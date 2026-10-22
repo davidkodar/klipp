@@ -209,6 +209,30 @@ pub(crate) fn respond(
             send(AppCommand::SetActiveSequence { sequence_idx })
         }
 
+        ControlCommand::RemoveSequence { index, sequence_id, confirm } => {
+            let project = ctx.shared.project.lock().map_err(|_| "project status lock poisoned")?;
+            let found = match (index, sequence_id.as_deref()) {
+                (Some(i), None) => (i < project.sequences.len()).then_some(i),
+                (None, Some(id)) => project.sequences.iter().position(|s| s.id == id),
+                _ => return Err("give the sequence's index or its sequence_id, one of them".into()),
+            };
+            let Some(sequence_idx) = found else {
+                return Err(format!("no such sequence; the project has {}", project.sequences.len()));
+            };
+            if project.sequences.len() == 1 {
+                return Err("it is the project's only sequence: add another first".into());
+            }
+            let seq = &project.sequences[sequence_idx];
+            if let Some(parent) = &seq.used_in {
+                return Err(format!("\"{}\" is a compound clip in \"{parent}\": remove that clip first", seq.name));
+            }
+            if !confirm {
+                return Err(format!("\"{}\" holds {} clip(s) and its removal can't be undone: ask first, then send confirm true", seq.name, seq.clips));
+            }
+            drop(project);
+            send(AppCommand::DeleteSequence { sequence_idx })
+        }
+
         ControlCommand::AppendClip { media_id, track } => {
             let id = klipp_core::MediaId(parse_uuid(&media_id, "media_id")?);
             match track {

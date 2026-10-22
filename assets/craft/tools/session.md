@@ -118,6 +118,10 @@ Add a sequence to the project and open it, at a picture size and rate: a vertica
 
 Name the active sequence: what the timeline is called in the app and in the project file. A new project's sequence has a default or inherited name until it is named; the brief's title does not rename it.
 
+## klipp_remove_sequence
+
+Remove one of the project's sequences, as its tab's Delete does: by index or sequence_id, as klipp_status lists them; prefer sequence_id, which doesn't shift when another is removed. Refused for the project's only sequence, and for one held as a compound clip in another (klipp_status shows it as used_in) until that clip is removed. It takes the sequence's own undo history with it and can't be undone: without confirm true it is refused, naming the sequence and its clip count. Ask the user, as the app's own dialog does, and only then send confirm true. The pool's media stays.
+
 ## klipp_open_project
 
 Open a `.klipp` project by exactly one of absolute path or name from klipp_recent_projects. A name is matched case-insensitively: exact matches first, otherwise literal partial matches. One match opens it; multiple matches open nothing and list candidate names and paths; no match points to klipp_recent_projects. Do not guess paths. Klipp projects are `.klipp` project folders (not `.kproj`); a project.json path is also accepted. Unsaved changes refuse the call unless save true or discard_changes true is supplied; never both. save writes the current project successfully before opening the next one. klipp_close_project returns to the project page. When no project is open, klipp_status includes up to five recent names and paths.

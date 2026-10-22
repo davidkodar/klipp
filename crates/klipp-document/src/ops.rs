@@ -46,6 +46,20 @@ pub struct VolumeKey {
     pub db: f32,
 }
 
+/// A track control's value at a moment, for [`Op::TrackAutomation`]:
+/// `db` for its volume, `pan` for its pan.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AutomationKey {
+    /// Sequence seconds.
+    pub at: f64,
+    /// The track's level in dB, 0 at unity; -60 and below is silence.
+    #[serde(default)]
+    pub db: Option<f32>,
+    /// -1 left to 1 right.
+    #[serde(default)]
+    pub pan: Option<f32>,
+}
+
 /// A point on the timeline, said the way an editor says it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -758,6 +772,21 @@ pub enum Op {
         visible: Option<bool>,
         #[serde(default)]
         language: Option<String>,
+    },
+    /// A track's own automation (#2306): `mode` how it is played (off,
+    /// read, touch, latch, write), and `keys` for its `param`, volume or
+    /// pan, at sequence seconds, straight moves between, replacing that
+    /// control's keys (empty clears them). The keys stay where they are
+    /// when clips move, and play over the track's own fader and pan. One
+    /// undo step.
+    TrackAutomation {
+        track: TrackRef,
+        #[serde(default)]
+        param: Option<klipp_core::automation::TrackParam>,
+        #[serde(default)]
+        mode: Option<klipp_core::automation::AutomationMode>,
+        #[serde(default)]
+        keys: Option<Vec<AutomationKey>>,
     },
     /// One edge of a clip to an anchor. The clip's other edge stays;
     /// the source moves with the edge, so the picture at the other edge
@@ -1880,7 +1909,7 @@ fn one_piece() -> u32 {
 /// Serialized operation tags accepted by `Op`. Keep this in sync with the
 /// variants; the test below catches additions and renames.
 pub const OP_NAMES: &[&str] = &[
-    "graphics", "vector_path", "connector", "place", "add_track", "remove_track", "set_track", "trim", "j_cut", "l_cut", "split", "join", "remove", "move", "cut",
+    "graphics", "vector_path", "connector", "place", "add_track", "remove_track", "set_track", "track_automation", "trim", "j_cut", "l_cut", "split", "join", "remove", "move", "cut",
     "captions", "audio", "volume", "duck", "lower_third", "set_text", "grade", "effect", "redact",
     "slip", "slide", "pin", "role", "match", "matte", "format", "stabilize", "reframe", "zoom", "pan", "follow", "refit", "highlight",
     "ramp", "grade_group", "remove_grade_group", "look", "qualify", "zones", "retime", "replace", "track_audio", "clean_audio",
@@ -3807,6 +3836,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
         }
         Op::RemoveTrack { track, with_clips } => remove_track(seq, i, track, *with_clips),
         Op::SetTrack { track, visible, language } => set_track(seq, i, track, *visible, language.as_deref()),
+        Op::TrackAutomation { track, param, mode, keys } => track_automation(seq, i, track, *param, *mode, keys.as_deref()),
         Op::Split { clip_id: clip_ref, at } => {
             let (ti, ci, clip) = resolve_clip(seq, fps, clip_ref, i)?;
             let clip_id = &clip.id;
@@ -4622,6 +4652,72 @@ fn set_track(seq: &Sequence, i: usize, track: &TrackRef, visible: Option<bool>, 
         new.language = (!l.is_empty()).then_some(l);
     }
     let edit = EditCommand::SetTrack { description: "Track", track_index: ti, old: Box::new(t.clone()), new: Box::new(new) };
+    Ok((format!("track {ti} \"{}\" {}", t.name, what.join(", ")), edit, Vec::new()))
+}
+
+/// [`Op::TrackAutomation`]: the track with its mode, or one control's
+/// keys, or both, changed.
+fn track_automation(
+    seq: &Sequence,
+    i: usize,
+    track: &TrackRef,
+    param: Option<klipp_core::automation::TrackParam>,
+    mode: Option<klipp_core::automation::AutomationMode>,
+    keys: Option<&[AutomationKey]>,
+) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    use klipp_core::automation::TrackParam;
+    let ti = resolve_track(seq, track, i)?;
+    let t = &seq.tracks[ti];
+    if t.kind != TrackKind::Audio {
+        return Err(refuse(i, format!("track {ti} \"{}\" is not an audio track", t.name), "name an audio track: its volume and pan are automated"));
+    }
+    if mode.is_none() && keys.is_none() {
+        return Err(refuse(i, "nothing to set", "give mode, or param and keys, or both"));
+    }
+    let mut new = t.clone();
+    let mut what = Vec::new();
+    if let Some(m) = mode {
+        new.automation.mode = m;
+        what.push(format!("automation {}", m.label()));
+    }
+    if let Some(keys) = keys {
+        let Some(param) = param else {
+            return Err(refuse(i, "keys without a param", "give param volume or pan"));
+        };
+        let mut kfs: Vec<klipp_core::Keyframe> = Vec::new();
+        for k in keys {
+            if !(k.at >= 0.0 && k.at.is_finite()) {
+                return Err(refuse(i, format!("{} s", k.at), "give times at or after the sequence's start, in seconds"));
+            }
+            let value = match (param, k.db, k.pan) {
+                (TrackParam::Volume, Some(db), None) if (-120.0..=6.0).contains(&db) => if db <= -60.0 { 0.0 } else { db_to_linear(db) },
+                (TrackParam::Volume, Some(db), None) => return Err(refuse(i, format!("{db} dB"), "give levels up to +6 dB, -60 or below for silence")),
+                (TrackParam::Pan, None, Some(pan)) if (-1.0..=1.0).contains(&pan) => pan,
+                (TrackParam::Pan, None, Some(pan)) => return Err(refuse(i, format!("pan {pan}"), "give pan from -1 (left) to 1 (right)")),
+                (TrackParam::Volume, ..) => return Err(refuse(i, format!("a volume key at {:.2} s without db alone", k.at), "give each key {at, db}")),
+                (TrackParam::Pan, ..) => return Err(refuse(i, format!("a pan key at {:.2} s without pan alone", k.at), "give each key {at, pan}")),
+            };
+            klipp_core::keyframe::upsert_keyframe(&mut kfs, k.at, value);
+        }
+        kfs.sort_by(|a, b| a.time_secs.total_cmp(&b.time_secs));
+        let unit = |k: &AutomationKey| match param {
+            TrackParam::Volume => format!("{:+.1} dB", k.db.unwrap_or_default()),
+            TrackParam::Pan => format!("pan {:+.2}", k.pan.unwrap_or_default()),
+        };
+        what.push(if keys.is_empty() {
+            format!("{} keys cleared", param.label().to_lowercase())
+        } else {
+            format!("{}: {}", param.label().to_lowercase(), keys.iter().map(|k| format!("{} at {:.2} s", unit(k), k.at)).collect::<Vec<_>>().join(", "))
+        });
+        if kfs.is_empty() {
+            new.automation.lanes.remove(&param);
+        } else {
+            new.automation.lanes.insert(param, kfs);
+        }
+    } else if param.is_some() {
+        return Err(refuse(i, "a param without keys", "give keys [{at, db}] or [{at, pan}] for it"));
+    }
+    let edit = EditCommand::SetTrack { description: "Track Automation", track_index: ti, old: Box::new(t.clone()), new: Box::new(new) };
     Ok((format!("track {ti} \"{}\" {}", t.name, what.join(", ")), edit, Vec::new()))
 }
 
@@ -13005,6 +13101,22 @@ mod tests {
         assert!(!new.visible && new.language.as_deref() == Some("de"), "{}", hide.steps[0].what);
         assert!(one(&seq, serde_json::json!({ "op": "set_track", "track": 0 })).unwrap_err().why.contains("nothing to set"));
         assert!(one(&seq, serde_json::json!({ "op": "set_track", "track": 0, "language": "de de" })).is_err());
+        // A track's own automation (#2306): a fade to silence keyed in dB,
+        // its mode, one undo step; a picture track, or keys without
+        // their control, refused.
+        let fade = one(&seq, serde_json::json!({ "op": "track_automation", "track": "audio", "param": "volume", "mode": "latch", "keys": [{ "at": 1.0, "db": 0 }, { "at": 3.0, "db": -6 }, { "at": 4.0, "db": -60 }] })).unwrap();
+        let EditCommand::SetTrack { new, .. } = &fade.steps[0].edit else { panic!("a track edit: {:?}", fade.steps[0].edit) };
+        let a = &new.automation;
+        assert_eq!(a.mode, klipp_core::automation::AutomationMode::Latch, "{}", fade.steps[0].what);
+        let v = |s| a.value_at(klipp_core::automation::TrackParam::Volume, s, 1.0);
+        assert!((v(1.0) - 1.0).abs() < 1e-6 && (v(3.0) - db_to_linear(-6.0)).abs() < 1e-6 && v(4.0) == 0.0, "{:?}", a.lanes);
+        let pan = one(&seq, serde_json::json!({ "op": "track_automation", "track": "audio", "param": "pan", "keys": [{ "at": 0.0, "pan": -1 }, { "at": 2.0, "pan": 1 }] })).unwrap();
+        let EditCommand::SetTrack { new, .. } = &pan.steps[0].edit else { panic!() };
+        assert!(new.automation.value_at(klipp_core::automation::TrackParam::Pan, 1.0, 0.0).abs() < 1e-6);
+        assert!(one(&seq, serde_json::json!({ "op": "track_automation", "track": 0, "mode": "off" })).unwrap_err().why.contains("not an audio track"));
+        assert!(one(&seq, serde_json::json!({ "op": "track_automation", "track": "audio", "keys": [{ "at": 0.0, "db": 0 }] })).unwrap_err().why.contains("without a param"));
+        assert!(one(&seq, serde_json::json!({ "op": "track_automation", "track": "audio", "param": "pan", "keys": [{ "at": 0.0, "db": 0 }] })).is_err());
+        assert!(one(&seq, serde_json::json!({ "op": "track_automation", "track": "audio", "param": "volume", "keys": [{ "at": 0.0, "db": 9 }] })).is_err());
         assert!(held.why.contains("holds 2 clips") && held.hint.contains("with_clips"), "{held:?}");
         // With them: gone, and the pictures no longer linked to them.
         let plan = one(&seq, serde_json::json!({ "op": "remove_track", "track": "audio", "with_clips": true })).unwrap();

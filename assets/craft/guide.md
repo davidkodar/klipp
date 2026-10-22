@@ -198,6 +198,14 @@ exist until the plan runs.
   none) a subtitle export tags its file with. A translated caption track
   starts hidden so two languages don't draw over each other: show it,
   and hide its source, to see it.
+- `track_automation {track, param?, mode?, keys?}`: an audio track's own
+  automation, one undo step. `mode` is off, read (the default), touch,
+  latch or write; `keys` for `param` volume, `[{at, db}]` (0 unity, up
+  to +6, -60 or below silence), or pan, `[{at, pan}]` (-1 left to 1
+  right), at sequence seconds with straight moves between, replacing
+  that control's keys (empty clears them). They stay put when clips
+  move: a fade-out across several clips is one track lane, where
+  `volume` keys a single clip.
 - `captions {track?, from?, to?, max_chars?, max_lines?, replace?}`: captions for
   what is heard on the timeline, from the transcripts. Each word lands
   where its clip puts it; a cue closes at a sentence, a pause or a cut;

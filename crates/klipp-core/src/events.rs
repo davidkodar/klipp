@@ -5293,6 +5293,10 @@ pub struct SequenceSummary {
     pub name: String,
     /// Clips on all its tracks.
     pub clips: usize,
+    /// The sequence that holds it as a compound clip, if one does: it
+    /// can't be removed while it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub used_in: Option<String>,
 }
 
 impl Default for ProjectStatus {
