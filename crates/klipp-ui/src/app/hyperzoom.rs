@@ -374,7 +374,7 @@ mod hyperzoom_handler_tests {
 
     fn kf(t: f64, v: f32) -> Keyframe {
         Keyframe { time_secs: t, value: v, interpolation: Interpolation::Linear,
-                   tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) }
+                   tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0), handles: Default::default() }
     }
 
     #[test]

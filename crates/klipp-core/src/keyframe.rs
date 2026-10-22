@@ -131,6 +131,55 @@ pub struct Keyframe {
     /// Negative time_delta means the handle extends to the left.
     #[serde(default)]
     pub tangent_in: (f64, f32),
+    /// How the key's handles are made: given (`tangent_in`/`tangent_out`
+    /// as stored) or worked out from its neighbours when the curve is
+    /// evaluated. Unsaved when `Broken`, so a key without it reads as before.
+    #[serde(default, skip_serializing_if = "Handles::is_broken")]
+    pub handles: Handles,
+}
+
+/// How a key's two Bezier handles are made, as a curve editor's key menu
+/// sets them. The worked-out kinds are solved from the neighbouring keys
+/// each time the curve is evaluated, so they follow a neighbour that
+/// moves; the stored tangents are only kept in step for show and for a
+/// later switch to a given kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Handles {
+    /// Each handle as stored, moved on its own.
+    #[default]
+    Broken,
+    /// As stored, kept in one line: moving one turns the other with it.
+    Aligned,
+    /// Smooth through the key: both handles along the line from the key
+    /// before to the key after.
+    Auto,
+    /// As `Auto`, but never past the neighbours' values: flat at a peak, a
+    /// dip or an end key, and short enough not to overshoot.
+    Clamped,
+    /// Both handles level: the move comes to rest at the key.
+    Flat,
+    /// The in-handle aimed straight at the key before; the out-handle as stored.
+    LinearIn,
+    /// The out-handle aimed straight at the key after; the in-handle as stored.
+    LinearOut,
+}
+
+impl Handles {
+    /// Every kind, in the order a key menu lists them, with its label.
+    pub const ALL: [(Handles, &'static str); 7] = [
+        (Handles::Auto, "Auto"),
+        (Handles::Clamped, "Auto Clamped"),
+        (Handles::Aligned, "Aligned"),
+        (Handles::Broken, "Broken"),
+        (Handles::Flat, "Flat"),
+        (Handles::LinearIn, "Linear In"),
+        (Handles::LinearOut, "Linear Out"),
+    ];
+
+    pub fn is_broken(&self) -> bool {
+        *self == Handles::Broken
+    }
 }
 
 /// Timestamp tolerance for keyframe identity, in seconds. This absorbs rounding
@@ -165,6 +214,7 @@ pub fn upsert_keyframe_with_interpolation(kfs: &mut Vec<Keyframe>, time_secs: f6
     kfs.push(Keyframe {
         time_secs, value, interpolation: default,
         tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0),
+        handles: Default::default(),
     });
     kfs.sort_by(|a, b| a.time_secs.total_cmp(&b.time_secs));
 }
@@ -391,6 +441,7 @@ mod tests {
             interpolation: interp,
             tangent_out: (0.0, 0.0),
             tangent_in: (0.0, 0.0),
+            handles: Default::default(),
         }
     }
 
@@ -431,6 +482,20 @@ mod tests {
         assert_eq!(keys, line(), "no segment on that side, no change");
     }
 
+    /// A key saved without handles reads as Broken (its tangents as
+    /// stored), and a Broken key is saved without the field, so a file
+    /// is written as before; any other kind is saved and read back.
+    #[test]
+    fn handles_are_saved_only_when_not_broken() {
+        let key: Keyframe = serde_json::from_str(r#"{"time_secs":1.0,"value":2.0,"interpolation":"Bezier","tangent_out":[0.5,0.0],"tangent_in":[-0.5,0.0]}"#).unwrap();
+        assert_eq!(key.handles, Handles::Broken);
+        assert!(!serde_json::to_string(&key).unwrap().contains("handles"));
+        for (h, _) in Handles::ALL {
+            let k = Keyframe { handles: h, ..key.clone() };
+            assert_eq!(serde_json::from_str::<Keyframe>(&serde_json::to_string(&k).unwrap()).unwrap(), k);
+        }
+    }
+
     fn kf_linear(time: f64, value: f32) -> Keyframe {
         kf(time, value, Interpolation::Linear)
     }
@@ -461,6 +526,7 @@ mod tests {
             interpolation: Interpolation::Bezier,
             tangent_out: tan_out,
             tangent_in: tan_in,
+            handles: Default::default(),
         }
     }
 

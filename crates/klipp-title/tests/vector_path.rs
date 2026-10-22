@@ -172,6 +172,7 @@ fn a_still_path_moved_whole_is_its_resting_render_posed() {
             interpolation: klipp_core::Interpolation::Linear,
             tangent_out: (0.0, 0.0),
             tangent_in: (0.0, 0.0),
+            handles: Default::default(),
         }];
         let mut placed = TitleRenderer::new();
         let mut rastered = TitleRenderer::new();

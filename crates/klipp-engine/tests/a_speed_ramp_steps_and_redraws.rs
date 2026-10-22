@@ -26,7 +26,7 @@ const H: u32 = common::RAMP_H;
 /// playhead in the clip plays at `speed`, whatever the base speed says.
 fn held_at(speed: f32) -> Vec<Keyframe> {
     [0.0, 10.0]
-        .map(|t| Keyframe { time_secs: t, value: speed, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) })
+        .map(|t| Keyframe { time_secs: t, value: speed, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() })
         .to_vec()
 }
 

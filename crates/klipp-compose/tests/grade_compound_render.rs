@@ -212,7 +212,7 @@ fn a_key_inside_a_compound_animates_it() {
     let display = picture.graph.nodes.iter().find(|n| n.type_id.as_str() == lt::SCENE_TO_DISPLAY).unwrap().id;
     let node = klipp_graph_lift::grade_compound::new_compound(klipp_graph_format::NodeId::new_v4()).unwrap();
     let corrector = node.group.as_ref().unwrap().graph.nodes.iter().find(|n| klipp_graph_lift::structure::kind_of(n) == "Corrector").unwrap().id;
-    let key = |t: f64, v: f32| serde_json::to_value(klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }).unwrap();
+    let key = |t: f64, v: f32| serde_json::to_value(klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }).unwrap();
     c.apply_picture_ops(&[
         GraphOp::AddNode { after: at(&[display]), node: Box::new(node.clone()) },
         GraphOp::AddKeyAt { path: at(&[node.id, corrector]), key: "exposure".into(), keyframe: key(0.0, 0.0) },

@@ -102,7 +102,7 @@ fn fixture(track: &Track) -> Result<klipp_timeline::Clip, String> {
         let (mut state, id, node) = super::grade_inspector_tests::graded(kind).ok_or("the grade won't take one")?;
         let addr = state.sequences[0].all_clips().find(|c| c.id == id).unwrap().grade_nodes().into_iter().map(|(p, ..)| p).find(|p| p.node() == Some(node)).ok_or("no grade node by path")?;
         for (t, share) in KEYS {
-            let keyframe = serde_json::to_value(klipp_core::Keyframe { time_secs: t, value: track.at(share), interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }).unwrap();
+            let keyframe = serde_json::to_value(klipp_core::Keyframe { time_secs: t, value: track.at(share), interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }).unwrap();
             state.path_command(&AppCommand::AddKeyAt { addr: addr.clone(), key: track.key.into(), keyframe }).ok_or("no key added")?;
         }
         let clip = state.sequences[0].all_clips().find(|c| c.id == id).unwrap().clone();
@@ -144,7 +144,7 @@ fn fixture(track: &Track) -> Result<klipp_timeline::Clip, String> {
         .find(|n| klipp_graph_lift::effect_params::tag(n) == Some(track.tag)).map(|n| n.id).ok_or("no effect node")?;
     let addr = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: id.0 }, [node]);
     for (t, share) in KEYS {
-        let keyframe = serde_json::to_value(klipp_core::Keyframe { time_secs: t, value: track.at(share), interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }).unwrap();
+        let keyframe = serde_json::to_value(klipp_core::Keyframe { time_secs: t, value: track.at(share), interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }).unwrap();
         state.path_command(&AppCommand::AddKeyAt { addr: addr.clone(), key: track.key.into(), keyframe }).ok_or("no key added")?;
     }
     let clip = state.sequences[0].all_clips().find(|c| c.id == id).unwrap().clone();

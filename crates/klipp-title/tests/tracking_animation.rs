@@ -11,6 +11,7 @@ fn key(time_secs: f64, value: f32) -> Keyframe {
         interpolation: Interpolation::Linear,
         tangent_out: (0.0, 0.0),
         tangent_in: (0.0, 0.0),
+        handles: Default::default(),
     }
 }
 fn title(text: &str, alignment: TextAlignment) -> TitleData {

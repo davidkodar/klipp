@@ -3855,6 +3855,7 @@ mod tests {
             interpolation: Interpolation::Linear,
             tangent_in: (0.0, 0.0),
             tangent_out: (0.0, 0.0),
+            handles: Default::default(),
         };
         c0.audio_effect_keyframes.insert(
             "0:gain".to_string(),
@@ -4148,6 +4149,7 @@ mod tests {
             interpolation: klipp_core::keyframe::Interpolation::Linear,
             tangent_out: (0.0, 0.0),
             tangent_in: (0.0, 0.0),
+            handles: Default::default(),
         }
     }
 

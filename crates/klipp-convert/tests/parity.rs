@@ -257,6 +257,7 @@ fn structured_grade_settings_defaults_and_animation_match() {
         interpolation: klipp_core::Interpolation::Bezier,
         tangent_out: (0.2, 0.1),
         tangent_in: (-0.1, -0.2),
+        handles: Default::default(),
     };
     let mut mask = klipp_core::Mask::default();
     mask.keyframes.center_x.push(key.clone());

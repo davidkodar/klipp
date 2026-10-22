@@ -16,6 +16,7 @@ fn key(value: f32) -> Keyframe {
         interpolation: Interpolation::Linear,
         tangent_in: (0.0, 0.0),
         tangent_out: (0.0, 0.0),
+        handles: Default::default(),
     }
 }
 fn ids(c: &mut Clip) -> Vec<EffectId> {

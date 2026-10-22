@@ -927,6 +927,7 @@ fn show_clip_video(
                                     interpolation: klipp_core::keyframe::Interpolation::Linear,
                                     tangent_out: (0.0, 0.0),
                                     tangent_in: (0.0, 0.0),
+                                    handles: Default::default(),
                                 },
                                 klipp_core::Keyframe {
                                     time_secs: clip_dur,
@@ -934,6 +935,7 @@ fn show_clip_video(
                                     interpolation: klipp_core::keyframe::Interpolation::Linear,
                                     tangent_out: (0.0, 0.0),
                                     tangent_in: (0.0, 0.0),
+                                    handles: Default::default(),
                                 },
                             ],
                         });
@@ -1168,8 +1170,8 @@ fn show_clip_video(
                             cmds.push(AppCommand::SetSpeedKeyframes {
                                 clip_id,
                                 keyframes: vec![
-                                    klipp_core::Keyframe { time_secs: 0.0, value: 0.5, interpolation: klipp_core::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
-                                    klipp_core::Keyframe { time_secs: clip_dur, value: 2.0, interpolation: klipp_core::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
+                                    klipp_core::Keyframe { time_secs: 0.0, value: 0.5, interpolation: klipp_core::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() },
+                                    klipp_core::Keyframe { time_secs: clip_dur, value: 2.0, interpolation: klipp_core::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() },
                                 ],
                             });
                         }
@@ -1181,8 +1183,8 @@ fn show_clip_video(
                             cmds.push(AppCommand::SetSpeedKeyframes {
                                 clip_id,
                                 keyframes: vec![
-                                    klipp_core::Keyframe { time_secs: 0.0, value: 2.0, interpolation: klipp_core::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
-                                    klipp_core::Keyframe { time_secs: clip_dur, value: 0.5, interpolation: klipp_core::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
+                                    klipp_core::Keyframe { time_secs: 0.0, value: 2.0, interpolation: klipp_core::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() },
+                                    klipp_core::Keyframe { time_secs: clip_dur, value: 0.5, interpolation: klipp_core::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() },
                                 ],
                             });
                         }
@@ -1194,10 +1196,10 @@ fn show_clip_video(
                             cmds.push(AppCommand::SetSpeedKeyframes {
                                 clip_id,
                                 keyframes: vec![
-                                    klipp_core::Keyframe { time_secs: 0.0, value: 1.0, interpolation: klipp_core::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
-                                    klipp_core::Keyframe { time_secs: clip_dur * 0.3, value: 0.25, interpolation: klipp_core::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
-                                    klipp_core::Keyframe { time_secs: clip_dur * 0.7, value: 0.25, interpolation: klipp_core::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
-                                    klipp_core::Keyframe { time_secs: clip_dur, value: 1.0, interpolation: klipp_core::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
+                                    klipp_core::Keyframe { time_secs: 0.0, value: 1.0, interpolation: klipp_core::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() },
+                                    klipp_core::Keyframe { time_secs: clip_dur * 0.3, value: 0.25, interpolation: klipp_core::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() },
+                                    klipp_core::Keyframe { time_secs: clip_dur * 0.7, value: 0.25, interpolation: klipp_core::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() },
+                                    klipp_core::Keyframe { time_secs: clip_dur, value: 1.0, interpolation: klipp_core::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() },
                                 ],
                             });
                         }
@@ -1209,10 +1211,10 @@ fn show_clip_video(
                             cmds.push(AppCommand::SetSpeedKeyframes {
                                 clip_id,
                                 keyframes: vec![
-                                    klipp_core::Keyframe { time_secs: 0.0, value: 1.0, interpolation: klipp_core::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
-                                    klipp_core::Keyframe { time_secs: clip_dur * 0.3, value: 3.0, interpolation: klipp_core::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
-                                    klipp_core::Keyframe { time_secs: clip_dur * 0.7, value: 3.0, interpolation: klipp_core::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
-                                    klipp_core::Keyframe { time_secs: clip_dur, value: 1.0, interpolation: klipp_core::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
+                                    klipp_core::Keyframe { time_secs: 0.0, value: 1.0, interpolation: klipp_core::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() },
+                                    klipp_core::Keyframe { time_secs: clip_dur * 0.3, value: 3.0, interpolation: klipp_core::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() },
+                                    klipp_core::Keyframe { time_secs: clip_dur * 0.7, value: 3.0, interpolation: klipp_core::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() },
+                                    klipp_core::Keyframe { time_secs: clip_dur, value: 1.0, interpolation: klipp_core::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() },
                                 ],
                             });
                         }
@@ -3919,7 +3921,7 @@ mod tilt_tests {
         assert!(matches!(cmds[1], AppCommand::SetVideoRubberBandParam(VideoParam::TiltY)));
 
         // With a key already there, the button takes it off.
-        let key = klipp_core::Keyframe { time_secs: 1.0, value: 30.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+        let key = klipp_core::Keyframe { time_secs: 1.0, value: 30.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
         cmds.clear();
         keyframe_controls(&mut cmds, &r, std::slice::from_ref(&key), &keyframe_state(std::slice::from_ref(&key), 1.0, keyframe_tolerance), VideoParam::TiltY, 30.0, clip_id, 1.0, (0.0, 24), keyframe_tolerance);
         assert!(matches!(cmds[0], AppCommand::RemoveVideoKeyframe { param: VideoParam::TiltY, .. }));

@@ -10,7 +10,7 @@ const H: u32 = 720;
 const TEXT: &str = "one MIDDLE two";
 
 fn key(time_secs: f64, value: f32) -> Keyframe {
-    Keyframe { time_secs, value, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }
+    Keyframe { time_secs, value, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }
 }
 
 fn title(animators: Vec<Animator>) -> TitleData {

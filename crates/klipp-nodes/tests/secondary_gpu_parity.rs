@@ -667,6 +667,7 @@ fn a_denoised_qualifier_in_a_secondary_matches_the_cpu() {
 fn a_keyframed_refinement_in_a_secondary_matches_the_cpu() {
     let key = |time_secs, value| klipp_core::Keyframe {
         time_secs, value, interpolation: Default::default(), tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+        handles: Default::default(),
     };
     let mut graph = secondary_graph(Some(1.0));
     for n in &mut graph.nodes {
@@ -849,7 +850,7 @@ fn a_key_switched_off_by_its_track_is_bypassed_at_its_gate() {
                 e.from_node = first;
             }
         }
-        let key = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Step, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+        let key = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Step, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
         if let Some(n) = graph.nodes.iter_mut().find(|n| n.id == keys[1]) {
             n.keyframes.tracks.push(klipp_nodes::params::NodeKeyframeTrack { param_name: klipp_nodes::executor::ENABLED_TRACK.into(), keyframes: vec![key(0.0, 0.0), key(1.0, 1.0)] });
         }

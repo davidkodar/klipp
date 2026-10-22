@@ -134,7 +134,7 @@ fn start_track_menu(ui: &mut egui::Ui, state: &AppState, clip_id: klipp_core::Cl
         return Some((cmd, param));
     }
     let CurveParam::Node { path, key, .. } = &param else { return None };
-    let keyframe = serde_json::to_value(Keyframe { time_secs: t, value, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }).ok()?;
+    let keyframe = serde_json::to_value(Keyframe { time_secs: t, value, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }).ok()?;
     Some((AppCommand::AddKeyAt { addr: path.clone(), key: key.clone(), keyframe }, param))
 }
 
@@ -605,7 +605,7 @@ impl CurveEditorPanel {
                                 // (no dedicated AppCommand yet — add inline)
                             }
                             CurveParam::Node { path, key, .. } => {
-                                let keyframe = klipp_core::keyframe::Keyframe { time_secs: t, value: v, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+                                let keyframe = klipp_core::keyframe::Keyframe { time_secs: t, value: v, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
                                 if let Ok(keyframe) = serde_json::to_value(keyframe) {
                                     cmds.push(AppCommand::AddKeyAt { addr: path.clone(), key: key.clone(), keyframe });
                                 }

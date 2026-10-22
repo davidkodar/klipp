@@ -545,6 +545,7 @@ impl NodeGraph {
                     interpolation: klipp_core::keyframe::Interpolation::Linear,
                     tangent_out: (0.0, 0.0),
                     tangent_in: (0.0, 0.0),
+                    handles: Default::default(),
                 };
                 mask.keyframes.center_x.push(key(cx));
                 mask.keyframes.center_y.push(key(cy));

@@ -67,7 +67,7 @@ fn the_opacity_lands_on_the_entry_the_clip_reads() {
 fn keys_land_on_the_clips_lanes() {
     let mut c = clip(vec![transform(0.0)], vec![true]);
     let path = c.placement_path().unwrap();
-    let key = |t: f64, v: f32| serde_json::to_value(Keyframe { time_secs: t, value: v, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }).unwrap();
+    let key = |t: f64, v: f32| serde_json::to_value(Keyframe { time_secs: t, value: v, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }).unwrap();
     c.apply_picture_ops(&[
         GraphOp::AddKeyAt { path: path.clone(), key: "pos_x".into(), keyframe: key(1.0, 10.0) },
         GraphOp::AddKeyAt { path: path.clone(), key: "pos_x".into(), keyframe: key(0.0, 0.0) },
@@ -117,7 +117,7 @@ fn a_width_of_zero_resets_the_aspect_and_keys_through_zero_keep_it() {
     let mut keyed = clip(vec![half()], vec![true]);
     let path = keyed.placement_path().unwrap();
     for (t, v) in [(0.0, 1.0), (1.0, 0.0), (2.0, 1.0)] {
-        let key = Keyframe { time_secs: t, value: v, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+        let key = Keyframe { time_secs: t, value: v, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
         keyed.apply_picture_ops(&[GraphOp::AddKeyAt { path: path.clone(), key: ParamKey::from("scale"), keyframe: serde_json::to_value(key).unwrap() }]).unwrap();
     }
     let p = keyed.picture_v2().unwrap().picture.clone();
@@ -133,7 +133,7 @@ fn the_height_takes_keys_of_its_own() {
     let half = E::Transform { position_x: 0.0, position_y: 0.0, scale_x: 1.0, scale_y: 0.5, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None };
     let mut c = clip(vec![half], vec![true]);
     let path = c.placement_path().unwrap();
-    let key = |t: f64, v: f32| serde_json::to_value(Keyframe { time_secs: t, value: v, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }).unwrap();
+    let key = |t: f64, v: f32| serde_json::to_value(Keyframe { time_secs: t, value: v, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }).unwrap();
     c.apply_picture_ops(&[
         GraphOp::AddKeyAt { path: path.clone(), key: "scale_y".into(), keyframe: key(0.0, 0.25) },
         GraphOp::AddKeyAt { path: path.clone(), key: "scale_y".into(), keyframe: key(2.0, 0.75) },

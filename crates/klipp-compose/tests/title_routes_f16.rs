@@ -53,7 +53,7 @@ fn worst_code(a: &[f32], b: &[f32]) -> f32 {
 #[test]
 fn each_route_lands_within_a_level_of_the_byte_frame() {
     let Some(mut gpu) = GpuEffectsPipeline::new() else { return };
-    let key = |time_secs, value| Keyframe { time_secs, value, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+    let key = |time_secs, value| Keyframe { time_secs, value, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
     let mut keyed = lower_third(LayerFx::default());
     if let klipp_timeline::TitleObjectContent::TextBox(tb) = &mut keyed.objects[0].content {
         tb.font_size_keyframes = vec![key(0.0, 40.0), key(2.0, 80.0)];
@@ -123,7 +123,7 @@ fn tracking_glyphs_match_static_reference_on_gpu() {
         assert!(std::env::var_os("KLIPP_TEST_REQUIRE_GPU").is_none(), "GPU required");
         return;
     };
-    let key = |time_secs, value| Keyframe { time_secs, value, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+    let key = |time_secs, value| Keyframe { time_secs, value, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
     let td = TitleData::single_text(TextBox { text: "A little space".into(), font_size: 60.0, tracking: 2.0,
         tracking_keyframes: vec![key(0.0, 2.0), key(2.0, 14.0)], ..Default::default() });
     let mut r = TitleRenderer::new();
@@ -151,7 +151,7 @@ fn tracking_glyphs_match_static_reference_on_gpu() {
 fn tracking_4k_cached_and_raster_composition_timing() {
     use std::time::Instant;
     let mut gpu = GpuEffectsPipeline::new().expect("timing requires GPU");
-    let key = |time_secs, value| Keyframe { time_secs, value, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+    let key = |time_secs, value| Keyframe { time_secs, value, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
     let td = TitleData::single_text_fx(TextBox { text: "Give it a little space.".into(), font_name: "Inter".into(),
         font_style: klipp_timeline::FontStyle::Bold, font_size: 90.0,
         tracking_keyframes: vec![key(0.0, 0.0), key(6.0, 10.0)], ..Default::default() },
@@ -288,7 +288,7 @@ fn fading_layers_at_4k_only_rasterize_the_resting_pictures() {
         assert_eq!(renderer.resting_renders(), 2);
     }
     let mut keyed = title.clone();
-    keyed.objects[0].opacity_keyframes = vec![Keyframe { time_secs: 0.0, value: 0.0, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }];
+    keyed.objects[0].opacity_keyframes = vec![Keyframe { time_secs: 0.0, value: 0.0, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }];
     for t in [0.1, 0.5, 2.0, 3.6, 0.2] {
         assert!(matches!(renderer.frame_with_window(&keyed, 3840, 2160, None, t, Some(4.0)), TitleFrame::Layers { .. }));
         assert_eq!(renderer.resting_renders(), 2);

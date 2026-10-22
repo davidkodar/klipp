@@ -96,7 +96,7 @@ fn a_picture_truth_clip_keys_its_height_through_its_placement() {
     c.apply_picture_ops(&[GraphOp::SetMix { path: blur, mix: Some(0.5) }]).unwrap();
     assert!(c.is_picture_truth());
     let path = c.placement_path().unwrap();
-    let key = |t: f64, v: f32| serde_json::to_value(klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }).unwrap();
+    let key = |t: f64, v: f32| serde_json::to_value(klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }).unwrap();
     c.apply_picture_ops(&[
         GraphOp::AddKeyAt { path: path.clone(), key: "scale_y".into(), keyframe: key(0.0, 0.25) },
         GraphOp::AddKeyAt { path: path.clone(), key: "scale_y".into(), keyframe: key(2.0, 0.75) },

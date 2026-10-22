@@ -12889,6 +12889,7 @@ mod audio_fingerprint_kf_tests {
             interpolation: Interpolation::Linear,
             tangent_in: (0.0, 0.0),
             tangent_out: (0.0, 0.0),
+            handles: Default::default(),
         }
     }
 
@@ -13316,7 +13317,7 @@ mod audio_crossfade_schedule_tests {
         assert_eq!(heard(&s, &pool), vec![bm], "no cache, no varispeed: silent rather than at 1x");
         pool.get_mut(&am).unwrap().audio_cache = cache;
         s.tracks[0].clips[0].speed = 1.0;
-        s.tracks[0].clips[0].speed_keyframes = vec![klipp_core::Keyframe { time_secs: 0.0, value: 2.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }];
+        s.tracks[0].clips[0].speed_keyframes = vec![klipp_core::Keyframe { time_secs: 0.0, value: 2.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }];
         assert_eq!(heard(&s, &pool), vec![bm], "a ramp has no one speed: silent");
     }
 

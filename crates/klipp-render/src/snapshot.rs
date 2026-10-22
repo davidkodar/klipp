@@ -1328,7 +1328,7 @@ mod tests {
         seq.tracks.push(bed);
         let mut ramped = Track::new("A3", TrackKind::Audio);
         let mut r = clip(ramp, 1.0);
-        r.speed_keyframes = vec![klipp_core::Keyframe { time_secs: 0.0, value: 2.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }];
+        r.speed_keyframes = vec![klipp_core::Keyframe { time_secs: 0.0, value: 2.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }];
         ramped.clips.push(r);
         seq.tracks.push(ramped);
         let snap = SequenceSnapshot::from_sequence(&seq, &pool, &make_settings(), None, false, klipp_core::WorkingColorspace::Rec709Linear).unwrap();

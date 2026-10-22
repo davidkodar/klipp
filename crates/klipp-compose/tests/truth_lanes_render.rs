@@ -47,7 +47,7 @@ fn write_to_the_fields(c: &mut Clip) {
 }
 
 fn key(time_secs: f64, value: f32) -> serde_json::Value {
-    serde_json::to_value(klipp_core::Keyframe { time_secs, value, interpolation: klipp_core::Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) }).unwrap()
+    serde_json::to_value(klipp_core::Keyframe { time_secs, value, interpolation: klipp_core::Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0), handles: Default::default() }).unwrap()
 }
 
 fn transform_at(c: &Clip, secs: f64) -> klipp_compose::eval::ResolvedTransform {

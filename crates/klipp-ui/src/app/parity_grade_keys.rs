@@ -153,7 +153,7 @@ fn key_case(start: &Grade, r: &Row, action: Action) -> Result<(), String> {
     // add and the carets.
     let first = if matches!(action, Action::Add | Action::Previous | Action::Next) { 0.25 } else { AT };
     let initial = if matches!(action, Action::Interpolate(Interpolation::Linear)) { Interpolation::Step } else { Interpolation::Linear };
-    let key = |time_secs, value| Keyframe { time_secs, value, interpolation: initial, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) };
+    let key = |time_secs, value| Keyframe { time_secs, value, interpolation: initial, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0), handles: Default::default() };
     let start = with_track(start, r.desc.key, |keys| *keys = vec![key(first, a), key(1.25, b)])?;
     let expected: GradePicture = with_track(&start, r.desc.key, |keys| match action {
         Action::Add => {

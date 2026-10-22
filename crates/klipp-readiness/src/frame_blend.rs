@@ -109,7 +109,7 @@ fn scene(from: i64, frames: i64, run: Run, blend_mode: u32) -> (Arc<Scene>, Clip
     let mut clip = Clip::media(media, tc(0), tc(frames), tc(from), tc(from + covered));
     clip.speed = speed;
     if let Run::Ramped(a, b) = run {
-        let key = |time_secs: f64, value: f32| Keyframe { time_secs, value, interpolation: klipp_core::Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) };
+        let key = |time_secs: f64, value: f32| Keyframe { time_secs, value, interpolation: klipp_core::Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0), handles: Default::default() };
         clip.speed_keyframes = vec![key(0.0, a as f32), key(frames as f64 / FPS as f64, b as f32)];
     }
     clip.set_effect_list(

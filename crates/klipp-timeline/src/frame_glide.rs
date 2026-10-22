@@ -36,8 +36,8 @@ pub fn keys(glide: &FrameGlide, len_secs: f64, anchor: [f32; 2], frame_w: f32, f
     let interpolation = if glide.easing == GlideEasing::Linear { Interpolation::Linear } else { Interpolation::Bezier };
     let pair = |a: f32, b: f32| {
         vec![
-            Keyframe { time_secs: 0.0, value: a, interpolation, tangent_out: (out_handle, 0.0), tangent_in: (0.0, 0.0) },
-            Keyframe { time_secs: len, value: b, interpolation, tangent_out: (0.0, 0.0), tangent_in: (-in_handle, 0.0) },
+            Keyframe { time_secs: 0.0, value: a, interpolation, tangent_out: (out_handle, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() },
+            Keyframe { time_secs: len, value: b, interpolation, tangent_out: (0.0, 0.0), tangent_in: (-in_handle, 0.0), handles: Default::default() },
         ]
     };
     [pair(x0, x1), pair(y0, y1), pair(s0, s1)]
@@ -97,7 +97,7 @@ fn set_lanes(clip: &mut Clip, [x, y, s]: [Vec<Keyframe>; 3]) {
 /// one key at rest, so the viewer shows the whole picture whatever its
 /// placement is set to where nothing keys it.
 pub fn hold_at_rest(clip: &mut Clip) {
-    let rest = |value: f32| vec![Keyframe { time_secs: 0.0, value, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }];
+    let rest = |value: f32| vec![Keyframe { time_secs: 0.0, value, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }];
     set_lanes(clip, [rest(0.0), rest(0.0), rest(1.0)]);
 }
 
@@ -245,7 +245,7 @@ mod tests {
         assert_eq!(lane(&c, "scale")[1].value, 3.0);
         // And existing animation on a clip that never had a glide is never touched.
         let mut animated = clip(4.0);
-        set_scale(&mut animated, vec![Keyframe { time_secs: 1.0, value: 1.5, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }]);
+        set_scale(&mut animated, vec![Keyframe { time_secs: 1.0, value: 1.5, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }]);
         animated.frame_glide = Some(FrameGlide::default());
         assert!(!write(&mut animated, 1920.0, 1080.0));
     }
@@ -265,7 +265,7 @@ mod tests {
         assert!(off.frame_glide.is_none() && lane(&off, "scale").is_empty());
 
         let mut animated = clip(4.0);
-        set_scale(&mut animated, vec![Keyframe { time_secs: 1.0, value: 1.5, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }]);
+        set_scale(&mut animated, vec![Keyframe { time_secs: 1.0, value: 1.5, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }]);
         assert!(set(&animated, Some(push), false, 1920.0, 1080.0).is_err(), "never silently overwritten");
         let replaced = set(&animated, Some(push), true, 1920.0, 1080.0).unwrap();
         assert_eq!(lane(&replaced, "scale").len(), 2);

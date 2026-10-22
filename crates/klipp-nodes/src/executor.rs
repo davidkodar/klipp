@@ -8762,7 +8762,7 @@ mod tests {
         // driver.
         let node_id = uuid::Uuid::new_v4();
         let mut mask = make_circle_mask(0.5, 0.5);
-        mask.keyframes.track_x = vec![klipp_core::Keyframe { time_secs: 0.0, value: 0.0, interpolation: klipp_core::Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) }];
+        mask.keyframes.track_x = vec![klipp_core::Keyframe { time_secs: 0.0, value: 0.0, interpolation: klipp_core::Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0), handles: Default::default() }];
         let mut stack = klipp_core::MaskStack { masks: vec![mask] };
         let track_points = vec![make_track_point_at(Some((node_id, 0)), vec![(0.10, 0.20)])];
         apply_tracker_overrides_to_masks(&mut stack, node_id, 0.0, &track_points);

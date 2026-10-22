@@ -839,6 +839,7 @@ fn ramp_endpoint_keyframe(
                 interpolation: Interpolation::Bezier,
                 tangent_in,
                 tangent_out,
+                handles: Default::default(),
             }
         }
     }
@@ -978,6 +979,7 @@ fn keyframe(time_secs: f64, value: f32) -> Keyframe {
         interpolation: Interpolation::Linear,
         tangent_in: (0.0, 0.0),
         tangent_out: (0.0, 0.0),
+        handles: Default::default(),
     }
 }
 

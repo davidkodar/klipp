@@ -98,7 +98,7 @@ fn an_earlier_keyed_opacity_is_saved_on_with_its_keys() {
     let mut c = clip();
     c.set_effect_list(vec![E::Opacity { value: 0.5 }, E::Opacity { value: 0.8 }], vec![true, true]);
     c.edit_effect_keyframes(|k| {
-        k.insert("0:value".into(), vec![klipp_core::Keyframe { time_secs: 0.0, value: 0.2, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }]);
+        k.insert("0:value".into(), vec![klipp_core::Keyframe { time_secs: 0.0, value: 0.2, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }]);
     });
     let (back, stored) = saved("1386", c);
     // An enabled node writes no `enabled` (it's the default).

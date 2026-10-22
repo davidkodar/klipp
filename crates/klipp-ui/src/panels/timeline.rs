@@ -18324,7 +18324,7 @@ mod speed_badge_tests {
     #[test]
     fn a_speed_ramp_has_no_badge() {
         let mut clip = at(1.5);
-        clip.speed_keyframes.push(klipp_core::Keyframe { time_secs: 0.0, value: 1.5, interpolation: klipp_core::Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) });
+        clip.speed_keyframes.push(klipp_core::Keyframe { time_secs: 0.0, value: 1.5, interpolation: klipp_core::Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0), handles: Default::default() });
         assert_eq!(speed_badge_text(&clip), None);
     }
 }
@@ -18339,6 +18339,7 @@ mod bypass_strip_helper_tests {
             time_secs: t, value: v,
             interpolation: Interpolation::Step,
             tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+            handles: Default::default(),
         }
     }
 

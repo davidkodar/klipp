@@ -21,7 +21,7 @@ fn tc(s: f64) -> Timecode {
 }
 
 fn key(time_secs: f64, value: f32) -> Keyframe {
-    Keyframe { time_secs, value, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }
+    Keyframe { time_secs, value, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }
 }
 
 fn media(effects: Vec<E>, enabled: Vec<bool>) -> Clip {

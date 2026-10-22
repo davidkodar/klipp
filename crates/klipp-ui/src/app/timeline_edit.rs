@@ -406,7 +406,7 @@ impl KlippApp {
                     // without borrow conflicts.
                     let res = self.state.sequences[self.state.active_sequence_idx].resolution;
                     let Some(dur) = self.state.sequences[self.state.active_sequence_idx].all_clips().find(|c| c.id == cid).map(|c| c.duration().to_secs_f64()) else { return true };
-                    let key = |time_secs: f64, value: f32| klipp_core::Keyframe { time_secs, value, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+                    let key = |time_secs: f64, value: f32| klipp_core::Keyframe { time_secs, value, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
                     let lanes: Vec<(&str, Vec<klipp_core::Keyframe>)> = match preset.as_str() {
                         "ken_burns_zoom_in" => vec![("scale", vec![key(0.0, 1.0), key(dur, 1.4)])],
                         "ken_burns_zoom_out" => vec![("scale", vec![key(0.0, 1.4), key(dur, 1.0)])],

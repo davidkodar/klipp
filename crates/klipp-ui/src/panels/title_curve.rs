@@ -332,6 +332,7 @@ mod tests {
                 interpolation: Interpolation::Bezier,
                 tangent_in: (-0.1, 0.2),
                 tangent_out: (0.0, 0.0),
+                handles: Default::default(),
             },
             Keyframe {
                 time_secs: 1.0,
@@ -339,6 +340,7 @@ mod tests {
                 interpolation: Interpolation::Bezier,
                 tangent_in: (0.0, 0.0),
                 tangent_out: (0.0, 0.0),
+                handles: Default::default(),
             },
         ];
         object.transform.center_x_keyframes = keys.clone();

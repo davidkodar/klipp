@@ -93,7 +93,7 @@ fn case(entry: &CatalogEntry, interpolation: Interpolation, picks: &mut Picks) -
         clip.edit_effect_keyframes_of(id, desc.key, |keys| {
             *keys = [(T1, base), (T2, b)]
                 .into_iter()
-                .map(|(time_secs, value)| Keyframe { time_secs, value, interpolation, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) })
+                .map(|(time_secs, value)| Keyframe { time_secs, value, interpolation, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0), handles: Default::default() })
                 .collect();
         });
     };

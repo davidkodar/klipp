@@ -45,7 +45,7 @@ fn a_lut_and_a_transform_come_back_as_they_went_in() {
         after = *ids.last().unwrap();
     }
     for (time_secs, value) in [(0.0, 0.2), (2.0, 0.9)] {
-        let key = Keyframe { time_secs, value, interpolation: Default::default(), tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) };
+        let key = Keyframe { time_secs, value, interpolation: Default::default(), tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0), handles: Default::default() };
         ops.push(GraphOp::AddKeyAt { path: at(ids[1]), key: "opacity".into(), keyframe: serde_json::to_value(key).unwrap() });
     }
     clip.apply_picture_ops(&ops).unwrap();

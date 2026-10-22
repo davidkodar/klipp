@@ -317,7 +317,7 @@ mod tests {
     use super::*;
 
     fn key(t: f64, v: f32) -> Keyframe {
-        Keyframe { time_secs: t, value: v, interpolation: crate::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }
+        Keyframe { time_secs: t, value: v, interpolation: crate::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }
     }
 
     /// Keyed values are as they are at a time; the keys go once read.

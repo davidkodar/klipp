@@ -9551,6 +9551,7 @@ mod tests {
                     interpolation: Interpolation::Linear,
                     tangent_in: (0.0, 0.0),
                     tangent_out: (0.0, 0.0),
+                    handles: Default::default(),
                 },
                 Keyframe {
                     time_secs: 2.0,
@@ -9558,6 +9559,7 @@ mod tests {
                     interpolation: Interpolation::Linear,
                     tangent_in: (0.0, 0.0),
                     tangent_out: (0.0, 0.0),
+                    handles: Default::default(),
                 },
             ];
         }
@@ -9657,6 +9659,7 @@ mod tests {
                     interpolation: Interpolation::Linear,
                     tangent_in: (0.0, 0.0),
                     tangent_out: (0.0, 0.0),
+                    handles: Default::default(),
                 },
                 Keyframe {
                     time_secs: 2.0,
@@ -9664,6 +9667,7 @@ mod tests {
                     interpolation: Interpolation::Linear,
                     tangent_in: (0.0, 0.0),
                     tangent_out: (0.0, 0.0),
+                    handles: Default::default(),
                 },
             ],
             intensity: 1.0,
@@ -9723,6 +9727,7 @@ mod tests {
                     interpolation: Interpolation::Linear,
                     tangent_in: (0.0, 0.0),
                     tangent_out: (0.0, 0.0),
+                    handles: Default::default(),
                 },
                 Keyframe {
                     time_secs: 1.0,
@@ -9730,6 +9735,7 @@ mod tests {
                     interpolation: Interpolation::Linear,
                     tangent_in: (0.0, 0.0),
                     tangent_out: (0.0, 0.0),
+                    handles: Default::default(),
                 },
             ],
         });
@@ -9838,6 +9844,7 @@ mod tests {
                     interpolation: Interpolation::Linear,
                     tangent_in: (0.0, 0.0),
                     tangent_out: (0.0, 0.0),
+                    handles: Default::default(),
                 },
                 Keyframe {
                     time_secs: 2.0,
@@ -9845,6 +9852,7 @@ mod tests {
                     interpolation: Interpolation::Linear,
                     tangent_in: (0.0, 0.0),
                     tangent_out: (0.0, 0.0),
+                    handles: Default::default(),
                 },
             ],
             intensity: 1.0,
@@ -9933,11 +9941,13 @@ mod tests {
                     time_secs: 0.0, value: 0.0,
                     interpolation: Interpolation::Linear,
                     tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                    handles: Default::default(),
                 },
                 Keyframe {
                     time_secs: 2.0, value: 20.0,
                     interpolation: Interpolation::Linear,
                     tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                    handles: Default::default(),
                 },
             ],
         });
@@ -9986,11 +9996,13 @@ mod tests {
                     time_secs: 0.0, value: -40.0,
                     interpolation: Interpolation::Linear,
                     tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                    handles: Default::default(),
                 },
                 Keyframe {
                     time_secs: 2.0, value: 40.0,
                     interpolation: Interpolation::Linear,
                     tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                    handles: Default::default(),
                 },
             ],
             offset_y: 0.0,
@@ -10056,11 +10068,13 @@ mod tests {
                     time_secs: 0.0, value: 0.0,
                     interpolation: Interpolation::Linear,
                     tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                    handles: Default::default(),
                 },
                 Keyframe {
                     time_secs: 2.0, value: 18.0,
                     interpolation: Interpolation::Linear,
                     tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                    handles: Default::default(),
                 },
             ],
         });
@@ -10153,11 +10167,13 @@ mod tests {
                     time_secs: 0.0, value: 1.0,
                     interpolation: Interpolation::Linear,
                     tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                    handles: Default::default(),
                 },
                 Keyframe {
                     time_secs: 2.0, value: 8.0,
                     interpolation: Interpolation::Linear,
                     tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                    handles: Default::default(),
                 },
             ],
         });
@@ -10219,11 +10235,13 @@ mod tests {
                     time_secs: 0.0, value: 1.0,
                     interpolation: Interpolation::Linear,
                     tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                    handles: Default::default(),
                 },
                 Keyframe {
                     time_secs: 2.0, value: 10.0,
                     interpolation: Interpolation::Linear,
                     tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                    handles: Default::default(),
                 },
             ],
         });
@@ -10558,11 +10576,13 @@ mod tests {
                         time_secs: 0.0, value: 4.0,
                         interpolation: Interpolation::Linear,
                         tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                        handles: Default::default(),
                     },
                     Keyframe {
                         time_secs: 2.0, value: 30.0,
                         interpolation: Interpolation::Linear,
                         tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                        handles: Default::default(),
                     },
                 ],
                 angle: 135.0, angle_keyframes: Vec::new(),

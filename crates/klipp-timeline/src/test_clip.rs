@@ -131,7 +131,7 @@ impl TestClip {
             clip.set_ofx_effects(self.ofx);
         }
         for (keyed, secs, value) in self.keys {
-            let keyframe = serde_json::to_value(Keyframe { time_secs: secs, value, interpolation: Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) }).expect("a keyframe serialises");
+            let keyframe = serde_json::to_value(Keyframe { time_secs: secs, value, interpolation: Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0), handles: Default::default() }).expect("a keyframe serialises");
             let (path, key) = match keyed {
                 Keyed::Effect(index, param) => {
                     let node = clip.effect_node_at(false, index).unwrap_or_else(|| panic!("no effect at {index} to key"));

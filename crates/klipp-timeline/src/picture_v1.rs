@@ -288,7 +288,7 @@ mod tests {
     use klipp_core::{Interpolation, Keyframe, MediaId, ModifierStack, ParamId, RationalTime};
 
     fn key(time_secs: f64, value: f32) -> Keyframe {
-        Keyframe { time_secs, value, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }
+        Keyframe { time_secs, value, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }
     }
 
     /// The bytes the three private lane types save as: each the plain

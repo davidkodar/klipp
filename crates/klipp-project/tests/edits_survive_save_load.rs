@@ -102,6 +102,7 @@ fn a_title_saved_with_the_old_animation_opens_with_loops() {
     c.kind = ClipKind::Title(td);
     c.edit_transform_pos_y_keyframes(|v| v.push(klipp_core::Keyframe {
         time_secs: 0.0, value: 1080.0, interpolation: klipp_core::Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+        handles: Default::default(),
     }));
     seq.tracks[0].clips = vec![c];
 
@@ -350,7 +351,7 @@ fn a_motions_own_easing_curve_comes_back() {
 /// through a real save and a strict load.
 #[test]
 fn a_texts_keyed_type_comes_back() {
-    let key = |time_secs: f64, value: f32| klipp_core::Keyframe { time_secs, value, interpolation: klipp_core::Interpolation::Bezier, tangent_out: (0.2, 1.0), tangent_in: (-0.2, 0.0) };
+    let key = |time_secs: f64, value: f32| klipp_core::Keyframe { time_secs, value, interpolation: klipp_core::Interpolation::Bezier, tangent_out: (0.2, 1.0), tangent_in: (-0.2, 0.0), handles: Default::default() };
     let tb = TextBox {
         text: "Keyed".into(),
         font_size_keyframes: vec![key(0.0, 40.0), key(2.0, 90.0)],
@@ -395,7 +396,7 @@ fn a_texts_keyed_colour_comes_back() {
 #[test]
 fn a_layers_animators_come_back() {
     use klipp_timeline::{Animator, AnimatorProps, LayerFx, RangeSelector, SelectOrder, SelectShape, SelectUnit};
-    let key = |time_secs: f64, value: f32| klipp_core::Keyframe { time_secs, value, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+    let key = |time_secs: f64, value: f32| klipp_core::Keyframe { time_secs, value, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
     let animator = Animator {
         name: "Turn the middle".into(),
         selector: RangeSelector { unit: SelectUnit::Word, start: 0.34, end: 0.66, shape: SelectShape::Smooth, order: SelectOrder::Random { seed: 7 }, offset_keyframes: vec![key(0.0, -1.0), key(2.0, 1.0)], ..Default::default() },
@@ -442,7 +443,7 @@ fn a_gradients_stop_keys_come_back() {
 /// and a strict load, beside its older extrusion.
 #[test]
 fn a_texts_3d_comes_back() {
-    let key = |time_secs: f64, value: f32| klipp_core::Keyframe { time_secs, value, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+    let key = |time_secs: f64, value: f32| klipp_core::Keyframe { time_secs, value, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
     let mut three_d = klipp_timeline::Text3d {
         depth: 0.4,
         back_bevel: Some(klipp_timeline::Bevel { size: 0.03, segments: 4, profile: klipp_timeline::BevelProfile::Round }),

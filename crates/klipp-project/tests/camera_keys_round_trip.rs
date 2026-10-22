@@ -17,7 +17,7 @@ fn scratch(tag: &str) -> std::path::PathBuf {
 }
 
 fn key(time_secs: f64, value: f32, interpolation: Interpolation, tangent_in: (f64, f32), tangent_out: (f64, f32)) -> Keyframe {
-    Keyframe { time_secs, value, interpolation, tangent_in, tangent_out }
+    Keyframe { time_secs, value, interpolation, tangent_in, tangent_out, handles: Default::default() }
 }
 
 #[test]

@@ -389,7 +389,7 @@ fn escape_takes_back_a_grade_slider_drag() {
 /// views (step 11's `mask_shapes_keep_their_own_tracks`).
 #[test]
 fn mask_shapes_keep_their_own_tracks() {
-    let key = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+    let key = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
     let (mut state, clip, node) = placed(NodeKind::Mask).expect("a Mask node");
     let c = state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)).unwrap();
     let second = {
@@ -506,7 +506,7 @@ fn a_mask_slider_drag_is_one_step_and_escape_takes_it_back() {
 #[test]
 fn a_keyed_mask_slider_click_is_one_step() {
     let mut base = mask_node(true).expect("a Mask node with a circle");
-    let key = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+    let key = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
     let (clip, node) = (base.clip, base.node);
     let c = base.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)).unwrap();
     klipp_timeline::GradeAccess::edit_grade(c, |g| g.nodes.iter_mut().filter(|n| n.id == node).for_each(|n| {

@@ -127,7 +127,7 @@ fn one_window_read_by_two_effects() {
 #[test]
 fn a_keyed_window_moves_on_the_gpu_as_on_the_cpu() {
     let mut w = window(circle(0.3), 0.1);
-    let key = |t: f64, v: f32| Keyframe { time_secs: t, value: v, interpolation: Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) };
+    let key = |t: f64, v: f32| Keyframe { time_secs: t, value: v, interpolation: Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0), handles: Default::default() };
     if let Some(ms) = w.params.masks.as_mut() {
         ms.masks[0].keyframes.center_x = vec![key(0.0, 0.25), key(1.0, 0.75)];
     }

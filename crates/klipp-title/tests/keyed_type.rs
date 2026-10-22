@@ -11,7 +11,7 @@ const W: u32 = 1920;
 const H: u32 = 1080;
 
 fn key(time_secs: f64, value: f32) -> Keyframe {
-    Keyframe { time_secs, value, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }
+    Keyframe { time_secs, value, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }
 }
 
 fn title(tb: TextBox) -> TitleData {

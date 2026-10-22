@@ -503,6 +503,7 @@ mod tests {
                     interpolation: Interpolation::Linear,
                     tangent_out: (0.0, 0.0),
                     tangent_in: (0.0, 0.0),
+                    handles: Default::default(),
                 }],
             );
             c.view_mut().param_modifiers.0.insert(
