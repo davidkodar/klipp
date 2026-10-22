@@ -76,9 +76,11 @@ fn spread(mut times: Vec<f64>) -> f64 {
 /// frame, then their frames timed in turn (with, without, with, …) so
 /// the load of whatever else runs hits both alike; `frames` repeated to
 /// at least [`MIN_FRAMES`] on each side.
-fn run(with: &Arc<Scene>, without: &Arc<Scene>, source: &Arc<dyn Source>, frames: &[i64]) -> Measured {
+fn run(with: &Arc<Scene>, without: &Arc<Scene>, source: &Arc<dyn Source>, frames: &[i64], setup: &dyn Fn(&mut Session)) -> Measured {
     let mut a = Session::new(Route::Viewer, true, Arc::clone(with), Arc::clone(source));
     let mut b = Session::new(Route::Viewer, true, Arc::clone(without), Arc::clone(source));
+    setup(&mut a);
+    setup(&mut b);
     a.frame(frames[0]);
     b.frame(frames[0]);
     let count = frames.len().max(MIN_FRAMES);
@@ -114,15 +116,21 @@ fn breach(m: &Measured, budget: &Budget) -> Option<String> {
 /// job's load) is tried once more, and the result says it was; the CPU
 /// layer count isn't timing, so it's never retried.
 pub fn within(with: Arc<Scene>, without: Arc<Scene>, source: Arc<dyn Source>, frames: &[i64], budget: Budget) -> Result<Measured, String> {
+    within_set(with, without, source, frames, budget, &|_| {})
+}
+
+/// [`within`], each session given what the family's node reads before
+/// its first frame by `setup` (an analysis family's asset store).
+pub fn within_set(with: Arc<Scene>, without: Arc<Scene>, source: Arc<dyn Source>, frames: &[i64], budget: Budget, setup: &dyn Fn(&mut Session)) -> Result<Measured, String> {
     if frames.is_empty() {
         return Err("a budget needs frames to time".into());
     }
-    let first = run(&with, &without, &source, frames);
+    let first = run(&with, &without, &source, frames, setup);
     let Some(why) = breach(&first, &budget) else { return Ok(first) };
     if first.cpu_layers > budget.cpu_layers || first.noise <= NOISY {
         return Err(why);
     }
-    let second = Measured { retried: true, ..run(&with, &without, &source, frames) };
+    let second = Measured { retried: true, ..run(&with, &without, &source, frames, setup) };
     match breach(&second, &budget) {
         None => Ok(second),
         Some(again) => Err(format!("{again}; a second try after a noisy first ({why})")),

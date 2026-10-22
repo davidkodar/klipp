@@ -299,6 +299,31 @@ fn run_kind(report: &mut Report, kind: &Kind) {
         Ok(())
     });
 
+    // On the viewer, within the GPU's budget of the same clip without it,
+    // its analysis in the session's store.
+    report.case(&format!("{name} Viewer: within its frame budget"), [key(kind, Some(Route::Viewer), Obligation::FrameBudget)], || {
+        let (with, item) = one(1.0, true);
+        let mut without = (*with).clone();
+        without.sequence.tracks[0].clips[0].set_effect_list(vec![], vec![]);
+        let frames: Vec<i64> = (20..20 + crate::budget::MIN_FRAMES as i64).collect();
+        let setup = |s: &mut Session| s.renderer_mut().set_asset_store(Box::new(valid(&item)));
+        crate::budget::within_set(with, Arc::new(without), Arc::new(Pictures), &frames, crate::budget::Budget::GPU, &setup).map(|_| ())
+    });
+    // Level 2: the viewer shows export's frame, both read from one real
+    // file. Both find analysis where the app keeps it, the analysis
+    // cache, so the file's is put there for the case and taken out after.
+    report.case(&format!("{name}: the viewer shows export's frame"), [key(kind, Some(Route::Viewer), Obligation::ViewerEqualsExport), key(kind, Some(Route::Export), Obligation::ViewerEqualsExport)], || {
+        let (s, _) = one(1.0, true);
+        let s = crate::on_file::on_file_frames(&s, &format!("{name}-on-file"), FPS, MEDIA_FRAMES, &picture)?;
+        let item = s.pool.all().next().ok_or("the scene has no media")?;
+        let asset = assets::asset_key(kind.asset, item).ok_or("no analysis key for the file")?;
+        let folder = klipp_analysis::store::analysis_dir().join(&asset.media);
+        assets::store(&mut assets::CacheStore::default(), asset, (kind.data)(whole, 0.0))?;
+        let shown = crate::route2::viewer_equals_export(Arc::clone(&s), &[10, 11, 50]);
+        let _ = std::fs::remove_dir_all(&folder);
+        shown
+    });
+
     for route in [Route::Viewer, Route::Export] {
         let at = |o| [key(kind, Some(route), o)];
         let run_on = |gpu: bool, speed: f64, frames: &[i64]| -> Result<(), String> {
