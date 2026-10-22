@@ -158,6 +158,19 @@ pub fn load_aaf(path: &Path, cancel: &std::sync::atomic::AtomicBool) -> Result<I
     Ok(result)
 }
 
+/// Where to look first for an import's missing media (#2086): the folder
+/// above the imported file's, so the folders beside it are searched with
+/// its own (media moved next to the timeline's folder), but the file's own
+/// folder alone when the one above is the filesystem's root or the home
+/// folder, which would be the whole disk.
+pub fn relink_search_dir(imported: &Path) -> PathBuf {
+    let folder = imported.parent().filter(|p| !p.as_os_str().is_empty()).map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+    match folder.parent() {
+        Some(above) if above.parent().is_some() && dirs::home_dir().as_deref() != Some(above) => above.to_path_buf(),
+        _ => folder,
+    }
+}
+
 /// The timeline at `path`, read by the importer for its format, told from
 /// its content (#2083): a misnamed file opens as what it is. A format told
 /// apart but not read yet is refused by name, with what to export instead.

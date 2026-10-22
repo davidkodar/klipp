@@ -63,4 +63,42 @@ mod tests {
         assert!(!state.show_import_report);
         std::fs::remove_file(path).unwrap();
     }
+
+    /// An imported timeline whose media was moved to a folder beside its
+    /// own: the search beginning where the import's relink looks finds it
+    /// by name, and proposes it.
+    #[test]
+    fn media_moved_beside_the_timeline_is_found_for_relinking() {
+        let root = std::env::temp_dir().join(format!("klipp-relink-{}", uuid::Uuid::new_v4()));
+        let (edit, footage) = (root.join("job/edit"), root.join("job/footage"));
+        std::fs::create_dir_all(&edit).unwrap();
+        std::fs::create_dir_all(&footage).unwrap();
+        std::fs::write(footage.join("a001.mov"), b"not really a movie").unwrap();
+        let gone = root.join("job/media/a001.mov");
+        let otio = serde_json::json!({
+            "OTIO_SCHEMA": "Timeline.1", "name": "cut",
+            "tracks": { "OTIO_SCHEMA": "Stack.1", "children": [{ "OTIO_SCHEMA": "Track.1", "name": "V1", "kind": "Video", "children": [{
+                "OTIO_SCHEMA": "Clip.1", "name": "a001.mov",
+                "source_range": { "OTIO_SCHEMA": "TimeRange.1",
+                    "start_time": { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 0.0 },
+                    "duration": { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 24.0 } },
+                "media_reference": { "OTIO_SCHEMA": "ExternalReference.1", "target_url": format!("file://{}", gone.display()), "metadata": {} }
+            }] }] }
+        });
+        let path = edit.join("cut.otio");
+        std::fs::write(&path, otio.to_string()).unwrap();
+        let result = klipp_project::import_report::load(&path, klipp_core::Fps::film_24(), &klipp_media::MediaPool::new()).unwrap();
+        let wanted: Vec<_> = result.media_pool.all().filter(|m| m.offline).map(klipp_media::relink::Wanted::from_item).collect();
+        assert_eq!(wanted.len(), 1, "the clip's media is missing");
+        let dir = klipp_project::import_report::relink_search_dir(&path);
+        assert_eq!(dir, root.join("job"));
+        let criteria = klipp_media::relink::Criteria::default();
+        let found = klipp_media::relink::scan(&dir, &wanted, criteria, &std::sync::atomic::AtomicBool::new(false), |_| {});
+        let proposals = klipp_media::relink::propose(&wanted, &found.candidates, criteria);
+        match &proposals[0] {
+            klipp_media::relink::Proposal::Found(hit) => assert_eq!(found.candidates[hit.candidate].path, footage.join("a001.mov")),
+            other => panic!("{other:?}"),
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

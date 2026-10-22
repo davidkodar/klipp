@@ -23,7 +23,8 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 pathdiff = { workspace = true }
-# Where Klipp keeps the OpenTimelineIO converter it installs (#2086).
+# Where Klipp keeps the OpenTimelineIO converter it installs, and where an
+# import's missing media is looked for first (#2086).
 dirs = { workspace = true }
 roxmltree = "0.20"
 zip = { version = "2", default-features = false }
