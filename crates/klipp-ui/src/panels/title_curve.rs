@@ -5,6 +5,9 @@ use klipp_timeline::{Clip, ClipKind, TitleObjectContent, TitleObjectId};
 #[derive(Debug, Clone, PartialEq)]
 pub enum TitleCurveParam {
     Position(TitlePositionAxis),
+    /// The layer's own opacity (#2301): `TitleObject.opacity_keyframes`,
+    /// edited by the effects' commands under `LAYER_OPACITY`.
+    Opacity,
     Effect(String),
 }
 
@@ -19,6 +22,7 @@ impl TitleCurveParam {
         match self {
             Self::Position(TitlePositionAxis::X) => &object.transform.center_x_keyframes,
             Self::Position(TitlePositionAxis::Y) => &object.transform.center_y_keyframes,
+            Self::Opacity => &object.opacity_keyframes,
             Self::Effect(key) => object.effect_keyframes_for(key).unwrap_or(&[]),
         }
     }
@@ -39,6 +43,7 @@ impl TitleCurveParam {
         };
         let keyframes = match self {
             Self::Position(axis) => object.transform.position_keyframes_mut(*axis),
+            Self::Opacity => &mut object.opacity_keyframes,
             Self::Effect(key) => {
                 let Some(keyframes) = object.effect_keyframes_mut_for(key) else {
                     return;
@@ -53,6 +58,7 @@ impl TitleCurveParam {
         match self {
             Self::Position(TitlePositionAxis::X) => "Layer X".into(),
             Self::Position(TitlePositionAxis::Y) => "Layer Y".into(),
+            Self::Opacity => "Layer opacity".into(),
             Self::Effect(key) if key.starts_with("text.color.") || key.starts_with("gradient.stop.") => {
                 let channel = match key.rsplit('.').next() {
                     Some("r") => "red",
@@ -92,6 +98,7 @@ impl TitleCurveParam {
     pub fn range(&self) -> (f32, f32, f32) {
         match self {
             Self::Position(_) => (-1.0, 2.0, 0.5),
+            Self::Opacity => (0.0, 1.0, 1.0),
             // Linear light, and alpha, 0..1.
             Self::Effect(key) if key.starts_with("text.color.") || key.starts_with("gradient.stop.") => (0.0, 1.0, 1.0),
             Self::Effect(key) => match key.rsplit('.').next().unwrap_or("") {
@@ -110,6 +117,16 @@ impl TitleCurveParam {
         }
     }
 
+    /// The effects' key a curve's commands go by: an effect's own, the
+    /// layer opacity's `LAYER_OPACITY` (#2301); a position has none.
+    fn effect_key(&self) -> String {
+        match self {
+            Self::Effect(key) => key.clone(),
+            Self::Opacity => klipp_core::title_effect_keys::LAYER_OPACITY.into(),
+            Self::Position(_) => String::new(),
+        }
+    }
+
     pub fn add(&self, clip_id: ClipId, object_id: u32, time_secs: f64, value: f32) -> AppCommand {
         match self {
             Self::Position(axis) => AppCommand::AddTitleObjectPositionKeyframe {
@@ -119,10 +136,10 @@ impl TitleCurveParam {
                 time_secs,
                 value,
             },
-            Self::Effect(key) => AppCommand::AddTitleObjectEffectKeyframe {
+            Self::Opacity | Self::Effect(_) => AppCommand::AddTitleObjectEffectKeyframe {
                 clip_id,
                 object_id,
-                param_key: key.clone(),
+                param_key: self.effect_key(),
                 time_secs,
                 value,
             },
@@ -136,10 +153,10 @@ impl TitleCurveParam {
                 axis: *axis,
                 time_secs,
             },
-            Self::Effect(key) => AppCommand::RemoveTitleObjectEffectKeyframe {
+            Self::Opacity | Self::Effect(_) => AppCommand::RemoveTitleObjectEffectKeyframe {
                 clip_id,
                 object_id,
-                param_key: key.clone(),
+                param_key: self.effect_key(),
                 time_secs,
             },
         }
@@ -161,10 +178,10 @@ impl TitleCurveParam {
                 new_time_secs,
                 new_value,
             },
-            Self::Effect(key) => AppCommand::MoveTitleObjectEffectKeyframe {
+            Self::Opacity | Self::Effect(_) => AppCommand::MoveTitleObjectEffectKeyframe {
                 clip_id,
                 object_id,
-                param_key: key.clone(),
+                param_key: self.effect_key(),
                 index,
                 new_time_secs,
                 new_value,
@@ -186,10 +203,10 @@ impl TitleCurveParam {
                 keyframe_index,
                 interpolation,
             },
-            Self::Effect(key) => AppCommand::SetTitleObjectEffectKeyframeInterpolation {
+            Self::Opacity | Self::Effect(_) => AppCommand::SetTitleObjectEffectKeyframeInterpolation {
                 clip_id,
                 object_id,
-                param_key: key.clone(),
+                param_key: self.effect_key(),
                 keyframe_index,
                 interpolation,
             },
@@ -214,10 +231,10 @@ impl TitleCurveParam {
                 tangent_out,
                 handles,
             },
-            Self::Effect(key) => AppCommand::SetTitleObjectEffectKeyframeTangent {
+            Self::Opacity | Self::Effect(_) => AppCommand::SetTitleObjectEffectKeyframeTangent {
                 clip_id,
                 object_id,
-                param_key: key.clone(),
+                param_key: self.effect_key(),
                 keyframe_index,
                 tangent_in,
                 tangent_out,
@@ -233,6 +250,7 @@ pub fn parameters(object: &klipp_timeline::TitleObject) -> Vec<TitleCurveParam> 
     let mut params = vec![
         TitleCurveParam::Position(TitlePositionAxis::X),
         TitleCurveParam::Position(TitlePositionAxis::Y),
+        TitleCurveParam::Opacity,
     ];
     if let TitleObjectContent::TextBox(tb) = &object.content {
         let mut keys = vec![
@@ -474,5 +492,25 @@ mod tests {
         let blue = TitleCurveParam::Effect("gradient.stop.1.b".into());
         assert!(channels.contains(&blue) && !channels.contains(&TitleCurveParam::Effect("gradient.stop.0.b".into())));
         assert_eq!(blue.label(), "Gradient stop 2 · blue");
+    }
+
+    /// #2301: a layer's own opacity keys are a curve of its, listed with
+    /// the others, read from the layer and edited by the effects' commands
+    /// under `LAYER_OPACITY`, which reach the same keys.
+    #[test]
+    fn a_layers_opacity_is_one_of_its_curves() {
+        let (mut title, id) = animated_title();
+        let key = |t: f64, v: f32| Keyframe { time_secs: t, value: v, interpolation: Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0), handles: Default::default() };
+        title.objects[0].opacity_keyframes = vec![key(0.0, 0.0), key(1.0, 1.0)];
+        assert!(parameters(&title.objects[0]).contains(&TitleCurveParam::Opacity));
+        assert_eq!(TitleCurveParam::Opacity.label(), "Layer opacity");
+        let object = &mut title.objects[0];
+        let keys = object.effect_keyframes_mut_for(klipp_core::title_effect_keys::LAYER_OPACITY).expect("routed to the layer's opacity");
+        klipp_core::keyframe::upsert_keyframe(keys, 0.5, 0.25);
+        assert_eq!(title.objects[0].opacity_keyframes.len(), 3, "the layer's own keys edited");
+        match TitleCurveParam::Opacity.add(klipp_core::ClipId::new(), id, 0.5, 0.25) {
+            AppCommand::AddTitleObjectEffectKeyframe { param_key, .. } => assert_eq!(param_key, klipp_core::title_effect_keys::LAYER_OPACITY),
+            other => panic!("{other:?}"),
+        }
     }
 }

@@ -105,6 +105,11 @@ pub const EXTRUSION_DEPTH: &str = "extrusion.depth";
 pub const EXTRUSION_ANGLE: &str = "extrusion.angle";
 pub const EXTRUSION_LIGHTING: &str = "extrusion.lighting";
 
+// ── A layer's own (#2301) ──
+//
+// `TitleObject.opacity_keyframes`: the layer's opacity, 0..1.
+pub const LAYER_OPACITY: &str = "layer.opacity";
+
 // ── The text's own type (#1511) ──
 //
 // `TextBox.{font_size,tracking,line_spacing}_keyframes`.

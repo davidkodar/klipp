@@ -1285,6 +1285,10 @@ impl TitleObject {
     /// The keyframe vec of any effect param on this object: the
     /// stack's, or, for a text layer, the text's own.
     pub fn effect_keyframes_mut_for(&mut self, param_key: &str) -> Option<&mut Vec<klipp_core::Keyframe>> {
+        // The layer's own opacity (#2301), keyed as the effects are.
+        if param_key == klipp_core::title_effect_keys::LAYER_OPACITY {
+            return Some(&mut self.opacity_keyframes);
+        }
         let Self { content, fx, .. } = self;
         if let Some(keys) = fx.as_mut().and_then(|f| f.effect_keyframes_mut_for(param_key)) {
             return Some(keys);
@@ -1297,6 +1301,9 @@ impl TitleObject {
 
     /// Read-only mirror of [`Self::effect_keyframes_mut_for`].
     pub fn effect_keyframes_for(&self, param_key: &str) -> Option<&[klipp_core::Keyframe]> {
+        if param_key == klipp_core::title_effect_keys::LAYER_OPACITY {
+            return Some(&self.opacity_keyframes);
+        }
         if let Some(keys) = self.fx().effect_keyframes_for(param_key) {
             return Some(keys);
         }
