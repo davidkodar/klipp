@@ -1097,25 +1097,12 @@ impl OfxHostRuntime {
         height: u32,
         frame_time: f64,
     ) -> Vec<u8> {
-        self.apply_effects_chain_full(effects, rgba, width, height, frame_time, None, None)
+        self.apply_effects_chain_full(effects, rgba, width, height, frame_time, None)
     }
 
-    /// Apply effects with a frame provider for temporal clip access.
-    /// The frame_provider closure takes a time (seconds) and returns
-    /// (rgba_bytes, width, height) for the decoded frame at that time.
-    pub fn apply_effects_chain_temporal(
-        &mut self,
-        effects: &[AppliedEffect],
-        rgba: &[u8],
-        width: u32,
-        height: u32,
-        frame_time: f64,
-        frame_provider: image_effect::FrameProviderFn,
-    ) -> Vec<u8> {
-        self.apply_effects_chain_full(effects, rgba, width, height, frame_time, None, Some(frame_provider))
-    }
-
-    /// Apply a chain of effects with optional abort and temporal frame provider.
+    /// Apply a chain of effects with an optional abort. The chain has no
+    /// other frames to give: a plug-in that asks for one gets none (a
+    /// temporal plug-in runs as a node, which hands it its frames).
     pub fn apply_effects_chain_with_abort(
         &mut self,
         effects: &[AppliedEffect],
@@ -1125,7 +1112,7 @@ impl OfxHostRuntime {
         frame_time: f64,
         abort: Option<Arc<AtomicBool>>,
     ) -> Vec<u8> {
-        self.apply_effects_chain_full(effects, rgba, width, height, frame_time, abort, None)
+        self.apply_effects_chain_full(effects, rgba, width, height, frame_time, abort)
     }
 
     fn apply_effects_chain_full(
@@ -1136,7 +1123,6 @@ impl OfxHostRuntime {
         height: u32,
         frame_time: f64,
         abort: Option<Arc<AtomicBool>>,
-        frame_provider: Option<image_effect::FrameProviderFn>,
     ) -> Vec<u8> {
         if effects.is_empty() || effects.iter().all(|e| !e.enabled) {
             return rgba.to_vec();
@@ -1146,11 +1132,10 @@ impl OfxHostRuntime {
         self.render_width = width;
         self.render_height = height;
 
-        // Set up frame provider for temporal clip access
         let premult = self.plugins.first()
             .map(|p| p.premult_string.clone())
             .unwrap_or_else(|| crate::constants::kOfxImageAlphaUnPremultiplied.to_string());
-        let _render = image_effect::set_render_context(frame_provider, frame_time, width, height, &premult, false, false);
+        let _render = image_effect::set_render_context(None, frame_time, width, height, &premult, false);
 
         let mut current = rgba.to_vec();
         for effect in effects {
@@ -2130,7 +2115,7 @@ impl OfxPluginInstance {
         let provider: image_effect::FrameProviderFn = Box::new(move |t| frames.iter().find(|(at, _)| (at - t).abs() < 1e-6).map(|(_, f)| f.clone()));
         // Its other frames in the depth it takes them in.
         let needs_float = instance::with_instance(self.handle(), |inst| inst.plugin_idx).is_some_and(|i| host.plugins[i].needs_float);
-        let render = image_effect::set_render_context(Some(provider), time, width, height, &premult, needs_float, true);
+        let render = image_effect::set_render_context(Some(provider), time, width, height, &premult, needs_float);
         let effect = AppliedEffect { plugin_name: self.plugin.clone(), enabled: true, param_values: params.clone(), ..Default::default() };
         self.frame_bytes = rgba8.len();
         // Any frame it may ask for: the node hands in only the source's, held

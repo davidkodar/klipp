@@ -47,11 +47,6 @@ pub struct RenderContext {
     height: u32,
     pub premult: String,
     pub needs_float: bool,
-    /// A frame the provider hasn't is no frame (`kOfxStatFailed`), never
-    /// the current one: a node's own instance is handed exactly the frames
-    /// its node read (M4 step 3), and a plug-in told the current frame for
-    /// a neighbour would blend it with itself as if it were one.
-    missing_is_missing: bool,
     /// Cache of temporally-fetched images
     temporal_images: Vec<OfxPropertySetHandle>,
 }
@@ -94,7 +89,6 @@ pub fn set_render_context(
     height: u32,
     premult: &str,
     needs_float: bool,
-    missing_is_missing: bool,
 ) -> RenderContextGuard {
     let render = RENDER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     *RENDER_CONTEXT.lock().unwrap_or_else(|e| e.into_inner()) = Some(RenderContext {
@@ -104,7 +98,6 @@ pub fn set_render_context(
         height,
         premult: premult.to_string(),
         needs_float,
-        missing_is_missing,
         temporal_images: Vec::new(),
     });
     RenderContextGuard { _render: render }
@@ -492,15 +485,14 @@ unsafe extern "C" fn clip_get_image_fn(
                     return K_OFX_STAT_OK;
                 }
             }
-            if ctx.missing_is_missing {
-                *img_props_out = std::ptr::null_mut();
-                return K_OFX_STAT_FAILED;
-            }
         }
 
-        // Fallback: return current image even for temporal requests
-        *img_props_out = img_handle;
-        K_OFX_STAT_OK
+        // A frame the provider hasn't is no frame, never the current one:
+        // a node's own instance is handed exactly the frames its node read
+        // (M4 step 3), and a plug-in told the current frame for a neighbour
+        // would blend it with itself as if it were one (M4 step 4).
+        *img_props_out = std::ptr::null_mut();
+        K_OFX_STAT_FAILED
     } else {
         // Clip exists but has no image (disconnected)
         // Try temporal provider for disconnected clips too

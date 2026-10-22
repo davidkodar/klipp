@@ -22,9 +22,9 @@ const SUBJECTS: &[(Family, &[&str])] = &[
     // channels then alpha in one clip.
     (Family::Ofx, &["org.klipp.fixture.identity", "org.klipp.fixture.channels", "org.klipp.fixture.alpha"]),
     // M4 step 4: a temporal OFX fixture that records the times it asked for.
-    (Family::OfxTemporal, &["ofx.fixture.time_request"]),
+    (Family::OfxTemporal, &[crate::ofx_temporal::SUBJECT]),
     // M4 step 5: the native frei0r fixtures (step 2's).
-    (Family::Frei0r, &["frei0r.fixture.colour", "frei0r.fixture.stateful", "frei0r.fixture.tiled"]),
+    (Family::Frei0r, &[crate::frei0r::COLOUR, crate::frei0r::STATEFUL, crate::frei0r::TILED]),
     // M4 step 6.
     (Family::TemporalDenoise, &["klipp.temporal_denoise"]),
     // M4 step 7.
@@ -55,9 +55,6 @@ fn require_family(family: Family, manifest: &mut Manifest) {
     }
 }
 
-/// A family with no cases yet: its step's test-first change adds them.
-fn none_yet(_: &mut Report) {}
-
 macro_rules! family {
     ($f:ident, $require:ident) => {
         fn $require(m: &mut Manifest) {
@@ -81,8 +78,8 @@ family!(Format, require_format);
 /// every `Family` to having one.
 pub const ALL: &[FamilyEntry] = &[
     FamilyEntry { family: Family::Ofx, require: require_ofx, run: crate::ofx::run },
-    FamilyEntry { family: Family::OfxTemporal, require: require_ofx_temporal, run: none_yet },
-    FamilyEntry { family: Family::Frei0r, require: require_frei0r, run: none_yet },
+    FamilyEntry { family: Family::OfxTemporal, require: require_ofx_temporal, run: crate::ofx_temporal::run },
+    FamilyEntry { family: Family::Frei0r, require: require_frei0r, run: crate::frei0r::run },
     FamilyEntry { family: Family::TemporalDenoise, require: require_temporal_denoise, run: crate::temporal_denoise::run },
     FamilyEntry { family: Family::FrameBlend, require: require_frame_blend, run: crate::frame_blend::run },
     FamilyEntry { family: Family::RollingShutter, require: require_rolling_shutter, run: crate::analysis::run_rolling_shutter },
@@ -105,6 +102,14 @@ pub const DELETED: &[(Family, &[&str])] = &[
     // the instance shared by name) and its temporal-plug-in name guess,
     // replaced by a node per plug-in with an instance of its own.
     (Family::Ofx, &["fn ofx(", "is_temporal_plugin"]),
+    // Step 4: the renderer's temporal-plug-in name guess (with step 3), and
+    // the OFX chain's temporal entry, whose plug-in was told the current
+    // frame for a neighbour it wasn't given; a temporal plug-in runs as a
+    // node, handed its own frames.
+    (Family::OfxTemporal, &["is_temporal_plugin", "fn apply_effects_chain_temporal(", "missing_is_missing"]),
+    // Step 5: the effect chain's GPU veto on a chain with a frei0r plug-in,
+    // replaced by a frei0r node of its own, a local CPU segment.
+    (Family::Frei0r, &["chain_supports_gpu"]),
     // Step 9: a clip's analysis fields (an analysis is its media's asset
     // now), and the renderer's own rolling-shutter measuring stage.
     (Family::Deflicker, &["deflicker_data", "deflicker_gains"]),

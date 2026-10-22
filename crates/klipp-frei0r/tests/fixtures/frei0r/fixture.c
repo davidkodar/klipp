@@ -35,6 +35,7 @@ enum { P_BOOL = 0, P_DOUBLE = 1, P_COLOR = 2, P_POSITION = 3, P_STRING = 4 };
 #define BGRA 4       /* BGRA: inverts its byte 0 (blue) */
 #define PACKED 5     /* PACKED32: inverts the low byte of each pixel word */
 #define NEIGHBOUR 6  /* RGBA: 3x3 box, edges clamped to the instance */
+#define REFUSES 7    /* never makes an instance: a render that fails */
 
 #if KLIPP_KIND == COLOUR
 #define NAME "klipp-fixture-colour"
@@ -50,6 +51,8 @@ enum { P_BOOL = 0, P_DOUBLE = 1, P_COLOR = 2, P_POSITION = 3, P_STRING = 4 };
 #define NAME "klipp-fixture-packed32"
 #elif KLIPP_KIND == NEIGHBOUR
 #define NAME "klipp-fixture-neighbour"
+#elif KLIPP_KIND == REFUSES
+#define NAME "klipp-fixture-refuses"
 #else
 #error "unknown KLIPP_KIND"
 #endif
@@ -90,6 +93,7 @@ void f0r_get_param_info(f0r_param_info_t *info, int index) {
 }
 
 void *f0r_construct(unsigned width, unsigned height) {
+    if (KLIPP_KIND == REFUSES) return NULL;
     instance_t *inst = calloc(1, sizeof *inst);
     if (!inst) return NULL;
     inst->width = width;

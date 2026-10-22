@@ -28,6 +28,7 @@ klipp-plugin = { path = "../klipp-plugin" }
 klipp-title = { path = "../klipp-title" }
 klipp-core = { path = "../klipp-core" }
 klipp-effects = { path = "../klipp-effects" }
+klipp-frei0r = { path = "../klipp-frei0r" }
 klipp-graph-format = { workspace = true }
 klipp-media = { path = "../klipp-media" }
 klipp-nodes = { path = "../klipp-nodes", features = ["fault-hook"] }
