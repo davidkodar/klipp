@@ -1102,6 +1102,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
                 if let Some(x) = args.get(key).and_then(|v| v.as_str()) { v[key] = json!(x); }
             }
             if let Some(t) = args.get("tracks").filter(|t| !t.is_null()) { v["tracks"] = t.clone(); }
+            if let Some(s) = args.get("max_secs").and_then(Value::as_f64) { v["max_secs"] = json!(s); }
             v
         }
         "klipp_freesound_sign_in" => {

@@ -166,12 +166,12 @@ pub(crate) fn respond(
             Ok(json!({ "text": text, "results": results, "signed_in": signed_in, "next": format!("Hear candidates with listen (a count, or [track_id, …]): a sound's length and when it peaks say where it goes, the peak on the cut: place it with sync_source_secs set to its heard.peak_secs and at on the cut. Add one with add_music (it takes a sound effect just the same: pass title, artist, preview_url, license, license_url, page_url); {brings}. Its reply measures the file it brought. The credit is kept; honour the licence.") }))
         }
 
-        ControlCommand::AddMusic { title, artist, track_id, download_url, preview_url, license, license_url, page_url, tracks, quality } => {
+        ControlCommand::AddMusic { title, artist, track_id, download_url, preview_url, license, license_url, page_url, tracks, quality, max_secs } => {
             if in_batch {
                 return Err("add_music downloads and imports a file; send it on its own, not in a batch (it takes many at once as tracks)".into());
             }
             if tracks.is_empty() {
-                return add_one_track(ctx, MusicPick { title, artist, track_id, download_url, preview_url, license, license_url, page_url, quality });
+                return add_one_track(ctx, MusicPick { title, artist, track_id, download_url, preview_url, license, license_url, page_url, quality, max_secs });
             }
             // Many at once (#1587): each downloaded and imported in turn,
             // each answered on its own; one that fails doesn't stop the
@@ -180,6 +180,7 @@ pub(crate) fn respond(
             let mut failed = 0;
             for mut pick in tracks {
                 pick.quality = pick.quality.or_else(|| quality.clone());
+                pick.max_secs = pick.max_secs.or(max_secs);
                 let title = pick.title.clone();
                 match add_one_track(ctx, pick) {
                     Ok(v) => results.push(json!({ "title": title, "media_id": v["media_id"], "already_imported": v["already_imported"] == true, "job_id": v["job_id"], "attribution": v["attribution"] })),
@@ -435,7 +436,10 @@ fn listen_ids_outside(listen: &Listen, tracks: &[klipp_audio_search::Track]) -> 
 }
 
 fn add_one_track(ctx: &ControlContext, pick: MusicPick) -> Result<serde_json::Value, String> {
-    let MusicPick { title, artist, track_id, download_url, preview_url, license, license_url, page_url, quality } = pick;
+    let MusicPick { title, artist, track_id, download_url, preview_url, license, license_url, page_url, quality, max_secs } = pick;
+    if max_secs.is_some_and(|s| !(s > 0.0 && s.is_finite())) {
+        return Err("max_secs is a length in seconds, above zero".into());
+    }
     // A Freesound sound comes as its original when signed in (#1894).
     let freesound = [&page_url, &preview_url].iter().any(|u| u.contains("freesound.org"));
     let signed_in = klipp_audio_search::freesound_auth::signed_in().is_some();
@@ -458,7 +462,7 @@ fn add_one_track(ctx: &ControlContext, pick: MusicPick) -> Result<serde_json::Va
     };
     let fetch = |dir: &std::path::Path| match &bearer {
         Some(b) => klipp_audio_search::download_original(&track, dir, b),
-        None => klipp_audio_search::download_track(&track, dir),
+        None => klipp_audio_search::download_track_up_to(&track, dir, max_secs),
     };
     let path = fetch(&music_destination(project.as_deref()))
         // A project folder that can't be written to (read-only, gone):
