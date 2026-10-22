@@ -20,6 +20,7 @@ Open the dialog from **Window → AI Models**, from the AI Tools panel footer (`
 | **Kokoro-82M** (8-bit) and 10 voices, one download (Heart, the default; Bella, Nicole, Michael, Fenrir, Puck; Emma, Isabella, George, Fable) | 86 MB + 0.5 MB a voice | Apache-2.0 | ort, espeak-ng | Natural-sounding narration |
 | **Piper en_US Lessac (medium)** | 63 MB | research only, **not for commercial use** | Piper | Kept for older projects that use it |
 | **DeepFilterNet3** | 8 MB | MIT OR Apache-2.0 | tract | Voice Isolation (speech enhancement) |
+| **OPUS-MT** (Helsinki-NLP; one model a pair: English to and from German, French, Spanish, Swedish, Italian, Dutch, English to Finnish and Danish) | about 300 MB + 5 MB a pair | CC BY 4.0, Tiedemann & Thottingal 2020 | candle | Translate Captions, on a subtitle track's menu |
 
 ## Hosting
 
@@ -27,6 +28,7 @@ Klipp does not redistribute model weights. The bundled manifest points at upstre
 
 - BiRefNet Lite — [huggingface.co/onnx-community/BiRefNet_lite-ONNX](https://huggingface.co/onnx-community/BiRefNet_lite-ONNX)
 - MobileSAM — [huggingface.co/lmz/candle-sam](https://huggingface.co/lmz/candle-sam) (mirrored from upstream)
+- OPUS-MT — [huggingface.co/Helsinki-NLP](https://huggingface.co/Helsinki-NLP) (weights, e.g. opus-mt-en-de) and [huggingface.co/Xenova](https://huggingface.co/Xenova) (each pair's tokenizer.json)
 - RF-DETR-Seg Preview — [huggingface.co/bukuroo/RF-DETR-Seg-ONNX](https://huggingface.co/bukuroo/RF-DETR-Seg-ONNX)
 - RF-DETR-Seg Medium — [huggingface.co/davidkodar/rf-detr-seg-medium-onnx](https://huggingface.co/davidkodar/rf-detr-seg-medium-onnx) (Klipp-hosted mirror; upstream Roboflow has not published a Medium ONNX yet)
 

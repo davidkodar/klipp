@@ -804,6 +804,7 @@ fn handle(
             | ControlCommand::ExportStatus { .. }
             | ControlCommand::ExportSubtitles { .. }
             | ControlCommand::ImportSubtitles { .. }
+            | ControlCommand::TranslateCaptions { .. }
             | ControlCommand::ImportTimeline { .. }
             | ControlCommand::SaveProject { .. }
             | ControlCommand::OpenProject { .. }

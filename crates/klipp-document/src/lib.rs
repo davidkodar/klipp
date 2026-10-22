@@ -22,6 +22,7 @@
 
 pub mod apply;
 pub mod blade;
+pub mod caption_translation;
 pub mod control;
 pub mod edit_plan;
 pub mod find;

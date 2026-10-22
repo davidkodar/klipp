@@ -4267,6 +4267,12 @@ pub enum AppCommand {
     /// Set each clip's gain (linear), mirrored to a linked partner, as one
     /// undo step.
     ApplyClipGains { gains: Vec<(crate::ClipId, f32)> },
+
+    /// Translate the captions on `track_id` from `source` to `target`
+    /// (ISO 639-1 codes) as translation job `job_id`, off the UI thread,
+    /// its progress and cancel in the translation jobs; when it is done a
+    /// new subtitle track under it carries them, as one undo step (#2213).
+    TranslateCaptions { track_id: TrackId, source: String, target: String, job_id: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

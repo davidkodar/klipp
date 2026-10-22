@@ -2682,6 +2682,9 @@ pub struct AppState {
     pub track_subject_looked: Option<std::time::Instant>,
     /// The status bar's lines, one a running subject pass.
     pub status_tracking: Vec<String>,
+    /// The caption translation running (#2213), for the status bar:
+    /// what it is doing and how far.
+    pub status_translation: Option<String>,
     /// A Frame Glide drag in the viewer, sent when it is let go.
     pub frame_glide_drag: Option<crate::panels::frame_glide_tool::GlideDrag>,
     // Batch rename dialog (for bin media items).
@@ -4816,6 +4819,7 @@ impl Default for AppState {
             tracking_subjects: Default::default(),
             track_subject_looked: None,
             status_tracking: Vec::new(),
+            status_translation: None,
             frame_glide_drag: None,
             show_batch_rename_dialog: false,
             show_title_find: false,

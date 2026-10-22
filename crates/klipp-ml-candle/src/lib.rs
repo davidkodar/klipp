@@ -35,5 +35,6 @@
 //! the way is distributing its weights, not the code here.
 
 pub mod mobile_sam;
+pub mod translation;
 
 pub use mobile_sam::{MobileSam, MobileSamBuilder, MOBILE_SAM_MODEL_ID};

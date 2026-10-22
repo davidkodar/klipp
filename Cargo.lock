@@ -2982,6 +2982,7 @@ dependencies = [
  "klipp-graph-lift",
  "klipp-media",
  "klipp-ml",
+ "klipp-ml-candle",
  "klipp-nodes",
  "klipp-plugin",
  "klipp-project",
@@ -3292,8 +3293,10 @@ dependencies = [
  "candle-transformers",
  "klipp-color",
  "klipp-ml",
+ "serde_json",
  "thiserror 1.0.69",
  "tracing",
+ "unicode-normalization",
 ]
 
 [[package]]

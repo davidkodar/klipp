@@ -144,6 +144,10 @@ pub fn show(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme) {
             for line in &state.status_tracking {
                 ui.label(egui::RichText::new(line).size(10.0).color(theme.text_secondary));
             }
+            // Captions being translated (#2213).
+            if let Some(line) = &state.status_translation {
+                ui.label(egui::RichText::new(line).size(10.0).color(theme.text_secondary));
+            }
 
             // Render progress (if active)
             if let Some((label, progress)) = state.render_queue.active_job_progress() {

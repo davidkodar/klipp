@@ -61,6 +61,10 @@ Every track and its clips, one line a clip: clip id, kind, range in seconds, nam
 
 Prepare a frame-exact cut in a bounded TIMELINE range. Maps source pauses, word and sentence edges, shot changes, and settled screen reveals through trims and retiming onto sequence frames. Returns ranked candidates with evidence and uncertainty, relevant clips, linked sound, locks, handles, revision and project identity. Give the editing intent and an optional target moment. This only reads; choose a frame, plan the cut, and apply with its revision precondition. If ambiguous, inspect a contact sheet or audio excerpt first.
 
+## klipp_translate_captions
+
+Translate a subtitle (or text) track's captions into another language onto a new subtitle track under it, at the same times and in the source track's caption style, as one undo step. `to` is an ISO 639-1 code: from English (the default `from`) into de, fr, es, sv, it, nl, fi or da, or into en from de, fr, es, sv, it or nl. `track` is the track's index, by default the first subtitle track with captions. It runs as a job: the reply gives `job_id` at once; follow it with klipp_follow_job or klipp_job_status (kind translation, phase downloading, loading, translating or applying), and stop it with klipp_cancel_job. One translation runs at a time. Captions are translated as whole sentences (joined until a full stop, a pause over a second, or about 240 characters) and each sentence's translation is shared back over its captions by length, so a caption may carry other words than its source did. The finished job's `result` names the new track and the captions to check: those that read faster than 20 characters a second, run past two lines of 42, or whose sentence the translator cut short. Each pair's model (OPUS-MT, Helsinki-NLP, CC BY 4.0, about 300 MB) downloads only with `download_models` true; it runs locally.
+
 ## klipp_set_append_audio
 
 Source patching: whether appending a clip also brings its audio. On suits camera footage; off is for cutting to music, where every clip would otherwise lay down room tone. Shows as V+A / V only in the timeline toolbar, and resets to on when the app restarts.

@@ -749,6 +749,37 @@ mod menu_smoke_tests {
         }
     }
 
+    /// A subtitle track with captions offers Translate Captions, and a
+    /// pair in it sends that track's command (#2213).
+    #[test]
+    fn a_caption_tracks_menu_translates_it() {
+        let mut timeline = Timeline::new();
+        let mut track = klipp_timeline::Track::new("Subtitle 1", TrackKind::Subtitle);
+        let (zero, two) = (RationalTime { value: 0, rate: 24 }, RationalTime { value: 48, rate: 24 });
+        let td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Hello".into(), ..Default::default() });
+        track.clips.push(Clip { kind: klipp_timeline::ClipKind::Title(td), ..Clip::gap(zero, two) });
+        let track_id = track.id;
+        timeline.state.sequences[0].tracks.push(track);
+        let at = timeline.header(TrackKind::Subtitle);
+        let menu = timeline.right_click(at);
+        let item = timeline.frame(Vec::new()).into_iter().find(|(t, _)| t.starts_with("Translate Captions")).unwrap_or_else(|| panic!("the caption track's menu translates: {menu:?}")).1;
+        timeline.frame(vec![egui::Event::PointerMoved(item)]);
+        let drawn = timeline.frame(vec![egui::Event::PointerMoved(item)]);
+        let at = drawn.iter().find(|(t, _)| t == "English \u{2192} German").unwrap_or_else(|| panic!("a pair to pick: {drawn:?}")).1;
+        let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        timeline.frame(vec![egui::Event::PointerMoved(at)]);
+        timeline.frame(vec![egui::Event::PointerMoved(at), button(true)]);
+        timeline.frame(vec![button(false)]);
+        assert!(timeline.sent.iter().any(|c| matches!(c, AppCommand::TranslateCaptions { track_id: t, source, target, .. } if *t == track_id && source == "en" && target == "de")), "{:?}", timeline.sent);
+        // A track without captions doesn't offer it.
+        for _ in 0..2 {
+            timeline.frame(vec![egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]);
+        }
+        let at = timeline.header(TrackKind::Video);
+        let menu = timeline.right_click(at);
+        assert!(!menu.iter().any(|t| t.starts_with("Translate Captions")), "a video track has no captions: {menu:?}");
+    }
+
     /// A video track header's Track Effects menu offers Grade in Colour,
     /// and a click on it sends the track's command (#1408); an audio
     /// track's doesn't offer it.

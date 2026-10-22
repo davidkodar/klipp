@@ -3501,6 +3501,51 @@ fn status_lists_the_sequences_and_switch_sequence_opens_one() {
 /// #1516: a subtitle file is read over the socket as the app reads it, onto
 /// a new track; a path that is relative, names no subtitle format or is not
 /// there is refused, and an export's format must be its path's.
+/// translate_captions says what it cannot do before any model runs
+/// (#2213): no such pair, English without the captions' language, and a
+/// sequence with no captions.
+#[test]
+fn translate_captions_refuses_what_it_cannot_translate() {
+    let mut h = harness();
+    for (req, why) in [
+        (json!({ "method": "translate_captions", "to": "xx" }), "no translation from en to xx"),
+        (json!({ "method": "translate_captions", "to": "en" }), "name the captions' language"),
+        (json!({ "method": "translate_captions", "to": "de" }), "no subtitle track with captions"),
+        (json!({ "method": "translate_captions", "to": "de", "track": 99 }), "no track 99"),
+    ] {
+        let r = h.call(req.clone());
+        assert_eq!(r["ok"], json!(false), "{req}: {r}");
+        assert!(r["error"].as_str().unwrap().contains(why), "{req}: {r}");
+    }
+}
+
+/// A translation over the socket runs as the menu's does (#2213): the
+/// app is sent the track's command with a job id, and the reply gives
+/// that id to follow.
+#[test]
+fn translate_captions_hands_the_track_to_the_app_as_a_job() {
+    let mut h = harness();
+    let track_id = {
+        let mut seq = h.sequence.write().unwrap();
+        let mut track = klipp_timeline::Track::new("Subtitle 1", klipp_timeline::TrackKind::Subtitle);
+        let (zero, two) = (klipp_core::Timecode::from_secs_f64(0.0, 24), klipp_core::Timecode::from_secs_f64(2.0, 24));
+        let td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Hello there.".into(), ..Default::default() });
+        track.clips.push(klipp_timeline::Clip { kind: klipp_timeline::ClipKind::Title(td), ..klipp_timeline::Clip::gap(zero, two) });
+        let id = track.id;
+        seq.tracks.push(track);
+        id
+    };
+    let r = h.ok(json!({ "method": "translate_captions", "to": "de", "download_models": true }));
+    let job_id = r["job_id"].as_str().expect("a job id").to_string();
+    assert_eq!(r["sentences"], json!(1));
+    match h.cmd_rx.recv_timeout(std::time::Duration::from_secs(5)) {
+        Ok(klipp_core::AppCommand::TranslateCaptions { track_id: t, source, target, job_id: j }) => {
+            assert_eq!((t, source.as_str(), target.as_str(), j.as_str()), (track_id, "en", "de", job_id.as_str()));
+        }
+        other => panic!("expected TranslateCaptions, got {other:?}"),
+    }
+}
+
 #[test]
 fn subtitles_import_over_the_socket_and_export_in_the_format_asked() {
     let mut h = harness();

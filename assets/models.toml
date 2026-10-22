@@ -618,3 +618,401 @@ sources = [
 kind = "speech_enhancer"
 runtime = "tract"
 prompts = ""
+
+# ── Caption translation (#2213) ───────────────────────────────────
+# OPUS-MT, one Marian model a language pair (Helsinki-NLP, CC-BY-4.0),
+# run in candle from its model.safetensors (the hub's own conversion,
+# pinned by commit); each pair's SentencePiece
+# vocabulary is read from the tokenizer.json of its Xenova mirror.
+
+[[model]]
+id = "opus_mt_en_de"
+display_name = "Translation English → German"
+size_bytes = 297903668
+sha256 = "3fb78700bce624990eff6468d0e14fbde18a6aedac35821fa8c0c4ead5fae014"
+license = "CC-BY-4.0"
+attribution = "Helsinki-NLP / OPUS-MT, Tiedemann & Thottingal 2020 (huggingface.co/Helsinki-NLP/opus-mt-en-de)"
+sources = [
+    { url = "https://huggingface.co/Helsinki-NLP/opus-mt-en-de/resolve/0012d6d6ff4b4dd06bee042d3294295f0e587abd/model.safetensors" },
+]
+kind = "translator"
+runtime = "candle"
+prompts = ""
+
+[[model]]
+id = "opus_mt_en_de_tokenizer"
+display_name = "Translation English → German vocabulary"
+size_bytes = 5498450
+sha256 = "8e0fcf45621ea87fa680c7f9969c37a7f819c1f4c7658a2e6e0879b866a14b17"
+license = "CC-BY-4.0"
+attribution = "Helsinki-NLP / OPUS-MT vocabulary, as converted by Xenova (huggingface.co/Xenova/opus-mt-en-de)"
+sources = [
+    { url = "https://huggingface.co/Xenova/opus-mt-en-de/resolve/1ca130c44c4c5441ef16d48aae521a424ab644f7/tokenizer.json" },
+]
+kind = "translation_vocabulary"
+runtime = "candle"
+prompts = ""
+
+[[model]]
+id = "opus_mt_en_fr"
+display_name = "Translation English → French"
+size_bytes = 300803256
+sha256 = "c32d3003ced798c78b9ca90fb69c8e23ad5b4c64c500628bdf3303bbc9272816"
+license = "CC-BY-4.0"
+attribution = "Helsinki-NLP / OPUS-MT, Tiedemann & Thottingal 2020 (huggingface.co/Helsinki-NLP/opus-mt-en-fr)"
+sources = [
+    { url = "https://huggingface.co/Helsinki-NLP/opus-mt-en-fr/resolve/c96fcd7f38a4c0d1ac9b61e255b47f3f7ff55e5e/model.safetensors" },
+]
+kind = "translator"
+runtime = "candle"
+prompts = ""
+
+[[model]]
+id = "opus_mt_en_fr_tokenizer"
+display_name = "Translation English → French vocabulary"
+size_bytes = 5637839
+sha256 = "8391785c1a2139e7af4678571ccd8dc654ecbb72e4be186940f65d7c604f0246"
+license = "CC-BY-4.0"
+attribution = "Helsinki-NLP / OPUS-MT vocabulary, as converted by Xenova (huggingface.co/Xenova/opus-mt-en-fr)"
+sources = [
+    { url = "https://huggingface.co/Xenova/opus-mt-en-fr/resolve/28726206f80896b90035bd99cccd5cc1e151f916/tokenizer.json" },
+]
+kind = "translation_vocabulary"
+runtime = "candle"
+prompts = ""
+
+[[model]]
+id = "opus_mt_en_es"
+display_name = "Translation English → Spanish"
+size_bytes = 312062468
+sha256 = "b3ecbf954573c2fd95d05d3ad4618baf961793db0da07c2add2e8a3a6cd78d0b"
+license = "CC-BY-4.0"
+attribution = "Helsinki-NLP / OPUS-MT, Tiedemann & Thottingal 2020 (huggingface.co/Helsinki-NLP/opus-mt-en-es)"
+sources = [
+    { url = "https://huggingface.co/Helsinki-NLP/opus-mt-en-es/resolve/fdaddf76f50fcc1583ba42f95965862a7ab30f97/model.safetensors" },
+]
+kind = "translator"
+runtime = "candle"
+prompts = ""
+
+[[model]]
+id = "opus_mt_en_es_tokenizer"
+display_name = "Translation English → Spanish vocabulary"
+size_bytes = 6262682
+sha256 = "285eb29e7155ee48851a77960797813f86a125f70d2c1a124f613f1fbd2b19c3"
+license = "CC-BY-4.0"
+attribution = "Helsinki-NLP / OPUS-MT vocabulary, as converted by Xenova (huggingface.co/Xenova/opus-mt-en-es)"
+sources = [
+    { url = "https://huggingface.co/Xenova/opus-mt-en-es/resolve/4b002a4c7edd54a7ced58877258b87f7efd3f892/tokenizer.json" },
+]
+kind = "translation_vocabulary"
+runtime = "candle"
+prompts = ""
+
+[[model]]
+id = "opus_mt_en_sv"
+display_name = "Translation English → Swedish"
+size_bytes = 294482984
+sha256 = "1f10f4b66c86e4d98cdfa01e842ed2735312a6a99da08978b64e579e875fb0cb"
+license = "CC-BY-4.0"
+attribution = "Helsinki-NLP / OPUS-MT, Tiedemann & Thottingal 2020 (huggingface.co/Helsinki-NLP/opus-mt-en-sv)"
+sources = [
+    { url = "https://huggingface.co/Helsinki-NLP/opus-mt-en-sv/resolve/4e83c9f90366cb438892040c46c66aa3b8406981/model.safetensors" },
+]
+kind = "translator"
+runtime = "candle"
+prompts = ""
+
+[[model]]
+id = "opus_mt_en_sv_tokenizer"
+display_name = "Translation English → Swedish vocabulary"
+size_bytes = 5450794
+sha256 = "63498964420ffe2b50435706b4bf7873ea7083103a82dff908b21a6d50a6ebf0"
+license = "CC-BY-4.0"
+attribution = "Helsinki-NLP / OPUS-MT vocabulary, as converted by Xenova (huggingface.co/Xenova/opus-mt-en-sv)"
+sources = [
+    { url = "https://huggingface.co/Xenova/opus-mt-en-sv/resolve/33d522d806c041cdebecd549c558d22a2b9b4ea4/tokenizer.json" },
+]
+kind = "translation_vocabulary"
+runtime = "candle"
+prompts = ""
+
+[[model]]
+id = "opus_mt_en_it"
+display_name = "Translation English → Italian"
+size_bytes = 342912236
+sha256 = "7012b826195f82a68efc878b39e763d2fbf8ebb485811375e9d9632899eba7d0"
+license = "CC-BY-4.0"
+attribution = "Helsinki-NLP / OPUS-MT, Tiedemann & Thottingal 2020 (huggingface.co/Helsinki-NLP/opus-mt-en-it)"
+sources = [
+    { url = "https://huggingface.co/Helsinki-NLP/opus-mt-en-it/resolve/5483bd70fe6e934c56875647d5dbad58f09bbd16/model.safetensors" },
+]
+kind = "translator"
+runtime = "candle"
+prompts = ""
+
+[[model]]
+id = "opus_mt_en_it_tokenizer"
+display_name = "Translation English → Italian vocabulary"
+size_bytes = 7904597
+sha256 = "fb93411d5198eb85753bbd68e9ac24ccb42071003214851b2f37c81f2ea50416"
+license = "CC-BY-4.0"
+attribution = "Helsinki-NLP / OPUS-MT vocabulary, as converted by Xenova (huggingface.co/Xenova/opus-mt-en-it)"
+sources = [
+    { url = "https://huggingface.co/Xenova/opus-mt-en-it/resolve/075406e3c8c2c30634d4a1bd8f00c21d9e162011/tokenizer.json" },
+]
+kind = "translation_vocabulary"
+runtime = "candle"
+prompts = ""
+
+[[model]]
+id = "opus_mt_en_nl"
+display_name = "Translation English → Dutch"
+size_bytes = 316221872
+sha256 = "1e227db75d9134498000e1e91c9c8f6f6347d586d5fa2b7b08ea2c4e630c24db"
+license = "CC-BY-4.0"
+attribution = "Helsinki-NLP / OPUS-MT, Tiedemann & Thottingal 2020 (huggingface.co/Helsinki-NLP/opus-mt-en-nl)"
+sources = [
+    { url = "https://huggingface.co/Helsinki-NLP/opus-mt-en-nl/resolve/cb106147f56946f00045d2f9768539949e660489/model.safetensors" },
+]
+kind = "translator"
+runtime = "candle"
+prompts = ""
+
+[[model]]
+id = "opus_mt_en_nl_tokenizer"
+display_name = "Translation English → Dutch vocabulary"
+size_bytes = 6433167
+sha256 = "c6b55d9ac70b2a566f0307c6f80d3136fb839ed8e70bb16186324747df58668b"
+license = "CC-BY-4.0"
+attribution = "Helsinki-NLP / OPUS-MT vocabulary, as converted by Xenova (huggingface.co/Xenova/opus-mt-en-nl)"
+sources = [
+    { url = "https://huggingface.co/Xenova/opus-mt-en-nl/resolve/c3a0541231a7329b4492809fc2bd7ab7d2ceb0bc/tokenizer.json" },
+]
+kind = "translation_vocabulary"
+runtime = "candle"
+prompts = ""
+
+[[model]]
+id = "opus_mt_en_fi"
+display_name = "Translation English → Finnish"
+size_bytes = 312062468
+sha256 = "2a43d7e0416faf10acb80a106d470f02791f0d6be7a36bcc011cd67943fd07d2"
+license = "CC-BY-4.0"
+attribution = "Helsinki-NLP / OPUS-MT, Tiedemann & Thottingal 2020 (huggingface.co/Helsinki-NLP/opus-mt-en-fi)"
+sources = [
+    { url = "https://huggingface.co/Helsinki-NLP/opus-mt-en-fi/resolve/f294bfca8f7be502fde2362e4d0ac09fb232415b/model.safetensors" },
+]
+kind = "translator"
+runtime = "candle"
+prompts = ""
+
+[[model]]
+id = "opus_mt_en_fi_tokenizer"
+display_name = "Translation English → Finnish vocabulary"
+size_bytes = 6315513
+sha256 = "de8ac950e41165f4592c7ee3b2f5a42e34d948090b806f5d74b9a8e0e5822bf6"
+license = "CC-BY-4.0"
+attribution = "Helsinki-NLP / OPUS-MT vocabulary, as converted by Xenova (huggingface.co/Xenova/opus-mt-en-fi)"
+sources = [
+    { url = "https://huggingface.co/Xenova/opus-mt-en-fi/resolve/4e5799273dbd7cce94c1e99cc9d3acb9f191b8eb/tokenizer.json" },
+]
+kind = "translation_vocabulary"
+runtime = "candle"
+prompts = ""
+
+[[model]]
+id = "opus_mt_en_da"
+display_name = "Translation English → Danish"
+size_bytes = 299604776
+sha256 = "af93346239b6935d940ea0d00aff951915d7732027644f1cf9cb5f17e1adf5a4"
+license = "CC-BY-4.0"
+attribution = "Helsinki-NLP / OPUS-MT, Tiedemann & Thottingal 2020 (huggingface.co/Helsinki-NLP/opus-mt-en-da)"
+sources = [
+    { url = "https://huggingface.co/Helsinki-NLP/opus-mt-en-da/resolve/bee92961eb97c1a70d247637ab527439ed915b14/model.safetensors" },
+]
+kind = "translator"
+runtime = "candle"
+prompts = ""
+
+[[model]]
+id = "opus_mt_en_da_tokenizer"
+display_name = "Translation English → Danish vocabulary"
+size_bytes = 5685484
+sha256 = "3976d53decc408b6b6dfc41a1e9378eda3a5965045b82bfcf30a6df75003a41a"
+license = "CC-BY-4.0"
+attribution = "Helsinki-NLP / OPUS-MT vocabulary, as converted by Xenova (huggingface.co/Xenova/opus-mt-en-da)"
+sources = [
+    { url = "https://huggingface.co/Xenova/opus-mt-en-da/resolve/33862dc071a5cc43e821e60742553c501c587e77/tokenizer.json" },
+]
+kind = "translation_vocabulary"
+runtime = "candle"
+prompts = ""
+
+[[model]]
+id = "opus_mt_de_en"
+display_name = "Translation German → English"
+size_bytes = 297903668
+sha256 = "5b1a66c79f6e871eb01b8818819e29bbdb6a25139af210b97b6efbf862493b4d"
+license = "CC-BY-4.0"
+attribution = "Helsinki-NLP / OPUS-MT, Tiedemann & Thottingal 2020 (huggingface.co/Helsinki-NLP/opus-mt-de-en)"
+sources = [
+    { url = "https://huggingface.co/Helsinki-NLP/opus-mt-de-en/resolve/6f6b23ef5ef8a586414ad9d2b7dda64ca5352935/model.safetensors" },
+]
+kind = "translator"
+runtime = "candle"
+prompts = ""
+
+[[model]]
+id = "opus_mt_de_en_tokenizer"
+display_name = "Translation German → English vocabulary"
+size_bytes = 5498450
+sha256 = "8e0fcf45621ea87fa680c7f9969c37a7f819c1f4c7658a2e6e0879b866a14b17"
+license = "CC-BY-4.0"
+attribution = "Helsinki-NLP / OPUS-MT vocabulary, as converted by Xenova (huggingface.co/Xenova/opus-mt-de-en)"
+sources = [
+    { url = "https://huggingface.co/Xenova/opus-mt-de-en/resolve/399dfd68706739fffd503f876093e455ae268a06/tokenizer.json" },
+]
+kind = "translation_vocabulary"
+runtime = "candle"
+prompts = ""
+
+[[model]]
+id = "opus_mt_fr_en"
+display_name = "Translation French → English"
+size_bytes = 300803608
+sha256 = "6e3837f34b903802c3d0d670362b997cee6e87584a1108eb3fa89e4625e4424a"
+license = "CC-BY-4.0"
+attribution = "Helsinki-NLP / OPUS-MT, Tiedemann & Thottingal 2020 (huggingface.co/Helsinki-NLP/opus-mt-fr-en)"
+sources = [
+    { url = "https://huggingface.co/Helsinki-NLP/opus-mt-fr-en/resolve/c4aed37b318c763fd177aa449b44e3b783cc6c02/model.safetensors" },
+]
+kind = "translator"
+runtime = "candle"
+prompts = ""
+
+[[model]]
+id = "opus_mt_fr_en_tokenizer"
+display_name = "Translation French → English vocabulary"
+size_bytes = 5637839
+sha256 = "8391785c1a2139e7af4678571ccd8dc654ecbb72e4be186940f65d7c604f0246"
+license = "CC-BY-4.0"
+attribution = "Helsinki-NLP / OPUS-MT vocabulary, as converted by Xenova (huggingface.co/Xenova/opus-mt-fr-en)"
+sources = [
+    { url = "https://huggingface.co/Xenova/opus-mt-fr-en/resolve/6b166a182780e118c997879d0ad5be4b53671644/tokenizer.json" },
+]
+kind = "translation_vocabulary"
+runtime = "candle"
+prompts = ""
+
+[[model]]
+id = "opus_mt_es_en"
+display_name = "Translation Spanish → English"
+size_bytes = 312062580
+sha256 = "07d9fc8881ac9bc8f06fbe3576ca16045c684c7d529e9733cbeeaaf2c78f9539"
+license = "CC-BY-4.0"
+attribution = "Helsinki-NLP / OPUS-MT, Tiedemann & Thottingal 2020 (huggingface.co/Helsinki-NLP/opus-mt-es-en)"
+sources = [
+    { url = "https://huggingface.co/Helsinki-NLP/opus-mt-es-en/resolve/725b7965a8cac11ebe80ea671e72e0b7e8b28a9f/model.safetensors" },
+]
+kind = "translator"
+runtime = "candle"
+prompts = ""
+
+[[model]]
+id = "opus_mt_es_en_tokenizer"
+display_name = "Translation Spanish → English vocabulary"
+size_bytes = 6262682
+sha256 = "285eb29e7155ee48851a77960797813f86a125f70d2c1a124f613f1fbd2b19c3"
+license = "CC-BY-4.0"
+attribution = "Helsinki-NLP / OPUS-MT vocabulary, as converted by Xenova (huggingface.co/Xenova/opus-mt-es-en)"
+sources = [
+    { url = "https://huggingface.co/Xenova/opus-mt-es-en/resolve/eadfd7c658a9d8929ac3b8e996b68a68e2c7d480/tokenizer.json" },
+]
+kind = "translation_vocabulary"
+runtime = "candle"
+prompts = ""
+
+[[model]]
+id = "opus_mt_sv_en"
+display_name = "Translation Swedish → English"
+size_bytes = 294483096
+sha256 = "482ca42946152a8c0af2f5ae7093823e5682e50af017ed7ab9d67f53a1ce6903"
+license = "CC-BY-4.0"
+attribution = "Helsinki-NLP / OPUS-MT, Tiedemann & Thottingal 2020 (huggingface.co/Helsinki-NLP/opus-mt-sv-en)"
+sources = [
+    { url = "https://huggingface.co/Helsinki-NLP/opus-mt-sv-en/resolve/a66266b25c226b4666d58f8b8c1ee62a74386cfc/model.safetensors" },
+]
+kind = "translator"
+runtime = "candle"
+prompts = ""
+
+[[model]]
+id = "opus_mt_sv_en_tokenizer"
+display_name = "Translation Swedish → English vocabulary"
+size_bytes = 5450794
+sha256 = "63498964420ffe2b50435706b4bf7873ea7083103a82dff908b21a6d50a6ebf0"
+license = "CC-BY-4.0"
+attribution = "Helsinki-NLP / OPUS-MT vocabulary, as converted by Xenova (huggingface.co/Xenova/opus-mt-sv-en)"
+sources = [
+    { url = "https://huggingface.co/Xenova/opus-mt-sv-en/resolve/63a40256869b6a2b29a84e47aa7f03524fa5f3a2/tokenizer.json" },
+]
+kind = "translation_vocabulary"
+runtime = "candle"
+prompts = ""
+
+[[model]]
+id = "opus_mt_it_en"
+display_name = "Translation Italian → English"
+size_bytes = 343618124
+sha256 = "a6e1dd4180f8aeec864ea5d79678025fa013e93df935d46159ebd6eb164782c1"
+license = "CC-BY-4.0"
+attribution = "Helsinki-NLP / OPUS-MT, Tiedemann & Thottingal 2020 (huggingface.co/Helsinki-NLP/opus-mt-it-en)"
+sources = [
+    { url = "https://huggingface.co/Helsinki-NLP/opus-mt-it-en/resolve/d43c8316fd1645309b94b88ec52b13e505cc91d9/model.safetensors" },
+]
+kind = "translator"
+runtime = "candle"
+prompts = ""
+
+[[model]]
+id = "opus_mt_it_en_tokenizer"
+display_name = "Translation Italian → English vocabulary"
+size_bytes = 7942314
+sha256 = "c19e1dac8287ec5c5d47a0d81be5e0fd11755666b996c764ef4d13bb8117e3a2"
+license = "CC-BY-4.0"
+attribution = "Helsinki-NLP / OPUS-MT vocabulary, as converted by Xenova (huggingface.co/Xenova/opus-mt-it-en)"
+sources = [
+    { url = "https://huggingface.co/Xenova/opus-mt-it-en/resolve/fd0b89b9c052adc1f2f64152f555aa17353728be/tokenizer.json" },
+]
+kind = "translation_vocabulary"
+runtime = "candle"
+prompts = ""
+
+[[model]]
+id = "opus_mt_nl_en"
+display_name = "Translation Dutch → English"
+size_bytes = 316222336
+sha256 = "048b19007be3c1f438566de765b8803035415d295706b9bfd9df7e083f6154db"
+license = "CC-BY-4.0"
+attribution = "Helsinki-NLP / OPUS-MT, Tiedemann & Thottingal 2020 (huggingface.co/Helsinki-NLP/opus-mt-nl-en)"
+sources = [
+    { url = "https://huggingface.co/Helsinki-NLP/opus-mt-nl-en/resolve/385c15b2b304774437eac7c2b584e4868ca1c6f0/model.safetensors" },
+]
+kind = "translator"
+runtime = "candle"
+prompts = ""
+
+[[model]]
+id = "opus_mt_nl_en_tokenizer"
+display_name = "Translation Dutch → English vocabulary"
+size_bytes = 6433167
+sha256 = "c6b55d9ac70b2a566f0307c6f80d3136fb839ed8e70bb16186324747df58668b"
+license = "CC-BY-4.0"
+attribution = "Helsinki-NLP / OPUS-MT vocabulary, as converted by Xenova (huggingface.co/Xenova/opus-mt-nl-en)"
+sources = [
+    { url = "https://huggingface.co/Xenova/opus-mt-nl-en/resolve/82c42d95d1508037cbe7172d85fd4e940a2f3584/tokenizer.json" },
+]
+kind = "translation_vocabulary"
+runtime = "candle"
+prompts = ""

@@ -286,6 +286,8 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::ExportReviewList { .. }
         | AppCommand::PlanMusicFit { .. }
         | AppCommand::MusicFitPlanned { .. }
+        // The translation runs on a worker; its arrival is the edit.
+        | AppCommand::TranslateCaptions { .. }
         // A template is kept outside the project (#618).
         | AppCommand::SaveProjectTemplate { .. }
         | AppCommand::DeleteProjectTemplate { .. }

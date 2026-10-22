@@ -42,6 +42,7 @@ mod startup;
 mod shortcuts;
 mod frame_loop;
 mod colour_workspace;
+mod caption_translation;
 mod delivery_check;
 mod main_layout;
 mod dialogs;
@@ -327,6 +328,8 @@ pub struct KlippApp {
     /// The answer of the request the Delivery Check window sent, and
     /// whether it was the check itself.
     delivery_reply: Option<(bool, std::sync::mpsc::Receiver<Result<serde_json::Value, String>>)>,
+    /// The caption translation running (#2213), its answer to come.
+    translation: Option<caption_translation::Pending>,
     /// The Sound Over Time window's own state: the reading in hand or
     /// the thread still making it.
     sound_over_time: crate::panels::sound_over_time::SoundOverTimePanel,
