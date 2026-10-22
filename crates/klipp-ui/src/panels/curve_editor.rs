@@ -318,6 +318,11 @@ struct CurveDrag {
     keyframe_index: usize,
     /// true = dragging a bezier handle, false = dragging the keyframe diamond
     handle: Option<bool>, // Some(true) = out handle, Some(false) = in handle
+    /// Where the pointer was pressed, and the key's time and value then:
+    /// a key moves by how far the pointer has, so a click moves nothing
+    /// (#2285).
+    press: egui::Pos2,
+    origin: (f64, f32),
 }
 
 pub struct CurveEditorPanel {
@@ -908,7 +913,13 @@ impl CurveEditorPanel {
         // ── Double-click to add keyframe ──
         if graph_response.double_clicked() {
             if let Some(pos) = graph_response.interact_pointer_pos() {
-                if graph_rect.contains(pos) {
+                // Not on a key already there: a double-click on it would put
+                // its value where the pointer is, a hair off (#2285).
+                let on_key = self.get_keyframes(state, clip_id).iter().any(|k| {
+                    let (x, y) = (self.time_to_x(k.time_secs, &graph_rect, clip_duration), self.value_to_y(k.value, &graph_rect, v_min, v_range));
+                    (pos.x - x).hypot(pos.y - y) < 10.0
+                });
+                if graph_rect.contains(pos) && !on_key {
                     let t = self.x_to_time(pos.x, &graph_rect, clip_duration);
                     let v = self.y_to_value(pos.y, &graph_rect, v_min, v_range);
                     let t = t.clamp(0.0, clip_duration);
@@ -1730,6 +1741,8 @@ impl CurveEditorPanel {
                             self.drag = Some(CurveDrag {
                                 keyframe_index: sel_idx,
                                 handle: Some(false), // in
+                                press: ui.input(|i| i.pointer.press_origin()).unwrap_or(pos),
+                                origin: (kf.time_secs, kf.value),
                             });
                             found_handle = true;
                         }
@@ -1741,6 +1754,8 @@ impl CurveEditorPanel {
                                 self.drag = Some(CurveDrag {
                                     keyframe_index: sel_idx,
                                     handle: Some(true), // out
+                                    press: ui.input(|i| i.pointer.press_origin()).unwrap_or(pos),
+                                    origin: (kf.time_secs, kf.value),
                                 });
                                 found_handle = true;
                             }
@@ -1773,6 +1788,8 @@ impl CurveEditorPanel {
                                 self.drag = Some(CurveDrag {
                                     keyframe_index: i,
                                     handle: None,
+                                    press: ui.input(|i| i.pointer.press_origin()).unwrap_or(pos),
+                                    origin: (kf.time_secs, kf.value),
                                 });
                                 // A node's key dragged: one undo step (M3 step 3).
                                 if let CurveParam::Node { path, key, .. } = self.param() {
@@ -1855,14 +1872,21 @@ impl CurveEditorPanel {
                     let kf_idx = drag.keyframe_index;
                     if let Some(kf) = keyframes.get(kf_idx) {
                         match drag.handle {
+                            // A press that hasn't moved is a click: the key
+                            // stays exactly as it is (#2285).
+                            None if (pos - drag.press).length() < 0.5 => {}
                             None => {
-                                // Moving the keyframe itself
+                                // Moving the keyframe itself, by as far as
+                                // the pointer has moved from its press.
                                 // Snapped to frames, the playhead and the
                                 // other keys; the value to the grid with
                                 // Ctrl (#2279).
-                                let new_t = self.snap_time(ui, state, clip_id, keyframes, &[kf_idx], self.x_to_time(pos.x, graph_rect, clip_duration), graph_rect, clip_duration)
+                                let (t0, v0) = drag.origin;
+                                let press = drag.press;
+                                let moved_t = t0 + self.x_to_time(pos.x, graph_rect, clip_duration) - self.x_to_time(press.x, graph_rect, clip_duration);
+                                let new_t = self.snap_time(ui, state, clip_id, keyframes, &[kf_idx], moved_t, graph_rect, clip_duration)
                                     .clamp(0.0, clip_duration);
-                                let mut new_v = self.y_to_value(pos.y, graph_rect, v_min, v_range);
+                                let mut new_v = v0 + self.y_to_value(pos.y, graph_rect, v_min, v_range) - self.y_to_value(press.y, graph_rect, v_min, v_range);
                                 if ui.ctx().input(|i| i.modifiers.command) {
                                     let step = self.compute_value_step(v_range);
                                     new_v = (new_v / step).round() * step;
