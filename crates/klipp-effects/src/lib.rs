@@ -71,6 +71,7 @@ pub mod light;
 pub mod mask_mix;
 pub mod nv12_gpu;
 pub mod p010_gpu;
+pub mod shader_check;
 pub mod particles;
 pub mod pieces;
 pub mod registry;

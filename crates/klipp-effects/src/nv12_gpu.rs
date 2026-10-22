@@ -608,7 +608,7 @@ impl GpuNv12Converter {
         });
 
         if let Some(err) = pollster::block_on(device.pop_error_scope()) {
-            warn!("NV12 GPU converter: shader compilation failed: {err}");
+            crate::shader_check::shader_failed("NV12 converter", &err.to_string());
             return None;
         }
 

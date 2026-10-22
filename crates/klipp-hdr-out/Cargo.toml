@@ -26,6 +26,9 @@ tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
 half = "2"
+# Validates the presenter's WGSL with no GPU (#2344); the same naga
+# wgpu builds.
+naga = { version = "22", features = ["wgsl-in"] }
 
 [lints]
 workspace = true

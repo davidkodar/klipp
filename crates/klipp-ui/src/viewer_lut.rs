@@ -286,6 +286,14 @@ impl ViewerLut {
 mod tests {
     use super::*;
 
+    /// The viewer LUT shader compiles, with no GPU (#2344).
+    #[test]
+    fn the_shader_compiles() {
+        if let Err(e) = klipp_effects::shader_check::validate(SHADER) {
+            panic!("viewer_lut: {e}");
+        }
+    }
+
     fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
         let instance = wgpu::Instance::default();
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))?;

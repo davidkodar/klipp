@@ -17,7 +17,7 @@ pub fn set_gpu_power_preference(pref: Option<wgpu::PowerPreference>) {
 use crate::BuiltinEffect;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 mod readbacks;
 mod alpha_masks;
@@ -1610,7 +1610,7 @@ impl GpuEffectsPipeline {
 
         // Check if any shader compilation failed
         if let Some(err) = pollster::block_on(device.pop_error_scope()) {
-            warn!("GPU effects: shader compilation failed: {err} — falling back to CPU");
+            crate::shader_check::shader_failed("effects", &err.to_string());
             return None;
         }
 
@@ -19501,7 +19501,9 @@ mod shader_validation_tests {
 
     #[test]
     fn every_shader_compiles() {
-        let shaders = super::shader_sources();
+        // The registered shaders, and the flow's, assembled per pipeline.
+        let flow = super::flow::sources();
+        let shaders = super::shader_sources().into_iter().chain(flow.iter().map(|(n, s)| (*n, s.as_str())));
         let mut failures = Vec::new();
         for (name, src) in shaders {
             let module = match naga::front::wgsl::parse_str(src) {
