@@ -83,22 +83,7 @@ impl TitleRenderer {
         if o.transform != allowed_transform {
             return None;
         }
-        let animated = tb.has_keyframes()
-            || fx
-                .glows
-                .iter()
-                .any(|g| !g.radius_keyframes.is_empty() || !g.intensity_keyframes.is_empty())
-            || fx.shadows.iter().any(|s| {
-                !s.offset_x_keyframes.is_empty()
-                    || !s.offset_y_keyframes.is_empty()
-                    || !s.blur_keyframes.is_empty()
-            })
-            || fx.outlines.iter().any(|s| !s.width_keyframes.is_empty())
-            || fx.inner_shadows.iter().any(|s| {
-                !s.offset_x_keyframes.is_empty()
-                    || !s.offset_y_keyframes.is_empty()
-                    || !s.blur_keyframes.is_empty()
-            });
+        let animated = tb.has_keyframes() || fx.styles_keyed();
         if !animated {
             return None;
         }

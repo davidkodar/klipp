@@ -610,6 +610,30 @@ impl LayerFx {
     pub fn is_default(&self) -> bool {
         *self == STILL_FX
     }
+
+    /// Whether any glow, drop shadow, outline or inner shadow has a
+    /// keyed value, so the styles change over time. Each style is taken
+    /// apart field by field: a new field does not compile here until it
+    /// is said to be keyed or not (#2335).
+    pub fn styles_keyed(&self) -> bool {
+        let glow = |g: &TextGlow| {
+            let TextGlow { enabled: _, color: _, radius: _, radius_keyframes, intensity: _, intensity_keyframes } = g;
+            !radius_keyframes.is_empty() || !intensity_keyframes.is_empty()
+        };
+        let shadow = |s: &TitleShadow| {
+            let TitleShadow { enabled: _, color: _, offset_x: _, offset_x_keyframes, offset_y: _, offset_y_keyframes, blur: _, blur_keyframes } = s;
+            !offset_x_keyframes.is_empty() || !offset_y_keyframes.is_empty() || !blur_keyframes.is_empty()
+        };
+        let outline = |o: &TextOutline| {
+            let TextOutline { enabled: _, color: _, width: _, width_keyframes } = o;
+            !width_keyframes.is_empty()
+        };
+        let inner = |s: &InnerShadow| {
+            let InnerShadow { enabled: _, color: _, offset_x: _, offset_x_keyframes, offset_y: _, offset_y_keyframes, blur: _, blur_keyframes } = s;
+            !offset_x_keyframes.is_empty() || !offset_y_keyframes.is_empty() || !blur_keyframes.is_empty()
+        };
+        self.glows.iter().any(glow) || self.shadows.iter().any(shadow) || self.outlines.iter().any(outline) || self.inner_shadows.iter().any(inner)
+    }
 }
 
 impl TitleObject {
@@ -3473,6 +3497,34 @@ pub fn adjust_style_runs_for_text_change(style_runs: &mut Vec<StyleRun>, new_tex
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each keyed field of each style makes the layer's styles keyed,
+    /// and nothing else does (#2335).
+    #[test]
+    fn styles_are_keyed_by_their_keyed_fields_alone() {
+        let k = || vec![klipp_core::Keyframe { time_secs: 0.0, value: 1.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }];
+        let glow = TextGlow { enabled: true, color: [1; 4], radius: 4.0, radius_keyframes: vec![], intensity: 1.0, intensity_keyframes: vec![] };
+        let shadow = TitleShadow { enabled: true, color: [1; 4], offset_x: 1.0, offset_x_keyframes: vec![], offset_y: 1.0, offset_y_keyframes: vec![], blur: 1.0, blur_keyframes: vec![] };
+        let outline = TextOutline { enabled: true, color: [1; 4], width: 1.0, width_keyframes: vec![] };
+        let inner = InnerShadow { enabled: true, color: [1; 4], offset_x: 1.0, offset_x_keyframes: vec![], offset_y: 1.0, offset_y_keyframes: vec![], blur: 1.0, blur_keyframes: vec![] };
+        let still = LayerFx { glows: vec![glow.clone()], shadows: vec![shadow.clone()], outlines: vec![outline.clone()], inner_shadows: vec![inner.clone()], ..Default::default() };
+        assert!(!still.styles_keyed());
+        let keyed = [
+            LayerFx { glows: vec![TextGlow { radius_keyframes: k(), ..glow.clone() }], ..still.clone() },
+            LayerFx { glows: vec![TextGlow { intensity_keyframes: k(), ..glow }], ..still.clone() },
+            LayerFx { shadows: vec![TitleShadow { offset_x_keyframes: k(), ..shadow.clone() }], ..still.clone() },
+            LayerFx { shadows: vec![TitleShadow { offset_y_keyframes: k(), ..shadow.clone() }], ..still.clone() },
+            LayerFx { shadows: vec![TitleShadow { blur_keyframes: k(), ..shadow }], ..still.clone() },
+            LayerFx { outlines: vec![TextOutline { width_keyframes: k(), ..outline }], ..still.clone() },
+            LayerFx { inner_shadows: vec![InnerShadow { offset_x_keyframes: k(), ..inner.clone() }], ..still.clone() },
+            LayerFx { inner_shadows: vec![InnerShadow { offset_y_keyframes: k(), ..inner.clone() }], ..still.clone() },
+            LayerFx { inner_shadows: vec![InnerShadow { blur_keyframes: k(), ..inner }], ..still.clone() },
+        ];
+        for (i, fx) in keyed.iter().enumerate() {
+            assert!(fx.styles_keyed(), "case {i}");
+        }
+    }
+
     use klipp_core::{GeneratorData, MediaId, SequenceId};
 
     #[test]
