@@ -233,6 +233,11 @@ impl DocumentView<'_> {
             EditCommand::SetReviews { old, .. } => {
                 self.sequences[self.active].reviews = old.clone();
             }
+            EditCommand::SetClipMatch { clip_id, old, .. } => {
+                if let Some(c) = self.sequences[self.active].tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).find(|c| c.id == *clip_id) {
+                    c.matched_to = *old;
+                }
+            }
             EditCommand::SetClipRole { clip_id, old, old_source, .. } => {
                 if let Some(c) = self.sequences[self.active].tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).find(|c| c.id == *clip_id) {
                     c.role = *old;
@@ -946,6 +951,11 @@ impl DocumentView<'_> {
             }
             EditCommand::SetReviews { new, .. } => {
                 self.sequences[self.active].reviews = new.clone();
+            }
+            EditCommand::SetClipMatch { clip_id, new, .. } => {
+                if let Some(c) = self.sequences[self.active].tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).find(|c| c.id == *clip_id) {
+                    c.matched_to = *new;
+                }
             }
             EditCommand::SetClipRole { clip_id, new, .. } => {
                 if let Some(c) = self.sequences[self.active].tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).find(|c| c.id == *clip_id) {

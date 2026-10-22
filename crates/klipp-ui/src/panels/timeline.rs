@@ -8421,6 +8421,20 @@ impl TimelinePanel {
                         ui.close_menu();
                     }
                 }
+                // And kept matched, following the shot's trims, rolls and
+                // moves (#2236).
+                let matched = state.sequence().all_clips().find(|c| c.id == clip_id).and_then(|c| c.matched_to).is_some();
+                if matched {
+                    if ui.button("Stop Keeping Matched").on_hover_text("Let this clip be trimmed and moved on its own again").clicked() {
+                        cmds.push(AppCommand::SetClipMatch { clip_id, keep: false });
+                        ui.close_menu();
+                    }
+                } else if crate::edit_helpers::clip_below(state.sequence(), clip_id).is_some()
+                    && ui.button("Keep Matched to Clip Below").on_hover_text("Start and end with the clip under this one, and follow it when it is trimmed or moved").clicked()
+                {
+                    cmds.push(AppCommand::SetClipMatch { clip_id, keep: true });
+                    ui.close_menu();
+                }
                 // Rhythmic edits in one step (#988), in a submenu of
                 // their own so the clip menu stays short.
                 ui.menu_button("Rhythm Edits", |ui| {

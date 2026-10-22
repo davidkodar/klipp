@@ -3469,6 +3469,9 @@ pub enum AppCommand {
 
     // Clip role
     SetClipRole { clip_id: ClipId, role: crate::ClipRole },
+    /// Keep a clip matched to the clip under it (#2236), matching it now;
+    /// or, with `keep` false, stop. One undo step.
+    SetClipMatch { clip_id: ClipId, keep: bool },
     /// How far back a clip sits for the sequence camera (`Clip::depth`).
     /// Undoable; a drag of the value is one undo step.
     SetClipDepth { clip_id: ClipId, depth: f32 },

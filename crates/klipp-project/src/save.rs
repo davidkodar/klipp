@@ -518,6 +518,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                         effect_keyframes,
                         role: if c.role == klipp_core::ClipRole::default() { None } else { Some(c.role) },
                         role_source: c.role_source,
+                        matched_to: c.matched_to,
                         param_modifiers,
                         speed: if (c.speed - 1.0).abs() < f64::EPSILON { None } else { Some(c.speed) },
                         speed_keyframes: if c.speed_keyframes.is_empty() { None } else { Some(c.speed_keyframes.clone()) },

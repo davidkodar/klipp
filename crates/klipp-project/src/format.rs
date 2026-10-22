@@ -444,6 +444,9 @@ pub struct ClipJson {
     pub role: Option<klipp_core::ClipRole>,
     #[serde(default, skip_serializing_if = "klipp_core::RoleSource::is_unset")]
     pub role_source: klipp_core::RoleSource,
+    /// The shot the clip is kept matched to (#2236). Absent when none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matched_to: Option<klipp_core::ClipId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub param_modifiers: Option<HashMap<String, klipp_core::ModifierStack>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1073,6 +1076,7 @@ mod tests {
             effect_keyframes: None,
             role: None,
             role_source: Default::default(),
+            matched_to: None,
             param_modifiers: None,
             speed: None, speed_keyframes: None, keep_pitch: None,
             source_rotation: None,
@@ -1147,7 +1151,7 @@ mod tests {
             matte_feather_keyframes: None, matte_choke_keyframes: None,
             clip_markers: None,
             effect_keyframes: None,
-            role: None, role_source: Default::default(), param_modifiers: None,
+            role: None, role_source: Default::default(), matched_to: None, param_modifiers: None,
             speed: None, speed_keyframes: None, keep_pitch: None,
             source_rotation: None, enabled: None,
             audio_effects: None,
@@ -1347,7 +1351,7 @@ mod tests {
             transform_scale_keyframes: None, transform_scale_y_keyframes: None, transform_rotation_keyframes: None, transform_tilt_x_keyframes: None, transform_tilt_y_keyframes: None, frame_glide: None,
             matte_feather_keyframes: None, matte_choke_keyframes: None,
             clip_markers: None, effect_keyframes: None,
-            role: None, role_source: Default::default(), param_modifiers: None,
+            role: None, role_source: Default::default(), matched_to: None, param_modifiers: None,
             speed: None, speed_keyframes: None, keep_pitch: None,
             source_rotation: None, enabled: None,
             audio_effects: None,

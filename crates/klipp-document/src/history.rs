@@ -209,6 +209,9 @@ pub enum EditCommand {
         /// Where the old role came from, put back on undo.
         old_source: klipp_core::RoleSource,
     },
+    /// Which shot a clip is kept matched to (#2236): set from the clip
+    /// menu, or dropped when the clip can no longer follow it.
+    SetClipMatch { clip_id: ClipId, old: Option<ClipId>, new: Option<ClipId> },
     /// Roles proposed from what clips' sound is (#2216), as (clip, old,
     /// new). Undone, each clip keeps its old role and stays proposed, so
     /// it is not proposed again.
@@ -871,6 +874,8 @@ impl EditCommand {
             EditCommand::SetEditPlan { .. } => "Set Edit Plan",
             EditCommand::SetReviews { .. } => "Review Finding",
             EditCommand::SetClipRole { .. } => "Set Clip Role",
+            EditCommand::SetClipMatch { new: Some(_), .. } => "Keep Matched",
+            EditCommand::SetClipMatch { new: None, .. } => "Stop Keeping Matched",
             EditCommand::ProposeClipRoles { .. } => "Classify Audio Roles",
             EditCommand::SetSequenceFormat { .. } => "Sequence Format",
             EditCommand::SetMarkers { .. } => "Markers",

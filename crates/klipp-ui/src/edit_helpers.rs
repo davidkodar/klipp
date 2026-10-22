@@ -62,33 +62,63 @@ impl EditHelperDialog {
     }
 }
 
-/// What Match Clip Below does to `clip_id` (#2236): it starts where the
-/// clip under it starts and is as long, as one undo step through the move
-/// and set-length ops, which refuse what would run over a neighbour or
-/// past its source. Under it is the clip it overlaps most on the nearest
-/// track below that has one, else above; never its own linked partner.
-/// `None` with no clip under it, or when it matches already.
-pub fn match_clip_below(seq: &Sequence, clip_id: ClipId) -> Option<Vec<Op>> {
+/// The clip under `clip_id` (#2236): the one it overlaps most on the
+/// nearest track below that has one, else above; never its own linked
+/// partner.
+pub fn clip_below(seq: &Sequence, clip_id: ClipId) -> Option<ClipId> {
     let (ti, ci) = seq.find_clip(clip_id)?;
     let clip = &seq.tracks[ti].clips[ci];
     let shared = |c: &klipp_timeline::Clip| c.timeline_out.min(clip.timeline_out).value - c.timeline_in.max(clip.timeline_in).value;
-    let under = (ti + 1..seq.tracks.len())
+    (ti + 1..seq.tracks.len())
         .chain((0..ti).rev())
-        .find_map(|t| seq.tracks[t].clips.iter().filter(|c| c.id != clip.id && Some(c.id) != clip.linked_clip_id && shared(c) > 0).max_by_key(|c| shared(c)))?;
-    if (under.timeline_in, under.timeline_out) == (clip.timeline_in, clip.timeline_out) {
-        return None;
-    }
-    let one = klipp_timeline::one_frame(seq.fps).value.max(1);
-    let frames = ((under.timeline_out - under.timeline_in).value as f64 / one as f64).round() as i64;
-    let to = Op::Move { clip_id: ClipRef::Id(clip_id), to: Anchor::Secs(under.timeline_in.to_secs_f64()), track: None, linked: true };
-    let length = Op::SetLength { clips: vec![ClipRef::Id(clip_id)], frames, keep: LengthKeep::Start, ripple: false };
-    // Shrunk before it moves, grown after, so it never passes through a
-    // neighbour on the way.
-    Some(if under.timeline_out - under.timeline_in < clip.timeline_out - clip.timeline_in { vec![length, to] } else { vec![to, length] })
+        .find_map(|t| seq.tracks[t].clips.iter().filter(|c| c.id != clip.id && Some(c.id) != clip.linked_clip_id && shared(c) > 0).max_by_key(|c| shared(c)))
+        .map(|c| c.id)
+}
+
+/// What Match Clip Below does to `clip_id` (#2236): it starts where the
+/// clip under it starts and is as long, as one undo step through the move
+/// and set-length ops, which refuse what would run over a neighbour or
+/// past its source. `None` with no clip under it, or when it matches
+/// already.
+pub fn match_clip_below(seq: &Sequence, clip_id: ClipId) -> Option<Vec<Op>> {
+    klipp_document::matched::match_ops(seq, clip_id, clip_below(seq, clip_id)?)
 }
 
 #[cfg(test)]
 mod tests {
+    /// Kept matched (#2236): a shot trimmed and recorded takes the clip
+    /// matched to it along in the same step, and one undo puts both back.
+    #[test]
+    fn a_recorded_trim_takes_the_matched_clip_along_in_one_step() {
+        use klipp_document::history::EditCommand;
+        let mut state = crate::state::AppState::default();
+        let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+        let seq = &mut state.sequences[0];
+        seq.tracks.insert(0, klipp_timeline::Track::new("V2", klipp_timeline::TrackKind::Video));
+        let v: Vec<usize> = seq.tracks.iter().enumerate().filter(|(_, t)| t.kind == klipp_timeline::TrackKind::Video).map(|(i, _)| i).collect();
+        let shot = klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(4.0), tc(0.0), tc(4.0));
+        let mut title = klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(4.0), tc(0.0), tc(4.0));
+        title.matched_to = Some(shot.id);
+        let (shot_id, title_id) = (shot.id, title.id);
+        seq.tracks[v[1]].clips = vec![shot.clone()];
+        seq.tracks[v[0]].clips = vec![title];
+        let out = |s: &crate::state::AppState, id| s.sequence().all_clips().find(|c| c.id == id).unwrap().timeline_out.to_secs_f64();
+
+        let mut trimmed = shot.clone();
+        trimmed.timeline_out = tc(3.0);
+        trimmed.source_out = tc(3.0);
+        let seq = &mut state.sequences[0];
+        *seq.all_clips_mut().find(|c| c.id == shot_id).unwrap() = trimmed.clone();
+        state.push_history(EditCommand::ReplaceClip { description: "Trim", old: Box::new(shot), new: Box::new(trimmed) });
+        assert_eq!((out(&state, shot_id), out(&state, title_id)), (3.0, 3.0), "the title followed its shot");
+        assert!(state.matched_follow_sync, "and the engine is told");
+
+        let entry = state.take_undo().expect("one step");
+        let (mut pool, mut fps) = (state.media_pool.clone(), state.fps);
+        klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: 0, media_pool: &mut pool, fps: &mut fps }.apply_inverse(&entry.command);
+        assert_eq!((out(&state, shot_id), out(&state, title_id)), (4.0, 4.0), "one undo, both back");
+    }
+
     /// Match Clip Below (#2236): a title over a shot takes the shot's
     /// start and length; with nothing under it, or already matching,
     /// there is nothing to do.

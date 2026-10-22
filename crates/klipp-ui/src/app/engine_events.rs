@@ -10,6 +10,9 @@ impl KlippApp {
         self.apply_analysis_markers();
         self.advance_refits();
         self.propose_audio_roles();
+        if std::mem::take(&mut self.state.matched_follow_sync) {
+            self.sync_sequence_to_engine();
+        }
         while let Ok(event) = self.event_rx.try_recv() {
             if super::event_writes::event_writes(&event) {
                 self.close_drag_for_result();
