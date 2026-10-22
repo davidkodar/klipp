@@ -262,7 +262,8 @@ macro_rules! mask_mix_body {
     () => {
         r#"
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+fn main(@builtin(global_invocation_id) id_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let id = vec3<u32>(id_flat.x + id_flat.y * nwg.x * 256u, 0u, id_flat.z);
     let idx = id.x;
     if idx >= params.width * params.height { return; }
     var coverage = 1.0;
@@ -339,7 +340,8 @@ macro_rules! mask_mix_window_body {
     () => {
         r#"
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+fn main(@builtin(global_invocation_id) id_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let id = vec3<u32>(id_flat.x + id_flat.y * nwg.x * 256u, 0u, id_flat.z);
     let idx = id.x;
     if idx >= params.width * params.height { return; }
     // The window at this pixel, as SHADER_MASK_V2 draws it.

@@ -2088,18 +2088,18 @@ impl ScopeRenderer {
                 if jobs.iter().any(|j| matches!(j, ScopeJob::Waveform(_))) {
                     pass.set_pipeline(&self.sat_cols_pipeline);
                     pass.set_bind_group(0, &sat_cols_bg, &[]);
-                    pass.dispatch_workgroups(cols.div_ceil(64), 1, 1);
+                    crate::gpu::dispatch_flat(&mut pass, cols.div_ceil(64));
                     pass.set_pipeline(&self.sat_rows_pipeline);
                     pass.set_bind_group(0, &sat_rows_bg, &[]);
-                    pass.dispatch_workgroups(BIN_ROWS.div_ceil(64), 1, 1);
+                    crate::gpu::dispatch_flat(&mut pass, BIN_ROWS.div_ceil(64));
                 }
                 if want_hist {
                     pass.set_pipeline(&self.hist_reduce_pipeline);
                     pass.set_bind_group(0, lp_groups.as_ref().map_or(&hist_reduce_bg, |g| &g.4), &[]);
-                    pass.dispatch_workgroups(BIN_ROWS.div_ceil(64), 1, 1);
+                    crate::gpu::dispatch_flat(&mut pass, BIN_ROWS.div_ceil(64));
                     pass.set_pipeline(&self.hist_prep_pipeline);
                     pass.set_bind_group(0, &hist_prep_bg, &[]);
-                    pass.dispatch_workgroups(1, 1, 1);
+                    crate::gpu::dispatch_flat(&mut pass, 1);
                 }
             }
             if want_vector {

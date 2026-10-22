@@ -15,7 +15,8 @@ fn linear(v: f32) -> f32 {
     return pow((v+0.055)/1.055,2.4);
 }
 @compute @workgroup_size(256)
-fn resolve(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn resolve(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let i=gid.x;if i>=p.roi.z*p.roi.w {return;}
     let xy=vec2<u32>(i%p.roi.z,i/p.roi.z);
     var rgb=vec3<f32>(0.0);var coverage=0.0;
