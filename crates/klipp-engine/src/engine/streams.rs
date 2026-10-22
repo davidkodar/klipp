@@ -515,7 +515,11 @@ impl ClipStreams {
                         let want = w.clone();
                         // Admitted here, in order, not on the thread.
                         let lease = crate::decode_budget::admit(cost.rate, crate::decode_budget::Priority::Overflow);
+                        // Counted while it opens: a process exiting while
+                        // ffmpeg or the GPU is mid-open crashes (#2261).
+                        let alive = crate::video_decoder::DecodeThreadToken::new();
                         let spawned = std::thread::Builder::new().name("clip stream open".into()).spawn(move || {
+                            let _alive = alive;
                             let _ = tx.send(ClipStream::open(&want, &path, rot, lease, frames));
                         });
                         if spawned.is_ok() {
@@ -750,14 +754,29 @@ mod tests {
         ok.then_some(out)
     }
 
+    /// Waits, as a test ends however it ends, for the decoders it opened
+    /// (and those of tests beside it) to finish (#2261): one still making
+    /// its GPU pipeline as the process exited crashed in the driver's
+    /// teardown, after every test had passed. Declared first, it drops
+    /// after the test's streams.
+    struct Joined;
+
+    impl Drop for Joined {
+        fn drop(&mut self) {
+            crate::video_decoder::wait_for_decode_threads(std::time::Duration::from_secs(10));
+        }
+    }
+
     /// #2108: a stream opened for a clip coming up holds no frame up,
     /// opening or open and still seeking; one on screen is waited for.
     #[test]
     fn a_stream_opened_ahead_waits_for_nothing() {
+        let _joined = Joined;
         let Some(path) = source() else {
             eprintln!("skipping: no ffmpeg");
             return;
         };
+        let _one = BUDGETED.lock().unwrap_or_else(|e| e.into_inner());
         let frame = 1.0 / 25.0;
         let resolve = |_: &Want| Some((path.clone(), 0, Cost { rate: 0.0, frame_bytes: 0.0 }));
         let ahead = Want { clip: ClipId::new(), media: MediaId::new(), rotation: 0, source_secs: 1.0, reversed: false, ahead: true };
@@ -780,7 +799,8 @@ mod tests {
     }
 
     /// Tests that open streams the decode budget counts, one at a time: its
-    /// count is the process's, and one's streams change another's choice.
+    /// count is the process's, and one's streams change another's choice
+    /// (taking the software threads another's stream was to get).
     static BUDGETED: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// #2128: room is decode rate, not a count. Nine tiles on screen open
@@ -788,6 +808,7 @@ mod tests {
     /// ahead to make room; one more ahead then waits for room.
     #[test]
     fn layers_on_screen_open_past_the_rate_and_close_one_opened_ahead() {
+        let _joined = Joined;
         let Some(path) = source() else {
             eprintln!("skipping: no ffmpeg");
             return;
@@ -831,6 +852,7 @@ mod tests {
     /// queue, never fewer than four frames, rather than not at all.
     #[test]
     fn layers_on_screen_open_with_a_shorter_queue_when_memory_is_short() {
+        let _joined = Joined;
         let Some(path) = source() else {
             eprintln!("skipping: no ffmpeg");
             return;
@@ -924,6 +946,7 @@ mod tests {
     /// in software, and gives its frame at its time as any other.
     #[test]
     fn a_stream_past_the_gpu_budget_decodes_in_software() {
+        let _joined = Joined;
         let Some(path) = source() else {
             eprintln!("skipping: no ffmpeg");
             return;
@@ -955,10 +978,12 @@ mod tests {
     /// holds its frame; the sync that asked for it does not wait.
     #[test]
     fn a_stream_opens_off_the_callers_thread() {
+        let _joined = Joined;
         let Some(path) = source() else {
             eprintln!("skipping: no ffmpeg");
             return;
         };
+        let _one = BUDGETED.lock().unwrap_or_else(|e| e.into_inner());
         let frame = 1.0 / 25.0;
         let w = Want { clip: ClipId::new(), media: MediaId::new(), rotation: 0, source_secs: 1.0, reversed: false, ahead: false };
         let mut streams = ClipStreams::new();
@@ -995,10 +1020,12 @@ mod tests {
     /// seek is not thrown away and done again.
     #[test]
     fn a_stream_still_seeking_is_taken_over() {
+        let _joined = Joined;
         let Some(path) = source() else {
             eprintln!("skipping: no ffmpeg");
             return;
         };
+        let _one = BUDGETED.lock().unwrap_or_else(|e| e.into_inner());
         let frame = 1.0 / 25.0;
         let w = Want { clip: ClipId::new(), media: MediaId::new(), rotation: 0, source_secs: 1.0, reversed: false, ahead: false };
         let mut streams = ClipStreams::new();
@@ -1032,10 +1059,12 @@ mod tests {
     /// once, and not again by every sync while that seek is in flight.
     #[test]
     fn a_stream_held_ahead_is_sought_once() {
+        let _joined = Joined;
         let Some(path) = source() else {
             eprintln!("skipping: no ffmpeg");
             return;
         };
+        let _one = BUDGETED.lock().unwrap_or_else(|e| e.into_inner());
         let frame = 1.0 / 25.0;
         let want = |secs: f64| Want { clip: ClipId::new(), media: MediaId::new(), rotation: 0, source_secs: secs, reversed: false, ahead: false };
         let w = want(1.0);
@@ -1079,10 +1108,12 @@ mod tests {
     /// that frame, it holds it at once.
     #[test]
     fn a_stream_taken_over_past_its_frame_still_gets_it() {
+        let _joined = Joined;
         let Some(path) = source() else {
             eprintln!("skipping: no ffmpeg");
             return;
         };
+        let _one = BUDGETED.lock().unwrap_or_else(|e| e.into_inner());
         let frame = 1.0 / 25.0;
         // A decoder as playback leaves it at a cut: decoded on from 0, the
         // frame at the cut popped, the next ones queued.

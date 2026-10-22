@@ -6267,7 +6267,10 @@ impl PlaybackEngine {
                 // Opened ahead, it is among the first to decode in
                 // software when the GPU's decoder is full (#2116).
                 let lease = crate::decode_budget::admit(self.media_pixel_rate(media_id, &path), crate::decode_budget::Priority::Overflow);
+                // Counted while it opens (#2261), as a decoder's own thread is.
+                let alive = crate::video_decoder::DecodeThreadToken::new();
                 std::thread::spawn(move || crate::thread_guard::catch_panic("klipp-preroll", move || {
+                    let _alive = alive;
                     match VideoDecoder::open_with(&path, effective_preroll_rot, lease) {
                         Ok(dec) => {
                             if source_in_secs > 0.01 {
