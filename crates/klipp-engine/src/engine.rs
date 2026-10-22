@@ -5369,7 +5369,13 @@ impl PlaybackEngine {
             }).unwrap_or((None, 0));
             match &display_frame {
                 Some(f) => debug!("CUT-DIAG FRAME pts={:.4} clock={:.4} q_len={len} front={front:?}", f.pts_secs(), current_source_secs),
-                None => debug!("CUT-DIAG STARVED clock={:.4} q_len={len} front={front:?}", current_source_secs),
+                // No frame this tick: starved only when none is there to
+                // show. A queue whose front is still ahead of the clock
+                // is early, not starved; that was most of what it said.
+                None => match front {
+                    Some(next) if next > current_source_secs => debug!("CUT-DIAG AHEAD clock={:.4} q_len={len} next due in {:.1}ms", current_source_secs, (next - current_source_secs) * 1000.0),
+                    _ => debug!("CUT-DIAG STARVED clock={:.4} q_len={len} front={front:?}", current_source_secs),
+                },
             }
         }
         let frame = match display_frame {
