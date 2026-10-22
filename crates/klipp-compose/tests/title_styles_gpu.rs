@@ -630,7 +630,12 @@ fn title_post_and_grade_stay_resident_in_working_spaces() {
                 let worst = got.iter().zip(&want).map(|(a,b)| a.abs_diff(*b)).max().unwrap();
                 if worst>3 {let i=got.iter().zip(&want).position(|(a,b)|a.abs_diff(*b)==worst).unwrap()/4; eprintln!("worst pixel {},{} got {:?} want {:?}",i%w as usize,i/w as usize,&got[i*4..i*4+4],&want[i*4..i*4+4]);}
                 assert!(worst<=3,"{ws:?} graded={graded} variant={variant} at{t}: {worst}");
-                assert_eq!(gpu.title_renderer().resting_renders(),u64::from(variant==0 || variant==6 || variant==58 || variant==60 || variant==61 || variant==63 || variant==64),"cached sources, not full per-frame rasters");
+                // A still text is laid out on the glyph route, with no
+                // resting raster (#2335): the glitched face under its post
+                // pass (0), the edge-faded text (6) and the still text by a
+                // moving panel (60, 61, 63, 64) were each one CPU raster.
+                // Only a staggered text on a linked path still rests (58).
+                assert_eq!(gpu.title_renderer().resting_renders(),u64::from(variant==58),"cached sources, not full per-frame rasters");
                 if sample==2 { assert!(events.iter().all(|e| e.work!=klipp_effects::residency::Work::Preparation),"warm backward seek: {events:?}"); }
             }
         }

@@ -104,6 +104,8 @@ mod title_blend_mask_stack;
 mod title_image_gpu;
 #[path = "../title_keyed_position_gpu.rs"]
 mod title_keyed_position_gpu;
+#[path = "../title_still_glyph_route.rs"]
+mod title_still_glyph_route;
 #[path = "../title_layers_kept.rs"]
 mod title_layers_kept;
 #[path = "../title_loops_placed_gpu.rs"]

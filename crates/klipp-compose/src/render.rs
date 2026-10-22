@@ -1192,6 +1192,13 @@ impl Renderer {
     /// A title's first frame then places a sprite that is already
     /// there, instead of rastering 4K of text on the frame's thread.
     pub fn warm_titles(&mut self, wants: Vec<(klipp_timeline::TitleData, u32, u32)>) {
+        // A title the GPU lays out on its glyph route has no resting
+        // raster to wait on (#2335); the CPU one is the fallback's.
+        let wants: Vec<_> = if self.allow_gpu {
+            wants.into_iter().filter(|(td, _, _)| !klipp_title::takes_glyph_route(td, None)).collect()
+        } else {
+            wants
+        };
         if wants.is_empty() {
             return;
         }
