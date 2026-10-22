@@ -32,6 +32,10 @@ pub enum CurveParam {
     Mask { track: crate::mask_tracks::MaskTrack, name: String },
 }
 
+/// How near, in points, a dragged key snaps to the playhead or another
+/// key (#2279).
+const SNAP_PX: f32 = 6.0;
+
 /// The modifier stack's parameter for `param`, where it has one: what the
 /// renderer evaluates its keys with (#2277).
 fn modifier_param(param: &CurveParam) -> Option<klipp_core::ParamId> {
@@ -304,6 +308,11 @@ pub struct CurveEditorPanel {
     needs_fit: bool,
     /// Where a drag of the selected keys began, in time and value (#1958).
     multi_from: Option<(f64, f32)>,
+    /// The time of the key that drag was started on: what snaps (#2279).
+    multi_key_time: f64,
+    /// Where a dragged key last snapped to the playhead or another key,
+    /// for its guide line (#2279).
+    snapped_to: Option<f64>,
     /// A box being drawn on empty graph, where it began, and whether
     /// Shift adds what it holds to the selection (#1958).
     box_from: Option<(egui::Pos2, bool)>,
@@ -328,6 +337,8 @@ impl Default for CurveEditorPanel {
             drag: None,
             needs_fit: true,
             multi_from: None,
+            multi_key_time: 0.0,
+            snapped_to: None,
             box_from: None,
             dope: false,
             sheet: Default::default(),
@@ -1125,6 +1136,33 @@ impl CurveEditorPanel {
         painter.rect_stroke(clip_rect, 0.0, Stroke::new(0.5_f32, theme.border));
     }
 
+    /// Where a key dragged to `t` lands (#2279): on the playhead or
+    /// another key's time (not `moving`'s) when within a few points of it,
+    /// with its guide drawn, else on a whole frame; with Shift, where it
+    /// is.
+    #[allow(clippy::too_many_arguments)]
+    fn snap_time(&mut self, ui: &egui::Ui, state: &AppState, clip_id: klipp_core::ClipId, keyframes: &[Keyframe], moving: &[usize], t: f64, graph_rect: &Rect, clip_duration: f64) -> f64 {
+        self.snapped_to = None;
+        if ui.ctx().input(|i| i.modifiers.shift) {
+            return t;
+        }
+        let seq = state.sequence();
+        let playhead = seq.all_clips().find(|c| c.id == clip_id).map(|c| (state.playhead - c.timeline_in).to_secs_f64());
+        let x = self.time_to_x(t, graph_rect, clip_duration);
+        let near = playhead
+            .into_iter()
+            .chain(keyframes.iter().enumerate().filter(|(i, _)| !moving.contains(i)).map(|(_, k)| k.time_secs))
+            .map(|c| (c, (self.time_to_x(c, graph_rect, clip_duration) - x).abs()))
+            .filter(|(_, d)| *d <= SNAP_PX)
+            .min_by(|a, b| a.1.total_cmp(&b.1));
+        if let Some((c, _)) = near {
+            self.snapped_to = Some(c);
+            return c;
+        }
+        let fps = seq.fps.as_f64().max(1.0);
+        (t * fps).round() / fps
+    }
+
     fn compute_time_step(&self) -> f64 {
         // Choose a step so labels don't overlap (~60px minimum between ticks)
         let px_per_step = 60.0;
@@ -1283,6 +1321,14 @@ impl CurveEditorPanel {
         let mut cmds = Vec::new();
         let painter = ui.painter();
         let (p_v_min, p_v_max, _) = self.param().range();
+        // The playhead or key a dragged key snapped to, its guide (#2279).
+        if self.drag.is_none() && self.multi_from.is_none() {
+            self.snapped_to = None;
+        }
+        if let Some(t) = self.snapped_to {
+            let x = self.time_to_x(t, graph_rect, clip_duration);
+            painter.vline(x, graph_rect.y_range(), Stroke::new(1.0_f32, theme.accent.gamma_multiply(0.8)));
+        }
 
         // Draw tangent handles for selected keyframe
         let selected_kf_idx = state.selected_keyframe.as_ref().and_then(|sk| {
@@ -1402,6 +1448,7 @@ impl CurveEditorPanel {
                                 if let Some(clip) = clip.filter(|_| crate::key_selection::several(state) && state.key_selection.holds(clip_id, &self.param_to_kind(), kf.time_secs)) {
                                     cmds.extend(crate::key_selection::begin_drag(state, &clip, Some(self.param_to_kind())));
                                     self.multi_from = Some((self.x_to_time(pos.x, graph_rect, clip_duration), self.y_to_value(pos.y, graph_rect, v_min, v_range)));
+                                    self.multi_key_time = kf.time_secs;
                                     break;
                                 }
                                 self.drag = Some(CurveDrag {
@@ -1445,6 +1492,10 @@ impl CurveEditorPanel {
             if response.dragged_by(egui::PointerButton::Primary) {
                 if let Some(pos) = pointer_pos {
                     let dt = self.x_to_time(pos.x, graph_rect, clip_duration) - t0;
+                    // The key it was started on lands snapped; the rest
+                    // move by as much (#2279).
+                    let anchor = self.multi_key_time;
+                    let dt = self.snap_time(ui, state, clip_id, keyframes, &[], anchor + dt, graph_rect, clip_duration) - anchor;
                     let dv = self.y_to_value(pos.y, graph_rect, v_min, v_range) - v0;
                     let found = state.sequences[state.active_sequence_idx].all_clips().find(|c| c.id == clip_id).cloned();
                     if let Some(clip) = found {
@@ -1455,6 +1506,7 @@ impl CurveEditorPanel {
             if response.drag_stopped() {
                 cmds.extend(crate::key_selection::end_drag(state));
                 self.multi_from = None;
+                self.snapped_to = None;
             }
         }
         // The box drawn, and on release, what it holds selected.
@@ -1486,10 +1538,17 @@ impl CurveEditorPanel {
                         match drag.handle {
                             None => {
                                 // Moving the keyframe itself
-                                let new_t = self.x_to_time(pos.x, graph_rect, clip_duration)
+                                // Snapped to frames, the playhead and the
+                                // other keys; the value to the grid with
+                                // Ctrl (#2279).
+                                let new_t = self.snap_time(ui, state, clip_id, keyframes, &[kf_idx], self.x_to_time(pos.x, graph_rect, clip_duration), graph_rect, clip_duration)
                                     .clamp(0.0, clip_duration);
-                                let new_v = self.y_to_value(pos.y, graph_rect, v_min, v_range)
-                                    .clamp(p_v_min, p_v_max);
+                                let mut new_v = self.y_to_value(pos.y, graph_rect, v_min, v_range);
+                                if ui.ctx().input(|i| i.modifiers.command) {
+                                    let step = self.compute_value_step(v_range);
+                                    new_v = (new_v / step).round() * step;
+                                }
+                                let new_v = new_v.clamp(p_v_min, p_v_max);
                                 match self.param() {
                                     CurveParam::Audio(p) => {
                                         cmds.push(AppCommand::MoveAudioKeyframe {
