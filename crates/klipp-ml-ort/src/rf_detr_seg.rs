@@ -614,26 +614,9 @@ fn build_session(
         .with_intra_threads(crate::ppocr::SESSION_THREADS)
         .map_err(|e| MaskError::BackendInit(format!("set threads: {e}")))?;
 
-    #[cfg(feature = "cuda")]
-    {
-        if matches!(
-            device,
-            DevicePreference::GpuPreferCpu | DevicePreference::GpuRequired
-        ) {
-            let cuda = ort::execution_providers::CUDAExecutionProvider::default();
-            builder = builder
-                .with_execution_providers([cuda.build()])
-                .map_err(|e| MaskError::BackendInit(format!("register CUDA EP: {e}")))?;
-        }
-    }
-    #[cfg(not(feature = "cuda"))]
-    {
-        if matches!(device, DevicePreference::GpuRequired) {
-            return Err(MaskError::DeviceUnavailable(
-                "GPU required but klipp-ml-ort was built without --features cuda",
-            ));
-        }
-    }
+    // On the GPU where it loads, what it got recorded (#2250).
+    let model = weights.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    builder = crate::provider::on_device(builder, device, &model).map_err(MaskError::BackendInit)?;
 
     builder
         .commit_from_file(weights)

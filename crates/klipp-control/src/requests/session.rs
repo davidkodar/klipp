@@ -111,6 +111,16 @@ pub(crate) fn respond(
                 }
                 text.push('\n');
             }
+            // A model on the CPU with a GPU it can't use is said, never
+            // left silent (#2250).
+            let missed = klipp_analysis::providers::missed_gpu();
+            if !missed.is_empty() {
+                text.push_str("\nAI models on the CPU though there is a GPU:");
+                for line in &missed {
+                    text.push_str(&format!("\n{line}"));
+                }
+                text.push('\n');
+            }
             Ok(json!({
                 // What a person is told when they ask whether Klipp is
                 // there: in their words, read live (#626).
@@ -122,6 +132,7 @@ pub(crate) fn respond(
                 "revision": ctx.shared.revision(),
                 "active_jobs": active_jobs,
                 "recent_projects": recent_projects,
+                "execution_providers": klipp_analysis::providers::lines(),
                 // The edit history's reach and its next steps, for a client
                 // checking that something wrote none (M3 step 18).
                 "history": {

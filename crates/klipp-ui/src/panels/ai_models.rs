@@ -2867,6 +2867,18 @@ fn inference_status_label(theme: &KlippTheme) -> (String, egui::Color32, String)
     )
 }
 
+/// What each model opened so far runs on, a line each after a blank
+/// one, or nothing before one has opened (#2250).
+#[cfg(feature = "ai-ort")]
+fn models_on() -> String {
+    let lines: Vec<String> = klipp_ml_ort::provider::used().iter().map(|u| u.line()).collect();
+    if lines.is_empty() {
+        String::new()
+    } else {
+        format!("\n\nModels opened:\n{}", lines.join("\n"))
+    }
+}
+
 #[cfg(feature = "ai-ort")]
 fn inference_status_label(theme: &KlippTheme) -> (String, egui::Color32, String) {
     use klipp_ml_ort::{GpuVendor, RuntimeStatus};
@@ -2888,11 +2900,13 @@ fn inference_status_label(theme: &KlippTheme) -> (String, egui::Color32, String)
         (RuntimeStatus::GpuAccelerationActive(GpuVendor::Nvidia), true) => (
             "GPU (NVIDIA)".into(),
             theme.text_secondary,
-            "ort+CUDA active. AI Tools inference offloads to the \
-             GPU once the session opens. (Runtime libs CUDA + \
-             cuDNN must be on LD_LIBRARY_PATH; if they're not, \
-             ort falls back to CPU silently.)"
-                .into(),
+            format!(
+                "ort+CUDA active. AI Tools inference offloads to the \
+                 GPU once the session opens; a model whose CUDA \
+                 provider doesn't load (CUDA or cuDNN missing) runs on \
+                 the CPU, listed below.{}",
+                models_on(),
+            ),
         ),
         (RuntimeStatus::GpuAccelerationActive(GpuVendor::Nvidia), false) => (
             "⚠ Built without GPU support".into(),
@@ -2921,6 +2935,18 @@ fn inference_status_label(theme: &KlippTheme) -> (String, egui::Color32, String)
              with --features ai-ort-cuda, and install \
              onnxruntime GPU build (set ORT_DYLIB_PATH)."
                 .into(),
+        ),
+        (RuntimeStatus::GpuRuntimeCpuOnly(v), _) => (
+            format!("⚠ {} — CPU-only runtime", v.display_label()),
+            theme.marker_warning,
+            format!(
+                "{} GPU detected, but the onnxruntime library in use is a \
+                 CPU-only build, with no GPU provider: AI Tools and \
+                 analysis run on the CPU. Install a GPU build \
+                 (onnxruntime-cuda) or set ORT_DYLIB_PATH to one.{}",
+                v.display_label(),
+                models_on(),
+            ),
         ),
         (RuntimeStatus::GpuVendorUnsupported(v), _) => (
             format!("⚠ {} — coming soon", v.display_label()),

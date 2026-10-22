@@ -97,6 +97,10 @@ pub enum RuntimeStatus {
     /// F-97-INTEL-OPENVINO). User stays on CPU; tooltip says
     /// "vendor X — not yet supported, on the roadmap".
     GpuVendorUnsupported(GpuVendor),
+    /// GPU vendor detected and a libonnxruntime found, but one built
+    /// without that GPU's provider (a CPU-only package): inference runs
+    /// on the CPU (#2250).
+    GpuRuntimeCpuOnly(GpuVendor),
 }
 
 impl RuntimeStatus {
@@ -111,6 +115,7 @@ impl RuntimeStatus {
             Self::GpuVendorUnsupported(v) => {
                 format!("{} — not yet supported", v.display_label())
             }
+            Self::GpuRuntimeCpuOnly(v) => format!("{} — CPU-only runtime", v.display_label()),
         }
     }
 
@@ -122,7 +127,7 @@ impl RuntimeStatus {
         match self {
             Self::CpuOnly => StatusSeverity::Neutral,
             Self::GpuAccelerationActive(_) => StatusSeverity::Active,
-            Self::GpuAvailableNotInstalled(_) | Self::GpuVendorUnsupported(_) => {
+            Self::GpuAvailableNotInstalled(_) | Self::GpuVendorUnsupported(_) | Self::GpuRuntimeCpuOnly(_) => {
                 StatusSeverity::Warning
             }
         }
@@ -174,6 +179,15 @@ pub fn resolve_runtime_status() -> RuntimeStatus {
     match vendor {
         GpuVendor::Nvidia => {
             if find_libonnxruntime().is_some() {
+                // A library is there; whether it can run on the GPU is
+                // asked of it, once (#2250).
+                #[cfg(feature = "ort")]
+                {
+                    static HAS_CUDA: std::sync::OnceLock<Option<bool>> = std::sync::OnceLock::new();
+                    if *HAS_CUDA.get_or_init(crate::provider::runtime_has_cuda) == Some(false) {
+                        return RuntimeStatus::GpuRuntimeCpuOnly(vendor);
+                    }
+                }
                 RuntimeStatus::GpuAccelerationActive(vendor)
             } else {
                 RuntimeStatus::GpuAvailableNotInstalled(vendor)
@@ -524,7 +538,8 @@ mod tests {
             RuntimeStatus::CpuOnly
             | RuntimeStatus::GpuAccelerationActive(_)
             | RuntimeStatus::GpuAvailableNotInstalled(_)
-            | RuntimeStatus::GpuVendorUnsupported(_) => {}
+            | RuntimeStatus::GpuVendorUnsupported(_)
+            | RuntimeStatus::GpuRuntimeCpuOnly(_) => {}
         }
     }
 }
