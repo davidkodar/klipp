@@ -2785,6 +2785,9 @@ pub struct AppState {
     /// The keys selected together, `selected_keyframe` the primary among
     /// them (#1958).
     pub key_selection: crate::key_selection::KeySelection,
+    /// The animated parameter in focus (#2296), shared by the Inspector,
+    /// the Curve Editor and the Dope Sheet.
+    pub param_focus: Option<crate::param_focus::ParamFocus>,
     /// A drag of those keys in progress.
     pub multi_key_drag: Option<crate::key_selection::MultiKeyDrag>,
     /// The sequence camera's key that is selected, on the lane or in
@@ -4891,6 +4894,7 @@ impl Default for AppState {
             curve_key_clipboard: Vec::new(),
             selected_keyframe: None,
             key_selection: Default::default(),
+            param_focus: None,
             multi_key_drag: None,
             selected_camera_key: None,
             camera_key_menu: None,

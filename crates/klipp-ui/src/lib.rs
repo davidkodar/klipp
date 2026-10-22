@@ -91,6 +91,7 @@ pub mod picture_mattes;
 pub mod mask_edit;
 pub mod mask_tracks;
 pub mod key_selection;
+pub mod param_focus;
 pub mod parameterized_templates;
 pub mod templates_tab;
 pub mod prefs;
