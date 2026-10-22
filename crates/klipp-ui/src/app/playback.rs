@@ -312,6 +312,10 @@ impl KlippApp {
                 };
                 if let Some(seq) = self.state.sequences.get_mut(self.state.active_sequence_idx) {
                     if let Some(t) = seq.tracks.get_mut(*track_idx) {
+                        // Opened again, the lane shows the clips' keys of
+                        // the active param, as it did before track keys
+                        // (#2306).
+                        t.automation_lane_track = false;
                         t.automation_lane_visible = match t.automation_lane_visible {
                             None => Some(active_param),
                             Some(_) => None,

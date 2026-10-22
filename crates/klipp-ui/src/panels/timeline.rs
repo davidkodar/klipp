@@ -381,6 +381,19 @@ fn snap_threshold_px() -> f32 { TL_SNAP_THRESHOLD_PX.get() }
 // Hit-testing, drag dispatch, the param-pill overlay, and tooltip rendering
 // stay in the caller — only the curve paint lives here.
 
+/// Where a dragged track key lands for `wanted` seconds (#2306): kept
+/// between its neighbours, a millisecond clear of each where there is room,
+/// at their midpoint where they are closer than that.
+fn drag_key_time(keys: &[klipp_core::Keyframe], index: usize, wanted: f64) -> f64 {
+    let prev = index.checked_sub(1).map_or(0.0, |i| keys[i].time_secs);
+    let next = keys.get(index + 1).map_or(f64::MAX, |k| k.time_secs);
+    let (lo, hi) = (prev + 1e-3, next - 1e-3);
+    if lo > hi {
+        return (prev + next) / 2.0;
+    }
+    wanted.clamp(lo, hi)
+}
+
 /// Fixed (min, range, unity) per audio param. Matches the values used by
 /// the rubber-band drag handlers in `handle_audio_keyframe_drag` etc.;
 /// any change here MUST be mirrored in those handlers or drags desync.
@@ -777,6 +790,16 @@ pub(crate) struct TimelineFrameCache {
     pub tracks_clip_bottom: f32,
 }
 
+/// A track automation key being dragged in its lane (#2306): the track,
+/// the key's index, the keys as they were when the drag began, and as
+/// moved so far.
+struct TrackKeyDrag {
+    track: usize,
+    index: usize,
+    from: Vec<klipp_core::Keyframe>,
+    moved: Vec<klipp_core::Keyframe>,
+}
+
 #[derive(Default)]
 pub struct TimelinePanel {
     /// When true, skip internal toolbar/headers/status rendering (embedded in new shell)
@@ -799,9 +822,8 @@ pub struct TimelinePanel {
     last_refine_request: Option<std::time::Instant>,
     /// Suppress clip context menu when keyframe diamond right-click was handled
     suppress_clip_context_menu: bool,
-    /// A track automation key being dragged in its lane (#2306): the
-    /// track, the key's index, and the keys as moved so far.
-    track_key_drag: Option<(usize, usize, Vec<klipp_core::Keyframe>)>,
+    /// A track automation key being dragged in its lane (#2306).
+    track_key_drag: Option<TrackKeyDrag>,
     /// The edit point right-clicked, for its menu (#925).
     context_edit_point: Option<EditPoint>,
     /// Track height resize drag: (track_index, start_y, original_height)
@@ -12889,8 +12911,13 @@ impl TimelinePanel {
         let value_to_y = |v: f32| audio_param_value_to_y(curve_rect, param, v);
         let y_to_value = |y: f32| audio_param_y_to_value(curve_rect, param, y);
 
-        let dragging = self.track_key_drag.as_ref().filter(|(t, _, _)| *t == track_idx);
-        let keys: Vec<klipp_core::Keyframe> = dragging.map_or_else(|| track.automation.keys(tp).to_vec(), |(_, _, k)| k.clone());
+        // Keys changed under a drag (a pass committed, an undo) end it:
+        // releasing it would put back the keys it began with.
+        if self.track_key_drag.as_ref().is_some_and(|d| d.track == track_idx && d.from.as_slice() != track.automation.keys(tp)) {
+            self.track_key_drag = None;
+        }
+        let dragging = self.track_key_drag.as_ref().filter(|d| d.track == track_idx);
+        let keys: Vec<klipp_core::Keyframe> = dragging.map_or_else(|| track.automation.keys(tp).to_vec(), |d| d.moved.clone());
         let shown = klipp_timeline::TrackAutomation { mode: AutomationMode::Read, lanes: [(tp, keys.clone())].into_iter().collect() };
 
         // The curve as played, sampled across the lane.
@@ -12934,18 +12961,17 @@ impl TimelinePanel {
         });
         let commit = |keys: Vec<klipp_core::Keyframe>, cmds: &mut Vec<AppCommand>| cmds.push(AppCommand::SetTrackAutomationKeys { track_index: track_idx, param: tp, keys });
 
-        if let Some((_, index, moved)) = self.track_key_drag.as_mut().filter(|(t, _, _)| *t == track_idx) {
+        if let Some(TrackKeyDrag { index, moved, .. }) = self.track_key_drag.as_mut().filter(|d| d.track == track_idx) {
             if down {
                 if let Some(p) = ui.input(|i| i.pointer.interact_pos()) {
-                    let prev = if *index > 0 { moved[*index - 1].time_secs } else { 0.0 };
-                    let next = moved.get(*index + 1).map_or(f64::MAX, |k| k.time_secs);
-                    moved[*index].time_secs = x_to_secs(p.x).clamp(prev + 1e-3, next - 1e-3);
+                    moved[*index].time_secs = drag_key_time(moved, *index, x_to_secs(p.x));
                     moved[*index].value = y_to_value(p.y.clamp(curve_rect.top(), curve_rect.bottom()));
                 }
             }
             if released || !down {
-                let (_, _, moved) = self.track_key_drag.take().unwrap_or_default();
-                commit(moved, cmds);
+                if let Some(d) = self.track_key_drag.take() {
+                    commit(d.moved, cmds);
+                }
             }
             ui.ctx().request_repaint();
             return;
@@ -12958,7 +12984,7 @@ impl TimelinePanel {
                 commit(k, cmds);
                 self.suppress_clip_context_menu = true;
             }
-            Some(i) if pressed => self.track_key_drag = Some((track_idx, i, keys)),
+            Some(i) if pressed => self.track_key_drag = Some(TrackKeyDrag { track: track_idx, index: i, from: keys.clone(), moved: keys }),
             None if double => {
                 let t = x_to_secs(p.x);
                 let mut k = keys;
@@ -17149,6 +17175,22 @@ mod files_drop_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #2306: a dragged track key stays between its neighbours, and keys
+    /// closer than its margin, or at one time, don't panic the clamp.
+    #[test]
+    fn a_dragged_track_key_stays_between_its_neighbours() {
+        let key = |t: f64| klipp_core::Keyframe { time_secs: t, value: 1.0, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
+        let spread = [key(1.0), key(2.0), key(3.0)];
+        assert_eq!(drag_key_time(&spread, 1, 2.5), 2.5);
+        assert_eq!(drag_key_time(&spread, 1, 9.0), 3.0 - 1e-3);
+        assert_eq!(drag_key_time(&spread, 0, -4.0), 1e-3);
+        assert_eq!(drag_key_time(&spread, 2, 50.0), 50.0, "the last key goes on");
+        let close = [key(1.0), key(1.0005), key(1.001)];
+        assert_eq!(drag_key_time(&close, 1, 5.0), 1.0005);
+        let same = [key(2.0), key(2.0), key(2.0)];
+        assert_eq!(drag_key_time(&same, 1, 0.0), 2.0);
+    }
     use klipp_timeline::Track;
 
     fn make_video_track() -> Track {
