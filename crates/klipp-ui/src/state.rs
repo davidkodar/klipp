@@ -545,6 +545,97 @@ pub enum RangeDragKind {
     RulerCreate { anchor_secs: f64 },
 }
 
+
+/// What one timeline of two stacked ones holds of its own (#82): the
+/// sequence it shows and its playhead, its zoom and scroll, what is
+/// selected and hovered on it, and the drags begun on it. The timeline
+/// being worked in keeps these in the app's state as ever; the other's
+/// are parked here, and [`TimelineView::swap`] trades them, so every
+/// handler goes on reading the one being worked in.
+macro_rules! timeline_view {
+    ($($field:ident: $ty:ty = $init:expr),* $(,)?) => {
+        pub struct TimelineView {
+            $(pub $field: $ty,)*
+        }
+
+        impl TimelineView {
+            /// Every field a timeline holds of its own, by name: for the
+            /// test that no other per-timeline field is left shared.
+            pub const FIELDS: &'static [&'static str] = &[$(stringify!($field)),*];
+
+            /// A timeline's own state, nothing selected or dragged, showing
+            /// sequence `sequence_idx` at its `fps` from `playhead` at `zoom`.
+            pub fn fresh(sequence_idx: usize, fps: Fps, playhead: Timecode, zoom: f32) -> Self {
+                let mut view = TimelineView { $($field: $init,)* };
+                view.active_sequence_idx = sequence_idx;
+                view.fps = fps;
+                view.playhead = playhead;
+                view.playhead_anchor = playhead;
+                view.playhead_smooth_secs = playhead.to_secs_f64();
+                view.timeline_zoom = zoom;
+                view
+            }
+
+            /// This view's fields and `state`'s traded.
+            pub fn swap(&mut self, state: &mut AppState) {
+                $(std::mem::swap(&mut self.$field, &mut state.$field);)*
+                state.selected_clip_loc_cache.set(None);
+            }
+        }
+    };
+}
+
+timeline_view! {
+    active_sequence_idx: usize = 0,
+    fps: Fps = Fps::new(24, 1),
+    compound_clip_stack: Vec<(usize, klipp_core::Timecode)> = Vec::new(),
+    playhead: Timecode = Timecode::zero(),
+    playhead_smooth_secs: f64 = 0.0,
+    playhead_anchor: Timecode = Timecode::zero(),
+    timeline_zoom: f32 = 50.0,
+    timeline_scroll_x: f32 = 0.0,
+    timeline_scroll_y: f32 = 0.0,
+    timeline_resizing_track: Option<(usize, f32, f32)> = None,
+    timeline_track_pre_collapse: std::collections::HashMap<usize, f32> = Default::default(),
+    ruler_press_origin: Option<egui::Pos2> = None,
+    last_timeline_tracks_height: f32 = 0.0,
+    last_timeline_content_width: f32 = 0.0,
+    skim_speed_px_per_sec: f32 = 0.0,
+    skim_last_update: std::time::Instant = std::time::Instant::now(),
+    skim_last_x: f32 = 0.0,
+    program_skim_active: bool = false,
+    program_skim_revert_deadline: Option<std::time::Instant> = None,
+    selected_clip: Option<ClipId> = None,
+    selected_clips: Vec<ClipId> = Vec::new(),
+    selected_edits: Vec<crate::edit_point::EditPoint> = Vec::new(),
+    selected_gap: Option<(usize, Timecode, Timecode)> = None,
+    selected_transition: Option<(usize, TransitionId)> = None,
+    hovered_clip: Option<ClipId> = None,
+    trim_entry: Option<String> = None,
+    dynamic_trim: Option<Timecode> = None,
+    range_drag: Option<RangeDragState> = None,
+    range_snap_line_x: Option<f32> = None,
+    selected_keyframe: Option<SelectedKeyframe> = None,
+    key_selection: crate::key_selection::KeySelection = Default::default(),
+    multi_key_drag: Option<crate::key_selection::MultiKeyDrag> = None,
+    timeline_mask_lane: Option<(ClipId, crate::mask_tracks::MaskTrack)> = None,
+    mask_lane_drag: Option<(ClipId, crate::mask_tracks::MaskTrack, f64, bool)> = None,
+    timeline_param_lane: Option<(ClipId, KeyframeParamKind)> = None,
+    param_lane_drag: Option<ParamLaneDrag> = None,
+    selected_camera_key: Option<CameraKeyRef> = None,
+    dragging_camera_key: Option<DraggingCameraKey> = None,
+    dragging_audio_keyframe: Option<DraggingKeyframe> = None,
+    dragging_video_keyframe: Option<DraggingVideoKeyframe> = None,
+    dragging_rubber_band: Option<ClipId> = None,
+    dragging_rubber_band_in_lane: bool = false,
+    dragging_bezier_handle: Option<BezierHandleDrag> = None,
+    dragging_video_bezier_handle: Option<BezierVideoHandleDrag> = None,
+    dragging_audio_effect_keyframe: Option<DraggingEffectKeyframe> = None,
+    dragging_audio_effect_bezier_handle: Option<BezierEffectHandleDrag> = None,
+    dragging_fade_handle: Option<(ClipId, bool, f32)> = None,
+    frame_glide_drag: Option<crate::panels::frame_glide_tool::GlideDrag> = None,
+}
+
 impl AppState {
     /// Every sequence of the project, as the control socket lists them,
     /// and the open one's index (M3 step 18).
@@ -2688,6 +2779,9 @@ pub struct AppState {
     pub selects_drag: Option<(klipp_core::SequenceId, Timecode, Timecode)>,
     /// The selects strip's height, in points.
     pub selects_height: f32,
+    /// The selects stacked above the cut edited as a timeline of their
+    /// own, not the read-only strip (#82).
+    pub selects_edit: bool,
     /// Where project templates are kept (#618); `None` for the user's
     /// configuration folder's.
     pub project_templates_dir: Option<std::path::PathBuf>,
@@ -4861,6 +4955,7 @@ impl Default for AppState {
             selects_sequence: None,
             selects_range: None,
             selects_drag: None,
+            selects_edit: false,
             selects_height: 120.0,
             project_templates_dir: None,
             shared_library: crate::shared_library::dir().map(|d| crate::shared_library::SharedLibrary::load(&d)).unwrap_or_default(),
