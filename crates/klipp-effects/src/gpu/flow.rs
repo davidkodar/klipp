@@ -5,8 +5,13 @@
 //! A pair of source frames is uploaded and its flow estimated once, then
 //! kept ([`FlowKey`]): a clip slowed to a quarter draws four in-between
 //! frames from one pair, and only the first pays for the upload and the
-//! estimate. Kept pairs are bounded by count and by bytes, and a pair
-//! far from the one asked for (a seek, another clip) is dropped first.
+//! estimate. A kept pair is used again only for the same frames: its key
+//! names them and a fingerprint of their pixels checks them, so a frame
+//! that changed under the same key (a relink, a proxy, another grade
+//! before a smooth cut) is estimated afresh. Kept pairs are bounded by
+//! count and by bytes, and a pair far from the one asked for (a seek,
+//! another clip) is dropped first, so two flows close together, each
+//! dropping the other's pairs, estimate every frame afresh.
 use super::{poll_until_mapped, GpuEffectsPipeline};
 use crate::flow::{self, Interpolated};
 use wgpu::util::DeviceExt;
@@ -36,6 +41,8 @@ pub struct FlowKey {
 struct Pair {
     key: FlowKey,
     size: (u32, u32),
+    /// [`fingerprint`] of the two frames uploaded.
+    print: u64,
     a: wgpu::Buffer,
     b: wgpu::Buffer,
     forward: wgpu::Buffer,
@@ -58,6 +65,25 @@ pub(super) struct FlowGpu {
     /// The drawn frame's buffer and its read-back copy (with room for the
     /// count after it), kept for the next frame of the same size.
     frame: Option<(u64, wgpu::Buffer, wgpu::Buffer)>,
+}
+
+/// FNV-1a over every 997th value of `a` and `b` and their lengths: what
+/// tells two pairs of frames apart under one key, without reading every
+/// pixel (a 4K pair is about 66 million values).
+fn fingerprint(a: &[f32], b: &[f32]) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325_u64;
+    let mut eat = |v: u64| {
+        for byte in v.to_le_bytes() {
+            h = (h ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+        }
+    };
+    for frame in [a, b] {
+        eat(frame.len() as u64);
+        for v in frame.iter().step_by(997) {
+            eat(u64::from(v.to_bits()));
+        }
+    }
+    h
 }
 
 /// The uniform every pass reads at binding 0: the level it runs on and,
@@ -493,13 +519,15 @@ impl GpuEffectsPipeline {
         self.flush();
         let flow_gpu = self.flow_gpu.get_or_insert_with(|| FlowGpu::new(&device));
         let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("flow") });
-        let index = match flow_gpu.pairs.iter().position(|p| p.key == key && p.size == (width, height)) {
+        let print = fingerprint(a, b);
+        let index = match flow_gpu.pairs.iter().position(|p| p.key == key && p.size == (width, height) && p.print == print) {
             Some(i) => i,
             None => {
                 // Pairs far from this one first, then the oldest, past the
                 // bounds; room made for the new pair.
-                flow_gpu.pairs.retain(|p| p.key.clip == key.clip && (p.key.from_secs - key.from_secs).abs() <= KEPT_SPAN_SECS);
-                let pair = estimate_pair(&device, &self.queue, flow_gpu, &mut enc, key, a, b, (width, height), luma);
+                flow_gpu.pairs.retain(|p| p.key.clip == key.clip && p.key != key && (p.key.from_secs - key.from_secs).abs() <= KEPT_SPAN_SECS);
+                let mut pair = estimate_pair(&device, &self.queue, flow_gpu, &mut enc, key, a, b, (width, height), luma);
+                pair.print = print;
                 flow_gpu.pairs.push(pair);
                 while flow_gpu.pairs.len() > KEPT_PAIRS || (flow_gpu.pairs.len() > 1 && flow_gpu.pairs.iter().map(|p| p.bytes).sum::<u64>() > KEPT_BYTES) {
                     flow_gpu.pairs.remove(0);
@@ -599,7 +627,7 @@ fn estimate_pair(device: &wgpu::Device, queue: &wgpu::Queue, gpu: &FlowGpu, enc:
     }
     pass(device, enc, &gpu.count, &Params::level(work.0, work.1, 0), &[&forward, &backward, &count], work);
     let bytes = 2 * frame_bytes + 2 * cells * 16;
-    Pair { key, size, a: fa, b: fb, forward, backward, count, work, unreliable: None, bytes }
+    Pair { key, size, print: 0, a: fa, b: fb, forward, backward, count, work, unreliable: None, bytes }
 }
 
 #[cfg(test)]
@@ -675,6 +703,24 @@ mod tests {
         for ((o, a), b) in mid.pixels.iter().zip(&a).zip(&b) {
             assert!((o - (a + (b - a) * 0.25)).abs() < 1e-5);
         }
+    }
+
+    #[test]
+    fn a_kept_pair_is_estimated_afresh_when_its_frames_change() {
+        let Some(mut gpu) = gpu() else { return };
+        let (w, h) = (64, 48);
+        let a = square_frame(w, h, 10.0, 10.0, 16.0);
+        let b = square_frame(w, h, 18.0, 10.0, 16.0);
+        let first = gpu.interpolate_by_flow(key(0.0), &a, &b, w, h, 0.5, LUMA).expect("drawn");
+        // The same key, other frames (relinked, regraded): drawn from them,
+        // the stale pair replaced, not kept beside them.
+        let brighter: Vec<f32> = b.iter().map(|v| v * 1.5).collect();
+        let second = gpu.interpolate_by_flow(key(0.0), &a, &brighter, w, h, 0.5, LUMA).expect("drawn");
+        let on_cpu = flow::interpolate(&a, &brighter, w, h, 0.5, LUMA);
+        let (worst, off) = compare(&second.pixels, &on_cpu.pixels);
+        assert!(off < 0.01, "{off} of values differ from the new frames' draw, worst {worst}");
+        assert!(compare(&second.pixels, &first.pixels).1 > 0.01, "the old frames' draw came back");
+        assert_eq!(gpu.flow_pairs_kept(), 1);
     }
 
     #[test]
