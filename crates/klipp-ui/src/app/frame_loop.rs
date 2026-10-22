@@ -638,6 +638,11 @@ impl KlippApp {
             }
         }
 
+        // The ease shortcuts as the key menus name them (#2307): once, and
+        // again while the preferences, where they are rebound, are open.
+        if self.state.show_preferences || !crate::widgets::scrubby_param::has_ease_hints(ctx) {
+            crate::widgets::scrubby_param::set_ease_hints(ctx, &self.key_bindings);
+        }
         // Debounced preferences save (at most once per second)
         if self.prefs_dirty && self.prefs_last_save.elapsed().as_secs() >= 1 {
             // Sync prefs to state
