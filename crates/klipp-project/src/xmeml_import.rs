@@ -224,7 +224,7 @@ fn read_track(
                                 let keys = if p.keys.is_empty() { p.value.map(|v| vec![(src_in, v)]).unwrap_or_default() } else { p.keys };
                                 // A constant 100 % is the clip as it is.
                                 if keys.iter().any(|(_, v)| (*v - 100.0).abs() > 1e-6) {
-                                    if let Err(e) = set_opacity(&mut clip, &keyframes(&keys, src_in, clip_fps, 0.01)) {
+                                    if let Err(e) = crate::import_report::set_opacity_keys(&mut clip, &keyframes(&keys, src_in, clip_fps, 0.01)) {
                                         warnings.push(format!("Clip '{item_name}': opacity not imported ({e})"));
                                     }
                                 }
@@ -329,17 +329,6 @@ fn add_transition(track: &mut Track, t: &PendingTransition, fps: Fps, warnings: 
     });
 }
 
-/// `keys`, an opacity from 0 to 1, as the clip's picture's opacity lane.
-fn set_opacity(clip: &mut Clip, keys: &[Keyframe]) -> Result<(), String> {
-    use klipp_graph_format::ParamKey;
-    use klipp_graph_lift::ops::GraphOp;
-    let path = clip.placement_path().ok_or("no placement")?;
-    let ops: Vec<GraphOp> = keys
-        .iter()
-        .map(|k| Ok(GraphOp::AddKeyAt { path: path.clone(), key: ParamKey::from("opacity"), keyframe: serde_json::to_value(k).map_err(|e| e.to_string())? }))
-        .collect::<Result<_, String>>()?;
-    clip.apply_picture_ops(&ops).map(|_| ())
-}
 
 
 /// Parse an xmeml document.
