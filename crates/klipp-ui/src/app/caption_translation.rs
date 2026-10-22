@@ -23,22 +23,29 @@ impl KlippApp {
     /// `source` into `target` as job `job_id`; the pair's model fetched
     /// first when it is not downloaded yet.
     pub(super) fn translate_captions(&mut self, track_id: klipp_core::TrackId, source: &str, target: &str, job_id: &str) {
+        let language = tr::language_name(target).to_string();
+        // Refused before it starts, the job is still kept, failed with
+        // why: an agent was given its id.
+        let refuse = |this: &mut Self, why: &str| {
+            tr::jobs::refused(job_id, &language, why);
+            this.state.toast.show(format!("No translation: {why}"));
+        };
         let seq = self.state.sequence();
-        let Some(index) = seq.tracks.iter().position(|t| t.id == track_id) else { return };
+        let Some(index) = seq.tracks.iter().position(|t| t.id == track_id) else {
+            return refuse(self, "the caption track is gone");
+        };
         let captions = ct::captions(seq, index);
         if captions.is_empty() {
-            self.state.toast.show("That track has no captions to translate");
-            return;
+            return refuse(self, "that track has no captions to translate");
         }
         let sentences = ct::sentences(&captions);
         let lines: Vec<String> = sentences.iter().map(|s| s.text.clone()).collect();
         match tr::start(job_id.to_string(), source, target, lines) {
             Ok(rx) => {
-                let language = tr::language_name(target).to_string();
                 self.state.toast.show(format!("Translating {} captions into {language}…", captions.len()));
                 self.translation = Some(Pending { job_id: job_id.to_string(), track_id, language, sentences, rx });
             }
-            Err(why) => self.state.toast.show(format!("No translation: {why}")),
+            Err(why) => refuse(self, &why),
         }
     }
 
@@ -65,10 +72,20 @@ impl KlippApp {
                 return;
             }
             Err(why) => {
+                // The worker ends its own job; one that stopped without an
+                // answer (a panic) is ended here, so the next can start.
+                tr::jobs::finish(&pending.job_id, Err(why.clone()));
                 self.state.toast.show(format!("No translation: {why}"));
                 return;
             }
         };
+        // Cancelled while its translation was on the way back: not put in
+        // place, as the cancel said.
+        if tr::jobs::cancel_requested(&pending.job_id) {
+            tr::jobs::cancelled(&pending.job_id);
+            self.state.toast.show("Translation cancelled");
+            return;
+        }
         let texts: Vec<String> = lines.iter().map(|l| l.text.clone()).collect();
         let cuts: Vec<Option<&'static str>> = lines.iter().map(|l| l.cut).collect();
         let translations = ct::per_caption(&pending.sentences, &texts);
