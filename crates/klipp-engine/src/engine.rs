@@ -838,6 +838,22 @@ const GAP_AS_CUT_FRAMES: f64 = 1.5;
 static GAP_HAND_OVERS_WARM: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static GAP_HAND_OVERS_COLD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// Gaps across which the playing decoder went on to the shot after
+/// them, its file going on forward from where the decoder was (#2376).
+static DECODERS_HANDED_ON: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How many gaps the playing decoder was handed on across since the
+/// process began: a strobe's pieces, one shot of a file cut with
+/// frames left out.
+pub fn decoders_handed_on() -> u64 {
+    DECODERS_HANDED_ON.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The longest gap the playing decoder is handed on across, in frames:
+/// it decodes through the gap's frames, which are dropped as the next
+/// shot starts.
+const HAND_ON_GAP_FRAMES: f64 = 12.0;
+
 /// (warm, cold) hand-overs at the end of a gap since the process began.
 pub fn gap_hand_overs() -> (u64, u64) {
     (GAP_HAND_OVERS_WARM.load(std::sync::atomic::Ordering::Relaxed), GAP_HAND_OVERS_COLD.load(std::sync::atomic::Ordering::Relaxed))
@@ -5894,6 +5910,39 @@ impl PlaybackEngine {
         // is cut across (#546).
         if next_clip.timeline_in.to_secs_f64() - self.playhead.to_secs_f64() > self.fps.frame_duration_secs() * GAP_AS_CUT_FRAMES {
             let from = self.current_clip_index;
+            // The shot after the gap goes on in the same file from where
+            // this one stopped, as far on as the gap is long: a strobe's
+            // pieces, frames cut out. The playing decoder decodes on
+            // through the gap, as that shot's preroll, rather than a new
+            // one opening and seeking for each piece (#2376).
+            let frame = self.fps.frame_duration_secs();
+            let hand_on = self.v1_decoder.is_some()
+                && !next_clip.is_reversed()
+                && (next_clip.speed - self.clip_speed).abs() < 1e-6
+                && current_clip_info.as_ref().zip(current_out).is_some_and(|((_, media, source_out), out)| {
+                    let gap = next_clip.timeline_in.to_secs_f64() - out.to_secs_f64();
+                    let on = next_clip.source_in.to_secs_f64() - source_out;
+                    *media == next_clip.media_id() && media.is_some() && gap <= frame * HAND_ON_GAP_FRAMES && (on - gap * self.clip_speed).abs() < 0.5 * frame
+                });
+            if hand_on {
+                let decoder = self.v1_decoder.take();
+                self.boundary_frame = None;
+                self.held_tail = None;
+                let at = self.playhead;
+                self.enter_clock_only(at);
+                self.master_clock.resume();
+                self.clear_preroll();
+                if let Some(media_id) = next_clip.media_id() {
+                    self.preroll_decoder = decoder;
+                    self.preroll_clip_index = Some(actual_idx);
+                    self.preroll_for = Some((self.current_track_index, media_id));
+                    self.gap_hand_over = Some((from, actual_idx));
+                    DECODERS_HANDED_ON.fetch_add(1, Ordering::Relaxed);
+                }
+                self.report_playhead();
+                self.sync_streams();
+                return;
+            }
             self.retire_v1_decoder(old_clip);
             let at = self.playhead;
             self.enter_clock_only(at);
