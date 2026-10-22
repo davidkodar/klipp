@@ -517,6 +517,8 @@ pub struct KlippApp {
     layout_dirty: bool,
     browser: BrowserPanel,
     new_inspector: NewInspectorPanel,
+    /// The Inspector's Keyframes column, drawn beside its rows (#2305).
+    key_column: crate::inspector::key_column::KeyColumn,
     new_timeline: crate::timeline::NewTimelinePanel,
     // Skim audio — shared with engine's cpal callback
     skim_consumer: klipp_engine::audio_output::SkimConsumer,

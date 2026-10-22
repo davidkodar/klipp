@@ -226,6 +226,7 @@ impl KlippApp {
             layout_dirty: false,
             browser: BrowserPanel::default(),
             new_inspector: NewInspectorPanel::default(),
+            key_column: Default::default(),
             new_timeline: crate::timeline::NewTimelinePanel::default(),
             skim_consumer,
             cpal_sample_rate,

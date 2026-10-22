@@ -1400,11 +1400,22 @@ impl KlippApp {
                         }
                     }
                 }
+                self.new_inspector.key_column = self.layout.inspector_keys;
+                self.new_inspector.key_column_w = self.layout.inspector_keys_w;
                 let panel_cmds = self.new_inspector.show(
                     ui, &self.state, &self.prefs, &self.theme,
                     &mut self.layout.active_inspector_tab,
                 );
                 all_cmds.extend(panel_cmds);
+                // The Keyframes column, shown or resized there, kept (#2305).
+                if (self.new_inspector.key_column, self.new_inspector.key_column_w) != (self.layout.inspector_keys, self.layout.inspector_keys_w) {
+                    self.layout.inspector_keys = self.new_inspector.key_column;
+                    self.layout.inspector_keys_w = self.new_inspector.key_column_w;
+                    self.layout_dirty = true;
+                }
+                if let Some(area) = self.new_inspector.key_area.take() {
+                    self.key_column.show(ui, &mut self.state, &self.theme, &area, all_cmds);
+                }
                 // A chip or a row picked: its parameter comes into focus (#2296).
                 if let (Some(kind), Some(clip_id)) = (self.new_inspector.focus_request.take(), self.state.selected_clip_loc().map(|(_, c)| c.id)) {
                     self.state.param_focus = Some(crate::param_focus::ParamFocus { clip_id, kind, at: ui.input(|i| i.time) });
