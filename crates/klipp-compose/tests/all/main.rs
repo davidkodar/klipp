@@ -100,6 +100,8 @@ mod temporal_denoise_gpu;
 mod temporal_reader_size;
 #[path = "../title_blend_mask_stack.rs"]
 mod title_blend_mask_stack;
+#[path = "../title_templates_gpu.rs"]
+mod title_templates_gpu;
 #[path = "../title_image_gpu.rs"]
 mod title_image_gpu;
 #[path = "../title_keyed_position_gpu.rs"]

@@ -3420,7 +3420,31 @@ impl TitleRenderer {
                     let still = time_secs.is_none() && self.loop_wave.is_none() && !on_layer;
                     let faded = fade_alpha.filter(|_| self.loop_wave.is_none() && !on_layer);
                     let mut gpu = gpu;
-                    let mut kept = if still || faded.is_some() { self.text_layer_lookup(&single, width, height) } else { None };
+                    // A layer of several that comes in or goes out by a
+                    // motion and is otherwise still: drawn as the frame of
+                    // its own one-layer title, its resting render posed, as
+                    // that title's frame is and as the GPU stack places each
+                    // layer. Rastered with the motion here, it came in on
+                    // another curve from the same layer alone (#2369).
+                    let several = title.objects.iter().filter(|o| o.visible).count() > 1;
+                    let posed = time_secs.filter(|_| several && fade_alpha.is_none() && !on_layer && self.loop_wave.is_none() && matches!(&obj.content, TitleObjectContent::TextBox(authored) if poses_alone(obj, authored))).map(|t| {
+                        let mut lone = title.clone();
+                        let mut o = obj.clone();
+                        o.opacity = 1.0;
+                        o.opacity_keyframes.clear();
+                        o.blend = klipp_core::BlendMode::Normal;
+                        o.mask = None;
+                        lone.objects = vec![o];
+                        lone.background = single.background.clone();
+                        // The frame's own state, for this frame of the
+                        // whole title, kept through the layer's.
+                        let saved = (self.last_rows, self.last_blur, self.last_focus_blur, self.last_units.take(), self.matte_only.take());
+                        self.bound_path = None;
+                        let stack = self.stack_with_time(&lone, width, height, gpu.take(), t);
+                        (self.last_rows, self.last_blur, self.last_focus_blur, self.last_units, self.matte_only) = saved;
+                        to_bytes(&stack)
+                    });
+                    let mut kept = if posed.is_none() && (still || faded.is_some()) { self.text_layer_lookup(&single, width, height) } else { None };
                     // Fading in with no resting layer kept (played into, not
                     // parked on): the resting layer drawn once and kept, for
                     // the fade's frames after.
@@ -3448,9 +3472,10 @@ impl TitleRenderer {
                     // A fade below the first layer: the kept layer, its fade
                     // on its opacity.
                     let opacity = opacity * faded.filter(|_| kept.is_some()).unwrap_or(1.0);
-                    let mut layer = match kept {
-                        Some(kept) => kept.layer(width, height),
-                        None => {
+                    let mut layer = match (posed, kept) {
+                        (Some(posed), _) => posed,
+                        (None, Some(kept)) => kept.layer(width, height),
+                        (None, None) => {
                             self.text_layers_rendered += 1;
                             let layer = self.render_text_layer(&single, width, height, gpu, time_secs);
                             if still {
@@ -5406,6 +5431,35 @@ fn whole_layer_fade(obj: &TitleObject, tb: &klipp_timeline::TextBox, t: f32, win
         let (pe, px) = fx.motion.progress(t, window, 0);
         fx.motion.enter.map_or(1.0, |m| m.pose(pe, 0.0).0) * fx.motion.exit.map_or(1.0, |m| m.pose(px, 0.0).0)
     })
+}
+
+/// Whether a text layer's only change over time is an entrance or exit
+/// (not a blur) that poses its resting render: no loop, animator, edge fade or motion
+/// blur of its own, nothing keyed, no effect drawn per frame. Such a
+/// layer of several is drawn as its own one-layer title's frame (#2369).
+fn poses_alone(obj: &TitleObject, tb: &klipp_timeline::TextBox) -> bool {
+    let fx = obj.fx();
+    let t = &obj.transform;
+    // A blur entrance's frame leaves its blur to whoever places it, which
+    // a layer of several cannot defer: it stays rastered with its blur.
+    fx.motion.is_active()
+        && fx.motion.enter.iter().chain(fx.motion.exit.iter()).all(|m| !m.kind.blurs())
+        && fx.loops.is_empty()
+        && fx.animators.iter().all(|a| !a.enabled)
+        && fx.edge_fade.is_none()
+        && fx.motion_blur.is_none()
+        && !fx.styles_keyed()
+        && t.center_x_keyframes.is_empty() && t.center_y_keyframes.is_empty()
+        && t.size_x_keyframes.is_empty() && t.size_y_keyframes.is_empty()
+        && t.rotation_keyframes.is_empty() && t.rotation == 0.0
+        && t.anchor_x_keyframes.is_empty() && t.anchor_y_keyframes.is_empty()
+        && obj.opacity_keyframes.is_empty()
+        && !tb.has_keyframes()
+        && tb.char_animation.as_ref().is_none_or(|c| !c.enabled)
+        && tb.glitch_intensity == 0.0
+        && tb.chromatic_aberration_px == 0.0
+        && tb.extrusion.is_none()
+        && tb.three_d.as_ref().is_none_or(|d| !d.enabled)
 }
 
 /// [`TitleFrame::Layers`] composed on the CPU, as the title renderer
