@@ -3777,12 +3777,10 @@ mod export_prefs_tests {
 }
 
 impl super::KlippApp {
-    /// Whether `path` is an AAF file and nothing here can read it.
-    fn needs_aaf_converter(&self, path: &std::path::Path) -> bool {
-        matches!(klipp_project::import_report::detect(path), Ok(klipp_project::import_report::Format::Aaf)) && klipp_project::otio_tool::find().is_none()
-    }
-
     pub(super) fn import_timeline_report(&mut self, path: &std::path::Path, request_id: uuid::Uuid) {
+        if self.read_aaf_aside(path, request_id, false) {
+            return;
+        }
         let result = klipp_project::import_report::load(path, self.state.sequence().fps, &self.state.media_pool);
         self.take_import(path, result, request_id, false);
     }
@@ -3810,8 +3808,7 @@ impl super::KlippApp {
     pub(super) fn open_from_another_editor_now(&mut self, path: &std::path::Path, request_id: uuid::Uuid) {
         // An AAF with no converter to read it: the person is asked whether
         // to install one (#2086), and it opens when that is done.
-        if request_id.is_nil() && self.needs_aaf_converter(path) {
-            self.state.aaf_install = Some(crate::aaf_install::AafInstall::ask(path.to_path_buf()));
+        if self.read_aaf_aside(path, request_id, true) {
             return;
         }
         let result = klipp_project::import_report::load(path, self.state.sequence().fps, &self.state.media_pool);
@@ -3819,6 +3816,46 @@ impl super::KlippApp {
             self.do_new_project();
         }
         self.take_import(path, result, request_id, true);
+    }
+
+    /// An AAF taken aside from the reading in this frame (#2086): while
+    /// the converter installs, said to wait; with no converter, the
+    /// person's own request asks to install one; else read through it on
+    /// a thread of its own, its outcome taken in when it is done
+    /// ([`Self::poll_aaf_reading`]). Whether it was an AAF so taken.
+    fn read_aaf_aside(&mut self, path: &std::path::Path, request_id: uuid::Uuid, new_project: bool) -> bool {
+        if !matches!(klipp_project::import_report::detect(path), Ok(klipp_project::import_report::Format::Aaf)) {
+            return false;
+        }
+        if self.state.aaf_install.as_ref().is_some_and(|i| i.is_running()) || self.state.aaf_reading.is_some() {
+            self.state.toast.show("The AAF converter is busy: open the file again when it has finished");
+            return true;
+        }
+        if klipp_project::otio_tool::find().is_none() {
+            if request_id.is_nil() {
+                self.state.aaf_install = Some(crate::aaf_install::AafInstall::ask(path.to_path_buf()));
+            } else {
+                self.take_import(path, Err(klipp_project::import_report::AAF_NEEDS_CONVERTER.to_string()), request_id, new_project);
+            }
+            return true;
+        }
+        self.state.aaf_reading = Some(crate::aaf_install::AafReading::start(path.to_path_buf(), request_id, new_project, self.state.sequence().fps));
+        true
+    }
+
+    /// An AAF read aside, taken in once it is done.
+    pub(super) fn poll_aaf_reading(&mut self, ctx: &egui::Context) {
+        let Some(reading) = self.state.aaf_reading.as_ref() else { return };
+        match reading.take() {
+            None => crate::aaf_install::show_reading(ctx, reading),
+            Some(result) => {
+                let reading = self.state.aaf_reading.take().expect("reading");
+                if reading.new_project && result.is_ok() {
+                    self.do_new_project();
+                }
+                self.take_import(&reading.path, result, reading.request_id, reading.new_project);
+            }
+        }
     }
 
     /// An import's outcome taken in: its sequence added and opened, in

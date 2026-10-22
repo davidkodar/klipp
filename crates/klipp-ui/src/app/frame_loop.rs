@@ -1451,6 +1451,7 @@ impl KlippApp {
         // frame.
         self.render_model_download_dialogs(ctx, &mut all_cmds);
         crate::aaf_install::show(ctx, &mut self.state.aaf_install, &mut all_cmds);
+        self.poll_aaf_reading(ctx);
 
         // History panel
         if self.state.show_history_panel {
