@@ -80,7 +80,7 @@ use tracing::{debug, info, warn};
 ///
 /// Read once per process via `OnceLock` so the env check doesn't
 /// poke syscalls on the decode hot path.
-fn should_attach_gpu_source() -> bool {
+pub(crate) fn should_attach_gpu_source() -> bool {
     use std::sync::OnceLock;
     static GATE: OnceLock<bool> = OnceLock::new();
     *GATE.get_or_init(|| gpu_frames_from_env(std::env::var("KLIPP_GPU_FRAMES").ok().as_deref()))

@@ -381,6 +381,64 @@ pub fn free_memory() -> f64 {
     std::fs::read_to_string("/proc/meminfo").ok().as_deref().and_then(mem_available).unwrap_or(UNKNOWN_FREE_MEMORY)
 }
 
+/// How often the GPU's free memory is read again.
+const VRAM_REFRESH: Duration = Duration::from_secs(2);
+
+/// What the GPU has free for new memory, in bytes (#2128): where a stream
+/// decoded on it keeps its queue of frames. `None` where frames don't stay
+/// on the GPU (hardware decode or GPU frames off) or its memory can't be
+/// read; its frames are then counted in [`free_memory`]. Read on a thread
+/// of its own every [`VRAM_REFRESH`], as reading NVIDIA's takes a
+/// program's start: the engine never waits for it.
+pub fn free_vram() -> Option<f64> {
+    static FREE: AtomicU64 = AtomicU64::new(u64::MAX);
+    static READER: OnceLock<()> = OnceLock::new();
+    if !crate::video_decoder::hardware_decode_enabled() || !crate::video_decoder::should_attach_gpu_source() {
+        return None;
+    }
+    READER.get_or_init(|| {
+        let spawned = std::thread::Builder::new().name("vram-free".into()).spawn(|| loop {
+            FREE.store(read_free_vram().map_or(u64::MAX, f64::to_bits), Relaxed);
+            std::thread::sleep(VRAM_REFRESH);
+        });
+        if let Err(e) = spawned {
+            tracing::warn!("the GPU's free memory won't be read: {e}");
+        }
+    });
+    match FREE.load(Relaxed) {
+        u64::MAX => None,
+        bits => Some(f64::from_bits(bits)),
+    }
+}
+
+/// The GPU's free memory now, bytes: AMD's from sysfs, NVIDIA's from
+/// `nvidia-smi`; the first card that says.
+fn read_free_vram() -> Option<f64> {
+    let cards = std::fs::read_dir("/sys/class/drm").ok()?.flatten().map(|e| e.path().join("device"));
+    for dev in cards {
+        let read = |name: &str| std::fs::read_to_string(dev.join(name)).ok();
+        if let (Some(total), Some(used)) = (read("mem_info_vram_total"), read("mem_info_vram_used")) {
+            if let Some(free) = sysfs_free(&total, &used) {
+                return Some(free);
+            }
+        }
+    }
+    let out = std::process::Command::new("nvidia-smi").args(["--query-gpu=memory.free", "--format=csv,noheader,nounits"]).output().ok()?;
+    out.status.success().then(|| nvidia_smi_free(&String::from_utf8_lossy(&out.stdout))).flatten()
+}
+
+/// Free bytes from AMD's `mem_info_vram_total` and `mem_info_vram_used`.
+pub fn sysfs_free(total: &str, used: &str) -> Option<f64> {
+    let (total, used) = (total.trim().parse::<f64>().ok()?, used.trim().parse::<f64>().ok()?);
+    (total > 0.0).then(|| (total - used).max(0.0))
+}
+
+/// Free bytes from `nvidia-smi --query-gpu=memory.free`'s answer, MiB a
+/// line, the first GPU's.
+pub fn nvidia_smi_free(out: &str) -> Option<f64> {
+    out.lines().next()?.trim().parse::<f64>().ok().map(|mib| mib * 1024.0 * 1024.0)
+}
+
 /// Free memory taken where `/proc/meminfo` cannot be read: 4 GiB.
 pub const UNKNOWN_FREE_MEMORY: f64 = 4.0 * 1024.0 * 1024.0 * 1024.0;
 
@@ -420,6 +478,17 @@ mod tests {
         assert_eq!(mem_available(meminfo), Some(32_000_000.0 * 1024.0));
         assert_eq!(mem_available("MemTotal: 1 kB\n"), None);
         assert!(free_memory() > 0.0);
+    }
+
+    /// The GPU's free memory, from AMD's sysfs counters or nvidia-smi's
+    /// answer (#2128).
+    #[test]
+    fn free_vram_is_read_from_sysfs_or_nvidia_smi() {
+        assert_eq!(sysfs_free("17163091968\n", "1163091968\n"), Some(16_000_000_000.0));
+        assert_eq!(sysfs_free("0\n", "0\n"), None);
+        assert_eq!(sysfs_free("x", "1"), None);
+        assert_eq!(nvidia_smi_free("12034\n11000\n"), Some(12034.0 * 1024.0 * 1024.0));
+        assert_eq!(nvidia_smi_free("[N/A]\n"), None);
     }
 
     const K4: f64 = 3840.0 * 2160.0;
