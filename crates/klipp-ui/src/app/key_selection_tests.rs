@@ -560,3 +560,50 @@ fn a_sound_key_drag_leaves_the_clip_where_it_is() {
         assert_eq!(clip(&t.state, id).timeline_in, RationalTime::from_secs_f64(0.0, 24), "effect {effect}");
     }
 }
+
+/// The dope sheet (#2240): every keyed track of the clip a row, named as
+/// the curves name it; a key clicked, another Shift-clicked on another
+/// row, and one of them dragged, both move by the same time, one undo
+/// step; a box across rows selects what it holds; a row's name
+/// double-clicked opens its curve.
+#[test]
+fn the_dope_sheet_moves_keys_on_several_rows_together() {
+    let mut e = Editor::new();
+    let drawn = e.frame(Vec::new(), egui::Modifiers::NONE);
+    let tab = drawn.iter().find(|(t, _)| t == "Dope Sheet").expect("the Dope Sheet tab").1;
+    e.press(tab, egui::PointerButton::Primary, egui::Modifiers::NONE);
+    assert!(e.panel.showing_sheet());
+    e.frame(Vec::new(), egui::Modifiers::NONE);
+    for name in ["Opacity", "Position X", "Face \u{00B7} Radius"] {
+        assert!(e.texts.iter().any(|t| t == name), "a row for {name}: {:?}", e.texts);
+    }
+    // Rows: Opacity (3 s), Position X (1 s, 2 s), the mask's radius.
+    let (opacity, pos_x) = (KeyframeParamKind::Video(VideoParam::Opacity), KeyframeParamKind::Video(VideoParam::PositionX));
+    let a = e.panel.sheet_at(1, 1.0).unwrap();
+    e.press(a, egui::PointerButton::Primary, egui::Modifiers::NONE);
+    let b = e.panel.sheet_at(0, 3.0).unwrap();
+    e.press(b, egui::PointerButton::Primary, egui::Modifiers::SHIFT);
+    assert_eq!(e.state.key_selection.len(), 2, "two keys on two rows");
+    let undo_before = e.state.active_history().undo_count();
+    let to = e.panel.sheet_at(1, 1.5).unwrap();
+    e.drag(a, to);
+    assert_eq!(keys(&e.state, e.clip, &pos_x), vec![(1.5, 10.0), (2.0, 20.0)], "the key dragged");
+    assert_eq!(keys(&e.state, e.clip, &opacity), vec![(3.5, 0.5)], "and the other selected one, by the same time");
+    assert_eq!(e.state.active_history().undo_count(), undo_before + 1, "one undo step");
+    // A box over the first two rows from 0 s to 1.75 s: the x key at 1.5 s.
+    let (from, until) = (e.panel.sheet_at(0, 0.05).unwrap(), e.panel.sheet_at(1, 1.75).unwrap());
+    e.drag(from - egui::vec2(0.0, 8.0), until + egui::vec2(0.0, 8.0));
+    assert_eq!(e.state.key_selection.len(), 1, "{:?}", e.state.key_selection);
+    // A row's name double-clicked: its curve.
+    let drawn = e.frame(Vec::new(), egui::Modifiers::NONE);
+    // The row's name, under the header's own list of curves.
+    let name = drawn.iter().filter(|(t, _)| t == "Position X").map(|(_, p)| *p).max_by(|a, b| a.y.total_cmp(&b.y)).unwrap();
+    e.frame(vec![egui::Event::PointerMoved(name)], egui::Modifiers::NONE);
+    for _ in 0..2 {
+        for pressed in [true, false] {
+            e.frame(vec![egui::Event::PointerButton { pos: name, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE }], egui::Modifiers::NONE);
+        }
+    }
+    e.frame(Vec::new(), egui::Modifiers::NONE);
+    assert!(!e.panel.showing_sheet(), "the curves, for Position X");
+}
