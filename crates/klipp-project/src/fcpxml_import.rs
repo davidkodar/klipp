@@ -411,7 +411,7 @@ fn parse_clip_markers(
     let mut out = Vec::new();
     for m in clip_node
         .children()
-        .filter(|n| n.is_element() && n.tag_name().name() == "marker")
+        .filter(|n| n.is_element() && matches!(n.tag_name().name(), "marker" | "chapter-marker"))
     {
         let start_attr = match m.attribute("start") {
             Some(v) => v,
@@ -427,34 +427,124 @@ fn parse_clip_markers(
             .attribute("value")
             .map(|s| s.to_string())
             .unwrap_or_default();
-        // FCPXML comment lives on a child <note> element. Best-
-        // effort: capture text content if present.
-        let comment = m
-            .children()
-            .find(|c| c.is_element() && c.tag_name().name() == "note")
-            .and_then(|c| c.text())
-            .unwrap_or("")
-            .to_string();
         out.push(ClipMarker {
             time_secs: clip_local_secs,
             name,
-            color: MarkerColor::Blue,
-            comment,
+            color: marker_colour(m),
+            comment: marker_note(m),
         });
     }
     out
 }
 
-/// Parse a `<asset-clip>` or `<clip>` element into a Klipp `Clip`.
+/// A marker's note: its `note` attribute, as Final Cut Pro writes it, or
+/// a `<note>` child.
+fn marker_note(m: roxmltree::Node<'_, '_>) -> String {
+    m.attribute("note")
+        .or_else(|| m.children().find(|c| c.is_element() && c.tag_name().name() == "note").and_then(|c| c.text()))
+        .unwrap_or("")
+        .to_string()
+}
+
+/// A marker's colour as Final Cut Pro shows its kind (#2085): a to-do red,
+/// a completed one green, a chapter purple, any other blue.
+fn marker_colour(m: roxmltree::Node<'_, '_>) -> MarkerColor {
+    match (m.tag_name().name(), m.attribute("completed")) {
+        ("chapter-marker", _) => MarkerColor::Purple,
+        (_, Some("0")) => MarkerColor::Red,
+        (_, Some("1")) => MarkerColor::Green,
+        _ => MarkerColor::Blue,
+    }
+}
+
+/// Where an element's `offset` is measured from: a spine element's on the
+/// timeline, a connected clip's in its parent's own time, which starts at
+/// the parent's `start` where the parent is on the timeline (#2085).
+#[derive(Clone, Copy)]
+struct TimeBase {
+    timeline: RationalTime,
+    local: RationalTime,
+}
+
+impl TimeBase {
+    const SPINE: TimeBase = TimeBase { timeline: RationalTime::ZERO, local: RationalTime::ZERO };
+
+    // The offset first: a sum takes its left side's rate, and the spine's
+    // base is zero at rate 1.
+    fn place(self, offset: RationalTime) -> RationalTime {
+        offset - self.local + self.timeline
+    }
+}
+
+/// An element's `offset`, `duration` and `start`, at the sequence's rate.
+fn times(node: roxmltree::Node<'_, '_>, seq_fps: Fps) -> Result<(RationalTime, RationalTime, RationalTime), FcpxmlImportError> {
+    let at = |name: &str| parse_fcpxml_time(node.attribute(name).unwrap_or("0s"), seq_fps);
+    Ok((at("offset")?, at("duration")?, at("start")?))
+}
+
+/// A `<param name="amount">`'s keyframes under `adjust`, as (seconds from
+/// the clip's start, value).
+fn amount_keys(adjust: roxmltree::Node<'_, '_>, seq_fps: Fps, start: RationalTime, value: impl Fn(&str) -> Option<f64>) -> Vec<(f64, f64)> {
+    adjust
+        .descendants()
+        .filter(|n| n.is_element() && n.tag_name().name() == "keyframe")
+        .filter_map(|k| {
+            let t = parse_fcpxml_time(k.attribute("time")?, seq_fps).ok()?;
+            Some(((t - start).to_secs_f64().max(0.0), value(k.attribute("value")?)?))
+        })
+        .collect()
+}
+
+/// A level such as `-6dB` as a gain (0 dB is 1).
+fn decibels(v: &str) -> Option<f64> {
+    let db: f64 = v.trim().trim_end_matches("dB").trim().parse().ok()?;
+    Some(10f64.powf(db / 20.0))
+}
+
+fn keys(points: &[(f64, f64)]) -> Vec<klipp_core::Keyframe> {
+    points
+        .iter()
+        .map(|(t, v)| klipp_core::Keyframe { time_secs: *t, value: *v as f32, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) })
+        .collect()
+}
+
+/// A clip's constant speed from its `<timeMap>`: how much of its source a
+/// second of it plays. `None` for no map; a ramp (points off one line) is
+/// named in `warnings` and played at its overall speed.
+fn time_map_speed(node: roxmltree::Node<'_, '_>, seq_fps: Fps, name: &str, warnings: &mut Vec<String>) -> Option<f64> {
+    let map = node.children().find(|n| n.is_element() && n.tag_name().name() == "timeMap")?;
+    let points: Vec<(f64, f64)> = map
+        .children()
+        .filter(|n| n.is_element() && n.tag_name().name() == "timept")
+        .filter_map(|p| Some((parse_fcpxml_time(p.attribute("time")?, seq_fps).ok()?.to_secs_f64(), parse_fcpxml_time(p.attribute("value")?, seq_fps).ok()?.to_secs_f64())))
+        .collect();
+    let (first, last) = (points.first()?, points.last()?);
+    if last.0 <= first.0 {
+        return None;
+    }
+    let speed = (last.1 - first.1) / (last.0 - first.0);
+    let off_line = points.iter().any(|(t, v)| (first.1 + (t - first.0) * speed - v).abs() > 1e-3);
+    if off_line {
+        warnings.push(format!("Clip '{name}': a speed ramp is played at its overall speed ({:.0}%)", speed * 100.0));
+    }
+    (speed.abs() > 1e-9).then_some(speed)
+}
+
+/// Parse an `<asset-clip>`, `<clip>`, `<video>` or `<audio>` element into a
+/// Klipp `Clip`, its `offset` read against `base`.
+#[allow(clippy::too_many_arguments)]
 fn parse_clip_element(
     node: roxmltree::Node<'_, '_>,
+    base: TimeBase,
     assets: &HashMap<String, AssetInfo>,
     media_pool: &mut MediaPool,
     media_cache: &mut HashMap<String, MediaId>,
     seq_fps: Fps,
     warnings: &mut Vec<String>,
 ) -> Result<Option<Clip>, FcpxmlImportError> {
-    let asset_id = match node.attribute("ref") {
+    // A `<clip>` names its media on the `<video>` (or `<audio>`) inside it.
+    let own_media = node.children().find(|n| n.is_element() && matches!(n.tag_name().name(), "video" | "audio") && n.attribute("lane").is_none());
+    let asset_id = match node.attribute("ref").or_else(|| own_media.and_then(|m| m.attribute("ref"))) {
         Some(v) => v,
         None => {
             warnings.push(format!(
@@ -468,16 +558,16 @@ fn parse_clip_element(
         Some(a) => a.clone(),
         None => return Err(FcpxmlImportError::MissingAsset(asset_id.to_string())),
     };
-    let offset_str = node.attribute("offset").unwrap_or("0s");
-    let duration_str = node.attribute("duration").unwrap_or("0s");
-    let start_str = node.attribute("start").unwrap_or("0s");
+    let (offset, duration, source_in) = times(node, seq_fps)?;
+    let name = node.attribute("name").unwrap_or(asset_id).to_string();
 
-    let timeline_in = parse_fcpxml_time(offset_str, seq_fps)?;
-    let duration = parse_fcpxml_time(duration_str, seq_fps)?;
-    let source_in = parse_fcpxml_time(start_str, seq_fps)?;
-
+    let timeline_in = base.place(offset);
     let timeline_out = timeline_in + duration;
-    let source_out = source_in + duration;
+    let speed = time_map_speed(node, seq_fps, &name, warnings);
+    let source_out = match speed {
+        Some(speed) => source_in + RationalTime::from_secs_f64(duration.to_secs_f64() * speed.abs(), seq_fps.rate()),
+        None => source_in + duration,
+    };
 
     let media_id = register_asset_media(media_pool, asset_id, &asset, seq_fps, media_cache);
 
@@ -485,19 +575,40 @@ fn parse_clip_element(
     clip.source_in = source_in;
     clip.source_out = source_out;
     clip.kind = ClipKind::Media { media_id };
+    if let Some(speed) = speed {
+        clip.speed = speed;
+    }
     if let Some(enabled) = node.attribute("enabled") {
         clip.enabled = enabled != "0";
     }
     clip.clip_markers = parse_clip_markers(node, seq_fps, source_in.to_secs_f64());
 
-    // Warn about known-unsupported child elements so the user isn't surprised.
     for child in node.children().filter(|n| n.is_element()) {
         match child.tag_name().name() {
-            "marker" => {} // handled
-            "video" | "audio" => warnings.push(format!(
-                "Connected clip ({}) on '{asset_id}' is not imported — deferred feature",
-                child.tag_name().name()
-            )),
+            "marker" | "chapter-marker" | "timeMap" => {} // handled
+            // Connected clips: their parent places them on their lanes.
+            _ if child.attribute("lane").is_some() => {}
+            "video" | "audio" => {} // the clip's own media
+            "adjust-blend" => {
+                let points = amount_keys(child, seq_fps, source_in, |v| v.parse().ok());
+                let points = if points.is_empty() { child.attribute("amount").and_then(|v| v.parse().ok()).map(|v| vec![(0.0, v)]).unwrap_or_default() } else { points };
+                if points.iter().any(|(_, v)| (*v - 1.0).abs() > 1e-6) {
+                    if let Err(e) = crate::import_report::set_opacity_keys(&mut clip, &keys(&points)) {
+                        warnings.push(format!("Clip '{name}': opacity not imported ({e})"));
+                    }
+                }
+            }
+            "adjust-volume" => {
+                let points = amount_keys(child, seq_fps, source_in, decibels);
+                if points.is_empty() {
+                    if let Some(gain) = child.attribute("amount").and_then(decibels) {
+                        clip.volume = gain as f32;
+                    }
+                } else {
+                    clip.volume_keyframes = keys(&points);
+                }
+            }
+            "adjust-transform" => warnings.push(format!("Clip '{name}': its position, scale and rotation (adjust-transform) are not imported")),
             "filter-video" | "filter-audio" | "adjust-color" | "adjust-levels" => warnings
                 .push(format!(
                     "Effect <{}> on clip '{asset_id}' is not imported",
@@ -510,6 +621,73 @@ fn parse_clip_element(
     }
 
     Ok(Some(clip))
+}
+
+/// A `<title>` as an editable Klipp title holding its text and length,
+/// its `offset` read against `base`; the look is Klipp's default, named in
+/// `warnings`.
+fn parse_title(node: roxmltree::Node<'_, '_>, base: TimeBase, seq_fps: Fps, warnings: &mut Vec<String>) -> Result<Clip, FcpxmlImportError> {
+    let (offset, duration, _) = times(node, seq_fps)?;
+    let timeline_in = base.place(offset);
+    let text: String = node
+        .children()
+        .filter(|n| n.is_element() && n.tag_name().name() == "text")
+        .flat_map(|t| t.descendants().filter(|n| n.is_text()).filter_map(|n| n.text()))
+        .collect::<Vec<_>>()
+        .join("");
+    let text = if text.trim().is_empty() { node.attribute("name").unwrap_or("Title").to_string() } else { text };
+    let mut data = klipp_timeline::TitleData::default();
+    if let Some(block) = data.primary_text_mut() {
+        block.text = text.clone();
+    }
+    let mut clip = Clip::gap(timeline_in, timeline_in + duration);
+    clip.kind = ClipKind::Title(data);
+    warnings.push(format!("Title '{}': its text and length came across; its look is Klipp's default", text.lines().next().unwrap_or("")));
+    Ok(clip)
+}
+
+/// A spine `<transition>`: where it starts and how long it is, and its name.
+struct SpineTransition {
+    offset: RationalTime,
+    duration: RationalTime,
+    name: String,
+}
+
+/// `t` between the clip on `track` that ends at its middle and the one
+/// that starts there, as the nearest Klipp transition; one with no clip
+/// on a side, or of a kind Klipp has no like of, is named in `warnings`.
+fn add_spine_transition(track: &mut Track, t: &SpineTransition, seq_fps: Fps, warnings: &mut Vec<String>) {
+    use klipp_core::TransitionKind;
+    let cut = t.offset + RationalTime::from_secs_f64(t.duration.to_secs_f64() / 2.0, seq_fps.rate());
+    let near = |a: RationalTime| (a.to_secs_f64() - cut.to_secs_f64()).abs() < seq_fps.frame_duration_secs() * 0.75;
+    let a = track.clips.iter().find(|c| near(c.timeline_out)).map(|c| c.id);
+    let b = track.clips.iter().find(|c| near(c.timeline_in)).map(|c| c.id);
+    let (Some(clip_a_id), Some(clip_b_id)) = (a, b) else {
+        warnings.push(format!("Transition '{}' has no clip on one side — not imported", t.name));
+        return;
+    };
+    let lower = t.name.to_lowercase();
+    let kind = if lower.contains("cross dissolve") || lower == "dissolve" {
+        TransitionKind::CrossDissolve
+    } else if lower.contains("fade to color") || lower.contains("dip to") {
+        TransitionKind::DipToBlack
+    } else if lower.contains("wipe") {
+        TransitionKind::WipeLeft
+    } else if lower.contains("push") {
+        TransitionKind::PushLeft
+    } else {
+        warnings.push(format!("Transition '{}' imported as a cross dissolve", t.name));
+        TransitionKind::CrossDissolve
+    };
+    track.transitions.push(klipp_timeline::Transition {
+        id: klipp_core::TransitionId::new(),
+        kind,
+        duration: t.duration,
+        clip_a_id,
+        clip_b_id,
+        user_params: klipp_core::TransitionUserParams::default(),
+        alignment: klipp_core::TransitionAlignment::Center,
+    });
 }
 
 /// Parse an FCPXML 1.9 document from a string.
@@ -602,37 +780,53 @@ pub fn parse_fcpxml(xml: &str) -> Result<ImportResult, FcpxmlImportError> {
     let mut media_pool = MediaPool::new();
     let mut media_cache: HashMap<String, MediaId> = HashMap::new();
     let mut track = Track::new("V1", TrackKind::Video);
+    // Connected clips by lane: above the storyline positive, under it
+    // (sound) negative (#2085).
+    let mut lanes: std::collections::BTreeMap<i64, Track> = std::collections::BTreeMap::new();
+    let mut transitions: Vec<SpineTransition> = Vec::new();
 
     for child in spine.children().filter(|n| n.is_element()) {
+        let mut parent: Option<TimeBase> = None;
         match child.tag_name().name() {
-            "asset-clip" | "clip" => {
+            "asset-clip" | "clip" | "video" | "audio" => {
                 if let Some(clip) = parse_clip_element(
                     child,
+                    TimeBase::SPINE,
                     &assets,
                     &mut media_pool,
                     &mut media_cache,
                     seq_fps,
                     &mut warnings,
-                )? { track.clips.push(clip) }
+                )? {
+                    parent = Some(TimeBase { timeline: clip.timeline_in, local: clip.source_in });
+                    track.clips.push(clip)
+                }
+            }
+            "title" => {
+                let clip = parse_title(child, TimeBase::SPINE, seq_fps, &mut warnings)?;
+                let (_, _, start) = times(child, seq_fps)?;
+                parent = Some(TimeBase { timeline: clip.timeline_in, local: start });
+                track.clips.push(clip);
             }
             "gap" => {
                 // Gaps in FCPXML are explicit on the spine. Klipp's timeline
                 // represents empty space as absence of clips — skipping the
                 // gap preserves the intended offsets on subsequent clips,
                 // because each clip carries its own `offset` attribute
-                // (absolute timeline position).
+                // (absolute timeline position). Clips connected to it are
+                // placed all the same.
+                let (offset, _, start) = times(child, seq_fps)?;
+                parent = Some(TimeBase { timeline: offset, local: start });
             }
-            "title" => warnings.push(
-                "<title> on spine is not imported — deferred feature".to_string(),
-            ),
+            "transition" => {
+                let (offset, duration, _) = times(child, seq_fps)?;
+                transitions.push(SpineTransition { offset, duration, name: child.attribute("name").unwrap_or("transition").to_string() });
+            }
             "ref-clip" => warnings.push(
                 "<ref-clip> (compound clip) is not imported — deferred feature".to_string(),
             ),
             "mc-clip" => warnings.push(
                 "<mc-clip> (multicam) is not imported — deferred feature".to_string(),
-            ),
-            "transition" => warnings.push(
-                "<transition> is not imported — deferred feature".to_string(),
             ),
             "sync-clip" => warnings.push(
                 "<sync-clip> is not imported — deferred feature".to_string(),
@@ -645,6 +839,35 @@ pub fn parse_fcpxml(xml: &str) -> Result<ImportResult, FcpxmlImportError> {
                 "Unknown spine element <{other}> — ignored",
             )),
         }
+        // Its connected clips, each on its lane's track.
+        let Some(base) = parent else { continue };
+        for connected in child.children().filter(|n| n.is_element()) {
+            let Some(lane) = connected.attribute("lane").and_then(|l| l.parse::<i64>().ok()).filter(|l| *l != 0) else { continue };
+            let clip = match connected.tag_name().name() {
+                "asset-clip" | "clip" | "video" | "audio" => parse_clip_element(connected, base, &assets, &mut media_pool, &mut media_cache, seq_fps, &mut warnings)?,
+                "title" => Some(parse_title(connected, base, seq_fps, &mut warnings)?),
+                other => {
+                    warnings.push(format!("Connected <{other}> on lane {lane} is not imported"));
+                    None
+                }
+            };
+            if let Some(clip) = clip {
+                let kind = if lane > 0 { TrackKind::Video } else { TrackKind::Audio };
+                let name = if lane > 0 { format!("V{}", lane + 1) } else { format!("A{}", -lane) };
+                lanes.entry(lane).or_insert_with(|| Track::new(&name, kind)).clips.push(clip);
+            }
+        }
+    }
+    for t in &transitions {
+        add_spine_transition(&mut track, t, seq_fps, &mut warnings);
+    }
+    // Top lane first, the storyline, then the sound lanes from the
+    // storyline down; a lane's clips that overlap are kept as they are.
+    let mut tracks: Vec<Track> = lanes.range(1..).rev().map(|(_, t)| t.clone()).collect();
+    tracks.push(track);
+    tracks.extend(lanes.range(..0).rev().map(|(_, t)| t.clone()));
+    for t in &mut tracks {
+        t.clips.sort_by_key(|c| c.timeline_in);
     }
 
     let sequence = Sequence {
@@ -661,7 +884,7 @@ pub fn parse_fcpxml(xml: &str) -> Result<ImportResult, FcpxmlImportError> {
         fps: seq_fps,
         resolution,
         first_clip_autoset: Default::default(),
-        tracks: vec![track],
+        tracks,
         in_point: None,
         out_point: None,
         markers: collect_sequence_markers(seq_node, seq_fps),
@@ -692,7 +915,7 @@ fn collect_sequence_markers(
     let mut out = Vec::new();
     for m in seq_node
         .children()
-        .filter(|n| n.is_element() && n.tag_name().name() == "marker")
+        .filter(|n| n.is_element() && matches!(n.tag_name().name(), "marker" | "chapter-marker"))
     {
         let start_attr = match m.attribute("start") {
             Some(v) => v,
@@ -710,21 +933,15 @@ fn collect_sequence_markers(
             .attribute("value")
             .map(|s| s.to_string())
             .unwrap_or_default();
-        // FCPXML stores marker comments in a child <note> element.
-        let comment = m
-            .children()
-            .find(|c| c.is_element() && c.tag_name().name() == "note")
-            .and_then(|c| c.text())
-            .unwrap_or("")
-            .to_string();
+        let comment = marker_note(m);
         out.push(Marker { review: None,
             id: MarkerId::new(),
             position,
             label,
-            color: MarkerColor::Blue,
+            color: marker_colour(m),
             duration,
             comment,
-            kind: klipp_core::MarkerKind::None,
+            kind: if m.tag_name().name() == "chapter-marker" { klipp_core::MarkerKind::Chapter } else { klipp_core::MarkerKind::None },
         });
     }
     out
@@ -895,6 +1112,89 @@ mod tests {
         // 5s at 25fps = 125 frames.
         let tc = parse_fcpxml_time("5s", Fps::new(25, 1)).unwrap();
         assert_eq!(tc.value, 125);
+    }
+
+    /// #2085: connected clips on their lanes' tracks (on a clip and on a
+    /// gap), a title on the storyline and one connected, a dissolve
+    /// between two clips, a clip at twice its speed with an opacity fade, a
+    /// level, markers of each kind, and the transform named as not carried.
+    #[test]
+    fn connected_clips_transitions_speed_levels_titles_and_markers_come_across() {
+        let xml = r#"<?xml version="1.0"?>
+<!DOCTYPE fcpxml>
+<fcpxml version="1.9">
+  <resources>
+    <format id="r0" frameDuration="1/25s" width="1920" height="1080"/>
+    <asset id="a1" name="A" src="file:///nowhere/a.mov" duration="100s" hasVideo="1"/>
+    <asset id="a2" name="B" src="file:///nowhere/b.mov" duration="100s" hasVideo="1"/>
+    <asset id="m1" name="Music" src="file:///nowhere/m.wav" duration="100s" hasAudio="1"/>
+    <effect id="t1" name="Basic Title"/>
+  </resources>
+  <library><event><project name="Lanes">
+    <sequence format="r0" duration="12s">
+      <spine>
+        <asset-clip ref="a1" name="A" offset="0s" start="10s" duration="4s">
+          <asset-clip ref="a2" name="B over A" lane="1" offset="11s" start="0s" duration="2s">
+            <adjust-blend>
+              <param name="amount"><keyframeAnimation><keyframe time="0s" value="0"/><keyframe time="1s" value="1"/></keyframeAnimation></param>
+            </adjust-blend>
+          </asset-clip>
+          <audio ref="m1" lane="-1" offset="10s" start="0s" duration="4s"><adjust-volume amount="-6dB"/></audio>
+          <title ref="t1" name="Name" lane="2" offset="12s" duration="1s"><text><text-style ref="ts1">Ana Silva</text-style></text></title>
+          <marker start="11s" duration="1/25s" value="Fix" completed="0" note="too dark"/>
+          <chapter-marker start="12s" duration="1/25s" value="Part 2"/>
+          <adjust-transform position="10 0" scale="1.2 1.2"/>
+        </asset-clip>
+        <transition name="Cross Dissolve" offset="3s" duration="2s"/>
+        <asset-clip ref="a2" name="B" offset="4s" start="20s" duration="4s">
+          <timeMap><timept time="0s" value="0s"/><timept time="4s" value="8s"/></timeMap>
+        </asset-clip>
+        <gap offset="8s" start="0s" duration="2s">
+          <asset-clip ref="a1" name="A on gap" lane="1" offset="0s" start="50s" duration="2s"/>
+        </gap>
+        <title ref="t1" name="End" offset="10s" duration="2s"><text><text-style>The </text-style><text-style>End</text-style></text></title>
+      </spine>
+      <marker start="1s" duration="1/25s" value="Done" completed="1"/>
+    </sequence>
+  </project></event></library>
+</fcpxml>"#;
+        let result = parse_fcpxml(xml).expect("parses");
+        let seq = &result.sequence;
+        let secs = |t: RationalTime| t.to_secs_f64();
+        let names: Vec<&str> = seq.tracks.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["V3", "V2", "V1", "A1"], "lanes above the storyline first, sound under it");
+
+        // V2: B over A at A's 11 s, 1 s in; A on the gap at 8 s.
+        let v2 = &seq.tracks[1];
+        assert_eq!(v2.clips.iter().map(|c| (secs(c.timeline_in), secs(c.timeline_out))).collect::<Vec<_>>(), [(1.0, 3.0), (8.0, 10.0)]);
+        let (fade, _) = v2.clips[0].truth_lane(&klipp_core::ParamId::Opacity).expect("reads");
+        assert_eq!(fade.iter().map(|k| (k.time_secs, k.value)).collect::<Vec<_>>(), [(0.0, 0.0), (1.0, 1.0)]);
+        // V3: the connected title at 2 s.
+        let name = &seq.tracks[0].clips[0];
+        assert!(matches!(&name.kind, ClipKind::Title(d) if d.primary_text().is_some_and(|b| b.text == "Ana Silva")), "{:?}", name.kind);
+        assert_eq!(secs(name.timeline_in), 2.0);
+
+        // V1: A, B at twice its speed, the title; the dissolve between A and B.
+        let v1 = &seq.tracks[2];
+        let b = &v1.clips[1];
+        assert_eq!((b.speed, secs(b.source_in), secs(b.source_out)), (2.0, 20.0, 28.0));
+        assert!(matches!(&v1.clips[2].kind, ClipKind::Title(d) if d.primary_text().is_some_and(|b| b.text == "The End")));
+        let t = &v1.transitions[0];
+        assert_eq!((t.kind, secs(t.duration), t.clip_a_id, t.clip_b_id), (klipp_core::TransitionKind::CrossDissolve, 2.0, v1.clips[0].id, b.id));
+
+        // A1: the music at A's start, at -6 dB.
+        let music = &seq.tracks[3].clips[0];
+        assert_eq!(secs(music.timeline_in), 0.0);
+        assert!((music.volume - 0.501).abs() < 0.01, "{}", music.volume);
+
+        // Markers: a to-do red with its note, a chapter purple, a done one green.
+        let marks: Vec<(&str, MarkerColor, &str)> = v1.clips[0].clip_markers.iter().map(|m| (m.name.as_str(), m.color, m.comment.as_str())).collect();
+        assert_eq!(marks, [("Fix", MarkerColor::Red, "too dark"), ("Part 2", MarkerColor::Purple, "")]);
+        assert_eq!((seq.markers[0].label.as_str(), seq.markers[0].color), ("Done", MarkerColor::Green));
+
+        let warned = |w: &str| result.warnings.iter().any(|x| x.contains(w));
+        assert!(warned("adjust-transform") && warned("Title 'Ana Silva'"), "{:?}", result.warnings);
+        assert!(!warned("Connected clip"), "connected clips are no longer dropped: {:?}", result.warnings);
     }
 
     #[test]

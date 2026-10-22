@@ -229,6 +229,18 @@ pub(crate) fn interchange_media_item(path: std::path::PathBuf, name: String, dur
     }
 }
 
+/// `keys`, an opacity from 0 to 1, as the clip's picture's opacity lane.
+pub(crate) fn set_opacity_keys(clip: &mut klipp_timeline::Clip, keys: &[klipp_core::Keyframe]) -> Result<(), String> {
+    use klipp_graph_format::ParamKey;
+    use klipp_graph_lift::ops::GraphOp;
+    let path = clip.placement_path().ok_or("no placement")?;
+    let ops: Vec<GraphOp> = keys
+        .iter()
+        .map(|k| Ok(GraphOp::AddKeyAt { path: path.clone(), key: ParamKey::from("opacity"), keyframe: serde_json::to_value(k).map_err(|e| e.to_string())? }))
+        .collect::<Result<_, String>>()?;
+    clip.apply_picture_ops(&ops).map(|_| ())
+}
+
 const FILE: &str = "last_import_report.json";
 /// Auxiliary project information, not a change to the timeline file format.
 pub fn save(dir: &Path, report: Option<&ImportReport>) -> Result<(), String> {
