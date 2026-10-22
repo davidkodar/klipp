@@ -886,6 +886,44 @@ fn a_timeline_grade_over_the_stack_matches() {
     assert_match("timeline grade", &seq, &mut src);
 }
 
+/// A frame with nothing on screen (a gap, a strobe's dark pieces) is the
+/// stack's clear canvas, graded by the timeline grade and finished on the
+/// GPU, where it fell back to the CPU compositor (#2377).
+#[test]
+fn an_empty_frame_is_drawn_and_graded_on_the_stack() {
+    let (mut seq, mut src) = stack();
+    let end = seq.tracks.iter().flat_map(|t| t.clips.iter()).map(|c| c.timeline_out.to_secs_f64()).fold(0.0, f64::max);
+    let gap = tc(end + 0.5);
+    for graded in [false, true] {
+        if graded {
+            seq.timeline_grade_slot().set(Some({
+                use klipp_nodes::{graph::{Edge, Node, NodeGraph, NodeId, NodePos}, kinds::NodeKind, params::NodeParams};
+                let node = |kind: NodeKind, params: NodeParams| Node {
+                    id: NodeId::new_v4(), kind, label: format!("{kind:?}"), enabled: true, params, keyframes: Default::default(), output_link: None, input_links: vec![],
+                };
+                let nodes = vec![
+                    node(NodeKind::Source, NodeParams::default()),
+                    node(NodeKind::ColorWheels, NodeParams { offset_master: Some(0.15), ..Default::default() }),
+                    node(NodeKind::Output, NodeParams::default()),
+                ];
+                let edges = (0..2).map(|i| Edge { from_node: nodes[i].id, from_port: 0, to_node: nodes[i + 1].id, to_port: 0 }).collect();
+                let node_positions = nodes.iter().enumerate().map(|(i, n)| (n.id, NodePos { x: i as f32 * 100.0, y: 0.0 })).collect();
+                NodeGraph { output_node_id: nodes[2].id, nodes, edges, node_positions, working_space_override: None, frames: vec![], sticky_notes: vec![] }
+            }));
+        }
+        let mut r = renderer();
+        let Some((gpu, _)) = r.render_display_u8_on_gpu(&seq, gap, W, H, &mut src, RenderOptions::default()) else {
+            assert!(std::env::var_os("KLIPP_TEST_REQUIRE_GPU").is_none(), "graded={graded}: the stack declined an empty frame");
+            return;
+        };
+        let events = klipp_effects::residency::last_frame().events;
+        assert!(!events.iter().any(|e| e.work == klipp_effects::residency::Work::Fallback), "graded={graded}: {events:?}");
+        let cpu = display(&r.render(&seq, gap, W, H, &mut src, RenderOptions::default()));
+        let d = worst(&cpu, &gpu);
+        assert!(d <= 1, "graded={graded}: the empty frame differs from the CPU renderer by {d} levels");
+    }
+}
+
 /// The timeline's LUT over the stack: applied on the accumulator before
 /// the premultiply, where `render_stack` applies it.
 fn test_lut() -> klipp_color::lut::LutData {
