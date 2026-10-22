@@ -550,6 +550,17 @@ pub enum ControlCommand {
         #[serde(default)]
         max_hits: Option<usize>,
     },
+    /// Stretches of footage whose picture looks like `query`, a plain
+    /// description, across every analysed media item (#2212), best first.
+    SearchVisual {
+        query: String,
+        #[serde(default)]
+        max_hits: Option<usize>,
+        /// The least similarity (cosine, about 0.2 to 0.35 for a match)
+        /// a stretch needs; 0.2 when left out.
+        #[serde(default)]
+        min_score: Option<f32>,
+    },
     /// Hide everything the screen text found sensitive, wherever the
     /// timeline shows it: a redact op per finding, resolved as a plan;
     /// applied as one undo step with `apply`.

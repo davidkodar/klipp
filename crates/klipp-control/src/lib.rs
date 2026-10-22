@@ -697,6 +697,7 @@ fn handle(
             | ControlCommand::SearchTranscripts { .. }
             | ControlCommand::ScreenText { .. }
             | ControlCommand::SearchScreenText { .. }
+            | ControlCommand::SearchVisual { .. }
             | ControlCommand::AutoRedact { .. }
             | ControlCommand::AutoSfx { .. }
             | ControlCommand::MixLoudness { .. }

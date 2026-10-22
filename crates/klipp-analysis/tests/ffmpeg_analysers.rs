@@ -273,3 +273,39 @@ fn a_tune_reads_as_music_and_words_as_speech() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Footage found by its picture (#2212), with CLIP at `KLIPP_CLIP` and its
+/// tokenizer at `KLIPP_CLIP_TOKENIZER`: in a file that is red for 6 s then
+/// blue for 6 s, "a red picture" finds the first half and "a blue
+/// picture" the second.
+#[cfg(feature = "visual")]
+#[test]
+fn a_described_picture_is_found_where_it_shows() {
+    let ctx = AnalysisCtx::default();
+    let (Ok(weights), Ok(tokenizer)) = (std::env::var("KLIPP_CLIP"), std::env::var("KLIPP_CLIP_TOKENIZER")) else {
+        eprintln!("skipping: set KLIPP_CLIP and KLIPP_CLIP_TOKENIZER");
+        return;
+    };
+    if !ctx.ffmpeg_available() {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    }
+    let clip = klipp_ml_candle::clip::Clip::load(std::path::Path::new(&weights), std::path::Path::new(&tokenizer)).unwrap();
+    let dir = std::env::temp_dir().join(format!("klipp-visual-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("red-blue.mp4");
+    let ok = std::process::Command::new(&ctx.ffmpeg)
+        .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=red:s=640x360:d=6:r=25", "-f", "lavfi", "-i", "color=c=blue:s=640x360:d=6:r=25",
+            "-filter_complex", "[0][1]concat=n=2:v=1:a=0", "-pix_fmt", "yuv420p"])
+        .arg(&path).status().unwrap().success();
+    assert!(ok, "ffmpeg made the file");
+    let mut item = klipp_media::MediaItem::synthetic_for_test(path.clone(), None);
+    item.duration = klipp_core::RationalTime::from_secs_f64(12.0, 25);
+    item.resolution = klipp_core::Resolution { width: 640, height: 360 };
+    let v = klipp_analysis::visual::look(&clip, &item, &ctx).unwrap();
+    assert_eq!(v.samples.len(), 6);
+    let best = |q: &str| v.search(&clip.embed_text(q).unwrap(), -1.0)[0].best_secs;
+    assert!(best("a red picture") < 6.0, "red first");
+    assert!(best("a blue picture") > 6.0, "blue second");
+    let _ = std::fs::remove_dir_all(&dir);
+}

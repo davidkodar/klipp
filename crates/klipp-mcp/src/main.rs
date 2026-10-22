@@ -789,6 +789,16 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             }
             v
         }
+        "klipp_search_visual" => {
+            let mut v = json!({ "method": "search_visual", "query": arg_str(args, "query")? });
+            if let Some(n) = args.get("max_hits").and_then(|v| v.as_u64()) {
+                v["max_hits"] = json!(n as usize);
+            }
+            if let Some(s) = args.get("min_score").and_then(|v| v.as_f64()) {
+                v["min_score"] = json!(s);
+            }
+            v
+        }
         "klipp_auto_redact" => json!({ "method": "auto_redact", "apply": args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false) }),
         "klipp_skin_balance" => json!({ "method": "skin_balance", "clip_id": arg_str(args, "clip_id")?, "apply": args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false) }),
         "klipp_grade_to_target" => json!({
@@ -2073,6 +2083,10 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               screen recording's Cmd-F. Each hit has the media item, the seconds it stayed \
               up, the text and where on the frame.",
              json!({ "query": { "type": "string" }, "max_hits": { "type": "integer" } }),
+             vec!["query"]),
+        tool("klipp_search_visual",
+             "Find footage by what its picture shows (\"a dog on a beach\"), best first.",
+             json!({ "query": { "type": "string" }, "max_hits": { "type": "integer" }, "min_score": { "type": "number" } }),
              vec!["query"]),
         tool("klipp_analysis_queue", "Put media_id first in the analysis queue, or cancel the pending items. Details: klipp_guide topic analysis_queue.",
              json!({ "media_id": { "type": "string" }, "cancel_pending": { "type": "boolean" } }), vec![]),

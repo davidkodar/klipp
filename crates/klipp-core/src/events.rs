@@ -4248,6 +4248,17 @@ pub enum AppCommand {
     /// when given (the one a context menu is on) (#1843).
     OpenNormalizeDialog { clip_id: Option<crate::ClipId> },
 
+    /// Open the Find by Picture window (#2212).
+    OpenVisualSearch,
+    /// Search the analysed footage for stretches that look like `query`,
+    /// off the UI thread; [`AppCommand::VisualSearchFound`] brings back
+    /// what it found.
+    RunVisualSearch { query: String },
+    /// What a picture search found, best first, as (media, start, end,
+    /// best frame, score) in seconds of the file; or why it could not
+    /// search.
+    VisualSearchFound { query: String, hits: Result<Vec<(MediaId, f64, f64, f64, f32)>, String> },
+
     /// Measure `clip_ids` and bring them to `settings`' target, off the
     /// UI thread; [`AppCommand::ApplyClipGains`] applies what it finds.
     NormalizeClips { clip_ids: Vec<crate::ClipId>, settings: crate::normalize::NormalizeSettings },
