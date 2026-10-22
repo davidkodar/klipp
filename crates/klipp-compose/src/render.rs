@@ -2717,20 +2717,25 @@ impl Renderer {
 
     fn place_title_source_in_scene(&mut self, td: &klipp_timeline::TitleData, slot: usize, width: u32, height: u32, clip_time: f64, total: f32, scene: &klipp_timeline::TitleData, shape_straight: Option<bool>) -> Option<((u32,u32),Vec<BuiltinEffect>)> {
         if let [object] = td.objects.as_slice() {
-            if let klipp_timeline::TitleObjectContent::Shape(shape) = &object.content {
-                // Shape sources enter through scene composition, including a
-                // single shape, to preserve premultiplication and half precision.
+            let shape=match &object.content {klipp_timeline::TitleObjectContent::Shape(s)=>Some(s),_=>None};
+            let image=match &object.content {klipp_timeline::TitleObjectContent::Image(i)=>Some(i),_=>None};
+            if shape.is_some() || image.is_some() {
+                // Shape and image sources enter through scene composition,
+                // including a single one, to preserve premultiplication and
+                // half precision; an image is its fitted picture placed as a
+                // sprite, posed and faded as a shape's layer is (#2077).
                 if let Some(shape_straight)=shape_straight {
-                    let transform=if let Some(fit)=shape.fit {
+                    let transform=if let Some(fit)=shape.and_then(|s|s.fit) {
                         let Some(transform)=self.titles.resolved_shape_fit(scene,fit,width,height,Some(clip_time as f32)) else {
                             return self.executor.gpu_pipeline_or_init()?.stack_layer_clear(slot).then_some(((0,0),Vec::new()));
                         };
                         transform
+                    } else if image.is_some() {object.transform.evaluated_at(clip_time as f32 as f64)
                     } else {object.transform.evaluated_at(clip_time)};
                     // A still path moved or faded whole is its resting render
                     // posed, which the CPU's byte layer rounds exactly; only
                     // changing geometry is scanned here at each pose (#2201).
-                    if matches!(shape.kind,klipp_timeline::ShapeKind::Path(_))
+                    if shape.is_some_and(|s|matches!(s.kind,klipp_timeline::ShapeKind::Path(_)))
                         && object.fx().motion.is_active() && !klipp_title::keys_path_geometry(td) {return None;}
                     // Entrance/exit fades act on the painted byte layer before
                     // edge fades, object opacity and scene masking.
@@ -2765,12 +2770,24 @@ impl Renderer {
                         Some(klipp_core::title_motion::MotionAnchor::Point{x,y})=>[x,y],
                         _=>[0.5,0.5],
                     };
-                    let gradient=shape.gradient.as_ref().filter(|g|g.enabled).map(title_gradient_fill);
+                    let gradient=shape.and_then(|s|s.gradient.as_ref()).filter(|g|g.enabled).map(title_gradient_fill);
                     let scale=klipp_title::frame_scale(width,height);
+                    let picture=image.map(|img| {
+                        let placed=self.titles.image_sprite(img,&transform,width,height);
+                        if placed.as_ref().is_some_and(|p|p.2) {
+                            residency::record("title.image","Image layer fitted to its box once, then kept on the GPU",Work::Preparation);
+                        }
+                        placed
+                    });
                     let gpu=self.executor.gpu_pipeline_or_init()?;
                     let (cx,cy)=(transform.center.x*width as f32,transform.center.y*height as f32);
                     let (hw,hh)=((transform.size.x*width as f32*0.5).max(0.0),(transform.size.y*height as f32*0.5).max(0.0));
-                    let painted=match &shape.kind {
+                    let painted=if let Some(picture)=picture {
+                        match picture.filter(|(_,p,_)|!p.is_empty()) {
+                            Some((id,pixels,_))=>gpu.stack_layer_place_sprite(slot,id,&pixels.texels,sprite_box(&pixels),0,0,1.0,0,height),
+                            None=>gpu.stack_layer_clear(slot),
+                        }
+                    } else if let Some(shape)=shape {match &shape.kind {
                         klipp_timeline::ShapeKind::Rectangle{corner_radius}=>gpu.stack_title_rectangle(slot,[cx,cy,hw,hh],[cx+(transform.anchor_norm.x-0.5)*hw*2.0,cy+(transform.anchor_norm.y-0.5)*hh*2.0],transform.rotation.to_radians(),corner_radius.max(0.0)*scale,
                             shape.fill.unwrap_or([0;4]),shape.stroke.map(|s|(s.color,s.width.max(0.0)*scale)),shape_straight,gradient.as_ref()),
                         klipp_timeline::ShapeKind::Path(path)=>{
@@ -2785,7 +2802,7 @@ impl Renderer {
                                 None=>gpu.stack_layer_clear(slot),
                             }
                         }
-                    };
+                    }} else {false};
                     if !painted {return None;}
                     if motion.is_active() {
                         if !gpu.stack_title_precision(slot,true) {return None;}
@@ -2909,7 +2926,7 @@ impl Renderer {
         }
         // Render objects independently so each keeps its own source cache,
         // GPU styles and time evaluation before authored-space composition.
-        if td.objects.len() > 1 || td.mixes_layers() || matches!(td.background,klipp_timeline::TitleBackground::FullFrame{..}) || td.objects.iter().any(|o|matches!(o.content,klipp_timeline::TitleObjectContent::Shape(_)))
+        if td.objects.len() > 1 || td.mixes_layers() || matches!(td.background,klipp_timeline::TitleBackground::FullFrame{..}) || td.objects.iter().any(|o|matches!(o.content,klipp_timeline::TitleObjectContent::Shape(_)|klipp_timeline::TitleObjectContent::Image(_)))
  {
             let object_slot = self.executor.gpu_pipeline_or_init()?.stack_title_object_slot(0)?;
             let initialized=match td.background {
@@ -2932,8 +2949,10 @@ impl Renderer {
                 if !self.executor.gpu_pipeline_or_init()?.stack_title_source_effects(object_slot,&soft) { return None; }
                 // Shapes with opacity are byte layers in the CPU painter; at full
                 // opacity an undressed normal shape paints fractional colour directly.
+                // An image is always a byte layer.
                 let plain_shape=matches!(object.content,klipp_timeline::TitleObjectContent::Shape(_)) && object.fx().is_default();
-                if plain_shape && (opacity-1.0).abs()>=0.001 && !self.executor.gpu_pipeline_or_init()?.stack_title_precision(object_slot,true) {return None;}
+                let image=matches!(object.content,klipp_timeline::TitleObjectContent::Image(_));
+                if (plain_shape || image) && (opacity-1.0).abs()>=0.001 && !self.executor.gpu_pipeline_or_init()?.stack_title_precision(object_slot,true) {return None;}
                 // Apply opacity before the mask, exactly as the authored stack.
                 if !self.executor.gpu_pipeline_or_init()?.stack_title_alpha(object_slot,[0.0;4],opacity) { return None; }
                 if let Some((matte,kind)) = td.mask_of(object) {

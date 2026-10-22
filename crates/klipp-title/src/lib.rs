@@ -339,6 +339,9 @@ struct CachedRender {
     /// Names this render to whoever keeps a copy of it elsewhere (a
     /// GPU sprite): never reused within a renderer.
     id: u64,
+    /// Its image layers' files as they were read, so one written over
+    /// renders again (#2077).
+    images: Vec<Option<FileStamp>>,
 }
 
 /// A title's resting render, as cached: the box it covers as
@@ -589,9 +592,13 @@ pub struct TitleRenderer {
     /// mask source alone, shown or not, at the masked layer's time
     /// (#1513).
     matte_only: Option<TitleObjectId>,
-    /// Decoded image layers by path; `None` for a file that would
-    /// not open, so it is not retried every frame.
-    image_cache: HashMap<String, Option<std::sync::Arc<DecodedImage>>>,
+    /// Decoded image layers by path, with the file's stamp when read;
+    /// `None` for a file that would not open, so it is not retried
+    /// every frame. A file changed on disk is read again.
+    image_cache: HashMap<String, (Option<FileStamp>, Option<std::sync::Arc<DecodedImage>>)>,
+    /// Image layers fitted to their boxes, as the GPU places them, the
+    /// most recent last (#2077); at most [`IMAGE_SPRITE_CAP`].
+    image_sprites: std::collections::VecDeque<(u64, std::sync::Arc<BoxRaster>)>,
     /// Whether a character a face lacks is looked for in the system's
     /// fonts before the ones that ship with the app (#1503); off in
     /// tests that must draw the same on every machine.
@@ -721,6 +728,7 @@ impl TitleRenderer {
             defer_layer_fades: false,
             matte_only: None,
             image_cache: HashMap::new(),
+            image_sprites: Default::default(),
             system_fallback: true,
             fallback_keys: HashMap::new(),
         }
@@ -3632,10 +3640,14 @@ impl TitleRenderer {
         Some(transform)
     }
 
-    /// The decoded pixels of an image layer, read once per path.
+    /// The decoded pixels of an image layer, read once per path and
+    /// again when the file changes.
     fn decoded_image(&mut self, img: &ImageLayer) -> Option<std::sync::Arc<DecodedImage>> {
-        if let Some(cached) = self.image_cache.get(&img.path) {
-            return cached.clone();
+        let stamp = file_stamp(&img.path);
+        if let Some((seen, cached)) = self.image_cache.get(&img.path) {
+            if *seen == stamp {
+                return cached.clone();
+            }
         }
         let decoded = image::open(&img.path).ok().map(|i| {
             let rgba = i.to_rgba8();
@@ -3644,13 +3656,45 @@ impl TitleRenderer {
         if decoded.is_none() {
             tracing::warn!("title image layer could not be read: {}", img.path);
         }
-        self.image_cache.insert(img.path.clone(), decoded.clone());
+        self.image_cache.insert(img.path.clone(), (stamp, decoded.clone()));
         decoded
     }
 
     /// Forget a decoded image so a changed file is read again.
     pub fn forget_image(&mut self, path: &str) {
         self.image_cache.remove(path);
+    }
+
+    /// An image layer as it rests in `transform`'s box of a `width` ×
+    /// `height` frame (#2077): its picture fitted and sampled once, the
+    /// pixels the CPU paints, with an id that names exactly them, for
+    /// the GPU to keep. A changed file, fit, box or frame is a new id;
+    /// the last [`IMAGE_SPRITE_CAP`] are kept. `None` when the file
+    /// does not open or the picture covers nothing; the bool is whether
+    /// the picture was sampled now rather than kept.
+    pub fn image_sprite(&mut self, img: &ImageLayer, transform: &ObjectTransform, width: u32, height: u32) -> Option<(u64, std::sync::Arc<BoxRaster>, bool)> {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        "title image sprite".hash(&mut h);
+        img.path.hash(&mut h);
+        file_stamp(&img.path).hash(&mut h);
+        (img.fit as u8).hash(&mut h);
+        (width, height).hash(&mut h);
+        [transform.center.x, transform.center.y, transform.size.x, transform.size.y].map(f32::to_bits).hash(&mut h);
+        let id = h.finish();
+        if let Some(at) = self.image_sprites.iter().position(|(k, _)| *k == id) {
+            let kept = self.image_sprites.remove(at)?;
+            let pixels = kept.1.clone();
+            self.image_sprites.push_back(kept);
+            return Some((id, pixels, false));
+        }
+        let decoded = self.decoded_image(img)?;
+        let pixels = std::sync::Arc::new(image_box(&decoded, img.fit, transform, width, height)?);
+        if self.image_sprites.len() >= IMAGE_SPRITE_CAP {
+            self.image_sprites.pop_front();
+        }
+        self.image_sprites.push_back((id, pixels.clone()));
+        Some((id, pixels, true))
     }
 
     /// Single-text rasterisation: layout → compose → texture-fill,
@@ -4064,8 +4108,9 @@ impl TitleRenderer {
     }
 
     fn cache_lookup(&mut self, title: &TitleData, width: u32, height: u32) -> Option<RestingSprite> {
+        let images = image_stamps(title);
         let pos = self.render_cache.iter().position(|c| {
-            c.width == width && c.height == height && &c.title == title
+            c.width == width && c.height == height && &c.title == title && c.images == images
         })?;
         // Move to front (LRU).
         let entry = self.render_cache.remove(pos);
@@ -4093,6 +4138,7 @@ impl TitleRenderer {
         self.render_cache.insert(
             0,
             CachedRender {
+                images: image_stamps(&title),
                 title,
                 width,
                 height,
@@ -5825,6 +5871,26 @@ fn apply_layer_mask<C: Channel, M: Channel>(layer: &mut [C], matte: &[M], kind: 
     });
 }
 
+/// How many fitted image layers a renderer keeps: a few titles' worth,
+/// each its covered box alone.
+pub const IMAGE_SPRITE_CAP: usize = 16;
+
+/// A file's modified time and length, which change when it is written.
+type FileStamp = (std::time::SystemTime, u64);
+
+fn file_stamp(path: &str) -> Option<FileStamp> {
+    let m = std::fs::metadata(path).ok()?;
+    Some((m.modified().ok()?, m.len()))
+}
+
+/// The stamps of a title's image layers' files, in layer order.
+fn image_stamps(title: &TitleData) -> Vec<Option<FileStamp>> {
+    title.objects.iter().filter_map(|o| match &o.content {
+        TitleObjectContent::Image(img) => Some(file_stamp(&img.path)),
+        _ => None,
+    }).collect()
+}
+
 /// An image layer's pixels, straight-alpha RGBA.
 pub struct DecodedImage {
     pub w: usize,
@@ -5833,40 +5899,41 @@ pub struct DecodedImage {
 }
 
 impl DecodedImage {
-    /// Bilinear sample at source pixel coordinates, edges clamped.
+    /// Bilinear sample at source pixel coordinates, edges clamped,
+    /// weighted by alpha: straight colour back, so a transparent
+    /// neighbour's colour never bleeds into an edge (#2077).
     fn sample(&self, u: f32, v: f32) -> [f32; 4] {
         let u = u.clamp(0.0, (self.w - 1) as f32);
         let v = v.clamp(0.0, (self.h - 1) as f32);
         let (x0, y0) = (u.floor() as usize, v.floor() as usize);
         let (x1, y1) = ((x0 + 1).min(self.w - 1), (y0 + 1).min(self.h - 1));
         let (fx, fy) = (u - x0 as f32, v - y0 as f32);
-        let px = |x: usize, y: usize| {
-            let i = (y * self.w + x) * 4;
-            [self.rgba[i] as f32, self.rgba[i + 1] as f32, self.rgba[i + 2] as f32, self.rgba[i + 3] as f32]
-        };
-        let (a, b, c, d) = (px(x0, y0), px(x1, y0), px(x0, y1), px(x1, y1));
         let mut out = [0.0; 4];
-        for i in 0..4 {
-            let top = a[i] + (b[i] - a[i]) * fx;
-            let bottom = c[i] + (d[i] - c[i]) * fx;
-            out[i] = top + (bottom - top) * fy;
+        for (x, y, k) in [(x0, y0, (1.0 - fx) * (1.0 - fy)), (x1, y0, fx * (1.0 - fy)), (x0, y1, (1.0 - fx) * fy), (x1, y1, fx * fy)] {
+            let i = (y * self.w + x) * 4;
+            let a = self.rgba[i + 3] as f32 * k;
+            for c in 0..3 {
+                out[c] += self.rgba[i + c] as f32 * a;
+            }
+            out[3] += a;
+        }
+        if out[3] > 0.0 {
+            for c in 0..3 {
+                out[c] /= out[3];
+            }
         }
         out
     }
 }
 
-/// Paint an image layer into its box: the picture fitted, filled or
-/// stretched, sampled bilinearly, composited over what is there.
-fn paint_image_layer(
-    buf: &mut [u8],
-    img: &DecodedImage,
-    fit: ImageFit,
-    transform: &ObjectTransform,
-    width: u32,
-    height: u32,
-) {
+/// Where an image layer's picture lands in a `width` × `height` frame:
+/// its drawn rectangle (left, top, width, height) fitted, filled or
+/// stretched into the transform's box, and the pixel columns and rows
+/// it covers there, clipped to the box and the frame. `None` when it
+/// covers nothing.
+fn image_placement(img: &DecodedImage, fit: ImageFit, transform: &ObjectTransform, width: u32, height: u32) -> Option<([f32; 4], (u32, u32), (u32, u32))> {
     if img.w == 0 || img.h == 0 {
-        return;
+        return None;
     }
     let (w_f, h_f) = (width as f32, height as f32);
     let bw = (transform.size.x * w_f).max(1.0);
@@ -5890,26 +5957,55 @@ fn paint_image_layer(
     let y0 = top.max(cy - bh * 0.5).floor().max(0.0) as i32;
     let x1 = (cx + dw * 0.5).min(cx + bw * 0.5).ceil().min(w_f) as i32;
     let y1 = (cy + dh * 0.5).min(cy + bh * 0.5).ceil().min(h_f) as i32;
-    if x1 <= x0 || y1 <= y0 {
-        return;
-    }
-    for y in y0..y1 {
+    (x1 > x0 && y1 > y0).then_some(([left, top, dw, dh], (x0 as u32, x1 as u32), (y0 as u32, y1 as u32)))
+}
+
+/// An image layer's picture alone, over its covered box: sampled once,
+/// straight alpha, rounded to bytes as the CPU's layer holds it. The
+/// CPU paints these pixels into its layer and the GPU places them as a
+/// sprite, so the two draw one picture (#2077).
+fn image_box(img: &DecodedImage, fit: ImageFit, transform: &ObjectTransform, width: u32, height: u32) -> Option<raster::BoxRaster> {
+    let ([left, top, dw, dh], cols, rows) = image_placement(img, fit, transform, width, height)?;
+    let (iw, ih) = (img.w as f32, img.h as f32);
+    let (bw, bh) = ((cols.1 - cols.0) as usize, (rows.1 - rows.0) as usize);
+    let mut stack = vec![0.0f32; bw * bh * 4];
+    for y in rows.0..rows.1 {
         let v = ((y as f32 + 0.5) - top) / dh * ih - 0.5;
-        for x in x0..x1 {
+        for x in cols.0..cols.1 {
             let u = ((x as f32 + 0.5) - left) / dw * iw - 0.5;
             let src = img.sample(u, v);
-            let sa = src[3] / 255.0;
-            if sa <= 0.0 {
+            let a = src[3].round().clamp(0.0, 255.0);
+            if a <= 0.0 {
                 continue;
             }
-            let idx = ((y as usize) * (width as usize) + (x as usize)) * 4;
-            let inv_sa = 1.0 - sa;
-            let da = buf[idx + 3] as f32 / 255.0;
-            let out_a = sa + da * inv_sa;
-            for i in 0..3 {
-                buf[idx + i] = (src[i] * sa + buf[idx + i] as f32 * inv_sa).round().clamp(0.0, 255.0) as u8;
+            let at = (((y - rows.0) as usize) * bw + (x - cols.0) as usize) * 4;
+            for c in 0..3 {
+                stack[at + c] = src[c].round().clamp(0.0, 255.0);
             }
-            buf[idx + 3] = (out_a * 255.0).round().clamp(0.0, 255.0) as u8;
+            stack[at + 3] = a;
+        }
+    }
+    Some(raster::BoxRaster::from_box_stack(&stack, (width, height), cols.0, rows.0, bw as u32, bh as u32))
+}
+
+/// Paint an image layer into its clear layer: the picture fitted,
+/// filled or stretched into its box, as [`image_box`] samples it.
+fn paint_image_layer(
+    buf: &mut [u8],
+    img: &DecodedImage,
+    fit: ImageFit,
+    transform: &ObjectTransform,
+    width: u32,
+    height: u32,
+) {
+    let Some(px) = image_box(img, fit, transform, width, height) else { return };
+    for y in px.y0..px.y0 + px.h {
+        for x in px.x0..px.x0 + px.w {
+            let p = px.at(x as i64, y as i64);
+            let idx = ((y as usize) * (width as usize) + (x as usize)) * 4;
+            for i in 0..4 {
+                buf[idx + i] = p[i].round().clamp(0.0, 255.0) as u8;
+            }
         }
     }
 }
@@ -8194,6 +8290,30 @@ pub fn ensure_glyph_positions<'a>(
 
 #[cfg(test)]
 mod tests {
+    /// An image's soft edge keeps the picture's own colour, its alpha
+    /// alone falling (#2077): the layer is straight alpha, so colour
+    /// times alpha there would darken it twice once laid over, and a
+    /// clear neighbour's colour must not bleed in.
+    #[test]
+    fn an_image_edge_is_its_own_colour_fading() {
+        let img = DecodedImage { w: 2, h: 1, rgba: vec![250, 0, 200, 255, 0, 255, 0, 0] };
+        let mut t = klipp_timeline::default_text_transform();
+        t.center = klipp_timeline::TitlePosition { x: 0.5, y: 0.5 };
+        t.size = klipp_timeline::TitlePosition { x: 1.0, y: 1.0 };
+        let (w, h) = (8u32, 1u32);
+        let mut layer = vec![0u8; (w * h * 4) as usize];
+        paint_image_layer(&mut layer, &img, ImageFit::Stretch, &t, w, h);
+        let mut alphas = Vec::new();
+        for p in layer.chunks_exact(4) {
+            if p[3] == 0 {
+                continue;
+            }
+            assert_eq!(&p[..3], &[250, 0, 200], "{layer:?}");
+            alphas.push(p[3]);
+        }
+        assert!(alphas.len() >= 4 && alphas.windows(2).all(|a| a[0] >= a[1]) && alphas[0] == 255 && *alphas.last().unwrap() < 128, "{alphas:?}");
+    }
+
     /// A faint layer used to stall against an eight-bit buffer.
     ///
     /// Alpha 1/255 of white over a mid grey moves the result by about
