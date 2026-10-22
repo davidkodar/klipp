@@ -155,6 +155,23 @@ pub fn run(report: &mut Report) {
         }
         Ok(())
     });
+    // Level 2: the viewer shows export's frame, both read from one real
+    // file of the ramp.
+    report.case("denoise: the viewer shows export's frame", [key(Some(Route::Viewer), Obligation::ViewerEqualsExport), key(Some(Route::Export), Obligation::ViewerEqualsExport)], || {
+        let (s, _) = scene(50, 150, 1.0, STRENGTH);
+        let s = crate::on_file::on_file_frames(&s, "denoise-ramp", FPS, MEDIA_FRAMES, &|n| flat(grey(n as f64 / FPS as f64)))?;
+        crate::route2::viewer_equals_export(s, &[10, 11, 60])
+    });
+    // On the viewer, within the GPU's budget of the same clip without it.
+    report.case("denoise Viewer: within its frame budget", [key(Some(Route::Viewer), Obligation::FrameBudget)], || {
+        let (with, clip) = scene(50, 150, 1.0, STRENGTH);
+        let mut without = (*with).clone();
+        let mut bare = clip;
+        bare.set_effect_list(vec![], vec![]);
+        without.sequence.tracks[0].clips = vec![bare];
+        let frames: Vec<i64> = (20..20 + crate::budget::MIN_FRAMES as i64).collect();
+        crate::budget::within(with, Arc::new(without), Arc::new(Ramp::whole()), &frames, crate::budget::Budget::GPU).map(|_| ())
+    });
     for route in [Route::Viewer, Route::Export] {
         let at = |o| [key(Some(route), o)];
         report.case(&format!("denoise {route:?}: a frame mid-clip"), at(Obligation::ExpectedPixels), || {
