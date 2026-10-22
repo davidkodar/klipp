@@ -269,9 +269,8 @@ mod tests {
     #[test]
     fn a_clip_s_keyed_tracks_are_its_rows() {
         let tc = |s: f64| klipp_core::Timecode::from_secs_f64(s, 24);
-        let mut clip = Clip::gap(tc(0.0), tc(4.0));
-        assert!(rows(&clip).is_empty());
-        clip.edit_opacity_keyframes(|v| *v = vec![key(0.0, 0.0), key(1.0, 1.0)]);
+        assert!(rows(&Clip::gap(tc(0.0), tc(4.0))).is_empty());
+        let mut clip = klipp_timeline::test_clip::TestClip::of(Clip::gap(tc(0.0), tc(4.0))).lane("opacity", 0.0, 0.0).lane("opacity", 1.0, 1.0).build();
         clip.volume_keyframes = vec![key(0.5, 0.2), key(2.0, 1.0), key(3.0, 0.5)];
         let rows = rows(&clip);
         let names: Vec<&str> = rows.iter().map(|r| r.label.as_str()).collect();

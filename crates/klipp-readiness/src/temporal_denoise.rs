@@ -166,8 +166,9 @@ pub fn run(report: &mut Report) {
     report.case("denoise Viewer: within its frame budget", [key(Some(Route::Viewer), Obligation::FrameBudget)], || {
         let (with, clip) = scene(50, 150, 1.0, STRENGTH);
         let mut without = (*with).clone();
-        let mut bare = clip;
-        bare.set_effect_list(vec![], vec![]);
+        // The same clip with no effect on it.
+        let mut bare = Clip::media(clip.media_id().ok_or("the clip has no media")?, clip.timeline_in, clip.timeline_out, clip.source_in, clip.source_out);
+        bare.speed = clip.speed;
         without.sequence.tracks[0].clips = vec![bare];
         let frames: Vec<i64> = (20..20 + crate::budget::MIN_FRAMES as i64).collect();
         crate::budget::within(with, Arc::new(without), Arc::new(Ramp::whole()), &frames, crate::budget::Budget::GPU).map(|_| ())

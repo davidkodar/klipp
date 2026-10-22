@@ -303,11 +303,11 @@ fn run_kind(report: &mut Report, kind: &Kind) {
     // its analysis in the session's store.
     report.case(&format!("{name} Viewer: within its frame budget"), [key(kind, Some(Route::Viewer), Obligation::FrameBudget)], || {
         let (with, item) = one(1.0, true);
-        let mut without = (*with).clone();
-        without.sequence.tracks[0].clips[0].set_effect_list(vec![], vec![]);
+        // The same clip with the effect off.
+        let (without, _) = one(1.0, false);
         let frames: Vec<i64> = (20..20 + crate::budget::MIN_FRAMES as i64).collect();
         let setup = |s: &mut Session| s.renderer_mut().set_asset_store(Box::new(valid(&item)));
-        crate::budget::within_set(with, Arc::new(without), Arc::new(Pictures), &frames, crate::budget::Budget::GPU, &setup).map(|_| ())
+        crate::budget::within_set(with, without, Arc::new(Pictures), &frames, crate::budget::Budget::GPU, &setup).map(|_| ())
     });
     // Level 2: the viewer shows export's frame, both read from one real
     // file. Both find analysis where the app keeps it, the analysis
