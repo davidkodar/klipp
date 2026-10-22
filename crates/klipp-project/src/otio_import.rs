@@ -70,6 +70,9 @@ pub(crate) struct RawTimeline {
     #[serde(default)]
     pub global_start_time: Option<RawRationalTime>,
     pub tracks: RawStack,
+    /// Klipp's own export keeps the picture size here (`klipp.resolution`).
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
 }
 
 /// `Stack.1` — the container below Timeline that holds tracks. Stack-level
@@ -143,6 +146,10 @@ pub(crate) struct RawClip {
     /// `source_range` further.
     #[serde(default)]
     pub marked_range: Option<RawTimeRange>,
+    /// What the writing editor kept on the clip, by its namespace: not
+    /// imported, named in the report.
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
 }
 
 fn default_true() -> bool { true }
@@ -169,6 +176,9 @@ pub(crate) struct RawMarker {
     #[serde(default)]
     pub color: Option<String>,
     pub marked_range: RawTimeRange,
+    /// `Marker.2`'s note.
+    #[serde(default)]
+    pub comment: Option<String>,
 }
 
 /// Map an OTIO `rate` (plain `f64`) to a Klipp `Fps` using the SMPTE
@@ -463,7 +473,7 @@ fn build_track(
     project_dir: &Path,
     media_pool: &mut MediaPool,
     warnings: &mut Vec<String>,
-) -> Track {
+) -> (Track, Vec<Marker>) {
     let kind = match raw.kind.as_str() {
         "Video" => TrackKind::Video,
         "Audio" => TrackKind::Audio,
@@ -485,6 +495,9 @@ fn build_track(
         value: 0,
         rate: fps_rate,
     };
+    // Transitions met, at the cut they sit on, placed once the clips either
+    // side are built.
+    let mut transitions: Vec<PendingTransition> = Vec::new();
 
     for child_val in &raw.children {
         let schema = child_schema(child_val);
@@ -521,18 +534,17 @@ fn build_track(
                 Err(e) => warnings.push(format!("Gap parse failed: {e} — skipped")),
             }
         } else if schema.starts_with("Transition.") {
-            // OTIO transitions overlap the adjacent clips (in_offset + out_offset)
-            // and carry a transition_type enum. Klipp's transition model doesn't
-            // fit the OTIO overlap semantics directly — drop with a specific
-            // warning. Crucially the cursor does NOT advance: transitions are
-            // conceptually zero-duration at the track timeline level.
-            let kind = child_val
-                .get("transition_type")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
-            warnings.push(format!(
-                "Transition '{schema}' (type={kind}) not supported — skipped",
-            ));
+            // A transition takes no time on the track: it overlaps the clip
+            // before the cut by `in_offset` and the one after by
+            // `out_offset`, so the cursor does not advance.
+            let offset = |key: &str| child_val.get(key).and_then(|v| serde_json::from_value::<RawRationalTime>(v.clone()).ok()).map(|t| rt_from_otio(&t, fps_rate)).unwrap_or(RationalTime { value: 0, rate: fps_rate });
+            transitions.push(PendingTransition {
+                cut: cursor,
+                in_offset: offset("in_offset"),
+                out_offset: offset("out_offset"),
+                kind: child_val.get("transition_type").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                name: child_val.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            });
         } else {
             warnings.push(format!(
                 "Track child schema '{schema}' not supported — skipped",
@@ -540,8 +552,12 @@ fn build_track(
         }
     }
 
-    // Track-level markers are parsed but dropped — Klipp's data model only
-    // supports timeline (Sequence) and clip-scope markers.
+    for t in &transitions {
+        place_transition(&mut track, t, warnings);
+    }
+
+    // Klipp has no markers on a track: a track's markers, timed as the
+    // timeline is, become the timeline's, named with their track.
     let track_markers = parse_markers(
         &raw.markers,
         &format!("Track '{}'", track.name),
@@ -549,13 +565,90 @@ fn build_track(
     );
     if !track_markers.is_empty() {
         warnings.push(format!(
-            "Track '{}': {} track-level marker(s) dropped — Klipp has no track markers",
+            "Track '{}': {} track marker(s) kept as timeline markers — Klipp has no track markers",
             track.name,
             track_markers.len(),
         ));
     }
+    let markers = track_markers.into_iter().map(|rm| {
+        let mut marker = timeline_marker(rm, fps_rate);
+        marker.label = if marker.label.is_empty() { track.name.clone() } else { format!("{}: {}", track.name, marker.label) };
+        marker
+    }).collect();
 
-    track
+    (track, markers)
+}
+
+/// An OTIO transition met on a track, at the cut it sits on.
+struct PendingTransition {
+    cut: RationalTime,
+    in_offset: RationalTime,
+    out_offset: RationalTime,
+    kind: String,
+    name: String,
+}
+
+/// `t` placed on `track` between the clip that ends at its cut and the
+/// one that starts there: `in_offset` of it over the first, `out_offset`
+/// over the second, as the nearest Klipp transition. One with no clip on
+/// a side, or of a kind Klipp has no like of, is named in `warnings`.
+fn place_transition(track: &mut Track, t: &PendingTransition, warnings: &mut Vec<String>) {
+    use klipp_core::{TransitionAlignment, TransitionKind};
+    let a = track.clips.iter().find(|c| c.timeline_out == t.cut && !matches!(c.kind, ClipKind::Gap)).map(|c| c.id);
+    let b = track.clips.iter().find(|c| c.timeline_in == t.cut && !matches!(c.kind, ClipKind::Gap)).map(|c| c.id);
+    let label = if t.name.is_empty() { t.kind.clone() } else { t.name.clone() };
+    let (Some(clip_a_id), Some(clip_b_id)) = (a, b) else {
+        warnings.push(format!("Transition '{label}' has no clip on one side — not imported"));
+        return;
+    };
+    let duration = t.in_offset + t.out_offset;
+    if duration.value <= 0 {
+        warnings.push(format!("Transition '{label}' has no length — not imported"));
+        return;
+    }
+    let alignment = if t.out_offset.value == 0 {
+        TransitionAlignment::EndAtCut
+    } else if t.in_offset.value == 0 {
+        TransitionAlignment::StartAtCut
+    } else {
+        if t.in_offset != t.out_offset {
+            warnings.push(format!("Transition '{label}': off-centre overlap imported centred on the cut"));
+        }
+        TransitionAlignment::Center
+    };
+    let kind = match t.kind.as_str() {
+        "SMPTE_Dissolve" => TransitionKind::CrossDissolve,
+        other => {
+            warnings.push(format!("Transition '{label}' (type={other}) imported as a cross dissolve"));
+            TransitionKind::CrossDissolve
+        }
+    };
+    track.transitions.push(klipp_timeline::Transition {
+        id: klipp_core::TransitionId::new(),
+        kind,
+        duration,
+        clip_a_id,
+        clip_b_id,
+        user_params: klipp_core::TransitionUserParams::default(),
+        alignment,
+    });
+}
+
+/// A timeline marker from an OTIO marker timed as the timeline is: a range
+/// marker when it has a length, its note kept.
+fn timeline_marker(rm: RawMarker, fps_rate: u32) -> Marker {
+    let position = rt_from_otio(&rm.marked_range.start_time, fps_rate);
+    let duration = rt_from_otio(&rm.marked_range.duration, fps_rate);
+    Marker {
+        review: None,
+        id: MarkerId::new(),
+        position,
+        label: rm.name.unwrap_or_default(),
+        color: otio_color_to_klipp(rm.color.as_deref()),
+        duration: (duration.value > 0).then_some(duration),
+        comment: rm.comment.unwrap_or_default(),
+        kind: klipp_core::MarkerKind::None,
+    }
 }
 
 /// Build one media `Clip` from a parsed `RawClip`. Returns `(clip, consumed)`
@@ -572,7 +665,19 @@ fn build_clip(
     let source_range = raw.source_range.as_ref()?;
     let source_in = rt_from_otio(&source_range.start_time, fps_rate);
     let duration = rt_from_otio(&source_range.duration, fps_rate);
-    let source_out = source_in + duration;
+    // A constant speed: the clip keeps its length on the track and plays
+    // `time_scalar` of a second of its source each second; warps stacked
+    // on one clip multiply.
+    let scalars: Vec<f64> = raw.effects.iter().filter(|fx| child_schema(fx).starts_with("LinearTimeWarp")).filter_map(|fx| fx.get("time_scalar").and_then(|v| v.as_f64())).collect();
+    let product: f64 = scalars.iter().product();
+    let speed = (!scalars.is_empty()).then_some(product).filter(|s| s.abs() > 1e-9 && (s - 1.0).abs() > 1e-9);
+    // OTIO reads source time as start + t × scalar: a reversed clip runs
+    // back from its start, so its range ends there.
+    let (source_in, source_out) = match speed {
+        Some(speed) if speed < 0.0 => (source_in - RationalTime::from_secs_f64(duration.to_secs_f64() * speed.abs(), fps_rate), source_in),
+        Some(speed) => (source_in, source_in + RationalTime::from_secs_f64(duration.to_secs_f64() * speed.abs(), fps_rate)),
+        None => (source_in, source_in + duration),
+    };
     let timeline_in = cursor_timeline;
     let timeline_out = timeline_in + duration;
 
@@ -605,6 +710,9 @@ fn build_clip(
     clip.source_out = source_out;
     clip.kind = ClipKind::Media { media_id };
     clip.enabled = raw.enabled;
+    if let Some(speed) = speed {
+        clip.speed = speed;
+    }
 
     let clip_name = raw.name.as_deref().unwrap_or("<unnamed>");
 
@@ -631,29 +739,24 @@ fn build_clip(
     // Effects (LinearTimeWarp, FreezeFrame, colour ops) are dropped. Emit
     // a specific warning for time warps since they change clip duration
     // and a generic one for everything else.
-    if !raw.effects.is_empty() {
-        let mut has_time_warp = false;
-        for fx in &raw.effects {
-            let schema = fx
-                .get("OTIO_SCHEMA")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            if schema.starts_with("LinearTimeWarp") || schema.starts_with("FreezeFrame") {
-                has_time_warp = true;
-                break;
-            }
+    // A constant speed is imported above; a freeze, or a warp with no
+    // scalar, plays at normal speed, and any other effect is not imported.
+    let mut others = 0;
+    for fx in &raw.effects {
+        let schema = child_schema(fx);
+        let scalar = fx.get("time_scalar").and_then(|v| v.as_f64());
+        if schema.starts_with("FreezeFrame") || (schema.starts_with("LinearTimeWarp") && scalar.is_none_or(|s| s.abs() <= 1e-9)) {
+            warnings.push(format!("Clip '{clip_name}': freeze-frame effect not imported (clip will play at normal speed)"));
+        } else if !schema.starts_with("LinearTimeWarp") {
+            others += 1;
         }
-        if has_time_warp {
-            warnings.push(format!(
-                "Clip '{clip_name}': speed ramp / freeze-frame effect not imported (clip will play at normal speed)"
-            ));
-        } else {
-            warnings.push(format!(
-                "Clip '{}': {} effect(s) not imported (OTIO effects are not supported — LinearTimeWarp, colour corrections etc. are dropped)",
-                clip_name,
-                raw.effects.len(),
-            ));
-        }
+    }
+    if others > 0 {
+        warnings.push(format!("Clip '{clip_name}': {others} effect(s) not imported (OTIO effects other than a constant speed are not supported)"));
+    }
+    // What the writing editor kept on the clip: named, not imported.
+    if let Some(keys) = raw.metadata.as_ref().and_then(|m| m.as_object()).filter(|m| !m.is_empty()).map(|m| m.keys().cloned().collect::<Vec<_>>().join(", ")) {
+        warnings.push(format!("Clip '{clip_name}': OTIO metadata not imported ({keys})"));
     }
 
     // OTIO clip markers sit in the source's coordinate system (same basis as
@@ -667,10 +770,7 @@ fn build_clip(
             time_secs,
             name: rm.name.unwrap_or_default(),
             color: otio_color_to_klipp(rm.color.as_deref()),
-            // OTIO carries marker comments in metadata extensions
-            // (variable per writer); skip for now and let users edit
-            // post-import.
-            comment: String::new(),
+            comment: rm.comment.unwrap_or_default(),
         });
     }
 
@@ -721,12 +821,13 @@ pub fn load_otio(path: &Path) -> Result<ImportResult, OtioImportError> {
     let mut warnings: Vec<String> = Vec::new();
 
     let mut tracks: Vec<Track> = Vec::new();
+    let mut track_markers: Vec<Marker> = Vec::new();
     for child_val in &doc.tracks.children {
         let schema = child_schema(child_val);
         if schema.starts_with("Track.") {
             match serde_json::from_value::<RawTrack>(child_val.clone()) {
                 Ok(raw_track) => {
-                    let track = build_track(
+                    let (track, markers) = build_track(
                         &raw_track,
                         fps_rate,
                         &project_dir,
@@ -734,6 +835,7 @@ pub fn load_otio(path: &Path) -> Result<ImportResult, OtioImportError> {
                         &mut warnings,
                     );
                     tracks.push(track);
+                    track_markers.extend(markers);
                 }
                 Err(e) => warnings.push(format!("Track parse failed: {e} — skipped")),
             }
@@ -757,21 +859,10 @@ pub fn load_otio(path: &Path) -> Result<ImportResult, OtioImportError> {
     // Stack-level markers become timeline markers on the Sequence.
     let mut sequence_markers: Vec<Marker> = Vec::new();
     for rm in parse_markers(&doc.tracks.markers, "Timeline", &mut warnings) {
-        let position = rt_from_otio(&rm.marked_range.start_time, fps_rate);
-        // OTIO markers always carry a duration. Import anything > 0 frames
-        // as a range marker; zero-duration stays a point marker.
-        let duration = rt_from_otio(&rm.marked_range.duration, fps_rate);
-        let duration = if duration.value > 0 { Some(duration) } else { None };
-        sequence_markers.push(Marker { review: None,
-            id: MarkerId::new(),
-            position,
-            label: rm.name.unwrap_or_default(),
-            color: otio_color_to_klipp(rm.color.as_deref()),
-            duration,
-            comment: String::new(),
-            kind: klipp_core::MarkerKind::None,
-        });
+        sequence_markers.push(timeline_marker(rm, fps_rate));
     }
+    sequence_markers.extend(track_markers);
+    sequence_markers.sort_by_key(|m| m.position);
 
     let sequence = Sequence {
         // No interchange format carries a camera.
@@ -785,10 +876,8 @@ pub fn load_otio(path: &Path) -> Result<ImportResult, OtioImportError> {
         id: SequenceId::new(),
         name: doc.name.unwrap_or(name),
         fps,
-        resolution: Resolution {
-            width: 1920,
-            height: 1080,
-        },
+        // The size Klipp's own export kept, else HD.
+        resolution: doc.metadata.as_ref().and_then(|m| m.pointer("/klipp/resolution")).and_then(|r| Some(Resolution { width: r.get("width")?.as_u64()? as u32, height: r.get("height")?.as_u64()? as u32 })).unwrap_or(Resolution { width: 1920, height: 1080 }),
         first_clip_autoset: Default::default(),
         tracks,
         in_point: None,
@@ -1179,7 +1268,7 @@ mod tests {
     }
 
     #[test]
-    fn transition_drop_produces_warning() {
+    fn a_dissolve_between_two_clips_is_imported() {
         let json = timeline_with_track_children(
             serde_json::json!([
                 {
@@ -1213,14 +1302,45 @@ mod tests {
             serde_json::json!([]),
         );
         let result = load_inline(&json, "transition");
-        assert!(
-            warnings_contain_substring(&result.warnings, "transition"),
-            "warnings should mention 'transition', got: {:?}", result.warnings,
-        );
+        // A dissolve of 6 frames each side of the cut at 1 s, between A and B.
+        let track = &result.sequence.tracks[0];
+        assert_eq!(track.transitions.len(), 1, "{:?}", result.warnings);
+        let t = &track.transitions[0];
+        assert_eq!((t.clip_a_id, t.clip_b_id), (track.clips[0].id, track.clips[1].id));
+        assert_eq!(t.kind, klipp_core::TransitionKind::CrossDissolve);
+        assert_eq!(t.alignment, klipp_core::TransitionAlignment::Center);
+        assert!((t.duration.to_secs_f64() - 0.5).abs() < 1e-9);
+        assert!(!warnings_contain_substring(&result.warnings, "transition"), "{:?}", result.warnings);
+    }
+
+    /// A transition only before or only after its cut sits on that side; one
+    /// of a type Klipp has no like of comes in as a dissolve, said so; one
+    /// with no clip on a side is not imported, said so.
+    #[test]
+    fn a_transition_keeps_its_side_and_says_what_it_could_not_keep() {
+        let clip = |name: &str| serde_json::json!({
+            "OTIO_SCHEMA": "Clip.1", "name": name,
+            "source_range": { "OTIO_SCHEMA": "TimeRange.1",
+                "start_time": { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 0.0 },
+                "duration": { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 24.0 } },
+            "media_reference": { "OTIO_SCHEMA": "MissingReference.1", "metadata": {} }
+        });
+        let transition = |kind: &str, a: f64, b: f64| serde_json::json!({
+            "OTIO_SCHEMA": "Transition.1", "name": "t", "transition_type": kind,
+            "in_offset": { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": a },
+            "out_offset": { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": b }
+        });
+        let json = timeline_with_track_children(serde_json::json!([clip("A"), transition("Custom_Transition", 12.0, 0.0), clip("B"), transition("SMPTE_Dissolve", 6.0, 6.0)]), serde_json::json!([]));
+        let result = load_inline(&json, "transition_sides");
+        let track = &result.sequence.tracks[0];
+        assert_eq!(track.transitions.len(), 1);
+        assert_eq!(track.transitions[0].alignment, klipp_core::TransitionAlignment::EndAtCut);
+        assert!(result.warnings.iter().any(|w| w.contains("imported as a cross dissolve")), "{:?}", result.warnings);
+        assert!(result.warnings.iter().any(|w| w.contains("no clip on one side")), "{:?}", result.warnings);
     }
 
     #[test]
-    fn track_marker_drop_produces_warning() {
+    fn track_markers_are_said_to_become_timeline_markers() {
         let json = timeline_with_track_children(
             serde_json::json!([
                 {
@@ -1281,7 +1401,7 @@ mod tests {
     }
 
     #[test]
-    fn linear_time_warp_produces_specific_warning() {
+    fn a_linear_time_warp_is_the_clips_speed() {
         let json = timeline_with_track_children(
             serde_json::json!([{
                 "OTIO_SCHEMA": "Clip.1",
@@ -1302,15 +1422,62 @@ mod tests {
             serde_json::json!([]),
         );
         let result = load_inline(&json, "time_warp");
-        let mentions_speed_or_freeze = result.warnings.iter().any(|w| {
-            let lw = w.to_lowercase();
-            lw.contains("speed ramp") || lw.contains("freeze-frame")
+        // Half speed: a second on the track, half a second of its source.
+        let clip = &result.sequence.tracks[0].clips[0];
+        assert_eq!(clip.speed, 0.5);
+        assert!(((clip.timeline_out - clip.timeline_in).to_secs_f64() - 1.0).abs() < 1e-9);
+        assert!(((clip.source_out - clip.source_in).to_secs_f64() - 0.5).abs() < 1e-9);
+        assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    }
+
+    /// A reversed clip, as OTIO writes it: it starts at 2 s of its source
+    /// and runs back a second, so its range is 1 s to 2 s; two warps on one
+    /// clip multiply.
+    #[test]
+    fn a_reverse_warp_runs_back_from_its_start_and_warps_multiply() {
+        let warp = |s: f64| serde_json::json!({ "OTIO_SCHEMA": "LinearTimeWarp.1", "name": "w", "time_scalar": s, "metadata": {} });
+        let clip = |name: &str, warps: Vec<serde_json::Value>| serde_json::json!({
+            "OTIO_SCHEMA": "Clip.1", "name": name,
+            "source_range": { "OTIO_SCHEMA": "TimeRange.1",
+                "start_time": { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 48.0 },
+                "duration": { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 24.0 } },
+            "media_reference": { "OTIO_SCHEMA": "MissingReference.1", "metadata": {} },
+            "effects": warps
         });
-        assert!(
-            mentions_speed_or_freeze,
-            "warnings should mention 'speed ramp' or 'freeze-frame', got: {:?}",
-            result.warnings,
+        let json = timeline_with_track_children(serde_json::json!([clip("back", vec![warp(-1.0)]), clip("fast", vec![warp(2.0), warp(1.5)])]), serde_json::json!([]));
+        let result = load_inline(&json, "reverse");
+        let clips = &result.sequence.tracks[0].clips;
+        assert_eq!(clips[0].speed, -1.0);
+        assert!((clips[0].source_in.to_secs_f64() - 1.0).abs() < 1e-9 && (clips[0].source_out.to_secs_f64() - 2.0).abs() < 1e-9);
+        assert_eq!(clips[1].speed, 3.0);
+        assert!(((clips[1].source_out - clips[1].source_in).to_secs_f64() - 3.0).abs() < 1e-9);
+    }
+
+    /// A freeze is played at normal speed, said so; a clip's metadata is
+    /// named in the warnings; a marker's note is kept.
+    #[test]
+    fn a_freeze_metadata_and_marker_notes() {
+        let json = timeline_with_track_children(
+            serde_json::json!([{
+                "OTIO_SCHEMA": "Clip.2", "name": "held",
+                "source_range": { "OTIO_SCHEMA": "TimeRange.1",
+                    "start_time": { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 0.0 },
+                    "duration": { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 24.0 } },
+                "media_references": { "DEFAULT_MEDIA": { "OTIO_SCHEMA": "MissingReference.1", "metadata": {} } },
+                "active_media_reference_key": "DEFAULT_MEDIA",
+                "effects": [{ "OTIO_SCHEMA": "FreezeFrame.1", "name": "hold", "time_scalar": 0.0 }],
+                "metadata": { "editor": { "reel": "A001" } },
+                "markers": [{ "OTIO_SCHEMA": "Marker.2", "name": "look", "color": "RED", "comment": "fix the flare",
+                    "marked_range": { "OTIO_SCHEMA": "TimeRange.1",
+                        "start_time": { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 6.0 },
+                        "duration": { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 0.0 } } }]
+            }]),
+            serde_json::json!([]),
         );
+        let result = load_inline(&json, "freeze");
+        assert!(result.warnings.iter().any(|w| w.contains("freeze-frame")), "{:?}", result.warnings);
+        assert!(result.warnings.iter().any(|w| w.contains("metadata not imported (editor)")), "{:?}", result.warnings);
+        assert_eq!(result.sequence.tracks[0].clips[0].clip_markers[0].comment, "fix the flare");
     }
 
     #[test]
@@ -1456,22 +1623,21 @@ mod tests {
             .count();
         assert_eq!(clip_count, 2, "expected 2 media clips");
 
-        // Sequence-level marker promoted from the Stack.
-        assert_eq!(result.sequence.markers.len(), 1, "one sequence marker");
+        // The stack's marker and the track's, both on the timeline, the
+        // track's named with its track.
+        let labels: Vec<&str> = result.sequence.markers.iter().map(|m| m.label.as_str()).collect();
+        assert_eq!(labels, vec!["stack_mark", "V1: track_mark"]);
+        // The dissolve between the two clips.
+        assert_eq!(track.transitions.len(), 1);
 
         // Clip marker on the first clip.
         let first_clip_markers = track.clips[0].clip_markers.len();
         assert_eq!(first_clip_markers, 1, "one marker on first clip");
 
-        // Warnings: transition + track marker drops.
-        assert!(!result.warnings.is_empty(), "warnings expected");
+        // The track marker's move said.
         assert!(
-            warnings_contain_substring(&result.warnings, "transition"),
-            "warnings should mention 'transition', got: {:?}", result.warnings,
-        );
-        assert!(
-            warnings_contain_substring(&result.warnings, "marker"),
-            "warnings should mention 'marker', got: {:?}", result.warnings,
+            warnings_contain_substring(&result.warnings, "kept as timeline markers"),
+            "got: {:?}", result.warnings,
         );
     }
 }
