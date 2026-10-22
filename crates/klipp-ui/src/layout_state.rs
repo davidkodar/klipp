@@ -124,7 +124,7 @@ fn default_color_viewer_ratio() -> f32 { 0.66 }
 fn default_color_inspector_width() -> f32 { 300.0 }
 
 fn default_inspector_keys_w() -> f32 {
-    150.0
+    220.0
 }
 
 impl Default for LayoutState {

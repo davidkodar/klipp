@@ -19,6 +19,14 @@ pub const ROWS_MIN_W: f32 = 260.0;
 /// How near a key the pointer must be to take it, and to snap to a time,
 /// in points.
 const HIT: f32 = 6.0;
+
+/// The room kept clear at each end of a strip, in points: a key at the
+/// clip's first or last frame is drawn whole.
+const INSET: f32 = 10.0;
+
+/// Half a key diamond's width, in points: small enough that keys a few
+/// frames apart stay apart.
+const KEY_HALF: f32 = 3.5;
 const SNAP_PX: f32 = 6.0;
 
 /// What the Inspector hands the app to draw the column: the clip, the
@@ -50,7 +58,7 @@ impl KeyColumn {
         painter.rect_filled(column, 0.0, theme.bg_deep.gamma_multiply(0.5));
         painter.vline(column.min.x, column.y_range(), Stroke::new(1.0_f32, theme.border));
         let duration = clip.duration().to_secs_f64().max(1e-3);
-        let lane = column.shrink2(egui::vec2(8.0, 0.0));
+        let lane = column.shrink2(egui::vec2(INSET, 0.0));
         let px_per_sec = (lane.width() as f64 / duration).max(1e-3) as f32;
         let x_of = |t: f64| lane.min.x + t as f32 * px_per_sec;
         let t_of = |x: f32| (((x - lane.min.x) / px_per_sec) as f64).clamp(0.0, duration);
@@ -66,18 +74,28 @@ impl KeyColumn {
         // The strips, each in line with its row, and their keys.
         for (i, (kind, row)) in area.rows.iter().enumerate() {
             let strip = Rect::from_x_y_ranges(lane.x_range(), row.y_range());
-            painter.hline(strip.x_range(), strip.center().y, Stroke::new(1.0_f32, theme.border.gamma_multiply(0.6)));
-            for k in &keys[i] {
-                let c = pos2(x_of(k.time_secs), strip.center().y);
-                let s = 4.5;
-                let points = vec![pos2(c.x, c.y - s), pos2(c.x + s, c.y), pos2(c.x, c.y + s), pos2(c.x - s, c.y)];
-                if selected(kind, k.time_secs) {
-                    painter.add(egui::Shape::convex_polygon(points, theme.text_primary, Stroke::new(1.0_f32, theme.accent)));
-                } else if on_key(k.time_secs) {
-                    painter.add(egui::Shape::convex_polygon(points, theme.accent, Stroke::NONE));
-                } else {
-                    painter.add(egui::Shape::closed_line(points, Stroke::new(1.1_f32, theme.accent)));
+            let y = strip.center().y;
+            painter.hline(strip.x_range(), y, Stroke::new(1.0_f32, theme.border.gamma_multiply(0.6)));
+            // Where the value moves between two keys, a bar joins them; a
+            // hold between equal keys stays the plain line.
+            for w in keys[i].windows(2) {
+                if (w[0].value - w[1].value).abs() > f32::EPSILON && w[0].interpolation != klipp_core::Interpolation::Step {
+                    painter.hline(x_of(w[0].time_secs)..=x_of(w[1].time_secs), y, Stroke::new(2.0_f32, theme.accent.gamma_multiply(0.45)));
                 }
+            }
+            for k in &keys[i] {
+                let c = pos2(x_of(k.time_secs), y);
+                let s = KEY_HALF;
+                let points = vec![pos2(c.x, c.y - s), pos2(c.x + s, c.y), pos2(c.x, c.y + s), pos2(c.x - s, c.y)];
+                // Selected: light. At the playhead: ringed. Else the accent.
+                let (fill, ring) = if selected(kind, k.time_secs) {
+                    (theme.text_primary, Stroke::new(1.0_f32, theme.accent))
+                } else if on_key(k.time_secs) {
+                    (theme.accent, Stroke::new(1.2_f32, theme.text_primary))
+                } else {
+                    (theme.accent, Stroke::NONE)
+                };
+                painter.add(egui::Shape::convex_polygon(points, fill, ring));
             }
         }
         if (0.0..=duration).contains(&playhead) {
@@ -267,7 +285,7 @@ mod tests {
         fn key_at(&self, kind: &KeyframeParamKind, t: f64) -> egui::Pos2 {
             let area = self.area.as_ref().expect("the column drawn");
             let row = area.rows.iter().find(|(k, _)| k == kind).unwrap_or_else(|| panic!("a strip for {kind:?}: {:?}", area.rows)).1;
-            let lane = area.column.shrink2(egui::vec2(8.0, 0.0));
+            let lane = area.column.shrink2(egui::vec2(INSET, 0.0));
             pos2(lane.min.x + (t / 4.0) as f32 * lane.width(), row.center().y)
         }
     }
@@ -309,6 +327,19 @@ mod tests {
         let keys = crate::key_selection::track_keys(s.state.sequences[0].all_clips().find(|c| Some(c.id) == s.state.selected_clip).unwrap(), &px);
         let moved = keys[0].time_secs;
         assert!(((moved * 24.0) - (moved * 24.0).round()).abs() < 1e-6 && (moved - 1.6).abs() < 0.1, "{keys:?}");
+    }
+
+    /// The column ends at the panel's visible edge, and a key on the
+    /// clip's last frame is drawn whole inside it.
+    #[test]
+    fn the_last_key_is_drawn_whole() {
+        let mut s = Shown::new(560.0);
+        s.frame(Vec::new());
+        let px = KeyframeParamKind::Video(klipp_core::VideoParam::PositionX);
+        let column = s.area.as_ref().expect("the column drawn").column;
+        assert!(column.max.x <= 560.0, "the column ends on screen: {column:?}");
+        let last = s.key_at(&px, 4.0);
+        assert!(last.x + KEY_HALF <= column.max.x - 2.0, "the last key whole: {last:?} in {column:?}");
     }
 
     /// Too narrow for the rows and the column, the column is not drawn.
