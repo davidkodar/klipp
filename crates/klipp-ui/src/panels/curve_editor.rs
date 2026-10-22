@@ -301,6 +301,9 @@ pub struct CurveEditorPanel {
     /// Never empty.
     curves: Vec<ShownCurve>,
     active: usize,
+    /// Every shown curve drawn on its own range, 0 to 1 (#2271), not on
+    /// the active curve's values.
+    normalised: bool,
     selected_clip: Option<klipp_core::ClipId>,
     /// Active keyframe drag
     drag: Option<CurveDrag>,
@@ -333,6 +336,7 @@ impl Default for CurveEditorPanel {
             scroll: egui::Vec2::ZERO,
             curves: vec![ShownCurve { param: CurveParam::Video(VideoParam::Opacity), visible: true }],
             active: 0,
+            normalised: false,
             selected_clip: None,
             drag: None,
             needs_fit: true,
@@ -354,11 +358,88 @@ impl CurveEditorPanel {
         &self.curves[self.active.min(self.curves.len() - 1)].param
     }
 
-    /// Make `param` the curve shown and edited (#2271: one for now; the
-    /// list holds the ones shown beside it).
+    /// Make `param` the curve edited (#2271): the active curve if it is
+    /// shown already, else the one it takes the place of. The others
+    /// shown beside it stay.
     fn set_param(&mut self, param: CurveParam) {
-        self.curves = vec![ShownCurve { param, visible: true }];
-        self.active = 0;
+        match self.curves.iter().position(|c| c.param == param) {
+            Some(i) => self.active = i,
+            None => {
+                let at = self.active.min(self.curves.len() - 1);
+                self.curves[at] = ShownCurve { param, visible: true };
+                self.active = at;
+            }
+        }
+        self.curves[self.active].visible = true;
+    }
+
+    /// Show `param` beside the curves shown (#2271), drawn; nothing if it
+    /// is shown already.
+    fn show_with(&mut self, param: CurveParam) {
+        if !self.curves.iter().any(|c| c.param == param) {
+            self.curves.push(ShownCurve { param, visible: true });
+        }
+    }
+
+    /// Take curve `i` out of the list, never the last one; the active one
+    /// stays active, or the one before it becomes so.
+    fn remove_curve(&mut self, i: usize) {
+        if self.curves.len() < 2 || i >= self.curves.len() {
+            return;
+        }
+        self.curves.remove(i);
+        if self.active > i || self.active >= self.curves.len() {
+            self.active = self.active.saturating_sub(1);
+        }
+    }
+
+    /// The list of curves shown (#2271): each one's colour, whether it is
+    /// drawn, its name (the active one marked; a click makes it active),
+    /// and taking it out of the list.
+    fn curve_list(&mut self, ui: &mut egui::Ui, rect: Rect, theme: &KlippTheme) {
+        let mut activate = None;
+        let mut remove = None;
+        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
+            for (i, curve) in self.curves.iter_mut().enumerate() {
+                ui.horizontal(|ui| {
+                    let colour = Self::curve_colour(i, theme);
+                    let (swatch, _) = ui.allocate_exact_size(vec2(8.0, 8.0), egui::Sense::hover());
+                    ui.painter().rect_filled(swatch, 2.0, colour);
+                    if i != self.active {
+                        ui.checkbox(&mut curve.visible, "").on_hover_text("Draw this curve");
+                    }
+                    let name = egui::RichText::new(curve.param.label()).size(10.0).color(if i == self.active { theme.text_primary } else { theme.text_secondary });
+                    if ui.selectable_label(i == self.active, name).on_hover_text("Edit this curve's keys").clicked() {
+                        activate = Some(i);
+                    }
+                    if ui.small_button("×").on_hover_text("Stop showing this curve").clicked() {
+                        remove = Some(i);
+                    }
+                });
+            }
+        });
+        if let Some(i) = activate {
+            self.active = i;
+            self.curves[i].visible = true;
+            self.drag = None;
+            self.needs_fit = true;
+        }
+        if let Some(i) = remove {
+            self.remove_curve(i);
+            self.needs_fit = true;
+        }
+    }
+
+    /// Curve `i`'s colour: its place in the list, the first the accent.
+    fn curve_colour(i: usize, theme: &KlippTheme) -> Color32 {
+        const OTHERS: [Color32; 5] = [
+            Color32::from_rgb(224, 108, 117),
+            Color32::from_rgb(152, 195, 121),
+            Color32::from_rgb(97, 175, 239),
+            Color32::from_rgb(229, 192, 123),
+            Color32::from_rgb(198, 120, 221),
+        ];
+        if i == 0 { theme.accent } else { OTHERS[(i - 1) % OTHERS.len()] }
     }
 
     /// The curves shown, in order, the active one among them (#2271).
@@ -426,9 +507,12 @@ impl CurveEditorPanel {
         // ── Header (28px) ──
         let header_h = 28.0;
         let header_rect = Rect::from_min_size(full_rect.min, vec2(full_rect.width(), header_h));
+        // The list of curves shown, beside the graph, when there are
+        // several (#2271).
+        let list_w = if self.curves.len() > 1 { 160.0 } else { 0.0 };
         let graph_rect = Rect::from_min_max(
             pos2(full_rect.min.x + 50.0, header_rect.max.y + 1.0),
-            pos2(full_rect.max.x - 8.0, full_rect.max.y - 20.0),
+            pos2(full_rect.max.x - 8.0 - list_w, full_rect.max.y - 20.0),
         );
 
         // Draw header background
@@ -528,6 +612,31 @@ impl CurveEditorPanel {
                     }
                 }
 
+                // Other curves shown beside it (#2271): the clip's tracks
+                // with keys, or the camera's, each once.
+                let candidates: Vec<(String, CurveParam)> = match &scope {
+                    Some(CurveScope::Clip { id, .. }) => state.sequence().all_clips().find(|c| c.id == *id).map(|c| super::dope_sheet::rows(c).into_iter().map(|r| (r.label, r.curve)).collect()).unwrap_or_default(),
+                    _ => camera_lane::PARAMS.iter().map(|p| (p.label().to_string(), CurveParam::Camera(*p))).collect(),
+                };
+                let addable: Vec<(String, CurveParam)> = candidates.into_iter().filter(|(_, c)| !self.curves.iter().any(|s| s.param == *c)).collect();
+                if !addable.is_empty() {
+                    ui.menu_button(egui::RichText::new("Show with").size(10.0), |ui| {
+                        for (label, curve) in addable {
+                            if ui.button(label).clicked() {
+                                self.show_with(curve);
+                                ui.close_menu();
+                            }
+                        }
+                    })
+                    .response
+                    .on_hover_text("Show another of the clip's curves beside this one, in its own colour");
+                }
+                if self.curves.len() > 1
+                    && ui.selectable_label(self.normalised, egui::RichText::new("Normalised").size(10.0)).on_hover_text("Every curve on its own range, 0 to 1").clicked()
+                {
+                    self.normalised = !self.normalised;
+                }
+
                 ui.add_space(8.0);
                 ui.separator();
                 ui.add_space(4.0);
@@ -578,6 +687,11 @@ impl CurveEditorPanel {
             }
         }
 
+        if list_w > 0.0 {
+            let list_rect = Rect::from_min_max(pos2(graph_rect.max.x + 8.0, graph_rect.min.y), pos2(full_rect.max.x - 4.0, graph_rect.max.y));
+            self.curve_list(ui, list_rect, theme);
+        }
+
         let clip_duration = scope.duration();
         let track_kind = scope.kind();
         let clip_id = scope.clip_id();
@@ -608,14 +722,51 @@ impl CurveEditorPanel {
         self.draw_playhead(ui, state, &graph_rect, clip_id, clip_duration, theme);
 
         // ── Draw curve ──, past its keys as its modifier stack extends it
-        // (#2277), the same sums the renderer runs.
-        let extend = clip_id
-            .and_then(|id| state.sequence().all_clips().find(|c| c.id == id))
-            .and_then(|clip| modifier_param(self.param()).and_then(|p| clip.truth_lane(&p).and_then(|(_, stacks)| stacks.get(&p).map(|stack| klipp_core::modifier::extension(&stack.modifiers)))))
-            .unwrap_or_default();
+        // (#2277), the same sums the renderer runs. Each curve its own.
+        let clip = clip_id.and_then(|id| state.sequence().all_clips().find(|c| c.id == id)).cloned();
+        let extend_of = |param: &CurveParam| {
+            clip.as_ref()
+                .and_then(|clip| modifier_param(param).and_then(|p| clip.truth_lane(&p).and_then(|(_, stacks)| stacks.get(&p).map(|stack| klipp_core::modifier::extension(&stack.modifiers)))))
+                .unwrap_or_default()
+        };
+        // The other curves shown, under the active one (#2271): each on
+        // the active curve's values, or normalised, each on its own range.
+        let others: Vec<(usize, Vec<Keyframe>, f32, f32, f32, (klipp_core::Extrapolation, klipp_core::Extrapolation))> = self.curves.iter().enumerate()
+            .filter(|(i, c)| *i != self.active && c.visible)
+            .map(|(i, c)| {
+                let (mn, mx, def) = c.param.range();
+                let (lo, span) = if self.normalised { (mn, (mx - mn).max(f32::EPSILON)) } else { (v_min, v_range) };
+                (i, Self::keyframes_of(&c.param, state, clip_id), lo, span, def, extend_of(&c.param))
+            })
+            .collect();
+        let mut switch_to = None;
+        let clicked_at = graph_response.clicked().then(|| graph_response.interact_pointer_pos()).flatten();
+        for (i, keys, lo, span, def, extend) in &others {
+            let colour = Self::curve_colour(*i, theme);
+            self.draw_curve(ui, &graph_rect, keys, clip_duration, *lo, *span, *def, *extend, colour);
+            for k in keys {
+                let at = pos2(self.time_to_x(k.time_secs, &graph_rect, clip_duration), self.value_to_y(k.value, &graph_rect, *lo, *span));
+                if graph_rect.contains(at) {
+                    ui.painter().circle_filled(at, 3.0, colour);
+                    // A key of another curve clicked: that curve is the one
+                    // edited, and its keys drag on it.
+                    if clicked_at.is_some_and(|p| p.distance(at) <= 6.0) {
+                        switch_to = Some(*i);
+                    }
+                }
+            }
+        }
+        let extend = extend_of(self.param());
         self.draw_curve(
-            ui, &graph_rect, &keyframes, clip_duration, v_min, v_range, v_default, extend, theme,
+            ui, &graph_rect, &keyframes, clip_duration, v_min, v_range, v_default, extend, Self::curve_colour(self.active, theme),
         );
+        if let Some(i) = switch_to {
+            self.active = i;
+            self.needs_fit = true;
+            self.drag = None;
+            state.selected_keyframe = None;
+            return cmds;
+        }
 
         // ── Draw keyframe diamonds + handles ──
         let diamond_cmds = match (self.param(), clip_id) {
@@ -800,14 +951,19 @@ impl CurveEditorPanel {
     }
 
     fn get_keyframes(&self, state: &AppState, clip_id: Option<klipp_core::ClipId>) -> Vec<Keyframe> {
+        Self::keyframes_of(self.param(), state, clip_id)
+    }
+
+    /// `param`'s keys on the clip `clip_id`, or the sequence's camera's.
+    fn keyframes_of(param: &CurveParam, state: &AppState, clip_id: Option<klipp_core::ClipId>) -> Vec<Keyframe> {
         let seq = &state.sequences[state.active_sequence_idx];
-        if let CurveParam::Camera(param) = self.param() {
+        if let CurveParam::Camera(param) = param {
             return camera_lane::keys(&seq.camera, *param).to_vec();
         }
         let Some(clip_id) = clip_id else { return Vec::new() };
         for track in &seq.tracks {
             if let Some(clip) = track.find_clip(clip_id) {
-                return match self.param() {
+                return match param {
                     CurveParam::Title { object_id, param } => param.keyframes(clip, *object_id).to_vec(),
                     CurveParam::Audio(AudioParam::Volume) => clip.volume_keyframes.clone(),
                     CurveParam::Audio(AudioParam::Pan) => clip.pan_keyframes.clone(),
@@ -1235,14 +1391,13 @@ impl CurveEditorPanel {
         v_range: f32,
         v_default: f32,
         extend: (klipp_core::Extrapolation, klipp_core::Extrapolation),
-        theme: &KlippTheme,
+        curve_color: Color32,
     ) {
         if clip_duration <= 0.0 {
             return;
         }
 
         let painter = ui.painter();
-        let curve_color = theme.accent;
         let curve_stroke = Stroke::new(1.8_f32, curve_color);
 
         if keyframes.is_empty() {
@@ -2010,5 +2165,31 @@ mod curve_param_tests {
         let (min, max, _default) = CurveParam::AudioEffect("0:__wetdry".into()).range();
         assert_eq!(min, 0.0);
         assert_eq!(max, 1.0);
+    }
+
+    /// #2271: curves shown beside the active one. Picking a parameter
+    /// replaces the active curve and keeps the others, or makes one shown
+    /// already active; one is shown once; the list never goes empty, and
+    /// the active curve stays one in it.
+    #[test]
+    fn the_curves_shown_keep_one_active() {
+        let mut panel = CurveEditorPanel::new();
+        let (x, y, scale) = (CurveParam::Video(VideoParam::PositionX), CurveParam::Video(VideoParam::PositionY), CurveParam::Video(VideoParam::Scale));
+        panel.set_param(x.clone());
+        panel.show_with(y.clone());
+        panel.show_with(y.clone());
+        panel.show_with(scale.clone());
+        assert_eq!(panel.shown_curves().iter().map(|c| c.param.clone()).collect::<Vec<_>>(), [x.clone(), y.clone(), scale.clone()]);
+        assert_eq!(*panel.param(), x, "the first stays the one edited");
+        panel.set_param(scale.clone());
+        assert_eq!((panel.active, panel.shown_curves().len()), (2, 3), "one shown already is made active");
+        panel.set_param(CurveParam::Video(VideoParam::Rotation));
+        assert_eq!(panel.shown_curves()[2].param, CurveParam::Video(VideoParam::Rotation), "another takes the active one's place");
+        panel.remove_curve(2);
+        assert_eq!((panel.active, panel.shown_curves().len()), (1, 2), "the one before becomes active");
+        panel.remove_curve(0);
+        panel.remove_curve(0);
+        assert_eq!(panel.shown_curves().len(), 1, "never the last");
+        assert_eq!(*panel.param(), y);
     }
 }
