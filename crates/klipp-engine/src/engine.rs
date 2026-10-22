@@ -1406,6 +1406,10 @@ pub struct PlaybackEngine {
     /// prerolled during the gap and taken over as a cut is, not with a
     /// seek (#546). Cleared with `clock_only`'s other ways out.
     gap_hand_over: Option<(usize, usize)>,
+    /// The size the GPU stack's empty frame was drawn ahead at (#2386).
+    empty_stack_warm: Option<(u32, u32)>,
+    /// Whether it is drawn ahead at all; off only in a test.
+    prewarm_stack: bool,
     /// The last playhead said while playing, and whether playing forwards
     /// (#1806): what a report during playback is never behind, the way it
     /// plays (a floor forwards, a ceiling backwards). Cleared by a pause, a
@@ -2179,6 +2183,13 @@ impl PlaybackEngine {
         self.hold_neighbours = on;
     }
 
+    /// Whether the GPU stack's empty frame is drawn ahead (#2386); on
+    /// unless turned off. Off, a strobe's first gap meets a cold stack:
+    /// what a test of the recovery from a late hand-over plays against.
+    pub fn set_prewarm_empty_stack(&mut self, on: bool) {
+        self.prewarm_stack = on;
+    }
+
     /// Apply every queued `ParamChange` to `self.sequence`. Takes the write
     /// lock at most once (when the first entry is popped) and releases it when
     /// the queue is empty. Also invalidates `current_grade_hash` and
@@ -2346,6 +2357,8 @@ impl PlaybackEngine {
             held_tail: None,
             clock_only: false,
             gap_hand_over: None,
+            empty_stack_warm: None,
+            prewarm_stack: true,
             report_floor: std::cell::Cell::new(None),
             expected_audio_generation: 0,
             last_stats_time: std::time::Instant::now(),
@@ -2921,6 +2934,8 @@ impl PlaybackEngine {
 
             AppCommand::Play => {
                 debug!("Play command received, state={:?}", self.state);
+                // Before playback can reach a gap (#2386).
+                self.prewarm_empty_stack();
                 // Heard at the export's loudness: measured now if the
                 // sequence changed since (#1565).
                 self.refresh_delivery_gain();
@@ -5916,6 +5931,12 @@ impl PlaybackEngine {
             // through the gap, as that shot's preroll, rather than a new
             // one opening and seeking for each piece (#2376).
             let frame = self.fps.frame_duration_secs();
+            // Only a decoder ahead of the clock: one that has decoded past
+            // this shot's end. One behind it (opened late, held up) gave
+            // the next pieces frames already past when they came, and a
+            // strobe of short pieces stayed dark as long as it lagged
+            // (#2386); a fresh preroll opens at the next shot instead.
+            let ahead = |d: &VideoDecoder, source_out: f64| d.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).newest_pts_secs().is_some_and(|pts| pts >= source_out - 0.5 * frame);
             let hand_on = self.v1_decoder.is_some()
                 && !next_clip.is_reversed()
                 && (next_clip.speed - self.clip_speed).abs() < 1e-6
@@ -5923,6 +5944,7 @@ impl PlaybackEngine {
                     let gap = next_clip.timeline_in.to_secs_f64() - out.to_secs_f64();
                     let on = next_clip.source_in.to_secs_f64() - source_out;
                     *media == next_clip.media_id() && media.is_some() && gap <= frame * HAND_ON_GAP_FRAMES && (on - gap * self.clip_speed).abs() < 0.5 * frame
+                        && self.v1_decoder.as_ref().is_some_and(|d| ahead(d, *source_out))
                 });
             if hand_on {
                 let decoder = self.v1_decoder.take();
@@ -6560,6 +6582,22 @@ impl PlaybackEngine {
                     GAP_HAND_OVERS_WARM.fetch_add(1, Ordering::Relaxed);
                     self.current_clip_index = from;
                     self.advance_to_next_clip();
+                    return;
+                }
+                // Come to too late, the playhead past the shot it was
+                // for (#2386): its preroll, a decoder handed on across the
+                // gap among them, is stale. Let go of it, and open the shot
+                // here as a seek does: a clip stream taken over after a
+                // late hand-over kept a strobe's next pieces dark.
+                if self.preroll_clip_index == Some(next) {
+                    self.clear_preroll();
+                    GAP_HAND_OVERS_COLD.fetch_add(1, Ordering::Relaxed);
+                    self.seek_in_sequence(tc);
+                    if self.v1_decoder.is_none() && self.current_file.is_none() {
+                        let at = self.clip_source_start + (tc - self.clip_timeline_start).to_secs_f64().max(0.0) * self.clip_speed;
+                        self.master_clock.seek((at * 1_000_000.0) as u64);
+                        self.master_clock.resume();
+                    }
                     return;
                 }
             }

@@ -930,11 +930,54 @@ impl PlaybackEngine {
         }
     }
 
+    /// The GPU stack's empty frame drawn once, offscreen, at the size
+    /// playback draws at (#2386). Cold, its first one cost 150 to 300 ms,
+    /// which a strobe's first gap paid in the middle of playing: the
+    /// engine fell behind its pieces and showed black. Drawn after the
+    /// first paused frame and again, if that size has not been, as play
+    /// starts; the sequence's own grade and settings, its clips left out.
+    pub(super) fn prewarm_empty_stack(&mut self) {
+        struct Nothing;
+        impl FrameSource for Nothing {
+            fn frame(&mut self, _: &Clip, _: f64, _: u32, _: u32) -> Option<SourceFrame> {
+                None
+            }
+        }
+        if !self.prewarm_stack || !klipp_compose::gpu_composite_enabled() {
+            return;
+        }
+        let full = {
+            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+            (seq.resolution.width, seq.resolution.height)
+        };
+        let (w, h) = reduced_for_quality(full, quality_divisor_for(PlaybackState::Playing, crate::video_decoder::playback_quality_divisor()));
+        if w == 0 || h == 0 || self.empty_stack_warm == Some((w, h)) {
+            return;
+        }
+        let (snapshot, _) = self.sequence.snapshot_with_revision();
+        let mut seq = klipp_compose::frame_snapshot(&snapshot, self.playhead);
+        for track in seq.tracks.iter_mut() {
+            track.clips.clear();
+            track.transitions.clear();
+        }
+        self.renderer.set_working_colorspace(crate::video_decoder::working_colorspace());
+        self.renderer.set_grade_encoding(klipp_core::grade_encoding());
+        let t = Instant::now();
+        let drawn = self.renderer.render_display_on_gpu(&seq, self.playhead, w, h, &mut Nothing, RenderOptions::default(), klipp_compose::DisplayDelivery { texture: None, bytes: false });
+        self.empty_stack_warm = Some((w, h));
+        tracing::debug!("the GPU stack's empty frame drawn ahead at {w}x{h} in {:.1} ms (drawn {})", t.elapsed().as_secs_f64() * 1000.0, drawn.is_some());
+    }
+
     /// Render the timeline at the playhead and show it. `primary` is the
     /// primary decoder's frame (live or from the pre-grade cache), `None`
     /// when no media clip is under the primary decoder.
     pub(super) fn present_frame(&mut self, primary: Option<HeldFrame>) {
         self.present_frame_with(primary, false);
+        // A paused frame shown, playback not started: the stack's empty
+        // frame drawn ahead now, where it costs no frame on screen.
+        if self.state != PlaybackState::Playing {
+            self.prewarm_empty_stack();
+        }
     }
 
     /// [`Self::present_frame`], and with `stack_only` the frame is shown
