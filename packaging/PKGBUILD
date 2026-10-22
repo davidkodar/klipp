@@ -35,6 +35,9 @@ depends=(
   'pciutils'            # GPU probing (lspci)
   'onnxruntime'         # libonnxruntime.so for the ONNX vision models (BiRefNet, RF-DETR), CPU by default
   'espeak-ng'           # phonemes for the Kokoro narration voices (Window > Narrate)
+  'libxi'               # an X11 session; Wayland doesn't load them
+  'libxrandr'           # an X11 session; Wayland doesn't load them
+  'libxkbcommon-x11'    # an X11 session; Wayland doesn't load them
 )
 makedepends=(
   'rust'

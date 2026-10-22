@@ -18,16 +18,14 @@ does not automatically configure future system updates.
   use their respective distribution drivers; installing `vulkan-icd-loader`
   alone does not install a GPU driver. Existing Omarchy installations normally
   already have one. `vulkaninfo --summary` (from `vulkan-tools`) can check it.
-- While the repository is private, accept a repository invitation and
-  authenticate Git with your GitHub account first. A clone that says
-  "Repository not found" can mean missing access. Do not put tokens in commands
-  or clone URLs. An authenticated SSH clone works too.
 - Use your normal user account. `makepkg` must not run as root; it asks for sudo
   to install packages. Arch's [makepkg guide](https://wiki.archlinux.org/title/Makepkg)
   requires `base-devel` before building.
-- Keep room for source, compiler output and model downloads. The first release
-  build can take substantially longer than an incremental build. Models are
-  optional downloads and some are hundreds of megabytes each.
+- Keep room for source, compiler output and model downloads: the checkout and
+  its release build take about 5 GB, and the build dependencies about 3 GB more
+  on a fresh system. A first build with 4 compiler jobs takes about 8 minutes on
+  a fast desktop and longer on a laptop. Models are optional downloads and
+  some are hundreds of megabytes each.
 
 ## Install
 
@@ -42,6 +40,9 @@ Review the dependency prompts. The recipe installs the Rust/C/C++ build tools,
 Vulkan headers and shader compiler, audio/video libraries, and ONNX Runtime.
 If pacman asks for an `onnxruntime` provider, choose **onnxruntime-cpu** for the
 standard setup; CUDA is not required. An existing compatible provider can stay.
+If it asks for a `jack` provider, choose **pipewire-jack** on a PipeWire system
+such as Omarchy, and `jack2` otherwise. If it asks for a `cargo` provider, `rust`
+is the distribution compiler and `rustup` the toolchain manager; either works.
 If you use rustup instead of the distribution Rust compiler, install its stable
 toolchain first with `rustup toolchain install stable`.
 
