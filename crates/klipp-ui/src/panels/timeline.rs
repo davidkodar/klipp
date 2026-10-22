@@ -795,6 +795,7 @@ pub(crate) struct TimelineFrameCache {
 /// moved so far.
 struct TrackKeyDrag {
     track: usize,
+    param: klipp_core::automation::TrackParam,
     index: usize,
     from: Vec<klipp_core::Keyframe>,
     moved: Vec<klipp_core::Keyframe>,
@@ -1630,6 +1631,7 @@ impl TimelinePanel {
         // Restore clip rect for marquee selection and other post-track rendering
         ui.set_clip_rect(saved_clip);
 
+        self.end_unseen_track_key_drag(ui, state, &mut cmds);
         self.draw_marquee(ui, state, &mut cmds, content_rect, tracks_start_y, scroll_y);
 
         self.handle_empty_track_area_menu(ui, state, &layout, track_y, &mut cmds);
@@ -4538,6 +4540,7 @@ impl TimelinePanel {
                 && self.dragging_clip.is_none() && self.trimming_clip.is_none()
                 && self.roll_trimming.is_none() && self.slipping_clip.is_none()
                 && self.sliding_clip.is_none() && self.resizing_track.is_none()
+                && self.track_key_drag.is_none()
             {
                 if let Some(pos) = cur_pos {
                     // Only start if in the content area (not header) and not on a clip
@@ -12874,6 +12877,20 @@ impl TimelinePanel {
             }
     }
 
+    /// A track key drag let go while its lane wasn't drawn (its track
+    /// scrolled out, the lane closed) ends here (#2333): its keys as moved,
+    /// one undo step, unless the track's keys changed under it.
+    fn end_unseen_track_key_drag(&mut self, ui: &egui::Ui, state: &AppState, cmds: &mut Vec<AppCommand>) {
+        if self.track_key_drag.is_none() || ui.input(|i| i.pointer.primary_down()) {
+            return;
+        }
+        let Some(d) = self.track_key_drag.take() else { return };
+        let unchanged = state.sequence().tracks.get(d.track).is_some_and(|t| t.automation.keys(d.param) == d.from.as_slice());
+        if unchanged {
+            cmds.push(AppCommand::SetTrackAutomationKeys { track_index: d.track, param: d.param, keys: d.moved });
+        }
+    }
+
     /// The track's own keys of `param` in its automation lane (#2306): its
     /// curve as played, dim when the mode is Off, a diamond per key, and
     /// what the pass being recorded has written so far. Double-click adds
@@ -12984,7 +13001,7 @@ impl TimelinePanel {
                 commit(k, cmds);
                 self.suppress_clip_context_menu = true;
             }
-            Some(i) if pressed => self.track_key_drag = Some(TrackKeyDrag { track: track_idx, index: i, from: keys.clone(), moved: keys }),
+            Some(i) if pressed => self.track_key_drag = Some(TrackKeyDrag { track: track_idx, param: tp, index: i, from: keys.clone(), moved: keys }),
             None if double => {
                 let t = x_to_secs(p.x);
                 let mut k = keys;
@@ -17175,6 +17192,37 @@ mod files_drop_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #2333: a track key drag let go while its lane isn't drawn (its
+    /// track scrolled out) still ends: its keys as moved are one step,
+    /// unless the track's keys changed under it, when nothing is written.
+    #[test]
+    fn a_track_key_drag_ends_when_let_go_out_of_view() {
+        use klipp_core::automation::TrackParam;
+        let key = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
+        let mut state = AppState::default();
+        let a = state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Audio).expect("an audio track");
+        let from = vec![key(1.0, 1.0), key(2.0, 0.5)];
+        state.sequences[0].tracks[a].automation.lanes.insert(TrackParam::Volume, from.clone());
+        let moved = vec![key(1.0, 1.0), key(2.5, 0.25)];
+        let ctx = egui::Context::default();
+        let run = |panel: &mut TimelinePanel, state: &AppState| {
+            let mut cmds = Vec::new();
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| panel.end_unseen_track_key_drag(ui, state, &mut cmds));
+            });
+            cmds
+        };
+        let mut panel = TimelinePanel { track_key_drag: Some(TrackKeyDrag { track: a, param: TrackParam::Volume, index: 1, from: from.clone(), moved: moved.clone() }), ..Default::default() };
+        let cmds = run(&mut panel, &state);
+        assert!(matches!(&cmds[..], [AppCommand::SetTrackAutomationKeys { track_index, param: TrackParam::Volume, keys }] if *track_index == a && *keys == moved), "{cmds:?}");
+        assert!(panel.track_key_drag.is_none());
+
+        state.sequences[0].tracks[a].automation.lanes.insert(TrackParam::Volume, vec![key(0.0, 0.1)]);
+        let mut panel = TimelinePanel { track_key_drag: Some(TrackKeyDrag { track: a, param: TrackParam::Volume, index: 1, from, moved }), ..Default::default() };
+        assert!(run(&mut panel, &state).is_empty(), "keys changed under it: nothing written");
+        assert!(panel.track_key_drag.is_none());
+    }
 
     /// #2306: a dragged track key stays between its neighbours, and keys
     /// closer than its margin, or at one time, don't panic the clamp.
