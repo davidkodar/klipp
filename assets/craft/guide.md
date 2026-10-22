@@ -226,6 +226,7 @@ exist until the plan runs.
   file is transcribed is speech where its words are, not along its
   whole length, and a lone word the transcriber was unsure of is not
   speech; a clip marked voiceover is speech throughout.
+- `match {clip_id, keep?}`: start and end a title, effect or sound with the clip under it; `keep` keeps it so as the shot is edited.
 - `role {clip_id, role}`: what a clip is to the mix and the checks:
   dialogue, voiceover, music, sfx, ambience, foley, broll or graphics.
   Mark a camera's own sound `ambience` (or the shot `broll`) when it

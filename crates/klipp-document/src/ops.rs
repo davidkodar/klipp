@@ -1123,6 +1123,16 @@ pub enum Op {
     /// music bed and a sound effect are told from speech by this, so
     /// they are never taken for speech and speech is never ducked.
     Role { clip_id: ClipRef, role: String },
+    /// Give a clip the start and length of the clip under it (#2236): the
+    /// one it overlaps most on the nearest track below that has one, else
+    /// above. With `keep` it stays matched, following the shot's trims,
+    /// rolls and moves until it is moved on its own or the shot is
+    /// deleted; without, a clip kept matched stops being kept so.
+    Match {
+        clip_id: ClipRef,
+        #[serde(default)]
+        keep: bool,
+    },
     /// A clip seen only through another (#677), a track matte: footage
     /// inside the letters of a title, or inside a shape. `source` is
     /// the clip it shows through; left out, the clip above it at its
@@ -1872,7 +1882,7 @@ fn one_piece() -> u32 {
 pub const OP_NAMES: &[&str] = &[
     "graphics", "vector_path", "connector", "place", "add_track", "remove_track", "set_track", "trim", "j_cut", "l_cut", "split", "join", "remove", "move", "cut",
     "captions", "audio", "volume", "duck", "lower_third", "set_text", "grade", "effect", "redact",
-    "slip", "slide", "pin", "role", "matte", "format", "stabilize", "reframe", "zoom", "pan", "follow", "refit", "highlight",
+    "slip", "slide", "pin", "role", "match", "matte", "format", "stabilize", "reframe", "zoom", "pan", "follow", "refit", "highlight",
     "ramp", "grade_group", "remove_grade_group", "look", "qualify", "zones", "retime", "replace", "track_audio", "clean_audio",
     "transition", "style", "title", "compose", "camera", "crop", "generator", "depth", "label", "motion_blur",
     "strobe", "set_length", "over_edits", "template",
@@ -3140,6 +3150,24 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             };
             let what = format!("{} is {}", clip_name(seq, pool, clip), role.trim().to_lowercase());
             Ok((what, EditCommand::SetClipRole { clip_id: clip.id, old: clip.role, new, old_source: clip.role_source }, vec![clip.id]))
+        }
+        Op::Match { clip_id, keep } => {
+            let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            let Some(shot) = crate::matched::clip_below(seq, clip.id) else {
+                return Err(refuse(i, format!("nothing is under {} to match", clip_name(seq, pool, clip)), "lay it over a clip on another track"));
+            };
+            let mut edits = Vec::new();
+            if let Some(ops) = crate::matched::match_ops(seq, clip.id, shot) {
+                let plan = resolve(seq, pool, &ops).map_err(|r| Refusal { step: i, ..r })?;
+                edits.extend(plan.steps.into_iter().map(|s| s.edit));
+            }
+            let new = keep.then_some(shot);
+            if clip.matched_to != new {
+                edits.push(EditCommand::SetClipMatch { clip_id: clip.id, old: clip.matched_to, new });
+            }
+            let shot_name = find_clip(seq, shot).map_or_else(String::new, |(_, _, s)| clip_name(seq, pool, s));
+            let what = format!("{} matched to {shot_name}{}", clip_name(seq, pool, clip), if *keep { ", kept matched" } else { "" });
+            Ok((what, EditCommand::Batch(edits), vec![clip.id]))
         }
         Op::Matte { clip_id, source, channel, invert, feather_px, choke_px, show_source, clear } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;

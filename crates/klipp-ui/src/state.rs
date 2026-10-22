@@ -5464,9 +5464,10 @@ impl AppState {
         if command.scope() != crate::history::Scope::Sequence || !self.sequence().all_clips().any(|c| c.matched_to.is_some()) {
             return command;
         }
-        // The sequence as it was: the edit undone on a copy.
+        // The sequence as it was: the edit undone on a copy. A sequence's
+        // edit is undone on the sequence alone, the media pool left out.
         let mut before = vec![self.sequence().clone()];
-        let (mut pool, mut fps) = (self.media_pool.clone(), self.fps);
+        let (mut pool, mut fps) = (klipp_media::MediaPool::new(), self.fps);
         klipp_document::apply::DocumentView { sequences: &mut before, active: 0, media_pool: &mut pool, fps: &mut fps }.apply_inverse(&command);
         let follow = klipp_document::matched::follow(&before[0], self.sequence(), &self.media_pool);
         if follow.edits.is_empty() {

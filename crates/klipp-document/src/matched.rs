@@ -18,6 +18,18 @@ use klipp_timeline::Sequence;
 use crate::history::EditCommand;
 use crate::ops::{self, Anchor, ClipRef, LengthKeep, Op};
 
+/// The clip under `clip_id`: the one it overlaps most on the nearest track
+/// below that has one, else above; never its own linked partner.
+pub fn clip_below(seq: &Sequence, clip_id: ClipId) -> Option<ClipId> {
+    let (ti, ci) = seq.find_clip(clip_id)?;
+    let clip = &seq.tracks[ti].clips[ci];
+    let shared = |c: &klipp_timeline::Clip| c.timeline_out.min(clip.timeline_out).value - c.timeline_in.max(clip.timeline_in).value;
+    (ti + 1..seq.tracks.len())
+        .chain((0..ti).rev())
+        .find_map(|t| seq.tracks[t].clips.iter().filter(|c| c.id != clip.id && Some(c.id) != clip.linked_clip_id && shared(c) > 0).max_by_key(|c| shared(c)))
+        .map(|c| c.id)
+}
+
 /// The ops that give `clip_id` `shot_id`'s start and length, through the
 /// move and set-length ops. `None` when it has them already, or either
 /// is not in `seq`.
@@ -185,6 +197,33 @@ mod tests {
         let f = follow(&before, &alone, &MediaPool::new());
         assert_eq!(f.dropped.iter().map(|d| d.0).collect::<Vec<_>>(), vec![title], "moved on its own");
         assert_eq!(range(&apply(&alone, &f.edits), title), (1.0, 3.0), "and left where it was put");
+    }
+
+    /// The `match` op: a clip takes the shot's start and length, kept
+    /// matched with `keep`; without, a kept clip lets go where it is. With
+    /// nothing under it, it is refused.
+    #[test]
+    fn the_match_op_matches_keeps_and_lets_go() {
+        let (seq, shot, _, title) = matched();
+        let mut seq = apply(&seq, &[EditCommand::SetClipMatch { clip_id: title, old: Some(shot), new: None }]);
+        let t = seq.all_clips_mut().find(|c| c.id == title).unwrap();
+        (t.timeline_in, t.timeline_out) = (tc(1.0), tc(2.0));
+        let run = |seq: &Sequence, keep: bool| {
+            let plan = ops::resolve(seq, &MediaPool::new(), &[Op::Match { clip_id: ClipRef::Id(title), keep }]).expect("resolves");
+            apply(seq, &plan.steps.into_iter().map(|s| s.edit).collect::<Vec<_>>())
+        };
+        let kept = run(&seq, true);
+        let t = kept.all_clips().find(|c| c.id == title).unwrap();
+        assert_eq!((range(&kept, title), t.matched_to), ((0.0, 4.0), Some(shot)));
+        let let_go = run(&kept, false);
+        assert_eq!((range(&let_go, title), let_go.all_clips().find(|c| c.id == title).unwrap().matched_to), ((0.0, 4.0), None));
+
+        let mut alone = seq.clone();
+        for t in &mut alone.tracks {
+            t.clips.retain(|c| c.id == title);
+        }
+        let refused = ops::resolve(&alone, &MediaPool::new(), &[Op::Match { clip_id: ClipRef::Id(title), keep: true }]).unwrap_err();
+        assert!(refused.why.contains("nothing is under"), "{}", refused.why);
     }
 
     /// A follow the ops refuse, over a neighbour, drops the link instead.

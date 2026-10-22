@@ -32,33 +32,6 @@ impl KlippApp {
         false
     }
 
-    /// Keep `clip_id` matched to the clip under it (#2236), matched to it
-    /// now in the same step; or, with `keep` false, stop. A match the ops
-    /// refuse (over a neighbour, past its source) is said in a toast.
-    pub(super) fn set_clip_match(&mut self, clip_id: klipp_core::ClipId, keep: bool) {
-        let seq = self.state.sequence();
-        let Some(old) = seq.all_clips().find(|c| c.id == clip_id).map(|c| c.matched_to) else { return };
-        if !keep {
-            if old.is_some() {
-                self.apply_edits_as_one(&[EditCommand::SetClipMatch { clip_id, old, new: None }], "Stop Keeping Matched");
-            }
-            return;
-        }
-        let Some(shot) = crate::edit_helpers::clip_below(seq, clip_id) else { return };
-        let mut edits = Vec::new();
-        if let Some(ops) = klipp_document::matched::match_ops(seq, clip_id, shot) {
-            match klipp_document::ops::resolve(seq, &self.state.media_pool, &ops) {
-                Ok(plan) => edits.extend(plan.steps.into_iter().map(|s| s.edit)),
-                Err(r) => {
-                    self.state.toast.show(format!("Keep Matched: not done, {}", r.why));
-                    return;
-                }
-            }
-        }
-        edits.push(EditCommand::SetClipMatch { clip_id, old, new: Some(shot) });
-        self.apply_edits_as_one(&edits, "Keep Matched");
-    }
-
     /// Each of `clip_ids` given the name and colour `change` makes of its
     /// own (#920), as one undo step named `description`. A clip's linked
     /// partner (its picture or its sound) is named with it, so the two
@@ -711,10 +684,6 @@ impl KlippApp {
                 }
                 AppCommand::SetClipGradeFlags { clip_ids, flag } => {
                     self.set_clip_labels(clip_ids, "Grade Flag", |label| klipp_timeline::ClipLabel { flag: *flag, ..label.clone() });
-                    true
-                }
-                AppCommand::SetClipMatch { clip_id, keep } => {
-                    self.set_clip_match(*clip_id, *keep);
                     true
                 }
                 AppCommand::SetClipRole { clip_id, role } => {
