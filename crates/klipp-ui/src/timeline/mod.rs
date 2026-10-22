@@ -120,12 +120,16 @@ impl NewTimelinePanel {
                     crate::panels::selects_strip::show(ui, state, theme, strip_rect, &mut cmds);
                 });
             }
-            // Its foot drags to resize it.
+            // Its foot drags to resize it, and shows so: a short grip in
+            // the middle, lit while hovered or dragged (#2324).
             let grip = egui::Rect::from_min_size(egui::pos2(strip_rect.min.x, strip_rect.max.y - 3.0), egui::vec2(strip_rect.width(), 6.0));
             let resize = ui.interact(grip, ui.id().with("selects_resize"), egui::Sense::drag()).on_hover_cursor(egui::CursorIcon::ResizeVertical);
             if resize.dragged() {
-                state.selects_height = (state.selects_height + resize.drag_delta().y).clamp(60.0, 400.0);
+                state.selects_height = (state.selects_height + resize.drag_delta().y).clamp(60.0, stacked::MAX_HEIGHT);
             }
+            let lit = resize.hovered() || resize.dragged();
+            let mark = egui::Rect::from_center_size(egui::pos2(strip_rect.center().x, strip_rect.max.y), egui::vec2(36.0, 3.0));
+            ui.painter().rect_filled(mark, 1.5, if lit { theme.accent } else { theme.text_dim });
         }
 
         // Content area below tabs (and the selects strip)

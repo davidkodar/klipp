@@ -98,6 +98,10 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, rect: e
             ui.label(egui::RichText::new("read-only").size(10.0).color(theme.text_dim));
             if ui.small_button("Edit").on_hover_text("Work on the selects as a timeline of their own, above the cut").clicked() {
                 state.selects_edit = true;
+                // Tall enough to show its tracks (#2324).
+                if let Some(idx) = state.sequences.iter().position(|s| s.id == seq.id) {
+                    state.selects_height = state.selects_height.max(crate::timeline::stacked::fitting_height(state, idx));
+                }
             }
             ui.separator();
             let range = state.selects_range.filter(|(a, b)| b > a);

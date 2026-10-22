@@ -15,6 +15,21 @@ use klipp_core::AppCommand;
 /// The stacked header's height.
 pub const HEADER: f32 = 22.0;
 
+/// The width of the accent bar down the left edge of the timeline worked
+/// in (#2324).
+pub const FOCUS_BAR: f32 = 3.0;
+
+/// The height the upper timeline needs to show every track of sequence
+/// `idx` (#2324): its header, its ruler and its tracks, never above
+/// [`MAX_HEIGHT`].
+pub fn fitting_height(state: &AppState, idx: usize) -> f32 {
+    let tracks: f32 = state.sequences.get(idx).map_or(0.0, |s| s.tracks.iter().map(crate::panels::timeline::track_row_height).sum());
+    (HEADER + crate::theme::RULER_HEIGHT + tracks + 8.0).min(MAX_HEIGHT)
+}
+
+/// The tallest the stacked selects may be dragged.
+pub const MAX_HEIGHT: f32 = 400.0;
+
 /// The upper timeline: its own panels, so its drags and caches are its
 /// own; the view of whichever of the two is parked; and which sequence it
 /// shows.
@@ -124,9 +139,12 @@ pub(super) fn show_top(main: &mut NewTimelinePanel, ui: &mut egui::Ui, state: &m
             draw_parked(view, state, take, cmds, |state, out| panel.show_content(ui, state, theme, old, false, lanes, out))
         }
     }).inner;
-    // The one worked in, outlined.
+    // The one worked in, marked: an accent bar down its left edge and a
+    // thin outline, so which of the two takes edits is seen at a glance.
     let worked = if top_live != changed { rect } else { cut };
-    ui.painter().rect_stroke(worked.shrink(0.5), 0.0, egui::Stroke::new(1.0_f32, theme.accent.gamma_multiply(0.6)));
+    let painter = ui.painter();
+    painter.rect_stroke(worked.shrink(0.5), 0.0, egui::Stroke::new(1.0_f32, theme.accent.gamma_multiply(0.8)));
+    painter.rect_filled(egui::Rect::from_min_size(worked.min, egui::vec2(FOCUS_BAR, worked.height())), 0.0, theme.accent);
     main.stacked = Some(st);
     changed
 }
@@ -158,12 +176,14 @@ fn header_row(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, rect:
             ui.label(egui::RichText::new(&name).size(11.0).color(theme.text_secondary));
             done = ui.small_button("Done").on_hover_text("Back to the read-only strip").clicked();
             ui.separator();
-            let label = match marked {
-                Some(_) => "\u{21E9} Drag into the cut",
-                None => "Mark In and Out, or select clips, to drag them into the cut",
-            };
-            let handle = ui.add_enabled(marked.is_some(), egui::Label::new(egui::RichText::new(label).size(11.0).color(if marked.is_some() { theme.text_primary } else { theme.text_dim })).sense(egui::Sense::drag()));
-            carry = handle.on_hover_cursor(egui::CursorIcon::Grab).drag_started();
+            // The handle once something is marked; until then a hint at
+            // readable contrast (a disabled label greys it past reading).
+            if marked.is_some() {
+                let handle = ui.add(egui::Label::new(egui::RichText::new("\u{21E9} Drag into the cut").size(11.0).color(theme.text_primary)).sense(egui::Sense::drag()));
+                carry = handle.on_hover_cursor(egui::CursorIcon::Grab).drag_started();
+            } else {
+                ui.label(egui::RichText::new("Mark In and Out, or select clips, to drag them into the cut").size(11.0).color(theme.text_secondary));
+            }
         });
     });
     if let (true, Some((a, b))) = (carry, marked) {
@@ -290,6 +310,8 @@ mod tests {
         sent: Vec<AppCommand>,
         /// The modifiers held through each frame.
         mods: egui::Modifiers,
+        /// What the last frame drew.
+        shapes: Vec<egui::epaint::ClippedShape>,
     }
 
     impl Stack {
@@ -311,7 +333,7 @@ mod tests {
             state.timeline_zoom = 40.0;
             let mut old = crate::panels::timeline::TimelinePanel::default();
             old.embedded = true;
-            let mut s = Stack { ctx: egui::Context::default(), state, panel: NewTimelinePanel::default(), old, time: 0.0, sent: Vec::new(), mods: egui::Modifiers::NONE };
+            let mut s = Stack { ctx: egui::Context::default(), state, panel: NewTimelinePanel::default(), old, time: 0.0, sent: Vec::new(), mods: egui::Modifiers::NONE, shapes: Vec::new() };
             s.frame(Vec::new());
             s
         }
@@ -347,6 +369,7 @@ mod tests {
                 }
             }
             self.sent = cmds;
+            self.shapes = out.shapes.clone();
             out.shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)), _ => None }).collect()
         }
 
@@ -658,5 +681,23 @@ mod tests {
         let mut s = Stack::new();
         let clip = s.state.sequences[0].all_clips().next().unwrap().id;
         assert!(start_carry(&mut s.state, clip, true), "Select carries");
+    }
+
+    /// #2324: with nothing marked, the header's hint is drawn as a plain
+    /// label (not a disabled one, which greys it past reading); the
+    /// timeline worked in carries the accent bar; the height the upper one
+    /// opens at shows its tracks.
+    #[test]
+    fn the_stack_reads_clearly() {
+        let mut s = Stack::new();
+        let texts = s.frame(Vec::new());
+        assert!(texts.iter().any(|(t, _)| t.starts_with("Mark In and Out")), "the hint drawn: {texts:?}");
+        let theme = KlippTheme::default();
+        let bars = s.shapes.iter().filter(|c| matches!(&c.shape, egui::Shape::Rect(r) if r.fill == theme.accent && (r.rect.width() - FOCUS_BAR).abs() < 0.01)).count();
+        assert_eq!(bars, 1, "one accent bar, on the timeline worked in");
+        let top = s.state.sequences.iter().position(|q| q.name == "Selects").unwrap();
+        let want = fitting_height(&s.state, top);
+        let tracks: f32 = s.state.sequences[top].tracks.iter().map(crate::panels::timeline::track_row_height).sum();
+        assert!(want >= (HEADER + crate::theme::RULER_HEIGHT + tracks).min(MAX_HEIGHT) && want <= MAX_HEIGHT, "{want}");
     }
 }
