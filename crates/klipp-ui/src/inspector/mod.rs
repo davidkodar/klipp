@@ -589,7 +589,9 @@ impl NewInspectorPanel {
             // that sets its width.
             if let (true, Some((_, clip))) = (column_w > 0.0, clip_info) {
                 let seen = ui.clip_rect();
-                let column = egui::Rect::from_x_y_ranges(top.x + content_width..=top.x + full, seen.min.y.max(top.y)..=seen.max.y.min(rows_drawn.response.rect.max.y));
+                // Never past the panel's visible edge, or the last keys are cut.
+                let right = (top.x + full).min(seen.max.x).min(ui.ctx().screen_rect().max.x);
+                let column = egui::Rect::from_x_y_ranges(top.x + content_width..=right, seen.min.y.max(top.y)..=seen.max.y.min(rows_drawn.response.rect.max.y));
                 let edge = egui::Rect::from_x_y_ranges(column.min.x - 3.0..=column.min.x + 3.0, column.y_range());
                 let grip = ui.interact(edge, ui.id().with("key_column_edge"), egui::Sense::drag()).on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
                 if grip.dragged() {
