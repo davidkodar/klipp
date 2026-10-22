@@ -662,6 +662,20 @@ fn spill_bounds(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num
 /// dispatch that covers them: nothing when the layer is all transparent.
 const SPILL_REGION: &str = concat!(shader_pixel_storage_wgsl!(), spill_head!(), r#"
 @group(0) @binding(5) var<storage, read_write> args: array<u32, 12>; // not-pixels: the region's indirect dispatches
+// `n` workgroups over x and, past the per-dimension limit, y, as
+// `split_workgroups` splits a direct dispatch (#2341): the passes rebuild
+// their index from both.
+fn split(at: u32, n: u32) {
+    var x = n;
+    var y = 1u;
+    if n > 65535u {
+        y = (n + 65534u) / 65535u;
+        x = (n + y - 1u) / y;
+    }
+    args[at] = x;
+    args[at + 1u] = y;
+    args[at + 2u] = 1u;
+}
 @compute @workgroup_size(1)
 fn spill_region() {
     let b = rect();
@@ -680,18 +694,12 @@ fn spill_region() {
     atomicStore(&region.y1, r.w);
     let n = u32((r.z - r.x) * (r.w - r.y));
     // A thread a pixel; a thread a row; a thread a column.
-    args[0] = (n + 255u) / 256u;
-    args[1] = 1u;
-    args[2] = 1u;
+    split(0u, (n + 255u) / 256u);
     // A thread a 32-pixel stretch of a row, or of a column.
     let rw = u32(r.z - r.x);
     let rh = u32(r.w - r.y);
-    args[3] = (rh * ((rw + 31u) / 32u) + 63u) / 64u;
-    args[4] = 1u;
-    args[5] = 1u;
-    args[6] = (rw * ((rh + 31u) / 32u) + 63u) / 64u;
-    args[7] = 1u;
-    args[8] = 1u;
+    split(3u, (rh * ((rw + 31u) / 32u) + 63u) / 64u);
+    split(6u, (rw * ((rh + 31u) / 32u) + 63u) / 64u);
 }
 "#);
 

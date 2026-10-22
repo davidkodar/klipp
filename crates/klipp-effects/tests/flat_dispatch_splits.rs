@@ -10,6 +10,7 @@
 use std::path::Path;
 
 use klipp_effects::gpu::{split_workgroups, GpuEffectsPipeline, WorkgroupCapForTest};
+use klipp_effects::gpu_scopes::{HistogramJob, HistogramLayout, ScopeInput, ScopeJob, ScopeTransfer, VectorscopeJob, WaveformJob, WaveformMode};
 use klipp_effects::registry::effect_types;
 
 const YW: [f32; 3] = [0.2126, 0.7152, 0.0722];
@@ -73,6 +74,34 @@ fn every_effect_draws_the_same_dispatched_in_2d() {
     assert!(unsteady.len() <= 2, "too many effects differ run to run to be checked: {unsteady:?}");
 }
 
+/// Every scope draws the same dispatched in 2D as in a row, bit for bit,
+/// the limit lowered to 2: a flat-indexed scope shader rebuilds its index
+/// from both dimensions, and a 2D one isn't dispatched as if flat.
+#[test]
+fn every_scope_draws_the_same_dispatched_in_2d() {
+    let Some(mut g) = pipeline() else { return };
+    let (w, h) = (61, 37);
+    let input = frame(w, h);
+    let src = ScopeInput::Linear { rgba: &input, width: w, height: h, matrix: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], luma: YW, transfer: ScopeTransfer::Srgb, scale: 1.0 };
+    let wave = |mode, envelope| ScopeJob::Waveform(WaveformJob { mode, intensity: -1.0, channels: 7, envelope, glow: true, out_w: 96, out_h: 64 });
+    let jobs = [
+        wave(WaveformMode::Luma, true),
+        wave(WaveformMode::Parade, false),
+        wave(WaveformMode::RgbOverlay, false),
+        ScopeJob::Vectorscope(VectorscopeJob { zoom: 1.0, intensity: -1.0, colorize: true, luma_lo: 0.0, luma_hi: 1.0, glow: true, out_w: 64, out_h: 64 }),
+        ScopeJob::Histogram(HistogramJob { layout: HistogramLayout::Parade, log: true, fill: 0.5, glow: true, out_w: 96, out_h: 64 }),
+    ];
+    for (i, job) in jobs.iter().enumerate() {
+        let row = g.scopes().render(&src, 1, std::slice::from_ref(job));
+        let split = {
+            let _cap = WorkgroupCapForTest::new(2);
+            g.scopes().render(&src, 1, std::slice::from_ref(job))
+        };
+        assert!(row[0].is_some(), "scope {i} drew");
+        assert!(row == split, "scope {i} drawn differently dispatched in 2D");
+    }
+}
+
 /// Every source file of the GPU shaders and their dispatches, by path.
 fn sources() -> Vec<(String, String)> {
     let mut out = Vec::new();
@@ -97,7 +126,10 @@ fn sources() -> Vec<(String, String)> {
 /// workgroups unsplit. A flat shader is a compute entry with a workgroup
 /// one dimension wide whose body doesn't use its id's `y` (one that does
 /// indexes in 2D and is dispatched so); it must rebuild its id from both
-/// dimensions with its own workgroup size.
+/// dimensions with its own workgroup size. A direct dispatch of `(n, 1,
+/// 1)`, written over one line or several, is refused unless it says why
+/// it is safe (`flat-ok:`), and indirect arguments written as a row (a
+/// `y` of `1u`) are refused: they are split as `split_workgroups` splits.
 #[test]
 fn no_shader_or_dispatch_is_left_flat() {
     let mut found = Vec::new();
@@ -127,10 +159,24 @@ fn no_shader_or_dispatch_is_left_flat() {
                 found.push(format!("{path}: an entry of @workgroup_size({size}) indexes by {name}.x alone"));
             }
         }
-        for (i, line) in src.lines().enumerate() {
-            let code = line.split("//").next().unwrap_or("");
-            if code.contains(".dispatch_workgroups(") && code.trim_end().ends_with(", 1, 1);") {
-                found.push(format!("{path}:{}: a row of workgroups dispatched unsplit: {}", i + 1, line.trim()));
+        let mut rest = src.as_str();
+        while let Some(at) = rest.find(".dispatch_workgroups(") {
+            let after = &rest[at + ".dispatch_workgroups(".len()..];
+            let end = after.find(");").unwrap_or(after.len());
+            let args: Vec<&str> = after[..end].split(',').map(str::trim).filter(|a| !a.is_empty()).collect();
+            let line_end = after[end..].find('\n').map_or(after.len(), |n| end + n);
+            if args.len() >= 3 && args[args.len() - 2..] == ["1", "1"] && !after[end..line_end].contains("flat-ok:") {
+                let line = src[..src.len() - rest.len() + at].lines().count();
+                found.push(format!("{path}:{line}: a row of workgroups dispatched unsplit: ({})", args.join(", ")));
+            }
+            rest = &after[end..];
+        }
+        if src.contains("dispatch_workgroups_indirect(") {
+            for (i, line) in src.lines().enumerate() {
+                let Some(k) = line.trim().strip_prefix("args[").and_then(|l| l.split_once("] = 1u;")).and_then(|(k, _)| k.parse::<usize>().ok()) else { continue };
+                if k % 3 == 1 {
+                    found.push(format!("{path}:{}: an indirect dispatch written as a row: {}", i + 1, line.trim()));
+                }
             }
         }
     }
