@@ -5,21 +5,5 @@
     ],
     "issue": 1215,
     "max_readbacks": 1
-  },
-  "klipp.fx.rolling_shutter_correction": {
-    "features": [
-      "generator.layer",
-      "generator.solid"
-    ],
-    "issue": 1465,
-    "max_readbacks": 1
-  },
-  "klipp.fx.video_stabilization": {
-    "features": [
-      "generator.layer",
-      "generator.solid"
-    ],
-    "issue": 1465,
-    "max_readbacks": 1
   }
 }
