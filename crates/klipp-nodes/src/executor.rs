@@ -403,6 +403,10 @@ pub struct GraphExecutor {
     /// Neighbour frames the chain binds this run, held until the run's
     /// chain is submitted (#1988).
     run_neighbour_bufs: Vec<HeldNeighbour>,
+    /// The buffer a temporal denoise drawn off the chain left its output
+    /// in, with its node (#2266): kept as the held entry's GPU copy when
+    /// the parked frame holds that node, so later chains seed from it.
+    run_denoise_kept: Option<(NodeId, Arc<wgpu::Buffer>)>,
     /// Neighbours uploaded from the CPU for the chain this run, and last
     /// run's (#1988): one the source had on the GPU is bound as it is.
     run_neighbour_uploads: u32,
@@ -910,6 +914,7 @@ impl GraphExecutor {
             run_has_sources: false,
             run_denoise: None,
             run_neighbour_bufs: Vec::new(),
+            run_denoise_kept: None,
             run_neighbour_uploads: 0,
             last_neighbour_uploads: 0,
             denoise_chain_allowed: true,
@@ -1045,6 +1050,7 @@ impl GraphExecutor {
             run_has_sources: false,
             run_denoise: None,
             run_neighbour_bufs: Vec::new(),
+            run_denoise_kept: None,
             run_neighbour_uploads: 0,
             last_neighbour_uploads: 0,
             denoise_chain_allowed: true,
@@ -3436,6 +3442,14 @@ impl GraphExecutor {
             if let Some(key) = held_run.store.get(&node_id) {
                 let declines = self.run_declines.iter().filter(|d| d.node == node_id).cloned().collect();
                 self.held.put(key.clone(), Arc::clone(&output_arc), declines);
+                // A lone, unmixed denoise drawn on the GPU (#2266): its
+                // output is that buffer, the held entry's GPU copy as it is.
+                let lone_denoise = node.params.effect_blend.is_none() && !node.params.effects.is_empty() && node.params.effects.iter().all(|e| matches!(e, klipp_effects::BuiltinEffect::TemporalDenoise { .. }));
+                if let (Some((id, buffer)), true) = (self.run_denoise_kept.take(), lone_denoise) {
+                    if let Some(device) = self.gpu.as_ref().filter(|_| id == node_id).map(|g| g.device()) {
+                        self.held.set_gpu(key, buffer, &device);
+                    }
+                }
             }
 
             // Capture tapped node output for scopes (share via Arc, no copy).
@@ -3486,6 +3500,7 @@ impl GraphExecutor {
         self.last_run_declines = std::mem::take(&mut self.run_declines);
         // The run's chain is submitted: the neighbours it read can go.
         self.run_neighbour_bufs.clear();
+        self.run_denoise_kept = None;
         self.run_denoise = None;
         self.last_denoise_on_chain = std::mem::take(&mut self.run_denoise_on_chain);
         self.last_neighbour_uploads = std::mem::take(&mut self.run_neighbour_uploads);
@@ -4530,6 +4545,27 @@ impl GraphExecutor {
         (h.finish(), width, height)
     }
 
+    /// Temporal noise reduction of `input` on the GPU off the chain
+    /// (#2266), against `neighbours` made buffers as the chain makes them:
+    /// the pixels and the buffer they are in, or `None` without a GPU or
+    /// when a neighbour won't go up or the draw fails.
+    fn denoise_off_chain(&mut self, input: &[f32], neighbours: &[NeighbourPixels], width: u32, height: u32, threshold: f32, strength: f32) -> Option<(Vec<f32>, Arc<wgpu::Buffer>)> {
+        let luma = klipp_color::linear::luma_coefs(self.working_colorspace);
+        let gpu = self.gpu.as_mut()?;
+        let pixels = (width as usize) * (height as usize) * 4;
+        let mut held: Vec<HeldNeighbour> = Vec::with_capacity(neighbours.len());
+        for n in neighbours {
+            held.push(match n {
+                NeighbourPixels::Gpu(g) if g.srgb8() => HeldNeighbour::Uploaded(gpu.neighbour_from_u8(g.buffer(), width, height)?),
+                NeighbourPixels::Gpu(g) => HeldNeighbour::Source(Arc::clone(g)),
+                NeighbourPixels::Cpu(p) if p.len() == pixels => HeldNeighbour::Uploaded(gpu.upload_neighbour(p)?),
+                NeighbourPixels::Cpu(_) => return None,
+            });
+        }
+        let bufs: Vec<&wgpu::Buffer> = held.iter().map(HeldNeighbour::buffer).collect();
+        gpu.temporal_denoise_pixels(input, width, height, &bufs, threshold, strength, luma)
+    }
+
     /// Temporal noise reduction on the chain (#1988): the chain's picture
     /// against the neighbours `read_denoise_for_chain` read for this node,
     /// uploaded to buffers of their own, each of the node's denoises one
@@ -5245,6 +5281,12 @@ impl GraphExecutor {
         self.held.clear();
     }
 
+    /// The held outputs' GPU copies' budget in bytes (#2266): GPU memory,
+    /// apart from the CPU budget.
+    pub fn set_held_gpu_budget(&mut self, bytes: usize) {
+        self.held.set_gpu_budget(bytes);
+    }
+
     /// The held outputs' budget in bytes; two entries always stay.
     pub fn set_held_budget(&mut self, bytes: usize) {
         self.held.set_budget(bytes);
@@ -5367,9 +5409,21 @@ impl GraphExecutor {
                 Some(read) if read.node == node_id => read.neighbours,
                 other => {
                     self.run_denoise = other;
-                    self.denoise_neighbours(node_id, effect, ctx, false)
+                    // With a GPU to draw it on, the frames the source holds
+                    // there are taken as they are (#2266).
+                    let on_gpu = self.gpu.is_some();
+                    self.denoise_neighbours(node_id, effect, ctx, on_gpu)
                 }
             };
+            // On the GPU where there is one (#2266): the chain's kernel,
+            // so a frame drawn here, as a parked frame's held node is, is
+            // the picture the chain draws playing. The CPU's otherwise.
+            if let Some((pixels, buffer)) = self.denoise_off_chain(&out, &neighbours, width, height, threshold, strength) {
+                out = pixels;
+                self.run_denoise_kept = Some((node_id, buffer));
+                continue;
+            }
+            self.run_denoise_kept = None;
             let neighbours: Vec<Arc<Vec<f32>>> = neighbours.iter().map(NeighbourPixels::cpu).collect();
             let refs: Vec<&[f32]> = neighbours.iter().map(|n| n.as_slice()).collect();
             out = klipp_effects::temporal_denoise::denoise_frame(&out, &refs, threshold, strength, klipp_color::linear::luma_coefs(self.working_colorspace));
