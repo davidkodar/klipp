@@ -41,11 +41,25 @@ const GLIDE_SECS: f64 = 0.05;
 /// next frame starts another.
 const MAX_STEP_SECS: f64 = 0.25;
 
-/// One control's recording in a pass: its runs of samples, (sequence
-/// seconds, value), each moving forward in time.
+/// A run of samples, (sequence seconds, value), moving forward in time,
+/// and whether a click started it: a click's one sample is a jump, where
+/// one left by reverse play is nothing.
+#[derive(Default)]
+struct Run {
+    samples: Vec<(f64, f32)>,
+    clicked: bool,
+}
+
+impl Run {
+    fn written(&self) -> bool {
+        self.samples.len() >= 2 || self.clicked && !self.samples.is_empty()
+    }
+}
+
+/// One control's recording in a pass: its runs.
 #[derive(Default)]
 struct Series {
-    runs: Vec<Vec<(f64, f32)>>,
+    runs: Vec<Run>,
     latched: bool,
     writing: bool,
 }
@@ -65,7 +79,7 @@ pub struct Pass {
 impl Pass {
     /// Whether anything was written.
     pub fn has_samples(&self) -> bool {
-        self.series.values().any(|s| s.runs.iter().any(|r| !r.is_empty()))
+        self.series.values().any(|s| s.runs.iter().any(|r| !r.samples.is_empty()))
     }
 
     /// The value `param` of track `track` plays at while it is moved or
@@ -90,7 +104,7 @@ impl Pass {
     /// What the pass has written of `param` on track `track` so far, run
     /// by run, (sequence seconds, value).
     pub fn runs(&self, track: TrackId, param: TrackParam) -> impl Iterator<Item = &[(f64, f32)]> {
-        self.series.get(&(track, param)).into_iter().flat_map(|s| s.runs.iter().map(Vec::as_slice))
+        self.series.get(&(track, param)).into_iter().flat_map(|s| s.runs.iter().map(|r| r.samples.as_slice()))
     }
 
     /// One frame at `secs`, `held` the controls the user holds now by
@@ -106,7 +120,8 @@ impl Pass {
         for (i, track) in seq.tracks.iter().enumerate().filter(|(_, t)| t.kind == TrackKind::Audio) {
             for param in PARAMS {
                 let key = (track.id, param);
-                let touched = held.contains(&(i, param)) || self.clicked.contains(&key);
+                let clicked = self.clicked.contains(&key);
+                let touched = held.contains(&(i, param)) || clicked;
                 let s = self.series.entry(key).or_default();
                 s.latched = playing && (s.latched || touched && track.automation.mode == AutomationMode::Latch);
                 let writing = playing
@@ -120,14 +135,15 @@ impl Pass {
                     let value = *self.live.entry(key).or_insert_with(|| track.automation.value_at(param, secs, as_set(track, param)));
                     // A touch taken again before the last one's glide back
                     // ended carries its run on.
-                    let last = s.runs.last().and_then(|r| r.last()).map(|&(t, _)| t);
+                    let last = s.runs.last().and_then(|r| r.samples.last()).map(|&(t, _)| t);
                     let longest_step = if s.writing { MAX_STEP_SECS } else { 2.0 * GLIDE_SECS };
                     if last.is_none_or(|t| secs < t || secs - t > longest_step) {
-                        s.runs.push(Vec::new());
+                        s.runs.push(Run::default());
                     }
                     if let Some(run) = s.runs.last_mut() {
-                        if run.last().is_none_or(|&(t, _)| secs > t) {
-                            run.push((secs, value));
+                        run.clicked |= clicked;
+                        if run.samples.last().is_none_or(|&(t, _)| secs > t) {
+                            run.samples.push((secs, value));
                         }
                     }
                 } else if !touched {
@@ -175,9 +191,8 @@ impl Pass {
         let mut out: HashMap<usize, Track> = HashMap::new();
         for ((id, param), s) in series {
             let Some((i, track)) = seq.tracks.iter().enumerate().find(|(_, t)| t.id == id) else { continue };
-            // A run of one sample has no span: reverse play leaves only these.
-            for run in s.runs.iter().filter(|r| r.len() >= 2) {
-                write_run(out.entry(i).or_insert_with(|| track.clone()), param, run);
+            for run in s.runs.iter().filter(|r| r.written()) {
+                write_run(out.entry(i).or_insert_with(|| track.clone()), param, &run.samples);
             }
         }
         let mut out: Vec<(usize, Track)> = out.into_iter().collect();
@@ -429,6 +444,21 @@ mod tests {
         assert_eq!(pass.live(id, TrackParam::Pan), Some(0.5), "latched by the click");
         let keys = pass.finish(&s).remove(0).1.automation;
         assert_eq!(keys.value_at(TrackParam::Pan, 0.5, 0.0), 0.5);
+
+        // Touch: the click's one sample a key, the curve around it kept.
+        let mut touch = seq(AutomationMode::Touch);
+        touch.tracks[0].automation.lanes.insert(TrackParam::Pan, vec![key(0.0, -1.0)]);
+        let mut pass = Pass::default();
+        for f in 0..30 {
+            if f == 15 {
+                pass.touch_once(touch.tracks[0].id, TrackParam::Pan, 0.5);
+            }
+            pass.tick(&touch, &none, true, f as f64 / 30.0);
+        }
+        let keys = pass.finish(&touch).remove(0).1.automation;
+        assert_eq!(times(keys.keys(TrackParam::Pan)), vec![0.0, 0.45, 0.5, 0.55]);
+        assert_eq!(keys.value_at(TrackParam::Pan, 0.5, 0.0), 0.5, "the click a key");
+        assert_eq!(keys.value_at(TrackParam::Pan, 0.8, 0.0), -1.0, "the curve after it kept");
 
         let read = seq(AutomationMode::Read);
         let mut pass = Pass::default();
