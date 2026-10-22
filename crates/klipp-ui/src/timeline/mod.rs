@@ -138,8 +138,8 @@ impl NewTimelinePanel {
         // the strip's place, the one not being worked in from its parked
         // view, a press on it making it the one worked in.
         let mut changed = false;
+        let top_rect = egui::Rect::from_min_size(egui::pos2(full_rect.min.x, tabs_rect.max.y), egui::vec2(full_rect.width(), strip_h));
         if stacked_edit {
-            let top_rect = egui::Rect::from_min_size(egui::pos2(full_rect.min.x, tabs_rect.max.y), egui::vec2(full_rect.width(), strip_h));
             changed = stacked::show_top(self, ui, state, theme, top_rect, content_rect, &mut cmds);
         }
         // The cut parked while the selects are worked in (or became so this
@@ -160,6 +160,13 @@ impl NewTimelinePanel {
             kept => {
                 self.stacked = kept;
                 self.show_content(ui, state, theme, old_timeline, adaptive_fit, content_rect, &mut cmds);
+            }
+        }
+        // Clips carried from one of the two to the other (#82).
+        if stacked_edit && state.clip_carry.is_some() {
+            if let Some(mut st) = self.stacked.take() {
+                stacked::carry_frame(&mut st, ui, state, theme, top_rect, content_rect, &mut cmds);
+                self.stacked = Some(st);
             }
         }
         cmds

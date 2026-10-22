@@ -7969,7 +7969,10 @@ impl TimelinePanel {
                         let linked_id = linked_id.filter(|_| state.linked_selection);
                         let alt_held = ui.input(|i| i.modifiers.alt);
                         let shift_held = ui.input(|i| i.modifiers.shift);
-                        let gesture = body_drag_gesture(state.active_tool, alt_held, shift_held);
+                        // Ctrl-drag with the selects stacked: a copy carried to
+                        // the other timeline, not a move (#82).
+                        let carried = crate::timeline::stacked::start_carry(state, hit_id, ui.input(|i| i.modifiers.command));
+                        let gesture = if carried { BodyDragGesture::None } else { body_drag_gesture(state.active_tool, alt_held, shift_held) };
                         if matches!(gesture, BodyDragGesture::Slide | BodyDragGesture::Slip | BodyDragGesture::Move) {
 
                             if matches!(gesture, BodyDragGesture::Slide) {

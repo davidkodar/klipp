@@ -1554,6 +1554,11 @@ pub enum AppCommand {
     /// over what is there with `overwrite`. `at` left out is the cut's In
     /// point, else its playhead.
     EditFromSelects { sequence_id: crate::SequenceId, range_in: Timecode, range_out: Timecode, at: Option<Timecode>, overwrite: bool },
+    /// Clips `ids` of sequence `from`, with their linked partners, effects
+    /// and keys, copied into the sequence shown, the first at `at`: an
+    /// insert, or an overwrite. One step. A clip carried from one stacked
+    /// timeline to the other (#82).
+    PasteClipsFrom { from: crate::SequenceId, ids: Vec<ClipId>, at: Timecode, overwrite: bool },
     /// Paste at the playhead as an insert: every unlocked track is cut
     /// there and what follows moves along by the paste's length (#845).
     PasteClipInsert,

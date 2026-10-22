@@ -776,6 +776,25 @@ impl KlippApp {
                 }
                 // From the selects sequence above the cut (#82): its range
                 // copied whole, every track, and put in as one step.
+                AppCommand::PasteClipsFrom { from, ids, at, overwrite } => {
+                    // From the other of two stacked timelines; onto its own
+                    // sequence, nothing.
+                    if *from == self.state.sequence().id {
+                        return true;
+                    }
+                    let Some(source) = self.state.sequences.iter().find(|s| s.id == *from) else { return true };
+                    let Some(cb) = crate::clip_clipboard::copy(source, ids) else {
+                        self.state.toast.show("Those clips are gone from the other timeline");
+                        return true;
+                    };
+                    let (mode, label) = if *overwrite {
+                        (crate::clip_clipboard::PasteMode::Overwrite, "Overwrite from the Other Timeline")
+                    } else {
+                        (crate::clip_clipboard::PasteMode::Insert, "Insert from the Other Timeline")
+                    };
+                    self.paste_clipboard(&cb, *at, mode, label);
+                    true
+                }
                 AppCommand::EditFromSelects { sequence_id, range_in, range_out, at, overwrite } => {
                     if *sequence_id == self.state.sequence().id {
                         self.state.toast.show("The selects and the cut are the same sequence: open another as selects");

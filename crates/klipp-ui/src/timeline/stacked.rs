@@ -176,6 +176,84 @@ fn header_row(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, rect:
     done
 }
 
+/// A Ctrl-drag begun on clip `hit` with the selects stacked: it, or the
+/// selection it is in, carried as a copy to the other timeline, not moved.
+/// Whether it began one (a plain drag, or nothing stacked, does not).
+pub fn start_carry(state: &mut AppState, hit: klipp_core::ClipId, ctrl: bool) -> bool {
+    if !ctrl || !state.selects_edit || state.selects_sequence.is_none() {
+        return false;
+    }
+    let mut ids = state.selected_clips.clone();
+    if let Some(primary) = state.selected_clip.filter(|p| !ids.contains(p)) {
+        ids.push(primary);
+    }
+    if !ids.contains(&hit) {
+        ids = vec![hit];
+    }
+    state.clip_carry = Some((state.sequence().id, ids));
+    true
+}
+
+/// How near, in points, a carried copy snaps to the playhead or a clip's
+/// edge, as a clip's drag does.
+const SNAP_PX: f32 = 8.0;
+
+/// The clips being carried, each frame: over the other timeline, a ghost
+/// of them where they would land (snapped to its playhead or a clip's
+/// edge, else to a frame), on its track under the pointer; let go there,
+/// that timeline worked in and the copy made in one step (an overwrite
+/// with Alt). Let go over their own timeline or nowhere, nothing.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn carry_frame(st: &mut Stacked, ui: &egui::Ui, state: &mut AppState, theme: &KlippTheme, top: egui::Rect, cut: egui::Rect, cmds: &mut Vec<AppCommand>) {
+    let Some((from, ids)) = state.clip_carry.clone() else { return };
+    let top_id = state.sequences[st.top_idx].id;
+    let cut_idx = if state.active_sequence_idx == st.top_idx { st.view.active_sequence_idx } else { state.active_sequence_idx };
+    let (rect, target) = if from == top_id { (cut, cut_idx) } else { (egui::Rect::from_min_max(egui::pos2(top.min.x, top.min.y + HEADER), top.max), st.top_idx) };
+    let live = state.active_sequence_idx == target;
+    let (zoom, scroll, playhead) = if live { (state.timeline_zoom, state.timeline_scroll_x, state.playhead) } else { (st.view.timeline_zoom, st.view.timeline_scroll_x, st.view.playhead) };
+    let zoom = zoom.max(1e-3);
+    let fps = state.sequences[target].fps;
+    let left = rect.min.x + state.track_header_width;
+    let x_of = |secs: f64| left + secs as f32 * zoom - scroll;
+    let over = ui.input(|i| i.pointer.latest_pos()).filter(|p| rect.contains(*p) && p.x >= left);
+    let Some(source) = state.sequences.iter().find(|s| s.id == from) else {
+        state.clip_carry = None;
+        return;
+    };
+    let carried: Vec<&klipp_timeline::Clip> = source.all_clips().filter(|c| ids.contains(&c.id)).collect();
+    let span = carried.iter().map(|c| c.timeline_out).max().zip(carried.iter().map(|c| c.timeline_in).min()).map_or(0.0, |(b, a)| (b - a).to_secs_f64());
+    let at = over.map(|p| {
+        let secs = (((p.x - left + scroll) / zoom) as f64).max(0.0);
+        let edges = state.sequences[target].all_clips().flat_map(|c| [c.timeline_in.to_secs_f64(), c.timeline_out.to_secs_f64()]);
+        let near = std::iter::once(playhead.to_secs_f64()).chain(edges).map(|e| (e, (x_of(e) - p.x).abs())).filter(|(_, d)| *d <= SNAP_PX).min_by(|a, b| a.1.total_cmp(&b.1));
+        match near {
+            Some((e, _)) => e,
+            None => (secs * fps.as_f64()).round() / fps.as_f64(),
+        }
+    });
+    let overwrite = ui.input(|i| i.modifiers.alt);
+    if let (Some(p), Some(at)) = (over, at) {
+        let ghost = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, ui.id().with("clip_carry_ghost")));
+        let shape = egui::Rect::from_min_max(egui::pos2(x_of(at), p.y - 12.0), egui::pos2(x_of(at + span).max(x_of(at) + 4.0), p.y + 12.0));
+        ghost.rect_filled(shape, 3.0, theme.accent.gamma_multiply(0.25));
+        ghost.rect_stroke(shape, 3.0, egui::Stroke::new(1.0_f32, theme.accent));
+        let n = carried.len();
+        let what = if overwrite { "Overwrite" } else { "Insert" };
+        let text = format!("{what} {n} clip{} at {}", if n == 1 { "" } else { "s" }, state.timecode_display().position_secs(at));
+        ghost.text(egui::pos2(shape.min.x + 4.0, shape.max.y + 2.0), egui::Align2::LEFT_TOP, text, egui::FontId::proportional(11.0), theme.text_primary);
+        ui.ctx().request_repaint();
+    }
+    if ui.input(|i| i.pointer.any_released()) {
+        state.clip_carry = None;
+        if let Some(at) = at {
+            if !live {
+                focus(&mut st.view, state, cmds);
+            }
+            cmds.push(AppCommand::PasteClipsFrom { from, ids, at: klipp_core::Timecode::from_secs_f64(at, fps.rate()), overwrite });
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -195,6 +273,8 @@ mod tests {
         old: crate::panels::timeline::TimelinePanel,
         time: f64,
         sent: Vec<AppCommand>,
+        /// The modifiers held through each frame.
+        mods: egui::Modifiers,
     }
 
     impl Stack {
@@ -216,14 +296,14 @@ mod tests {
             state.timeline_zoom = 40.0;
             let mut old = crate::panels::timeline::TimelinePanel::default();
             old.embedded = true;
-            let mut s = Stack { ctx: egui::Context::default(), state, panel: NewTimelinePanel::default(), old, time: 0.0, sent: Vec::new() };
+            let mut s = Stack { ctx: egui::Context::default(), state, panel: NewTimelinePanel::default(), old, time: 0.0, sent: Vec::new(), mods: egui::Modifiers::NONE };
             s.frame(Vec::new());
             s
         }
 
         fn frame(&mut self, events: Vec<egui::Event>) -> Vec<(String, egui::Pos2)> {
             self.time += 0.5;
-            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 700.0))), time: Some(self.time), events, ..Default::default() };
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 700.0))), time: Some(self.time), events, modifiers: self.mods, ..Default::default() };
             let (theme, kb) = (KlippTheme::default(), crate::keybindings::KeyBindings::default());
             let (state, panel, old) = (&mut self.state, &mut self.panel, &mut self.old);
             let mut cmds = Vec::new();
@@ -286,7 +366,7 @@ mod tests {
             "multicam_at_playhead", "waveform_zoom", "viewer_text_edit_select_all", "viewer_text_selection", "viewer_text_selection_locked", "viewer_text_select_anchor",
             "timeline_track_scale", "timeline_prefs", "timeline_search_next", "timeline_search_prev", "browser_skim_texture", "browser_skim_media_id", "skim_transcoding", "skim_in_flight_paths",
             "skim_transcode_status", "skim_transcode_done_at", "browser_skim_pending", "skim_decode_in_flight", "skim_decode_started_at", "skim_queued_request", "skim_last_requested", "browser_skim_active_this_frame", "pending_skim_transcodes",
-            "upper_timeline_split", "magnetic_timeline_enabled", "perf_fps", "perf_video_fps",
+            "clip_carry", "upper_timeline_split", "magnetic_timeline_enabled", "perf_fps", "perf_video_fps",
             "filmstrip_hover_enabled", "transcript_panel_hovered", "speed_dialog_ripple", "ripple_enabled", "linked_selection", "drag_drop", "surface_snaps_pending", "consolidate_include_skims", "project_auto_skim",
         ];
         let per_timeline = ["drag", "select", "hover", "lane", "zoom", "scroll", "playhead", "range", "trim", "key_selection", "keyframe", "fps", "compound", "timeline_", "ruler_", "skim"];
@@ -430,5 +510,93 @@ mod tests {
         s.frame(vec![egui::Event::PointerMoved(to), b(to, false)]);
         sent.extend(s.sent.clone());
         assert!(sent.iter().any(|c| matches!(c, AppCommand::MoveTrack { .. })), "{sent:?}");
+    }
+
+    impl Stack {
+        /// A drag from `from` to `to` with `mods` held: what was sent on the way.
+        fn drag(&mut self, from: egui::Pos2, to: egui::Pos2, mods: egui::Modifiers) -> (Vec<AppCommand>, Vec<String>) {
+            self.mods = mods;
+            let b = |p, d| egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: d, modifiers: mods };
+            let mut sent = Vec::new();
+            let mut texts = Vec::new();
+            self.frame(vec![egui::Event::PointerMoved(from), b(from, true)]);
+            sent.extend(self.sent.clone());
+            for i in 1..=6 {
+                texts.extend(self.frame(vec![egui::Event::PointerMoved(from + (to - from) * (i as f32 / 6.0))]).into_iter().map(|(t, _)| t));
+                sent.extend(self.sent.clone());
+            }
+            self.frame(vec![egui::Event::PointerMoved(to), b(to, false)]);
+            sent.extend(self.sent.clone());
+            self.mods = egui::Modifiers::NONE;
+            (sent, texts)
+        }
+
+        /// Where the cut's clip is drawn.
+        fn cut_clip(&mut self) -> egui::Pos2 {
+            let texts = self.frame(Vec::new());
+            texts.iter().find(|(t, p)| t.contains("stack.mov") && p.y > 290.0).unwrap_or_else(|| panic!("the cut's clip: {texts:?}")).1
+        }
+    }
+
+    /// A Ctrl-drag on a clip carries it, the selection untouched by the
+    /// press; let go over its own timeline, nothing at all is done. A
+    /// Ctrl-click, no drag, adds the clip to the selection as before.
+    #[test]
+    fn a_ctrl_drag_carries_and_a_ctrl_click_selects() {
+        let mut s = Stack::new();
+        let clip = s.state.sequences[0].all_clips().next().unwrap().id;
+        let at = s.cut_clip();
+        let steps = s.state.active_history().can_undo();
+        let (sent, _) = s.drag(at, at + egui::vec2(120.0, 0.0), egui::Modifiers::COMMAND);
+        assert_eq!((s.state.selected_clip, s.state.selected_clips.len()), (None, 0), "no toggle from the press");
+        assert!(!sent.iter().any(|c| matches!(c, AppCommand::PasteClipsFrom { .. } | AppCommand::MoveClip { .. })), "{sent:?}");
+        assert_eq!(s.state.sequences[0].all_clips().next().unwrap().timeline_in, tc(0.0), "not moved");
+        assert_eq!(s.state.active_history().can_undo(), steps, "no step");
+        assert!(s.state.clip_carry.is_none());
+        // A Ctrl-click.
+        s.mods = egui::Modifiers::COMMAND;
+        let b = |d| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: d, modifiers: egui::Modifiers::COMMAND };
+        s.frame(vec![egui::Event::PointerMoved(at), b(true)]);
+        s.frame(vec![b(false)]);
+        s.mods = egui::Modifiers::NONE;
+        assert!(s.state.selected_clip == Some(clip) || s.state.selected_clips.contains(&clip) || s.sent.iter().any(|c| matches!(c, AppCommand::SelectClip(Some(id)) if *id == clip)), "selected: {:?} {:?}", s.state.selected_clip, s.sent);
+    }
+
+    /// The cut's clip Ctrl-dragged up onto the selects: a ghost of it
+    /// shows where it lands, and let go there the selects are worked in
+    /// and the copy is asked for at that time.
+    #[test]
+    fn a_clip_carried_up_is_copied_into_the_selects() {
+        let mut s = Stack::new();
+        let clip = s.state.sequences[0].all_clips().next().unwrap().id;
+        let from = s.cut_clip();
+        let to = egui::pos2(700.0, 34.0 + 24.0 + HEADER + 60.0);
+        let (sent, texts) = s.drag(from, to, egui::Modifiers::COMMAND);
+        assert!(texts.iter().any(|t| t.starts_with("Insert 1 clip at")), "the ghost: {texts:?}");
+        let focus = sent.iter().position(|c| matches!(c, AppCommand::FocusSequence { sequence_idx: 1 }));
+        let paste = sent.iter().position(|c| matches!(c, AppCommand::PasteClipsFrom { from, ids, overwrite: false, .. } if *from == s.state.sequences[0].id && ids == &vec![clip]));
+        assert!(focus.is_some() && paste.is_some() && focus < paste, "{sent:?}");
+    }
+
+    /// The copy a carry asks for, as the app makes it: new ids in the
+    /// target, the originals left, one set of edits undo takes back.
+    #[test]
+    fn a_carried_copy_is_fresh_and_undone_in_one() {
+        let s = Stack::new();
+        let source = &s.state.sequences[0];
+        let ids: Vec<klipp_core::ClipId> = source.all_clips().map(|c| c.id).collect();
+        let cb = crate::clip_clipboard::copy(source, &ids).expect("copied");
+        let before = s.state.sequences[1].clone();
+        let pasted = crate::clip_clipboard::paste(&before, &cb, tc(2.0), crate::clip_clipboard::PasteMode::Insert);
+        assert!(!pasted.ids.is_empty() && pasted.ids.iter().all(|id| !ids.contains(id)), "fresh ids");
+        let edits = crate::clip_clipboard::track_edits(&before, &pasted.sequence, &pasted.touched, "Insert from the Other Timeline");
+        let mut seqs = vec![pasted.sequence.clone()];
+        let (mut pool, mut fps) = (s.state.media_pool.clone(), s.state.fps);
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps };
+        for e in edits.iter().rev() {
+            view.apply_inverse(e);
+        }
+        let ids_of = |s: &klipp_timeline::Sequence| s.all_clips().map(|c| c.id).collect::<Vec<_>>();
+        assert_eq!(ids_of(&seqs[0]), ids_of(&before), "undone");
     }
 }
