@@ -335,6 +335,7 @@ impl KlippApp {
                                         interpolation: klipp_core::Interpolation::Linear,
                                         tangent_out: (0.0, 0.0),
                                         tangent_in: (0.0, 0.0),
+                                        handles: Default::default(),
                                     });
                                 }
                             }
@@ -393,6 +394,7 @@ impl KlippApp {
                             interpolation: klipp_core::keyframe::Interpolation::Linear,
                             tangent_out: (0.0, 0.0),
                             tangent_in: (0.0, 0.0),
+                            handles: Default::default(),
                         });
                         clip.speed_keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
                         recalc_timeline_out_from_speed(clip);

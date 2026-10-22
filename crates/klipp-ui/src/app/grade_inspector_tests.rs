@@ -284,7 +284,7 @@ fn a_keyed_switch_holds_until_its_next_key() {
     let mut run = Run::new(NodeKind::Corrector).unwrap();
     let (addr, _) = crate::inspector::grade_view::grade_node(clip(&run.state, run.clip), run.node).unwrap();
     for (t, v) in [(0.0, 0.0f32), (1.0, 1.0)] {
-        let key = klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Step, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+        let key = klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Step, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
         run.apply(&[AppCommand::AddKeyAt { addr: addr.clone(), key: "wheels_log_mode".into(), keyframe: serde_json::to_value(key).unwrap() }]);
     }
     let at = |t: f64| run.v1().keyframes.evaluate_all(t).into_iter().find(|(k, _)| k == "wheels_log_mode").map(|(_, v)| v);
@@ -300,7 +300,7 @@ fn a_keyed_corrector_exposure_animates() {
     let mut run = Run::new(NodeKind::Corrector).unwrap();
     let (addr, _) = crate::inspector::grade_view::grade_node(clip(&run.state, run.clip), run.node).unwrap();
     for (t, v) in [(0.0, 0.0f32), (1.0, 1.0)] {
-        let key = klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+        let key = klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
         run.apply(&[AppCommand::AddKeyAt { addr: addr.clone(), key: "exposure".into(), keyframe: serde_json::to_value(key).unwrap() }]);
     }
     let at = run.v1().keyframes.evaluate_all(0.5);
@@ -350,7 +350,7 @@ fn opening_a_grade_node_writes_nothing() {
 fn an_off_grid_grade_key_is_the_one_its_row_edits() {
     let mut run = Run::new(NodeKind::Corrector).unwrap();
     let (addr, _) = crate::inspector::grade_view::grade_node(clip(&run.state, run.clip), run.node).unwrap();
-    let key = klipp_core::Keyframe { time_secs: 0.49, value: 0.3, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+    let key = klipp_core::Keyframe { time_secs: 0.49, value: 0.3, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
     run.apply(&[AppCommand::AddKeyAt { addr: addr.clone(), key: "exposure".into(), keyframe: serde_json::to_value(key.clone()).unwrap() }]);
     // At 0.50 s (25 fps), the key at 0.49 s is in the frame.
     run.time = 0.5;

@@ -209,7 +209,7 @@ fn write_stored(ctx: &mut RowCtx, desc: &ParamDesc, new: Value) -> bool {
 }
 
 fn add_key(ctx: &mut RowCtx, desc: &ParamDesc, value: f32) {
-    let key = Keyframe { time_secs: ctx.clip_time_secs, value, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+    let key = Keyframe { time_secs: ctx.clip_time_secs, value, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
     ctx.cmds.push(AppCommand::AddKeyAt {
         addr: ctx.addr.clone(),
         key: ParamKey::new(desc.key),
@@ -220,7 +220,7 @@ fn add_key(ctx: &mut RowCtx, desc: &ParamDesc, value: f32) {
 /// A switch's or a choice's key: the stored number (a switch's 0 or 1, a
 /// choice's index), held until the next key rather than blended.
 fn add_step_key(ctx: &mut RowCtx, desc: &ParamDesc, value: f32) {
-    let key = Keyframe { time_secs: ctx.clip_time_secs, value, interpolation: Interpolation::Step, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+    let key = Keyframe { time_secs: ctx.clip_time_secs, value, interpolation: Interpolation::Step, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
     ctx.cmds.push(AppCommand::AddKeyAt {
         addr: ctx.addr.clone(),
         key: ParamKey::new(desc.key),

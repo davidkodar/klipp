@@ -1023,6 +1023,7 @@ mod tests {
                     interpolation: klipp_core::Interpolation::Linear,
                     tangent_in: (0.0, 0.0),
                     tangent_out: (0.0, 0.0),
+                    handles: Default::default(),
                 },
                 klipp_core::Keyframe {
                     time_secs: 1.5,
@@ -1030,6 +1031,7 @@ mod tests {
                     interpolation: klipp_core::Interpolation::Bezier,
                     tangent_in: (-0.3, 0.0),
                     tangent_out: (0.0, 0.0),
+                    handles: Default::default(),
                 },
             ],
         );
@@ -1041,6 +1043,7 @@ mod tests {
                 interpolation: klipp_core::Interpolation::Step,
                 tangent_in: (0.0, 0.0),
                 tangent_out: (0.0, 0.0),
+                handles: Default::default(),
             }],
         );
 

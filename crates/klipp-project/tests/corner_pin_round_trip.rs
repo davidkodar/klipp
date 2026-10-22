@@ -28,8 +28,8 @@ fn a_pinned_clip_reads_back_pin_and_keys() {
     clip.edit_effect_keyframes(|v| v.insert(
         "0:tr_x".into(),
         vec![
-            Keyframe { time_secs: 0.0, value: 0.9, interpolation: Default::default(), tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) },
-            Keyframe { time_secs: 2.0, value: 0.6, interpolation: Default::default(), tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) },
+            Keyframe { time_secs: 0.0, value: 0.9, interpolation: Default::default(), tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0), handles: Default::default() },
+            Keyframe { time_secs: 2.0, value: 0.6, interpolation: Default::default(), tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0), handles: Default::default() },
         ],
     ));
     let clip_id = clip.id;

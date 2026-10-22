@@ -1618,7 +1618,7 @@ mod keyframe_alias_tests {
     }
 
     fn key(t: f64, v: f32) -> serde_json::Value {
-        serde_json::to_value(klipp_core::Keyframe { time_secs: t, value: v, interpolation: Default::default(), tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) }).unwrap()
+        serde_json::to_value(klipp_core::Keyframe { time_secs: t, value: v, interpolation: Default::default(), tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0), handles: Default::default() }).unwrap()
     }
 
     fn times(c: &Clip, path: &NodePath, name: &str) -> Vec<f64> {

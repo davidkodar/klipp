@@ -1193,6 +1193,7 @@ impl Mask {
                     },
                     tangent_out: (0.0, 0.0),
                     tangent_in: (0.0, 0.0),
+                    handles: Default::default(),
                 })
                 .collect();
         }
@@ -1213,7 +1214,7 @@ impl Mask {
         if let Some(kf) = track.iter_mut().find(|k| (k.time_secs - time_secs).abs() < epsilon) {
             kf.value = value;
         } else {
-            track.push(Keyframe { time_secs, value, interpolation: keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) });
+            track.push(Keyframe { time_secs, value, interpolation: keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() });
             track.sort_by(|a, b| a.time_secs.total_cmp(&b.time_secs));
         }
     }
@@ -1576,7 +1577,7 @@ mod window_motion_tests {
     fn a_window_draws_where_its_track_says_at_each_moment() {
         let mut m = Mask { shape: MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.1 }, ..Mask::default() };
         assert_eq!(m.evaluated_in(1.0, 0.5625), m);
-        let key = |t: f64, v: f32| crate::keyframe::Keyframe { time_secs: t, value: v, interpolation: crate::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+        let key = |t: f64, v: f32| crate::keyframe::Keyframe { time_secs: t, value: v, interpolation: crate::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
         m.keyframes.track_x = vec![key(0.0, 0.0), key(1.0, 0.2)];
         m.keyframes.track_scale = vec![key(0.0, 1.0), key(1.0, 1.5)];
         assert!(m.keyframes.is_tracked() && !m.keyframes.is_empty());
@@ -1648,7 +1649,7 @@ mod mask_track_tests {
     use crate::mask_path::{BezierPoint, PathEase, PathKey};
 
     fn kf(t: f64, v: f32) -> Keyframe {
-        Keyframe { time_secs: t, value: v, interpolation: keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }
+        Keyframe { time_secs: t, value: v, interpolation: keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }
     }
 
     fn sq(off: f32) -> Vec<BezierPoint> {

@@ -104,8 +104,8 @@ fn backing_follows_animated_target_position() {
     let mut renderer = TitleRenderer::new();
     let mut td = with_backing("Name");
     td.objects[1].transform.center_x_keyframes = vec![
-        klipp_core::Keyframe { time_secs: 0.0, value: 0.3, interpolation: klipp_core::Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) },
-        klipp_core::Keyframe { time_secs: 1.0, value: 0.7, interpolation: klipp_core::Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) },
+        klipp_core::Keyframe { time_secs: 0.0, value: 0.3, interpolation: klipp_core::Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0), handles: Default::default() },
+        klipp_core::Keyframe { time_secs: 1.0, value: 0.7, interpolation: klipp_core::Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0), handles: Default::default() },
     ];
     let a = red_bounds(&renderer.render_with_time(&td, 960, 540, None, 0.0), 960);
     let b = red_bounds(&renderer.render_with_time(&td, 960, 540, None, 1.0), 960);

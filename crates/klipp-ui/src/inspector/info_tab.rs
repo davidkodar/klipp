@@ -813,6 +813,7 @@ mod camera_row_tests {
                 interpolation: Interpolation::Linear,
                 tangent_in: (0.0, 0.0),
                 tangent_out: (0.0, 0.0),
+                handles: Default::default(),
             })
             .collect()
     }

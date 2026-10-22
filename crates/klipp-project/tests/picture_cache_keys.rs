@@ -8,7 +8,7 @@ use klipp_project::{load_project, save_project};
 use klipp_timeline::{Clip, Sequence};
 
 fn key(time_secs: f64, value: f32) -> Keyframe {
-    Keyframe { time_secs, value, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }
+    Keyframe { time_secs, value, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }
 }
 
 fn scratch(tag: &str) -> std::path::PathBuf {

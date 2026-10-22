@@ -245,6 +245,7 @@ fn parse_scalar_keyframes(raw: &str, fps: &Fps) -> Result<Vec<Keyframe>, String>
             interpolation: Interpolation::Linear,
             tangent_out: (0.0, 0.0),
             tangent_in: (0.0, 0.0),
+            handles: Default::default(),
         });
     }
     Ok(out)
@@ -342,6 +343,7 @@ fn parse_geometry_keyframes(
             interpolation: Interpolation::Linear,
             tangent_out: (0.0, 0.0),
             tangent_in: (0.0, 0.0),
+            handles: Default::default(),
         };
         gk.pos_x.push(kf(x as f32));
         gk.pos_y.push(kf(y as f32));

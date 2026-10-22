@@ -261,7 +261,7 @@ mod tests {
     use super::*;
 
     fn key(t: f64, v: f32) -> klipp_core::Keyframe {
-        klipp_core::Keyframe { time_secs: t, value: v, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }
+        klipp_core::Keyframe { time_secs: t, value: v, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }
     }
 
     /// Each track with keys is a row, named as the Curve Editor names it;

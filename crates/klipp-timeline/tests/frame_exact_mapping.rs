@@ -183,7 +183,7 @@ fn a_cut_in_the_file_lands_on_the_first_frame_that_shows_it() {
 /// renderer evaluates, not on an integrated inverse.
 #[test]
 fn a_cut_through_a_speed_ramp_lands_on_the_first_frame_that_shows_it() {
-    let key = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+    let key = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
     for (num, den) in RATES {
         let fps = Fps::new(num, den);
         for t0 in starts(fps) {

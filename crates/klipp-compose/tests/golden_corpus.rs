@@ -231,7 +231,7 @@ fn tc(secs: f64) -> Timecode {
 }
 
 fn key(time_secs: f64, value: f32) -> Keyframe {
-    Keyframe { time_secs, value, interpolation: Default::default(), tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) }
+    Keyframe { time_secs, value, interpolation: Default::default(), tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0), handles: Default::default() }
 }
 
 fn media(from: f64, to: f64) -> Clip {

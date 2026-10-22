@@ -48,7 +48,7 @@ fn write_the_fixture() {
         return;
     }
     let t = |n| RationalTime::from_frames(n, 24);
-    let key = |time_secs, value| Keyframe { time_secs, value, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+    let key = |time_secs, value| Keyframe { time_secs, value, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
     let mut clip = Clip::media(MediaId::new(), t(0), t(48), t(0), t(48));
     clip.edit_grade(|g| g.nodes.truncate(3));
     clip.push_effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 0.1 });

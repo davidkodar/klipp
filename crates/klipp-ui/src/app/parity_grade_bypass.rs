@@ -63,7 +63,7 @@ fn keyed(keys: &[(f64, f32)]) -> impl Fn(&mut klipp_nodes::Node) + '_ {
 fn keyed_as(keys: &[(f64, f32)], interpolation: klipp_core::Interpolation) -> impl Fn(&mut klipp_nodes::Node) + '_ {
     move |n| {
         let track = n.keyframes.track_mut(klipp_nodes::ENABLED_TRACK);
-        track.keyframes = keys.iter().map(|&(time_secs, value)| Keyframe { time_secs, value, interpolation, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) }).collect();
+        track.keyframes = keys.iter().map(|&(time_secs, value)| Keyframe { time_secs, value, interpolation, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0), handles: Default::default() }).collect();
     }
 }
 

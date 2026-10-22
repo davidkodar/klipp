@@ -183,6 +183,7 @@ impl KlippApp {
                     interpolation: klipp_core::Interpolation::Bezier,
                     tangent_in: (0.0, 0.0),
                     tangent_out: (attack / 3.0, 0.0),
+                    handles: Default::default(),
                 });
             }
 
@@ -193,6 +194,7 @@ impl KlippApp {
                 interpolation: klipp_core::Interpolation::Bezier,
                 tangent_in: (-attack / 3.0, 0.0),
                 tangent_out: (0.0, 0.0),
+                handles: Default::default(),
             });
 
             // Duck end
@@ -202,6 +204,7 @@ impl KlippApp {
                 interpolation: klipp_core::Interpolation::Bezier,
                 tangent_in: (0.0, 0.0),
                 tangent_out: (release / 3.0, 0.0),
+                handles: Default::default(),
             });
 
             // After duck: normal volume
@@ -212,6 +215,7 @@ impl KlippApp {
                     interpolation: klipp_core::Interpolation::Bezier,
                     tangent_in: (-release / 3.0, 0.0),
                     tangent_out: (0.0, 0.0),
+                    handles: Default::default(),
                 });
             }
         }
@@ -494,6 +498,7 @@ impl KlippApp {
                                             interpolation: klipp_core::Interpolation::Linear,
                                             tangent_out: (0.0, 0.0),
                                             tangent_in: (0.0, 0.0),
+                                            handles: Default::default(),
                                         });
                                     }
                                 }

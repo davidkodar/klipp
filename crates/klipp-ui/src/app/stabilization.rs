@@ -693,7 +693,7 @@ impl KlippApp {
                             klipp_core::TrackTarget::TransformPosition => {
                                 // The position lanes, laid by path once the
                                 // sequence is let go (M4 step 12c).
-                                let key = |t: f64, value: f32| klipp_core::Keyframe { time_secs: t, value, interpolation: klipp_core::Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) };
+                                let key = |t: f64, value: f32| klipp_core::Keyframe { time_secs: t, value, interpolation: klipp_core::Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0), handles: Default::default() };
                                 let at = |i: usize| (start_frame + i) as f64 / fps;
                                 position_lanes = Some(vec![
                                     ("pos_x", positions.iter().enumerate().map(|(i, &(nx, _))| key(at(i), (nx - 0.5) as f32)).collect()),
@@ -734,7 +734,7 @@ impl KlippApp {
                                         .and_then(|ms| ms.masks.get_mut(mask_index))
                                     {
                                         mask.keyframes.clear_track();
-                                        let k = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) };
+                                        let k = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0), handles: Default::default() };
                                         for &(t, dx, dy, scale, rot) in &keys {
                                             mask.keyframes.track_x.push(k(t, dx));
                                             mask.keyframes.track_y.push(k(t, dy));
@@ -768,6 +768,7 @@ impl KlippApp {
                                                         interpolation: klipp_core::Interpolation::Linear,
                                                         tangent_in: (0.0, 0.0),
                                                         tangent_out: (0.0, 0.0),
+                                                        handles: Default::default(),
                                                     });
                                                     mask.keyframes.center_y.push(klipp_core::Keyframe {
                                                         time_secs: t,
@@ -775,6 +776,7 @@ impl KlippApp {
                                                         interpolation: klipp_core::Interpolation::Linear,
                                                         tangent_in: (0.0, 0.0),
                                                         tangent_out: (0.0, 0.0),
+                                                        handles: Default::default(),
                                                     });
                                                 }
                                                 self.state.toast.show("Generated mask center keyframes from tracker");

@@ -602,6 +602,7 @@ mod qc_geometry_tests {
         object.transform.center_x_keyframes = [0.2,0.8].into_iter().enumerate().map(|(i,value)|klipp_core::Keyframe {
             time_secs: i as f64, value, interpolation: klipp_core::Interpolation::Linear,
             tangent_in: (0.0,0.0), tangent_out: (0.0,0.0),
+            handles: Default::default(),
         }).collect();
         let frame = klipp_core::Resolution { width: 1920, height: 1080 };
         let early = AnalysedTranscripts.title_regions(&title,frame,0.0,4.0);

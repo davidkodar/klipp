@@ -777,7 +777,7 @@ pub const ANIMATOR_PRESETS: [&str; 3] = ["wave", "random_fade_in", "spin_in"];
 /// order, and letters spinning in one after another; `None` for a name
 /// that is not one.
 pub fn animator_preset(name: &str, clip_secs: f64) -> Option<Animator> {
-    let key = |time_secs: f64, value: f32| crate::keyframe::Keyframe { time_secs, value, interpolation: crate::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+    let key = |time_secs: f64, value: f32| crate::keyframe::Keyframe { time_secs, value, interpolation: crate::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
     let clip = clip_secs.max(0.1);
     let entrance = clip.min(1.2);
     Some(match name {
@@ -1773,7 +1773,7 @@ mod animator_tests {
     use crate::keyframe::{Interpolation, Keyframe};
 
     fn key(t: f64, v: f32) -> Keyframe {
-        Keyframe { time_secs: t, value: v, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }
+        Keyframe { time_secs: t, value: v, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }
     }
 
     fn selector(start: f32, end: f32, shape: SelectShape, order: SelectOrder) -> RangeSelector {

@@ -669,6 +669,7 @@ fn eased(keys: &[(f64, f32, Easing)]) -> Vec<klipp_core::Keyframe> {
             interpolation: klipp_core::Interpolation::Linear,
             tangent_out: (0.0, 0.0),
             tangent_in: (0.0, 0.0),
+            handles: Default::default(),
         })
         .collect();
     for (i, (_, _, easing)) in keys.iter().enumerate() {

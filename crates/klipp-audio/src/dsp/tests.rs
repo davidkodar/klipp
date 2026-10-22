@@ -991,6 +991,7 @@ fn linear_kf(t: f64, v: f32) -> klipp_core::Keyframe {
         interpolation: klipp_core::Interpolation::Linear,
         tangent_in: (0.0, 0.0),
         tangent_out: (0.0, 0.0),
+        handles: Default::default(),
     }
 }
 
@@ -1001,6 +1002,7 @@ fn step_kf(t: f64, v: f32) -> klipp_core::Keyframe {
         interpolation: klipp_core::Interpolation::Step,
         tangent_in: (0.0, 0.0),
         tangent_out: (0.0, 0.0),
+        handles: Default::default(),
     }
 }
 

@@ -520,8 +520,8 @@ impl crate::state::AppState {
                 let ease = 0.42 * duration;
                 let pair = |a: f32, b: f32| {
                     vec![
-                        Keyframe { time_secs: 0.0, value: a, interpolation: klipp_core::Interpolation::Bezier, tangent_out: (ease, 0.0), tangent_in: (0.0, 0.0) },
-                        Keyframe { time_secs: duration, value: b, interpolation: klipp_core::Interpolation::Bezier, tangent_out: (0.0, 0.0), tangent_in: (-ease, 0.0) },
+                        Keyframe { time_secs: 0.0, value: a, interpolation: klipp_core::Interpolation::Bezier, tangent_out: (ease, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() },
+                        Keyframe { time_secs: duration, value: b, interpolation: klipp_core::Interpolation::Bezier, tangent_out: (0.0, 0.0), tangent_in: (-ease, 0.0), handles: Default::default() },
                     ]
                 };
                 let ops = vec![set_lane(&clip, &addr, "scale", pair(*start_scale, *end_scale)), set_lane(&clip, &addr, "pos_x", pair(*start_pos_x, *end_pos_x)), set_lane(&clip, &addr, "pos_y", pair(*start_pos_y, *end_pos_y))];
@@ -602,7 +602,7 @@ impl crate::state::AppState {
                 let half = duration_secs / 2.0;
                 for (t, v) in [(center_time - half - ramp_secs, *base_value), (center_time - half, *bump_value), (center_time + half, *bump_value), (center_time + half + ramp_secs, *base_value)] {
                     if t >= 0.0 && t <= clip_dur {
-                        keys.push(Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) });
+                        keys.push(Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() });
                     }
                 }
                 sort(&mut keys);
@@ -1923,7 +1923,7 @@ mod tests {
         let (mut s, id) = state(&[pin, E::Gamma { gamma: 1.2 }]);
         let pin_node = clip(&s, id).effect_node_at(false, 0).unwrap();
         let addr = at(id, &[pin_node]);
-        let key = |t: f64, v: f32| serde_json::to_value(klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }).unwrap();
+        let key = |t: f64, v: f32| serde_json::to_value(klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }).unwrap();
         // tl_x keyed before the drags.
         run(&mut s, AppCommand::AddKeyAt { addr: addr.clone(), key: "tl_x".into(), keyframe: key(0.0, 0.0) });
         let drag = |s: &mut AppState, t: f64, x: f32, y: f32| {
@@ -1957,7 +1957,7 @@ mod tests {
         let (mut s, id) = state(&[E::GaussianBlur { radius: 3.0 }, E::Vignette { amount: 0.5, size: 0.5, softness: 0.5, roundness: 0.5 }]);
         let fx = effects(&s, id);
         let blur = at(id, &[fx[0]]);
-        let key = |t: f64, v: f32| serde_json::to_value(klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }).unwrap();
+        let key = |t: f64, v: f32| serde_json::to_value(klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }).unwrap();
         run(&mut s, AppCommand::AddKeyAt { addr: blur.clone(), key: "radius".into(), keyframe: key(0.0, 2.0) });
         run(&mut s, AppCommand::AddKeyAt { addr: blur.clone(), key: "radius".into(), keyframe: key(1.0, 6.0) });
         s.selected_node_addr = Some(blur.clone());
@@ -1984,7 +1984,7 @@ mod tests {
         let pin = (klipp_effects::registry::effect_type("corner_pin").unwrap().sample)();
         let (mut s, id) = state(&[pin]);
         let addr = at(id, &[clip(&s, id).effect_node_at(false, 0).unwrap()]);
-        let key = |t: f64, v: f32| serde_json::to_value(klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }).unwrap();
+        let key = |t: f64, v: f32| serde_json::to_value(klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }).unwrap();
         run(&mut s, AppCommand::AddKeyAt { addr: addr.clone(), key: "tl_x".into(), keyframe: key(0.0, 0.0) });
         let picture = |s: &AppState| serde_json::to_string(&clip(s, id).picture_v2().unwrap().picture).unwrap();
         let (before, steps) = (picture(&s), s.active_history().undo_count());
@@ -2122,7 +2122,7 @@ mod tests {
     /// pin's keys as the viewer builds them.
     #[test]
     fn a_key_set_by_path_keeps_its_curve_shape() {
-        let bezier = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Bezier, tangent_out: (0.1, 0.2), tangent_in: (-0.3, 0.4) };
+        let bezier = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Bezier, tangent_out: (0.1, 0.2), tangent_in: (-0.3, 0.4), handles: Default::default() };
         for truth in [false, true] {
             let mut c = fixture(&[E::GaussianBlur { radius: 2.0 }]);
             c.edit_video_param_keyframes(klipp_core::VideoParam::PositionX, |k| k.push(bezier(0.5, 1.0)));
@@ -2491,7 +2491,7 @@ mod tests {
     fn a_grade_key_by_path_is_the_key_by_id() {
         let (c, addr) = graded();
         let node = addr.node().unwrap();
-        let key = klipp_core::Keyframe { time_secs: 0.5, value: 0.7, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+        let key = klipp_core::Keyframe { time_secs: 0.5, value: 0.7, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
         let mut a = with(std::slice::from_ref(&c));
         let clip_a = a.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(c.id)).unwrap();
         clip_a.edit_grade(|root| root.nodes.iter_mut().find(|n| n.id == node).unwrap().keyframes.track_mut("exposure").set_keyframe(0.5, 0.7));
@@ -2515,7 +2515,7 @@ mod tests {
         let node = addr.node().unwrap();
         let mut s = with(std::slice::from_ref(&c));
         for (t, v) in [(0.0, 0.0f32), (1.0, 1.0)] {
-            let key = klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+            let key = klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
             run(&mut s, AppCommand::AddKeyAt { addr: addr.clone(), key: "exposure".into(), keyframe: serde_json::to_value(key).unwrap() });
         }
         let dir = std::env::temp_dir().join(format!("klipp_grade_key_by_path_{}", std::process::id()));
@@ -2563,15 +2563,15 @@ mod tests {
             let addr = at(c.id, &[corrector_addr.nodes[0], node]);
             let mut s = with(std::slice::from_ref(&c));
             for (t, v) in [(0.0, 0.0f32), (1.0, 1.0)] {
-                let k = klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+                let k = klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
                 run(&mut s, AppCommand::AddKeyAt { addr: addr.clone(), key: key.into(), keyframe: serde_json::to_value(k).unwrap() });
             }
             run(&mut s, AppCommand::MoveKeyAt { addr: addr.clone(), key: key.into(), time_secs: 1.0, new_time_secs: 1.5, value: 0.8 });
             run(&mut s, AppCommand::SetInterpKeyAt { addr: addr.clone(), key: key.into(), time_secs: 1.5, interpolation: klipp_core::Interpolation::Bezier });
             let track = klipp_timeline::GradeAccess::grade(clip(&s, c.id)).nodes.iter().find(|n| n.id == node).unwrap().keyframes.tracks.iter().find(|t| t.param_name == key).unwrap().keyframes.clone();
             let mut want = vec![
-                klipp_core::Keyframe { time_secs: 0.0, value: 0.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
-                klipp_core::Keyframe { time_secs: 1.5, value: 0.8, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
+                klipp_core::Keyframe { time_secs: 0.0, value: 0.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() },
+                klipp_core::Keyframe { time_secs: 1.5, value: 0.8, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() },
             ];
             klipp_core::keyframe::set_interpolation_at(&mut want, 1, klipp_core::Interpolation::Bezier);
             assert_eq!(track, want, "{kind:?} ({lifted}) {key}");
@@ -2746,7 +2746,7 @@ mod tests {
         let c = fixture(&[E::GaussianBlur { radius: 3.0 }]);
         let node = effects(&with(std::slice::from_ref(&c)), c.id)[0];
         let addr = at(c.id, &[node]);
-        let key = |t: f64, v: f32, i: klipp_core::Interpolation| klipp_core::Keyframe { time_secs: t, value: v, interpolation: i, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+        let key = |t: f64, v: f32, i: klipp_core::Interpolation| klipp_core::Keyframe { time_secs: t, value: v, interpolation: i, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
         let lin = klipp_core::Interpolation::Linear;
         // By index: the clip's own keyframe list for the effect.
         let by_index = |keys: Vec<klipp_core::Keyframe>| {
@@ -2780,7 +2780,7 @@ mod tests {
     fn an_effect_lane_copies_pastes_and_reverses_by_path() {
         let blur = || E::GaussianBlur { radius: 3.0 };
         let c = fixture(&[blur(), blur()]);
-        let key = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+        let key = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
         let nodes = effects(&with(std::slice::from_ref(&c)), c.id);
         // Each blur's lane laid down by path, as the picture holds it.
         let seeded = |lanes: [Vec<klipp_core::Keyframe>; 2]| {
@@ -2833,7 +2833,7 @@ mod tests {
         let c = fixture(&[E::GaussianBlur { radius: 3.0 }]);
         let node = effects(&with(std::slice::from_ref(&c)), c.id)[0];
         let addr = at(c.id, &[node]);
-        let key = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+        let key = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
         for keys in [vec![key(0.0, 2.0), key(1.0, 9.0)], vec![key(0.0, 2.0), key(1.0, 9.0), key(1.5, 4.0)]] {
             for interpolation in [klipp_core::Interpolation::Step, klipp_core::Interpolation::Bezier] {
                 for index in 1..keys.len() {

@@ -13,7 +13,7 @@ use klipp_timeline::test_clip::TestClip;
 use klipp_timeline::{GradeAccess, TrackKind};
 
 fn key(t: f64, v: f32) -> Keyframe {
-    Keyframe { time_secs: t, value: v, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }
+    Keyframe { time_secs: t, value: v, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }
 }
 
 /// A 4 s clip on the first video track, its media in the pool: its x

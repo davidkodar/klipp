@@ -64,7 +64,7 @@ impl Run {
     fn keyed(mut self, key: &str, keys: &[(f64, f32)]) -> Self {
         let path = self.path();
         for (t, v) in keys {
-            let keyframe = serde_json::to_value(Keyframe { time_secs: *t, value: *v, interpolation: Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) }).unwrap();
+            let keyframe = serde_json::to_value(Keyframe { time_secs: *t, value: *v, interpolation: Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0), handles: Default::default() }).unwrap();
             self.state.path_command(&AppCommand::AddKeyAt { addr: path.clone(), key: key.into(), keyframe }).expect("a path command");
         }
         let clip = self.clip().clone();
@@ -210,7 +210,7 @@ fn a_grade_key_menu_holds_or_eases_it() {
         let key = run.panel.screen_at(1.0, 1.0).expect("the graph is drawn");
         run.click(key, egui::PointerButton::Secondary);
         run.click_text(item).unwrap_or_else(|e| panic!("{item}: {e}"));
-        let mut want = vec![Keyframe { time_secs: 0.5, value: 0.0, interpolation: Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) }, Keyframe { time_secs: 1.0, value: 1.0, interpolation: Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) }, Keyframe { time_secs: 1.5, value: 0.0, interpolation: Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) }];
+        let mut want = vec![Keyframe { time_secs: 0.5, value: 0.0, interpolation: Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0), handles: Default::default() }, Keyframe { time_secs: 1.0, value: 1.0, interpolation: Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0), handles: Default::default() }, Keyframe { time_secs: 1.5, value: 0.0, interpolation: Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0), handles: Default::default() }];
         match ease {
             None => klipp_core::keyframe::set_interpolation_at(&mut want, 1, Interpolation::Step),
             Some(side) => klipp_core::keyframe::ease_key(&mut want, 1, side),

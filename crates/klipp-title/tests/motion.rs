@@ -186,6 +186,7 @@ fn a_faded_roll_fades_by_where_it_is_on_both_paths() {
                 interpolation: klipp_core::Interpolation::Linear,
                 tangent_out: (0.0, 0.0),
                 tangent_in: (0.0, 0.0),
+                handles: Default::default(),
             }];
         }
         td
@@ -286,6 +287,7 @@ fn a_soft_focus_band_blurs_the_roll_away_from_the_band() {
                 interpolation: klipp_core::Interpolation::Linear,
                 tangent_out: (0.0, 0.0),
                 tangent_in: (0.0, 0.0),
+                handles: Default::default(),
             }];
         }
         td
@@ -389,6 +391,7 @@ fn rastered(mut td: TitleData) -> TitleData {
         interpolation: klipp_core::Interpolation::Linear,
         tangent_out: (0.0, 0.0),
         tangent_in: (0.0, 0.0),
+        handles: Default::default(),
     }];
     td
 }

@@ -694,7 +694,7 @@ mod tests {
         v.effects.set_video_effect_list(vec![E::Vignette { amount: -0.4, size: 0.8, softness: 0.5, roundness: 0.7 }], vec![]);
         v.effects.grade = Some(track_grade.into());
         let mut a = TestClip::of(Clip::media(MediaId::new(), t(0), t(24), t(0), t(24))).effect(E::Opacity { value: 0.5 }).off().build();
-        a.edit_effect_keyframes(|v| v.insert("0:value".into(), vec![klipp_core::Keyframe { time_secs: 0.0, value: 0.2, interpolation: Default::default(), tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) }]));
+        a.edit_effect_keyframes(|v| v.insert("0:value".into(), vec![klipp_core::Keyframe { time_secs: 0.0, value: 0.2, interpolation: Default::default(), tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0), handles: Default::default() }]));
         a.edit_param_modifiers(|v| v.insert(klipp_core::ParamId::Effect { effect_index: 0, param_name: "value".into() }, klipp_core::ModifierStack::default()));
         a.grade_group = Some(group.id);
         let own_node = corrector(&a.picture.view().node_graph.0);

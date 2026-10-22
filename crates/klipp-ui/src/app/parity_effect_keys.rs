@@ -254,6 +254,7 @@ pub(super) fn exercise_on(entry: &CatalogEntry, surface: Surface, action: Action
                 interpolation: initial_interp,
                 tangent_in: (0.0, 0.0),
                 tangent_out: (0.0, 0.0),
+                handles: Default::default(),
             })
             .collect();
     });

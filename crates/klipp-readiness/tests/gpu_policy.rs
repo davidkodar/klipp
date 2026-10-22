@@ -628,6 +628,7 @@ fn title_corpus_guards_resident_sources_and_declared_fallbacks() {
         interpolation: klipp_core::Interpolation::Linear,
         tangent_out: (0., 0.),
         tangent_in: (0., 0.),
+        handles: Default::default(),
     };
     let fx = LayerFx {
         glows: vec![klipp_timeline::TextGlow {

@@ -504,7 +504,7 @@ fn decibels(v: &str) -> Option<f64> {
 fn keys(points: &[(f64, f64)]) -> Vec<klipp_core::Keyframe> {
     points
         .iter()
-        .map(|(t, v)| klipp_core::Keyframe { time_secs: *t, value: *v as f32, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) })
+        .map(|(t, v)| klipp_core::Keyframe { time_secs: *t, value: *v as f32, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() })
         .collect()
 }
 

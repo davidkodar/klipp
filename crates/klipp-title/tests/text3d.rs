@@ -11,7 +11,7 @@ const H: u32 = 720;
 const SIDE: [u8; 4] = [0, 0, 255, 255];
 
 fn key(time_secs: f64, value: f32) -> Keyframe {
-    Keyframe { time_secs, value, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }
+    Keyframe { time_secs, value, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }
 }
 
 /// "I" in 3D, deep and bevelled, lit from the right and 30° towards

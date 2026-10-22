@@ -332,6 +332,7 @@ impl InspectorEditHost<'_> {
                                             interpolation: klipp_core::Interpolation::Linear,
                                             tangent_out: (0.0, 0.0),
                                             tangent_in: (0.0, 0.0),
+                                            handles: Default::default(),
                                         });
                                     }
                                 }
@@ -383,11 +384,13 @@ impl InspectorEditHost<'_> {
                                 time_secs: 0.0, value: *start_scale,
                                 interpolation: klipp_core::Interpolation::Bezier,
                                 tangent_out: (ease_t, 0.0), tangent_in: (0.0, 0.0),
+                                handles: Default::default(),
                             }));
                             clip.edit_transform_scale_keyframes(|v| v.push(klipp_core::Keyframe {
                                 time_secs: duration, value: *end_scale,
                                 interpolation: klipp_core::Interpolation::Bezier,
                                 tangent_out: (0.0, 0.0), tangent_in: (-ease_t, 0.0),
+                                handles: Default::default(),
                             }));
 
                             // Position X keyframes
@@ -395,11 +398,13 @@ impl InspectorEditHost<'_> {
                                 time_secs: 0.0, value: *start_pos_x,
                                 interpolation: klipp_core::Interpolation::Bezier,
                                 tangent_out: (ease_t, 0.0), tangent_in: (0.0, 0.0),
+                                handles: Default::default(),
                             }));
                             clip.edit_transform_pos_x_keyframes(|v| v.push(klipp_core::Keyframe {
                                 time_secs: duration, value: *end_pos_x,
                                 interpolation: klipp_core::Interpolation::Bezier,
                                 tangent_out: (0.0, 0.0), tangent_in: (-ease_t, 0.0),
+                                handles: Default::default(),
                             }));
 
                             // Position Y keyframes
@@ -407,11 +412,13 @@ impl InspectorEditHost<'_> {
                                 time_secs: 0.0, value: *start_pos_y,
                                 interpolation: klipp_core::Interpolation::Bezier,
                                 tangent_out: (ease_t, 0.0), tangent_in: (0.0, 0.0),
+                                handles: Default::default(),
                             }));
                             clip.edit_transform_pos_y_keyframes(|v| v.push(klipp_core::Keyframe {
                                 time_secs: duration, value: *end_pos_y,
                                 interpolation: klipp_core::Interpolation::Bezier,
                                 tangent_out: (0.0, 0.0), tangent_in: (-ease_t, 0.0),
+                                handles: Default::default(),
                             }));
                             break;
                         }

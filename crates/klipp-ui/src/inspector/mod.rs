@@ -8710,7 +8710,7 @@ mod text_key_tests {
     /// (#1511).
     #[test]
     fn a_text_row_sets_or_keys_its_value() {
-        let key = |t: f64| klipp_core::Keyframe { time_secs: t, value: 0.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+        let key = |t: f64| klipp_core::Keyframe { time_secs: t, value: 0.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
         let changed = || TextKeyEdit { changed: true, ..Default::default() };
         let toggled = || TextKeyEdit { toggled: true, ..Default::default() };
         let run = |target: Option<u32>, keys: &[klipp_core::Keyframe], e: TextKeyEdit| {

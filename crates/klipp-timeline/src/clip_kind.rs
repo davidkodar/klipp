@@ -3535,6 +3535,7 @@ mod tests {
                 interpolation: Interpolation::Linear,
                 tangent_in: (0.0, 0.0),
                 tangent_out: (0.0, 0.0),
+                handles: Default::default(),
             },
             Keyframe {
                 time_secs: 1.5,
@@ -3542,6 +3543,7 @@ mod tests {
                 interpolation: Interpolation::Bezier,
                 tangent_in: (-0.25, -0.05),
                 tangent_out: (0.25, 0.05),
+                handles: Default::default(),
             },
         ];
         obj.transform.center_y_keyframes = vec![Keyframe {
@@ -3550,6 +3552,7 @@ mod tests {
             interpolation: Interpolation::Step,
             tangent_in: (0.0, 0.0),
             tangent_out: (0.0, 0.0),
+            handles: Default::default(),
         }];
 
         let json = serde_json::to_string(&td).expect("serialise");
@@ -3783,6 +3786,7 @@ mod tests {
                     interpolation: Interpolation::Linear,
                     tangent_in: (0.0, 0.0),
                     tangent_out: (0.0, 0.0),
+                    handles: Default::default(),
                 },
                 Keyframe {
                     time_secs: 1.0,
@@ -3790,6 +3794,7 @@ mod tests {
                     interpolation: Interpolation::Linear,
                     tangent_in: (0.0, 0.0),
                     tangent_out: (0.0, 0.0),
+                    handles: Default::default(),
                 },
             ],
             intensity: 0.8,
@@ -3822,6 +3827,7 @@ mod tests {
                 interpolation: Interpolation::Bezier,
                 tangent_in: (-0.1, 0.0),
                 tangent_out: (0.1, 0.0),
+                handles: Default::default(),
             }],
             intensity: 0.9,
             intensity_keyframes: vec![Keyframe {
@@ -3830,6 +3836,7 @@ mod tests {
                 interpolation: Interpolation::Linear,
                 tangent_in: (0.0, 0.0),
                 tangent_out: (0.0, 0.0),
+                handles: Default::default(),
             }],
         };
         let json = serde_json::to_string(&g).expect("serialise");
@@ -3934,6 +3941,7 @@ mod tests {
                     interpolation: Interpolation::Linear,
                     tangent_in: (0.0, 0.0),
                     tangent_out: (0.0, 0.0),
+                    handles: Default::default(),
                 },
                 Keyframe {
                     time_secs: 1.0,
@@ -3941,6 +3949,7 @@ mod tests {
                     interpolation: Interpolation::Linear,
                     tangent_in: (0.0, 0.0),
                     tangent_out: (0.0, 0.0),
+                    handles: Default::default(),
                 },
             ],
             offset_y: 3.0,
@@ -3953,6 +3962,7 @@ mod tests {
                     interpolation: Interpolation::Linear,
                     tangent_in: (0.0, 0.0),
                     tangent_out: (0.0, 0.0),
+                    handles: Default::default(),
                 },
                 Keyframe {
                     time_secs: 1.0,
@@ -3960,6 +3970,7 @@ mod tests {
                     interpolation: Interpolation::Linear,
                     tangent_in: (0.0, 0.0),
                     tangent_out: (0.0, 0.0),
+                    handles: Default::default(),
                 },
             ],
         };
@@ -3989,6 +4000,7 @@ mod tests {
                 time_secs: 0.5, value: 5.0,
                 interpolation: Interpolation::Bezier,
                 tangent_in: (-0.1, 0.0), tangent_out: (0.1, 0.0),
+                handles: Default::default(),
             }],
             offset_y: 3.0,
             offset_y_keyframes: Vec::new(),
@@ -3997,6 +4009,7 @@ mod tests {
                 time_secs: 0.0, value: 0.0,
                 interpolation: Interpolation::Linear,
                 tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                handles: Default::default(),
             }],
         };
         let json = serde_json::to_string(&s).expect("serialise");
@@ -4117,11 +4130,13 @@ mod tests {
                 time_secs: 0.0, value: 0.0,
                 interpolation: Interpolation::Linear,
                 tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                handles: Default::default(),
             },
             Keyframe {
                 time_secs: 1.0, value: 10.0,
                 interpolation: Interpolation::Linear,
                 tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                handles: Default::default(),
             },
         ];
         assert!((s.evaluated_blur(0.5) - 5.0).abs() < 1e-5);
@@ -4153,11 +4168,13 @@ mod tests {
                 time_secs: 0.0, value: 5.0,
                 interpolation: Interpolation::Linear,
                 tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                handles: Default::default(),
             },
             Keyframe {
                 time_secs: 1.0, value: 25.0,
                 interpolation: Interpolation::Linear,
                 tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                handles: Default::default(),
             },
         ];
         assert!((e.evaluated_depth(0.5) - 15.0).abs() < 1e-5);
@@ -4437,6 +4454,7 @@ mod tests {
                 time_secs: 0.0, value: 3.0,
                 interpolation: Interpolation::Linear,
                 tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                handles: Default::default(),
             }],
             offset_y: 4.0,
             offset_y_keyframes: Vec::new(),
@@ -4621,11 +4639,13 @@ mod tests {
                 time_secs: 0.0, value: 1.0,
                 interpolation: Interpolation::Linear,
                 tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                handles: Default::default(),
             },
             Keyframe {
                 time_secs: 1.0, value: 9.0,
                 interpolation: Interpolation::Linear,
                 tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                handles: Default::default(),
             },
         ];
         assert!((o.evaluated_width(0.5) - 5.0).abs() < 1e-5);
@@ -4717,11 +4737,13 @@ mod tests {
                 time_secs: 0.0, value: 0.02,
                 interpolation: Interpolation::Linear,
                 tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                handles: Default::default(),
             },
             Keyframe {
                 time_secs: 1.0, value: 0.10,
                 interpolation: Interpolation::Linear,
                 tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                handles: Default::default(),
             },
         ];
         assert!((c.evaluated_stagger(0.5) - 0.06).abs() < 1e-5);
@@ -4762,11 +4784,13 @@ mod tests {
                 time_secs: 0.0, value: 90.0,
                 interpolation: Interpolation::Linear,
                 tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                handles: Default::default(),
             },
             Keyframe {
                 time_secs: 1.0, value: 270.0,
                 interpolation: Interpolation::Linear,
                 tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                handles: Default::default(),
             },
         ];
         assert!((mb.evaluated_shutter_angle(0.5) - 180.0).abs() < 1e-5);
@@ -4939,6 +4963,7 @@ mod animator_key_tests {
         for field in ["start", "end", "offset"] {
             fx.effect_keyframes_mut_for(&k(1, field)).expect(field).push(klipp_core::Keyframe {
                 time_secs: 0.5, value: 0.25, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0),
+                handles: Default::default(),
             });
         }
         let s = &fx.animators[1].selector;
@@ -5024,7 +5049,7 @@ mod text3d_key_tests {
     use crate::Text3d;
 
     fn key(t: f64, v: f32) -> klipp_core::Keyframe {
-        klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }
+        klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }
     }
 
     /// The text's 3D keys are its own keyable params, as `text3d.*`,

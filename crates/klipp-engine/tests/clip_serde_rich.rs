@@ -52,7 +52,7 @@ fn write_the_fixture() {
         return;
     }
     let t = |n| RationalTime::from_frames(n, 24);
-    let key = |time_secs, value| Keyframe { time_secs, value, interpolation: Interpolation::Bezier, tangent_out: (0.1, 0.2), tangent_in: (-0.1, -0.2) };
+    let key = |time_secs, value| Keyframe { time_secs, value, interpolation: Interpolation::Bezier, tangent_out: (0.1, 0.2), tangent_in: (-0.1, -0.2), handles: Default::default() };
     let mut clip = Clip::media(MediaId::new(), t(0), t(48), t(0), t(48));
     clip.edit_grade(|g| {
         g.nodes[1].params.exposure = Some(0.75);

@@ -1640,7 +1640,7 @@ mod placement_for_editing_tests {
     }
 
     fn key(time_secs: f64, value: f32) -> klipp_core::Keyframe {
-        klipp_core::Keyframe { time_secs, value, interpolation: Default::default(), tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) }
+        klipp_core::Keyframe { time_secs, value, interpolation: Default::default(), tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0), handles: Default::default() }
     }
 
     /// #2014: the sequence's camera places a title on the composed plane

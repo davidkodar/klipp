@@ -139,7 +139,7 @@ fn field_writes_on_a_picture_truth_clip_map_onto_its_picture() {
     let vignette = c.effect_id_at(1).unwrap();
     assert!(c.set_effect_enabled(vignette, false));
     assert!(c.replace_effect(vignette, E::Vignette { amount: 0.9, size: 0.5, softness: 0.5, roundness: 0.5 }));
-    c.edit_opacity_keyframes(|k| k.push(klipp_core::Keyframe { time_secs: 1.0, value: 0.5, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }));
+    c.edit_opacity_keyframes(|k| k.push(klipp_core::Keyframe { time_secs: 1.0, value: 0.5, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }));
     assert!(klipp_timeline::take_picture_refusal().is_none());
     let p = picture(&c);
     holds_the_mask(&p, blur, qualifier);

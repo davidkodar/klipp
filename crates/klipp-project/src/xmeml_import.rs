@@ -148,7 +148,7 @@ fn param(effect: Node<'_, '_>, id: &str) -> Option<Param> {
 
 fn keyframes(keys: &[(i64, f64)], from: i64, fps: Fps, scale: f64) -> Vec<Keyframe> {
     keys.iter()
-        .map(|(when, v)| Keyframe { time_secs: (when - from).max(0) as f64 / fps.as_f64(), value: (v * scale) as f32, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) })
+        .map(|(when, v)| Keyframe { time_secs: (when - from).max(0) as f64 / fps.as_f64(), value: (v * scale) as f32, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() })
         .collect()
 }
 

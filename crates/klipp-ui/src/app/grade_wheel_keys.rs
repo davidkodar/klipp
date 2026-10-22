@@ -17,7 +17,7 @@ use klipp_nodes::NodeKind;
 const AT: f64 = 0.5;
 
 fn key(time_secs: f64, value: f32) -> Keyframe {
-    Keyframe { time_secs, value, interpolation: Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) }
+    Keyframe { time_secs, value, interpolation: Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0), handles: Default::default() }
 }
 
 /// A Corrector drawn on `page`: on its own per-node layout, or the

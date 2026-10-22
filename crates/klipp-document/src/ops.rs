@@ -9259,7 +9259,7 @@ struct TypeKeys {
 }
 
 fn keyframe(at: f64, value: f32) -> klipp_core::Keyframe {
-    klipp_core::Keyframe { time_secs: at, value, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }
+    klipp_core::Keyframe { time_secs: at, value, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }
 }
 
 /// Why a key's time cannot be, if it cannot.
@@ -11808,7 +11808,7 @@ mod tests {
         let tail = &trim(Edge::Out, 3.0).steps[0].after[0];
         assert_eq!((tail.timeline_out_secs, tail.source_out_secs), (3.0, 6.0));
         // A ramp has no one factor: refused, not guessed.
-        seq.tracks[0].clips.iter_mut().find(|c| c.id == a).unwrap().speed_keyframes = vec![klipp_core::Keyframe { time_secs: 0.0, value: 1.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }];
+        seq.tracks[0].clips.iter_mut().find(|c| c.id == a).unwrap().speed_keyframes = vec![klipp_core::Keyframe { time_secs: 0.0, value: 1.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }];
         let refused = resolve(&seq, &pool, &[Op::Trim { clip_id: ClipRef::Id(a), edge: Edge::In, to: Anchor::Secs(1.0), ripple: false, linked: false }]).unwrap_err();
         assert!(refused.why.contains("speed ramp"), "{}", refused.why);
     }
@@ -13579,7 +13579,7 @@ mod tests {
         // No keys takes it off again — and says so rather than doing
         // nothing when there was none.
         let mut moved = seq.clone();
-        moved.camera.zoom_keyframes = vec![klipp_core::Keyframe { time_secs: 0.0, value: 1.2, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }];
+        moved.camera.zoom_keyframes = vec![klipp_core::Keyframe { time_secs: 0.0, value: 1.2, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }];
         let plan = resolve(&moved, &pool, &[Op::Camera { keys: vec![] }]).unwrap();
         let EditCommand::SetSequenceCamera { new, .. } = &plan.steps[0].edit else { panic!("a camera edit") };
         assert!(new.is_still());
@@ -16178,7 +16178,7 @@ mod effects_edit_tests {
             .effects([E::Vignette { amount: 0.5, size: 0.5, softness: 0.5, roundness: 0.5 }, E::GaussianBlur { radius: 3.0 }])
             .key(1, "radius", 1.0, 6.0)
             .build();
-        let key = klipp_core::Keyframe { time_secs: 1.0, value: 6.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+        let key = klipp_core::Keyframe { time_secs: 1.0, value: 6.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
         let fresh = E::Vignette { amount: 0.75, size: 0.5, softness: 0.5, roundness: 0.5 };
         let edit = effects_edit(&clip, |e| matches!(e, E::Vignette { .. }), Some((fresh, Place::Last))).unwrap();
         let EditCommand::PictureEdit { edit, description, .. } = edit else { panic!("a picture edit: {edit:?}") };

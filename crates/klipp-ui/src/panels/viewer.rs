@@ -7785,8 +7785,8 @@ mod fitted_backing_editor_tests {
         let mut title = TitleData::single_text(TextBox { text: "Name".into(), ..Default::default() });
         let target = title.objects[0].id;
         title.objects[0].transform.center_x_keyframes = vec![
-            klipp_core::Keyframe { time_secs: 0.0, value: 0.3, interpolation: klipp_core::Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) },
-            klipp_core::Keyframe { time_secs: 1.0, value: 0.7, interpolation: klipp_core::Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) },
+            klipp_core::Keyframe { time_secs: 0.0, value: 0.3, interpolation: klipp_core::Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0), handles: Default::default() },
+            klipp_core::Keyframe { time_secs: 1.0, value: 0.7, interpolation: klipp_core::Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0), handles: Default::default() },
         ];
         let fit = ShapeFit { target, padding: TitlePosition { x: 20.0, y: 12.0 } };
         let backing = title.add_object(TitleObjectContent::Shape(Shape {

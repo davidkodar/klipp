@@ -277,7 +277,7 @@ fn a_picture_truth_clip_refuses_a_placed_edit_and_keeps_its_mix() {
 }
 
 fn key(t: f64, v: f32) -> klipp_core::Keyframe {
-    klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) }
+    klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0), handles: Default::default() }
 }
 
 /// A key naming a slot past the list is an orphan the clip keeps. Growing

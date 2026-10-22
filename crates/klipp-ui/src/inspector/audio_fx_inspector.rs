@@ -1430,6 +1430,7 @@ mod helper_tests {
             time_secs: t, value: v,
             interpolation: Interpolation::Linear,
             tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+            handles: Default::default(),
         }
     }
 
@@ -1527,9 +1528,9 @@ mod helper_tests {
         let mut map: HashMap<String, Vec<Keyframe>> = HashMap::new();
         map.insert("0:__bypass".to_string(), vec![
             Keyframe { time_secs: 0.0, value: 0.0, interpolation: Interpolation::Step,
-                tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) },
+                tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0), handles: Default::default() },
             Keyframe { time_secs: 1.0, value: 1.0, interpolation: Interpolation::Step,
-                tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) },
+                tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0), handles: Default::default() },
         ]);
         // Step interp before second kf: still 0.0
         assert_eq!(audio_kf_eval(&map, 0, "__bypass", 0.5, 1.0, 0.0), 0.0);

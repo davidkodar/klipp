@@ -499,6 +499,7 @@ fn export_with_keyframed_opacity() {
         interpolation: klipp_core::Interpolation::Linear,
         tangent_out: (0.0, 0.0),
         tangent_in: (0.0, 0.0),
+        handles: Default::default(),
     };
     let kf_end = klipp_core::Keyframe {
         time_secs: 1.0,
@@ -506,6 +507,7 @@ fn export_with_keyframed_opacity() {
         interpolation: klipp_core::Interpolation::Linear,
         tangent_out: (0.0, 0.0),
         tangent_in: (0.0, 0.0),
+        handles: Default::default(),
     };
 
     let mut effect_keyframes = std::collections::HashMap::new();

@@ -11,7 +11,7 @@ use klipp_core::{AppCommand, ClipId, Keyframe, Mask, MaskShape, MaskStack};
 use klipp_timeline::GradeAccess;
 
 fn key(t: f64, v: f32) -> Keyframe {
-    Keyframe { time_secs: t, value: v, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }
+    Keyframe { time_secs: t, value: v, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }
 }
 
 fn square(off: f32) -> Vec<BezierPoint> {

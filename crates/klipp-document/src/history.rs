@@ -2323,6 +2323,7 @@ mod audio_chain_snapshot_tests {
                 interpolation: Interpolation::Linear,
                 tangent_in: (0.0, 0.0),
                 tangent_out: (0.0, 0.0),
+                handles: Default::default(),
             }],
         );
 
@@ -2352,6 +2353,7 @@ mod audio_chain_snapshot_tests {
                 time_secs: 0.0, value: 1.0,
                 interpolation: Interpolation::Linear,
                 tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                handles: Default::default(),
             }],
         );
 
@@ -2396,6 +2398,7 @@ mod audio_chain_snapshot_tests {
             time_secs: t, value: v,
             interpolation: Interpolation::Linear,
             tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+            handles: Default::default(),
         };
         clip.audio_effect_keyframes.insert("0:room_size".into(), vec![kf(0.0, 0.5), kf(1.0, 0.9)]);
         clip.audio_effect_keyframes.insert("1:threshold".into(), vec![kf(0.5, -6.0)]);
@@ -2450,6 +2453,7 @@ mod audio_effect_kf_ops_tests {
             time_secs: t, value: v,
             interpolation: Interpolation::Linear,
             tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+            handles: Default::default(),
         }
     }
 
@@ -2458,6 +2462,7 @@ mod audio_effect_kf_ops_tests {
             time_secs: t, value: v,
             interpolation: Interpolation::Bezier,
             tangent_in: tin, tangent_out: tout,
+            handles: Default::default(),
         }
     }
 
@@ -2589,6 +2594,7 @@ mod audio_effect_kf_ops_tests {
                     time_secs: t, value: v,
                     interpolation: Interpolation::Linear,
                     tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                    handles: Default::default(),
                 });
             }
         }

@@ -16,7 +16,7 @@ fn clip() -> Clip {
 }
 
 fn key(value: f32) -> Keyframe {
-    Keyframe { time_secs: 0.0, value, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }
+    Keyframe { time_secs: 0.0, value, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }
 }
 
 /// A grade that does something: one stop up on the Corrector.

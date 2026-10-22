@@ -6805,8 +6805,8 @@ mod paste_speed_tests {
         let mut source = klipp_timeline::Clip::media(MediaId::new(), tc(0), tc(48), tc(0), tc(48));
         source.speed = 0.5;
         source.speed_keyframes = vec![
-            klipp_core::Keyframe { time_secs: 0.0, value: 1.0, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
-            klipp_core::Keyframe { time_secs: 1.0, value: 0.25, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
+            klipp_core::Keyframe { time_secs: 0.0, value: 1.0, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() },
+            klipp_core::Keyframe { time_secs: 1.0, value: 0.25, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() },
         ];
         let copied = AttributesClipboard::of(&source);
         let mut target = klipp_timeline::Clip::media(MediaId::new(), tc(0), tc(48), tc(0), tc(48));
