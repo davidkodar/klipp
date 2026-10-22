@@ -165,6 +165,10 @@ pub struct SequenceJson {
     /// there are none, which is every project saved before there could be.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reviews: Vec<klipp_timeline::FindingReview>,
+    /// An aspect version still to be reframed (#2231). Absent when not,
+    /// which is every sequence once reframed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub awaiting_refit: bool,
     /// The move over the whole sequence. Absent when there is no camera,
     /// which is every project saved before there could be one.
     #[serde(default, skip_serializing_if = "klipp_timeline::Camera::is_default")]

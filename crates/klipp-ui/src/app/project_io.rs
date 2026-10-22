@@ -894,6 +894,10 @@ impl KlippApp {
                     }
                 }
 
+                // Aspect versions not yet reframed when the project was
+                // closed wait again for their files' framing (#2231).
+                self.state.pending_refits = super::aspect_version::waiting_refits(&self.state.sequences, &self.state.media_pool);
+
                 // Restore global LUT
                 self.state.global_lut_opacity = color_settings.global_lut_opacity;
                 self.state.global_lut_enabled = color_settings.global_lut_enabled;

@@ -551,6 +551,7 @@ mod tests {
             brief: None,
             edit_plan: None,
             reviews: Vec::new(),
+            awaiting_refit: false,
         }
     }
 

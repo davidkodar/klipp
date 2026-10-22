@@ -79,6 +79,7 @@ impl KlippApp {
             brief: None,
             edit_plan: None,
             reviews: Vec::new(),
+            awaiting_refit: false,
         };
         // The same reset closing a project does. Resetting only the
         // UI's copy left the engine on the last project: its
@@ -725,6 +726,7 @@ impl KlippApp {
                     brief: None,
                     edit_plan: None,
                     reviews: Vec::new(),
+                    awaiting_refit: false,
                 };
                 self.state.sequences.push(seq);
                 self.state.dirty = true;
@@ -735,6 +737,8 @@ impl KlippApp {
                     let mut dup = self.state.sequences[*sequence_idx].clone();
                     dup.id = klipp_core::SequenceId::new();
                     dup.name = new_name.clone();
+                    // A copy of a version still to be reframed waits too.
+                    self.state.pending_refits.extend(super::aspect_version::waiting_refits(std::slice::from_ref(&dup), &self.state.media_pool));
                     self.state.sequences.push(dup);
                     self.state.dirty = true;
                 }
