@@ -256,6 +256,7 @@ pub(super) fn build_whoosh_media_item(
         synced_audio: None,
         markers: Vec::new(),
         screen_text: String::new(),
+        audio_role: None,
         span: None,
     }
 }
@@ -844,6 +845,7 @@ mod insert_audio_media_clip_tests {
             synced_audio: None,
             markers: Vec::new(),
             screen_text: String::new(),
+            audio_role: None,
             span: None,
         }
     }

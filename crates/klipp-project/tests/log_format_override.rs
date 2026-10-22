@@ -81,6 +81,7 @@ fn make_media_item(path: PathBuf) -> MediaItem {
         synced_audio: None,
         markers: Vec::new(),
         screen_text: String::new(),
+        audio_role: None,
         span: None,
     }
 }

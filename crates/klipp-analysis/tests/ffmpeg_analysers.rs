@@ -228,3 +228,48 @@ fn fit_media_cuts_a_click_track_to_a_length_by_whole_bars() {
     assert!(klipp_analysis::music_structure::fit_media(&ctx.ffmpeg, &wav, 64.0, 0.0, 0.0, false).is_err(), "no length, no fit");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// What a sound is (#2216), with the PANNs weights at `KLIPP_PANNS_CNN10`:
+/// a synthesised tune reads as music and, where espeak-ng is installed,
+/// spoken words as speech.
+#[cfg(feature = "audio_role")]
+#[test]
+fn a_tune_reads_as_music_and_words_as_speech() {
+    use klipp_analysis::audio_role::{score, SoundKind};
+    let ctx = AnalysisCtx::default();
+    let Ok(weights) = std::env::var("KLIPP_PANNS_CNN10") else {
+        eprintln!("skipping: set KLIPP_PANNS_CNN10 to the weights");
+        return;
+    };
+    if !ctx.ffmpeg_available() {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    }
+    let model = klipp_ml_candle::panns::Cnn10::load(std::path::Path::new(&weights)).unwrap();
+    let dir = std::env::temp_dir().join(format!("klipp-role-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let rate = klipp_ml_candle::panns::SAMPLE_RATE;
+    let read = |path: &std::path::Path| klipp_analysis::audio_sync::decode_mono_pcm(&ctx.ffmpeg, path, rate, 0.0, 60.0).unwrap();
+    let tune = dir.join("tune.wav");
+    let ok = std::process::Command::new(&ctx.ffmpeg)
+        .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
+            "aevalsrc='0.2*sin(2*PI*261.6*t)*(1-mod(t,0.5))+0.2*sin(2*PI*329.6*t)*(1-mod(t+0.25,0.5))+0.15*sin(2*PI*392*t)+0.3*sin(2*PI*65.4*t)*exp(-8*mod(t,0.5))':s=32000:d=12"])
+        .arg(&tune).status().unwrap().success();
+    assert!(ok);
+    let roles = score(&read(&tune), &mut |b| model.classify(b)).unwrap();
+    assert_eq!(roles.label(None).unwrap().kind, SoundKind::Music, "{roles:?}");
+    let words = dir.join("words.wav");
+    let spoke = std::process::Command::new("espeak-ng")
+        .arg("-w").arg(&words)
+        .arg("Good morning. Today we talk about how the river changed the town, and why the bridge was built where it stands now.")
+        .status().is_ok_and(|s| s.success());
+    if spoke {
+        let roles = score(&read(&words), &mut |b| model.classify(b)).unwrap();
+        let label = roles.label(None).unwrap();
+        assert_eq!(label.kind, SoundKind::Speech, "{roles:?}");
+        assert!(label.confident, "{label:?}");
+    } else {
+        eprintln!("no espeak-ng: speech not checked");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

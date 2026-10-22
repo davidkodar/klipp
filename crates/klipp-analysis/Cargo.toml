@@ -19,7 +19,7 @@ publish = false
 # The transcript analyser: whisper.cpp built from source through
 # whisper-rs (cmake and a C++ toolchain). On by default so the app has
 # it; `--no-default-features` leaves the ffmpeg analysers only.
-default = ["transcript", "framing", "ocr", "subject_matte"]
+default = ["transcript", "framing", "ocr", "subject_matte", "audio_role"]
 transcript = ["dep:whisper-rs", "dep:klipp-ml"]
 # The framing analyser: RF-DETR through ONNX Runtime (`load-dynamic`:
 # the library is found at run time, never downloaded at build time).
@@ -32,6 +32,8 @@ subject_matte = ["dep:klipp-ml-ort", "klipp-ml-ort/ort", "dep:klipp-ml", "dep:kl
 # ONNX Runtime's CUDA provider; needs a GPU build of libonnxruntime
 # with CUDA 12 and cuDNN 9 on the machine at run time, else the
 # provider is refused and the CPU provider carries on.
+# What a file's sound is (#2216): PANNs Cnn10 in candle, pure Rust.
+audio_role = ["dep:klipp-ml-candle", "klipp-ml-candle/candle", "dep:klipp-ml"]
 cuda = ["klipp-ml-ort/cuda"]
 
 [target.'cfg(unix)'.dependencies]
@@ -45,6 +47,7 @@ klipp-media = { workspace = true }
 realfft = "3"
 klipp-ml = { workspace = true, optional = true }
 klipp-ml-ort = { workspace = true, optional = true }
+klipp-ml-candle = { workspace = true, optional = true }
 klipp-nodes = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -55,4 +58,5 @@ whisper-rs = { version = "0.16", optional = true, features = ["vulkan"] }
 workspace = true
 
 [dev-dependencies]
+klipp-ml-candle = { workspace = true }
 tracing-subscriber = { workspace = true }

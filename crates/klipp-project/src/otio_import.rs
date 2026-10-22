@@ -318,6 +318,7 @@ fn make_otio_media_item(path: PathBuf, filename: String, fps: Fps, offline: bool
         synced_audio: None,
         markers: Vec::new(),
         screen_text: String::new(),
+        audio_role: None,
         span: None,
     }
 }

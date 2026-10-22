@@ -515,6 +515,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                         },
                         effect_keyframes,
                         role: if c.role == klipp_core::ClipRole::default() { None } else { Some(c.role) },
+                        role_source: c.role_source,
                         param_modifiers,
                         speed: if (c.speed - 1.0).abs() < f64::EPSILON { None } else { Some(c.speed) },
                         speed_keyframes: if c.speed_keyframes.is_empty() { None } else { Some(c.speed_keyframes.clone()) },
@@ -802,6 +803,7 @@ fn media_item_to_json(item: &MediaItem, project_dir: &Path) -> MediaItemJson {
         synced_audio: item.synced_audio.clone(),
         span: item.span,
         screen_text: item.screen_text.clone(),
+        audio_role: item.audio_role,
         shot: item.shot.clone(),
         truncated_from_secs: item.truncated_from_secs,
     }

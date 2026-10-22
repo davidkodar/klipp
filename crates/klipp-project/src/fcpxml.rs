@@ -612,6 +612,7 @@ mod tests {
             synced_audio: None,
             markers: Vec::new(),
             screen_text: String::new(),
+            audio_role: None,
             span: None,
         }
     }
@@ -651,6 +652,7 @@ mod tests {
             clip_markers: Vec::new(),
             frame_glide: None,
             role: Default::default(),
+            role_source: klipp_core::RoleSource::Unset,
             speed: 1.0,
             speed_keyframes: Vec::new(),
             keep_pitch: false,

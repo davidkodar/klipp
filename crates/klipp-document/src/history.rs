@@ -201,7 +201,18 @@ pub enum EditCommand {
     SetReviews { old: Vec<klipp_timeline::FindingReview>, new: Vec<klipp_timeline::FindingReview> },
     /// A clip's role: dialogue, music, effects… what the mix and the
     /// checks treat it as.
-    SetClipRole { clip_id: ClipId, old: klipp_core::ClipRole, new: klipp_core::ClipRole },
+    /// Set by hand: a proposal from the sound never replaces it (#2216).
+    SetClipRole {
+        clip_id: ClipId,
+        old: klipp_core::ClipRole,
+        new: klipp_core::ClipRole,
+        /// Where the old role came from, put back on undo.
+        old_source: klipp_core::RoleSource,
+    },
+    /// Roles proposed from what clips' sound is (#2216), as (clip, old,
+    /// new). Undone, each clip keeps its old role and stays proposed, so
+    /// it is not proposed again.
+    ProposeClipRoles { changes: Vec<(ClipId, klipp_core::ClipRole, klipp_core::ClipRole)> },
     /// The sequence's picture size and rate, as (resolution, fps).
     SetSequenceFormat { old: (Resolution, Fps), new: (Resolution, Fps) },
     /// The sequence's markers, the whole list either side: a marker
@@ -860,6 +871,7 @@ impl EditCommand {
             EditCommand::SetEditPlan { .. } => "Set Edit Plan",
             EditCommand::SetReviews { .. } => "Review Finding",
             EditCommand::SetClipRole { .. } => "Set Clip Role",
+            EditCommand::ProposeClipRoles { .. } => "Classify Audio Roles",
             EditCommand::SetSequenceFormat { .. } => "Sequence Format",
             EditCommand::SetMarkers { .. } => "Markers",
             EditCommand::SetTrackContents { description, .. } => description,
@@ -1657,6 +1669,7 @@ pub(crate) mod bin_undo_tests {
             synced_audio: None,
             markers: Vec::new(),
             screen_text: String::new(),
+            audio_role: None,
             span: None,
         }
     }

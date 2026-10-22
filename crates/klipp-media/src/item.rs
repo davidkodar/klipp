@@ -279,6 +279,10 @@ pub struct MediaItem {
     /// until that analysis has run.
     #[serde(default)]
     pub screen_text: String,
+    /// The role its sound was classified as (#2216), proposed for its
+    /// clips. `None` until that analysis has run, or with nothing heard.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_role: Option<klipp_core::RoleProposal>,
     /// Which part of a split take this is, when it is one.
     #[serde(default)]
     pub span: Option<klipp_core::ClipSpan>,
@@ -416,6 +420,7 @@ impl MediaItem {
             synced_audio: None,
             markers: Vec::new(),
             screen_text: String::new(),
+            audio_role: None,
             span: None,
         }
     }
@@ -687,6 +692,7 @@ mod subclip_tests {
             synced_audio: None,
             markers: Vec::new(),
             screen_text: String::new(),
+            audio_role: None,
             span: None,
         }
     }
@@ -868,6 +874,7 @@ mod effective_rotation_tests {
             synced_audio: None,
             markers: Vec::new(),
             screen_text: String::new(),
+            audio_role: None,
             span: None,
         }
     }
@@ -1052,6 +1059,7 @@ impl MediaItem {
             synced_audio: None,
             markers: Vec::new(),
             screen_text: String::new(),
+            audio_role: None,
             span: None,
         }
     }

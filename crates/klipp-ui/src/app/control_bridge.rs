@@ -457,6 +457,12 @@ impl crate::state::AppState {
             item.screen_text = digest;
             changed = true;
         }
+        // The role the sound proposes for the file's clips (#2216).
+        let proposal = report.audio_role.as_ref().and_then(|r| r.proposal());
+        if item.audio_role != proposal {
+            item.audio_role = proposal;
+            changed = true;
+        }
         self.analysis_generation += 1;
         changed
     }

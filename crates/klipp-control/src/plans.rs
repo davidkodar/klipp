@@ -246,9 +246,11 @@ impl klipp_document::ops::Transcripts for AnalysedTranscripts {
     }
 
     fn library_role(&self, item: &klipp_media::MediaItem) -> Option<klipp_core::ClipRole> {
-        match klipp_audio_search::library_source(&item.path)? {
-            klipp_audio_search::Source::JamendoMusic => Some(klipp_core::ClipRole::Music),
-            klipp_audio_search::Source::Freesound => Some(klipp_core::ClipRole::SFX),
+        match klipp_audio_search::library_source(&item.path) {
+            Some(klipp_audio_search::Source::JamendoMusic) => Some(klipp_core::ClipRole::Music),
+            Some(klipp_audio_search::Source::Freesound) => Some(klipp_core::ClipRole::SFX),
+            // Else what its sound was surely classified as (#2216).
+            None => item.audio_role.filter(|p| p.confident).map(|p| p.role),
         }
     }
 

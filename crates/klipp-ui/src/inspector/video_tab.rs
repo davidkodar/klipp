@@ -192,6 +192,7 @@ fn show_bin_media_video(
         clip_markers: Vec::new(),
         frame_glide: None,
         role: klipp_core::ClipRole::default(),
+        role_source: klipp_core::RoleSource::Unset,
         speed: 1.0,
         speed_keyframes: Vec::new(),
         keep_pitch: false,

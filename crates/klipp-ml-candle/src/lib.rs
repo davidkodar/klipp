@@ -36,5 +36,6 @@
 
 pub mod mobile_sam;
 pub mod translation;
+pub mod panns;
 
 pub use mobile_sam::{MobileSam, MobileSamBuilder, MOBILE_SAM_MODEL_ID};

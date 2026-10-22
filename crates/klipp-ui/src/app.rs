@@ -33,6 +33,7 @@ mod multicam;
 mod placement;
 mod history_apply;
 pub(crate) mod aspect_version;
+mod audio_roles;
 mod recording;
 mod ai_tool_runs;
 mod multi_clip_edit;

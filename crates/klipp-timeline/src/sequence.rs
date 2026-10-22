@@ -1573,6 +1573,7 @@ impl Track {
             clip_markers: Vec::new(),
             frame_glide: None,
             role: ClipRole::default(),
+            role_source: klipp_core::RoleSource::Unset,
             speed: 1.0,
             speed_keyframes: Vec::new(),
             keep_pitch: false,
@@ -1882,6 +1883,7 @@ impl Track {
             // A glide is the whole clip's move: each piece keeps its share of the keys (#611).
             frame_glide: None,
             role: clip.role,
+            role_source: clip.role_source,
             speed: clip.speed,
             speed_keyframes: clip.speed_keyframes.clone(),
             keep_pitch: clip.keep_pitch,
@@ -1959,6 +1961,7 @@ impl Track {
             // A glide is the whole clip's move: each piece keeps its share of the keys (#611).
             frame_glide: None,
             role: clip.role,
+            role_source: clip.role_source,
             speed: clip.speed,
             speed_keyframes: clip.speed_keyframes.clone(),
             keep_pitch: clip.keep_pitch,
@@ -2410,6 +2413,10 @@ pub struct Clip {
     /// Content role — determines timeline color coding.
     #[serde(default)]
     pub role: ClipRole,
+    /// Whether the role was set by hand or proposed from the sound
+    /// (#2216).
+    #[serde(default, skip_serializing_if = "klipp_core::RoleSource::is_unset")]
+    pub role_source: klipp_core::RoleSource,
     /// Playback speed multiplier (1.0 = normal, 2.0 = 2x fast, 0.5 = half speed)
     #[serde(default = "default_speed")]
     pub speed: f64,
@@ -2930,6 +2937,7 @@ impl Clip {
             clip_markers: Vec::new(),
             frame_glide: None,
             role: ClipRole::default(),
+            role_source: klipp_core::RoleSource::Unset,
             speed: 1.0,
             speed_keyframes: Vec::new(),
             keep_pitch: false,
@@ -3045,6 +3053,7 @@ impl Clip {
             clip_markers: Vec::new(),
             frame_glide: None,
             role: ClipRole::default(),
+            role_source: klipp_core::RoleSource::Unset,
             speed: 1.0,
             speed_keyframes: Vec::new(),
             keep_pitch: false,
@@ -3149,6 +3158,7 @@ impl Clip {
             clip_markers: Vec::new(),
             frame_glide: None,
             role: ClipRole::default(),
+            role_source: klipp_core::RoleSource::Unset,
             speed: 1.0,
             speed_keyframes: Vec::new(),
             keep_pitch: false,
@@ -3719,6 +3729,21 @@ mod tests {
     /// it. A blade through a clip with a fade out used to leave a fade
     /// out on the left half and a fade in on the right, dipping to
     /// nothing at a join that should pass unnoticed.
+    /// #2216: a role set by hand stays set by hand in both halves, so a
+    /// proposal from the sound never replaces it after a blade.
+    #[test]
+    fn split_keeps_where_the_role_came_from() {
+        let mut c = make_clip(0, 96, 0, 96);
+        c.role = ClipRole::Music;
+        c.role_source = klipp_core::RoleSource::ByHand;
+        let id = c.id;
+        let mut track = make_track(vec![c]);
+        let (a, b) = track.split_at(id, tc(48)).expect("split");
+        for half in [&a, &b] {
+            assert_eq!((half.role, half.role_source), (ClipRole::Music, klipp_core::RoleSource::ByHand));
+        }
+    }
+
     #[test]
     fn split_keeps_each_half_only_its_own_outer_fade() {
         let mut c = make_clip(0, 96, 0, 96);
