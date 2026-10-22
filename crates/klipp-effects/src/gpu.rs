@@ -1934,11 +1934,12 @@ impl GpuEffectsPipeline {
         self.luma_coefs
     }
 
-    /// True once wgpu has reported a device-lost or uncaptured error.
-    /// After this flips, every frame-processing entry passes the input
+    /// True once wgpu has reported a device-lost or uncaptured error,
+    /// and for a moment after the device runs out of memory (#2394).
+    /// While it holds, every frame-processing entry passes the input
     /// through unchanged so compositing doesn't stall on a dead GPU.
     pub fn is_device_lost(&self) -> bool {
-        self.device_lost.load(Ordering::SeqCst)
+        self.device_lost.load(Ordering::SeqCst) || crate::gpu_context::out_of_memory_recently()
     }
 
     /// Mark the pipeline dead. Intended for internal call sites that

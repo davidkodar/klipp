@@ -121,6 +121,12 @@ pub(crate) fn respond(
                 }
                 text.push('\n');
             }
+            // A GPU driver refusing work is said, so going on in
+            // software isn't taken for a Klipp bug (#2394).
+            let gpu_refusing = klipp_engine::gpu_health::Refusals::now().warning();
+            if let Some(line) = &gpu_refusing {
+                text.push_str(&format!("\n{line}\n"));
+            }
             Ok(json!({
                 // What a person is told when they ask whether Klipp is
                 // there: in their words, read live (#626).
@@ -133,6 +139,7 @@ pub(crate) fn respond(
                 "active_jobs": active_jobs,
                 "recent_projects": recent_projects,
                 "execution_providers": klipp_analysis::providers::lines(),
+                "gpu_refusing": gpu_refusing,
                 // The edit history's reach and its next steps, for a client
                 // checking that something wrote none (M3 step 18).
                 "history": {

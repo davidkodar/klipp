@@ -186,13 +186,37 @@ impl GpuContext {
     /// and for viewer-side GPU handoff when the UI shares this same
     /// device.
     ///
-    /// Returns `None` if the first initialisation fails (no adapter,
-    /// etc.) and caches that failure for the process lifetime so we
-    /// don't retry a broken driver on every decoder spawn. On such
-    /// systems the `*::new()` paths fall back to creating private
-    /// devices (the pre-phase-4a behaviour).
+    /// Returns `None` if initialisation fails (no adapter, a driver
+    /// refusing new work, etc.), and keeps answering `None` for
+    /// [`SHARED_RETRY_AFTER`] so a broken driver isn't retried on every
+    /// decoder spawn; after that the next caller tries again. It used to
+    /// keep that answer for the life of the process, so a driver that
+    /// recovered was never used (#2394). Meanwhile the `*::new()` paths
+    /// fall back to creating private devices (the pre-phase-4a
+    /// behaviour).
     pub fn shared() -> Option<&'static GpuContext> {
-        SHARED.get_or_init(GpuContext::new).as_ref()
+        if let Some(ctx) = SHARED.get() {
+            return Some(ctx);
+        }
+        let mut failed_at = SHARED_FAILED_AT.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(ctx) = SHARED.get() {
+            return Some(ctx);
+        }
+        if failed_at.is_some_and(|at| at.elapsed() < SHARED_RETRY_AFTER) {
+            return None;
+        }
+        match GpuContext::new() {
+            Some(ctx) => {
+                *failed_at = None;
+                // An install racing this one wins; either is the device.
+                let _ = SHARED.set(ctx);
+                SHARED.get()
+            }
+            None => {
+                *failed_at = Some(std::time::Instant::now());
+                None
+            }
+        }
     }
 
     /// Install a pre-built `GpuContext` as the process-wide shared
@@ -207,12 +231,7 @@ impl GpuContext {
     /// its lazy init); the caller can decide whether to log and
     /// proceed with two devices or abort.
     pub fn install_shared(ctx: GpuContext) -> Result<(), GpuContext> {
-        SHARED.set(Some(ctx)).map_err(|opt| {
-            // OnceLock::set returns the value back on Err; unwrap
-            // the Option layer. The slot is only ever stored as
-            // Some here, so opt is always Some.
-            opt.expect("install_shared always stores Some")
-        })?;
+        SHARED.set(ctx)?;
         SHARED_FROM_UI.store(true, std::sync::atomic::Ordering::Release);
         Ok(())
     }
@@ -223,7 +242,7 @@ impl GpuContext {
     /// itself and leaves the UI's install to fail. Whether it was decided.
     pub fn wait_for_shared(limit: std::time::Duration) -> bool {
         let until = std::time::Instant::now() + limit;
-        while SHARED.get().is_none() {
+        while SHARED.get().is_none() && SHARED_FAILED_AT.lock().unwrap_or_else(|e| e.into_inner()).is_none() {
             if std::time::Instant::now() >= until {
                 return false;
             }
@@ -243,9 +262,14 @@ impl GpuContext {
 }
 
 // File-level so `shared()` and `install_shared()` cooperate on one
-// slot. `None` in the `Some(...)` position means init was attempted
-// and failed — `shared()` returns None until end of process.
-static SHARED: std::sync::OnceLock<Option<GpuContext>> = std::sync::OnceLock::new();
+// slot.
+static SHARED: std::sync::OnceLock<GpuContext> = std::sync::OnceLock::new();
+/// When [`GpuContext::shared`] last failed to make the device, while
+/// it has none. Its lock also keeps two callers from making it at once.
+static SHARED_FAILED_AT: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+/// How long after a failed [`GpuContext::shared`] the next caller tries
+/// to make the device again.
+const SHARED_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
 static SHARED_FROM_UI: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Register the device's single uncaptured-error + device-lost
@@ -275,6 +299,46 @@ pub fn validation_errors() -> u64 {
     VALIDATION_ERRORS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Out-of-memory errors the device reported this session (#2394).
+static OUT_OF_MEMORY_ERRORS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// When the newest out-of-memory error came, in milliseconds after
+/// [`since_start`]'s start, plus one; 0 for none.
+static OUT_OF_MEMORY_AT_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How long GPU work stands aside after the device runs out of memory,
+/// before the next frame tries it again. It used to stand aside for the
+/// rest of the session: once a driver out of memory recovered, nothing
+/// went back to the GPU (#2394).
+const OUT_OF_MEMORY_BACKOFF: std::time::Duration = std::time::Duration::from_millis(500);
+
+fn since_start() -> std::time::Duration {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    START.get_or_init(std::time::Instant::now).elapsed()
+}
+
+/// How many out-of-memory errors the device has reported this session.
+pub fn out_of_memory_errors() -> u64 {
+    OUT_OF_MEMORY_ERRORS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Whether the device ran out of memory in the last
+/// [`OUT_OF_MEMORY_BACKOFF`]: GPU work stands aside until it has passed.
+pub fn out_of_memory_recently() -> bool {
+    match OUT_OF_MEMORY_AT_MS.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => false,
+        at => since_start().as_millis() as u64 + 1 < at + OUT_OF_MEMORY_BACKOFF.as_millis() as u64,
+    }
+}
+
+/// Count an out-of-memory error, as the device reports one. Public for
+/// tests, which can't make a driver run out.
+#[doc(hidden)]
+pub fn note_out_of_memory() {
+    OUT_OF_MEMORY_ERRORS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    OUT_OF_MEMORY_AT_MS.store(since_start().as_millis() as u64 + 1, std::sync::atomic::Ordering::Relaxed);
+}
+
 fn register_device_callbacks(
     device: &wgpu::Device,
 ) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
@@ -298,6 +362,12 @@ fn register_device_callbacks(
                     return;
                 }
                 tracing::error!("WGPU_UNCAPTURED: {err} — the {n}th validation error, disabling GPU effects");
+            } else if matches!(err, wgpu::Error::OutOfMemory { .. }) {
+                // Out of memory stands GPU work aside for a moment, then
+                // the next frame tries again (#2394).
+                note_out_of_memory();
+                tracing::error!("WGPU_UNCAPTURED: {err} — out of GPU memory ({} this session), GPU effects stand aside for {OUT_OF_MEMORY_BACKOFF:?}", out_of_memory_errors());
+                return;
             } else {
                 tracing::error!("WGPU_UNCAPTURED: {err} — disabling GPU effects");
                 tracing::error!("WGPU_UNCAPTURED debug:\n{err:#?}");
@@ -318,4 +388,21 @@ fn register_device_callbacks(
         }));
     }
     device_lost
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Out of memory stands GPU work aside for the back-off only, then
+    /// lets it try again; it used to for the rest of the session (#2394).
+    #[test]
+    fn out_of_memory_stands_aside_for_a_moment() {
+        let before = out_of_memory_errors();
+        note_out_of_memory();
+        assert!(out_of_memory_recently(), "GPU work stands aside right after");
+        assert_eq!(out_of_memory_errors(), before + 1, "and the error is counted");
+        std::thread::sleep(OUT_OF_MEMORY_BACKOFF + std::time::Duration::from_millis(50));
+        assert!(!out_of_memory_recently(), "after the back-off the GPU is tried again");
+    }
 }

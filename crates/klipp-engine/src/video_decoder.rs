@@ -1485,6 +1485,123 @@ pub(crate) fn open_video_decoder(
     })
 }
 
+/// A software decoder for a stream's `parameters`, on `threads` (all
+/// the machine's when `None`): what a stream goes on with once the GPU
+/// refuses its hardware frames (#2394). Made from the parameters alone,
+/// so the stream's container stays free to seek.
+fn open_software_decoder(parameters: ffmpeg_next::codec::Parameters, threads: Option<usize>) -> Result<OpenedDecoder, ffmpeg_next::Error> {
+    let mut ctx = ffmpeg_next::codec::context::Context::from_parameters(parameters)?;
+    ctx.set_threading(ffmpeg_next::threading::Config { kind: ffmpeg_next::threading::Type::Frame, count: threads.unwrap_or(0) });
+    Ok(OpenedDecoder { decoder: ctx.decoder().video()?, hw_accel: HwAccel::Software, bsf: None })
+}
+
+/// Send `packet` to `decoder`, through the stream's bitstream filter
+/// when it has one (cuvid reading H.264 / HEVC out of MP4).
+fn send_to_decoder(bsf: Option<&BsfContext>, decoder: &mut ffmpeg_next::decoder::Video, packet: &mut ffmpeg_next::Packet) -> Result<(), ffmpeg_next::Error> {
+    match bsf {
+        Some(bsf) => unsafe { bsf_route_packet_to_decoder(bsf, decoder, packet) }.map_err(ffmpeg_next::Error::from),
+        None => decoder.send_packet(packet),
+    }
+}
+
+/// How long a hardware decoder may take to open and make its first
+/// frame before the stream is decoded in software: a driver refusing
+/// new work blocked the open, or the first frame, for good (#2394). A
+/// cold cuvid open at 4K takes well under a second.
+const HW_OPEN_LIMIT: Duration = Duration::from_secs(3);
+
+/// How long after a hardware open ran out of time new streams skip
+/// the GPU, so each does not wait [`HW_OPEN_LIMIT`] on a driver that is
+/// still refusing work.
+const HW_SHUNNED_FOR: Duration = Duration::from_secs(30);
+
+/// When the newest hardware open ran out of time.
+static HW_OPEN_TIMED_OUT_AT: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+
+/// Hardware opens that ran out of time.
+static HW_OPENS_TIMED_OUT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How many hardware decoder opens, since the process began, ran out of
+/// [`HW_OPEN_LIMIT`] and went on in software (#2394).
+pub fn hw_opens_timed_out() -> u64 {
+    HW_OPENS_TIMED_OUT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Whether a hardware open ran out of time in the last [`HW_SHUNNED_FOR`].
+fn hw_shunned() -> bool {
+    HW_OPEN_TIMED_OUT_AT.lock().unwrap_or_else(|e| e.into_inner()).is_some_and(|at| at.elapsed() < HW_SHUNNED_FOR)
+}
+
+/// Milliseconds the next hardware open waits before it starts, as one
+/// blocked in a refusing driver does: a test's (#2394).
+static STALL_NEXT_HW_OPEN_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Have the next hardware decoder open stall for `stall`, and forget an
+/// earlier open that ran out of time. For tests.
+#[doc(hidden)]
+pub fn stall_next_hw_open(stall: Duration) {
+    *HW_OPEN_TIMED_OUT_AT.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    STALL_NEXT_HW_OPEN_MS.store(stall.as_millis() as u64, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Open `path`'s video stream on the GPU and decode up to its first
+/// frame, on a thread of its own, within [`HW_OPEN_LIMIT`]. The decoder
+/// comes back flushed, ready for the caller's packets from the start.
+/// `None` when the open ran out of time: that thread is left behind,
+/// blocked in the driver, and its decoder dropped should it ever return.
+fn open_hardware_in_time(path: &Path, try_cuvid: bool) -> Option<Result<OpenedDecoder, ffmpeg_next::Error>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let owned = path.to_path_buf();
+    let spawned = std::thread::Builder::new().name("klipp-hw-open".into()).spawn(move || {
+        let stall = STALL_NEXT_HW_OPEN_MS.swap(0, std::sync::atomic::Ordering::Relaxed);
+        if stall > 0 {
+            std::thread::sleep(Duration::from_millis(stall));
+        }
+        let _ = tx.send(open_hardware_to_first_frame(&owned, try_cuvid));
+    });
+    if spawned.is_err() {
+        return Some(Err(ffmpeg_next::Error::Bug));
+    }
+    match rx.recv_timeout(HW_OPEN_LIMIT) {
+        Ok(opened) => Some(opened),
+        Err(_) => {
+            warn!("decode_thread: the GPU decoder for {path:?} did not open within {HW_OPEN_LIMIT:?}; decoding in software");
+            HW_OPENS_TIMED_OUT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            *HW_OPEN_TIMED_OUT_AT.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::time::Instant::now());
+            None
+        }
+    }
+}
+
+/// [`open_hardware_in_time`]'s work: open the decoder on a container of
+/// its own and decode until the first frame comes.
+fn open_hardware_to_first_frame(path: &Path, try_cuvid: bool) -> Result<OpenedDecoder, ffmpeg_next::Error> {
+    let mut format_ctx = ffmpeg_next::format::input(path)?;
+    let stream = format_ctx.streams().best(ffmpeg_next::media::Type::Video).ok_or(ffmpeg_next::Error::StreamNotFound)?;
+    let stream_index = stream.index();
+    let mut opened = open_video_decoder(&stream, true, try_cuvid, None)?;
+    drop(stream);
+    if opened.hw_accel == HwAccel::Software {
+        return Ok(opened);
+    }
+    let mut frame = ffmpeg_next::frame::Video::empty();
+    // Enough packets for any decoder's delay before its first frame.
+    for (stream, mut packet) in format_ctx.packets().take(256) {
+        if stream.index() != stream_index {
+            continue;
+        }
+        let _ = send_to_decoder(opened.bsf.as_ref(), &mut opened.decoder, &mut packet);
+        if opened.decoder.receive_frame(&mut frame).is_ok() {
+            break;
+        }
+    }
+    opened.decoder.flush();
+    if let Some(bsf) = opened.bsf.as_ref() {
+        bsf.flush();
+    }
+    Ok(opened)
+}
+
 /// Try to initialize VAAPI on the codec context. Returns true if successful.
 pub(crate) unsafe fn try_init_vaapi(codec_ctx_ptr: *mut ffmpeg_next::ffi::AVCodecContext) -> bool {
     use ffmpeg_next::ffi::*;
@@ -1526,6 +1643,32 @@ pub(crate) unsafe fn try_init_vaapi(codec_ctx_ptr: *mut ffmpeg_next::ffi::AVCode
 
     warn!("Hardware decode: VAAPI init failed on all device paths");
     false
+}
+
+/// How many hardware frames in a row the GPU may refuse (their transfer
+/// or conversion failing) before the stream is decoded in software: a
+/// driver that refuses new work otherwise left the picture empty for
+/// good, every frame dropped (#2394).
+const HW_REFUSALS_TO_SOFTWARE: u32 = 3;
+
+/// Streams moved to software decode after the GPU refused their frames.
+static STREAMS_TO_SOFTWARE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How many streams went on in software decode, since the process began,
+/// after the GPU refused their hardware frames (#2394).
+pub fn streams_moved_to_software() -> u64 {
+    STREAMS_TO_SOFTWARE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Hardware frames to refuse on purpose, as a driver refusing work does:
+/// a test's (#2394).
+static REFUSE_HW_FRAMES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Have the next `n` hardware-decoded frames fail as a refused transfer
+/// does. For tests.
+#[doc(hidden)]
+pub fn refuse_next_hw_frames(n: u32) {
+    REFUSE_HW_FRAMES.store(n, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Maximum playback resolution — frames larger than this are downscaled during
@@ -2468,10 +2611,15 @@ fn decode_thread_main(
         crate::decode_budget::Decoding::Software { threads } => Some(threads),
         crate::decode_budget::Decoding::Gpu => None,
     };
-    let hw_enabled = sw_threads.is_none() && HARDWARE_DECODE_PREF.load(std::sync::atomic::Ordering::Relaxed);
+    let hw_enabled = sw_threads.is_none() && HARDWARE_DECODE_PREF.load(std::sync::atomic::Ordering::Relaxed) && !hw_shunned();
     let try_cuvid = hw_enabled && std::env::var("KLIPP_USE_CUVID").as_deref() != Ok("0");
 
-    let opened = match open_video_decoder(&video_stream, hw_enabled, try_cuvid, sw_threads) {
+    // The GPU open, and its first frame, within a time limit; software
+    // when it runs out (#2394).
+    let hw_opened = if hw_enabled && !still { open_hardware_in_time(&path, try_cuvid) } else { None };
+    // A still opens as it always did; a GPU open out of time, or no GPU
+    // wanted, goes on in software.
+    let opened = match hw_opened.unwrap_or_else(|| open_video_decoder(&video_stream, hw_enabled && still, try_cuvid && still, sw_threads)) {
         Ok(o) => o,
         Err(e) => {
             warn!("decode_thread: video decoder error: {e}");
@@ -2480,8 +2628,15 @@ fn decode_thread_main(
         }
     };
     let mut decoder = opened.decoder;
-    let bsf_ctx = opened.bsf;
-    let hw_accel = opened.hw_accel;
+    // What a software decoder for this stream is made from, should the
+    // GPU refuse its frames (#2394).
+    let stream_parameters = video_stream.parameters();
+    let mut bsf_ctx = opened.bsf;
+    let mut hw_accel = opened.hw_accel;
+    // Hardware frames the GPU refused in a row, and the time of the
+    // first of them (#2394).
+    let mut hw_refused: u32 = 0;
+    let mut first_refused_secs = 0.0;
 
     if hw_accel != HwAccel::Software {
         hw_active_flag.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -2812,16 +2967,50 @@ fn decode_thread_main(
             let t_transfer = std::time::Instant::now();
             let frame_result = if is_hw_frame {
                 hw_active_flag.store(true, std::sync::atomic::Ordering::Relaxed);
-                unsafe { download_hw_frame(&received_frame, &mut hw_scaler, gpu_nv12.as_mut(), &mut gpu_p010, source_rotation, cs_baseline) }
+                let refused = REFUSE_HW_FRAMES.fetch_update(std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed, |n| n.checked_sub(1)).is_ok();
+                if refused { None } else { unsafe { download_hw_frame(&received_frame, &mut hw_scaler, gpu_nv12.as_mut(), &mut gpu_p010, source_rotation, cs_baseline) } }
             } else {
                 sw_frame_on_gpu(&received_frame, &mut sw_repack, &mut gpu_nv12, &mut gpu_p010, source_rotation, cs_baseline)
                     .or_else(|| convert_sw_frame(&received_frame, &mut sw_scaler, &mut perf_copy_us, source_rotation, cs_baseline))
             };
 
             let mut linear_frame = match frame_result {
-                Some(result) => result,
+                Some(result) => {
+                    hw_refused = 0;
+                    result
+                }
                 None => {
                     warn!("decode_thread: frame conversion failed, skipping");
+                    // The GPU refusing a hardware frame again and again
+                    // (a driver out of channels or memory): the stream goes
+                    // on in software from the frame it refused (#2394).
+                    hw_refused = if is_hw_frame { hw_refused + 1 } else { 0 };
+                    if hw_refused == 1 {
+                        first_refused_secs = pts_secs;
+                    }
+                    if hw_refused >= HW_REFUSALS_TO_SOFTWARE {
+                        hw_refused = 0;
+                        match open_software_decoder(stream_parameters.clone(), sw_threads) {
+                            Ok(software) => {
+                                warn!("decode_thread: the GPU refused {HW_REFUSALS_TO_SOFTWARE} frames in a row; decoding in software from {first_refused_secs:.3}s");
+                                decoder = software.decoder;
+                                bsf_ctx = software.bsf;
+                                hw_accel = software.hw_accel;
+                                hw_active_flag.store(false, std::sync::atomic::Ordering::Relaxed);
+                                STREAMS_TO_SOFTWARE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                let ts = (first_refused_secs * 1_000_000.0) as i64;
+                                let _ = format_ctx.seek(ts, ..ts);
+                                packets = format_ctx.packets();
+                                seek_target = Some(first_refused_secs);
+                                last_pts_secs = None;
+                                publish_pts(&last_decoded_pts, None);
+                                eof_sent = false;
+                                eof_from_demuxer = false;
+                                pending_packet = None;
+                            }
+                            Err(e) => warn!("decode_thread: the GPU refused its frames and software decode would not open: {e}"),
+                        }
+                    }
                     continue; // skip this frame but keep draining
                 }
             };
@@ -2893,12 +3082,7 @@ fn decode_thread_main(
 
         // Retry pending packet first (was EAGAIN last time)
         if let Some(mut pkt) = pending_packet.take() {
-            let send_result = if let Some(bsf) = bsf_ctx.as_ref() {
-                unsafe { bsf_route_packet_to_decoder(bsf, &mut decoder, &mut pkt) }
-                    .map_err(ffmpeg_next::Error::from)
-            } else {
-                decoder.send_packet(&pkt)
-            };
+            let send_result = send_to_decoder(bsf_ctx.as_ref(), &mut decoder, &mut pkt);
             match send_result {
                 Ok(()) => {}
                 Err(e) => {
@@ -2913,12 +3097,7 @@ fn decode_thread_main(
             match packets.next() {
                 Some((stream, mut packet)) => {
                     if stream.index() == stream_index {
-                        let send_result = if let Some(bsf) = bsf_ctx.as_ref() {
-                            unsafe { bsf_route_packet_to_decoder(bsf, &mut decoder, &mut packet) }
-                                .map_err(ffmpeg_next::Error::from)
-                        } else {
-                            decoder.send_packet(&packet)
-                        };
+                        let send_result = send_to_decoder(bsf_ctx.as_ref(), &mut decoder, &mut packet);
                         if send_result.is_err() {
                             // EAGAIN: decoder buffer full. Save packet and drain first.
                             pending_packet = Some(packet);
