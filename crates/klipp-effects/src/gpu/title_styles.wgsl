@@ -234,6 +234,29 @@ fn solid_distance(x:i32,y:i32,gw:u32,gh:u32,base:u32) -> u32 {
     if x<0 || y<0 || x>=i32(gw) || y>=i32(gh) {return 0u;}
     return output[base+u32(y)*gw+u32(x)];
 }
+// An image layer's decoded pixel, packed RGBA8 one to a u32, in byte units.
+fn image_px(x: u32, y: u32) -> vec4<f32> {
+    let v=input[y*u32(p.offset_x)+x];
+    return vec4<f32>(f32(v&255u),f32((v>>8u)&255u),f32((v>>16u)&255u),f32(v>>24u));
+}
+// `DecodedImage::sample`: bilinear at source pixel coordinates, edges
+// clamped, weighted by alpha, straight colour back.
+fn image_sample(u0: f32, v0: f32) -> vec4<f32> {
+    let iw=u32(p.offset_x);let ih=u32(p.offset_y);
+    let u=clamp(u0,0.0,f32(iw-1u));let v=clamp(v0,0.0,f32(ih-1u));
+    let x0=u32(floor(u));let y0=u32(floor(v));
+    let x1=min(x0+1u,iw-1u);let y1=min(y0+1u,ih-1u);
+    let fx=u-f32(x0);let fy=v-f32(y0);
+    var out=vec4<f32>(0.0);
+    var taps=array<vec3<f32>,4>(vec3<f32>(f32(x0),f32(y0),(1.0-fx)*(1.0-fy)),vec3<f32>(f32(x1),f32(y0),fx*(1.0-fy)),vec3<f32>(f32(x0),f32(y1),(1.0-fx)*fy),vec3<f32>(f32(x1),f32(y1),fx*fy));
+    for (var k=0u;k<4u;k+=1u) {
+        let px=image_px(u32(taps[k].x),u32(taps[k].y));
+        let a=px.a*taps[k].z;
+        out=vec4<f32>(out.rgb+px.rgb*a,out.a+a);
+    }
+    if out.a>0.0 {out=vec4<f32>(out.rgb/out.a,out.a);}
+    return out;
+}
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i=gid.x;
@@ -798,6 +821,20 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             }
             store_rgba(i,vec4<f32>(encoded(rgb.x),encoded(rgb.y),encoded(rgb.z),a));
         }
+    } else if p.op==54u {
+        // An image layer fitted into its box, as `paint_image_layer` paints
+        // it: in `color` the drawn rectangle's left and top and the picture's
+        // pixels per frame pixel across and down, the
+        // covered pixels in `row0` (x0, y0, x1, y1), the picture's size in
+        // the offsets; sRGB-encoded straight alpha, rounded to bytes.
+        let fx=f32(x);let fy=f32(y);
+        if fx<p.row0.x || fy<p.row0.y || fx>=p.row0.z || fy>=p.row0.w {store_rgba(i,vec4<f32>(0.0));return;}
+        let v=((fy+0.5)-p.color.y)*p.color.w-0.5;
+        let u=((fx+0.5)-p.color.x)*p.color.z-0.5;
+        let s=image_sample(u,v);
+        let a=clamp(round_away(s.a),0.0,255.0);
+        if a<=0.0 {store_rgba(i,vec4<f32>(0.0));return;}
+        store_rgba(i,vec4<f32>(clamp(round_away3(s.rgb),vec3<f32>(0.0),vec3<f32>(255.0))/255.0,a/255.0));
     } else if p.op==11u {
         let v=load_rgba(i);
         store_rgba(i,vec4<f32>(matrix(vec3<f32>(linear(v.x),linear(v.y),linear(v.z))),v.a));

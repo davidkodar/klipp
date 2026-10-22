@@ -17,9 +17,12 @@ use klipp_timeline::*;
 const W: u32 = 320;
 const H: u32 = 180;
 
-/// How far the viewer may be from the export, in display levels: both
-/// lay the same byte pixels over the picture, the GPU in half floats.
-const TOLERANCE: i32 = 1;
+/// How far the viewer may be from the export, in display levels. Both
+/// sample the picture with the same numbers and round it to bytes, but
+/// the GPU's division (taking the alpha weighting back out) is only
+/// within 2.5 ULP: a channel landing on a half can round the other way,
+/// one byte, which is two levels once laid over the picture (#2342).
+const TOLERANCE: i32 = 2;
 
 fn tc(secs: f64) -> Timecode {
     RationalTime::from_secs_f64(secs, 24)
@@ -187,10 +190,34 @@ fn a_moving_image_layer_is_placed_not_rastered() {
         for t in [0.2, 0.5, 1.3, 3.0] {
             let Some((viewer, events, export)) = both(&mut gpu, &mut cpu, &seq, &mut src, t) else { return no_gpu().unwrap_or(()) };
             no_fallback(&events, &format!("{name} at {t}"));
+            // The picture went up once; a moving or growing box is fitted on
+            // the GPU, with nothing fitted or uploaded again (#2342).
+            if t != 0.2 {
+                assert!(!events.iter().any(|e| e.feature == "title.image"), "{name} at {t}: {events:?}");
+            }
             let d = worst(&viewer, &export);
-            assert!(d <= TOLERANCE + 1, "{name} at {t} s: the viewer differs from the export by {d} levels");
+            assert!(d <= TOLERANCE, "{name} at {t} s: the viewer differs from the export by {d} levels");
         }
     }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// An image the image route does not draw says so under its own name,
+/// not only as the title's raster.
+#[test]
+fn a_styled_image_layer_says_why_it_is_rastered() {
+    let dir = folder("styled");
+    let png = dir.join("soft.png");
+    soft_png(&png, [250, 0, 200]);
+    let mut td = image_title(&png, ImageFit::Contain, 1.0);
+    td.objects[0].fx_mut().glows = vec![TextGlow { enabled: true, color: [80, 150, 255, 220], radius: 12.0, radius_keyframes: vec![], intensity: 0.9, intensity_keyframes: vec![] }];
+    let (seq, mut src) = sequence(td);
+    let mut gpu = renderer(true);
+    if gpu.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()).is_none() {
+        return no_gpu().unwrap_or(());
+    }
+    let events = residency::last_frame().events;
+    assert!(events.iter().any(|e| e.feature == "title.image" && e.work == Work::Fallback), "{events:?}");
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -203,8 +230,9 @@ fn a_changed_file_is_read_again() {
     let mut cpu = renderer(false);
     let (seq, mut src) = sequence(image_title(&png, ImageFit::Contain, 1.0));
     let Some((before, _, _)) = both(&mut gpu, &mut cpu, &seq, &mut src, 1.0) else { return no_gpu().unwrap_or(()) };
-    // Another picture written over it, a moment later so its time moves.
-    std::thread::sleep(std::time::Duration::from_millis(20));
+    // Another picture written over it, after the renderer trusts the
+    // stamp it read (`STAMP_EVERY`), so it looks again.
+    std::thread::sleep(klipp_title::STAMP_EVERY + std::time::Duration::from_millis(50));
     soft_png(&png, [10, 0, 60]);
     let (after, events, export) = both(&mut gpu, &mut cpu, &seq, &mut src, 1.0).unwrap();
     assert!(events.iter().any(|e| e.feature == "title.image"), "fitted anew: {events:?}");

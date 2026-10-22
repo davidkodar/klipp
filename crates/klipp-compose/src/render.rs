@@ -2744,7 +2744,12 @@ impl Renderer {
                     let motion=std::mem::take(&mut source_fx.motion);
                     if !source_fx.is_default()
                         || motion.enter.iter().chain(motion.exit.iter())
-                        .any(|m|!matches!(m.kind,klipp_timeline::MotionKind::Fade|klipp_timeline::MotionKind::Rise|klipp_timeline::MotionKind::Drop|klipp_timeline::MotionKind::SlideLeft|klipp_timeline::MotionKind::SlideRight|klipp_timeline::MotionKind::ScaleUp|klipp_timeline::MotionKind::ScaleDown|klipp_timeline::MotionKind::Blur|klipp_timeline::MotionKind::MaskRise|klipp_timeline::MotionKind::MaskDrop|klipp_timeline::MotionKind::Pop|klipp_timeline::MotionKind::Slam|klipp_timeline::MotionKind::Larger|klipp_timeline::MotionKind::Smaller|klipp_timeline::MotionKind::FlyLeft|klipp_timeline::MotionKind::FlyRight|klipp_timeline::MotionKind::FlyTop|klipp_timeline::MotionKind::FlyBottom|klipp_timeline::MotionKind::Bounce|klipp_timeline::MotionKind::Flicker|klipp_timeline::MotionKind::Typewriter|klipp_timeline::MotionKind::FocusIn|klipp_timeline::MotionKind::SoftRise)) {return None;}
+                        .any(|m|!matches!(m.kind,klipp_timeline::MotionKind::Fade|klipp_timeline::MotionKind::Rise|klipp_timeline::MotionKind::Drop|klipp_timeline::MotionKind::SlideLeft|klipp_timeline::MotionKind::SlideRight|klipp_timeline::MotionKind::ScaleUp|klipp_timeline::MotionKind::ScaleDown|klipp_timeline::MotionKind::Blur|klipp_timeline::MotionKind::MaskRise|klipp_timeline::MotionKind::MaskDrop|klipp_timeline::MotionKind::Pop|klipp_timeline::MotionKind::Slam|klipp_timeline::MotionKind::Larger|klipp_timeline::MotionKind::Smaller|klipp_timeline::MotionKind::FlyLeft|klipp_timeline::MotionKind::FlyRight|klipp_timeline::MotionKind::FlyTop|klipp_timeline::MotionKind::FlyBottom|klipp_timeline::MotionKind::Bounce|klipp_timeline::MotionKind::Flicker|klipp_timeline::MotionKind::Typewriter|klipp_timeline::MotionKind::FocusIn|klipp_timeline::MotionKind::SoftRise)) {
+                        if image.is_some() {
+                            residency::record("title.image","Image layer with layer styles, or a motion the image route does not pose, rasters with its title",Work::Fallback);
+                        }
+                        return None;
+                    }
                     let blurs=motion.enter.iter().chain(motion.exit.iter()).any(|m|matches!(m.kind,klipp_timeline::MotionKind::Blur|klipp_timeline::MotionKind::FocusIn|klipp_timeline::MotionKind::SoftRise));
                     // Shapes pose as a whole layer: character/word stagger has
                     // no effect, and both fades use unit zero as on the CPU.
@@ -2772,19 +2777,27 @@ impl Renderer {
                     };
                     let gradient=shape.and_then(|s|s.gradient.as_ref()).filter(|g|g.enabled).map(title_gradient_fill);
                     let scale=klipp_title::frame_scale(width,height);
-                    let picture=image.map(|img| {
-                        let placed=self.titles.image_sprite(img,&transform,width,height);
-                        if placed.as_ref().is_some_and(|p|p.2) {
-                            residency::record("title.image","Image layer fitted to its box once, then kept on the GPU",Work::Preparation);
-                        }
-                        placed
-                    });
+                    // The decoded picture stays on the GPU; its box is fitted
+                    // there each frame, keyed or not (#2342).
+                    let picture=image.map(|img| self.titles.decoded_image(img).and_then(|d| {
+                        let placed=klipp_title::image_placement(&d,img.fit,&transform,width,height)?;
+                        Some((d,placed))
+                    }));
                     let gpu=self.executor.gpu_pipeline_or_init()?;
+                    if let Some(Some((d,_)))=&picture {
+                        if !gpu.stack_title_image_fits(d.texels.len()) {
+                            residency::record("title.image","Image larger than one GPU buffer rasters with its title",Work::Fallback);
+                            return None;
+                        }
+                        if !gpu.stack_title_image_resident(d.id) {
+                            residency::record("title.image","Image layer's picture uploaded once, then kept on the GPU",Work::Preparation);
+                        }
+                    }
                     let (cx,cy)=(transform.center.x*width as f32,transform.center.y*height as f32);
                     let (hw,hh)=((transform.size.x*width as f32*0.5).max(0.0),(transform.size.y*height as f32*0.5).max(0.0));
                     let painted=if let Some(picture)=picture {
-                        match picture.filter(|(_,p,_)|!p.is_empty()) {
-                            Some((id,pixels,_))=>gpu.stack_layer_place_sprite(slot,id,&pixels.texels,sprite_box(&pixels),0,0,1.0,0,height),
+                        match picture {
+                            Some((d,(rect,cols,rows)))=>gpu.stack_title_image(slot,d.id,&d.texels,[d.w as u32,d.h as u32],rect,[cols.0,rows.0,cols.1,rows.1]),
                             None=>gpu.stack_layer_clear(slot),
                         }
                     } else if let Some(shape)=shape {match &shape.kind {
