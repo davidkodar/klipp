@@ -8,20 +8,11 @@ Transitions provide smooth visual changes between adjacent clips on the timeline
 
 ## Adding Transitions
 
-To add a transition between two clips:
+- Drag a transition from **Library → Transitions** onto the cut between two clips.
+- Select a clip next to a cut and press **Shift+T** for the default transition (a cross dissolve), or use the **Transition** button in the timeline toolbar.
+- **Alt+T** adds an audio crossfade.
 
-1. Position two clips adjacent to each other on the same track
-2. Select the edit point (the boundary between the clips)
-3. Drag a transition from the Transitions tab of the browser onto the edit point
-
-Both clips must have sufficient *handle media* — extra frames beyond the visible trim points — to create the transition overlap.
-
-## Cross Dissolve
-
-The cross dissolve is the default transition. It blends the outgoing clip into the incoming clip over the transition duration. The most commonly used transition in video editing.
-
-- Select an edit point between two clips
-- Press **Ctrl+T** or right-click → **Add Cross Dissolve**
+A transition needs *handle media* — frames beyond the visible trim points — on both sides of the cut. A dissolve into or out of a generator or a title needs none. A transition stays with the clips it joins when they move.
 
 ## Smooth Cut
 
@@ -33,34 +24,19 @@ A smooth cut hides a jump cut between two takes of one framing, such as an inter
 
 ## Transition Duration
 
-The default duration is 30 frames (≈ 1 second at 30 fps). Adjust by:
-
-- Dragging the edges of the transition on the timeline
-- Selecting the transition and entering a duration in the inspector
-- Changing the default in **Edit → Preferences → General**
-
-## Behaviour Under Limited Handles
-
-If a clip does not have enough handle media for the requested duration, Klipp will:
-
-- Shorten the transition to fit available media
-- Display a warning indicator on the transition
-
-This avoids the alternative — silently freezing on the last available frame — which produces invisible bugs in finished cuts.
+The default duration is 24 frames. Adjust it by dragging the transition's edges on the timeline or in the inspector; change the default in **Preferences → Editing**. Where a clip has too little handle media for the duration, the transition is shortened to fit.
 
 ## Removing Transitions
 
 Select a transition on the timeline and press **Del** to remove it. Clips return to a straight cut at the original edit point.
 
-## Per-Type Catalogue
+## Catalogue
 
-Sixty-seven transitions ship, in the Transitions tab of the browser.
-The ones reached for most:
+Seventy-three transitions ship, grouped as dissolves, wipes, slides, zooms, cinematic and effect transitions. Among them:
 
-- Dip to colour (configurable colour, default black)
-- Slide
-- Wipe (linear, radial, clock)
-- Push
-- Cross zoom
+- Cross dissolve, and dip to colour (black, white or any colour)
+- Slides, pushes and wipes (linear, radial, clock)
+- Zooms and cross zoom
+- **Piece transitions** — the picture breaks into strips, panels, halves or shards that slide, tilt, turn, fall or shrink away, in an order and with an easing you choose. A piece transition can also cut round the subject, by its tracked matte, so the subject moves as a piece of its own.
 
-All are GPU-rendered through the same compute shaders that drive the effects pipeline — no CPU fallback needed at typical preview resolutions.
+All are drawn on the GPU.

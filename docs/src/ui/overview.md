@@ -8,7 +8,7 @@ Three columns over a timeline, with one rule: every panel has one job and every 
 
 ```
 +--------------------------------------------------------------+
-| Klipp  File Edit Clip ...      Edit | Color | Export   [Q] [E]|
+| Klipp  File Edit Clip ...     Edit | Colour | Export  [Q] [E]|
 +-----------+--------------------------------------+-----------+
 |           |      Source        |     Program     |           |
 |  Browser  |      viewer        |     viewer      | Inspector |
@@ -21,11 +21,11 @@ Three columns over a timeline, with one rule: every panel has one job and every 
 +--------------------------------------------------------------+
 ```
 
-- **App bar** — Brand, the menu bar, the workspace switch (Edit, Color, Export) and the two global actions: Render Queue and Export. Nothing on it acts on the timeline.
+- **App bar** — Brand, the menu bar, the workspace switch (Edit, Colour, Export) and the two global actions: Render Queue and Export. Nothing on it acts on the timeline.
 - **Browser** — Left column: Files, Media and Library tabs.
 - **Viewers** — Centre top. Source and program side by side, or one viewer (**View → Dual Viewers**). Each viewer owns its transport, its overlays and, on the program side, the scopes and viewer-layout buttons.
-- **Timeline** — Centre bottom. Its own toolbar carries everything that changes how an edit behaves: the edit tools, insert / overwrite, snap, skimming, markers and zoom.
-- **Inspector** — Right column. Video, Audio, Color, Effects and Info tabs for the selection.
+- **Timeline** — Centre bottom. Its own toolbar carries everything that changes how an edit behaves: the edit tools, insert / overwrite, ripple, snap, skimming, markers and zoom. A selects timeline can be stacked above it.
+- **Inspector** — Right column. Video, Audio, Colour, Effects and Info tabs for the selection (Title or Generator for those clips), the sequence when nothing is selected.
 - **AI Tools** — Optional panel (Alt+A) for AI-assisted masking, isolation and detection.
 
 ## Workspaces
@@ -33,29 +33,20 @@ Three columns over a timeline, with one rule: every panel has one job and every 
 The switch in the app bar chooses what the centre and right columns are for:
 
 - **Edit** — Source and program viewers, the full timeline with its toolbar and sequence tabs, the clip inspector.
-- **Color** — One program viewer, a timeline strip for moving between shots, the scope dock below, the grade in the right column.
+- **Colour** — One program viewer, a strip of graded thumbnails for moving between shots, the scope dock below, the grade in the right column.
 - **Export** — One program viewer, the timeline for the in/out range, the export settings in the right column. Ctrl+E opens the same settings as a dialog from the other workspaces.
 
-Each workspace remembers its own viewer layout (one or two viewers) and, for Color, its own timeline height. Panel presets are under **Window → Workspaces**.
+Each workspace remembers its own viewer layout (one or two viewers) and, for Colour, its own timeline height. **Window** lists the built-in layouts (including Audio Mixing) and the ones you save with **Save Workspace...**.
 
 ## Panel Visibility
 
-Toggle individual panels from the **Window** menu:
-
-- Media Browser
-- Timeline
-- Inspector
-- Color Panel
-- Scopes
-- Audio Meters
-- AI Tools (Alt+A)
-- AI Models dialog
+Show or hide panels from the **Window** menu: Nodes, Inspector, Browser, Curve Editor, Audio Mixer, History, Markers, Edit List, Subtitle Editor, Transcript, Project Notes, Edit Plan, Colour Check, Delivery Check, Sound Over Time, Narrate, AI Tools and Plugins. The **Tools** menu opens the dialogs: Audio Plugins, AI Models, Cache Manager, Render Queue, Project Doctor and System Probe.
 
 ## Navigation
 
 - Click any panel to give it focus.
 - The **Command Palette** (**Ctrl+K**) searches every command by name.
-- The status bar at the bottom of the timeline shows clip count, selected clip info, filmstrip statistics, and zoom level.
+- The status bar at the bottom of the window shows background jobs, the selection and the timeline's state.
 
 ## Themes
 
@@ -68,7 +59,7 @@ Theme definitions cover:
 - Border and divider hues
 - Polarity-aware overlays — tooltips, popups, and toasts derive their backgrounds from the theme so light themes do not produce dark-on-dark or unreadable amber-on-amber combinations
 
-UI scale and theme can be changed in **Edit → Preferences → Appearance**. See [Appearance & Themes](../preferences/appearance.md) for the full reference.
+UI scale and theme can be changed in **Edit → Preferences... → Appearance**, and **View → Interface Size** sets the scale directly. See [Appearance & Themes](../preferences/appearance.md) for the full reference.
 
 ## Adaptive Sizing
 

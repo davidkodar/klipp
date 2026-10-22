@@ -1,68 +1,28 @@
 # Audio Preferences
 
-Access audio preferences from **Edit → Preferences → Audio**.
+Two pages: **Audio** for the mix, and **Audio Hardware** for devices.
 
-## Pan Law
+## Audio
 
-Determines how volume is compensated when audio is panned away from centre:
+### Mixing
 
-- **0 dB** — No compensation. Centre signal at full volume in both channels.
-- **−3 dB (Constant Power)** — Centre attenuated by 3 dB. Maintains perceived loudness across the stereo field. Default and most common.
-- **−4.5 dB** — Compromise between −3 dB and −6 dB.
-- **−6 dB (Linear)** — Centre attenuated by 6 dB. Linear crossfade between channels.
+- **Pan law** — the gain change when panning from centre to one side: **Linear (balance)** (the default), **Constant power**, **−3 dB**, **−4.5 dB** or **−6 dB**. Playback and export use the same law. See [Audio Mixing](../audio/mixing.md#pan-law).
+- **Anti-click fade** — the length of the micro-fade at clip edges that prevents clicks.
+- **Default fade duration** and **Default fade curve** — what a clip's **Add Fade In** and **Add Fade Out** use.
 
-Pan law applies globally to all clips. Change before beginning your audio mix — switching pan law mid-project alters the balance of all panned clips.
+### Loudness
 
-## Anti-Click Fade
+- **Loudness standard** — off, EBU R128 (−23 LUFS) or ATSC A/85 (−24 LKFS): the target the meters and the Loudness History scope show.
+- **Peak hold time** — how long the meters hold a peak.
 
-Klipp applies a short crossfade at every clip boundary to prevent audible clicks from waveform discontinuities.
+### Auto-Duck Defaults
 
-- **Duration** — Length in milliseconds (default: 3 ms)
-- **Enable / Disable**
+The duck level, attack, release and threshold a new Auto Duck starts with.
 
-The anti-click fade is extremely short and inaudible in practice. Disabling may cause clicks at cut points, especially on continuous music.
+## Audio Hardware
 
-## Loudness Standard
-
-Select the loudness metering standard:
-
-- **EBU R128** — European broadcast standard, target −23 LUFS (default)
-- **ATSC A/85** — North American broadcast standard, target −24 LKFS
-- **Custom** — set a custom target loudness in LUFS
-
-The selected standard determines the meter's target indicator and the reference level for integrated loudness measurement.
-
-## Output Device
-
-Select the audio output device from detected system devices. See [Audio Hardware](../audio/hardware.md) for backend details.
-
-## Sample Rate
-
-Configure the output sample rate:
-
-- **44 100 Hz** — CD quality
-- **48 000 Hz** — Video production standard (default)
-- **96 000 Hz** — High-resolution audio
-
-Source audio is automatically resampled to match the output. The resampler is recreated on seek to avoid stale-buffer artefacts.
-
-## Buffer Size
-
-Trade-off between latency and stability:
-
-| Buffer | Latency at 48 kHz |
-|---|---|
-| 256 samples | ~5 ms |
-| 512 samples | ~10 ms (default) |
-| 1024 samples | ~21 ms |
-| 2048 samples | ~42 ms |
-
-Increase if you experience dropouts or crackling. Decrease if audio latency is noticeable during scrubbing.
-
-## Audio Backend
-
-Klipp uses cpal, which selects the best available backend:
-
-- **PipeWire** (recommended; default on most modern distros)
-- **ALSA** (fallback)
-- **JACK** via PipeWire's JACK compatibility layer
+- **Output device** — **Default (auto)** or a specific device; **Refresh** after plugging one in.
+- **Sample rate** — 44.1, 48 (default), 96 or 192 kHz.
+- **Buffer size** — 64 to 2048 samples; larger is more stable, with more latency. See [Audio Hardware](../audio/hardware.md#buffer-size).
+- **Recording input** — the input device used when a track is armed and recording, and a reminder when the system input is muted.
+- **Detected hardware** — the audio backend and the output devices found.

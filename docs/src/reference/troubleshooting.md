@@ -10,9 +10,9 @@ When reporting issues, include the relevant sections.
 
 ## Performance Overlay
 
-Press **P** to toggle the performance overlay. It displays:
+Press **Ctrl+Shift+P** to toggle the performance overlay. It displays:
 
-- UI FPS, decode backend (NVDEC / Software)
+- UI FPS, decode backend (NVDEC / VAAPI / Software)
 - Playback state, frame queue depth, dropped frames
 - CPU usage (process-specific, EMA-smoothed) and memory in MB
 
@@ -26,11 +26,11 @@ The fastest way to diagnose playback and performance problems.
 
 **Cause** — `nvidia-vaapi-driver` has known issues with AV1 and VP9, producing all-zero frame data.
 
-**Fix** — Use CUDA NVDEC. Klipp now defaults to NVDEC and skips VAAPI entirely on NVIDIA hardware.
+**Fix** — None needed: Klipp tries CUDA NVDEC before VAAPI, and AV1 and VP9 skip VAAPI on NVIDIA.
 
 ### Vulkan Not Detected (CachyOS / Arch)
 
-**Symptom** — GPU effects fall back to CPU. Performance overlay shows no GPU effects.
+**Symptom** — Klipp reports no usable GPU, or the performance overlay shows no GPU.
 
 **Cause** — On CachyOS, the NVIDIA Vulkan ICD lives at `/usr/share/vulkan/icd.d/nvidia_icd.json` rather than `/etc/vulkan/icd.d/`.
 
@@ -48,8 +48,8 @@ cargo r
 **Fixes**
 
 1. Ensure CUDA NVDEC is the active decode backend (check the performance overlay)
-2. Set playback resolution to **Half** in **Edit → Preferences → System**
-3. Increase frame queue size (default 16; try 24 or 32)
+2. Set **Playback quality** to **Half** in **Preferences → Playback**, or lower **Max playback resolution** in **Preferences → System**
+3. Increase **Frame queue size** in **Preferences → System**
 4. Close other GPU-intensive applications
 5. Use proxy media for editing, switch to full resolution for export
 
@@ -59,7 +59,7 @@ cargo r
 
 **Fixes**
 
-1. Increase audio buffer size in **Edit → Preferences → Audio** (try 1024 or 2048 samples)
+1. Increase the buffer size in **Preferences → Audio Hardware** (try 1024 or 2048 samples)
 2. Check that PipeWire or ALSA is running (`systemctl --user status pipewire`)
 3. Ensure no other application has exclusive access to the audio device
 4. Verify CPU usage is not at 100% — heavy effects can starve the audio thread
@@ -70,7 +70,7 @@ cargo r
 
 **Fixes**
 
-1. Check the correct output device is selected in **Edit → Preferences → Audio**
+1. Check the correct output device is selected in **Preferences → Audio Hardware**
 2. Verify system and application volume are not muted
 3. Check that the clip has audio (some files are video-only)
 4. Try a different output device or the system default
@@ -81,9 +81,8 @@ cargo r
 
 **Fixes**
 
-1. Reduce frame queue size in **Edit → Preferences → System**
-2. Clear the cache (**Edit → Preferences → System → Clear Cache**)
-3. Reduce undo history depth in **Edit → Preferences → General**
+1. Reduce **Frame queue size** in **Preferences → System**
+2. Clear caches in **Preferences → Media & Cache**, or with **Tools → Cache Manager…**
 4. Close and reopen large projects periodically
 
 ### Slow Startup
@@ -135,14 +134,14 @@ sudo apt install nvidia-cuda-toolkit  # Ubuntu / Debian
 
 **Cause** — The mask is wired to the clip's first Corrector, but if the Corrector has no active grade, the matte has nothing to gate. The matte itself doesn't change the image — it gates a colour operation.
 
-**Fix** — Open the inspector → Color tab → bring up the wheels or curves and apply some grade. The mask now restricts that grade to its area.
+**Fix** — Open the inspector's Colour tab or the Colour workspace and apply some grade with the wheels or curves. The mask now restricts that grade to its area.
 
 ## Performance Tips
 
 - Use CUDA NVDEC for all video decode on NVIDIA GPUs
 - Set playback resolution to **Half** for 4K projects
 - Keep frame queue at 16 (default) unless experiencing issues
-- Use the Color Grading workspace only when grading (scopes add GPU load)
+- Show the scopes only when grading (they add GPU load)
 - Close unused panels to reduce UI rendering overhead
 - Use background rendering for effects-heavy timelines
 - Pre-cache thumbnails by pre-loading bins in the browser before editing

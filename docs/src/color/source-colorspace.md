@@ -26,13 +26,10 @@ Each detection produces a confidence score; sources at low confidence default to
 To override:
 
 1. Select the clip
-2. Inspector → Video → Source Colourspace
-3. Pick from the dropdown:
-   - Auto (use detected) — default
-   - sRGB / Rec.709 / Rec.2020
-   - One of the log curves listed above
+2. Inspector → Colour → **Input Colour Space**
+3. Pick the right encoding: one of the log curves listed above, or sRGB / Rec.709 / Rec.2020.
 
-The override is per-clip and saved in the project. Re-importing the same media does not lose the override.
+The override is per clip, saved in the project, and one undo step. New clips take the project's input format and input LUT from the Colour Management page.
 
 ## Why YUV420P10LE Bypasses libswscale
 
@@ -42,7 +39,7 @@ Klipp bypasses libswscale entirely for `yuv420p10le` sources via a direct decode
 
 1. Reads YUV planes at full 10-bit precision (`& 0x3FF` to mask the lower 10 bits — *not* `>> 6`, which is for P010LE)
 2. Decodes Y, U, V to floating-point in the source colourspace
-3. Applies the source colourspace inverse to produce linear ACEScg directly
+3. Applies the source colourspace inverse to produce linear light in the working space directly
 
 This bypass is what makes SLog3, V-Log, and the rest grade correctly — without it, the working space sees a clipped, posterised version of the original 10 bits.
 
@@ -65,4 +62,4 @@ If a clip is decoded with the wrong source colourspace:
 - **Log decoded as sRGB** — Image looks faded and low-contrast (the log curve's linear range is interpreted as already-gamma-curved values)
 - **sRGB decoded as log** — Image looks crushed and over-saturated (the inverse log curve is applied to already-linear values)
 
-Both are visible at a glance. Toggle the inspector dropdown until the image looks like the camera intended; then either keep the override or, if many clips from the same camera need the same override, file a bug — the auto-detect is missing a case.
+Both are visible at a glance. Change the clip's Input Colour Space until the image looks like the camera intended. If many clips from one camera need the same override, set the project's input format instead, and report the case so detection can learn it. Clip metadata also helps tell a hazy picture from camera log.

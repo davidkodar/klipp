@@ -49,6 +49,12 @@ Klipp uses ffmpeg-next for decoding and supports all major video formats:
 |--------|-------|
 | SRT | SubRip text, widely supported |
 | VTT | WebVTT, web standard |
+| ASS / SSA | Styled subtitles |
+| TTML, DFXP, IMSC, iTT | XML timed text |
+| SCC | Scenarist, CEA-608 captions |
+| EBU-STL | Broadcast subtitles |
+
+Exports write the same formats, TTML as IMSC 1.1 Text.
 
 ## Import: Camera Log Encodings
 
@@ -68,7 +74,7 @@ Klipp decodes these camera log formats, each with the gamut it is decoded in:
 | DJI D-Log | BT.709 |
 | GoPro ProTune Flat | BT.709 |
 | Apple Log | BT.2020 |
-| Leica L-Log | BT.2020 (set the primaries by hand for footage from the SL, Typ 601, which records BT.709) |
+| Leica L-Log | BT.2020 (BT.709 for footage from the SL, Typ 601, which records it) |
 | RED Log3G10 | REDWideGamutRGB |
 | BMD Film Gen 5 | Blackmagic Wide Gamut |
 
@@ -78,7 +84,7 @@ HLG and PQ sources are read from the file's own tags. See [Source Colourspace & 
 
 Klipp decodes video through FFmpeg, and does not support proprietary camera RAW video: REDCODE (`.r3d`), ARRIRAW (`.ari`, or ARRIRAW in MXF) and Blackmagic RAW (`.braw`). Each needs its maker's closed SDK to decode and its own colour science to develop, and Klipp does not link those SDKs. `.r3d`, `.ari` and `.braw` are not in Klipp's list of media files. This is a deliberate choice, not a planned feature.
 
-Transcode camera RAW to an editing codec first, in the maker's free tool — REDCINE-X PRO for RED, ARRI Reference Tool for ARRI, DaVinci Resolve (the free version) for Blackmagic RAW — to ProRes (422 HQ or 4444) or DNxHR, and import the result. Keep a log encoding if the tool offers one, so the latitude is there to grade in Klipp, and set the clip's log format if Klipp does not detect it. The professional codecs cameras record directly (ProRes, DNxHD / DNxHR, XAVC and XDCAM in MXF, H.264 and H.265) are decoded by FFmpeg as usual.
+Transcode camera RAW to an editing codec first, in the maker's free tool — REDCINE-X PRO for RED, ARRI Reference Tool for ARRI, Blackmagic's own free software for Blackmagic RAW — to ProRes (422 HQ or 4444) or DNxHR, and import the result. Keep a log encoding if the tool offers one, so the latitude is there to grade in Klipp, and set the clip's log format if Klipp does not detect it. The professional codecs cameras record directly (ProRes, DNxHD / DNxHR, XAVC and XDCAM in MXF, H.264 and H.265) are decoded by FFmpeg as usual.
 
 Still-image RAW files (`.arw`, `.cr2`, `.cr3`, `.nef`, `.raf`, `.orf`, `.rw2`, `.dng`, `.pef`, `.srw`, `.rwl`) import as stills, but Klipp does not develop the sensor data. The file browser's thumbnail is the JPEG preview the camera embedded in the file, with the camera's white balance and processing baked in. The picture on the timeline is decoded by FFmpeg like any other still, and FFmpeg cannot decode the compression many cameras use. For dependable results, convert RAW photos to TIFF or JPEG in a RAW developer first.
 
@@ -96,7 +102,7 @@ Still-image RAW files (`.arw`, `.cr2`, `.cr3`, `.nef`, `.raf`, `.orf`, `.rw2`, `
 
 ## Export: Audio Codecs
 
-AAC, MP3, Opus (128–320 kbps), FLAC, PCM 16-bit and PCM 24-bit, or no audio; MOV holds no Opus or FLAC, and WebM only Opus. The mix is stereo at 48 kHz. See [Export Formats](../export/formats.md).
+AAC, MP3, Opus (128–320 kbps), FLAC, PCM 16-bit and PCM 24-bit, or no audio; MOV holds no Opus or FLAC, and WebM only Opus. The mix is stereo at 48 kHz. The sound alone exports as MP3, WAV or M4A. See [Export Formats](../export/formats.md).
 
 ## Export: Output Transforms
 
@@ -104,6 +110,7 @@ Chosen in the export settings:
 
 - Match Viewer (default)
 - Rec.709 SDR
+- Rec.2020 SDR
 - Rec.2100 PQ (1000 nit)
 - Rec.2100 PQ (4000 nit)
 - DCI-P3 D65 (48 nit)
@@ -117,15 +124,17 @@ HDR delivery itself (HLG or HDR10) is chosen separately; see [Exporting Projects
 |--------|--------|--------|
 | OpenTimelineIO (`.otio`) | yes | yes |
 | Kdenlive / MLT (`.kdenlive`) | yes | yes |
-| FCPXML 1.9 | yes (primary storyline) | yes (first video track only) |
-| CMX 3600 EDL | no | yes (all video and audio tracks) |
+| FCPXML 1.9 | yes (storyline and connected clips) | yes (first video track only) |
+| Final Cut Pro 7 XML (xmeml) | yes | no |
+| CMX 3600 EDL | yes (cuts) | yes (all video and audio tracks) |
+| AAF, through OpenTimelineIO | yes | yes |
 
 See [Timeline Interchange](../export/interchange.md) for what each carries.
 
 ## Not Supported
 
 - **DCP** — export a master and wrap it with DCP-o-matic; see [Cinema (DCP) Delivery](../export/exporting.md#cinema-dcp-delivery).
-- **IMF** — not planned; see [IMF Packages](../export/exporting.md#imf-packages).
+- **IMF** — not made by Klipp; see [IMF Packages](../export/exporting.md#imf-packages).
 - **Camera RAW video** — see [Camera RAW](#camera-raw).
 
 ## Hardware Decode Support Matrix

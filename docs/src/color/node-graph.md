@@ -1,8 +1,8 @@
 # Node Graph
 
-Each clip in Klipp has a per-clip *node graph* (in the `klipp-nodes` crate) that defines how the source frame is transformed into the final composited output. The graph is a directed acyclic graph where nodes produce or consume frames, masks, or parameter values.
+Each clip in Klipp has a *node graph* that defines how the source frame becomes the picture the timeline composites: its grade, its effects, its keys and masks, as connected nodes. A track, a grade group's stages and the timeline grade have graphs of their own.
 
-Most users never need to open the node graph — the inspector controls map onto graph nodes automatically — but for power users it exposes the full compositing surface.
+Most users never need to open the graph — the inspector's controls map onto its nodes — but it exposes the full surface: every effect in the clip's stack is a node in its picture graph too, and OFX and frei0r plug-ins run as nodes of their own.
 
 ## Default Graph
 
@@ -18,7 +18,7 @@ Source ── Corrector ── Output
 
 ## Node Kinds
 
-The `NodeKind` enum in `crates/klipp-nodes/src/kinds.rs` has 35 kinds plus `Unknown`. Ports are listed as inputs → outputs; a matte output is a single-channel selection that feeds another node's matte input.
+The kinds a grade graph is built from are below. Ports are listed as inputs → outputs; a matte output is a single-channel selection that feeds another node's matte input.
 
 ### Structure
 
@@ -45,6 +45,7 @@ The `NodeKind` enum in `crates/klipp-nodes/src/kinds.rs` has 35 kinds plus `Unkn
 | `RGBCurves` | 1 → 1 | Master and R/G/B curves, with preserve-luma and mix. |
 | `HueSatCurves` | 1 → 1 | The six hue/saturation curves. |
 | `ColorBalance` | 1 → 1 | Temperature, tint, hue rotation and a global mix. |
+| `HdrZones` | 1 → 1 | Exposure, colour and saturation by tonal zone, each zone's reach set in stops about mid grey. |
 | `ColorWarper` | 1 → 1 | Hue/saturation vector grading in 12 sectors. |
 | `ColorMatch` | 2 → 1 | Histogram matching of the input (port 0) to a reference frame (port 1). |
 | `Denoise` | 1 → 1 | Spatial noise reduction (bilateral filter); shown as *Noise Reduction*. |
@@ -53,11 +54,12 @@ The `NodeKind` enum in `crates/klipp-nodes/src/kinds.rs` has 35 kinds plus `Unkn
 
 | Node | Ports | Purpose |
 |---|---|---|
-| `Qualifier` | 1 → matte | HSL qualifier: a matte from the input frame. |
+| `Qualifier` | 1 → matte | A matte from the input frame's colours: HSL, RGB or 3D (strokes across the colours to keep and to take out), with Matte Finesse. |
 | `LumaKey` | 1 → matte | A matte of pixels whose luma lies between a low and a high threshold, with a soft falloff. |
 | `DifferenceKey` | 1 → matte | A matte of pixels that differ from a clean-plate image loaded from disk by more than a tolerance. |
-| `Mask` | 1 → matte | Spatial masks (circle, rectangle, gradient). |
-| `ExternalMatte` | 0 → matte | An image file read as a matte: its alpha, luminance, red, green or blue channel (`MatteChannel`), optionally inverted. |
+| `Mask` | 1 → matte | Spatial masks: circle, rectangle, gradient, and freeform paths with curves, an inner feather and a combine mode; shapes can be keyed or tracked. |
+| `ExternalMatte` | 0 → matte | An image file, or a per-frame matte sequence (such as Track Subject's), read as a matte: its alpha, luminance, red, green or blue channel, optionally inverted. |
+| `KeyMixer` | 2+ mattes → matte | Mixes any number of mattes into one, each with a gain (negative subtracts), then an output gain and offset. |
 | `CombineMattes` | 2 mattes → matte | Combines two mattes by `matte_combine_op`: intersect (the default), union or A minus B, in linear light. |
 | `ApplyMatte` | 3 → 1 | Uses the graded frame (port 0) where the matte (port 1) selects and the ungraded frame (port 2) elsewhere. This is how a secondary is gated. |
 | `MaskCutout` | 2 → 1 | The source (port 0) multiplied by the matte (port 1): the picture where the matte is, black outside. Alpha stays opaque. |
@@ -87,70 +89,25 @@ Every kind also has a place in the grading order (`NodeKind::grade_stage`): inpu
 
 Most users only see the graph when:
 
-- **Applying an AI mask** — *Apply to clip* in the AI Tools panel inserts an `ExternalMatte` node labelled *AI mask* and wires it to port 1 of the first Corrector, replacing any edge already there. See [AI Tools Overview](../ai-tools/overview.md#apply-to-clip).
+- **Applying an AI mask** — *Apply to clip* in the AI Tools panel inserts an `ExternalMatte` node labelled *AI mask* and wires it to the first Corrector's matte input. See [AI Tools Overview](../ai-tools/overview.md#apply-to-clip).
+- **Masking or mixing one correction** — a correction takes a **mix** and a **mask channel**, set in the inspector; a grade's Output can take a matte as the clip's alpha.
 - **Stacking multiple correctors** — when the inspector adds a second corrector for secondary grading, a new `Corrector` node is appended downstream.
 - **Combining multiple masks** — e.g. an HSL qualifier *and* an external matte should select the same region. Wire both into a `CombineMattes` node and its output into the matte port of an `ApplyMatte`.
 
 ## Editing the Graph
 
-Open the graph from the inspector's **Effects** tab → **Show node graph…** In the **Colour** workspace, use **Nodes** to show or hide the docked graph.
+**Window → Nodes** shows the graph dock, in the Edit and Colour workspaces. In the Colour workspace, the arrow beside **Nodes** offers **Below viewer** and **Right of viewer**; drag the divider to resize, and the placement is remembered. **Open in graph** on an effect card in the inspector shows that effect's node.
 
-The arrow beside **Nodes** offers **Below viewer** and **Right of viewer**. Drag the divider to resize the side-by-side view; placement and split are remembered. Compact windows temporarily put the graph below, returning it to the right when there is room.
+The **Picture** view shows the clip's whole picture — source, effects, grade and output — and breadcrumbs lead from a grade back to its clip, or into a compound. Drag from an output port to an input port to wire; a reroute bends a wire through a point. Right-click a node to rename, label with a colour, delete or replace it; **Node graph: Auto-layout** tidies the canvas. Each node has a thumbnail, a solo to show its output alone, and a scope tap to feed the scopes from it. Node parameters appear in the inspector when the node is selected.
 
-The right-side layout temporarily hides the left browser to make space. Reopen it from its rail whenever needed. Leaving the layout restores the previous browser state unless you changed it manually; the colour inspector stays available.
-
-The graph editor shows nodes as rounded rectangles with input ports on the left and output ports on the right. Drag from an output port to an input port to wire. Right-click a node to delete or replace it.
-
-Node parameters appear in the inspector when the node is selected.
+**[** and **]** step between colour nodes, **Alt+D** bypasses the current one, and **Ctrl+Shift+R** resets it.
 
 ## Mask Routing Conventions
 
 - A matte gates a grade through `ApplyMatte`: the graded frame on port 0, the matte on port 1, and the ungraded frame on port 2. Where the matte is 0 the ungraded frame shows through.
-- Matte producers (`Qualifier`, `LumaKey`, `DifferenceKey`, `Mask`, `ExternalMatte`, `CombineMattes`) output a matte, and the editor colours their wires as mattes.
+- Matte producers (`Qualifier`, `LumaKey`, `DifferenceKey`, `Mask`, `ExternalMatte`, `CombineMattes`, `KeyMixer`) output a matte, and the editor colours their wires as mattes.
 - To use two mattes at once, route both through a `CombineMattes` node first and pick its operator: intersect, union or subtract.
-
-## Why Direct UI Mutation Is Discouraged
-
-Direct mutation of the graph from UI code (e.g. `vec.remove(i)` against the node list) bypasses the centralised handler that maintains cross-field invariants. Klipp routes every graph change through `AppCommand` so that orphaned `TrackPoints`, dangling keyframes, or stale matte edges can be detected and cleaned up consistently.
-
-When extending the editor, send the existing `AppCommand` variants rather than touching the graph directly. They are defined in `crates/klipp-core/src/events.rs` and take the clip's id, except the viewing ones (`SetNodeSolo`, `SetNodeViewBookmark`, `JumpNodeViewBookmark`), which act on the graph shown:
-
-- **Structure** — `AddNode` (kind by name, e.g. `"Qualifier"`, and a position), `RemoveNode`, `ConnectNodes` (from node and port, to node and port), `DisconnectEdge` (by target node and port), `RenameNode`, `ToggleNodeEnabled`, `MoveNode`, `AutoLayoutNodeGraph`
-- **Wireless links** — `SetNodeOutputLink`, `SetNodeInputLink`: connect ports by label instead of a drawn edge
-- **Compounds** — `GroupIntoCompound`, `UngroupCompound`, `DescendIntoCompound`
-- **Parameters** — `SetNodeParam` (one named scalar), bracketed by `BeginNodeParamEdit` / `EndNodeParamEdit` for a drag, and typed setters for structured parameters: `SetNodeCurves`, `SetNodeHueSatCurves`, `SetNodeQualifier`, `SetNodeLumaKey`, `SetNodeDifferenceKey`, `SetNodeDifferenceKeyPlate`, `SetNodeSoftClip`, `SetNodeMasks`, `SetNodeColorMatch`, `SetNodeLayerMixerInput`
-- **Clipboard** — `CopyColorNodes`, `PasteColorNodes` (pasted nodes get new ids)
-- **Annotation** — frames (`CreateNodeFrame`, `RenameNodeFrame`, `SetNodeFrameDescription`, `RecolorNodeFrame`, `AddToNodeFrame`, `RemoveFromNodeFrame`, `DeleteNodeFrame`) and sticky notes (`CreateStickyNote`, `SetStickyNoteText`, `MoveStickyNote`, `DeleteStickyNote`)
-- **Viewing** — `SetNodeSolo` (show one node's output as the final image), `SetScopeTapNode`, `SetNodeViewBookmark` / `JumpNodeViewBookmark`
 
 ## File Format
 
-A clip's graph is saved in its `node_graph` field in the project file, and round-trips across save and load. Node ids are UUIDs. An edge is four flat fields: the output node and port it leaves, and the input node and port it enters. `output_node_id` names the node whose output is the graded frame, and `node_positions` maps node ids to editor positions. The default graph looks like this (ids shortened here for reading; real ones are full UUIDs):
-
-```json
-{
-  "nodes": [
-    {"id": "5c1e…", "kind": "Source", "label": "Source", "enabled": true,
-     "params": {}, "keyframes": {"tracks": []},
-     "output_link": null, "input_links": []},
-    {"id": "a07b…", "kind": "Corrector", "label": "Corrector", "enabled": true,
-     "params": {}, "keyframes": {"tracks": []},
-     "output_link": null, "input_links": []},
-    {"id": "e9d2…", "kind": "Output", "label": "Output", "enabled": true,
-     "params": {}, "keyframes": {"tracks": []},
-     "output_link": null, "input_links": []}
-  ],
-  "edges": [
-    {"from_node": "5c1e…", "from_port": 0, "to_node": "a07b…", "to_port": 0},
-    {"from_node": "a07b…", "from_port": 0, "to_node": "e9d2…", "to_port": 0}
-  ],
-  "output_node_id": "e9d2…",
-  "node_positions": {
-    "5c1e…": {"x": 0.0, "y": 0.0},
-    "a07b…": {"x": 220.0, "y": 0.0},
-    "e9d2…": {"x": 440.0, "y": 0.0}
-  }
-}
-```
-
-`id`, `kind`, `label` and `enabled` are required on every node; `params`, `keyframes`, `output_link` and `input_links` may be left out when loading. Only the parameters that are set are written into `params`. The graph itself may also carry `working_space_override`, `frames` and `sticky_notes`, which are written only when set or non-empty, and `node_positions` defaults to empty when missing.
+A clip's graph is saved with the clip in the project file and round-trips across save and load. See [Project Format](../reference/project-format.md).

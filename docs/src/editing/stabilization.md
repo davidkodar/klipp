@@ -1,46 +1,33 @@
 # Stabilization
 
-Klipp ships motion stabilisation for handheld and gimbal-residual footage. The stabiliser tracks features across frames, builds a motion trajectory, smooths it, and warps each frame to match the smoothed trajectory.
+Klipp ships motion stabilisation for handheld and gimbal-residual footage, and two related clean-ups: rolling shutter correction and deflicker. Each is an effect that analyses the clip's motion or brightness first, then corrects each frame from that analysis on the GPU, in the viewer and the export.
 
 ## Workflow
 
-1. Select a clip on the timeline
-2. **Clip → Stabilize** (or *Stabilize Selected Clip* in the command palette)
-3. Klipp analyses the clip — a progress bar shows percent complete
-4. When complete, the inspector's **Stabilization** section becomes interactive
+1. Select a clip on the timeline.
+2. Add **Stabilisation** from **Library → Video FX** (drag it onto the clip, or double-click it).
+3. The analysis starts at once and runs in the background, with its progress shown.
+4. When it finishes, the clip plays stabilised, and the effect's card in the Effects tab takes its settings.
 
-Analysis is one-time per clip. Adjusting smoothness afterwards is instant — Klipp re-warps from the cached motion data, no re-analysis needed.
-
-## Performance
-
-The stabiliser runs on the GPU through the `SequentialFrameDecoder`, which keeps frames resident on the GPU between analysis steps. On an RTX 4080:
-
-- 4K HEVC, 60 seconds: ~18 seconds analysis
-- 1080p H.264, 60 seconds: ~6 seconds analysis
-
-A previous implementation took 10–15 minutes for the same 4K clip; the current decoder + GPU pipeline is roughly 30× faster.
+The analysis runs once per clip. Changing the settings afterwards re-warps from the stored motion; nothing is analysed again.
 
 ## Controls
 
-After analysis, the inspector exposes:
-
-| Control | Default | Range |
+| Control | Default | What it does |
 |---|---|---|
-| **Bypass** | off | toggle — when on, the stabilisation is computed but not applied (useful to A/B compare) |
-| **Smoothness** | 0.6 | 0.0 (no smoothing, just tracking) to 1.0 (maximum smoothing) |
-| **Crop strategy** | Auto | Auto / Fixed crop / Black borders |
-| **Show jitter %** | off | UI overlay showing residual jitter per frame |
-| **Trajectory graph** | off | UI overlay showing X/Y/rotation trajectory |
+| **Smoothing** | 0.5 | 0 follows the camera's own path; 1 smooths it the most |
+| **Crop** | 0.05 | How much of the edge is given up to hide the borders the warp reveals (0–0.2) |
+| **Zoom to Fill** | on | Scale up so the frame is always filled; off shows the warped frame with black where borders show |
 
-The jitter % indicator is meant to build trust — it shows how much motion remains after stabilisation, so you can judge whether the result is over- or under-smoothed without watching the clip end-to-end.
+Like any effect, it can be turned off with its eye to compare, and mixed or masked.
 
-## Crop Strategies
+## Rolling Shutter Correction
 
-Stabilisation needs to crop the frame because warping reveals the borders. Three strategies:
+A CMOS sensor reads its rows one after another, so fast pans lean and wobble. **Rolling Shutter Correction** straightens them from the clip's motion; **Readout** is the share of the frame time the sensor takes to read, and **Strength** how much is corrected.
 
-- **Auto** — Klipp picks a crop that hides borders for the analysed trajectory
-- **Fixed crop** — apply a constant percentage crop regardless of trajectory
-- **Black borders** — show the warped frame at full extent with black where borders are revealed; useful for VFX workflows where the borders will be replaced
+## Deflicker
+
+**Deflicker** evens out brightness that pulses from frame to frame — timelapses, lights on mains frequency. **Strength** sets how much, over a **Window** of 0.2 to 4 seconds.
 
 ## When to Stabilise
 
@@ -48,21 +35,14 @@ Good candidates:
 
 - Handheld footage with general camera shake
 - Gimbal residue (low-frequency drift the gimbal didn't catch)
-- Vehicle-mounted shots
-- Walking shots in narrative work
+- Vehicle-mounted shots and walking shots
 
 Bad candidates:
 
-- Locked-off shots (no motion to stabilise; will produce subtle warp artefacts from feature mis-tracking)
-- Heavy zoom-in shots (feature tracking degrades when frame content changes rapidly)
-- Footage with a moving subject filling the frame (the stabiliser may lock to the subject and create motion in the background)
+- Locked-off shots (nothing to stabilise; tracking noise can add a subtle warp)
+- Heavy zoom-ins (tracking degrades when the frame content changes quickly)
+- A moving subject filling the frame (the stabiliser may lock to the subject and move the background)
 
-## Cache
+## Order with Other Effects
 
-Motion data is cached in the project under `analysis/stabilization/<clip_id>.json`. The cache survives project save / load. Re-analysing replaces the cache.
-
-To clear the cache and re-analyse: select the clip → **Clip → Re-analyze Stabilization** from the command palette.
-
-## Combine with Other Effects
-
-Stabilisation runs *before* the effect chain, so any blur, sharpen, or transform you stack on top sees the stabilised frame. This is the order most editors expect — the effect chain operates on what looks like a tripod-mounted shot.
+The analysis lands on the clip that was analysed, and the correction runs as a node in the clip's effect stack, so effects after it see the stabilised frame.

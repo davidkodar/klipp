@@ -4,13 +4,14 @@ Klipp's titles are text layers rendered by the `klipp-title` engine and composit
 
 ## The Library
 
-**Library → Titles** holds a curated set of twenty-five designs, one job each, in six groups: Lower Thirds, Openers, Captions, Credits, Social and Utility. Every card is rendered by the real title engine over a frame of your own footage, with the template's fonts, shadows and motion at its resting pose. Hover a card to see its motion play. The swatches above the grid switch the backdrop to black, white or a colour if you want to judge a title without footage, and the text field renders your own words into every card.
+**Library → Titles** holds thirty-eight designs, one job each, in six groups: Lower Thirds, Openers, Captions, Credits, Social and Utility, and your own saved templates (right-click a title clip, **Save as Title Template**). **Credits from a list…** builds rolling credits from a CSV or tab-separated list of sections, roles and names, in columns or centred, fitted to a duration or scrolling at a speed. Every card is rendered by the real title engine over a frame of your own footage, with the template's fonts, shadows and motion at its resting pose. Hover a card to see its motion play. The swatches above the grid switch the backdrop to black, white or a colour if you want to judge a title without footage, and the text field renders your own words into every card.
 
 ## Adding a Title
 
 Every way in lands the same: the title becomes the selection, the inspector opens on its Title tab with the text focused, and the playhead parks a little way into the clip so the viewer shows the title at rest rather than mid-entrance. Type to replace the placeholder text.
 
-- **Ctrl+T**, the **T** button in the timeline toolbar, **Add Title** in the command palette, or the **Add Title** button the Title tab shows when nothing is selected: a fresh five-second title on a free text track at the playhead.
+- **Ctrl+T**, **Add Title** in the timeline toolbar or the command palette, or the **Add Title** button the Title tab shows when nothing is selected: a fresh five-second title on a free text track at the playhead.
+- The **Text tool** (**Y**): click in the viewer to start a title there, or drag to draw its text box, and type.
 - **Right-click a video clip › Add Title Over Clip**: a title spanning exactly that clip.
 - **Library › Titles**: double-click a design, or drag it onto the timeline, for one of the curated designs.
 
@@ -53,9 +54,9 @@ They appear at the top of the font picker with any fonts found on the system. Ne
 
 Each text layer has an entrance and an exit, set in the inspector's **Motion** group:
 
-- **Kind** — Fade, Rise, Drop, Slide from left or right, Grow, Settle, Focus, Mask rise, Mask drop, Typewriter. The mask kinds clip each glyph to its resting box so it appears out of an invisible edge.
+- **Kind** — Fade, Flicker, Rise, Drop, Soft rise, Bounce, Slide from left or right, Fly from any side, Grow, Settle, Pop, Slam, Scale from large or small, Focus, Focus in, Mask rise, Mask drop, Typewriter. The mask kinds clip each glyph to its resting box so it appears out of an invisible edge.
 - **Duration** and **Delay** — the exit's delay counts back from the end of the clip, so it always finishes as the clip does.
-- **Easing** — ease out in three strengths, overshoot, ease in and out, ease in, or linear. An easing runs over its motion's own time, so ease in starts slowly on the way out as it does on the way in. An Out motion starts with ease in.
+- **Easing** — ease out in three strengths, overshoot, ease in and out, ease in, linear, or a curve of the motion's own. An easing runs over its motion's own time, so ease in starts slowly on the way out as it does on the way in. An Out motion starts with ease in.
 - **Stagger** — all at once, or by line, word or character, with the gap between units.
 - **Travel** — how far the moving kinds move, as a fraction of the font size.
 
@@ -75,16 +76,48 @@ Below the entrance and exit sit the layer's **Loops**: what it keeps doing while
 
 The templates are built on this model, so a template's motion is fully editable after it is added. Projects saved by earlier versions, which had a single whole-title animation and a separate per-character animation, are converted to entrances, exits and loops when they open.
 
+## Animators
+
+**Animate letters** gives a text layer animators: each moves, turns, scales, fades or colours a range of its letters, words or lines, and the range's start, end and offset can be keyed so the effect travels through the text. Three presets add one in a click; the full controls fold under **Details**.
+
+## Keyed Text
+
+A title layer's position, opacity, text colour, size, tracking and line spacing, a gradient's stop colours, and its 3D settings can be keyed at the playhead. Colours blend in linear light. The keys show in the Curve Editor, the Dope Sheet and the inspector's Keyframes column.
+
+## Typography
+
+- Text is shaped with OpenType: kerning, ligatures, contextual alternates, and **Font features** to turn others on, by name or by tag, for a text box or a selection.
+- Every weight of a family, and variable fonts' axes.
+- Complex scripts and mixed left-to-right and right-to-left text, with the caret and drop caps following a right-to-left box.
+- Vertical text set in columns, with vertical forms and sideways runs.
+- Superscript, subscript, underline and strikethrough as style runs on a selection.
+- Paragraphs justified, and text aligned within its box; line breaks chosen by shaped width, avoiding one-word last lines.
+- A glyph a font lacks falls back to a font that has it; colour emoji are drawn.
+
+## Fills, Blends and Masks
+
+Text and shapes take solid fills, multi-stop linear, angled and radial gradients, pattern and texture fills. A layer can blend with the layers below it by a blend mode, and mask another layer.
+
+## Text on a Path and 3D Text
+
+Text can follow a drawn path, posed glyph by glyph as it travels. **3D text** extrudes a text layer into a solid: three looks, a turn, a depth and a light direction, with bevels, the camera and the colours under **Details**.
+
+## Find, Replace and Missing Fonts
+
+**Find and Replace in Titles…** (command palette) searches the titles, and the subtitles if you like, in the sequence or every sequence; replace one match or all, one undo step per sequence. When a project names fonts this computer lacks, Klipp lists them with the titles that use them and lets you replace each everywhere; a font left missing keeps its name, so installing it brings the look back.
+
+## Motion-Graphics Templates
+
+A composition saved as a template can expose fields — text, colours, speed — that stay editable on each use. Project templates and the assistant use them as well.
+
 ## Text Properties
 
 Font family and style, size in pixels at 1080p, colour, alignment, tracking, line spacing, case, shadows, outlines, glows, gradients, inner shadows, pattern and texture fills, extrusion, text on a path and rich-text style runs are all in the Title tab, the everyday ones in the first tier and the rest under Advanced.
 
 ## Font Discovery
 
-Klipp scans the system font directories on first launch and caches the result in `~/.cache/klipp/font_registry.json`. Later launches read the cache. Run `Reload Font Registry` from the command palette to force a rescan.
+Klipp scans the system font directories on first launch and caches the result in `~/.cache/klipp/font_registry.json`. Later launches read the cache, and scan again when a font directory has changed.
 
 ## Performance
 
-Text is shaped with OpenType by `harfrust` (kerning, ligatures, contextual alternates, and any features a layer or style run turns on or off) and its glyphs are rasterised with `fontdue`; shadows, glows and blurs run on the GPU when one is available. A resting title renders once and is cached; an entrance or exit rasterises only during its own window; Scroll, Crawl, Shake, Blink and Pulse move and fade the cached render, so a scrolling credits roll costs a few milliseconds a frame even at UHD. Wave, Colour cycle, Colour blend and Counter rasterise every frame.
-
-In the viewer, a title over the picture is composited on the GPU with the rest of the frame. A title whose frame is its resting render moved or faded (a static title, a roll, a crawl, a blink, a pulse, a fade) is rendered once and kept on the GPU; each frame then places it in one pass, with nothing rasterised or uploaded. Only when the GPU compositor is off (`KLIPP_GPU_COMPOSITE=0`) does a plain title fall back to being laid over the presented picture on the CPU, which matches the composite wherever the text is solid and differs only a hair across anti-aliased edges. The export always takes the full composite, in linear light.
+Titles are drawn on the GPU, in the viewer and the export: glyphs, shapes, paths, image layers, their fills, shadows, glows and blurs, and their motion. A resting title is rendered once and kept; a moving one is posed each frame from what is kept rather than rasterised again.

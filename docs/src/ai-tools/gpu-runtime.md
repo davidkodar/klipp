@@ -86,12 +86,7 @@ Relaunch Klipp. The footer should now show `NVIDIA CUDA — active`.
 
 ## AMD and Intel
 
-Today, AI inference on AMD and Intel falls back to CPU. Two future paths are tracked:
-
-- **AMD ROCm** — ort has a ROCm Execution Provider. When that is wired up, AMD users will get GPU AI through the same `ort` build, no candle changes required. (Tracked as F-97-AMD-ROCM.)
-- **Intel OpenVINO** — ort also has an OpenVINO EP. When wired, Intel users will get GPU AI on iGPUs and dGPUs. (Tracked as F-97-INTEL-OPENVINO.)
-
-The plan is for one Klipp binary to ship with all three EPs compiled in, so end users do not pick a build — Klipp detects the right path at startup and registers the matching EP. This matches the DaVinci Resolve / Blender model.
+AI inference on AMD and Intel GPUs runs on the CPU: Klipp's `ort` build registers only NVIDIA's CUDA execution provider. **Tools → System Probe…** reports which execution provider each model actually ran on.
 
 ## Auto-Configured Environment
 

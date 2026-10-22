@@ -2,6 +2,8 @@
 
 The media browser manages all imported media and provides tools for organising, previewing, and adding clips to the timeline.
 
+It has three tabs: **Files**, the folders on disk to import from; **Media**, the project's media pool; and **Library**, the effects, titles, transitions, generators, sounds and shared files that go onto clips and the timeline.
+
 ## Views
 
 Toggle between two view modes using the icons at the top of the browser:
@@ -78,20 +80,14 @@ From the browser, add media to the timeline by:
 - **.** — Overwrite at playhead
 - **Drag and drop** — Drag directly onto a timeline track
 
-## Effects Browser
+## Library
 
-Switch to the effects browser tab to browse and apply effects. Effects are categorised by type (colour, blur, film, distortion, etc.) and can be dragged onto clips or applied from the inspector. Every card is rendered by the real effect over a reference frame.
+The Library tab's categories:
 
-The source filter above the list defaults to **Built-in**: Klipp's own GPU
-effects, the ones that run at full speed in the viewer and the export.
-**Installed** shows the frei0r and OpenFX plugins found on the system; they
-run on the CPU and are kept as slow alternatives. **All** lists both.
-
-The **Looks** category holds chains of built-ins applied in one go (Cinematic,
-Dreamy, Punchy, Bleach Bypass, Vintage, Anamorphic). Dropping or double-clicking
-a Look adds every effect in the chain to the clip, each as its own row in the
-inspector, so any part of it can be tuned or removed afterwards.
-
-## Title Browser
-
-The title browser lists generated title presets — lower-thirds, full-screen titles, end-card layouts. See [Titles](../editing/titles.md) for the full reference.
+- **Video FX** — effects by type (colour, blur, film, distortion and more). Every card is rendered by the real effect over a reference frame. Drag one onto a clip, or double-click it to add it to the selected clip. The source filter defaults to **Built-in**, Klipp's own GPU effects; **Installed** shows the frei0r and OpenFX plug-ins found on the system; **All** lists both. **Looks** are chains of built-ins added in one go, each as its own row in the inspector.
+- **Audio FX** — built-in audio effects and the LV2 plug-ins found on the system.
+- **Titles** — title templates: lower thirds, full-screen titles, end cards, credits. See [Titles](../editing/titles.md).
+- **Transitions** — dissolves, wipes and piece transitions, previewed. See [Transitions](../editing/transitions.md).
+- **Generators** — solids, bars, gradients, particles and other generated pictures. See [Generators](../editing/generators.md).
+- **Audio** — royalty-free music and sound-effect search (Jamendo and Freesound); a download goes into the project with its credit.
+- **Shared** — the Shared Library: collections of files kept across projects, such as logos, fonts and graphics, added to a project or straight to the timeline.

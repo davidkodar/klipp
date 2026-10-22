@@ -4,89 +4,75 @@ The timeline is the primary editing surface where you arrange, trim, and organiz
 
 ## Toolbar
 
-The timeline's own toolbar sits above the sequence tabs and holds every control that changes how an edit behaves: the edit tools, the INS / OVR edit mode, snap and skimming, the marker button and the zoom. See [Toolbar](toolbar.md#timeline-toolbar).
+The timeline's own toolbar sits above the sequence tabs and holds every control that changes how an edit behaves: the edit tools, the INS / OVR edit mode, ripple, snap and skimming, the marker and title buttons and the zoom. See [Toolbar](toolbar.md#timeline-toolbar).
 
 ## Tracks
 
-The timeline supports multiple video and audio tracks:
+The timeline holds video, audio and subtitle tracks:
 
 - **Video tracks** stack from bottom to top. Higher tracks composite over lower tracks.
-- **Audio tracks** mix together. Each track has independent volume and pan.
-- Add tracks from **Timeline → Add Video Track** or **Timeline → Add Audio Track**.
-- Tracks display a header on the left with name, lock, mute/solo, and visibility toggles.
+- **Audio tracks** mix together. Each track has its own volume and pan, and can carry automation for both.
+- **Subtitle tracks** hold captions, with a language and a caption style each.
+- Add tracks from **Timeline → Add Video Track** / **Add Audio Track**, or from a track header's menu.
 
 ## Clips
 
-Clips on the timeline represent segments of imported media. They display:
+Clips on the timeline display:
 
-- **Filmstrip thumbnails** on video clips, showing frames at regular intervals
+- **Filmstrip thumbnails** on video clips
 - **Audio waveforms** on audio clips and linked audio
-- **Colour tint bar** at the top edge for visual identification
-- Clip name overlay
+- A **colour label** for visual identification
+- The clip name, and badges for speed, effects and keys
+
+A clip's menu offers **Show Keys on Clip**: any keyed parameter of its effects, grade or title layers drawn as a line on the clip, where keys are clicked, Alt+clicked to add, dragged in time and value, and deleted with Delete.
 
 ## Playhead
 
-The playhead is a vertical line indicating the current position. Click anywhere on the ruler or track area to move the playhead. During playback, the playhead moves smoothly using wall-clock interpolation against the master clock — sub-frame timing is honest at any monitor refresh rate.
-
-The playhead position is stored as a raw `f64` seconds value, not snapped to any frame rate, so seeking and trimming have no quantisation drift.
+The playhead is a vertical line marking the current position. Click the ruler or the track area to move it. During playback it moves smoothly against the master clock.
 
 ## Magnetic Timeline
 
-Klipp uses a magnetic timeline model inspired by Final Cut Pro. The full set of FCP-parity behaviours (insert, overwrite, ripple, slip, slide, replace, append, swap, lift, gap-fill) is documented in [Magnetic Timeline](../editing/magnetic-timeline.md). Headlines:
-
-- Clips automatically snap together, eliminating gaps
-- Moving a clip ripples adjacent clips to maintain continuity
-- Deleting a clip closes the gap automatically (ripple delete)
-- Override magnetic behaviour by holding a modifier key while dragging
+Clips in Klipp's timeline close up by default: moving or deleting a clip ripples the clips after it, and insert, overwrite, slip, slide, roll and replace edits keep the edit continuous. The **RIPPLE** button turns gap-closing off. See [Magnetic Timeline](../editing/magnetic-timeline.md).
 
 ## Snapping
 
-Toggle snapping with **N**. When enabled, clips snap to:
-
-- The playhead
-- Other clip boundaries
-- In/out points
-- Markers
-
-A visual indicator appears when a snap occurs.
-
-## Filmstrip Thumbnails
-
-Video clips display filmstrip thumbnails that update as you zoom:
-
-- Thumbnails are generated incrementally (~60 frames per clip, 100 ms throttle, streamed via channel)
-- Progressive refinement: zooming in queues higher-density thumbnails for visible tiles
-- Only viewport-visible tiles are rendered for performance
-- Dark separators mark distinct frame boundaries
-- A coloured tint bar at the top edge identifies the clip across cuts
+Toggle snapping with **N**. When enabled, clips snap to the playhead, other clip boundaries, in/out points and markers; right-click the snap button to choose the targets, or to snap to a grid.
 
 ## Waveforms
 
-Audio tracks and linked audio display waveforms showing amplitude over time. Waveforms cache to disk so re-renders on zoom are sub-millisecond.
+Audio tracks and linked audio display waveforms. **Show Channels Separately** on an audio track's header draws each clip's left channel above its right.
 
 ## Zoom and Navigation
 
 - **=** / **-** — Zoom in/out
-- **Z** — Zoom to fit the whole timeline; **Shift+Z** zooms to the selection
+- **Z** — Fit the whole timeline; **Shift+Z** zooms to the selection
 - **Scroll wheel** — Horizontal scroll (or zoom with Ctrl held)
-- **Home** / **End** — Jump to timeline start/end
-
-## Status Bar
-
-An 18-pixel status bar below the timeline tracks shows:
-
-- **Left side** — Clip count, selected clip name, and duration
-- **Right side** — Filmstrip visible/total count and zoom level (pixels per second)
+- **Home** / **End** — Jump to the start / end
+- **↑** / **↓** — Previous / next edit point
 
 ## Track Headers
 
-Each track header shows:
+Each track header shows its name (double-click to rename), lock, mute and solo, and, on audio, the arm button for recording. Its menu adds:
 
-- Name (double-click to rename)
-- Lock toggle (prevents edits)
-- Mute / Solo (audio)
-- Visibility (video)
-- Output target indicator (which audio bus the track sends to)
+- Track colour and height (Small, Medium, Large, Expanded)
+- Add a track above or below, move it, remove it (with or without its clips)
+- **Show automation lane** — the track's volume and pan keys, drawn and edited in a lane under it
+- **Set as Primary** — the track the cut is built on
+- On subtitle tracks, the **Language**, **Translate Captions**, and show or hide
+
+Drag a header to reorder tracks.
+
+## Track Automation
+
+An audio track's volume and pan can be keyed over time, played and exported. The automation lane shows the keys on a fader law in dB, down to silence. Each track's automation mode, clicked through in the Audio Mixer, is **Off** (the controls as set), **Read** (play the keys), **Touch** (record while a control is held), **Latch** (record from its first touch until playback stops) or **Write** (record the whole pass). Each recorded pass is one undo step.
+
+## Compound Clips
+
+Double-click a compound clip to edit inside it; a breadcrumb over the timeline shows where you are, and **Ctrl+↑** leaves it.
+
+## Stacked Selects
+
+A sequence tab's menu offers **Open as Selects**: that sequence is shown as a strip above the cut. Mark a range or select clips in it and drag them into the cut, or insert or overwrite them. Click **Edit** on the strip to work in it as a full timeline stacked above the cut; **Alt+`** swaps which of the two you are working in, and a mark along the top shows which one it is. Clips move between the two only with a clip-moving tool, or with Ctrl+drag.
 
 ## Camera Lane
 

@@ -147,7 +147,7 @@ cargo r
 
 Then verify each subsystem:
 
-- **Decode backend** — Press **P** to toggle the performance overlay. The "Decode" line shows `NVDEC`, `VAAPI`, or `Software`.
+- **Decode backend** — Press **Ctrl+Shift+P** to toggle the performance overlay. The "Decode" line shows `NVDEC`, `VAAPI`, or `Software`.
 - **GPU effects** — The same overlay shows whether Vulkan compute is active.
 - **AI runtime** — Open the AI Tools panel with **Alt+A**, then click "Manage AI models" in the panel footer. The dialog footer shows the resolved ONNX runtime and detected GPU vendor (e.g. `NVIDIA CUDA`, `CPU only`, or `GPU detected — runtime libs missing`).
 

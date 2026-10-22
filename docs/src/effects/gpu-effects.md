@@ -1,6 +1,6 @@
 # GPU Effects
 
-Klipp uses `wgpu` compute shaders on the Vulkan backend for GPU-accelerated visual effects. On systems without Vulkan, effects fall back to CPU processing — same code path, same results, just slower.
+Klipp's built-in effects are `wgpu` compute shaders on the Vulkan backend. Each effect in a clip's stack runs as a node of the clip's picture graph, together with its grade, in the viewer and the export alike. A GPU is required; the CPU kernels are kept as a reference and for the few cases the GPU cannot take. An effect takes a **mix** back over its input and a **mask channel**, so it can be limited to a matte.
 
 ## Performance
 
@@ -17,7 +17,7 @@ This makes real-time playback with multiple stacked effects practical at 1080p, 
 
 ## Built-in Effects
 
-The built-in effects are the variants of `BuiltinEffect` in `crates/klipp-effects/src/lib.rs`. Parameters are listed by their saved names. Positions and centres are fractions of the frame (0–1); a radius, length or distance in pixels is measured at the sequence's size and scaled with the frame when a preview or proxy renders smaller.
+Effects are added from **Library → Video FX**. Parameters are listed by their saved names. Positions and centres are fractions of the frame (0–1); a radius, length or distance in pixels is measured at the sequence's size and scaled with the frame when a preview or proxy renders smaller.
 
 ### Geometry and layer
 
@@ -34,19 +34,22 @@ The built-in effects are the variants of `BuiltinEffect` in `crates/klipp-effect
 | Mirror | `horizontal`, `vertical` (0 or 1) | Flips the picture |
 | Lens Distortion | `distortion` (−1 barrel to 1 pincushion), `scale` | Barrel or pincushion distortion |
 | Letterbox | `aspect_ratio`, `bar_color` (0 black, 1 white), `opacity` | Bars that matte the frame to an aspect ratio |
+| Fill Bars | `blur`, `zoom`, `darken` | Fills the bars around a picture of another shape with a blurred, zoomed copy of it |
+| Picture Transform | `position_x`, `position_y`, `scale_x`, `scale_y`, `rotation`, `anchor_x`, `anchor_y` | Moves the picture inside its frame, where it sits, rather than placing the frame |
 
 ### Blur, sharpen and noise
 
 | Effect | Parameters | What it does |
 |---|---|---|
 | Gaussian Blur | `radius` (px) | Smooth Gaussian blur |
+| Focus Blur | `radius`, `band` | A blur that leaves a band in focus |
 | Directional Blur | `angle`, `distance`, `samples` | Motion blur along an angle |
 | Radial Blur | `center_x`, `center_y`, `amount`, `samples`, `mode` (0 zoom, 1 spin) | Zoom or spin blur about a point |
 | Tilt-Shift | `center`, `width`, `softness`, `radius` | A sharp band across the frame, blurred beyond it; see below |
 | Sharpen | `amount` (0–2) | Edge sharpening; over-sharpening shows halos |
 | Denoise | `spatial_sigma`, `color_sigma`, `iterations` | Edge-preserving bilateral filter |
 | Median Filter | `radius` (1–5; 2 at most on the GPU) | Median of the neighbourhood, for impulse noise |
-| Temporal Noise Reduction | `strength`, `threshold` | Averages each pixel with the neighbouring frames, keeping moved pixels as they are. Runs at the head of the clip's pipeline, before the grade, wherever it sits in the list. Display-referred sources only for now |
+| Temporal Noise Reduction | `strength`, `threshold` | Averages each pixel with the neighbouring frames, keeping moved pixels as they are. Runs as the node after the clip's source, before the grade, wherever it sits in the list, on the GPU in playback and paused |
 | Noise | `amount`, `monochrome` (0 colour, 1 grey), `seed` | Static per-pixel noise |
 | Dilate | `radius` (1–10) | Morphological dilation: bright areas grow |
 | Erode | `radius` (1–10) | Morphological erosion: dark areas grow |
@@ -64,6 +67,7 @@ The built-in effects are the variants of `BuiltinEffect` in `crates/klipp-effect
 | Film Halation | `threshold`, `radius`, `intensity`, `hue` | Red-orange bloom around highlights, as film stock glows |
 | Light Wrap | `width` (px), `intensity`, `softness` | Background light bled onto the foreground's edges |
 | Vignette | `amount` (−1 black to 1 white), `size`, `softness`, `roundness` | Darkens or lightens the edges and corners |
+| Binocular Vignette | `amount`, `spacing`, `width`, `height`, `softness`, `fringe` | Two overlapping circles, as seen through binoculars |
 | Chromatic Aberration | `red_shift`, `blue_shift` (px), `center_x`, `center_y` | Radial separation of the red and blue channels |
 
 ### Colour and tone
@@ -78,7 +82,10 @@ The built-in effects are the variants of `BuiltinEffect` in `crates/klipp-effect
 | Equalize | `strength` | Histogram equalisation |
 | Invert | `mix` | Inverts RGB, mixed with the original |
 | Posterize | `levels` (2–256) | Reduces each channel to a number of levels |
+| 3D LUT | `path`, `opacity`, `tetrahedral` | A LUT file applied as an effect |
+| Colour Space Transform | `input_gamut`, `input_curve`, `output_gamut`, `output_curve` | Converts between colour spaces and transfer curves |
 | Chroma Key | `key_color`, `tolerance`, `soft_edge`, `spill_method`, `spill_strength` | Keys out a colour; see below |
+| Luma Key | `low`, `high`, `soft`, `invert` | Keys by brightness |
 
 ### Stylise
 
@@ -90,21 +97,34 @@ The built-in effects are the variants of `BuiltinEffect` in `crates/klipp-effect
 | Film Grain | `amount`, `size`, `color` (0 mono, 1 per channel), `shadows`, `seed` | Animated emulsion grain; see below |
 | Old Film | `flicker`, `scratches`, `dust`, `weave`, `sepia`, `seed` | Flicker, scratches, dust, gate weave and sepia; see below |
 | VHS | `tracking`, `bleed`, `noise`, `scanlines`, `seed` | Tracking error, chroma bleed, tape noise and scanlines; see below |
+| Flicker | `amount`, `speed`, `smoothness`, `hold`, `seed`, `target` | Brightness or opacity that flickers |
+| Particles | `style` (dust, snow, rain, sparks, embers), `amount`, `size`, `speed`, `direction`, `spread`, `lifetime`, `opacity`, `seed` | Particles drawn over the picture |
 
 ### Time and camera
 
 | Effect | Parameters | What it does |
 |---|---|---|
-| Video Stabilization | `smoothing`, `crop_ratio`, `zoom` | Smooths camera motion. Needs the clip analysed first (*AnalyzeStabilization*) |
+| Stabilisation | `smoothing`, `crop_ratio`, `zoom` | Smooths camera motion; the clip is analysed when the effect is added. See [Stabilization](../editing/stabilization.md) |
 | Rolling Shutter Correction | `strength`, `readout_ratio` | Removes CMOS wobble |
-| Deflicker | `strength`, `window_secs`, `gain` | Undoes whole-frame brightness pumping. Needs the clip analysed first (*AnalyzeDeflicker*); the compositor sets `gain` per frame, and 1.0 (no correction) is what an unanalysed clip gets |
-| Speed Ramp | `speed`, `blend_mode` (0 nearest, 1 linear) | Retiming with optional frame blending; there is no optical-flow mode |
+| Deflicker | `strength`, `window_secs`, `gain` | Undoes whole-frame brightness pumping; the clip is analysed when the effect is added, and `gain` is set per frame from the analysis |
+| Speed Ramp | `speed`, `blend_mode` (nearest, linear, optical flow) | Retiming; slowed frames are the nearest frame, a cross-fade, or interpolated by optical flow on the GPU |
+
+### Compositing
+
+| Effect | Parameters | What it does |
+|---|---|---|
+| Merge | `blend_mode`, `opacity` | Lays a generator's picture over the clip's by a blend mode |
+| Generator | `shape`, `color_a`, `color_b`, `angle`, `center_x`, `center_y`, `radius` | A generated picture (solid, gradient and more) for a Merge |
+| Media Source | `media`, `offset` | Another media item's picture laid over the clip's |
+| Clip Below | — | Lays what the tracks under the clip show over its picture |
+| Grade | — | The clip's grade, as a place in the effect stack |
 
 ### Plugins
 
 | Effect | Parameters | What it does |
 |---|---|---|
-| frei0r plugin | `type_id`, `params` (one value per plugin parameter) | Runs an installed frei0r 1.x plugin; shown under the plugin's own name. CPU only: a chain with one does not run on the GPU. Above 2048 px a spatial plugin renders in tiles and a temporal one passes the frame through |
+| frei0r plugin | `type_id`, `params` (one value per plugin parameter) | Runs an installed frei0r 1.x plugin as a node of its own, on the CPU between the GPU nodes around it, its instance kept across frames; shown under the plugin's own name |
+| OFX plugin | the plug-in's own parameters | Runs an installed OpenFX plug-in as a node of its own, on the CPU, with its neighbouring frames when it asks for them; a plug-in that declares temporal access it cannot be given is render-only |
 
 ### Corner Pin
 Pins the picture to four corners — where its top-left, top-right, bottom-right and bottom-left land, as fractions of the frame — so it sits on a screen, a sign or a wall in the shot with that surface's perspective. Straight lines stay straight. Outside the four corners is transparent, and corners that make no quadrilateral draw nothing. Each coordinate is keyframable from its row in the inspector. With on-canvas controls on, the four corners are handles in the viewer: drag one to move it, and a drag is one undo step. The pin runs before the clip's transform, with the picture, so it scales and moves with the layer.
@@ -138,25 +158,13 @@ export all land on the same grain for a given frame.
   **Softness** ramp; the blur runs into a scratch buffer and a blend pass
   mixes the original back in
 
-## Pipeline Architecture
+## Pipeline
 
-Effects use a ping-pong storage buffer pattern — the output of one effect becomes the input of the next, with two buffers swapping roles. No intermediate copies, no GPU↔CPU round-trips between effects.
-
-The pipeline lives in `klipp_effects::GpuEffectsPipeline` and is held by `klipp-engine`. On a frame:
-
-1. Source RGBA → GPU buffer A
-2. Effect 1 reads A, writes B
-3. Effect 2 reads B, writes A
-4. … alternating until the chain is complete
-5. Final buffer copies back to CPU for the egui texture
-
-## CPU Parity
-
-Every GPU effect has a CPU twin in `crates/klipp-effects/src/cpu.rs`, a transcription of its shader that works on the same linear-light frame. The grade shaders' twins are in `cpu_grade.rs` and the transitions' in `cpu_transition.rs`. The parity tests in `crates/klipp-effects/tests/` (`cpu_gpu_effect_parity.rs`, `cpu_gpu_transition_parity.rs` and others) render each case both ways and compare the results; a shader change needs the matching change to its twin to keep them green.
+A clip's effects and grade run as one GPU plan: the frame is uploaded once (or arrives on the GPU from the decoder), each node reads and writes GPU buffers, and the result is composited and presented without a CPU round trip. An effect is scaled to the render size by its own rules, so it looks the same at half resolution. Effects are worked only near the layer they belong to: a glow or shadow is computed around its layer, not over the whole frame.
 
 ## Order in the Effects Chain
 
-Effects are processed top-to-bottom in the inspector list. Drag to reorder. Some orderings matter:
+Effects are processed top-to-bottom in the inspector's Effects tab; **Move up** / **Move down** reorder them. Some orderings matter:
 
 - Blur after Chroma Key — softens key edges
 - Blur before Sharpen — smooths first, then re-defines edges
@@ -171,14 +179,10 @@ Effects are processed top-to-bottom in the inspector list. Drag to reorder. Some
 
 On CachyOS / Arch, the NVIDIA ICD lives at `/usr/share/vulkan/icd.d/nvidia_icd.json` (not `/etc/vulkan/icd.d/`). Klipp sets `VK_DRIVER_FILES` automatically to find it.
 
-## CPU Fallback
+## When an Effect Can't Run on the GPU
 
-When the GPU is unavailable, Klipp processes effects on the CPU. The performance overlay (**P**) shows whether GPU effects are active. The fallback is real and tested — Klipp ships with a CPU-only mode for headless / CI testing.
+A plug-in node runs on the CPU between the GPU nodes around it. An export that would need a frame a node cannot draw is refused for that frame rather than drawn wrong, and the viewer names the node. The performance overlay (**Ctrl+Shift+P**) shows where frames went.
 
 ## Premultiplied Alpha
 
-All Klipp effects work in premultiplied alpha. This is what egui expects for `Color32`, and it's what gives correct results when blurring across an alpha edge. If you write a custom effect, scale all four channels by alpha — failing to do so on opacity in particular causes a "halo" around edges that's surprisingly visible against busy backgrounds.
-
-## WGSL Uniform Layout Gotcha
-
-`array<u32, N>` in WGSL uniform blocks fails naga validation. When defining effect parameters, use individual `_pad0: u32` fields instead. This is a one-time gotcha; once you know it, the rest of the shader pipeline is straightforward.
+All Klipp effects work in premultiplied alpha, which gives correct results when blurring across an alpha edge: no dark halo round a cut-out against a busy background.

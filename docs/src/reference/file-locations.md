@@ -18,6 +18,8 @@ Quick reference for where Klipp stores its data on disk.
 | `presets/color/*` | Saved grades |
 | `effect_presets/`, `hyperzoom_presets/` | Saved effect and hyperzoom presets |
 | `title_templates/*.klipptitle` | Titles you saved from the timeline |
+| `project_templates/` | Project templates, from **Save Project as Template...** |
+| `shared_library/` | The Shared Library: collections of files for every project |
 
 `preferences.json` survives Klipp updates. If you delete it, Klipp regenerates it with default values on next launch.
 

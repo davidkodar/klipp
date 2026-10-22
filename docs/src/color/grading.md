@@ -1,95 +1,99 @@
 # Color Grading
 
-Klipp provides a complete colour grading toolset for adjusting the look and exposure of your footage. Access colour controls from the inspector's effects chain or switch to the Color Grading workspace for a dedicated layout.
+Switch to the **Colour** workspace (the switcher at the top, or **C** for the colour panel) to grade: the program viewer, a strip of graded thumbnails for moving between shots, the scope dock, and the grade of the selected clip with its node graph.
 
 The pipeline runs in linear light, in **Rec.709 linear** unless the project says otherwise — see [Working Colorspaces](./working-colorspaces.md).
 
-## Color Wheels
+## Where a Grade Lives
 
-Four colour wheels control different tonal ranges:
+- **A clip's grade** — its own node graph, the usual place.
+- **A track's grade** — over every clip on the track.
+- **A grade group's stages** — shared by the clips in the group: pre-clip, before their own grades, and post-clip, after.
+- **The timeline grade** — over the whole picture.
 
-### Lift
-Adjusts the darkest parts of the image (shadows). Drag the centre point to shift shadow colour. The outer ring controls shadow brightness.
+Each is a node graph of correctors, keys, masks, LUTs and effects, and each is edited the same way. See [Node Graph](./node-graph.md).
 
-### Gamma
-Adjusts the midtones. Most of the visible image falls in this range, so gamma changes have the most visible impact on overall colour balance.
+## Colour Wheels
 
-### Gain
-Adjusts the brightest parts of the image (highlights). Use gain to correct white balance in highlights or add warmth/coolness to bright areas.
+The Corrector's wheels control tonal ranges:
 
-### Offset
-Applies a uniform shift across the entire tonal range. Useful for overall colour-cast correction.
+- **Lift** — the darkest parts of the image
+- **Gamma** — the midtones
+- **Gain** — the brightest parts
+- **Offset** — a uniform shift across the whole range
 
-## Curves Editor
+Each wheel has a colour puck and a level. **Log** wheels (shadows, midtones, highlights with adjustable ranges) suit log and HDR footage, and a luma mix sets how much the wheels move brightness. Exposure, contrast with its pivot, saturation, temperature and tint, highlights and shadows, and an ASC CDL view sit beside them.
 
-The curves editor provides precise control over luminance and individual colour channels:
+**HDR Zones** divides the range into tonal zones measured in stops, each with its own wheel, with presets.
 
-- **Master curve** — overall luminance
-- **Red / Green / Blue curves** — per-channel control
-- **Hue vs Hue / Hue vs Sat / Hue vs Lum** — secondary curves for hue-based qualifying
+## Printer Lights
 
-Click on a curve to add a control point. Drag to adjust. Double-click to remove.
+Step the red, green, blue or all three up and down by printer points: **Ctrl+Alt+7/4** (red), **8/5** (green), **9/6** (blue), **3/1** (master).
 
-Common patterns:
+## Curves
 
-- S-curve on the master channel increases contrast
-- Lifting the black point creates a faded matte look
-- Per-channel curves correct colour casts precisely
-- Hue vs Sat is the cleanest way to desaturate a single colour without touching others
+- **Master** and **Red / Green / Blue** curves
+- **Hue vs Hue**, **Hue vs Sat**, **Hue vs Lum**, **Lum vs Sat** and more
 
-## HSL Qualifier
+Click a curve to add a point, drag to adjust, double-click to remove. Hue vs Sat is the cleanest way to desaturate one colour without touching others.
 
-Pick a colour with the eyedropper, then adjust:
+## Colour Warper
 
-- Hue range
-- Saturation range
-- Luminance range
-- Softness (feathering)
+A grid over hue and saturation (or chroma and luma): drag points to move colours toward others, the rest following smoothly.
 
-The qualifier output drives a mask that can be wired into a Corrector node — see [Node Graph](./node-graph.md).
+## Qualifiers
 
-## Temperature and Tint
+A qualifier keys the picture by colour, so a correction applies only there:
 
-- **Temperature** — Shift between warm (amber) and cool (blue) tones. Approximate Kelvin equivalents.
-- **Tint** — Shift between green and magenta to correct for fluorescent or mixed lighting.
+- **HSL** — hue, saturation and luminance ranges with softness
+- **RGB** — red, green and blue ranges
+- **3D** — strokes across the colours to keep and the colours to take out
 
-These controls operate in CIE xy chromaticity space and are colourspace-aware — temperature in Rec.709 and ACEScg work the same way perceptually.
+Pick with the eyedropper on the viewer. **Matte Finesse** cleans the key: clean black and clean white, shrink / grow, blur, and a denoise that clears specks and keeps the edge.
 
-## Saturation
+## Masks
 
-- **Saturation** — Linear intensity scale (0 = monochrome, 1 = normal, 2 = oversaturated)
-- **Vibrance** — Saturation that protects skin tones and already-saturated colours
+Circle, linear gradient and freeform masks limit a correction to part of the frame. Draw freeform masks with the Mask tool (**P**) in the viewer: curves, an inner feather and a combine mode (add, subtract, intersect). A mask's shape can be keyed over time or follow a tracked subject.
+
+## Matching and Balance
+
+- **Auto WB** balances from a neutral you pick.
+- **Match** captures a reference frame and matches the clip's colour to it.
+- Scenes can be matched to a hero shot, and looks derived from a reference; see [Colour Check](#colour-check).
 
 ## LUTs
 
-Klipp ships ~300 film emulation LUTs (Kodak Portra, Tri-X, Fuji Velvia, Agfa, etc.) under MIT, plus ~50 cinematic LUTs under CC0. Apply a LUT from the Color Panel's LUT picker. LUTs operate in their native domain (most are display-referred); Klipp converts to/from ACEScg around the LUT call so the rest of the chain stays linear.
+Klipp ships 304 LUTs: film emulation (negative, print, slide, instant, black and white, Fuji X-Trans) under MIT, and a set of cinematic looks. Apply one from a LUT node or the Colour tab's LUT presets. 3D `.cube` LUTs and 1D tables and shapers (`.cube` 1D, CSP) load. User LUTs in `~/.config/klipp/luts/` appear automatically.
 
-User LUTs land in `~/.config/klipp/luts/` and appear automatically.
+**Bake Grade as 3D LUT (.cube)** (command palette, or **Bake Grade** in the Colour tab) writes the clip's grade as a LUT.
 
-## Viewer LUT
+## Viewing LUT
 
-Apply a display LUT to the viewer for monitoring. The viewer LUT affects only the preview — it does not modify exported output unless explicitly included in render settings. Useful for previewing a film look or simulating a specific display output while grading.
+A project's viewing LUT, set in **Colour Management**, is applied to the viewer only — not to the export. The scopes can read before or after it.
+
+## Grade Library, Versions and Flags
+
+- **Grade versions** keep alternative grades on a clip to switch between.
+- The **grade library** keeps grades across projects: save one, browse with thumbnails, apply it.
+- **Copy Colour Nodes** / **Paste Colour Nodes** (Ctrl+C / Ctrl+V in the node graph) carry a grade between clips.
+- **Grade flags** mark clips as needs work, review or approved, shown on the thumbnail strip.
+- Node colour labels travel with a pasted, library or still grade.
+
+## Colour Check
+
+**Window → Colour Check** measures the grade: a chart self-check, skin tones against their band, white balance, black floor and clipping, banding, and how shots match each other. Its tools match scenes to a hero shot, grade a clip toward a measured target, and derive a look from a reference. Findings can be reviewed and saved with a reason.
 
 ## Output Display Transforms
 
-At export time, pick an Output Display Transform (ODT) to convert from the working space to the delivery space:
-
-- sRGB
-- Rec.709
-- Rec.2020
-- P3-D65
-
-ODT is per-export — the same project can be rendered to multiple deliveries without re-grading. See [Working Colorspaces](./working-colorspaces.md) for the full chain.
+At export time, an Output Display Transform (ODT) converts from the working space to the delivery space: sRGB, Rec.709, Rec.2020 or P3-D65, and HDR PQ or HLG. The same project can be rendered to several deliveries without re-grading. See [Working Colorspaces](./working-colorspaces.md).
 
 ## Order of Operations
 
-The colour pipeline applies in this order:
+1. Source decode, with the camera-log inverse if applicable
+2. Source colourspace → working space (linear)
+3. The clip's effects and grade, in the order of its node graph
+4. The track's grade, the grade group's stages, then the timeline grade
+5. Working space → Output Display Transform
+6. Encode
 
-1. Source decode (with camera-log inverse if applicable)
-2. Source colourspace → ACEScg
-3. Effects chain (blur, sharpen, etc.) in ACEScg linear
-4. Colour Corrector chain (wheels, curves, qualifiers)
-5. ACEScg → Output Display Transform
-6. Final encode
-
-Working in linear ACEScg between steps 2 and 5 means colour operations behave as light operations — combining halves a value rather than producing the gamma-confused mid-grey of an sRGB-domain mix.
+Working in linear light means colour operations behave as light: mixing two values halves them rather than producing the gamma-confused mid-grey of an sRGB-domain mix.

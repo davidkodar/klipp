@@ -1,54 +1,53 @@
 # Inspector
 
-The inspector panel appears on the right side of the interface and displays context-sensitive properties for the selected clip. It contains four tabs.
+The inspector panel on the right shows the properties of the selected clip, in tabs that depend on what it is:
+
+| Selection | Tabs |
+|---|---|
+| A media clip | Video, Audio, Colour, Effects, Info |
+| A title | Title, Clip Video, Effects, Info |
+| A generator | Generator, Video, Effects, Info |
+| Nothing | The sequence: its settings, or plain facts about it |
+
+A tab with keyed parameters is marked ◆, and its tooltip names what is animated there. **◆ Keyframes** at the right of the tab row shows each parameter's keys on a strip beside it, when the inspector is wide enough.
 
 ## Video Tab
 
-The video tab shows spatial and visual properties:
+- **Transform** — position, scale (with a separate height when keyed apart), rotation and anchor, keyframable; reset and clear-keys buttons.
+- **Compositing** — opacity, blend mode and a matte source (alpha, luma, or another clip's picture).
+- **Placement** — **Auto** follows the effects' order; **Fixed** keeps the transform where its row is.
+- **Behaviours** — Ken Burns, Frame Glide (frame the clip's start and end over the picture), Hyperzoom and colour fades.
+- **Speed** — constant speed, speed keys and ramps, with an option to keep the pitch.
+- **Source colourspace** — override the detected input colour space or camera log curve; see [Source Colourspace & Log](../color/source-colorspace.md).
 
-### Transform
-- **Position** — X and Y offset from centre
-- **Scale** — Uniform or independent X / Y scaling
-- **Rotation** — Rotation in degrees
-- **Anchor Point** — Centre of transformation
-
-### Opacity
-Adjust clip opacity from 0% (transparent) to 100% (fully opaque). Opacity is GPU-accelerated and uses premultiplied alpha for correct compositing — opacity scales all four RGBA channels.
-
-### Source Colourspace
-Override Klipp's auto-detected source colourspace. Useful when:
-
-- Camera log encoding is mis-detected (rare; auto-detect is reliable for Sony / Canon / Panasonic / ARRI / Apple / RED)
-- The clip was already de-logged externally
-- You want to force a specific decode path
-
-Available choices include Rec.709, Rec.2020, sRGB, ACEScg, plus the camera log curves. See [Source Colourspace & Log](../color/source-colorspace.md) for details.
-
-### Stabilisation
-Per-clip stabilisation is applied here. **Analyze** runs motion analysis (~18 s on 4K with the SequentialFrameDecoder); afterwards a **Smoothness** slider, **Bypass** toggle, and **Show jitter %** indicator let you adjust without re-analysing. See [Stabilization](../editing/stabilization.md).
+Opacity is premultiplied: it scales all four channels. Every enabled Opacity — the clip's, an effect's, its track's — multiplies.
 
 ## Audio Tab
 
-The audio tab shows audio properties for the selected clip:
+- **Volume** and **Pan**, keyframable
+- **Channels** — stereo, left only, right only, swapped, or a mono downmix
+- **Fade In / Out** — duration and curve (linear, logarithmic, exponential, S-curve, constant power)
+- **Role** — dialogue, music, effects and the like, used by the mix and the delivery check
+- **Audio effects** — the clip's audio effect chain, EQ among them
+- **Auto Duck** — lower this clip under a sidechain by a duck level, threshold, attack and release
+- **Loudness meter** and waveform
 
-- **Volume** — Clip volume in dB with scrubby slider
-- **Pan** — Stereo pan position
-- **EQ** — Multi-band parametric equaliser
-- **Fade In / Out** — Curve type and duration
-- **Audio Meters** — Real-time level meters with peak hold
+Click the diamond next to a parameter to add a key at the playhead.
 
-All audio parameters support keyframe animation for dynamic changes over time. Click the diamond icon next to any parameter to add a keyframe at the playhead.
+## Colour Tab
+
+The clip's input colour space and LUTs, a **Bake Grade** action, and **Open Colour Panel** (C) for the full grade. See [Color Grading](../color/grading.md).
 
 ## Effects Tab
 
-Lists all effects applied to the clip. Each row shows:
+The clip's effect stack, as cards in the order they run. Each card has:
 
-- Enable/disable toggle
-- Parameter controls (sliders, colour pickers, etc.)
-- Drag handle to reorder in the effect chain
-- Delete button
+- an eye to turn it on or off, and **Remove**
+- its parameters, each with a key diamond
+- **Mix**, to blend the result back over its input, and a **mask channel** to limit it to a matte
+- **Move up** / **Move down**, and **Open in graph** to see it as a node
 
-Add effects with the **+** button or by dragging from the effects browser. Effects ship as GPU compute shaders with CPU fallback — see [GPU Effects](../effects/gpu-effects.md).
+Add effects from the Library tab, by drag or double-click. Built-in effects run as GPU compute nodes — see [GPU Effects](../effects/gpu-effects.md).
 
 ## Info Tab
 
@@ -76,7 +75,7 @@ See [Importing Media](../editing/importing.md#what-klipp-reads-about-a-shot) for
 
 ## Adaptive Layout
 
-The inspector adapts to the available space. When the panel is narrow, controls reflow to a single column. Sliders use scrubby input — click and drag horizontally on any numeric value to adjust it smoothly. The cursor wraps at the screen edge so long drags don't run out of room.
+The inspector adapts to the available space and keeps its rows inside the column at any width. Sliders use scrubby input — click and drag horizontally on any numeric value to adjust it smoothly. The cursor wraps at the screen edge so long drags don't run out of room.
 
 Hover any parameter for a tooltip with the parameter name, current value, and (where applicable) the range of valid values.
 

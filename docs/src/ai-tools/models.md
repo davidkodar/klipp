@@ -2,7 +2,7 @@
 
 Klipp ships a catalogue of AI models that can be downloaded on demand from the **AI Models** dialog. All models are verified by SHA-256 against a manifest bundled with Klipp; bytes that don't match are rejected.
 
-Open the dialog from **Window → AI Models**, from the AI Tools panel footer (`Manage AI models`), or via the [Command Palette](../ui/command-palette.md).
+Open the dialog from **Tools → AI Models…**, from the AI Tools panel footer (`Manage AI models`), or via the [Command Palette](../ui/command-palette.md).
 
 ## Bundled Catalogue
 
@@ -34,7 +34,7 @@ Klipp does not redistribute model weights. The bundled manifest points at upstre
 - RF-DETR-Seg Preview — [huggingface.co/bukuroo/RF-DETR-Seg-ONNX](https://huggingface.co/bukuroo/RF-DETR-Seg-ONNX)
 - RF-DETR-Seg Medium — [huggingface.co/davidkodar/rf-detr-seg-medium-onnx](https://huggingface.co/davidkodar/rf-detr-seg-medium-onnx) (Klipp-hosted mirror; upstream Roboflow has not published a Medium ONNX yet)
 
-This is the same pattern Kdenlive uses for its Vosk and SAM2 model lineup. The trade-off is that upstream URLs can move or break — when they do, Klipp ships a manifest update in a patch release. SHA-256 verification means that if upstream replaces a file with bytes Klipp has not blessed, the download is rejected and the user is told.
+The trade-off is that upstream URLs can move or break — when they do, Klipp ships a manifest update in a patch release. SHA-256 verification means that if upstream replaces a file with bytes Klipp has not blessed, the download is rejected and the user is told.
 
 ## The Dialog
 

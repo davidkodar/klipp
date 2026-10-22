@@ -1,89 +1,63 @@
 # Magnetic Timeline
 
-Klipp's timeline is *magnetic* by default — clips snap together, gaps close automatically, and edits ripple by default. This is the same behaviour Final Cut Pro popularised; Klipp implements 64 of the FCP-parity behaviours across edit, trim, move, and delete operations.
-
-Toggle magnetic behaviour from **Timeline → Toggle Magnetic** if you want classic gap-permitting editing.
+Klipp's timeline is *magnetic* by default: clips close up, deletes and trims ripple, and inserts push later clips along. The **RIPPLE** button in the timeline toolbar turns gap-closing off, so deletes and trims leave gaps; **INS / OVR** (Shift+W) chooses whether edits and drops insert or overwrite.
 
 ## Edit Operations
 
 | Operation | Shortcut | Behaviour |
 |---|---|---|
-| **Insert** | **,** | Place clip at playhead; ripple subsequent clips forward |
-| **Overwrite** | **.** | Place clip at playhead; replace whatever overlaps |
-| **Append** | — | Place clip at end of primary track |
-| **Backtimed insert** | — | Place clip ending at playhead; ripple |
-| **Backtimed overwrite** | — | Place clip ending at playhead; overwrite |
-| **Replace** | — | Swap clip; preserve timeline span and effects |
-| **Source overwrite** | — | Use marked source range over marked timeline range |
+| **Insert** | **,** or **F10** | Place the source range at the playhead; ripple later clips forward |
+| **Overwrite** | **.** | Place it at the playhead; replace whatever overlaps |
+| **Ripple Overwrite** | — | Overwrite, then ripple to the new length |
+| **Fit to Fill** | **Shift+F11** | Retime the source range to fill the timeline's in–out range |
+| **Place on Top** | **F12** | Put it on the first free track above |
+| **Replace** | **Shift+F12** | Swap the clip under the playhead, keeping its span |
+| **Lift** / **Extract** | **;** / **'** | Remove the in–out range, leaving or closing the gap |
+
+## Three- and Four-Point Editing
+
+An edit uses whichever of the four points are set: the source's in and out, and the timeline's in and out.
+
+- The clip starts at the timeline's in point, or at the playhead when there is none.
+- A timeline out point alone places the clip by its end: the edit is **backtimed**.
+- With both timeline points, their span is the length, taken from the source in point, or back from a source out point set without an in.
+- With all four points, **Fit to Fill** retimes the source range to the timeline range.
 
 ## Trim Operations
 
 | Operation | How | Behaviour |
 |---|---|---|
-| **Ripple trim** | Drag clip edge | Trim, ripple neighbours to close gap (default) |
-| **Roll trim** | Drag edit point with both edges | Move boundary between two adjacent clips |
-| **Slip** | Alt + drag inside clip | Change clip in/out without moving timeline position |
-| **Slide** | Cmd + drag inside clip | Move clip and ripple both sides |
-| **Extend edit** | E | Trim selected edge to playhead |
+| **Ripple trim** | Drag a clip edge | Trim, moving later clips to close the gap (RIPPLE on) |
+| **Roll** | Drag the junction between two clips (Trim tool) | Move the cut between them |
+| **Slip** | Trim tool on the clip's body, or Alt-drag with Select | Change in and out without moving the clip |
+| **Slide** | Trim tool + Shift-drag, or Alt+Shift-drag with Select | Move the clip between its neighbours, keeping its in and out |
+| **Trim to playhead** | **Q** / **W** | Ripple-trim the tail / head to the playhead |
+| **Extend edit** | **E** | Move the selected edit point to the playhead |
+| **Trim a frame** | **[** / **]** (Shift for more) | Move the selected edit point (**U** selects the nearest) |
 
 ## Move Operations
 
 | Operation | How | Behaviour |
 |---|---|---|
-| **Drag move** | Drag clip body | Magnetic-snap to neighbours and gaps |
-| **Swap** | Drag clip onto another | Exchange the two clips' positions |
-| **Lift** | Shift + Del | Remove clip; leave a gap |
-| **Ripple delete** | Del | Remove clip; close gap |
+| **Drag move** | Drag a clip's body | Snaps to neighbours and gaps |
+| **Nudge** | **Alt+,** / **Alt+.** (Shift for more) | Move the selection by frames |
+| **Change track** | **Alt+↑** / **Alt+↓** | Move the selection a track up or down |
+| **Swap** | Swap Selected Clips (palette) | Exchange two clips' places |
+
+Picture and sound move together while **Linked Selection** is on; hold **Alt** at the start of a drag to move one alone.
 
 ## Delete Operations
 
 | Operation | Shortcut | Behaviour |
 |---|---|---|
-| **Ripple delete** | **Del** | Remove clip; close gap (default) |
-| **Lift delete** | **Shift+Del** | Remove clip; leave a gap |
-| **Delete attributes** | — | Strip effects from a clip without removing it |
+| **Ripple delete** | **Delete** | Remove the clip; close the gap |
+| **Lift delete** | **Shift+Delete** | Remove the clip; leave a gap |
+| **Close Gap** | Clip menu | Close the gap before a clip |
 
 ## Snapping
 
-Toggle snapping with **N**. When enabled, clips snap to:
-
-- The playhead
-- Other clip boundaries
-- In / out points
-- Markers
-- Clip edges across tracks
-
-A visual snap-line appears when a snap occurs. The snap window is configurable in **Edit → Preferences → System & Performance**.
-
-## Modifier Overrides
-
-Hold a modifier while dragging to override magnetic behaviour:
-
-| Modifier | Effect |
-|---|---|
-| **Shift** | Disable snapping for this drag only |
-| **Ctrl** | Disable magnetic ripple — drag like a non-magnetic timeline |
-| **Alt** | Slip mode — adjust clip in/out instead of position |
-| **Cmd** | Slide mode — move clip and ripple both sides |
-
-## Drop Targets
-
-When dragging a clip onto the timeline, the drop indicator shows what will happen:
-
-- **Vertical line between clips** — Insert (ripple)
-- **Highlighted clip** — Overwrite that clip
-- **Empty track area** — Place at that position; the magnetic timeline closes any resulting gap
-
-A modal appears when the intent is ambiguous (dropping mid-clip): choose **Insert** or **Overwrite**.
+Toggle snapping with **N**. Clips snap to the playhead, other clip edges on any track, in and out points and markers; right-click the snap button to choose the targets or to snap to a grid. Hold **Shift** while dragging to skip snapping for that drag. A snap line shows where a snap lands.
 
 ## Ripple Across Tracks
 
-When the magnetic timeline ripples, it considers every track simultaneously. A clip moved on track V1 will ripple linked audio on its own audio track and any clips on V2 / V3 that started after the moved clip.
-
-To restrict rippling to a single track, use **Lock** on tracks you want to leave alone.
-
-## Why Magnetic?
-
-The magnetic model is opinionated: it prioritises *intent* over *coordinates*. When you delete a clip, you almost certainly mean "close the gap"; when you move a clip forward, you almost certainly mean "ripple later clips backward". Magnetic timelines turn those intents into one-step operations.
-
-For workflows where you need exact timecode control (multi-cam sync, music videos with hard cuts on the beat), turn magnetic off — the timeline becomes a fixed-coordinate grid where deletes leave gaps and moves overwrite.
+A ripple moves every track: a clip moved on V1 moves its linked sound and the clips on other tracks that come after it. **Lock** a track to leave it alone.

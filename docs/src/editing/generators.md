@@ -18,7 +18,7 @@ There is one generator per job. Its colours, counts and sizes are parameters in 
 
 ## Adding a Generator
 
-Double-click a card, or drag it onto the timeline. The generator lands on a video track at the playhead with a five-second duration, becomes the selection, the inspector opens on its parameters, and the playhead moves a little way in so the viewer shows it.
+Double-click a card, or drag it onto the timeline; **Timeline → Add Generator** adds a solid colour, colour bars or black directly. The generator lands on a video track at the playhead with a five-second duration, becomes the selection, the inspector opens on its parameters, and the playhead moves a little way in so the viewer shows it.
 
 ## Living Backgrounds
 

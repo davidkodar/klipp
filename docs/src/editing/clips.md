@@ -4,94 +4,100 @@ Clips are the building blocks of your timeline. Each clip references a segment o
 
 ## Adding Clips to the Timeline
 
-### Append
-Drag a clip from the media browser to the end of a track, or select it and press **Append** — placed after the last clip on the primary track.
-
-### Insert Edit (,)
-Places the clip at the playhead and pushes all subsequent clips forward. Preserves the relative timing of everything after the insertion point.
+### Insert Edit (, or F10)
+Places the source range at the playhead and pushes all later clips forward.
 
 ### Overwrite Edit (.)
-Places the clip at the playhead, replacing whatever was there. Clips that overlap are trimmed or replaced. No rippling.
+Places the source range at the playhead, replacing whatever was there. No rippling.
+
+### Fit to Fill, Place on Top, Replace
+- **Fit to Fill** (Shift+F11) retimes the source range to fill the timeline's in–out range.
+- **Place on Top** (F12) puts it on the first free track above the playhead.
+- **Replace** (Shift+F12) swaps the clip under the playhead for it, keeping its span.
+
+With an out point set and no in point, an edit is backtimed: it ends at the out point. See [Magnetic Timeline](./magnetic-timeline.md#three--and-four-point-editing).
 
 ### Drag and Drop
-Drag clips from the media browser directly onto any track. The magnetic timeline snaps the clip into position; drop on top of an existing clip and Klipp prompts whether to insert (ripple) or overwrite.
+Drag clips from the media browser or the source viewer onto any track. The drop follows the timeline's INS / OVR mode.
 
 ## Trimming
 
 Drag the left or right edge of a clip to trim it:
 
-- **Ripple trim** — Trims the clip and shifts subsequent clips to close the gap (default with magnetic timeline)
-- **Roll trim** — Adjusts the edit point between two adjacent clips without moving other clips
-- **Slip** — Adjusts the in/out points of a clip without moving its position on the timeline (alt-drag inside the clip)
-- **Slide** — Moves a clip without changing its in/out, rippling neighbours
+- **Ripple trim** — trims the clip and moves later clips to close the gap (with RIPPLE on)
+- **Roll** — moves the edit point between two adjacent clips without moving other clips
+- **Slip** — changes a clip's in and out points without moving it (Trim tool on the clip's body, or Alt-drag)
+- **Slide** — moves a clip between its neighbours, keeping its in and out (Trim tool, Shift-drag)
 
-The viewer shows the trim frame in real time as you drag. The full FCP-parity trim taxonomy is documented in [Magnetic Timeline](./magnetic-timeline.md).
+**Q** and **W** trim the selected clip's tail or head to the playhead. **U** selects the edit point nearest the playhead; **[** and **]** then trim it a frame at a time (Shift for more), and **E** extends it to the playhead. The viewer shows the trim frame as you drag. See [Magnetic Timeline](./magnetic-timeline.md).
 
-## Splitting (Blade Tool)
+## Splitting
 
-1. Press **B** to activate the blade tool
-2. Click on a clip at the desired split point
-3. The clip is split into two independent clips at that position
+Press **B** for the Blade tool and click a clip to split it there, or press **Ctrl+B** to split the selected clips at the playhead. **Join Through Edit at Playhead** (Timeline menu) rejoins a split.
 
-You can also split at the playhead with **Ctrl+B** while using the select tool.
+## Deleting
 
-## Ripple Delete
+**Delete** removes the selected clips and closes the gap (with RIPPLE on). **Shift+Delete** lifts them, leaving a gap. **;** and **'** lift and extract the in–out range.
 
-Select a clip and press **Del** to delete it. The magnetic timeline automatically closes the gap left behind. Use **Shift+Del** for a *lift* delete (leaves a gap).
+## Moving
+
+- **Alt+,** / **Alt+.** nudge the selection a frame (Shift+Alt for more).
+- **Alt+↑** / **Alt+↓** move it a track up or down.
+- **Swap Selected Clips** (command palette) exchanges two clips.
+
+## Connected Clips, Groups and Storylines
+
+- **G** connects a clip to the clip under it on the primary track, so it moves with it; **Shift+G** disconnects it.
+- **Ctrl+G** groups clips to select and move together; **Ctrl+Shift+G** ungroups.
+- A clip's menu promotes connected clips to a storyline, or breaks one apart.
 
 ## Speed Changes
 
-Adjust clip playback speed from the **Clip → Speed** menu or the inspector:
+**Clip → Speed...** sets the clip's speed and reverse:
 
-- **Constant speed** — 25%, 50%, 100%, 200%, 400%, or custom
-- Speed changes adjust the clip duration proportionally
-- Source clip duration and rate are preserved; only the timeline span changes
+- Constant speed — preset percentages or a custom value; the clip's length changes to match
+- Speed keys, in the Video tab's speed rows
+- **Keep pitch** for the sound
 
-## Replace
+The **Speed Ramp** effect blends the in-between frames of a slowed clip by nearest frame, a cross-fade, or **optical flow**, which follows the motion between source frames on the GPU. A slowed clip plays at the timeline's rate.
 
-To swap one clip for another while keeping the same timeline span and effects:
+## Freeze Frame
 
-1. Select the target clip on the timeline
-2. Select the replacement clip in the browser
-3. Right-click → **Replace** (or use the command palette)
+**Alt+H**, or **Freeze Frame Here** in a clip's menu, holds the frame under the playhead.
 
-The replacement inherits the original's timeline position, duration, in/out, and applied effects.
+## Enable / Disable and Solo
 
-## Enable / Disable (E)
+**Clip → Enable / Disable** switches a clip off without removing it; disabled clips are dimmed and excluded from playback and export. **Clip → Solo** plays only that clip.
 
-Press **E** to toggle a clip between enabled and disabled. Disabled clips remain on the timeline but are excluded from playback and export. Disabled clips appear dimmed.
+## Matching a Clip to the One Below
 
-## Solo (S)
-
-Press **S** to solo the selected clip. When soloed, only that clip plays back; all other clips are temporarily muted. Press **S** again to unsolo.
+A title, effect layer or sound's menu offers **Match Clip Below**: it takes the start and length of the clip under it, in one undo step. **Keep Matched to Clip Below** keeps it so as that clip is moved or trimmed; **Stop Keeping Matched** ends that.
 
 ## Stabilisation
 
-Run motion stabilisation on a clip from **Clip → Stabilize**. Analysis takes ~18 seconds on 4K via the SequentialFrameDecoder; the result is cached, so adjusting smoothness does not require re-analysing. See [Stabilization](./stabilization.md).
+Add the **Stabilisation** effect to a clip; its analysis starts at once. See [Stabilization](./stabilization.md).
 
 ## Scene Detection
 
-Run scene-change detection on a clip from **Clip → Detect Scenes**. The result is a list of detected cuts, which can be applied as edits to split the clip at the detected boundaries. See [Scene Detection](./scene-detection.md).
+**Timeline → Detect Scene Cuts** splits the selected clip where its picture cuts. See [Scene Detection](./scene-detection.md).
 
 ## Copy / Paste Attributes
 
 Copy effects, colour grades, or transform settings from one clip to others:
 
-1. Select the source clip
-2. **Clip → Copy Attributes**
-3. Select the target clip(s)
-4. Paste with **Ctrl+V**
+1. Select the source clip and press **Ctrl+Shift+C** (Edit → Copy Attributes).
+2. Select the target clip(s) and press **Ctrl+Shift+V** (Edit → Paste Attributes...).
+3. Choose which attributes to paste.
 
-Choose which attributes to paste: effects, colour, transform, audio, or all.
+**Copy Title Style** / **Paste Title Style** do the same for a title's look.
 
 ## Compound Clips
 
-Group multiple clips into a compound clip that behaves as a single unit:
+Select clips and choose **Timeline → Create Compound Clip**. Double-click a compound clip to edit inside it; **Ctrl+↑** leaves it. Changes inside are reflected everywhere it is used.
 
-1. Select multiple clips on the timeline
-2. Right-click → **Create Compound Clip**
+## Multicam Clips
 
-Compound clips can be opened (double-click) to edit their internal timeline. Changes inside a compound clip are reflected everywhere it is used.
+Select synced angles in the browser and choose **Create Multicam Clip** (Alt+C). Cut between angles with **1**–**9** while playing, or from **Clip → Switch Angle**; **Clip → Multicam Sound** picks where the sound comes from. See [Source Viewer](../ui/source-viewer.md#multicam-angles).
 
 ## Clip Properties
 

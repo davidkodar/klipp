@@ -1,20 +1,23 @@
 # Timeline Interchange
 
-Klipp reads and writes timelines in four interchange formats. Each one carries the edit (which clips, where, and which part of the source) and loses most of what Klipp does on top of it: grades, effects and most titles stay behind.
+Klipp reads and writes timelines in the common interchange formats. Each carries the edit (which clips, where, and which part of the source) and loses most of what Klipp does on top of it: grades, most effects and most titles stay behind.
 
 | Format | Import | Export |
 |---|---|---|
 | OpenTimelineIO (`.otio`) | yes | yes |
-| Kdenlive / MLT (`.kdenlive`) | yes | yes |
+| Kdenlive / MLT (`.kdenlive`, `.mlt`) | yes | yes |
 | FCPXML 1.9 (`.fcpxml`) | yes | yes |
-| CMX 3600 EDL (`.edl`) | no | yes |
-| AAF (`.aaf`), through OpenTimelineIO | no | yes, with OpenTimelineIO's AAF adapter installed |
+| Final Cut Pro 7 XML (xmeml, `.xml`) | yes | no |
+| CMX 3600 EDL (`.edl`) | yes | yes |
+| AAF (`.aaf`), through OpenTimelineIO | yes, with OpenTimelineIO's AAF adapter | yes, with the same |
 
-**Import:** **File → Import Timeline** has Kdenlive Project, OpenTimelineIO and Final Cut Pro XML. An import adds a new sequence to the current project and switches to it; its media is added to the media pool. What the importer could not bring in is listed in a file beside the one you imported, named `<name>.import_warnings.txt`, and a message says how many there were.
+**Opening:** **File → Open Project from Another Editor...** opens any of these as a new project, asking about unsaved changes first; a file dropped on the window does the same. The format is read from the content, so a misnamed extension still works. **File → Import Timeline** adds one to the current project as a new sequence instead. The media is added to the media pool, and media that is not found can be relinked at once.
 
-**Export:** **File → Export Timeline** has FCPXML, Kdenlive Project, EDL, OpenTimelineIO and AAF (via OpenTimelineIO); each is in the command palette too. Every export writes the active sequence.
+**Import report:** after an import Klipp shows what it brought in, grouped warnings for what it changed or left out, and the media it could not find, with a **Relink** button. The report is kept with the project; **File → Last Import Report…** opens it again.
 
-All four formats refer to media by its file path. The receiving system needs the same files at the same paths, or has to relink them.
+**Export:** **File → Export Timeline** has FCPXML, Kdenlive Project, EDL, OpenTimelineIO and AAF (via OpenTimelineIO); each is in the command palette too. Every export writes the active sequence, and what it could not write is listed in `<name>.export_warnings.txt` beside the exported file.
+
+All formats refer to media by its file path. The receiving system needs the same files at the same paths, or has to relink them.
 
 ## OpenTimelineIO
 
@@ -29,17 +32,17 @@ OTIO has adapters to many other applications, so an `.otio` file is the most gen
 
 Titles, generators, adjustment layers and compound clips become gaps of the same length, so everything after them stays in place. Subtitle and text tracks are not exported. Transitions, grades and effects are not written. Clips that overlap on one track cannot be expressed in OTIO, where a track is a sequence of items; the later clip is moved to follow the earlier one. Everything dropped or moved is listed in `<name>.export_warnings.txt` beside the exported file.
 
-**Import** reads video and audio tracks, clips with their media (a missing or unlinked reference becomes an offline item), gaps, and timeline and clip markers. Transitions and effects, including speed changes, are skipped with a warning.
+**Import** reads video and audio tracks, clips with their media (a missing or unlinked reference becomes an offline item), gaps, transitions, constant speed changes, and timeline and clip markers. Other effects are named in the import report.
 
 ## AAF
 
-Klipp writes AAF by way of OpenTimelineIO: **AAF (via OpenTimelineIO)…** exports the sequence as OTIO and has OpenTimelineIO's `otioconvert` turn it into AAF. That needs OpenTimelineIO and its AAF adapter on the machine:
+Klipp reads and writes AAF by way of OpenTimelineIO's converter, `otioconvert`, with its AAF adapter. Opening an AAF without them, Klipp says what is missing and offers to install them into a Python environment of its own, showing the exact commands first; with your consent it runs them, shows their output, and opens the file when they finish. To install them yourself:
 
 ```sh
 pip install opentimelineio otio-aaf-adapter
 ```
 
-Without them the export says which one is missing and writes nothing; **Export OpenTimelineIO** still works, and the `.otio` file can be converted anywhere they are installed with `otioconvert -i edit.otio -o edit.aaf`. What reaches the AAF file is what reaches the OTIO one (see above).
+**AAF (via OpenTimelineIO)…** exports the sequence as OTIO and converts it. What reaches the AAF file is what reaches the OTIO one (see above), and an AAF import carries what the OTIO import does.
 
 ## Kdenlive (MLT)
 
@@ -65,7 +68,11 @@ Other filters are dropped with a warning.
 
 Gaps on that track stay gaps; compound clips, generators and adjustment layers become named gaps. Other video tracks, audio tracks, transitions, audio levels, grades and effects are not exported.
 
-**Import** reads the primary storyline (the `spine`) onto one video track: asset clips and clips with their in points and enabled state, gaps, clip markers and sequence markers. Titles, transitions, compound clips, multicam clips, synchronised clips, auditions, connected clips and effects are skipped with a warning.
+**Import** reads the primary storyline (the `spine`) onto a video track, and connected clips onto lane tracks above and below it: asset clips and clips with their in points and enabled state, gaps, transitions joined to their clips, titles as editable titles, timeMap speed, opacity and volume with their keyframes, and markers with their notes and colours, chapters kept as chapters. Transforms, effects, compound clips, multicam clips, synchronised clips and auditions are named in the import report. An FCPXML saved as `.xml` is read too.
+
+## Final Cut Pro 7 XML (xmeml)
+
+**Import** reads the first sequence, with its rate (NTSC and drop frame) and frame size: its video and audio tracks, their clips with their files, enabled or not, linked picture and sound; gaps; constant speed and reverse; opacity and audio level with their keyframes; cross dissolves and dips between two clips; and markers on the sequence and on clips. Generators such as titles, other filters and nested sequences are named in the import report.
 
 ## CMX 3600 EDL
 
@@ -79,11 +86,13 @@ Gaps on that track stay gaps; compound clips, generators and adjustment layers b
 
 The header says `DROP FRAME` at 29.97 and 59.94 fps and `NON-DROP FRAME` otherwise, and every timecode is counted the same way. Effects, grades, levels and markers are not written.
 
+**Import** reads the events as cuts, matching each to media already in the pool by its `* FROM CLIP NAME` comment, else by its reel. Source timecodes are taken from the file's start timecode when they lie past it (a conform EDL), and from zero otherwise. A dissolve or wipe comes in as a cut, and an event whose media is not in the pool is listed in the report.
+
 ## Which to Use
 
 | Need | Use |
 |---|---|
 | Hand a multitrack edit to another application | OpenTimelineIO, or Kdenlive for Kdenlive itself |
 | Send a conform list against camera reels | EDL |
-| Hand a single-track cut to Final Cut Pro | FCPXML |
+| Hand a single-track cut to an FCPXML reader | FCPXML |
 | Keep everything, including grades and effects | Klipp's own project file |

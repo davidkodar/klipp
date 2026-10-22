@@ -5,7 +5,7 @@ Klipp supports importing video, audio, and image files into your project's media
 ## Import Methods
 
 ### File Menu
-Go to **File → Import Media** (or press **Ctrl+I**) to open the native file picker (`rfd`-backed). Select one or more files. Hold **Shift** or **Ctrl** to select multiple.
+Go to **File → Import Media...** (or press **Ctrl+I**) to open the file picker. Select one or more files. An import is one undo step.
 
 ### Drag and Drop
 Drag files from your file manager directly into the media browser panel. Klipp accepts files dropped anywhere in the browser area. Dropping a folder imports recursively.
@@ -18,9 +18,7 @@ Klipp uses ffmpeg-next for decoding and supports all formats that FFmpeg handles
 - **Video codecs** — H.264/AVC, H.265/HEVC, ProRes, DNxHD, VP9, AV1, MPEG-2, MJPEG
 - **Frame rates** — Any frame rate; rational-time tracking preserves drop-frame and fractional rates exactly
 
-Hardware-accelerated decode via CUDA NVDEC (cuvid path) is used automatically for supported codecs on NVIDIA GPUs. NVDEC pulls Annex B bitstreams via auto-attached `*_mp4toannexb` BSFs and resizes on the GPU side to a 1080p cap during playback. Software fallback uses thread-count auto-detection.
-
-VAAPI is currently disabled by default — `nvidia-vaapi-driver` returns all-zero frames for AV1 and VP9, which is unrecoverable.
+Decoding tries CUDA NVDEC first, then VAAPI, then software. During playback frames are scaled to the maximum playback resolution set in Preferences. AV1 and VP9 skip VAAPI on NVIDIA, whose VAAPI driver returns empty frames for them. A stream moves to software decode when the GPU's decoder is full or refuses its frames.
 
 ## Supported Audio Formats
 
@@ -37,7 +35,7 @@ Audio is resampled to the project sample rate on the fly with a recreate-on-seek
 
 ## Camera RAW
 
-Klipp does not support proprietary camera RAW video: REDCODE (`.r3d`), ARRIRAW and Blackmagic RAW (`.braw`). Decoding them needs each maker's closed SDK, and Klipp decodes video through FFmpeg. This is a deliberate choice, not a planned feature. Transcode the footage first in the maker's free tool (REDCINE-X PRO, ARRI Reference Tool, or DaVinci Resolve for Blackmagic RAW) to ProRes or DNxHR, and import that.
+Klipp does not support proprietary camera RAW video: REDCODE (`.r3d`), ARRIRAW and Blackmagic RAW (`.braw`). Decoding them needs each maker's closed SDK, and Klipp decodes video through FFmpeg. This is a deliberate choice, not a planned feature. Transcode the footage first in the maker's free tool (REDCINE-X PRO, ARRI Reference Tool, or Blackmagic's own software for Blackmagic RAW) to ProRes or DNxHR, and import that.
 
 Still-image RAW files (`.cr2`, `.nef`, `.arw`, `.dng` and others) import as stills, without developing the sensor data. See [Camera RAW](../reference/formats.md#camera-raw) for the details and the limits.
 
@@ -82,20 +80,22 @@ A copy interrupted mid-transfer keeps its header, which describes the whole reco
 
 ## Subtitles
 
-- **SRT** (SubRip) — standard timed text format
-- **VTT** (WebVTT) — web-compatible subtitle format
+**File → Import Subtitles...** reads SRT, WebVTT, ASS / SSA, TTML (including DFXP, IMSC and iTT), Scenarist SCC (CEA-608) and EBU-STL. The captions land on a subtitle track, keeping their inline styling. See [Subtitles & Captions](./subtitles.md).
 
-Imported subtitles appear as clips on a subtitle track.
+## Timelines from Other Editors
+
+**File → Open Project from Another Editor...** opens an FCPXML, Final Cut Pro 7 XML, EDL, OpenTimelineIO, AAF or Kdenlive timeline as a new project; **File → Import Timeline** brings one into the open project. Each import keeps a report of what it carried, changed or left out, under **File → Last Import Report…**. See [Timeline Interchange](../export/interchange.md).
 
 ## Media Management
 
-Klipp references media files by their original file paths. The project does not copy media files into the project directory. If you move or rename source files, Klipp prompts you to relink them on next open.
+Klipp references media files by their original file paths; the project does not copy them. If an import or an opened project has missing media, the relink flow opens at once to point it at its files (**File → Relink Media...** opens it any time). Undoing a relink gives each item its old file's details back. **File → Consolidate Project...** copies the media into one place, optionally only what the cut uses, trimmed with handles. Music and sound effects downloaded from the Library go into the saved project with their credits.
 
 ## After Import
 
 Imported media appears in the media browser. From there you can:
 
 - Hover to skim through clips
-- Double-click to load into the source viewer for marking up
-- Drag to the timeline or use **W** / **D** to insert / overwrite
-- Organise into bins
+- Click to load into the source viewer for marking up
+- Drag to the timeline or use **,** / **.** to insert / overwrite
+- Organise into bins and smart bins
+- Transcribe, analyse and tag them; see [AI Tools](../ai-tools/overview.md)

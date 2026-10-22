@@ -11,6 +11,11 @@ Reference for the containers, video codecs and audio codecs Klipp exports. Klipp
 | MOV | `.mov` | H.264, H.265, ProRes, DNxHD | AAC, MP3, PCM | The usual home of ProRes and DNxHD. Chapters and soft subtitles (`mov_text`). |
 | WebM | `.webm` | VP9, AV1 | Opus | Soft subtitles (WebVTT). No chapters. |
 | GIF | `.gif` | GIF | — | Picture only: no audio, subtitles, chapters or HDR. |
+| MP3 | `.mp3` | — | MP3 | The sound alone. |
+| WAV | `.wav` | — | PCM | The sound alone, uncompressed. |
+| M4A | `.m4a` | — | AAC | The sound alone. |
+
+H.264 and H.265 exports can also carry the subtitle track as CEA-608 closed captions inside the video stream.
 
 Every pair in this table is one FFmpeg writes. The audio menu lists only what the container holds. Changing the format replaces a codec it cannot hold with its default (H.264 and AAC, or VP9 and Opus for WebM), and picking a video codec the format cannot hold moves the export to that codec's container: MOV for ProRes and DNxHD, WebM for VP9, MP4 for AV1. A saved preset is fitted the same way when it is loaded, and a pair that still does not fit is named above the Export button, which stays disabled until it is changed.
 
@@ -60,9 +65,10 @@ Every export except GIF is tagged limited range, and its colour tags follow the 
 |---|---|---|---|
 | SDR | BT.709 | BT.709 | BT.709 |
 | SDR, DCI-P3 D65 | P3 D65 (SMPTE EG 432-1) | unspecified | BT.709 |
+| SDR, Rec.2020 | BT.2020 | BT.709 | BT.2020 non-constant |
 | HLG | BT.2020 | ARIB STD-B67 (HLG) | BT.2020 non-constant |
 | HDR10 (PQ) | BT.2020 | SMPTE ST 2084 (PQ) | BT.2020 non-constant |
 
-A PQ file also carries the mastering-display metadata and MaxCLL / MaxFALL, measured on the frames written.
+A PQ file also carries the mastering-display metadata and MaxCLL / MaxFALL, measured on the frames written; an H.265 PQ file carries HDR10+ dynamic metadata as well. An MP4 or M4A puts its index before its media, so it starts playing before it has downloaded.
 
 The DCI-P3 D65 transform writes a pure 2.6 gamma, which has no transfer code (the SMPTE 428 code is for the XYZ encoding a DCP holds), so its transfer is left unspecified. Tell the receiving application the gamma when it asks.
