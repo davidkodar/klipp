@@ -750,6 +750,7 @@ impl NodeInspectorPanel {
                 has_kf_at_playhead: bool,
                 key_time: f64,
                 range: std::ops::RangeInclusive<f32>,
+                keys: usize,
             }
             let param_infos: Vec<ParamInfo> = animatable_params.iter().map(|&param_name| {
                 let mask = &masks.masks[mask_idx];
@@ -773,7 +774,8 @@ impl NodeInspectorPanel {
                     "rotation" => -180.0..=180.0,
                     _ => 0.0..=1.0,
                 };
-                ParamInfo { name: param_name, display_val, has_keyframes, has_kf_at_playhead, key_time, range }
+                let keys = track.map_or(0, |t| t.len());
+                ParamInfo { name: param_name, display_val, has_keyframes, has_kf_at_playhead, key_time, range, keys }
             }).collect();
 
             ui.add_space(4.0);
@@ -1016,7 +1018,8 @@ impl NodeInspectorPanel {
             }
 
             for info in &param_infos {
-                ui.horizontal(|ui| {
+                let mut picked = false;
+                let row = ui.horizontal(|ui| {
                     ui.add_space(14.0);
                     let diamond_color = if info.has_kf_at_playhead {
                         theme.text_accent
@@ -1030,6 +1033,7 @@ impl NodeInspectorPanel {
                         egui::Button::new(egui::RichText::new(diamond_text).size(12.0).color(diamond_color))
                             .frame(false)
                     );
+                    picked |= diamond_resp.clicked();
                     if diamond_resp.clicked() {
                         if info.has_kf_at_playhead {
                             cmds.push(AppCommand::RemoveMaskKeyframe {
@@ -1055,7 +1059,8 @@ impl NodeInspectorPanel {
                             }
                         });
                     }
-                    diamond_resp.on_hover_text(if info.has_kf_at_playhead {
+                    let explained = crate::param_focus::diamond_hover(info.keys, info.has_kf_at_playhead);
+                    diamond_resp.on_hover_text(if let Some(text) = &explained { text.as_str() } else if info.has_kf_at_playhead {
                         "Remove keyframe at playhead"
                     } else {
                         "Add keyframe at playhead"
@@ -1117,6 +1122,11 @@ impl NodeInspectorPanel {
                         }
                     }
                 });
+                // The row as its track, for the Inspector's focus (#2296).
+                if info.keys > 0 {
+                    let tag = crate::param_focus::Tag::new(crate::state::KeyframeParamKind::Mask(crate::mask_tracks::MaskTrack { node: node_id, mask: mask_idx, param: info.name.to_string() }), info.keys);
+                    crate::param_focus::row_drawn(ui, &tag, row.response.rect, picked);
+                }
             }
 
             {

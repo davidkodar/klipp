@@ -73,6 +73,9 @@ pub struct NewInspectorPanel {
     /// An animated parameter picked here this frame, a chip or a row, for
     /// the app to bring into focus (#2296).
     pub focus_request: Option<crate::state::KeyframeParamKind>,
+    /// When the focus last selected a title track's layer, so it does so
+    /// once per focus and the user's own layer pick is kept after.
+    pub layer_followed: Option<f64>,
 }
 
 impl NewInspectorPanel {
@@ -1948,6 +1951,7 @@ fn show_title_pinned_core_textbox(
             .inner;
         let key = size_target.map(|_| {
             let ks = title_object_keyframe_state(&tb.font_size_keyframes, clip_time_secs, keyframe_tolerance);
+            crate::param_focus::tag_keys(ui, &tb.font_size_keyframes);
             crate::widgets::scrubby_param::key_controls(ui, ks)
         });
         if has_selection && sel_range.0 < sel_range.1 {
@@ -2285,6 +2289,7 @@ fn show_title_pinned_core_textbox(
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if size_target.is_some() {
                 let ks = title_object_keyframe_state(&tb.color_keyframes.r, clip_time_secs, keyframe_tolerance);
+                crate::param_focus::tag_keys(ui, &tb.color_keyframes.r);
                 color_key_toggled = crate::widgets::scrubby_param::key_controls(ui, ks).toggled;
             }
             if color_is_mixed {
@@ -2854,6 +2859,7 @@ fn show_title_effects_group(
                         });
                     }
                     let mut radius = display_radius;
+                    crate::param_focus::tag_keys(ui, kfs_r);
                     let r_radius = rows::param_row(
                         ui, theme, "r", &mut radius, 1.0..=80.0, 10.0, 0.5, 1, " px",
                         target_oid.map(|_| title_object_keyframe_state(kfs_r, clip_time_secs, keyframe_tolerance)),
@@ -2864,6 +2870,7 @@ fn show_title_effects_group(
                         keyframe_tolerance,
                     );
                     let mut intensity = display_intensity;
+                    crate::param_focus::tag_keys(ui, kfs_i);
                     let r_intensity = rows::param_row(
                         ui, theme, "i", &mut intensity, 0.0..=2.0, 1.0, 0.02, 2, "",
                         target_oid.map(|_| title_object_keyframe_state(kfs_i, clip_time_secs, keyframe_tolerance)),
@@ -3002,6 +3009,7 @@ fn show_title_effects_group(
                         });
                     }
                     let mut w_val = display_width;
+                    crate::param_focus::tag_keys(ui, kfs_width);
                     let resp_width = rows::param_row(
                         ui, theme, "", &mut w_val, 0.5..=20.0, 4.0, 0.5, 1, " px",
                         target_oid.map(|_| ks_width),
@@ -3187,6 +3195,7 @@ fn show_title_effects_group(
                         });
                     }
                     let mut ox = display_ox;
+                    crate::param_focus::tag_keys(ui, kfs_ox);
                     let r_ox = rows::param_row(
                         ui, theme, "x", &mut ox, -20.0..=20.0, 4.0, 0.5, 1, " px",
                         target_oid.map(|_| title_object_keyframe_state(kfs_ox, clip_time_secs, keyframe_tolerance)),
@@ -3197,6 +3206,7 @@ fn show_title_effects_group(
                         keyframe_tolerance,
                     );
                     let mut oy = display_oy;
+                    crate::param_focus::tag_keys(ui, kfs_oy);
                     let r_oy = rows::param_row(
                         ui, theme, "y", &mut oy, -20.0..=20.0, 4.0, 0.5, 1, " px",
                         target_oid.map(|_| title_object_keyframe_state(kfs_oy, clip_time_secs, keyframe_tolerance)),
@@ -3207,6 +3217,7 @@ fn show_title_effects_group(
                         keyframe_tolerance,
                     );
                     let mut bl = display_bl;
+                    crate::param_focus::tag_keys(ui, kfs_bl);
                     let r_bl = rows::param_row(
                         ui, theme, "blur", &mut bl, 0.0..=60.0, 4.0, 0.5, 1, " px",
                         target_oid.map(|_| title_object_keyframe_state(kfs_bl, clip_time_secs, keyframe_tolerance)),
@@ -3397,6 +3408,7 @@ fn show_title_effects_group(
                         });
                     }
                     let mut ox = display_ox;
+                    crate::param_focus::tag_keys(ui, kfs_ox);
                     let r_ox = rows::param_row(
                         ui, theme, "x", &mut ox, -20.0..=20.0, 2.0, 0.5, 1, " px",
                         target_oid.map(|_| title_object_keyframe_state(kfs_ox, clip_time_secs, keyframe_tolerance)),
@@ -3407,6 +3419,7 @@ fn show_title_effects_group(
                         keyframe_tolerance,
                     );
                     let mut oy = display_oy;
+                    crate::param_focus::tag_keys(ui, kfs_oy);
                     let r_oy = rows::param_row(
                         ui, theme, "y", &mut oy, -20.0..=20.0, 2.0, 0.5, 1, " px",
                         target_oid.map(|_| title_object_keyframe_state(kfs_oy, clip_time_secs, keyframe_tolerance)),
@@ -3417,6 +3430,7 @@ fn show_title_effects_group(
                         keyframe_tolerance,
                     );
                     let mut bl = display_bl;
+                    crate::param_focus::tag_keys(ui, kfs_bl);
                     let r_bl = rows::param_row(
                         ui, theme, "blur", &mut bl, 0.0..=60.0, 3.0, 0.5, 1, " px",
                         target_oid.map(|_| title_object_keyframe_state(kfs_bl, clip_time_secs, keyframe_tolerance)),
@@ -4154,18 +4168,23 @@ fn compact_axis_input(
     let has_kfs = !keyframes.is_empty();
     let mut changed = false;
     let mut keyframe_toggled = false;
-    egui::Frame::none()
+    // The axis's track, found by its keys, for the Inspector's focus (#2296).
+    crate::param_focus::tag_keys(ui, keyframes);
+    let tag = crate::param_focus::take_tag(ui);
+    let mut picked = false;
+    let framed = egui::Frame::none()
         .fill(theme.bg_raised)
         .rounding(4.0)
         .inner_margin(egui::Margin::symmetric(8.0, 6.0))
         .show(ui, |ui| {
             ui.set_width(col_w - 16.0);
             ui.horizontal(|ui| {
-                ui.label(
+                let name = ui.add(egui::Label::new(
                     egui::RichText::new(label)
                         .size(rows::TEXT)
                         .color(theme.text_secondary),
-                );
+                ).sense(if tag.is_some() { egui::Sense::click() } else { egui::Sense::hover() }));
+                picked |= name.clicked();
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // Diamond only when this axis already has
                     // keyframes; clicking removes the keyframe at the
@@ -4178,8 +4197,13 @@ fn compact_axis_input(
                         )
                         .frame(false)
                         .min_size(egui::vec2(14.0, 14.0));
-                        if ui.add(diamond).clicked() {
+                        let diamond = ui.add(diamond);
+                        if let Some(text) = tag.as_ref().and_then(|t| crate::param_focus::diamond_hover(t.keys(), false)) {
+                            diamond.clone().on_hover_text(text);
+                        }
+                        if diamond.clicked() {
                             keyframe_toggled = true;
+                            picked = true;
                         }
                     }
                     let dv_resp = ui.add(
@@ -4194,6 +4218,9 @@ fn compact_axis_input(
                 });
             });
         });
+    if let Some(tag) = &tag {
+        crate::param_focus::row_drawn(ui, tag, framed.response.rect, picked);
+    }
     crate::widgets::scrubby_param::ScrubbyParamResponse {
         changed,
         drag_started: false,
@@ -4624,6 +4651,7 @@ fn show_title_motion_blur_group(
             let ks_shutter = title_object_keyframe_state(kfs_shutter, clip_time_secs, keyframe_tolerance);
 
             let mut shutter = display_shutter;
+            crate::param_focus::tag_keys(ui, kfs_shutter);
             let resp_shutter = rows::param_row(
                 ui, theme, "Shutter Angle", &mut shutter, 1.0..=360.0, 180.0, 1.0, 0, "\u{00b0}",
                 target_oid.map(|_| ks_shutter),
@@ -5043,10 +5071,12 @@ fn show_title_editor(
         let keys = |key: &str| tb_target.and_then(|tb| tb.effect_keyframes_for(key)).unwrap_or(no_keys);
         let ks = |key: &str| target_oid.map(|_| title_object_keyframe_state(keys(key), clip_time_secs, keyframe_tolerance));
         let mut tracking = keyed.as_ref().map_or(td.tracking(), |tb| tb.tracking);
+        crate::param_focus::tag_keys(ui, keys(k::TEXT_TRACKING));
         let resp = rows::param_row(ui, theme, "Tracking", &mut tracking, -10.0..=200.0, 0.0, 0.2, 1, " px", ks(k::TEXT_TRACKING));
         handle_text_key_edit(cmds, clip_id, target_oid, k::TEXT_TRACKING, tracking, keys(k::TEXT_TRACKING), clip_time_secs, keyframe_tolerance, (&resp).into(),
             |tracking| AppCommand::SetTitleTracking { clip_id, tracking });
         let mut line_sp = keyed.as_ref().map_or(td.line_spacing(), |tb| tb.line_spacing);
+        crate::param_focus::tag_keys(ui, keys(k::TEXT_LINE_SPACING));
         let resp = rows::param_row(ui, theme, "Line spacing", &mut line_sp, 0.5..=4.0, 1.0, 0.05, 2, "x", ks(k::TEXT_LINE_SPACING));
         handle_text_key_edit(cmds, clip_id, target_oid, k::TEXT_LINE_SPACING, line_sp, keys(k::TEXT_LINE_SPACING), clip_time_secs, keyframe_tolerance, (&resp).into(),
             |line_spacing| AppCommand::SetTitleLineSpacing { clip_id, line_spacing });
@@ -5331,6 +5361,7 @@ fn show_title_editor(
             let object_id = obj.id.0;
             let keyframes = obj.opacity_keyframes.as_slice();
             let mut op = obj.evaluated_opacity(clip_time_secs);
+            crate::param_focus::tag_keys(ui, keyframes);
             let keyframe_state = title_object_keyframe_state(keyframes, clip_time_secs, keyframe_tolerance);
             let response = rows::param_row(
                 ui,
@@ -5501,10 +5532,12 @@ fn show_title_editor(
         let mut depth = display_depth;
         let mut angle = display_angle;
         let mut lighting = display_lighting;
+        crate::param_focus::tag_keys(ui, kfs_depth);
         let resp_depth = rows::param_row(
             ui, theme, "Depth", &mut depth, 1.0..=50.0, 10.0, 0.5, 1, " px",
             target_oid.map(|_| ks_depth),
         );
+        crate::param_focus::tag_keys(ui, kfs_angle);
         let resp_angle = rows::param_row(
             ui, theme, "Angle", &mut angle, 0.0..=360.0, 135.0, 1.0, 0, "\u{00b0}",
             target_oid.map(|_| ks_angle),
@@ -5520,6 +5553,7 @@ fn show_title_editor(
             ui.label("Side:");
             color_changed |= ui.color_edit_button_srgba(&mut side_col).changed();
         });
+        crate::param_focus::tag_keys(ui, kfs_lighting);
         let resp_lighting = rows::param_row(
             ui, theme, "Lighting", &mut lighting, 0.0..=1.0, 0.5, 0.05, 2, "",
             target_oid.map(|_| ks_lighting),
@@ -5673,6 +5707,7 @@ fn show_title_editor(
                     use klipp_core::title_effect_keys as k;
                     let no_keys: &[klipp_core::Keyframe] = &[];
                     let keys = td.primary_text().and_then(|tb| tb.effect_keyframes_for(k::TEXT_PATH_OFFSET)).unwrap_or(no_keys);
+                    crate::param_focus::tag_keys(ui, keys);
                     let ks = target_oid.map(|_| title_object_keyframe_state(keys, clip_time_secs, keyframe_tolerance));
                     let mut at = path.offset_at(clip_time_secs);
                     let align_id = match align { klipp_timeline::PathTextAlign::Start => 0u8, klipp_timeline::PathTextAlign::Center => 1, klipp_timeline::PathTextAlign::End => 2 };
@@ -9023,7 +9058,18 @@ mod fits_its_column_tests {
         };
         // Animated, so the Animated strip and the tab marks are drawn (#2296).
         let animated = klipp_timeline::test_clip::TestClip::of(with_effect.clone()).lane("opacity", 1.0, 0.5).lane("pos_x", 1.0, 10.0).lane("pos_y", 1.0, 10.0).lane("scale", 1.0, 1.5).lane("rotation", 1.0, 30.0).build();
+        let animated_title = {
+            let mut td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Moving".into(), ..Default::default() });
+            let key = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
+            td.objects[0].transform.center_x_keyframes = vec![key(0.5, 0.2), key(1.5, 0.8)];
+            td.objects[0].transform.center_y_keyframes = vec![key(0.5, 0.2), key(1.5, 0.8)];
+            klipp_timeline::Clip { kind: klipp_timeline::ClipKind::Title(td), ..klipp_timeline::Clip::gap(tc(0.0), tc(4.0)) }
+        };
         for width in [crate::theme::INSPECTOR_MIN_W, 300.0, 360.0] {
+            for tab in [InspectorTab::Title, InspectorTab::Video] {
+                let (right, edge, over) = rightmost(width, animated_title.clone(), tab);
+                assert!(right <= edge + 1.0, "an animated title's {tab:?} tab at {width}: drawn to {right}, the column ends at {edge}: {over:#?}");
+            }
             for tab in [InspectorTab::Video, InspectorTab::Audio, InspectorTab::Effects] {
                 let (right, edge, over) = rightmost(width, animated.clone(), tab);
                 assert!(right <= edge + 1.0, "an animated clip's {tab:?} tab at {width}: drawn to {right}, the column ends at {edge}: {over:#?}");

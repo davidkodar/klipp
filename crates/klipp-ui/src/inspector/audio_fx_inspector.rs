@@ -22,6 +22,23 @@ fn audio_kf_state(
     crate::inspector::keyframe_selection::state(kfs, clip_time_secs, keyframe_tolerance)
 }
 
+/// [`audio_kf_state`] for the row drawn next, which it names as that
+/// effect parameter's track for the Inspector to show in focus (#2296).
+fn audio_kf_row(
+    ui: &egui::Ui,
+    audio_effect_keyframes: &HashMap<String, Vec<Keyframe>>,
+    effect_index: usize,
+    param_name: &str,
+    clip_time_secs: f64,
+    keyframe_tolerance: f64,
+) -> KeyframeState {
+    let keys = audio_effect_keyframes.get(&format!("{effect_index}:{param_name}")).map_or(0, Vec::len);
+    if keys > 0 {
+        crate::param_focus::tag_counted(ui, crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name: param_name.to_string() }, keys);
+    }
+    audio_kf_state(audio_effect_keyframes, effect_index, param_name, clip_time_secs, keyframe_tolerance)
+}
+
 /// Evaluate a kf'd audio-effect param at the playhead, falling back to
 /// the static value when no kfs exist.
 fn audio_kf_eval(
@@ -767,7 +784,7 @@ pub fn show_content(
                             let decimals = if range > 100.0 { 0 } else if range > 10.0 { 1 } else { 2 };
                             let mut shown = val * display_scale;
                             let kf_state = if desc.is_keyframable() {
-                                Some(audio_kf_state(audio_effect_keyframes, idx, desc.name, clip_time_secs, keyframe_tolerance))
+                                Some(audio_kf_row(ui, audio_effect_keyframes, idx, desc.name, clip_time_secs, keyframe_tolerance))
                             } else {
                                 None
                             };
@@ -825,7 +842,7 @@ pub fn show_content(
                         "__wetdry",
                         clip_time_secs,
                         static_wet_dry, keyframe_tolerance);
-                    let kf_state = Some(audio_kf_state(
+                    let kf_state = Some(audio_kf_row(ui,
                         audio_effect_keyframes, idx, "__wetdry", clip_time_secs,
                         keyframe_tolerance,
                     ));
@@ -969,7 +986,7 @@ fn render_ladspa_params(
             klipp_audio::dsp::ParamUnit::Ratio => ":1",
             klipp_audio::dsp::ParamUnit::None => "",
         };
-        let kf_state = Some(audio_kf_state(
+        let kf_state = Some(audio_kf_row(ui,
             audio_effect_keyframes, effect_index, &port.name, clip_time_secs,
             keyframe_tolerance,
         ));
@@ -1068,7 +1085,7 @@ fn render_lv2_params(
         } else {
             3
         };
-        let kf_state = Some(audio_kf_state(
+        let kf_state = Some(audio_kf_row(ui,
             audio_effect_keyframes,
             effect_index,
             &port.symbol,
@@ -1167,7 +1184,7 @@ fn render_clap_params(
         } else {
             3
         };
-        let kf_state = Some(audio_kf_state(
+        let kf_state = Some(audio_kf_row(ui,
             audio_effect_keyframes,
             effect_index,
             &key,
