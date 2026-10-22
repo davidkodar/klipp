@@ -719,3 +719,27 @@ fn a_keys_time_and_value_are_typed_in_the_header() {
     undo(&mut e.state);
     assert_eq!(keys(&e.state, e.clip, &pos_x), vec![(1.5, 12.5), (2.0, 20.0)], "one step");
 }
+
+/// #2296: a key picked in the Curve Editor puts its parameter in focus,
+/// for the Inspector; a focus set there shows its curve, made the one
+/// edited, and opens the Curve Editor if it is closed; the panel never
+/// answers a focus it followed with one of its own.
+#[test]
+fn the_curve_editor_and_the_parameter_in_focus_follow_each_other() {
+    let mut e = Editor::new();
+    let radius = KeyframeParamKind::Mask(MaskTrack { node: e.node, mask: 0, param: "radius".into() });
+    let at = e.at(1.5, 0.3);
+    e.press(at, egui::PointerButton::Primary, egui::Modifiers::NONE);
+    let focus = e.state.param_focus.clone().expect("a key picked is in focus");
+    assert_eq!((focus.clip_id, focus.kind), (e.clip, radius));
+
+    e.state.show_curve_editor = false;
+    let position_x = KeyframeParamKind::Video(klipp_core::VideoParam::PositionX);
+    let set = crate::param_focus::ParamFocus { clip_id: e.clip, kind: position_x, at: e.clock + 1.0 };
+    e.state.param_focus = Some(set.clone());
+    e.panel.follow_focus(&mut e.state);
+    assert!(e.state.show_curve_editor, "the Curve Editor opened");
+    assert_eq!(*e.panel.active_curve(), CurveParam::Video(klipp_core::VideoParam::PositionX), "its curve the one edited");
+    e.frame(Vec::new(), egui::Modifiers::NONE);
+    assert_eq!(e.state.param_focus, Some(set), "followed, not answered");
+}
