@@ -3777,6 +3777,11 @@ mod export_prefs_tests {
 }
 
 impl super::KlippApp {
+    /// Whether `path` is an AAF file and nothing here can read it.
+    fn needs_aaf_converter(&self, path: &std::path::Path) -> bool {
+        matches!(klipp_project::import_report::detect(path), Ok(klipp_project::import_report::Format::Aaf)) && klipp_project::otio_tool::find().is_none()
+    }
+
     pub(super) fn import_timeline_report(&mut self, path: &std::path::Path, request_id: uuid::Uuid) {
         let result = klipp_project::import_report::load(path, self.state.sequence().fps, &self.state.media_pool);
         self.take_import(path, result, request_id, false);
@@ -3803,6 +3808,12 @@ impl super::KlippApp {
     /// saved or let go. The file is read before the project is closed, so
     /// one that does not open leaves it as it was.
     pub(super) fn open_from_another_editor_now(&mut self, path: &std::path::Path, request_id: uuid::Uuid) {
+        // An AAF with no converter to read it: the person is asked whether
+        // to install one (#2086), and it opens when that is done.
+        if request_id.is_nil() && self.needs_aaf_converter(path) {
+            self.state.aaf_install = Some(crate::aaf_install::AafInstall::ask(path.to_path_buf()));
+            return;
+        }
         let result = klipp_project::import_report::load(path, self.state.sequence().fps, &self.state.media_pool);
         if result.is_ok() {
             self.do_new_project();

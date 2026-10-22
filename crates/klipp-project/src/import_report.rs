@@ -138,6 +138,10 @@ pub fn detect_bytes(head: &[u8]) -> Option<Format> {
     text.lines().take(50).any(|l| l.trim_start().starts_with("TITLE:") || event(l)).then_some(Format::Edl)
 }
 
+/// What [`load`] says of an AAF file with no converter to read it: the
+/// app offers the install on it.
+pub const AAF_NEEDS_CONVERTER: &str = "Opening AAF needs OpenTimelineIO's AAF converter, which isn't installed";
+
 /// The timeline at `path`, read by the importer for its format, told from
 /// its content (#2083): a misnamed file opens as what it is. A format told
 /// apart but not read yet is refused by name, with what to export instead.
@@ -147,7 +151,20 @@ pub fn load(path: &Path, fps: klipp_core::Fps, pool: &klipp_media::MediaPool) ->
         Format::Fcpxml => crate::fcpxml_import::load_fcpxml(path).map_err(|e| e.to_string()),
         Format::Mlt => crate::mlt_import::load_kdenlive(path).map_err(|e| e.to_string()),
         Format::Xmeml => crate::xmeml_import::load_xmeml(path),
-        Format::Aaf => Err("AAF is not read yet; export OpenTimelineIO, FCPXML or an EDL from the other editor".into()),
+        // Through OpenTimelineIO's converter (#2086), into its own format,
+        // read as any OTIO timeline is.
+        Format::Aaf => {
+            let Some(converter) = crate::otio_tool::find() else { return Err(AAF_NEEDS_CONVERTER.into()) };
+            let otio = std::env::temp_dir().join(format!("klipp-aaf-{}-{}.otio", std::process::id(), uuid::Uuid::new_v4()));
+            crate::otio_tool::convert(&converter, path, &otio).map_err(|e| e.to_string())?;
+            let read = crate::otio_import::load_otio(&otio).map_err(|e| e.to_string());
+            let _ = std::fs::remove_file(&otio);
+            let mut result = read?;
+            if let Some(name) = path.file_stem() {
+                result.sequence.name = name.to_string_lossy().into_owned();
+            }
+            Ok(result)
+        }
         Format::Edl => {
             let bytes = crate::path_util::read_capped(path, crate::path_util::MAX_INPUT_FILE_BYTES).map_err(|e| e.to_string())?;
             let edl = crate::edl_import::parse(&String::from_utf8_lossy(&bytes), fps);
@@ -322,7 +339,9 @@ mod tests {
         let aaf = dir.join("cut.aaf");
         std::fs::write(&aaf, [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1, 0, 0]).unwrap();
         let why = load(&aaf, klipp_core::Fps::film_24(), &klipp_media::MediaPool::new()).unwrap_err();
-        assert!(why.contains("AAF") && why.contains("export"), "{why}");
+        // Without the converter it asks for one; with it, OpenTimelineIO
+        // can't read these ten bytes. Either way it is said of the AAF.
+        assert!(why.contains("AAF"), "{why}");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
