@@ -34,7 +34,7 @@ subject_matte = ["dep:klipp-ml-ort", "klipp-ml-ort/ort", "dep:klipp-ml", "dep:kl
 # provider is refused and the CPU provider carries on.
 # What a file's sound is (#2216): PANNs Cnn10 in candle, pure Rust.
 audio_role = ["dep:klipp-ml-candle", "klipp-ml-candle/candle", "dep:klipp-ml"]
-cuda = ["klipp-ml-ort/cuda", "klipp-ml-candle?/cuda"]
+cuda = ["klipp-ml-ort/cuda"]
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
