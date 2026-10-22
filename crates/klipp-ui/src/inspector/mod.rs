@@ -375,7 +375,7 @@ impl NewInspectorPanel {
             });
         }
         if let Some((_, clip)) = clip_info {
-            crate::param_focus::begin_rows(ui.ctx(), state.param_focus.as_ref(), clip);
+            crate::param_focus::begin_rows(ui.ctx(), state.param_focus.as_ref(), clip, self.key_column);
         }
         egui::ScrollArea::vertical()
             .id_salt("inspector_body_scroll")
