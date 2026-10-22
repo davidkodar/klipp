@@ -91,6 +91,16 @@ impl KlippApp {
         klipp_engine::video_decoder::wait_for_decode_threads(
             std::time::Duration::from_millis(1000),
         );
+        // An export the quit cancelled (`kill_children_for_exit`) drops
+        // its decoders and GPU converters on its own thread as it sees
+        // the flag: waited for the same way, and as bounded.
+        let t1 = std::time::Instant::now();
+        while klipp_render::live_render_decoders() > 0 && t1.elapsed() < std::time::Duration::from_millis(1000) {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        if klipp_render::live_render_decoders() > 0 {
+            tracing::warn!("{} render decoder(s) still alive after 1000ms — exiting anyway", klipp_render::live_render_decoders());
+        }
         std::process::exit(0);
     }
 
