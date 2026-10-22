@@ -16,55 +16,7 @@ use std::collections::BTreeMap;
 use klipp_core::Keyframe;
 use serde::{Deserialize, Serialize};
 
-/// How a track's automation is played and recorded.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum AutomationMode {
-    /// The keys are ignored: the controls are as set.
-    Off,
-    /// The keys are played into the controls (the default).
-    #[default]
-    Read,
-    /// A control's moves are written while it is held; let go, it
-    /// returns to the keys.
-    Touch,
-    /// A control's moves are written from its first touch until
-    /// playback stops, its last value held after it is let go.
-    Latch,
-    /// The controls are written over the whole pass, held or not.
-    Write,
-}
-
-impl AutomationMode {
-    pub const ALL: [AutomationMode; 5] = [Self::Off, Self::Read, Self::Touch, Self::Latch, Self::Write];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Off => "Off",
-            Self::Read => "Read",
-            Self::Touch => "Touch",
-            Self::Latch => "Latch",
-            Self::Write => "Write",
-        }
-    }
-}
-
-/// A track control that can be automated. More join here.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-pub enum TrackParam {
-    /// The fader: linear gain, 0..2, interpolated in dB between keys.
-    Volume,
-    /// The pan: -1 (left) to 1 (right), interpolated linearly.
-    Pan,
-}
-
-impl TrackParam {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Volume => "Track volume",
-            Self::Pan => "Track pan",
-        }
-    }
-}
+pub use klipp_core::automation::{AutomationMode, TrackParam};
 
 /// A track's automation: its mode, and its keys by control.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -75,16 +27,17 @@ pub struct TrackAutomation {
     pub lanes: BTreeMap<TrackParam, Vec<Keyframe>>,
 }
 
-/// The quietest level a key is taken as, in dB: silence (0 gain) can't be
-/// expressed in dB, so it is this, and back to 0 below it.
-const FLOOR_DB: f32 = -100.0;
+/// The level a key at silence (0 gain, which has no level in dB) is
+/// moved to and from, at most: at -60 dB a fade to silence is heard to its
+/// end, where a lower level spent most of the fade below hearing and
+/// sounded like a cut. Keys quieter than it are their own level; silence
+/// is then this far below the quietest.
+const FLOOR_DB: f32 = -60.0;
+const SILENCE_BELOW_DB: f32 = 20.0;
 
-fn to_db(gain: f32) -> f32 {
-    if gain <= 0.0 { FLOOR_DB } else { (20.0 * gain.log10()).max(FLOOR_DB) }
-}
-
-fn from_db(db: f32) -> f32 {
-    if db <= FLOOR_DB { 0.0 } else { 10f32.powf(db / 20.0) }
+/// A volume in dB, silence at the floor: how automation moves and thins it.
+pub fn to_db(gain: f32) -> f32 {
+    if gain <= 0.0 { FLOOR_DB } else { 20.0 * gain.log10() }
 }
 
 impl TrackAutomation {
@@ -108,7 +61,9 @@ impl TrackAutomation {
     /// `param` at `secs` on the sequence: its keys' value there when it is
     /// played from them, else `static_value`, the control as set. Volume
     /// is interpolated in dB between keys, so a fade sounds even; pan
-    /// linearly.
+    /// linearly. A volume key's value tangents are in gain and don't carry
+    /// over to dB, so a Bezier volume curve keeps its timing, flat at its
+    /// keys; recorded keys are linear.
     pub fn value_at(&self, param: TrackParam, secs: f64, static_value: f32) -> f32 {
         if !self.plays(param) {
             return static_value;
@@ -116,8 +71,12 @@ impl TrackAutomation {
         let keys = self.keys(param);
         match param {
             TrackParam::Volume => {
-                let in_db: Vec<Keyframe> = keys.iter().map(|k| Keyframe { value: to_db(k.value), tangent_in: (k.tangent_in.0, 0.0), tangent_out: (k.tangent_out.0, 0.0), ..k.clone() }).collect();
-                from_db(klipp_core::keyframe::evaluate(&in_db, secs, to_db(static_value)))
+                let quietest = keys.iter().filter(|k| k.value > 0.0).map(|k| to_db(k.value)).fold(f32::INFINITY, f32::min);
+                let silence = FLOOR_DB.min(quietest - SILENCE_BELOW_DB);
+                let level = |g: f32| if g <= 0.0 { silence } else { to_db(g) };
+                let in_db: Vec<Keyframe> = keys.iter().map(|k| Keyframe { value: level(k.value), tangent_in: (k.tangent_in.0, 0.0), tangent_out: (k.tangent_out.0, 0.0), ..k.clone() }).collect();
+                let db = klipp_core::keyframe::evaluate(&in_db, secs, silence);
+                if db <= silence + 1e-3 { 0.0 } else { 10f32.powf(db / 20.0) }
             }
             TrackParam::Pan => klipp_core::keyframe::evaluate(keys, secs, static_value),
         }
@@ -127,6 +86,10 @@ impl TrackAutomation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn from_db(db: f32) -> f32 {
+        10f32.powf(db / 20.0)
+    }
 
     fn key(t: f64, v: f32) -> Keyframe {
         Keyframe { time_secs: t, value: v, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }
@@ -157,5 +120,11 @@ mod tests {
         assert_eq!(a.value_at(TrackParam::Volume, 5.0, 1.0), from_db(-12.0), "held past the last key");
         a.lanes.insert(TrackParam::Volume, vec![key(0.0, 1.0), key(1.0, 0.0)]);
         assert_eq!(a.value_at(TrackParam::Volume, 1.0, 1.0), 0.0, "a key at silence is silence");
+        let half = a.value_at(TrackParam::Volume, 0.5, 1.0);
+        assert!((to_db(half) + 30.0).abs() < 1e-3, "a fade to silence is halfway down at halfway: {} dB", to_db(half));
+        a.lanes.insert(TrackParam::Volume, vec![key(0.0, from_db(-70.0)), key(1.0, from_db(-80.0)), key(2.0, 0.0)]);
+        assert!((to_db(a.value_at(TrackParam::Volume, 0.0, 1.0)) + 70.0).abs() < 1e-3, "a quiet key is its own level, not silence");
+        assert!((to_db(a.value_at(TrackParam::Volume, 1.5, 1.0)) + 90.0).abs() < 1e-3, "and fades on to silence below it");
+        assert_eq!(a.value_at(TrackParam::Volume, 2.0, 1.0), 0.0);
     }
 }

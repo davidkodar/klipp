@@ -312,6 +312,7 @@ impl KlippApp {
         self.state.dragging_fade_handle = None;
 
         // 5. Reset playback / playhead
+        self.drop_automation_pass();
         self.state.playback = PlaybackState::Idle;
         let seq_rate = self.state.sequences[self.state.active_sequence_idx].fps.rate();
         self.state.playhead = klipp_core::RationalTime::from_frames(0, seq_rate);
@@ -1002,6 +1003,7 @@ impl KlippApp {
                 };
                 self.prefs.add_recent_project(rp);
                 self.prefs_dirty = true;
+                self.drop_automation_pass();
                 self.state.playback = PlaybackState::Idle;
                 let seq_rate = self.state.sequences[self.state.active_sequence_idx].fps.rate();
                 self.state.playhead = klipp_core::RationalTime::from_frames(0, seq_rate);

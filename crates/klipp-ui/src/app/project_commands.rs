@@ -1023,6 +1023,13 @@ impl KlippApp {
                 }
                 true
             }
+            AppCommand::SetTrackAutomationMode { track_index, mode } => {
+                if let Some(t) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index) {
+                    t.automation.mode = *mode;
+                    self.state.dirty = true;
+                }
+                true
+            }
             AppCommand::SetTrackSyncLock { track_id, on } => {
                 if let Some(t) = self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut().find(|t| t.id == *track_id) {
                     t.sync_lock = *on;

@@ -311,7 +311,9 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SetFrameGlideMode(..)
         // The pass runs beside the document (#239).
         | AppCommand::CancelTrackSubject { .. }
-        | AppCommand::TrackTransitionSubject { .. } => false,
+        | AppCommand::TrackTransitionSubject { .. }
+        // The engine's alone, while a pass records (#2306).
+        | AppCommand::OverrideTrackAutomation { .. } => false,
         // Write the picture, the project or the history, start a step of
         // their own, or aren't known to write nothing. The path edits are
         // among them; a path drag takes its own (`closes_path_drag`).
@@ -709,6 +711,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::RemoveTrack { .. }
         | AppCommand::RenameTrack { .. }
         | AppCommand::SetTrackSyncLock { .. }
+        | AppCommand::SetTrackAutomationMode { .. }
         | AppCommand::SetTrackLanguage { .. }
         | AppCommand::SetTrackTargeted { .. }
         | AppCommand::SetTrackSourcePatch { .. }

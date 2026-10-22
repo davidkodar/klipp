@@ -3108,6 +3108,12 @@ pub enum AppCommand {
     /// A track's sync lock on or off (#915): on, a ripple on another track
     /// moves its clips too.
     SetTrackSyncLock { track_id: TrackId, on: bool },
+    /// How a track's automation is played and recorded (#2306).
+    SetTrackAutomationMode { track_index: usize, mode: crate::automation::AutomationMode },
+    /// A track's control played at `value` in place of its keys and its
+    /// value as set, while the user moves it or a pass records it, or back
+    /// to them (`None`) (#2306): the engine's only.
+    OverrideTrackAutomation { track_index: usize, param: crate::automation::TrackParam, value: Option<f32> },
     /// A subtitle track's language, a BCP 47 tag, or none (#2223).
     SetTrackLanguage { track_id: TrackId, language: Option<String> },
     /// A track's targeting on or off (#915): edit-point navigation,

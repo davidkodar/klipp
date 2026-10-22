@@ -293,6 +293,7 @@ impl KlippApp {
         self.drain_events(ctx);
         self.stop_at_out();
         self.tick_recording();
+        self.tick_automation();
 
         // Sync scope mode to engine — only when it actually changed.
         // Previously this sent unconditionally every UI frame (~120

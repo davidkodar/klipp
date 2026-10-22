@@ -234,12 +234,7 @@ impl AudioMixer {
                 Some(s) => s,
                 None => continue,
             };
-            if settings.muted {
-                settings.peak_left = 0.0;
-                settings.peak_right = 0.0;
-                continue;
-            }
-            if any_solo && !settings.solo {
+            if settings.muted || (any_solo && !settings.solo) {
                 settings.peak_left = 0.0;
                 settings.peak_right = 0.0;
                 continue;
@@ -301,6 +296,12 @@ impl AudioMixer {
                 settings.rms_left = (sum_sq_l / sample_count as f32).sqrt();
                 settings.rms_right = (sum_sq_r / sample_count as f32).sqrt();
             }
+        }
+        // Every track is at its settings after this block, the ones not
+        // heard in it too (muted, soloed out, no sound): heard again, a
+        // track starts from them, not ramping from where it was silenced.
+        for t in &mut self.tracks {
+            t.ramp_from = Some((t.volume, t.pan));
         }
 
         // Mix buses into master
@@ -370,6 +371,27 @@ mod tests {
         assert!(approx(left[0], 0.625 * pl) && approx(left[3], 1.0 * pl), "{left:?}");
         let next = mixer.mix(&[(0, &buf)]);
         assert!(next.iter().step_by(2).all(|v| approx(*v, pl)), "then held at the new value");
+    }
+
+    /// A track whose volume changed while it was muted, or had no sound,
+    /// is heard at the new value from its first sample back, not ramping
+    /// from the old.
+    #[test]
+    fn a_change_while_silent_is_not_ramped_when_heard_again() {
+        let buf = vec![1.0f32; 8];
+        let (pl, _) = AudioMixer::pan_gains_for(0.0, klipp_core::PanLaw::default());
+        for muted in [true, false] {
+            let mut mixer = AudioMixer::new(1);
+            mixer.tracks[0].volume = 0.5;
+            mixer.mix(&[(0, &buf)]);
+            mixer.tracks[0].volume = 1.0;
+            mixer.tracks[0].muted = muted;
+            let silent: Vec<(usize, &[f32])> = if muted { vec![(0, &buf)] } else { Vec::new() };
+            mixer.mix(&silent);
+            mixer.tracks[0].muted = false;
+            let back = mixer.mix(&[(0, &buf)]);
+            assert!(back.iter().step_by(2).all(|v| approx(*v, pl)), "muted {muted}: {back:?}");
+        }
     }
 
     #[test]

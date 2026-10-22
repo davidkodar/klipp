@@ -45,6 +45,7 @@ pub fn label(cmd: &AppCommand) -> Option<&'static str> {
         AppCommand::RenameTrack { .. } => "Rename Track",
         AppCommand::SetTrackSyncLock { on: true, .. } => "Sync Lock Track",
         AppCommand::SetTrackSyncLock { .. } => "Sync Unlock Track",
+        AppCommand::SetTrackAutomationMode { .. } => "Automation Mode",
         AppCommand::SetTrackLanguage { .. } => "Track Language",
         AppCommand::SetTrackTargeted { on: true, .. } => "Target Track",
         AppCommand::SetTrackTargeted { .. } => "Untarget Track",

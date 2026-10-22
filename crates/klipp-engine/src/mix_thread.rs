@@ -11,6 +11,10 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 use tracing::{debug, warn};
 
+/// The samples mixed in one block, interleaved L+R: 512 stereo frames,
+/// ≈ 10.7 ms at 48 kHz. The mixer ramps a changed volume or pan over one.
+pub(crate) const MIX_CHUNK_SAMPLES: usize = 1024;
+
 /// One source's clip settings, applied to its own samples before the
 /// track sums them: volume times gain, a balance pan, and the channel
 /// config (0 as is, 1 mono downmix, 2 swap left and right), in the
@@ -394,7 +398,7 @@ fn mix_loop(
     let mut lufs_meter = LufsMeter::new(sample_rate as f32, tp_oversample);
     let mut stagings: Vec<StagingEntry> = Vec::new();
     // Per-track temporary buffer for reading from staging
-    let chunk_samples = 1024; // 512 stereo frames ≈ 10.7ms at 48kHz
+    let chunk_samples = MIX_CHUNK_SAMPLES;
     let mut drain_buf = vec![0.0f32; 8192];
     // Reused across loop iterations — the inner `Vec<f32>`s are resized to
     // `read_size` (never exceeds `chunk_samples`) before each pop_slice and

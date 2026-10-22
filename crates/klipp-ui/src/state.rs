@@ -2944,6 +2944,12 @@ pub struct AppState {
     /// The animated parameter in focus (#2296), shared by the Inspector,
     /// the Curve Editor and the Dope Sheet.
     pub param_focus: Option<crate::param_focus::ParamFocus>,
+    /// The track controls the user is holding now (#2306), by sequence
+    /// index: what Touch and Latch record.
+    pub automation_held: std::collections::HashSet<(usize, klipp_core::automation::TrackParam)>,
+    /// The automation pass being recorded, and the track controls being
+    /// moved over their keys (#2306).
+    pub automation_pass: crate::automation_record::Pass,
     /// A drag of those keys in progress.
     pub multi_key_drag: Option<crate::key_selection::MultiKeyDrag>,
     /// The sequence camera's key that is selected, on the lane or in
@@ -5059,6 +5065,8 @@ impl Default for AppState {
             selected_keyframe: None,
             key_selection: Default::default(),
             param_focus: None,
+            automation_held: Default::default(),
+            automation_pass: Default::default(),
             multi_key_drag: None,
             selected_camera_key: None,
             camera_key_menu: None,

@@ -1263,6 +1263,10 @@ pub struct PlaybackEngine {
     /// automation (#2306), by sequence index: one no longer automated gets
     /// its controls as set back.
     automated_tracks: std::sync::Mutex<Vec<bool>>,
+    /// The track controls the user is moving or a pass is recording
+    /// (#2306), by sequence index: played at this value, not from their
+    /// keys, so what is heard is what is written.
+    automation_override: std::sync::Mutex<std::collections::HashMap<(usize, klipp_core::automation::TrackParam), f32>>,
     fps: Fps,
     playhead: Timecode,
     sequence: Arc<klipp_timeline::SharedSequence>,
@@ -2256,6 +2260,7 @@ impl PlaybackEngine {
             current_track_index: 0,
             contiguous_audio: std::sync::atomic::AtomicBool::new(false),
             automated_tracks: std::sync::Mutex::new(Vec::new()),
+            automation_override: Default::default(),
             fps: Fps::film_24(),
             playhead: RationalTime::from_frames(0, 24),
             sequence,
@@ -3187,6 +3192,16 @@ impl PlaybackEngine {
                     m.ensure_tracks(track_index + 1);
                     m.tracks[track_index].volume = volume;
                 }
+            }
+            AppCommand::OverrideTrackAutomation { track_index, param, value } => {
+                if let Ok(mut o) = self.automation_override.lock() {
+                    match value {
+                        Some(v) => o.insert((track_index, param), v),
+                        None => o.remove(&(track_index, param)),
+                    };
+                }
+                let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+                self.sync_track_automation(&seq, self.audio_heard_at().to_secs_f64());
             }
             AppCommand::SetTrackMute { track_index, muted } => {
                 if let Ok(mut m) = self.mixer.lock() {
@@ -4237,15 +4252,32 @@ impl PlaybackEngine {
         self.playhead + RationalTime::from_secs_f64(lead, self.fps.rate())
     }
 
-    /// Each track's automated volume and pan at `heard_at` (#2306), where
-    /// the samples mixed now are heard, as a clip's keys are taken: into
-    /// the mixer, which ramps to them over its next block. A track whose
-    /// automation stopped applying (its keys gone, or Off) gets its
-    /// controls as set back; one never automated is left as it is.
+    /// Each track's automated volume and pan into the mixer (#2306). The
+    /// samples mixed next are heard from `heard_at`, and the mixer ramps
+    /// to a new value over that block, so the value is taken at the
+    /// block's end: the ramp then follows the keys over the block, as the
+    /// export does per frame, and between engine ticks the level holds
+    /// (a steep move steps once a tick, ramped). A track whose automation
+    /// stopped applying (its keys gone, or Off) gets its controls as set
+    /// back; one never automated is left as it is. The flags are by track
+    /// position: after a track is moved or deleted one may be stale, which
+    /// only sets that slot's controls as set once more.
     fn sync_track_automation(&self, seq: &klipp_timeline::Sequence, heard_at: f64) {
         use klipp_timeline::TrackParam;
+        let block_secs = if self.cpal_sample_rate > 0 {
+            (crate::mix_thread::MIX_CHUNK_SAMPLES / 2) as f64 / self.cpal_sample_rate as f64
+        } else {
+            0.0
+        };
+        let at = heard_at + block_secs;
         let Ok(mut was) = self.automated_tracks.lock() else { return };
-        let now: Vec<bool> = seq.tracks.iter().map(|t| t.automation.plays(TrackParam::Volume) || t.automation.plays(TrackParam::Pan)).collect();
+        let overrides = self.automation_override.lock().map(|o| o.clone()).unwrap_or_default();
+        let now: Vec<bool> = seq
+            .tracks
+            .iter()
+            .enumerate()
+            .map(|(i, t)| t.automation.plays(TrackParam::Volume) || t.automation.plays(TrackParam::Pan) || overrides.keys().any(|(o, _)| *o == i))
+            .collect();
         if now.iter().all(|a| !a) && was.iter().all(|a| !a) {
             return;
         }
@@ -4253,8 +4285,9 @@ impl PlaybackEngine {
             m.ensure_tracks(seq.tracks.len());
             for (i, track) in seq.tracks.iter().enumerate() {
                 if now[i] || was.get(i).copied().unwrap_or(false) {
-                    m.tracks[i].volume = track.automation.value_at(TrackParam::Volume, heard_at, track.volume);
-                    m.tracks[i].pan = track.automation.value_at(TrackParam::Pan, heard_at, track.pan);
+                    let value = |param: TrackParam, set: f32| overrides.get(&(i, param)).copied().unwrap_or_else(|| track.automation.value_at(param, at, set));
+                    m.tracks[i].volume = value(TrackParam::Volume, track.volume);
+                    m.tracks[i].pan = value(TrackParam::Pan, track.pan);
                 }
             }
         }
@@ -14202,3 +14235,46 @@ mod probed_duration_tests {
     }
 }
 
+
+#[cfg(test)]
+mod track_automation_override_tests {
+    use super::*;
+    use klipp_core::automation::TrackParam;
+    use klipp_core::Keyframe;
+    use std::sync::Mutex;
+
+    fn key(t: f64, v: f32) -> Keyframe {
+        Keyframe { time_secs: t, value: v, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }
+    }
+
+    /// #2306: a control moved or recorded plays at the value it is set to,
+    /// over its keys or its value as set, so what is heard is what is
+    /// written; let go, it plays from them again.
+    #[test]
+    fn an_overridden_control_plays_its_override() {
+        let mut seq = klipp_timeline::Sequence::new_default();
+        let mut keyed = klipp_timeline::Track::new("A1", klipp_timeline::TrackKind::Audio);
+        keyed.automation.lanes.insert(TrackParam::Volume, vec![key(0.0, 1.0), key(10.0, 1.0)]);
+        let mut plain = klipp_timeline::Track::new("A2", klipp_timeline::TrackKind::Audio);
+        plain.volume = 0.5;
+        seq.tracks = vec![keyed, plain];
+        let sequence = Arc::new(klipp_timeline::SharedSequence::new(seq.clone()));
+        let (_cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
+        let (ev_tx, _ev_rx) = crossbeam_channel::unbounded();
+        let fb = || Arc::new(Mutex::new(crate::texture::FrameBuffer::new(16, 16)));
+        let engine = PlaybackEngine::new(
+            cmd_rx, ev_tx, fb(), fb(),
+            Arc::clone(&sequence), Arc::new(RwLock::new(klipp_media::MediaPool::new())), Box::new(|| {}),
+            Arc::new(Mutex::new(None)), Arc::new(Mutex::new(crate::perf::PerfRing::default())),
+        );
+        let volumes = || engine.mixer.lock().unwrap().tracks.iter().map(|t| t.volume).collect::<Vec<f32>>();
+        engine.sync_track_automation(&seq, 1.0);
+        assert_eq!(volumes()[0], 1.0, "from its keys");
+        engine.automation_override.lock().unwrap().extend([((0, TrackParam::Volume), 0.25), ((1, TrackParam::Volume), 0.8)]);
+        engine.sync_track_automation(&seq, 1.0);
+        assert_eq!(volumes()[..2], [0.25, 0.8], "as moved, over the keys and the value as set");
+        engine.automation_override.lock().unwrap().clear();
+        engine.sync_track_automation(&seq, 1.0);
+        assert_eq!(volumes()[..2], [1.0, 0.5], "let go: the keys, and the value as set");
+    }
+}
