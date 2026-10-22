@@ -128,6 +128,7 @@ struct Played {
     end: f64,
     handed: u64,
     cold: u64,
+    streams: u64,
 }
 
 /// The strobe played from its start on a cold engine, as the first play
@@ -137,6 +138,7 @@ fn played(video: &std::path::Path, prewarm: bool) -> Played {
     let r = start(video, prewarm);
     let handed = klipp_engine::engine::decoders_handed_on();
     let (_, cold) = klipp_engine::engine::cut_openings();
+    let streams = klipp_engine::engine::streams_opened();
     let g = common::generation(&r.fb);
     r.cmd.send(AppCommand::SetPlayhead(common::frame_tc(0, fps))).unwrap();
     common::wait_new(&r.fb, g, Duration::from_secs(10));
@@ -170,6 +172,7 @@ fn played(video: &std::path::Path, prewarm: bool) -> Played {
         end,
         handed: klipp_engine::engine::decoders_handed_on() - handed,
         cold: klipp_engine::engine::cut_openings().1 - cold,
+        streams: klipp_engine::engine::streams_opened() - streams,
     }
 }
 
@@ -208,6 +211,13 @@ fn a_strobe_shows_every_piece_from_the_first_play() {
     assert_eq!(seen.len(), PIECES as usize, "pieces shown {seen:?} of {PIECES}: {:?}", p.shown);
     assert!(p.handed >= PIECES as u64 - 1, "the decoder was not handed on across the gaps");
     assert_eq!(p.cold, 0, "a piece's file was opened again at its cut");
+    // Every piece is the primary decoder's. With it handed on in a gap,
+    // the pieces coming up on its track were each opened as a clip stream
+    // too, closed as the next piece came on and opened again at the next
+    // gap: 91 decoders in a second and a half in a 13-piece strobe, each
+    // with its own GPU decoder, until a new one waited seconds for its
+    // own and the picture stayed black.
+    assert_eq!(p.streams, 0, "the strobe's pieces were opened as clip streams");
 }
 
 /// With the stack left cold, its first gap holds the engine past a

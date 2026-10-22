@@ -867,6 +867,8 @@ static CUTS_FROM_PREROLL: std::sync::atomic::AtomicU64 = std::sync::atomic::Atom
 static CUTS_OPENED_COLD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static STREAM_TAKE_OVERS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 pub(crate) static STREAMS_OPENED_ON_SCREEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Clip streams opened, on screen or ahead.
+pub(crate) static STREAMS_OPENED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// Layers on screen opened with a shorter queue of frames, memory being
 /// short (#2128).
 pub(crate) static STREAMS_SHORTENED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -891,6 +893,11 @@ pub fn stream_take_overs() -> u64 {
 /// the process began.
 pub fn streams_opened_on_screen() -> u64 {
     STREAMS_OPENED_ON_SCREEN.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Clip streams opened, on screen or ahead, since the process began.
+pub fn streams_opened() -> u64 {
+    STREAMS_OPENED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Layers on screen opened with fewer frames queued than the preference,
