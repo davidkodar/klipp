@@ -45,6 +45,7 @@ pub mod timeline;
 pub mod timeline_search;
 pub mod toolbar;
 pub mod transport;
+pub mod motion_path;
 pub mod viewer;
 pub mod viewer_declines;
 pub mod workspace_manager;
