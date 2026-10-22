@@ -1342,4 +1342,43 @@ mod tests {
         assert!(!back.metadata_read);
         std::fs::remove_dir_all(&dir).unwrap();
     }
+
+    /// Every field of a media item is named here as what an undone relink
+    /// does with it (#2327), so a new one can't be missed: this stops
+    /// compiling until it is put in a group, and a probed one must be
+    /// copied by `take_probed_details` too, which the second half checks.
+    #[test]
+    fn every_field_is_probed_the_persons_or_the_relinks() {
+        let item = MediaItem::synthetic_for_test("/tmp/fields.mov".into(), None);
+        let MediaItem {
+            // Set by the relink itself, path and offline flag both ways.
+            id: _, path: _, offline: _,
+            // Read from the file: given back by `take_probed_details`.
+            filename: _, duration: _, fps: _, resolution: _, video_codec: _, audio_codec: _, has_audio: _, file_size_bytes: _,
+            sample_rate: _, audio_channels: _, is_still: _, fingerprint: _, file_modified_at: _, media_created_at: _,
+            colour_space: _, source_rotation: _, camera_make: _, camera_model: _, encoder: _, bit_depth: _,
+            video_bitrate_kbps: _, audio_bitrate_kbps: _, color_primaries: _, color_transfer: _, pixel_format: _,
+            detected_log_format: _, shot: _, metadata_read: _, truncated_from_secs: _,
+            // The person's, or the project's: kept.
+            kind: _, default_source_in: _, default_source_out: _, rating: _, tags: _, user_notes: _, bin: _, bin_id: _,
+            parent_media_id: _, added_at: _, color_label: _, log_format: _, log_format_user_set: _, log: _,
+            synced_audio: _, markers: _, screen_text: _, audio_role: _, span: _,
+            // Made from the file, and made again by the relink's own
+            // pictures and proxies: left to that.
+            proxy_path: _, proxy_ready: _, skim_file: _, needs_reprobe: _, waveform_data: _, audio_cache: _,
+        } = item.clone();
+
+        // The probed group, each made to differ, comes over.
+        let mut from = item.clone();
+        from.filename = "other.mov".into();
+        from.duration = klipp_core::RationalTime::from_secs_f64(9.0, 24);
+        from.video_codec = "prores".into();
+        from.file_size_bytes = 99;
+        from.metadata_read = !item.metadata_read;
+        from.rating = 5;
+        let mut to = item.clone();
+        to.take_probed_details(&from);
+        assert_eq!((to.filename.as_str(), to.duration, to.video_codec.as_str(), to.file_size_bytes, to.metadata_read), ("other.mov", from.duration, "prores", 99, from.metadata_read));
+        assert_eq!(to.rating, item.rating, "the person's kept");
+    }
 }
