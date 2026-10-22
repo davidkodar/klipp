@@ -748,6 +748,17 @@ pub enum Op {
         #[serde(default)]
         with_clips: bool,
     },
+    /// A track's own settings (#2246): `visible` shows or hides its
+    /// picture or captions, its header's eye; `language` (a BCP 47 tag,
+    /// empty for none) is what a subtitle export tags its file with. One
+    /// undo step.
+    SetTrack {
+        track: TrackRef,
+        #[serde(default)]
+        visible: Option<bool>,
+        #[serde(default)]
+        language: Option<String>,
+    },
     /// One edge of a clip to an anchor. The clip's other edge stays;
     /// the source moves with the edge, so the picture at the other edge
     /// does not change. Refused past the media's start or end, or into
@@ -1859,7 +1870,7 @@ fn one_piece() -> u32 {
 /// Serialized operation tags accepted by `Op`. Keep this in sync with the
 /// variants; the test below catches additions and renames.
 pub const OP_NAMES: &[&str] = &[
-    "graphics", "vector_path", "connector", "place", "add_track", "remove_track", "trim", "j_cut", "l_cut", "split", "join", "remove", "move", "cut",
+    "graphics", "vector_path", "connector", "place", "add_track", "remove_track", "set_track", "trim", "j_cut", "l_cut", "split", "join", "remove", "move", "cut",
     "captions", "audio", "volume", "duck", "lower_third", "set_text", "grade", "effect", "redact",
     "slip", "slide", "pin", "role", "matte", "format", "stabilize", "reframe", "zoom", "pan", "follow", "refit", "highlight",
     "ramp", "grade_group", "remove_grade_group", "look", "qualify", "zones", "retime", "replace", "track_audio", "clean_audio",
@@ -3715,6 +3726,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             join(seq, pool, i, ti, clip, *side)
         }
         Op::RemoveTrack { track, with_clips } => remove_track(seq, i, track, *with_clips),
+        Op::SetTrack { track, visible, language } => set_track(seq, i, track, *visible, language.as_deref()),
         Op::Split { clip_id: clip_ref, at } => {
             let (ti, ci, clip) = resolve_clip(seq, fps, clip_ref, i)?;
             let clip_id = &clip.id;
@@ -4508,6 +4520,31 @@ fn join(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, side
 }
 
 /// [`Op::RemoveTrack`].
+/// [`Op::SetTrack`]: the track with what was given changed.
+fn set_track(seq: &Sequence, i: usize, track: &TrackRef, visible: Option<bool>, language: Option<&str>) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    let ti = resolve_track(seq, track, i)?;
+    let t = &seq.tracks[ti];
+    if visible.is_none() && language.is_none() {
+        return Err(refuse(i, "nothing to set", "give visible, language or both"));
+    }
+    let mut new = t.clone();
+    let mut what = Vec::new();
+    if let Some(v) = visible {
+        new.visible = v;
+        what.push(if v { "shown" } else { "hidden" }.to_string());
+    }
+    if let Some(l) = language {
+        let l = l.trim().to_ascii_lowercase();
+        if !l.is_empty() && !l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            return Err(refuse(i, format!("{l:?} is not a language tag"), "give a BCP 47 tag such as de or pt-br, or an empty one for none"));
+        }
+        what.push(if l.is_empty() { "no language".to_string() } else { format!("in {l}") });
+        new.language = (!l.is_empty()).then_some(l);
+    }
+    let edit = EditCommand::SetTrack { description: "Track", track_index: ti, old: Box::new(t.clone()), new: Box::new(new) };
+    Ok((format!("track {ti} \"{}\" {}", t.name, what.join(", ")), edit, Vec::new()))
+}
+
 fn remove_track(seq: &Sequence, i: usize, track: &TrackRef, with_clips: bool) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     let ti = resolve_track(seq, track, i)?;
     let t = &seq.tracks[ti];
@@ -12855,6 +12892,13 @@ mod tests {
         assert_eq!(view.sequences[0].tracks.len(), seq.tracks.len());
         // The audio track holds the sound: refused without with_clips.
         let held = one(&seq, serde_json::json!({ "op": "remove_track", "track": "audio" })).unwrap_err();
+        // A track shown, hidden and given a language (#2246), each one
+        // undo step; nothing to set, or a word that isn't a tag, refused.
+        let hide = one(&seq, serde_json::json!({ "op": "set_track", "track": 0, "visible": false, "language": "DE" })).unwrap();
+        let EditCommand::SetTrack { new, track_index: 0, .. } = &hide.steps[0].edit else { panic!("a track edit: {:?}", hide.steps[0].edit) };
+        assert!(!new.visible && new.language.as_deref() == Some("de"), "{}", hide.steps[0].what);
+        assert!(one(&seq, serde_json::json!({ "op": "set_track", "track": 0 })).unwrap_err().why.contains("nothing to set"));
+        assert!(one(&seq, serde_json::json!({ "op": "set_track", "track": 0, "language": "de de" })).is_err());
         assert!(held.why.contains("holds 2 clips") && held.hint.contains("with_clips"), "{held:?}");
         // With them: gone, and the pictures no longer linked to them.
         let plan = one(&seq, serde_json::json!({ "op": "remove_track", "track": "audio", "with_clips": true })).unwrap();

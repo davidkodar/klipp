@@ -103,12 +103,12 @@ impl KlippApp {
                 self.apply_edits_as_one(std::slice::from_ref(&out.edit), "Translate Captions");
                 let rate = self.state.sequence().fps.rate();
                 let flagged: Vec<String> = out.flagged.iter().map(|f| format!("{} {}", klipp_core::Timecode::from_secs_f64(f.at_secs, rate).to_timecode_string(), f.why)).collect();
-                let made = format!("{} captions in {} on track {}; {} to check{}", translations.len(), pending.language, out.track_index, flagged.len(), if flagged.is_empty() { String::new() } else { format!(": {}", flagged.join("; ")) });
+                let made = format!("{} captions in {} on track {}, hidden so the two languages don't overlap (set_track visible shows it); {} to check{}", translations.len(), pending.language, out.track_index, flagged.len(), if flagged.is_empty() { String::new() } else { format!(": {}", flagged.join("; ")) });
                 tr::jobs::finish(&pending.job_id, Ok(made));
                 if flagged.is_empty() {
-                    self.state.toast.show(format!("Captions translated into {}", pending.language));
+                    self.state.toast.show(format!("Captions translated into {} on a hidden track; its eye shows it", pending.language));
                 } else {
-                    self.state.toast.show(format!("Captions translated into {}; {} to check: {}", pending.language, flagged.len(), flagged.join("; ")));
+                    self.state.toast.show(format!("Captions translated into {} on a hidden track; {} to check: {}", pending.language, flagged.len(), flagged.join("; ")));
                 }
             }
             Err(why) => {

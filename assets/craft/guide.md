@@ -192,6 +192,12 @@ exist until the plan runs.
   kind; every track below moves up by one. Refused while it holds clips
   unless `with_clips`, which takes them too and unlinks anything on
   another track from them. One undo step puts it back.
+- `set_track {track, visible?, language?}`: a track's own settings, one
+  undo step. `visible` false hides its picture or captions (its eye),
+  true shows them; `language` is a BCP 47 tag (`de`, `pt-br`; empty for
+  none) a subtitle export tags its file with. A translated caption track
+  starts hidden so two languages don't draw over each other: show it,
+  and hide its source, to see it.
 - `captions {track?, from?, to?, max_chars?, max_lines?, replace?}`: captions for
   what is heard on the timeline, from the transcripts. Each word lands
   where its clip puts it; a cue closes at a sentence, a pause or a cut;
