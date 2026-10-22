@@ -1140,7 +1140,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             serde_json::from_value::<klipp_control::protocol::ControlCommand>(v.clone()).map_err(|e| format!("invalid graph request: {e}"))?;
             v
         }
-        "klipp_import_timeline" => json!({"method":"import_timeline","path":args.get("path")}),
+        "klipp_import_timeline" => json!({"method":"import_timeline","path":args.get("path"),"new_project":args.get("new_project").and_then(Value::as_bool).unwrap_or(false)}),
         "klipp_node_types" => {
             let mut v = json!({ "method": "node_types" });
             if let Some(c) = args.get("category").and_then(|v| v.as_str()) { v["category"] = json!(c); }
@@ -2376,10 +2376,10 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "Window PNG for UI checks, not colour measurement. Guide: klipp_guide topic window_screenshot.",
              json!({ "path": { "type": "string" }, "max_width": { "type": "integer" } }), vec![]),
         tool("klipp_import_timeline",
-             "Import OTIO/FCPXML/Kdenlive/EDL; omit path for last outcome. Guide: klipp_guide topic import_timeline.",
-             json!({"path":{"type":"string"}}), vec![]),
+             "Import or open a timeline; no path: last outcome. Guide: klipp_guide topic import_timeline.",
+             json!({"path":{"type":"string"},"new_project":{"type":"boolean"}}), vec![]),
         tool("klipp_open_project",
-             "Open a project by absolute path or recent name; protect unsaved changes. Guide: klipp_guide topic open_project.",
+             "Open a project by path or recent name; protect unsaved changes. Guide: klipp_guide topic open_project.",
              json!({ "path": { "type": "string" }, "name": { "type": "string" }, "save": { "type": "boolean" }, "discard_changes": { "type": "boolean" } }), vec![]),
         tool("klipp_recent_projects", "List existing recent projects, most recent first. Names and paths are local project data. Guide: klipp_guide topic recent_projects.", json!({}), vec![]),
         tool("klipp_close_project", "Close to the project page; refuses unsaved changes unless save or discard_changes. Guide: klipp_guide topic close_project.", json!({"save":{"type":"boolean"},"discard_changes":{"type":"boolean"}}), vec![]),
@@ -2485,8 +2485,9 @@ mod interface_tests {
 
     #[test]
     fn timeline_import_routes_reads_and_writes_and_has_a_guide() {
-        assert_eq!(tool_to_command("klipp_import_timeline", &json!({"path":"/tmp/test.otio"})).unwrap(), json!({"method":"import_timeline","path":"/tmp/test.otio"}));
-        assert_eq!(tool_to_command("klipp_import_timeline", &json!({})).unwrap(), json!({"method":"import_timeline","path":null}));
+        assert_eq!(tool_to_command("klipp_import_timeline", &json!({"path":"/tmp/test.otio"})).unwrap(), json!({"method":"import_timeline","path":"/tmp/test.otio","new_project":false}));
+        assert_eq!(tool_to_command("klipp_import_timeline", &json!({"path":"/tmp/test.otio","new_project":true})).unwrap(), json!({"method":"import_timeline","path":"/tmp/test.otio","new_project":true}));
+        assert_eq!(tool_to_command("klipp_import_timeline", &json!({})).unwrap(), json!({"method":"import_timeline","path":null,"new_project":false}));
         assert!(guide_topic("import_timeline").unwrap().contains("warning counts") || guide_topic("import_timeline").unwrap().contains("Warning counts"));
         assert!(has_structured_output("klipp_import_timeline"));
         let reply = json!({"report":{"imported":{"clips":1}},"request_id":"request"});

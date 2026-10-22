@@ -87,6 +87,7 @@ pub enum DialogKind {
     ExportAaf,
     ExportKdenlive,
     ImportFcpxml,
+    OpenFromAnotherEditor,
     ImportKdenlive,
     ImportOtio,
 }
@@ -133,6 +134,8 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
         action: PaletteAction::Cmd(AppCommand::NewProject), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Open Project…"), shortcut: Cow::Borrowed("Ctrl+O"),
         action: PaletteAction::OpenDialog(DialogKind::OpenProject), enabled: true });
+    e.push(PaletteEntry { label: Cow::Borrowed("Open Project from Another Editor…"), shortcut: Cow::Borrowed(""),
+        action: PaletteAction::OpenDialog(DialogKind::OpenFromAnotherEditor), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Save Project"), shortcut: Cow::Borrowed("Ctrl+S"),
         action: PaletteAction::Cmd(AppCommand::SaveProject), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Save Project As…"), shortcut: Cow::Borrowed("Ctrl+Shift+S"),
@@ -1126,6 +1129,12 @@ pub fn dispatch_dialog(kind: DialogKind) -> Vec<AppCommand> {
             .set_file_name("project.kdenlive")
             .save_file()
             .map(|p| AppCommand::ExportKdenlive { path: p }),
+        DialogKind::OpenFromAnotherEditor => rfd::FileDialog::new()
+            .set_title("Open Project from Another Editor")
+            .add_filter("Timelines", &["fcpxml", "xml", "otio", "kdenlive", "mlt", "edl", "aaf"])
+            .add_filter("Any file", &["*"])
+            .pick_file()
+            .map(|path| AppCommand::OpenFromAnotherEditor { path, request_id: uuid::Uuid::nil() }),
         DialogKind::ImportFcpxml => rfd::FileDialog::new()
             .set_title("Import FCPXML")
             .add_filter("FCPXML", &["fcpxml"])

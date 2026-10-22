@@ -91,7 +91,7 @@ impl KlippApp {
         }
     }
 
-    fn do_new_project(&mut self) {
+    pub(super) fn do_new_project(&mut self) {
         self.reset_project_state();
         self.sync_sequence_to_engine();
         // The socket's clients are told, as for a save or an open: an
@@ -1251,6 +1251,7 @@ impl KlippApp {
                 self.state.show_new_project_dialog = true;
             }
             UnsavedAction::OpenProject(p) => self.do_open_project(&p),
+            UnsavedAction::OpenFromAnotherEditor(p) => self.open_from_another_editor_now(&p, uuid::Uuid::nil()),
             UnsavedAction::CloseProject => self.do_close_project(),
             UnsavedAction::Quit => {
                 // HARD EXIT — bypass eframe's

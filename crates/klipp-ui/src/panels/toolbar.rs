@@ -184,6 +184,18 @@ impl ToolbarPanel {
                 ui.close_menu();
                 crate::file_dialog::spawn(crate::project_paths::pick_project_commands);
             }
+            if ui.button("Open Project from Another Editor...").on_hover_text(klipp_project::import_report::READS).clicked() {
+                ui.close_menu();
+                crate::file_dialog::spawn(move || {
+                    rfd::FileDialog::new()
+                        .set_title("Open Project from Another Editor")
+                        .add_filter("Timelines", &["fcpxml", "xml", "otio", "kdenlive", "mlt", "edl", "aaf"])
+                        .add_filter("Any file", &["*"])
+                        .pick_file()
+                        .map(|path| vec![AppCommand::OpenFromAnotherEditor { path, request_id: uuid::Uuid::nil() }])
+                        .unwrap_or_default()
+                });
+            }
             if !recent.is_empty() {
                 ui.menu_button("Open Recent", |ui| {
                     for rp in recent {

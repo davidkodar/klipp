@@ -410,6 +410,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::ImportKdenlive { .. }
         | AppCommand::ImportOtio { .. }
         | AppCommand::ImportTimeline { .. }
+        | AppCommand::OpenFromAnotherEditor { .. }
         | AppCommand::ImportEdl { .. }
         | AppCommand::ImportFcpxml { .. }
         | AppCommand::ConsolidateProject { .. }

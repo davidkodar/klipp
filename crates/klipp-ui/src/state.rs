@@ -4306,6 +4306,8 @@ pub enum UnsavedAction {
     NewProject,
     OpenNewProjectDialog,
     OpenProject(PathBuf),
+    /// A timeline from another editor, opened as a new project (#2083).
+    OpenFromAnotherEditor(PathBuf),
     CloseProject,
     Quit,
 }

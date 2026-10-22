@@ -212,6 +212,10 @@ impl KlippApp {
                     // Camera RAW video is a non-goal (#85): say so and what
                     // to do, rather than ignore the drop.
                     self.state.toast.show(why);
+                } else if klipp_project::import_report::detect(&path).is_ok() {
+                    // A timeline from another editor (#2083): opened as a
+                    // new project, as from the File menu.
+                    self.send_commands(vec![AppCommand::OpenFromAnotherEditor { path, request_id: uuid::Uuid::nil() }]);
                 }
             }
         }
