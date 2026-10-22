@@ -96,7 +96,7 @@ pub fn effect(effect: &E) -> Capability {
         | E::Generator { .. } => cap(Gpu, "Effect recorder; input and output stay in GPU buffers", None),
         E::Equalize { .. } => cap(RoundTrip, "Histogram/CDF breaks the recorded chain for CPU processing", Some(1215)),
         E::Frei0r { .. } => cap(RoundTrip, "Plugin ABI consumes CPU pixels; explicit local CPU segment", Some(1465)),
-        E::TemporalDenoise { .. } => cap(Conditional, "Source-neighbour boundary: GPU inputs use GPU kernel; CPU-neighbour and export paths require separate coverage", Some(1988)),
+        E::TemporalDenoise { .. } => cap(Conditional, "Neighbours on the GPU at the render size (playback, pause, export) use the GPU kernel; software-decoded or fitted neighbours, and the composite stack, still run the CPU kernel", Some(2337)),
         E::MediaSource { .. } | E::ClipBelow { .. } | E::Merge { .. } | E::GradeCompound { .. } | E::SpeedRamp { .. } =>
             cap(Conditional, "Graph/source operation, not an effect-recorder pass; residency depends on connected sources and conversion", Some(1465)),
         E::VideoStabilization { .. } | E::RollingShutterCorrection { .. } | E::Deflicker { .. } =>
