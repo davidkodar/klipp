@@ -31,10 +31,15 @@ pub(crate) struct HeldFrame {
     pub height: u32,
     pub pts: Option<f64>,
     pixels: Held,
-    /// `Held::Srgb8` as linear light, once asked for.
-    linear: OnceLock<Arc<Vec<f32>>>,
-    /// `Held::Hdr` codes on the CPU, once asked for.
-    codes: OnceLock<Arc<klipp_color::hdr::SceneCodes>>,
+    /// `Held::Srgb8` as linear light, once asked for. Behind an `Arc`, so
+    /// the clones share it: a frame regraded on each slider step is handed
+    /// over as a clone each time, and a cell cloned before it was filled
+    /// would make the conversion again (#2352).
+    linear: Arc<OnceLock<Arc<Vec<f32>>>>,
+    /// `Held::Hdr` codes on the CPU, once asked for, shared as `linear`
+    /// is: read back from the GPU once per frame, not once per step, and
+    /// the same buffer each time, so the GPU keeps its upload of them.
+    codes: Arc<OnceLock<Arc<klipp_color::hdr::SceneCodes>>>,
     /// The caches' own record of this frame, when it came from them —
     /// carrying the ungraded picture they already made.
     pregrade: Option<super::Pregrade>,
@@ -107,7 +112,7 @@ impl HeldFrame {
     }
 
     fn new(pixels: Held, width: u32, height: u32, pts: Option<f64>) -> Self {
-        Self { width, height, pts, pixels, linear: OnceLock::new(), codes: OnceLock::new(), pregrade: None }
+        Self { width, height, pts, pixels, linear: Arc::default(), codes: Arc::default(), pregrade: None }
     }
 
     fn gpu(g: Arc<crate::frame::GpuFrame>) -> Held {
@@ -161,6 +166,22 @@ impl HeldFrame {
         let mut f = Self::new(pixels, width, height, p.pts);
         f.pregrade = Some(p.clone());
         f
+    }
+
+    /// Whether this frame and `other` hold the very same pixels (one
+    /// buffer, not equal copies), wherever they are: the bytes, or the
+    /// HDR codes on the CPU or on the GPU (#2352).
+    pub fn same_pixels(&self, other: &HeldFrame) -> bool {
+        use crate::types::HdrCodes;
+        match (&self.pixels, &other.pixels) {
+            (Held::Srgb8(a), Held::Srgb8(b)) => Arc::ptr_eq(a, b),
+            (Held::Hdr(a), Held::Hdr(b)) => match (&a.codes, &b.codes) {
+                (HdrCodes::Cpu(a), HdrCodes::Cpu(b)) => Arc::ptr_eq(a, b),
+                (HdrCodes::Gpu { buffer: a, .. }, HdrCodes::Gpu { buffer: b, .. }) => Arc::ptr_eq(a, b),
+                _ => false,
+            },
+            _ => false,
+        }
     }
 
     /// Whether this frame is `p` itself — the same pixels, not an equal
@@ -830,6 +851,24 @@ impl ClipStreams {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A clone shares the conversions made after it was taken (#2352):
+    /// the parked frame is handed to each slider step as a clone, and one
+    /// that made its conversion again cost a 4K PQ step a read of its
+    /// codes back from the GPU and a fresh upload of them.
+    #[test]
+    fn a_clone_shares_a_conversion_made_later() {
+        let frame = HeldFrame::new(Held::Srgb8(Arc::new(vec![128u8; 4 * 4])), 2, 2, None);
+        let step = frame.clone();
+        let SourcePixels::Linear(made) = step.source_pixels() else { panic!("bytes go in as linear light") };
+        let SourcePixels::Linear(again) = frame.source_pixels() else { panic!("bytes go in as linear light") };
+        assert!(Arc::ptr_eq(&made, &again), "the original made the conversion again");
+        let SourcePixels::Linear(third) = frame.clone().source_pixels() else { panic!() };
+        assert!(Arc::ptr_eq(&made, &third));
+        // A clone holds the very same pixels; an equal copy does not.
+        assert!(frame.same_pixels(&step));
+        assert!(!frame.same_pixels(&HeldFrame::new(Held::Srgb8(Arc::new(vec![128u8; 4 * 4])), 2, 2, None)));
+    }
 
     /// Two seconds of FFV1 at 25 fps, or `None` without ffmpeg.
     fn source() -> Option<std::path::PathBuf> {
