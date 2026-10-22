@@ -55,7 +55,7 @@ pub mod selection;
 pub mod edit_helpers;
 pub mod timeline_sync;
 pub mod punch_in;
-pub mod clip_clipboard;
+pub use klipp_document::clipboard as clip_clipboard;
 pub mod source_edit;
 pub mod trim_view;
 pub mod ai_tools;
