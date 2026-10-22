@@ -2342,10 +2342,11 @@ impl Renderer {
         };
         // Its picture's plan, read below, stops there too.
         let at_move = if shutter.is_some() { PlanPart::BeforeMove } else { PlanPart::Whole };
-        let temporal = fx.iter().any(|e| matches!(e, BuiltinEffect::RollingShutterCorrection { .. } | BuiltinEffect::VideoStabilization { .. }));
+        // Every effect a layer has runs in its plan on the GPU: a warp by
+        // the clip's motion (stabilisation, rolling shutter) reads the
+        // clip's analysis, which `grade_on_stack` gives the run (#2241).
         // No frei0r test here: the stack declines a frame with a frei0r
         // plug-in before a layer is placed (M4 step 5), so none reaches it.
-        let fx_on_gpu = !has_active_effects(&fx) || !temporal;
         let clip_time = eval_clip_time(c, time);
         // Its media sources' frames, for its plan (#1746).
         self.read_media_frames(c, clip_time, width, height, src);
@@ -2356,7 +2357,7 @@ impl Renderer {
         // are the title's own, not in its picture's list.
         let mut lead: Vec<BuiltinEffect> = Vec::new();
         let placed = match &c.kind {
-            ClipKind::Media { .. } if fx_on_gpu => {
+            ClipKind::Media { .. } => {
                 let at = source_secs(c, time, fps);
                 // A still image's picture, fitted to the frame, kept on the
                 // GPU while its file, the size and the working space stand
@@ -2531,7 +2532,7 @@ impl Renderer {
                     }
                 }
             }
-            ClipKind::Title(td) if fx_on_gpu && title_motion_blur(c).is_some() && title_raster_moves(td).is_some() && shutter.is_some() => {
+            ClipKind::Title(td) if title_motion_blur(c).is_some() && title_raster_moves(td).is_some() && shutter.is_some() => {
                 // Its drawing moves while the shutter is open: drawn at
                 // each sample's instant and placed as that sample places
                 // it, the sum averaged, as `motion_blurred` does.
@@ -2557,7 +2558,7 @@ impl Renderer {
                 rows = (0, height);
                 self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_shutter_finish(slot, times.len() as u32))
             }
-            ClipKind::Title(td) if fx_on_gpu => {
+            ClipKind::Title(td) => {
                 let total = (c.timeline_out - c.timeline_in).to_secs_f64() as f32;
                 if let Some((r, soft)) = self.place_title_source(td, slot, width, height, drawn_time(c,time), total) {
                     rows = r;
@@ -2566,7 +2567,7 @@ impl Renderer {
                     true
                 } else { false }
             }
-            ClipKind::Generator(g) if fx_on_gpu && c.grade_is_identity() => {
+            ClipKind::Generator(g) if c.grade_is_identity() => {
                 let total = (c.timeline_out - c.timeline_in).to_secs_f64();
                 let clip_time = drawn_time(c, time);
                 // Half floats, sRGB-encoded, decoded on the way into
@@ -2621,7 +2622,7 @@ impl Renderer {
                     };
                     let names: Vec<String> = fx.iter().map(|e| format!("{e:?}").split([' ', '{', '(']).next().unwrap_or("").to_string()).collect();
                     tracing::debug!(
-                        "GPU stack: a {kind} layer rendered on the CPU and uploaded: effects on gpu {fx_on_gpu} {names:?}, temporal {temporal}, graph identity {}",
+                        "GPU stack: a {kind} layer rendered on the CPU and uploaded: effects {names:?}, graph identity {}",
                         c.grade_is_identity(),
                     );
                 }
