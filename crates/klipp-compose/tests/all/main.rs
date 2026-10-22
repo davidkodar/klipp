@@ -102,6 +102,8 @@ mod temporal_reader_size;
 mod title_blend_mask_stack;
 #[path = "../title_image_gpu.rs"]
 mod title_image_gpu;
+#[path = "../title_keyed_position_gpu.rs"]
+mod title_keyed_position_gpu;
 #[path = "../title_layers_kept.rs"]
 mod title_layers_kept;
 #[path = "../title_routes_f16.rs"]
