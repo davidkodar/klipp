@@ -1153,6 +1153,14 @@ impl TitlePositionPreset {
     }
 }
 
+/// An aspect version to reframe once `waiting`'s framing analysis is done
+/// (#2211).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PendingRefit {
+    pub sequence: klipp_core::SequenceId,
+    pub waiting: Vec<klipp_core::MediaId>,
+}
+
 /// Document ops a panel asks the app to run as one undo step.
 #[derive(Debug, Clone)]
 pub struct DocOpsRequest {
@@ -2491,6 +2499,10 @@ pub struct AppState {
     /// the app on its next frame, through the same resolver the
     /// assistant's ops use.
     pub pending_doc_ops: Vec<DocOpsRequest>,
+    /// Aspect versions waiting for their files' framing analysis before
+    /// they are reframed (#2211), by sequence, so switching tabs meanwhile
+    /// reframes the right one when it is next open.
+    pub pending_refits: Vec<PendingRefit>,
     /// Per-session editing state for the subtitle editor panel.
     pub subtitle_editor: SubtitleEditorState,
     /// Live state for a running project-consolidation operation (None = no
@@ -4745,6 +4757,7 @@ impl Default for AppState {
             show_transcript_panel: false,
             transcript_panel_hovered: false,
             pending_doc_ops: Vec::new(),
+            pending_refits: Vec::new(),
             show_project_notes: false,
             show_edit_plan: false,
             show_colour_check: false,

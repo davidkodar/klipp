@@ -366,6 +366,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::AddSequence { .. }
         | AppCommand::AddSequenceAndOpen { .. }
         | AppCommand::DuplicateSequence { .. }
+        | AppCommand::NewAspectVersion { .. }
         | AppCommand::SetActiveSequence { .. }
         | AppCommand::RenameSequence { .. }
         | AppCommand::DeleteSequence { .. }

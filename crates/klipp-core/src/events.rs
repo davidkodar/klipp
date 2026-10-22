@@ -1420,6 +1420,10 @@ pub enum AppCommand {
     /// `new_sequence`, which does not know the new sequence's index.
     AddSequenceAndOpen { name: String, fps_num: u32, fps_den: u32, width: u32, height: u32 },
     DuplicateSequence { sequence_idx: usize, new_name: String },
+    /// A copy of a sequence at another frame size, opened, each picture
+    /// reframed to follow its subject once the files' framing analysis is
+    /// done, and its titles kept in title-safe (#2211).
+    NewAspectVersion { sequence_idx: usize, width: u32, height: u32, name: String },
     SetActiveSequence { sequence_idx: usize },
     RenameSequence { sequence_idx: usize, new_name: String },
     DeleteSequence { sequence_idx: usize },

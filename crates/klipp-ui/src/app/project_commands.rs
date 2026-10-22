@@ -740,6 +740,20 @@ impl KlippApp {
                 }
                 true
             }
+            AppCommand::NewAspectVersion { sequence_idx, width, height, name } => {
+                if let Some(index) = super::aspect_version::add_version(&mut self.state, *sequence_idx, (*width, *height), name) {
+                    let id = self.state.sequences[index].id;
+                    let waiting = super::aspect_version::request_framing(&self.state.sequences[index], &self.state.media_pool);
+                    if !waiting.is_empty() {
+                        self.state.toast.show(format!("{name}: finding the subjects in {} files; it is reframed when that is done", waiting.len()));
+                    } else if !klipp_analysis::subject_detection_enabled() {
+                        self.state.toast.show(format!("{name}: subject detection is off in Preferences, so its pictures are centred for review"));
+                    }
+                    self.state.pending_refits.push(crate::state::PendingRefit { sequence: id, waiting });
+                    self.send_commands(vec![AppCommand::SetActiveSequence { sequence_idx: index }]);
+                }
+                true
+            }
             AppCommand::RenameSequence { sequence_idx, new_name } => {
                 // usize::MAX names the active sequence: the control socket
                 // does not know the index, only that it is the one open.

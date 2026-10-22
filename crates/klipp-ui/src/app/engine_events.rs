@@ -8,6 +8,7 @@ impl KlippApp {
         self.sync_system_theme(ctx);
         self.drain_control_inbox();
         self.apply_analysis_markers();
+        self.advance_refits();
         while let Ok(event) = self.event_rx.try_recv() {
             if super::event_writes::event_writes(&event) {
                 self.close_drag_for_result();

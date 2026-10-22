@@ -147,6 +147,19 @@ pub fn show(
                 });
                 ui.close_menu();
             }
+            // A copy at another aspect, each picture following its subject
+            // (#2211).
+            ui.menu_button("New Version at Aspect", |ui| {
+                use crate::app::aspect_version::{aspect_size, has_aspect, ASPECTS};
+                let frame = state.sequences[i].resolution;
+                for (label, a, b) in ASPECTS.into_iter().filter(|(_, a, b)| !has_aspect(frame, (*a, *b))) {
+                    let (w, h) = aspect_size(frame, (a, b));
+                    if ui.button(format!("{label}  ({w}\u{00d7}{h})")).on_hover_text("A copy at this frame, each picture following its subject; pictures with no clear subject are marked for review").clicked() {
+                        cmds.push(AppCommand::NewAspectVersion { sequence_idx: i, width: w, height: h, name: format!("{name} {label}") });
+                        ui.close_menu();
+                    }
+                }
+            });
             if ui.button("Sequence Settings...").clicked() {
                 cmds.push(AppCommand::OpenSequenceSettings { sequence_idx: i });
                 ui.close_menu();

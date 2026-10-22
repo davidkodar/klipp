@@ -34,4 +34,5 @@ pub mod qc_geometry;
 pub mod qc_review;
 pub mod review;
 pub mod sound_design;
+pub mod subject_path;
 pub mod title_style;

@@ -1213,6 +1213,20 @@ pub enum Op {
         #[serde(default = "default_follow_hold")]
         hold_secs: f64,
     },
+    /// Fit every picture and title to the sequence's frame as it now is,
+    /// once `format` has changed its aspect (#2211). Each picture fills
+    /// the frame and follows its subject (faces first, then people, from
+    /// the framing analysis: analyze first) with a held, eased pan no
+    /// faster than a bound, as ordinary transform keys; a still holds one
+    /// pose. Titles' words are kept inside title-safe and shrunk where
+    /// they no longer fit across. A picture with no confident subject is
+    /// left centred and named for review, with a range marker on it when
+    /// `markers` (the default). Cards, titles' shapes and generators keep
+    /// their places.
+    Refit {
+        #[serde(default = "default_true")]
+        markers: bool,
+    },
     /// A highlight over the picture at `at` for `secs`: `kind` "box" (a
     /// rounded stroke round the region), "ring" (a capsule) or "spot"
     /// (everything outside it dimmed). The region is centred on `x`,`y`
@@ -1847,7 +1861,7 @@ fn one_piece() -> u32 {
 pub const OP_NAMES: &[&str] = &[
     "graphics", "vector_path", "connector", "place", "add_track", "remove_track", "trim", "j_cut", "l_cut", "split", "join", "remove", "move", "cut",
     "captions", "audio", "volume", "duck", "lower_third", "set_text", "grade", "effect", "redact",
-    "slip", "slide", "pin", "role", "matte", "format", "stabilize", "reframe", "zoom", "pan", "follow", "highlight",
+    "slip", "slide", "pin", "role", "matte", "format", "stabilize", "reframe", "zoom", "pan", "follow", "refit", "highlight",
     "ramp", "grade_group", "remove_grade_group", "look", "qualify", "zones", "retime", "replace", "track_audio", "clean_audio",
     "transition", "style", "title", "compose", "camera", "crop", "generator", "depth", "label", "motion_blur",
     "strobe", "set_length", "over_edits", "template",
@@ -3143,7 +3157,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
         }
         Op::Pan { clip_id, keys } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
-            pan(seq, pool, i, ti, clip, keys, "pan")
+            pan(seq, pool, i, ti, clip, keys, "pan", false)
         }
         Op::Follow { clip_id, scale, hold_secs } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
@@ -3154,8 +3168,9 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 return Err(refuse(i, format!("nothing happened on screen in {}", clip_name(seq, pool, clip)), "the beat sheet has no spot in this stretch (analyze first, or the screen held still); use pan with keys of your own"));
             }
             let keys = follow_keys(&spots, secs(clip.timeline_out) - secs(clip.timeline_in), *scale, *hold_secs);
-            pan(seq, pool, i, ti, clip, &keys, "follow")
+            pan(seq, pool, i, ti, clip, &keys, "follow", false)
         }
+        Op::Refit { markers } => refit(seq, pool, transcripts, i, *markers),
         Op::Graphics { at, secs: held, track } => {
             let at = resolve_anchor(seq, fps, at, i)?;
             if !held.is_finite() || *held < 0.2 || *held > 86400.0 {
@@ -6634,7 +6649,9 @@ fn compose(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, p
     Ok((what, edit, vec![clip.id]))
 }
 
-fn pan(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, keys: &[PanKey], verb: &str) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+/// With `fill`, the picture fills the frame whatever its placement now,
+/// which is replaced: never a card's pan inside itself (a refit, #2211).
+fn pan(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, keys: &[PanKey], verb: &str, fill: bool) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     require_picture(seq, pool, i, ti, clip, verb)?;
     if keys.len() < 2 {
         return Err(refuse(i, format!("a {verb} needs at least two keys"), "give the pose at two or more times"));
@@ -6653,14 +6670,18 @@ fn pan(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, keys:
     }
     let mut sorted: Vec<PanKey> = keys.to_vec();
     sorted.sort_by(|a, b| a.secs.total_cmp(&b.secs));
-    if is_card(clip, seq.resolution.width as f32, seq.resolution.height as f32) {
+    if !fill && is_card(clip, seq.resolution.width as f32, seq.resolution.height as f32) {
         return pan_inside(seq, pool, i, clip, &sorted, verb);
     }
+    // How far it can move is the fitted picture's, not the frame's: a wide
+    // picture in a tall frame has no room up or down until it is scaled
+    // past the frame's height (#2211).
+    let picture = fitted_size(clip, pool, seq.resolution.width as f32, seq.resolution.height as f32);
     let old_state = crate::history::KeyframeSnapshot::from_clip(clip);
     let mut new_state = old_state.clone();
     let (mut sk, mut px, mut py) = (Vec::new(), Vec::new(), Vec::new());
     for k in &sorted {
-        let (x, y) = pan_position(k.scale, k.x, k.y, seq.resolution.width as f32, seq.resolution.height as f32);
+        let (x, y) = pan_position(k.scale, k.x, k.y, (seq.resolution.width as f32, seq.resolution.height as f32), picture);
         klipp_core::keyframe::upsert_keyframe(&mut sk, k.secs, k.scale);
         klipp_core::keyframe::upsert_keyframe(&mut px, k.secs, x);
         klipp_core::keyframe::upsert_keyframe(&mut py, k.secs, y);
@@ -6794,17 +6815,178 @@ fn pan_inside(seq: &Sequence, pool: &MediaPool, i: usize, clip: &Clip, sorted: &
     Ok((what, edit, vec![clip.id]))
 }
 
-/// The transform position, in pixels of a `w` by `h` frame, that puts
-/// the frame point (`x`, `y`) in the middle at `scale` — held back where
-/// the picture's edge would show.
+/// The transform position, in pixels of a `frame`, that puts the frame
+/// point (`x`, `y`) in the middle at `scale` — held back where the edge of
+/// the `picture`, as fitted into the frame, would show.
 ///
 /// The transform puts a point `d` from the middle at `scale·d + p` on
 /// screen, so a subject at `d` is centred by `p = -scale·d`: a subject
 /// right of the middle moves the picture left.
-pub fn pan_position(scale: f32, x: f32, y: f32, w: f32, h: f32) -> (f32, f32) {
-    let (rx, ry) = (reach(scale, w), reach(scale, h));
+pub fn pan_position(scale: f32, x: f32, y: f32, frame: (f32, f32), picture: (f32, f32)) -> (f32, f32) {
+    let (w, h) = frame;
+    let (rx, ry) = (reach_of(scale, picture.0, w), reach_of(scale, picture.1, h));
     ((-(x - 0.5) * scale * w).clamp(-rx, rx), (-(y - 0.5) * scale * h).clamp(-ry, ry))
 }
+
+/// How far a picture `pic` pixels across as fitted, at `scale`, can move
+/// from the middle of a frame `dim` pixels across before its edge shows:
+/// [`reach`] when it fills the frame that way.
+fn reach_of(scale: f32, pic: f32, dim: f32) -> f32 {
+    // Filling the frame that way (to the half pixel the fit rounds to),
+    // the same sum as ever, so such a pan lands where it always did.
+    if pic >= dim - 0.5 {
+        return reach(scale, dim);
+    }
+    ((scale * pic - dim) * 0.5).max(0.0)
+}
+
+/// [`Op::Refit`]: every picture and title fitted to the frame the
+/// sequence now has (#2211), as one undoable step.
+fn refit(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, i: usize, markers: bool) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    use crate::subject_path::{by_time, camera_keys, subject_track};
+    let (fw, fh) = (seq.resolution.width as f32, seq.resolution.height as f32);
+    let (mut edits, mut ids) = (Vec::new(), Vec::new());
+    let (mut followed, mut still) = (0usize, 0usize);
+    let mut review: Vec<(&Clip, String, &'static str)> = Vec::new();
+    let mut shrunk: Vec<String> = Vec::new();
+    for (ti, track) in seq.tracks.iter().enumerate().filter(|(_, t)| !t.locked) {
+        for clip in &track.clips {
+            if let Some(td) = clip.title_data() {
+                if let Some((new, shrank)) = relay_title(td, seq.resolution) {
+                    if shrank {
+                        shrunk.push(format!("{} at {:.2} s", clip_name(seq, pool, clip), secs(clip.timeline_in)));
+                    }
+                    edits.push(EditCommand::EditTitle { clip_id: clip.id, description: "Refit Title", old_data: td.clone(), new_data: new });
+                    ids.push(clip.id);
+                }
+                continue;
+            }
+            let ClipKind::Media { media_id } = &clip.kind else { continue };
+            let Some(item) = pool.get(media_id).filter(|m| m.resolution.width > 0 && m.resolution.height > 0) else { continue };
+            // A card is a crop or an inset smaller than the frame. A pan made
+            // for the old frame is not one: is_card would judge its reach
+            // by the new frame and keep it letterboxed. It is replaced.
+            let inset = { let [_, _, (sk, still), _] = placement_lanes(clip); sk.iter().map(|k| k.value).fold(still, f32::min) < 0.999 };
+            if track.kind != TrackKind::Video || CropSides::of(clip).is_some() || inset {
+                continue;
+            }
+            let name = clip_name(seq, pool, clip);
+            let picture = fitted_size(clip, pool, fw, fh);
+            // The least scale that fills the frame, or the clip's own when
+            // it was already pushed in further.
+            let fill = (fw / picture.0).max(fh / picture.1);
+            let keyed = |lane: &(Vec<klipp_core::Keyframe>, f32)| if lane.0.is_empty() { lane.1 } else { lane.0.iter().map(|k| k.value).fold(f32::MIN, f32::max) };
+            let scale = fill.max(keyed(&placement_lanes(clip)[2])).max(1.0);
+            if scale > 4.0 {
+                review.push((clip, format!("{name}: filling the frame needs {scale:.1}x, past the 4x a reframe allows"), "too narrow to fill"));
+                continue;
+            }
+            let dur = (secs(clip.timeline_out) - secs(clip.timeline_in)).max(0.05);
+            let (s_in, s_out) = (secs(clip.source_in), secs(clip.source_out));
+            // Detections in the clip's stretch, at clip seconds; a still's
+            // are all of it.
+            let in_clip = |found: Vec<(f64, [f32; 4])>| -> Vec<(f64, [f32; 4])> {
+                if item.is_still {
+                    return found.into_iter().map(|(_, b)| (0.0, b)).collect();
+                }
+                let rate = dur / (s_out - s_in).max(1e-6);
+                found.into_iter().filter(|(t, _)| *t >= s_in && *t < s_out).map(|(t, b)| ((t - s_in) * rate, b)).collect()
+            };
+            let (faces, people) = (in_clip(transcripts.faces(item)), in_clip(transcripts.people(item)));
+            let seen = by_time(&faces.iter().chain(&people).copied().collect::<Vec<_>>()).len();
+            // A subject seen in at least half the samples that saw anyone.
+            let confident = |found: &[(f64, [f32; 4])]| { let g = by_time(found); (!g.is_empty() && g.len() * 2 >= seen).then_some(g) };
+            let subject = confident(&faces).map(|g| subject_track(&g, true)).or_else(|| confident(&people).map(|g| subject_track(&g, false)));
+            // The subject's point in the frame, the picture fitted into it.
+            let in_frame = |p: [f32; 2]| [0.5 + (p[0] - 0.5) * picture.0 / fw, 0.5 + (p[1] - 0.5) * picture.1 / fh];
+            let points: Vec<(f64, [f32; 2])> = match &subject {
+                // A still holds one pose, on where the subject is.
+                Some(track) if item.is_still => track.first().map(|(_, p)| (0.0, in_frame(*p))).into_iter().collect(),
+                Some(track) => track.iter().map(|(t, p)| (*t, in_frame(*p))).collect(),
+                None => {
+                    let why = if seen == 0 { "no one found in it (analyze it, or it has no people)" } else { "no subject held through it" };
+                    review.push((clip, format!("{name}: {why}"), "no subject"));
+                    Vec::new()
+                }
+            };
+            if !points.is_empty() {
+                if item.is_still { still += 1 } else { followed += 1 }
+            }
+            let keys = camera_keys(&points, dur, scale, (fw, fh), picture);
+            let (_, edit, _) = pan(seq, pool, i, ti, clip, &keys, "refit", true)?;
+            edits.push(edit);
+            ids.push(clip.id);
+        }
+    }
+    if markers && !review.is_empty() {
+        let old = seq.markers.clone();
+        let mut new = old.clone();
+        for (clip, why, _) in &review {
+            new.push(klipp_timeline::Marker {
+                id: klipp_core::MarkerId::new(),
+                position: clip.timeline_in,
+                label: "Reframe: check subject".into(),
+                color: klipp_core::MarkerColor::Orange,
+                duration: Some(clip.timeline_out - clip.timeline_in),
+                comment: why.clone(),
+                kind: klipp_core::MarkerKind::ToDo,
+                review: None,
+            });
+        }
+        edits.push(EditCommand::SetMarkers { old, new });
+    }
+    if edits.is_empty() {
+        return Err(refuse(i, "nothing to refit", "the sequence has no picture or title on an unlocked track"));
+    }
+    let mut what = format!("refit to {}x{}: {followed} pictures follow their subject, {still} stills hold on theirs", seq.resolution.width, seq.resolution.height);
+    if !review.is_empty() {
+        what += &format!("; {} centred for review: {}", review.len(), review.iter().map(|(_, why, _)| why.as_str()).collect::<Vec<_>>().join("; "));
+    }
+    if !shrunk.is_empty() {
+        what += &format!("; titles shrunk to fit: {}", shrunk.join(", "));
+    }
+    Ok((what, EditCommand::Named { label: "Refit to Frame".into(), edit: Box::new(EditCommand::Batch(edits)) }, ids))
+}
+
+/// A title's words kept inside title-safe in `frame` (#2211): a text box
+/// too wide to fit across shrinks until it does, and each one is moved in
+/// as far as its edges need. `None` when nothing moves; with whether any
+/// text shrank.
+fn relay_title(td: &klipp_timeline::TitleData, frame: klipp_core::Resolution) -> Option<(klipp_timeline::TitleData, bool)> {
+    use klipp_timeline::TitleObjectContent;
+    let mut new = td.clone();
+    let mut shrank = false;
+    for obj in new.objects.iter_mut().filter(|o| o.visible) {
+        let TitleObjectContent::TextBox(tb) = &mut obj.content else { continue };
+        let (w, h) = (frame.width.max(1) as f32, frame.height.max(1) as f32);
+        let longest = tb.text.lines().map(|l| l.chars().count()).max().unwrap_or(0).max(1) as f32;
+        // As text_extent measures it, before it caps at the text box.
+        let across = longest * tb.font_size * w.min(h) / 1080.0 * 0.55 / w;
+        if across > SAFE_WIDTH {
+            let k = SAFE_WIDTH / across;
+            tb.font_size *= k;
+            for key in &mut tb.font_size_keyframes {
+                key.value *= k;
+            }
+            shrank = true;
+        }
+        if !obj.transform.center_x_keyframes.is_empty() || !obj.transform.center_y_keyframes.is_empty() {
+            continue;
+        }
+        let (ew, eh) = text_extent(&tb.text, tb.font_size, frame);
+        let keep = |c: f32, half: f32| if half < 0.45 { c.clamp(0.05 + half, 0.95 - half) } else { 0.5 };
+        obj.transform.center.x = match tb.alignment {
+            klipp_timeline::TextAlignment::Left if ew < 0.9 => obj.transform.center.x.clamp(0.05, 0.95 - ew),
+            klipp_timeline::TextAlignment::Right if ew < 0.9 => obj.transform.center.x.clamp(0.05 + ew, 0.95),
+            _ => keep(obj.transform.center.x, ew / 2.0),
+        };
+        obj.transform.center.y = keep(obj.transform.center.y, eh / 2.0);
+    }
+    (new != *td).then_some((new, shrank))
+}
+
+/// Title-safe's width, as a fraction of the frame.
+const SAFE_WIDTH: f32 = 0.9;
 
 /// How far a picture at `scale` can move from the middle of a frame
 /// `dim` pixels across before its edge shows.
@@ -10927,7 +11109,7 @@ mod tests {
         // frame, 960 px. A subject above the middle moves the picture down.
         assert!((new_state.transform_pos_x_keyframes[1].value + 960.0).abs() < 1e-3);
         assert!((new_state.transform_pos_y_keyframes[1].value - 540.0).abs() < 1e-3);
-        assert_eq!(pan_position(1.5, 0.5, 0.5, 1920.0, 1080.0), (0.0, 0.0));
+        assert_eq!(pan_position(1.5, 0.5, 0.5, (1920.0, 1080.0), (1920.0, 1080.0)), (0.0, 0.0));
         let err = resolve(&seq, &pool, &[Op::Pan { clip_id: ClipRef::Id(a), keys: vec![PanKey { secs: 9.0, scale: 1.0, x: 0.5, y: 0.5, ease: klipp_core::keyframe::Ease::InOut }, PanKey { secs: 0.0, scale: 1.0, x: 0.5, y: 0.5, ease: klipp_core::keyframe::Ease::InOut }] }]).unwrap_err();
         assert!(format!("{err:?}").contains("outside the clip"));
 
@@ -15480,6 +15662,123 @@ mod tests {
         let plan = resolve(&seq, &pool, &[Op::AddTrack { kind: "video".into(), name: None }]).unwrap();
         assert!(plan.steps[0].what.contains("as track 0") && plan.steps[0].what.contains("moves down"), "{}", plan.steps[0].what);
         let _ = media;
+    }
+
+    /// #2211: a wide edit refit to a tall frame. The picture with a face
+    /// in it follows the face; the one with no one in it stays centred,
+    /// is named for review and marked; the sound under them is left alone;
+    /// it all undoes as one step.
+    #[test]
+    fn a_refit_follows_faces_and_names_what_it_could_not() {
+        struct Faces;
+        impl Transcripts for Faces {
+            fn words(&self, _item: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>> {
+                None
+            }
+            fn faces(&self, _item: &klipp_media::MediaItem) -> Vec<(f64, [f32; 4])> {
+                // In the first clip's stretch only, left of the middle.
+                [0.5, 1.5, 2.5, 3.5].iter().map(|t| (*t, [0.2, 0.4, 0.1, 0.1])).collect()
+            }
+        }
+        let (mut seq, pool, _, a, b) = fixture();
+        seq.resolution = klipp_core::Resolution { width: 1080, height: 1920 };
+        let plan = resolve_with(&seq, &pool, &[Op::Refit { markers: true }], &Faces).unwrap();
+        let what = &plan.steps[0].what;
+        assert!(what.contains("1 pictures follow") && what.contains("1 centred for review") && what.contains("no one found"), "{what}");
+        let EditCommand::Named { label, edit } = &plan.steps[0].edit else { panic!("one named step") };
+        assert_eq!(label, "Refit to Frame");
+        let EditCommand::Batch(edits) = edit.as_ref() else { panic!() };
+        let keyed: Vec<_> = edits.iter().filter_map(|e| match e { EditCommand::EditKeyframes { clip_id, new_state, .. } => Some((*clip_id, new_state)), _ => None }).collect();
+        assert_eq!(keyed.iter().map(|(id, _)| *id).collect::<Vec<_>>(), vec![a, b], "the pictures, not their sound");
+        // A 16:9 picture fills a 9:16 frame at 1920/607.5; the face at a
+        // quarter across is put in the middle, and nothing moves up or
+        // down, where the picture has no room.
+        let fill = 1920.0 / 607.5;
+        let followed = keyed[0].1;
+        assert!(followed.transform_scale_keyframes.iter().all(|k| (k.value - fill).abs() < 1e-3));
+        assert!(followed.transform_pos_x_keyframes.iter().all(|k| (k.value - 0.25 * fill * 1080.0).abs() < 0.5), "{:?}", followed.transform_pos_x_keyframes);
+        assert!(followed.transform_pos_y_keyframes.iter().all(|k| k.value.abs() < 1e-3));
+        let centred = keyed[1].1;
+        assert!(centred.transform_pos_x_keyframes.iter().all(|k| k.value.abs() < 1e-3));
+        let Some(EditCommand::SetMarkers { old, new }) = edits.iter().find(|e| matches!(e, EditCommand::SetMarkers { .. })) else { panic!("a review marker") };
+        assert_eq!(new.len(), old.len() + 1);
+        let marker = new.last().unwrap();
+        assert_eq!((marker.label.as_str(), marker.position, marker.duration), ("Reframe: check subject", tc(4.0), Some(tc(4.0))));
+
+        let mut seqs = vec![seq.clone()];
+        let (mut p, mut fps) = (pool.clone(), seq.fps);
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&plan.steps[0].edit);
+        view.apply_inverse(&plan.steps[0].edit);
+        assert_eq!(serde_json::to_value(&seqs[0]).unwrap(), serde_json::to_value(&seq).unwrap(), "one undo takes it all back");
+        // Without markers, the review is still named but nothing is marked.
+        let plan = resolve_with(&seq, &pool, &[Op::Refit { markers: false }], &Faces).unwrap();
+        let EditCommand::Named { edit, .. } = &plan.steps[0].edit else { panic!() };
+        let EditCommand::Batch(edits) = edit.as_ref() else { panic!() };
+        assert!(!edits.iter().any(|e| matches!(e, EditCommand::SetMarkers { .. })));
+    }
+
+    /// #2211: a picture panned for the wide frame is refit for the tall one,
+    /// not kept letterboxed as a card the pan seems to make of it there.
+    #[test]
+    fn a_picture_panned_before_is_refit_not_left_as_a_card() {
+        let (seq, pool, _, a, _) = fixture();
+        let pan = Op::Pan { clip_id: ClipRef::Id(a), keys: vec![
+            PanKey { secs: 0.0, scale: 1.0, x: 0.5, y: 0.5, ease: Default::default() },
+            PanKey { secs: 4.0, scale: 1.2, x: 0.8, y: 0.5, ease: Default::default() },
+        ] };
+        let plan = resolve(&seq, &pool, &[pan]).unwrap();
+        let mut seqs = vec![seq.clone()];
+        let (mut p, mut fps) = (pool.clone(), seq.fps);
+        crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps }.apply_forward(&plan.steps[0].edit);
+        seqs[0].resolution = klipp_core::Resolution { width: 1080, height: 1920 };
+        let plan = resolve(&seqs[0], &p, &[Op::Refit { markers: true }]).unwrap();
+        let EditCommand::Named { edit, .. } = &plan.steps[0].edit else { panic!() };
+        let EditCommand::Batch(edits) = edit.as_ref() else { panic!() };
+        let refit = edits.iter().find_map(|e| match e { EditCommand::EditKeyframes { clip_id, new_state, .. } if *clip_id == a => Some(new_state), _ => None }).expect("the panned picture is refit");
+        let fill = 1920.0 / 607.5;
+        assert!(refit.transform_scale_keyframes.iter().all(|k| k.value >= fill - 1e-3), "it fills the tall frame: {:?}", refit.transform_scale_keyframes);
+    }
+
+    /// #2211: a pan's reach is the fitted picture's; where the picture has
+    /// the frame's aspect it is exactly what it was.
+    #[test]
+    fn a_pan_reaches_as_far_as_before_when_the_picture_fills_the_frame() {
+        let before = |s: f32, x: f32, y: f32, w: f32, h: f32| {
+            let r = |d: f32| (s - 1.0).max(0.0) * d * 0.5;
+            ((-(x - 0.5) * s * w).clamp(-r(w), r(w)), (-(y - 0.5) * s * h).clamp(-r(h), r(h)))
+        };
+        for s in [1.0, 1.2, 2.0, 3.17, 4.0] {
+            for (x, y) in [(0.0, 0.0), (0.2, 0.9), (0.5, 0.5), (0.77, 0.31), (1.0, 1.0)] {
+                for (w, h) in [(1920.0, 1080.0), (1080.0, 1920.0)] {
+                    assert_eq!(pan_position(s, x, y, (w, h), (w, h)), before(s, x, y, w, h), "{s} {x},{y} {w}x{h}");
+                }
+            }
+        }
+        // A wide picture in a tall frame has no room up or down until it
+        // is scaled past the frame's height.
+        assert_eq!(pan_position(2.0, 0.5, 0.0, (1080.0, 1920.0), (1080.0, 607.5)).1, 0.0);
+        let fill = 1920.0 / 607.5;
+        assert!((pan_position(4.0, 0.5, 0.0, (1080.0, 1920.0), (1080.0, 607.5)).1 - (4.0 * 607.5 - 1920.0) / 2.0).abs() < 1e-3);
+        assert!(pan_position(fill, 0.0, 0.5, (1080.0, 1920.0), (1080.0, 607.5)).0 > 0.0);
+    }
+
+    /// #2211: a heading too wide for a tall frame shrinks to fit title-safe
+    /// and is moved in from the edge; one that fits is left alone.
+    #[test]
+    fn a_refit_keeps_titles_inside_title_safe() {
+        let tall = klipp_core::Resolution { width: 1080, height: 1920 };
+        let mut td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "A heading made for a wide frame".into(), font_size: 96.0, ..Default::default() });
+        td.objects[0].transform.center.y = 0.03;
+        let (new, shrank) = relay_title(&td, tall).expect("it moves");
+        assert!(shrank);
+        let klipp_timeline::TitleObjectContent::TextBox(tb) = &new.objects[0].content else { panic!() };
+        let (w, h) = text_extent(&tb.text, tb.font_size, tall);
+        assert!(w <= SAFE_WIDTH + 1e-4, "{w}");
+        let c = new.objects[0].transform.center;
+        assert!(c.x - w / 2.0 >= 0.05 - 1e-4 && c.x + w / 2.0 <= 0.95 + 1e-4 && c.y - h / 2.0 >= 0.05 - 1e-4, "{c:?}");
+        let short = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Hi".into(), font_size: 60.0, ..Default::default() });
+        assert!(relay_title(&short, tall).is_none());
     }
 }
 
