@@ -61,7 +61,7 @@ pub fn by_time(detections: &[(f64, Box4)]) -> Vec<(f64, Vec<Box4>)> {
 /// clip seconds, as points of a `frame` the picture is fitted into at
 /// `picture` size) in frame at `scale`. The picture holds while the
 /// subject stays near the middle, and moves to it, eased and no faster
-/// than [`MAX_SPEED`], when it drifts out; it never moves so far that its
+/// than a set speed, when it drifts out; it never moves so far that its
 /// edge shows. A subject that holds still gives one pose, keyed at both
 /// ends.
 pub fn camera_keys(subject: &[(f64, [f32; 2])], dur: f64, scale: f32, frame: (f32, f32), picture: (f32, f32)) -> Vec<PanKey> {
