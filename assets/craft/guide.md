@@ -398,7 +398,7 @@ exist until the plan runs.
   path in `name`. For example, call `klipp_look` with
   `{"clip_id":"CLIP_ID","name":"fuji_xtrans_iii_classic_chrome","opacity":0.25}`.
   Use a real clip ID from the timeline. `@N` references belong to batch
-  ops, not this standalone tool. For a place+look batch, see topic `ops`.
+  ops, not this standalone tool. For a place+look batch, see topic `op.look`.
 - `search_music` / `search_sfx` / `add_music` (the `klipp_search_music`,
   `klipp_search_sfx`, `klipp_add_music` tools): find royalty-free music
   (Jamendo, by mood or genre) and sound effects (Freesound, by keyword)

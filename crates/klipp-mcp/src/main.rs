@@ -1375,14 +1375,16 @@ fn guide_topic(topic: &str) -> Result<String, String> {
         "craft" => CRAFT.to_string(),
         "recipes" => RECIPES.to_string(),
         "abilities" => ABILITIES.to_string(),
-        // The guide's op list, then the fuller notes on some, then every
-        // op's name: the ops klipp_plan previews and klipp_apply applies.
-        "ops" => {
-            let list = GUIDE.find("\n## Ops\n").map_or("", |at| {
-                let rest = &GUIDE[at + 1..];
-                &rest[..rest[1..].find("\n## ").map_or(rest.len(), |e| e + 2)]
-            });
-            format!("{list}\n{OPS}\nEvery op: {}.\n", klipp_document::ops::OP_NAMES.join(", "))
+        // The ops klipp_plan previews and klipp_apply applies: all of them
+        // was 68 KB, past what a tool reply takes (#2362). A line an op, or
+        // their fields alone, and one op in full by its name.
+        "ops" => ops_overview(false),
+        "ops_index" => ops_overview(true),
+        other if other.starts_with("op.") => {
+            let name = &other[3..];
+            let entry = op_entries().into_iter().find(|e| e.name == name).ok_or_else(|| format!("unknown op {name}; topic ops_index lists them"))?;
+            let more = if entry.more.is_empty() { String::new() } else { format!("\n{}\n", entry.more) };
+            format!("## {}\n\n{}{more}", entry.name, entry.line)
         }
         "all" => format!("{GUIDE}\n\n---\n\n{CRAFT}\n\n---\n\n{RECIPES}\n\n---\n\n{GRAPH_GUIDE}"),
         other => {
@@ -1403,10 +1405,96 @@ fn guide_topic(topic: &str) -> Result<String, String> {
             // missing from the guide (#1898).
             return section.or_else(|| tool_reference(other)).ok_or_else(|| {
                 let pages: Vec<&str> = TOOL_PAGES.iter().map(|(n, _)| *n).collect();
-                format!("unknown topic {other}; use guide, graph, craft, recipes, abilities, ops, all, {}, or a tool's name", pages.join(", "))
+                format!("unknown topic {other}; use guide, graph, craft, recipes, abilities, ops, ops_index, op.<name>, all, {}, or a tool's name", pages.join(", "))
             });
         }
     })
+}
+
+/// The guide's own list of the ops: its `## Ops` section.
+fn ops_section() -> &'static str {
+    GUIDE.find("\n## Ops\n").map_or("", |at| {
+        let rest = &GUIDE[at + 1..];
+        &rest[..rest[1..].find("\n## ").map_or(rest.len(), |e| e + 2)]
+    })
+}
+
+/// One op as the guide has it (#2362): its fields as the list writes
+/// them, its entry in that list, and what `ops.md` says more of it, its
+/// examples with it.
+struct OpEntry {
+    name: String,
+    signature: String,
+    line: String,
+    more: String,
+}
+
+/// Every op the guide lists, in its order.
+fn op_entries() -> Vec<OpEntry> {
+    let mut entries: Vec<OpEntry> = Vec::new();
+    // Inside an entry; and whether its fields, in backticks, go on past
+    // its first line (`qualify`'s do).
+    let (mut open, mut fields) = (false, false);
+    for line in ops_section().lines() {
+        if let Some(rest) = line.strip_prefix("- `") {
+            let (signature, closed) = rest.split_once('`').map_or((rest, false), |(s, _)| (s, true));
+            let name = signature.split([' ', '{']).next().unwrap_or(signature).to_string();
+            entries.push(OpEntry { name, signature: signature.trim_end().to_string(), line: format!("{line}\n"), more: String::new() });
+            (open, fields) = (true, !closed);
+        } else if open && line.starts_with("  ") {
+            let entry = entries.last_mut().expect("an open entry");
+            entry.line.push_str(&format!("{line}\n"));
+            if fields {
+                let (more, closed) = line.trim().split_once('`').map_or((line.trim(), false), |(s, _)| (s, true));
+                entry.signature = format!("{} {}", entry.signature, more.trim_end());
+                fields = !closed;
+            }
+        } else {
+            open = false;
+        }
+    }
+    // `ops.md`: a paragraph that opens with an op's name starts what it
+    // says of that op; the ones after it, its examples among them, go on
+    // with it until the next op's.
+    let mut at: Option<usize> = None;
+    for paragraph in OPS.split("\n\n").filter(|p| !p.trim().is_empty()) {
+        let first = paragraph.split([' ', '{']).next().unwrap_or("");
+        let starts = paragraph[first.len()..].trim_start().starts_with(['{', '—']);
+        if let Some(i) = entries.iter().position(|e| e.name == first).filter(|_| starts) {
+            at = Some(i);
+        }
+        if let Some(i) = at {
+            let more = &mut entries[i].more;
+            if !more.is_empty() {
+                more.push_str("\n\n");
+            }
+            more.push_str(paragraph.trim_end());
+        }
+    }
+    entries
+}
+
+/// The ops in short (#2362): with `fields_only`, a line an op of its
+/// fields; else each with its entry's first sentence. Then what holds
+/// for every op, and where one op's full entry is.
+fn ops_overview(fields_only: bool) -> String {
+    let mut out = String::from(if fields_only { "## Ops: their fields\n\n" } else { "## Ops\n\n" });
+    out.push_str("Fields marked ? may be left out. One op in full, with its limits and examples: topic `op.<name>` (op.title, op.place).\n\n");
+    for e in op_entries() {
+        if fields_only {
+            out.push_str(&format!("- `{}`\n", e.signature));
+            continue;
+        }
+        let text = e.line.split_once("`:").map_or("", |(_, t)| t).split_whitespace().collect::<Vec<_>>().join(" ");
+        let sentence = text.find(". ").map_or(text.as_str(), |end| &text[..=end]);
+        out.push_str(&format!("- `{}`: {}\n", e.signature, sentence.trim()));
+    }
+    // What the guide's list says after its ops: how they run together.
+    let rules: Vec<&str> = ops_section().split("\n\n").filter(|p| !p.trim_start().starts_with("- `") && !p.starts_with("## ") && !p.trim().is_empty()).collect();
+    if !rules.is_empty() {
+        out.push_str(&format!("\n{}\n", rules.join("\n\n").trim_end()));
+    }
+    out
 }
 
 /// A tool's entry in the guide, made from its catalog entry (#1898): its
@@ -1838,7 +1926,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               montage). Files the user can read and change. A tool's details are under its \
               name as the topic. Every write takes an optional idempotency_key: on a lost reply, \
               retry the identical call with the same key (kept until Klipp exits).",
-             json!({ "topic": { "type": "string", "description": "guide (default), graph (read before graph edits), craft, recipes, abilities (what a person can do here, for answering them when they ask), ops (every edit op), all, an area (session-tools, timeline-tools, analysis-tools, colour-tools, sound-tools), or a tool's name (find_shots) for its details" } }),
+             json!({ "topic": { "type": "string", "description": "guide (default), graph (read before graph edits), craft, recipes, abilities (what a person can do here, for answering them when they ask), ops, op.<name>, all, an area (session-tools, timeline-tools, analysis-tools, colour-tools, sound-tools), or a tool's name (find_shots) for its details" } }),
              vec![]),
         tool("klipp_status",
              "App status, MCP build and catalog mismatch warnings. Read-only. Details: klipp_guide topic status.",
@@ -2604,13 +2692,26 @@ mod interface_tests {
                 assert_eq!(guide_topic(line).unwrap(), one, "the full name reads the same");
             }
         }
+        // The ops in a reply a client takes whole (#2362): a line an op, or
+        // their fields alone, and each op in full on its own.
         let ops = guide_topic("ops").unwrap();
+        let index = guide_topic("ops_index").unwrap();
+        assert!(ops.len() < 20_000 && index.len() < 6_000, "ops {} bytes, ops_index {}", ops.len(), index.len());
+        assert!(ops.starts_with("## Ops\n") && ops.contains("`place {media_id, track, at"), "the guide's op list");
+        assert!(ops.contains("Ops run in order"), "with what holds for every op");
+        assert!(!ops.contains("## Batches"), "and nothing of the guide's next part");
         for op in klipp_document::ops::OP_NAMES {
-            assert!(ops.contains(op), "{op}");
+            assert!(ops.contains(&format!("- `{op}")) && index.contains(&format!("- `{op}")), "{op} in the overview and the index");
+            let full = guide_topic(&format!("op.{op}")).unwrap();
+            assert!(full.starts_with(&format!("## {op}\n")) && full.len() < 20_000, "op.{op}");
         }
-        assert!(ops.starts_with("## Ops\n") && ops.contains("`place {media_id, track, at"), "the guide's op list first");
-        assert!(ops.contains("# More on the ops") && ops.contains("bridge_secs"), "then the fuller notes");
-        assert!(!ops.contains("## Batches"), "and the list ends where the guide's next part starts");
+        let place = guide_topic("op.place").unwrap();
+        assert!(place.contains("sync_source_secs") && place.contains("search_sfx's heard.peak_secs"), "the guide's entry and the fuller notes: {place}");
+        let look = guide_topic("op.look").unwrap();
+        assert!(look.contains("```json") && look.contains("\"op\":\"look\""), "an op's example goes with it: {look}");
+        let duck = guide_topic("op.duck").unwrap();
+        assert!(duck.contains("bridge_secs") && !duck.contains("volume {clip_id"), "one op, not the next: {duck}");
+        assert!(guide_topic("op.teleport").unwrap_err().contains("ops_index"));
         let err = guide_topic("nope").unwrap_err();
         assert!(err.contains("ops") && err.contains("timeline-tools") && err.contains("a tool's name"), "{err}");
     }

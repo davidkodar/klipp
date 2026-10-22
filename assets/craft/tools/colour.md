@@ -30,7 +30,7 @@ Measure the top picture track or clip against the brief look in CIELAB: black/wh
 
 Apply a bundled 3D LUT after the grade on a picture clip, as one undo step. Choose category/name or identifying words from klipp_looks; opacity 0-1 defaults to 1; remove clears it. Correct exposure/continuity first; verify with frame_at. on timeline applies after clip grades. on {group} uses the group post-clip grade (create via grade_group); one call updates the whole scene/piece and later changes affect every member.
 
-This standalone tool takes `name` (a bundled name or an absolute `.cube` path), for example `{"clip_id":"CLIP_ID","name":"fuji_xtrans_iii_classic_chrome","opacity":0.25}` with a real timeline clip ID. The `look` op inside klipp_plan/klipp_apply instead requires `lut_path`; its optional `name` is only a display label. It does not resolve library names. See topic `ops` for a place+look batch using `@0`.
+This standalone tool takes `name` (a bundled name or an absolute `.cube` path), for example `{"clip_id":"CLIP_ID","name":"fuji_xtrans_iii_classic_chrome","opacity":0.25}` with a real timeline clip ID. The `look` op inside klipp_plan/klipp_apply instead requires `lut_path`; its optional `name` is only a display label. It does not resolve library names. See topic `op.look` for a place+look batch using `@0`.
 
 ## klipp_looks
 
