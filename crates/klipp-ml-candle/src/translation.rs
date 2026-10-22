@@ -135,10 +135,14 @@ impl Unigram {
         self.pieces.is_empty()
     }
 
-    /// `text`'s ids: each word, with `▁` before it, cut into the pieces
+    /// `text`'s ids, NFKC-normalised: each word, with `▁` before it, cut into the pieces
     /// whose scores add up to the most, then `</s>`. A character no
     /// piece covers is `<unk>`.
     pub fn encode(&self, text: &str) -> Vec<u32> {
+        use unicode_normalization::UnicodeNormalization;
+        // NFKC first, as SentencePiece normalised the text it was trained
+        // on: a full-width letter or a ligature reads as its plain form.
+        let text: String = text.nfkc().collect();
         let mut ids = Vec::new();
         for word in text.split_whitespace() {
             let chars: Vec<char> = std::iter::once('\u{2581}').chain(word.chars()).collect();
@@ -198,41 +202,257 @@ impl Unigram {
 /// The paths of `pair`'s model and tokenizer in the model cache,
 /// downloaded first when `download` allows and they are not there yet.
 pub fn ensure_pair(pair: &Pair, download: bool) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
-    let manifest = klipp_ml::manifest::load_effective().map_err(|e| format!("model manifest: {e:?}"))?;
-    let cache = klipp_ml::cache::ModelCache::open().map_err(|e| format!("model cache: {e:?}"))?;
-    let mut paths = Vec::new();
-    for id in [pair.model_id(), pair.tokenizer_id()] {
-        let entry = manifest.get(&id).ok_or_else(|| format!("no manifest entry {id}"))?;
-        let path = cache.path_for(entry);
-        if !path.is_file() {
-            if !download {
-                return Err(format!("the translation model {id} is not downloaded"));
-            }
-            let cancel = std::sync::atomic::AtomicBool::new(false);
-            let mut progress = klipp_ml::download::NoOpProgress;
-            klipp_ml::download::download_to_cache(&cache, entry, &mut progress, &cancel).map_err(|e| format!("download of {id}: {e:?}"))?;
-        }
-        paths.push(path);
-    }
-    let tokenizer = paths.pop().expect("two paths");
-    let model = paths.pop().expect("two paths");
-    Ok((model, tokenizer))
+    ensure_pair_with(pair, download, &mut |_| {}, &std::sync::atomic::AtomicBool::new(false))
 }
 
-/// `lines` translated from `source` to `target`, one for one, the model
-/// fetched first when it is not in the cache.
-pub fn translate_lines(source: &str, target: &str, lines: &[String]) -> Result<Vec<String>, String> {
+/// The download's share done, told to `on_progress` (0 to 1).
+struct Progress<'a> {
+    total: u64,
+    done: u64,
+    on_progress: &'a mut dyn FnMut(f32),
+}
+
+impl klipp_ml::download::ProgressSink for Progress<'_> {
+    fn started(&mut self, _: u64) {}
+    fn advance(&mut self, bytes: u64) {
+        self.done += bytes;
+        (self.on_progress)((self.done as f64 / self.total.max(1) as f64).min(1.0) as f32);
+    }
+    fn finished(&mut self) {}
+}
+
+/// [`ensure_pair`], telling `on_progress` how much of the download is
+/// done, and stopping when `cancel` is set.
+pub fn ensure_pair_with(pair: &Pair, download: bool, on_progress: &mut dyn FnMut(f32), cancel: &std::sync::atomic::AtomicBool) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
+    let manifest = klipp_ml::manifest::load_effective().map_err(|e| format!("model manifest: {e:?}"))?;
+    let cache = klipp_ml::cache::ModelCache::open().map_err(|e| format!("model cache: {e:?}"))?;
+    let entries = [pair.model_id(), pair.tokenizer_id()].map(|id| manifest.get(&id).cloned().ok_or_else(|| format!("no manifest entry {id}")));
+    let [model, tokenizer] = entries;
+    let entries = [model?, tokenizer?];
+    let missing: Vec<&klipp_ml::manifest::ModelEntry> = entries.iter().filter(|e| !cache.path_for(e).is_file()).collect();
+    if !missing.is_empty() && !download {
+        return Err(format!("the translation model {} is not downloaded", missing[0].id));
+    }
+    let mut progress = Progress { total: missing.iter().map(|e| e.size_bytes).sum(), done: 0, on_progress };
+    for entry in missing {
+        klipp_ml::download::download_to_cache(&cache, entry, &mut progress, cancel).map_err(|e| match e {
+            klipp_ml::download::DownloadError::Cancelled => CANCELLED.to_string(),
+            e => format!("download of {}: {e}", entry.id),
+        })?;
+    }
+    Ok((cache.path_for(&entries[0]), cache.path_for(&entries[1])))
+}
+
+/// What a cancelled translation answers.
+pub const CANCELLED: &str = "the translation was cancelled";
+
+/// One line's translation, and why it may stop short of the whole line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Line {
+    pub text: String,
+    pub cut: Option<&'static str>,
+}
+
+/// The most tokens of a line the encoder reads: its 512 positions, less
+/// room for `</s>`. A longer line is translated up to there and flagged.
+pub const MAX_INPUT_TOKENS: usize = 500;
+
+/// Translating `lines` from `source` into `target` begun as job `id` on a
+/// worker: the pair's model fetched first when it is not in the cache,
+/// with the job's progress and its cancel kept in [`jobs`]. The
+/// receiver brings each line's translation, or why there are none. One
+/// translation runs at a time.
+pub fn start(id: String, source: &str, target: &str, lines: Vec<String>) -> Result<std::sync::mpsc::Receiver<Result<Vec<Line>, String>>, String> {
     let pair = pair(source, target).ok_or_else(|| format!("no translation from {} to {}", language_name(source), language_name(target)))?;
+    if let Some(running) = jobs::running() {
+        return Err(format!("a translation into {} is running already ({:.0}%); wait for it, or cancel it", running.language, running.progress * 100.0));
+    }
+    let cancel = jobs::begin(&id, language_name(target), lines.len());
+    let (tx, rx) = std::sync::mpsc::channel();
+    let job = id.clone();
+    let spawned = std::thread::Builder::new().name("klipp-translate".into()).spawn(move || {
+        let out = run(&job, &pair, &lines, &cancel);
+        match &out {
+            Err(why) if why == CANCELLED => jobs::cancelled(&job),
+            Err(why) => jobs::finish(&job, Err(why.clone())),
+            // Done when the caller has put the translation in place.
+            Ok(_) => jobs::update(&job, |j| {
+                j.phase = "applying";
+                j.progress = 1.0;
+            }),
+        }
+        let _ = tx.send(out);
+    });
+    if let Err(e) = spawned {
+        jobs::finish(&id, Err(format!("could not start: {e}")));
+        return Err(format!("could not start the translation: {e}"));
+    }
+    Ok(rx)
+}
+
+/// Job `id`'s work: fetch, load, translate line by line, `cancel` read
+/// between lines.
+fn run(id: &str, pair: &Pair, lines: &[String], cancel: &std::sync::atomic::AtomicBool) -> Result<Vec<Line>, String> {
+    let (model, tokenizer) = ensure_pair_with(
+        pair,
+        true,
+        &mut |p| {
+            jobs::update(id, |j| {
+                j.phase = "downloading";
+                j.progress = p;
+            })
+        },
+        cancel,
+    )?;
     #[cfg(feature = "candle")]
     {
-        let (model, tokenizer) = ensure_pair(&pair, true)?;
-        let mut t = Translator::load(&pair, &model, &tokenizer).map_err(|e| e.to_string())?;
-        lines.iter().map(|l| t.translate(l).map_err(|e| e.to_string())).collect()
+        jobs::update(id, |j| {
+            j.phase = "loading";
+            j.progress = 0.0;
+        });
+        let mut t = Translator::load(pair, &model, &tokenizer).map_err(|e| e.to_string())?;
+        let mut out = Vec::with_capacity(lines.len());
+        for (i, line) in lines.iter().enumerate() {
+            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err(CANCELLED.into());
+            }
+            out.push(t.translate(line).map_err(|e| e.to_string())?);
+            jobs::update(id, |j| {
+                j.phase = "translating";
+                j.done = i + 1;
+                j.progress = (i + 1) as f32 / lines.len().max(1) as f32;
+            });
+        }
+        Ok(out)
     }
     #[cfg(not(feature = "candle"))]
     {
-        let _ = (pair, lines);
+        let _ = (model, tokenizer, lines);
         Err("this build has no translation (built without candle)".into())
+    }
+}
+
+/// The translations running and done this session, for the app's status
+/// and for agents (`job_status`, `cancel_job`).
+pub mod jobs {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+
+    /// Where a translation stands.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum State {
+        Running,
+        Done,
+        Failed,
+        Cancelled,
+    }
+
+    /// A translation job as last told.
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct Job {
+        pub id: String,
+        pub language: String,
+        pub state: State,
+        /// downloading, loading, translating, applying, or how it ended.
+        pub phase: &'static str,
+        /// The phase's share done, 0 to 1.
+        pub progress: f32,
+        /// Lines translated, of `total`.
+        pub done: usize,
+        pub total: usize,
+        pub error: Option<String>,
+        /// What was made, once done.
+        pub result: Option<String>,
+    }
+
+    struct Entry {
+        job: Job,
+        cancel: Arc<AtomicBool>,
+    }
+
+    /// Finished jobs kept, newest last, for a reader that comes late.
+    const KEPT: usize = 32;
+
+    fn all_entries() -> MutexGuard<'static, Vec<Entry>> {
+        static JOBS: OnceLock<Mutex<Vec<Entry>>> = OnceLock::new();
+        JOBS.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Job `id` begun, translating `total` lines into `language`: its
+    /// cancel flag.
+    pub(super) fn begin(id: &str, language: &str, total: usize) -> Arc<AtomicBool> {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut jobs = all_entries();
+        jobs.retain(|e| e.job.id != id);
+        let finished = jobs.iter().filter(|e| e.job.state != State::Running).count();
+        let mut drop = finished.saturating_sub(KEPT - 1);
+        jobs.retain(|e| {
+            let gone = drop > 0 && e.job.state != State::Running;
+            drop -= usize::from(gone);
+            !gone
+        });
+        jobs.push(Entry {
+            job: Job { id: id.into(), language: language.into(), state: State::Running, phase: "starting", progress: 0.0, done: 0, total, error: None, result: None },
+            cancel: cancel.clone(),
+        });
+        cancel
+    }
+
+    /// Job `id` changed by `f`, while it runs.
+    pub(super) fn update(id: &str, f: impl FnOnce(&mut Job)) {
+        if let Some(e) = all_entries().iter_mut().find(|e| e.job.id == id && e.job.state == State::Running) {
+            f(&mut e.job);
+        }
+    }
+
+    pub(super) fn cancelled(id: &str) {
+        update(id, |j| {
+            j.state = State::Cancelled;
+            j.phase = "cancelled";
+        });
+    }
+
+    /// Job `id` ended: what it made, or why it made nothing.
+    pub fn finish(id: &str, result: Result<String, String>) {
+        update(id, |j| match result {
+            Ok(made) => {
+                j.state = State::Done;
+                j.phase = "done";
+                j.progress = 1.0;
+                j.result = Some(made);
+            }
+            Err(why) => {
+                j.state = State::Failed;
+                j.phase = "failed";
+                j.error = Some(why);
+            }
+        });
+    }
+
+    /// Every job kept, oldest first.
+    pub fn all() -> Vec<Job> {
+        all_entries().iter().map(|e| e.job.clone()).collect()
+    }
+
+    pub fn get(id: &str) -> Option<Job> {
+        all_entries().iter().find(|e| e.job.id == id).map(|e| e.job.clone())
+    }
+
+    /// The translation running now, if one is.
+    pub fn running() -> Option<Job> {
+        all_entries().iter().find(|e| e.job.state == State::Running).map(|e| e.job.clone())
+    }
+
+    /// Job `id` asked to stop: it does between two lines, or within the
+    /// download. An error when it is not running.
+    pub fn cancel(id: &str) -> Result<(), String> {
+        let jobs = all_entries();
+        let e = jobs.iter().find(|e| e.job.id == id).ok_or_else(|| format!("no translation job {id}"))?;
+        if e.job.state != State::Running {
+            return Err(format!("translation {id} has ended already ({}); nothing cancelled", e.job.phase));
+        }
+        e.cancel.store(true, Ordering::Relaxed);
+        Ok(())
     }
 }
 
@@ -319,6 +539,9 @@ mod model {
                 return Err(TranslateError(format!("the tokenizer has {} pieces, the {}→{} model {}", tokenizer.len(), pair.source, pair.target, pair.vocab)));
             }
             let config = marian_config(pair);
+            if tokenizer.eos() != config.eos_token_id {
+                return Err(TranslateError(format!("the tokenizer's </s> is id {}, the model's end {}: not this model's vocabulary", tokenizer.eos(), config.eos_token_id)));
+            }
             // Read into memory: the safe load, where a mapped file is not.
             let bytes = std::fs::read(model).map_err(err)?;
             let vb = candle_nn::VarBuilder::from_buffered_safetensors(bytes, DType::F32, &device).map_err(err)?;
@@ -328,16 +551,31 @@ mod model {
 
         /// `text` translated, greedily: each next token the likeliest,
         /// the padding never chosen, until `</s>`, a loop, or
-        /// [`super::output_limit`] tokens.
-        pub fn translate(&mut self, text: &str) -> Result<String, TranslateError> {
+        /// [`super::output_limit`] tokens; said when it stopped short.
+        pub fn translate(&mut self, text: &str) -> Result<super::Line, TranslateError> {
+            let out = self.decode_greedy(text);
+            // Clean for the next line, whichever way this one ended.
+            self.model.reset_kv_cache();
+            out
+        }
+
+        fn decode_greedy(&mut self, text: &str) -> Result<super::Line, TranslateError> {
             if text.trim().is_empty() {
-                return Ok(String::new());
+                return Ok(super::Line { text: String::new(), cut: None });
             }
-            let ids = self.tokenizer.encode(text);
+            let mut ids = self.tokenizer.encode(text);
+            let mut cut = None;
+            if ids.len() > super::MAX_INPUT_TOKENS {
+                ids.truncate(super::MAX_INPUT_TOKENS - 1);
+                ids.push(self.tokenizer.eos());
+                cut = Some("too long for the translator: its end is not translated");
+            }
             let input = Tensor::new(ids.as_slice(), &self.device).and_then(|t| t.unsqueeze(0)).map_err(err)?;
             let encoded = self.model.encoder().forward(&input, 0).map_err(err)?;
             let mut out = vec![self.config.decoder_start_token_id];
-            for step in 0..super::output_limit(ids.len()) {
+            let limit = super::output_limit(ids.len());
+            let mut ended = false;
+            for step in 0..limit {
                 let context = if step >= 1 { 1 } else { out.len() };
                 let start = out.len().saturating_sub(context);
                 let next_in = Tensor::new(&out[start..], &self.device).and_then(|t| t.unsqueeze(0)).map_err(err)?;
@@ -349,6 +587,7 @@ mod model {
                 }
                 let next = scores.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).map(|(i, _)| i as u32).unwrap_or(self.config.eos_token_id);
                 if next == self.config.eos_token_id || next == self.config.forced_eos_token_id {
+                    ended = true;
                     break;
                 }
                 out.push(next);
@@ -356,11 +595,15 @@ mod model {
                     // A loop ("the the the …"): what came before it is
                     // the translation.
                     out.truncate(out.len() - 3);
+                    cut = cut.or(Some("the translator repeated itself: the repeat is left out"));
+                    ended = true;
                     break;
                 }
             }
-            self.model.reset_kv_cache();
-            Ok(self.tokenizer.decode(&out[1..]))
+            if !ended {
+                cut = cut.or(Some("the translation reached its length limit: its end may be missing"));
+            }
+            Ok(super::Line { text: self.tokenizer.decode(&out[1..]), cut })
         }
     }
 
@@ -379,15 +622,21 @@ mod model {
             let dir = std::path::PathBuf::from(dir);
             let pair = super::super::pair("en", "de").unwrap();
             let mut t = Translator::load(&pair, &dir.join("model.safetensors"), &dir.join("tokenizer.json")).expect("the pair loads");
-            let out = t.translate("Good morning, how are you today?").unwrap();
+            let out = t.translate("Good morning, how are you today?").unwrap().text;
             eprintln!("en→de: {out}");
             assert!(out.contains("Guten Morgen") || out.contains("guten Morgen"), "{out}");
-            let out = t.translate("The cat sleeps on the table.").unwrap();
+            let out = t.translate("The cat sleeps on the table.").unwrap().text;
             assert!(out.contains("Katze") && out.contains("Tisch"), "{out}");
             // Degenerate input ends, short, rather than looping to the limit.
             let out = t.translate(&"the ".repeat(20)).unwrap();
-            eprintln!("degenerate: {out}");
-            assert!(out.split_whitespace().count() <= 30, "{out}");
+            eprintln!("degenerate: {out:?}");
+            assert!(out.text.split_whitespace().count() <= 30, "{out:?}");
+            assert!(out.cut.is_some(), "a loop is said");
+            // Past the encoder's reach: translated up to it, and said.
+            let long = "This is a sentence that goes on. ".repeat(80);
+            let out = t.translate(&long).unwrap();
+            assert!(out.cut.is_some() && !out.text.is_empty(), "{out:?}");
+            assert_eq!(t.translate("Good morning.").unwrap().cut, None, "the next line starts clean");
         }
     }
 }
@@ -438,6 +687,39 @@ mod tests {
                 assert!(!e.attribution.is_empty(), "{id} credits its makers");
             }
         }
+    }
+
+    #[test]
+    fn text_is_normalised_as_the_model_was_trained() {
+        let t = tiny();
+        assert_eq!(t.encode("\u{ff54}\u{ff48}\u{ff45} cat"), t.encode("the cat"), "full-width letters read as plain ones");
+    }
+
+    #[test]
+    fn a_translation_job_is_followed_cancelled_and_closed() {
+        let id = format!("test-{}", std::process::id());
+        let cancel = jobs::begin(&id, "German", 4);
+        assert_eq!(jobs::running().map(|j| j.id), Some(id.clone()));
+        jobs::update(&id, |j| {
+            j.phase = "translating";
+            j.done = 2;
+            j.progress = 0.5;
+        });
+        let j = jobs::get(&id).unwrap();
+        assert_eq!((j.phase, j.done, j.total, j.state), ("translating", 2, 4, jobs::State::Running));
+        jobs::cancel(&id).unwrap();
+        assert!(cancel.load(std::sync::atomic::Ordering::Relaxed), "the worker sees it");
+        jobs::cancelled(&id);
+        assert_eq!(jobs::get(&id).unwrap().state, jobs::State::Cancelled);
+        assert!(jobs::cancel(&id).is_err(), "an ended job is not cancelled again");
+        assert!(jobs::running().is_none());
+        // A finished one keeps what it made.
+        let done = format!("{id}-done");
+        jobs::begin(&done, "French", 1);
+        jobs::finish(&done, Ok("1 caption".into()));
+        let j = jobs::get(&done).unwrap();
+        assert_eq!((j.state, j.result.as_deref()), (jobs::State::Done, Some("1 caption")));
+        assert!(jobs::cancel("no-such-job").is_err());
     }
 
     #[test]

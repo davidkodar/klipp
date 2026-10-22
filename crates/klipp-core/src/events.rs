@@ -4269,14 +4269,10 @@ pub enum AppCommand {
     ApplyClipGains { gains: Vec<(crate::ClipId, f32)> },
 
     /// Translate the captions on `track_id` from `source` to `target`
-    /// (ISO 639-1 codes), off the UI thread (#2213);
-    /// [`AppCommand::CaptionsTranslated`] brings the lines back.
-    TranslateCaptions { track_id: TrackId, source: String, target: String },
-
-    /// Each caption clip on `track_id` and its translation into
-    /// `language`, or why there are none: added as a new subtitle track
-    /// under it, as one undo step.
-    CaptionsTranslated { track_id: TrackId, language: String, translations: Result<Vec<(crate::ClipId, String)>, String> },
+    /// (ISO 639-1 codes) as translation job `job_id`, off the UI thread,
+    /// its progress and cancel in the translation jobs; when it is done a
+    /// new subtitle track under it carries them, as one undo step (#2213).
+    TranslateCaptions { track_id: TrackId, source: String, target: String, job_id: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

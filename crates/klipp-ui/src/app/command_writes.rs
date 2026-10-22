@@ -813,7 +813,6 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::UpdateClipAudio { .. }
         | AppCommand::ApplyClipGains { .. }
         | AppCommand::ApplyMusicFit { .. }
-        | AppCommand::CaptionsTranslated { .. }
         | AppCommand::BeginAudioDrag { .. }
         | AppCommand::EndAudioDrag { .. }
         | AppCommand::ScaleAudioKeyframeTiming { .. }

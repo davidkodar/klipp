@@ -851,12 +851,8 @@ impl KlippApp {
                     self.apply_clip_gains(gains);
                     true
                 }
-                AppCommand::TranslateCaptions { track_id, source, target } => {
-                    self.translate_captions(*track_id, source, target);
-                    true
-                }
-                AppCommand::CaptionsTranslated { track_id, language, translations } => {
-                    self.add_translated_captions(*track_id, language, translations);
+                AppCommand::TranslateCaptions { track_id, source, target, job_id } => {
+                    self.translate_captions(*track_id, source, target, job_id);
                     true
                 }
                 AppCommand::AutoDuckAudio { target_clip_id, sidechain_track_idx, duck_level, attack_secs, release_secs, threshold } => {
@@ -982,58 +978,6 @@ impl KlippApp {
                 .map(|(fit, _)| (fit.segments, fit.length_secs, fit.join_secs, fit.bars_changed));
             vec![AppCommand::MusicFitPlanned { clip_id, target_secs, plan }]
         });
-    }
-
-    /// The captions on `track_id` translated on a worker (#2213), the
-    /// pair's model fetched first when it is not downloaded yet.
-    fn translate_captions(&mut self, track_id: klipp_core::TrackId, source: &str, target: &str) {
-        let seq = self.state.sequence();
-        let Some(index) = seq.tracks.iter().position(|t| t.id == track_id) else { return };
-        let captions = klipp_document::caption_translation::captions(seq, index);
-        if captions.is_empty() {
-            self.state.toast.show("That track has no captions to translate");
-            return;
-        }
-        let language = language_name(target);
-        self.state.toast.show(format!("Translating {} captions into {language}…", captions.len()));
-        // Whole sentences, each spread back over its captions.
-        let sentences = klipp_document::caption_translation::sentences(&captions);
-        let (source, target) = (source.to_string(), target.to_string());
-        crate::file_dialog::spawn(move || {
-            let lines: Vec<String> = sentences.iter().map(|s| s.text.clone()).collect();
-            let translations = translate_lines(&source, &target, &lines).map(|out| klipp_document::caption_translation::per_caption(&sentences, &out));
-            vec![AppCommand::CaptionsTranslated { track_id, language, translations }]
-        });
-    }
-
-    /// A translation back from the worker, added under its source track
-    /// as one undo step, the lines that read badly named.
-    fn add_translated_captions(&mut self, track_id: klipp_core::TrackId, language: &str, translations: &Result<Vec<(klipp_core::ClipId, String)>, String>) {
-        let translations = match translations {
-            Ok(t) => t,
-            Err(why) => {
-                self.state.toast.show(format!("No translation: {why}"));
-                return;
-            }
-        };
-        let seq = self.state.sequence();
-        let Some(index) = seq.tracks.iter().position(|t| t.id == track_id) else {
-            self.state.toast.show("The caption track is gone");
-            return;
-        };
-        match klipp_document::caption_translation::translated_track(seq, index, translations, language) {
-            Ok(out) => {
-                self.apply_edits_as_one(std::slice::from_ref(&out.edit), "Translate Captions");
-                let rate = self.state.sequence().fps.rate();
-                let flagged: Vec<String> = out.flagged.iter().map(|f| format!("{} {}", klipp_core::Timecode::from_secs_f64(f.at_secs, rate).to_timecode_string(), f.why)).collect();
-                if flagged.is_empty() {
-                    self.state.toast.show(format!("Captions translated into {language}"));
-                } else {
-                    self.state.toast.show(format!("Captions translated into {language}; {} to check: {}", flagged.len(), flagged.join("; ")));
-                }
-            }
-            Err(why) => self.state.toast.show(format!("No translation: {why}")),
-        }
     }
 
     /// Set each clip's gain, and its linked partner's, as one undo step.
@@ -1353,31 +1297,6 @@ fn normalize_summary(settings: &klipp_core::normalize::NormalizeSettings, gains:
         text.push_str(&format!("; {} left as they were (silent or no sound)", silent + skipped));
     }
     text
-}
-
-/// A language's name, for messages.
-fn language_name(code: &str) -> String {
-    #[cfg(feature = "ai-candle")]
-    {
-        klipp_ml_candle::translation::language_name(code).to_string()
-    }
-    #[cfg(not(feature = "ai-candle"))]
-    {
-        code.to_string()
-    }
-}
-
-/// `lines` from `source` into `target`, when this build can translate.
-fn translate_lines(source: &str, target: &str, lines: &[String]) -> Result<Vec<String>, String> {
-    #[cfg(feature = "ai-candle")]
-    {
-        klipp_ml_candle::translation::translate_lines(source, target, lines)
-    }
-    #[cfg(not(feature = "ai-candle"))]
-    {
-        let _ = (source, target, lines);
-        Err("this build has no translation".into())
-    }
 }
 
 #[cfg(test)]

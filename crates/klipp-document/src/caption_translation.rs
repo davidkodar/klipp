@@ -22,6 +22,12 @@ pub const MAX_CHARS_PER_SEC: f64 = 20.0;
 /// without its full stop.
 pub const SENTENCE_GAP_SECS: f64 = 1.0;
 
+/// The most characters a sentence gathers before it is ended at the
+/// next caption anyway: captions with no full stop and no pause would
+/// otherwise run on into one line too long to translate whole. About 60
+/// tokens, well inside what the translator reads and writes.
+pub const MAX_SENTENCE_CHARS: usize = 240;
+
 /// One caption: its clip, when it shows, and its text with its lines
 /// joined into one.
 #[derive(Debug, Clone, PartialEq)]
@@ -63,14 +69,16 @@ fn ends_sentence(text: &str) -> bool {
 }
 
 /// `captions` gathered into sentences: consecutive captions joined until
-/// one ends a sentence or a pause longer than [`SENTENCE_GAP_SECS`] comes.
+/// one ends a sentence, a pause longer than [`SENTENCE_GAP_SECS`] comes,
+/// or the next would take it past [`MAX_SENTENCE_CHARS`]; always at a
+/// caption's edge.
 pub fn sentences(captions: &[Caption]) -> Vec<Sentence> {
     let mut out: Vec<Sentence> = Vec::new();
     let mut open = false;
     for (i, c) in captions.iter().enumerate() {
         let after_gap = i > 0 && c.start - captions[i - 1].end > SENTENCE_GAP_SECS;
         match out.last_mut() {
-            Some(s) if open && !after_gap => {
+            Some(s) if open && !after_gap && s.text.chars().count() + 1 + c.text.chars().count() <= MAX_SENTENCE_CHARS => {
                 s.text.push(' ');
                 s.text.push_str(&c.text);
                 s.parts.push((c.id, c.text.chars().count()));
@@ -113,6 +121,12 @@ pub fn spread(text: &str, weights: &[usize]) -> Vec<String> {
         done_chars += word.chars().count() + 1;
     }
     out
+}
+
+/// The last caption of each sentence whose translation stopped short,
+/// with why: `cuts[i]` is `sentences[i]`'s.
+pub fn cut_captions(sentences: &[Sentence], cuts: &[Option<&'static str>]) -> Vec<(ClipId, &'static str)> {
+    sentences.iter().zip(cuts).filter_map(|(s, cut)| Some((s.parts.last()?.0, (*cut)?))).collect()
 }
 
 /// Each caption's translation: `translated[i]` is `sentences[i]`'s,
@@ -162,8 +176,9 @@ fn track_name(seq: &Sequence, source: &str, language: &str) -> String {
 /// source captions' times, in the source track's caption style, wrapped
 /// to [`MAX_CHARS`] × [`MAX_LINES`]. Captions that read faster than
 /// [`MAX_CHARS_PER_SEC`], or run past the line limits once wrapped, are
-/// flagged.
-pub fn translated_track(seq: &Sequence, track: usize, translations: &[(ClipId, String)], language: &str) -> Result<Translated, String> {
+/// flagged, as are those in `cut` (a caption whose sentence the
+/// translator stopped short, with why).
+pub fn translated_track(seq: &Sequence, track: usize, translations: &[(ClipId, String)], cut: &[(ClipId, &'static str)], language: &str) -> Result<Translated, String> {
     let source = seq.tracks.get(track).ok_or("the caption track is gone")?;
     if !matches!(source.kind, TrackKind::Subtitle | TrackKind::Text) {
         return Err("that is not a caption track".into());
@@ -180,7 +195,9 @@ pub fn translated_track(seq: &Sequence, track: usize, translations: &[(ClipId, S
         let wrapped = crate::ops::wrap_lines(text, MAX_CHARS, MAX_LINES);
         let at = clip.timeline_in.to_secs_f64();
         let secs = (clip.timeline_out - clip.timeline_in).to_secs_f64().max(1e-3);
-        if text.chars().count() as f64 / secs > MAX_CHARS_PER_SEC {
+        if let Some((_, why)) = cut.iter().find(|(c, _)| c == id) {
+            flagged.push(Flagged { at_secs: at, text: text.to_string(), why });
+        } else if text.chars().count() as f64 / secs > MAX_CHARS_PER_SEC {
             flagged.push(Flagged { at_secs: at, text: text.to_string(), why: "reads too fast for its time on screen" });
         } else if wrapped.lines().count() > MAX_LINES || wrapped.lines().any(|l| l.chars().count() > MAX_CHARS + 4) {
             flagged.push(Flagged { at_secs: at, text: text.to_string(), why: "too long for two lines" });
@@ -262,7 +279,7 @@ mod tests {
     fn a_translated_track_keeps_each_captions_time_and_flags_the_hard_ones() {
         let (seq, ti, ids) = caption_sequence(&[(2.0, 4.0, "Good morning"), (0.0, 2.0, "Hello there")]);
         let long = "Dies ist ein sehr langer Satz, der in der kurzen Zeit auf dem Bildschirm kaum zu lesen ist.";
-        let out = translated_track(&seq, ti, &[(ids[1], "Hallo".into()), (ids[0], long.into())], "German").unwrap();
+        let out = translated_track(&seq, ti, &[(ids[1], "Hallo".into()), (ids[0], long.into())], &[], "German").unwrap();
         let EditCommand::AddTrack { index, track } = &out.edit else { panic!("an added track") };
         assert_eq!(*index, ti + 1, "the index after the source is the track under it");
         assert_eq!(track.name, "Subtitle 1 (German)");
@@ -280,10 +297,35 @@ mod tests {
     }
 
     #[test]
+    fn captions_with_no_full_stop_and_no_pause_still_end_at_a_caption_within_the_budget() {
+        let lines: Vec<(f64, f64, String)> = (0..40).map(|i| (i as f64, i as f64 + 1.0, format!("and then we kept on talking {i}"))).collect();
+        let refs: Vec<(f64, f64, &str)> = lines.iter().map(|(a, b, t)| (*a, *b, t.as_str())).collect();
+        let (seq, ti, _) = caption_sequence(&refs);
+        let caps = captions(&seq, ti);
+        let s = sentences(&caps);
+        assert!(s.len() > 1, "not one run-on line");
+        assert!(s.iter().all(|s| s.text.chars().count() <= MAX_SENTENCE_CHARS), "each within the budget");
+        assert_eq!(s.iter().map(|s| s.parts.len()).sum::<usize>(), caps.len(), "every caption in one sentence, none split");
+    }
+
+    #[test]
+    fn a_sentence_the_translator_cut_short_is_flagged_on_its_last_caption() {
+        let (seq, ti, ids) = caption_sequence(&[(0.0, 3.0, "And then we went"), (3.0, 6.0, "to the station.")]);
+        let s = sentences(&captions(&seq, ti));
+        let cut = cut_captions(&s, &[Some("the translation reached its length limit: its end may be missing")]);
+        assert_eq!(cut, vec![(ids[1], "the translation reached its length limit: its end may be missing")]);
+        let per = per_caption(&s, &["Und dann gingen wir zum".into()]);
+        let out = translated_track(&seq, ti, &per, &cut, "German").unwrap();
+        assert_eq!(out.flagged.len(), 1);
+        assert!(out.flagged[0].why.contains("length limit"));
+        assert!((out.flagged[0].at_secs - 3.0).abs() < 1e-6);
+    }
+
+    #[test]
     fn a_caption_too_long_for_two_lines_is_flagged() {
         let (seq, ti, ids) = caption_sequence(&[(0.0, 30.0, "Hello")]);
         let long = "word ".repeat(40);
-        let out = translated_track(&seq, ti, &[(ids[0], long)], "German").unwrap();
+        let out = translated_track(&seq, ti, &[(ids[0], long)], &[], "German").unwrap();
         assert_eq!(out.flagged.len(), 1, "{:?}", out.flagged);
         assert_eq!(out.flagged[0].why, "too long for two lines");
     }
@@ -291,10 +333,10 @@ mod tests {
     #[test]
     fn a_second_translation_into_the_same_language_gets_its_own_name() {
         let (mut seq, ti, ids) = caption_sequence(&[(0.0, 2.0, "Hello")]);
-        let out = translated_track(&seq, ti, &[(ids[0], "Hallo".into())], "German").unwrap();
+        let out = translated_track(&seq, ti, &[(ids[0], "Hallo".into())], &[], "German").unwrap();
         let EditCommand::AddTrack { index, track } = out.edit else { panic!("an added track") };
         seq.tracks.insert(index, track);
-        let again = translated_track(&seq, ti, &[(ids[0], "Hallo".into())], "German").unwrap();
+        let again = translated_track(&seq, ti, &[(ids[0], "Hallo".into())], &[], "German").unwrap();
         let EditCommand::AddTrack { track, .. } = again.edit else { panic!("an added track") };
         assert_eq!(track.name, "Subtitle 1 (German 2)");
     }
@@ -302,7 +344,7 @@ mod tests {
     #[test]
     fn nothing_to_translate_is_refused() {
         let (seq, ti, _) = caption_sequence(&[(0.0, 2.0, "Hello")]);
-        assert!(translated_track(&seq, ti, &[], "German").is_err());
-        assert!(translated_track(&seq, 99, &[], "German").is_err());
+        assert!(translated_track(&seq, ti, &[], &[], "German").is_err());
+        assert!(translated_track(&seq, 99, &[], &[], "German").is_err());
     }
 }

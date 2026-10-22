@@ -391,7 +391,7 @@ fn control_call(command: Value) -> Result<Value, String> {
     // The colour tools read every shot they grade, each clip rendered
     // alone (#719, #720): a whole piece is a minute or more on a busy
     // machine.
-    let long_call = matches!(method, "review" | "record" | "analyze" | "narrate" | "translate_captions"
+    let long_call = matches!(method, "review" | "record" | "analyze" | "narrate"
         | "search_music" | "search_sfx" | "add_music" | "grade_to_target" | "match_scenes" | "timeline_sheet" | "mix_loudness")
         || (method == "check" && command.get("color").and_then(Value::as_bool) == Some(true))
         || (!job_poll && command.get("wait").and_then(Value::as_bool) == Some(true));

@@ -652,18 +652,29 @@ pub fn show(
                 klipp_timeline::TrackRole::Primary => {}
             }
 
-            // A caption track in another language beside this one (#2213).
-            #[cfg(feature = "ai-candle")]
-            if matches!(track_kind, TrackKind::Subtitle | TrackKind::Text) && !state.sequence().tracks[track_idx].clips.is_empty() {
-                ui.menu_button("Translate Captions", |ui| {
-                    for pair in klipp_ml_candle::translation::PAIRS {
-                        let (from, to) = (klipp_ml_candle::translation::language_name(pair.source), klipp_ml_candle::translation::language_name(pair.target));
-                        if ui.button(format!("{from} \u{2192} {to}")).on_hover_text("A new subtitle track under this one, each caption translated at its own time; the model downloads the first time").clicked() {
-                            cmds.push(AppCommand::TranslateCaptions { track_id, source: pair.source.into(), target: pair.target.into() });
+            // A caption track in another language beside this one (#2213),
+            // offered where there are captions to translate.
+            if matches!(track_kind, TrackKind::Subtitle | TrackKind::Text) && !klipp_document::caption_translation::captions(state.sequence(), track_idx).is_empty() {
+                use klipp_ml_candle::translation as tr;
+                match tr::jobs::running() {
+                    Some(job) => {
+                        if ui.button(format!("Cancel Translation into {} ({:.0}%)", job.language, job.progress * 100.0)).clicked() {
+                            let _ = tr::jobs::cancel(&job.id);
                             ui.close_menu();
                         }
                     }
-                });
+                    None => {
+                        ui.menu_button("Translate Captions", |ui| {
+                            for pair in tr::PAIRS {
+                                let (from, to) = (tr::language_name(pair.source), tr::language_name(pair.target));
+                                if ui.button(format!("{from} \u{2192} {to}")).on_hover_text("A new subtitle track under this one, each caption translated at its own time; the model downloads the first time").clicked() {
+                                    cmds.push(AppCommand::TranslateCaptions { track_id, source: pair.source.into(), target: pair.target.into(), job_id: uuid::Uuid::new_v4().to_string() });
+                                    ui.close_menu();
+                                }
+                            }
+                        });
+                    }
+                }
             }
 
             ui.separator();

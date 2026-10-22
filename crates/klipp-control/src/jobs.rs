@@ -207,6 +207,23 @@ pub(super) fn snapshot(ctx: &ControlContext) -> Vec<Value> {
             "artifact": analysis.artifact, "result": if state == "completed" { Some(analysis.filename) } else { None },
         })
     }));
+    // Caption translations (#2213), run by the app as its menu runs them.
+    jobs.extend(klipp_ml_candle::translation::jobs::all().into_iter().map(|t| {
+        use klipp_ml_candle::translation::jobs::State;
+        let state = match t.state {
+            State::Running => "running",
+            State::Done => "completed",
+            State::Failed => "failed",
+            State::Cancelled => "cancelled",
+        };
+        json!({
+            "job_id": t.id, "kind": "translation", "state": state,
+            "phase": t.phase, "progress": t.progress,
+            "completed_units": t.done, "total_units": t.total,
+            "unit": "sentences", "eta_secs": null,
+            "error": t.error, "artifact": null, "result": t.result,
+        })
+    }));
     let submitted: Vec<_> = submitted().lock().unwrap_or_else(|e| e.into_inner())
         .iter().map(|(id, work)| (id.clone(), work.clone())).collect();
     for (operation_id, work) in submitted {

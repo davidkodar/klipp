@@ -47,6 +47,12 @@ pub(crate) fn respond(
                 });
                 return Ok(response);
             }
+            // A caption translation (#2213): stopped between two lines.
+            if klipp_ml_candle::translation::jobs::get(&job_id).is_some() {
+                klipp_ml_candle::translation::jobs::cancel(&job_id)?;
+                return Ok(json!({ "job_id":job_id, "kind":"translation", "cancel_requested":true,
+                    "next":"Read job_status until it reports cancelled; nothing is added." }));
+            }
             // A subject matte pass (#239): stopped after the frame it is
             // on, every finished frame kept.
             if let Some(media) = job_id.strip_suffix(":subject_matte") {

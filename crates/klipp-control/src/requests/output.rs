@@ -321,29 +321,17 @@ pub(crate) fn respond(
             if !download_models {
                 tr::ensure_pair(&pair, false).map_err(|e| format!("{e}; send download_models true to fetch it (about 300 MB, CC BY 4.0, Helsinki-NLP OPUS-MT)"))?;
             }
-            let started = std::time::Instant::now();
-            let lines: Vec<String> = sentences.iter().map(|s| s.text.clone()).collect();
-            let translated = tr::translate_lines(&from, &to, &lines)?;
-            let translations = ct::per_caption(&sentences, &translated);
-            let language = tr::language_name(&to);
-            let revision = ctx.shared.revision();
-            let built = {
-                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-                let ti = seq.tracks.iter().position(|t| t.id == track_id).ok_or("the caption track went while it was translated")?;
-                ct::translated_track(&seq, ti, &translations, language)?
-            };
-            let mut v = send_full_envelope(ctx, Vec::new(), vec![built.edit], true, Some(revision), Some("Translate Captions".into()))?;
-            let flagged: Vec<serde_json::Value> = built.flagged.iter().map(|f| json!({ "at_secs": f.at_secs, "text": f.text, "why": f.why })).collect();
-            v["track_index"] = json!(built.track_index);
+            if let Some(running) = tr::jobs::running() {
+                return Err(format!("translation {} into {} is running already; follow it with job_status, or cancel_job it", running.id, running.language));
+            }
+            // The app runs it, as its menu does: a job with progress and
+            // cancel, the track added when it is done.
+            let job_id = uuid::Uuid::new_v4().to_string();
+            let mut v = send(AppCommand::TranslateCaptions { track_id, source: from.clone(), target: to.clone(), job_id: job_id.clone() })?;
+            v["job_id"] = json!(job_id);
             v["sentences"] = json!(sentences.len());
-            v["captions"] = json!(translations.len());
-            v["translate_secs"] = json!(started.elapsed().as_secs_f64());
-            v["text"] = json!(format!(
-                "{} captions translated into {language} ({} sentences) on a new subtitle track, index {}; {} to check.",
-                translations.len(), sentences.len(), built.track_index, flagged.len()
-            ));
-            v["flagged"] = json!(flagged);
-            v["next"] = json!("Read the flagged captions and shorten or retime them; undo takes the new track back.");
+            v["text"] = json!(format!("Translating {} sentences into {} as job {job_id}.", sentences.len(), tr::language_name(&to)));
+            v["next"] = json!("Follow it with follow_job or job_status; when it completes its result names the new track and the captions to check. cancel_job stops it.");
             Ok(v)
         }
 

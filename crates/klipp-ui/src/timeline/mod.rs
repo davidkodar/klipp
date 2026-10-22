@@ -751,7 +751,6 @@ mod menu_smoke_tests {
 
     /// A subtitle track with captions offers Translate Captions, and a
     /// pair in it sends that track's command (#2213).
-    #[cfg(feature = "ai-candle")]
     #[test]
     fn a_caption_tracks_menu_translates_it() {
         let mut timeline = Timeline::new();
@@ -771,7 +770,14 @@ mod menu_smoke_tests {
         timeline.frame(vec![egui::Event::PointerMoved(at)]);
         timeline.frame(vec![egui::Event::PointerMoved(at), button(true)]);
         timeline.frame(vec![button(false)]);
-        assert!(timeline.sent.iter().any(|c| matches!(c, AppCommand::TranslateCaptions { track_id: t, source, target } if *t == track_id && source == "en" && target == "de")), "{:?}", timeline.sent);
+        assert!(timeline.sent.iter().any(|c| matches!(c, AppCommand::TranslateCaptions { track_id: t, source, target, .. } if *t == track_id && source == "en" && target == "de")), "{:?}", timeline.sent);
+        // A track without captions doesn't offer it.
+        for _ in 0..2 {
+            timeline.frame(vec![egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]);
+        }
+        let at = timeline.header(TrackKind::Video);
+        let menu = timeline.right_click(at);
+        assert!(!menu.iter().any(|t| t.starts_with("Translate Captions")), "a video track has no captions: {menu:?}");
     }
 
     /// A video track header's Track Effects menu offers Grade in Colour,

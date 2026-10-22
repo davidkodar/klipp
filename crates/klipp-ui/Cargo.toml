@@ -19,7 +19,7 @@ ai-ort-cuda = ["ai-ort", "klipp-ml-ort/cuda", "klipp-analysis/cuda"]
 # Pulls in the candle-backed MobileSAM implementation. Pure-Rust
 # (no C library required at runtime). Auto-registers MobileSAM for
 # Isolate Object (click-to-mask).
-ai-candle = ["dep:klipp-ml-candle", "klipp-ml-candle/candle"]
+ai-candle = ["klipp-ml-candle/candle"]
 # NVIDIA acceleration via candle's CUDA backend.
 ai-candle-cuda = ["ai-candle", "klipp-ml-candle/cuda"]
 
@@ -46,7 +46,7 @@ klipp-export = { workspace = true }
 klipp-render = { workspace = true }
 klipp-ml = { workspace = true }
 klipp-audio-search = { workspace = true }
-klipp-ml-candle = { workspace = true, optional = true }
+klipp-ml-candle = { workspace = true }
 klipp-ml-ort = { workspace = true, optional = true }
 klipp-title = { workspace = true }
 klipp-project = { workspace = true }

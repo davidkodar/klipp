@@ -25,6 +25,7 @@ bitflags    = { workspace = true }
 thiserror   = { workspace = true }
 tracing     = { workspace = true }
 serde_json  = { workspace = true }
+unicode-normalization = "0.1"
 
 # Real ML deps — only present with the `candle` feature. Pinned to a
 # specific minor so the API doesn't shift under us between releases.
