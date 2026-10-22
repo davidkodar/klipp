@@ -674,6 +674,12 @@ impl FrameQueue {
         self.frames.get(1)
     }
 
+    /// The PTS in seconds of the newest frame queued, if any: how far on
+    /// the decoder has got.
+    pub fn newest_pts_secs(&self) -> Option<f64> {
+        self.frames.iter().rev().find(|f| !f.is_eof).map(|f| f.pts_secs())
+    }
+
     /// Get the PTS in seconds of the front frame, or f64::MAX if empty.
     pub fn front_pts_secs(&self) -> f64 {
         self.frames.front().map(|f| f.pts_secs()).unwrap_or(f64::MAX)
