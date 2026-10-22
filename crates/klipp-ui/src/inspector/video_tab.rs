@@ -627,7 +627,7 @@ fn show_clip_video(
             for idx in [ki.saturating_sub(1), ki] {
                 if idx >= kfs.len() { continue; }
                 let (t_in, t_out) = preset.compute_tangents(&kfs, idx);
-                cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: VideoParam::PositionX, keyframe_index: idx, tangent_in: t_in, tangent_out: t_out });
+                cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: VideoParam::PositionX, keyframe_index: idx, tangent_in: t_in, tangent_out: t_out, handles: None });
             }
         }
     }
@@ -663,7 +663,7 @@ fn show_clip_video(
             for idx in [ki.saturating_sub(1), ki] {
                 if idx >= kfs.len() { continue; }
                 let (t_in, t_out) = preset.compute_tangents(&kfs, idx);
-                cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: VideoParam::PositionY, keyframe_index: idx, tangent_in: t_in, tangent_out: t_out });
+                cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: VideoParam::PositionY, keyframe_index: idx, tangent_in: t_in, tangent_out: t_out, handles: None });
             }
         }
     }
@@ -699,7 +699,7 @@ fn show_clip_video(
             for idx in [ki.saturating_sub(1), ki] {
                 if idx >= kfs.len() { continue; }
                 let (t_in, t_out) = preset.compute_tangents(&kfs, idx);
-                cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: VideoParam::Scale, keyframe_index: idx, tangent_in: t_in, tangent_out: t_out });
+                cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: VideoParam::Scale, keyframe_index: idx, tangent_in: t_in, tangent_out: t_out, handles: None });
             }
         }
     }
@@ -735,7 +735,7 @@ fn show_clip_video(
             for idx in [ki.saturating_sub(1), ki] {
                 if idx >= kfs.len() { continue; }
                 let (t_in, t_out) = preset.compute_tangents(&kfs, idx);
-                cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: VideoParam::Rotation, keyframe_index: idx, tangent_in: t_in, tangent_out: t_out });
+                cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: VideoParam::Rotation, keyframe_index: idx, tangent_in: t_in, tangent_out: t_out, handles: None });
             }
         }
     }
@@ -852,7 +852,7 @@ fn show_clip_video(
             for idx in [ki.saturating_sub(1), ki] {
                 if idx >= kfs.len() { continue; }
                 let (t_in, t_out) = preset.compute_tangents(&kfs, idx);
-                cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: VideoParam::Opacity, keyframe_index: idx, tangent_in: t_in, tangent_out: t_out });
+                cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param: VideoParam::Opacity, keyframe_index: idx, tangent_in: t_in, tangent_out: t_out, handles: None });
             }
         }
     }
@@ -3744,7 +3744,7 @@ fn keyframe_controls(
                 continue;
             }
             let (t_in, t_out) = preset.compute_tangents(kfs, idx);
-            cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param, keyframe_index: idx, tangent_in: t_in, tangent_out: t_out });
+            cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param, keyframe_index: idx, tangent_in: t_in, tangent_out: t_out, handles: None });
         }
     }
     if r.keyframe_toggled {

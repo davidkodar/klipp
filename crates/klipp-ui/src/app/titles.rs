@@ -2212,14 +2212,14 @@ impl KlippApp {
                 true
             }
             AppCommand::SetTitleObjectPositionKeyframeTangent {
-                clip_id, object_id, axis, keyframe_index, tangent_in, tangent_out,
+                clip_id, object_id, axis, keyframe_index, tangent_in, tangent_out, handles,
             } => {
                 let old = self.snapshot_title(*clip_id);
                 let param = crate::panels::title_curve::TitleCurveParam::Position(*axis);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            param.set_tangent(td, *object_id, *keyframe_index, *tangent_in, *tangent_out);
+                            param.set_tangent(td, *object_id, *keyframe_index, *tangent_in, *tangent_out, *handles);
                         }
                     }
                 }
@@ -3277,14 +3277,14 @@ impl KlippApp {
                 true
             }
             AppCommand::SetTitleObjectEffectKeyframeTangent {
-                clip_id, object_id, param_key, keyframe_index, tangent_in, tangent_out,
+                clip_id, object_id, param_key, keyframe_index, tangent_in, tangent_out, handles,
             } => {
                 let old = self.snapshot_title(*clip_id);
                 let param = crate::panels::title_curve::TitleCurveParam::Effect(param_key.clone());
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            param.set_tangent(td, *object_id, *keyframe_index, *tangent_in, *tangent_out);
+                            param.set_tangent(td, *object_id, *keyframe_index, *tangent_in, *tangent_out, *handles);
                         }
                     }
                 }

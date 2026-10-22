@@ -831,7 +831,15 @@ impl CurveEditorPanel {
         }
 
         // Get keyframes (read-only snapshot)
-        let keyframes: Vec<Keyframe> = self.get_keyframes(state, clip_id);
+        // Each key's handles drawn, taken and dragged where its kind puts
+        // them, as the curve is evaluated (#2273).
+        let mut keyframes: Vec<Keyframe> = self.get_keyframes(state, clip_id);
+        let shown: Vec<_> = (0..keyframes.len()).map(|i| klipp_core::keyframe::handles_at(&keyframes, i)).collect();
+        for (k, (tangent_in, tangent_out)) in keyframes.iter_mut().zip(shown) {
+            k.tangent_in = tangent_in;
+            k.tangent_out = tangent_out;
+        }
+        let keyframes = keyframes;
 
         // ── Interaction (scroll/zoom) ──
         let graph_response = ui.allocate_rect(graph_rect, egui::Sense::click_and_drag());
@@ -1959,11 +1967,7 @@ impl CurveEditorPanel {
                                 let handle_v = self.y_to_value(pos.y, graph_rect, v_min, v_range);
                                 let dt = handle_t - kf.time_secs;
                                 let dv = handle_v - kf.value;
-                                let (tangent_in, tangent_out) = if is_out {
-                                    (None, Some((dt, dv)))
-                                } else {
-                                    (Some((dt, dv)), None)
-                                };
+                                let (tangent_in, tangent_out, handles) = dragged_handles(kf, is_out, (dt, dv));
                                 match self.param() {
                                     CurveParam::Audio(p) => {
                                         cmds.push(AppCommand::SetAudioKeyframeTangent {
@@ -1972,6 +1976,7 @@ impl CurveEditorPanel {
                                             keyframe_index: kf_idx,
                                             tangent_in,
                                             tangent_out,
+                                            handles,
                                         });
                                     }
                                     CurveParam::Video(p) => {
@@ -1981,12 +1986,13 @@ impl CurveEditorPanel {
                                             keyframe_index: kf_idx,
                                             tangent_in,
                                             tangent_out,
+                                            handles,
                                         });
                                     }
-                                    CurveParam::Title { object_id, param } => cmds.push(param.tangent(clip_id, *object_id, kf_idx, tangent_in, tangent_out)),
+                                    CurveParam::Title { object_id, param } => cmds.push(param.tangent(clip_id, *object_id, kf_idx, tangent_in, tangent_out, handles)),
                                     CurveParam::AudioEffect(_) => {
                                         if let KeyframeParamKind::AudioEffect { effect_index, param_name } = self.param_to_kind() {
-                                            cmds.push(AppCommand::SetAudioEffectKeyframeTangent { clip_id, effect_index, param_name, keyframe_index: kf_idx, tangent_in, tangent_out });
+                                            cmds.push(AppCommand::SetAudioEffectKeyframeTangent { clip_id, effect_index, param_name, keyframe_index: kf_idx, tangent_in, tangent_out, handles });
                                         }
                                     }
                                     CurveParam::Speed
@@ -2232,6 +2238,25 @@ impl CurveEditorPanel {
             (CurveParam::Node { path: a, key: k, .. }, KeyframeParamKind::Node { path: b, key: l }) => a == b && k == l,
             (CurveParam::Mask { track: a, .. }, KeyframeParamKind::Mask(b)) => a == b,
             _ => false,
+        }
+    }
+}
+
+/// A handle of `kf` (its handles as drawn) dragged to `to`: the handles
+/// to write and the kind the key takes (#2273). A Broken key's handle
+/// moves on its own, as before; a Linear In or Out key's becomes Broken;
+/// any other kind becomes Aligned, the other handle turned into line with
+/// the dragged one, its length in time kept.
+fn dragged_handles(kf: &Keyframe, is_out: bool, to: (f64, f32)) -> (Option<(f64, f32)>, Option<(f64, f32)>, Option<klipp_core::Handles>) {
+    use klipp_core::Handles;
+    let one = |handles| if is_out { (None, Some(to), handles) } else { (Some(to), None, handles) };
+    match kf.handles {
+        Handles::Broken => one(None),
+        Handles::LinearIn | Handles::LinearOut => one(Some(Handles::Broken)),
+        Handles::Aligned | Handles::Auto | Handles::Clamped | Handles::Flat => {
+            let other = if is_out { kf.tangent_in } else { kf.tangent_out };
+            let other = if to.0.abs() > 1e-9 { (other.0, (to.1 as f64 * other.0 / to.0) as f32) } else { other };
+            if is_out { (Some(other), Some(to), Some(Handles::Aligned)) } else { (Some(to), Some(other), Some(Handles::Aligned)) }
         }
     }
 }

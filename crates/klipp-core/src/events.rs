@@ -3340,14 +3340,14 @@ pub enum AppCommand {
     RemoveAudioKeyframe { clip_id: ClipId, param: AudioParam, time_secs: f64 },
     MoveAudioKeyframe { clip_id: ClipId, param: AudioParam, index: usize, new_time_secs: f64, new_value: f32 },
     SetAudioKeyframeInterpolation { clip_id: ClipId, param: AudioParam, keyframe_index: usize, interpolation: crate::keyframe::Interpolation },
-    SetAudioKeyframeTangent { clip_id: ClipId, param: AudioParam, keyframe_index: usize, tangent_in: Option<(f64, f32)>, tangent_out: Option<(f64, f32)> },
+    SetAudioKeyframeTangent { clip_id: ClipId, param: AudioParam, keyframe_index: usize, tangent_in: Option<(f64, f32)>, tangent_out: Option<(f64, f32)>, handles: Option<crate::keyframe::Handles> },
 
     // Video keyframes
     AddVideoKeyframe { clip_id: ClipId, param: VideoParam, time_secs: f64, value: f32 },
     RemoveVideoKeyframe { clip_id: ClipId, param: VideoParam, time_secs: f64 },
     MoveVideoKeyframe { clip_id: ClipId, param: VideoParam, index: usize, new_time_secs: f64, new_value: f32 },
     SetVideoKeyframeInterpolation { clip_id: ClipId, param: VideoParam, keyframe_index: usize, interpolation: crate::keyframe::Interpolation },
-    SetVideoKeyframeTangent { clip_id: ClipId, param: VideoParam, keyframe_index: usize, tangent_in: Option<(f64, f32)>, tangent_out: Option<(f64, f32)> },
+    SetVideoKeyframeTangent { clip_id: ClipId, param: VideoParam, keyframe_index: usize, tangent_in: Option<(f64, f32)>, tangent_out: Option<(f64, f32)>, handles: Option<crate::keyframe::Handles> },
 
     // Per-effect title keyframes — animate any keyframable param on
     // any TitleObject's effect (TextGlow radius/intensity today, more
@@ -3383,6 +3383,9 @@ pub enum AppCommand {
         keyframe_index: usize,
         tangent_in: Option<(f64, f32)>,
         tangent_out: Option<(f64, f32)>,
+        /// The key's handle kind, set before the handles given
+        /// ([`crate::keyframe::edit_handles`]).
+        handles: Option<crate::keyframe::Handles>,
     },
     /// Key a title layer's colour at `time_secs` on all four of its
     /// channels at once, or (`color` None) take that key from all four:
@@ -3447,6 +3450,9 @@ pub enum AppCommand {
         keyframe_index: usize,
         tangent_in: Option<(f64, f32)>,
         tangent_out: Option<(f64, f32)>,
+        /// The key's handle kind, set before the handles given
+        /// ([`crate::keyframe::edit_handles`]).
+        handles: Option<crate::keyframe::Handles>,
     },
     SetTitleObjectPositionKeyframeInterpolation {
         clip_id: ClipId,
@@ -3873,6 +3879,9 @@ pub enum AppCommand {
         keyframe_index: usize,
         tangent_in: Option<(f64, f32)>,
         tangent_out: Option<(f64, f32)>,
+        /// The key's handle kind, set before the handles given
+        /// ([`crate::keyframe::edit_handles`]).
+        handles: Option<crate::keyframe::Handles>,
     },
     /// Copy a single audio-effect param's keyframe vec into the
     /// clipboard so the user can paste it onto another (clip, effect,

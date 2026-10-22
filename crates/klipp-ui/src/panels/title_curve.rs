@@ -23,7 +23,8 @@ impl TitleCurveParam {
         }
     }
 
-    /// Apply handles without changing the opposite handle, time, or value.
+    /// Apply handles without changing the opposite handle, time, or value;
+    /// a handle kind given is set first ([`klipp_core::keyframe::edit_handles`]).
     pub fn set_tangent(
         &self,
         title: &mut klipp_timeline::TitleData,
@@ -31,6 +32,7 @@ impl TitleCurveParam {
         index: usize,
         tangent_in: Option<(f64, f32)>,
         tangent_out: Option<(f64, f32)>,
+        handles: Option<klipp_core::Handles>,
     ) {
         let Some(object) = title.object_mut(TitleObjectId(object_id)) else {
             return;
@@ -44,14 +46,7 @@ impl TitleCurveParam {
                 keyframes
             }
         };
-        if let Some(kf) = keyframes.get_mut(index) {
-            if let Some(tangent) = tangent_in {
-                kf.tangent_in = tangent;
-            }
-            if let Some(tangent) = tangent_out {
-                kf.tangent_out = tangent;
-            }
-        }
+        klipp_core::keyframe::edit_handles(keyframes, index, tangent_in, tangent_out, handles);
     }
 
     pub fn label(&self) -> String {
@@ -207,6 +202,7 @@ impl TitleCurveParam {
         keyframe_index: usize,
         tangent_in: Option<(f64, f32)>,
         tangent_out: Option<(f64, f32)>,
+        handles: Option<klipp_core::Handles>,
     ) -> AppCommand {
         match self {
             Self::Position(axis) => AppCommand::SetTitleObjectPositionKeyframeTangent {
@@ -216,6 +212,7 @@ impl TitleCurveParam {
                 keyframe_index,
                 tangent_in,
                 tangent_out,
+                handles,
             },
             Self::Effect(key) => AppCommand::SetTitleObjectEffectKeyframeTangent {
                 clip_id,
@@ -224,6 +221,7 @@ impl TitleCurveParam {
                 keyframe_index,
                 tangent_in,
                 tangent_out,
+                handles,
             },
         }
     }
@@ -356,7 +354,7 @@ mod tests {
         ] {
             let (old, id) = animated_title();
             let mut new = old.clone();
-            param.set_tangent(&mut new, id, 0, None, Some((0.6, 0.0)));
+            param.set_tangent(&mut new, id, 0, None, Some((0.6, 0.0)), None);
             let mut clip = Clip::gap(
                 Timecode::from_secs_f64(0.0, 24),
                 Timecode::from_secs_f64(1.0, 24),
@@ -402,6 +400,7 @@ mod tests {
             0,
             None,
             Some((0.3, 3.0)),
+            None,
         );
         TitleCurveParam::Effect("glow.99.radius".into()).set_tangent(
             &mut title,
@@ -409,6 +408,7 @@ mod tests {
             0,
             None,
             Some((0.3, 3.0)),
+            None,
         );
         TitleCurveParam::Position(TitlePositionAxis::X).set_tangent(
             &mut title,
@@ -416,6 +416,7 @@ mod tests {
             99,
             None,
             Some((0.3, 3.0)),
+            None,
         );
         assert_eq!(title, old);
         TitleCurveParam::Effect("glow.1.radius".into()).set_tangent(
@@ -424,6 +425,7 @@ mod tests {
             0,
             None,
             Some((0.3, 3.0)),
+            None,
         );
         assert_eq!(title.objects[0].transform, old.objects[0].transform);
         assert!(title.objects[0].effect_keyframes_for("glow.0.radius").unwrap().is_empty());

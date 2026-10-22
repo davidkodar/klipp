@@ -2453,6 +2453,7 @@ impl TimelinePanel {
                                                     keyframe_index: idx,
                                                     tangent_in: t_in,
                                                     tangent_out: t_out,
+                                                    handles: None,
                                                 });
                                             }
                                             crate::state::KeyframeParamKind::Video(param) => {
@@ -2462,9 +2463,10 @@ impl TimelinePanel {
                                                     keyframe_index: idx,
                                                     tangent_in: t_in,
                                                     tangent_out: t_out,
+                                                    handles: None,
                                                 });
                                             }
-                                            crate::state::KeyframeParamKind::Title { object_id, param } => { cmds.push(param.tangent(m.clip_id, *object_id, idx, t_in, t_out)); }
+                                            crate::state::KeyframeParamKind::Title { object_id, param } => { cmds.push(param.tangent(m.clip_id, *object_id, idx, t_in, t_out, None)); }
                                             crate::state::KeyframeParamKind::Node { .. } => {}
                                             crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
                                                 cmds.push(AppCommand::SetAudioEffectKeyframeTangent {
@@ -2474,6 +2476,7 @@ impl TimelinePanel {
                                                     keyframe_index: idx,
                                                     tangent_in: t_in,
                                                     tangent_out: t_out,
+                                                    handles: None,
                                                 });
                                             }
                                         }
@@ -2575,6 +2578,26 @@ impl TimelinePanel {
                                     }
                                     if batch { cmds.push(AppCommand::EndHistoryBatch); }
                                     close_menu = true;
+                                }
+                            }
+
+                            // How the key's handles are made (#2273), each
+                            // target key's, one step. A mask's key has none.
+                            if !matches!(ctx_menu.param_kind, crate::state::KeyframeParamKind::Mask(_)) {
+                                ui.separator();
+                                ui.label(egui::RichText::new("Handles").small().strong());
+                                let current = menu_lane_keys(state, ctx_menu).and_then(|k| k.get(ctx_menu.keyframe_index).map(|k| k.handles));
+                                for (handles, label) in klipp_core::Handles::ALL {
+                                    let text = egui::RichText::new(format!("  {label}"));
+                                    let text = if current == Some(handles) { text.strong() } else { text };
+                                    if ui.add(egui::Button::new(text).frame(false)).clicked() {
+                                        cmds.push(AppCommand::BeginHistoryBatch);
+                                        for m in &targets {
+                                            cmds.extend(key_handles_commands(state, m, handles));
+                                        }
+                                        cmds.push(AppCommand::EndHistoryBatch);
+                                        close_menu = true;
+                                    }
                                 }
                             }
 
@@ -15950,6 +15973,7 @@ impl TimelinePanel {
                                     keyframe_index: drag_vbh.keyframe_index,
                                     tangent_in: ti_arg,
                                     tangent_out: to_arg,
+                                    handles: None,
                                 });
 
                                 // Live tangent readout tooltip
@@ -16062,6 +16086,7 @@ impl TimelinePanel {
                                     keyframe_index: drag_bh.keyframe_index,
                                     tangent_in: ti_arg,
                                     tangent_out: to_arg,
+                                    handles: None,
                                 });
 
                                 // Live tangent readout tooltip
@@ -16599,6 +16624,7 @@ impl TimelinePanel {
                 keyframe_index: drag.keyframe_index,
                 tangent_in,
                 tangent_out,
+                handles: None,
             });
             break;
         }
@@ -19795,6 +19821,55 @@ mod track_height_cap_tests {
         assert_eq!(resized_track_height(100.0, 50.0, &prefs(250.0)), 150.0, "under the cap: as dragged");
         assert_eq!(resized_track_height(100.0, -500.0, &prefs(250.0)), MIN_TRACK_HEIGHT);
         assert_eq!(track_height_cap(&crate::prefs::TimelinePrefs::default()), MAX_TRACK_HEIGHT, "the default is the old fixed cap");
+    }
+}
+
+/// The keys of the lane a key menu was opened on, as the clip holds them;
+/// `None` for a clip that is gone.
+pub(crate) fn menu_lane_keys(state: &AppState, m: &KeyframeContextMenu) -> Option<Vec<klipp_core::Keyframe>> {
+    use crate::state::KeyframeParamKind as K;
+    let clip = state.sequence().all_clips().find(|c| c.id == m.clip_id)?;
+    Some(match &m.param_kind {
+        K::Mask(track) => crate::mask_tracks::keys(clip, track),
+        K::Audio(klipp_core::AudioParam::Volume) => clip.volume_keyframes.clone(),
+        K::Audio(klipp_core::AudioParam::Pan) => clip.pan_keyframes.clone(),
+        K::Audio(klipp_core::AudioParam::Gain) => clip.gain_keyframes.clone(),
+        K::Video(p) => crate::inspector::placement_by_path::param_keys(clip, *p),
+        K::Title { object_id, param } => param.keyframes(clip, *object_id).to_vec(),
+        K::Node { path, key } => clip.node_key_state(path, key).map(|s| s.keys).unwrap_or_default(),
+        K::AudioEffect { effect_index, param_name } => clip.audio_effect_keyframes.get(&format!("{effect_index}:{param_name}")).cloned().unwrap_or_default(),
+    })
+}
+
+/// The commands that give the menu's key the handle kind `handles`
+/// ([`klipp_core::keyframe::set_handles`]), as one step: a sound lane's
+/// write held as a key drag's, a node's keys put back by path where the
+/// kind changed them. Nothing for a mask's key, which has no handles.
+pub(crate) fn key_handles_commands(state: &AppState, m: &KeyframeContextMenu, handles: klipp_core::Handles) -> Vec<AppCommand> {
+    use crate::state::KeyframeParamKind as K;
+    let (clip_id, keyframe_index, h) = (m.clip_id, m.keyframe_index, Some(handles));
+    let held = |cmd: AppCommand| {
+        let key = format!("kf:handles:{}", clip_id.0);
+        vec![AppCommand::BeginKeyframeDrag { key: key.clone(), clip_id }, cmd, AppCommand::EndKeyframeDrag { key, clip_id }]
+    };
+    match &m.param_kind {
+        K::Mask(_) => Vec::new(),
+        K::Audio(param) => held(AppCommand::SetAudioKeyframeTangent { clip_id, param: *param, keyframe_index, tangent_in: None, tangent_out: None, handles: h }),
+        K::AudioEffect { effect_index, param_name } => held(AppCommand::SetAudioEffectKeyframeTangent { clip_id, effect_index: *effect_index, param_name: param_name.clone(), keyframe_index, tangent_in: None, tangent_out: None, handles: h }),
+        K::Video(param) => vec![AppCommand::SetVideoKeyframeTangent { clip_id, param: *param, keyframe_index, tangent_in: None, tangent_out: None, handles: h }],
+        K::Title { object_id, param } => vec![param.tangent(clip_id, *object_id, keyframe_index, None, None, h)],
+        K::Node { path, key } => {
+            let Some(keys) = menu_lane_keys(state, m) else { return Vec::new() };
+            let mut want = keys.clone();
+            klipp_core::keyframe::set_handles(&mut want, keyframe_index, handles);
+            let puts: Vec<AppCommand> = want.iter().zip(&keys).filter(|(w, k)| w != k).filter_map(|(w, _)| {
+                Some(AppCommand::AddKeyAt { addr: path.clone(), key: key.clone(), keyframe: serde_json::to_value(w).ok()? })
+            }).collect();
+            match state.sequence().all_clips().find(|c| c.id == clip_id) {
+                Some(clip) => crate::inspector::stack_view::route_placed(clip, puts),
+                None => puts,
+            }
+        }
     }
 }
 

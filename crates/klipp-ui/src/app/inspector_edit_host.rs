@@ -203,18 +203,11 @@ impl InspectorEditHost<'_> {
                     self.state.dirty = true;
                     true
                 }
-                AppCommand::SetVideoKeyframeTangent { clip_id, param, keyframe_index, tangent_in, tangent_out } => {
+                AppCommand::SetVideoKeyframeTangent { clip_id, param, keyframe_index, tangent_in, tangent_out, handles } => {
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
                             clip.edit_video_param_keyframes(*param, |keyframes| {
-                                if let Some(kf) = keyframes.get_mut(*keyframe_index) {
-                                    if let Some(ti) = tangent_in {
-                                        kf.tangent_in = *ti;
-                                    }
-                                    if let Some(to) = tangent_out {
-                                        kf.tangent_out = *to;
-                                    }
-                                }
+                                klipp_core::keyframe::edit_handles(keyframes, *keyframe_index, *tangent_in, *tangent_out, *handles);
                             });
                             break;
                         }
