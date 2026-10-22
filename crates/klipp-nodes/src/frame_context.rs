@@ -111,6 +111,12 @@ pub struct LinearFrame {
 pub trait GpuFramePixels: Send + Sync {
     fn buffer(&self) -> &wgpu::Buffer;
     fn read(&self) -> std::sync::Arc<Vec<f32>>;
+    /// Whether [`Self::buffer`] holds sRGB bytes, 4 a pixel, rather than
+    /// linear floats: a viewer stream's decoded frame. The chain decodes
+    /// it to linear into a buffer of its own before binding it.
+    fn srgb8(&self) -> bool {
+        false
+    }
 }
 
 /// A source frame on the GPU (#1988), as [`SourceProvider::linear_on_gpu`]

@@ -1274,6 +1274,9 @@ pub struct PlaybackEngine {
     held_scope: Option<(PlaybackState, Option<klipp_core::ClipId>)>,
     /// Whether [`Self::neighbour_hold`] is used (`set_neighbour_hold`).
     hold_neighbours: bool,
+    /// The primary frame the last render drew, with its clip: the next
+    /// frame's neighbour before for a temporal denoise on the GPU (#1988).
+    previous_primary: Option<(klipp_core::ClipId, streams::HeldFrame)>,
     /// Renders every frame the viewer shows off the fast paths — the same
     /// renderer, and rules, export uses. Owns the node-graph executor and
     /// GPU effects pipeline the fast paths drive too.
@@ -2253,6 +2256,7 @@ impl PlaybackEngine {
             neighbour_hold: Default::default(),
             held_scope: None,
             hold_neighbours: true,
+            previous_primary: None,
             renderer: klipp_compose::Renderer::new(ofx_host, title_renderer),
             titles_warmed: std::collections::HashSet::new(),
             titles_warm_checked: std::time::Instant::now(),

@@ -80,7 +80,32 @@ impl klipp_compose::GpuPixels for GpuHeld {
     }
 }
 
+/// A held frame's sRGB bytes on the GPU, as a temporal denoise's
+/// neighbour (#1988): the chain decodes them to linear on the GPU.
+impl klipp_nodes::frame_context::GpuFramePixels for GpuHeld {
+    fn buffer(&self) -> &wgpu::Buffer {
+        &self.frame.rgba_buffer
+    }
+
+    fn read(&self) -> Arc<Vec<f32>> {
+        klipp_compose::GpuPixels::read(self)
+    }
+
+    fn srgb8(&self) -> bool {
+        true
+    }
+}
+
 impl HeldFrame {
+    /// The frame as a temporal denoise's neighbour on the GPU, where the
+    /// decoder left it there as sRGB bytes (#1988); `None` for any other.
+    pub fn gpu_neighbour(&self) -> Option<Arc<dyn klipp_nodes::frame_context::GpuFramePixels>> {
+        match &self.pixels {
+            Held::Gpu(g) => Some(Arc::clone(g) as Arc<dyn klipp_nodes::frame_context::GpuFramePixels>),
+            _ => None,
+        }
+    }
+
     fn new(pixels: Held, width: u32, height: u32, pts: Option<f64>) -> Self {
         Self { width, height, pts, pixels, linear: OnceLock::new(), codes: OnceLock::new(), pregrade: None }
     }
@@ -238,6 +263,9 @@ struct ClipStream {
     decoder: Option<VideoDecoder>,
     /// The latest frame at or before `target`.
     held: Option<HeldFrame>,
+    /// The frame `held` replaced as the stream played on: a temporal
+    /// denoise's neighbour before (#1988). None after a seek.
+    previous: Option<HeldFrame>,
     /// The source time last asked for.
     target: f64,
     /// A seek to this time is in flight: queued frames from before it are
@@ -265,7 +293,7 @@ impl ClipStream {
         }
         decoder.resume();
         debug!("clip stream opened for {:?} at {target:.3}s", want.clip);
-        Some(Self { decoder: Some(decoder), held: None, target, seeking: Some(target), ended: false, held_from_seek: false, ahead: want.ahead })
+        Some(Self { decoder: Some(decoder), held: None, previous: None, target, seeking: Some(target), ended: false, held_from_seek: false, ahead: want.ahead })
     }
 
     fn dec(&self) -> &VideoDecoder {
@@ -310,6 +338,7 @@ impl ClipStream {
             if self.seeking.is_some() {
                 // The first frame of the seek: the nearest there is.
                 self.seeking = None;
+                self.previous = None;
                 self.held = q.pop().map(HeldFrame::from_frame);
                 self.held_from_seek = true;
                 continue;
@@ -317,6 +346,7 @@ impl ClipStream {
             if pts > self.target + half_frame {
                 break;
             }
+            self.previous = self.held.take();
             self.held = q.pop().map(HeldFrame::from_frame);
             self.held_from_seek = false;
         }
@@ -665,6 +695,12 @@ impl ClipStreams {
         self.streams.get(&clip)?.held.as_ref()
     }
 
+    /// The frame `clip`'s stream held before its current one, as it played
+    /// on (#1988).
+    pub fn previous_frame(&self, clip: ClipId) -> Option<&HeldFrame> {
+        self.streams.get(&clip)?.previous.as_ref()
+    }
+
     /// A copy of the frame after `clip`'s held one, if it is decoded.
     pub fn next_frame(&self, clip: ClipId) -> Option<HeldFrame> {
         let s = self.streams.get(&clip)?;
@@ -686,7 +722,7 @@ impl ClipStreams {
     /// `held` is the frame the decoder gave at the cut, when the caller
     /// took it from the queue (#1494).
     pub fn adopt(&mut self, clip: ClipId, decoder: VideoDecoder, source_secs: f64, held: Option<HeldFrame>) {
-        self.streams.insert(clip, ClipStream { decoder: Some(decoder), held, target: source_secs.max(0.0), seeking: None, ended: false, held_from_seek: false, ahead: false });
+        self.streams.insert(clip, ClipStream { decoder: Some(decoder), held, previous: None, target: source_secs.max(0.0), seeking: None, ended: false, held_from_seek: false, ahead: false });
     }
 
     /// `clip`'s decoder, open and seeked where its stream is, and the frame
