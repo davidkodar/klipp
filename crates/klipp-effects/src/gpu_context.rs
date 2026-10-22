@@ -18,6 +18,40 @@
 
 use tracing::info;
 
+/// The limits Klipp asks a device for, the engine's and the UI's alike
+/// (#2341): wgpu's defaults, but the adapter's own largest buffer and
+/// storage binding. The defaults cap a binding at 128 MiB and a buffer at
+/// 256 MiB, under an 8K frame of four floats a pixel (~510 MiB); what an
+/// adapter offers is granted, so asking for it can't fail. The GL backend
+/// starts from the WebGL2 defaults, as egui's own descriptor did, and
+/// textures go to 8192 for a 4K+ surface's depth buffer.
+pub fn device_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
+    let base = if adapter.get_info().backend == wgpu::Backend::Gl {
+        wgpu::Limits::downlevel_webgl2_defaults()
+    } else {
+        wgpu::Limits::default()
+    };
+    let offered = adapter.limits();
+    wgpu::Limits {
+        max_texture_dimension_2d: base.max_texture_dimension_2d.max(8192),
+        max_storage_buffer_binding_size: offered.max_storage_buffer_binding_size,
+        max_buffer_size: offered.max_buffer_size,
+        ..base
+    }
+}
+
+/// Log the buffer limits `device` was granted, so a frame too large for
+/// them can be told from a bug.
+fn log_granted_limits(device: &wgpu::Device) {
+    let l = device.limits();
+    info!(
+        "GpuContext limits: storage binding {} MiB, buffer {} MiB, texture 2D {}",
+        l.max_storage_buffer_binding_size >> 20,
+        l.max_buffer_size >> 20,
+        l.max_texture_dimension_2d
+    );
+}
+
 /// Bundled wgpu device + queue. Held behind `Arc` so handles can be
 /// shared across the decoder thread, the engine thread, and the UI
 /// thread without cloning the underlying wgpu resources.
@@ -84,13 +118,14 @@ impl GpuContext {
             &wgpu::DeviceDescriptor {
                 label: Some("klipp-shared"),
                 required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
+                required_limits: device_limits(&adapter),
                 ..Default::default()
             },
             None,
         ))
         .ok()?;
         drop(_loading);
+        log_granted_limits(&device);
 
         let device_lost = register_device_callbacks(&device);
 
@@ -114,6 +149,7 @@ impl GpuContext {
         device: std::sync::Arc<wgpu::Device>,
         queue: std::sync::Arc<wgpu::Queue>,
     ) -> Self {
+        log_granted_limits(&device);
         let device_lost = register_device_callbacks(&device);
         Self { device, queue, device_lost, adapter_info: None }
     }
