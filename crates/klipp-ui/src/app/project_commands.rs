@@ -235,65 +235,13 @@ impl KlippApp {
         true
     }
 
-    /// Make sequence `sequence_idx` the one shown, as its tab does: its tab
-    /// opened, this playhead kept on the sequence left and the other's
-    /// taken back, playback stopped, the engine given the sequence. A tab
-    /// clears the selection and the way back out of a compound clip;
-    /// `keep_view` keeps them, for a stacked timeline that brings its own
-    /// (#82).
+    /// Make sequence `sequence_idx` the one shown, as its tab does
+    /// ([`crate::state::AppState::switch_sequence`]), then stop playback
+    /// and give the engine the sequence.
     fn switch_active_sequence(&mut self, sequence_idx: usize, keep_view: bool) {
-        // Switching to a sequence opens its tab again (#906).
-        if let Some(seq) = self.state.sequences.get(sequence_idx) {
-            let id = seq.id;
-            self.state.closed_sequence_tabs.remove(&id);
-        }
-        if sequence_idx < self.state.sequences.len()
-            && sequence_idx != self.state.active_sequence_idx
-        {
-            // Save current playhead to outgoing sequence
-            let playhead_rt = klipp_core::RationalTime {
-                value: self.state.playhead.value,
-                rate: self.state.playhead.rate,
-            };
-            self.state.sequences[self.state.active_sequence_idx].last_playhead =
-                Some(playhead_rt);
-            // If a parameter drag was in flight on the outgoing
-            // sequence, abandon the pending coalesce envelope —
-            // the user can't possibly finish that drag here.
-            // Without this, the next push on the outgoing
-            // sequence's stack would silently clobber the
-            // pending entry on whatever sequence becomes active
-            // next.
-            self.state.active_history_mut().abandon_pending_drag();
-            // A tab is another sequence, not a step out of an opened
-            // compound clip: the way back to its parents is
-            // dropped, so the breadcrumb and Ctrl+Up never lead into
-            // a sequence it no longer sits in (#910).
-            self.state.compound_clip_stack.clear();
-            // Switch
-            self.state.active_sequence_idx = sequence_idx;
-            // Restore playhead from incoming sequence
-            let seq_rate = self.state.sequences[sequence_idx].fps.rate();
-            let restored = self.state.sequences[sequence_idx]
-                .last_playhead
-                .map(|rt| Timecode { value: rt.value, rate: rt.rate })
-                .unwrap_or(klipp_core::RationalTime::from_frames(0, seq_rate));
-            self.state.playhead = restored;
-            self.state.playhead_smooth_secs = restored.to_secs_f64();
-            self.state.playhead_anchor = restored;
-            self.state.playhead_anchor_wall = std::time::Instant::now();
-            self.state.playhead_speed = 1.0;
-            // Sync fps
-            self.state.fps = self.state.sequences[sequence_idx].fps;
-            // Stop playback
+        if self.state.switch_sequence(sequence_idx, keep_view) {
             self.cmd_tx.send(AppCommand::Stop).ok();
             self.sync_sequence_to_engine();
-            // Clear selection, unless the timeline brings its own.
-            if !keep_view {
-                self.state.selected_clip = None;
-                self.state.selected_clips.clear();
-                self.state.hovered_clip = None;
-            }
         }
     }
 
