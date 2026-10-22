@@ -497,7 +497,7 @@ impl CurveEditorPanel {
             ui.painter().text(
                 graph_rect.center(),
                 egui::Align2::CENTER_CENTER,
-                "Select a clip to view its keyframe curves",
+                "Select a clip to see its keyframes",
                 egui::FontId::proportional(12.0),
                 theme.text_dim,
             );
@@ -709,9 +709,9 @@ impl CurveEditorPanel {
         if let Some((duration, name, kind)) = self.find_selected_clip(state) {
             return Some(CurveScope::Clip { id: state.selected_clip?, duration, name, kind });
         }
-        let camera_in_view = state.show_camera_lane
-            || camera_lane::has_keys(&state.sequence().camera)
-            || matches!(self.param, CurveParam::Camera(_));
+        // Only a camera that moves, or whose lane is open: an empty one
+        // is a flat line that reads as the clip's curves missing.
+        let camera_in_view = state.show_camera_lane || camera_lane::has_keys(&state.sequence().camera);
         if state.selected_clip.is_none() && camera_in_view {
             return Some(CurveScope::Sequence { duration: state.sequence_duration().to_secs_f64() });
         }
