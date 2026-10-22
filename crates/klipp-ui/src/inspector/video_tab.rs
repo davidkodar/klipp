@@ -4098,7 +4098,8 @@ mod row_style_tests {
         let cmds = click(right_control(&texts, "Fade from colour", 16.0), &mut draw);
         assert!(matches!(cmds.as_slice(), [AppCommand::AddBuiltinEffect { effect: BuiltinEffect::ColorFade { mode: klipp_effects::ColorFadeMode::In, .. }, .. }]), "{cmds:?}");
 
-        let cmds = click(right_control(&texts, "Position X", 8.0), &mut draw);
+        // The diamond, left of the next-key arrow's room every keyable row keeps.
+        let cmds = click(right_control(&texts, "Position X", 8.0 + 16.0 + 4.0), &mut draw);
         assert!(cmds.iter().any(|c| matches!(c, AppCommand::AddVideoKeyframe { param: VideoParam::PositionX, .. })), "{cmds:?}");
 
         // The blend mode's menu, opened from its row's right-hand side,

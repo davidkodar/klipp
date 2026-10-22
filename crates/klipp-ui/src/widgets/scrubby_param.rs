@@ -65,12 +65,25 @@ pub struct KeyframeState {
     pub current_interpolation: Option<klipp_core::Interpolation>,
 }
 
-/// A previous or next key arrow, `nav_arrow_width` wide: dim and inert
-/// with no key that way. Whether it was clicked.
+/// How wide a previous or next key arrow is: a target a finger of the
+/// pointer can find.
+const NAV_ARROW_W: f32 = 16.0;
+
+/// A previous or next key arrow, [`NAV_ARROW_W`] wide: dim, still seen,
+/// and inert with no key that way; its tip says which. Whether it was
+/// clicked.
 fn nav_arrow(ui: &mut egui::Ui, has_key: bool, icon: Icon) -> bool {
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(10.0, 18.0), if has_key { egui::Sense::click() } else { egui::Sense::hover() });
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(NAV_ARROW_W, 18.0), if has_key { egui::Sense::click() } else { egui::Sense::hover() });
+    let next = matches!(icon, Icon::CaretRight);
+    let tip = match (next, has_key) {
+        (true, true) => "Next key",
+        (false, true) => "Previous key",
+        (true, false) => "No key after the playhead",
+        (false, false) => "No key before the playhead",
+    };
+    let resp = resp.on_hover_text(tip);
     let colour = if !has_key {
-        egui::Color32::from_rgb(60, 60, 65)
+        egui::Color32::from_rgb(95, 95, 100)
     } else if resp.hovered() {
         ui.visuals().selection.stroke.color
     } else {
@@ -94,8 +107,10 @@ fn paint_diamond(ui: &egui::Ui, resp: &egui::Response, keyframe_state: Option<&K
             let c = if hovered { ui.visuals().selection.stroke.color.gamma_multiply(1.25) } else { ui.visuals().selection.stroke.color };
             (c, true, 0.0_f32)
         } else if ks.has_any_keyframes {
+            // Animated, between keys: the accent's outline, thin enough to
+            // read as hollow beside a key's filled diamond.
             let c = if hovered { ui.visuals().selection.stroke.color.gamma_multiply(1.25) } else { ui.visuals().selection.stroke.color };
-            (c, false, 1.8_f32)
+            (c, false, 1.1_f32)
         } else {
             let c = if hovered { egui::Color32::from_rgb(180, 180, 185) } else { egui::Color32::from_rgb(100, 100, 105) };
             (c, false, 1.2_f32)
@@ -421,9 +436,12 @@ fn scrubby_row(
         let available = ui.available_width();
         let value_width = 70.0;
         let icon_width = 18.0;
-        let nav_arrow_width = 10.0; // per arrow
+        let nav_arrow_width = NAV_ARROW_W; // per arrow
         let diamond_width = 16.0;
-        let has_nav = keyframe_state.as_ref().is_some_and(|ks| ks.has_any_keyframes);
+        // Every keyable row keeps the arrows' room, animated or not, so the
+        // values and diamonds of a column line up.
+        let has_nav = keyframe_state.is_some();
+        let animated = keyframe_state.as_ref().is_some_and(|ks| ks.has_any_keyframes);
         let item_spacing = ui.spacing().item_spacing.x;
         let nav_total = if has_nav { nav_arrow_width * 2.0 } else { 0.0 };
         // Right cluster contains: value + reset + (prev arrow if has_nav) + diamond + (next arrow if has_nav).
@@ -505,7 +523,9 @@ fn scrubby_row(
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             // Next keyframe arrow (rightmost — only when keyframes exist)
             if let Some(ref ks) = keyframe_state {
-                if ks.has_any_keyframes && nav_arrow(ui, ks.next_keyframe_time.is_some(), Icon::CaretRight) {
+                if !ks.has_any_keyframes {
+                    ui.allocate_exact_size(egui::vec2(nav_arrow_width, 18.0), egui::Sense::hover());
+                } else if nav_arrow(ui, ks.next_keyframe_time.is_some(), Icon::CaretRight) {
                     nav_next = true;
                 }
             }
@@ -521,7 +541,9 @@ fn scrubby_row(
 
             // Previous keyframe arrow (left of diamond)
             if let Some(ref ks) = keyframe_state {
-                if ks.has_any_keyframes && nav_arrow(ui, ks.prev_keyframe_time.is_some(), Icon::CaretLeft) {
+                if !ks.has_any_keyframes {
+                    ui.allocate_exact_size(egui::vec2(nav_arrow_width, 18.0), egui::Sense::hover());
+                } else if nav_arrow(ui, ks.prev_keyframe_time.is_some(), Icon::CaretLeft) {
                     nav_prev = true;
                 }
             }
@@ -536,6 +558,16 @@ fn scrubby_row(
 
             // Drag value (leftmost in cluster)
             let before_drag = *value;
+            // A value that moves is tinted, so the row reads as animated
+            // without its diamond.
+            if animated {
+                let accent = ui.visuals().selection.stroke.color;
+                let w = &mut ui.visuals_mut().widgets;
+                for state in [&mut w.inactive, &mut w.hovered, &mut w.active] {
+                    state.bg_stroke = egui::Stroke::new(1.0_f32, accent.gamma_multiply(0.55));
+                    state.weak_bg_fill = state.weak_bg_fill.lerp_to_gamma(accent, 0.12);
+                }
+            }
             let dv = egui::DragValue::new(value)
                 .speed(effective_speed)
                 .range(range.clone())
@@ -613,20 +645,6 @@ fn scrubby_row(
         crate::param_focus::row_drawn(ui, tag, row_response.response.rect, row_clicked);
     }
 
-    // ---- RANGE INDICATOR (subtle fill bar under the label area only) ----
-    let range_span = *range.end() - *range.start();
-    if range_span > 0.0 && label_rect_out.width() > 0.0 {
-        let t = ((*value - *range.start()) / range_span).clamp(0.0, 1.0);
-        let bar_height = 2.0;
-        let bar_rect = egui::Rect::from_min_size(
-            egui::pos2(label_rect_out.left(), label_rect_out.bottom() - bar_height),
-            egui::vec2(label_rect_out.width() * t, bar_height),
-        );
-        let acc = ui.visuals().selection.stroke.color;
-        let bar_color = egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 110);
-        ui.painter().rect_filled(bar_rect, 1.0, bar_color);
-    }
-
     let dv_resp = dv_response.unwrap();
     let value_changed = (*value - old_value).abs() > f32::EPSILON;
 
@@ -641,5 +659,39 @@ fn scrubby_row(
         keyframe_nav_next: nav_next,
         keyframe_set_interpolation: interp_changed,
         keyframe_ease_preset: ease_preset,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An animated row and a plain one, one under the other: the value
+    /// field and the diamond sit at the same place across in both, the
+    /// plain row keeping the room the animated one's arrows take (#2296).
+    #[test]
+    fn animated_and_plain_rows_line_up() {
+        let ctx = egui::Context::default();
+        crate::icons::install(&ctx);
+        let state = |any| KeyframeState { has_keyframe_at_playhead: false, has_any_keyframes: any, keys_in_frame: 0, prev_keyframe_time: any.then_some(0.5), next_keyframe_time: None, current_interpolation: None };
+        let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(300.0, 200.0))), ..Default::default() }, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let (mut a, mut b) = (1.25_f32, 2.5_f32);
+                scrubby_param_row(ui, "Moving", &mut a, 0.0..=4.0, 1.0, 0.01, 2, "", Some(state(true)));
+                scrubby_param_row(ui, "Still", &mut b, 0.0..=4.0, 1.0, 0.01, 2, "", Some(state(false)));
+            });
+        });
+        let right_of = |text: &str| out.shapes.iter().find_map(|s| match &s.shape {
+            egui::Shape::Text(t) if t.galley.text() == text => Some(t.pos.x + t.galley.size().x),
+            _ => None,
+        }).unwrap_or_else(|| panic!("{text} drawn"));
+        assert!((right_of("1.25") - right_of("2.50")).abs() < 0.5, "values end at {} and {}", right_of("1.25"), right_of("2.50"));
+        // The diamonds: four-point shapes, one per row, at one x.
+        let diamonds: Vec<f32> = out.shapes.iter().filter_map(|s| match &s.shape {
+            egui::Shape::Path(p) if p.points.len() == 4 && p.closed => Some((p.points[0].x + p.points[2].x) / 2.0),
+            _ => None,
+        }).collect();
+        assert_eq!(diamonds.len(), 2, "{diamonds:?}");
+        assert!((diamonds[0] - diamonds[1]).abs() < 0.5, "{diamonds:?}");
     }
 }
