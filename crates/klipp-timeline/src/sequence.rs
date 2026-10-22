@@ -1587,6 +1587,7 @@ impl Track {
             frame_glide: None,
             role: ClipRole::default(),
             role_source: klipp_core::RoleSource::Unset,
+            matched_to: None,
             speed: 1.0,
             speed_keyframes: Vec::new(),
             keep_pitch: false,
@@ -1897,6 +1898,7 @@ impl Track {
             frame_glide: None,
             role: clip.role,
             role_source: clip.role_source,
+            matched_to: None,
             speed: clip.speed,
             speed_keyframes: clip.speed_keyframes.clone(),
             keep_pitch: clip.keep_pitch,
@@ -1975,6 +1977,7 @@ impl Track {
             frame_glide: None,
             role: clip.role,
             role_source: clip.role_source,
+            matched_to: None,
             speed: clip.speed,
             speed_keyframes: clip.speed_keyframes.clone(),
             keep_pitch: clip.keep_pitch,
@@ -2430,6 +2433,12 @@ pub struct Clip {
     /// (#2216).
     #[serde(default, skip_serializing_if = "klipp_core::RoleSource::is_unset")]
     pub role_source: klipp_core::RoleSource,
+    /// The shot this clip is kept matched to (#2236): it starts and ends
+    /// with it, following its trims, rolls and moves. A piece of a split
+    /// or a copy of the clip matches nothing; the link is dropped when the
+    /// shot is deleted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matched_to: Option<ClipId>,
     /// Playback speed multiplier (1.0 = normal, 2.0 = 2x fast, 0.5 = half speed)
     #[serde(default = "default_speed")]
     pub speed: f64,
@@ -2951,6 +2960,7 @@ impl Clip {
             frame_glide: None,
             role: ClipRole::default(),
             role_source: klipp_core::RoleSource::Unset,
+            matched_to: None,
             speed: 1.0,
             speed_keyframes: Vec::new(),
             keep_pitch: false,
@@ -3067,6 +3077,7 @@ impl Clip {
             frame_glide: None,
             role: ClipRole::default(),
             role_source: klipp_core::RoleSource::Unset,
+            matched_to: None,
             speed: 1.0,
             speed_keyframes: Vec::new(),
             keep_pitch: false,
@@ -3172,6 +3183,7 @@ impl Clip {
             frame_glide: None,
             role: ClipRole::default(),
             role_source: klipp_core::RoleSource::Unset,
+            matched_to: None,
             speed: 1.0,
             speed_keyframes: Vec::new(),
             keep_pitch: false,

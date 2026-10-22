@@ -2505,6 +2505,9 @@ pub struct AppState {
     /// they are reframed (#2211), by sequence, so switching tabs meanwhile
     /// reframes the right one when it is next open.
     pub pending_refits: Vec<PendingRefit>,
+    /// Clips kept matched followed their shot in a step just recorded
+    /// (#2236): the engine is given the sequence again.
+    pub matched_follow_sync: bool,
     /// What the open sequence was when its clips were last proposed roles
     /// from their sound (#2216): analysis, sequence, history, clip count
     /// and locked tracks, so the look is taken again only when one changes.
@@ -4765,6 +4768,7 @@ impl Default for AppState {
             transcript_panel_hovered: false,
             pending_doc_ops: Vec::new(),
             pending_refits: Vec::new(),
+            matched_follow_sync: false,
             role_sweep_key: None,
             show_project_notes: false,
             show_edit_plan: false,
@@ -5432,6 +5436,7 @@ impl AppState {
     /// `state.active_history_mut().push(HistoryEntry { sequence_idx, command })`
     /// idiom — callers no longer pass a sequence index.
     pub fn push_history(&mut self, command: EditCommand) {
+        let command = self.with_matched_follow(command);
         // The project's steps go to its own history, reachable from any
         // sequence (#1986); inside a batch already open they are one more
         // edit of it, and the batch stays where it is.
@@ -5449,6 +5454,39 @@ impl AppState {
         }
         self.prune_stale_redo();
         self.history_ops_since_save = self.history_ops_since_save.saturating_add(1);
+    }
+    /// `command`, already applied, with what it means for the clips kept
+    /// matched to a shot (#2236): their follow, applied now and recorded in
+    /// the same step, so undo and redo replay it rather than work it out
+    /// again. A link that can no longer be followed is dropped, and the
+    /// toast says why.
+    fn with_matched_follow(&mut self, command: EditCommand) -> EditCommand {
+        if command.scope() != crate::history::Scope::Sequence || !self.sequence().all_clips().any(|c| c.matched_to.is_some()) {
+            return command;
+        }
+        // The sequence as it was: the edit undone on a copy.
+        let mut before = vec![self.sequence().clone()];
+        let (mut pool, mut fps) = (self.media_pool.clone(), self.fps);
+        klipp_document::apply::DocumentView { sequences: &mut before, active: 0, media_pool: &mut pool, fps: &mut fps }.apply_inverse(&command);
+        let follow = klipp_document::matched::follow(&before[0], self.sequence(), &self.media_pool);
+        if follow.edits.is_empty() {
+            return command;
+        }
+        let active = self.active_sequence_idx;
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut self.sequences, active, media_pool: &mut self.media_pool, fps: &mut self.fps };
+        for e in &follow.edits {
+            view.apply_forward(e);
+        }
+        self.matched_follow_sync = true;
+        if let [(_, why), rest @ ..] = follow.dropped.as_slice() {
+            let more = if rest.is_empty() { String::new() } else { format!(" (and {} more)", rest.len()) };
+            self.toast.show(format!("A clip is no longer kept matched: {why}{more}"));
+        }
+        let (label, edit) = match command {
+            EditCommand::Named { label, edit } => (label, *edit),
+            other => (other.label().to_string(), other),
+        };
+        EditCommand::Named { label, edit: Box::new(EditCommand::Batch(std::iter::once(edit).chain(follow.edits).collect())) }
     }
     /// `edits`, already applied, recorded as one undo step named `label`,
     /// or, inside a batch already open (an agent's, a socket batch), as

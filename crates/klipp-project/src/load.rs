@@ -952,6 +952,7 @@ fn load_sequence_from_json(
                     }).unwrap_or_default(),
                     role: c.role.unwrap_or_default(),
                     role_source: c.role_source,
+                    matched_to: c.matched_to,
                     speed: c.speed.unwrap_or(1.0),
                     speed_keyframes: c.speed_keyframes.clone().unwrap_or_default(),
                     keep_pitch: c.keep_pitch.unwrap_or(false),
