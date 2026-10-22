@@ -2885,6 +2885,13 @@ impl Renderer {
                             || !gpu.stack_title_alpha(slot,[0.0;4],opacity) {return None;}
                         return Some(((0,height),Vec::new()));
                     }
+                    // A lone layer the CPU places from its resting render is
+                    // that render posed here too: folding the loop into its
+                    // position made each frame a new title, rastered afresh
+                    // on the CPU every frame (#2335).
+                    if pose.focus.is_none() && placed_on_cpu {
+                        return self.place_title_frame(td,slot,width,height,clip_time,total);
+                    }
                     if pose.focus.is_none() {
                         let mut source=td.clone();
                         let target=&mut source.objects[0];
@@ -3114,8 +3121,14 @@ impl Renderer {
         let frame = self.titles.frame_with_window(td, width, height, gpu, clip_time as f32, Some(total));
         // Keyed path geometry is rasterised again at each new pose; the
         // cache only serves a pose seen before (#2201).
-        if self.titles.resting_renders() > resting && klipp_title::keys_path_geometry(td) {
-            residency::record("title.path_geometry", "Keyed vector path geometry rasterized on CPU", Work::Fallback);
+        if self.titles.resting_renders() > resting {
+            if klipp_title::keys_path_geometry(td) {
+                residency::record("title.path_geometry", "Keyed vector path geometry rasterized on CPU", Work::Fallback);
+            } else {
+                // The one-off raster a still title's first frame waits on,
+                // 50 to 90 ms at 1080p: counted, so it shows (#2335).
+                residency::record("title.resting", "Still title rastered on the CPU once, then kept on the GPU", Work::Preparation);
+            }
         }
         let placed = match frame {
             klipp_title::TitleFrame::Placed { sprite, dx, dy, opacity, scale, anchor, under, blur, shape, rows: r } => {
@@ -6704,10 +6717,7 @@ fn title_rasters_each_frame(title: &klipp_timeline::TitleData, text: &klipp_time
             _ => false,
         };
         o.visible && (keyed || (pose.wave.is_some() && posed_glyphs(o))
-            || fx.glows.iter().any(|g| !g.radius_keyframes.is_empty() || !g.intensity_keyframes.is_empty())
-            || fx.shadows.iter().any(|s| !s.offset_x_keyframes.is_empty() || !s.offset_y_keyframes.is_empty() || !s.blur_keyframes.is_empty())
-            || fx.inner_shadows.iter().any(|s| !s.offset_x_keyframes.is_empty() || !s.offset_y_keyframes.is_empty() || !s.blur_keyframes.is_empty())
-            || fx.outlines.iter().any(|ol| !ol.width_keyframes.is_empty()))
+            || fx.styles_keyed())
     })
 }
 

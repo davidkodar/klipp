@@ -6,7 +6,8 @@
 //! every frame of a common title comes first.
 //!
 //! A measurement, not a gate: `cargo test -p klipp-compose --test
-//! title_fallback_tally -- --ignored --nocapture`. Its own binary as it
+//! title_fallback_tally -- --ignored --nocapture`, `TALLY_ONLY=<part of
+//! a fixture's name>` for some of them. Its own binary as it
 //! times itself. The time is the frame's work on this thread, which a
 //! CPU raster is; GPU passes run on after it.
 
@@ -181,7 +182,7 @@ fn tally(what: &str, times: &[f64], works: &[Work]) {
     let mut by_reason: BTreeMap<(String, String, String), Tally> = BTreeMap::new();
     let (mut all_frames, mut all_ms, mut counted_frames) = (0u64, 0.0f64, 0u64);
     let mut slowest: Vec<(f64, String, f64)> = Vec::new();
-    for (name, title) in corpus() {
+    for (name, title) in corpus().into_iter().filter(|(n, _)| std::env::var("TALLY_ONLY").map_or(true, |o| n.contains(&o))) {
         let mut seq = Sequence::new_default();
         seq.resolution = klipp_core::Resolution { width: W, height: H };
         let mut track = Track::new("Text", TrackKind::Text);
@@ -242,7 +243,7 @@ fn tally(what: &str, times: &[f64], works: &[Work]) {
 #[ignore = "a measurement: run with --ignored --nocapture"]
 fn tally_title_fallbacks_while_playing() {
     let frames: Vec<f64> = (0..(SECONDS * FPS as f64) as u64).map(|f| f as f64 / FPS as f64).collect();
-    tally("playing", &frames, &[Work::Fallback]);
+    tally("playing", &frames, &[Work::Fallback, Work::Preparation]);
 }
 
 /// Scrubbed: frames out of order on a renderer that has drawn nothing
