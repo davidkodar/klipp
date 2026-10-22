@@ -374,6 +374,22 @@ pub fn stream_capacity() -> f64 {
     r.budget + software
 }
 
+/// What the system has free for new memory, in bytes: `MemAvailable`,
+/// read as it is asked, or [`UNKNOWN_FREE_MEMORY`] where it cannot be
+/// read. What limits how many frames the viewer's streams queue (#2128).
+pub fn free_memory() -> f64 {
+    std::fs::read_to_string("/proc/meminfo").ok().as_deref().and_then(mem_available).unwrap_or(UNKNOWN_FREE_MEMORY)
+}
+
+/// Free memory taken where `/proc/meminfo` cannot be read: 4 GiB.
+pub const UNKNOWN_FREE_MEMORY: f64 = 4.0 * 1024.0 * 1024.0 * 1024.0;
+
+/// `MemAvailable` in bytes from the text of `/proc/meminfo`.
+pub fn mem_available(meminfo: &str) -> Option<f64> {
+    let kb = meminfo.lines().find_map(|l| l.strip_prefix("MemAvailable:"))?.trim().strip_suffix("kB")?.trim().parse::<f64>().ok()?;
+    Some(kb * 1024.0)
+}
+
 /// What the GPU's decoder has left, pixels a second: the budget less
 /// what the decoders on it ask.
 pub fn gpu_headroom() -> f64 {
@@ -397,6 +413,14 @@ pub fn budget() -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn free_memory_is_read_from_meminfo() {
+        let meminfo = "MemTotal:       65536000 kB\nMemFree:         1000000 kB\nMemAvailable:   32000000 kB\n";
+        assert_eq!(mem_available(meminfo), Some(32_000_000.0 * 1024.0));
+        assert_eq!(mem_available("MemTotal: 1 kB\n"), None);
+        assert!(free_memory() > 0.0);
+    }
 
     const K4: f64 = 3840.0 * 2160.0;
 

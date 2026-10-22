@@ -614,13 +614,6 @@ fn direct_present_enabled() -> bool {
     *GATE.get_or_init(|| std::env::var("KLIPP_DIRECT_PRESENT").ok().as_deref() != Some("0"))
 }
 
-/// At most this many decoders the viewer opens besides the primary
-/// track's (overlays, a transition's other side, multicam angles), however
-/// small: each holds a queue of up to 16 decoded frames of up to 1080p,
-/// about 128 MB. What limits them below that is the decode rate they ask
-/// for, not their number (#2128): see `ClipStreams::make_room`.
-const MAX_CLIP_STREAMS: usize = 16;
-
 /// How long before a shot's end the next shot on its track is opened and
 /// seeked, so the cut finds its first frame decoded.
 const PREROLL_LEAD_SECS: f64 = 1.5;
@@ -844,6 +837,9 @@ static CUTS_FROM_PREROLL: std::sync::atomic::AtomicU64 = std::sync::atomic::Atom
 static CUTS_OPENED_COLD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static STREAM_TAKE_OVERS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 pub(crate) static STREAMS_OPENED_ON_SCREEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Layers on screen opened with a shorter queue of frames, memory being
+/// short (#2128).
+pub(crate) static STREAMS_SHORTENED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// (from the preroll, opened cold) cuts to the next shot on the primary
 /// track since the process began.
@@ -861,6 +857,12 @@ pub fn stream_take_overs() -> u64 {
 /// the process began.
 pub fn streams_opened_on_screen() -> u64 {
     STREAMS_OPENED_ON_SCREEN.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Layers on screen opened with fewer frames queued than the preference,
+/// memory being short, since the process began (#2128).
+pub fn streams_shortened() -> u64 {
+    STREAMS_SHORTENED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Whether `clip`'s grade reads a matte sequence: an External Matte bound
@@ -2240,7 +2242,7 @@ impl PlaybackEngine {
             last_frame_time: std::time::Instant::now(),
             dropped_frames: 0,
             v1_decoder: None,
-            streams: streams::ClipStreams::new(MAX_CLIP_STREAMS),
+            streams: streams::ClipStreams::new(),
             seek_leads: seek_lead::SeekLeads::default(),
             neighbour_hold: Default::default(),
             held_scope: None,
@@ -9749,6 +9751,20 @@ impl PlaybackEngine {
     /// stream opening is counted against the GPU's decoder (#2116): its
     /// size times its rate. A proxy is counted as 1080p, as it is made no
     /// larger; the decoder corrects it once it reads the file's size.
+    /// What a stream of `media_id` read from `path` asks for (#2128): its
+    /// decode rate, and the bytes of one frame at the size it plays at,
+    /// 8 bytes a pixel for HDR (decoded at 16 bits a channel), else 4.
+    fn media_cost(&self, media_id: MediaId, path: &std::path::Path) -> streams::Cost {
+        let rate = self.media_pixel_rate(media_id, path);
+        let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());
+        let (w, h, deep) = match pool.get(&media_id) {
+            Some(item) if item.path == path => (item.resolution.width, item.resolution.height, matches!(item.colour_space, klipp_media::ColourSpace::Hdr10 | klipp_media::ColourSpace::Hlg)),
+            _ => (1920, 1080, false),
+        };
+        let (pw, ph) = crate::video_decoder::playback_dimensions(w.max(1), h.max(1), 0);
+        streams::Cost { rate, frame_bytes: pw as f64 * ph as f64 * if deep { 8.0 } else { 4.0 } }
+    }
+
     fn media_pixel_rate(&self, media_id: MediaId, path: &std::path::Path) -> f64 {
         let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());
         let Some(item) = pool.get(&media_id) else { return 0.0 };
