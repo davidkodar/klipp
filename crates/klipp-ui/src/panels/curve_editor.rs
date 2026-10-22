@@ -297,6 +297,31 @@ impl CurveScope {
     }
 }
 
+/// A key's influence handle as the Speed view draws it (#2275).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SpeedHandle {
+    key: usize,
+    is_out: bool,
+    /// The key's time.
+    time: f64,
+    /// The handle's reach in time from the key: forward for the out-handle.
+    reach: f64,
+    /// The speed it sets at the key, in the curve's units a second.
+    speed: f32,
+}
+
+/// Key `index`'s handle dragged in the Speed view to `reach` seconds from
+/// its key at `speed` (#2275): the handle, (time, value) from the key,
+/// its reach kept on its own side and short of the neighbouring key.
+/// `None` without that neighbour.
+fn speed_drag_to(keys: &[Keyframe], index: usize, is_out: bool, reach: f64, speed: f32) -> Option<(f64, f32)> {
+    let key = keys.get(index)?;
+    let neighbour = if is_out { keys.get(index + 1)? } else { keys.get(index.checked_sub(1)?)? };
+    let room = (neighbour.time_secs - key.time_secs).abs();
+    let reach = reach.abs().clamp(room * 0.01, room) * if is_out { 1.0 } else { -1.0 };
+    Some((reach, speed * reach as f32))
+}
+
 /// How fast the curve of `keys` changes at `t`, in its units a second
 /// (#2275): its slope, measured across a 240th of a second either side.
 fn curve_speed(keys: &[Keyframe], default: f32, t: f64) -> f32 {
@@ -346,6 +371,9 @@ pub struct CurveEditorPanel {
     /// In the Speed view, Position X and Y shown together drawn as one
     /// spatial speed.
     spatial: bool,
+    /// A key's influence handle dragged in the Speed view (#2275): the
+    /// key's index on the active curve, and whether it is the out-handle.
+    speed_drag: Option<(usize, bool)>,
     selected_clip: Option<klipp_core::ClipId>,
     /// Active keyframe drag
     drag: Option<CurveDrag>,
@@ -385,6 +413,7 @@ impl Default for CurveEditorPanel {
             normalised: false,
             speed_view: false,
             spatial: true,
+            speed_drag: None,
             selected_clip: None,
             drag: None,
             needs_fit: true,
@@ -491,11 +520,11 @@ impl CurveEditorPanel {
     /// units a second, sampled across the graph in its colour; Position X
     /// and Y as one speed along the path when `spatial`. The value axis is
     /// the speeds' own, zero to the fastest (or the slowest below zero).
-    fn draw_speed(&self, ui: &mut egui::Ui, state: &AppState, graph_rect: &Rect, clip_id: Option<klipp_core::ClipId>, clip_duration: f64, theme: &KlippTheme) {
+    fn draw_speed(&self, ui: &mut egui::Ui, state: &AppState, graph_rect: &Rect, clip_id: Option<klipp_core::ClipId>, clip_duration: f64, theme: &KlippTheme) -> Option<(f32, f32)> {
         let t0 = self.x_to_time(graph_rect.left(), graph_rect, clip_duration).max(0.0);
         let t1 = self.x_to_time(graph_rect.right(), graph_rect, clip_duration).min(clip_duration);
         if t1 <= t0 {
-            return;
+            return None;
         }
         let samples = (graph_rect.width() as usize).clamp(100, 800);
         let times: Vec<f64> = (0..=samples).map(|i| t0 + (t1 - t0) * i as f64 / samples as f64).collect();
@@ -518,8 +547,11 @@ impl CurveEditorPanel {
                 }
             }
         }
-        let lo = series.iter().flat_map(|(_, v)| v.iter().copied()).fold(0.0_f32, f32::min);
-        let hi = series.iter().flat_map(|(_, v)| v.iter().copied()).fold(0.0_f32, f32::max);
+        // The active curve's handles' speeds on the axis too, so each can
+        // be reached.
+        let handle_speeds: Vec<f32> = self.speed_handles_of(state, clip_id).iter().map(|h| h.speed).collect();
+        let lo = series.iter().flat_map(|(_, v)| v.iter().copied()).chain(handle_speeds.iter().copied()).fold(0.0_f32, f32::min);
+        let hi = series.iter().flat_map(|(_, v)| v.iter().copied()).chain(handle_speeds.iter().copied()).fold(0.0_f32, f32::max);
         let span = (hi - lo).max(1e-6);
         let y_of = |v: f32| graph_rect.bottom() - 6.0 - (v - lo) / span * (graph_rect.height() - 12.0);
         let painter = ui.painter_at(*graph_rect);
@@ -534,6 +566,76 @@ impl CurveEditorPanel {
                 painter.text(pos2(graph_rect.left() + 4.0, y_of(v)), align, format!("{v:.2}/s"), egui::FontId::proportional(9.0), theme.text_dim);
             }
         }
+        Some((lo, span))
+    }
+
+    /// The active curve's influence handles as the Speed view shows them
+    /// (#2275): each key's in- and out-handle that has a length, at its
+    /// reach in time and the speed it sets at the key. None while the
+    /// active curve is drawn inside a spatial speed, or isn't one whose
+    /// handles are edited.
+    fn speed_handles_of(&self, state: &AppState, clip_id: Option<klipp_core::ClipId>) -> Vec<SpeedHandle> {
+        let in_pair = self.spatial_pair().filter(|_| self.spatial).is_some_and(|(x, y)| self.active == x || self.active == y);
+        if in_pair || !matches!(self.param(), CurveParam::Video(_) | CurveParam::Audio(_) | CurveParam::Title { .. } | CurveParam::AudioEffect(_)) {
+            return Vec::new();
+        }
+        let keys = Self::keyframes_of(self.param(), state, clip_id);
+        let mut out = Vec::new();
+        for i in 0..keys.len() {
+            let (tin, tout) = klipp_core::keyframe::handles_at(&keys, i);
+            for (is_out, (dt, dv)) in [(true, tout), (false, tin)] {
+                let has_side = if is_out { i + 1 < keys.len() } else { i > 0 };
+                if has_side && dt.abs() > 1e-9 {
+                    out.push(SpeedHandle { key: i, is_out, time: keys[i].time_secs, reach: dt, speed: dv / dt as f32 });
+                }
+            }
+        }
+        out
+    }
+
+    /// Draw the active curve's influence handles in the Speed view, on
+    /// the speeds' axis (`lo`, `span`), and take a drag of one (#2275):
+    /// across, its reach in time; up and down, the speed it sets at the
+    /// key. Its tangent is written as a handle dragged on the value graph
+    /// is, the same kinds kept, one undo step.
+    #[allow(clippy::too_many_arguments)]
+    fn speed_handles(&mut self, ui: &mut egui::Ui, state: &AppState, graph_rect: &Rect, response: &egui::Response, clip_id: Option<klipp_core::ClipId>, clip_duration: f64, (lo, span): (f32, f32), theme: &KlippTheme) -> Vec<AppCommand> {
+        let mut cmds = Vec::new();
+        let Some(clip_id) = clip_id else { return cmds };
+        let handles = self.speed_handles_of(state, Some(clip_id));
+        let y_of = |v: f32| graph_rect.bottom() - 6.0 - (v - lo) / span * (graph_rect.height() - 12.0);
+        let v_of = |y: f32| lo + (graph_rect.bottom() - 6.0 - y) / (graph_rect.height() - 12.0) * span;
+        let colour = Self::curve_colour(self.active, theme);
+        let painter = ui.painter_at(*graph_rect);
+        let at = |h: &SpeedHandle| (pos2(self.time_to_x(h.time, graph_rect, clip_duration), y_of(h.speed)), pos2(self.time_to_x(h.time + h.reach, graph_rect, clip_duration), y_of(h.speed)));
+        for h in &handles {
+            let (key, end) = at(h);
+            painter.line_segment([key, end], Stroke::new(1.0_f32, colour));
+            painter.circle_stroke(end, 3.5, Stroke::new(1.2_f32, colour));
+            painter.circle_filled(key, 2.5, colour);
+        }
+        if response.drag_started_by(egui::PointerButton::Primary) {
+            if let Some(p) = response.interact_pointer_pos() {
+                if let Some(h) = handles.iter().find(|h| at(h).1.distance(p) <= 7.0) {
+                    self.speed_drag = Some((h.key, h.is_out));
+                    cmds.push(AppCommand::BeginKeyframeDrag { key: lane_drag_key(clip_id, self.param()), clip_id });
+                }
+            }
+        }
+        if let (Some((index, is_out)), Some(p)) = (self.speed_drag, response.interact_pointer_pos().filter(|_| response.dragged())) {
+            let keys = self.get_keyframes(state, Some(clip_id));
+            if let Some(kf) = keys.get(index) {
+                let (reach, speed) = (self.x_to_time(p.x, graph_rect, clip_duration) - kf.time_secs, v_of(p.y));
+                if let Some(to) = speed_drag_to(&keys, index, is_out, reach, speed) {
+                    let (tangent_in, tangent_out, handles) = dragged_handles(kf, is_out, to);
+                    cmds.extend(self.tangent_command(clip_id, index, tangent_in, tangent_out, handles));
+                }
+            }
+        }
+        if response.drag_stopped() && self.speed_drag.take().is_some() {
+            cmds.push(AppCommand::EndKeyframeDrag { key: lane_drag_key(clip_id, self.param()), clip_id });
+        }
+        cmds
     }
 
     /// Curve `i`'s colour: its place in the list, the first the accent.
@@ -847,7 +949,9 @@ impl CurveEditorPanel {
 
         // The Speed view draws in place of the values (#2275).
         if self.speed_view {
-            self.draw_speed(ui, state, &graph_rect, clip_id, clip_duration, theme);
+            if let Some(axis) = self.draw_speed(ui, state, &graph_rect, clip_id, clip_duration, theme) {
+                cmds.extend(self.speed_handles(ui, state, &graph_rect, &graph_response, clip_id, clip_duration, axis, theme));
+            }
             self.draw_playhead(ui, state, &graph_rect, clip_id, clip_duration, theme);
             return cmds;
         }
@@ -1968,40 +2072,7 @@ impl CurveEditorPanel {
                                 let dt = handle_t - kf.time_secs;
                                 let dv = handle_v - kf.value;
                                 let (tangent_in, tangent_out, handles) = dragged_handles(kf, is_out, (dt, dv));
-                                match self.param() {
-                                    CurveParam::Audio(p) => {
-                                        cmds.push(AppCommand::SetAudioKeyframeTangent {
-                                            clip_id,
-                                            param: *p,
-                                            keyframe_index: kf_idx,
-                                            tangent_in,
-                                            tangent_out,
-                                            handles,
-                                        });
-                                    }
-                                    CurveParam::Video(p) => {
-                                        cmds.push(AppCommand::SetVideoKeyframeTangent {
-                                            clip_id,
-                                            param: *p,
-                                            keyframe_index: kf_idx,
-                                            tangent_in,
-                                            tangent_out,
-                                            handles,
-                                        });
-                                    }
-                                    CurveParam::Title { object_id, param } => cmds.push(param.tangent(clip_id, *object_id, kf_idx, tangent_in, tangent_out, handles)),
-                                    CurveParam::AudioEffect(_) => {
-                                        if let KeyframeParamKind::AudioEffect { effect_index, param_name } = self.param_to_kind() {
-                                            cmds.push(AppCommand::SetAudioEffectKeyframeTangent { clip_id, effect_index, param_name, keyframe_index: kf_idx, tangent_in, tangent_out, handles });
-                                        }
-                                    }
-                                    CurveParam::Speed
-                                    | CurveParam::Node { .. }
-                                    | CurveParam::Camera(_)
-                                    | CurveParam::Mask { .. } => {
-                                        // Tangent editing not yet wired for speed/effects
-                                    }
-                                }
+                                cmds.extend(self.tangent_command(clip_id, kf_idx, tangent_in, tangent_out, handles));
                             }
                         }
                     }
@@ -2027,6 +2098,22 @@ impl CurveEditorPanel {
         }
 
         cmds
+    }
+
+    /// The command setting the active curve's key `index`'s handles, or
+    /// none for a curve whose handles aren't edited yet (speed, effects,
+    /// the camera, masks).
+    fn tangent_command(&self, clip_id: klipp_core::ClipId, index: usize, tangent_in: Option<(f64, f32)>, tangent_out: Option<(f64, f32)>, handles: Option<klipp_core::Handles>) -> Option<AppCommand> {
+        Some(match self.param() {
+            CurveParam::Audio(p) => AppCommand::SetAudioKeyframeTangent { clip_id, param: *p, keyframe_index: index, tangent_in, tangent_out, handles },
+            CurveParam::Video(p) => AppCommand::SetVideoKeyframeTangent { clip_id, param: *p, keyframe_index: index, tangent_in, tangent_out, handles },
+            CurveParam::Title { object_id, param } => param.tangent(clip_id, *object_id, index, tangent_in, tangent_out, handles),
+            CurveParam::AudioEffect(_) => {
+                let KeyframeParamKind::AudioEffect { effect_index, param_name } = self.param_to_kind() else { return None };
+                AppCommand::SetAudioEffectKeyframeTangent { clip_id, effect_index, param_name, keyframe_index: index, tangent_in, tangent_out, handles }
+            }
+            CurveParam::Speed | CurveParam::Node { .. } | CurveParam::Camera(_) | CurveParam::Mask { .. } => return None,
+        })
     }
 
     /// The diamonds, and the selected one's Bezier handles, for any
@@ -2416,5 +2503,17 @@ mod curve_param_tests {
         assert!((curve_speed(&x, 0.0, 0.5) - 3.0).abs() < 1e-3);
         assert!((curve_speed(&x, 0.0, 0.5).hypot(curve_speed(&y, 0.0, 0.5)) - 5.0).abs() < 1e-3, "along the path");
         assert!(curve_speed(&x, 0.0, 2.0).abs() < 1e-3, "held past its last key");
+    }
+
+    /// #2275: a handle dragged in the Speed view keeps to its side of its
+    /// key and short of the next one, and its height is the speed it sets.
+    #[test]
+    fn a_speed_handle_drags_to_a_tangent() {
+        let key = |t: f64, v: f32| Keyframe { time_secs: t, value: v, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
+        let keys = [key(0.0, 0.0), key(1.0, 10.0), key(3.0, 10.0)];
+        assert_eq!(speed_drag_to(&keys, 1, true, 0.5, 4.0), Some((0.5, 2.0)), "out, half a second at 4 a second");
+        assert_eq!(speed_drag_to(&keys, 1, true, -0.5, 4.0), Some((0.5, 2.0)), "out stays forward");
+        assert_eq!(speed_drag_to(&keys, 1, false, 5.0, 4.0), Some((-1.0, -4.0)), "in, no further than the key before");
+        assert_eq!(speed_drag_to(&keys, 0, false, -0.5, 4.0), None, "no key before the first");
     }
 }
