@@ -402,16 +402,23 @@ fn show_clip_video(
             let frame = egui::Frame::none()
                 .inner_margin(egui::Margin { left: pad, right: pad, top: 4.0, bottom: 4.0 });
             frame.show(ui, |ui| {
+                crate::param_focus::tag(ui, clip, crate::state::KeyframeParamKind::Video(VideoParam::PositionX));
                 r_px_out = Some(param_row(ui, theme, "Position X", &mut pos_x, -2000.0..=2000.0, 0.0, 1.0, 0, " px", Some(pos_x_ks)));
+                crate::param_focus::tag(ui, clip, crate::state::KeyframeParamKind::Video(VideoParam::PositionY));
                 r_py_out = Some(param_row(ui, theme, "Position Y", &mut pos_y, -2000.0..=2000.0, 0.0, 1.0, 0, " px", Some(pos_y_ks)));
+                crate::param_focus::tag(ui, clip, crate::state::KeyframeParamKind::Video(VideoParam::Scale));
                 r_sc_out = Some(param_row(ui, theme, "Scale", &mut scale_val, 0.0..=4.0, 1.0, 0.01, 2, "\u{00d7}", Some(scale_ks)));
                 if shows_scale_y {
+                    crate::param_focus::tag(ui, clip, crate::state::KeyframeParamKind::Video(VideoParam::ScaleY));
                     r_sy_out = Some(param_row(ui, theme, "Scale Y", &mut scale_y_val, 0.0..=4.0, 1.0, 0.01, 2, "\u{00d7}", Some(scale_y_ks)));
                 }
+                crate::param_focus::tag(ui, clip, crate::state::KeyframeParamKind::Video(VideoParam::Rotation));
                 r_ro_out = Some(param_row(ui, theme, "Rotation", &mut rotation, -360.0..=360.0, 0.0, 0.5, 1, " \u{00b0}", Some(rot_ks)));
                 // Tilt out of the picture's plane: the top leans away for
                 // positive X, the right edge swings away for positive Y.
+                crate::param_focus::tag(ui, clip, crate::state::KeyframeParamKind::Video(VideoParam::TiltX));
                 r_tx_out = Some(param_row(ui, theme, "Tilt X", &mut tilt_x, -80.0..=80.0, 0.0, 0.5, 1, " \u{00b0}", Some(tilt_x_ks)));
+                crate::param_focus::tag(ui, clip, crate::state::KeyframeParamKind::Video(VideoParam::TiltY));
                 r_ty_out = Some(param_row(ui, theme, "Tilt Y", &mut tilt_y, -80.0..=80.0, 0.0, 0.5, 1, " \u{00b0}", Some(tilt_y_ks)));
                 if tilt_x != 0.0 || tilt_y != 0.0 || !lane(clip, "tilt_x").is_empty() || !lane(clip, "tilt_y").is_empty() {
                     r_pe_out = Some(param_row(ui, theme, "Perspective", &mut persp, 0.1..=3.0, 1.0, 0.01, 2, "", None));
@@ -450,6 +457,7 @@ fn show_clip_video(
                     cmds.push(AppCommand::SetClipDepth { clip_id, depth });
                 }
 
+                crate::param_focus::tag(ui, clip, crate::state::KeyframeParamKind::Video(VideoParam::Opacity));
                 r_op_out = Some(param_row(ui, theme, "Opacity", &mut opacity, 0.0..=1.0, 1.0, 0.005, 2, "", Some(opacity_ks)));
             });
             // Behind the switch opacity is the clip's property, edited here

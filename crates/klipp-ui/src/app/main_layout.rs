@@ -1392,6 +1392,10 @@ impl KlippApp {
                     &mut self.layout.active_inspector_tab,
                 );
                 all_cmds.extend(panel_cmds);
+                // A chip or a row picked: its parameter comes into focus (#2296).
+                if let (Some(kind), Some(clip_id)) = (self.new_inspector.focus_request.take(), self.state.selected_clip_loc().map(|(_, c)| c.id)) {
+                    self.state.param_focus = Some(crate::param_focus::ParamFocus { clip_id, kind, at: ui.input(|i| i.time) });
+                }
             }
         });
         if collapse_requested {

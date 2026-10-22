@@ -171,13 +171,17 @@ fn slider_row(
     let w = ui.available_width();
     let pad = 14.0;
     let row_h = 30.0;
+    // The row's track, when the caller named it (#2296).
+    let tag = crate::param_focus::take_tag(ui);
+    let mut row_clicked = false;
 
     let old_value = *value;
     let min = *range.start();
     let max = *range.end();
 
     // ── Top row: label left, value input + keyframe diamond right ──
-    let (top_rect, _) = ui.allocate_exact_size(egui::vec2(w, row_h), egui::Sense::hover());
+    let (top_rect, top_resp) = ui.allocate_exact_size(egui::vec2(w, row_h), if tag.is_some() { egui::Sense::click() } else { egui::Sense::hover() });
+    row_clicked |= top_resp.clicked();
 
     // Label
     ui.painter().text(
@@ -211,6 +215,10 @@ fn slider_row(
 
         if diamond_resp.clicked() {
             resp.keyframe_toggled = true;
+            row_clicked = true;
+        }
+        if let Some(text) = tag.as_ref().and_then(|t| crate::param_focus::diamond_hover(t.keys(), at_playhead)) {
+            diamond_resp.clone().on_hover_text(text);
         }
 
         // Right-click context menu for interpolation/ease
@@ -414,6 +422,9 @@ fn slider_row(
     if track_resp.drag_stopped() {
         resp.drag_stopped = true;
     }
+    if let Some(tag) = &tag {
+        crate::param_focus::row_drawn(ui, tag, top_rect, row_clicked);
+    }
 
     resp
 }
@@ -608,6 +619,7 @@ fn show_clip_audio(
         let drag_key = format!("{:?}:audio", clip_id);
 
         // ── Gain slider ──
+        crate::param_focus::tag(ui, clip, crate::state::KeyframeParamKind::Audio(AudioParam::Gain));
         let gain_resp = slider_row(
             ui, theme, "gain", "Gain", &mut gain, 0.0..=4.0, 1.0, 0.005, 2, "",
             Some(gain_ks), false,
@@ -616,6 +628,7 @@ fn show_clip_audio(
 
         // ── Volume slider ──
         ui.add_space(4.0);
+        crate::param_focus::tag(ui, clip, crate::state::KeyframeParamKind::Audio(AudioParam::Volume));
         let vol_resp = slider_row(
             ui, theme, "volume", "Volume", &mut volume, 0.0..=2.0, 1.0, 0.005, 2, "",
             Some(vol_ks), false,
@@ -624,6 +637,7 @@ fn show_clip_audio(
 
         // ── Pan slider ──
         ui.add_space(4.0);
+        crate::param_focus::tag(ui, clip, crate::state::KeyframeParamKind::Audio(AudioParam::Pan));
         let pan_resp = slider_row(
             ui, theme, "pan", "Pan", &mut pan, -1.0..=1.0, 0.0, 0.005, 2, "",
             Some(pan_ks), true,

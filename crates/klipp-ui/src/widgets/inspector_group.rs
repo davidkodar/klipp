@@ -180,6 +180,11 @@ pub fn panel_title_row(ui: &mut Ui, title: &str, dim: bool, theme: &KlippTheme) 
 /// short forms before they would collide, so none is ever clipped.
 /// Returns the index of a tab clicked this frame.
 pub fn tab_strip(ui: &mut Ui, labels: &[&str], short: &[&str], active: usize, theme: &KlippTheme) -> Option<usize> {
+    tab_strip_with_tips(ui, labels, short, &[], active, theme)
+}
+
+/// [`tab_strip`], each tab with its tip on hover where `tips` gives one.
+pub fn tab_strip_with_tips(ui: &mut Ui, labels: &[&str], short: &[&str], tips: &[Option<String>], active: usize, theme: &KlippTheme) -> Option<usize> {
     let strip = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), SECTION_HEADER_H));
     let mut clicked = None;
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(strip), |ui| {
@@ -220,6 +225,9 @@ pub fn tab_strip(ui: &mut Ui, labels: &[&str], short: &[&str], active: usize, th
                 ui.painter().text(tab_rect.center(), egui::Align2::CENTER_CENTER, *name, egui::FontId::proportional(size), colour);
                 if is_active {
                     ui.painter().hline(tab_rect.x_range().shrink(4.0), tab_rect.max.y - 1.0, Stroke::new(2.0_f32, theme.accent));
+                }
+                if let Some(Some(tip)) = tips.get(i) {
+                    resp.clone().on_hover_text(tip);
                 }
                 if resp.clicked() {
                     clicked = Some(i);

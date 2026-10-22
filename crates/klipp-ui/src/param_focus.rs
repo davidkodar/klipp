@@ -39,6 +39,141 @@ pub fn animated(clip: &Clip) -> Vec<(KeyframeParamKind, String, InspectorTab)> {
         .collect()
 }
 
+/// How long a row brought into focus stays lit, in seconds.
+pub const FLASH_SECS: f64 = 1.5;
+
+/// What the Inspector's rows need this frame to show the focus: the
+/// parameter in focus on the clip shown, in the rows' own terms, and when
+/// it was set; and the clip's placement node, to read a placement row's
+/// lane as the same parameter.
+#[derive(Clone)]
+struct View {
+    focus: Option<(KeyframeParamKind, f64)>,
+    placement: Option<klipp_graph_format::path::NodePath>,
+}
+
+/// The row about to be drawn: its parameter and how many keys it has.
+#[derive(Clone)]
+pub(crate) struct Tag {
+    kind: KeyframeParamKind,
+    keys: usize,
+}
+
+impl Tag {
+    pub(crate) fn keys(&self) -> usize {
+        self.keys
+    }
+}
+
+fn view_id() -> egui::Id {
+    egui::Id::new("param_focus::view")
+}
+fn tag_id() -> egui::Id {
+    egui::Id::new("param_focus::tag")
+}
+fn request_id() -> egui::Id {
+    egui::Id::new("param_focus::request")
+}
+fn scrolled_id() -> egui::Id {
+    egui::Id::new("param_focus::scrolled")
+}
+
+/// A placement or opacity lane as the clip's placement node holds it, so
+/// a row drawn by path and the Video tab's row are one parameter.
+fn same_terms(placement: Option<&klipp_graph_format::path::NodePath>, kind: &KeyframeParamKind) -> KeyframeParamKind {
+    match (kind, placement) {
+        (KeyframeParamKind::Video(p), Some(path)) => match crate::inspector::placement_by_path::lane_key(*p) {
+            Some(key) => KeyframeParamKind::Node { path: path.clone(), key: key.into() },
+            None => kind.clone(),
+        },
+        _ => kind.clone(),
+    }
+}
+
+/// Before the Inspector draws `clip`'s rows: the focus they show, and no
+/// row picked yet.
+pub fn begin_rows(ctx: &egui::Context, focus: Option<&ParamFocus>, clip: &Clip) {
+    let placement = clip.placement_path();
+    let focus = focus.filter(|f| f.clip_id == clip.id).map(|f| (same_terms(placement.as_ref(), &f.kind), f.at));
+    ctx.data_mut(|d| {
+        d.insert_temp(view_id(), View { focus, placement });
+        d.remove::<Tag>(tag_id());
+        d.remove::<KeyframeParamKind>(request_id());
+    });
+}
+
+/// The next row drawn is `clip`'s `kind`: it lights while that is in
+/// focus, a click on its name or diamond brings it into focus, and its
+/// diamond says how many keys it has.
+pub fn tag(ui: &egui::Ui, clip: &Clip, kind: KeyframeParamKind) {
+    let keys = crate::key_selection::track_keys(clip, &kind).len();
+    ui.ctx().data_mut(|d| d.insert_temp(tag_id(), Tag { kind, keys }));
+}
+
+/// The tag the next row was given, taken.
+pub(crate) fn take_tag(ui: &egui::Ui) -> Option<Tag> {
+    ui.ctx().data_mut(|d| {
+        let tag = d.get_temp::<Tag>(tag_id());
+        d.remove::<Tag>(tag_id());
+        tag
+    })
+}
+
+/// A tagged row drawn over `rect`: picked when `clicked`; lit, fading,
+/// for [`FLASH_SECS`] after its parameter came into focus, and scrolled
+/// into view once.
+pub(crate) fn row_drawn(ui: &egui::Ui, tag: &Tag, rect: egui::Rect, clicked: bool) {
+    let Some(view) = ui.ctx().data(|d| d.get_temp::<View>(view_id())) else { return };
+    if clicked {
+        ui.ctx().data_mut(|d| d.insert_temp(request_id(), tag.kind.clone()));
+    }
+    let Some((focus, at)) = &view.focus else { return };
+    if same_terms(view.placement.as_ref(), &tag.kind) != *focus {
+        return;
+    }
+    let age = ui.input(|i| i.time) - at;
+    if !(0.0..FLASH_SECS).contains(&age) {
+        return;
+    }
+    let scrolled = ui.ctx().data(|d| d.get_temp::<f64>(scrolled_id()));
+    if scrolled != Some(*at) {
+        ui.scroll_to_rect(rect, Some(egui::Align::Center));
+        ui.ctx().data_mut(|d| d.insert_temp(scrolled_id(), *at));
+    }
+    let accent = ui.visuals().selection.stroke.color;
+    let fade = (1.0 - age / FLASH_SECS) as f32;
+    ui.painter().rect_filled(rect.expand(1.0), 3.0, accent.gamma_multiply(0.25 * fade));
+    ui.painter().rect_stroke(rect.expand(1.0), 3.0, egui::Stroke::new(1.0_f32, accent.gamma_multiply(fade)));
+    ui.ctx().request_repaint();
+}
+
+/// What a tagged row's diamond says on hover: how many keys the track
+/// has and what the arrows and the diamond do; `None` with no keys.
+pub(crate) fn diamond_hover(keys: usize, at_playhead: bool) -> Option<String> {
+    if keys == 0 {
+        return None;
+    }
+    let count = if keys == 1 { "1 key".to_string() } else { format!("{keys} keys") };
+    let here = if at_playhead { "\u{25C6} removes the one at the playhead" } else { "\u{25C6} adds one at the playhead" };
+    Some(format!("{count}. \u{25C0} \u{25B6} jump between them; {here}. A click on the name shows its curve."))
+}
+
+/// The row picked this frame, if one was: the parameter to bring into focus.
+pub fn take_request(ctx: &egui::Context) -> Option<KeyframeParamKind> {
+    ctx.data_mut(|d| {
+        let picked = d.get_temp::<KeyframeParamKind>(request_id());
+        d.remove::<KeyframeParamKind>(request_id());
+        picked
+    })
+}
+
+/// The Inspector tab that holds `kind` on `clip`, if it is animated there.
+pub fn tab_of(clip: &Clip, kind: &KeyframeParamKind) -> Option<InspectorTab> {
+    let placement = clip.placement_path();
+    let want = same_terms(placement.as_ref(), kind);
+    animated(clip).into_iter().find(|(k, ..)| same_terms(placement.as_ref(), k) == want).map(|(.., tab)| tab)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -57,5 +192,98 @@ mod tests {
         assert_eq!(names.len(), 2, "{names:?}");
         assert!(found.iter().all(|(_, _, tab)| *tab == InspectorTab::Video), "{names:?}");
         assert!(found.iter().any(|(k, ..)| *k == KeyframeParamKind::Video(klipp_core::VideoParam::PositionX)));
+    }
+
+    /// The Inspector shown once, `events` given, with `tab` open: what it
+    /// drew (each text and where) and the tab it leaves open.
+    struct Shown {
+        state: crate::state::AppState,
+        panel: crate::inspector::NewInspectorPanel,
+        ctx: egui::Context,
+        tab: InspectorTab,
+        clock: f64,
+    }
+
+    impl Shown {
+        fn new(clip: Clip, tab: InspectorTab) -> Self {
+            let mut state = crate::state::AppState::default();
+            let v = state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+            state.selected_clip = Some(clip.id);
+            state.sequences[0].tracks[v].clips.push(clip);
+            let ctx = egui::Context::default();
+            crate::icons::install(&ctx);
+            let mut s = Shown { state, panel: Default::default(), ctx, tab, clock: 1.0 };
+            s.frame(Vec::new());
+            s
+        }
+
+        fn frame(&mut self, events: Vec<egui::Event>) -> Vec<(String, egui::Pos2)> {
+            self.clock += 0.05;
+            let prefs = crate::prefs::Preferences::default();
+            let (state, panel, tab) = (&self.state, &mut self.panel, &mut self.tab);
+            let out = self.ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(360.0, 1600.0))), time: Some(self.clock), events, ..Default::default() }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let _ = panel.show(ui, state, &prefs, &crate::theme::KlippTheme::default(), tab);
+                });
+            });
+            // As the app applies a pick.
+            if let Some(kind) = self.panel.focus_request.take() {
+                self.state.param_focus = Some(ParamFocus { clip_id: self.state.selected_clip.unwrap(), kind, at: self.clock });
+            }
+            out.shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)), _ => None }).collect()
+        }
+
+        fn click(&mut self, label: &str) {
+            let drawn = self.frame(Vec::new());
+            let at = drawn.iter().find(|(t, _)| t == label).unwrap_or_else(|| panic!("{label:?} drawn: {:?}", drawn.iter().map(|d| &d.0).collect::<Vec<_>>())).1;
+            self.frame(vec![egui::Event::PointerMoved(at)]);
+            for pressed in [true, false] {
+                self.frame(vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE }]);
+            }
+        }
+    }
+
+    fn animated_clip() -> Clip {
+        let t = |s| klipp_core::RationalTime::from_secs_f64(s, 24);
+        TestClip::of(Clip::media(klipp_core::MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0))).lane("opacity", 1.0, 0.5).lane("pos_x", 1.0, 10.0).lane("pos_x", 2.0, 20.0).build()
+    }
+
+    /// On another tab, the Animated strip names the clip's keyed
+    /// parameters and the Video tab is marked; a chip opens the Video tab
+    /// and brings its parameter into focus.
+    #[test]
+    fn a_chip_opens_its_tab_and_brings_its_parameter_into_focus() {
+        let mut s = Shown::new(animated_clip(), InspectorTab::Audio);
+        let drawn: Vec<String> = s.frame(Vec::new()).into_iter().map(|(t, _)| t).collect();
+        assert!(drawn.iter().any(|t| t == "Animated") && drawn.iter().any(|t| t.ends_with("\u{25C6}") && t.starts_with("VID")), "{drawn:?}");
+        let chip = drawn.iter().find(|t| t.starts_with("\u{25C6} ") && t.contains("Position X")).expect("a Position X chip").clone();
+        s.click(&chip);
+        assert_eq!(s.tab, InspectorTab::Video);
+        let focus = s.state.param_focus.clone().expect("in focus");
+        assert_eq!(tab_of(&animated_clip(), &focus.kind), Some(InspectorTab::Video));
+        assert!(matches!(focus.kind, KeyframeParamKind::Video(klipp_core::VideoParam::PositionX)));
+    }
+
+    /// A parameter brought into focus elsewhere (the Curve Editor) opens
+    /// the tab that holds it once; the user's own tab click is kept after.
+    #[test]
+    fn the_tab_follows_a_parameter_newly_in_focus() {
+        let clip = animated_clip();
+        let mut s = Shown::new(clip.clone(), InspectorTab::Audio);
+        s.state.param_focus = Some(ParamFocus { clip_id: clip.id, kind: KeyframeParamKind::Video(klipp_core::VideoParam::Opacity), at: s.clock });
+        s.frame(Vec::new());
+        assert_eq!(s.tab, InspectorTab::Video);
+        s.tab = InspectorTab::Audio;
+        s.frame(Vec::new());
+        assert_eq!(s.tab, InspectorTab::Audio, "the same focus moves it once");
+    }
+
+    /// A click on an animated row's name brings it into focus.
+    #[test]
+    fn a_rows_name_clicked_brings_it_into_focus() {
+        let mut s = Shown::new(animated_clip(), InspectorTab::Video);
+        s.click("Opacity");
+        let focus = s.state.param_focus.clone().expect("in focus");
+        assert_eq!(tab_of(&animated_clip(), &focus.kind), Some(InspectorTab::Video), "{:?}", focus.kind);
     }
 }

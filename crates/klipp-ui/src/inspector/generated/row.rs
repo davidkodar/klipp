@@ -361,6 +361,10 @@ fn numeric_row(ui: &mut egui::Ui, ctx: &mut RowCtx, input: RowInput) -> RowOutco
         next_keyframe_time: keys.next,
         current_interpolation: keys.interpolation,
     });
+    // The row's track, for the Inspector to show it in focus (#2296).
+    if let Some((_, clip)) = ctx.app.and_then(|app| app.selected_clip_loc()).filter(|_| has_diamond(desc)) {
+        crate::param_focus::tag(ui, clip, crate::state::KeyframeParamKind::Node { path: ctx.addr.clone(), key: ParamKey::new(desc.key) });
+    }
     #[cfg(any(test, feature = "row-recorder"))]
     crate::widgets::row_recorder::next_parameter(desc.key);
     // The stored value a grade drag left, kept as is rather than read back
