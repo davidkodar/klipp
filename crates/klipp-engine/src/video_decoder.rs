@@ -728,10 +728,13 @@ static LIVE_DECODE_THREADS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
 /// Counts a decode thread as alive for as long as it is held.
-struct DecodeThreadToken(&'static std::sync::atomic::AtomicUsize);
+pub(crate) struct DecodeThreadToken(&'static std::sync::atomic::AtomicUsize);
 
 impl DecodeThreadToken {
-    fn new() -> Self {
+    /// Counted until dropped: held by every thread that runs ffmpeg or the
+    /// GPU for a decoder, its own decode thread and one that opens it
+    /// (#2261), so [`wait_for_decode_threads`] waits for them all.
+    pub(crate) fn new() -> Self {
         Self::counted_in(&LIVE_DECODE_THREADS)
     }
 
