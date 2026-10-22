@@ -855,6 +855,10 @@ pub(crate) static STREAMS_OPENED_ON_SCREEN: std::sync::atomic::AtomicU64 = std::
 /// short (#2128).
 pub(crate) static STREAMS_SHORTENED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// Layers on screen opened while their drive was already giving all the
+/// viewer's streams may read from it (#2128).
+pub(crate) static STREAMS_DISK_SHORT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// (from the preroll, opened cold) cuts to the next shot on the primary
 /// track since the process began.
 pub fn cut_openings() -> (u64, u64) {
@@ -877,6 +881,11 @@ pub fn streams_opened_on_screen() -> u64 {
 /// memory being short, since the process began (#2128).
 pub fn streams_shortened() -> u64 {
     STREAMS_SHORTENED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// How many layers on screen opened while their drive was short.
+pub fn streams_disk_short() -> u64 {
+    STREAMS_DISK_SHORT.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Whether `clip`'s grade reads a matte sequence: an External Matte bound
@@ -9856,7 +9865,14 @@ impl PlaybackEngine {
             _ => (1920, 1080, false),
         };
         let (pw, ph) = crate::video_decoder::playback_dimensions(w.max(1), h.max(1), 0);
-        streams::Cost { rate, frame_bytes: pw as f64 * ph as f64 * if deep { 8.0 } else { 4.0 } }
+        // What it reads: the item's probed rates for its own file; a proxy
+        // or skim file's size over the item's length.
+        let read_bytes = match pool.get(&media_id) {
+            Some(item) if item.path == path => crate::disk_budget::read_bytes_per_sec(item.video_bitrate_kbps.unwrap_or(0), item.audio_bitrate_kbps.unwrap_or(0), item.file_size_bytes, item.duration.to_secs_f64()),
+            Some(item) => crate::disk_budget::read_bytes_per_sec(0, 0, std::fs::metadata(path).map(|m| m.len()).unwrap_or(0), item.duration.to_secs_f64()),
+            None => 0.0,
+        };
+        streams::Cost { rate, frame_bytes: pw as f64 * ph as f64 * if deep { 8.0 } else { 4.0 }, read_bytes, drive: Some(crate::disk_budget::drive_of(path)) }
     }
 
     fn media_pixel_rate(&self, media_id: MediaId, path: &std::path::Path) -> f64 {

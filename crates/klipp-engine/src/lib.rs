@@ -70,6 +70,7 @@ pub mod audio_output;
 pub mod audio_source;
 pub mod commands;
 pub mod decode_budget;
+pub mod disk_budget;
 pub mod engine;
 pub mod fast_path;
 pub mod scopes;

@@ -589,7 +589,10 @@ impl PlaybackEngine {
                 (true, _) | (false, None) => super::seek_lead::MAX_LEAD_SECS,
                 (false, Some(path)) => {
                     let fps = self.media_pool.read().unwrap_or_else(|e| e.into_inner()).get(&w.media).map_or(30.0, |m| m.fps.as_f64());
-                    self.seek_leads.lead(&path, w.source_secs, fps)
+                    // Earlier on a slow drive, so its first frames are read
+                    // in time (#2128).
+                    let slow = crate::disk_budget::drive_of(&path).kind.extra_lead_secs();
+                    (self.seek_leads.lead(&path, w.source_secs, fps) + slow).min(super::seek_lead::MAX_LEAD_SECS)
                 }
             };
             if due_in <= lead {
@@ -602,8 +605,8 @@ impl PlaybackEngine {
             .filter(|w| !self.streams.has(w.clip))
             .filter_map(|w| {
                 let path = self.path_for_media(w.media)?;
-                let rot = self.effective_decode_rotation(w.media, &path, w.rotation);
                 let cost = self.media_cost(w.media, &path);
+                let rot = self.effective_decode_rotation(w.media, &path, w.rotation);
                 Some((w.clip, (path, rot, cost)))
             })
             .collect();
@@ -1504,10 +1507,10 @@ impl PlaybackEngine {
         if total_ms > 16.0 || self.in_node_param_edit {
             tracing::debug!(
                 "PERF view_frame: {total_ms:.1}ms {w}x{h} | render={:.1} (grade={:.1} ofx={:.1} fx={:.1} lut={:.1} composite={:.1}) \
-                 encode={encode_ms:.1} scope={scope_ms:.1} streams={} cached={} stills kept={} uploaded={} decoders gpu={streams_gpu} software={streams_software} shortened={} \
+                 encode={encode_ms:.1} scope={scope_ms:.1} streams={} cached={} stills kept={} uploaded={} decoders gpu={streams_gpu} software={streams_software} shortened={} disk_short={} \
                  grade[splice={:.1} analyses={:.1} prepare={:.1} seed={:.1} graph={:.1}]",
                 s.total_ms, s.grade_ms, s.ofx_ms, s.effects_ms, s.lut_ms, s.composite_ms,
-                self.streams.len(), stats.is_none(), s.stills_kept, s.stills_uploaded, super::streams_shortened(),
+                self.streams.len(), stats.is_none(), s.stills_kept, s.stills_uploaded, super::streams_shortened(), super::streams_disk_short(),
                 s.grade_split.splice_ms, s.grade_split.analyses_ms, s.grade_split.prepare_ms, s.grade_split.seed_ms, s.grade_split.graph_ms,
             );
         }
