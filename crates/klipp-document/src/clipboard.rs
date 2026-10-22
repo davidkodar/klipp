@@ -268,6 +268,16 @@ pub fn selection_for(clip: ClipId, primary: Option<ClipId>, selected: &[ClipId])
     if sel.len() > 1 && sel.contains(&clip) { sel } else { vec![clip] }
 }
 
+/// A sequence's content revision (#2385): a hash of all it holds, so any
+/// change to it, by whatever path, changes it. A plan that copied from a
+/// sequence records it, and the copy lands only while it still holds.
+pub fn content_revision(seq: &Sequence) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    serde_json::to_vec(seq).unwrap_or_default().hash(&mut h);
+    h.finish()
+}
+
 /// Overwrite-insert a clip onto a track at a given position.
 /// Trims or removes any overlapping clips in the range [timeline_in, timeline_out].
 pub fn overwrite_insert_clip_on_track(

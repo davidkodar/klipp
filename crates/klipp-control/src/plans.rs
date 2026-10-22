@@ -21,6 +21,24 @@ pub(crate) fn resolve_plan(ctx: &ControlContext, ops: &[klipp_document::ops::Op]
     Ok((plan, revision))
 }
 
+/// [`resolve_plan`], seeing the project's other sequences as the UI last
+/// published them, for `plan` and `apply`'s `edit_from_selects` (#2385).
+/// The plan names each it copied from, with the content it read; the UI
+/// refuses the edits if one has changed since.
+pub(crate) fn resolve_plan_seeing(ctx: &ControlContext, ops: &[klipp_document::ops::Op]) -> Result<(klipp_document::ops::Plan, u64), String> {
+    if !ops.iter().any(|o| matches!(o, klipp_document::ops::Op::EditFromSelects { .. })) {
+        return resolve_plan(ctx, ops);
+    }
+    let revision = ctx.shared.revision();
+    let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+    let seq = seq.with_own_grades();
+    let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+    let others = ctx.others.read().map_err(|_| "sequences lock poisoned")?.clone();
+    let ops = &with_templates(ops, template_dir().as_deref());
+    let plan = klipp_document::ops::resolve_in(&seq, &others, &pool, ops, &AnalysedTranscripts).map_err(|r| format!("{r} (step {} refused; nothing applied)", r.step + 1))?;
+    Ok((plan, revision))
+}
+
 /// The user's title template folder (#1139).
 pub(crate) fn template_dir() -> Option<std::path::PathBuf> {
     dirs::config_dir().map(|c| klipp_timeline::template_dir(&c))

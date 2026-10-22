@@ -56,7 +56,7 @@ fn context() -> Option<(ControlContext, Vec<klipp_core::ClipId>, Arc<Mutex<Vec<A
         commands, shared: Arc::new(klipp_core::ControlShared::default()), wake_ui,
         sequence: Arc::new(klipp_timeline::SharedSequence::new(sequence)),
         media_pool: Arc::new(RwLock::new(pool)), frame_buffer: fb,
-        perf_ring: klipp_engine::perf::shared(), log_path: root.join("unused.log"),
+        perf_ring: klipp_engine::perf::shared(), log_path: root.join("unused.log"), others: Default::default(),
     };
     Some((ctx, ids, sent))
 }

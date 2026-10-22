@@ -573,6 +573,14 @@ exist until the plan runs.
   shorter, so nothing else moves. Its sound and theirs go with it; one
   undo step. Refused where a neighbour would run out of its file or of
   its length; a clip touching nothing either side is moved, not slid.
+- `edit_from_selects {from, from_secs, to_secs, at?, overwrite?}`: what
+  lies from `from_secs` to `to_secs` in another sequence of the project
+  (`from`, its id or name as `klipp_status` lists them), put into the
+  open one at `at` (its In point when left out), as Insert and Overwrite
+  from Selects do: every track cut and moved along, or over what is there
+  with `overwrite`. One undo step. Only `klipp_apply` and `klipp_plan` see
+  the other sequences; if the one copied from changes before the edit
+  lands, it is refused, so plan again.
 - `strobe {clip_id, piece_frames, on?, off?, from?, to?, ripple?}`: a
   flicker: the clip (or `from` to `to` inside it) cut into pieces
   `piece_frames` long, and of every `on` pieces kept the next `off`

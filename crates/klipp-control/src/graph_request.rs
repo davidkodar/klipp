@@ -35,7 +35,7 @@ pub(crate) fn write(ctx: &ControlContext, ops: &[GraphWireOp], expected_revision
         Err((at, why)) => return Ok(refuse(at, why)),
     };
     let mut result = send_with_reply(ctx, vec![AppCommand::GraphOps { ops: prepared.ops, label: label.clone() }], Vec::new(), false,
-        EnvelopeReply { expected_revision: Some(revision), expected_project_identity: Some(identity), label: Some(label), source_indices: Some(prepared.source_indices) })?;
+        EnvelopeReply { expected_revision: Some(revision), expected_project_identity: Some(identity), label: Some(label), source_indices: Some(prepared.source_indices), expected_sources: Vec::new() })?;
     // Queued ids are useful for recovery, but do not claim they exist until
     // the app acknowledges the write. A late outcome is in operation_status.
     if result["accepted"] == true {

@@ -434,7 +434,7 @@ pub(crate) fn respond(
             if in_batch {
                 return read_in_batch("plan");
             }
-            let (plan, revision) = resolve_plan(ctx, &ops)?;
+            let (plan, revision) = resolve_plan_seeing(ctx, &ops)?;
             let mut v = json!({ "text": if detail { plan.text() } else { plan.text_folded() }, "steps_resolved": plan.steps.len(), "duration_secs": plan.duration_secs, "revision": revision, "applied": false });
             if detail {
                 v["steps"] = json!(plan.report());
@@ -459,7 +459,7 @@ pub(crate) fn respond(
                     return Err(format!("the document is at revision {now}, the plan was made at {want}; plan again"));
                 }
             }
-            let (plan, revision) = resolve_plan(ctx, &ops)?;
+            let (plan, revision) = resolve_plan_seeing(ctx, &ops)?;
             if let Some(want) = expected_revision {
                 if revision != want {
                     return Err(format!("the document is at revision {revision}, the plan was made at {want}; plan again"));
@@ -470,7 +470,8 @@ pub(crate) fn respond(
                 Some(planned_cut_changes(ctx, &edits)?)
             } else { None };
             let label = label.unwrap_or_else(|| apply_label(&ops));
-            let mut v = send_full_envelope_for_project(ctx, Vec::new(), edits, true, Some(revision), expected_project_identity, Some(label))?;
+            let reply = EnvelopeReply { expected_revision: Some(revision), expected_project_identity, label: Some(label), source_indices: None, expected_sources: plan.sources.clone() };
+            let mut v = send_with_reply(ctx, Vec::new(), edits, true, reply)?;
             if v["applied"] == true {
                 if let Some(changes) = cut_changes {
                     v["changes"] = changes["changes"].clone();
