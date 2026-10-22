@@ -66,7 +66,7 @@ pub mod pixel_check;
 pub mod still;
 
 pub use audio_mixdown::AudioMixdown;
-pub use clip_decoder::{detect_gpu, hardware_decoders_open, GpuVendor, RenderDecoder};
+pub use clip_decoder::{detect_gpu, hardware_decoders_open, live_render_decoders, GpuVendor, RenderDecoder};
 pub use encoder::Encoder;
 pub use export_job::{measure_delivery, partial_path_for, ExportJob, LoudnessAnalysis};
 /// The export's decoder of a snapshot's media, for tools that render

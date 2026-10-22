@@ -31,6 +31,8 @@ pub(crate) enum DecodedPixels {
 /// descriptor pool once, which arrives as SIGSEGV rather than an error.
 #[derive(Default)]
 pub struct GpuConverters {
+    /// Counted in [`live_render_decoders`] while it lives.
+    _live: Live,
     /// Eight-bit 4:2:0 (NV12), what an SDR hardware decode hands back.
     pub nv12: Option<klipp_effects::nv12_gpu::GpuNv12Converter>,
     /// Ten-bit 4:2:0 (P010), what a 10-bit one does. Without this a
@@ -47,6 +49,7 @@ impl GpuConverters {
             return Self::default();
         };
         Self {
+            _live: Live::new(),
             nv12: klipp_effects::nv12_gpu::GpuNv12Converter::with_context(ctx),
             p010: klipp_effects::p010_gpu::GpuP010Converter::with_context(ctx),
         }
@@ -133,6 +136,8 @@ pub struct RenderDecoder {
     hw_accel: HwAccel,
     /// Counted in [`hardware_decoders_open`] while it decodes on the GPU.
     _on_gpu: Option<OnGpu>,
+    /// Counted in [`live_render_decoders`] while it lives.
+    _live: Live,
     /// Target output dimensions.
     target_width: u32,
     target_height: u32,
@@ -334,6 +339,7 @@ impl RenderDecoder {
             last_scene: None,
             hw_accel,
             _on_gpu: (hw_accel != HwAccel::Software).then(OnGpu::new),
+            _live: Live::new(),
             target_width,
             target_height,
             time_base_secs,
@@ -845,6 +851,42 @@ impl OnGpu {
 impl Drop for OnGpu {
     fn drop(&mut self) {
         ON_GPU.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Render decoders and GPU frame converters alive now, export's and
+/// background renders'.
+static LIVE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// How many render decoders and GPU frame converters are alive. A quit
+/// waits for them to be dropped before the process exits: one still in
+/// ffmpeg or the GPU driver as the driver tears itself down at exit
+/// crashes the process, as a viewer decoder did (#2261).
+pub fn live_render_decoders() -> usize {
+    LIVE.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// One decoder's or converter's place in [`live_render_decoders`].
+struct Live;
+
+impl Live {
+    fn new() -> Self {
+        LIVE.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        Self
+    }
+}
+
+// `GpuConverters::default()`, the converters a render without a GPU
+// has, is counted as the shared ones are.
+impl Default for Live {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for Live {
+    fn drop(&mut self) {
+        LIVE.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
     }
 }
 
