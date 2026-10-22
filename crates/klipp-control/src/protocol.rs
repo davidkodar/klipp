@@ -1298,6 +1298,19 @@ pub enum ControlCommand {
     /// and in the project. A new project's sequence keeps a default name
     /// until someone names it.
     RenameSequence { name: String },
+    /// Remove one of the project's sequences, as its tab's Delete does: by
+    /// `index` or `sequence_id`, as `status` lists them. Refused for the
+    /// project's only sequence and for one held as a compound clip in
+    /// another. It can't be undone, so it is refused, naming the sequence
+    /// and what it holds, until `confirm` is true, as the app asks first.
+    RemoveSequence {
+        #[serde(default)]
+        index: Option<usize>,
+        #[serde(default)]
+        sequence_id: Option<String>,
+        #[serde(default)]
+        confirm: bool,
+    },
     /// Open another of the project's sequences, as clicking its tab does:
     /// by `index` or `sequence_id`, the `index` and `id` `status`'s
     /// `sequences` lists (`id` itself names the request). It records the

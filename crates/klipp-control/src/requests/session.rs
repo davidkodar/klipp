@@ -142,14 +142,21 @@ pub(crate) fn respond(
                     "next_redo": project.redo,
                 },
                 // Every sequence of the project, the open one marked:
-                // `switch_sequence` opens another (M3 step 18).
-                "sequences": project.sequences.iter().enumerate().map(|(index, s)| json!({
-                    "index": index,
-                    "id": s.id,
-                    "name": s.name,
-                    "clips": s.clips,
-                    "active": index == project.active_sequence,
-                })).collect::<Vec<_>>(),
+                // `switch_sequence` opens another (M3 step 18); one held as
+                // a compound clip says where, as `remove_sequence` refuses it.
+                "sequences": project.sequences.iter().enumerate().map(|(index, s)| {
+                    let mut v = json!({
+                        "index": index,
+                        "id": s.id,
+                        "name": s.name,
+                        "clips": s.clips,
+                        "active": index == project.active_sequence,
+                    });
+                    if let Some(parent) = &s.used_in {
+                        v["used_in"] = json!(parent);
+                    }
+                    v
+                }).collect::<Vec<_>>(),
                 "project": {
                     "path": project.path.as_ref().map(|p| p.to_string_lossy().to_string()),
                     "unsaved_changes": project.dirty,

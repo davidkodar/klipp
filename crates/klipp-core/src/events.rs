@@ -1430,7 +1430,10 @@ pub enum AppCommand {
     /// #82).
     FocusSequence { sequence_idx: usize },
     RenameSequence { sequence_idx: usize, new_name: String },
-    DeleteSequence { sequence_idx: usize },
+    /// Remove the sequence `sequence_id`: by its id, not its place, so a
+    /// second removal sent before the first is applied names the one meant
+    /// (#2366).
+    DeleteSequence { sequence_id: crate::SequenceId },
     ReorderSequences { from_idx: usize, to_idx: usize },
     /// Change a sequence's frame size. Goes through the undo history because
     /// changing the canvas reshapes how every clip composites.
@@ -5293,6 +5296,10 @@ pub struct SequenceSummary {
     pub name: String,
     /// Clips on all its tracks.
     pub clips: usize,
+    /// The sequence that holds it as a compound clip, if one does: it
+    /// can't be removed while it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub used_in: Option<String>,
 }
 
 impl Default for ProjectStatus {

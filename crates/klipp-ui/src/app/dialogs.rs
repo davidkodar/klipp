@@ -841,7 +841,7 @@ impl KlippApp {
                             ui.add_space(8.0);
                             ui.horizontal(|ui| {
                                 if ui.button("Delete").clicked() {
-                                    cmds.push(AppCommand::DeleteSequence { sequence_idx: idx });
+                                    cmds.push(AppCommand::DeleteSequence { sequence_id: seq_id });
                                     self.state.confirm_delete_sequence = None;
                                 }
                                 if ui.button("Cancel").clicked() {

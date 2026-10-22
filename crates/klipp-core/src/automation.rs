@@ -8,17 +8,22 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum AutomationMode {
     /// The keys are ignored: the controls are as set.
+    #[serde(alias = "off")]
     Off,
     /// The keys are played into the controls (the default).
     #[default]
+    #[serde(alias = "read")]
     Read,
     /// A control's moves are written while it is held; let go, it
     /// returns to the keys.
+    #[serde(alias = "touch")]
     Touch,
     /// A control's moves are written from its first touch until
     /// playback stops, its last value held after it is let go.
+    #[serde(alias = "latch")]
     Latch,
     /// The controls are written over the whole pass, held or not.
+    #[serde(alias = "write")]
     Write,
 }
 
@@ -40,8 +45,10 @@ impl AutomationMode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum TrackParam {
     /// The fader: linear gain, 0..2, interpolated in dB between keys.
+    #[serde(alias = "volume")]
     Volume,
     /// The pan: -1 (left) to 1 (right), interpolated linearly.
+    #[serde(alias = "pan")]
     Pan,
 }
 

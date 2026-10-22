@@ -58,7 +58,7 @@ const WRITE_TOOLS: &[&str] = &[
     "klipp_add_node", "klipp_remove_node", "klipp_connect_nodes",
     "klipp_set_node_param", "klipp_toggle_node", "klipp_set_log_format",
     "klipp_generator", "klipp_undo", "klipp_redo", "klipp_batch", "klipp_export", "klipp_export_subtitles", "klipp_import_subtitles", "klipp_translate_captions", "klipp_apply",
-    "klipp_open_project", "klipp_close_project", "klipp_switch_sequence", "klipp_track_subject",
+    "klipp_open_project", "klipp_close_project", "klipp_switch_sequence", "klipp_remove_sequence", "klipp_track_subject",
 ];
 
 /// Calls with side effects may be replayed after a lost socket reply. The
@@ -1209,6 +1209,11 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             (None, Some(id)) => json!({ "method": "switch_sequence", "sequence_id": id }),
             _ => return Err("give index or sequence_id (one of them), as klipp_status lists the sequences".into()),
         },
+        "klipp_remove_sequence" => match (args.get("index").and_then(Value::as_u64), args.get("sequence_id").and_then(Value::as_str)) {
+            (Some(index), None) => json!({ "method": "remove_sequence", "index": index, "confirm": args.get("confirm").and_then(Value::as_bool).unwrap_or(false) }),
+            (None, Some(id)) => json!({ "method": "remove_sequence", "sequence_id": id, "confirm": args.get("confirm").and_then(Value::as_bool).unwrap_or(false) }),
+            _ => return Err("give index or sequence_id (one of them), as klipp_status lists the sequences".into()),
+        },
         "klipp_add_marker" => {
             let mut v = json!({ "method": "add_marker", "at_secs": args.get("at_secs").and_then(|v| v.as_f64()).ok_or("missing required argument: at_secs")? });
             for key in ["duration_secs", "label", "note", "color", "kind"] {
@@ -1866,7 +1871,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({ "secs": { "type": "number", "description": "Seconds from timeline start" } }),
              vec!["secs"]),
         tool("klipp_list_clips",
-             "Every track and its clips, a line a clip: ids, kinds, ranges, names, media ids and transitions; narrow by track, time or media. Clip ids here are what the grade tools take. Details: klipp_guide topic list_clips.",
+             "Every track and its clips, a line a clip, with their ids; narrow by track, time or media. Details: klipp_guide topic list_clips.",
              json!({
                  "track": { "type": ["integer", "string"], "description": "A track's index or name" },
                  "from_secs": { "type": "number", "description": "Only clips that end after this" },
@@ -1879,7 +1884,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "The media pool: media ids, paths, kind, duration, fps, resolution, codec. Details: klipp_guide topic list_media.",
              json!({}), vec![]),
         tool("klipp_generator",
-             "Preview a native generator clip; apply true places it as one undo step. Give at_secs and secs; data describes the native generator. Overlaps and locked tracks are refused. Details: klipp_guide topic generator.",
+             "Preview a native generator clip; apply true places it. Details: klipp_guide topic generator.",
              json!({ "data": { "type": ["object", "string"] }, "at_secs": { "type": "number" }, "secs": { "type": "number" }, "track": { "type": "integer" }, "apply": { "type": "boolean" } }), vec!["data", "at_secs", "secs"]),
         tool("klipp_import_media",
              "Import media: one path, several paths, or a folder's media files. Each is answered \
@@ -2034,7 +2039,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              }),
              vec![]),
         tool("klipp_track_subject",
-             "Track a clip's subject into grade or cut_out; returns a job_id. into whole restores its background in one undo step, without a job. Models fetched only with download_model. Details: klipp_guide topic track_subject.",
+             "Track a clip's subject into grade or cut_out, as a job; into whole restores its background. Details: klipp_guide topic track_subject.",
              json!({
                  "clip_id": { "type": "string", "description": "From klipp_list_clips" },
                  "transition_id": { "type": "string", "description": "In place of clip_id: a piece transition whose pieces cut round the subject" },
@@ -2068,7 +2073,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "A clip's grade chain in picture order, each node named with its stage, and what runs out of order. Read when a grading loop will not settle. Details: klipp_guide topic grade_chain.",
              json!({ "clip_id": { "type": "string" } }), vec![]),
         tool("klipp_colour_selfcheck",
-             "Send a ColorChecker through the CPU and GPU render paths and read it back, to see whether the pipeline itself moves colour. Run once before grading to targets. Details: klipp_guide topic colour_selfcheck.",
+             "Check whether the render paths move colour, with a ColorChecker; run once before grading to targets. Details: klipp_guide topic colour_selfcheck.",
              json!({ "size": { "type": "integer" } }), vec![]),
         tool("klipp_measure_region",
              "One box of the frame read alone, in klipp_frame_stats's numbers; x, y, w, h are fractions. Details: klipp_guide topic measure_region.",
@@ -2303,6 +2308,9 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "Open another of the project's sequences, as clicking its tab does: by index or sequence_id, as \
               klipp_status lists them. The tools then work on it.",
              json!({ "index": { "type": "integer" }, "sequence_id": { "type": "string" } }), vec![]),
+        tool("klipp_remove_sequence",
+             "Remove a sequence, by index or sequence_id; final, so confirm true after asking. Details: klipp_guide topic remove_sequence.",
+             json!({ "index": { "type": "integer" }, "sequence_id": { "type": "string" }, "confirm": { "type": "boolean" } }), vec![]),
         tool("klipp_create_multicam",
              "Make a multicam group from two or more pool angles of one event, synced by timecode or sound and laid out at the playhead, in the background. Details: klipp_guide topic create_multicam.",
              json!({

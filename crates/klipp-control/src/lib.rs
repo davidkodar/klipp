@@ -757,6 +757,7 @@ fn handle(
             | ControlCommand::NewSequence { .. }
             | ControlCommand::RenameSequence { .. }
             | ControlCommand::SwitchSequence { .. }
+            | ControlCommand::RemoveSequence { .. }
             | ControlCommand::AppendClip { .. }
             | ControlCommand::RemoveClip { .. }
             | ControlCommand::AttachAudio { .. }
