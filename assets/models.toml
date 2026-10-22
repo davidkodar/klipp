@@ -1030,3 +1030,31 @@ sources = [
 kind = "sound_tagger"
 runtime = "candle"
 prompts = ""
+
+[[model]]
+id = "clip_vit_b32"
+display_name = "CLIP ViT-B/32 — picture search"
+size_bytes = 605157884
+sha256 = "99d28a652e6ec46629ab7047a0ac82c69b1fe11e0ce672c43af65d3a9a3fc05d"
+license = "MIT"
+attribution = "OpenAI, CLIP (openai/CLIP), ViT-B/32 weights as safetensors (openai/clip-vit-base-patch32)"
+sources = [
+    { url = "https://huggingface.co/openai/clip-vit-base-patch32/resolve/b33cedfd0df4e43b8238760678fcc89e1a0d38b3/model.safetensors" },
+]
+kind = "image_text_embedder"
+runtime = "candle"
+prompts = ""
+
+[[model]]
+id = "clip_vit_b32_tokenizer"
+display_name = "CLIP ViT-B/32 tokenizer — picture search"
+size_bytes = 2224041
+sha256 = "b556ac8c99757ffb677208af34bc8c6721572114111a6e0aaf5fa69ff0b8d842"
+license = "MIT"
+attribution = "OpenAI, CLIP (openai/CLIP), byte-level BPE vocabulary (openai/clip-vit-base-patch32)"
+sources = [
+    { url = "https://huggingface.co/openai/clip-vit-base-patch32/resolve/b33cedfd0df4e43b8238760678fcc89e1a0d38b3/tokenizer.json" },
+]
+kind = "image_text_embedder"
+runtime = "candle"
+prompts = ""

@@ -278,6 +278,11 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::ExportAaf { .. }
         | AppCommand::ShowToast { .. }
         | AppCommand::OpenNormalizeDialog { .. }
+        // Finding footage by its picture reads and shows; opening a hit
+        // or making a subclip of it is its own command.
+        | AppCommand::OpenVisualSearch
+        | AppCommand::RunVisualSearch { .. }
+        | AppCommand::VisualSearchFound { .. }
         | AppCommand::NormalizeClips { .. }
         // The fit dialog's own steps; Apply is the edit.
         | AppCommand::OpenMusicFitDialog { .. }

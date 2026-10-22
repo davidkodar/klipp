@@ -222,6 +222,32 @@ pub(crate) fn respond(
             Ok(json!({ "query": query, "hits": hits }))
         }
 
+        ControlCommand::SearchVisual { query, max_hits, min_score } => {
+            if in_batch {
+                return read_in_batch("search_visual");
+            }
+            let wanted = klipp_analysis::visual::query(&query)?;
+            let min = min_score.unwrap_or(0.2);
+            let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+            let (mut hits, mut searched) = (Vec::new(), 0usize);
+            for m in pool.all() {
+                let Some(v) = klipp_analysis::visual::load(&m.path) else { continue };
+                searched += 1;
+                let length = m.duration.to_secs_f64();
+                for h in v.search(&wanted, min) {
+                    let end = if length > 0.0 { h.end_secs.min(length) } else { h.end_secs };
+                    hits.push((h.score, json!({ "media_id": m.id.0.to_string(), "filename": m.filename, "start_secs": h.start_secs, "end_secs": end, "best_secs": h.best_secs, "score": (h.score * 1000.0).round() / 1000.0 })));
+                }
+            }
+            hits.sort_by(|a, b| b.0.total_cmp(&a.0));
+            hits.truncate(max_hits.unwrap_or(20));
+            let mut out = json!({ "query": query, "searched": searched, "hits": hits.into_iter().map(|(_, h)| h).collect::<Vec<_>>() });
+            if searched == 0 {
+                out["next"] = json!("No footage has been looked at for picture search yet: download its model (klipp_analyze download_models) and analyze the media.");
+            }
+            Ok(out)
+        }
+
         ControlCommand::AutoRedact { apply } => {
             if in_batch {
                 return Err("auto_redact is its own batch; send it on its own".into());

@@ -34,6 +34,7 @@
 //! would live in its own module behind the same trait; what stands in
 //! the way is distributing its weights, not the code here.
 
+pub mod clip;
 pub mod mobile_sam;
 pub mod translation;
 pub mod panns;

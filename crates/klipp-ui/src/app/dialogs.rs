@@ -197,6 +197,7 @@ impl KlippApp {
         cmds.extend(crate::import_report::show_dialog(ctx, &mut self.state));
         cmds.extend(crate::credits_dialog::show_dialog(ctx, &mut self.state));
         cmds.extend(crate::normalize_dialog::show_dialog(ctx, &mut self.state));
+        cmds.extend(crate::visual_search_dialog::show_dialog(ctx, &mut self.state));
         cmds.extend(crate::music_fit_dialog::show_dialog(ctx, &mut self.state));
         cmds.extend(crate::missing_fonts::show_dialog(ctx, &mut self.state, &self.theme));
 

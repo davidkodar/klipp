@@ -239,6 +239,7 @@ impl KlippApp {
                 if self.handle_title_commands(&cmd, &mut needs_refresh) { break 'dispatch; }
                 if self.handle_project_commands(&cmd, &mut needs_refresh) { break 'dispatch; }
                 if self.handle_media_commands(&cmd, &mut needs_refresh) { break 'dispatch; }
+                if self.handle_visual_search_commands(&cmd) { break 'dispatch; }
                 // Clip operations — handled by handle_clip_commands
                 // Timeline operations — handled by handle_timeline_commands
                 // Track seek commands for filmstrip preview

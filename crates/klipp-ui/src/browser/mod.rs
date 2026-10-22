@@ -1609,6 +1609,10 @@ impl BrowserPanel {
                         // AND-combined across categories, OR-combined
                         // within the colour-label bitmask.
                         self.render_media_filter_toolbar(ui, theme, state);
+                        // Footage found by what is in its picture (#2212).
+                        if ui.small_button("Find by Picture\u{2026}").on_hover_text("Describe a shot (\u{201c}a dog on a beach\u{201d}) to find the footage that looks like it").clicked() {
+                            state.visual_search.get_or_insert_with(Default::default);
+                        }
                         let tab_cmds = media_tab::show(
                             ui,
                             state,

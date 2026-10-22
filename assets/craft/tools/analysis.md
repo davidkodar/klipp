@@ -83,3 +83,11 @@ What is said in a media file between two times, with when, in seconds of the fil
 ## klipp_analysis_queue
 
 Put media_id first in the pending analysis queue. With cancel_pending true, cancel other queued items (all if no ID). Running work finishes normally. Call analyze first for an item that has no active request.
+
+## klipp_search_screen_text
+
+The screen recording's Cmd-F: every moment a word or phrase was on screen, across all footage that has had its screen text read (klipp_screen_text). Each hit has the media item, the seconds it stayed up, the text and where on the frame. max_hits caps the list.
+
+## klipp_search_visual
+
+Footage found by what its picture shows: a description such as "a dog on a beach" or "a close-up of hands on a keyboard", matched against frames sampled every two seconds of each analysed file (picture search must be downloaded, and analysis must have run). Hits come best first: the media item, the stretch of the file where neighbouring frames match, its best frame and the match score, a cosine similarity. max_hits caps the list; min_score (default 0.2) drops weaker matches. With nothing analysed yet it says how to start.

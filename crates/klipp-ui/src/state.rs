@@ -2369,6 +2369,8 @@ pub struct AppState {
     pub credits_dialog: Option<crate::credits_dialog::CreditsDialog>,
     /// The open Normalize dialog (#1843).
     pub normalize_dialog: Option<crate::normalize_dialog::NormalizeDialog>,
+    /// The open Find by Picture window (#2212).
+    pub visual_search: Option<crate::visual_search_dialog::VisualSearch>,
     /// The open Fit Music to Length dialog (#2210).
     pub music_fit_dialog: Option<crate::music_fit_dialog::MusicFitDialog>,
     pub effect_thumbnails: crate::browser::effect_thumbnails::ThumbnailRenderer,
@@ -4688,6 +4690,7 @@ impl Default for AppState {
             title_template_dialog: None,
             credits_dialog: None,
             normalize_dialog: None,
+            visual_search: None,
             music_fit_dialog: None,
             effect_thumbnails: crate::browser::effect_thumbnails::ThumbnailRenderer::default(),
             render_queue: {

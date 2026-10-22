@@ -74,6 +74,9 @@ pub enum ModelKind {
     /// What a sound is, by AudioSet's classes: what proposes a clip's
     /// audio role (#2216).
     SoundTagger,
+    /// Pictures and words in one space: what finds footage by a
+    /// description (#2212), and its tokenizer.
+    ImageTextEmbedder,
 }
 
 /// Which backend crate runs the model. Lets the registry pick the

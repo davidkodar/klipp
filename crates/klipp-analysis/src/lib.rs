@@ -50,6 +50,8 @@ pub mod screentext;
 pub mod subject_matte;
 #[cfg(feature = "audio_role")]
 pub mod audio_role;
+#[cfg(feature = "visual")]
+pub mod visual;
 
 use std::path::{Path, PathBuf};
 
@@ -249,6 +251,8 @@ pub fn analysers() -> Vec<Box<dyn Analyser>> {
     // Wants nothing until its model is downloaded.
     #[cfg(feature = "audio_role")]
     v.push(Box::new(audio_role::AudioRoleAnalyser));
+    #[cfg(feature = "visual")]
+    v.push(Box::new(visual::VisualAnalyser));
     v
 }
 
@@ -262,6 +266,8 @@ pub(crate) fn native_analysers() -> Vec<Box<dyn Analyser>> {
     v.push(Box::new(framing::FramingAnalyser));
     #[cfg(feature = "ocr")]
     v.push(Box::new(screentext::ScreenTextAnalyser));
+    #[cfg(feature = "visual")]
+    v.push(Box::new(visual::VisualAnalyser));
     v
 }
 
@@ -289,6 +295,11 @@ pub fn download_models() -> Result<Vec<String>, String> {
     {
         audio_role::ensure_model(true)?;
         got.push(audio_role::MODEL_ID.to_string());
+    }
+    #[cfg(feature = "visual")]
+    {
+        visual::ensure_models(true)?;
+        got.extend([visual::TOKENIZER_ID.to_string(), visual::MODEL_ID.to_string()]);
     }
     Ok(got)
 }

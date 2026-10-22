@@ -131,3 +131,7 @@ List the existing projects in Klipp's recent list, most recent first: name, abso
 ## klipp_close_project
 
 Close the project and return to the project page. Unsaved changes refuse the call unless save true or discard_changes true is supplied; never supply both. save writes to the project's current path and closes only after a successful save. A never-saved project needs klipp_save_project with a path first. Closing an already closed project is safe. Use klipp_recent_projects, then klipp_open_project with a name or path to switch projects without shell access.
+
+## klipp_list_media
+
+The media pool: each item's media id, path, kind (video, still or audio), duration, fps, resolution and codec, and whether it is offline. A sound has no width, height or fps; it gives sample_rate and audio_channels, and its cover art as artwork, never as a picture size.
