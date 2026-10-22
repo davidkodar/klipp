@@ -248,6 +248,49 @@ fn draw_lufs_bar(
 // Track fader strip
 // ═══════════════════════════════════════════════════════════════════
 
+/// A strip's automation (#2306): its track's mode; the volume and pan it
+/// shows in place of the controls as set, moved or from the keys at the
+/// playhead; and whether a move of each is live rather than set.
+pub(crate) struct StripAutomation {
+    pub mode: klipp_core::automation::AutomationMode,
+    pub shown_volume: Option<f32>,
+    pub shown_pan: Option<f32>,
+    pub live_volume: bool,
+    pub live_pan: bool,
+}
+
+/// Whether a move of `param` on `track` is live, played over its keys
+/// and recorded by a pass, rather than setting the control (#2306): it
+/// plays from keys, or playback is on and the mode records.
+pub(crate) fn goes_live(track: &klipp_timeline::Track, param: klipp_core::automation::TrackParam, playing: bool) -> bool {
+    use klipp_core::automation::AutomationMode;
+    track.automation.plays(param) || playing && matches!(track.automation.mode, AutomationMode::Touch | AutomationMode::Latch | AutomationMode::Write)
+}
+
+/// A control moved to `value`: live, for the pass and the engine, or set,
+/// one undoable step as before.
+fn set_control(
+    track_index: usize,
+    param: klipp_core::automation::TrackParam,
+    value: f32,
+    live: bool,
+    target: &mut f32,
+    lives: &mut Vec<(klipp_core::automation::TrackParam, f32)>,
+    cmds: &mut Vec<AppCommand>,
+) {
+    use klipp_core::automation::TrackParam;
+    if live {
+        lives.push((param, value));
+        return;
+    }
+    *target = value;
+    cmds.push(match param {
+        TrackParam::Volume => AppCommand::SetTrackVolume { track_index, volume: value },
+        TrackParam::Pan => AppCommand::SetTrackPan { track_index, pan: value },
+    });
+}
+
+#[allow(clippy::too_many_arguments)]
 fn fader_strip(
     ui: &mut egui::Ui,
     theme: &KlippTheme,
@@ -261,8 +304,15 @@ fn fader_strip(
     peak_l: f32,
     peak_r: f32,
     editing_name: &mut Option<(usize, String)>,
+    automation: &StripAutomation,
+    touches: &mut Vec<(klipp_core::automation::TrackParam, bool)>,
+    lives: &mut Vec<(klipp_core::automation::TrackParam, f32)>,
     cmds: &mut Vec<AppCommand>,
 ) {
+    use klipp_core::automation::{AutomationMode, TrackParam};
+    // What the controls show: as moved, or the keys' values when played.
+    let shown_pan = automation.shown_pan.unwrap_or(*pan);
+    let shown_volume = automation.shown_volume.unwrap_or(*volume);
     let strip_rect = ui.available_rect_before_wrap();
     let strip_h = strip_rect.height().max(STRIP_MIN_H);
     let (rect, _) = ui.allocate_exact_size(
@@ -281,6 +331,20 @@ fn fader_strip(
     let fader_cx = inner_left + 22.0;
     let meter_x = inner_right - PEAK_BAR_W * 2.0 - 3.0;
     let mut y = rect.min.y + 10.0;
+
+    // -- Automation mode (#2306): a click steps through them --
+    let mode_rect = egui::Rect::from_min_size(egui::pos2(inner_right - 28.0, rect.min.y + 1.0), egui::vec2(28.0, 9.0));
+    let mode_resp = ui
+        .allocate_rect(mode_rect, egui::Sense::click())
+        .on_hover_text("Automation: Off (the controls as set), Read (play the track's keys), Touch (record while a control is held), Latch (record from its first touch until playback stops), Write (record the whole pass). Click for the next.");
+    let recording = matches!(automation.mode, AutomationMode::Touch | AutomationMode::Latch | AutomationMode::Write);
+    let mode_colour = if recording { theme.marker_error } else if mode_resp.hovered() { theme.text_primary } else { theme.text_dim };
+    painter.text(mode_rect.right_center(), egui::Align2::RIGHT_CENTER, automation.mode.label(), egui::FontId::proportional(8.0), mode_colour);
+    if mode_resp.clicked() {
+        let all = AutomationMode::ALL;
+        let next = all[(all.iter().position(|m| *m == automation.mode).unwrap_or(0) + 1) % all.len()];
+        cmds.push(AppCommand::SetTrackAutomationMode { track_index, mode: next });
+    }
 
     // -- Track name (double-click to rename) --
     let name_rect = egui::Rect::from_min_size(
@@ -340,7 +404,7 @@ fn fader_strip(
         egui::Stroke::new(1.0_f32, theme.border_light),
     );
     // Fill from center to thumb
-    let pan_t = (*pan + 1.0) / 2.0;
+    let pan_t = (shown_pan + 1.0) / 2.0;
     let pan_x = pan_rect.min.x + pan_t * pan_w;
     let center_x = pan_rect.center().x;
     let fill_l = center_x.min(pan_x);
@@ -365,16 +429,26 @@ fn fader_strip(
     painter.rect_stroke(thumb_rect, 2.0, egui::Stroke::new(0.5_f32, theme.border));
     // Pan interaction
     let pan_resp = ui.allocate_rect(pan_rect.expand(2.0), egui::Sense::click_and_drag());
+    // Held, the pan is recorded by the track's mode (#2306), moving from
+    // where it shows.
+    if pan_resp.drag_started() {
+        touches.push((TrackParam::Pan, true));
+    }
+    if pan_resp.drag_stopped() {
+        touches.push((TrackParam::Pan, false));
+    }
+    let mut moved_pan = None;
     if pan_resp.dragged() {
-        *pan = (*pan + pan_resp.drag_delta().x / (pan_w * 0.5)).clamp(-1.0, 1.0);
-        cmds.push(AppCommand::SetTrackPan { track_index, pan: *pan });
+        moved_pan = Some((shown_pan + pan_resp.drag_delta().x / (pan_w * 0.5)).clamp(-1.0, 1.0));
     }
     if pan_resp.double_clicked() {
-        *pan = 0.0;
-        cmds.push(AppCommand::SetTrackPan { track_index, pan: 0.0 });
+        moved_pan = Some(0.0);
+    }
+    if let Some(v) = moved_pan {
+        set_control(track_index, TrackParam::Pan, v, automation.live_pan, pan, lives, cmds);
     }
     // Pan label below
-    let pan_label = if pan.abs() < 0.01 { "C".to_string() } else { format!("{:+.0}", *pan * 100.0) };
+    let pan_label = if shown_pan.abs() < 0.01 { "C".to_string() } else { format!("{:+.0}", shown_pan * 100.0) };
     painter.text(
         egui::pos2(rect.center().x, pan_rect.max.y + 2.0),
         egui::Align2::CENTER_TOP, &pan_label,
@@ -413,12 +487,12 @@ fn fader_strip(
     );
 
     // Fill + thumb
-    let vol_t = (*volume / 2.0).clamp(0.0, 1.0);
+    let vol_t = (shown_volume / 2.0).clamp(0.0, 1.0);
     let thumb_y = fader_bottom - vol_t * FADER_TRACK_H;
-    let fill_color = if *muted { theme.text_dim } else if *volume > 1.0 {
+    let fill_color = if *muted { theme.text_dim } else if shown_volume > 1.0 {
         theme.marker_error
     } else { theme.accent };
-    if *volume > 0.001 {
+    if shown_volume > 0.001 {
         painter.rect_filled(
             egui::Rect::from_min_max(egui::pos2(fader_cx - 1.5, thumb_y), egui::pos2(fader_cx + 1.5, fader_bottom)),
             0.0, fill_color,
@@ -438,21 +512,30 @@ fn fader_strip(
         egui::pos2(fader_cx + 12.0, fader_bottom + 4.0),
     );
     let fader_resp = ui.allocate_rect(fader_hit, egui::Sense::click_and_drag());
+    // Held, the fader is recorded by the track's mode (#2306), moving from
+    // where it shows.
+    if fader_resp.drag_started() {
+        touches.push((TrackParam::Volume, true));
+    }
+    if fader_resp.drag_stopped() {
+        touches.push((TrackParam::Volume, false));
+    }
+    let mut moved_volume = None;
     if fader_resp.dragged() {
         let step = -fader_resp.drag_delta().y / FADER_TRACK_H * 2.0;
-        *volume = (*volume + step).clamp(0.0, 2.0);
-        cmds.push(AppCommand::SetTrackVolume { track_index, volume: *volume });
+        moved_volume = Some((shown_volume + step).clamp(0.0, 2.0));
     }
     if fader_resp.clicked() {
         if let Some(pos) = fader_resp.interact_pointer_pos() {
             let t = 1.0 - ((pos.y - fader_top) / FADER_TRACK_H).clamp(0.0, 1.0);
-            *volume = t * 2.0;
-            cmds.push(AppCommand::SetTrackVolume { track_index, volume: *volume });
+            moved_volume = Some(t * 2.0);
         }
     }
     if fader_resp.double_clicked() {
-        *volume = 1.0;
-        cmds.push(AppCommand::SetTrackVolume { track_index, volume: 1.0 });
+        moved_volume = Some(1.0);
+    }
+    if let Some(v) = moved_volume {
+        set_control(track_index, TrackParam::Volume, v, automation.live_volume, volume, lives, cmds);
     }
 
     // -- Peak meter bars (right side) --
@@ -473,7 +556,7 @@ fn fader_strip(
     y = fader_bottom + READOUT_GAP;
 
     // -- dB readout --
-    let db = vol_to_db(*volume);
+    let db = vol_to_db(shown_volume);
     let db_color = if *muted { theme.text_dim } else { theme.text_secondary };
     painter.text(
         egui::pos2(rect.center().x, y + 5.0), egui::Align2::CENTER_CENTER,
@@ -791,6 +874,24 @@ pub fn show(
         egui::pos2(full_rect.min.x, header_rect.max.y), full_rect.max,
     );
 
+    let playhead_secs = state.playhead.to_secs_f64();
+    let playing = state.playback == klipp_engine::PlaybackState::Playing;
+    let mut touches: Vec<(usize, klipp_core::automation::TrackParam, bool)> = Vec::new();
+    let mut lives: Vec<(klipp_core::TrackId, klipp_core::automation::TrackParam, f32)> = Vec::new();
+    // Each strip's automation (#2306): a control shows its value as moved,
+    // or its keys' value at the playhead when played from them.
+    let strip_automation: Vec<StripAutomation> = state.sequences[state.active_sequence_idx].tracks.iter().map(|t| {
+        use klipp_core::automation::TrackParam;
+        let pass = &state.automation_pass;
+        let shown = |param: TrackParam, set: f32| pass.live(t.id, param).or_else(|| t.automation.plays(param).then(|| t.automation.value_at(param, playhead_secs, set)));
+        StripAutomation {
+            mode: t.automation.mode,
+            shown_volume: shown(TrackParam::Volume, t.volume),
+            shown_pan: shown(TrackParam::Pan, t.pan),
+            live_volume: goes_live(t, TrackParam::Volume, playing),
+            live_pan: goes_live(t, TrackParam::Pan, playing),
+        }
+    }).collect();
     let seq = &mut state.sequences[state.active_sequence_idx];
     let track_count = seq.tracks.len();
 
@@ -835,13 +936,20 @@ pub fn show(
                         for i in 0..track_count {
                             let (ref name, track_id, ref _kind, ref mut vol, ref mut pan, ref mut muted, ref mut solo, _has_audio) = track_data[i];
                             let (pl, pr) = peak_levels[i];
+                            let mut strip_touches = Vec::new();
+                            let mut strip_lives = Vec::new();
                             fader_strip(
                                 ui, theme, i, name, track_id,
                                 vol, pan, muted, solo,
                                 pl, pr,
                                 &mut editing_name,
+                                &strip_automation[i],
+                                &mut strip_touches,
+                                &mut strip_lives,
                                 &mut cmds,
                             );
+                            touches.extend(strip_touches.into_iter().map(|(param, down)| (i, param, down)));
+                            lives.extend(strip_lives.into_iter().map(|(param, v)| (track_id, param, v)));
                             // Gap between strips
                             ui.add_space(4.0);
                         }
@@ -869,6 +977,17 @@ pub fn show(
     });
 
     state.mixer_editing_name = editing_name;
+    // The controls held now, for Touch and Latch to record (#2306).
+    for (i, param, down) in touches {
+        if down {
+            state.automation_held.insert((i, param));
+        } else {
+            state.automation_held.remove(&(i, param));
+        }
+    }
+    for (id, param, value) in lives {
+        state.automation_pass.set_live(id, param, value);
+    }
 
     // Write back track data
     let seq = &mut state.sequences[state.active_sequence_idx];
@@ -983,6 +1102,41 @@ pub fn draw_inspector_meter(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #2306: a fader moved over keys, or while a pass records it, is live:
+    /// no set command (no undo step of its own), the value as set kept. A
+    /// track that doesn't play from keys and isn't recorded is set as
+    /// before.
+    #[test]
+    fn a_recorded_or_keyed_control_moves_live_not_set() {
+        use klipp_core::automation::{AutomationMode, TrackParam};
+        let mut t = klipp_timeline::Track::new("A", klipp_timeline::TrackKind::Audio);
+        let cases = [
+            (AutomationMode::Read, false, false, false),
+            (AutomationMode::Touch, false, false, false),
+            (AutomationMode::Touch, false, true, true),
+            (AutomationMode::Latch, false, true, true),
+            (AutomationMode::Write, false, true, true),
+            (AutomationMode::Read, true, false, true),
+            (AutomationMode::Read, true, true, true),
+            (AutomationMode::Off, true, true, false),
+        ];
+        for (mode, keyed, playing, live) in cases {
+            t.automation.mode = mode;
+            t.automation.lanes.clear();
+            if keyed {
+                t.automation.lanes.insert(TrackParam::Volume, vec![klipp_core::Keyframe { time_secs: 0.0, value: 0.5, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }]);
+            }
+            assert_eq!(goes_live(&t, TrackParam::Volume, playing), live, "{mode:?} keyed {keyed} playing {playing}");
+            let (mut volume, mut lives, mut cmds) = (1.0_f32, Vec::new(), Vec::new());
+            set_control(0, TrackParam::Volume, 0.25, live, &mut volume, &mut lives, &mut cmds);
+            if live {
+                assert!(cmds.is_empty() && volume == 1.0 && lives == vec![(TrackParam::Volume, 0.25)]);
+            } else {
+                assert!(matches!(cmds[..], [AppCommand::SetTrackVolume { volume: v, .. }] if v == 0.25) && volume == 0.25 && lives.is_empty());
+            }
+        }
+    }
 
     #[test]
     fn mixer_layout_constants_valid() {

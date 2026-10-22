@@ -36,6 +36,7 @@ pub(crate) mod aspect_version;
 mod audio_roles;
 mod visual_search;
 mod recording;
+mod automation;
 mod ai_tool_runs;
 mod multi_clip_edit;
 mod caches;

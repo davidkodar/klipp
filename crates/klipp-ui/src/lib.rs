@@ -47,6 +47,7 @@
 pub mod app;
 pub mod project_paths;
 pub mod auto_align;
+pub mod automation_record;
 pub mod audio_plugins_disabled;
 pub mod browser;
 pub mod effect_targets;
