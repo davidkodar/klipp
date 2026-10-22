@@ -657,6 +657,6 @@ fn the_key_tools_add_a_key_at_the_playhead_and_paste_copied_keys() {
     e.state.playhead = klipp_core::Timecode::from_secs_f64(3.5, rate);
     let paste = button(&mut e, "Paste");
     e.press(paste, egui::PointerButton::Primary, egui::Modifiers::NONE);
-    // (A click on a key nudges its value by the pointer's rounding: #2285.)
-    assert!(keys(&e.state, e.clip, &pos_x).iter().any(|(t, v)| (t - 3.5).abs() < 1e-9 && (v - 10.0).abs() < 1e-2), "{:?}", keys(&e.state, e.clip, &pos_x));
+    // A click selects the key and leaves its value exactly as it was (#2285).
+    assert_eq!(keys(&e.state, e.clip, &pos_x), vec![(1.0, 10.0), (2.0, 20.0), (3.0, 20.0), (3.5, 10.0)]);
 }
