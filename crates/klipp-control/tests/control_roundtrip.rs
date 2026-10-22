@@ -3742,9 +3742,9 @@ fn timeline_import_returns_the_same_report_and_reports_failures() {
     std::fs::copy(&path, &misnamed).unwrap();
     let opened = h.ok(json!({"method":"import_timeline","path":misnamed,"new_project":true}));
     assert_eq!(opened["report"]["imported"], result["report"]["imported"], "{opened}");
-    std::fs::write(&misnamed, "<xmeml version=\"5\"/>").unwrap();
-    let xmeml = h.call(json!({"method":"import_timeline","path":misnamed,"new_project":true}));
-    assert!(xmeml["error"].as_str().unwrap().contains("xmeml"), "{xmeml}");
+    std::fs::write(&misnamed, [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1, 0, 0]).unwrap();
+    let aaf = h.call(json!({"method":"import_timeline","path":misnamed,"new_project":true}));
+    assert!(aaf["error"].as_str().unwrap().contains("AAF"), "{aaf}");
     std::fs::remove_file(misnamed).unwrap();
     std::fs::write(&path, "not json").unwrap();
     let failed = h.call(json!({"method":"import_timeline","path":path}));

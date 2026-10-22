@@ -213,6 +213,21 @@ pub fn parse_xml_safe(xml: &str) -> Result<roxmltree::Document<'_>, roxmltree::E
     )
 }
 
+/// `xml` without a document type declaration that names its root and
+/// nothing more (`<!DOCTYPE fcpxml>`, `<!DOCTYPE xmeml>`), which Final Cut
+/// Pro writes, and Klipp's own FCPXML too, and [`parse_xml_safe`] refuses
+/// as a DTD. One with an internal subset (`[...]`), where entities are
+/// declared, is left for the parser to refuse.
+pub fn without_bare_doctype(xml: &str) -> std::borrow::Cow<'_, str> {
+    let Some(at) = xml.find("<!DOCTYPE") else { return xml.into() };
+    let Some(len) = xml[at..].find('>') else { return xml.into() };
+    let decl = &xml[at..at + len + 1];
+    if decl.contains('[') {
+        return xml.into();
+    }
+    format!("{}{}", &xml[..at], &xml[at + len + 1..]).into()
+}
+
 /// Write `data` to `path` atomically: write to a unique temp file in the
 /// same directory (so the rename stays on one filesystem), then rename
 /// over the target. A crash mid-write leaves an orphan temp file, never
@@ -262,6 +277,15 @@ pub fn read_capped(path: &Path, max_bytes: u64) -> Result<Vec<u8>, std::io::Erro
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_bare_doctype_is_dropped_and_one_with_entities_is_not() {
+        let bare = "<?xml version=\"1.0\"?>\n<!DOCTYPE fcpxml>\n<fcpxml version=\"1.9\"/>";
+        assert!(parse_xml_safe(bare).is_err());
+        assert!(parse_xml_safe(&without_bare_doctype(bare)).is_ok());
+        let entities = "<!DOCTYPE x [<!ENTITY a \"b\">]><x>&a;</x>";
+        assert!(parse_xml_safe(&without_bare_doctype(entities)).is_err(), "entities still refused");
+    }
     use std::fs;
 
     // ═══════════════════════════════════════════════════════════════

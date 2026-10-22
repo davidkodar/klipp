@@ -1,0 +1,160 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE xmeml>
+<xmeml version="5">
+  <project>
+    <name>Fixture</name>
+    <children>
+      <sequence id="sequence-1">
+        <name>Edit 23.976</name>
+        <duration>120</duration>
+        <rate><timebase>24</timebase><ntsc>TRUE</ntsc></rate>
+        <timecode>
+          <rate><timebase>24</timebase><ntsc>TRUE</ntsc></rate>
+          <string>01:00:00:00</string>
+          <frame>86400</frame>
+          <displayformat>NDF</displayformat>
+        </timecode>
+        <media>
+          <video>
+            <format>
+              <samplecharacteristics><width>1920</width><height>1080</height></samplecharacteristics>
+            </format>
+            <track>
+              <enabled>TRUE</enabled>
+              <clipitem id="clipitem-1">
+                <name>A001</name>
+                <enabled>TRUE</enabled>
+                <rate><timebase>24</timebase><ntsc>TRUE</ntsc></rate>
+                <start>0</start>
+                <end>-1</end>
+                <in>0</in>
+                <out>48</out>
+                <file id="file-1">
+                  <name>A 001é.mov</name>
+                  <pathurl>file://localhost/nowhere/A%20001%C3%A9.mov</pathurl>
+                  <rate><timebase>24</timebase><ntsc>TRUE</ntsc></rate>
+                  <duration>2400</duration>
+                </file>
+                <link><linkclipref>clipitem-1</linkclipref></link>
+                <link><linkclipref>clipitem-4</linkclipref></link>
+              </clipitem>
+              <transitionitem>
+                <start>36</start>
+                <end>60</end>
+                <alignment>center</alignment>
+                <rate><timebase>24</timebase><ntsc>TRUE</ntsc></rate>
+                <effect>
+                  <name>Cross Dissolve</name>
+                  <effectid>Cross Dissolve</effectid>
+                  <effecttype>transition</effecttype>
+                </effect>
+              </transitionitem>
+              <clipitem id="clipitem-2">
+                <name>B002</name>
+                <enabled>TRUE</enabled>
+                <rate><timebase>24</timebase><ntsc>TRUE</ntsc></rate>
+                <start>-1</start>
+                <end>120</end>
+                <in>100</in>
+                <out>172</out>
+                <file id="file-2">
+                  <name>B002.mov</name>
+                  <pathurl>file:///nowhere/B002.mov</pathurl>
+                  <rate><timebase>24</timebase><ntsc>TRUE</ntsc></rate>
+                  <duration>2400</duration>
+                </file>
+                <marker><name>Look</name><comment>her eyes</comment><in>110</in><out>-1</out></marker>
+              </clipitem>
+            </track>
+            <track>
+              <enabled>TRUE</enabled>
+              <clipitem id="clipitem-3">
+                <name>A001 slow</name>
+                <enabled>TRUE</enabled>
+                <rate><timebase>24</timebase><ntsc>TRUE</ntsc></rate>
+                <start>24</start>
+                <end>120</end>
+                <in>200</in>
+                <out>248</out>
+                <file id="file-1"/>
+                <filter>
+                  <effect>
+                    <name>Time Remap</name>
+                    <effectid>timeremap</effectid>
+                    <parameter><parameterid>speed</parameterid><value>50</value></parameter>
+                    <parameter><parameterid>reverse</parameterid><value>FALSE</value></parameter>
+                  </effect>
+                </filter>
+                <filter>
+                  <effect>
+                    <name>Opacity</name>
+                    <effectid>opacity</effectid>
+                    <parameter>
+                      <parameterid>opacity</parameterid>
+                      <value>100</value>
+                      <keyframe><when>200</when><value>0</value></keyframe>
+                      <keyframe><when>224</when><value>100</value></keyframe>
+                    </parameter>
+                  </effect>
+                </filter>
+                <filter>
+                  <effect><name>Gaussian Blur</name><effectid>gaussianblur</effectid></effect>
+                </filter>
+              </clipitem>
+              <generatoritem id="generator-1">
+                <name>Text</name>
+                <start>0</start>
+                <end>24</end>
+              </generatoritem>
+            </track>
+          </video>
+          <audio>
+            <track>
+              <clipitem id="clipitem-4">
+                <name>A001</name>
+                <rate><timebase>24</timebase><ntsc>TRUE</ntsc></rate>
+                <start>0</start>
+                <end>48</end>
+                <in>0</in>
+                <out>48</out>
+                <file id="file-1"/>
+                <filter>
+                  <effect>
+                    <name>Audio Levels</name>
+                    <effectid>audiolevels</effectid>
+                    <parameter>
+                      <parameterid>level</parameterid>
+                      <value>1</value>
+                      <keyframe><when>0</when><value>1</value></keyframe>
+                      <keyframe><when>24</when><value>0.5</value></keyframe>
+                    </parameter>
+                  </effect>
+                </filter>
+                <link><linkclipref>clipitem-1</linkclipref></link>
+                <link><linkclipref>clipitem-4</linkclipref></link>
+              </clipitem>
+            </track>
+            <track>
+              <clipitem id="clipitem-5">
+                <name>room tone</name>
+                <enabled>FALSE</enabled>
+                <rate><timebase>24</timebase><ntsc>TRUE</ntsc></rate>
+                <start>48</start>
+                <end>120</end>
+                <in>0</in>
+                <out>72</out>
+                <file id="file-3">
+                  <name>room.wav</name>
+                  <pathurl>file:///nowhere/room.wav</pathurl>
+                  <rate><timebase>24</timebase><ntsc>TRUE</ntsc></rate>
+                  <duration>480</duration>
+                </file>
+              </clipitem>
+            </track>
+          </audio>
+        </media>
+        <marker><name>Beat</name><comment>hit</comment><in>30</in><out>-1</out></marker>
+      </sequence>
+    </children>
+  </project>
+</xmeml>

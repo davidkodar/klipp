@@ -1338,6 +1338,7 @@ fn walk_container_tractor(
 pub fn load_kdenlive(path: &Path) -> Result<ImportResult, MltImportError> {
     tracing::info!(path = %path.display(), "MLT import: starting");
     let xml_text = crate::path_util::read_to_string_capped(path, crate::path_util::MAX_INPUT_FILE_BYTES)?;
+    let xml_text = crate::path_util::without_bare_doctype(&xml_text);
     let doc = crate::path_util::parse_xml_safe(&xml_text)
         .map_err(|e| MltImportError::Xml(e.to_string()))?;
 
