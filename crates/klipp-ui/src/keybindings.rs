@@ -464,6 +464,8 @@ impl KeyBindings {
 
         // Timeline display
         bind(&mut b, "toggle_snap", vec![KeyCombo::new("N")]);
+        // Which of the stacked timelines takes edits, swapped (#2324).
+        bind(&mut b, "swap_stacked_focus", vec![KeyCombo::alt("`")]);
         bind(&mut b, "toggle_skimming", vec![KeyCombo::new("S")]);
         bind(&mut b, "fit_to_window", vec![KeyCombo::new("Z")]);
         bind(&mut b, "zoom_to_selection", vec![KeyCombo::shift("Z")]);
@@ -740,6 +742,7 @@ impl KeyBindings {
             "toggle_project_notes" => "Toggle Project Notes",
             "focus_panel_search" => "Focus Panel Search",
             "toggle_snap" => "Toggle Snap",
+            "swap_stacked_focus" => "Swap Stacked Timeline Focus",
             "toggle_skimming" => "Toggle Skimming",
             "fit_to_window" => "Fit to Window",
             "zoom_to_selection" => "Zoom to Selection",
@@ -806,7 +809,7 @@ impl KeyBindings {
             ("Transport", &["play_pause", "step_forward", "step_backward", "go_to_start", "go_to_end", "shuttle_reverse", "shuttle_pause", "shuttle_forward", "toggle_loop", "play_in_to_out"]),
             ("Viewer", &["toggle_fullscreen", "toggle_before_after", "toggle_color_panel", "toggle_scopes", "toggle_zebra", "toggle_false_color", "toggle_perf_overlay", "toggle_perf_recording", "toggle_matte_preview", "toggle_safe_areas", "toggle_grid_overlay", "extract_frame_to_file", "extract_frame_to_bin"]),
             ("Window", &["command_palette", "toggle_browser_panel", "toggle_inspector_panel", "toggle_audio_mixer", "toggle_subtitle_editor", "toggle_project_notes", "focus_panel_search"]),
-            ("Display", &["toggle_snap", "toggle_skimming", "toggle_audio_skim", "fit_to_window", "zoom_to_selection", "zoom_in", "zoom_out"]),
+            ("Display", &["swap_stacked_focus", "toggle_snap", "toggle_skimming", "toggle_audio_skim", "fit_to_window", "zoom_to_selection", "zoom_in", "zoom_out"]),
             ("Markers", &["add_marker", "add_clip_marker", "toggle_keyframe", "toggle_keyframe_editor", "prev_keyframe", "next_keyframe", "key_ease_in", "key_ease_out", "key_ease_in_out", "key_linear"]),
             ("Multicam", &["multicam_angle_1", "multicam_angle_2", "multicam_angle_3",
                 "multicam_angle_4", "multicam_angle_5", "multicam_angle_6",

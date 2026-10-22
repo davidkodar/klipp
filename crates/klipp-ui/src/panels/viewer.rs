@@ -2719,9 +2719,12 @@ impl ViewerPanel {
             }
         }
         if show_viewer_label {
+            // With the selects stacked, the program names the sequence it
+            // plays: the one of the two worked in (#2324).
             let label = match viewer_kind {
-                ViewerMode::Source => "Source",
-                ViewerMode::Program => "Program",
+                ViewerMode::Source => "Source".to_string(),
+                ViewerMode::Program if crate::timeline::stacked::stacked_edit(state) => format!("Program \u{00B7} {}", state.sequence().name),
+                ViewerMode::Program => "Program".to_string(),
             };
             ui.painter().text(
                 egui::pos2(rect.min.x + 126.0, cy),

@@ -2826,6 +2826,9 @@ pub struct AppState {
     pub selects_drag: Option<(klipp_core::SequenceId, Timecode, Timecode)>,
     /// The selects strip's height, in points.
     pub selects_height: f32,
+    /// The stacked timelines' focus asked to swap, by its shortcut; the
+    /// timeline panel does it as it draws them (#2324).
+    pub stacked_focus_swap: bool,
     /// The selects stacked above the cut edited as a timeline of their
     /// own, not the read-only strip (#82).
     pub selects_edit: bool,
@@ -5020,6 +5023,7 @@ impl Default for AppState {
             aaf_install: None,
             aaf_reading: None,
             selects_height: 120.0,
+            stacked_focus_swap: false,
             project_templates_dir: None,
             shared_library: crate::shared_library::dir().map(|d| crate::shared_library::SharedLibrary::load(&d)).unwrap_or_default(),
             shared_library_dir: None,
