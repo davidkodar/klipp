@@ -49,12 +49,10 @@ anything that touches the colour pipeline's numerical output.
 green, and nothing is pushed to it directly — not by contributors, not
 by the maintainer. Everything arrives as a pull request.
 
-The pre-push hook refuses a direct push to `main`, because GitHub will
-not: branch protection and rulesets are both behind GitHub Pro on a
-private repository. While the repo is private that costs nothing —
-everyone who can push has the hook. When it goes public, server-side
-protection becomes available free and should be turned on, and this
-becomes a second line rather than the only one.
+GitHub enforces this: a ruleset on `main` accepts changes only through
+pull requests, merged as a squash, with a linear history. The pre-push
+hook also refuses a direct push to `main`, so the mistake is caught on
+your machine before GitHub has to.
 
 ```
 main  ──●──●──●──●──●──●──●──▶   protected, always green
@@ -313,9 +311,8 @@ Your laptop is a *better* gate than GitHub's runner, not a worse one.
 A workflow was written and then deleted unrun, which is worth recording
 so it is not rediscovered as an oversight:
 
-* On a private repository Actions minutes are metered, and a cold build
-  of this workspace — ffmpeg and whisper.cpp both build C — would spend
-  a month's budget in a handful of runs.
+* A cold build of this workspace — ffmpeg and whisper.cpp both build C —
+  takes long enough on a hosted runner to be a poor fit for every push.
 * Whatever it reported would be **advisory** for the GPU reason above,
   and a check that cannot be trusted must not be able to block a merge.
 * A check nobody trusts is worse than no check. A red mark that is
@@ -558,30 +555,12 @@ Before you open a PR:
 
 ---
 
-## The day the repo goes public
+## Pull requests from forks
 
-For the maintainer. Several things in here are waiting on that moment,
-and they are waiting *silently*, so this is the list.
-
-1. **Check what is in the history.** It becomes readable by everyone,
-   all of it, not just the current tree. Paths, hostnames, anything
-   pasted into a commit message years ago.
-2. **Flip the repository to public.**
-3. **Run `scripts/protect-main.sh`.** Branch protection and rulesets
-   are gated behind GitHub Pro on private repositories, so `main`
-   cannot be protected server-side before this point — until now the
-   pre-push hook has been the only thing refusing a direct push, and it
-   only binds people who installed it. This is the step that makes the
-   rule apply to everybody. It is also the easiest one to forget,
-   because nothing breaks when you do.
-4. **Enable private vulnerability reporting** in Settings → Security,
-   which is what `SECURITY.md` tells people to use.
-5. **Check a fork's sign-offs before merging it.** A fork contributor
-   has no pre-push hook, so nothing has checked their commits:
-   `scripts/check-signoff.sh main..their-branch` after
-   `gh pr checkout`. This is the one rule that stops being
-   self-enforcing the moment the repo is public, and there is no CI to
-   catch it.
+Contributors outside the repository work from a fork, which has no
+pre-push hook, so nothing has checked their commits. Before merging,
+check the sign-offs by hand: `gh pr checkout <number>`, then
+`scripts/check-signoff.sh main..HEAD`. There is no CI to catch it.
 
 ## Releasing
 

@@ -10,7 +10,7 @@ every crate now carries a `//!` overview.
 
 ## Workspace
 
-Klipp is a 33-crate Cargo workspace. Dependencies flow strictly
+Klipp is a 42-crate Cargo workspace. Dependencies flow strictly
 bottom-up — no cycles — and every crate depends on `klipp-core`.
 
 ```

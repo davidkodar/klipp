@@ -2,14 +2,14 @@
 
 The release tooling is implemented, but no public package repository or signing
 identity has been configured yet. Do not advertise automatic package updates
-until the hosting steps below have been completed. GitHub is currently private;
-an unauthenticated in-app release check will report that releases are unavailable.
+until the hosting steps below have been completed. Until a release is published,
+the in-app release check reports that no releases are available.
 The app never reads a user's GitHub credentials.
 
 ## Maintainer: build a release
 
-Follow CONTRIBUTING.md: issue, branch, reviewed PR, signed-off commits, full local
-GPU test gate, squash merge. Releases come from tags on tested commits; this
+Follow CONTRIBUTING.md: issue, branch, reviewed PR, signed-off commits, squash
+merge. Test the release candidate on a GPU before tagging. Releases come from tags on tested commits; this
 script does not replace that gate and does not publish or create tags.
 
 1. Set `[workspace.package].version` and update Cargo.lock in the release PR.
