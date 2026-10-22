@@ -218,6 +218,7 @@ pub fn transition(kind: klipp_core::transition_registry::TransitionKind) -> Capa
         | SlidePanels
         | PartHalves
         | Shatter => cap(Residency::Gpu, "GPU stack transition when both inputs are resident; composition fallback remains possible", None),
+        SmoothCut => cap(Residency::RoundTrip, "Optical-flow morph runs on the GPU from the composite route's two held frames, read back after", None),
     }
 }
 

@@ -175,6 +175,13 @@ pub fn render_transition_with_params(
                 }
             }
         }
+        TransitionKind::SmoothCut => {
+            // The morph follows the motion between the two shots' frames,
+            // which the renderer holds (#2219); with only two pixels to go
+            // on, this 8-bit renderer draws it as the dissolve it falls
+            // back to.
+            output = render_transition_with_params(TransitionKind::CrossDissolve, from, to, p, width, height, &klipp_core::TransitionUserParams::default());
+        }
         TransitionKind::SlideStrips | TransitionKind::SlidePanels | TransitionKind::PartHalves | TransitionKind::Shatter => {
             // Nor are the piece transitions (#985): here they draw as the
             // push their pieces travel like, eased.

@@ -6225,6 +6225,7 @@ fn show_transition_inspector(
                     | klipp_timeline::TransitionKind::UncoverRight
                     | klipp_timeline::TransitionKind::SqueezeH
                     | klipp_timeline::TransitionKind::SqueezeV
+                    | klipp_timeline::TransitionKind::SmoothCut
             ) {
                 ui.add_space(6.0);
                 ui.label(
@@ -6232,6 +6233,15 @@ fn show_transition_inspector(
                         .color(theme.text_dim)
                         .size(10.0)
                         .italics(),
+                );
+            }
+            if matches!(transition.kind, klipp_timeline::TransitionKind::SmoothCut) {
+                ui.label(
+                    egui::RichText::new(
+                        "Morphs the last frame before the cut into the first after it; the picture holds still meanwhile",
+                    )
+                    .color(theme.text_dim)
+                    .size(10.0),
                 );
             }
             if matches!(

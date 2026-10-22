@@ -1418,6 +1418,12 @@ const TRANSITIONS: &[TransitionDef] = &[
         preview: |p, r, _, progress| paint_pieces(p, r, klipp_core::TransitionKind::Shatter, progress, PREVIEW_A, PREVIEW_B),
     },
     TransitionDef {
+        // A jump cut's two framings morphed into each other (#2219).
+        kind: klipp_core::TransitionKind::SmoothCut,
+        category: TransitionCategory::Dissolve,
+        preview: |p, r, _, _progress| preview_gradient_h(p, r, 8, PREVIEW_A, PREVIEW_B),
+    },
+    TransitionDef {
         kind: klipp_core::TransitionKind::WhipPan,
         category: TransitionCategory::Slide,
         preview: |p, r, _, _progress| {
@@ -2069,7 +2075,9 @@ fn transition_card(
         });
     }
 
-    resp.on_hover_text(format!("{} \u{00B7} {}, built in", spec.display_name, tr.category.label()))
+    // A smooth cut says what it is for: its picture holds still (#2219).
+    let note = if spec.kind == klipp_core::TransitionKind::SmoothCut { " \u{00B7} for a jump cut between two takes of one framing; the picture holds still while it morphs" } else { "" };
+    resp.on_hover_text(format!("{} \u{00B7} {}, built in{note}", spec.display_name, tr.category.label()))
 }
 
 /// Where a playing card is in its cycle (#549): a thin bar along the
@@ -2950,6 +2958,7 @@ fn paint_kind_motion_overlay(
     match kind {
         // ── Plain dissolves and fades ──
         K::CrossDissolve => fade_over(b, t),
+        K::SmoothCut => fade_over(b, t),
         K::FilmDissolve => {
             fade_over(egui::Color32::from_rgba_unmultiplied(255, 220, 180, 60), t);
             fade_over(b, t);

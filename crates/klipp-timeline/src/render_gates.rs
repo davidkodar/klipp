@@ -131,6 +131,11 @@ impl Clip {
         })
     }
 
+    /// Whether the clip has a SpeedRamp, on or off, blending or not.
+    pub fn has_speed_ramp(&self) -> bool {
+        self.picture_entries().iter().any(|(e, _)| matches!(e, BuiltinEffect::SpeedRamp { .. }))
+    }
+
     /// Whether an enabled plug-in matches a render-path requirement.
     pub fn has_enabled_plugin_matching(&self, predicate: impl Fn(&str) -> bool) -> bool {
         self.picture_ofx().is_ok_and(|ofx| ofx.iter().any(|p| p.entry.enabled && predicate(&p.entry.plugin_name)))

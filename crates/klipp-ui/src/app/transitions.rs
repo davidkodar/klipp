@@ -21,7 +21,14 @@ impl KlippApp {
                     return true;
                 }
                 let Some(spec) = klipp_core::spec_for_kind_id(*kind_id) else { return true };
-                let secs = *duration_frames as f64 / seq.fps.as_f64();
+                // A smooth cut holds the picture still while it morphs, so
+                // it stays short: a third of a second at most (#2219).
+                let duration_frames = &if spec.kind == klipp_core::TransitionKind::SmoothCut {
+                    (*duration_frames).min(((seq.fps.as_f64() / 3.0).round() as u32).max(2))
+                } else {
+                    *duration_frames
+                };
+                let secs =*duration_frames as f64 / seq.fps.as_f64();
                 let op = klipp_document::ops::Op::Transition {
                     clip_id: klipp_document::ops::ClipRef::Id(*clip_a_id),
                     kind: spec.string_key.to_string(),
@@ -30,10 +37,17 @@ impl KlippApp {
                     pieces: None,
                 };
                 let fps = seq.fps.as_f64();
-                let resolved = klipp_document::ops::resolve(seq, &self.state.media_pool, std::slice::from_ref(&op)).map(|plan| (plan, *duration_frames));
+                // With the framing analysis a smooth cut is checked by (#2219).
+                let analysis = &self.transcript_source;
+                let resolved = klipp_document::ops::resolve_with(seq, &self.state.media_pool, std::slice::from_ref(&op), analysis).map(|plan| (plan, *duration_frames));
                 // Not enough media for the length asked: the longest that
                 // fits, said so, rather than nothing (#918).
                 let resolved = resolved.or_else(|refusal| {
+                    // Two framings too unlike to morph are as unlike at
+                    // any length.
+                    if refusal.code == Some(klipp_document::ops::RefusalCode::FramingDiffers) {
+                        return Err(refusal);
+                    }
                     let fits = |frames: u32| {
                         let op = klipp_document::ops::Op::Transition {
                             clip_id: klipp_document::ops::ClipRef::Id(*clip_a_id),
@@ -42,7 +56,7 @@ impl KlippApp {
                             remove: false,
                             pieces: None,
                         };
-                        klipp_document::ops::resolve(seq, &self.state.media_pool, std::slice::from_ref(&op)).ok().map(|plan| (plan, frames))
+                        klipp_document::ops::resolve_with(seq, &self.state.media_pool, std::slice::from_ref(&op), analysis).ok().map(|plan| (plan, frames))
                     };
                     (2..*duration_frames).rev().find_map(fits).ok_or(refusal)
                 });
@@ -103,6 +117,14 @@ impl KlippApp {
                 true
             }
             AppCommand::SetTransitionKind { track_index, transition_id, kind_id } => {
+                // A smooth cut is checked as one put on the cut is (#2219).
+                if klipp_engine::transition::transition_kind_from_id(*kind_id) == klipp_core::TransitionKind::SmoothCut {
+                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    if let Err(r) = klipp_document::ops::smooth_cut_fits(seq, &self.state.media_pool, *track_index, *transition_id, &self.transcript_source) {
+                        self.state.toast.show(format!("No smooth cut: {}. {}", r.why, capitalise(&r.hint)));
+                        return true;
+                    }
+                }
                 if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index) {
                     if let Some(t) = track.transitions.iter_mut().find(|t| t.id == *transition_id) {
                         t.kind = klipp_engine::transition::transition_kind_from_id(*kind_id);

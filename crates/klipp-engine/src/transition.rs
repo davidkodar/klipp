@@ -820,7 +820,7 @@ mod tests {
     #[test]
     fn unknown_kind_id_defaults_to_cross_dissolve() {
         assert_eq!(transition_kind_from_id(255), TransitionKind::CrossDissolve);
-        assert_eq!(transition_kind_from_id(72), TransitionKind::CrossDissolve);
+        assert_eq!(transition_kind_from_id(73), TransitionKind::CrossDissolve);
     }
 
     #[test]

@@ -54,7 +54,7 @@ fn every_transition_matches_between_cpu_and_gpu() {
     let params = [4.0, 0.5, 0.5, 0.5];
     let color = [0.8, 0.3, 0.1, 1.0];
     let mut failures = Vec::new();
-    for kind in 0..72u32 {
+    for kind in 0..73u32 {
         for p in [0.25f32, 0.5, 0.75] {
             let cpu = render_transition_linear(&from, &to, kind, p, W, H, params[0], params[1], params[2], params[3], color);
             let g = gpu.render_transition_linear(&from, &to, kind, p, W, H, params[0], params[1], params[2], params[3], color);

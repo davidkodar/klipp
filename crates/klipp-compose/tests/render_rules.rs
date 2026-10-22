@@ -303,6 +303,36 @@ fn a_transition_mixes_both_graded_clips() {
     }
 }
 
+/// A smooth cut (#2219) morphs the outgoing clip's last frame into the
+/// incoming's first by their motion, eased in and out. Flat pictures
+/// have no motion to follow, so it mixes the two as graded by the eased
+/// time, with and without a GPU alike.
+#[test]
+fn a_smooth_cut_morphs_the_two_held_frames_eased() {
+    let a = solid([255, 0, 0], 0.0, 2.0);
+    let mut b = media(2.0, 4.0);
+    b.set_grade(exposure(1.0));
+    let mut src = Flat::default().grey(&b, 0.25);
+    let tr = Transition {
+        id: TransitionId::new(),
+        kind: klipp_core::TransitionKind::SmoothCut,
+        duration: tc(1.0),
+        clip_a_id: a.id,
+        clip_b_id: b.id,
+        user_params: Default::default(),
+        alignment: klipp_core::TransitionAlignment::Center,
+    };
+    let mut seq = sequence(vec![vec![a, b]]);
+    seq.tracks[0].transitions.push(tr);
+    for (t, p) in [(2.0, 0.5f32), (2.25, 0.75), (1.75, 0.25)] {
+        let eased = p * p * (3.0 - 2.0 * p);
+        for (i, img) in render(&seq, t, &mut src).iter().enumerate() {
+            let want = [(1.0 - eased) + eased * 0.5, eased * 0.5, eased * 0.5];
+            assert_px(&format!("t={t}, run {i}"), px(img, 16, 9), want, 2e-3);
+        }
+    }
+}
+
 /// A scene-referred clip is graded in scene-linear light and tone-mapped
 /// after: S-Log3 18% grey one stop up is 36% grey through the display
 /// tone map — the viewer's ungraded look, one stop brighter.

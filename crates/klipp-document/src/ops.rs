@@ -2713,6 +2713,16 @@ pub enum RefusalCode {
     /// [`Op::Captions`]: a caption would land on a clip already on the
     /// track, one `replace` did not take away.
     CaptionsOverlap,
+    /// [`Op::Transition`]: a smooth cut's two framings differ too much to
+    /// morph (#2219); a shorter one differs as much.
+    FramingDiffers,
+}
+
+impl RefusalCode {
+    /// `refusal` marked with this code.
+    fn on(self, refusal: Refusal) -> Refusal {
+        Refusal { code: Some(self), ..refusal }
+    }
 }
 
 impl std::fmt::Display for Refusal {
@@ -3035,7 +3045,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
         }
         Op::Transition { clip_id, kind, secs, pieces, .. } => {
             let (ti, ci, clip) = resolve_clip(seq, fps, clip_id, i)?;
-            transition(seq, pool, fps, i, ti, ci, clip, kind, *secs, pieces.as_ref())
+            transition(seq, pool, fps, i, ti, ci, clip, kind, *secs, pieces.as_ref(), transcripts)
         }
         Op::Effect { clip_id, on, kind, amount, color, tolerance, softness, spill, low, high, invert } => match (on, clip_id) {
             (Some(_), _) if is_key(kind) => Err(refuse(i, format!("{kind} keys one clip, not every one of a group"), "give clip_id for each clip to key")),
@@ -3266,11 +3276,12 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
         }
         Op::Retime { clip_id, speed, fit, ripple, interpolation } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
-            let interpolated = interpolation.as_deref().map(|how| interpolation_edit(seq, pool, i, clip, how)).transpose()?;
-            if *speed == 0.0 && !*fit {
-                if let Some((what, edit)) = interpolated {
-                    return Ok((what, edit, vec![clip.id]));
-                }
+            let interpolated = interpolation.as_deref().map(|how| interpolation_edit(seq, pool, i, clip, how)).transpose()?.flatten();
+            if *speed == 0.0 && !*fit && interpolation.is_some() {
+                return match interpolated {
+                    Some((what, edit)) => Ok((what, edit, vec![clip.id])),
+                    None => Err(refuse(i, format!("{} already repeats the nearest frame", clip_name(seq, pool, clip)), "give interpolation blend or flow, or a speed")),
+                };
             }
             let speed = if *fit {
                 if *speed != 0.0 {
@@ -7577,7 +7588,7 @@ fn stabilize(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip,
 /// [`Op::Retime`]'s `interpolation`: its Speed Ramp entry taken out
 /// ("sample"), or set to cross-fade ("blend") or to follow the motion
 /// ("flow", #2215).
-fn interpolation_edit(seq: &Sequence, pool: &MediaPool, i: usize, clip: &Clip, how: &str) -> Result<(String, EditCommand), Refusal> {
+fn interpolation_edit(seq: &Sequence, pool: &MediaPool, i: usize, clip: &Clip, how: &str) -> Result<Option<(String, EditCommand)>, Refusal> {
     use klipp_effects::BuiltinEffect as E;
     let blend_mode = match how {
         "sample" => None,
@@ -7588,6 +7599,10 @@ fn interpolation_edit(seq: &Sequence, pool: &MediaPool, i: usize, clip: &Clip, h
     if !matches!(clip.kind, ClipKind::Media { .. }) {
         return Err(refuse(i, format!("{} has no source frames to interpolate", clip_name(seq, pool, clip)), "set interpolation on a media clip"));
     }
+    if blend_mode.is_none() && !clip.has_speed_ramp() {
+        // Nearest is what a clip with no Speed Ramp already does.
+        return Ok(None);
+    }
     let add = blend_mode.map(|blend_mode| (E::SpeedRamp { speed: 1.0, blend_mode }, Place::Last));
     let edit = effects_edit(clip, |e: &E| matches!(e, E::SpeedRamp { .. }), add).map_err(|why| refuse(i, why, "set its Speed Ramp in its node view"))?;
     let what = match blend_mode {
@@ -7595,7 +7610,7 @@ fn interpolation_edit(seq: &Sequence, pool: &MediaPool, i: usize, clip: &Clip, h
         Some(1) => "in-between frames cross-fade",
         _ => "in-between frames follow the motion",
     };
-    Ok((format!("{what} on {}", clip_name(seq, pool, clip)), edit))
+    Ok(Some((format!("{what} on {}", clip_name(seq, pool, clip)), edit)))
 }
 
 /// A clip's speed set to `speed` — negative plays it reversed — for the
@@ -7884,6 +7899,7 @@ fn transition(
     kind: &str,
     secs: f64,
     pieces: Option<&serde_json::Value>,
+    transcripts: &dyn Transcripts,
 ) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     if seq.tracks[ti].locked {
         return Err(refuse(i, format!("track {ti} is locked"), "unlock it first"));
@@ -7905,7 +7921,10 @@ fn transition(
     }
     let dur = snap(secs, fps).max(one_frame(fps));
     let alignment = klipp_core::TransitionAlignment::default();
-    transition_fits(seq, pool, fps, i, clip, next, dur, alignment)?;
+    transition_fits(seq, pool, fps, i, clip, next, dur, alignment, spec.kind)?;
+    // A smooth cut morphs one framing into the other: refused where the
+    // faces either side differ too much to morph believably (#2219).
+    let unchecked = if spec.kind == klipp_core::TransitionKind::SmoothCut { smooth_cut_framing(seq, pool, i, clip, next, transcripts)? } else { None };
     let replaced = seq.tracks[ti].transitions.iter().find(|t| t.clip_a_id == clip.id && t.clip_b_id == next.id).cloned();
     let transition = klipp_timeline::Transition {
         id: klipp_core::TransitionId::new(),
@@ -7940,6 +7959,9 @@ fn transition(
         clip_name(seq, pool, clip),
         clip_name(seq, pool, next),
     );
+    if let Some(why) = unchecked {
+        what.push_str(&format!("; its framing not checked: {why}"));
+    }
     let edit = EditCommand::AddTransition {
         track_index: ti,
         transition,
@@ -7993,6 +8015,85 @@ fn remove_transition(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip
     Ok((what, edit, vec![clip.id]))
 }
 
+/// How far from the cut, in file seconds, a framing sample still tells
+/// how a smooth cut's side is framed.
+const SMOOTH_CUT_NEAR_SECS: f64 = 2.0;
+
+/// The most a face may move between a smooth cut's two sides, as a share
+/// of the frame's width or height, and still morph believably.
+const SMOOTH_CUT_MOVE: f32 = 0.15;
+
+/// The most a face's size may change across a smooth cut, as a share of
+/// its size, and still morph believably.
+const SMOOTH_CUT_GROW: f32 = 0.25;
+
+/// The faces in `item` at the framing sample nearest `secs`, within
+/// [`SMOOTH_CUT_NEAR_SECS`]: `None` with no sample that near (no framing
+/// analysis there).
+fn faces_near(transcripts: &dyn Transcripts, item: &klipp_media::MediaItem, secs: f64) -> Option<Vec<[f32; 4]>> {
+    let faces = transcripts.faces(item);
+    let nearest = faces.iter().map(|(at, _)| *at).filter(|at| (at - secs).abs() <= SMOOTH_CUT_NEAR_SECS).min_by(|x, y| (x - secs).abs().total_cmp(&(y - secs).abs()))?;
+    let mut here: Vec<[f32; 4]> = faces.iter().filter(|(at, _)| (at - nearest).abs() < 1e-9).map(|(_, r)| *r).collect();
+    // Left to right, so the two sides pair up face for face.
+    here.sort_by(|x, y| (x[0] + x[2] / 2.0).total_cmp(&(y[0] + y[2] / 2.0)));
+    Some(here)
+}
+
+/// Whether a smooth cut from `a` into `b` can morph believably (#2219),
+/// by their faces at the cut from the framing analysis: refused where the
+/// count differs, a face moves more than [`SMOOTH_CUT_MOVE`] of the frame
+/// or changes size by more than [`SMOOTH_CUT_GROW`]. `Some(why)` when it
+/// couldn't be checked (a side without framing analysis near the cut);
+/// the render still cross-fades what it can't follow.
+fn smooth_cut_framing(seq: &Sequence, pool: &MediaPool, i: usize, a: &Clip, b: &Clip, transcripts: &dyn Transcripts) -> Result<Option<String>, Refusal> {
+    let item = |c: &Clip| match &c.kind {
+        ClipKind::Media { media_id } => pool.get(media_id),
+        _ => None,
+    };
+    let (Some(item_a), Some(item_b)) = (item(a), item(b)) else {
+        return Err(refuse(i, "a smooth cut morphs between two shots of footage", "put it between two media clips"));
+    };
+    // Where each held frame is in its file: the outgoing clip's last frame
+    // and the incoming's first, through each clip's own speed.
+    let fps = seq.fps.as_f64();
+    let last = (a.timeline_out - one_frame(seq.fps)).max(a.timeline_in) - a.timeline_in;
+    let out = faces_near(transcripts, item_a, a.source_secs_at(last.to_secs_f64(), fps));
+    let into = faces_near(transcripts, item_b, b.source_secs_at(0.0, fps));
+    let (out, into) = match (out, into) {
+        (Some(out), Some(into)) => (out, into),
+        (None, Some(_)) => return Ok(Some(format!("{} has no framing analysis near the cut", clip_name(seq, pool, a)))),
+        (Some(_), None) => return Ok(Some(format!("{} has no framing analysis near the cut", clip_name(seq, pool, b)))),
+        (None, None) => return Ok(Some("neither clip has framing analysis near the cut".into())),
+    };
+    let hint = "a smooth cut joins two takes of the same framing; cover this cut with another shot, or use a cross dissolve";
+    if out.len() != into.len() {
+        return Err(RefusalCode::FramingDiffers.on(refuse(i, format!("the shots show {} and {} faces, too different to morph", out.len(), into.len()), hint)));
+    }
+    for (x, y) in out.iter().zip(&into) {
+        let moved = ((x[0] + x[2] / 2.0) - (y[0] + y[2] / 2.0)).abs().max(((x[1] + x[3] / 2.0) - (y[1] + y[3] / 2.0)).abs());
+        if moved > SMOOTH_CUT_MOVE {
+            return Err(RefusalCode::FramingDiffers.on(refuse(i, format!("a face moves {:.0}% of the frame across the cut, too far to morph", moved * 100.0), hint)));
+        }
+        let grew = (y[3] / x[3].max(1e-6) - 1.0).abs();
+        if grew > SMOOTH_CUT_GROW {
+            return Err(RefusalCode::FramingDiffers.on(refuse(i, format!("a face changes size by {:.0}% across the cut, too much to morph", grew * 100.0), hint)));
+        }
+    }
+    Ok(None)
+}
+
+/// Whether the transition `transition_id` on `track_index` could be a
+/// smooth cut (#2219), as one put on its cut is checked: `Ok` with why
+/// when its framing couldn't be checked.
+pub fn smooth_cut_fits(seq: &Sequence, pool: &MediaPool, track_index: usize, transition_id: klipp_core::TransitionId, transcripts: &dyn Transcripts) -> Result<Option<String>, Refusal> {
+    let track = seq.tracks.get(track_index).ok_or_else(|| refuse(0, format!("there is no track {track_index}"), "pick a transition on the timeline"))?;
+    let t = track.transitions.iter().find(|t| t.id == transition_id).ok_or_else(|| refuse(0, "the transition is gone", "pick one on the timeline"))?;
+    let (Some(a), Some(b)) = (track.find_clip(t.clip_a_id), track.find_clip(t.clip_b_id)) else {
+        return Err(refuse(0, "the transition's clips are gone", "remove the transition"));
+    };
+    smooth_cut_framing(seq, pool, 0, a, b, transcripts)
+}
+
 /// Whether a transition of `dur` aligned `alignment` fits between `a`
 /// and `b`: each clip has the footage beyond the cut the transition
 /// plays from it, and outlasts the transition. The check a transition
@@ -8000,10 +8101,13 @@ fn remove_transition(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip
 /// tail past the file's end would export as padded silence, and a head
 /// short of the in point cuts the crossfade short.
 #[allow(clippy::too_many_arguments)]
-fn transition_fits(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, a: &Clip, b: &Clip, dur: Timecode, alignment: klipp_core::TransitionAlignment) -> Result<(), Refusal> {
+fn transition_fits(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, a: &Clip, b: &Clip, dur: Timecode, alignment: klipp_core::TransitionAlignment, kind: klipp_core::TransitionKind) -> Result<(), Refusal> {
     let (tail, head) = overlap(dur, alignment, fps);
     let (a_room, b_room) = handle_room(pool, a, b, tail, head);
-    if !a_room || !b_room {
+    // A smooth cut holds each clip's frame at the cut (#2219): it plays
+    // no footage past it.
+    let holds = kind == klipp_core::TransitionKind::SmoothCut;
+    if !holds && (!a_room || !b_room) {
         let who = if !a_room { clip_name(seq, pool, a) } else { clip_name(seq, pool, b) };
         let secs = dur.to_secs_f64();
         return Err(refuse(i, format!("{who} has no footage beyond the cut to make the {secs:.2} s overlap"), "shorten the transition, or trim the clip so there is a handle"));
@@ -8064,7 +8168,7 @@ pub fn reshape_transition(
         return Err(refuse(0, "the transition's clips are gone", "remove the transition"));
     };
     let dur = duration.max(one_frame(fps));
-    transition_fits(seq, pool, fps, 0, a, b, dur, alignment)?;
+    transition_fits(seq, pool, fps, 0, a, b, dur, alignment, old.kind)?;
     Ok(EditCommand::AddTransition {
         track_index,
         transition: klipp_timeline::Transition { duration: dur, alignment, ..*old },
@@ -8129,6 +8233,7 @@ fn resolve_transition_kind(name: &str) -> Option<&'static klipp_core::Transition
         "vanish" | "dip" => "DipToBlack",
         "blur" => "BlurDissolve",
         "spin" => "Spin",
+        "smooth_cut" | "morph_cut" | "smooth_jump_cut" => "SmoothCut",
         "strips" | "slide_strips" => "SlideStrips",
         "panels" | "slide_panels" | "grid" => "SlidePanels",
         "halves" | "part_halves" | "split" => "PartHalves",
@@ -12814,6 +12919,52 @@ mod tests {
     }
 
     #[test]
+    fn a_smooth_cut_is_refused_where_the_framings_differ_too_much() {
+        struct Faces(Vec<(f64, [f32; 4])>);
+        impl Transcripts for Faces {
+            fn words(&self, _: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>> {
+                None
+            }
+            fn faces(&self, _: &klipp_media::MediaItem) -> Vec<(f64, [f32; 4])> {
+                self.0.clone()
+            }
+        }
+        let (mut seq, pool, _, a, _) = fixture();
+        // A jump cut: the first take runs to the file's end, with no footage
+        // past the cut, which a smooth cut doesn't need (it holds its
+        // frame); the second starts at the file's start.
+        seq.tracks[0].clips[0].source_in = tc(6.0);
+        seq.tracks[0].clips[0].source_out = tc(10.0);
+        seq.tracks[0].clips[1].source_in = tc(0.0);
+        seq.tracks[0].clips[1].source_out = tc(4.0);
+        let op = [Op::Transition { clip_id: ClipRef::Id(a), kind: "smooth_cut".into(), secs: 0.32, remove: false, pieces: None }];
+        let face = |x: f32, h: f32| [x, 0.2, h * 0.75, h];
+        // The same framing, near enough: added.
+        let same = Faces(vec![(9.5, face(0.40, 0.30)), (0.5, face(0.43, 0.32))]);
+        let plan = resolve_with(&seq, &pool, &op, &same).unwrap();
+        assert!(plan.steps[0].what.contains("Smooth Cut") && !plan.steps[0].what.contains("not checked"), "{}", plan.steps[0].what);
+        // Moved, grown, another face: refused, marked so a shorter one isn't tried.
+        for (faces, says) in [
+            (vec![(9.5, face(0.2, 0.3)), (0.5, face(0.6, 0.3))], "moves"),
+            (vec![(9.5, face(0.4, 0.3)), (0.5, face(0.4, 0.45))], "changes size"),
+            (vec![(9.5, face(0.2, 0.3)), (9.5, face(0.6, 0.3)), (0.5, face(0.4, 0.3))], "2 and 1 faces"),
+        ] {
+            let err = resolve_with(&seq, &pool, &op, &Faces(faces)).unwrap_err();
+            assert!(err.why.contains(says) && err.code == Some(RefusalCode::FramingDiffers), "{err}");
+        }
+        // One side analysed: added, saying which clip wasn't checked.
+        let one = resolve_with(&seq, &pool, &op, &Faces(vec![(9.5, face(0.4, 0.3))])).unwrap();
+        let b_name = clip_name(&seq, &pool, &seq.tracks[0].clips[1]);
+        assert!(one.steps[0].what.contains(&format!("not checked: {b_name} has no framing analysis")), "{}", one.steps[0].what);
+        // Neither: added, said so.
+        let none = resolve(&seq, &pool, &op).unwrap();
+        assert!(none.steps[0].what.contains("neither clip has framing analysis"), "{}", none.steps[0].what);
+        // Another transition there still wants the handle.
+        let dissolve = [Op::Transition { clip_id: ClipRef::Id(a), kind: "cross_dissolve".into(), secs: 0.32, remove: false, pieces: None }];
+        assert!(resolve(&seq, &pool, &dissolve).unwrap_err().why.contains("no footage beyond the cut"));
+    }
+
+    #[test]
     fn a_transition_is_reshaped_through_the_same_checks_and_undo_puts_it_back() {
         use klipp_core::TransitionAlignment;
         let (mut seq, pool, _, _, _) = fixture();
@@ -13483,6 +13634,12 @@ mod tests {
         assert!(plan.steps[0].what.contains("2.00x") && plan.steps[0].what.contains("cross-fade"), "{}", plan.steps[0].what);
         let unknown = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 0.0, fit: false, ripple: false, interpolation: Some("morph".into()) }]).unwrap_err();
         assert!(unknown.why.contains("not one of sample, blend or flow"), "{}", unknown.why);
+        // Sample on a clip with no Speed Ramp changes nothing: refused
+        // alone, left out beside a speed.
+        let nothing = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 0.0, fit: false, ripple: false, interpolation: Some("sample".into()) }]).unwrap_err();
+        assert!(nothing.why.contains("already repeats the nearest frame"), "{}", nothing.why);
+        let plan = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 2.0, fit: false, ripple: false, interpolation: Some("sample".into()) }]).unwrap();
+        assert!(plan.steps[0].what.contains("2.00x") && !plan.steps[0].what.contains("nearest"), "only the speed change: {}", plan.steps[0].what);
         // Half speed would run over b: refused, not laid over it (#639).
         let refused =resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 0.5, fit: false, ripple: false, interpolation: None }]).unwrap_err();
         assert!(refused.why.contains("would run over") && refused.hint.contains("ripple"), "{}", refused.why);

@@ -23,6 +23,14 @@ The cross dissolve is the default transition. It blends the outgoing clip into t
 - Select an edit point between two clips
 - Press **Ctrl+T** or right-click → **Add Cross Dissolve**
 
+## Smooth Cut
+
+A smooth cut hides a jump cut between two takes of one framing, such as an interview where a few words were cut out. It holds the last frame before the cut and morphs it into the first frame after it by following the motion between the two, so a head that moved a little slides into place instead of jumping.
+
+- The picture holds still while it morphs, so a smooth cut is kept short: at most a third of a second when added from the Library.
+- It needs no footage past the cut.
+- When both clips have framing analysis, a smooth cut is refused where the faces differ in number, move or change size too much between the two frames. Without the analysis it is added, and says it wasn't checked.
+
 ## Transition Duration
 
 The default duration is 30 frames (≈ 1 second at 30 fps). Adjust by:
