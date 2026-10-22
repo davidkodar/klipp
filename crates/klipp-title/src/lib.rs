@@ -3420,7 +3420,37 @@ impl TitleRenderer {
                     let still = time_secs.is_none() && self.loop_wave.is_none() && !on_layer;
                     let faded = fade_alpha.filter(|_| self.loop_wave.is_none() && !on_layer);
                     let mut gpu = gpu;
-                    let mut kept = if still || faded.is_some() { self.text_layer_lookup(&single, width, height) } else { None };
+                    // A layer of several that comes in or goes out by a
+                    // motion and is otherwise still: drawn as the frame of
+                    // its own one-layer title, its resting render posed, as
+                    // that title's frame is and as the GPU stack places each
+                    // layer. Rastered with the motion here, it came in on
+                    // another curve from the same layer alone (#2369).
+                    // Each such layer's resting render takes a place in the
+                    // render cache (`RENDER_CACHE_CAP`, 16): a title with
+                    // more moving layers than that renders some again.
+                    let several = title.objects.iter().filter(|o| o.visible).count() > 1;
+                    let posed = time_secs.filter(|_| several && fade_alpha.is_none() && !on_layer && self.loop_wave.is_none() && matches!(&obj.content, TitleObjectContent::TextBox(authored) if poses_alone(obj, authored))).map(|t| {
+                        let mut lone = title.clone();
+                        let mut o = obj.clone();
+                        o.opacity = 1.0;
+                        o.opacity_keyframes.clear();
+                        o.blend = klipp_core::BlendMode::Normal;
+                        o.mask = None;
+                        lone.objects = vec![o];
+                        lone.background = single.background.clone();
+                        // The frame's own state, for this frame of the
+                        // whole title, kept through the layer's.
+                        // The whole title's loops too: the layer's own frame,
+                        // rastered, clears them for its one layer, and a
+                        // later layer's wave or focus band would go without.
+                        let saved = (self.last_rows, self.last_blur, self.last_focus_blur, self.last_units.take(), self.matte_only.take(), std::mem::take(&mut self.loop_waves), std::mem::take(&mut self.loop_focus));
+                        self.bound_path = None;
+                        let stack = self.stack_with_time(&lone, width, height, gpu.take(), t);
+                        (self.last_rows, self.last_blur, self.last_focus_blur, self.last_units, self.matte_only, self.loop_waves, self.loop_focus) = saved;
+                        to_bytes(&stack)
+                    });
+                    let mut kept = if posed.is_none() && (still || faded.is_some()) { self.text_layer_lookup(&single, width, height) } else { None };
                     // Fading in with no resting layer kept (played into, not
                     // parked on): the resting layer drawn once and kept, for
                     // the fade's frames after.
@@ -3448,9 +3478,10 @@ impl TitleRenderer {
                     // A fade below the first layer: the kept layer, its fade
                     // on its opacity.
                     let opacity = opacity * faded.filter(|_| kept.is_some()).unwrap_or(1.0);
-                    let mut layer = match kept {
-                        Some(kept) => kept.layer(width, height),
-                        None => {
+                    let mut layer = match (posed, kept) {
+                        (Some(posed), _) => posed,
+                        (None, Some(kept)) => kept.layer(width, height),
+                        (None, None) => {
                             self.text_layers_rendered += 1;
                             let layer = self.render_text_layer(&single, width, height, gpu, time_secs);
                             if still {
@@ -5406,6 +5437,35 @@ fn whole_layer_fade(obj: &TitleObject, tb: &klipp_timeline::TextBox, t: f32, win
         let (pe, px) = fx.motion.progress(t, window, 0);
         fx.motion.enter.map_or(1.0, |m| m.pose(pe, 0.0).0) * fx.motion.exit.map_or(1.0, |m| m.pose(px, 0.0).0)
     })
+}
+
+/// Whether a text layer's only change over time is an entrance or exit
+/// (not a blur) that poses its resting render: no loop, animator, edge fade or motion
+/// blur of its own, nothing keyed, no effect drawn per frame. Such a
+/// layer of several is drawn as its own one-layer title's frame (#2369).
+fn poses_alone(obj: &TitleObject, tb: &klipp_timeline::TextBox) -> bool {
+    let fx = obj.fx();
+    let t = &obj.transform;
+    // A blur entrance's frame leaves its blur to whoever places it, which
+    // a layer of several cannot defer: it stays rastered with its blur.
+    fx.motion.is_active()
+        && fx.motion.enter.iter().chain(fx.motion.exit.iter()).all(|m| !m.kind.blurs())
+        && fx.loops.is_empty()
+        && fx.animators.iter().all(|a| !a.enabled)
+        && fx.edge_fade.is_none()
+        && fx.motion_blur.is_none()
+        && !fx.styles_keyed()
+        && t.center_x_keyframes.is_empty() && t.center_y_keyframes.is_empty()
+        && t.size_x_keyframes.is_empty() && t.size_y_keyframes.is_empty()
+        && t.rotation_keyframes.is_empty() && t.rotation == 0.0
+        && t.anchor_x_keyframes.is_empty() && t.anchor_y_keyframes.is_empty()
+        && obj.opacity_keyframes.is_empty()
+        && !tb.has_keyframes()
+        && tb.char_animation.as_ref().is_none_or(|c| !c.enabled)
+        && tb.glitch_intensity == 0.0
+        && tb.chromatic_aberration_px == 0.0
+        && tb.extrusion.is_none()
+        && tb.three_d.as_ref().is_none_or(|d| !d.enabled)
 }
 
 /// [`TitleFrame::Layers`] composed on the CPU, as the title renderer
@@ -8300,6 +8360,38 @@ pub fn ensure_glyph_positions<'a>(
 
 #[cfg(test)]
 mod tests {
+    /// A moving layer of several drawn as its own title's frame keeps the
+    /// whole title's loops for the layers after it (#2369 review): a long
+    /// staggered layer, its frame rastered, had cleared them, and the wave
+    /// of the layer below went still for that frame.
+    #[test]
+    fn a_posed_layer_leaves_the_loops_of_the_layers_after_it() {
+        use klipp_core::title_motion::{Motion, MotionKind, StaggerUnit, TitleLoop};
+        let (w, h) = (480u32, 270u32);
+        let title = |moving: bool| {
+            let mut td = TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: TitleBackground::None, style: None, published: Vec::new(), template: None };
+            let mut top = klipp_timeline::default_text_transform();
+            top.center = klipp_timeline::TitlePosition { x: 0.5, y: 0.15 };
+            // More letters than are posed one by one: rastered.
+            let long = "staggered ".repeat(30);
+            let a = td.add_object(TitleObjectContent::TextBox(klipp_timeline::TextBox { text: long, font_size: 10.0, ..Default::default() }), top);
+            if moving {
+                td.object_mut(a).unwrap().fx_mut().motion = klipp_timeline::TitleMotion::enter(Motion::new(MotionKind::Rise).duration(1.0).stagger(StaggerUnit::Char, 0.002));
+            }
+            let mut low = klipp_timeline::default_text_transform();
+            low.center = klipp_timeline::TitlePosition { x: 0.5, y: 0.7 };
+            let b = td.add_object(TitleObjectContent::TextBox(klipp_timeline::TextBox { text: "Wave".into(), font_size: 60.0, ..Default::default() }), low);
+            td.object_mut(b).unwrap().fx_mut().loops = vec![TitleLoop::Wave { amplitude: 0.3, rate_hz: 1.0 }];
+            td
+        };
+        let lower = |frame: &[u8]| frame[(h as usize / 2) * w as usize * 4..].to_vec();
+        let mut r = TitleRenderer::new();
+        let with = r.render_with_window(&title(true), w, h, None, 0.3, Some(3.0));
+        let mut r = TitleRenderer::new();
+        let without = r.render_with_window(&title(false), w, h, None, 0.3, Some(3.0));
+        assert!(lower(&with) == lower(&without), "the wave below the moving layer went still");
+    }
+
     /// An image's soft edge keeps the picture's own colour, its alpha
     /// alone falling (#2077): the layer is straight alpha, so colour
     /// times alpha there would darken it twice once laid over, and a
