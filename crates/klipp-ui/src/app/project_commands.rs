@@ -735,8 +735,10 @@ impl KlippApp {
                 }
                 true
             }
-            AppCommand::DeleteSequence { sequence_idx } => {
-                if self.state.sequences.len() > 1 && *sequence_idx < self.state.sequences.len() {
+            AppCommand::DeleteSequence { sequence_id } => {
+                let Some(idx) = self.state.sequences.iter().position(|s| s.id == *sequence_id) else { return true };
+                let sequence_idx = &idx;
+                if self.state.sequences.len() > 1 {
                     // Refuse to delete a sequence that is used as a compound
                     // clip elsewhere — otherwise the compound clip's
                     // ClipKind::Sequence { sequence_id, .. } reference would

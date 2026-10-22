@@ -229,8 +229,9 @@ pub(crate) fn respond(
             if !confirm {
                 return Err(format!("\"{}\" holds {} clip(s) and its removal can't be undone: ask first, then send confirm true", seq.name, seq.clips));
             }
+            let sequence_id = klipp_core::SequenceId(parse_uuid(&seq.id, "sequence_id")?);
             drop(project);
-            send(AppCommand::DeleteSequence { sequence_idx })
+            send(AppCommand::DeleteSequence { sequence_id })
         }
 
         ControlCommand::AppendClip { media_id, track } => {

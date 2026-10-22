@@ -4690,7 +4690,8 @@ fn track_automation(
                 return Err(refuse(i, format!("{} s", k.at), "give times at or after the sequence's start, in seconds"));
             }
             let value = match (param, k.db, k.pan) {
-                (TrackParam::Volume, Some(db), None) if (-120.0..=6.0).contains(&db) => if db <= -60.0 { 0.0 } else { db_to_linear(db) },
+                (TrackParam::Volume, Some(db), None) if db <= -60.0 => 0.0,
+                (TrackParam::Volume, Some(db), None) if db <= 6.0 => db_to_linear(db),
                 (TrackParam::Volume, Some(db), None) => return Err(refuse(i, format!("{db} dB"), "give levels up to +6 dB, -60 or below for silence")),
                 (TrackParam::Pan, None, Some(pan)) if (-1.0..=1.0).contains(&pan) => pan,
                 (TrackParam::Pan, None, Some(pan)) => return Err(refuse(i, format!("pan {pan}"), "give pan from -1 (left) to 1 (right)")),
@@ -13117,6 +13118,9 @@ mod tests {
         assert!(one(&seq, serde_json::json!({ "op": "track_automation", "track": "audio", "keys": [{ "at": 0.0, "db": 0 }] })).unwrap_err().why.contains("without a param"));
         assert!(one(&seq, serde_json::json!({ "op": "track_automation", "track": "audio", "param": "pan", "keys": [{ "at": 0.0, "db": 0 }] })).is_err());
         assert!(one(&seq, serde_json::json!({ "op": "track_automation", "track": "audio", "param": "volume", "keys": [{ "at": 0.0, "db": 9 }] })).is_err());
+        let deep = one(&seq, serde_json::json!({ "op": "track_automation", "track": "audio", "param": "volume", "keys": [{ "at": 0.0, "db": -200 }] })).unwrap();
+        let EditCommand::SetTrack { new, .. } = &deep.steps[0].edit else { panic!() };
+        assert_eq!(new.automation.keys(klipp_core::automation::TrackParam::Volume)[0].value, 0.0, "far under the floor is silence");
         assert!(held.why.contains("holds 2 clips") && held.hint.contains("with_clips"), "{held:?}");
         // With them: gone, and the pictures no longer linked to them.
         let plan = one(&seq, serde_json::json!({ "op": "remove_track", "track": "audio", "with_clips": true })).unwrap();

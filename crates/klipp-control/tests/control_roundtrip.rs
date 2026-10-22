@@ -3507,20 +3507,31 @@ fn remove_sequence_is_refused_until_confirmed_and_never_for_a_held_or_only_one()
     let mut h = harness();
     let set = |h: &mut Harness, list: Vec<klipp_core::SequenceSummary>| h.shared.project.lock().unwrap().sequences = list;
     let summary = |id: &str, name: &str, clips, used_in: Option<&str>| klipp_core::SequenceSummary { id: id.into(), name: name.into(), clips, used_in: used_in.map(Into::into) };
-    set(&mut h, vec![summary("a", "Main", 3, None), summary("b", "Demo", 2, None), summary("c", "Nest", 1, Some("Main"))]);
+    let (a, b, c, d) = ("00000000-0000-4000-8000-00000000000a", "00000000-0000-4000-8000-00000000000b", "00000000-0000-4000-8000-00000000000c", "00000000-0000-4000-8000-00000000000d");
+    set(&mut h, vec![summary(a, "Main", 3, None), summary(b, "Demo", 2, None), summary(c, "Nest", 1, Some("Main")), summary(d, "Spare", 0, None)]);
     let refused = |h: &mut Harness, cmd: Value, why: &str| {
         let reply = h.call(cmd.clone());
         assert_eq!(reply["ok"], json!(false), "{cmd}");
         assert!(reply["error"].as_str().unwrap_or_default().contains(why), "{cmd}: {}", reply["error"]);
     };
-    refused(&mut h, json!({"method": "remove_sequence", "sequence_id": "b"}), "\"Demo\" holds 2 clip(s)");
+    refused(&mut h, json!({"method": "remove_sequence", "sequence_id": b}), "\"Demo\" holds 2 clip(s)");
     refused(&mut h, json!({"method": "remove_sequence", "index": 2, "confirm": true}), "compound clip in \"Main\"");
     refused(&mut h, json!({"method": "remove_sequence", "index": 5, "confirm": true}), "no such sequence");
     assert_eq!(h.ok(json!({"method": "status"}))["sequences"][2]["used_in"], json!("Main"));
     assert!(h.sent.lock().unwrap().is_empty(), "a refused removal sends nothing");
-    h.ok(json!({"method": "remove_sequence", "sequence_id": "b", "confirm": true}));
-    assert!(matches!(h.sent.lock().unwrap()[..], [klipp_core::AppCommand::DeleteSequence { sequence_idx: 1 }]));
-    set(&mut h, vec![summary("a", "Main", 3, None)]);
+    // Two in a batch: each by its id, so the second names the one meant
+    // whatever the first moves.
+    h.ok(json!({"method": "batch", "commands": [
+        {"method": "remove_sequence", "index": 1, "confirm": true},
+        {"method": "remove_sequence", "index": 3, "confirm": true},
+    ]}));
+    let id = |s: &str| klipp_core::SequenceId(s.parse().unwrap());
+    let removed: Vec<_> = h.sent.lock().unwrap().iter().filter_map(|c| match c {
+        klipp_core::AppCommand::DeleteSequence { sequence_id } => Some(*sequence_id),
+        _ => None,
+    }).collect();
+    assert_eq!(removed, [id(b), id(d)]);
+    set(&mut h, vec![summary(a, "Main", 3, None)]);
     refused(&mut h, json!({"method": "remove_sequence", "index": 0, "confirm": true}), "only sequence");
 }
 
