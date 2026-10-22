@@ -1691,8 +1691,9 @@ fn show_title_position_block(
     let (resp_x, resp_y) = ui
         .horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = gap;
-            let rx = compact_axis_input(ui, theme, "X", &mut x, col_w, kfs_x);
-            let ry = compact_axis_input(ui, theme, "Y", &mut y, col_w, kfs_y);
+            let ks = |kfs| title_object_keyframe_state(kfs, clip_time_secs, keyframe_tolerance);
+            let rx = compact_axis_input(ui, theme, "X", &mut x, col_w, kfs_x, ks(kfs_x));
+            let ry = compact_axis_input(ui, theme, "Y", &mut y, col_w, kfs_y, ks(kfs_y));
             (rx, ry)
         })
         .inner;
@@ -4185,6 +4186,7 @@ fn compact_axis_input(
     value: &mut f32,
     col_w: f32,
     keyframes: &[klipp_core::Keyframe],
+    ks: crate::widgets::scrubby_param::KeyframeState,
 ) -> crate::widgets::scrubby_param::ScrubbyParamResponse {
     let has_kfs = !keyframes.is_empty();
     let mut changed = false;
@@ -4208,24 +4210,17 @@ fn compact_axis_input(
                 picked |= name.clicked();
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // Diamond only when this axis already has
-                    // keyframes; clicking removes the keyframe at the
-                    // playhead, mirroring the scrubby diamond.
+                    // keyframes, drawn as a number row's: filled on a
+                    // key, an outline between keys (#2296).
                     if has_kfs {
-                        let diamond = egui::Button::new(
-                            egui::RichText::new("\u{25C6}")
-                                .size(10.0)
-                                .color(theme.accent),
-                        )
-                        .frame(false)
-                        .min_size(egui::vec2(14.0, 14.0));
-                        let diamond = ui.add(diamond);
-                        if let Some(text) = tag.as_ref().and_then(|t| crate::param_focus::diamond_hover(t.keys(), false)) {
-                            diamond.clone().on_hover_text(text);
-                        }
+                        let diamond = crate::widgets::scrubby_param::diamond_button(ui, &ks, tag.as_ref().map(|t| t.keys()));
                         if diamond.clicked() {
                             keyframe_toggled = true;
                             picked = true;
                         }
+                    }
+                    if has_kfs {
+                        crate::widgets::scrubby_param::tint_animated(ui);
                     }
                     let dv_resp = ui.add(
                         egui::DragValue::new(value)
