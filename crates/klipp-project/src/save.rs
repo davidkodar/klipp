@@ -417,10 +417,12 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                 custom_height: t.custom_height,
                 colour_label: t.colour_label,
                 channel_waveforms: t.channel_waveforms,
-                automation_lane_visible: t.automation_lane_visible.map(|p| match p {
-                    klipp_core::AudioParam::Volume => "Volume".to_string(),
-                    klipp_core::AudioParam::Pan => "Pan".to_string(),
-                    klipp_core::AudioParam::Gain => "Gain".to_string(),
+                automation_lane_visible: t.automation_lane_visible.map(|p| match (p, t.automation_lane_track) {
+                    (klipp_core::AudioParam::Volume, true) => "TrackVolume".to_string(),
+                    (klipp_core::AudioParam::Pan, true) => "TrackPan".to_string(),
+                    (klipp_core::AudioParam::Volume, false) => "Volume".to_string(),
+                    (klipp_core::AudioParam::Pan, false) => "Pan".to_string(),
+                    (klipp_core::AudioParam::Gain, _) => "Gain".to_string(),
                 }),
                 automation_lane_height: t.automation_lane_height,
                 automation: (!t.automation.is_default()).then(|| t.automation.clone()),

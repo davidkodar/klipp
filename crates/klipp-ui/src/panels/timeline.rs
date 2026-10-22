@@ -381,6 +381,19 @@ fn snap_threshold_px() -> f32 { TL_SNAP_THRESHOLD_PX.get() }
 // Hit-testing, drag dispatch, the param-pill overlay, and tooltip rendering
 // stay in the caller — only the curve paint lives here.
 
+/// Where a dragged track key lands for `wanted` seconds (#2306): kept
+/// between its neighbours, a millisecond clear of each where there is room,
+/// at their midpoint where they are closer than that.
+fn drag_key_time(keys: &[klipp_core::Keyframe], index: usize, wanted: f64) -> f64 {
+    let prev = index.checked_sub(1).map_or(0.0, |i| keys[i].time_secs);
+    let next = keys.get(index + 1).map_or(f64::MAX, |k| k.time_secs);
+    let (lo, hi) = (prev + 1e-3, next - 1e-3);
+    if lo > hi {
+        return (prev + next) / 2.0;
+    }
+    wanted.clamp(lo, hi)
+}
+
 /// Fixed (min, range, unity) per audio param. Matches the values used by
 /// the rubber-band drag handlers in `handle_audio_keyframe_drag` etc.;
 /// any change here MUST be mirrored in those handlers or drags desync.
@@ -777,6 +790,16 @@ pub(crate) struct TimelineFrameCache {
     pub tracks_clip_bottom: f32,
 }
 
+/// A track automation key being dragged in its lane (#2306): the track,
+/// the key's index, the keys as they were when the drag began, and as
+/// moved so far.
+struct TrackKeyDrag {
+    track: usize,
+    index: usize,
+    from: Vec<klipp_core::Keyframe>,
+    moved: Vec<klipp_core::Keyframe>,
+}
+
 #[derive(Default)]
 pub struct TimelinePanel {
     /// When true, skip internal toolbar/headers/status rendering (embedded in new shell)
@@ -799,6 +822,8 @@ pub struct TimelinePanel {
     last_refine_request: Option<std::time::Instant>,
     /// Suppress clip context menu when keyframe diamond right-click was handled
     suppress_clip_context_menu: bool,
+    /// A track automation key being dragged in its lane (#2306).
+    track_key_drag: Option<TrackKeyDrag>,
     /// The edit point right-clicked, for its menu (#925).
     context_edit_point: Option<EditPoint>,
     /// Track height resize drag: (track_index, start_y, original_height)
@@ -2837,6 +2862,11 @@ impl TimelinePanel {
                 .tracks
                 .get(menu.track_idx)
                 .and_then(|t| t.automation_lane_visible);
+            let (cur_track, cur_mode) = state
+                .sequence()
+                .tracks
+                .get(menu.track_idx)
+                .map_or((false, Default::default()), |t| (t.automation_lane_track, t.automation.mode));
             if cur_param.is_none() {
                 state.automation_lane_param_menu = None;
                 return;
@@ -2853,12 +2883,20 @@ impl TimelinePanel {
                         .inner_margin(egui::Margin::same(4.0))
                         .show(ui, |ui| {
                             ui.set_min_width(120.0);
-                            for (param, label) in [
-                                (klipp_core::AudioParam::Volume, "Volume"),
-                                (klipp_core::AudioParam::Pan, "Pan"),
-                                (klipp_core::AudioParam::Gain, "Gain"),
+                            // The clips' keys, then the track's own
+                            // (#2306), then how the track plays and
+                            // records its own.
+                            for (param, track, label) in [
+                                (klipp_core::AudioParam::Volume, false, "Volume"),
+                                (klipp_core::AudioParam::Pan, false, "Pan"),
+                                (klipp_core::AudioParam::Gain, false, "Gain"),
+                                (klipp_core::AudioParam::Volume, true, "Track Volume"),
+                                (klipp_core::AudioParam::Pan, true, "Track Pan"),
                             ] {
-                                let is_active = cur_param == Some(param);
+                                if track && param == klipp_core::AudioParam::Volume {
+                                    ui.separator();
+                                }
+                                let is_active = cur_param == Some(param) && cur_track == track;
                                 let display = if is_active {
                                     format!("\u{2022} {}", label)
                                 } else {
@@ -2872,7 +2910,23 @@ impl TimelinePanel {
                                         cmds.push(AppCommand::SetAudioAutomationLaneParam {
                                             track_idx: menu.track_idx,
                                             param,
+                                            track,
                                         });
+                                    }
+                                    close_menu = true;
+                                }
+                            }
+                            ui.separator();
+                            ui.label(egui::RichText::new("Track Automation").small().color(theme().text_dim));
+                            for mode in klipp_core::automation::AutomationMode::ALL {
+                                let display = if mode == cur_mode {
+                                    format!("\u{2022} {}", mode.label())
+                                } else {
+                                    format!("  {}", mode.label())
+                                };
+                                if ui.add(egui::Button::new(display).frame(false)).clicked() {
+                                    if mode != cur_mode {
+                                        cmds.push(AppCommand::SetTrackAutomationMode { track_index: menu.track_idx, mode });
                                     }
                                     close_menu = true;
                                 }
@@ -12820,6 +12874,129 @@ impl TimelinePanel {
             }
     }
 
+    /// The track's own keys of `param` in its automation lane (#2306): its
+    /// curve as played, dim when the mode is Off, a diamond per key, and
+    /// what the pass being recorded has written so far. Double-click adds
+    /// a key, a drag moves one, a right-click removes it; each one undo
+    /// step.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_track_automation_keys(
+        &mut self,
+        painter: &egui::Painter,
+        lane_rect: egui::Rect,
+        curve_left: f32,
+        content_rect: &egui::Rect,
+        track_idx: usize,
+        param: klipp_core::AudioParam,
+        state: &AppState,
+        cmds: &mut Vec<AppCommand>,
+        ui: &egui::Ui,
+    ) {
+        use klipp_core::automation::{AutomationMode, TrackParam};
+        let tp = match param {
+            klipp_core::AudioParam::Volume => TrackParam::Volume,
+            klipp_core::AudioParam::Pan => TrackParam::Pan,
+            klipp_core::AudioParam::Gain => return,
+        };
+        let tt = theme();
+        let track = &state.sequence().tracks[track_idx];
+        let set = match tp {
+            TrackParam::Volume => track.volume,
+            TrackParam::Pan => track.pan,
+        };
+        let (zoom, scroll) = (state.timeline_zoom, state.timeline_scroll_x);
+        let secs_to_x = |t: f64| content_rect.left() + t as f32 * zoom - scroll;
+        let x_to_secs = |x: f32| ((x - content_rect.left() + scroll) / zoom).max(0.0) as f64;
+        let curve_rect = egui::Rect::from_x_y_ranges(curve_left..=lane_rect.right(), lane_rect.top() + 1.0..=lane_rect.bottom() - 1.0);
+        let value_to_y = |v: f32| audio_param_value_to_y(curve_rect, param, v);
+        let y_to_value = |y: f32| audio_param_y_to_value(curve_rect, param, y);
+
+        // Keys changed under a drag (a pass committed, an undo) end it:
+        // releasing it would put back the keys it began with.
+        if self.track_key_drag.as_ref().is_some_and(|d| d.track == track_idx && d.from.as_slice() != track.automation.keys(tp)) {
+            self.track_key_drag = None;
+        }
+        let dragging = self.track_key_drag.as_ref().filter(|d| d.track == track_idx);
+        let keys: Vec<klipp_core::Keyframe> = dragging.map_or_else(|| track.automation.keys(tp).to_vec(), |d| d.moved.clone());
+        let shown = klipp_timeline::TrackAutomation { mode: AutomationMode::Read, lanes: [(tp, keys.clone())].into_iter().collect() };
+
+        // The curve as played, sampled across the lane.
+        let off = track.automation.mode == AutomationMode::Off;
+        let colour = if off { tt.text_dim } else { audio_curve_palette(param).ref_color };
+        let points: Vec<egui::Pos2> = (curve_rect.left() as i32..=curve_rect.right() as i32)
+            .step_by(2)
+            .map(|x| egui::pos2(x as f32, value_to_y(shown.value_at(tp, x_to_secs(x as f32), set))))
+            .collect();
+        painter.add(egui::Shape::line(points, egui::Stroke::new(1.5_f32, colour)));
+
+        // What the pass has written so far, over it.
+        for run in state.automation_pass.runs(track.id, tp) {
+            let points: Vec<egui::Pos2> = run.iter().map(|&(t, v)| egui::pos2(secs_to_x(t), value_to_y(v))).collect();
+            painter.add(egui::Shape::line(points, egui::Stroke::new(2.0_f32, tt.marker_error)));
+        }
+
+        let pointer = ui.input(|i| i.pointer.interact_pos()).filter(|p| curve_rect.contains(*p));
+        let hovered = pointer.and_then(|p| keys.iter().position(|k| egui::pos2(secs_to_x(k.time_secs), value_to_y(k.value)).distance(p) < 6.0));
+        for (i, k) in keys.iter().enumerate() {
+            let c = egui::pos2(secs_to_x(k.time_secs), value_to_y(k.value));
+            if !curve_rect.expand(4.0).contains(c) {
+                continue;
+            }
+            let r = if hovered == Some(i) { 5.0 } else { 4.0 };
+            painter.add(egui::Shape::convex_polygon(
+                vec![c + egui::vec2(0.0, -r), c + egui::vec2(r, 0.0), c + egui::vec2(0.0, r), c + egui::vec2(-r, 0.0)],
+                colour,
+                egui::Stroke::new(1.0_f32, tt.bg_deep),
+            ));
+        }
+
+        let (pressed, down, released, double, secondary) = ui.input(|i| {
+            (
+                i.pointer.primary_pressed(),
+                i.pointer.primary_down(),
+                i.pointer.primary_released(),
+                i.pointer.button_double_clicked(egui::PointerButton::Primary),
+                i.pointer.secondary_released(),
+            )
+        });
+        let commit = |keys: Vec<klipp_core::Keyframe>, cmds: &mut Vec<AppCommand>| cmds.push(AppCommand::SetTrackAutomationKeys { track_index: track_idx, param: tp, keys });
+
+        if let Some(TrackKeyDrag { index, moved, .. }) = self.track_key_drag.as_mut().filter(|d| d.track == track_idx) {
+            if down {
+                if let Some(p) = ui.input(|i| i.pointer.interact_pos()) {
+                    moved[*index].time_secs = drag_key_time(moved, *index, x_to_secs(p.x));
+                    moved[*index].value = y_to_value(p.y.clamp(curve_rect.top(), curve_rect.bottom()));
+                }
+            }
+            if released || !down {
+                if let Some(d) = self.track_key_drag.take() {
+                    commit(d.moved, cmds);
+                }
+            }
+            ui.ctx().request_repaint();
+            return;
+        }
+        let Some(p) = pointer else { return };
+        match hovered {
+            Some(i) if secondary => {
+                let mut k = keys;
+                k.remove(i);
+                commit(k, cmds);
+                self.suppress_clip_context_menu = true;
+            }
+            Some(i) if pressed => self.track_key_drag = Some(TrackKeyDrag { track: track_idx, index: i, from: keys.clone(), moved: keys }),
+            None if double => {
+                let t = x_to_secs(p.x);
+                let mut k = keys;
+                k.retain(|k| (k.time_secs - t).abs() > 1e-3);
+                k.push(klipp_core::Keyframe { time_secs: t, value: y_to_value(p.y), interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() });
+                k.sort_by(|a, b| a.time_secs.total_cmp(&b.time_secs));
+                commit(k, cmds);
+            }
+            _ => {}
+        }
+    }
+
     /// Draw the per-track expandable automation lane. The lane sits
     /// directly below the clip area and spans the timeline's full width.
     /// Each clip on the track contributes a sub-rect inside the lane at
@@ -12849,6 +13026,7 @@ impl TimelinePanel {
         if track.kind != TrackKind::Audio {
             return;
         }
+        let lane_track = track.automation_lane_track;
 
         let tt = theme();
         let lane_painter = painter.with_clip_rect(lane_rect.intersect(*content_rect));
@@ -12971,6 +13149,7 @@ impl TimelinePanel {
             .tracks[track_idx]
             .clips
             .iter()
+            .filter(|_| !lane_track)
             .filter_map(|clip| {
                 if clip.kind.is_gap() {
                     return None;
@@ -13056,6 +13235,10 @@ impl TimelinePanel {
                     egui::Stroke::NONE,
                 ));
             }
+        }
+
+        if lane_track {
+            self.draw_track_automation_keys(&lane_painter, lane_rect, scale_inset_left, content_rect, track_idx, param, state, cmds, ui);
         }
 
         for c in &clips {
@@ -16992,6 +17175,22 @@ mod files_drop_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #2306: a dragged track key stays between its neighbours, and keys
+    /// closer than its margin, or at one time, don't panic the clamp.
+    #[test]
+    fn a_dragged_track_key_stays_between_its_neighbours() {
+        let key = |t: f64| klipp_core::Keyframe { time_secs: t, value: 1.0, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
+        let spread = [key(1.0), key(2.0), key(3.0)];
+        assert_eq!(drag_key_time(&spread, 1, 2.5), 2.5);
+        assert_eq!(drag_key_time(&spread, 1, 9.0), 3.0 - 1e-3);
+        assert_eq!(drag_key_time(&spread, 0, -4.0), 1e-3);
+        assert_eq!(drag_key_time(&spread, 2, 50.0), 50.0, "the last key goes on");
+        let close = [key(1.0), key(1.0005), key(1.001)];
+        assert_eq!(drag_key_time(&close, 1, 5.0), 1.0005);
+        let same = [key(2.0), key(2.0), key(2.0)];
+        assert_eq!(drag_key_time(&same, 1, 0.0), 2.0);
+    }
     use klipp_timeline::Track;
 
     fn make_video_track() -> Track {

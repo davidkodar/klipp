@@ -712,6 +712,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::RenameTrack { .. }
         | AppCommand::SetTrackSyncLock { .. }
         | AppCommand::SetTrackAutomationMode { .. }
+        | AppCommand::SetTrackAutomationKeys { .. }
         | AppCommand::SetTrackLanguage { .. }
         | AppCommand::SetTrackTargeted { .. }
         | AppCommand::SetTrackSourcePatch { .. }

@@ -707,6 +707,20 @@ pub fn show(
                     }
                 });
             }
+            // How the track's own volume and pan keys play and record
+            // (#2306), as the mixer strip's mode button sets it.
+            if track_kind == TrackKind::Audio {
+                let current = state.sequence().tracks[track_idx].automation.mode;
+                ui.menu_button(format!("Automation: {}", current.label()), |ui| {
+                    for mode in klipp_core::automation::AutomationMode::ALL {
+                        let mark = if mode == current { "\u{2714} " } else { "    " };
+                        if ui.button(format!("{mark}{}", mode.label())).clicked() {
+                            cmds.push(AppCommand::SetTrackAutomationMode { track_index: track_idx, mode });
+                            ui.close_menu();
+                        }
+                    }
+                });
+            }
 
             ui.separator();
             crate::panels::timeline::track_attribute_items(ui, state, track_idx, &mut cmds);

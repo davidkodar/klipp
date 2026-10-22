@@ -12,8 +12,12 @@ fn a_tracks_automation_is_saved_and_read_back() {
     let mut music = Track::new("Music", TrackKind::Audio);
     music.automation.mode = AutomationMode::Latch;
     music.automation.lanes.insert(TrackParam::Volume, vec![key(1.0, 1.0), key(3.0, 0.25)]);
+    music.automation_lane_visible = Some(klipp_core::AudioParam::Pan);
+    music.automation_lane_track = true;
     seq.tracks.push(music);
-    seq.tracks.push(Track::new("Dialogue", TrackKind::Audio));
+    let mut dialogue = Track::new("Dialogue", TrackKind::Audio);
+    dialogue.automation_lane_visible = Some(klipp_core::AudioParam::Pan);
+    seq.tracks.push(dialogue);
     let dir = std::env::temp_dir().join(format!("klipp_track_automation_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -25,5 +29,8 @@ fn a_tracks_automation_is_saved_and_read_back() {
     let of = |name: &str| back.tracks.iter().find(|t| t.name == name).map(|t| t.automation.clone()).unwrap();
     assert_eq!(of("Music"), seq.tracks.iter().find(|t| t.name == "Music").unwrap().automation);
     assert!(of("Dialogue").is_default());
+    let lane = |name: &str| back.tracks.iter().find(|t| t.name == name).map(|t| (t.automation_lane_visible, t.automation_lane_track)).unwrap();
+    assert_eq!(lane("Music"), (Some(klipp_core::AudioParam::Pan), true), "the lane shows the track's own pan keys");
+    assert_eq!(lane("Dialogue"), (Some(klipp_core::AudioParam::Pan), false), "the lane shows the clips' pan keys");
     assert_eq!(written.matches("\"automation\"").count(), 1, "only the automated track writes it");
 }

@@ -46,6 +46,7 @@ pub fn label(cmd: &AppCommand) -> Option<&'static str> {
         AppCommand::SetTrackSyncLock { on: true, .. } => "Sync Lock Track",
         AppCommand::SetTrackSyncLock { .. } => "Sync Unlock Track",
         AppCommand::SetTrackAutomationMode { .. } => "Automation Mode",
+        AppCommand::SetTrackAutomationKeys { .. } => "Edit Track Automation",
         AppCommand::SetTrackLanguage { .. } => "Track Language",
         AppCommand::SetTrackTargeted { on: true, .. } => "Target Track",
         AppCommand::SetTrackTargeted { .. } => "Untarget Track",
