@@ -187,6 +187,10 @@ pub fn translated_track(seq: &Sequence, track: usize, translations: &[(ClipId, S
     let mut new = Track::new(&track_name(seq, &source.name, language), TrackKind::Subtitle);
     new.caption_style = source.caption_style.clone();
     new.language = Some(code.to_string());
+    // Hidden, so the two languages' captions don't draw over each other
+    // in the viewer, a burn-in or a review copy (#2246); its eye, or the
+    // set_track op, shows it.
+    new.visible = false;
     let mut flagged = Vec::new();
     for (id, text) in translations {
         let Some(clip) = source.clips.iter().find(|c| c.id == *id) else { continue };
@@ -342,6 +346,7 @@ mod tests {
         let EditCommand::AddTrack { track, .. } = again.edit else { panic!("an added track") };
         assert_eq!(track.name, "Subtitle 1 (German 2)");
         assert_eq!(track.language.as_deref(), Some("de"), "in the language's tag, not only its name");
+        assert!(!track.visible, "hidden, not drawn over its source");
     }
 
     #[test]

@@ -9,6 +9,7 @@ place {media_id, track, at, source_in?, source_out?, insert?, with_audio?, sync_
 add_track {kind, name?} — a video or text track on top (it becomes track 0, every other index moves down by one), an audio or subtitle track at the bottom.
 
 remove_track {track, with_clips?} — a track out (index or kind), every track below moving up by one; refused while it holds clips unless with_clips, which takes them and unlinks their partners elsewhere.
+set_track {track, visible?, language?} — a track's own settings, one undo step: visible false hides its picture or captions (its eye), true shows it; language a BCP 47 tag (de, pt-br; empty for none) that a subtitle export tags its file with. A translated caption track (klipp_translate_captions) starts hidden so the two languages don't draw over each other: show it, and hide its source, to see it.
 
 captions {track?, from?, to?, max_chars?, max_lines?, replace?} — captions for what is heard on the timeline, from the transcripts (run klipp_analyze first): each word lands where its clip puts it, cues close at sentences, pauses and cuts, two lines of 42 by default; on the first subtitle track, made at the bottom if there is none. The reply lists every cue to be read; correct one with set_text. Do it after the speech is placed and trimmed; after a re-cut, make them again with replace true.
 

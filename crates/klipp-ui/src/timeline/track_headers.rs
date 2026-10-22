@@ -432,10 +432,12 @@ pub fn show(
             }
         }
 
-        // Eye (picture and text tracks): the track's output on or off, in
-        // the record-arm's place (#912). It was only drawn by the header
-        // the app no longer shows, so a track could not be hidden.
-        if matches!(track.kind, TrackKind::Video | TrackKind::Text) {
+        // Eye (picture, text and subtitle tracks): the track's output on
+        // or off, in the record-arm's place (#912). It was only drawn by
+        // the header the app no longer shows, so a track could not be
+        // hidden; a subtitle track's lets one language show at a time
+        // (#2246).
+        if matches!(track.kind, TrackKind::Video | TrackKind::Text | TrackKind::Subtitle) {
             let eye_rect = egui::Rect::from_min_size(
                 egui::pos2(
                     track_rect.max.x - btn_size * 4.0 - 16.0,
@@ -452,7 +454,8 @@ pub fn show(
             );
             let (eye_icon, eye_color) = if visible { (Icon::Eye, theme.text_dim) } else { (Icon::EyeSlash, theme.accent) };
             eye_icon.image(12.0).tint(eye_color).paint_at(ui, eye_rect.shrink(2.0));
-            styled_tooltip(&eye_resp, theme, if visible { "Hide this track's picture" } else { "Show this track's picture" }, None);
+            let what = if track.kind == TrackKind::Subtitle { "captions" } else { "picture" };
+            styled_tooltip(&eye_resp, theme, &format!("{} this track's {what}", if visible { "Hide" } else { "Show" }), None);
             if eye_resp.clicked() {
                 cmds.push(AppCommand::SetTrackVisibility { track_index: track_idx, visible: !visible });
             }
