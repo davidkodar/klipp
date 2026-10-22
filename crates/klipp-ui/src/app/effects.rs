@@ -420,7 +420,8 @@ impl KlippApp {
                                     klipp_core::Modifier::Ramp { enabled, .. } |
                                     klipp_core::Modifier::Loop { enabled, .. } |
                                     klipp_core::Modifier::PingPong { enabled, .. } |
-                                    klipp_core::Modifier::Clamp { enabled, .. } => {
+                                    klipp_core::Modifier::Clamp { enabled, .. } |
+                                    klipp_core::Modifier::Extend { enabled, .. } => {
                                         *enabled = !*enabled;
                                     }
                                 }
@@ -563,7 +564,8 @@ fn toggle(m: &mut klipp_core::Modifier) {
         | klipp_core::Modifier::Ramp { enabled, .. }
         | klipp_core::Modifier::Loop { enabled, .. }
         | klipp_core::Modifier::PingPong { enabled, .. }
-        | klipp_core::Modifier::Clamp { enabled, .. } => *enabled = !*enabled,
+        | klipp_core::Modifier::Clamp { enabled, .. }
+        | klipp_core::Modifier::Extend { enabled, .. } => *enabled = !*enabled,
     }
 }
 

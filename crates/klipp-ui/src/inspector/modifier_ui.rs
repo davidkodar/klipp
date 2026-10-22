@@ -11,6 +11,7 @@ const MODIFIER_LABELS: &[&str] = &[
     "Loop",
     "Ping Pong",
     "Clamp",
+    "Outside Keys",
 ];
 
 /// Show a "Behaviors" section for a list of parameter IDs.
@@ -420,6 +421,24 @@ fn show_modifier_params(
                 });
             }
         }
+        // Before the first key and after the last (#2277).
+        Modifier::Extend { before, after, enabled } => {
+            let (mut b, mut a, en) = (*before, *after, *enabled);
+            let mut changed = false;
+            for (label, value, salt) in [("Before", &mut b, "ext_before"), ("After", &mut a, "ext_after")] {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(label).size(10.0));
+                    egui::ComboBox::from_id_salt((id_salt, salt)).selected_text(value.label()).show_ui(ui, |ui| {
+                        for option in klipp_core::Extrapolation::ALL {
+                            changed |= ui.selectable_value(value, option, option.label()).changed();
+                        }
+                    });
+                });
+            }
+            if changed {
+                cmds.push(AppCommand::UpdateModifier { clip_id, param: param_id.clone(), modifier_index, modifier: Modifier::Extend { before: b, after: a, enabled: en } });
+            }
+        }
     }
 }
 
@@ -578,6 +597,12 @@ fn default_modifier_for(label: &str) -> Modifier {
         "Clamp" => Modifier::Clamp {
             min: 0.0,
             max: 1.0,
+            enabled: true,
+        },
+        // Repeats the keyed span after the last key (#2277).
+        "Outside Keys" => Modifier::Extend {
+            before: klipp_core::Extrapolation::Hold,
+            after: klipp_core::Extrapolation::Cycle,
             enabled: true,
         },
         _ => Modifier::Oscillate {

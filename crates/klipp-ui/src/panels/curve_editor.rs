@@ -32,6 +32,23 @@ pub enum CurveParam {
     Mask { track: crate::mask_tracks::MaskTrack, name: String },
 }
 
+/// The modifier stack's parameter for `param`, where it has one: what the
+/// renderer evaluates its keys with (#2277).
+fn modifier_param(param: &CurveParam) -> Option<klipp_core::ParamId> {
+    use klipp_core::ParamId;
+    // The placement and opacity lanes, whose stack the picture gives
+    // (`Clip::truth_lane`); the others draw their keys as keyed.
+    Some(match param {
+        CurveParam::Video(VideoParam::Opacity) => ParamId::Opacity,
+        CurveParam::Video(VideoParam::PositionX) => ParamId::PositionX,
+        CurveParam::Video(VideoParam::PositionY) => ParamId::PositionY,
+        CurveParam::Video(VideoParam::Scale) => ParamId::Scale,
+        CurveParam::Video(VideoParam::ScaleY) => ParamId::ScaleY,
+        CurveParam::Video(VideoParam::Rotation) => ParamId::Rotation,
+        _ => return None,
+    })
+}
+
 /// An effect parameter as the catalog describes it, by the effect's saved
 /// tag and the parameter's key in its node (its field, or an element's
 /// key): the effect's name, the parameter's label as the inspector shows
@@ -579,9 +596,14 @@ impl CurveEditorPanel {
         // ── Draw playhead ──
         self.draw_playhead(ui, state, &graph_rect, clip_id, clip_duration, theme);
 
-        // ── Draw curve ──
+        // ── Draw curve ──, past its keys as its modifier stack extends it
+        // (#2277), the same sums the renderer runs.
+        let extend = clip_id
+            .and_then(|id| state.sequence().all_clips().find(|c| c.id == id))
+            .and_then(|clip| modifier_param(self.param()).and_then(|p| clip.truth_lane(&p).and_then(|(_, stacks)| stacks.get(&p).map(|stack| klipp_core::modifier::extension(&stack.modifiers)))))
+            .unwrap_or_default();
         self.draw_curve(
-            ui, &graph_rect, &keyframes, clip_duration, v_min, v_range, v_default, theme,
+            ui, &graph_rect, &keyframes, clip_duration, v_min, v_range, v_default, extend, theme,
         );
 
         // ── Draw keyframe diamonds + handles ──
@@ -1174,6 +1196,7 @@ impl CurveEditorPanel {
         v_min: f32,
         v_range: f32,
         v_default: f32,
+        extend: (klipp_core::Extrapolation, klipp_core::Extrapolation),
         theme: &KlippTheme,
     ) {
         if clip_duration <= 0.0 {
@@ -1212,16 +1235,24 @@ impl CurveEditorPanel {
         let dt = (t_end - t_start) / num_samples as f64;
         for i in 0..=num_samples {
             let t = t_start + dt * i as f64;
-            let v = klipp_core::keyframe::evaluate(keyframes, t, v_default);
+            let v = klipp_core::modifier::evaluate_extended(keyframes, extend.0, extend.1, t, v_default);
             let x = self.time_to_x(t, graph_rect, clip_duration);
             let y = self.value_to_y(v, graph_rect, v_min, v_range);
             points.push(pos2(x, y));
         }
 
-        // Draw segments (clipped to graph)
+        // Draw segments (clipped to graph); past the keys, where an
+        // extension carries the curve on, fainter (#2277).
+        let keyed_x = (
+            self.time_to_x(keyframes[0].time_secs, graph_rect, clip_duration),
+            self.time_to_x(keyframes[keyframes.len() - 1].time_secs, graph_rect, clip_duration),
+        );
+        let faint = Stroke::new(1.4_f32, Color32::from_rgba_premultiplied(curve_color.r() / 2, curve_color.g() / 2, curve_color.b() / 2, 140));
         for w in points.windows(2) {
             let a = w[0];
             let b = w[1];
+            let outside = b.x <= keyed_x.0 + 0.5 || a.x >= keyed_x.1 - 0.5;
+            let curve_stroke = if outside { faint } else { curve_stroke };
             // Basic clipping
             if (a.x >= graph_rect.left() || b.x >= graph_rect.left())
                 && (a.x <= graph_rect.right() || b.x <= graph_rect.right())
