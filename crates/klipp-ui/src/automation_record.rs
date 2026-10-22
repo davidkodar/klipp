@@ -56,6 +56,8 @@ pub struct Pass {
     sequence: Option<SequenceId>,
     series: HashMap<(TrackId, TrackParam), Series>,
     live: HashMap<(TrackId, TrackParam), f32>,
+    /// Controls clicked to a value: touched for the next tick only.
+    clicked: HashSet<(TrackId, TrackParam)>,
     /// The values the engine was last told to play, by track index.
     sent: HashMap<(usize, TrackParam), f32>,
 }
@@ -78,6 +80,13 @@ impl Pass {
         self.live.insert((track, param), value);
     }
 
+    /// The user clicked `param` of track `track` to `value`: a touch of
+    /// one frame, which Latch and Write record as a jump.
+    pub fn touch_once(&mut self, track: TrackId, param: TrackParam, value: f32) {
+        self.live.insert((track, param), value);
+        self.clicked.insert((track, param));
+    }
+
     /// What the pass has written of `param` on track `track` so far, run
     /// by run, (sequence seconds, value).
     pub fn runs(&self, track: TrackId, param: TrackParam) -> impl Iterator<Item = &[(f64, f32)]> {
@@ -97,7 +106,7 @@ impl Pass {
         for (i, track) in seq.tracks.iter().enumerate().filter(|(_, t)| t.kind == TrackKind::Audio) {
             for param in PARAMS {
                 let key = (track.id, param);
-                let touched = held.contains(&(i, param));
+                let touched = held.contains(&(i, param)) || self.clicked.contains(&key);
                 let s = self.series.entry(key).or_default();
                 s.latched = playing && (s.latched || touched && track.automation.mode == AutomationMode::Latch);
                 let writing = playing
@@ -109,8 +118,11 @@ impl Pass {
                     };
                 if writing {
                     let value = *self.live.entry(key).or_insert_with(|| track.automation.value_at(param, secs, as_set(track, param)));
+                    // A touch taken again before the last one's glide back
+                    // ended carries its run on.
                     let last = s.runs.last().and_then(|r| r.last()).map(|&(t, _)| t);
-                    if !s.writing || last.is_none_or(|t| secs < t || secs - t > MAX_STEP_SECS) {
+                    let longest_step = if s.writing { MAX_STEP_SECS } else { 2.0 * GLIDE_SECS };
+                    if last.is_none_or(|t| secs < t || secs - t > longest_step) {
                         s.runs.push(Vec::new());
                     }
                     if let Some(run) = s.runs.last_mut() {
@@ -124,6 +136,7 @@ impl Pass {
                 s.writing = writing;
             }
         }
+        self.clicked.clear();
 
         let index: HashMap<TrackId, usize> = seq.tracks.iter().enumerate().map(|(i, t)| (t.id, i)).collect();
         self.live.retain(|(id, _), _| index.contains_key(id));
@@ -144,6 +157,7 @@ impl Pass {
     pub fn drop_pass(&mut self) -> Vec<(usize, TrackParam, Option<f32>)> {
         self.series.clear();
         self.live.clear();
+        self.clicked.clear();
         self.sequence = None;
         let mut changed: Vec<_> = self.sent.drain().map(|((i, param), _)| (i, param, None)).collect();
         changed.sort_by_key(|&(i, param, _)| (i, param));
@@ -396,6 +410,56 @@ mod tests {
             assert!((run.last().unwrap().time_secs - 59.0 / 30.0).abs() < 1e-9, "{mode:?}: to the end of the pass");
             assert!((run.last().unwrap().value - -0.1).abs() < 1e-6, "{mode:?}: the last value held");
         }
+    }
+
+    /// A click is a touch of one frame: Latch records the jump and holds
+    /// it; with the control not played from keys and nothing recording,
+    /// the click is let go after that frame.
+    #[test]
+    fn a_click_is_a_touch_of_one_frame() {
+        let s = seq(AutomationMode::Latch);
+        let id = s.tracks[0].id;
+        let none = HashSet::new();
+        let mut pass = Pass::default();
+        pass.tick(&s, &none, true, 0.0);
+        pass.touch_once(id, TrackParam::Pan, 0.5);
+        for f in 1..30 {
+            pass.tick(&s, &none, true, f as f64 / 30.0);
+        }
+        assert_eq!(pass.live(id, TrackParam::Pan), Some(0.5), "latched by the click");
+        let keys = pass.finish(&s).remove(0).1.automation;
+        assert_eq!(keys.value_at(TrackParam::Pan, 0.5, 0.0), 0.5);
+
+        let read = seq(AutomationMode::Read);
+        let mut pass = Pass::default();
+        pass.touch_once(read.tracks[0].id, TrackParam::Pan, 0.5);
+        pass.tick(&read, &none, false, 0.0);
+        assert_eq!(pass.live(read.tracks[0].id, TrackParam::Pan), Some(0.5), "heard for the frame clicked");
+        pass.tick(&read, &none, false, 0.0);
+        assert_eq!(pass.live(read.tracks[0].id, TrackParam::Pan), None, "then let go");
+    }
+
+    /// Touch taken again within the glide of its last let-go carries the
+    /// same run on, so the new run's lead doesn't cut the last one's end.
+    #[test]
+    fn a_quick_retouch_carries_the_run_on() {
+        let s = seq(AutomationMode::Touch);
+        let id = s.tracks[0].id;
+        let held: HashSet<_> = [(0, TrackParam::Pan)].into_iter().collect();
+        let none = HashSet::new();
+        let mut pass = Pass::default();
+        pass.set_live(id, TrackParam::Pan, 0.5);
+        for f in 30..=60 {
+            pass.tick(&s, &held, true, f as f64 / 30.0);
+        }
+        pass.tick(&s, &none, true, 61.0 / 30.0);
+        pass.set_live(id, TrackParam::Pan, -0.5);
+        for f in 62..=90 {
+            pass.tick(&s, &held, true, f as f64 / 30.0);
+        }
+        let keys = pass.finish(&s).remove(0).1.automation;
+        assert_eq!(keys.value_at(TrackParam::Pan, 2.0, 0.0), 0.5, "the first touch's end kept");
+        assert_eq!(keys.value_at(TrackParam::Pan, 2.5, 0.0), -0.5);
     }
 
     /// A pass belongs to its sequence: another one made active, it is

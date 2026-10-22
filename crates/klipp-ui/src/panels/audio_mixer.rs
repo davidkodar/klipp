@@ -248,11 +248,12 @@ fn draw_lufs_bar(
 // Track fader strip
 // ═══════════════════════════════════════════════════════════════════
 
-/// A strip's automation (#2306): its track's mode; the volume and pan it
+/// A strip's automation (#2306): its track's mode, none for a track that
+/// isn't an audio track (only those are automated); the volume and pan it
 /// shows in place of the controls as set, moved or from the keys at the
 /// playhead; and whether a move of each is live rather than set.
 pub(crate) struct StripAutomation {
-    pub mode: klipp_core::automation::AutomationMode,
+    pub mode: Option<klipp_core::automation::AutomationMode>,
     pub shown_volume: Option<f32>,
     pub shown_pan: Option<f32>,
     pub live_volume: bool,
@@ -261,9 +262,13 @@ pub(crate) struct StripAutomation {
 
 /// Whether a move of `param` on `track` is live, played over its keys
 /// and recorded by a pass, rather than setting the control (#2306): it
-/// plays from keys, or playback is on and the mode records.
+/// plays from keys, or playback is on and the mode records. Only an audio
+/// track's are.
 pub(crate) fn goes_live(track: &klipp_timeline::Track, param: klipp_core::automation::TrackParam, playing: bool) -> bool {
     use klipp_core::automation::AutomationMode;
+    if track.kind != klipp_timeline::TrackKind::Audio {
+        return false;
+    }
     track.automation.plays(param) || playing && matches!(track.automation.mode, AutomationMode::Touch | AutomationMode::Latch | AutomationMode::Write)
 }
 
@@ -333,17 +338,19 @@ fn fader_strip(
     let mut y = rect.min.y + 10.0;
 
     // -- Automation mode (#2306): a click steps through them --
-    let mode_rect = egui::Rect::from_min_size(egui::pos2(inner_right - 28.0, rect.min.y + 1.0), egui::vec2(28.0, 9.0));
-    let mode_resp = ui
-        .allocate_rect(mode_rect, egui::Sense::click())
-        .on_hover_text("Automation: Off (the controls as set), Read (play the track's keys), Touch (record while a control is held), Latch (record from its first touch until playback stops), Write (record the whole pass). Click for the next.");
-    let recording = matches!(automation.mode, AutomationMode::Touch | AutomationMode::Latch | AutomationMode::Write);
-    let mode_colour = if recording { theme.marker_error } else if mode_resp.hovered() { theme.text_primary } else { theme.text_dim };
-    painter.text(mode_rect.right_center(), egui::Align2::RIGHT_CENTER, automation.mode.label(), egui::FontId::proportional(8.0), mode_colour);
-    if mode_resp.clicked() {
-        let all = AutomationMode::ALL;
-        let next = all[(all.iter().position(|m| *m == automation.mode).unwrap_or(0) + 1) % all.len()];
-        cmds.push(AppCommand::SetTrackAutomationMode { track_index, mode: next });
+    if let Some(mode) = automation.mode {
+        let mode_rect = egui::Rect::from_min_size(egui::pos2(inner_right - 28.0, rect.min.y + 1.0), egui::vec2(28.0, 9.0));
+        let mode_resp = ui
+            .allocate_rect(mode_rect, egui::Sense::click())
+            .on_hover_text("Automation: Off (the controls as set), Read (play the track's keys), Touch (record while a control is held), Latch (record from its first touch until playback stops), Write (record the whole pass). Click for the next.");
+        let recording = matches!(mode, AutomationMode::Touch | AutomationMode::Latch | AutomationMode::Write);
+        let mode_colour = if recording { theme.marker_error } else if mode_resp.hovered() { theme.text_primary } else { theme.text_dim };
+        painter.text(mode_rect.right_center(), egui::Align2::RIGHT_CENTER, mode.label(), egui::FontId::proportional(8.0), mode_colour);
+        if mode_resp.clicked() {
+            let all = AutomationMode::ALL;
+            let next = all[(all.iter().position(|m| *m == mode).unwrap_or(0) + 1) % all.len()];
+            cmds.push(AppCommand::SetTrackAutomationMode { track_index, mode: next });
+        }
     }
 
     // -- Track name (double-click to rename) --
@@ -877,7 +884,7 @@ pub fn show(
     let playhead_secs = state.playhead.to_secs_f64();
     let playing = state.playback == klipp_engine::PlaybackState::Playing;
     let mut touches: Vec<(usize, klipp_core::automation::TrackParam, bool)> = Vec::new();
-    let mut lives: Vec<(klipp_core::TrackId, klipp_core::automation::TrackParam, f32)> = Vec::new();
+    let mut lives: Vec<(usize, klipp_core::TrackId, klipp_core::automation::TrackParam, f32)> = Vec::new();
     // Each strip's automation (#2306): a control shows its value as moved,
     // or its keys' value at the playhead when played from them.
     let strip_automation: Vec<StripAutomation> = state.sequences[state.active_sequence_idx].tracks.iter().map(|t| {
@@ -885,7 +892,7 @@ pub fn show(
         let pass = &state.automation_pass;
         let shown = |param: TrackParam, set: f32| pass.live(t.id, param).or_else(|| t.automation.plays(param).then(|| t.automation.value_at(param, playhead_secs, set)));
         StripAutomation {
-            mode: t.automation.mode,
+            mode: (t.kind == klipp_timeline::TrackKind::Audio).then_some(t.automation.mode),
             shown_volume: shown(TrackParam::Volume, t.volume),
             shown_pan: shown(TrackParam::Pan, t.pan),
             live_volume: goes_live(t, TrackParam::Volume, playing),
@@ -949,7 +956,7 @@ pub fn show(
                                 &mut cmds,
                             );
                             touches.extend(strip_touches.into_iter().map(|(param, down)| (i, param, down)));
-                            lives.extend(strip_lives.into_iter().map(|(param, v)| (track_id, param, v)));
+                            lives.extend(strip_lives.into_iter().map(|(param, v)| (i, track_id, param, v)));
                             // Gap between strips
                             ui.add_space(4.0);
                         }
@@ -985,8 +992,14 @@ pub fn show(
             state.automation_held.remove(&(i, param));
         }
     }
-    for (id, param, value) in lives {
-        state.automation_pass.set_live(id, param, value);
+    // A drag holds its control; a click or double-click is a touch of
+    // one frame, so it is recorded as a jump where the mode records.
+    for (i, id, param, value) in lives {
+        if state.automation_held.contains(&(i, param)) {
+            state.automation_pass.set_live(id, param, value);
+        } else {
+            state.automation_pass.touch_once(id, param, value);
+        }
     }
 
     // Write back track data
@@ -1121,6 +1134,9 @@ mod tests {
             (AutomationMode::Read, true, true, true),
             (AutomationMode::Off, true, true, false),
         ];
+        let mut video = klipp_timeline::Track::new("V", klipp_timeline::TrackKind::Video);
+        video.automation.mode = AutomationMode::Write;
+        assert!(!goes_live(&video, TrackParam::Volume, true), "a video track's strip sets its controls");
         for (mode, keyed, playing, live) in cases {
             t.automation.mode = mode;
             t.automation.lanes.clear();
