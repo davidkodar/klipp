@@ -193,6 +193,22 @@ impl HeldFrame {
     }
 }
 
+/// What a stream asks for as it opens (#2128): decode rate, pixels a
+/// second, and memory, the bytes of one of its decoded frames.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Cost {
+    pub rate: f64,
+    pub frame_bytes: f64,
+}
+
+/// A layer on screen opened while memory is short holds at least this
+/// many decoded frames: enough to play on through a slow frame.
+const MIN_QUEUE_FRAMES: usize = 4;
+
+/// The share of memory the viewer's streams' queues may hold together:
+/// of what is free and what they hold already (#2128).
+const STREAM_MEMORY_SHARE: f64 = 0.5;
+
 /// One media clip a frame needs, and where in its media.
 #[derive(Clone)]
 pub(crate) struct Want {
@@ -239,8 +255,8 @@ struct ClipStream {
 }
 
 impl ClipStream {
-    fn open(want: &Want, path: &std::path::Path, rotation: i32, lease: crate::decode_budget::Lease) -> Option<Self> {
-        let decoder = VideoDecoder::open_with(path, rotation, lease)
+    fn open(want: &Want, path: &std::path::Path, rotation: i32, lease: crate::decode_budget::Lease, frames: usize) -> Option<Self> {
+        let decoder = VideoDecoder::open_with_queue(path, rotation, lease, frames)
             .map_err(|e| warn!("clip stream: cannot open {path:?}: {e}"))
             .ok()?;
         let target = want.source_secs.max(0.0);
@@ -365,9 +381,15 @@ pub(crate) struct ClipStreams {
     reversed: HashMap<ClipId, Reversed>,
     /// The pixels a second each stream asks for, open or opening (#2128).
     rates: HashMap<ClipId, f64>,
-    /// At most this many decoders at once, however small: each holds up to
-    /// a queue of decoded frames.
-    max_streams: usize,
+    /// The bytes each one's queue of decoded frames may hold, open or
+    /// opening (#2128): its frames at their size.
+    bytes: HashMap<ClipId, f64>,
+    /// Memory free for more: [`crate::decode_budget::free_memory`], or a
+    /// test's.
+    free_memory: fn() -> f64,
+    /// The frames a stream queues when memory allows: the preference's,
+    /// or a test's.
+    queue_frames: fn() -> usize,
     /// The pixels a second all streams together may ask for:
     /// [`crate::decode_budget::stream_capacity`], or a test's.
     capacity: fn() -> f64,
@@ -382,8 +404,8 @@ pub(crate) struct ClipStreams {
 }
 
 impl ClipStreams {
-    pub fn new(max_streams: usize) -> Self {
-        Self { streams: HashMap::new(), opening: HashMap::new(), reversed: HashMap::new(), rates: HashMap::new(), max_streams, capacity: crate::decode_budget::stream_capacity, gpu_headroom: crate::decode_budget::gpu_headroom, media: klipp_media::frame_reader::MediaReaders::new(klipp_compose::MEDIA_READERS), neighbours: Vec::new() }
+    pub fn new() -> Self {
+        Self { streams: HashMap::new(), opening: HashMap::new(), reversed: HashMap::new(), rates: HashMap::new(), bytes: HashMap::new(), free_memory: crate::decode_budget::free_memory, queue_frames: crate::video_decoder::frame_queue_size, capacity: crate::decode_budget::stream_capacity, gpu_headroom: crate::decode_budget::gpu_headroom, media: klipp_media::frame_reader::MediaReaders::new(klipp_compose::MEDIA_READERS), neighbours: Vec::new() }
     }
 
     /// The reader of `path`'s frames at any time for an OFX plug-in's
@@ -421,7 +443,7 @@ impl ClipStreams {
     /// GPU's decoder as it does (#2116): when it is full, the later ones
     /// decode in software. Layers come bottom first and those opened ahead
     /// last, so those go to software first, then the top-most layers.
-    pub fn sync(&mut self, wants: &[Want], frame_secs: f64, resolve: &dyn Fn(&Want) -> Option<(PathBuf, i32, f64)>) {
+    pub fn sync(&mut self, wants: &[Want], frame_secs: f64, resolve: &dyn Fn(&Want) -> Option<(PathBuf, i32, Cost)>) {
         crate::decode_budget::sample();
         self.streams.retain(|id, _| wants.iter().any(|w| w.clip == *id && !w.reversed));
         // One no longer wanted is let go: opened, it is dropped on its own
@@ -475,24 +497,25 @@ impl ClipStreams {
                 }
                 None => {
                     // Opened off this thread; it lands on a later sync.
-                    if let Some((path, rot, rate)) = resolve(w) {
-                        if !self.make_room(rate, w.ahead) {
+                    if let Some((path, rot, cost)) = resolve(w) {
+                        let Some(frames) = self.make_room(cost, w.ahead) else {
                             debug!(
-                                "clip streams: decode rate full ({:.0} of {:.0} Mpx/s, {} streams), not opening one ahead for {:?}",
-                                self.rates.values().sum::<f64>() / 1e6, (self.capacity)() / 1e6, self.streams.len() + self.opening.len(), w.clip,
+                                "clip streams: no room ({:.0} of {:.0} Mpx/s, {:.0} MB queued, {} streams), not opening one ahead for {:?}",
+                                self.rates.values().sum::<f64>() / 1e6, (self.capacity)() / 1e6, self.bytes.values().sum::<f64>() / 1e6, self.streams.len() + self.opening.len(), w.clip,
                             );
                             continue;
-                        }
+                        };
                         let (tx, rx) = std::sync::mpsc::channel();
                         let want = w.clone();
                         // Admitted here, in order, not on the thread.
-                        let lease = crate::decode_budget::admit(rate, crate::decode_budget::Priority::Overflow);
+                        let lease = crate::decode_budget::admit(cost.rate, crate::decode_budget::Priority::Overflow);
                         let spawned = std::thread::Builder::new().name("clip stream open".into()).spawn(move || {
-                            let _ = tx.send(ClipStream::open(&want, &path, rot, lease));
+                            let _ = tx.send(ClipStream::open(&want, &path, rot, lease, frames));
                         });
                         if spawned.is_ok() {
                             self.opening.insert(w.clip, (rx, w.ahead));
-                            self.rates.insert(w.clip, rate);
+                            self.rates.insert(w.clip, cost.rate);
+                            self.bytes.insert(w.clip, cost.frame_bytes * frames as f64);
                         }
                     }
                 }
@@ -505,37 +528,59 @@ impl ClipStreams {
         self.forget_rates();
     }
 
-    /// Room for a stream asking `rate` pixels a second (#2128). The limit
-    /// is what the decoders give, not a count: six decoders were the limit,
-    /// and a 3×3 grid of 1080p clips, a fraction of a 4K layer each, played
-    /// with two tiles black. A stream opened ahead fits or waits. One on
+    /// Room for a stream asking `cost` (#2128): how many frames it may
+    /// queue, or `None` to wait. The limits are what the decoders give and
+    /// the memory their queues hold, not a count: six decoders were the
+    /// limit, and a 3×3 grid of 1080p clips, a fraction of a 4K layer
+    /// each, played with two tiles black.
+    ///
+    /// A stream opened ahead fits with its whole queue or waits. One on
     /// screen is never left black: streams opened ahead are closed to make
-    /// room, the biggest first, and past that it opens all the same, only
-    /// [`Self::max_streams`] refusing it.
-    fn make_room(&mut self, rate: f64, ahead: bool) -> bool {
+    /// room, the biggest first, and past that it opens all the same, with
+    /// a shorter queue when memory is what is short.
+    fn make_room(&mut self, cost: Cost, ahead: bool) -> Option<usize> {
         let capacity = (self.capacity)();
-        let fits = |s: &Self| s.streams.len() + s.opening.len() < s.max_streams && s.rates.values().sum::<f64>() + rate <= capacity;
+        let full = (self.queue_frames)().max(MIN_QUEUE_FRAMES);
+        let rate_fits = |s: &Self| s.rates.values().sum::<f64>() + cost.rate <= capacity;
+        let frames_fit = |s: &Self| {
+            if cost.frame_bytes <= 0.0 {
+                return full;
+            }
+            let held: f64 = s.bytes.values().sum();
+            let left = STREAM_MEMORY_SHARE * ((s.free_memory)() + held) - held;
+            (left / cost.frame_bytes).floor().clamp(0.0, full as f64) as usize
+        };
+        let fits = |s: &Self| rate_fits(s) && frames_fit(s) >= full;
         if ahead {
             // A stream opened ahead also waits for the GPU's decoder to
             // have room for it: with no count to stop them, every clip
             // coming up within its lead was opened, eleven at a time, all
             // seeking on the GPU's decoder while the section on screen
             // needed it, and the codec section played at 15–22 frames.
-            return fits(self) && rate <= (self.gpu_headroom)();
-        }
-        if fits(self) {
-            return true;
+            return (fits(self) && cost.rate <= (self.gpu_headroom)()).then_some(full);
         }
         while !fits(self) {
+            // The biggest in what is short: memory, else decode rate.
+            let by_bytes = frames_fit(self) < full;
+            let size = |id: &ClipId| if by_bytes { self.bytes.get(id).copied().unwrap_or(0.0) } else { self.rate(*id) };
             let opened_ahead = self.streams.iter().filter(|(_, s)| s.ahead).map(|(id, _)| *id);
             let opening_ahead = self.opening.iter().filter(|(_, (_, a))| *a).map(|(id, _)| *id);
-            let Some(biggest) = opened_ahead.chain(opening_ahead).max_by(|a, b| self.rate(*a).total_cmp(&self.rate(*b))) else { break };
+            let Some(biggest) = opened_ahead.chain(opening_ahead).max_by(|a, b| size(a).total_cmp(&size(b))) else { break };
             debug!("clip streams: closing {biggest:?}, opened ahead, for a layer on screen");
             self.streams.remove(&biggest);
             self.opening.remove(&biggest);
             self.rates.remove(&biggest);
+            self.bytes.remove(&biggest);
         }
-        self.streams.len() + self.opening.len() < self.max_streams
+        let frames = frames_fit(self).max(MIN_QUEUE_FRAMES);
+        if frames < full {
+            super::STREAMS_SHORTENED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            tracing::info!(
+                "clip streams: memory short ({:.0} MB free, {:.0} MB queued), a layer on screen queues {frames} of {full} frames",
+                (self.free_memory)() / 1e6, self.bytes.values().sum::<f64>() / 1e6,
+            );
+        }
+        Some(frames)
     }
 
     fn rate(&self, clip: ClipId) -> f64 {
@@ -546,6 +591,7 @@ impl ClipStreams {
     fn forget_rates(&mut self) {
         let (streams, opening) = (&self.streams, &self.opening);
         self.rates.retain(|id, _| streams.contains_key(id) || opening.contains_key(id));
+        self.bytes.retain(|id, _| streams.contains_key(id) || opening.contains_key(id));
     }
 
     /// Streams whose opening finished, put with the others; one that could
@@ -648,6 +694,7 @@ impl ClipStreams {
         self.streams.clear();
         self.opening.clear();
         self.rates.clear();
+        self.bytes.clear();
         self.reversed.clear();
     }
 
@@ -689,9 +736,9 @@ mod tests {
             return;
         };
         let frame = 1.0 / 25.0;
-        let resolve = |_: &Want| Some((path.clone(), 0, 0.0));
+        let resolve = |_: &Want| Some((path.clone(), 0, Cost { rate: 0.0, frame_bytes: 0.0 }));
         let ahead = Want { clip: ClipId::new(), media: MediaId::new(), rotation: 0, source_secs: 1.0, reversed: false, ahead: true };
-        let mut streams = ClipStreams::new(2);
+        let mut streams = ClipStreams::new();
         // Whatever other tests ask of the process's GPU budget.
         streams.gpu_headroom = || f64::INFINITY;
         streams.sync(std::slice::from_ref(&ahead), frame, &resolve);
@@ -724,11 +771,11 @@ mod tests {
         };
         let _one = BUDGETED.lock().unwrap_or_else(|e| e.into_inner());
         let frame = 1.0 / 25.0;
-        let mut streams = ClipStreams::new(16);
+        let mut streams = ClipStreams::new();
         // Room for four streams of 100.
         streams.capacity = || 400.0;
         streams.gpu_headroom = || f64::INFINITY;
-        let resolve = |_: &Want| Some((path.clone(), 0, 100.0));
+        let resolve = |_: &Want| Some((path.clone(), 0, Cost { rate: 100.0, frame_bytes: 0.0 }));
         let want = |ahead: bool| Want { clip: ClipId::new(), media: MediaId::new(), rotation: 0, source_secs: 0.0, reversed: false, ahead };
         let early = want(true);
         streams.sync(std::slice::from_ref(&early), frame, &resolve);
@@ -755,6 +802,54 @@ mod tests {
         assert!(streams.has(opens.clip), "on screen opens");
     }
 
+    /// #2128: memory, not a count, as decode rate is. A stream opened ahead
+    /// needs room for its whole queue or waits; a layer on screen closes
+    /// one opened ahead for room, and past that opens with a shorter
+    /// queue, never fewer than four frames, rather than not at all.
+    #[test]
+    fn layers_on_screen_open_with_a_shorter_queue_when_memory_is_short() {
+        let Some(path) = source() else {
+            eprintln!("skipping: no ffmpeg");
+            return;
+        };
+        let _one = BUDGETED.lock().unwrap_or_else(|e| e.into_inner());
+        let frame = 1.0 / 25.0;
+        let mut streams = ClipStreams::new();
+        streams.capacity = || f64::INFINITY;
+        streams.gpu_headroom = || f64::INFINITY;
+        streams.queue_frames = || 16;
+        // Half of what is free and what the queues hold: 16 frames of 100
+        // bytes with nothing held.
+        streams.free_memory = || 3200.0;
+        let resolve = |_: &Want| Some((path.clone(), 0, Cost { rate: 1.0, frame_bytes: 100.0 }));
+        let want = |ahead: bool| Want { clip: ClipId::new(), media: MediaId::new(), rotation: 0, source_secs: 0.0, reversed: false, ahead };
+        let frames = |s: &ClipStreams, w: &Want| s.bytes.get(&w.clip).map(|b| (b / 100.0) as usize);
+        let shortened = super::super::streams_shortened();
+
+        let early = want(true);
+        let mut all = vec![early.clone()];
+        streams.sync(&all, frame, &resolve);
+        assert_eq!(frames(&streams, &early), Some(16), "room for one ahead, whole");
+        let first = want(false);
+        all.push(first.clone());
+        streams.sync(&all, frame, &resolve);
+        assert!(!streams.has(early.clip), "the one ahead was closed for a layer on screen");
+        assert_eq!(frames(&streams, &first), Some(16), "which then has its whole queue");
+        let second = want(false);
+        all.push(second.clone());
+        streams.sync(&all, frame, &resolve);
+        assert_eq!(frames(&streams, &second), Some(8), "the next on screen, a shorter one");
+        let later = want(true);
+        all.push(later.clone());
+        streams.sync(&all, frame, &resolve);
+        assert!(!streams.has(later.clip), "one ahead waits for room for its whole queue");
+        let (third, fourth) = (want(false), want(false));
+        all.extend([third.clone(), fourth.clone()]);
+        streams.sync(&all, frame, &resolve);
+        assert_eq!((frames(&streams, &third), frames(&streams, &fourth)), (Some(4), Some(4)), "on screen, never refused and never under four frames");
+        assert!(super::super::streams_shortened() >= shortened + 3, "and each is counted");
+    }
+
     /// #2116: a stream asking more than the GPU's decoder has left opens
     /// in software, and gives its frame at its time as any other.
     #[test]
@@ -770,8 +865,8 @@ mod tests {
         // The GPU asked for more than any gives, by a decoder that is never
         // moved; then a small stream, which software keeps up with.
         let _full = crate::decode_budget::admit(1e15, crate::decode_budget::Priority::Fixed);
-        let mut streams = ClipStreams::new(2);
-        let resolve = |_: &Want| Some((path.clone(), 0, 64.0 * 36.0 * 25.0));
+        let mut streams = ClipStreams::new();
+        let resolve = |_: &Want| Some((path.clone(), 0, Cost { rate: 64.0 * 36.0 * 25.0, frame_bytes: 0.0 }));
         streams.sync(std::slice::from_ref(&w), frame, &resolve);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while !streams.ready(frame) || !streams.streams.contains_key(&w.clip) {
@@ -796,9 +891,9 @@ mod tests {
         };
         let frame = 1.0 / 25.0;
         let w = Want { clip: ClipId::new(), media: MediaId::new(), rotation: 0, source_secs: 1.0, reversed: false, ahead: false };
-        let mut streams = ClipStreams::new(4);
+        let mut streams = ClipStreams::new();
         let t = std::time::Instant::now();
-        streams.sync(std::slice::from_ref(&w), frame, &|_: &Want| Some((path.clone(), 0, 0.0)));
+        streams.sync(std::slice::from_ref(&w), frame, &|_: &Want| Some((path.clone(), 0, Cost { rate: 0.0, frame_bytes: 0.0 })));
         let asked = t.elapsed();
         assert!(streams.has(w.clip), "wanted: counted while it opens");
         assert!(streams.opening.contains_key(&w.clip) && !streams.streams.contains_key(&w.clip), "still opening when the sync returns");
@@ -813,14 +908,14 @@ mod tests {
         eprintln!("sync returned in {asked:?}");
         // A stream still opening is taken over once it lands.
         let late = Want { clip: ClipId::new(), ..w.clone() };
-        streams.sync(std::slice::from_ref(&late), frame, &|_: &Want| Some((path.clone(), 0, 0.0)));
+        streams.sync(std::slice::from_ref(&late), frame, &|_: &Want| Some((path.clone(), 0, Cost { rate: 0.0, frame_bytes: 0.0 })));
         assert!(streams.opening.contains_key(&late.clip));
         assert!(streams.take(late.clip).is_some(), "taken over while it opened");
         assert!(!streams.has(late.clip));
         // A stream no longer wanted while it opens is let go.
         let other = Want { clip: ClipId::new(), ..w.clone() };
-        streams.sync(std::slice::from_ref(&other), frame, &|_: &Want| Some((path.clone(), 0, 0.0)));
-        streams.sync(&[], frame, &|_: &Want| Some((path.clone(), 0, 0.0)));
+        streams.sync(std::slice::from_ref(&other), frame, &|_: &Want| Some((path.clone(), 0, Cost { rate: 0.0, frame_bytes: 0.0 })));
+        streams.sync(&[], frame, &|_: &Want| Some((path.clone(), 0, Cost { rate: 0.0, frame_bytes: 0.0 })));
         assert!(!streams.has(other.clip) && !streams.has(w.clip), "nothing wanted, nothing kept");
     }
 
@@ -836,8 +931,8 @@ mod tests {
         };
         let frame = 1.0 / 25.0;
         let w = Want { clip: ClipId::new(), media: MediaId::new(), rotation: 0, source_secs: 1.0, reversed: false, ahead: false };
-        let mut streams = ClipStreams::new(4);
-        streams.sync(std::slice::from_ref(&w), frame, &|_: &Want| Some((path.clone(), 0, 0.0)));
+        let mut streams = ClipStreams::new();
+        streams.sync(std::slice::from_ref(&w), frame, &|_: &Want| Some((path.clone(), 0, Cost { rate: 0.0, frame_bytes: 0.0 })));
         // Opened off this thread: it lands on a pump.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while !streams.streams.contains_key(&w.clip) {
@@ -874,8 +969,8 @@ mod tests {
         let frame = 1.0 / 25.0;
         let want = |secs: f64| Want { clip: ClipId::new(), media: MediaId::new(), rotation: 0, source_secs: secs, reversed: false, ahead: false };
         let w = want(1.0);
-        let mut streams = ClipStreams::new(4);
-        let resolve = |_: &Want| Some((path.clone(), 0, 0.0));
+        let mut streams = ClipStreams::new();
+        let resolve = |_: &Want| Some((path.clone(), 0, Cost { rate: 0.0, frame_bytes: 0.0 }));
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         streams.sync(std::slice::from_ref(&w), frame, &resolve);
         while !streams.ready(frame) {
@@ -941,10 +1036,10 @@ mod tests {
             let (dec, cut) = taken_over(5);
             let target = cut.pts_secs();
             let clip = ClipId::new();
-            let mut streams = ClipStreams::new(4);
+            let mut streams = ClipStreams::new();
             streams.adopt(clip, dec, target, hand_on.then(|| HeldFrame::from_frame(cut)));
             let w = Want { clip, media: MediaId::new(), rotation: 0, source_secs: target, reversed: false, ahead: false };
-            let resolve = |_: &Want| Some((path.clone(), 0, 0.0));
+            let resolve = |_: &Want| Some((path.clone(), 0, Cost { rate: 0.0, frame_bytes: 0.0 }));
             if hand_on {
                 streams.sync(std::slice::from_ref(&w), frame, &resolve);
                 assert!(streams.ready(frame), "handed its frame at the cut, it holds it");

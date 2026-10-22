@@ -557,13 +557,14 @@ impl PlaybackEngine {
             }
         }
         // Files are resolved here, for new streams only: resolution logs.
-        let paths: HashMap<ClipId, (std::path::PathBuf, i32, f64)> = wants
+        let paths: HashMap<ClipId, (std::path::PathBuf, i32, super::streams::Cost)> = wants
             .iter()
             .filter(|w| !self.streams.has(w.clip))
             .filter_map(|w| {
                 let path = self.path_for_media(w.media)?;
                 let rot = self.effective_decode_rotation(w.media, &path, w.rotation);
-                { let rate = self.media_pixel_rate(w.media, &path); Some((w.clip, (path, rot, rate))) }
+                let cost = self.media_cost(w.media, &path);
+                Some((w.clip, (path, rot, cost)))
             })
             .collect();
         let frame_secs = self.fps.frame_duration_secs();
@@ -1454,10 +1455,10 @@ impl PlaybackEngine {
         if total_ms > 16.0 || self.in_node_param_edit {
             tracing::debug!(
                 "PERF view_frame: {total_ms:.1}ms {w}x{h} | render={:.1} (grade={:.1} ofx={:.1} fx={:.1} lut={:.1} composite={:.1}) \
-                 encode={encode_ms:.1} scope={scope_ms:.1} streams={} cached={} stills kept={} uploaded={} decoders gpu={streams_gpu} software={streams_software} \
+                 encode={encode_ms:.1} scope={scope_ms:.1} streams={} cached={} stills kept={} uploaded={} decoders gpu={streams_gpu} software={streams_software} shortened={} \
                  grade[splice={:.1} analyses={:.1} prepare={:.1} seed={:.1} graph={:.1}]",
                 s.total_ms, s.grade_ms, s.ofx_ms, s.effects_ms, s.lut_ms, s.composite_ms,
-                self.streams.len(), stats.is_none(), s.stills_kept, s.stills_uploaded,
+                self.streams.len(), stats.is_none(), s.stills_kept, s.stills_uploaded, super::streams_shortened(),
                 s.grade_split.splice_ms, s.grade_split.analyses_ms, s.grade_split.prepare_ms, s.grade_split.seed_ms, s.grade_split.graph_ms,
             );
         }
@@ -1805,7 +1806,7 @@ mod neighbour_tests {
         let pool = std::sync::RwLock::new(pool);
         let tc = |f| klipp_core::RationalTime::from_frames(f, 24);
         let clip = klipp_timeline::Clip::media(id, tc(0), tc(24), tc(0), tc(24));
-        let mut streams = super::super::streams::ClipStreams::new(2);
+        let mut streams = super::super::streams::ClipStreams::new();
         for (use_proxies, file, size) in [(true, &proxy, (32, 18)), (false, &original, (64, 36))] {
             let mut view = ViewerSource { primary: None, primary_queue: None, streams: &mut streams, media_pool: &pool, hold: None, use_proxies };
             let read = view.temporal_frames(&clip).expect("a reader");

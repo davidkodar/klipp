@@ -536,13 +536,20 @@ impl VideoDecoder {
     /// `source_rotation` is the media rotation in degrees (0, 90, 180, 270) from metadata.
     /// It asks the GPU, always, and is counted as asking (#2116).
     pub fn open(path: &Path, source_rotation: i32) -> Result<Self, DecoderError> {
-        Self::open_inner(path, source_rotation, None)
+        Self::open_inner(path, source_rotation, None, None)
     }
 
     /// Open as [`Self::open`], decoding as `lease` was admitted: in
     /// software when the GPU's decoder was full (#2116).
     pub fn open_with(path: &Path, source_rotation: i32, lease: crate::decode_budget::Lease) -> Result<Self, DecoderError> {
-        Self::open_inner(path, source_rotation, Some(lease))
+        Self::open_inner(path, source_rotation, Some(lease), None)
+    }
+
+    /// Open as [`Self::open_with`], holding at most `frames` decoded frames
+    /// rather than the preference's: a layer opened while memory is short
+    /// (#2128).
+    pub fn open_with_queue(path: &Path, source_rotation: i32, lease: crate::decode_budget::Lease, frames: usize) -> Result<Self, DecoderError> {
+        Self::open_inner(path, source_rotation, Some(lease), Some(frames))
     }
 
     /// How this decoder was asked to decode.
@@ -550,7 +557,7 @@ impl VideoDecoder {
         self.lease.decoding
     }
 
-    fn open_inner(path: &Path, source_rotation: i32, lease: Option<crate::decode_budget::Lease>) -> Result<Self, DecoderError> {
+    fn open_inner(path: &Path, source_rotation: i32, lease: Option<crate::decode_budget::Lease>, frames: Option<usize>) -> Result<Self, DecoderError> {
         // Validate file can be opened before spawning the thread, and read
         // the stream's own frame rate: which of its frames a time shows
         // is decided at half of *its* frame, as export's decoder does (#696).
@@ -568,7 +575,7 @@ impl VideoDecoder {
         let lease = lease.unwrap_or_else(|| crate::decode_budget::admit(0.0, crate::decode_budget::Priority::Fixed));
         let (lease_id, decoding) = (lease.id(), lease.decoding);
 
-        let queue_cap = FRAME_QUEUE_SIZE_PREF.load(std::sync::atomic::Ordering::Relaxed) as usize;
+        let queue_cap = frames.unwrap_or_else(frame_queue_size);
         let frame_queue: SharedFrameQueue = Arc::new(Mutex::new(FrameQueue::new(queue_cap)));
         let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
         let queue_clone = frame_queue.clone();
@@ -1647,6 +1654,11 @@ pub fn set_decode_threads(count: u32) {
 /// Set the frame queue capacity from preferences.
 pub fn set_frame_queue_size(size: u32) {
     FRAME_QUEUE_SIZE_PREF.store(size.max(4), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The frames a decoder holds decoded ahead, from preferences.
+pub(crate) fn frame_queue_size() -> usize {
+    FRAME_QUEUE_SIZE_PREF.load(std::sync::atomic::Ordering::Relaxed) as usize
 }
 
 /// Set the max playback height from preferences.
