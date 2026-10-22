@@ -289,6 +289,12 @@ pub static ENGINE_SHUTDOWN_COMPLETE: AtomicBool = AtomicBool::new(false);
 /// frames, short of anyone noticing the cache is late.
 const PRERENDER_AFTER_IDLE: Duration = Duration::from_millis(400);
 
+/// How long the playhead must rest before a paused frame drawn from the
+/// skim substitute is redrawn from the original media: a seek or a
+/// scrub's release moves it again within this. A pause from playback
+/// rests where it stops, so it doesn't wait (#2136).
+const PARK_DEBOUNCE: Duration = Duration::from_millis(400);
+
 /// Fine-grained "last waypoint reached" marker for the watchdog. The
 /// engine thread updates this at each major stage of a tick; when the
 /// watchdog detects a stall, it reads this value and logs WHICH
@@ -2997,6 +3003,11 @@ impl PlaybackEngine {
                         let playhead = self.playhead;
                         self.seek_in_sequence(playhead);
                     }
+                    // Stopped where it rests: the original-quality redraw
+                    // of a skim frame starts now, not after the debounce a
+                    // seek waits out (#2136). It painted about 0.7 s after
+                    // Pause on the Stress Test; this saves the 0.4 s wait.
+                    self.parked_since = Some((self.playhead, std::time::Instant::now().checked_sub(PARK_DEBOUNCE).unwrap_or_else(std::time::Instant::now)));
                     (self.repaint_cb)();
                 }
             }
@@ -7787,7 +7798,6 @@ impl PlaybackEngine {
     /// kick off a refresh when the visible frame came from the skim
     /// substitute rather than the original media.
     fn tick_parked_refresh(&mut self) {
-        const PARK_DEBOUNCE: Duration = Duration::from_millis(400);
         const REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
 
         // Not while a scrub is live. A drag sends no seek until it is
