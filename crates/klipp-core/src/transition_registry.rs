@@ -106,6 +106,11 @@ pub enum TransitionKind {
     PartHalves,
     /// The picture breaks into shards that tumble away (#985).
     Shatter,
+    /// Smooths a jump cut between two takes of the same framing (#2219):
+    /// the outgoing shot's last frame morphs into the incoming shot's
+    /// first by following the motion between them (optical flow). The
+    /// picture holds still while it morphs.
+    SmoothCut,
 }
 
 // ---------------------------------------------------------------------------
@@ -124,10 +129,10 @@ pub struct TransitionSpec {
 }
 
 // ---------------------------------------------------------------------------
-// Registry — const array of all 72 specs
+// Registry — const array of all 73 specs
 // ---------------------------------------------------------------------------
 
-pub const TRANSITION_SPECS: [TransitionSpec; 72] = [
+pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
     TransitionSpec {
         kind: TransitionKind::CrossDissolve,
         kind_id: 0,
@@ -715,10 +720,19 @@ pub const TRANSITION_SPECS: [TransitionSpec; 72] = [
         // shadow (1 << 15).
         default_params: TransitionUserParams { param0: 24.0, param1: 90.0, param2: 0.4, param3: 45074.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
+    TransitionSpec {
+        kind: TransitionKind::SmoothCut,
+        kind_id: 72,
+        string_key: "SmoothCut",
+        display_name: "Smooth Cut",
+        short_label: "Smooth",
+        // No parameters: the morph's pace is the transition's length.
+        default_params: TransitionUserParams { param0: 0.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
+    },
 ];
 
-// Compile-time assertion: exactly 72 entries.
-const _: () = assert!(TRANSITION_SPECS.len() == 72);
+// Compile-time assertion: exactly 73 entries.
+const _: () = assert!(TRANSITION_SPECS.len() == 73);
 
 // ---------------------------------------------------------------------------
 // Lookup helpers
@@ -791,7 +805,7 @@ mod tests {
 
     #[test]
     fn test_spec_count() {
-        assert_eq!(TRANSITION_SPECS.len(), 72);
+        assert_eq!(TRANSITION_SPECS.len(), 73);
     }
 
     #[test]
@@ -1017,6 +1031,7 @@ mod tests {
             TransitionKind::SlidePanels => check(TransitionKind::SlidePanels),
             TransitionKind::PartHalves => check(TransitionKind::PartHalves),
             TransitionKind::Shatter => check(TransitionKind::Shatter),
+            TransitionKind::SmoothCut => check(TransitionKind::SmoothCut),
         }
     }
 

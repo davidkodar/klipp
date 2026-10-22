@@ -2040,6 +2040,11 @@ impl Renderer {
                     n_slots += 1;
                 }
                 TrackItem::Transition { a, b, kind, progress, params, shutter } => {
+                    // A smooth cut morphs two held frames by their motion
+                    // (#2219): the composite route's, which reads both.
+                    if *kind == klipp_core::TransitionKind::SmoothCut {
+                        return self.gpu_stack_declines("smooth cut");
+                    }
                     for side in [a, b] {
                         if let Some(why) = blocker(side) {
                             return self.gpu_stack_declines(why);
@@ -5474,6 +5479,31 @@ impl Renderer {
         self.effects_by(plan, clip, &after, &after_blends, acc, clip_time, fps, width, height)
     }
 
+    /// A smooth cut's frame at `progress` (#2219): `from`, the outgoing
+    /// shot's last frame, morphed into `to`, the incoming's first, by the
+    /// motion between them (`klipp_effects::flow`), eased in and out. The
+    /// pair is the same through the whole transition, so its flow is
+    /// estimated once and kept. Where too much of it can't be followed the
+    /// frames cross-fade, recorded as a fallback; without a GPU the CPU
+    /// reference morphs them, recorded the same way.
+    #[allow(clippy::too_many_arguments)]
+    fn smooth_cut(&mut self, a: &Clip, b: &Clip, from: &[f32], to: &[f32], at: (Timecode, Timecode), progress: f32, width: u32, height: u32) -> Vec<f32> {
+        let p = progress.clamp(0.0, 1.0);
+        let t = p * p * (3.0 - 2.0 * p);
+        let luma = klipp_color::linear::luma_coefs(self.working);
+        // Keyed by the cut, both its clips, apart from either clip's own.
+        let key = klipp_effects::gpu::FlowKey { clip: a.id.0.as_u128() ^ b.id.0.as_u128().rotate_left(64), from_secs: at.0.to_secs_f64(), to_secs: at.1.to_secs_f64() };
+        let made = self.gpu().and_then(|gpu| gpu.interpolate_by_flow(key, from, to, width, height, t, luma));
+        let made = made.unwrap_or_else(|| {
+            residency::record("transition.smooth_cut", "no GPU: the CPU reference morphed the frames", Work::Fallback);
+            klipp_effects::flow::interpolate(from, to, width, height, t, luma)
+        });
+        if made.cross_faded {
+            residency::record("transition.smooth_cut", "the two framings couldn't be followed: the frames cross-faded", Work::Fallback);
+        }
+        made.pixels
+    }
+
     /// Both clips of a transition as full layers at `time`, blended.
     #[allow(clippy::too_many_arguments)]
     fn render_transition(
@@ -5495,7 +5525,7 @@ impl Renderer {
         let _clip_residency = residency::clip(a.id.0);
         residency::record(klipp_core::spec_for_kind(kind).string_key, "Transition uses CPU composite inputs/outputs", Work::Fallback);
         let n = (width as usize) * (height as usize) * 4;
-        let side = |this: &mut Self, c: &Clip, src: &mut dyn FrameSource| {
+        let side = |this: &mut Self, c: &Clip, time: Timecode, src: &mut dyn FrameSource| {
             this.render_clip(c, time, fps, width, height, src, transforms)
                 .map(|(mut p, opacity)| {
                     // Opacity is the clip's alpha within the transition.
@@ -5508,8 +5538,20 @@ impl Renderer {
                 })
                 .unwrap_or_else(|| vec![0.0; n])
         };
-        let mut from = side(self, a, src);
-        let mut to = side(self, b, src);
+        // A smooth cut (#2219) holds the outgoing shot's last frame and the
+        // incoming's first, so neither plays its handle (on a jump cut, the
+        // pause that was cut out); every other transition plays both.
+        let smooth = kind == klipp_core::TransitionKind::SmoothCut;
+        let (time_a, time_b) = if smooth {
+            // One frame back in whole ticks (1001 at an NTSC rate): from
+            // seconds it could round onto the frame beside it.
+            let frame = Timecode { value: (f64::from(a.timeline_out.rate) / fps).round() as i64, rate: a.timeline_out.rate };
+            ((a.timeline_out - frame).max(a.timeline_in), b.timeline_in)
+        } else {
+            (time, time)
+        };
+        let mut from = side(self, a, time_a, src);
+        let mut to = side(self, b, time_b, src);
         let kind_id = klipp_core::spec_for_kind(kind).kind_id as u32;
         let eased = if matches!(kind, klipp_core::TransitionKind::CrossDissolve) {
             klipp_transitions::apply_easing(progress, params.param0)
@@ -5529,7 +5571,9 @@ impl Renderer {
             }
         }
         let colour = self.authored_colour(params.color);
-        let mut mixed = if klipp_effects::pieces::is_posed_with(kind_id, params.param3, subject_code(kind, params)) {
+        let mut mixed = if smooth {
+            self.smooth_cut(a, b, &from, &to, (time_a, time_b), progress, width, height)
+        } else if klipp_effects::pieces::is_posed_with(kind_id, params.param3, subject_code(kind, params)) {
             // Posed pieces (#985), blurred across the shutter, cut round
             // the subject when asked.
             let plan = self.piece_plan(a, b, kind, eased, params, shutter, time, fps, width, height, src, transforms);

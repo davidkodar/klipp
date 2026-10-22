@@ -150,6 +150,12 @@ fn transition_catalogue_runs_without_intermediate_readbacks() {
     let Some(mut g) = gpu() else { return };
     let (w, h) = (32, 16);
     for spec in klipp_core::transition_registry::TRANSITION_SPECS {
+        // A smooth cut morphs held source frames, uploaded and read back
+        // (#2219): a measured round trip, not one of the stack's kinds.
+        if spec.kind == klipp_core::TransitionKind::SmoothCut {
+            assert_eq!(residency::transition(spec.kind).residency, Residency::RoundTrip);
+            continue;
+        }
         assert_eq!(residency::transition(spec.kind).residency, Residency::Gpu);
         assert!(g.stack_begin(w, h, 3));
         assert!(g.stack_layer_from_linear(0, &[0.1, 0.3, 0.6, 1.0].repeat((w * h) as usize)));

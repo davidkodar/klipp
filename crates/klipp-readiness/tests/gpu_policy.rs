@@ -520,6 +520,12 @@ fn playback_corpus_exposes_declared_cpu_sources_and_guards_gpu_routes() {
     }));
 
     for spec in klipp_core::transition_registry::TRANSITION_SPECS {
+        // A smooth cut morphs two held source frames by optical flow, run
+        // on the GPU from the frames the CPU holds: the stack declines it
+        // (#2219), and its own residency is a round trip.
+        if spec.kind == klipp_core::TransitionKind::SmoothCut {
+            continue;
+        }
         let mut s = sequence(ClipKind::Generator(G::SolidColor {
             color: [20, 60, 90, 255],
         }));

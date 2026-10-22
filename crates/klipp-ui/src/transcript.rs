@@ -61,6 +61,16 @@ impl Transcripts for TranscriptSource {
         self.read(item);
         self.silences.borrow().get(&item.id).cloned().unwrap_or_default()
     }
+
+    /// The faces its framing analysis found, per sampled frame: what a
+    /// smooth cut's framing is checked by (#2219). Read when asked, which
+    /// is when a smooth cut is put on a cut.
+    fn faces(&self, item: &klipp_media::MediaItem) -> Vec<(f64, [f32; 4])> {
+        klipp_analysis::report::MediaAnalysis::load(&item.path)
+            .framing
+            .map(|f| f.samples.iter().flat_map(|s| s.faces.iter().map(move |b| (s.secs, [b.x, b.y, b.w, b.h]))).collect())
+            .unwrap_or_default()
+    }
 }
 
 /// A pause longer than this starts a new paragraph, as it ends a caption.
