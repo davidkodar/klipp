@@ -637,6 +637,53 @@ timeline_view! {
 }
 
 impl AppState {
+    /// Make sequence `sequence_idx` the one shown, as its tab does: its tab
+    /// opened, this playhead kept on the sequence left and the other's
+    /// taken back, the rate the sequence's. A tab clears the selection and
+    /// the way back out of a compound clip; `keep_view` keeps them, for a
+    /// stacked timeline that brings its own (#82). Whether it switched (the
+    /// app then stops playback and gives the engine the sequence).
+    pub fn switch_sequence(&mut self, sequence_idx: usize, keep_view: bool) -> bool {
+        // Switching to a sequence opens its tab again (#906).
+        if let Some(seq) = self.sequences.get(sequence_idx) {
+            let id = seq.id;
+            self.closed_sequence_tabs.remove(&id);
+        }
+        if sequence_idx >= self.sequences.len() || sequence_idx == self.active_sequence_idx {
+            return false;
+        }
+        // The playhead kept on the sequence left.
+        self.sequences[self.active_sequence_idx].last_playhead = Some(klipp_core::RationalTime { value: self.playhead.value, rate: self.playhead.rate });
+        // A parameter drag in flight on the sequence left can't be
+        // finished here: its pending step is abandoned, so the next push
+        // there does not clobber whatever is pending on the next one.
+        self.active_history_mut().abandon_pending_drag();
+        // A tab is another sequence, not a step out of an opened compound
+        // clip: the way back to its parents is dropped, so the breadcrumb
+        // and Ctrl+Up never lead into a sequence it no longer sits in
+        // (#910). A stacked timeline brings its own way back.
+        if !keep_view {
+            self.compound_clip_stack.clear();
+        }
+        self.active_sequence_idx = sequence_idx;
+        // The playhead taken back from the sequence shown.
+        let seq_rate = self.sequences[sequence_idx].fps.rate();
+        let restored = self.sequences[sequence_idx].last_playhead.unwrap_or(klipp_core::RationalTime::from_frames(0, seq_rate));
+        self.playhead = restored;
+        self.playhead_smooth_secs = restored.to_secs_f64();
+        self.playhead_anchor = restored;
+        self.playhead_anchor_wall = std::time::Instant::now();
+        self.playhead_speed = 1.0;
+        self.fps = self.sequences[sequence_idx].fps;
+        // The selection cleared, unless the timeline brings its own.
+        if !keep_view {
+            self.selected_clip = None;
+            self.selected_clips.clear();
+            self.hovered_clip = None;
+        }
+        true
+    }
+
     /// Every sequence of the project, as the control socket lists them,
     /// and the open one's index (M3 step 18).
     pub fn sequence_summaries(&self) -> (Vec<klipp_core::SequenceSummary>, usize) {
@@ -7304,5 +7351,33 @@ mod pool_import_undo_tests {
         state.complete_pool_import(item, false);
         assert_eq!(state.undo_depth(), 0, "a re-probe must not undo an existing item");
         assert!(state.pending_undo_imports.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod switch_sequence_tests {
+    use super::*;
+
+    /// A tab clears the selection and the compound path; a stacked
+    /// timeline's focus keeps both, and either keeps each sequence's
+    /// playhead on it (#82).
+    #[test]
+    fn a_focus_keeps_the_view_a_tab_clears() {
+        let mut state = AppState::default();
+        state.sequences.push(klipp_timeline::Sequence::new_default());
+        let clip = ClipId::new();
+        let at = |s: f64| Timecode::from_secs_f64(s, 24);
+        for keep in [false, true] {
+            state.active_sequence_idx = 0;
+            state.playhead = at(3.0);
+            state.selected_clip = Some(clip);
+            state.compound_clip_stack = vec![(0, at(1.0))];
+            assert!(state.switch_sequence(1, keep));
+            assert_eq!(state.active_sequence_idx, 1);
+            assert_eq!(state.sequences[0].last_playhead, Some(at(3.0)));
+            assert_eq!((state.selected_clip.is_some(), state.compound_clip_stack.is_empty()), (keep, !keep), "keep_view {keep}");
+            state.sequences[1].last_playhead = None;
+        }
+        assert!(!state.switch_sequence(1, false), "already shown");
     }
 }
