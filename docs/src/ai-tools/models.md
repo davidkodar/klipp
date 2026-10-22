@@ -22,6 +22,7 @@ Open the dialog from **Window → AI Models**, from the AI Tools panel footer (`
 | **DeepFilterNet3** | 8 MB | MIT OR Apache-2.0 | tract | Voice Isolation (speech enhancement) |
 | **OPUS-MT** (Helsinki-NLP; one model a pair: English to and from German, French, Spanish, Swedish, Italian, Dutch, English to Finnish and Danish) | about 300 MB + 5 MB a pair | CC BY 4.0, Tiedemann & Thottingal 2020 | candle | Translate Captions, on a subtitle track's menu |
 | **PANNs Cnn10** (Kong et al.) | 25 MB | CC BY 4.0 | candle | Audio roles: whether a clip's sound is speech, music, effects or ambience |
+| **CLIP ViT-B/32** (OpenAI) and its tokenizer | 605 MB + 2 MB | MIT | candle | Find by Picture: footage found by a description of what is in it |
 
 ## Hosting
 
