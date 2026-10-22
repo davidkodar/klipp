@@ -4546,6 +4546,9 @@ impl GraphExecutor {
         let mut held: Vec<HeldNeighbour> = Vec::with_capacity(read.neighbours.len());
         for n in &read.neighbours {
             held.push(match n {
+                // sRGB bytes on the GPU (a viewer stream's frame): decoded
+                // to linear there, into a buffer of its own.
+                NeighbourPixels::Gpu(g) if g.srgb8() => HeldNeighbour::Uploaded(gpu.neighbour_from_u8(g.buffer(), width, height)?),
                 NeighbourPixels::Gpu(g) => HeldNeighbour::Source(Arc::clone(g)),
                 NeighbourPixels::Cpu(p) if p.len() == pixels => {
                     self.run_neighbour_uploads += 1;

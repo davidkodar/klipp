@@ -139,6 +139,83 @@ fn a_temporal_denoise_draws_on_the_chain_as_the_cpu_draws_it() {
     }
 }
 
+/// The viewer's neighbours (#1988): its streams hold their frames on the
+/// GPU as sRGB bytes, which the chain decodes to linear there. Against a
+/// source that reads the same bytes on the CPU, the chain's picture is
+/// the CPU route's within a level, with nothing uploaded.
+#[test]
+fn a_temporal_denoise_binds_neighbours_the_gpu_holds_as_srgb_bytes() {
+    use klipp_nodes::frame_context::{GpuFramePixels, GpuLinearFrame};
+    struct Bytes {
+        buf: wgpu::Buffer,
+        linear: Arc<Vec<f32>>,
+    }
+    impl GpuFramePixels for Bytes {
+        fn buffer(&self) -> &wgpu::Buffer {
+            &self.buf
+        }
+        fn read(&self) -> Arc<Vec<f32>> {
+            Arc::clone(&self.linear)
+        }
+        fn srgb8(&self) -> bool {
+            true
+        }
+    }
+    /// [`Media`]'s frames as 8-bit sRGB: on the CPU decoded, on the GPU
+    /// as the bytes.
+    struct Srgb8Media {
+        inner: Media,
+        gpu: Option<(Arc<wgpu::Device>, Arc<wgpu::Queue>)>,
+    }
+    impl Srgb8Media {
+        fn bytes(&mut self, source_secs: f64) -> Option<Vec<u8>> {
+            let Neighbour::Frame(f) = self.inner.linear(source_secs) else { return None };
+            Some(klipp_effects::linear_f32_rgba_to_srgb_u8(&f.rgba))
+        }
+    }
+    impl SourceProvider for Srgb8Media {
+        fn bounds(&self) -> (f64, f64) {
+            self.inner.bounds()
+        }
+        fn frame_secs(&self) -> Option<f64> {
+            self.inner.frame_secs()
+        }
+        fn encoded(&mut self, source_secs: f64) -> Neighbour<EncodedFrame> {
+            self.inner.encoded(source_secs)
+        }
+        fn linear(&mut self, source_secs: f64) -> Neighbour<LinearFrame> {
+            let Some(bytes) = self.bytes(source_secs) else { return self.inner.linear(source_secs) };
+            Neighbour::Frame(LinearFrame { rgba: Arc::new(klipp_effects::srgb_u8_to_linear_f32_rgba(&bytes)), width: W, height: H, source_secs, pts: None })
+        }
+        fn linear_on_gpu(&mut self, source_secs: f64) -> Neighbour<GpuLinearFrame> {
+            let (Some((device, queue)), Some(bytes)) = (self.gpu.clone(), self.bytes(source_secs)) else {
+                return Neighbour::Missing(klipp_nodes::frame_context::Missing::Unavailable);
+            };
+            let buf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: bytes.len() as u64, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+            queue.write_buffer(&buf, 0, &bytes);
+            let linear = Arc::new(klipp_effects::srgb_u8_to_linear_f32_rgba(&bytes));
+            Neighbour::Frame(GpuLinearFrame { pixels: Arc::new(Bytes { buf, linear }), width: W, height: H, source_secs })
+        }
+    }
+    let Some(mut on_gpu) = gpu() else { return };
+    let device = on_gpu.gpu_pipeline_or_init().map(|g| (g.device(), g.queue()));
+    let mut on_cpu = GraphExecutor::new_cpu_only();
+    let g = chain(vec![denoise()]);
+    let ran = |ex: &mut GraphExecutor, gpu: Option<(Arc<wgpu::Device>, Arc<wgpu::Queue>)>| {
+        let mut media = Srgb8Media { inner: Media { end: 10.0 }, gpu };
+        let mut bounded = BoundedSources::new(&mut media, W, H);
+        let mut instances = PluginInstances::default();
+        let mut ctx = FrameContext { clip: ClipId::new(), frame: 10, source: (MediaId::nil(), 0.0), clip_time_secs: 0.4, source_secs: 0.4, source_pts: Some(0.4), frame_number: 10, fps: FPS, sources: &mut bounded, analysis: &NoAnalysis, instances: &mut instances, ofx: None, source_at: &|t| t };
+        ex.execute_linear_with_context(&frame(), &g, W, H, 0.4, 10, None, None, None, &mut ctx).expect("the run").0
+    };
+    let cpu = ran(&mut on_cpu, None);
+    let gpu = ran(&mut on_gpu, device);
+    assert_eq!(on_gpu.last_denoise_on_chain(), 1, "drawn on the chain");
+    assert_eq!(on_gpu.last_neighbour_uploads(), 0, "its neighbours bound from the GPU, none uploaded");
+    let off = levels(&gpu, &cpu);
+    assert!(off <= 1, "{off} levels off the CPU route");
+}
+
 /// A neighbour past the media's end is left out and declined the same
 /// way on both routes, and the frame still denoises against the other.
 #[test]

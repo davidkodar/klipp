@@ -35,6 +35,9 @@ struct ViewerSource<'a> {
     hold: Option<&'a std::sync::Arc<std::sync::Mutex<NeighbourHold>>>,
     /// Whether the viewer decodes proxies where a media item has one.
     use_proxies: bool,
+    /// The primary frame the render before drew, of the same clip: a
+    /// temporal denoise's neighbour before, on the GPU (#1988).
+    primary_previous: Option<&'a HeldFrame>,
 }
 
 /// The source frames a temporal node read beside the parked frame, kept
@@ -414,6 +417,38 @@ impl FrameSource for ViewerSource<'_> {
             let (px, w, h) = read.as_mut()?(t)?;
             hold.lock().unwrap_or_else(|e| e.into_inner()).put(key, std::sync::Arc::clone(&px), w, h);
             Some((px, w, h))
+        }))
+    }
+
+    /// The frames either side that the viewer's own streams hold on the
+    /// GPU (#1988): the primary's frame before (the one the last render
+    /// drew) and after (its queue's front), or a clip stream's. Bound by a
+    /// temporal denoise on the chain, decoded from their sRGB bytes there,
+    /// instead of read from the file on the CPU and uploaded: 14 to 20 ms
+    /// a 4K neighbour, two a frame. Only in the Rec.709 working space, in
+    /// which a decoded frame's linear light is the working space's, and at
+    /// the render size; any other time or frame is read the CPU way.
+    fn temporal_frames_on_gpu(&mut self, clip: &Clip, working: klipp_core::WorkingColorspace, width: u32, height: u32) -> Option<klipp_compose::GpuFrameProviderFn> {
+        if working != klipp_core::WorkingColorspace::Rec709Linear || clip.is_reversed() {
+            return None;
+        }
+        let half_frame = 0.5 / self.media_fps(clip).filter(|f| *f > 0.0)?;
+        let held: Vec<HeldFrame> = match self.primary {
+            Some((id, f)) if id == clip.id => {
+                let next = self.primary_queue.and_then(|q| q.lock().unwrap_or_else(|e| e.into_inner()).front().filter(|n| !n.is_eof).map(HeldFrame::copy_of));
+                self.primary_previous.cloned().into_iter().chain([f.clone()]).chain(next).collect()
+            }
+            _ => self.streams.previous_frame(clip.id).cloned().into_iter().chain(self.streams.frame(clip.id).cloned()).chain(self.streams.next_frame(clip.id)).collect(),
+        };
+        let held: Vec<(f64, std::sync::Arc<dyn klipp_nodes::frame_context::GpuFramePixels>)> =
+            held.iter().filter(|f| (f.width, f.height) == (width, height)).filter_map(|f| Some((f.pts?, f.gpu_neighbour()?))).collect();
+        if held.is_empty() {
+            return None;
+        }
+        let source_in = clip.source_in.to_secs_f64();
+        Some(Box::new(move |t: f64| {
+            let secs = (source_in + t).max(0.0);
+            held.iter().find(|(pts, _)| (pts - secs).abs() < half_frame).map(|(_, g)| std::sync::Arc::clone(g))
         }))
     }
 
@@ -804,6 +839,7 @@ impl PlaybackEngine {
         self.push_global_lut();
         self.scope_held_outputs(primary.map(|(id, _)| id));
         let time = self.playhead;
+        let previous = self.previous_primary.take();
         let mut src = ViewerSource {
             primary,
             primary_queue: self.v1_decoder.as_ref().map(|d| d.frame_queue()),
@@ -811,6 +847,7 @@ impl PlaybackEngine {
             media_pool: &self.media_pool,
             hold: Self::neighbour_hold_for(&self.neighbour_hold, self.state, self.hold_neighbours),
             use_proxies: self.use_proxies,
+            primary_previous: previous.as_ref().filter(|(id, _)| primary.is_some_and(|(p, _)| p == *id)).map(|(_, f)| f),
         };
         let opts = RenderOptions {
             hdr_peak_nits: self
@@ -819,7 +856,11 @@ impl PlaybackEngine {
                 .then_some(klipp_color::hdr::DEFAULT_MASTERING_MAX_LUMA_CD_M2),
             ..Default::default()
         };
-        self.renderer.render_display_on_gpu(seq, time, width, height, &mut src, opts, out)
+        let shown = self.renderer.render_display_on_gpu(seq, time, width, height, &mut src, opts, out);
+        // Declined, the frame is drawn by `render_timeline` next, which
+        // needs the frame before still.
+        self.previous_primary = if shown.is_some() { primary.map(|(id, f)| (id, f.clone())) } else { previous };
+        shown
     }
 
     fn render_timeline(
@@ -852,6 +893,7 @@ impl PlaybackEngine {
         let (w, h) = if downsample { (width / 2, height / 2) } else { (width, height) };
         self.scope_held_outputs(primary.map(|(id, _)| id));
         let time = self.playhead;
+        let previous = self.previous_primary.take();
         let mut src = ViewerSource {
             primary,
             primary_queue: self.v1_decoder.as_ref().map(|d| d.frame_queue()),
@@ -859,6 +901,7 @@ impl PlaybackEngine {
             media_pool: &self.media_pool,
             hold: Self::neighbour_hold_for(&self.neighbour_hold, self.state, self.hold_neighbours),
             use_proxies: self.use_proxies,
+            primary_previous: previous.as_ref().filter(|(id, _)| primary.is_some_and(|(p, _)| p == *id)).map(|(_, f)| f),
         };
         // HDR monitoring renders what the export writes: display light,
         // 1.0 = 203 cd/m², mastered to the delivery's peak.
@@ -870,6 +913,7 @@ impl PlaybackEngine {
             ..Default::default()
         };
         let (out, found) = self.renderer.render_inspected(seq, time, w, h, &mut src, opts, inspect);
+        self.previous_primary = primary.map(|(id, f)| (id, f.clone()));
         if downsample {
             self.drag_downsampled_count = self.drag_downsampled_count.saturating_add(1);
             (crate::grade_resample::upsample_linear_2x(&out, w, h), found)
@@ -1808,7 +1852,7 @@ mod neighbour_tests {
         let clip = klipp_timeline::Clip::media(id, tc(0), tc(24), tc(0), tc(24));
         let mut streams = super::super::streams::ClipStreams::new();
         for (use_proxies, file, size) in [(true, &proxy, (32, 18)), (false, &original, (64, 36))] {
-            let mut view = ViewerSource { primary: None, primary_queue: None, streams: &mut streams, media_pool: &pool, hold: None, use_proxies };
+            let mut view = ViewerSource { primary: None, primary_queue: None, streams: &mut streams, media_pool: &pool, hold: None, use_proxies, primary_previous: None };
             let read = view.temporal_frames(&clip).expect("a reader");
             let (viewer, w, h) = read(0.5).expect("a frame");
             assert_eq!((w, h), size, "proxies {use_proxies}: read from {}", file.display());
@@ -1821,7 +1865,7 @@ mod neighbour_tests {
         }
         // Three frames of the proxy: one reader, kept.
         for _ in 0..3 {
-            let mut view = ViewerSource { primary: None, primary_queue: None, streams: &mut streams, media_pool: &pool, hold: None, use_proxies: true };
+            let mut view = ViewerSource { primary: None, primary_queue: None, streams: &mut streams, media_pool: &pool, hold: None, use_proxies: true, primary_previous: None };
             view.temporal_frames(&clip).expect("a reader")(0.25).expect("a frame");
         }
         assert_eq!(streams.neighbour_readers(), 2, "the proxy's reader and the original's, each opened once");

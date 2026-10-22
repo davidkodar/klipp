@@ -5052,6 +5052,51 @@ impl GpuEffectsPipeline {
         Some(std::sync::Arc::new(buf))
     }
 
+    /// A neighbour frame the GPU holds as sRGB bytes (a viewer stream's
+    /// decoded frame), decoded to linear into a buffer of its own for a
+    /// temporal denoise to bind (#1988): nothing read back or uploaded.
+    /// Never the chain's buffers or its parameters: the pass has a uniform
+    /// of its own, and is submitted at once, ahead of the chain that reads
+    /// it. `None` on a lost device or a buffer too small.
+    pub fn neighbour_from_u8(&self, input_u8: &wgpu::Buffer, width: u32, height: u32) -> Option<std::sync::Arc<wgpu::Buffer>> {
+        let pixels = u64::from(width) * u64::from(height);
+        if self.is_device_lost() || pixels == 0 || input_u8.size() < pixels * 4 {
+            return None;
+        }
+        let out = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("temporal_neighbour_from_u8"),
+            size: pixels * 16,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let params = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("temporal_neighbour_from_u8_params"),
+            size: std::mem::size_of::<BridgeU8Params>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.queue.write_buffer(&params, 0, bytemuck::bytes_of(&BridgeU8Params { width, height, _pad0: 0, _pad1: 0 }));
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("temporal_neighbour_from_u8_bg"),
+            layout: &self.huesat_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: input_u8.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: out.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: params.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: self.srgb8_lut.as_entire_binding() },
+            ],
+        });
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("temporal_neighbour_from_u8") });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            pass.set_pipeline(&self.bridge_u8_to_linear_pipeline);
+            pass.set_bind_group(0, &bg, &[]);
+            pass.dispatch_workgroups((pixels as u32).div_ceil(WORKGROUP_SIZE), 1, 1);
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
+        Some(std::sync::Arc::new(out))
+    }
+
     /// Dispatch-only temporal noise reduction (#1988): the chain's picture
     /// (in `buf_a` when `in_is_a`) against `neighbours` (none to two, each
     /// a frame of the picture's size), written to the other slot, as
