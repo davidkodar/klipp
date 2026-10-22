@@ -1646,6 +1646,11 @@ pub struct PlaybackEngine {
     // Cached pre-grade frame for instant parameter updates when paused.
     // Stored after decode, before color grading. Re-graded when sequence changes.
     cached_pregrade_frame: Option<(Pregrade, u32, u32)>, // (pixels, width, height)
+    /// The frame `cached_pregrade_frame` was made from, while it is
+    /// that one: a step of a slider on the parked frame whose primary is
+    /// this frame (its HDR codes on the GPU, the pre-grade's on the CPU)
+    /// has its pre-grade already (#2352).
+    pregrade_source: Option<streams::HeldFrame>,
     /// The playhead `cached_pregrade_frame` was captured at. The frame is
     /// only the parked frame while the playhead is still there; after a
     /// seek it is a frame of somewhere else, and regrading it would show
@@ -2404,6 +2409,7 @@ impl PlaybackEngine {
             scope_render_owed: false,
             matte_preview_node: None,
             cached_pregrade_frame: None,
+            pregrade_source: None,
             cached_pregrade_at: None,
             retained_primary: None,
             presenting_progress: false,
@@ -3268,6 +3274,7 @@ impl PlaybackEngine {
             AppCommand::MediaDecodeChanged => {
                 info!("Engine: media decode settings changed; re-decoding at the playhead");
                 self.cached_pregrade_frame = None;
+                self.pregrade_source = None;
                 self.retained_primary = None;
                 // Pre-grades decoded the old way.
                 self.frame_cache.clear();
@@ -4446,6 +4453,7 @@ impl PlaybackEngine {
 
         // Clear caches (frame, render hot, pre-grade, grade hash)
         self.cached_pregrade_frame = None;
+        self.pregrade_source = None;
         self.retained_primary = None;
         self.frame_cache.clear();
         self.render_cache_hot.clear();
@@ -9224,6 +9232,7 @@ impl PlaybackEngine {
             return false;
         }
         self.cached_pregrade_frame = None;
+        self.pregrade_source = None;
         self.cached_pregrade_at = None;
         self.retained_primary = None;
         true

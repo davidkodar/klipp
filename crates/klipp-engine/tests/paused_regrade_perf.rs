@@ -200,7 +200,7 @@ fn paused_4k_regrade_under_a_title() {
             parked.end_drag();
             parked.settle();
             for p in parked.perf().iter().rev().skip(1).take(2) {
-                eprintln!("PROBE   engine: total {:5.1} | decode {:4.1} grade {:5.1} fx {:4.1} lut {:4.1} composite {:5.1} encode {:5.1} scope {:4.1}", p.total_ms, p.decode_ms, p.grade_ms, p.builtin_ms, p.lut_ms, p.composite_ms, p.reencode_ms, p.scope_ms);
+                eprintln!("PROBE   engine: total {:5.1} | decode {:4.1} grade {:5.1} fx {:4.1} lut {:4.1} composite {:5.1} encode {:5.1} scope {:4.1} | phases {:?}", p.total_ms, p.decode_ms, p.grade_ms, p.builtin_ms, p.lut_ms, p.composite_ms, p.reencode_ms, p.scope_ms, p.phases);
             }
             let mut sorted = steps[1..].to_vec();
             sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());

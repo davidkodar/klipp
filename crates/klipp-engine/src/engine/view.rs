@@ -992,7 +992,7 @@ impl PlaybackEngine {
         let parked = primary
             .as_ref()
             .zip(self.cached_pregrade_frame.as_ref())
-            .is_some_and(|(p, (c, cw, ch))| (*cw, *ch) == (p.width, p.height) && p.is_pregrade(c));
+            .is_some_and(|(p, (c, cw, ch))| (*cw, *ch) == (p.width, p.height) && (p.is_pregrade(c) || self.pregrade_source.as_ref().is_some_and(|f| f.same_pixels(p))));
         // A progress frame — one short of the playhead, shown while a
         // slow seek is still decoding — is not this playhead's frame and
         // is kept out of both caches, or a slider drag would regrade it
@@ -1004,6 +1004,7 @@ impl PlaybackEngine {
             // not be (see `viewer_canvas`).
             let (pw, ph) = (p.width, p.height);
             self.cached_pregrade_frame = Some((pregrade.clone(), pw, ph));
+            self.pregrade_source = Some(p.clone());
             self.cached_pregrade_at = Some(self.playhead);
             let published = std::sync::Arc::new(pregrade.clone());
             self.frame_cache.insert(self.playhead.value, primary_clip, pregrade, pw, ph);
