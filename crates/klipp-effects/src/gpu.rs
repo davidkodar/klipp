@@ -6589,15 +6589,6 @@ impl GpuEffectsPipeline {
         self.download_linear_rgba_f32(final_buf, (width * height) as usize)
     }
 
-    /// One break of a chain ([`Self::chain_run_effects`]): an effect, or a
-    /// run of spills, the chain couldn't record, run in passes of its own
-    /// on the chain buffers, on the frame in slot A (`in_a`) or B. Returns
-    /// whether the result sits in slot A. Equalize builds its histogram on
-    /// the CPU, and a run of spills too long for the slots runs unrecorded.
-    /// Any other effect is only ever recorded (the chain makes the layer
-    /// passes' buffers before it records), so one that couldn't be is
-    /// missing from the picture, and [`Self::last_effects_complete`] says
-    /// so.
     /// Equalize's histogram and CDF of `linear` (straight RGBA, `width` ×
     /// `height`) as the chain builds them on the GPU (#1215), read back:
     /// for the tests that hold them to `crate::equalize_cdf`. `None` on a
@@ -6634,6 +6625,15 @@ impl GpuEffectsPipeline {
         Some((counts.try_into().ok()?, ramp.try_into().ok()?))
     }
 
+    /// One break of a chain ([`Self::chain_run_effects`]): an effect, or a
+    /// run of spills, the chain couldn't record, run in passes of its own
+    /// on the chain buffers, on the frame in slot A (`in_a`) or B. Returns
+    /// whether the result sits in slot A. Equalize comes here only when
+    /// recording is refused (#1215), and builds its histogram on the CPU;
+    /// a run of spills too long for the slots runs unrecorded. Any other
+    /// effect is only ever recorded (the chain makes the layer passes'
+    /// buffers before it records), so one that couldn't be is missing from
+    /// the picture, and [`Self::last_effects_complete`] says so.
     fn run_break_pass(&mut self, part: &[BuiltinEffect], in_a: bool, width: u32, height: u32) -> bool {
         // A lost device runs none of them, so every effect is missing;
         // set before the early return, or a caller would read the last
