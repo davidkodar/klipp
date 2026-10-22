@@ -8413,6 +8413,14 @@ impl TimelinePanel {
                     cmds.push(AppCommand::SubclipFromClip { clip_id });
                     ui.close_menu();
                 }
+                // A title, effect or sound laid over one shot, made to start
+                // and end with it (#2236).
+                if let Some(ops) = crate::edit_helpers::match_clip_below(state.sequence(), clip_id) {
+                    if ui.button("Match Clip Below").on_hover_text("Start and end exactly with the clip under this one").clicked() {
+                        state.pending_doc_ops.push(crate::state::DocOpsRequest { label: "Match Clip Below".into(), ops, independent: false });
+                        ui.close_menu();
+                    }
+                }
                 // Rhythmic edits in one step (#988), in a submenu of
                 // their own so the clip menu stays short.
                 ui.menu_button("Rhythm Edits", |ui| {

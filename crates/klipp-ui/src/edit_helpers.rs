@@ -62,8 +62,74 @@ impl EditHelperDialog {
     }
 }
 
+/// What Match Clip Below does to `clip_id` (#2236): it starts where the
+/// clip under it starts and is as long, as one undo step through the move
+/// and set-length ops, which refuse what would run over a neighbour or
+/// past its source. Under it is the clip it overlaps most on the nearest
+/// track below that has one, else above; never its own linked partner.
+/// `None` with no clip under it, or when it matches already.
+pub fn match_clip_below(seq: &Sequence, clip_id: ClipId) -> Option<Vec<Op>> {
+    let (ti, ci) = seq.find_clip(clip_id)?;
+    let clip = &seq.tracks[ti].clips[ci];
+    let shared = |c: &klipp_timeline::Clip| c.timeline_out.min(clip.timeline_out).value - c.timeline_in.max(clip.timeline_in).value;
+    let under = (ti + 1..seq.tracks.len())
+        .chain((0..ti).rev())
+        .find_map(|t| seq.tracks[t].clips.iter().filter(|c| c.id != clip.id && Some(c.id) != clip.linked_clip_id && shared(c) > 0).max_by_key(|c| shared(c)))?;
+    if (under.timeline_in, under.timeline_out) == (clip.timeline_in, clip.timeline_out) {
+        return None;
+    }
+    let one = klipp_timeline::one_frame(seq.fps).value.max(1);
+    let frames = ((under.timeline_out - under.timeline_in).value as f64 / one as f64).round() as i64;
+    let to = Op::Move { clip_id: ClipRef::Id(clip_id), to: Anchor::Secs(under.timeline_in.to_secs_f64()), track: None, linked: true };
+    let length = Op::SetLength { clips: vec![ClipRef::Id(clip_id)], frames, keep: LengthKeep::Start, ripple: false };
+    // Shrunk before it moves, grown after, so it never passes through a
+    // neighbour on the way.
+    Some(if under.timeline_out - under.timeline_in < clip.timeline_out - clip.timeline_in { vec![length, to] } else { vec![to, length] })
+}
+
 #[cfg(test)]
 mod tests {
+    /// Match Clip Below (#2236): a title over a shot takes the shot's
+    /// start and length; with nothing under it, or already matching,
+    /// there is nothing to do.
+    #[test]
+    fn a_clip_is_matched_to_the_clip_under_it() {
+        let mut seq = Sequence::new_default();
+        let rate = seq.fps.rate();
+        let tc = |s: f64| klipp_core::Timecode::from_secs_f64(s, rate);
+        let v = seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        let shot = klipp_timeline::Clip::gap(tc(2.0), tc(6.0));
+        seq.tracks[v].clips.push(shot);
+        seq.tracks.insert(v, klipp_timeline::Track::new("Text 1", klipp_timeline::TrackKind::Text));
+        let td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Hello".into(), ..Default::default() });
+        let title = klipp_timeline::Clip { kind: klipp_timeline::ClipKind::Title(td), ..klipp_timeline::Clip::gap(tc(3.0), tc(4.0)) };
+        let title_id = title.id;
+        seq.tracks[v].clips.push(title);
+        let ops = match_clip_below(&seq, title_id).expect("a shot under it");
+        let frames = (4.0 * seq.fps.as_f64()).round() as i64;
+        assert!(matches!(&ops[0], Op::Move { to: Anchor::Secs(s), .. } if (*s - 2.0).abs() < 1e-6), "moved first, as it grows: {ops:?}");
+        assert!(matches!(&ops[1], Op::SetLength { frames: f, keep: LengthKeep::Start, ripple: false, .. } if *f == frames), "{ops:?}");
+        // And the document takes them: the title ends up on the shot.
+        let pool = klipp_media::MediaPool::new();
+        let plan = klipp_document::ops::resolve(&seq, &pool, &ops).unwrap_or_else(|r| panic!("refused: {}", r.why));
+        let mut seqs = vec![seq.clone()];
+        let (mut p, mut fps) = (pool.clone(), seq.fps);
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        for step in &plan.steps {
+            view.apply_forward(&step.edit);
+        }
+        let placed = seqs[0].tracks.iter().flat_map(|t| &t.clips).find(|c| c.id == title_id).unwrap();
+        assert_eq!((placed.timeline_in, placed.timeline_out), (tc(2.0), tc(6.0)), "on the shot");
+        // Already matching: nothing to do.
+        seq.tracks[v].clips[0].timeline_in = tc(2.0);
+        seq.tracks[v].clips[0].timeline_out = tc(6.0);
+        assert!(match_clip_below(&seq, title_id).is_none());
+        // Nothing under it.
+        seq.tracks[v].clips[0].timeline_in = tc(10.0);
+        seq.tracks[v].clips[0].timeline_out = tc(12.0);
+        assert!(match_clip_below(&seq, title_id).is_none());
+    }
+
     use super::*;
     use klipp_core::{MediaId, RationalTime};
     use klipp_timeline::{Clip, Track, TrackKind};
