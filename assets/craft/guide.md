@@ -578,7 +578,8 @@ exist until the plan runs.
   `piece_frames` long, and of every `on` pieces kept the next `off`
   removed (1 and 1). The last piece takes what does not divide, so no
   sliver is left. With `ripple` the gaps close up; without, they stay
-  black. The linked sound is cut with it; one undo step.
+  black. The linked sound is cut with it; one undo step. `check` reads
+  it as one strobe, a note, not its gaps and pieces as black and flashes.
 - `set_length {clips, frames, keep?, ripple?}`: each clip made `frames`
   long, keeping its `start` (the default), `end` or `centre`; with
   `ripple` what follows closes up or makes room. A rapid-fire montage is

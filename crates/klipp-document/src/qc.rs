@@ -178,6 +178,62 @@ fn montage_spans(seq: &Sequence) -> Vec<(f64, f64)> {
     merged
 }
 
+/// A strobe as the strobe op leaves it (#2357): three or more pieces of
+/// one shot, each shorter than a flash (8 frames), in the shot's order,
+/// with a gap under a flash between them, black on purpose, or none when
+/// rippled. A longer piece of the same shot at either end belongs to it
+/// when the gap to it is no wider than the run's own: the clip the strobe
+/// left whole outside its stretch. A gap of another width, or one before
+/// or after it, is not the strobe's.
+struct Strobe {
+    /// What it covers, with the pieces of the shot either side.
+    covers: (f64, f64),
+    /// From its first piece to its last.
+    pieces_span: (f64, f64),
+    pieces: usize,
+    piece_frames: i64,
+}
+
+fn strobe_spans(seq: &Sequence) -> Vec<Strobe> {
+    let fps = seq.fps.as_f64().max(1.0);
+    let tolerance = 0.5 / fps;
+    let frames = |c: &Clip| ((secs(c.timeline_out) - secs(c.timeline_in)) * fps).round() as i64;
+    let mut spans = Vec::new();
+    for track in seq.tracks.iter().filter(|t| t.visible && t.kind == TrackKind::Video) {
+        let mut clips: Vec<&Clip> = track.clips.iter().filter(|c| is_picture(c)).collect();
+        clips.sort_by_key(|c| c.timeline_in);
+        let gap = |k: usize| secs(clips[k + 1].timeline_in) - secs(clips[k].timeline_out);
+        // Clip k and the next: one shot, in its order, a gap under a flash.
+        let linked = |k: usize| {
+            let (a, b) = (clips[k], clips[k + 1]);
+            a.media_id().is_some() && a.media_id() == b.media_id() && (-tolerance..8.0 / fps).contains(&gap(k)) && secs(b.source_in) >= secs(a.source_out) - tolerance
+        };
+        let mut k = 0;
+        while k < clips.len() {
+            let mut end = k;
+            while end + 1 < clips.len() && frames(clips[end]) < 8 && frames(clips[end + 1]) < 8 && linked(end) {
+                end += 1;
+            }
+            if end - k + 1 >= 3 && frames(clips[k]) < 8 {
+                let widest = (k..end).map(gap).fold(0.0, f64::max) + tolerance;
+                let first = if k > 0 && linked(k - 1) && gap(k - 1) <= widest { k - 1 } else { k };
+                let last = if end + 1 < clips.len() && linked(end) && gap(end) <= widest { end + 1 } else { end };
+                let piece = (k..=end).map(|i| frames(clips[i])).min().unwrap_or(1);
+                spans.push(Strobe {
+                    covers: (secs(clips[first].timeline_in), secs(clips[last].timeline_out)),
+                    pieces_span: (secs(clips[k].timeline_in), secs(clips[end].timeline_out)),
+                    pieces: end - k + 1,
+                    piece_frames: piece,
+                });
+                k = end + 1;
+            } else {
+                k += 1;
+            }
+        }
+    }
+    spans
+}
+
 /// How much of a title's drawn box must lie over a changing screen for
 /// the title to be over it: a twentieth, so a graze of its glow along
 /// the screen's edge is not, and a caption with a third of it on the
@@ -405,6 +461,13 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
     let duration = secs(seq.total_duration());
     let montages = montage_spans(seq);
     let in_montage = |a: f64, b: f64| montages.iter().any(|(start, end)| a + 1e-6 >= *start && b <= *end + 1e-6);
+    // A strobe's gaps, pieces and cuts are its effect: said once (#2357).
+    let strobes = strobe_spans(seq);
+    let in_strobe = |a: f64, b: f64| strobes.iter().any(|s| a + 1e-6 >= s.covers.0 && b <= s.covers.1 + 1e-6);
+    for s in &strobes {
+        let ((a, b), n) = (s.pieces_span, s.piece_frames);
+        add(Severity::Note, "strobe", Some(a), format!("a strobe from {a:.2} to {b:.2} s: {} pieces of {n} frame{}", s.pieces, if n == 1 { "" } else { "s" }), "Its gaps and flashes are its own; nothing to do");
+    }
     let video_tracks: Vec<(usize, &klipp_timeline::Track)> = seq.tracks.iter().enumerate().filter(|(_, t)| t.kind == TrackKind::Video && t.visible).collect();
     let pictures: Vec<(usize, &Clip)> = video_tracks.iter().flat_map(|(ti, t)| t.clips.iter().filter(|c| is_picture(c)).map(move |c| (*ti, c))).collect();
     // Where there is something on screen: the pictures, and the cards on
@@ -508,7 +571,7 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
     // Black: time with no picture under it.
     if !on_screen.is_empty() {
         let picture_end = on_screen.iter().map(|(_, b)| *b).fold(0.0, f64::max);
-        for (a, b) in uncovered(on_screen.clone(), picture_end, frame * 0.9) {
+        for (a, b) in uncovered(on_screen.clone(), picture_end, frame * 0.9).into_iter().filter(|(a, b)| !in_strobe(*a, *b)) {
             add(Severity::Error, "black", Some(a), format!("no picture from {a:.2} to {b:.2} s: {:.0} frame{} of black", (b - a) * fps, if (b - a) * fps >= 1.5 { "s" } else { "" }), "Close the gap, or cover it");
         }
         // Picture and sound ending apart.
@@ -570,7 +633,7 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
         let clips: Vec<&Clip> = t.clips.iter().filter(|c| is_picture(c)).collect();
         for c in &clips {
             let frames = ((secs(c.timeline_out) - secs(c.timeline_in)) * fps).round() as i64;
-            if frames < 8 {
+            if frames < 8 && !in_strobe(secs(c.timeline_in), secs(c.timeline_out)) {
                 add(Severity::Warning, "flash", Some(secs(c.timeline_in)), format!("{} is on screen for {frames} frame{}", clip_label(pool, c), if frames == 1 { "" } else { "s" }), "A shot that short reads as a flash: lengthen it or take it out");
             }
         }
@@ -580,7 +643,7 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
             let same_media = matches!((&a.kind, &b.kind), (ClipKind::Media { media_id: x }, ClipKind::Media { media_id: y }) if x == y);
             let meets = (secs(a.timeline_out) - cut).abs() < frame * 0.5;
             let jumps = (secs(b.source_in) - secs(a.source_out)).abs() > 0.2;
-            if !(same_media && meets && jumps) {
+            if !(same_media && meets && jumps) || in_strobe(secs(a.timeline_in), secs(b.timeline_out)) {
                 continue;
             }
             // The picture changes shot in the file between the two: a
@@ -1096,6 +1159,46 @@ mod tests {
         }
         seq.tracks = vec![v, a];
         (seq, pool, talk, music)
+    }
+
+    /// `seq` with `op` resolved and applied, as the app does.
+    fn applied(seq: &Sequence, pool: &MediaPool, op: crate::ops::Op) -> Sequence {
+        let plan = crate::ops::resolve(seq, pool, &[op]).expect("the op plans");
+        let (mut seqs, mut pool, mut fps) = (vec![seq.clone()], pool.clone(), seq.fps);
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps };
+        for step in &plan.steps {
+            view.apply_forward(&step.edit);
+        }
+        seqs.remove(0)
+    }
+
+    /// #2357: a strobe's black gaps and two-frame pieces are its effect,
+    /// said once as a note, not 13 errors and 13 flashes; rippled, its
+    /// cuts aren't jump cuts. A gap of another width after it is still
+    /// black.
+    #[test]
+    fn a_strobe_is_one_note_and_a_real_gap_beside_it_still_an_error() {
+        use crate::ops::{Anchor, ClipRef, Op};
+        let (seq, pool, talk, _) = piece();
+        let strobe = |ripple| Op::Strobe { clip_id: ClipRef::Id(seq.tracks[0].clips[0].id), piece_frames: 2, from: Some(Anchor::Frame(25)), to: Some(Anchor::Frame(77)), on: 1, off: 1, ripple };
+        let left = applied(&seq, &pool, strobe(false));
+        let r = check(&left, &pool, &Spoken(talk));
+        let notes: Vec<_> = r.findings.iter().filter(|f| f.rule == "strobe").collect();
+        assert_eq!(notes.len(), 1, "{}", r.text());
+        assert!(notes[0].what == "a strobe from 1.00 to 3.00 s: 13 pieces of 2 frames" && notes[0].severity == Severity::Note, "{:?}", notes[0]);
+        assert!(!rules(&r).iter().any(|x| matches!(*x, "black" | "flash")), "{}", r.text());
+        let rippled = applied(&seq, &pool, strobe(true));
+        let r = check(&rippled, &pool, &Spoken(talk));
+        assert!(rules(&r).contains(&"strobe") && !rules(&r).iter().any(|x| matches!(*x, "flash" | "jump_cut")), "{}", r.text());
+        // The second select moved 5 frames later: a gap of its own.
+        let mut gapped = left.clone();
+        for t in gapped.tracks.iter_mut() {
+            let c = t.clips.last_mut().unwrap();
+            (c.timeline_in, c.timeline_out) = (tc(4.2), tc(8.2));
+        }
+        let r = check(&gapped, &pool, &Spoken(talk));
+        let black: Vec<_> = r.findings.iter().filter(|f| f.rule == "black").collect();
+        assert!(black.len() == 1 && black[0].what.contains("from 4.00 to 4.20"), "{}", r.text());
     }
 
     fn rules(r: &Report) -> Vec<&'static str> {
