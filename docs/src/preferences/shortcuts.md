@@ -1,64 +1,24 @@
 # Keyboard Shortcuts Preferences
 
-Access keyboard shortcut preferences from **Edit → Preferences → Keyboard**.
+Access keyboard shortcut preferences from **Edit → Preferences... → Keyboard**.
 
-## Shortcut Editor
+## Layout
 
-The shortcut editor displays all available actions organised by category. Each row shows:
-
-- **Action name** — description of what the shortcut does
-- **Current binding** — the currently assigned key combination
-- **Default binding** — the factory default (shown when modified)
+The **Layout** picker at the top swaps the whole map for the default keys of another editor, named in the picker, for the actions Klipp shares with it. Your own changes sit on top and survive switching layouts.
 
 ## Remapping Shortcuts
 
-To change a keyboard shortcut:
+The page lists every action in its group — File, Edit, Tools, Timeline, Navigation, Transport, Viewer, Window, Display, Markers, Multicam, Colour, AI Tools and Other — with its keys.
 
-1. Open **Edit → Preferences → Keyboard**
-2. Find the action (use the search field to filter)
-3. Click on the current binding
-4. Press the new key combination
-5. Binding updates immediately
+1. Click **Set** beside an action.
+2. Press the new key combination.
 
-To clear a binding, click the binding and press **Escape** or click the clear button.
-
-## Conflict Detection
-
-When you assign a key combination already used by another action, Klipp highlights the conflict:
-
-- The conflicting actions are both highlighted in the list
-- A warning indicates which other action uses the same binding
-- You can proceed (the old binding is removed) or cancel
-
-System-reserved combinations that conflict with window management are not assignable.
-
-## Search
-
-Type in the search field at the top of the shortcuts panel to filter actions by name. Helps locate shortcuts in the full list.
-
-## Categories
-
-Shortcuts are organised into these categories:
-
-- **File** — Project operations (new, open, save, export)
-- **Edit** — Clipboard and selection
-- **Tools** — Editing tool selection
-- **Timeline** — Timeline navigation and editing
-- **Mark** — In/out points and markers
-- **Transport** — Playback control
-- **Clips** — Per-clip operations (enable, solo, transitions)
-- **AI Tools** — Open panel, run task, apply mask
-- **View** — UI and overlay toggles
-- **Window** — Workspace switching, panel toggles
-
-## Reset to Defaults
-
-**Reset to Defaults** at the bottom of the shortcuts panel restores all keyboard shortcuts to their factory defaults. This cannot be undone, so confirm when prompted.
+A combination already used by another action is counted as a conflict at the top of the page, and both actions are marked. **Reset all to layout** puts every key back to the layout's.
 
 ## Persistence
 
-Custom shortcut bindings are saved at `~/.config/klipp/keybindings.json` and persist across sessions and Klipp updates. They are stored separately from project files.
+Your changes are saved in `~/.config/klipp/keybindings.json` — the layout's name and only the actions you changed — apart from any project.
 
 ## Default Reference
 
-A complete list of default shortcuts is in the [Keyboard Shortcuts](../editing/shortcuts.md) reference.
+The complete list of Klipp's default keys is in the [Keyboard Shortcuts](../editing/shortcuts.md) reference.

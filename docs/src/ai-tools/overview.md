@@ -1,6 +1,6 @@
 # AI Tools Overview
 
-Klipp ships on-device AI tools for masking, object isolation, and instance segmentation. All inference runs locally — no frames ever leave your machine — using ONNX models loaded through `ort` (with CUDA acceleration when available) or pure-Rust models loaded through `candle`.
+Klipp ships on-device AI tools for masking, object isolation and segmentation, and for reading what is in the footage: speech, shots, sound, faces and on-screen text. All inference runs locally — no frames ever leave your machine — using ONNX models through `ort` (with CUDA acceleration when available), pure-Rust models through `candle`, and whisper.cpp for speech. Every model downloads only when first asked for.
 
 The AI Tools panel is opened with **Alt+A**, or via **Window → AI Tools**.
 
@@ -12,7 +12,7 @@ The AI Tools panel is opened with **Alt+A**, or via **Window → AI Tools**.
 | **Isolate Object** | Click-to-mask a specific object or region | MobileSAM | point / box / scribble |
 | **Detect Objects** | Multi-class segmentation, one mask per detection | RF-DETR-Seg (Medium) | none — automatic |
 
-A fourth task, **Track Object** (temporal mask propagation), is reserved for the SAM 2.1 video backend and ships disabled until that work lands.
+A fourth task, **Track Object** (temporal mask propagation), is greyed out until a model that propagates masks over time is available; to follow a subject through a clip, use **Track Subject** (below).
 
 ## The Three-State Workflow
 
@@ -38,6 +38,7 @@ The panel follows a deliberate three-state machine designed to get out of your w
   - **Mask only** — the raw mask on a flat background
   - **Cutout** — the source frame with the mask alpha applied, against a checkerboard
 - **Re-run** repeats with the same parameters; **Apply to clip** writes the mask to disk and inserts a node into the clip's colour graph (see *Apply to Clip* below)
+- **Cut Out Subject** keeps only the subject over transparency, and **Grade inside the mask** limits the clip's grade to it; **Restore Background** undoes a cut-out in one step
 - The Recent panel keeps the last 20 results in memory with thumbnails for quick comparison
 
 ## Apply to Clip
@@ -51,6 +52,10 @@ When you click **Apply to clip**, Klipp:
 5. Toasts `Mask applied to {track_name} · {clip_short}`
 
 The mask cache is bounded — `~/.cache/klipp/ai_masks/` is LRU-pruned to 2 GB on app start, oldest first.
+
+## Custom Models
+
+**Add custom model…** in the model picker adds an ONNX model by URL, with a display name and an id, for a task it can do.
 
 ## Auto-Pick by Task
 
@@ -74,6 +79,17 @@ The panel's footer shows the resolved inference path:
 | ● grey — `CPU only — feature flag off` | Klipp was built with `--no-default-features` |
 
 Hover any of these for a tooltip explaining how to upgrade.
+
+## More On-Device Tools
+
+- **Track Subject** — in a clip's menu or the AI Tools panel: a subject matte made over every frame, kept as a matte sequence beside the project and read by an `ExternalMatte` node. Its progress shows on the status bar and on the matte's card; an export waits for a complete matte. Piece transitions can cut round the tracked subject.
+- **Transcripts** — **Transcribe Clip** in a clip's menu, or **Window → Transcript**. Correct a word, choose the language, or transcribe again with another model; captions can be made from the transcript. See [Subtitles & Captions](../editing/subtitles.md).
+- **Scene detection** — see [Scene Detection](../editing/scene-detection.md).
+- **Sound roles** — clips' sound classified as speech, music, effects or ambience, and roles proposed from it.
+- **Voice Isolation** — an audio effect; see [Audio Effects](../audio/effects.md).
+- **Narration** — **Window → Narrate** makes a voice-over from text.
+- **Caption translation** — **Translate Captions** on a subtitle track.
+- **Search by picture** — footage found by a description of what is in it; available to the assistant (`search_visual`).
 
 ## See Also
 

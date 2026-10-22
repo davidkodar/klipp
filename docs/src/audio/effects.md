@@ -1,61 +1,50 @@
 # Audio Effects
 
-Klipp includes built-in audio effects for common post-production needs.
+Audio effects go on a clip from **Library → Audio FX**: drag one onto a clip, or double-click it with the clip selected. They then appear in the clip's Audio tab, in the order they run.
 
-## Equaliser (EQ)
+## Built-in Effects
 
-A parametric equaliser available in the inspector's Audio tab:
+| Effect | What it does |
+|---|---|
+| **EQ** | 6-band parametric equaliser |
+| **Compressor** | Dynamic range control: threshold, ratio, attack, release, makeup gain |
+| **Multiband Compressor** | Per-band compression |
+| **Limiter** | Peak protection |
+| **Gate** | Silence low-level noise |
+| **High Pass** | Remove low-frequency rumble and wind |
+| **De-esser** | Reduce sibilance in vocals |
+| **Denoiser** | Learn and reduce steady background noise |
+| **Noise Reduction** | Per-band noise gating |
+| **Voice Isolation** | Separate speech from wind, traffic and room noise (AI, model downloaded on request) |
+| **Declick** | Remove pops and clicks |
+| **Normalize** | Set a target loudness (LUFS) |
+| **Reverb** | Room and space simulation |
+| **Delay** | Time-based repeat |
+| **Chorus** | Modulation and width |
+| **Pitch Shift** | Transpose the pitch |
 
-- Multiple adjustable bands
-- Each band has frequency, gain, and Q (bandwidth) controls
-- Band types — low shelf, high shelf, bell/peak, low pass, high pass
-- Visual frequency-response curve
+The command palette also offers one-step clean-ups: **Hum Removal** at 50 Hz or 60 Hz, and **Camera Wind** rumble reduction.
 
-Use EQ to shape the tonal balance — reduce muddiness, add presence, roll off unwanted low-frequency rumble.
+## Plug-ins
 
-## Compressor
-
-Reduces the difference between loud and quiet parts of the audio:
-
-- **Threshold** — Level above which compression begins (dB)
-- **Ratio** — e.g. 4:1 means 4 dB of input above threshold produces 1 dB of output
-- **Attack** — Time for compression to engage (ms)
-- **Release** — Time for compression to disengage (ms)
-- **Makeup Gain** — Compensate for level reduction after compression
-
-## Multiband Compressor
-
-Splits the audio into frequency bands and applies independent compression to each:
-
-- Low band (below ~200 Hz)
-- Mid band (~200 Hz – 2 kHz)
-- High band (above ~2 kHz)
-
-Each band has its own threshold, ratio, attack, release. Useful for taming specific ranges without affecting the whole signal.
-
-## Anti-Click Fade
-
-Klipp automatically applies very short fades at clip boundaries to prevent audible clicks and pops. This happens transparently and does not affect the visible clip length. Default 3 ms; configurable in **Edit → Preferences → Audio**.
+The **Installed** filter lists the LV2 plug-ins found on the system, which run as audio effects; plug-ins Klipp cannot run are marked, and **Hide unsupported plugins** hides them. **Tools → Audio Plugins…** scans and manages them; **Re-enable all Audio Plugins** in the command palette turns back on any that were disabled.
 
 ## Fade In / Fade Out
 
-Apply fades at clip start and end by dragging the fade handles in the clip's top corners on the timeline. Curve types:
+Drag the fade handles in a clip's top corners on the timeline, or set the fades in the Audio tab. Curve types:
 
 - **Linear** — constant rate of change
-- **Exponential** — slow start, fast finish (in) or vice versa (out); natural for music
-- **S-Curve** — slow start and finish, faster middle; smooth and subtle
-- **Logarithmic** — follows perceived loudness more closely than linear; good for dialogue
+- **Logarithmic** — follows perceived loudness more closely; good for dialogue
+- **Exponential** — slow start, fast finish (in) or the reverse (out)
+- **S-Curve** — slow start and finish, faster middle
+- **Constant Power** — for crossfades between two clips
 
-Right-click on a fade handle to change curve type, or select the fade and edit in the inspector.
+**Alt+T** adds an audio crossfade at a cut.
+
+## Anti-Click Fade
+
+Klipp applies very short fades at clip boundaries to prevent clicks. They do not change the visible clip length; their length is set in **Preferences → Audio**.
 
 ## Effect Order
 
-Audio effects are processed in the order they appear in the inspector. Drag to reorder. Typical signal chain:
-
-1. Gain (input level)
-2. EQ
-3. Compressor
-4. Pan
-5. Volume (output level)
-
-Effects can be bypassed individually with the bypass toggle on each row, useful for A/B comparison without losing your settings.
+Audio effects run in the order they appear in the Audio tab; reorder them there. Each can be bypassed on its own, to compare without losing its settings.

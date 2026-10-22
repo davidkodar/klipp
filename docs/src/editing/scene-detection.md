@@ -7,7 +7,7 @@ you can cut the file into its shots without scrubbing for them.
 
 ## Using it
 
-1. Right-click a clip on the timeline.
+1. Right-click a clip on the timeline (or select it and use **Timeline → Detect Scene Cuts**).
 2. Choose **Detect Scenes…**. The menu item is replaced by a progress
    readout while it runs, with a **Cancel** beside it.
 3. Each cut it finds becomes a clip marker, in the colour set in

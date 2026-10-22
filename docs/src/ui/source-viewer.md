@@ -1,48 +1,34 @@
 # Source Viewer
 
-The source viewer is an optional second viewer for browsing source media without affecting the program viewer or timeline. It is a familiar pattern from professional NLEs (Avid, Premiere) — review your source clip in one viewer, see the program output in the other, and use insert/overwrite to move material between them.
+The source viewer is a second viewer for reviewing source media without affecting the program viewer or the timeline: review a clip in one viewer, see the program in the other, and insert or overwrite to move material between them.
 
 It is shown beside the program viewer while **View → Dual Viewers** is on; with a single viewer, the Source / Program switch under the viewer brings it up.
 
 ## Workflow
 
-1. Double-click a clip in the media browser. The clip loads into the source viewer.
-2. Scrub or play the source viewer to find the section you want.
-3. Press **I** in the source viewer to mark an in point, **O** for an out point.
-4. Switch focus to the timeline, park the playhead where you want the section to land, then press **,** (insert) or **.** (overwrite).
-5. Klipp adds the marked section of the source clip to the timeline at the playhead.
+1. Click a clip in the media browser. It loads into the source viewer.
+2. Scrub or play it to find the section you want.
+3. Press **I** to mark an in point, **O** for an out point.
+4. Park the timeline's playhead where the section should land, then press **,** (insert) or **.** (overwrite), or use the viewer's buttons. **Place on Top** (F12), **Replace** (Shift+F12) and **Fit to Fill** (Shift+F11) work from the same marks.
+5. Or drag the marked section from the viewer onto a track.
 
-The source viewer stays loaded with that clip until you double-click a different one. Marks and playhead are independent of the timeline.
+The source viewer keeps its clip, marks and playhead until you load another; they are independent of the timeline's.
 
-## Why It's Separate from the Browser Skim
+## Logging in the Source Viewer
 
-The browser provides *skimming* — hover over a clip thumbnail to preview without committing. Skimming is fast and casual; the source viewer is for committed review with marks.
+- **M** adds a source marker on the media.
+- **Shift+F** marks the range as a favourite and **Shift+R** as rejected.
+- **Subclip** turns the marked range into a media item of its own.
+- **Match Frame** (F) loads the source of the frame under the timeline's playhead; **Shift+F** in the program viewer goes back to the timeline.
 
-These two flows are deliberately separate so you can:
-- Skim through a bin of dailies in the browser
-- Promote a candidate to the source viewer when you find one worth marking up
-- Set in/out points there
-- Keep the browser free for browsing other candidates without losing your marked section
+## Multicam Angles
 
-## Performance: Scrub vs Source
+**View → Multicam Angles** (Shift+Alt+M) shows a multicam clip's angles as a grid in the source viewer. Click an angle, or press **1**–**9**, to cut to it while playing.
 
-The source viewer uses Klipp's *skim* decode path, not the full timeline decode path. This is deliberate:
+## Skim and Playback
 
-- **Skim path** — sparse keyframe decode, ~30 Hz UI throttle, coalesced seeks. Designed to keep up with rapid scrubbing on 4K source.
-- **Timeline path** — full smooth playback with master clock sync. Designed for review at 1× or shuttle speeds.
+Scrubbing the source viewer uses Klipp's skim decode path: sparse decodes and coalesced seeks, so rapid scrubbing keeps up on 4K sources. Pressing **Space** plays it through the full playback path.
 
-If you need frame-accurate review at 1×, mark in/out and play the source — the source viewer switches to the playback path automatically when **Space** is pressed.
+## Display
 
-## Coalesced Seeks
-
-The source viewer coalesces seek requests at three layers:
-
-1. **UI throttle** — at most one seek per 33 ms (30 Hz)
-2. **Engine coalesce** — pending seeks are dropped if a newer one arrives before the decoder consumes the previous
-3. **Decoder coalesce** — the decoder discards in-flight frames whose presentation timestamp is past the current target
-
-This three-layer coalescing is what makes 4K scrubbing feel professional rather than slideshow-stuttery.
-
-## Display Modes
-
-The source viewer respects the same overlays as the program viewer (safe areas, grid, zebra, false colour). It does **not** show the timeline-level effect chain — only the raw decoded source. This is by design: the source viewer is for evaluating source material, not for previewing graded output.
+The source viewer takes the same overlays as the program viewer (safe areas, grid, zebras, false colour). It shows the source as decoded, without the clip's effects or grade: it is for judging the material, not the graded output.

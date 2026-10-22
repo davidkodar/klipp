@@ -12,6 +12,8 @@ A fixed test project, made from generated sources with no footage: a moving test
 - **Chroma, range and tags**: the pixel format's subsampling, and the primaries, transfer and matrix the stream carries. These agree with the picture's own frame tags; ProRes carries them in every frame header.
 - **PQ light**: a second project of four patches at 5, 100, 203 and 1000 cd/m², read back from the file's codes through the PQ curve.
 
+The **HEVC Main10 master** preset was added after this measurement and is not in the table; the H.265 10-bit row below is the same codec and depth.
+
 The Animated GIF preset is a palette at its own rate (15 fps), so it is checked for its size, rate and frame count rather than scored. "Audio Only MP3" writes the sound alone: it is checked for one MP3 stream and no video stream, and its loudness is held by the audio export's tests.
 
 ## Results

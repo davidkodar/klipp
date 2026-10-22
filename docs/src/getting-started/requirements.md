@@ -7,11 +7,11 @@
 | OS | Linux x86_64 (kernel 5.15+) |
 | CPU | 4-core x86_64 processor |
 | RAM | 8 GB |
-| GPU | Any GPU with Vulkan 1.1 support |
+| GPU | Any GPU with Vulkan 1.1 support (integrated is fine) |
 | Storage | 10 GB for app + cache; SSD recommended |
 | Display | Wayland or X11 |
 
-With minimum specs, Klipp operates with software decode and CPU-based effects and AI inference. Editing 1080p content is practical; 4K may require proxy workflows. AI tools work but are slower (BiRefNet on CPU: ~5–8 seconds per frame on a 4-core CPU).
+A working Vulkan GPU is required: the viewer, effects, titles and scopes run on it. With minimum specs, decode may be software and AI inference runs on the CPU. Editing 1080p content is practical; 4K may require proxy workflows. AI tools work but are slower (BiRefNet on CPU: ~5–8 seconds per frame on a 4-core CPU).
 
 ## Recommended Requirements
 
@@ -41,14 +41,16 @@ Klipp's GPU acceleration is split across three independent subsystems. Each has 
 
 | Subsystem | NVIDIA | AMD | Intel | CPU fallback |
 |---|---|---|---|---|
-| Video decode | NVDEC (cuvid) | Software | Software | ✓ (FFmpeg threaded) |
+| Video decode | NVDEC (cuvid) | VAAPI | VAAPI | ✓ (FFmpeg threaded) |
 | GPU effects | Vulkan (wgpu) | Vulkan (wgpu) | Vulkan (wgpu) | ✓ |
-| AI inference (ort) | CUDA EP | CPU (ROCm planned) | CPU (OpenVINO planned) | ✓ |
+| AI inference (ort) | CUDA EP | CPU | CPU | ✓ |
 | AI inference (candle) | CUDA | CPU | CPU | ✓ |
+
+A stream moves to software decode when the GPU's decoder is full or refuses it.
 
 **Effects parity is full across vendors** — RADV and AMDVLK on AMD, ANV on Intel, and the proprietary NVIDIA driver all work for Klipp's compute shaders.
 
-**AI inference currently accelerates only on NVIDIA.** AMD ROCm Execution Provider and Intel OpenVINO Execution Provider are tracked as future work; today AMD and Intel users get CPU AI, which is functional but several times slower for the heavier models.
+**AI inference currently accelerates only on NVIDIA.** AMD and Intel users get CPU AI, which is functional but several times slower for the heavier models.
 
 ## NVIDIA-Specific Notes
 
@@ -64,7 +66,7 @@ GTX 900 series and later are supported for NVDEC. RTX 20-series and later are re
 
 | What | Size |
 |---|---|
-| Klipp source + dev build | ~6 GB |
+| Klipp source + dev build | well over 100 GB of build output in `target/` |
 | Klipp release build | ~250 MB |
 | AI model cache (`~/.local/share/klipp/models/`) | about 1.4 GB with every model installed; each downloads only when first asked for |
 | AI mask cache (`~/.cache/klipp/ai_masks/`) | capped at 2 GB, LRU-evicted |

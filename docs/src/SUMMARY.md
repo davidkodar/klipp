@@ -7,6 +7,7 @@
 - [Installation](./getting-started/installation.md)
 - [System Requirements](./getting-started/requirements.md)
 - [Quick Start](./getting-started/quick-start.md)
+- [Projects & Templates](./getting-started/projects.md)
 
 # User Interface
 
@@ -29,6 +30,7 @@
 - [Generators](./editing/generators.md)
 - [Markers](./editing/markers.md)
 - [Titles](./editing/titles.md)
+- [Subtitles & Captions](./editing/subtitles.md)
 - [Stabilization](./editing/stabilization.md)
 - [Scene Detection](./editing/scene-detection.md)
 - [Keyboard Shortcuts](./editing/shortcuts.md)
@@ -50,11 +52,12 @@
 
 # Effects
 
-- [GPU Effects](./effects/gpu-effects.md)
+- [Effects](./effects/gpu-effects.md)
 
 # AI Tools
 
 - [Overview](./ai-tools/overview.md)
+- [Assistant](./ai-tools/assistant.md)
 - [Models & Manager](./ai-tools/models.md)
 - [Remove Background](./ai-tools/remove-background.md)
 - [Isolate Object](./ai-tools/isolate-object.md)
@@ -71,10 +74,11 @@
 # Preferences
 
 - [General](./preferences/general.md)
-- [System & Performance](./preferences/system.md)
+- [System](./preferences/system.md)
 - [Appearance & Themes](./preferences/appearance.md)
-- [Audio & Hardware](./preferences/audio.md)
+- [Audio & Audio Hardware](./preferences/audio.md)
 - [Keyboard Shortcuts](./preferences/shortcuts.md)
+- [Other Pages](./preferences/pages.md)
 
 # Technical Reference
 

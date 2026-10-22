@@ -52,20 +52,20 @@ A power-cut mid-save leaves the previous valid `project.json` in place; the half
 
 ## Versioning
 
-Format version is currently `"1.0.0"`. Each save records:
+Each save records:
 
-- `version` — schema version
-- `klipp_version_min` — lowest Klipp build that can read this file
+- `format_revision` — the project format's revision, currently **4**
+- `version` — the schema version string
 - `klipp_version` — the writing build
 - `saved_at` / `created_at` — ISO 8601 timestamps
 - `platform` — e.g. `linux-x86_64`
 
-`klipp_version_min` records the lowest build that was expected to read the file. It is written on save; nothing refuses a load on it today, so a project written by a newer Klipp opens and any field this build does not know is dropped.
+The revision goes up only when a change would be *misread* by a build that knows the previous one (data moved or removed, not merely added). A build refuses a project from a newer revision, and a project from before revision 4 is refused with the name of the tool that converts it. A project whose grade uses node kinds this build does not know is refused rather than opened without them.
 
-## Forward Compatibility
+## Compatibility
 
-- New optional fields are added via `#[serde(default)]` — older projects load cleanly
-- Unknown keys are silently dropped on load — newer Klipp builds can read projects that include fields removed in later versions
+- New optional fields are added with defaults, so a project without them loads cleanly.
+- Opening a project and only playing it leaves it saved; a project whose files are unchanged stays saved.
 
 ## Project Settings
 
@@ -93,9 +93,8 @@ Each sequence has its own:
 
 The biggest record on disk. A clip carries:
 
-- **Identity & timing** — IDs, kind (Media / Title / Gap / Sequence / Generator / AdjustmentLayer), `timeline_in/out` and `source_in/out` as `i64` frames at the clip's native rate
-- **Colour graph** — per-clip `NodeGraph` (see [Node Graph](../color/node-graph.md))
-- **Effects** — OFX plugin chain plus built-in effect node references
+- **Identity & timing** — IDs, kind (Media / Title / Gap / Sequence / Generator / AdjustmentLayer and others), `timeline_in/out` and `source_in/out` as exact times at one rate that holds them all
+- **Picture** — the clip's grade, effects and plug-ins as one node graph, each effect keeping its node id across saves (see [Node Graph](../color/node-graph.md))
 - **Linkage** — audio↔video pair, multi-clip groups, multicam
 - **Audio mix** — gain, volume, pan, fade in/out with curve type, channel config
 - **Keyframes** — per-parameter keyframe tracks (volume, pan, opacity, transform, effects, speed)
@@ -105,7 +104,7 @@ The biggest record on disk. A clip carries:
 - **Grade versions** — multiple complete `NodeGraph` snapshots with one active
 - **Per-clip markers**
 
-Every optional field uses `#[serde(default)]` for forward / backward compatibility.
+Every optional field has a default, so a project without it loads.
 
 ## Source Colourspace Persistence
 
@@ -117,7 +116,7 @@ When Klipp auto-detects log encoding from camera metadata, the detected `colour_
 
 ## Media References
 
-Klipp references media files by absolute path, not by copy. Moving or renaming source files triggers a relink dialog on next open. If you need a self-contained project (for archival, hand-off), use **File → Consolidate Media** to copy referenced files into the project's `media/` subdirectory.
+Klipp references media files by path, not by copy (paths in `media/manifest.json` are relative to it). Missing media opens the relink flow. If you need a self-contained project (for archival, hand-off), use **File → Consolidate Project...** to copy the media into one place, optionally only what the cut uses.
 
 ## See Also
 

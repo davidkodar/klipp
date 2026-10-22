@@ -6,63 +6,72 @@ Klipp is an in-progress non-linear video editor for Linux, written in Rust with 
 
 🚧 **Early development.**
 
-Many subsystems are stubbed, half-built, or actively changing. There is no stability commitment, no release schedule, no pre-built binaries, and no support. Building from source is currently the only way to run Klipp, and you should expect to hit rough edges, breakage, and incomplete features.
-
-If you need a Linux NLE you can rely on for actual work today, use [Kdenlive](https://kdenlive.org/), [DaVinci Resolve](https://www.blackmagicdesign.com/products/davinciresolve), or [Olive](https://www.olivevideoeditor.org/). Klipp is not a replacement for any of them.
+Many subsystems are still changing. There is no stability commitment, no release schedule, no pre-built binaries, and no support. Building from source is currently the only way to run Klipp, and you should expect to hit rough edges, breakage, and incomplete features.
 
 ## What's Wired Up
 
-The list below describes which subsystems currently produce output. None of these are claims of quality, completeness, or production readiness — they're just things you can poke at if you build Klipp from source.
+The list below describes which subsystems currently produce output. None of these are claims of quality, completeness, or production readiness.
 
 ### Timeline editing
-- Multi-track video and audio
-- Magnetic-timeline behaviours (insert / overwrite, ripple, snap)
-- Filmstrip thumbnails on video clips
-- Undo / redo with drag coalescing
+- Multi-track video, audio and subtitle tracks, with a magnetic model (insert / overwrite, ripple, snap)
+- Three- and four-point editing: insert, overwrite, fit to fill, place on top, replace, backtiming
+- Compound clips, multicam clips, adjustment layers and connected clips
+- A selects timeline stacked above the cut
+- Undo / redo, with project-wide steps kept in a history of their own
+
+### Titles and graphics
+- Titles with OpenType shaping, complex scripts, vertical text, variable fonts and colour emoji
+- Animators, keyed text properties, text on a path, gradients, 3D extruded text
+- Title templates, rolling credits and motion-graphics templates with editable fields
+- Generators (solids, bars, gradients, timers, slates, shapes) and piece transitions
 
 ### Colour pipeline
-- Lift / Gamma / Gain / Offset wheels and a curves editor
-- Working colourspaces: Rec.709, Rec.2020, ACEScg
-- Auto-detection for common camera log formats (Sony SLog3, Canon Log, Panasonic V-Log, Apple Log, ARRI Log-C, RED Log3G10) — not validated against reference workflows
-- Output Display Transforms (sRGB, Rec.709, Rec.2020, P3-D65)
-- A per-clip node graph for mattes and correctors
-- Keyframable parameters with several interpolation curves
+- A node graph per clip, per track, per grade group and for the whole timeline
+- Lift / Gamma / Gain / Offset wheels, log wheels, HDR Zones, curves and qualifiers (HSL, RGB, 3D)
+- Working colourspaces Rec.709, Rec.2020 and ACEScg, linear-light throughout
+- Camera log detection and decode (Sony S-Log3, Canon Log, Panasonic V-Log, Apple Log, ARRI LogC, RED Log3G10, Leica L-Log and more)
+- Freeform and shape masks, keyed over time, and tracked mattes
+- Waveform, vectorscope, histogram and parade scopes drawn on the GPU
 
-### GPU effects
-- Opacity, Gaussian Blur, Sharpen, Crop, Transform, Chroma Key
-- Vulkan compute shaders via wgpu, with CPU fallback
-
-### AI tools
-- Remove Background (BiRefNet, MIT)
-- Isolate Object (MobileSAM, Apache-2.0)
-- Detect Objects (RF-DETR-Seg, Apache-2.0)
-- All inference runs on-device. NVIDIA CUDA acceleration when the runtime libraries are present; CPU fallback otherwise. AMD and Intel GPU acceleration is not implemented yet.
+### Effects
+- Built-in effects as GPU compute nodes (wgpu / Vulkan), with CPU kernels as fallback, particles (dust, snow, rain, sparks, embers) among them
+- OFX and frei0r plug-ins, run as nodes of their own
+- Keyframes with easing presets and per-key handle kinds, in a Curve Editor and a Dope Sheet
 
 ### Audio
-- Per-clip volume, pan, EQ, fade curves
-- EBU R128 loudness metering
-- Keyframable parameters
+- Per-clip volume, pan, EQ and fades; per-track volume and pan automation
+- EBU R128 loudness metering and normalisation to a loudness or peak target
+- LV2 audio effects, a denoiser and optional voice isolation
 - Output through cpal — PipeWire / ALSA / JACK
 
-### Decode
-- CUDA NVDEC (cuvid path) on NVIDIA hardware
-- Software decode fallback
-- A direct path for 10-bit camera-log YUV that bypasses libswscale's broken RGBA64LE output
+### Media and decode
+- CUDA NVDEC and VAAPI hardware decode, with software decode when the GPU is busy or refuses
+- Proxies, skim files, metadata from cameras and sidecars, smart bins
+- Transcripts (whisper.cpp) and search by words or by what is in the picture
+
+### AI tools
+- Remove Background, Isolate Object and Detect Objects, all on-device
+- Track Subject, scene detection, shot and sound classification
+- Models download on request; nothing is bundled
 
 ### Export
-- H.264 / H.265 / ProRes / DNxHD into MP4 / MKV / MOV
-- Interchange out: FCPXML, CMX 3600 EDL, OTIO and MLT / Kdenlive; in: OTIO, FCPXML and MLT / Kdenlive
-- Burnt-in or sidecar captions, and a delivery check over picture and sound
+- H.264, H.265, AV1, VP9, ProRes, DNxHD and animated GIF; sound alone as MP3, WAV or M4A
+- HDR10 / HLG output, HDR10+ metadata on H.265 PQ
+- Captions burnt in, as sidecar files, or as CEA-608 in the video stream
+- A delivery check over picture and sound before export
+- Timeline interchange in and out: FCPXML, Final Cut Pro 7 XML (in), CMX 3600 EDL, OpenTimelineIO, AAF (through OpenTimelineIO) and Kdenlive / MLT
+
+### Assistant
+- A local control socket and an MCP server, so an assistant can read and edit the open project
 
 ## What's Missing
 
-A non-exhaustive list of fundamentals that are either stubbed, unfinished, or not yet started:
+A non-exhaustive list:
 
 - Reliability — no extended soak-testing has been done
-- AMD ROCm and Intel OpenVINO for AI inference
+- AMD and Intel GPU acceleration for AI inference
 - Pre-built binaries / installers
 - Documentation accuracy under continued churn (this doc may drift)
-- Many polish items across audio, effects, and the timeline
 
 ## Author and Licence
 

@@ -20,7 +20,7 @@ Source clip
 2. Source colourspace inverse  ← per-clip auto-detected (Sony SLog3,
     │                            Canon Log, sRGB, Rec.709, …)
     ▼
-3. Working colourspace (ACEScg by default)
+3. Working colourspace (Rec.709 linear by default)
     │
     ├─► 4a. Effects chain (blur, sharpen, transform, …)
     │
@@ -30,7 +30,7 @@ Source clip
 5. Output Display Transform (ODT)  ← chosen at export time
     │
     ▼
-Final delivery (sRGB, Rec.709, Rec.2020, P3-D65)
+Final delivery (sRGB, Rec.709, Rec.2020, P3-D65, Rec.2100 PQ / HLG)
 ```
 
 Stages 1–3 are *decode*. Stage 4 is *grading*. Stage 5 is *delivery*.
@@ -42,8 +42,20 @@ Stages 1–3 are *decode*. Stage 4 is *grading*. Stage 5 is *delivery*.
 | **Rec.709 (linear)** (default) | HD and web delivery; the safe choice, and what a project gets if you never touch this |
 | **ACEScg** | VFX work, wide-gamut sources, stacking many effects, an ACES delivery |
 | **Rec.2020 (linear)** | HDR and UHD wide-gamut grades without the ACES tone curve |
+| **ACEScct** / **ACEScc** | Grading in a log space, for wheels and curves that respond as on film |
 
-Set the working space in **Project Info → Colour**.
+Set it under **Grade in** on the Colour Management page.
+
+## Colour Management
+
+**Colour Management…** (from Project Properties or the command palette) holds the project's colour settings on one page, in the order the picture goes through them:
+
+- **Input** — the input format new clips take (or **Detect from the file**), and an input LUT.
+- **Grade in** — the working space.
+- **Output** — the output transform (including Rec.2100 PQ and HLG), and an output LUT, applied or not.
+- **Monitoring** — a viewing LUT and a calibration LUT for the viewer only, the display gamma (BT.1886), **Match Viewer**, and whether the scopes read before or after the viewing LUT.
+
+A colour change made here is one undo step, with any grades converted alongside it.
 
 Switching it re-bases the whole grade chain. The dropdown alone is a
 naked switch: the numbers stay, so the picture changes. The button
@@ -57,7 +69,7 @@ ACEScg has three useful properties:
 
 1. **AP1 primaries** — wider than Rec.2020. No clipping when grading a wide-gamut camera through to Rec.2020 delivery.
 2. **Linear** — every effect behaves like light.
-3. **Industry-standard** — round-tripping through Resolve, Nuke, or any other ACES-aware tool is lossless.
+3. **Industry-standard** — round-tripping through any other ACES-aware tool is lossless.
 
 The cost is that ACEScg values can exceed 1.0 (super-white highlights from log sources) and go below 0.0 (chromatic excursions). All Klipp's effects are floating-point throughout to handle this.
 
@@ -69,10 +81,11 @@ At export, an ODT converts from the working space to the delivery space. ODT is 
 |---|---|
 | sRGB | YouTube, web, most monitors |
 | Rec.709 | Broadcast HD, conservative streaming |
-| Rec.2020 | HDR streaming, Blu-ray UHD |
+| Rec.2020 | Wide-gamut SDR deliveries |
+| Rec.2100 PQ / HLG | HDR streaming and broadcast |
 | P3-D65 | Cinema, Apple displays |
 
-Pick the ODT in the export dialog. It applies to the whole export; there is no per-clip override.
+Pick the ODT in the export settings, or set the project's on the Colour Management page. It applies to the whole export; there is no per-clip override.
 
 ## Per-Clip Source Override
 
@@ -86,4 +99,3 @@ The pipeline is `f16` on the GPU (storage) and `f32` in compute, end to end. The
 
 When you stack a 50% opacity clip over a background in ACEScg, the result is what you'd see if you'd shot two physical lights at half power against the scene. When you do the same in sRGB-encoded space, you get a darker, muddier composite that requires extra exposure compensation to look right.
 
-This single change — linear-light everywhere — is the largest visible quality difference between Klipp's pipeline and a typical web-video editor.

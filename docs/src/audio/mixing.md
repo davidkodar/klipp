@@ -1,6 +1,10 @@
 # Audio Mixing
 
-Klipp provides per-clip and per-track audio controls with EBU R128 loudness metering.
+Klipp provides per-clip and per-track audio controls with EBU R128 loudness metering. Playback is heard at the loudness the export will deliver, and playback and export mix with the same pan law.
+
+## The Audio Mixer
+
+**Window → Audio Mixer** (Ctrl+Shift+M) shows a channel strip per audio track — fader, pan, mute, solo, meters and the track's automation mode — and the master.
 
 ## Volume
 
@@ -40,16 +44,27 @@ Each clip is measured over the part of its file it plays. A silent clip is left 
 
 ## Pan Law
 
-Determines how volume is compensated when panning to one side. Configure in **Edit → Preferences → Audio**:
+How volume is compensated when panning to one side, set in **Preferences → Audio**:
 
-- **0 dB** — No compensation. Centre at full volume in both channels.
-- **−3 dB (Constant Power)** — Centre attenuated by 3 dB. Maintains perceived loudness across the stereo field. Most common.
-- **−4.5 dB** — Compromise.
-- **−6 dB (Linear)** — Centre attenuated by 6 dB. Mathematically precise linear crossfade.
+- **Linear (balance)** — the default: the side panned away from is turned down, the other left at full level.
+- **Constant power** — keeps the perceived loudness constant across the field.
+- **−3 dB**, **−4.5 dB**, **−6 dB** — the centre attenuated by that much.
+
+## Track Automation
+
+An audio track's volume and pan can be keyed over time and are played and exported with the mix. The automation lane under a track (its header menu, **Show automation lane**) draws the keys on a fader law in dB, down to silence. In the mixer, each track's automation mode is **Off**, **Read**, **Touch**, **Latch** or **Write**; Touch, Latch and Write record the controls' moves while playing, each pass one undo step.
+
+## Roles and Ducking
+
+Each clip has a role — dialogue, music, effects and the like — which the mix, the delivery check and the assistant use. Klipp can classify clips' sound and propose their roles. **Auto Duck** in the Audio tab lowers a clip under a sidechain, such as music under dialogue.
+
+## Fitting Music
+
+**Fit Music to Length…** in a music clip's menu fits it to a length by whole bars, cutting or repeating them. The plan is shown before **Apply** replaces the clip with the fitted stretches, their joins crossfaded, in one undo step.
 
 ## Audio Keyframes
 
-All audio parameters (volume, pan, EQ bands) can be keyframed for automation. Click the diamond icon next to any audio parameter to add a keyframe at the playhead. See [Keyframes](../color/keyframes.md) for the full keyframe model.
+Clip volume, pan and audio effect parameters can be keyed. Click the diamond icon next to any audio parameter to add a keyframe at the playhead. See [Keyframes](../color/keyframes.md) for the full keyframe model.
 
 ## Loudness Metering (EBU R128)
 
@@ -71,17 +86,16 @@ Common targets:
 | Apple Music | −16 |
 | Spotify | −14 |
 
-Set the project target in preferences; the meter highlights when the integrated loudness drifts outside the target's tolerance band.
+Set the project target in preferences; the meter highlights when the integrated loudness drifts outside the target's tolerance band. An export can be fitted to a loudness target, measured on its own output; see [Export Quality](../export/quality.md).
 
 ## Audio Output Chain
 
-The full chain from clip to speaker:
+From clip to speaker:
 
-1. Decode (codec → PCM via FFmpeg)
-2. Resample to project sample rate (recreated on seek to avoid stale-buffer artefacts)
-3. Per-clip gain → EQ → compressor (if enabled)
-4. Per-clip volume + pan
-5. Track-level mix
-6. Master mix → cpal output → PipeWire/ALSA
+1. Decode (codec → PCM via FFmpeg), read on its own thread
+2. Resample to the project sample rate
+3. Per-clip gain, audio effects, volume and pan
+4. Track mix, with its automation
+5. Master mix → cpal output → PipeWire / ALSA
 
-A ~2-second ring buffer absorbs timing jitter between decode and output. An overflow buffer catches samples that don't fit in the ring buffer (prevents truncation that produced loud audio artefacts in early builds).
+At a cut, playback swaps a track's sound on the cut's own sample.

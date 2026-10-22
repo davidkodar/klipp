@@ -1,40 +1,42 @@
 # Keyframes
 
-Keyframes animate parameter values over time. Almost every parameter in Klipp — opacity, transform, colour wheels, audio volume, EQ bands, effect parameters — is keyframable.
+Keyframes animate parameter values over time. Almost every parameter in Klipp — opacity, transform, colour wheels, grade node values, title layer properties, masks, audio volume, effect parameters — can be keyed.
 
 ## Adding a Keyframe
 
-Click the diamond icon next to any parameter in the inspector. The current value at the playhead becomes a keyframe. Move the playhead, change the value, and click the diamond again to add a second keyframe — the parameter now interpolates between the two.
+Click the diamond next to any parameter in the inspector, or press **Alt+K** for the parameter in focus: the current value at the playhead becomes a key. Move the playhead, change the value, and the parameter now moves between the two. A switch or a choice keys as a step. **Alt+←** / **Alt+→** go to the previous / next key.
 
-## Interpolation Curves
+Keys show in several places, all of them editable:
 
-Each keyframe has an *interpolation* setting that controls how the value transitions to the next keyframe. There are three (`Interpolation` in `crates/klipp-core/src/keyframe.rs`):
+- The inspector's **◆ Keyframes** column, a strip beside each parameter
+- The **Curve Editor** and its **Dope Sheet** (Shift+K)
+- On the clip itself, with **Show Keys on Clip** in the clip's menu
+- A clip's position keys as a **motion path** in the viewer
+- A track's automation lane, and the sequence camera's lane
 
-| Interpolation | Shape | Use for |
-|---|---|---|
-| **Linear** | Straight line; the default | Steady changes, no acceleration |
-| **Step** | Holds the value until the next keyframe (shown as *Step (Hold)* or *Hold*) | On/off toggles, discrete state |
-| **Bezier** | Cubic curve shaped by the keyframes' in and out tangents | Eases and custom shapes |
+## Interpolation and Easing
 
-Interpolation is set on the *outgoing* keyframe — i.e. the keyframe whose curve takes you to the next one. Before the first keyframe and after the last, the value holds.
+Each key's curve to the next is **Linear** (the default), **Step (Hold)** — holding the value until the next key — or **Bezier**, shaped by handles. Before the first key and after the last, the value holds.
 
-### Ease presets
+Easing presets set a key to Bezier with a named shape: **ease in**, **ease out**, **ease in-out**, and exponential, back (a small overshoot), elastic and bounce, each in, out or in-out. **Ctrl+Alt+I**, **Ctrl+Alt+O**, **Ctrl+Alt+E** and **Ctrl+Alt+L** set the selected keys to ease in, ease out, ease in-out and linear.
 
-Ease In, Ease Out and Ease Both (Ease In-Out) are not interpolation types of their own. Choosing one from a keyframe's right-click menu sets the keyframe to **Bezier** and writes its tangents, scaled to the length of the segment, using the CSS `cubic-bezier` curves:
+Each key also has a **handle kind**: **auto** (smooth, chosen for you), **clamped** (smooth without overshooting its neighbours), **aligned** (the two handles move together), **broken** (each handle on its own), **flat**, or **linear in / out**. The kind is saved with the key.
 
-| Preset | Curve | Shape |
-|---|---|---|
-| **Ease In** | (0.42, 0, 1, 1) | Starts slowly and arrives at speed |
-| **Ease Out** | (0, 0, 0.58, 1) | Leaves at speed and settles |
-| **Ease Both** | (0.42, 0, 0.58, 1) | Slow at both ends |
+## The Curve Editor
 
-The camera lane and the assistant's motion tools use the same model (`Ease` in `keyframe.rs`), which adds two more curves: *expo out* (0.16, 1, 0.3, 1), a fast arrival that settles long, and *back out* (0.34, 1.56, 0.64, 1), which overshoots a little and settles back. *Bezier (Custom)* keeps whatever tangents you drag in the keyframe editor.
+**Window → Curve Editor** (Shift+K) shows the selected clip's keyed parameters on one time axis. With no clip selected it shows the sequence camera.
 
-## Keyframe Editor
+- **Several curves at once** — the list of shown curves on the left; **Draw this curve** adds one, **Stop showing this curve** removes it. Position X and Y can be shown as one.
+- **Edit keys** — click to select, drag in time and value, Shift-click or drag a box to select several and edit them together. Dragged keys snap to frames, the playhead and other keys. Type a selected key's exact time and value.
+- **Handles** — drag Bezier handles to shape the curve; in the **Speed** view, drag a key's influence handles to set how it eases.
+- **Key tools** — previous / next key, key at the playhead, copy, paste and scale the selected keys.
+- **Dope Sheet** — every animated parameter of the clip as a row of keys over time, to move keys and see timing at a glance.
 
-Open the per-parameter keyframe graph by clicking the small graph icon next to the parameter. The editor shows time on the X-axis, value on the Y-axis, and the keyframe sequence as control points connected by their interpolation curve.
+The Curve Editor and the inspector share the parameter in focus: selecting a row in one shows it in the other.
 
-Drag points to move them. Drag bezier handles to reshape the curve. Right-click a point to change interpolation type or delete.
+## Copying and Reversing Keys
+
+A key diamond's menu copies, pastes and reverses an effect parameter's keys. **Clear all keyframes** turns the parameter back into a single value: its value at the playhead.
 
 ## Behaviours (Modifiers)
 
@@ -57,13 +59,13 @@ Time runs from the clip's start on the timeline. Keyframes and behaviours combin
 ## Common Patterns
 
 ### Fade in / out
-Two keyframes on opacity: 0 → 1 over the in duration, 1 → 0 over the out duration. Use the **Ease Both** preset for a natural feel.
+Two keyframes on opacity: 0 → 1 over the in duration, 1 → 0 over the out duration. Use the **ease in-out** preset for a natural feel.
 
 ### Ken Burns
-Two keyframes on transform position + scale at clip start and end. **Linear** interpolation looks deliberate; **Ease Both** looks photographic.
+Two keyframes on transform position + scale at clip start and end. **Linear** interpolation looks deliberate; **ease in-out** looks photographic. **Clip → Motion Presets** sets up common ones.
 
 ### Music ducking
-Two keyframes on the music track's volume around a voiceover: -6 dB before VO, -18 dB during, -6 dB after. **Ease Both** for a smooth duck.
+Keys on the music track's volume around a voiceover: −6 dB before, −18 dB during, −6 dB after, eased in-out — or let **Auto Duck** do it.
 
 ### Chromakey edge clean-up
 Keyframe the chroma-key tolerance over a tricky shot — relax tolerance during a fast-moving section, tighten during a static one.
@@ -71,7 +73,3 @@ Keyframe the chroma-key tolerance over a tricky shot — relax tolerance during 
 ## Performance
 
 Keyframe evaluation is sub-microsecond per parameter. Klipp samples every animated parameter at the playhead per frame; with hundreds of keyframes across dozens of parameters, evaluation cost is negligible against the rest of the render pipeline.
-
-## Removing All Keyframes
-
-Right-click the diamond icon → **Remove all keyframes** to convert the parameter back to a single constant value (the value at the playhead at the time of removal).

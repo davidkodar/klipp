@@ -7,8 +7,8 @@ same groups.
 ## Starting from another editor's keys
 
 The **Layout** picker at the top of that page swaps the whole map for
-another NLE's defaults — Premiere Pro, Avid Media Composer, DaVinci
-Resolve or Final Cut Pro — for the actions Klipp shares with it.
+the default keys of another editor, named in the picker, for the actions
+Klipp shares with it.
 Anything Klipp has and that editor does not keeps the Klipp key, and a
 key the layout needs is taken off whichever Klipp action held it, so a
 press never runs two things. Changes you make yourself sit on top of
@@ -39,12 +39,18 @@ The tables below are the **Klipp** layout.
 | Cut Clip | `Ctrl+X` |
 | Copy Clip | `Ctrl+C` |
 | Paste Clip | `Ctrl+V` |
+| Paste Insert | — |
 | Copy Attributes | `Ctrl+Shift+C` |
 | Paste Attributes | `Ctrl+Shift+V` |
 | Duplicate Clip | `Ctrl+D` |
 | Select All | `Ctrl+A` |
 | Deselect All | `Ctrl+Shift+A` |
-| Delete Clip | `Del` or `Backspace` |
+| Select All on Track | `Ctrl+Alt+A` |
+| Select Forward on Track | `Ctrl+Alt+→` |
+| Select Backward on Track | `Ctrl+Alt+←` |
+| Select Forward (All Tracks) | — |
+| Select Backward (All Tracks) | — |
+| Delete Clip | `Delete` or `Backspace` |
 | Lift Clip (Leave Gap) | `Shift+Delete` or `Shift+Backspace` |
 | Split at Playhead | `Ctrl+B` |
 | Group Clips | `Ctrl+G` |
@@ -58,14 +64,33 @@ The tables below are the **Klipp** layout.
 | Blade Tool | `B` |
 | Range Tool | `R` |
 | Trim Tool | `T` |
+| Text Tool | `Y` |
 | Mask Tool | `P` |
 
 ## Timeline
 
 | Action | Shortcut |
 |---|---|
+| Add Default Transition | `Shift+T` |
+| Add Audio Crossfade | `Alt+T` |
+| Nudge Clips Back a Frame | `Alt+,` |
+| Nudge Clips Forward a Frame | `Alt+.` |
+| Nudge Clips Back Ten Frames | `Shift+Alt+,` |
+| Nudge Clips Forward Ten Frames | `Shift+Alt+.` |
+| Move Clips Up a Track | `Alt+↑` |
+| Move Clips Down a Track | `Alt+↓` |
+| Select Edit Point / Cycle Its Side | `U` |
+| Extend Edit to Playhead | `E` |
+| Play Around Edit (loops) | `Ctrl+Shift+K` |
+| Trim Edit Point Back a Frame | `[` |
+| Trim Edit Point Forward a Frame | `]` |
+| Trim Edit Point Back Ten Frames | `Shift+[` |
+| Trim Edit Point Forward Ten Frames | `Shift+]` |
 | Insert Edit | `,` or `F10` |
 | Overwrite Edit | `.` |
+| Fit to Fill | `Shift+F11` |
+| Place on Top | `F12` |
+| Replace Edit | `Shift+F12` |
 | Lift Edit | `;` |
 | Extract Edit | `'` |
 | Toggle Insert/Overwrite | `Shift+W` |
@@ -79,8 +104,11 @@ The tables below are the **Klipp** layout.
 
 | Action | Shortcut |
 |---|---|
-| Next Edit Point | `Down` |
-| Previous Edit Point | `Up` |
+| Next Edit Point | `↓` |
+| Previous Edit Point | `↑` |
+| Leave Compound Clip | `Ctrl+↑` |
+| Next Marker | `Shift+↓` |
+| Previous Marker | `Shift+↑` |
 | Set In Point | `I` |
 | Set Out Point | `O` |
 | Clear In Point | `Shift+I` |
@@ -95,14 +123,15 @@ The tables below are the **Klipp** layout.
 | Action | Shortcut |
 |---|---|
 | Play / Pause | `Space` |
-| Step Forward | `Right` |
-| Step Backward | `Left` |
+| Step Forward | `→` |
+| Step Backward | `←` |
 | Go to Start | `Home` |
 | Go to End | `End` |
 | Shuttle Reverse (J) | `J` |
 | Shuttle Pause (K) | `K` |
 | Shuttle Forward (L) | `L` |
 | Toggle Loop Playback | `Ctrl+L` |
+| Play In to Out | `Ctrl+Shift+Space` |
 
 ## Viewer
 
@@ -138,6 +167,7 @@ The tables below are the **Klipp** layout.
 
 | Action | Shortcut |
 |---|---|
+| Swap Stacked Timeline Focus | `` Alt+` `` |
 | Toggle Snap | `N` |
 | Toggle Skimming | `S` |
 | Toggle Audio Skim | `Shift+S` |
@@ -154,8 +184,12 @@ The tables below are the **Klipp** layout.
 | Add Clip Marker | `Shift+M` |
 | Toggle Keyframe | `Alt+K` |
 | Toggle Keyframe Editor | `Shift+K` |
-| Previous Keyframe | `Alt+ArrowLeft` |
-| Next Keyframe | `Alt+ArrowRight` |
+| Previous Keyframe | `Alt+←` |
+| Next Keyframe | `Alt+→` |
+| Ease In Selected Keys | `Ctrl+Alt+I` |
+| Ease Out Selected Keys | `Ctrl+Alt+O` |
+| Ease In-Out Selected Keys | `Ctrl+Alt+E` |
+| Linear Selected Keys | `Ctrl+Alt+L` |
 
 ## Multicam
 
@@ -171,6 +205,7 @@ The tables below are the **Klipp** layout.
 | Multicam Angle 8 | `8` |
 | Multicam Angle 9 | `9` |
 | Create Multicam Clip | `Alt+C` |
+| Multicam Mode (Source Viewer Angles) | `Shift+Alt+M` |
 
 ## Colour
 
@@ -180,6 +215,14 @@ The tables below are the **Klipp** layout.
 | Next Colour Node | `]` |
 | Toggle Node Bypass | `Alt+D` |
 | Reset Current Node | `Ctrl+Shift+R` |
+| Printer Light: Red Up | `Ctrl+Alt+7` |
+| Printer Light: Red Down | `Ctrl+Alt+4` |
+| Printer Light: Green Up | `Ctrl+Alt+8` |
+| Printer Light: Green Down | `Ctrl+Alt+5` |
+| Printer Light: Blue Up | `Ctrl+Alt+9` |
+| Printer Light: Blue Down | `Ctrl+Alt+6` |
+| Printer Light: Master Up | `Ctrl+Alt+3` |
+| Printer Light: Master Down | `Ctrl+Alt+1` |
 | Cycle Scope Mode | `Shift+V` |
 | Copy Colour Nodes | `Ctrl+C` |
 | Paste Colour Nodes | `Ctrl+V` |
@@ -202,3 +245,11 @@ The tables below are the **Klipp** layout.
 | Create Title Clip | `Ctrl+T` |
 | Connect to Primary | `G` |
 | Disconnect from Primary | `Shift+G` |
+
+## Keys That Act in Context
+
+- **Shift+←** / **Shift+→** step one second, or the number of frames set in Preferences.
+- **K** held with **J** or **L** plays slowly (0.5×).
+- In the source viewer, **Shift+F** and **Shift+R** mark the range as a favourite or rejected.
+- **Ctrl+P** toggles focus peaking in the viewer.
+- With the Mask tool, **Enter**, **Delete**, **Escape** and Alt-drag edit the shape being drawn.

@@ -1,6 +1,6 @@
 # Video Scopes
 
-Video scopes provide objective measurement of your image's colour and luminance values, essential for accurate colour grading. Access scopes from **View → Scopes**, the scopes button under the program viewer, or **Alt+V**. In the Color workspace they dock under the viewer, where the timeline is hidden. In every other workspace the same toggle opens the floating scope window, so the timeline keeps its rows; **View → Scopes → Overlay on Viewer** draws one scope in the viewer's corner instead.
+Video scopes provide objective measurement of your image's colour and luminance values, essential for accurate colour grading. Access scopes from **View → Scopes**, the scopes button under the program viewer, or **Alt+V**. In the Colour workspace they dock under the viewer, where the timeline is hidden. In every other workspace the same toggle opens the floating scope window, so the timeline keeps its rows; **View → Scopes → Overlay on Viewer** draws one scope in the viewer's corner instead.
 
 ## Waveform
 
@@ -91,7 +91,7 @@ The picture as shown, repainted by exposure, so a glance says where the light is
 | 92 | Amber | Near white |
 | 98 | Red | At white: detail gone |
 
-Skin is pink, as on an ARRI or a Blackmagic camera: a band ±5 L* around the skin level of the look in the sequence's brief, or L* 62 (the *broadcast_neutral* look) when the brief names none. A face exposed as the look asks turns pink; a stop either side stays grey. It has no settings.
+Skin is pink: a band ±5 L* around the skin level of the look in the sequence's brief, or L* 62 (the *broadcast_neutral* look) when the brief names none. A face exposed as the look asks turns pink; a stop either side stays grey. It has no settings.
 
 ### HDR false colour
 
@@ -138,6 +138,10 @@ When a scope is drawn larger than its samples can fill, as when a small frame is
 A sampled column is spread over every scope column it stands for, so a lower quality changes how many samples are counted, not where the trace is.
 
 Scope quality does not affect the video output, only the precision of the scope displays.
+
+## Scope Picker and the Viewing LUT
+
+**Enable scope picker** in the scope settings, then click the viewer to lock a sample point: the scopes mark that pixel's level and colour. When the project has a viewing LUT, the Colour Management page sets whether the scopes read the picture before or after it.
 
 ## Refresh rate
 
