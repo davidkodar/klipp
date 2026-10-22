@@ -491,7 +491,18 @@ fn main() -> Result<()> {
         // share a single device between them — for now they stay
         // independent, but the backend is unified.
         renderer: eframe::Renderer::Wgpu,
-        wgpu_options: eframe::egui_wgpu::WgpuConfiguration { present_mode: ui_present_mode(), ..Default::default() },
+        // The UI's device is the engine's too: the same limits as one
+        // the engine makes itself, the adapter's largest buffers (#2341).
+        wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
+            present_mode: ui_present_mode(),
+            device_descriptor: std::sync::Arc::new(|adapter| eframe::egui_wgpu::wgpu::DeviceDescriptor {
+                label: Some("egui wgpu device"),
+                required_features: eframe::egui_wgpu::wgpu::Features::default(),
+                required_limits: klipp_effects::gpu_context::device_limits(adapter),
+                memory_hints: eframe::egui_wgpu::wgpu::MemoryHints::default(),
+            }),
+            ..Default::default()
+        },
         ..Default::default()
     };
 

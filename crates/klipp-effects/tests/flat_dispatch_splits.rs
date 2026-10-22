@@ -12,6 +12,7 @@ use std::path::Path;
 use klipp_effects::gpu::{split_workgroups, GpuEffectsPipeline, WorkgroupCapForTest};
 use klipp_effects::gpu_scopes::{HistogramJob, HistogramLayout, ScopeInput, ScopeJob, ScopeTransfer, VectorscopeJob, WaveformJob, WaveformMode};
 use klipp_effects::registry::effect_types;
+use klipp_effects::{apply_effects_with_luma, equalize_cdf_of, equalize_histogram, BuiltinEffect};
 
 const YW: [f32; 3] = [0.2126, 0.7152, 0.0722];
 
@@ -182,4 +183,37 @@ fn no_shader_or_dispatch_is_left_flat() {
     }
     assert!(entries > 100, "the scan found the shaders: {entries}");
     assert!(found.is_empty(), "{}", found.join("\n"));
+}
+
+/// A frame really past the limit (4200 × 4100: 67,266 workgroups of 256)
+/// is drawn to its last pixel: Equalize's histogram counts every pixel
+/// once, as the CPU's does, and a plain effect's first and last rows are
+/// the CPU's. Its buffers are past wgpu's default limits, so it needs the
+/// adapter's own (`device_limits`); an adapter offering less skips it.
+#[test]
+fn a_frame_past_the_limit_is_drawn_to_its_last_pixel() {
+    let Some(mut g) = pipeline() else { return };
+    let (w, h): (u32, u32) = (4200, 4100);
+    assert!((w * h).div_ceil(256) > 65_535);
+    let bytes = u64::from(w * h) * 16;
+    let limits = g.device().limits();
+    if u64::from(limits.max_storage_buffer_binding_size) < bytes || limits.max_buffer_size < bytes {
+        eprintln!("skipped: the adapter binds {} MiB, a {w}×{h} frame is {} MiB", limits.max_storage_buffer_binding_size >> 20, bytes >> 20);
+        return;
+    }
+    let input = frame(w, h);
+    let (hist, cdf) = g.equalize_histogram_and_cdf(&input, w, h).expect("a GPU histogram");
+    assert_eq!(hist.iter().map(|&c| u64::from(c)).sum::<u64>(), u64::from(w * h), "every pixel counted once");
+    let cpu_cdf = equalize_cdf_of(&equalize_histogram(&input, YW), (w * h) as usize);
+    let worst = cdf.iter().zip(&cpu_cdf).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+    assert!(worst < 1e-3, "the CDF is the CPU's: {worst}");
+    let row = (w * 4) as usize;
+    for fx in [BuiltinEffect::Invert { mix: 0.7 }, BuiltinEffect::Gamma { gamma: 1.4 }] {
+        let gpu = g.apply_effects(std::slice::from_ref(&fx), &input, w, h);
+        for (name, at) in [("first", 0), ("last", input.len() - row)] {
+            let cpu = apply_effects_with_luma(std::slice::from_ref(&fx), input[at..at + row].to_vec(), w, 1, YW);
+            let off = gpu[at..at + row].iter().zip(&cpu).filter(|(a, b)| (*a - *b).abs() > 1e-4).count();
+            assert_eq!(off, 0, "{fx:?}: the {name} row is the CPU's");
+        }
+    }
 }
