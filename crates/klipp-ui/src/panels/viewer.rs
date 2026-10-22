@@ -2712,10 +2712,15 @@ impl ViewerPanel {
             let size = crate::widgets::segmented::segmented_size(ui, &labels, &font, h);
             let sw = egui::Rect::from_min_size(egui::pos2(rect.min.x + 126.0, cy - h / 2.0), size);
             let active = if viewer_kind == ViewerMode::Source { 0 } else { 1 };
-            if let Some(i) = crate::widgets::segmented::segmented_in(ui, sw, &labels, active, theme, font) {
+            if let Some(i) = crate::widgets::segmented::segmented_in(ui, sw, &labels, active, theme, font.clone()) {
                 if i != active {
                     cmds.push(AppCommand::SetViewerMode(if i == 0 { ViewerMode::Source } else { ViewerMode::Program }));
                 }
+            }
+            // With the selects stacked, the sequence the program plays, the
+            // one of the two worked in, named beside the switch (#2324).
+            if viewer_kind == ViewerMode::Program && crate::timeline::stacked::stacked_edit(state) {
+                ui.painter().text(egui::pos2(sw.max.x + 8.0, cy), egui::Align2::LEFT_CENTER, &state.sequence().name, font, theme.text_secondary);
             }
         }
         if show_viewer_label {
