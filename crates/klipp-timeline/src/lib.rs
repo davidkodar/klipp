@@ -54,6 +54,7 @@ pub use klipp_graph_lift::registry_catalog::RegistryCatalog;
 #[cfg(test)]
 mod picture_cache_tests;
 pub use clip_anim::{EffectKeyframes, Keyframes, ParamModifiers};
+pub use track_automation::{AutomationMode, TrackAutomation, TrackParam};
 pub use picture_fields::ClipPictureParts;
 pub use picture_store::{ClipPictureFields, LiftedPicture, COLD_LIFTS};
 mod edit_plan;
@@ -96,6 +97,7 @@ pub mod surface;
 /// Clips for tests, built through the picture (M4 step 12-0).
 #[cfg(any(test, feature = "test-clip"))]
 pub mod test_clip;
+pub mod track_automation;
 pub use surface::{PinFit, Surface, SurfaceKey, SurfacePin};
 pub use shared::{SequenceRead, SequenceRevision, SequenceWrite, SharedSequence};
 

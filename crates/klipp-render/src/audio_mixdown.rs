@@ -34,6 +34,8 @@ struct TrackSettings {
     pan: f32,
     muted: bool,
     solo: bool,
+    /// The track's automation (#2306), evaluated as playback evaluates it.
+    automation: klipp_timeline::TrackAutomation,
 }
 
 /// Per-track state: the clips and the decoded sound of those playing.
@@ -70,6 +72,7 @@ impl AudioMixdown {
                 pan: track.pan,
                 muted: track.muted,
                 solo: track.solo,
+                automation: track.automation.clone(),
             });
         }
 
@@ -170,14 +173,30 @@ impl AudioMixdown {
             let (gain_l, gain_r) = self.pan_law.gains(settings.pan);
             let pan_l = gain_l * settings.volume;
             let pan_r = gain_r * settings.volume;
+            // Automated (#2306): the track's volume and pan at the frame's
+            // first sample and at the next frame's, by the function the
+            // playback mixer is fed by, ramped across the frame's samples.
+            let automated = settings.automation.plays(klipp_timeline::TrackParam::Volume) || settings.automation.plays(klipp_timeline::TrackParam::Pan);
+            let ramp = automated.then(|| {
+                let at = |sample: u64| automated_gains(settings, self.pan_law, sample as f64 / self.sample_rate as f64);
+                (at(first), at(end))
+            });
 
             let sample_count = track_samples.len().min(stereo_samples);
+            let frames = (stereo_samples / 2).max(1) as f32;
             for i in (0..sample_count).step_by(2) {
                 let l = track_samples[i];
                 let r = if i + 1 < track_samples.len() {
                     track_samples[i + 1]
                 } else {
                     l
+                };
+                let (pan_l, pan_r) = match ramp {
+                    Some(((l0, r0), (l1, r1))) => {
+                        let t = (i / 2) as f32 / frames;
+                        (l0 + (l1 - l0) * t, r0 + (r1 - r0) * t)
+                    }
+                    None => (pan_l, pan_r),
                 };
                 mixed[i] += l * pan_l;
                 if i + 1 < stereo_samples {
@@ -199,6 +218,15 @@ impl AudioMixdown {
             first_sample_of_frame(frame_num + 1, self.sample_rate, self.fps_num, self.fps_den),
         )
     }
+}
+
+/// A track's left and right gains at `secs` from its automation (#2306):
+/// its automated volume times its pan law's gains at its automated pan,
+/// as the playback mixer multiplies them.
+fn automated_gains(settings: &TrackSettings, law: klipp_core::PanLaw, secs: f64) -> (f32, f32) {
+    let volume = settings.automation.value_at(klipp_timeline::TrackParam::Volume, secs, settings.volume);
+    let (l, r) = law.gains(settings.automation.value_at(klipp_timeline::TrackParam::Pan, secs, settings.pan));
+    (l * volume, r * volume)
 }
 
 /// `floor(frame * sample_rate / fps)` in integer arithmetic.
@@ -760,6 +788,29 @@ mod tests {
     use super::*;
     use crate::snapshot::{AudioClipSnapshot, AudioTrackSnapshot, SequenceSnapshot, VarispeedRead};
 
+    /// #2306: export's gains for an automated track are playback's at the
+    /// same time: the mixer, held at the volume and pan the engine sets
+    /// from the automation there, gives the same samples.
+    #[test]
+    fn automated_gains_are_playbacks() {
+        let key = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
+        let mut automation = klipp_timeline::TrackAutomation::default();
+        automation.lanes.insert(klipp_timeline::TrackParam::Volume, vec![key(0.0, 1.0), key(2.0, 0.1)]);
+        automation.lanes.insert(klipp_timeline::TrackParam::Pan, vec![key(0.0, -0.5), key(2.0, 0.5)]);
+        let settings = TrackSettings { volume: 0.7, pan: 0.0, muted: false, solo: false, automation: automation.clone() };
+        let law = klipp_core::PanLaw::default();
+        for secs in [0.0, 0.4, 1.0, 1.7, 3.0] {
+            let mut mixer = klipp_audio::AudioMixer::new(1);
+            mixer.pan_law = law;
+            mixer.tracks[0].volume = automation.value_at(klipp_timeline::TrackParam::Volume, secs, 0.7);
+            mixer.tracks[0].pan = automation.value_at(klipp_timeline::TrackParam::Pan, secs, 0.0);
+            let one = vec![1.0f32; 2];
+            let played = mixer.mix(&[(0, &one)]);
+            let (l, r) = automated_gains(&settings, law, secs);
+            assert_eq!((played[0].to_bits(), played[1].to_bits()), (l.to_bits(), r.to_bits()), "at {secs} s");
+        }
+    }
+
     fn make_empty_snapshot(num_audio_tracks: usize) -> SequenceSnapshot {
         let audio_tracks: Vec<AudioTrackSnapshot> = (0..num_audio_tracks)
             .map(|_| AudioTrackSnapshot {
@@ -768,6 +819,7 @@ mod tests {
                 muted: false,
                 solo: false,
                 clips: vec![],
+                automation: Default::default(),
             })
             .collect();
 

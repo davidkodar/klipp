@@ -423,6 +423,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                     klipp_core::AudioParam::Gain => "Gain".to_string(),
                 }),
                 automation_lane_height: t.automation_lane_height,
+                automation: (!t.automation.is_default()).then(|| t.automation.clone()),
                 magnetic_role: Some(t.magnetic_role.clone()),
                 storyline_anchor: t.storyline_anchor.clone(),
                 effects: (!t.effects.is_empty()).then(|| crate::format::TrackEffectsJson {

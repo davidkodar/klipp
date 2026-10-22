@@ -1259,6 +1259,10 @@ pub struct PlaybackEngine {
     /// True when audio is continuing seamlessly across a contiguous clip boundary.
     /// Suppresses fade-in on the new clip to prevent dropout.
     contiguous_audio: std::sync::atomic::AtomicBool,
+    /// The tracks whose volume or pan the last sync took from their
+    /// automation (#2306), by sequence index: one no longer automated gets
+    /// its controls as set back.
+    automated_tracks: std::sync::Mutex<Vec<bool>>,
     fps: Fps,
     playhead: Timecode,
     sequence: Arc<klipp_timeline::SharedSequence>,
@@ -2251,6 +2255,7 @@ impl PlaybackEngine {
             current_clip_index: 0,
             current_track_index: 0,
             contiguous_audio: std::sync::atomic::AtomicBool::new(false),
+            automated_tracks: std::sync::Mutex::new(Vec::new()),
             fps: Fps::film_24(),
             playhead: RationalTime::from_frames(0, 24),
             sequence,
@@ -4232,6 +4237,30 @@ impl PlaybackEngine {
         self.playhead + RationalTime::from_secs_f64(lead, self.fps.rate())
     }
 
+    /// Each track's automated volume and pan at `heard_at` (#2306), where
+    /// the samples mixed now are heard, as a clip's keys are taken: into
+    /// the mixer, which ramps to them over its next block. A track whose
+    /// automation stopped applying (its keys gone, or Off) gets its
+    /// controls as set back; one never automated is left as it is.
+    fn sync_track_automation(&self, seq: &klipp_timeline::Sequence, heard_at: f64) {
+        use klipp_timeline::TrackParam;
+        let Ok(mut was) = self.automated_tracks.lock() else { return };
+        let now: Vec<bool> = seq.tracks.iter().map(|t| t.automation.plays(TrackParam::Volume) || t.automation.plays(TrackParam::Pan)).collect();
+        if now.iter().all(|a| !a) && was.iter().all(|a| !a) {
+            return;
+        }
+        if let Ok(mut m) = self.mixer.lock() {
+            m.ensure_tracks(seq.tracks.len());
+            for (i, track) in seq.tracks.iter().enumerate() {
+                if now[i] || was.get(i).copied().unwrap_or(false) {
+                    m.tracks[i].volume = track.automation.value_at(TrackParam::Volume, heard_at, track.volume);
+                    m.tracks[i].pan = track.automation.value_at(TrackParam::Pan, heard_at, track.pan);
+                }
+            }
+        }
+        *was = now;
+    }
+
     fn sync_clip_volumes(&self) {
         let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
         // A blade join's continuing sound takes no fade-in; the flag is
@@ -4243,6 +4272,7 @@ impl PlaybackEngine {
         // sample at its own time; at the playhead a duck came ~200 ms early.
         let heard_tc = self.audio_heard_at();
         let heard_at = heard_tc.to_secs_f64();
+        self.sync_track_automation(&seq, heard_at);
 
         for active in &self.audio_sources {
             if seq.tracks.get(key_track(active.track_index)).is_some() {

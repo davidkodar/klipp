@@ -297,6 +297,9 @@ pub struct TrackJson {
     /// when it has none, so a project without them is written as before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effects: Option<TrackEffectsJson>,
+    /// The track's own automation (#2306), skipped when it has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub automation: Option<klipp_timeline::TrackAutomation>,
 }
 
 /// A track's own effects (#846). The picture effects are kept as JSON and
@@ -1217,6 +1220,7 @@ mod tests {
                 channel_waveforms: false,
                 automation_lane_visible: Some(label.to_string()),
                 automation_lane_height: None,
+                automation: None,
             };
             let s = serde_json::to_string(&track).expect("serialise");
             let back: TrackJson = serde_json::from_str(&s).expect("deserialise");
@@ -1269,6 +1273,7 @@ mod tests {
             channel_waveforms: false,
             automation_lane_visible: None,
             automation_lane_height: None,
+            automation: None,
         };
         let s = serde_json::to_string(&track).expect("serialise");
         assert!(!s.contains("automation_lane_visible"),
@@ -1308,6 +1313,7 @@ mod tests {
             channel_waveforms: false,
             automation_lane_visible: Some("Volume".to_string()),
             automation_lane_height: Some(180.0),
+            automation: None,
         };
         let s = serde_json::to_string(&track).expect("serialise");
         let back: TrackJson = serde_json::from_str(&s).expect("deserialise");
