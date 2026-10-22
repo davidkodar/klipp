@@ -479,6 +479,18 @@ pub struct AutomationLaneParamMenu {
     pub screen_pos: egui::Pos2,
 }
 
+/// A key dragged on a clip's parameter lane (#2307): its clip and track,
+/// its time now, the values the lane spanned when the drag began (kept
+/// so the key stays under the pointer), and whether its step has begun.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParamLaneDrag {
+    pub clip_id: ClipId,
+    pub kind: KeyframeParamKind,
+    pub at: f64,
+    pub span: (f32, f32),
+    pub began: bool,
+}
+
 /// A selected keyframe on the timeline rubber band.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SelectedKeyframe {
@@ -2812,6 +2824,12 @@ pub struct AppState {
     /// A mask key dragged on that lane: its clip and track, its time now,
     /// and whether its gesture has begun.
     pub mask_lane_drag: Option<(ClipId, crate::mask_tracks::MaskTrack, f64, bool)>,
+    /// Any other keyed parameter the clip's key lane shows, picked from
+    /// the clip's menu (#2307): an effect's, a grade node's, a title
+    /// layer's, and the clip it is picked on.
+    pub timeline_param_lane: Option<(ClipId, KeyframeParamKind)>,
+    /// A key dragged on that lane.
+    pub param_lane_drag: Option<ParamLaneDrag>,
     /// Audio prefs synced from preferences (fade overlay mode, show rubber band, show waveform)
     pub audio_fade_overlay_mode: crate::prefs::FadeOverlayMode,
     pub audio_show_rubber_band: bool,
@@ -4904,6 +4922,8 @@ impl Default for AppState {
             video_rubber_band_param: VideoParam::Opacity,
             timeline_mask_lane: None,
             mask_lane_drag: None,
+            timeline_param_lane: None,
+            param_lane_drag: None,
             audio_fade_overlay_mode: crate::prefs::FadeOverlayMode::default(),
             audio_show_rubber_band: true,
             audio_show_waveform: true,

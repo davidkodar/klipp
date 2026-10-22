@@ -36,7 +36,7 @@ pub enum CurveParam {
 /// `clip_id`: what a double-click on the graph does, and the key tools'
 /// key at the playhead and paste (#2278). None for a curve with no keys
 /// of its own here (speed, the camera).
-fn add_key_commands(param: &CurveParam, clip_id: klipp_core::ClipId, t: f64, v: f32) -> Vec<AppCommand> {
+pub(crate) fn add_key_commands(param: &CurveParam, clip_id: klipp_core::ClipId, t: f64, v: f32) -> Vec<AppCommand> {
     match param {
         CurveParam::Title { object_id, param } => vec![param.add(clip_id, *object_id, t, v)],
         CurveParam::Audio(p) => vec![AppCommand::AddAudioKeyframe { clip_id, param: *p, time_secs: t, value: v }],

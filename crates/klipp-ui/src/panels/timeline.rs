@@ -2394,94 +2394,12 @@ impl TimelinePanel {
                                     kfs.get(ctx_menu.keyframe_index).map(|kf| kf.interpolation)
                                 });
 
-                            // A node's key is set by its time (M3 step 3).
-                            let node_time = |m: &KeyframeContextMenu| match &m.param_kind {
-                                crate::state::KeyframeParamKind::Node { path, key } => state.sequences[state.active_sequence_idx].all_clips().find(|c| c.id == m.clip_id).and_then(|c| c.node_key_state(path, key)).and_then(|s| s.keys.get(m.keyframe_index).map(|k| k.time_secs)),
-                                _ => None,
-                            };
                             // Several keys selected, this one among them:
                             // each choice goes to every one (#1958).
                             let targets = crate::key_selection::menu_targets(state, ctx_menu);
                             // Helper closure: emit interpolation command
                             let emit_interp = |cmds: &mut Vec<AppCommand>, m: &KeyframeContextMenu, interp: klipp_core::Interpolation| {
                                 cmds.extend(key_interpolation_commands(state, m, interp));
-                            };
-
-                            // Helper: emit tangent commands for ease presets
-                            let emit_ease = |cmds: &mut Vec<AppCommand>, m: &KeyframeContextMenu, preset: crate::widgets::scrubby_param::EasePreset| {
-                                let (out_ratio, in_ratio) = preset.tangent_ratios();
-                                let kfs: Option<Vec<klipp_core::Keyframe>> = state.sequence().tracks.iter()
-                                    .flat_map(|t| t.clips.iter())
-                                    .find(|c| c.id == m.clip_id)
-                                    .map(|clip| {
-                                        match &m.param_kind {
-                                            crate::state::KeyframeParamKind::Mask(track) => crate::mask_tracks::keys(clip, track),
-                                            crate::state::KeyframeParamKind::Audio(p) => match p {
-                                                klipp_core::AudioParam::Volume => clip.volume_keyframes.clone(),
-                                                klipp_core::AudioParam::Pan => clip.pan_keyframes.clone(),
-                                                klipp_core::AudioParam::Gain => clip.gain_keyframes.clone(),
-                                            },
-                                            // The lane as the picture holds it (M4 step 12c).
-                                            crate::state::KeyframeParamKind::Video(p) => crate::inspector::placement_by_path::param_keys(clip, *p),
-                                            crate::state::KeyframeParamKind::Title { object_id, param } => param.keyframes(clip, *object_id).to_vec(),
-                                            crate::state::KeyframeParamKind::Node { path, key } => clip.node_key_state(path, key).map(|s| s.keys).unwrap_or_default(),
-                                            crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
-                                                clip.audio_effect_keyframes
-                                                    .get(&format!("{effect_index}:{param_name}"))
-                                                    .cloned()
-                                                    .unwrap_or_default()
-                                            }
-                                        }
-                                    });
-                                if let Some(kfs) = kfs {
-                                    let ki = m.keyframe_index;
-                                    let len = kfs.len();
-                                    for idx in [ki.saturating_sub(1), ki] {
-                                        if idx >= len { continue; }
-                                        let prev_t = if idx > 0 { kfs[idx - 1].time_secs } else { kfs[idx].time_secs - 1.0 };
-                                        let next_t = if idx + 1 < len { kfs[idx + 1].time_secs } else { kfs[idx].time_secs + 1.0 };
-                                        let span_out = (next_t - kfs[idx].time_secs).abs();
-                                        let span_in = (kfs[idx].time_secs - prev_t).abs();
-                                        let t_out = Some((span_out * out_ratio, 0.0f32));
-                                        let t_in = Some((-span_in * in_ratio, 0.0f32));
-                                        match &m.param_kind {
-                                            crate::state::KeyframeParamKind::Mask(_) => {},
-                                            crate::state::KeyframeParamKind::Audio(param) => {
-                                                cmds.push(AppCommand::SetAudioKeyframeTangent {
-                                                    clip_id: m.clip_id,
-                                                    param: *param,
-                                                    keyframe_index: idx,
-                                                    tangent_in: t_in,
-                                                    tangent_out: t_out,
-                                                    handles: None,
-                                                });
-                                            }
-                                            crate::state::KeyframeParamKind::Video(param) => {
-                                                cmds.push(AppCommand::SetVideoKeyframeTangent {
-                                                    clip_id: m.clip_id,
-                                                    param: *param,
-                                                    keyframe_index: idx,
-                                                    tangent_in: t_in,
-                                                    tangent_out: t_out,
-                                                    handles: None,
-                                                });
-                                            }
-                                            crate::state::KeyframeParamKind::Title { object_id, param } => { cmds.push(param.tangent(m.clip_id, *object_id, idx, t_in, t_out, None)); }
-                                            crate::state::KeyframeParamKind::Node { .. } => {}
-                                            crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
-                                                cmds.push(AppCommand::SetAudioEffectKeyframeTangent {
-                                                    clip_id: m.clip_id,
-                                                    effect_index: *effect_index,
-                                                    param_name: param_name.clone(),
-                                                    keyframe_index: idx,
-                                                    tangent_in: t_in,
-                                                    tangent_out: t_out,
-                                                    handles: None,
-                                                });
-                                            }
-                                        }
-                                    }
-                                }
                             };
 
                             // Linear
@@ -2492,7 +2410,7 @@ impl TimelinePanel {
                                 } else {
                                     egui::RichText::new("  Linear")
                                 };
-                                if ui.add(egui::Button::new(text).frame(false)).clicked() {
+                                if ui.add(egui::Button::new(text).frame(false).shortcut_text(crate::widgets::scrubby_param::ease_hints(ui.ctx())[3].as_str())).clicked() {
                                     // Several keys' edit is one step (#1958).
                                     let batch = targets.len() > 1;
                                     if batch { cmds.push(AppCommand::BeginHistoryBatch); }
@@ -2525,36 +2443,20 @@ impl TimelinePanel {
                             }
 
                             // Ease presets
-                            for (label, preset) in [
-                                ("Ease In", crate::widgets::scrubby_param::EasePreset::EaseIn),
-                                ("Ease Out", crate::widgets::scrubby_param::EasePreset::EaseOut),
-                                ("Ease Both", crate::widgets::scrubby_param::EasePreset::EaseBoth),
+                            // Each with its shortcut (#2307).
+                            let hints = crate::widgets::scrubby_param::ease_hints(ui.ctx());
+                            for (label, preset, hint) in [
+                                ("Ease In", crate::widgets::scrubby_param::EasePreset::EaseIn, &hints[0]),
+                                ("Ease Out", crate::widgets::scrubby_param::EasePreset::EaseOut, &hints[1]),
+                                ("Ease Both", crate::widgets::scrubby_param::EasePreset::EaseBoth, &hints[2]),
                             ] {
                                 let text = egui::RichText::new(format!("  {label}"));
-                                if ui.add(egui::Button::new(text).frame(false)).clicked() {
+                                if ui.add(egui::Button::new(text).frame(false).shortcut_text(hint.as_str())).clicked() {
                                     // Several keys' edit is one step (#1958).
                                     let batch = targets.len() > 1;
                                     if batch { cmds.push(AppCommand::BeginHistoryBatch); }
                                     for m in &targets {
-                                        match (&m.param_kind, node_time(m)) {
-                                            // A node's key eases by path, the
-                                            // side the item names, one step (#891).
-                                            (crate::state::KeyframeParamKind::Node { path, key }, Some(time_secs)) => {
-                                                let ease = AppCommand::EaseKeyAt { addr: path.clone(), key: key.clone(), time_secs, ease: preset.key_ease() };
-                                                match state.sequence().all_clips().find(|c| c.id == m.clip_id) {
-                                                    Some(clip) => cmds.extend(crate::inspector::stack_view::route_placed(clip, vec![ease])),
-                                                    None => cmds.push(ease),
-                                                }
-                                            }
-                                            (crate::state::KeyframeParamKind::Node { .. }, None) => {}
-                                            // A mask's key has no handles to
-                                            // shape: an ease is passed over.
-                                            (crate::state::KeyframeParamKind::Mask(_), _) => {}
-                                            _ => {
-                                                emit_interp(cmds, m, klipp_core::Interpolation::Bezier);
-                                                emit_ease(cmds, m, preset);
-                                            }
-                                        }
+                                        cmds.extend(key_ease_commands(state, m, preset));
                                     }
                                     if batch { cmds.push(AppCommand::EndHistoryBatch); }
                                     close_menu = true;
@@ -8541,6 +8443,20 @@ impl TimelinePanel {
                         }
                     })
                 });
+                // Any keyed parameter of the clip on its band (#2307).
+                let keyed = state.sequence().all_clips().find(|c| c.id == clip_id).map(crate::panels::dope_sheet::rows).unwrap_or_default();
+                if !keyed.is_empty() {
+                    ui.menu_button("Show Keys on Clip", |ui| {
+                        crate::widgets::menu::menu_body(ui, |ui| {
+                            for row in &keyed {
+                                if ui.button(&row.label).clicked() {
+                                    crate::timeline::param_lane::pick(state, clip_id, &row.kind);
+                                    ui.close_menu();
+                                }
+                            }
+                        })
+                    });
+                }
                 // Wipe the graded clip against this one (#899).
                 let viewed = crate::graded_thumbs::viewed_clip(state.sequence(), state.selected_clip, state.playhead);
                 if state.show_color_panel
@@ -12374,6 +12290,20 @@ impl TimelinePanel {
         };
 
         if kind_is_gap {
+            return;
+        }
+
+        // Another keyed parameter picked for the clip (#2307): its lane,
+        // its pill going back to the picture's band.
+        let picked = {
+            let clip = &state.sequence().tracks[track_idx].clips[clip_index];
+            crate::timeline::param_lane::shown(state, clip)
+        };
+        if let Some(row) = picked {
+            let clip = state.sequence().tracks[track_idx].clips[clip_index].clone();
+            if crate::timeline::param_lane::draw(ui, painter, clip_rect, &clip, &row, state, cmds, interactive, pointer_pos, &theme()) {
+                state.timeline_param_lane = None;
+            }
             return;
         }
 
@@ -19893,6 +19823,50 @@ pub(crate) fn key_handles_commands(state: &AppState, m: &KeyframeContextMenu, ha
                 Some(clip) => crate::inspector::stack_view::route_placed(clip, puts),
                 None => puts,
             }
+        }
+    }
+}
+
+/// The commands easing `m`'s key by `preset`, by its kind: a node's key
+/// by its time, the side the preset names (#891); the others' keys made
+/// Bezier, the handles of the key and the one before it flat and
+/// `preset`'s share of their segments long. A mask's key has no handles
+/// to shape, so it is passed over. Shared by the key menus and the ease
+/// shortcuts (#2307).
+pub(crate) fn key_ease_commands(state: &AppState, m: &KeyframeContextMenu, preset: crate::widgets::scrubby_param::EasePreset) -> Vec<AppCommand> {
+    use crate::state::KeyframeParamKind as K;
+    let Some(clip) = state.sequence().all_clips().find(|c| c.id == m.clip_id) else { return Vec::new() };
+    let kfs = crate::key_selection::track_keys(clip, &m.param_kind);
+    match &m.param_kind {
+        K::Mask(_) => Vec::new(),
+        K::Node { path, key } => {
+            let Some(time_secs) = kfs.get(m.keyframe_index).map(|k| k.time_secs) else { return Vec::new() };
+            let ease = AppCommand::EaseKeyAt { addr: path.clone(), key: key.clone(), time_secs, ease: preset.key_ease() };
+            crate::inspector::stack_view::route_placed(clip, vec![ease])
+        }
+        kind => {
+            let mut cmds = key_interpolation_commands(state, m, klipp_core::Interpolation::Bezier);
+            let (out_ratio, in_ratio) = preset.tangent_ratios();
+            let ki = m.keyframe_index;
+            let len = kfs.len();
+            for idx in [ki.saturating_sub(1), ki] {
+                if idx >= len {
+                    continue;
+                }
+                let prev_t = if idx > 0 { kfs[idx - 1].time_secs } else { kfs[idx].time_secs - 1.0 };
+                let next_t = if idx + 1 < len { kfs[idx + 1].time_secs } else { kfs[idx].time_secs + 1.0 };
+                let t_out = Some(((next_t - kfs[idx].time_secs).abs() * out_ratio, 0.0f32));
+                let t_in = Some((-(kfs[idx].time_secs - prev_t).abs() * in_ratio, 0.0f32));
+                let clip_id = m.clip_id;
+                cmds.push(match kind {
+                    K::Audio(param) => AppCommand::SetAudioKeyframeTangent { clip_id, param: *param, keyframe_index: idx, tangent_in: t_in, tangent_out: t_out, handles: None },
+                    K::Video(param) => AppCommand::SetVideoKeyframeTangent { clip_id, param: *param, keyframe_index: idx, tangent_in: t_in, tangent_out: t_out, handles: None },
+                    K::Title { object_id, param } => param.tangent(clip_id, *object_id, idx, t_in, t_out, None),
+                    K::AudioEffect { effect_index, param_name } => AppCommand::SetAudioEffectKeyframeTangent { clip_id, effect_index: *effect_index, param_name: param_name.clone(), keyframe_index: idx, tangent_in: t_in, tangent_out: t_out, handles: None },
+                    K::Mask(_) | K::Node { .. } => continue,
+                });
+            }
+            cmds
         }
     }
 }

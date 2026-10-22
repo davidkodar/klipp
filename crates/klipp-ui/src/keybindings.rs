@@ -484,6 +484,11 @@ impl KeyBindings {
         bind(&mut b, "toggle_keyframe_editor", vec![KeyCombo::shift("K")]);
         bind(&mut b, "prev_keyframe", vec![KeyCombo::alt("ArrowLeft")]);
         bind(&mut b, "next_keyframe", vec![KeyCombo::alt("ArrowRight")]);
+        // The selected keys' ease, one key each (#2307).
+        bind(&mut b, "key_ease_in", vec![KeyCombo::ctrl_alt("I")]);
+        bind(&mut b, "key_ease_out", vec![KeyCombo::ctrl_alt("O")]);
+        bind(&mut b, "key_ease_in_out", vec![KeyCombo::ctrl_alt("E")]);
+        bind(&mut b, "key_linear", vec![KeyCombo::ctrl_alt("L")]);
 
         // Multicam
         bind(&mut b, "multicam_angle_1", vec![KeyCombo::new("1")]);
@@ -749,6 +754,10 @@ impl KeyBindings {
             "toggle_keyframe_editor" => "Toggle Keyframe Editor",
             "prev_keyframe" => "Previous Keyframe",
             "next_keyframe" => "Next Keyframe",
+            "key_ease_in" => "Ease In Selected Keys",
+            "key_ease_out" => "Ease Out Selected Keys",
+            "key_ease_in_out" => "Ease In-Out Selected Keys",
+            "key_linear" => "Linear Selected Keys",
             "multicam_angle_1" => "Multicam Angle 1",
             "multicam_angle_2" => "Multicam Angle 2",
             "multicam_angle_3" => "Multicam Angle 3",
@@ -798,7 +807,7 @@ impl KeyBindings {
             ("Viewer", &["toggle_fullscreen", "toggle_before_after", "toggle_color_panel", "toggle_scopes", "toggle_zebra", "toggle_false_color", "toggle_perf_overlay", "toggle_perf_recording", "toggle_matte_preview", "toggle_safe_areas", "toggle_grid_overlay", "extract_frame_to_file", "extract_frame_to_bin"]),
             ("Window", &["command_palette", "toggle_browser_panel", "toggle_inspector_panel", "toggle_audio_mixer", "toggle_subtitle_editor", "toggle_project_notes", "focus_panel_search"]),
             ("Display", &["toggle_snap", "toggle_skimming", "toggle_audio_skim", "fit_to_window", "zoom_to_selection", "zoom_in", "zoom_out"]),
-            ("Markers", &["add_marker", "add_clip_marker", "toggle_keyframe", "toggle_keyframe_editor", "prev_keyframe", "next_keyframe"]),
+            ("Markers", &["add_marker", "add_clip_marker", "toggle_keyframe", "toggle_keyframe_editor", "prev_keyframe", "next_keyframe", "key_ease_in", "key_ease_out", "key_ease_in_out", "key_linear"]),
             ("Multicam", &["multicam_angle_1", "multicam_angle_2", "multicam_angle_3",
                 "multicam_angle_4", "multicam_angle_5", "multicam_angle_6",
                 "multicam_angle_7", "multicam_angle_8", "multicam_angle_9",

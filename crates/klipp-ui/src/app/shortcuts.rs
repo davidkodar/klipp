@@ -989,6 +989,21 @@ impl KlippApp {
                     let _ = self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead));
                 }
             }
+            // The selected keys' ease, wherever they are selected, one
+            // step (#2307).
+            use crate::widgets::scrubby_param::EasePreset;
+            if kb.is_action_pressed("key_ease_in", i) {
+                cmds.extend(key_ease_shortcut(&self.state, Some(EasePreset::EaseIn)));
+            }
+            if kb.is_action_pressed("key_ease_out", i) {
+                cmds.extend(key_ease_shortcut(&self.state, Some(EasePreset::EaseOut)));
+            }
+            if kb.is_action_pressed("key_ease_in_out", i) {
+                cmds.extend(key_ease_shortcut(&self.state, Some(EasePreset::EaseBoth)));
+            }
+            if kb.is_action_pressed("key_linear", i) {
+                cmds.extend(key_ease_shortcut(&self.state, None));
+            }
             // In the source viewer, marks go on the pool clip: M a note at
             // the playhead, Shift+F a favourite stretch, Shift+R a rejected
             // one — the stretch between the in and out points, or the
@@ -1391,5 +1406,24 @@ pub(super) fn removal_keys(state: &crate::state::AppState, kb: &crate::keybindin
     if kb.is_action_pressed("extract_edit", i) {
         cmds.push(AppCommand::ExtractEdit);
     }
+    cmds
+}
+
+/// What an ease shortcut does (#2307): `preset` on every key it acts on
+/// ([`crate::key_selection::ease_targets`]), or Linear when `None`, in one
+/// batch. Nothing when no key is selected or in focus.
+pub(crate) fn key_ease_shortcut(state: &crate::state::AppState, preset: Option<crate::widgets::scrubby_param::EasePreset>) -> Vec<AppCommand> {
+    let targets = crate::key_selection::ease_targets(state);
+    if targets.is_empty() {
+        return Vec::new();
+    }
+    let mut cmds = vec![AppCommand::BeginHistoryBatch];
+    for m in &targets {
+        cmds.extend(match preset {
+            Some(p) => crate::panels::timeline::key_ease_commands(state, m, p),
+            None => crate::panels::timeline::key_interpolation_commands(state, m, klipp_core::Interpolation::Linear),
+        });
+    }
+    cmds.push(AppCommand::EndHistoryBatch);
     cmds
 }

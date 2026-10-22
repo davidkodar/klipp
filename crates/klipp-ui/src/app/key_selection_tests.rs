@@ -743,3 +743,91 @@ fn the_curve_editor_and_the_parameter_in_focus_follow_each_other() {
     e.frame(Vec::new(), egui::Modifiers::NONE);
     assert_eq!(e.state.param_focus, Some(set), "followed, not answered");
 }
+
+/// The fixture with its video clip carrying a Gaussian Blur whose radius
+/// is keyed at 1 s (2) and 3 s (12): the effect's track, as the Dope
+/// Sheet lists it.
+fn blur_state() -> (AppState, ClipId, crate::panels::dope_sheet::Row) {
+    let (mut state, id, _) = state();
+    let v1 = state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+    let at = state.sequences[0].tracks[v1].clips.iter().position(|c| c.id == id).unwrap();
+    let clip = state.sequences[0].tracks[v1].clips[at].clone();
+    let clip = TestClip::of(clip).effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 2.0 }).key(0, "radius", 1.0, 2.0).key(0, "radius", 3.0, 12.0).build();
+    let row = crate::panels::dope_sheet::rows(&clip).into_iter().find(|r| matches!(r.kind, KeyframeParamKind::Node { .. })).expect("the blur's radius is a row");
+    state.sequences[0].tracks[v1].clips[at] = clip;
+    (state, id, row)
+}
+
+/// The lane's key diamonds, left to right.
+fn lane_keys(t: &mut Timeline) -> Vec<egui::Pos2> {
+    t.frame(Vec::new(), egui::Modifiers::NONE);
+    diamonds(&t.shapes, 4.5)
+}
+
+/// An effect's keys, picked for the clip's band, are drawn there with
+/// the track's name; a key dragged moves in time as one undo step that
+/// undo takes back, and an Alt+click on the line adds a key on the curve
+/// as it runs (#2307).
+#[test]
+fn an_effects_keys_show_on_the_clip_band_and_edit_there() {
+    let (state, id, row) = blur_state();
+    let mut t = Timeline::new(state);
+    crate::timeline::param_lane::pick(&mut t.state, id, &row.kind);
+    let found = lane_keys(&mut t);
+    assert_eq!(found.len(), 2, "the radius's two keys on the band: {found:?}");
+    let texts: Vec<String> = t.shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Text(x) => Some(x.galley.text().to_string()), _ => None }).collect();
+    assert!(texts.contains(&row.label), "the pill names the track {:?}: {texts:?}", row.label);
+
+    let before = keys(&t.state, id, &row.kind);
+    let steps = t.state.active_history().undo_count();
+    t.drag(found[0], found[0] + egui::vec2(100.0, 0.0));
+    assert!(t.unapplied.is_empty(), "{:?}", t.unapplied);
+    let now = keys(&t.state, id, &row.kind);
+    assert!((now[0].0 - 1.5).abs() < 0.03 && (now[0].1 - 2.0).abs() < 0.5 && now[1] == (3.0, 12.0), "the key moved in time: {now:?}");
+    assert_eq!(t.state.active_history().undo_count(), steps + 1, "one step for the drag");
+    undo(&mut t.state);
+    assert_eq!(keys(&t.state, id, &row.kind), before, "undo takes it back exactly");
+
+    // Halfway along the line between the two keys.
+    let found = lane_keys(&mut t);
+    let mid = found[0] + (found[1] - found[0]) * 0.5;
+    t.click(mid, egui::Modifiers::ALT);
+    assert!(t.unapplied.is_empty(), "{:?}", t.unapplied);
+    let now = keys(&t.state, id, &row.kind);
+    assert_eq!(now.len(), 3, "a key added on the line: {now:?}");
+    assert!((now[1].0 - 2.0).abs() < 0.05 && (now[1].1 - 7.0).abs() < 0.3, "on the curve as it ran: {now:?}");
+}
+
+/// The lane's pill goes back to the picture's band.
+#[test]
+fn the_lanes_pill_goes_back_to_the_picture() {
+    let (state, id, row) = blur_state();
+    let mut t = Timeline::new(state);
+    crate::timeline::param_lane::pick(&mut t.state, id, &row.kind);
+    t.frame(Vec::new(), egui::Modifiers::NONE);
+    let pill = t.shapes.iter().find_map(|s| match &s.shape { egui::Shape::Text(x) if x.galley.text() == row.label => Some(x.pos + x.galley.size() / 2.0), _ => None }).expect("the pill");
+    t.click(pill, egui::Modifiers::NONE);
+    assert_eq!(t.state.timeline_param_lane, None);
+}
+
+/// An ease shortcut eases the selected key, Linear sets it back, each
+/// one undo step; with no key selected or in focus it does nothing
+/// (#2307).
+#[test]
+fn the_ease_shortcuts_act_on_the_selected_key() {
+    use crate::widgets::scrubby_param::EasePreset;
+    let (mut state, id, row) = blur_state();
+    assert!(super::shortcuts::key_ease_shortcut(&state, Some(EasePreset::EaseIn)).is_empty(), "nothing selected");
+    state.selected_keyframe = Some(crate::state::SelectedKeyframe { clip_id: id, param_kind: row.kind.clone(), keyframe_index: 1 });
+    let interp = |s: &AppState| crate::key_selection::track_keys(&clip(s, id), &row.kind).iter().map(|k| k.interpolation).collect::<Vec<_>>();
+    let before = interp(&state);
+    let steps = state.active_history().undo_count();
+    let cmds = super::shortcuts::key_ease_shortcut(&state, Some(EasePreset::EaseIn));
+    assert!(apply(&mut state, &cmds).is_empty());
+    assert_ne!(interp(&state), before, "the key eased");
+    assert_eq!(state.active_history().undo_count(), steps + 1, "one step");
+    let cmds = super::shortcuts::key_ease_shortcut(&state, None);
+    assert!(apply(&mut state, &cmds).is_empty());
+    assert_eq!(interp(&state)[1], klipp_core::Interpolation::Linear);
+    assert_eq!(state.active_history().undo_count(), steps + 2);
+}

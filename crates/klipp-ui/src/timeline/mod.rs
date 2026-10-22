@@ -9,6 +9,7 @@ pub mod range_visuals;
 pub mod grid_snap;
 pub mod camera_lane;
 pub mod mask_lane;
+pub mod param_lane;
 pub mod markers;
 
 use crate::state::AppState;

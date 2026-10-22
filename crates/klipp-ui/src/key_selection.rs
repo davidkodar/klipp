@@ -313,6 +313,25 @@ pub fn several(state: &AppState) -> bool {
     track_keys(clip, &sk.param_kind).get(sk.keyframe_index).is_some_and(|k| sel.holds(clip.id, &sk.param_kind, k.time_secs))
 }
 
+/// The keys an ease shortcut acts on (#2307), each as a key menu names
+/// it: every selected key when several are, else the one selected (on the
+/// timeline, in the Curve Editor or the Dope Sheet), else the key at the
+/// playhead of the parameter the Inspector has in focus.
+pub fn ease_targets(state: &AppState) -> Vec<KeyframeContextMenu> {
+    let at = |sk: &SelectedKeyframe| KeyframeContextMenu { clip_id: sk.clip_id, param_kind: sk.param_kind.clone(), keyframe_index: sk.keyframe_index, screen_pos: egui::Pos2::ZERO };
+    if let Some(sk) = &state.selected_keyframe {
+        return menu_targets(state, &at(sk));
+    }
+    let Some(focus) = &state.param_focus else { return Vec::new() };
+    let Some(clip) = state.sequence().all_clips().find(|c| c.id == focus.clip_id) else { return Vec::new() };
+    let t = state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64();
+    let keys = track_keys(clip, &focus.kind);
+    let tolerance = crate::inspector::keyframe_selection::frame_tolerance(state.sequence());
+    crate::inspector::keyframe_selection::nearest(&keys, t, tolerance)
+        .map(|keyframe_index| vec![at(&SelectedKeyframe { clip_id: clip.id, param_kind: focus.kind.clone(), keyframe_index })])
+        .unwrap_or_default()
+}
+
 /// What Delete takes when several keys are selected: every one, in one
 /// batch, one step. `None` when fewer than two are.
 pub fn delete_all(state: &AppState) -> Option<Vec<AppCommand>> {

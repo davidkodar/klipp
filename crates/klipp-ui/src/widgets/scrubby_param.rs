@@ -154,6 +154,29 @@ impl EasePreset {
     }
 }
 
+/// Where the key menus find the ease shortcuts' names (#2307): Ease In,
+/// Ease Out, Ease In-Out, Linear, as bound now.
+fn ease_hints_id() -> egui::Id {
+    egui::Id::new("key_ease_hints")
+}
+
+/// Whether the ease shortcuts' names are in `ctx` yet.
+pub fn has_ease_hints(ctx: &egui::Context) -> bool {
+    ctx.data(|d| d.get_temp::<std::sync::Arc<[String; 4]>>(ease_hints_id()).is_some())
+}
+
+/// Put the ease shortcuts' names, as `kb` binds them, where the key menus
+/// read them.
+pub fn set_ease_hints(ctx: &egui::Context, kb: &crate::keybindings::KeyBindings) {
+    let hints = ["key_ease_in", "key_ease_out", "key_ease_in_out", "key_linear"].map(|a| kb.display_for(a));
+    ctx.data_mut(|d| d.insert_temp(ease_hints_id(), std::sync::Arc::new(hints)));
+}
+
+/// The ease shortcuts' names, in that order: empty before they are set.
+pub fn ease_hints(ctx: &egui::Context) -> std::sync::Arc<[String; 4]> {
+    ctx.data(|d| d.get_temp(ease_hints_id())).unwrap_or_default()
+}
+
 /// What a key's menu picked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyMenuPick {
@@ -168,11 +191,12 @@ pub fn key_menu(ui: &mut egui::Ui, current: Option<klipp_core::Interpolation>) -
     use klipp_core::Interpolation;
     super::menu::menu_body(ui, |ui| {
         let mut pick = None;
-        if super::menu::menu_choice(ui, "Linear", "", current == Some(Interpolation::Linear)).clicked() {
+        let hints = ease_hints(ui.ctx());
+        if super::menu::menu_choice(ui, "Linear", &hints[3], current == Some(Interpolation::Linear)).clicked() {
             pick = Some(KeyMenuPick::Interpolation(Interpolation::Linear));
         }
-        for (label, preset) in [("Ease In", EasePreset::EaseIn), ("Ease Out", EasePreset::EaseOut), ("Ease Both", EasePreset::EaseBoth)] {
-            if super::menu::menu_item(ui, label, "").clicked() {
+        for (label, preset, hint) in [("Ease In", EasePreset::EaseIn, &hints[0]), ("Ease Out", EasePreset::EaseOut, &hints[1]), ("Ease Both", EasePreset::EaseBoth, &hints[2])] {
+            if super::menu::menu_item(ui, label, hint).clicked() {
                 pick = Some(KeyMenuPick::Ease(preset));
             }
         }
