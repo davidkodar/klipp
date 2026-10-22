@@ -87,7 +87,7 @@ fn nav_arrow(ui: &mut egui::Ui, has_key: bool, icon: Icon) -> bool {
 /// looks: a key at the playhead, filled; keys elsewhere, hollow and
 /// bright with a thicker stroke; no keys, hollow and dim. `None` (a
 /// parameter that can't be keyed) draws a dark outline.
-fn paint_diamond(ui: &egui::Ui, resp: &egui::Response, keyframe_state: Option<&KeyframeState>) {
+fn paint_diamond(ui: &egui::Ui, resp: &egui::Response, keyframe_state: Option<&KeyframeState>, keys: Option<usize>) {
     let (colour, filled, stroke_width) = if let Some(ks) = keyframe_state {
         let hovered = resp.hovered();
         if ks.has_keyframe_at_playhead {
@@ -112,7 +112,11 @@ fn paint_diamond(ui: &egui::Ui, resp: &egui::Response, keyframe_state: Option<&K
         ui.painter().add(egui::Shape::closed_line(points, egui::Stroke::new(stroke_width, colour)));
     }
     if let Some(ks) = keyframe_state {
-        if ks.keys_in_frame > 1 {
+        // A row that knows its track says what the diamond and arrows do (#2296).
+        let all = keys.and_then(|n| crate::param_focus::diamond_hover(n, ks.has_keyframe_at_playhead));
+        if let Some(text) = all {
+            resp.clone().on_hover_text(text);
+        } else if ks.keys_in_frame > 1 {
             resp.clone().on_hover_text(format!("{} keys in this frame. This diamond edits or removes the nearest key; use the curve editor to select the others.", ks.keys_in_frame));
         } else if !ks.has_any_keyframes {
             resp.clone().on_hover_text("Click to enable keyframing");
@@ -203,7 +207,7 @@ pub fn key_strip(ui: &mut egui::Ui, ks: KeyframeState) -> KeyStrip {
             out.next = nav_arrow(ui, ks.next_keyframe_time.is_some(), Icon::CaretRight);
         }
         let diamond = ui.add(egui::Button::new("").frame(false).min_size(egui::vec2(16.0, 18.0)).sense(egui::Sense::click()));
-        paint_diamond(ui, &diamond, Some(&ks));
+        paint_diamond(ui, &diamond, Some(&ks), None);
         if diamond.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
@@ -238,7 +242,7 @@ pub fn key_controls(ui: &mut egui::Ui, ks: KeyframeState) -> KeyControls {
             out.next = nav_arrow(ui, ks.next_keyframe_time.is_some(), Icon::CaretRight);
         }
         let diamond = ui.add(egui::Button::new("").frame(false).min_size(egui::vec2(16.0, 18.0)).sense(egui::Sense::click()));
-        paint_diamond(ui, &diamond, Some(&ks));
+        paint_diamond(ui, &diamond, Some(&ks), None);
         if diamond.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
@@ -390,8 +394,11 @@ fn scrubby_row(
     let was_row_hovered: bool = ui.ctx().data_mut(|d| *d.get_temp_mut_or_default(row_id));
 
     let mut label_rect_out = egui::Rect::NOTHING;
+    // The row's track, when the caller named it (#2296).
+    let tag = crate::param_focus::take_tag(ui);
+    let mut row_clicked = false;
 
-    let _row_response = ui.horizontal(|ui| {
+    let row_response = ui.horizontal(|ui| {
         // Reserve space: label takes left portion, value + reset + nav arrows + diamond on right.
         // The trailing cluster is rendered with `Layout::right_to_left` (see below) so it always
         // packs to the row's right edge — that's why the only thing we need to compute here is
@@ -567,7 +574,8 @@ fn scrubby_row(
         // Store hover state for next frame (prevents reset button flicker)
         ui.ctx().data_mut(|d| d.insert_temp(row_id, row_is_hovered));
 
-        paint_diamond(ui, &diamond_btn_resp, keyframe_state.as_ref());
+        paint_diamond(ui, &diamond_btn_resp, keyframe_state.as_ref(), tag.as_ref().map(|t| t.keys()));
+        row_clicked = label_rect.clicked() || diamond_btn_resp.clicked();
 
         if is_keyframeable && diamond_btn_resp.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -588,6 +596,10 @@ fn scrubby_row(
         }
 
     });
+
+    if let Some(tag) = &tag {
+        crate::param_focus::row_drawn(ui, tag, row_response.response.rect, row_clicked);
+    }
 
     // ---- RANGE INDICATOR (subtle fill bar under the label area only) ----
     let range_span = *range.end() - *range.start();

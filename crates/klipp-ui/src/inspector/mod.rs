@@ -67,6 +67,12 @@ pub struct NewInspectorPanel {
     /// The clip name being typed (#920), with the clip it was taken
     /// from: refilled from the clip when another is selected.
     clip_name_edit: Option<(klipp_core::ClipId, String)>,
+    /// When the parameter in focus last came into focus (#2296), so the
+    /// tab follows it once and the user's own tab click is kept after.
+    last_focus_at: Option<f64>,
+    /// An animated parameter picked here this frame, a chip or a row, for
+    /// the app to bring into focus (#2296).
+    pub focus_request: Option<crate::state::KeyframeParamKind>,
 }
 
 impl NewInspectorPanel {
@@ -233,6 +239,35 @@ impl NewInspectorPanel {
             }
         }
 
+        // ── Animated strip (#2296) ──
+        // The clip's animated parameters, on every tab: a chip opens the
+        // tab that holds one and brings it into focus.
+        let animated = clip_info.map(|(_, c)| crate::param_focus::animated(c)).unwrap_or_default();
+        if !animated.is_empty() {
+            ui.add_space(4.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+                ui.label(egui::RichText::new("Animated").size(10.0).color(theme.text_dim));
+                for (kind, label, tab) in &animated {
+                    let chip = egui::Button::new(egui::RichText::new(format!("\u{25C6} {label}")).size(10.0)).small();
+                    if ui.add(chip).on_hover_text("Show it here and its curve in the Curve Editor").clicked() {
+                        *active_tab = *tab;
+                        self.focus_request = Some(kind.clone());
+                    }
+                }
+            });
+            ui.add_space(2.0);
+        }
+        // The tab follows a parameter newly in focus, wherever it was picked.
+        if let (Some(focus), Some((_, clip))) = (&state.param_focus, clip_info) {
+            if focus.clip_id == clip.id && self.last_focus_at != Some(focus.at) {
+                self.last_focus_at = Some(focus.at);
+                if let Some(tab) = crate::param_focus::tab_of(clip, &focus.kind) {
+                    *active_tab = tab;
+                }
+            }
+        }
+
         // ── Tab bar ──
         let is_title_clip = clip_info.as_ref().is_some_and(|(_, c)| matches!(c.kind, klipp_timeline::ClipKind::Title(_)));
         let is_generator_clip = clip_info.as_ref().is_some_and(|(_, c)| matches!(c.kind, klipp_timeline::ClipKind::Generator(_)));
@@ -259,10 +294,18 @@ impl NewInspectorPanel {
                 (InspectorTab::Info, "INFO", "INFO"),
             ]
         };
-        let labels: Vec<&str> = tabs.iter().map(|t| t.1).collect();
-        let brief: Vec<&str> = tabs.iter().map(|t| t.2).collect();
+        // A tab holding an animated parameter is marked, its tip naming them (#2296).
+        let marks: Vec<Option<String>> = tabs.iter().map(|(tab, ..)| {
+            let names: Vec<&str> = animated.iter().filter(|(_, _, t)| t == tab).map(|(_, l, _)| l.as_str()).collect();
+            (!names.is_empty()).then(|| format!("Animated here: {}", names.join(", ")))
+        }).collect();
+        let marked = |name: &str, i: usize| if marks[i].is_some() { format!("{name} \u{25C6}") } else { name.to_string() };
+        let labels: Vec<String> = tabs.iter().enumerate().map(|(i, t)| marked(t.1, i)).collect();
+        let brief: Vec<String> = tabs.iter().enumerate().map(|(i, t)| marked(t.2, i)).collect();
+        let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+        let brief: Vec<&str> = brief.iter().map(String::as_str).collect();
         let active = tabs.iter().position(|t| t.0 == *active_tab).unwrap_or(0);
-        if let Some(i) = crate::widgets::inspector_group::tab_strip(ui, &labels, &brief, active, theme) {
+        if let Some(i) = crate::widgets::inspector_group::tab_strip_with_tips(ui, &labels, &brief, &marks, active, theme) {
             *active_tab = tabs[i].0;
         }
 
@@ -286,6 +329,9 @@ impl NewInspectorPanel {
         // extent and clip the controls at the right edge.  A fixed-width
         // content rail lets rows wrap instead of asking users to resize the
         // panel just to reach a field.
+        if let Some((_, clip)) = clip_info {
+            crate::param_focus::begin_rows(ui.ctx(), state.param_focus.as_ref(), clip);
+        }
         egui::ScrollArea::vertical()
             .id_salt("inspector_body_scroll")
             .auto_shrink([false, false])
@@ -495,6 +541,10 @@ impl NewInspectorPanel {
                 }
                 _ => keyframe_selection::resolve_command(state.sequence(), cmd),
             }
+        }
+        // A row's name or diamond clicked brings its parameter into focus.
+        if let Some(kind) = crate::param_focus::take_request(ui.ctx()) {
+            self.focus_request = Some(kind);
         }
         cmds
     }
@@ -8971,7 +9021,13 @@ mod fits_its_column_tests {
             td.objects.append(&mut more.objects);
             klipp_timeline::Clip { kind: klipp_timeline::ClipKind::Title(td), ..klipp_timeline::Clip::gap(tc(0.0), tc(4.0)) }
         };
+        // Animated, so the Animated strip and the tab marks are drawn (#2296).
+        let animated = klipp_timeline::test_clip::TestClip::of(with_effect.clone()).lane("opacity", 1.0, 0.5).lane("pos_x", 1.0, 10.0).lane("pos_y", 1.0, 10.0).lane("scale", 1.0, 1.5).lane("rotation", 1.0, 30.0).build();
         for width in [crate::theme::INSPECTOR_MIN_W, 300.0, 360.0] {
+            for tab in [InspectorTab::Video, InspectorTab::Audio, InspectorTab::Effects] {
+                let (right, edge, over) = rightmost(width, animated.clone(), tab);
+                assert!(right <= edge + 1.0, "an animated clip's {tab:?} tab at {width}: drawn to {right}, the column ends at {edge}: {over:#?}");
+            }
             for tab in [InspectorTab::Title, InspectorTab::Video, InspectorTab::Effects, InspectorTab::Info] {
                 let (right, edge, over) = rightmost(width, title.clone(), tab);
                 assert!(right <= edge + 1.0, "a title clip's {tab:?} tab at {width}: drawn to {right}, the column ends at {edge}: {over:#?}");
