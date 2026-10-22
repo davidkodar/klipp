@@ -10,6 +10,14 @@
 //! the clip's own speed curve (`Clip::source_secs_at`), which source
 //! evaluation keeps; the cases keep the Speed Ramp's speed equal to the
 //! curve, so the retime's authored value (#1409) doesn't change them.
+//!
+//! Blend mode 2 follows the motion between the two frames by optical
+//! flow (#2215). A flat grey has no motion to follow: its frames warp to
+//! themselves, so the in-between frame is the same cross-fade, and the
+//! cases hold mode 2 to it. Where the two frames are unlike (the ramp's
+//! step), the motion can't be followed and the whole frame cross-fades,
+//! declined as a fallback. How well it follows real motion is held by
+//! `klipp_effects::flow`'s own tests.
 
 use std::sync::Arc;
 
@@ -124,7 +132,7 @@ fn expected(clip: &Clip, source: &Ramp, frame: i64, blend_mode: u32) -> Vec<f32>
     let at = clip.source_secs_at(elapsed, FPS as f64);
     let n = shown(at);
     let current = source.level(n);
-    let blends = blend_mode == 1 && !clip.is_reversed() && clip.speed_at(elapsed).abs() < 1.0 - 1e-6;
+    let blends = matches!(blend_mode, 1 | 2) && !clip.is_reversed() && clip.speed_at(elapsed).abs() < 1.0 - 1e-6;
     let next = source.frame(MediaId::nil(), (n + 1) as f64 / FPS as f64);
     let weight = (at * FPS as f64 - n as f64).clamp(0.0, 1.0) as f32;
     match next {
@@ -165,12 +173,24 @@ pub fn run(report: &mut Report) {
     // A save and a strict reload keep the clip's blend: its Speed Ramp in
     // blend mode, its speed, its speed curve.
     report.case("blend: saved and reloaded", [key(None, Obligation::Saved)], || {
-        let (scene, clip) = scene(50, 100, Run::Ramped(0.25, 0.75), 1);
-        let back = crate::saved::round_trip(&scene.sequence, &scene.pool)?;
-        let got = back.tracks.first().and_then(|t| t.clips.first()).ok_or("no clip came back")?;
-        let ramp = |c: &Clip| c.picture_effects().map(|fx| fx.into_iter().map(|e| (e.effect, e.enabled)).collect::<Vec<_>>());
-        if ramp(got)? != ramp(&clip)? || got.speed != clip.speed || got.speed_keyframes != clip.speed_keyframes {
-            return Err(format!("the blend came back as {:?} at {} ({:?})", ramp(got)?, got.speed, got.speed_keyframes));
+        for mode in [1, 2] {
+            let (scene, clip) = scene(50, 100, Run::Ramped(0.25, 0.75), mode);
+            let back = crate::saved::round_trip(&scene.sequence, &scene.pool)?;
+            let got = back.tracks.first().and_then(|t| t.clips.first()).ok_or("no clip came back")?;
+            let ramp = |c: &Clip| c.picture_effects().map(|fx| fx.into_iter().map(|e| (e.effect, e.enabled)).collect::<Vec<_>>());
+            if ramp(got)? != ramp(&clip)? || got.speed != clip.speed || got.speed_keyframes != clip.speed_keyframes {
+                return Err(format!("the blend in mode {mode} came back as {:?} at {} ({:?})", ramp(got)?, got.speed, got.speed_keyframes));
+            }
+        }
+        Ok(())
+    });
+    // Level 2: the viewer shows export's frame, both read from one real
+    // file of the ramp, cross-faded and followed by optical flow (#2215).
+    report.case("blend: the viewer shows export's frame", [key(Some(Route::Viewer), Obligation::ViewerEqualsExport), key(Some(Route::Export), Obligation::ViewerEqualsExport)], || {
+        for mode in [1, 2] {
+            let (s, _) = scene(50, 100, Run::At(0.5), mode);
+            let s = crate::on_file::on_file_frames(&s, "frame-blend-ramp", FPS, MEDIA_FRAMES, &|n| flat(grey(n)))?;
+            crate::route2::viewer_equals_export(s, &[40, 41]).map_err(|e| format!("blend mode {mode}: {e}"))?;
         }
         Ok(())
     });
@@ -187,6 +207,26 @@ pub fn run(report: &mut Report) {
         report.case(&format!("blend {route:?}: the CPU and the GPU agree"), at(Obligation::CpuGpuAgree), || {
             holds(route, false, scene(50, 100, Run::At(0.5), 1), whole(), &[41], 1)?;
             holds(route, true, scene(50, 100, Run::At(0.5), 1), whole(), &[41], 1)
+        });
+        // Optical flow (#2215): a flat grey warps to itself, so the frames
+        // are the cross-fade's, on the GPU and, without one, cross-faded.
+        report.case(&format!("blend {route:?}: optical flow at half speed"), at(Obligation::ExpectedPixels), || {
+            holds(route, true, scene(50, 100, Run::At(0.5), 2), whole(), &[1, 2, 41], 2)?;
+            holds(route, true, scene(50, 100, Run::Ramped(0.25, 0.75), 2), whole(), &[3, 37, 70, 98], 2)?;
+            declines(route, scene(50, 100, Run::At(0.5), 2), whole(), 41, None)
+        });
+        report.case(&format!("blend {route:?}: optical flow on the CPU and the GPU"), at(Obligation::CpuGpuAgree), || {
+            holds(route, false, scene(50, 100, Run::At(0.5), 2), whole(), &[41], 2)?;
+            holds(route, true, scene(50, 100, Run::At(0.5), 2), whole(), &[41], 2)
+        });
+        // Two frames unlike each other, the ramp's step: the motion can't
+        // be followed, the frame cross-fades whole and says so, as a
+        // fallback an export still writes.
+        report.case(&format!("blend {route:?}: optical flow it can't follow"), at(Obligation::ExpectedPixels), || {
+            let step = || Ramp { missing: vec![], large: vec![], step: Some(71) };
+            holds(route, true, scene(50, 100, Run::At(0.5), 2), step(), &[39, 40, 41, 42], 2)?;
+            declines(route, scene(50, 100, Run::At(0.5), 2), step(), 41, Some("fallback"))?;
+            declines(route, scene(50, 100, Run::At(0.5), 2), step(), 40, None)
         });
         report.case(&format!("blend {route:?}: a trimmed clip's first frame"), at(Obligation::Time(TimeCase::TrimmedStart)), || {
             holds(route, true, scene(50, 100, Run::At(0.4), 1), whole(), &[0, 1], 1)

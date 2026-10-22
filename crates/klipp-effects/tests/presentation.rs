@@ -341,7 +341,7 @@ const CHOICE_LABELS: &[(&str, &str, &[&str])] = &[
     ("klipp.fx.color_fade", "mode", &["Fade From", "Fade To"]),
     ("klipp.fx.letterbox", "bar_color", &["Black", "White"]),
     ("klipp.fx.chroma_key", "spill_method", &["None", "Channel Clamp", "Hawk"]),
-    ("klipp.fx.speed_ramp", "blend_mode", &["Nearest", "Linear"]),
+    ("klipp.fx.speed_ramp", "blend_mode", &["Nearest", "Linear", "Optical Flow"]),
     ("klipp.fx.radial_blur", "mode", &["Zoom", "Spin"]),
     ("klipp.fx.flicker", "target", &["Opacity", "Exposure", "Gamma"]),
     ("klipp.fx.particles", "style", &["Dust", "Snow", "Rain", "Sparks", "Embers"]),

@@ -868,7 +868,7 @@ pub fn lift_clip(record: &ClipRecordV2, ctx: &LiftCtx) -> Result<(ClipPicture, V
     }
     let blend = effects.iter().find(|n| {
         let v = payload(n);
-        n.type_id.as_str() == types::LEGACY_SPEED_RAMP && n.enabled && v.get("blend_mode").and_then(Value::as_u64) == Some(1)
+        n.type_id.as_str() == types::LEGACY_SPEED_RAMP && n.enabled && matches!(v.get("blend_mode").and_then(Value::as_u64), Some(1 | 2))
     });
     if let Some(n) = blend {
         let mut b = node(n.id, lt::FRAME_BLEND, media, n.legacy.clone());

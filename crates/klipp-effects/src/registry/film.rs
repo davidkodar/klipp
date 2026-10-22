@@ -353,7 +353,7 @@ pub(super) static TYPES: &[EffectType] = &[
             Category::FilmTemporal,
             &[
                 ParamDesc::float("speed", "Speed", 1.0, (0.1, 4.0), Unit::Ratio).fixed(),
-                choice("blend_mode", "Blend", 1.0, &["nearest", "linear"]),
+                choice("blend_mode", "Blend", 1.0, &["nearest", "linear", "optical flow"]),
             ],
             ColourDomain::Linear,
             Spatial::PerPixel,

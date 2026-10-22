@@ -193,6 +193,9 @@ pub struct GpuEffectsPipeline {
     color_fade_pipeline: wgpu::ComputePipeline,
     layer_gpu: layer::LayerGpu,
     mask_mix_gpu: mask_mix::MaskMixGpu,
+    /// Optical-flow interpolation's pipelines and kept pairs (#2215),
+    /// made on first use.
+    flow_gpu: Option<flow::FlowGpu>,
     blur_h_pipeline: wgpu::ComputePipeline,
     blur_v_pipeline: wgpu::ComputePipeline,
     sharpen_pipeline: wgpu::ComputePipeline,
@@ -1622,6 +1625,7 @@ impl GpuEffectsPipeline {
             readbacks: readbacks::Counters::default(),
             layer_gpu,
             mask_mix_gpu,
+            flow_gpu: None,
             device,
             queue,
             opacity_pipeline,
@@ -10224,6 +10228,8 @@ fn eval_record(rec: MaskRecord, px: f32, py: f32, aspect: f32) -> f32 {
 // the sRGB u8 version multiplied gamma-encoded bytes, which
 // produced visibly darker-than-half output.
 mod layer;
+mod flow;
+pub use flow::FlowKey;
 mod mask_mix;
 
 const SHADER_OPACITY: &str = concat!(

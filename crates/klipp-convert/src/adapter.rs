@@ -96,7 +96,10 @@ pub fn clip(p: &ClipPicture, ctx: &LiftCtx) -> Result<Value, Refusal> {
             lt::FRAME_BLEND => {
                 if n.enabled {
                     let mut ramp = payload(n)?.clone();
-                    ramp["blend_mode"] = json!(1);
+                    // A frame blend cross-fades (1) or follows the motion
+                    // (2, #2215).
+                    let mode = if ramp.get("blend_mode").and_then(Value::as_u64) == Some(2) { 2 } else { 1 };
+                    ramp["blend_mode"] = json!(mode);
                     fx.push(ramp, true, &BTreeMap::new());
                 }
             }
