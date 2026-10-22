@@ -387,6 +387,12 @@ pub(crate) struct ClipStreams {
     /// Memory free for more: [`crate::decode_budget::free_memory`], or a
     /// test's.
     free_memory: fn() -> f64,
+    /// The bytes on the GPU each queue may hold, of the streams decoded
+    /// there, whose frames stay on it: counted here, not in `bytes`.
+    vram: HashMap<ClipId, f64>,
+    /// The GPU's memory free for more: [`crate::decode_budget::free_vram`],
+    /// `None` where it can't be read, or a test's.
+    free_vram: fn() -> Option<f64>,
     /// The frames a stream queues when memory allows: the preference's,
     /// or a test's.
     queue_frames: fn() -> usize,
@@ -405,7 +411,7 @@ pub(crate) struct ClipStreams {
 
 impl ClipStreams {
     pub fn new() -> Self {
-        Self { streams: HashMap::new(), opening: HashMap::new(), reversed: HashMap::new(), rates: HashMap::new(), bytes: HashMap::new(), free_memory: crate::decode_budget::free_memory, queue_frames: crate::video_decoder::frame_queue_size, capacity: crate::decode_budget::stream_capacity, gpu_headroom: crate::decode_budget::gpu_headroom, media: klipp_media::frame_reader::MediaReaders::new(klipp_compose::MEDIA_READERS), neighbours: Vec::new() }
+        Self { streams: HashMap::new(), opening: HashMap::new(), reversed: HashMap::new(), rates: HashMap::new(), bytes: HashMap::new(), free_memory: crate::decode_budget::free_memory, vram: HashMap::new(), free_vram: crate::decode_budget::free_vram, queue_frames: crate::video_decoder::frame_queue_size, capacity: crate::decode_budget::stream_capacity, gpu_headroom: crate::decode_budget::gpu_headroom, media: klipp_media::frame_reader::MediaReaders::new(klipp_compose::MEDIA_READERS), neighbours: Vec::new() }
     }
 
     /// The reader of `path`'s frames at any time for an OFX plug-in's
@@ -498,7 +504,7 @@ impl ClipStreams {
                 None => {
                     // Opened off this thread; it lands on a later sync.
                     if let Some((path, rot, cost)) = resolve(w) {
-                        let Some(frames) = self.make_room(cost, w.ahead) else {
+                        let Some((frames, on_gpu)) = self.make_room(cost, w.ahead) else {
                             debug!(
                                 "clip streams: no room ({:.0} of {:.0} Mpx/s, {:.0} MB queued, {} streams), not opening one ahead for {:?}",
                                 self.rates.values().sum::<f64>() / 1e6, (self.capacity)() / 1e6, self.bytes.values().sum::<f64>() / 1e6, self.streams.len() + self.opening.len(), w.clip,
@@ -515,7 +521,8 @@ impl ClipStreams {
                         if spawned.is_ok() {
                             self.opening.insert(w.clip, (rx, w.ahead));
                             self.rates.insert(w.clip, cost.rate);
-                            self.bytes.insert(w.clip, cost.frame_bytes * frames as f64);
+                            let held = if on_gpu { &mut self.vram } else { &mut self.bytes };
+                            held.insert(w.clip, cost.frame_bytes * frames as f64);
                         }
                     }
                 }
@@ -538,16 +545,23 @@ impl ClipStreams {
     /// screen is never left black: streams opened ahead are closed to make
     /// room, the biggest first, and past that it opens all the same, with
     /// a shorter queue when memory is what is short.
-    fn make_room(&mut self, cost: Cost, ahead: bool) -> Option<usize> {
+    fn make_room(&mut self, cost: Cost, ahead: bool) -> Option<(usize, bool)> {
         let capacity = (self.capacity)();
         let full = (self.queue_frames)().max(MIN_QUEUE_FRAMES);
+        // Where its frames will be: on the GPU when its decoder has room
+        // for it and the GPU's memory can be read, else in memory.
+        let free_vram = (self.free_vram)();
+        let on_gpu = free_vram.is_some() && cost.rate <= (self.gpu_headroom)();
         let rate_fits = |s: &Self| s.rates.values().sum::<f64>() + cost.rate <= capacity;
         let frames_fit = |s: &Self| {
             if cost.frame_bytes <= 0.0 {
                 return full;
             }
-            let held: f64 = s.bytes.values().sum();
-            let left = STREAM_MEMORY_SHARE * ((s.free_memory)() + held) - held;
+            let (held, free): (f64, f64) = match free_vram.filter(|_| on_gpu) {
+                Some(free) => (s.vram.values().sum(), free),
+                None => (s.bytes.values().sum(), (s.free_memory)()),
+            };
+            let left = STREAM_MEMORY_SHARE * (free + held) - held;
             (left / cost.frame_bytes).floor().clamp(0.0, full as f64) as usize
         };
         let fits = |s: &Self| rate_fits(s) && frames_fit(s) >= full;
@@ -557,12 +571,14 @@ impl ClipStreams {
             // coming up within its lead was opened, eleven at a time, all
             // seeking on the GPU's decoder while the section on screen
             // needed it, and the codec section played at 15–22 frames.
-            return (fits(self) && cost.rate <= (self.gpu_headroom)()).then_some(full);
+            return (fits(self) && cost.rate <= (self.gpu_headroom)()).then_some((full, on_gpu));
         }
         while !fits(self) {
-            // The biggest in what is short: memory, else decode rate.
+            // The biggest in what is short: the memory its frames take, the
+            // GPU's or the system's, else decode rate.
             let by_bytes = frames_fit(self) < full;
-            let size = |id: &ClipId| if by_bytes { self.bytes.get(id).copied().unwrap_or(0.0) } else { self.rate(*id) };
+            let held = if on_gpu { &self.vram } else { &self.bytes };
+            let size = |id: &ClipId| if by_bytes { held.get(id).copied().unwrap_or(0.0) } else { self.rate(*id) };
             let opened_ahead = self.streams.iter().filter(|(_, s)| s.ahead).map(|(id, _)| *id);
             let opening_ahead = self.opening.iter().filter(|(_, (_, a))| *a).map(|(id, _)| *id);
             let Some(biggest) = opened_ahead.chain(opening_ahead).max_by(|a, b| size(a).total_cmp(&size(b))) else { break };
@@ -571,16 +587,21 @@ impl ClipStreams {
             self.opening.remove(&biggest);
             self.rates.remove(&biggest);
             self.bytes.remove(&biggest);
+            self.vram.remove(&biggest);
         }
         let frames = frames_fit(self).max(MIN_QUEUE_FRAMES);
         if frames < full {
             super::STREAMS_SHORTENED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let (what, free, queued) = match free_vram.filter(|_| on_gpu) {
+                Some(free) => ("GPU memory", free, self.vram.values().sum::<f64>()),
+                None => ("memory", (self.free_memory)(), self.bytes.values().sum::<f64>()),
+            };
             tracing::info!(
-                "clip streams: memory short ({:.0} MB free, {:.0} MB queued), a layer on screen queues {frames} of {full} frames",
-                (self.free_memory)() / 1e6, self.bytes.values().sum::<f64>() / 1e6,
+                "clip streams: {what} short ({:.0} MB free, {:.0} MB queued), a layer on screen queues {frames} of {full} frames",
+                free / 1e6, queued / 1e6,
             );
         }
-        Some(frames)
+        Some((frames, on_gpu))
     }
 
     fn rate(&self, clip: ClipId) -> f64 {
@@ -592,6 +613,7 @@ impl ClipStreams {
         let (streams, opening) = (&self.streams, &self.opening);
         self.rates.retain(|id, _| streams.contains_key(id) || opening.contains_key(id));
         self.bytes.retain(|id, _| streams.contains_key(id) || opening.contains_key(id));
+        self.vram.retain(|id, _| streams.contains_key(id) || opening.contains_key(id));
     }
 
     /// Streams whose opening finished, put with the others; one that could
@@ -695,6 +717,7 @@ impl ClipStreams {
         self.opening.clear();
         self.rates.clear();
         self.bytes.clear();
+        self.vram.clear();
         self.reversed.clear();
     }
 
@@ -819,8 +842,9 @@ mod tests {
         streams.gpu_headroom = || f64::INFINITY;
         streams.queue_frames = || 16;
         // Half of what is free and what the queues hold: 16 frames of 100
-        // bytes with nothing held.
+        // bytes with nothing held. Frames in memory, not on the GPU.
         streams.free_memory = || 3200.0;
+        streams.free_vram = || None;
         let resolve = |_: &Want| Some((path.clone(), 0, Cost { rate: 1.0, frame_bytes: 100.0 }));
         let want = |ahead: bool| Want { clip: ClipId::new(), media: MediaId::new(), rotation: 0, source_secs: 0.0, reversed: false, ahead };
         let frames = |s: &ClipStreams, w: &Want| s.bytes.get(&w.clip).map(|b| (b / 100.0) as usize);
@@ -848,6 +872,52 @@ mod tests {
         streams.sync(&all, frame, &resolve);
         assert_eq!((frames(&streams, &third), frames(&streams, &fourth)), (Some(4), Some(4)), "on screen, never refused and never under four frames");
         assert!(super::super::streams_shortened() >= shortened + 3, "and each is counted");
+    }
+
+    /// #2128: a stream decoded on the GPU keeps its frames there, so its
+    /// queue is held to the GPU's free memory, not the system's: short of
+    /// it, layers on screen open with shorter queues as they do short of
+    /// memory. One past the GPU decoder's room decodes in software, its
+    /// frames in memory.
+    #[test]
+    fn layers_decoded_on_the_gpu_are_held_to_its_memory() {
+        let Some(path) = source() else {
+            eprintln!("skipping: no ffmpeg");
+            return;
+        };
+        let _one = BUDGETED.lock().unwrap_or_else(|e| e.into_inner());
+        let frame = 1.0 / 25.0;
+        let mut streams = ClipStreams::new();
+        streams.capacity = || f64::INFINITY;
+        streams.gpu_headroom = || f64::INFINITY;
+        streams.queue_frames = || 16;
+        streams.free_memory = || f64::INFINITY;
+        // Half of the GPU's free memory and what is queued there: 16
+        // frames of 100 bytes with nothing held.
+        streams.free_vram = || Some(3200.0);
+        let resolve = |_: &Want| Some((path.clone(), 0, Cost { rate: 1.0, frame_bytes: 100.0 }));
+        let want = || Want { clip: ClipId::new(), media: MediaId::new(), rotation: 0, source_secs: 0.0, reversed: false, ahead: false };
+        let on_gpu = |s: &ClipStreams, w: &Want| s.vram.get(&w.clip).map(|b| (b / 100.0) as usize);
+        let shortened = super::super::streams_shortened();
+
+        let (first, second, third) = (want(), want(), want());
+        let mut all = vec![first.clone()];
+        streams.sync(&all, frame, &resolve);
+        all.push(second.clone());
+        streams.sync(&all, frame, &resolve);
+        all.push(third.clone());
+        streams.sync(&all, frame, &resolve);
+        assert_eq!([&first, &second, &third].map(|w| on_gpu(&streams, w)), [Some(16), Some(8), Some(4)], "held to the GPU's memory, never under four");
+        assert!(streams.bytes.is_empty(), "nothing counted in memory");
+        assert!(super::super::streams_shortened() >= shortened + 2, "each shortened one counted");
+
+        // Past the GPU decoder's room: decoded in software, in memory.
+        streams.gpu_headroom = || 0.0;
+        let soft = want();
+        all.push(soft.clone());
+        streams.sync(&all, frame, &resolve);
+        assert_eq!(streams.bytes.get(&soft.clip).map(|b| (b / 100.0) as usize), Some(16), "a software stream's queue is in memory");
+        assert!(!streams.vram.contains_key(&soft.clip));
     }
 
     /// #2116: a stream asking more than the GPU's decoder has left opens
