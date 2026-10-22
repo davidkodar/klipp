@@ -495,6 +495,13 @@ pub fn takes_glyph_route(title: &TitleData, scene: Option<&TitleData>) -> bool {
     // moves keeps the route it was proven on.
     // Keyed styles at rest stay with `style_source`, as they were proven.
     let still = !fx.motion.is_active() && fx.loops.is_empty() && !fx.animators.iter().any(|a| a.enabled) && !fx.styles_keyed();
+    // An entrance or exit the glyph route poses (any but a blur), on a
+    // text that is otherwise still and not on a drawn path: laid out
+    // here too, so a template's first frame waits on no CPU raster
+    // (#2335). Its keyed styles under motion are a change, above.
+    let posed = fx.motion.is_active() && fx.loops.is_empty() && !fx.animators.iter().any(|a| a.enabled) && !linked
+        && !fx.styles_keyed() && fx.motion.enter.iter().chain(fx.motion.exit.iter()).all(|m| !m.kind.blurs());
+    let still = still || posed;
     changes || still
 }
 
