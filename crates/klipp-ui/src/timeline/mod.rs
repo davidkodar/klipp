@@ -166,6 +166,11 @@ impl NewTimelinePanel {
                 self.show_content(ui, state, theme, old_timeline, adaptive_fit, content_rect, &mut cmds);
             }
         }
+        // The one of the two worked in, marked over both (#2324).
+        if let (true, Some(st)) = (stacked_edit, self.stacked.as_ref()) {
+            let worked = if state.active_sequence_idx == st.top_idx { top_rect } else { content_rect };
+            stacked::paint_focus(ui, theme, worked);
+        }
         // Clips carried from one of the two to the other (#82).
         if stacked_edit && state.clip_carry.is_some() {
             if let Some(mut st) = self.stacked.take() {

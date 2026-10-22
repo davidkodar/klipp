@@ -15,9 +15,19 @@ use klipp_core::AppCommand;
 /// The stacked header's height.
 pub const HEADER: f32 = 22.0;
 
-/// The width of the accent bar down the left edge of the timeline worked
+/// The height of the accent band across the top of the timeline worked
 /// in (#2324).
 pub const FOCUS_BAR: f32 = 3.0;
+
+/// Mark `worked`, the one of the two timelines that takes edits: an accent
+/// band across its top and a thin outline (#2324). Its left edge is the
+/// tracks' colour stripes, so the mark is along the top. Painted after
+/// both are drawn, so neither covers it.
+pub fn paint_focus(ui: &egui::Ui, theme: &KlippTheme, worked: egui::Rect) {
+    let painter = ui.painter();
+    painter.rect_stroke(worked.shrink(0.5), 0.0, egui::Stroke::new(1.0_f32, theme.accent.gamma_multiply(0.8)));
+    painter.rect_filled(egui::Rect::from_min_size(worked.min, egui::vec2(worked.width(), FOCUS_BAR)), 0.0, theme.accent);
+}
 
 /// The height the upper timeline needs to show every track of sequence
 /// `idx` (#2324): its header, its ruler and its tracks, never above
@@ -139,12 +149,6 @@ pub(super) fn show_top(main: &mut NewTimelinePanel, ui: &mut egui::Ui, state: &m
             draw_parked(view, state, take, cmds, |state, out| panel.show_content(ui, state, theme, old, false, lanes, out))
         }
     }).inner;
-    // The one worked in, marked: an accent bar down its left edge and a
-    // thin outline, so which of the two takes edits is seen at a glance.
-    let worked = if top_live != changed { rect } else { cut };
-    let painter = ui.painter();
-    painter.rect_stroke(worked.shrink(0.5), 0.0, egui::Stroke::new(1.0_f32, theme.accent.gamma_multiply(0.8)));
-    painter.rect_filled(egui::Rect::from_min_size(worked.min, egui::vec2(FOCUS_BAR, worked.height())), 0.0, theme.accent);
     main.stacked = Some(st);
     changed
 }
@@ -693,8 +697,8 @@ mod tests {
         let texts = s.frame(Vec::new());
         assert!(texts.iter().any(|(t, _)| t.starts_with("Mark In and Out")), "the hint drawn: {texts:?}");
         let theme = KlippTheme::default();
-        let bars = s.shapes.iter().filter(|c| matches!(&c.shape, egui::Shape::Rect(r) if r.fill == theme.accent && (r.rect.width() - FOCUS_BAR).abs() < 0.01)).count();
-        assert_eq!(bars, 1, "one accent bar, on the timeline worked in");
+        let bars = s.shapes.iter().filter(|c| matches!(&c.shape, egui::Shape::Rect(r) if r.fill == theme.accent && (r.rect.height() - FOCUS_BAR).abs() < 0.01 && r.rect.width() > 100.0)).count();
+        assert_eq!(bars, 1, "one accent band, on the timeline worked in");
         let top = s.state.sequences.iter().position(|q| q.name == "Selects").unwrap();
         let want = fitting_height(&s.state, top);
         let tracks: f32 = s.state.sequences[top].tracks.iter().map(crate::panels::timeline::track_row_height).sum();
