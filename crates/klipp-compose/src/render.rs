@@ -1095,7 +1095,10 @@ impl<'a> TrackItem<'a> {
 impl Renderer {
     /// A renderer with the given OFX host (plugin discovery is the
     /// caller's: it is slow, and the viewer and export each have theirs).
-    pub fn new(ofx: klipp_plugin::OfxHost, titles: klipp_title::TitleRenderer) -> Self {
+    pub fn new(ofx: klipp_plugin::OfxHost, mut titles: klipp_title::TitleRenderer) -> Self {
+        // A posed layer of several blurred by its entrance as a one-layer
+        // title's frame is, here and on the GPU stack (#2370).
+        titles.set_layer_softener(Box::new(soften_title_layer));
         Self {
             executor: klipp_nodes::GraphExecutor::new(),
             gpu: None,
@@ -6375,6 +6378,32 @@ pub fn clip_effects(
 /// A title raster's box as the GPU stack takes it (#190).
 fn sprite_box(r: &klipp_title::BoxRaster) -> klipp_effects::gpu::SpriteBox {
     klipp_effects::gpu::SpriteBox { x0: r.x0, y0: r.y0, w: r.w, h: r.h }
+}
+
+/// A posed title layer of several blurred by its blur entrance (#2370):
+/// decoded to linear light, blurred by the effects `title_linear_at` gives
+/// a one-layer title's frame and the GPU stack its layer, in the same
+/// straight alpha, and encoded back to byte units.
+fn soften_title_layer(stack: &mut [f32], width: u32, height: u32, blur: f32, focus: Option<(f32, klipp_core::title_motion::RampAxis, f32)>) {
+    let mut fx = Vec::new();
+    if blur > 0.5 {
+        fx.push(BuiltinEffect::GaussianBlur { radius: blur });
+    }
+    if let Some((radius, axis, band)) = focus {
+        fx.push(BuiltinEffect::FocusBlur { radius, vertical: axis == klipp_core::title_motion::RampAxis::Vertical, band });
+    }
+    if fx.is_empty() {
+        return;
+    }
+    let luma = klipp_color::linear::luma_coefs(WorkingColorspace::default());
+    let linear = klipp_effects::apply_effects_with_luma(&fx, srgb_stack_to_linear(stack), width, height, luma);
+    let encode = |c: f32| {
+        let c = c.max(0.0);
+        255.0 * if c <= 0.0031308 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }
+    };
+    for (out, p) in stack.chunks_exact_mut(4).zip(linear.chunks_exact(4)) {
+        out.copy_from_slice(&[encode(p[0]), encode(p[1]), encode(p[2]), p[3].clamp(0.0, 1.0) * 255.0]);
+    }
 }
 
 /// A title's stack in byte units (straight-alpha sRGB 0..255) as linear

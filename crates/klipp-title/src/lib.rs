@@ -511,6 +511,12 @@ fn alpha_rows(buf: &[u8], width: u32, height: u32) -> (u32, u32) {
     }
 }
 
+/// What blurs a posed layer of several as its placer blurs a one-layer
+/// title's frame (#2370): the layer's stack (straight alpha, byte units),
+/// its size, the entrance's blur radius and its focus band gone soft.
+/// The compositor gives one; this crate can't reach the effects that blur.
+pub type LayerSoftener = Box<dyn FnMut(&mut [f32], u32, u32, f32, Option<(f32, RampAxis, f32)>) + Send>;
+
 /// Renders title clips to RGBA pixel buffers.
 pub struct TitleRenderer {
     fallback_font: LoadedFont,
@@ -557,6 +563,9 @@ pub struct TitleRenderer {
     /// A placed frame's focus band gone soft: (blur radius in frame
     /// pixels, axis, band), for the caller to blur the placed layer by.
     last_focus_blur: Option<(f32, RampAxis, f32)>,
+    /// Blurs a posed layer of several by its blur entrance (#2370); with
+    /// none, such a layer is rastered with its blur.
+    layer_softener: Option<LayerSoftener>,
     /// The solid point of the last resting sprite a motion scaled about
     /// (#787): the sprite is fixed while it moves, so the box scan and
     /// distance pass run once per sprite, not once a frame.
@@ -719,6 +728,7 @@ impl TitleRenderer {
             last_rows: (0, 0),
             last_blur: 0.0,
             last_focus_blur: None,
+            layer_softener: None,
             solid_point: None,
             last_units: None,
             last_glyphs3d: std::sync::Mutex::new(Default::default()),
@@ -3430,7 +3440,8 @@ impl TitleRenderer {
                     // render cache (`RENDER_CACHE_CAP`, 16): a title with
                     // more moving layers than that renders some again.
                     let several = title.objects.iter().filter(|o| o.visible).count() > 1;
-                    let posed = time_secs.filter(|_| several && fade_alpha.is_none() && !on_layer && self.loop_wave.is_none() && matches!(&obj.content, TitleObjectContent::TextBox(authored) if poses_alone(obj, authored))).map(|t| {
+                    let softens = self.layer_softener.is_some();
+                    let posed = time_secs.filter(|_| several && fade_alpha.is_none() && !on_layer && self.loop_wave.is_none() && matches!(&obj.content, TitleObjectContent::TextBox(authored) if poses_alone(obj, authored, softens))).map(|t| {
                         let mut lone = title.clone();
                         let mut o = obj.clone();
                         o.opacity = 1.0;
@@ -3446,8 +3457,14 @@ impl TitleRenderer {
                         // later layer's wave or focus band would go without.
                         let saved = (self.last_rows, self.last_blur, self.last_focus_blur, self.last_units.take(), self.matte_only.take(), std::mem::take(&mut self.loop_waves), std::mem::take(&mut self.loop_focus));
                         self.bound_path = None;
-                        let stack = self.stack_with_time(&lone, width, height, gpu.take(), t);
+                        let mut stack = self.stack_with_time(&lone, width, height, gpu.take(), t);
+                        // A blur entrance's frame left its blur to the
+                        // placer: blurred here as the placer blurs it.
+                        let (blur, focus) = (self.last_blur, self.last_focus_blur);
                         (self.last_rows, self.last_blur, self.last_focus_blur, self.last_units, self.matte_only, self.loop_waves, self.loop_focus) = saved;
+                        if let Some(soften) = self.layer_softener.as_mut().filter(|_| blur > 0.5 || focus.is_some()) {
+                            soften(&mut stack, width, height, blur, focus);
+                        }
                         to_bytes(&stack)
                     });
                     let mut kept = if posed.is_none() && (still || faded.is_some()) { self.text_layer_lookup(&single, width, height) } else { None };
@@ -4029,6 +4046,13 @@ impl TitleRenderer {
         }
         self.last_units = units;
         self.cache_store(key.into_owned(), width, height, pixels);
+    }
+
+    /// What blurs a posed layer of several by its blur entrance (#2370),
+    /// as the caller blurs a one-layer title's frame by [`Self::last_blur`]
+    /// and [`Self::last_focus_blur`].
+    pub fn set_layer_softener(&mut self, soften: LayerSoftener) {
+        self.layer_softener = Some(soften);
     }
 
     /// The focus blur the last placed frame asked for: (radius in frame
@@ -5440,16 +5464,17 @@ fn whole_layer_fade(obj: &TitleObject, tb: &klipp_timeline::TextBox, t: f32, win
 }
 
 /// Whether a text layer's only change over time is an entrance or exit
-/// (not a blur) that poses its resting render: no loop, animator, edge fade or motion
+/// that poses its resting render: no loop, animator, edge fade or motion
 /// blur of its own, nothing keyed, no effect drawn per frame. Such a
 /// layer of several is drawn as its own one-layer title's frame (#2369).
-fn poses_alone(obj: &TitleObject, tb: &klipp_timeline::TextBox) -> bool {
+/// A blur entrance only when `softens`: its frame leaves its blur to
+/// whoever places it, and a [`LayerSoftener`] blurs it as that placer
+/// does (#2370); without one it stays rastered with its blur.
+fn poses_alone(obj: &TitleObject, tb: &klipp_timeline::TextBox, softens: bool) -> bool {
     let fx = obj.fx();
     let t = &obj.transform;
-    // A blur entrance's frame leaves its blur to whoever places it, which
-    // a layer of several cannot defer: it stays rastered with its blur.
     fx.motion.is_active()
-        && fx.motion.enter.iter().chain(fx.motion.exit.iter()).all(|m| !m.kind.blurs())
+        && fx.motion.enter.iter().chain(fx.motion.exit.iter()).all(|m| softens || !m.kind.blurs())
         && fx.loops.is_empty()
         && fx.animators.iter().all(|a| !a.enabled)
         && fx.edge_fade.is_none()
