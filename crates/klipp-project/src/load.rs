@@ -837,6 +837,7 @@ fn load_sequence_from_json(
                 }
             });
             track.automation_lane_height = t.automation_lane_height;
+            track.automation = t.automation.clone().unwrap_or_default();
             if let Some(fx) = &t.effects {
                 // Read once already, before anything was loaded: an effect
                 // this Klipp does not know refused the load there.

@@ -1346,6 +1346,10 @@ pub struct Track {
     /// own. Set once, they hold for clips added later too.
     #[serde(default, skip_serializing_if = "TrackEffects::is_empty")]
     pub effects: TrackEffects,
+    /// The track's own automation (#2306): its mode and its keys for its
+    /// volume and pan, in sequence seconds.
+    #[serde(default, skip_serializing_if = "crate::track_automation::TrackAutomation::is_default")]
+    pub automation: crate::track_automation::TrackAutomation,
 }
 
 /// A track's own effects (#846), applied to every clip on it after the
@@ -1520,6 +1524,7 @@ impl Track {
             source_patch: false,
             record_armed: false,
             automation_lane_visible: None,
+            automation: Default::default(),
             automation_lane_height: None,
             effects: TrackEffects::default(),
         }

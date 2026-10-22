@@ -12,6 +12,11 @@ pub struct AudioTrackSettings {
     pub rms_right: f32,
     /// Optional bus assignment (index into AudioMixer::buses). None = direct to master.
     pub bus: Option<usize>,
+    /// The volume and pan the last block ended at (#2306): a change since
+    /// is ramped across the next block, sample by sample, so an automated
+    /// or moved control doesn't step (and click) at each block. `None`
+    /// before the first block.
+    pub ramp_from: Option<(f32, f32)>,
 }
 
 impl Default for AudioTrackSettings {
@@ -26,6 +31,7 @@ impl Default for AudioTrackSettings {
             rms_left: 0.0,
             rms_right: 0.0,
             bus: None,
+            ramp_from: None,
         }
     }
 }
@@ -240,6 +246,13 @@ impl AudioMixer {
             }
 
             let (pan_l, pan_r) = Self::pan_gains_for(settings.pan, self.pan_law);
+            // From where the last block ended to the settings now, when
+            // they changed; held, the gains are the settings' as before.
+            let (from_volume, from_pan) = settings.ramp_from.unwrap_or((settings.volume, settings.pan));
+            let ramped = (from_volume, from_pan) != (settings.volume, settings.pan);
+            let (from_l, from_r) = Self::pan_gains_for(from_pan, self.pan_law);
+            let frames = (buf.len() / 2).max(1) as f32;
+            settings.ramp_from = Some((settings.volume, settings.pan));
 
             let mut peak_l = 0.0f32;
             let mut peak_r = 0.0f32;
@@ -261,8 +274,13 @@ impl AudioMixer {
             for (j, pair) in buf.chunks(2).enumerate() {
                 let l = pair.first().copied().unwrap_or(0.0);
                 let r = pair.get(1).copied().unwrap_or(0.0);
-                let out_l = l * settings.volume * pan_l;
-                let out_r = r * settings.volume * pan_r;
+                let (out_l, out_r) = if ramped {
+                    let t = (j + 1) as f32 / frames;
+                    let volume = from_volume + (settings.volume - from_volume) * t;
+                    (l * volume * (from_l + (pan_l - from_l) * t), r * volume * (from_r + (pan_r - from_r) * t))
+                } else {
+                    (l * settings.volume * pan_l, r * settings.volume * pan_r)
+                };
                 peak_l = peak_l.max(out_l.abs());
                 peak_r = peak_r.max(out_r.abs());
                 sum_sq_l += out_l * out_l;
@@ -332,6 +350,27 @@ mod tests {
     // ---------------------------------------------------------------
     // Basic mixer tests
     // ---------------------------------------------------------------
+
+    /// #2306: held settings mix as they always did, bit for bit; a
+    /// change is ramped across the next block from where the last ended,
+    /// reaching the new value at its last sample, with no step.
+    #[test]
+    fn a_volume_change_ramps_across_the_next_block() {
+        let mut mixer = AudioMixer::new(1);
+        mixer.tracks[0].volume = 0.5;
+        let buf = vec![1.0f32; 8];
+        let held = mixer.mix(&[(0, &buf)]);
+        let (pl, _) = AudioMixer::pan_gains_for(0.0, mixer.pan_law);
+        assert!(held.iter().step_by(2).all(|v| v.to_bits() == (1.0f32 * 0.5 * pl).to_bits()), "{held:?}");
+        assert_eq!(held, mixer.mix(&[(0, &buf)]), "held again: the same");
+        mixer.tracks[0].volume = 1.0;
+        let ramped = mixer.mix(&[(0, &buf)]);
+        let left: Vec<f32> = ramped.iter().step_by(2).copied().collect();
+        assert!(left.windows(2).all(|w| w[1] > w[0]), "rising, no step: {left:?}");
+        assert!(approx(left[0], 0.625 * pl) && approx(left[3], 1.0 * pl), "{left:?}");
+        let next = mixer.mix(&[(0, &buf)]);
+        assert!(next.iter().step_by(2).all(|v| approx(*v, pl)), "then held at the new value");
+    }
 
     #[test]
     fn silence_in_silence_out() {

@@ -124,6 +124,8 @@ mod surface_round_trip;
 mod texture_fill_path;
 #[path = "../title_nits_round_trip.rs"]
 mod title_nits_round_trip;
+#[path = "../track_automation_round_trip.rs"]
+mod track_automation_round_trip;
 #[path = "../track_effects_round_trip.rs"]
 mod track_effects_round_trip;
 #[path = "../track_language_round_trip.rs"]

@@ -140,6 +140,9 @@ pub struct AudioTrackSnapshot {
     pub muted: bool,
     pub solo: bool,
     pub clips: Vec<AudioClipSnapshot>,
+    /// The track's own automation (#2306): its volume and pan over the
+    /// sequence, evaluated as playback evaluates it.
+    pub automation: klipp_timeline::TrackAutomation,
 }
 
 #[derive(Clone)]
@@ -771,6 +774,7 @@ fn snapshot_audio_track(
         muted: track.muted,
         solo: track.solo,
         clips,
+        automation: track.automation.clone(),
     })
 }
 
@@ -815,7 +819,7 @@ fn snapshot_video_track_sound(track: &Track, seq: &Sequence, media_pool: &MediaP
     if clips.is_empty() {
         return None;
     }
-    Some(AudioTrackSnapshot { volume: track.volume, pan: track.pan, muted: track.muted, solo: track.solo, clips })
+    Some(AudioTrackSnapshot { volume: track.volume, pan: track.pan, muted: track.muted, solo: track.solo, clips, automation: track.automation.clone() })
 }
 
 /// Flatten a compound clip's inner sequence audio tracks into the parent audio clip list.
