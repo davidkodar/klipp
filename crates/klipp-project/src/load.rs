@@ -833,9 +833,12 @@ fn load_sequence_from_json(
                     "Volume" => Some(klipp_core::AudioParam::Volume),
                     "Pan" => Some(klipp_core::AudioParam::Pan),
                     "Gain" => Some(klipp_core::AudioParam::Gain),
+                    "TrackVolume" => Some(klipp_core::AudioParam::Volume),
+                    "TrackPan" => Some(klipp_core::AudioParam::Pan),
                     _ => None,
                 }
             });
+            track.automation_lane_track = matches!(t.automation_lane_visible.as_deref(), Some("TrackVolume" | "TrackPan"));
             track.automation_lane_height = t.automation_lane_height;
             track.automation = t.automation.clone().unwrap_or_default();
             if let Some(fx) = &t.effects {

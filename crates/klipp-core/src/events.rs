@@ -3110,6 +3110,9 @@ pub enum AppCommand {
     SetTrackSyncLock { track_id: TrackId, on: bool },
     /// How a track's automation is played and recorded (#2306).
     SetTrackAutomationMode { track_index: usize, mode: crate::automation::AutomationMode },
+    /// A track's own keys of one control, edited in its automation lane
+    /// (#2306).
+    SetTrackAutomationKeys { track_index: usize, param: crate::automation::TrackParam, keys: Vec<crate::Keyframe> },
     /// A track's control played at `value` in place of its keys and its
     /// value as set, while the user moves it or a pass records it, or back
     /// to them (`None`) (#2306): the engine's only.
@@ -3179,7 +3182,8 @@ pub enum AppCommand {
     /// closing it. Used by the lane's right-click param picker so
     /// users can flip between Volume / Pan / Gain without first
     /// collapsing the lane and changing the global rubber-band pill.
-    SetAudioAutomationLaneParam { track_idx: usize, param: AudioParam },
+    /// `track`: the track's own keys of `param` (#2306), not the clips'.
+    SetAudioAutomationLaneParam { track_idx: usize, param: AudioParam, track: bool },
     /// Begin capturing audio from the configured input device into a WAV file
     /// in the proxy cache. Does nothing if no track is armed.
     StartRecording,

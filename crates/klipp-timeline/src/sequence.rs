@@ -1336,6 +1336,10 @@ pub struct Track {
     /// serde; defaults to `None` for back-compat.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub automation_lane_visible: Option<klipp_core::AudioParam>,
+    /// The open lane shows the track's own keys of its param (#2306), its
+    /// [`TrackAutomation`](crate::TrackAutomation), not the clips'.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub automation_lane_track: bool,
     /// User-overridden lane height in pixels. `None` falls back to the
     /// `AUTOMATION_LANE_HEIGHT` default (120 px) so projects saved
     /// before drag-resize landed still render at the original height.
@@ -1524,6 +1528,7 @@ impl Track {
             source_patch: false,
             record_armed: false,
             automation_lane_visible: None,
+            automation_lane_track: false,
             automation: Default::default(),
             automation_lane_height: None,
             effects: TrackEffects::default(),

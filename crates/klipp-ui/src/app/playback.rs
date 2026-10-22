@@ -284,7 +284,7 @@ impl KlippApp {
                 }
                 true
             }
-            AppCommand::SetAudioAutomationLaneParam { track_idx, param } => {
+            AppCommand::SetAudioAutomationLaneParam { track_idx, param, track } => {
                 if let Some(seq) = self.state.sequences.get_mut(self.state.active_sequence_idx) {
                     if let Some(t) = seq.tracks.get_mut(*track_idx) {
                         // Only writes when the lane is already open —
@@ -293,6 +293,7 @@ impl KlippApp {
                         // be a logic bug rather than a no-op fix.
                         if t.automation_lane_visible.is_some() {
                             t.automation_lane_visible = Some(*param);
+                            t.automation_lane_track = *track && *param != klipp_core::AudioParam::Gain;
                             self.state.dirty = true;
                         }
                     }

@@ -855,6 +855,35 @@ mod menu_smoke_tests {
         assert!(!menu.iter().any(|t| t.starts_with("Translate Captions")), "a video track has no captions: {menu:?}");
     }
 
+    /// An audio track header's Automation menu sets the track's mode
+    /// (#2306); a video track's has none.
+    #[test]
+    fn an_audio_tracks_menu_sets_its_automation_mode() {
+        let mut timeline = Timeline::new();
+        let at = timeline.header(TrackKind::Audio);
+        let track_index = timeline.state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Audio).expect("an audio track");
+        let menu = timeline.right_click(at);
+        let item = timeline.frame(Vec::new()).into_iter().find(|(t, _)| t.starts_with("Automation:")).unwrap_or_else(|| panic!("the audio track's menu has its automation: {menu:?}")).1;
+        timeline.frame(vec![egui::Event::PointerMoved(item)]);
+        let drawn = timeline.frame(vec![egui::Event::PointerMoved(item)]);
+        let at = drawn.iter().find(|(t, _)| t.trim_start() == "Touch").unwrap_or_else(|| panic!("a mode to pick: {drawn:?}")).1;
+        let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        timeline.frame(vec![egui::Event::PointerMoved(at)]);
+        timeline.frame(vec![egui::Event::PointerMoved(at), button(true)]);
+        timeline.frame(vec![button(false)]);
+        assert!(
+            timeline.sent.iter().any(|c| matches!(c, AppCommand::SetTrackAutomationMode { track_index: t, mode: klipp_core::automation::AutomationMode::Touch } if *t == track_index)),
+            "{:?}",
+            timeline.sent
+        );
+        for _ in 0..2 {
+            timeline.frame(vec![egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]);
+        }
+        let at = timeline.header(TrackKind::Video);
+        let menu = timeline.right_click(at);
+        assert!(!menu.iter().any(|t| t.starts_with("Automation:")), "a video track has no automation: {menu:?}");
+    }
+
     /// A subtitle track header's Language menu sets the track's language
     /// (#2223); a video track's has none.
     #[test]
