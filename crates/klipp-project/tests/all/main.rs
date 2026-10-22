@@ -14,6 +14,8 @@ mod auto_move_save;
 mod autosave_restore_paths;
 #[path = "../brief_round_trip.rs"]
 mod brief_round_trip;
+#[path = "../awaiting_refit_round_trip.rs"]
+mod awaiting_refit_round_trip;
 #[path = "../review_markers_round_trip.rs"]
 mod review_markers_round_trip;
 #[path = "../camera_keys_round_trip.rs"]

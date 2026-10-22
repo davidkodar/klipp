@@ -87,6 +87,12 @@ pub struct Sequence {
     /// to be fixed, with why (#1932). Empty for a sequence never reviewed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reviews: Vec<crate::FindingReview>,
+    /// A version at another aspect still to be reframed to its frame once
+    /// its files' framing analysis is done (#2211, #2231): kept with the
+    /// project so a version made just before quitting is reframed when
+    /// it is opened again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub awaiting_refit: bool,
     /// A move over the whole sequence; see [`Camera`]. Empty means none,
     /// which is what every sequence made before this had.
     #[serde(default, skip_serializing_if = "Camera::is_default")]
@@ -683,6 +689,7 @@ impl Sequence {
             brief: None,
             edit_plan: None,
             reviews: Vec::new(),
+            awaiting_refit: false,
         }
     }
 
@@ -4433,6 +4440,7 @@ mod tests {
             brief: None,
             edit_plan: None,
             reviews: Vec::new(),
+            awaiting_refit: false,
         }
     }
 

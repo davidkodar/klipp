@@ -28,6 +28,7 @@ pub(super) fn add_version(state: &mut crate::state::AppState, source: usize, siz
     version.id = klipp_core::SequenceId::new();
     version.name = name.to_string();
     version.resolution = klipp_core::Resolution { width: size.0, height: size.1 };
+    version.awaiting_refit = true;
     state.sequences.push(version);
     state.dirty = true;
     Some(state.sequences.len() - 1)
@@ -51,6 +52,12 @@ pub(super) fn due_refits(pending: &mut Vec<crate::state::PendingRefit>, exists: 
         true
     });
     due
+}
+
+/// The waits of an opened project's aspect versions still to be reframed
+/// (#2231): their files' framing asked for again.
+pub(super) fn waiting_refits(sequences: &[klipp_timeline::Sequence], pool: &klipp_media::MediaPool) -> Vec<crate::state::PendingRefit> {
+    sequences.iter().filter(|s| s.awaiting_refit).map(|s| crate::state::PendingRefit { sequence: s.id, waiting: request_framing(s, pool) }).collect()
 }
 
 /// Ask for the framing analysis of every file `seq` shows a picture of,
@@ -83,7 +90,10 @@ impl KlippApp {
         let busy = |id| klipp_analysis::service::status(id).is_some_and(|s| matches!(s.state, klipp_analysis::service::State::Queued | klipp_analysis::service::State::Running));
         // The open sequence is the one an op resolves on, so one due at
         // most.
-        for _ in due_refits(&mut self.state.pending_refits, |id| ids.contains(&id), open, busy) {
+        for id in due_refits(&mut self.state.pending_refits, |id| ids.contains(&id), open, busy) {
+            if let Some(seq) = self.state.sequences.iter_mut().find(|s| s.id == id) {
+                seq.awaiting_refit = false;
+            }
             self.state.pending_doc_ops.push(crate::state::DocOpsRequest {
                 label: "Refit to Frame".into(),
                 ops: vec![klipp_document::ops::Op::Refit { markers: true }],
@@ -123,6 +133,19 @@ mod tests {
         assert_eq!(version.tracks.len(), source.tracks.len());
         assert_eq!(state.sequences[0].resolution, source.resolution);
         assert!(add_version(&mut state, 9, (1, 1), "x").is_none());
+        assert!(state.sequences[1].awaiting_refit && !state.sequences[0].awaiting_refit, "the version waits to be reframed");
+    }
+
+    /// An opened project's versions still to be reframed wait again
+    /// (#2231); the rest do not.
+    #[test]
+    fn an_opened_version_still_to_be_reframed_waits_again() {
+        let mut state = crate::state::AppState::default();
+        add_version(&mut state, 0, (1080, 1920), "Cut 9:16").unwrap();
+        let pending = waiting_refits(&state.sequences, &state.media_pool);
+        assert_eq!(pending.iter().map(|p| p.sequence).collect::<Vec<_>>(), vec![state.sequences[1].id]);
+        state.sequences[1].awaiting_refit = false;
+        assert!(waiting_refits(&state.sequences, &state.media_pool).is_empty());
     }
 
     /// A version is reframed once its files are analysed and it is the
