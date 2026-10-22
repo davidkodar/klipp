@@ -100,6 +100,7 @@ pub fn generate_otio(seq: &Sequence, media_pool: &MediaPool) -> Result<OtioExpor
                     m.duration.map(|d| d.to_secs_f64()).unwrap_or(0.0),
                     rate,
                 ),
+                "comment": m.comment,
                 "metadata": {},
             })
         })
@@ -180,6 +181,10 @@ fn build_track(
 
         children.push(clip_value(clip, media_pool, rate, &track.name, warnings));
         cursor_secs = cursor_secs.max(start) + dur;
+        // A transition out of this clip, at the cut after it.
+        for t in track.transitions.iter().filter(|t| t.clip_a_id == clip.id) {
+            children.push(transition_value(t, rate, &track.name, warnings));
+        }
     }
 
     json!({
@@ -192,6 +197,33 @@ fn build_track(
         "metadata": {},
         "source_range": Value::Null,
         "enabled": !track.muted,
+    })
+}
+
+/// A transition at its cut: how far it reaches into the clip before and
+/// the clip after, as its alignment puts it; a dissolve as OTIO's, any
+/// other kind as a custom transition named for it.
+fn transition_value(t: &klipp_timeline::Transition, rate: f64, track_name: &str, warnings: &mut Vec<String>) -> Value {
+    let d = t.duration.to_secs_f64();
+    let (before, after) = match t.alignment {
+        klipp_core::TransitionAlignment::Center => (d / 2.0, d / 2.0),
+        klipp_core::TransitionAlignment::EndAtCut => (d, 0.0),
+        klipp_core::TransitionAlignment::StartAtCut => (0.0, d),
+    };
+    let (kind, name) = match t.kind {
+        klipp_core::TransitionKind::CrossDissolve => ("SMPTE_Dissolve", "Cross Dissolve".to_string()),
+        other => {
+            warnings.push(format!("Track '{track_name}': a {other:?} transition exported as a custom transition — OTIO names only the dissolve"));
+            ("Custom_Transition", format!("{other:?}"))
+        }
+    };
+    json!({
+        "OTIO_SCHEMA": "Transition.1",
+        "name": name,
+        "transition_type": kind,
+        "in_offset": rational_time(before, rate),
+        "out_offset": rational_time(after, rate),
+        "metadata": {},
     })
 }
 
@@ -270,10 +302,19 @@ fn clip_value(
                 // Clip markers are relative to source_in, which is the
                 // frame source_range is measured from too.
                 "marked_range": time_range(clip.source_in.to_secs_f64() + m.time_secs, 0.0, rate),
+                "comment": m.comment,
                 "metadata": {},
             })
         })
         .collect();
+
+    // A constant speed: OTIO keeps the clip's length on the track and says
+    // how fast it plays its source.
+    let effects: Vec<Value> = if (clip.speed - 1.0).abs() > 1e-9 {
+        vec![json!({ "OTIO_SCHEMA": "LinearTimeWarp.1", "name": "speed", "time_scalar": clip.speed, "metadata": {} })]
+    } else {
+        Vec::new()
+    };
 
     json!({
         "OTIO_SCHEMA": "Clip.1",
@@ -281,7 +322,7 @@ fn clip_value(
         "source_range": time_range(clip.source_in.to_secs_f64(), dur, rate),
         "media_reference": media_reference,
         "markers": markers,
-        "effects": [],
+        "effects": effects,
         "metadata": {},
         "enabled": clip.enabled,
     })
@@ -661,5 +702,45 @@ mod tests {
             Err(e) => assert_eq!(e, super::ConvertError::NoAdapter("aaf".into())),
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A dissolve, a clip at double speed, marker notes and the picture
+    /// size go out and come back as they were.
+    #[test]
+    fn transitions_speed_notes_and_size_survive() {
+        let id = MediaId::new();
+        let mut pool = MediaPool::new();
+        pool.add(item(id, "/tmp/rt.mov", 60.0, 24));
+        let a = media_clip(id, 0.0, 2.0, 0.0, 24);
+        let mut b = media_clip(id, 2.0, 4.0, 10.0, 24);
+        b.speed = 2.0;
+        b.source_out = RationalTime::from_secs_f64(14.0, 24);
+        b.clip_markers.push(klipp_timeline::ClipMarker { time_secs: 1.0, name: "flare".into(), color: klipp_core::MarkerColor::Red, comment: "fix it".into() });
+        let mut v = Track::new("V1", TrackKind::Video);
+        v.transitions.push(klipp_timeline::Transition {
+            id: klipp_core::TransitionId::new(),
+            kind: klipp_core::TransitionKind::CrossDissolve,
+            duration: RationalTime::from_secs_f64(0.5, 24),
+            clip_a_id: a.id,
+            clip_b_id: b.id,
+            user_params: Default::default(),
+            alignment: klipp_core::TransitionAlignment::Center,
+        });
+        v.clips = vec![a, b];
+        let mut seq = seq_with(Fps { num: 24, den: 1 }, vec![v]);
+        seq.resolution = klipp_core::Resolution { width: 1280, height: 720 };
+        seq.markers.push(Marker { review: None, id: MarkerId::new(), position: RationalTime::from_secs_f64(1.0, 24), label: "beat".into(), color: klipp_core::MarkerColor::Blue, duration: None, comment: "music".into(), kind: klipp_core::MarkerKind::None });
+
+        let back = round_trip(&seq, &pool);
+        let track = &back.sequence.tracks[0];
+        let t = &track.transitions[0];
+        assert_eq!((t.clip_a_id, t.clip_b_id, t.alignment), (track.clips[0].id, track.clips[1].id, klipp_core::TransitionAlignment::Center));
+        assert!((t.duration.to_secs_f64() - 0.5).abs() < 1e-9);
+        let b = &track.clips[1];
+        assert_eq!(b.speed, 2.0);
+        assert!(((b.source_out - b.source_in).to_secs_f64() - 4.0).abs() < 1e-9, "two seconds on the track, four of the source");
+        assert_eq!(b.clip_markers[0].comment, "fix it");
+        assert_eq!(back.sequence.markers[0].comment, "music");
+        assert_eq!(back.sequence.resolution, klipp_core::Resolution { width: 1280, height: 720 });
     }
 }
