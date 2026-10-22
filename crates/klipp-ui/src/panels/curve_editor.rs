@@ -279,6 +279,9 @@ pub struct CurveEditorPanel {
     /// A box being drawn on empty graph, where it began, and whether
     /// Shift adds what it holds to the selection (#1958).
     box_from: Option<(egui::Pos2, bool)>,
+    /// Showing the dope sheet (#2240) in place of the curves.
+    dope: bool,
+    sheet: super::dope_sheet::Sheet,
     /// The last frame's graph, for a test to find a key on screen: its
     /// rect and the value range it maps.
     #[cfg(test)]
@@ -297,6 +300,8 @@ impl Default for CurveEditorPanel {
             needs_fit: true,
             multi_from: None,
             box_from: None,
+            dope: false,
+            sheet: Default::default(),
             #[cfg(test)]
             last_view: None,
         }
@@ -385,12 +390,21 @@ impl CurveEditorPanel {
             ui.horizontal_centered(|ui| {
                 ui.add_space(8.0);
 
-                // Label: "Curve Editor"
+                // Label: "Curve Editor", and its two views: one curve, or
+                // every keyed track of the clip on one axis (#2240).
                 ui.label(
                     egui::RichText::new("Curve Editor")
                         .size(11.0)
                         .color(theme.text_secondary),
                 );
+                ui.add_space(4.0);
+                if ui.selectable_label(!self.dope, egui::RichText::new("Curves").size(10.0)).clicked() {
+                    self.dope = false;
+                    self.needs_fit = true;
+                }
+                if ui.selectable_label(self.dope, egui::RichText::new("Dope Sheet").size(10.0)).on_hover_text("Every animated parameter of the clip on one time axis").clicked() {
+                    self.dope = true;
+                }
 
                 ui.add_space(8.0);
                 ui.separator();
@@ -434,6 +448,8 @@ impl CurveEditorPanel {
                     ui.label(egui::RichText::new(format!("{} keys", state.key_selection.len())).size(crate::theme::type_scale::CAPTION).color(theme.text_accent));
                 }
                 if self.param != previous_param {
+                    // A curve picked is shown, from the dope sheet too.
+                    self.dope = false;
                     // A selection of several keys stays across tracks.
                     if !crate::key_selection::several(state) {
                         state.selected_keyframe = None;
@@ -487,6 +503,23 @@ impl CurveEditorPanel {
             );
             return cmds;
         };
+
+        // The dope sheet takes the whole body, the names' column with it.
+        if self.dope {
+            if let CurveScope::Clip { id, .. } = &scope {
+                let body = Rect::from_min_max(pos2(full_rect.min.x, header_rect.max.y + 1.0), full_rect.max);
+                let clip = state.sequence().all_clips().find(|c| c.id == *id).cloned();
+                if let Some(clip) = clip {
+                    if let Some(curve) = self.sheet.show(ui, state, theme, body, &clip, &mut cmds) {
+                        // A row's name double-clicked: its curve.
+                        self.param = curve;
+                        self.dope = false;
+                        self.needs_fit = true;
+                    }
+                }
+                return cmds;
+            }
+        }
 
         let clip_duration = scope.duration();
         let track_kind = scope.kind();
@@ -865,6 +898,18 @@ impl CurveEditorPanel {
     pub(crate) fn screen_at(&self, t: f64, v: f32) -> Option<egui::Pos2> {
         let (rect, v_min, v_range) = self.last_view?;
         Some(pos2(self.time_to_x(t, &rect, 0.0), self.value_to_y(v, &rect, v_min, v_range)))
+    }
+
+    /// Where the dope sheet drew the key at `t` on row `row` (#2240).
+    #[cfg(test)]
+    pub(crate) fn sheet_at(&self, row: usize, t: f64) -> Option<egui::Pos2> {
+        self.sheet.screen_at(row, t)
+    }
+
+    /// Whether the dope sheet is shown.
+    #[cfg(test)]
+    pub(crate) fn showing_sheet(&self) -> bool {
+        self.dope
     }
 
     /// Show `param`'s track, as picking it from the header's list does.

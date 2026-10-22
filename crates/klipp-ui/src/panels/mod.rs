@@ -11,6 +11,7 @@ pub mod cache_manager;
 pub mod colour_management;
 pub mod clip_properties;
 pub mod curve_editor;
+pub mod dope_sheet;
 pub mod preset_manager;
 // `panels::inspector` was a legacy single-file module that exposed
 // `show_color_and_luts`. It has been migrated into
