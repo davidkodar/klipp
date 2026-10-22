@@ -296,6 +296,13 @@ fn upcoming(seq: &Sequence, time: klipp_core::Timecode, playing: bool, primary_t
     out
 }
 
+/// The track whose coming shots the primary decoder plays, left to it by
+/// [`upcoming`]: while it plays one, or holds or opens a preroll for the
+/// next, as through a strobe's gap (#2386). With neither, none.
+fn primary_track(playing_one: bool, prerolling: bool, track: usize) -> Option<usize> {
+    (playing_one || prerolling).then_some(track)
+}
+
 /// The source times the viewer can read `clip`'s media at: from its start
 /// to its duration in the pool, as export's snapshot says, so a temporal
 /// node's neighbour past the media's end is out of range on both routes,
@@ -576,7 +583,15 @@ impl PlaybackEngine {
                     })
                 })
                 .collect();
-            let primary_track = self.v1_decoder.is_some().then_some(self.current_track_index);
+            // The primary track's next shots are the primary decoder's
+            // while it plays them, and through a gap while a preroll holds
+            // or opens the next one: a strobe's pieces, each in a gap with
+            // the decoder handed on, were all opened as clip streams and
+            // closed at the next piece, 91 decoders in a second and a half,
+            // until the shot after waited seconds for its own and the
+            // picture stayed black (#2386). With neither, a shot coming up
+            // on it is opened ahead as on any other track.
+            let primary_track = primary_track(self.v1_decoder.is_some(), self.preroll_decoder.is_some() || self.preroll_pending.is_some(), self.current_track_index);
             (on_screen, upcoming(&seq, time, playing, primary_track))
         };
         // Clips on screen with no stream yet: opened late, if playing.
@@ -1923,5 +1938,39 @@ mod neighbour_tests {
         }
         assert_eq!(streams.neighbour_readers(), 2, "the proxy's reader and the original's, each opened once");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod upcoming_tests {
+    use super::*;
+    use klipp_core::{MediaId, RationalTime};
+    use klipp_timeline::{ClipKind, Track, TrackKind};
+
+    /// Two-frame pieces of one file with two-frame gaps on V1, at 30 fps.
+    fn strobe() -> Sequence {
+        let tc = |f: i64| RationalTime::from_frames(f, 30);
+        let media = MediaId::new();
+        let mut v1 = Track::new("V1", TrackKind::Video);
+        v1.clips = (0..8).map(|k| Clip { kind: ClipKind::Media { media_id: media }, source_in: tc(4 * k), source_out: tc(4 * k + 2), ..Clip::gap(tc(4 * k), tc(4 * k + 2)) }).collect();
+        let mut seq = Sequence::new_default();
+        seq.fps = klipp_core::Fps::new(30, 1);
+        seq.tracks = vec![v1];
+        seq
+    }
+
+    /// #2386: in a gap, with the decoder handed on as the next piece's
+    /// preroll, the pieces coming up are the primary's, not streams of
+    /// their own; with no decoder and no preroll they open ahead as
+    /// before, the way a shot after the primary's track runs out does.
+    #[test]
+    fn a_gap_with_a_preroll_leaves_the_pieces_to_the_primary() {
+        let seq = strobe();
+        // In the first gap, after the first piece.
+        let at = RationalTime::from_frames(3, 30);
+        let wanted = |primary: Option<usize>| upcoming(&seq, at, true, primary).len();
+        assert_eq!(wanted(primary_track(false, true, 0)), 0, "prerolling: the pieces are the primary's");
+        assert_eq!(wanted(primary_track(true, false, 0)), 0, "playing one: the pieces are the primary's");
+        assert!(wanted(primary_track(false, false, 0)) > 0, "no decoder, no preroll: the next pieces open ahead");
     }
 }

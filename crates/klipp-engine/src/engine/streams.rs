@@ -584,6 +584,7 @@ impl ClipStreams {
                             let _ = tx.send(ClipStream::open(&want, &path, rot, lease, frames));
                         });
                         if spawned.is_ok() {
+                            super::STREAMS_OPENED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             self.opening.insert(w.clip, (rx, w.ahead));
                             self.rates.insert(w.clip, cost.rate);
                             if let Some(drive) = cost.drive {
