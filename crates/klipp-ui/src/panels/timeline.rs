@@ -394,9 +394,10 @@ fn drag_key_time(keys: &[klipp_core::Keyframe], index: usize, wanted: f64) -> f6
     wanted.clamp(lo, hi)
 }
 
-/// Fixed (min, range, unity) per audio param. Matches the values used by
-/// the rubber-band drag handlers in `handle_audio_keyframe_drag` etc.;
-/// any change here MUST be mirrored in those handlers or drags desync.
+/// Fixed (min, range, unity) per audio param. A volume lane isn't even
+/// over its range but on a fader law: every lane, drag and handle maps a
+/// value up the lane with [`audio_param_norm`] and back with
+/// [`audio_param_from_norm`], so a diamond stays under the pointer.
 fn audio_param_range(param: klipp_core::AudioParam) -> (f32, f32, f32) {
     match param {
         klipp_core::AudioParam::Volume => (0.0_f32, 2.0_f32, 1.0_f32),
@@ -405,20 +406,71 @@ fn audio_param_range(param: klipp_core::AudioParam) -> (f32, f32, f32) {
     }
 }
 
+/// A volume lane's fader law (#2378), (dB, height up the lane): even in
+/// dB, with more room near unity than near silence, as a mixer fader
+/// is. Gain 2 (+6 dB) at the top, unity at 80%; below the last point the
+/// lane is silence.
+const VOLUME_FADER_LAW: [(f32, f32); 7] = [(-60.0, 0.03), (-40.0, 0.15), (-30.0, 0.26), (-20.0, 0.40), (-10.0, 0.58), (0.0, 0.80), (6.0206, 1.0)];
+
+/// Where `value` of `param` sits up its lane, 0 at the bottom to 1 at the
+/// top: a volume by [`VOLUME_FADER_LAW`], down to silence at the bottom;
+/// pan and gain evenly over their range.
+pub(crate) fn audio_param_norm(param: klipp_core::AudioParam, value: f32) -> f32 {
+    if param != klipp_core::AudioParam::Volume {
+        let (p_min, p_range, _) = audio_param_range(param);
+        return ((value - p_min) / p_range).clamp(0.0, 1.0);
+    }
+    let (floor_db, floor_n) = VOLUME_FADER_LAW[0];
+    let floor_gain = 10f32.powf(floor_db / 20.0);
+    if value <= floor_gain {
+        return (value.max(0.0) / floor_gain) * floor_n;
+    }
+    let db = 20.0 * value.log10();
+    let i = VOLUME_FADER_LAW.windows(2).position(|w| db <= w[1].0).unwrap_or(VOLUME_FADER_LAW.len() - 2);
+    let ((d0, n0), (d1, n1)) = (VOLUME_FADER_LAW[i], VOLUME_FADER_LAW[i + 1]);
+    (n0 + (db - d0) / (d1 - d0) * (n1 - n0)).clamp(0.0, 1.0)
+}
+
+/// Inverse of [`audio_param_norm`]. A volume below the law's last point
+/// is silence, so a key dragged to the bottom of the lane is silent.
+pub(crate) fn audio_param_from_norm(param: klipp_core::AudioParam, n: f32) -> f32 {
+    let n = n.clamp(0.0, 1.0);
+    if param != klipp_core::AudioParam::Volume {
+        let (p_min, p_range, _) = audio_param_range(param);
+        return p_min + n * p_range;
+    }
+    if n < VOLUME_FADER_LAW[0].1 {
+        return 0.0;
+    }
+    let i = VOLUME_FADER_LAW.windows(2).position(|w| n <= w[1].1).unwrap_or(VOLUME_FADER_LAW.len() - 2);
+    let ((d0, n0), (d1, n1)) = (VOLUME_FADER_LAW[i], VOLUME_FADER_LAW[i + 1]);
+    let db = d0 + (n - n0) / (n1 - n0) * (d1 - d0);
+    10f32.powf(db / 20.0).min(2.0)
+}
+
+/// A lane value as its key's hover and drag read it: a volume in dB,
+/// pan as L/C/R, gain as a number.
+pub(crate) fn audio_param_text(param: klipp_core::AudioParam, value: f32) -> String {
+    match param {
+        klipp_core::AudioParam::Volume if value <= 0.0 => "-∞ dB".to_string(),
+        klipp_core::AudioParam::Volume => format!("{:+.1} dB", 20.0 * value.log10()),
+        klipp_core::AudioParam::Pan if value.abs() < 0.01 => "C".to_string(),
+        klipp_core::AudioParam::Pan if value < 0.0 => format!("L{:.0}", -value * 100.0),
+        klipp_core::AudioParam::Pan => format!("R{:.0}", value * 100.0),
+        klipp_core::AudioParam::Gain => format!("{value:.2}x"),
+    }
+}
+
 /// Map a param value to a Y position within `rect`. min = bottom, max = top.
 fn audio_param_value_to_y(rect: egui::Rect, param: klipp_core::AudioParam, value: f32) -> f32 {
-    let (p_min, p_range, _) = audio_param_range(param);
-    let normalized = ((value - p_min) / p_range).clamp(0.0, 1.0);
-    rect.bottom() - normalized * rect.height()
+    rect.bottom() - audio_param_norm(param, value) * rect.height()
 }
 
 /// Inverse of [`audio_param_value_to_y`]. Used by alt-click-to-add and
 /// the flat-line drag handler to project a pointer Y back onto a value.
 #[allow(dead_code)]
 fn audio_param_y_to_value(rect: egui::Rect, param: klipp_core::AudioParam, y: f32) -> f32 {
-    let (p_min, p_range, _) = audio_param_range(param);
-    let normalized = ((rect.bottom() - y) / rect.height()).clamp(0.0, 1.0);
-    p_min + normalized * p_range
+    audio_param_from_norm(param, (rect.bottom() - y) / rect.height())
 }
 
 /// Map a time value (in source seconds, 0..time_range_secs) to an X
@@ -502,7 +554,7 @@ fn paint_audio_curve_band(
     selected_kf_idx: Option<usize>,
     marked_kf: &[usize],
 ) {
-    let (param_min, param_range, unity_value) = audio_param_range(param);
+    let (_, _, unity_value) = audio_param_range(param);
     let palette = audio_curve_palette(param);
 
     let active_line_color = if is_selected || is_multi_selected {
@@ -522,8 +574,7 @@ fn paint_audio_curve_band(
     let time_to_x = |t: f64| audio_param_time_to_x(rect, time_range_secs, t);
 
     // 1) Reference line at unity / centre.
-    let unity_y = rect.bottom()
-        - ((unity_value - param_min) / param_range).clamp(0.0, 1.0) * rect.height();
+    let unity_y = value_to_y(unity_value);
     painter.line_segment(
         [egui::pos2(rect.left(), unity_y), egui::pos2(rect.right(), unity_y)],
         egui::Stroke::new(1.0_f32, palette.ref_color),
@@ -658,7 +709,6 @@ fn paint_audio_curve_band(
             } else {
                 1.0
             };
-            let value_scale = rect.height() / param_range;
             let tangent_line_color = egui::Color32::from_rgba_unmultiplied(
                 active_line_color.r(), active_line_color.g(), active_line_color.b(), 120,
             );
@@ -666,7 +716,7 @@ fn paint_audio_curve_band(
 
             // Out (right).
             let tout_x = cx + kf.tangent_out.0 as f32 * pixels_per_sec;
-            let tout_y = cy - kf.tangent_out.1 * value_scale;
+            let tout_y = value_to_y(kf.value + kf.tangent_out.1);
             painter.line_segment(
                 [egui::pos2(cx, cy), egui::pos2(tout_x, tout_y)],
                 egui::Stroke::new(1.0_f32, tangent_line_color),
@@ -680,7 +730,7 @@ fn paint_audio_curve_band(
 
             // In (left).
             let tin_x = cx + kf.tangent_in.0 as f32 * pixels_per_sec;
-            let tin_y = cy - kf.tangent_in.1 * value_scale;
+            let tin_y = value_to_y(kf.value + kf.tangent_in.1);
             painter.line_segment(
                 [egui::pos2(cx, cy), egui::pos2(tin_x, tin_y)],
                 egui::Stroke::new(1.0_f32, tangent_line_color),
@@ -12972,6 +13022,11 @@ impl TimelinePanel {
                 egui::Stroke::new(1.0_f32, tt.bg_deep),
             ));
         }
+        // The key held or under the pointer says its value, a volume in dB.
+        if let Some(k) = self.track_key_drag.as_ref().filter(|d| d.track == track_idx).map(|d| d.index).or(hovered).and_then(|i| keys.get(i)) {
+            let c = egui::pos2(secs_to_x(k.time_secs), value_to_y(k.value));
+            painter.text(c + egui::vec2(8.0, -6.0), egui::Align2::LEFT_BOTTOM, audio_param_text(param, k.value), egui::FontId::proportional(10.0), tt.text_primary);
+        }
 
         let (pressed, down, released, double, secondary) = ui.input(|i| {
             (
@@ -13072,11 +13127,10 @@ impl TimelinePanel {
         );
 
         // 3) Horizontal grid lines + value-scale labels on the left edge.
-        // Tick spacing depends on the param's range: Volume / Gain go
-        // 0..2 with ticks at 0, 0.5, 1.0 (unity), 1.5, 2.0 — labelled
-        // 0%, 50%, 100%, 150%, 200%. Pan goes -1..1 with ticks at
-        // -1.0 (L), -0.5, 0 (C), 0.5, 1.0 (R).
-        let (param_min, param_range, _) = audio_param_range(param);
+        // Volume is labelled in dB on its fader law (#2378): +6 at the
+        // top, 0 (unity), -10, -20, -40, and silence at the bottom. Gain
+        // goes 0..2 with ticks at 0, 0.5, 1.0 (unity), 1.5, 2.0. Pan goes
+        // -1..1 with ticks at -1.0 (L), -0.5, 0 (C), 0.5, 1.0 (R).
         let palette = audio_curve_palette(param);
         let grid_color = egui::Color32::from_rgba_unmultiplied(
             tt.text_dim.r(), tt.text_dim.g(), tt.text_dim.b(), 28,
@@ -13091,11 +13145,12 @@ impl TimelinePanel {
         let scale_inset_left = lane_rect.left() + 28.0; // grid starts after the value column
         let ticks: &[(f32, &str, bool)] = match param {
             klipp_core::AudioParam::Volume => &[
-                (0.0, "0%", false),
-                (0.5, "50%", false),
-                (1.0, "100%", true),
-                (1.5, "150%", false),
-                (2.0, "200%", false),
+                (0.0, "-∞", false),
+                (0.01, "-40", false),
+                (0.1, "-20", false),
+                (0.316_227_8, "-10", false),
+                (1.0, "0 dB", true),
+                (2.0, "+6", false),
             ],
             klipp_core::AudioParam::Gain => &[
                 (0.0, "0", false),
@@ -13113,8 +13168,7 @@ impl TimelinePanel {
             ],
         };
         for &(value, label, is_unity) in ticks {
-            let normalized = ((value - param_min) / param_range).clamp(0.0, 1.0);
-            let y = lane_rect.bottom() - normalized * lane_rect.height();
+            let y = lane_rect.bottom() - audio_param_norm(param, value) * lane_rect.height();
             let stroke = if is_unity {
                 egui::Stroke::new(1.0_f32, unity_grid_color)
             } else {
@@ -13351,8 +13405,7 @@ impl TimelinePanel {
             // `is_selected || is_multi_selected`). Hybrid rect mapping:
             // X uses `full_clip_rect.width() / time_range_secs` to
             // mirror the painter's `pixels_per_sec`; Y uses
-            // `sub_rect.height() / param_range` to mirror the painter's
-            // `value_scale`. Using `sub_rect` for X would drift when
+            // `value_to_y` of the handle's value, as the painter places it. Using `sub_rect` for X would drift when
             // the clip extends offscreen.
             let nearest_bezier_handle: Option<(usize, bool, f32)> =
                 if (c.is_selected || c.is_multi_selected)
@@ -13364,7 +13417,6 @@ impl TimelinePanel {
                     } else {
                         1.0
                     };
-                    let value_scale_h = sub_rect.height() / param_range;
                     pointer_pos.and_then(|pos| {
                         let mut best: Option<(usize, bool, f32)> = None;
                         for (ki, kf) in c.kfs.iter().enumerate() {
@@ -13375,10 +13427,9 @@ impl TimelinePanel {
                                 continue;
                             }
                             let cx_h = time_to_x(kf.time_secs);
-                            let cy_h = value_to_y(kf.value);
                             // Out (right) tangent.
                             let tout_hx = cx_h + kf.tangent_out.0 as f32 * pixels_per_sec_h;
-                            let tout_hy = cy_h - kf.tangent_out.1 * value_scale_h;
+                            let tout_hy = value_to_y(kf.value + kf.tangent_out.1);
                             let dist_out = ((pos.x - tout_hx).powi(2)
                                 + (pos.y - tout_hy).powi(2))
                                 .sqrt();
@@ -13389,7 +13440,7 @@ impl TimelinePanel {
                             }
                             // In (left) tangent.
                             let tin_hx = cx_h + kf.tangent_in.0 as f32 * pixels_per_sec_h;
-                            let tin_hy = cy_h - kf.tangent_in.1 * value_scale_h;
+                            let tin_hy = value_to_y(kf.value + kf.tangent_in.1);
                             let dist_in = ((pos.x - tin_hx).powi(2)
                                 + (pos.y - tin_hy).powi(2))
                                 .sqrt();
@@ -13911,20 +13962,13 @@ impl TimelinePanel {
             // Fixed ranges match how DaVinci/Premiere present the inline
             // rubber band; the dedicated automation lane is where
             // zoom-to-fit auto-scaling can live as a follow-up.
-            let (param_min, param_range, unity_value) = match rb_param {
-                klipp_core::AudioParam::Volume => (0.0_f32, 2.0_f32, 1.0_f32),
-                klipp_core::AudioParam::Pan    => (-1.0_f32, 2.0_f32, 0.0_f32),
-                klipp_core::AudioParam::Gain   => (0.0_f32, 2.0_f32, 1.0_f32),
-            };
+            let (_, _, unity_value) = audio_param_range(rb_param);
 
             let clip_painter = painter.with_clip_rect(clip_rect);
 
             // Map param value to Y position within clip rect
             // min = bottom, max = top
-            let value_to_y = |val: f32| -> f32 {
-                let normalized = ((val - param_min) / param_range).clamp(0.0, 1.0);
-                clip_rect.bottom() - normalized * clip_rect.height()
-            };
+            let value_to_y = |val: f32| audio_param_value_to_y(clip_rect, rb_param, val);
 
             // Map time (relative to clip start) to X position
             let time_to_x = |t: f64| -> f32 {
@@ -14053,24 +14097,19 @@ impl TimelinePanel {
                             frac * clip_dur_secs
                         };
                         // Helper: Y position to param value
-                        let y_to_value = |y: f32| -> f32 {
-                            let normalized = ((clip_rect.bottom() - y) / clip_rect.height()).clamp(0.0, 1.0);
-                            param_min + normalized * param_range
-                        };
+                        let y_to_value = |y: f32| audio_param_y_to_value(clip_rect, rb_param, y);
 
                         // Check if hovering near a bezier tangent handle
                         let mut nearest_bezier_handle: Option<(usize, bool, f32)> = None; // (kf_idx, is_out, dist)
                         if (is_selected || is_multi_selected) && state.dragging_bezier_handle.is_none() {
                             let pixels_per_sec_h = if clip_dur_secs > 0.0 { clip_rect.width() / clip_dur_secs as f32 } else { 1.0 };
-                            let value_scale_h = clip_rect.height() / param_range;
                             for (ki, kf) in kf_keyframes.iter().enumerate() {
                                 if kf.interpolation != klipp_core::Interpolation::Bezier { continue; }
                                 if kf.time_secs < 0.0 || kf.time_secs > (src_out_secs - src_in_secs) { continue; }
                                 let cx_h = time_to_x(kf.time_secs);
-                                let cy_h = value_to_y(kf.value);
                                 // Tangent out handle
                                 let tout_hx = cx_h + kf.tangent_out.0 as f32 * pixels_per_sec_h;
-                                let tout_hy = cy_h - kf.tangent_out.1 * value_scale_h;
+                                let tout_hy = value_to_y(kf.value + kf.tangent_out.1);
                                 let dist_out = ((pos.x - tout_hx).powi(2) + (pos.y - tout_hy).powi(2)).sqrt();
                                 if dist_out < 8.0
                                     && nearest_bezier_handle.is_none_or(|(_, _, d)| dist_out < d) {
@@ -14078,7 +14117,7 @@ impl TimelinePanel {
                                     }
                                 // Tangent in handle
                                 let tin_hx = cx_h + kf.tangent_in.0 as f32 * pixels_per_sec_h;
-                                let tin_hy = cy_h - kf.tangent_in.1 * value_scale_h;
+                                let tin_hy = value_to_y(kf.value + kf.tangent_in.1);
                                 let dist_in = ((pos.x - tin_hx).powi(2) + (pos.y - tin_hy).powi(2)).sqrt();
                                 if dist_in < 8.0
                                     && nearest_bezier_handle.is_none_or(|(_, _, d)| dist_in < d) {
@@ -14292,15 +14331,7 @@ impl TimelinePanel {
                                     channel_config: kf_channel_config,
                                 });
                                 // Show tooltip with param-appropriate format
-                                let tooltip_text = match rb_param {
-                                    klipp_core::AudioParam::Volume => format!("{:.0}%", new_val * 100.0),
-                                    klipp_core::AudioParam::Pan => {
-                                        if new_val.abs() < 0.01 { "C".to_string() }
-                                        else if new_val < 0.0 { format!("L{:.0}", -new_val * 100.0) }
-                                        else { format!("R{:.0}", new_val * 100.0) }
-                                    }
-                                    klipp_core::AudioParam::Gain => format!("{:.1}x", new_val),
-                                };
+                                let tooltip_text = audio_param_text(rb_param, new_val);
                                 clip_painter.text(
                                     egui::pos2(pos.x, pos.y - 14.0),
                                     egui::Align2::CENTER_BOTTOM,
@@ -14325,15 +14356,7 @@ impl TimelinePanel {
                         // Show value tooltip when hovering near a keyframe
                         if let Some(ki) = nearest_kf_idx {
                             let kf = &kf_keyframes[ki];
-                            let tooltip_text = match rb_param {
-                                klipp_core::AudioParam::Volume => format!("{:.1}%", kf.value * 100.0),
-                                klipp_core::AudioParam::Pan => {
-                                    if kf.value.abs() < 0.01 { "C".to_string() }
-                                    else if kf.value < 0.0 { format!("L{:.0}", -kf.value * 100.0) }
-                                    else { format!("R{:.0}", kf.value * 100.0) }
-                                }
-                                klipp_core::AudioParam::Gain => format!("{:.2}x", kf.value),
-                            };
+                            let tooltip_text = audio_param_text(rb_param, kf.value);
                             let kx = time_to_x(kf.time_secs);
                             let ky = value_to_y(kf.value);
                             clip_painter.text(
@@ -16213,26 +16236,16 @@ impl TimelinePanel {
                                 klipp_core::AudioParam::Pan => &clip.pan_keyframes,
                                 klipp_core::AudioParam::Gain => &clip.gain_keyframes,
                             };
-                            let (p_min, p_range) = match drag_bh.param {
-                                klipp_core::AudioParam::Volume => (0.0_f32, 2.0_f32),
-                                klipp_core::AudioParam::Pan    => (-1.0_f32, 2.0_f32),
-                                klipp_core::AudioParam::Gain   => (0.0_f32, 2.0_f32),
-                            };
                             if let Some(kf) = keyframes.get(drag_bh.keyframe_index) {
                                 let kf_x = {
                                     let frac = if clip_dur_secs > 0.0 { (kf.time_secs / clip_dur_secs).clamp(0.0, 1.0) } else { 0.0 };
                                     clip_rect_approx.left() + frac as f32 * clip_rect_approx.width()
                                 };
-                                let kf_y = {
-                                    let norm = ((kf.value - p_min) / p_range).clamp(0.0, 1.0);
-                                    clip_rect_approx.bottom() - norm * clip_rect_approx.height()
-                                };
                                 let pixels_per_sec = if clip_dur_secs > 0.0 { clip_rect_approx.width() / clip_dur_secs as f32 } else { 1.0 };
-                                let value_scale = clip_rect_approx.height() / p_range;
 
                                 // Convert mouse position to tangent offset
                                 let time_offset = (pos.x - kf_x) / pixels_per_sec;
-                                let value_offset = -(pos.y - kf_y) / value_scale;
+                                let value_offset = audio_param_y_to_value(clip_rect_approx, drag_bh.param, pos.y) - kf.value;
 
                                 let (ti_arg, to_arg) = if drag_bh.is_out {
                                     // Constrain tangent_out time offset to be non-negative
@@ -16486,12 +16499,7 @@ impl TimelinePanel {
                                 // ~0.005 — the diamond barely shifted, the
                                 // pointer left it behind, and the next
                                 // hit-test failed because pointer ≠ diamond.
-                                let (p_min, p_range) = match drag_kf.param {
-                                    klipp_core::AudioParam::Volume => (0.0_f32, 2.0_f32),
-                                    klipp_core::AudioParam::Pan    => (-1.0_f32, 2.0_f32),
-                                    klipp_core::AudioParam::Gain   => (0.0_f32, 2.0_f32),
-                                };
-                                let new_value = p_min + normalized * p_range;
+                                let new_value = audio_param_from_norm(drag_kf.param, normalized);
                                 cmds.push(AppCommand::MoveAudioKeyframe {
                                     clip_id: drag_kf.clip_id,
                                     param: drag_kf.param,
@@ -16504,15 +16512,7 @@ impl TimelinePanel {
                                 // language as the lane's value-scale axis so
                                 // the user can correlate "the diamond is at
                                 // X%" with the labels they see drawn.
-                                let value_text = match drag_kf.param {
-                                    klipp_core::AudioParam::Volume => format!("{:.0}%", new_value * 100.0),
-                                    klipp_core::AudioParam::Pan => {
-                                        if new_value.abs() < 0.01 { "C".to_string() }
-                                        else if new_value < 0.0 { format!("L{:.0}", -new_value * 100.0) }
-                                        else { format!("R{:.0}", new_value * 100.0) }
-                                    }
-                                    klipp_core::AudioParam::Gain => format!("{:.2}x", new_value),
-                                };
+                                let value_text = audio_param_text(drag_kf.param, new_value);
                                 let time_text = format!("{:.2}s", new_time);
                                 let tooltip = format!("{}  {}", time_text, value_text);
                                 let painter = ui.painter().with_clip_rect(
@@ -17198,6 +17198,35 @@ mod files_drop_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #2378: a volume lane is on a fader law in dB. Unity at 80% up,
+    /// +6 dB at the top, -20 dB still well up the lane (it was 5% from the
+    /// bottom), and the bottom silence; a value goes up the lane and back
+    /// unchanged, and a key dragged to the bottom is silent. Pan stays even.
+    #[test]
+    fn a_volume_lane_is_in_db_down_to_silence() {
+        use klipp_core::AudioParam::{Pan, Volume};
+        let db = |d: f32| 10f32.powf(d / 20.0);
+        assert!((audio_param_norm(Volume, 1.0) - 0.8).abs() < 1e-6);
+        assert!((audio_param_norm(Volume, 2.0) - 1.0).abs() < 1e-4);
+        assert!((audio_param_norm(Volume, db(-20.0)) - 0.4).abs() < 1e-5);
+        assert_eq!(audio_param_norm(Volume, 0.0), 0.0);
+        assert_eq!(audio_param_from_norm(Volume, 0.0), 0.0, "the bottom is silence");
+        assert_eq!(audio_param_from_norm(Volume, 0.02), 0.0, "and just above it");
+        for d in [-59.0, -45.0, -24.0, -6.0, -0.5, 0.0, 3.0, 6.0] {
+            let back = 20.0 * audio_param_from_norm(Volume, audio_param_norm(Volume, db(d))).log10();
+            assert!((back - d).abs() < 1e-3, "{d} dB came back {back}");
+        }
+        let mut last = -1.0;
+        for i in 0..=200 {
+            let n = audio_param_norm(Volume, i as f32 / 100.0);
+            assert!(n > last || n == 1.0, "up the lane as the level rises: {i}");
+            last = n;
+        }
+        assert!((audio_param_norm(Pan, 0.0) - 0.5).abs() < 1e-6 && (audio_param_from_norm(Pan, 0.25) + 0.5).abs() < 1e-6);
+        assert_eq!(audio_param_text(Volume, db(-6.0)), "-6.0 dB");
+        assert_eq!(audio_param_text(Volume, 0.0), "-∞ dB");
+    }
 
     /// #2333: a track key drag let go while its lane isn't drawn (its
     /// track scrolled out) still ends: its keys as moved are one step,
