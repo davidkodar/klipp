@@ -8414,25 +8414,25 @@ impl TimelinePanel {
                     ui.close_menu();
                 }
                 // A title, effect or sound laid over one shot, made to start
-                // and end with it (#2236).
-                if let Some(ops) = crate::edit_helpers::match_clip_below(state.sequence(), clip_id) {
-                    if ui.button("Match Clip Below").on_hover_text("Start and end exactly with the clip under this one").clicked() {
-                        state.pending_doc_ops.push(crate::state::DocOpsRequest { label: "Match Clip Below".into(), ops, independent: false });
-                        ui.close_menu();
-                    }
-                }
-                // And kept matched, following the shot's trims, rolls and
-                // moves (#2236).
+                // and end with it (#2236), and kept so: it follows the shot's
+                // trims, rolls and moves.
                 let matched = state.sequence().all_clips().find(|c| c.id == clip_id).and_then(|c| c.matched_to).is_some();
+                let mut asked: Option<(&str, bool)> = None;
                 if matched {
                     if ui.button("Stop Keeping Matched").on_hover_text("Let this clip be trimmed and moved on its own again").clicked() {
-                        cmds.push(AppCommand::SetClipMatch { clip_id, keep: false });
-                        ui.close_menu();
+                        asked = Some(("Stop Keeping Matched", false));
                     }
-                } else if crate::edit_helpers::clip_below(state.sequence(), clip_id).is_some()
-                    && ui.button("Keep Matched to Clip Below").on_hover_text("Start and end with the clip under this one, and follow it when it is trimmed or moved").clicked()
-                {
-                    cmds.push(AppCommand::SetClipMatch { clip_id, keep: true });
+                } else if klipp_document::matched::clip_below(state.sequence(), clip_id).is_some() {
+                    if crate::edit_helpers::match_clip_below(state.sequence(), clip_id).is_some() && ui.button("Match Clip Below").on_hover_text("Start and end exactly with the clip under this one").clicked() {
+                        asked = Some(("Match Clip Below", false));
+                    }
+                    if ui.button("Keep Matched to Clip Below").on_hover_text("Start and end with the clip under this one, and follow it when it is trimmed or moved").clicked() {
+                        asked = Some(("Keep Matched", true));
+                    }
+                }
+                if let Some((label, keep)) = asked {
+                    let ops = vec![klipp_document::ops::Op::Match { clip_id: klipp_document::ops::ClipRef::Id(clip_id), keep }];
+                    state.pending_doc_ops.push(crate::state::DocOpsRequest { label: label.into(), ops, independent: false });
                     ui.close_menu();
                 }
                 // Rhythmic edits in one step (#988), in a submenu of

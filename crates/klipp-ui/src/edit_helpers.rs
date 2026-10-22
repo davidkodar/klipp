@@ -62,26 +62,13 @@ impl EditHelperDialog {
     }
 }
 
-/// The clip under `clip_id` (#2236): the one it overlaps most on the
-/// nearest track below that has one, else above; never its own linked
-/// partner.
-pub fn clip_below(seq: &Sequence, clip_id: ClipId) -> Option<ClipId> {
-    let (ti, ci) = seq.find_clip(clip_id)?;
-    let clip = &seq.tracks[ti].clips[ci];
-    let shared = |c: &klipp_timeline::Clip| c.timeline_out.min(clip.timeline_out).value - c.timeline_in.max(clip.timeline_in).value;
-    (ti + 1..seq.tracks.len())
-        .chain((0..ti).rev())
-        .find_map(|t| seq.tracks[t].clips.iter().filter(|c| c.id != clip.id && Some(c.id) != clip.linked_clip_id && shared(c) > 0).max_by_key(|c| shared(c)))
-        .map(|c| c.id)
-}
-
 /// What Match Clip Below does to `clip_id` (#2236): it starts where the
 /// clip under it starts and is as long, as one undo step through the move
 /// and set-length ops, which refuse what would run over a neighbour or
 /// past its source. `None` with no clip under it, or when it matches
 /// already.
 pub fn match_clip_below(seq: &Sequence, clip_id: ClipId) -> Option<Vec<Op>> {
-    klipp_document::matched::match_ops(seq, clip_id, clip_below(seq, clip_id)?)
+    klipp_document::matched::match_ops(seq, clip_id, klipp_document::matched::clip_below(seq, clip_id)?)
 }
 
 #[cfg(test)]

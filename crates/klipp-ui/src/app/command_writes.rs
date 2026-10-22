@@ -790,7 +790,6 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::MoveEffectKeyframe { .. }
         | AppCommand::SetEffectKeyframeInterpolation { .. }
         | AppCommand::SetClipRole { .. }
-        | AppCommand::SetClipMatch { .. }
         | AppCommand::SetClipDepth { .. }
         | AppCommand::RenameClips { .. }
         | AppCommand::SetClipColourLabels { .. }
