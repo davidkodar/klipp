@@ -78,7 +78,7 @@ impl ImportReport {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
     Fcpxml,
-    /// Final Cut Pro 7 XML: told apart from FCPXML, not read yet (#2084).
+    /// Final Cut Pro 7 XML (#2084).
     Xmeml,
     Otio,
     /// Kdenlive's project, or any MLT XML.
@@ -90,7 +90,7 @@ pub enum Format {
 }
 
 /// What the formats Klipp opens are, for a refusal.
-pub const READS: &str = "FCPXML (.fcpxml, .xml), OpenTimelineIO (.otio), Kdenlive or MLT (.kdenlive, .mlt) and CMX 3600 EDL (.edl)";
+pub const READS: &str = "FCPXML (.fcpxml, .xml), Final Cut Pro 7 XML (.xml), OpenTimelineIO (.otio), Kdenlive or MLT (.kdenlive, .mlt) and CMX 3600 EDL (.edl)";
 
 /// How far into a file its format is looked for.
 const SNIFF_BYTES: u64 = 64 * 1024;
@@ -146,7 +146,7 @@ pub fn load(path: &Path, fps: klipp_core::Fps, pool: &klipp_media::MediaPool) ->
         Format::Otio => crate::otio_import::load_otio(path).map_err(|e| e.to_string()),
         Format::Fcpxml => crate::fcpxml_import::load_fcpxml(path).map_err(|e| e.to_string()),
         Format::Mlt => crate::mlt_import::load_kdenlive(path).map_err(|e| e.to_string()),
-        Format::Xmeml => Err("Final Cut Pro 7 XML (xmeml) is not read yet; export FCPXML or OpenTimelineIO from the other editor".into()),
+        Format::Xmeml => crate::xmeml_import::load_xmeml(path),
         Format::Aaf => Err("AAF is not read yet; export OpenTimelineIO, FCPXML or an EDL from the other editor".into()),
         Format::Edl => {
             let bytes = crate::path_util::read_capped(path, crate::path_util::MAX_INPUT_FILE_BYTES).map_err(|e| e.to_string())?;
@@ -159,6 +159,73 @@ pub fn load(path: &Path, fps: klipp_core::Fps, pool: &klipp_media::MediaPool) ->
             }
             Ok(ImportResult { sequence, warnings, media_pool })
         }
+    }
+}
+
+/// A file another editor's timeline names, as a media item: what the
+/// timeline says of it, probed for the rest once it is found (#2084).
+pub(crate) fn interchange_media_item(path: std::path::PathBuf, name: String, duration: klipp_core::RationalTime, fps: klipp_core::Fps) -> klipp_media::MediaItem {
+    use klipp_media::{MediaItem, MediaItemKind};
+    use klipp_core::{MediaId, Resolution};
+    let offline = !path.exists();
+    MediaItem {
+        id: MediaId::new(),
+        path,
+        kind: MediaItemKind::File,
+        filename: name,
+        duration,
+        fps,
+        resolution: Resolution { width: 0, height: 0 },
+        video_codec: String::new(),
+        audio_codec: String::new(),
+        has_audio: false,
+        file_size_bytes: 0,
+        sample_rate: None,
+        audio_channels: None,
+        offline,
+        is_still: false,
+        proxy_path: None,
+        proxy_ready: false,
+        default_source_in: None,
+        default_source_out: None,
+        rating: 0,
+        tags: Vec::new(),
+        user_notes: String::new(),
+        bin: None,
+        bin_id: None,
+        parent_media_id: None,
+        added_at: 0,
+        fingerprint: None,
+        file_modified_at: None,
+        media_created_at: None,
+        color_label: klipp_media::ColorLabel::default(),
+        colour_space: klipp_media::ColourSpace::default(),
+        log_format: klipp_core::LogFormat::default(),
+        source_rotation: 0,
+        camera_make: None,
+        camera_model: None,
+        encoder: None,
+        bit_depth: None,
+        video_bitrate_kbps: None,
+        audio_bitrate_kbps: None,
+        color_primaries: None,
+        color_transfer: None,
+        pixel_format: None,
+        detected_log_format: klipp_core::LogFormat::default(),
+        log_format_user_set: false,
+        skim_file: None,
+        needs_reprobe: !offline,
+        waveform_data: None,
+        audio_cache: None,
+        shot: Default::default(),
+        metadata_read: false,
+        truncated_from_secs: None,
+        log: Default::default(),
+        synced_audio: None,
+        markers: Vec::new(),
+        screen_text: String::new(),
+        audio_role: None,
+        span: None,
     }
 }
 
@@ -239,8 +306,11 @@ mod tests {
         assert!(why.starts_with("notes.txt is not a timeline") && why.contains("OpenTimelineIO"), "{why}");
         let xmeml = dir.join("fcp7.xml");
         std::fs::write(&xmeml, "<xmeml version=\"5\"/>").unwrap();
-        let why = load(&xmeml, klipp_core::Fps::film_24(), &klipp_media::MediaPool::new()).unwrap_err();
-        assert!(why.contains("xmeml") && why.contains("export FCPXML"), "{why}");
+        assert_eq!(detect(&xmeml), Ok(Format::Xmeml), "read by its own importer");
+        let aaf = dir.join("cut.aaf");
+        std::fs::write(&aaf, [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1, 0, 0]).unwrap();
+        let why = load(&aaf, klipp_core::Fps::film_24(), &klipp_media::MediaPool::new()).unwrap_err();
+        assert!(why.contains("AAF") && why.contains("export"), "{why}");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

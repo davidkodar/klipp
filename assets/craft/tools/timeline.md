@@ -33,14 +33,13 @@ Preview a native generator clip; apply true places it as one undo step. Give at_
 Import a timeline and inspect its report.
 
 Call `klipp_import_timeline` with an absolute `path` to an OpenTimelineIO,
-FCPXML, Kdenlive/MLT or CMX 3600 EDL timeline. The format is told from the
+FCPXML, Final Cut Pro 7 XML (xmeml), Kdenlive/MLT or CMX 3600 EDL timeline. The format is told from the
 file's content, so a misnamed extension still opens. It appends a sequence to
 the current project and switches to it; it does not replace or save the current
 project. With `new_project: true` the timeline opens as a new, unsaved project
 instead, the way Open Project from Another Editor does; that is refused while the
-open project has unsaved changes (save it first). Final Cut Pro 7 XML (xmeml)
-and AAF are recognised but not read yet: the error says to export FCPXML,
-OpenTimelineIO or an EDL instead. Missing media is listed in the report; relink
+open project has unsaved changes (save it first). AAF is recognised but not
+read yet: the error says to export OpenTimelineIO, FCPXML or an EDL instead. Missing media is listed in the report; relink
 it in the app (Relink Media…, or the report's Relink…) or with `klipp_relink_media`.
 
 The response includes the same `report` shown in the app: imported sequence,

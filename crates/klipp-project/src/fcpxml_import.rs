@@ -514,7 +514,8 @@ fn parse_clip_element(
 
 /// Parse an FCPXML 1.9 document from a string.
 pub fn parse_fcpxml(xml: &str) -> Result<ImportResult, FcpxmlImportError> {
-    let doc = crate::path_util::parse_xml_safe(xml)?;
+    let xml = crate::path_util::without_bare_doctype(xml);
+    let doc = crate::path_util::parse_xml_safe(&xml)?;
     let root = doc.root_element();
     if root.tag_name().name() != "fcpxml" {
         return Err(FcpxmlImportError::Parse(format!(
