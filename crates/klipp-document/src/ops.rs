@@ -8496,6 +8496,32 @@ fn resolve_transition_kind(name: &str) -> Option<&'static klipp_core::Transition
     klipp_core::spec_for_string_key(alias)
 }
 
+/// How a grade knob is said in the reply. Contrast and saturation are
+/// multipliers (1 = as shot), so they read "×0.12 (88% less)", and one
+/// far below as shot asks whether a 0-1 amount was meant (#2360): a
+/// whole film greyed by "saturation 0.12" read as a gentle boost. Zero
+/// is a plain black and white, said as such.
+fn multiplier_said(name: &str, shown: &str, factor: f32) -> String {
+    if name != "contrast" && name != "saturation" {
+        return format!("{name} {shown}");
+    }
+    let change = ((factor - 1.0) * 100.0).round() as i32;
+    let how = match change {
+        0 => "as shot".to_string(),
+        c if c > 0 => format!("{c}% more"),
+        c => format!("{}% less", -c),
+    };
+    let said = format!("{name} \u{00D7}{shown} ({how})");
+    if name == "saturation" && factor == 0.0 {
+        return format!("{name} \u{00D7}0 (black and white)");
+    }
+    if factor < 0.5 {
+        let meant = 1.0 + factor;
+        return format!("{said}; note: {name} is a multiplier with 1 as shot, so this is a strong cut; if a {}% boost was meant, give {meant:.2}", (factor * 100.0).round());
+    }
+    said
+}
+
 /// A clip's primary grade set from named knobs: what is given lands on
 /// the clip's Corrector node, the rest of the grade stays, recorded as
 /// one whole-graph edit so a single undo takes it back.
@@ -8533,7 +8559,7 @@ fn grade(i: usize, target: GradeTarget, knobs: &[(&str, &str, Option<f32>, f32, 
             if !node.params.apply_override(param, *v) {
                 return Err(refuse(i, format!("the grade has no \"{param}\""), "this is a bug: tell the user the grade param went nowhere"));
             }
-            said.push(format!("{name} {}", shown(name, *v)));
+            said.push(multiplier_said(name, &shown(name, *v), if *name == "contrast" { *v + 1.0 } else { *v }));
         }
     }
     let what = format!(
@@ -14471,7 +14497,7 @@ mod tests {
         assert!(plan.steps[0].what.contains("exposure 0.5") && plan.steps[0].what.contains("gain -0.1"), "{}", plan.steps[0].what);
         // Contrast is said as the multiplier it was given, not the offset
         // the node stores, and without float noise.
-        assert!(plan.steps[0].what.contains("contrast 1.2,"), "{}", plan.steps[0].what);
+        assert!(plan.steps[0].what.contains("contrast \u{00D7}1.2 (20% more),"), "{}", plan.steps[0].what);
         let EditCommand::SetNodeGraph { new_graph, .. } = &plan.steps[0].edit else { panic!("a node-graph edit") };
         let node = new_graph.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector).expect("a corrector");
         assert_eq!(node.params.exposure, Some(0.5));
@@ -16259,5 +16285,22 @@ mod effect_scale_tests {
         }
         let err = named_picture_effect("flickr", None).unwrap_err();
         assert!(err.1.contains("flicker") && err.1.contains("binocular"), "{err:?}");
+    }
+}
+
+#[cfg(test)]
+mod multiplier_said_tests {
+    use super::multiplier_said;
+
+    /// #2360: the multipliers say what they do, and one far below as shot
+    /// asks whether a 0-1 amount was meant; other knobs are as given.
+    #[test]
+    fn multipliers_say_what_they_do() {
+        assert_eq!(multiplier_said("saturation", "1.18", 1.18), "saturation \u{00D7}1.18 (18% more)");
+        assert_eq!(multiplier_said("contrast", "0.9", 0.9), "contrast \u{00D7}0.9 (10% less)");
+        assert_eq!(multiplier_said("saturation", "0", 0.0), "saturation \u{00D7}0 (black and white)");
+        let low = multiplier_said("saturation", "0.12", 0.12);
+        assert!(low.starts_with("saturation \u{00D7}0.12 (88% less); note:") && low.contains("give 1.12"), "{low}");
+        assert_eq!(multiplier_said("exposure", "0.5", 0.5), "exposure 0.5");
     }
 }

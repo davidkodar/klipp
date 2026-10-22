@@ -314,6 +314,7 @@ impl Run {
         match cmd {
             AppCommand::BeginHistoryBatch => return self.state.active_history_mut().begin_batch(),
             AppCommand::EndHistoryBatch => return self.state.active_history_mut().end_batch(),
+            AppCommand::EndHistoryBatchAs { label } => return self.state.active_history_mut().end_batch_as(&label),
             _ => {}
         }
         if is_side(&cmd) {

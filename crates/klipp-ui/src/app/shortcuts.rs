@@ -1428,6 +1428,14 @@ pub(crate) fn key_ease_shortcut(state: &crate::state::AppState, preset: Option<c
             None => crate::panels::timeline::key_interpolation_commands(state, m, klipp_core::Interpolation::Linear),
         });
     }
-    cmds.push(AppCommand::EndHistoryBatch);
+    // Named for what was done, and how many keys (#2358).
+    let what = match preset {
+        Some(crate::widgets::scrubby_param::EasePreset::EaseIn) => "Ease In",
+        Some(crate::widgets::scrubby_param::EasePreset::EaseOut) => "Ease Out",
+        Some(crate::widgets::scrubby_param::EasePreset::EaseBoth) => "Ease In-Out",
+        None => "Linear",
+    };
+    let label = if targets.len() > 1 { format!("{what} ({} keys)", targets.len()) } else { what.to_string() };
+    cmds.push(AppCommand::EndHistoryBatchAs { label });
     cmds
 }

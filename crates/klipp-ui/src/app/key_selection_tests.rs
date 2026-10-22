@@ -70,6 +70,7 @@ fn apply(state: &mut AppState, cmds: &[AppCommand]) -> Vec<String> {
         match cmd {
             AppCommand::BeginHistoryBatch => state.active_history_mut().begin_batch(),
             AppCommand::EndHistoryBatch => state.active_history_mut().end_batch(),
+            AppCommand::EndHistoryBatchAs { label } => state.active_history_mut().end_batch_as(label),
             // What the panels show: no clip changes.
             AppCommand::SelectClip(id) => state.selected_clip = *id,
             AppCommand::SetVideoRubberBandParam(_) | AppCommand::SequenceUpdated | AppCommand::BrowserSkimAudioStart { .. } => {}
@@ -826,6 +827,7 @@ fn the_ease_shortcuts_act_on_the_selected_key() {
     assert!(apply(&mut state, &cmds).is_empty());
     assert_ne!(interp(&state), before, "the key eased");
     assert_eq!(state.active_history().undo_count(), steps + 1, "one step");
+    assert_eq!(state.active_history().undo_label(), Some("Ease In"), "named for the ease (#2358)");
     let cmds = super::shortcuts::key_ease_shortcut(&state, None);
     assert!(apply(&mut state, &cmds).is_empty());
     assert_eq!(interp(&state)[1], klipp_core::Interpolation::Linear);

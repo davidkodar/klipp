@@ -2479,13 +2479,19 @@ impl TimelinePanel {
                             ] {
                                 let text = egui::RichText::new(format!("  {label}"));
                                 if ui.add(egui::Button::new(text).frame(false).shortcut_text(hint.as_str())).clicked() {
-                                    // Several keys' edit is one step (#1958).
-                                    let batch = targets.len() > 1;
-                                    if batch { cmds.push(AppCommand::BeginHistoryBatch); }
+                                    // One step, however many keys (#1958), named for
+                                    // the ease as the shortcut names it (#2358).
+                                    cmds.push(AppCommand::BeginHistoryBatch);
                                     for m in &targets {
                                         cmds.extend(key_ease_commands(state, m, preset));
                                     }
-                                    if batch { cmds.push(AppCommand::EndHistoryBatch); }
+                                    let what = match preset {
+                                        crate::widgets::scrubby_param::EasePreset::EaseIn => "Ease In",
+                                        crate::widgets::scrubby_param::EasePreset::EaseOut => "Ease Out",
+                                        crate::widgets::scrubby_param::EasePreset::EaseBoth => "Ease In-Out",
+                                    };
+                                    let label = if targets.len() > 1 { format!("{what} ({} keys)", targets.len()) } else { what.to_string() };
+                                    cmds.push(AppCommand::EndHistoryBatchAs { label });
                                     close_menu = true;
                                 }
                             }

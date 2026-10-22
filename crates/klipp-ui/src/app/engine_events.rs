@@ -302,7 +302,9 @@ impl KlippApp {
                         }
                         self.state.pending_media_path = None;
                     } else {
-                        self.state.fps = fps;
+                        // A new file in the pool leaves the sequence's rate
+                        // alone: setting it from the file showed a 30 fps
+                        // sequence as 24 once 24 fps clips came in (#2356).
                         self.state.playback = PlaybackState::Stopped;
 
                         // Record as recently-used for the file browser Recents view.
