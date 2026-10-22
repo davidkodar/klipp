@@ -3157,7 +3157,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
         }
         Op::Pan { clip_id, keys } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
-            pan(seq, pool, i, ti, clip, keys, "pan")
+            pan(seq, pool, i, ti, clip, keys, "pan", false)
         }
         Op::Follow { clip_id, scale, hold_secs } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
@@ -3168,7 +3168,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 return Err(refuse(i, format!("nothing happened on screen in {}", clip_name(seq, pool, clip)), "the beat sheet has no spot in this stretch (analyze first, or the screen held still); use pan with keys of your own"));
             }
             let keys = follow_keys(&spots, secs(clip.timeline_out) - secs(clip.timeline_in), *scale, *hold_secs);
-            pan(seq, pool, i, ti, clip, &keys, "follow")
+            pan(seq, pool, i, ti, clip, &keys, "follow", false)
         }
         Op::Refit { markers } => refit(seq, pool, transcripts, i, *markers),
         Op::Graphics { at, secs: held, track } => {
@@ -6649,7 +6649,9 @@ fn compose(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, p
     Ok((what, edit, vec![clip.id]))
 }
 
-fn pan(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, keys: &[PanKey], verb: &str) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+/// With `fill`, the picture fills the frame whatever its placement now,
+/// which is replaced: never a card's pan inside itself (a refit, #2211).
+fn pan(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, keys: &[PanKey], verb: &str, fill: bool) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     require_picture(seq, pool, i, ti, clip, verb)?;
     if keys.len() < 2 {
         return Err(refuse(i, format!("a {verb} needs at least two keys"), "give the pose at two or more times"));
@@ -6668,7 +6670,7 @@ fn pan(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, keys:
     }
     let mut sorted: Vec<PanKey> = keys.to_vec();
     sorted.sort_by(|a, b| a.secs.total_cmp(&b.secs));
-    if is_card(clip, seq.resolution.width as f32, seq.resolution.height as f32) {
+    if !fill && is_card(clip, seq.resolution.width as f32, seq.resolution.height as f32) {
         return pan_inside(seq, pool, i, clip, &sorted, verb);
     }
     // How far it can move is the fitted picture's, not the frame's: a wide
@@ -6861,7 +6863,11 @@ fn refit(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, i: usi
             }
             let ClipKind::Media { media_id } = &clip.kind else { continue };
             let Some(item) = pool.get(media_id).filter(|m| m.resolution.width > 0 && m.resolution.height > 0) else { continue };
-            if track.kind != TrackKind::Video || is_card(clip, fw, fh) {
+            // A card is a crop or an inset smaller than the frame. A pan made
+            // for the old frame is not one: is_card would judge its reach
+            // by the new frame and keep it letterboxed. It is replaced.
+            let inset = { let [_, _, (sk, still), _] = placement_lanes(clip); sk.iter().map(|k| k.value).fold(still, f32::min) < 0.999 };
+            if track.kind != TrackKind::Video || CropSides::of(clip).is_some() || inset {
                 continue;
             }
             let name = clip_name(seq, pool, clip);
@@ -6907,7 +6913,7 @@ fn refit(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, i: usi
                 if item.is_still { still += 1 } else { followed += 1 }
             }
             let keys = camera_keys(&points, dur, scale, (fw, fh), picture);
-            let (_, edit, _) = pan(seq, pool, i, ti, clip, &keys, "refit")?;
+            let (_, edit, _) = pan(seq, pool, i, ti, clip, &keys, "refit", true)?;
             edits.push(edit);
             ids.push(clip.id);
         }
@@ -15710,6 +15716,28 @@ mod tests {
         let EditCommand::Named { edit, .. } = &plan.steps[0].edit else { panic!() };
         let EditCommand::Batch(edits) = edit.as_ref() else { panic!() };
         assert!(!edits.iter().any(|e| matches!(e, EditCommand::SetMarkers { .. })));
+    }
+
+    /// #2211: a picture panned for the wide frame is refit for the tall one,
+    /// not kept letterboxed as a card the pan seems to make of it there.
+    #[test]
+    fn a_picture_panned_before_is_refit_not_left_as_a_card() {
+        let (seq, pool, _, a, _) = fixture();
+        let pan = Op::Pan { clip_id: ClipRef::Id(a), keys: vec![
+            PanKey { secs: 0.0, scale: 1.0, x: 0.5, y: 0.5, ease: Default::default() },
+            PanKey { secs: 4.0, scale: 1.2, x: 0.8, y: 0.5, ease: Default::default() },
+        ] };
+        let plan = resolve(&seq, &pool, &[pan]).unwrap();
+        let mut seqs = vec![seq.clone()];
+        let (mut p, mut fps) = (pool.clone(), seq.fps);
+        crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps }.apply_forward(&plan.steps[0].edit);
+        seqs[0].resolution = klipp_core::Resolution { width: 1080, height: 1920 };
+        let plan = resolve(&seqs[0], &p, &[Op::Refit { markers: true }]).unwrap();
+        let EditCommand::Named { edit, .. } = &plan.steps[0].edit else { panic!() };
+        let EditCommand::Batch(edits) = edit.as_ref() else { panic!() };
+        let refit = edits.iter().find_map(|e| match e { EditCommand::EditKeyframes { clip_id, new_state, .. } if *clip_id == a => Some(new_state), _ => None }).expect("the panned picture is refit");
+        let fill = 1920.0 / 607.5;
+        assert!(refit.transform_scale_keyframes.iter().all(|k| k.value >= fill - 1e-3), "it fills the tall frame: {:?}", refit.transform_scale_keyframes);
     }
 
     /// #2211: a pan's reach is the fitted picture's; where the picture has
