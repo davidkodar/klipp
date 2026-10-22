@@ -174,6 +174,11 @@ pub struct MusicPick {
     /// Left out, the original when signed in, else the preview (#1894).
     #[serde(default)]
     pub quality: Option<String>,
+    /// Only the first this many seconds of an MP3 (a preview, or a
+    /// library's MP3 download), for an ambience bed out of a long
+    /// recording (#2359); an original comes whole.
+    #[serde(default)]
+    pub max_secs: Option<f64>,
 }
 
 impl ControlCommand {
@@ -1231,6 +1236,9 @@ pub enum ControlCommand {
         /// A Freesound sound's file: "original" or "preview" (#1894).
         #[serde(default)]
         quality: Option<String>,
+        /// Only the first this many seconds of each MP3 (#2359).
+        #[serde(default)]
+        max_secs: Option<f64>,
     },
     /// Sign in to the user's own Freesound account, for original
     /// recordings (#1894): opens the browser at the approval page and

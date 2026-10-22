@@ -705,6 +705,12 @@ fn safe_name(s: &str) -> String {
 /// Returns the path to the downloaded audio. Prefers the full download
 /// URL, falling back to the preview stream when a download is not offered.
 pub fn download_track(track: &Track, dest_dir: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    download_track_up_to(track, dest_dir, None)
+}
+
+/// [`download_track`], only its first `max_secs` when given (#2359): an
+/// ambience bed needs a stretch of a long recording, not all of it.
+pub fn download_track_up_to(track: &Track, dest_dir: &std::path::Path, max_secs: Option<f64>) -> Result<std::path::PathBuf, String> {
     let url = if !track.download_url.is_empty() { &track.download_url } else { &track.preview_url };
     if url.is_empty() {
         return Err(format!("\"{}\" has no downloadable audio", track.title));
@@ -713,8 +719,136 @@ pub fn download_track(track: &Track, dest_dir: &std::path::Path) -> Result<std::
     // Jamendo track's download is the MP3 the library offers, not a
     // master: "download".
     let quality = if track.source == Source::Freesound || track.download_url.is_empty() { "preview" } else { "download" };
-    let resp = ureq::get(url).timeout(std::time::Duration::from_secs(45)).call().map_err(|e| format!("download failed: {e}"))?;
-    fetch_into(track, dest_dir, "mp3", resp, quality)
+    retry_once(|| {
+        let resp = paced_agent().get(url).call().map_err(|e| failed("download failed", e))?;
+        fetch_into(track, dest_dir, "mp3", resp, quality, max_secs)
+    })
+}
+
+/// How long a download may take to connect, and go without a byte before
+/// it is given up as stalled (#2359): a long preview on a slow link takes
+/// minutes, and is fine while it moves. The whole of it is bounded by its
+/// size instead, [`allowed_secs`].
+const CONNECT_SECS: u64 = 20;
+const STALL_SECS: u64 = 30;
+
+/// An agent that gives up on a connection or a stall, never on a long
+/// download that is moving.
+fn paced_agent() -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .timeout_connect(std::time::Duration::from_secs(CONNECT_SECS))
+        .timeout_read(std::time::Duration::from_secs(STALL_SECS))
+        .build()
+}
+
+/// How long a download of `bytes` may take in all: 45 s, and a second for
+/// each 32 KiB, a slow link's pace (a 221 s preview of 3.5 MB gets two and
+/// a half minutes); ten minutes when the size isn't said.
+fn allowed_secs(bytes: Option<u64>) -> u64 {
+    bytes.map_or(600, |b| 45 + b / (32 * 1024)).min(1800)
+}
+
+/// Why a download failed, and whether trying again may help: a dropped or
+/// stalled connection may, a refusal or a bad file won't.
+#[derive(Debug)]
+enum Failed {
+    Again(String),
+    Final(String),
+}
+
+/// A request's failure: a refusal is final, the connection's isn't.
+fn failed(what: &str, e: ureq::Error) -> Failed {
+    match e {
+        ureq::Error::Status(..) => Failed::Final(format!("{what}: {e}")),
+        ureq::Error::Transport(_) => Failed::Again(format!("{what}: {e}")),
+    }
+}
+
+/// `fetch` once, and once more when the connection failed (#2359).
+fn retry_once<T>(mut fetch: impl FnMut() -> Result<T, Failed>) -> Result<T, String> {
+    match fetch() {
+        Ok(v) => Ok(v),
+        Err(Failed::Final(e)) => Err(e),
+        Err(Failed::Again(_)) => fetch().map_err(|e| match e {
+            Failed::Again(e) => format!("{e}; tried twice"),
+            Failed::Final(e) => e,
+        }),
+    }
+}
+
+/// A download's body read against its deadline, saying in words what went
+/// wrong: what it was, how much came of how much, and the time it had.
+struct Paced<R> {
+    inner: R,
+    what: String,
+    started: std::time::Instant,
+    allowed: u64,
+    total: Option<u64>,
+    got: u64,
+}
+
+impl<R> Paced<R> {
+    fn came(&self) -> String {
+        let mb = |b: u64| b as f64 / 1e6;
+        match self.total {
+            Some(t) => format!("{:.1} of {:.1} MB in", mb(self.got), mb(t)),
+            None => format!("{:.1} MB in", mb(self.got)),
+        }
+    }
+}
+
+impl<R: std::io::Read> std::io::Read for Paced<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        use std::io::ErrorKind::{TimedOut, WouldBlock};
+        if self.started.elapsed().as_secs() >= self.allowed {
+            return Err(std::io::Error::new(TimedOut, format!("the {} took longer than {} s, {}", self.what, self.allowed, self.came())));
+        }
+        match self.inner.read(buf) {
+            Ok(n) => {
+                self.got += n as u64;
+                Ok(n)
+            }
+            Err(e) if matches!(e.kind(), TimedOut | WouldBlock) => {
+                Err(std::io::Error::new(TimedOut, format!("the {} stalled, nothing coming for {STALL_SECS} s, {}", self.what, self.came())))
+            }
+            Err(e) => Err(e),
+        }
+    }
+}
+
+/// How many bytes of an MP3 whose start is `head` hold its first `secs`:
+/// its tag, and the stream at the rate its first frame says, or its Xing
+/// header's average for a variable rate; a frame over, so the cut never
+/// falls short. `None` when `head` isn't an MP3 this can read.
+fn mp3_bytes_for(head: &[u8], secs: f64) -> Option<u64> {
+    let mut at = 0usize;
+    if head.len() >= 10 && &head[..3] == b"ID3" {
+        let size = head[6..10].iter().fold(0usize, |n, &b| (n << 7) | (b & 0x7f) as usize);
+        at = 10 + size + if head[5] & 0x10 != 0 { 10 } else { 0 };
+    }
+    let sync = (at..head.len().saturating_sub(4)).find(|&i| head[i] == 0xff && head[i + 1] & 0xe0 == 0xe0 && (head[i + 1] >> 1) & 3 == 1)?;
+    let (b1, b2, b3) = (head[sync + 1], head[sync + 2], head[sync + 3]);
+    let mpeg1 = (b1 >> 3) & 3 == 3;
+    const KBPS_1: [u32; 15] = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320];
+    const KBPS_2: [u32; 15] = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160];
+    let kbps = *if mpeg1 { &KBPS_1 } else { &KBPS_2 }.get((b2 >> 4) as usize)?;
+    let rate = [44100u32, 48000, 32000].get(((b2 >> 2) & 3) as usize)? >> if mpeg1 { 0 } else if (b1 >> 3) & 3 == 2 { 1 } else { 2 };
+    let mono = b3 >> 6 == 3;
+    let side = match (mpeg1, mono) {
+        (true, false) => 32,
+        (true, true) | (false, false) => 17,
+        (false, true) => 9,
+    };
+    let xing = sync + 4 + side;
+    let mut bits_per_sec = kbps as f64 * 1000.0;
+    if let Some(tag) = head.get(xing..xing + 16).filter(|t| &t[..4] == b"Xing" || &t[..4] == b"Info") {
+        let word = |i: usize| u32::from_be_bytes([tag[i], tag[i + 1], tag[i + 2], tag[i + 3]]) as f64;
+        if word(4) as u32 & 3 == 3 && word(8) > 0.0 {
+            let secs_all = word(8) * if mpeg1 { 1152.0 } else { 576.0 } / rate as f64;
+            bits_per_sec = word(12) * 8.0 / secs_all;
+        }
+    }
+    (bits_per_sec > 0.0).then(|| sync as u64 + (secs.max(0.0) * bits_per_sec / 8.0) as u64 + 1441)
 }
 
 /// A Freesound sound's original recording (#1894), with `bearer` the
@@ -727,39 +861,63 @@ pub fn download_original(track: &Track, dest_dir: &std::path::Path, bearer: &str
         return Err(format!("\"{}\" has no Freesound id to fetch the original by", track.title));
     }
     let url = format!("https://freesound.org/apiv2/sounds/{}/download/", track.id);
-    let resp = match ureq::get(&url).set("Authorization", &format!("Bearer {bearer}")).timeout(std::time::Duration::from_secs(120)).call() {
-        Ok(r) => r,
-        Err(ureq::Error::Status(code, _)) => return Err(format!("Freesound refused the original of \"{}\" ({code}); quality preview takes the preview instead", track.title)),
-        Err(e) => return Err(format!("the original of \"{}\" could not be downloaded ({}); quality preview takes the preview instead", track.title, e.kind())),
-    };
-    fetch_into(track, dest_dir, original.extension(), resp, "original")
+    retry_once(|| {
+        let resp = match paced_agent().get(&url).set("Authorization", &format!("Bearer {bearer}")).call() {
+            Ok(r) => r,
+            Err(ureq::Error::Status(code, _)) => return Err(Failed::Final(format!("Freesound refused the original of \"{}\" ({code}); quality preview takes the preview instead", track.title))),
+            Err(e) => return Err(Failed::Again(format!("the original of \"{}\" could not be downloaded ({}); quality preview takes the preview instead", track.title, e.kind()))),
+        };
+        fetch_into(track, dest_dir, original.extension(), resp, "original", None)
+    })
 }
 
 /// `resp`'s body into `dest_dir` as the track's file with `ext`, capped
 /// and moved into place whole, and its credit beside it, with what it is
-/// as measured off the file.
-fn fetch_into(track: &Track, dest_dir: &std::path::Path, ext: &str, resp: ureq::Response, quality: &str) -> Result<std::path::PathBuf, String> {
-    std::fs::create_dir_all(dest_dir).map_err(|e| format!("creating {}: {e}", dest_dir.display()))?;
+/// as measured off the file. Only its first `max_secs` of an MP3, when
+/// given. A body that stalls or runs past its time may come on a second
+/// try; one too large or empty won't.
+fn fetch_into(track: &Track, dest_dir: &std::path::Path, ext: &str, resp: ureq::Response, quality: &str, max_secs: Option<f64>) -> Result<std::path::PathBuf, Failed> {
+    std::fs::create_dir_all(dest_dir).map_err(|e| Failed::Final(format!("creating {}: {e}", dest_dir.display())))?;
     let base = format!("{}-{}-{}", safe_name(&track.artist), safe_name(&track.title), track.id);
     let audio_path = dest_dir.join(format!("{base}.{ext}"));
-    refuse_announced_size(&resp, MAX_TRACK_BYTES)?;
+    refuse_announced_size(&resp, MAX_TRACK_BYTES).map_err(Failed::Final)?;
+    let total = resp.header("Content-Length").and_then(|n| n.trim().parse::<u64>().ok());
+    let what = if track.duration_secs > 0.0 { format!("{:.0} s {quality}", track.duration_secs) } else { quality.to_string() };
+    let mut body = Paced { inner: resp.into_reader(), what, started: std::time::Instant::now(), allowed: allowed_secs(total), total, got: 0 };
     // Streamed to a file beside it, capped, and moved into place whole:
     // never held in memory, and never a half track under the real name.
     let part = audio_path.with_extension(format!("{ext}.part"));
     let written = std::fs::File::create(&part)
-        .map_err(|e| format!("writing {}: {e}", part.display()))
+        .map_err(|e| Failed::Final(format!("writing {}: {e}", part.display())))
         .and_then(|file| {
             let mut out = std::io::BufWriter::new(file);
-            let n = copy_capped(resp.into_reader(), &mut out, MAX_TRACK_BYTES).map_err(|e| format!("reading audio: {e}"))?;
-            std::io::Write::flush(&mut out).map_err(|e| format!("writing {}: {e}", part.display()))?;
-            Ok(n)
+            let reading = |e: std::io::Error| if e.kind() == std::io::ErrorKind::Other { Failed::Final(format!("reading audio: {e}")) } else { Failed::Again(format!("reading audio: {e}")) };
+            // A stretch of an MP3: its head says how many bytes hold it.
+            let mut head = Vec::new();
+            let mut limit = MAX_TRACK_BYTES;
+            if let Some(secs) = max_secs.filter(|_| ext == "mp3") {
+                std::io::Read::read_to_end(&mut std::io::Read::take(&mut body, 64 * 1024), &mut head).map_err(reading)?;
+                if let Some(bytes) = mp3_bytes_for(&head, secs) {
+                    limit = bytes.min(MAX_TRACK_BYTES);
+                    head.truncate(limit as usize);
+                }
+                std::io::Write::write_all(&mut out, &head).map_err(|e| Failed::Final(format!("writing {}: {e}", part.display())))?;
+            }
+            let rest = limit.saturating_sub(head.len() as u64);
+            let n = if limit < MAX_TRACK_BYTES {
+                std::io::copy(&mut std::io::Read::take(&mut body, rest), &mut out).map_err(reading)?
+            } else {
+                copy_capped(&mut body, &mut out, rest).map_err(reading)?
+            };
+            std::io::Write::flush(&mut out).map_err(|e| Failed::Final(format!("writing {}: {e}", part.display())))?;
+            Ok(n + head.len() as u64)
         })
-        .and_then(|n| if n < 1024 { Err(format!("\"{}\" downloaded empty", track.title)) } else { Ok(n) });
+        .and_then(|n| if n < 1024 { Err(Failed::Final(format!("\"{}\" downloaded empty", track.title))) } else { Ok(n) });
     if let Err(e) = written {
         let _ = std::fs::remove_file(&part);
         return Err(e);
     }
-    std::fs::rename(&part, &audio_path).map_err(|e| format!("writing {}: {e}", audio_path.display()))?;
+    std::fs::rename(&part, &audio_path).map_err(|e| Failed::Final(format!("writing {}: {e}", audio_path.display())))?;
     // The credit line, kept next to the file for export attribution, and
     // what the file is.
     let _ = std::fs::write(audio_path.with_extension("klipp-credit.txt"), credit_text(track, &Download::measure(&audio_path, quality)));
@@ -901,11 +1059,18 @@ pub fn download_bytes(url: &str) -> Result<Vec<u8>, String> {
     if url.is_empty() {
         return Err("nothing to preview".into());
     }
-    let resp = ureq::get(url).timeout(std::time::Duration::from_secs(30)).call().map_err(|e| format!("preview download failed: {e}"))?;
-    refuse_announced_size(&resp, MAX_PREVIEW_BYTES)?;
-    let mut bytes = Vec::new();
-    copy_capped(resp.into_reader(), &mut bytes, MAX_PREVIEW_BYTES).map_err(|e| format!("reading preview: {e}"))?;
-    Ok(bytes)
+    retry_once(|| {
+        let resp = paced_agent().get(url).call().map_err(|e| failed("preview download failed", e))?;
+        refuse_announced_size(&resp, MAX_PREVIEW_BYTES).map_err(Failed::Final)?;
+        let total = resp.header("Content-Length").and_then(|n| n.trim().parse::<u64>().ok());
+        let mut body = Paced { inner: resp.into_reader(), what: "preview".into(), started: std::time::Instant::now(), allowed: allowed_secs(total), total, got: 0 };
+        let mut bytes = Vec::new();
+        copy_capped(&mut body, &mut bytes, MAX_PREVIEW_BYTES).map_err(|e| {
+            let why = format!("reading preview: {e}");
+            if e.kind() == std::io::ErrorKind::Other { Failed::Final(why) } else { Failed::Again(why) }
+        })?;
+        Ok(bytes)
+    })
 }
 
 /// The largest track downloaded (#824): an hour at 320 kb/s is about
@@ -1386,5 +1551,115 @@ mod tests {
         assert!(!tracks.is_empty(), "upbeat returns tracks");
         let t = &tracks[0];
         assert!(!t.title.is_empty() && !t.preview_url.is_empty(), "track has a title and a preview: {t:?}");
+    }
+}
+
+#[cfg(test)]
+mod download_tests {
+    use super::*;
+    use std::io::{Read, Write};
+
+    /// An MP3's start: a 100-byte tag, then a 128 kbps 44.1 kHz stereo
+    /// frame header, and frames after it.
+    fn mp3(bytes: usize) -> Vec<u8> {
+        let mut v = b"ID3\x04\x00\x00\x00\x00\x00\x5a".to_vec();
+        v.resize(100, 0);
+        while v.len() < bytes {
+            v.extend_from_slice(&[0xff, 0xfb, 0x90, 0x00]);
+            v.resize((v.len() + 413).min(bytes), 0x55);
+        }
+        v.truncate(bytes);
+        v
+    }
+
+    /// #2359: the bytes that hold an MP3's first seconds: its tag, and the
+    /// stream at its first frame's rate, or a variable one's average.
+    #[test]
+    fn an_mp3s_stretch_is_measured_off_its_head() {
+        let head = mp3(64 * 1024);
+        // 60 s at 128 kbps is 960,000 bytes, after the tag, a frame over.
+        assert_eq!(mp3_bytes_for(&head, 60.0), Some(100 + 960_000 + 1441));
+        // A Xing header: 1000 frames of 1152 at 44.1 kHz (26.1 s) in
+        // 522,449 bytes is 160 kbps on average, whatever the first frame.
+        let mut vbr = head.clone();
+        let xing = 100 + 4 + 32;
+        vbr[xing..xing + 16].copy_from_slice(&[b'X', b'i', b'n', b'g', 0, 0, 0, 3, 0, 0, 0x03, 0xe8, 0, 0x07, 0xf8, 0x51]);
+        let got = mp3_bytes_for(&vbr, 10.0).unwrap();
+        assert!((got as i64 - (100 + 200_000 + 1441)).abs() < 50, "{got}");
+        assert_eq!(mp3_bytes_for(b"RIFF....WAVEfmt ", 10.0), None, "not an MP3");
+    }
+
+    /// A reader whose second read stalls, as a socket's read timeout does.
+    struct Stalls(u8);
+    impl Read for Stalls {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.0 += 1;
+            if self.0 > 1 {
+                return Err(std::io::Error::new(std::io::ErrorKind::WouldBlock, "timed out"));
+            }
+            buf[..1000].fill(1);
+            Ok(1000)
+        }
+    }
+
+    /// #2359: a stall and a deadline say in words what happened, and come
+    /// back as worth a second try; a refusal doesn't.
+    #[test]
+    fn a_stalled_or_slow_download_says_so_and_is_tried_again() {
+        let paced = |inner, allowed| Paced { inner, what: "221 s preview".into(), started: std::time::Instant::now(), allowed, total: Some(3_500_000), got: 0 };
+        let e = std::io::copy(&mut paced(Stalls(0), 60), &mut std::io::sink()).unwrap_err();
+        assert_eq!(e.to_string(), "the 221 s preview stalled, nothing coming for 30 s, 0.0 of 3.5 MB in");
+        let e = std::io::copy(&mut paced(Stalls(0), 0), &mut std::io::sink()).unwrap_err();
+        assert!(e.to_string().starts_with("the 221 s preview took longer than 0 s"), "{e}");
+        assert!(allowed_secs(Some(3_500_000)) > 140 && allowed_secs(None) == 600);
+        let mut tries = 0;
+        assert_eq!(retry_once(|| { tries += 1; if tries == 1 { Err(Failed::Again("dropped".into())) } else { Ok(tries) } }), Ok(2));
+        let mut tries = 0;
+        assert_eq!(retry_once(|| -> Result<(), Failed> { tries += 1; Err(Failed::Final("refused (404)".into())) }), Err("refused (404)".into()));
+        assert_eq!(tries, 1, "a refusal isn't tried again");
+    }
+
+    /// A server on a local port answering each connection in turn: `None`
+    /// drops it unanswered, `Some(body)` sends the body in pieces with a
+    /// pause between, a slow link that keeps moving.
+    fn serve(replies: Vec<Option<Vec<u8>>>) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/preview.mp3", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for reply in replies {
+                let Ok((mut s, _)) = listener.accept() else { return };
+                let mut req = [0u8; 2048];
+                let _ = s.read(&mut req);
+                let Some(body) = reply else { continue };
+                let _ = write!(s, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+                for piece in body.chunks(body.len() / 4 + 1) {
+                    let _ = s.write_all(piece);
+                    std::thread::sleep(std::time::Duration::from_millis(150));
+                }
+            }
+        });
+        url
+    }
+
+    fn track(url: String) -> Track {
+        Track {
+            source: Source::Freesound, id: "2359".into(), title: "Rain in the city".into(), artist: "a".into(), duration_secs: 0.0, license: "CC0".into(),
+            license_url: String::new(), commercial_ok: true, preview_url: url, download_url: String::new(), page_url: String::new(),
+            image_url: String::new(), tags: vec![], pace: String::new(), original: None,
+        }
+    }
+
+    /// #2359: a preview that comes slowly comes whole; one whose first
+    /// connection drops comes on the second; and `max_secs` keeps only
+    /// the bytes that hold that stretch.
+    #[test]
+    fn a_preview_comes_slowly_on_a_second_try_and_cut_to_its_stretch() {
+        let dir = std::env::temp_dir().join(format!("klipp-paced-download-{}", std::process::id()));
+        let body = mp3(200_000);
+        let path = download_track_up_to(&track(serve(vec![None, Some(body.clone())])), &dir, None).expect("the second try");
+        assert_eq!(std::fs::read(&path).unwrap(), body, "whole, though it came in pauses");
+        let cut = download_track_up_to(&track(serve(vec![Some(body)])), &dir, Some(5.0)).expect("a stretch");
+        assert_eq!(std::fs::read(&cut).unwrap().len() as u64, mp3_bytes_for(&mp3(64 * 1024), 5.0).unwrap(), "5 s at 128 kbps");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
