@@ -607,3 +607,26 @@ fn the_dope_sheet_moves_keys_on_several_rows_together() {
     e.frame(Vec::new(), egui::Modifiers::NONE);
     assert!(!e.panel.showing_sheet(), "the curves, for Position X");
 }
+
+/// #2279: a key dragged in the curve editor lands on the playhead when
+/// near it (even off a frame), else on a whole frame, and with Shift
+/// where it is let go.
+#[test]
+fn a_dragged_key_snaps_to_the_playhead_and_to_frames() {
+    let (state, clip, node) = state();
+    let mut e = Editor::showing(state, clip, node, CurveParam::Video(VideoParam::PositionX));
+    let pos_x = KeyframeParamKind::Video(VideoParam::PositionX);
+    let fps = e.state.sequence().fps.as_f64();
+    // The playhead at 1.6 s; the key at 2 s (20) dragged to just past it.
+    e.state.playhead = klipp_core::Timecode::from_secs_f64(1.6, e.state.sequence().fps.rate());
+    e.frame(Vec::new(), egui::Modifiers::NONE);
+    let playhead = e.state.playhead.to_secs_f64();
+    let (from, near) = (e.at(2.0, 20.0), e.at(playhead + 0.004, 20.0));
+    e.drag(from, near);
+    assert!(keys(&e.state, e.clip, &pos_x).iter().any(|(t, _)| (t - playhead).abs() < 1e-6), "on the playhead: {:?}", keys(&e.state, e.clip, &pos_x));
+    // Away from it and the other key: a whole frame.
+    let (from, away) = (e.at(playhead, 20.0), e.at(3.13, 20.0));
+    e.drag(from, away);
+    let moved = keys(&e.state, e.clip, &pos_x).into_iter().map(|(t, _)| t).find(|t| (t - 3.13).abs() < 0.05).expect("the key near 3.13 s");
+    assert!(((moved * fps) - (moved * fps).round()).abs() < 1e-6, "on a frame: {moved}");
+}
