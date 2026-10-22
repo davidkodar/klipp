@@ -6924,6 +6924,7 @@ fn refit(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, i: usi
                 duration: Some(clip.timeline_out - clip.timeline_in),
                 comment: why.clone(),
                 kind: klipp_core::MarkerKind::ToDo,
+                review: None,
             });
         }
         edits.push(EditCommand::SetMarkers { old, new });
