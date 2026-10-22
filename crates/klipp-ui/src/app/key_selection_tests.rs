@@ -682,3 +682,40 @@ fn a_key_menu_handle_kind_is_one_step() {
     assert_eq!(lane(&state), before);
     assert!(crate::panels::timeline::key_handles_commands(&state, &menu(radius(node)), klipp_core::Handles::Auto).is_empty());
 }
+
+/// #2272: a selected key's time and value typed in the Curve Editor's
+/// header. A value sets it; `+` and a frame count moves it later; with
+/// both keys selected, `+1` raises them both, as one step undo takes back.
+#[test]
+fn a_keys_time_and_value_are_typed_in_the_header() {
+    let (state, clip, node) = state();
+    let mut e = Editor::showing(state, clip, node, CurveParam::Video(VideoParam::PositionX));
+    let pos_x = KeyframeParamKind::Video(VideoParam::PositionX);
+    let key_event = |key, modifiers| egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers };
+    // Click the field showing `shown`, type `text` over it and press Enter.
+    let type_in = |e: &mut Editor, shown: &str, text: &str| {
+        let drawn = e.frame(Vec::new(), egui::Modifiers::NONE);
+        let at = drawn.iter().find(|(t, _)| t == shown).unwrap_or_else(|| panic!("a field showing {shown:?}: {:?}", e.texts)).1;
+        e.press(at, egui::PointerButton::Primary, egui::Modifiers::NONE);
+        e.frame(vec![key_event(egui::Key::A, egui::Modifiers::COMMAND), egui::Event::Text(text.into())], egui::Modifiers::NONE);
+        e.frame(vec![key_event(egui::Key::Enter, egui::Modifiers::NONE)], egui::Modifiers::NONE);
+        e.frame(Vec::new(), egui::Modifiers::NONE);
+    };
+    let first = e.at(1.0, 10.0);
+    e.press(first, egui::PointerButton::Primary, egui::Modifiers::NONE);
+    type_in(&mut e, "10", "12.5");
+    assert_eq!(keys(&e.state, e.clip, &pos_x), vec![(1.0, 12.5), (2.0, 20.0)]);
+    let shown = e.state.timecode_display().position_secs(1.0);
+    type_in(&mut e, &shown, "+12");
+    assert_eq!(keys(&e.state, e.clip, &pos_x), vec![(1.5, 12.5), (2.0, 20.0)], "12 frames later at 24 fps");
+    e.state.key_selection.clip_id = Some(e.clip);
+    e.state.key_selection.keys = [1.5, 2.0].map(|t| crate::key_selection::KeyRef { param_kind: pos_x.clone(), time_secs: t }).to_vec();
+    let drawn = e.frame(Vec::new(), egui::Modifiers::NONE);
+    let at = drawn.iter().find(|(t, _)| t == "a value, or +/-").expect("the value field's hint for several keys").1;
+    e.press(at, egui::PointerButton::Primary, egui::Modifiers::NONE);
+    e.frame(vec![egui::Event::Text("+1".into())], egui::Modifiers::NONE);
+    e.frame(vec![key_event(egui::Key::Enter, egui::Modifiers::NONE)], egui::Modifiers::NONE);
+    assert_eq!(keys(&e.state, e.clip, &pos_x), vec![(1.5, 13.5), (2.0, 21.0)]);
+    undo(&mut e.state);
+    assert_eq!(keys(&e.state, e.clip, &pos_x), vec![(1.5, 12.5), (2.0, 20.0)], "one step");
+}
