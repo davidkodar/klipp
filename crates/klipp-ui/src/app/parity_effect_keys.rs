@@ -78,7 +78,8 @@ impl Action {
             Self::Interpolate(i) => Interaction::Interpolation(match i {
                 Interpolation::Linear => KeyInterpolation::Linear,
                 Interpolation::Step => KeyInterpolation::Step,
-                Interpolation::Bezier => KeyInterpolation::Bezier,
+                // The parity runs pick no eased curve; it is shaped as a Bezier is.
+                Interpolation::Bezier | Interpolation::Eased(_) => KeyInterpolation::Bezier,
             }),
         }
     }
@@ -146,6 +147,7 @@ fn interpolation(run: &mut Run, label: RowLabel, want: Interpolation) -> Result<
         Interpolation::Linear => "Linear",
         Interpolation::Step => "Step (Hold)",
         Interpolation::Bezier => "Bezier (Custom)",
+        Interpolation::Eased(_) => return Err("an eased curve is picked from its family's submenu".into()),
     };
     let text = run
         .frame(Vec::new(), egui::Modifiers::NONE)

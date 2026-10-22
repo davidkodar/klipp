@@ -29,15 +29,42 @@ pub enum Interpolation {
     Step,
     /// Smooth cubic bezier interpolation (tangents on KeyframePoint).
     Bezier,
+    /// A named easing curve over the segment ([`Ease::at`]): the key
+    /// menu's presets, elastic and bounce among them, which one cubic
+    /// cannot draw. The handles play no part.
+    Eased(Ease),
+}
+
+impl Interpolation {
+    /// A number for the interpolation, for a fingerprint: Linear, Step
+    /// and Bezier as their places (0, 1, 2), an eased curve past them by
+    /// its curve.
+    pub fn code(self) -> u64 {
+        match self {
+            Interpolation::Linear => 0,
+            Interpolation::Step => 1,
+            Interpolation::Bezier => 2,
+            Interpolation::Eased(ease) => 3 + ease as u64,
+        }
+    }
 }
 
 /// Set the interpolation of the key at `index` as the keyframe editor does:
 /// that key and the one before it take `interpolation` (the segment into
 /// the key and the one out of it), and for Bezier each of the two gets
 /// tangents a third of the way to its neighbours where it has none yet.
-/// An index past the end changes only the key before it, as before.
+/// An index past the end changes only the key before it, as before. An
+/// eased curve shapes one move, so it goes to the segment leaving the key
+/// alone (the one into it, for the last key).
 pub fn set_interpolation_at(keyframes: &mut [Keyframe], index: usize, interpolation: Interpolation) {
     let len = keyframes.len();
+    if let Interpolation::Eased(_) = interpolation {
+        let segment = if index + 1 < len { index } else { index.saturating_sub(1) };
+        if let Some(k) = keyframes.get_mut(segment) {
+            k.interpolation = interpolation;
+        }
+        return;
+    }
     if index < len {
         keyframes[index].interpolation = interpolation;
     }
@@ -386,7 +413,7 @@ pub fn set_keyframe_interpolation(
 /// uses, written as the Bezier handles [`evaluate`] already solves — the
 /// same model as CSS `cubic-bezier`, handles as fractions of the
 /// segment's time and change.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Ease {
     /// Constant speed: starts and stops dead. Right for a slow drift.
@@ -402,11 +429,40 @@ pub enum Ease {
     ExpoOut,
     /// Arrives, overshoots a little and settles back.
     BackOut,
+    /// Starts slowly and leaves fast: the reverse of `ExpoOut`.
+    ExpoIn,
+    /// Slow at both ends, fast through the middle.
+    ExpoInOut,
+    /// Draws back a little before it goes.
+    BackIn,
+    /// Draws back, goes, overshoots and settles.
+    BackInOut,
+    /// Winds up in growing swings before it goes.
+    ElasticIn,
+    /// Overshoots and swings about the key, settling like a spring.
+    ElasticOut,
+    /// Winds up, then springs into place.
+    ElasticInOut,
+    /// Bounces off the start, higher each time, before it goes.
+    BounceIn,
+    /// Falls onto the key and bounces to rest, as a dropped ball.
+    BounceOut,
+    /// Bounces off the start and onto the key.
+    BounceInOut,
 }
 
 impl Ease {
+    /// The presets a key menu offers, by family, with their labels:
+    /// each family's In, Out and In-Out.
+    pub const PRESETS: [(&'static str, [Ease; 3]); 4] = [
+        ("Exponential", [Ease::ExpoIn, Ease::ExpoOut, Ease::ExpoInOut]),
+        ("Back", [Ease::BackIn, Ease::BackOut, Ease::BackInOut]),
+        ("Elastic", [Ease::ElasticIn, Ease::ElasticOut, Ease::ElasticInOut]),
+        ("Bounce", [Ease::BounceIn, Ease::BounceOut, Ease::BounceInOut]),
+    ];
+
     /// The curve's two handles, `(x1, y1, x2, y2)`, or `None` for a
-    /// straight line.
+    /// straight line or a curve one cubic cannot draw (elastic, bounce).
     pub fn handles(self) -> Option<(f64, f32, f64, f32)> {
         match self {
             Ease::Linear => None,
@@ -415,8 +471,90 @@ impl Ease {
             Ease::InOut => Some((0.42, 0.0, 0.58, 1.0)),
             Ease::ExpoOut => Some((0.16, 1.0, 0.3, 1.0)),
             Ease::BackOut => Some((0.34, 1.56, 0.64, 1.0)),
+            Ease::ExpoIn => Some((0.7, 0.0, 0.84, 0.0)),
+            Ease::ExpoInOut => Some((0.87, 0.0, 0.13, 1.0)),
+            Ease::BackIn => Some((0.36, 0.0, 0.66, -0.56)),
+            Ease::BackInOut => Some((0.68, -0.6, 0.32, 1.6)),
+            Ease::ElasticIn | Ease::ElasticOut | Ease::ElasticInOut | Ease::BounceIn | Ease::BounceOut | Ease::BounceInOut => None,
         }
     }
+
+    /// How far along the move is at `t` (0..1 of the segment's time):
+    /// 0 at the start, 1 at the end, past either for an overshoot. A
+    /// curve with handles is that cubic, solved as [`evaluate`] solves a
+    /// Bezier segment; elastic and bounce are the standard closed forms.
+    pub fn at(self, t: f64) -> f64 {
+        use std::f64::consts::PI;
+        let t = t.clamp(0.0, 1.0);
+        let bounce_out = |t: f64| {
+            let (n, d) = (7.5625, 2.75);
+            if t < 1.0 / d {
+                n * t * t
+            } else if t < 2.0 / d {
+                let t = t - 1.5 / d;
+                n * t * t + 0.75
+            } else if t < 2.5 / d {
+                let t = t - 2.25 / d;
+                n * t * t + 0.9375
+            } else {
+                let t = t - 2.625 / d;
+                n * t * t + 0.984375
+            }
+        };
+        match self {
+            Ease::Linear => t,
+            Ease::ElasticIn | Ease::ElasticOut | Ease::ElasticInOut if t <= 0.0 || t >= 1.0 => t,
+            Ease::ElasticIn => -(2f64.powf(10.0 * t - 10.0)) * ((10.0 * t - 10.75) * (2.0 * PI / 3.0)).sin(),
+            Ease::ElasticOut => 2f64.powf(-10.0 * t) * ((10.0 * t - 0.75) * (2.0 * PI / 3.0)).sin() + 1.0,
+            Ease::ElasticInOut => {
+                let c = 2.0 * PI / 4.5;
+                if t < 0.5 {
+                    -(2f64.powf(20.0 * t - 10.0) * ((20.0 * t - 11.125) * c).sin()) / 2.0
+                } else {
+                    2f64.powf(-20.0 * t + 10.0) * ((20.0 * t - 11.125) * c).sin() / 2.0 + 1.0
+                }
+            }
+            Ease::BounceOut => bounce_out(t),
+            Ease::BounceIn => 1.0 - bounce_out(1.0 - t),
+            Ease::BounceInOut => {
+                if t < 0.5 {
+                    (1.0 - bounce_out(1.0 - 2.0 * t)) / 2.0
+                } else {
+                    (1.0 + bounce_out(2.0 * t - 1.0)) / 2.0
+                }
+            }
+            _ => {
+                let (x1, y1, x2, y2) = self.handles().unwrap_or((0.0, 0.0, 1.0, 1.0));
+                cubic_at((x1, y1 as f64, x2, y2 as f64), t)
+            }
+        }
+    }
+}
+
+/// How far along a segment shaped by the CSS-style cubic `(x1, y1, x2,
+/// y2)` the value is at time `t` (0..1): the curve's x solved for `t` by
+/// Newton's method, as [`evaluate`] solves a Bezier segment, then its y.
+fn cubic_at((x1, y1, x2, y2): (f64, f64, f64, f64), t: f64) -> f64 {
+    let bez = |a: f64, b: f64, u: f64| {
+        let mu = 1.0 - u;
+        3.0 * mu * mu * u * a + 3.0 * mu * u * u * b + u * u * u
+    };
+    let dx = |u: f64| {
+        let mu = 1.0 - u;
+        3.0 * mu * mu * x1 + 6.0 * mu * u * (x2 - x1) + 3.0 * u * u * (1.0 - x2)
+    };
+    let mut u = t;
+    for _ in 0..8 {
+        let d = dx(u);
+        if d.abs() < 1e-12 {
+            break;
+        }
+        u = (u - (bez(x1, x2, u) - t) / d).clamp(0.0, 1.0);
+        if (bez(x1, x2, u) - t).abs() < 1e-7 {
+            break;
+        }
+    }
+    bez(y1, y2, u)
 }
 
 /// Ease the move from keyframe `i - 1` into keyframe `i`. The handles
@@ -427,7 +565,7 @@ pub fn ease_into(kfs: &mut [Keyframe], i: usize, ease: Ease) {
         return;
     }
     let Some((x1, y1, x2, y2)) = ease.handles() else {
-        kfs[i - 1].interpolation = Interpolation::Linear;
+        kfs[i - 1].interpolation = if ease == Ease::Linear { Interpolation::Linear } else { Interpolation::Eased(ease) };
         return;
     };
     let d = kfs[i].time_secs - kfs[i - 1].time_secs;
@@ -465,6 +603,7 @@ pub fn evaluate(keyframes: &[Keyframe], time_secs: f64, default: f32) -> f32 {
             return match a.interpolation {
                 Interpolation::Step => a.value,
                 Interpolation::Linear => a.value + (b.value - a.value) * t as f32,
+                Interpolation::Eased(ease) => a.value + (b.value - a.value) * ease.at(t) as f32,
                 Interpolation::Bezier => {
                     let duration = b.time_secs - a.time_secs;
                     // The handles as each key's kind makes them.
@@ -689,6 +828,47 @@ mod tests {
         edit_handles(&mut keys, 1, None, Some((0.4, 0.9)), Some(Handles::Broken));
         assert_eq!(keys[1].handles, Handles::Broken);
         assert_eq!(handles_at(&keys, 1).1, (0.4, 0.9));
+    }
+
+    /// Every named curve starts at 0 and ends at 1. Elastic swings past
+    /// both ends, back overshoots, bounce never passes its end. A curve one
+    /// cubic can draw evaluates as `ease_into`'s Bezier segment does, so a
+    /// preset and an automatic op's ease give the same move.
+    #[test]
+    fn eased_curves_run_from_start_to_end() {
+        let all = Ease::PRESETS.iter().flat_map(|(_, e)| *e).chain([Ease::Linear, Ease::In, Ease::Out, Ease::InOut]);
+        for e in all {
+            assert!(e.at(0.0).abs() < 1e-6 && (e.at(1.0) - 1.0).abs() < 1e-6, "{e:?}");
+            let line = vec![kf_linear(0.0, 0.0), kf_linear(2.0, 10.0)];
+            let mut eased = line.clone();
+            ease_into(&mut eased, 1, e);
+            for i in 1..20 {
+                let t = i as f64 / 20.0;
+                assert!((evaluate(&eased, 2.0 * t, 0.0) - 10.0 * e.at(t) as f32).abs() < 1e-3, "{e:?} at {t}");
+            }
+        }
+        let range = |e: Ease| (0..=1000).map(|i| e.at(i as f64 / 1000.0)).fold((f64::MAX, f64::MIN), |(lo, hi), v| (lo.min(v), hi.max(v)));
+        assert!(range(Ease::ElasticOut).1 > 1.2 && range(Ease::ElasticIn).0 < -0.2);
+        assert!(range(Ease::BackOut).1 > 1.0 && range(Ease::BackIn).0 < 0.0);
+        assert!(range(Ease::BounceOut).1 <= 1.0 + 1e-9 && range(Ease::BounceIn).0 >= -1e-9);
+        assert!((Ease::BounceOut.at(1.0 / 2.75) - 1.0).abs() < 1e-9, "the first fall lands on the end");
+    }
+
+    /// An eased curve goes to the segment leaving the key (the one into
+    /// it for the last key), alone, and that segment evaluates along it.
+    #[test]
+    fn an_eased_curve_shapes_one_segment() {
+        let line = || vec![kf_linear(0.0, 0.0), kf_linear(1.0, 1.0), kf_linear(2.0, 0.0)];
+        let elastic = Interpolation::Eased(Ease::ElasticOut);
+        let mut keys = line();
+        set_interpolation_at(&mut keys, 1, elastic);
+        assert_eq!(keys.iter().map(|k| k.interpolation).collect::<Vec<_>>(), [Interpolation::Linear, elastic, Interpolation::Linear]);
+        assert!((evaluate(&keys, 1.3, 0.0) - (1.0 - Ease::ElasticOut.at(0.3) as f32)).abs() < 1e-5);
+        let mut keys = line();
+        set_interpolation_at(&mut keys, 2, elastic);
+        assert_eq!(keys[1].interpolation, elastic, "the last key's is the segment into it");
+        let json = serde_json::to_string(&keys[1]).unwrap();
+        assert_eq!(serde_json::from_str::<Keyframe>(&json).unwrap(), keys[1], "{json}");
     }
 
     fn kf_linear(time: f64, value: f32) -> Keyframe {

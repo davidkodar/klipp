@@ -1346,7 +1346,7 @@ mod tests {
         assert_eq!(lane(&s0, id0, "pos_x"), vec![(0.5, 10.0), (1.0, 20.0), (1.5, 30.0)], "keyed by path");
         type Cmd = fn(ClipId) -> AppCommand;
         type Check = fn(&AppState, ClipId);
-        let families: [(&str, Cmd, Check); 12] = [
+        let families: [(&str, Cmd, Check); 13] = [
             ("add", |id| AppCommand::AddVideoKeyframe { clip_id: id, param: P::PositionX, time_secs: 0.75, value: 15.0 }, |s, id| assert_eq!(lane(s, id, "pos_x").len(), 4)),
             ("remove", |id| AppCommand::RemoveVideoKeyframe { clip_id: id, param: P::PositionX, time_secs: 1.0 }, |s, id| assert_eq!(lane(s, id, "pos_x"), vec![(0.5, 10.0), (1.5, 30.0)])),
             ("move", |id| AppCommand::MoveVideoKeyframe { clip_id: id, param: P::PositionX, index: 0, new_time_secs: 1.2, new_value: 12.0 }, |s, id| assert_eq!(lane(s, id, "pos_x"), vec![(1.0, 20.0), (1.2, 12.0), (1.5, 30.0)])),
@@ -1355,6 +1355,11 @@ mod tests {
                 assert!(keys[0].interpolation == Interpolation::Bezier && keys[1].interpolation == Interpolation::Bezier && keys[1].tangent_out.0 > 0.0, "{keys:?}");
             }),
             ("tangent", |id| AppCommand::SetVideoKeyframeTangent { clip_id: id, param: P::PositionX, keyframe_index: 1, tangent_in: Some((-0.1, 2.0)), tangent_out: None, handles: None }, |s, id| assert_eq!(crate::inspector::placement_by_path::lane_keys(clip(s, id), "pos_x")[1].tangent_in, (-0.1, 2.0))),
+            // A named curve from the key menu (#2274): the segment leaving the key alone.
+            ("eased", |id| AppCommand::SetVideoKeyframeInterpolation { clip_id: id, param: P::PositionX, keyframe_index: 1, interpolation: Interpolation::Eased(klipp_core::keyframe::Ease::BounceOut) }, |s, id| {
+                let keys = crate::inspector::placement_by_path::lane_keys(clip(s, id), "pos_x");
+                assert_eq!((keys[0].interpolation, keys[1].interpolation), (Interpolation::Linear, Interpolation::Eased(klipp_core::keyframe::Ease::BounceOut)), "{keys:?}");
+            }),
             // A handle kind from the key menu (#2273): the key keeps it, both
             // its segments Bezier, the curve smooth through it.
             ("handles", |id| AppCommand::SetVideoKeyframeTangent { clip_id: id, param: P::PositionX, keyframe_index: 1, tangent_in: None, tangent_out: None, handles: Some(klipp_core::Handles::Auto) }, |s, id| {
