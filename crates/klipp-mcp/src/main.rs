@@ -1561,6 +1561,25 @@ fn output_schema(name: &str) -> Value {
 
 /// A reply's content: the frame-wait bookkeeping for writes, text for
 /// the views that are text, pictures and sound inlined when small.
+/// An apply's `made`, a line a step (#2364): the ids of what it made, and
+/// the "@N" a later op of one apply names its clip by.
+fn made_lines(made: &[Value]) -> String {
+    let mut out = String::from("\nMade (ids for the next call; within one apply a later op names a step's clip as its ref):");
+    for m in made {
+        let mut parts = Vec::new();
+        if let Some(ids) = m.get("clip_ids").and_then(Value::as_array).filter(|a| !a.is_empty()) {
+            let ids: Vec<&str> = ids.iter().filter_map(Value::as_str).collect();
+            parts.push(format!("clip{} {}", if ids.len() == 1 { "" } else { "s" }, ids.join(", ")));
+        }
+        if let Some(tracks) = m.get("tracks").and_then(Value::as_array).filter(|a| !a.is_empty()) {
+            let tracks: Vec<String> = tracks.iter().map(|t| t.to_string()).collect();
+            parts.push(format!("track{} {}", if tracks.len() == 1 { "" } else { "s" }, tracks.join(", ")));
+        }
+        out.push_str(&format!("\n  step {} ({}): {}", m["step"], m["ref"].as_str().unwrap_or(""), parts.join("; ")));
+    }
+    out
+}
+
 fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
     let result = result.clone();
     if WRITE_TOOLS.contains(&name) {
@@ -1715,6 +1734,9 @@ fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
             if let Some(moved) = result.get("retracked").and_then(Value::as_array).filter(|m| !m.is_empty()) {
                 message.push_str("\nClips that only moved track index (count per move):\n");
                 message.push_str(&serde_json::to_string(moved).unwrap_or_default());
+            }
+            if let Some(made) = result.get("made").and_then(Value::as_array).filter(|m| !m.is_empty()) {
+                message.push_str(&made_lines(made));
             }
             return Ok(with_next(message));
         }
