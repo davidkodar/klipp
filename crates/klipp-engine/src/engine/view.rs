@@ -534,6 +534,11 @@ impl PlaybackEngine {
     /// now another clip's (another clip, another sequence). The key keeps
     /// a stale entry from being used; this keeps it from taking memory.
     fn scope_held_outputs(&mut self, primary: Option<ClipId>) {
+        // Held outputs' GPU copies are GPU memory (#2266): a quarter of
+        // what is free there, no more than the default, when it can be read.
+        if let Some(free) = crate::decode_budget::free_vram() {
+            self.renderer.executor().set_held_gpu_budget(((free * 0.25) as usize).min(klipp_nodes::held::DEFAULT_BUDGET));
+        }
         let scope = (self.state, primary);
         if self.held_scope != Some(scope) || self.state == PlaybackState::Playing || !self.hold_neighbours {
             self.renderer.executor().clear_held();

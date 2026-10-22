@@ -5150,6 +5150,64 @@ impl GpuEffectsPipeline {
         true
     }
 
+    /// Temporal noise reduction of `input` (linear RGBA, `width` ×
+    /// `height`) against `neighbours`, off the chain (#2266): the chain's
+    /// kernel and parameters, so a frame is denoised to the same picture
+    /// whether the chain draws it or this does. For a node whose output
+    /// must be pixels (a parked frame holds it): the result read back,
+    /// and the buffer it is in, for the holder to seed later chains from.
+    /// Its own buffers and uniform, never the chain's. `None` on a lost
+    /// device, a size that doesn't fit, more than two neighbours, or a
+    /// failed read; the caller draws it on the CPU then.
+    #[allow(clippy::too_many_arguments)]
+    pub fn temporal_denoise_pixels(&mut self, input: &[f32], width: u32, height: u32, neighbours: &[&wgpu::Buffer], threshold: f32, strength: f32, luma: [f32; 3]) -> Option<(Vec<f32>, std::sync::Arc<wgpu::Buffer>)> {
+        let pixels = (width as usize) * (height as usize);
+        let bytes = (pixels * 16) as u64;
+        if self.is_device_lost() || pixels == 0 || input.len() != pixels * 4 || neighbours.len() > 2 || neighbours.iter().any(|n| n.size() < bytes) {
+            return None;
+        }
+        // The read-back's staging buffer, at the frame's size.
+        self.ensure_buffers(bytes);
+        let storage = |label| self.device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size: bytes, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
+        let (inp, out) = (storage("temporal_denoise_in"), storage("temporal_denoise_out"));
+        self.queue.write_buffer(&inp, 0, bytemuck::cast_slice(input));
+        let params = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("temporal_denoise_params"),
+            size: std::mem::size_of::<GpuTemporalDenoiseParams>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.queue.write_buffer(&params, 0, bytemuck::bytes_of(&GpuTemporalDenoiseParams {
+            width,
+            height,
+            count: neighbours.len() as u32,
+            _pad0: 0,
+            denom: crate::temporal_denoise::denominator(threshold),
+            strength: strength.clamp(0.0, 1.0),
+            _pad1: 0,
+            _pad2: 0,
+            luma: [luma[0], luma[1], luma[2], 0.0],
+        }));
+        let before = neighbours.first().copied().unwrap_or(&inp);
+        let after = neighbours.get(1).copied().unwrap_or(&inp);
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("temporal_denoise_pixels_bg"),
+            layout: &self.temporal_denoise_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: inp.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: out.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: params.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: before.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: after.as_entire_binding() },
+            ],
+        });
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("temporal_denoise_pixels") });
+        Self::record_compute_dispatch(&mut encoder, &self.temporal_denoise_pipeline, &bind_group, (pixels as u32).div_ceil(WORKGROUP_SIZE));
+        self.queue.submit(std::iter::once(encoder.finish()));
+        let read = self.with_downloaded(&out, bytes, |b| mapped_bytes_to_f32(b, pixels * 4)).filter(|v| v.len() == pixels * 4)?;
+        Some((read, std::sync::Arc::new(out)))
+    }
+
     /// Dispatch-only ApplyMatte: blend the chain's picture (graded) with
     /// `kept` (ungraded), through `matte` (M3 step 17b). Standard chain
     /// conventions — reads the `in_is_a` slot, writes the opposite.

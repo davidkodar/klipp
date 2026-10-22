@@ -203,6 +203,13 @@ impl HeldOutputs {
         self.entries.is_empty()
     }
 
+    /// The GPU copies' budget in bytes, apart from the CPU one's (#2266):
+    /// set from the GPU's free memory by the viewer. Copies past it are
+    /// dropped as the next is kept; the CPU pixels stay.
+    pub fn set_gpu_budget(&mut self, bytes: usize) {
+        self.gpu_budget = bytes;
+    }
+
     /// The budget in bytes; the [`MIN_ENTRIES`] newest always stay.
     pub fn set_budget(&mut self, bytes: usize) {
         self.budget = bytes;

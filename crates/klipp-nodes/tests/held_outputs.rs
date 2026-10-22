@@ -168,9 +168,10 @@ fn bits(v: &[f32]) -> Vec<u32> {
     v.iter().map(|f| f.to_bits()).collect()
 }
 
-/// The GPU executor with its temporal denoise on the CPU (#1988): a
-/// parked frame's denoise is held as pixels, so runs on the CPU, and a
-/// run without the cache is held to it bit for bit on the same route.
+/// The GPU executor with its temporal denoise off the chain (#1988): a
+/// parked frame's denoise is held as pixels, so is drawn off the chain
+/// (on the GPU since #2266), and a run without the cache is held to it
+/// bit for bit on the same route.
 /// The chain's own denoise is held to the CPU's by `denoise_on_chain`.
 fn gpu_cpu_denoise() -> GraphExecutor {
     let mut ex = GraphExecutor::new();
@@ -437,11 +438,13 @@ fn a_seed_whose_source_is_held_is_not_graded() {
     assert_eq!(bits(&got), bits(&want), "the chain under the held output read the seed");
 }
 
-/// A parked frame's denoise runs on the CPU, where its output is the
-/// pixels held (#1988); the same frame unparked draws it on the GPU
-/// chain, within a level of the parked picture.
+/// A parked frame's denoise is held as pixels, so it is drawn off the
+/// chain (#1988); since #2266 on the GPU with the chain's kernel, so the
+/// picture is the one the same frame unparked draws on the chain, and
+/// the buffer it was drawn in is the held entry's GPU copy, no upload.
+/// The next step takes it held, the picture unchanged.
 #[test]
-fn a_parked_denoise_runs_on_the_cpu_and_an_unparked_one_on_the_chain() {
+fn a_parked_denoise_draws_the_picture_an_unparked_one_draws() {
     let mut probe = GraphExecutor::new();
     if probe.gpu_pipeline_or_init().is_none() {
         assert!(std::env::var_os("KLIPP_TEST_REQUIRE_GPU").is_none_or(|v| v != "1"), "required, but there is no GPU");
@@ -454,11 +457,15 @@ fn a_parked_denoise_runs_on_the_cpu_and_an_unparked_one_on_the_chain() {
     let mut media = Media { end: 10.0 };
     let (mut parked, mut playing) = (GraphExecutor::new(), GraphExecutor::new());
     let a = run(&mut parked, &g, clip, Some(source(clip)), &mut media, &host, None);
-    assert_eq!(parked.last_denoise_on_chain(), 0, "parked: the CPU");
+    assert_eq!(parked.last_denoise_on_chain(), 0, "parked: off the chain");
     assert_eq!(parked.held_counts().stored, 1, "and held");
+    assert_eq!(parked.held_gpu_len(), 1, "with its GPU copy, from the draw");
     let b = run(&mut playing, &g, clip, None, &mut media, &host, None);
     assert_eq!(playing.last_denoise_on_chain(), 1, "unparked: the chain");
     let srgb8 = |v: f32| (klipp_color::transfer::linear_to_srgb(v.clamp(0.0, 1.0)) * 255.0).round() as i32;
     let off = a.pixels.iter().zip(&b.pixels).map(|(x, y)| (srgb8(*x) - srgb8(*y)).abs()).max().unwrap();
     assert!(off <= 1, "{off} levels between the parked and the unparked picture");
+    let again = run(&mut parked, &g, clip, Some(source(clip)), &mut media, &host, None);
+    assert_eq!(parked.held_counts().hits, 1, "the next step takes it held");
+    assert_eq!(bits(&again.pixels), bits(&a.pixels), "the same picture");
 }
