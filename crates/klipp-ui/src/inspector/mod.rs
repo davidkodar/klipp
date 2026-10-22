@@ -1,5 +1,6 @@
 pub(crate) mod keyframe_selection;
 mod vector_path;
+pub mod key_column;
 mod gradient_editor;
 pub mod letter_picker;
 pub mod tracker_picker;
@@ -76,6 +77,11 @@ pub struct NewInspectorPanel {
     /// When the focus last selected a title track's layer, so it does so
     /// once per focus and the user's own layer pick is kept after.
     pub layer_followed: Option<f64>,
+    /// The Keyframes column (#2305): shown, and how wide, as the layout
+    /// keeps them; and what it shows this frame, for the app to draw.
+    pub key_column: bool,
+    pub key_column_w: f32,
+    pub key_area: Option<key_column::KeyArea>,
     /// The Animated strip opened past its count (#2296).
     animated_open: bool,
 }
@@ -353,6 +359,21 @@ impl NewInspectorPanel {
         // extent and clip the controls at the right edge.  A fixed-width
         // content rail lets rows wrap instead of asking users to resize the
         // panel just to reach a field.
+        // The Keyframes column's switch (#2305), right of the tabs' row.
+        self.key_area = None;
+        if clip_info.is_some() {
+            let fits = ui.available_width() >= key_column::ROWS_MIN_W + key_column::MIN_W;
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let text = egui::RichText::new("\u{25C6} Keyframes").size(10.0);
+                    let toggle = ui.add_enabled(fits, egui::SelectableLabel::new(self.key_column && fits, text));
+                    let toggle = if fits { toggle.on_hover_text("Show each parameter's keys beside it") } else { toggle.on_disabled_hover_text("Widen the Inspector to show each parameter's keys beside it") };
+                    if toggle.clicked() {
+                        self.key_column = !self.key_column;
+                    }
+                });
+            });
+        }
         if let Some((_, clip)) = clip_info {
             crate::param_focus::begin_rows(ui.ctx(), state.param_focus.as_ref(), clip);
         }
@@ -360,7 +381,17 @@ impl NewInspectorPanel {
             .id_salt("inspector_body_scroll")
             .auto_shrink([false, false])
             .show(ui, |ui| {
-            let content_width = ui.available_width();
+            let full = ui.available_width();
+            // The rows keep their room; the column takes the rest of its width.
+            let column_w = if self.key_column && clip_info.is_some() && full >= key_column::ROWS_MIN_W + key_column::MIN_W {
+                self.key_column_w.clamp(key_column::MIN_W, full - key_column::ROWS_MIN_W)
+            } else {
+                0.0
+            };
+            let content_width = full - column_w;
+            let top = ui.cursor().min;
+            ui.set_width(full);
+            let rows_drawn = ui.allocate_ui_with_layout(egui::vec2(content_width, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
             ui.set_width(content_width);
             ui.add_space(10.0);
             match active_tab {
@@ -552,6 +583,19 @@ impl NewInspectorPanel {
                         info_tab::show_no_selection(ui, state, theme, &mut cmds);
                     }
                 }
+            }
+            });
+            // The Keyframes column beside the rows (#2305), and the edge
+            // that sets its width.
+            if let (true, Some((_, clip))) = (column_w > 0.0, clip_info) {
+                let seen = ui.clip_rect();
+                let column = egui::Rect::from_x_y_ranges(top.x + content_width..=top.x + full, seen.min.y.max(top.y)..=seen.max.y.min(rows_drawn.response.rect.max.y));
+                let edge = egui::Rect::from_x_y_ranges(column.min.x - 3.0..=column.min.x + 3.0, column.y_range());
+                let grip = ui.interact(edge, ui.id().with("key_column_edge"), egui::Sense::drag()).on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+                if grip.dragged() {
+                    self.key_column_w = (self.key_column_w - grip.drag_delta().x).clamp(key_column::MIN_W, (full - key_column::ROWS_MIN_W).max(key_column::MIN_W));
+                }
+                self.key_area = Some(key_column::KeyArea { clip_id: clip.id, column, rows: crate::param_focus::take_rows(ui.ctx()) });
             }
         });
 
@@ -9025,6 +9069,11 @@ mod fits_its_column_tests {
     /// The right-most point drawn by one frame of the Inspector in a
     /// column `width` wide, on `tab`, with `clip` selected.
     fn rightmost(width: f32, clip: klipp_timeline::Clip, tab: InspectorTab) -> (f32, f32, Vec<String>) {
+        rightmost_with(width, clip, tab, false)
+    }
+
+    /// [`rightmost`], with the Keyframes column switched on or off (#2305).
+    fn rightmost_with(width: f32, clip: klipp_timeline::Clip, tab: InspectorTab, keys: bool) -> (f32, f32, Vec<String>) {
         let mut state = AppState::default();
         let v = state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
         state.selected_clip = Some(clip.id);
@@ -9032,7 +9081,7 @@ mod fits_its_column_tests {
         let prefs = crate::prefs::Preferences::default();
         let ctx = egui::Context::default();
         crate::icons::install(&ctx);
-        let mut panel = NewInspectorPanel::default();
+        let mut panel = NewInspectorPanel { key_column: keys, key_column_w: 150.0, ..Default::default() };
         let mut right = 0.0_f32;
         let mut edge = 0.0_f32;
         let mut over = Vec::new();
@@ -9087,6 +9136,9 @@ mod fits_its_column_tests {
                 assert!(right <= edge + 1.0, "an animated title's {tab:?} tab at {width}: drawn to {right}, the column ends at {edge}: {over:#?}");
             }
             for tab in [InspectorTab::Video, InspectorTab::Audio, InspectorTab::Effects] {
+                // With the Keyframes column on, it fits or stands aside.
+                let (right, edge, over) = rightmost_with(width, animated.clone(), tab, true);
+                assert!(right <= edge + 1.0, "an animated clip's {tab:?} tab with its keys at {width}: drawn to {right}, the column ends at {edge}: {over:#?}");
                 let (right, edge, over) = rightmost(width, animated.clone(), tab);
                 assert!(right <= edge + 1.0, "an animated clip's {tab:?} tab at {width}: drawn to {right}, the column ends at {edge}: {over:#?}");
             }

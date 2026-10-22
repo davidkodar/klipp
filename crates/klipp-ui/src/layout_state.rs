@@ -53,6 +53,11 @@ pub struct LayoutState {
     pub timeline_height: f32,
     pub active_browser_tab: BrowserTab,
     pub active_inspector_tab: InspectorTab,
+    /// The Inspector's Keyframes column (#2305): shown, and how wide.
+    #[serde(default)]
+    pub inspector_keys: bool,
+    #[serde(default = "default_inspector_keys_w")]
+    pub inspector_keys_w: f32,
     pub active_tool: EditTool,
     pub skimming_enabled: bool,
     /// Two viewers side by side, or one.
@@ -118,6 +123,10 @@ fn default_color_panel_height() -> f32 { 200.0 }
 fn default_color_viewer_ratio() -> f32 { 0.66 }
 fn default_color_inspector_width() -> f32 { 300.0 }
 
+fn default_inspector_keys_w() -> f32 {
+    150.0
+}
+
 impl Default for LayoutState {
     fn default() -> Self {
         Self {
@@ -126,6 +135,8 @@ impl Default for LayoutState {
             timeline_height: TIMELINE_H_UNSET,
             active_browser_tab: BrowserTab::Media,
             active_inspector_tab: InspectorTab::Video,
+            inspector_keys: false,
+            inspector_keys_w: default_inspector_keys_w(),
             active_tool: EditTool::Select,
             skimming_enabled: true,
             dual_viewers: true,

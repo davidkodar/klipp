@@ -85,6 +85,9 @@ fn request_id() -> egui::Id {
 fn scrolled_id() -> egui::Id {
     egui::Id::new("param_focus::scrolled")
 }
+fn rows_id() -> egui::Id {
+    egui::Id::new("param_focus::rows")
+}
 
 /// A placement or opacity lane as the clip's placement node holds it, so
 /// a row drawn by path and the Video tab's row are one parameter.
@@ -118,7 +121,18 @@ pub fn begin_rows(ctx: &egui::Context, focus: Option<&ParamFocus>, clip: &Clip) 
         d.insert_temp(view_id(), View { focus, placement, held });
         d.remove::<Tag>(tag_id());
         d.remove::<KeyframeParamKind>(request_id());
+        d.insert_temp(rows_id(), Vec::<(KeyframeParamKind, egui::Rect)>::new());
     });
+}
+
+/// Each tagged row drawn since [`begin_rows`], with where: the rows the
+/// Inspector's Keyframes column lines its strips up with (#2305).
+pub fn take_rows(ctx: &egui::Context) -> Vec<(KeyframeParamKind, egui::Rect)> {
+    ctx.data_mut(|d| {
+        let rows = d.get_temp::<Vec<(KeyframeParamKind, egui::Rect)>>(rows_id()).unwrap_or_default();
+        d.remove::<Vec<(KeyframeParamKind, egui::Rect)>>(rows_id());
+        rows
+    })
 }
 
 /// The next row drawn is `clip`'s `kind`: it lights while that is in
@@ -162,6 +176,13 @@ pub(crate) fn take_tag(ui: &egui::Ui) -> Option<Tag> {
 /// for [`FLASH_SECS`] after its parameter came into focus, and scrolled
 /// into view once.
 pub(crate) fn row_drawn(ui: &egui::Ui, tag: &Tag, rect: egui::Rect, clicked: bool) {
+    // Noted for the Keyframes column, while the Inspector is drawing rows.
+    ui.ctx().data_mut(|d| {
+        if let Some(mut rows) = d.get_temp::<Vec<(KeyframeParamKind, egui::Rect)>>(rows_id()) {
+            rows.push((tag.kind.clone(), rect));
+            d.insert_temp(rows_id(), rows);
+        }
+    });
     let Some(view) = ui.ctx().data(|d| d.get_temp::<View>(view_id())) else { return };
     if clicked {
         ui.ctx().data_mut(|d| d.insert_temp(request_id(), tag.kind.clone()));
@@ -354,7 +375,7 @@ mod tests {
         let clip = TestClip::of(Clip::media(klipp_core::MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0)))
             .lane("opacity", 1.0, 0.5).lane("pos_x", 1.0, 10.0).lane("pos_y", 1.0, 10.0).lane("scale", 1.0, 1.5).lane("rotation", 1.0, 30.0).build();
         let mut s = Shown::new(clip, InspectorTab::Video);
-        let chips = |s: &mut Shown| s.frame(Vec::new()).into_iter().filter(|(t, _)| t.starts_with("\u{25C6} ") && !t.ends_with(" animated")).count();
+        let chips = |s: &mut Shown| s.frame(Vec::new()).into_iter().filter(|(t, _)| t.starts_with("\u{25C6} ") && !t.ends_with(" animated") && t != "\u{25C6} Keyframes").count();
         assert_eq!(chips(&mut s), 0, "folded");
         s.click("\u{25C6} 5 animated");
         assert_eq!(chips(&mut s), 5);
