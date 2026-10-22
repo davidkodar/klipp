@@ -896,6 +896,8 @@ fn fit_limited(
             // (a peak between samples the limiter leaves alone, or one the
             // codec rings up), the loudness short by that.
             let pad = LIMITER_OVERSHOOT_PAD_DB + if coded.is_some() { CODEC_OVERSHOOT_PAD_DB } else { 0.0 };
+            // The ceiling held this step, not the extra-gain limit.
+            held_by_extra = false;
             if mixed <= 0.0 {
                 codec_overs += 1;
             }
@@ -925,9 +927,11 @@ fn fit_limited(
                 margin_db = (margin_db - room).max(LIMITER_CEILING_MARGIN_DB);
             }
         }
-        // Held where the last trial was: running it again measures the
-        // same, so the fit is as near as it gets.
-        if tried.last().is_some_and(|t| (t.gain_db - gain_db).abs() < 1e-3 && (t.margin_db - margin_db).abs() < 1e-3) {
+        // Back where a trial was: one under the ceiling would measure the
+        // same, so the fit is as near as it gets. One over may have been
+        // the codec's noise and is measured once more, never a third time.
+        let before: Vec<&Tried> = tried.iter().filter(|t| (t.gain_db - gain_db).abs() < 1e-3 && (t.margin_db - margin_db).abs() < 1e-3).collect();
+        if before.iter().any(|t| t.over <= 0.0) || before.len() >= 2 {
             break;
         }
     }
