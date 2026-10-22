@@ -687,15 +687,11 @@ impl KlippApp {
                     true
                 }
                 AppCommand::SetClipRole { clip_id, role } => {
-                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                        if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            clip.role = *role;
-                            // A role chosen by hand wins over the sound's (#2216).
-                            clip.role_source = klipp_core::RoleSource::ByHand;
-                            break;
-                        }
+                    // One undo step, and a role chosen by hand wins over the
+                    // sound's (#2216, #2229).
+                    if let Some(edit) = super::audio_roles::hand_role_edit(self.state.sequence(), *clip_id, *role) {
+                        self.apply_edits_as_one(&[edit], "Set Clip Role");
                     }
-                    self.state.dirty = true;
                     true
                 }
                 // Speed keyframes, audio/video/effect keyframes, keyframe drag,
