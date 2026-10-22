@@ -482,6 +482,10 @@ impl TitleRenderer {
         let changes = (linked && !(still_link && translates)) || raster_animator || stagger_blur || tb.gradient.as_ref().is_some_and(|g| g.has_keyframes())
             || !o.transform.size_x_keyframes.is_empty()
             || !o.transform.size_y_keyframes.is_empty()
+            // A keyed position lays the text out afresh where it is now,
+            // as the CPU raster does (#2335).
+            || !o.transform.center_x_keyframes.is_empty()
+            || !o.transform.center_y_keyframes.is_empty()
             || !tb.font_size_keyframes.is_empty()
             || !tb.color_keyframes.is_empty()
             || !tb.line_spacing_keyframes.is_empty()
