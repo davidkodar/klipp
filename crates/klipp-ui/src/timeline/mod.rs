@@ -971,6 +971,33 @@ mod menu_smoke_tests {
         assert!(menu.iter().any(|t| t == "Snap targets"), "the ruler's menu opens: {menu:?}");
     }
 
+    /// Squeezed by Fit, each track's header sits in its own lane's row,
+    /// down to the last sound track: a header kept at its authored height
+    /// drifted below its lane and pushed the last tracks out of reach.
+    #[test]
+    fn headers_stay_on_their_lanes_when_fit_squeezes_the_stack() {
+        let mut timeline = Timeline::new();
+        for i in 0..6 {
+            timeline.state.sequences[0].tracks.push(klipp_timeline::Track::new(&format!("Pic{i}"), TrackKind::Video));
+        }
+        for i in 0..4 {
+            timeline.state.sequences[0].tracks.push(klipp_timeline::Track::new(&format!("Snd{i}"), TrackKind::Audio));
+        }
+        timeline.state.timeline_track_scale = 0.5;
+        timeline.state.timeline_scroll_y = 0.0;
+        timeline.frame(Vec::new());
+        let drawn = timeline.frame(Vec::new());
+        let lanes = timeline.old.frame_cache.track_rects.clone();
+        assert!(!lanes.is_empty(), "lanes drawn");
+        for (idx, _, lane) in &lanes {
+            let name = timeline.state.sequences[0].tracks[*idx].name.clone();
+            let at = drawn.iter().find(|(t, _)| *t == name).unwrap_or_else(|| panic!("{name}'s header drawn"));
+            assert!(lane.y_range().contains(at.1.y), "{name}'s header at {} is off its lane {:?}", at.1.y, lane.y_range());
+        }
+        let last = timeline.state.sequences[0].tracks.last().unwrap().name.clone();
+        assert!(drawn.iter().any(|(t, p)| *t == last && p.y < timeline.height), "the last track's header on screen");
+    }
+
     #[test]
     fn a_clips_menu_has_its_items() {
         let mut timeline = Timeline::new();

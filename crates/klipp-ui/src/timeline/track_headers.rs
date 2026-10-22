@@ -5,6 +5,10 @@ use crate::widgets::tooltip::styled_tooltip;
 use klipp_core::AppCommand;
 use klipp_timeline::TrackKind;
 
+/// The shortest header row that has room for a video track's opacity bar
+/// under its name.
+const OPACITY_BAR_MIN_ROW: f32 = 40.0;
+
 /// Render the 110px track header column: ruler spacer + per-track headers.
 pub fn show(
     ui: &mut egui::Ui,
@@ -72,11 +76,18 @@ pub fn show(
     let track_count = state.sequence().tracks.len();
     for track_idx in 0..track_count {
         let track = &state.sequences[state.active_sequence_idx].tracks[track_idx];
-        let track_h = crate::panels::timeline::effective_track_height(track);
+        // The rows as the clip area stacks them: squeezed by Fit's scale,
+        // the automation lane under the clips counted in. A header at the
+        // authored height drifted below its lane, and the last tracks fell
+        // off the bottom where nothing could scroll to them.
+        let scale = state.timeline_track_scale;
+        let authored_h = crate::panels::timeline::effective_track_height(track);
+        let track_h = crate::panels::timeline::scaled_track_height(track, scale);
+        let row_h = crate::panels::timeline::scaled_track_row_height(track, scale);
 
         // Vertical visibility culling — skip rows above/below the visible header strip.
-        if y + track_h < visible_top {
-            y += track_h;
+        if y + row_h < visible_top {
+            y += row_h;
             continue;
         }
         if y > visible_bottom {
@@ -282,8 +293,9 @@ pub fn show(
             );
         }
 
-        // Track opacity slider (video tracks only) — horizontal bar at bottom of header
-        if track.kind == TrackKind::Video {
+        // Track opacity slider (video tracks only) — horizontal bar at bottom
+        // of header, where a squeezed row has room for it beside the name.
+        if track.kind == TrackKind::Video && track_h >= OPACITY_BAR_MIN_ROW {
             let opacity_pct = (track.opacity * 100.0) as u32;
             let slider_h = 12.0;
             let slider_rect = egui::Rect::from_min_size(
@@ -804,7 +816,7 @@ pub fn show(
             state.timeline_resizing_track = Some((
                 track_idx,
                 handle_resp.interact_pointer_pos().map_or(0.0, |p| p.y),
-                track_h,
+                authored_h,
             ));
         }
 
@@ -814,7 +826,8 @@ pub fn show(
             if let Some((ridx, start_y, orig_h)) = state.timeline_resizing_track {
                 if ridx == track_idx {
                     if let Some(pos) = handle_resp.interact_pointer_pos() {
-                        let delta = pos.y - start_y;
+                        // On screen a squeezed row moves less than its height.
+                        let delta = (pos.y - start_y) / scale.clamp(0.1, 1.0);
                         let new_h = (orig_h + delta).clamp(32.0, 300.0);
                         state.sequence_mut().tracks[track_idx].custom_height = Some(new_h);
                         state.dirty = true;
@@ -834,7 +847,7 @@ pub fn show(
         // Double-click — collapse/expand toggle with height memory
         if handle_resp.double_clicked() {
             let min_h = 32.0;
-            let new_h = if track_h <= min_h + 2.0 {
+            let new_h = if authored_h <= min_h + 2.0 {
                 // Expand — restore pre-collapse height or default by kind
                 state
                     .timeline_track_pre_collapse
@@ -848,7 +861,7 @@ pub fn show(
                     })
             } else {
                 // Collapse — save current height first
-                state.timeline_track_pre_collapse.insert(track_idx, track_h);
+                state.timeline_track_pre_collapse.insert(track_idx, authored_h);
                 min_h
             };
             cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: Some(new_h) });
@@ -879,7 +892,13 @@ pub fn show(
             }
         });
 
-        y += track_h;
+        // The automation lane's part of the row, under the header.
+        if row_h > track_h + 0.5 {
+            let lane = egui::Rect::from_min_max(egui::pos2(header_rect.min.x, y + track_h), egui::pos2(header_rect.max.x, y + row_h));
+            ui.painter().rect_filled(lane, 0.0, theme.bg_deep);
+            ui.painter().hline(lane.x_range(), lane.max.y, egui::Stroke::new(1.0_f32, theme.border));
+        }
+        y += row_h;
     }
 
     // ── Empty area below tracks: right-click to add track ──
