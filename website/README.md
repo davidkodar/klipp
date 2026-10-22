@@ -1,6 +1,6 @@
 # Klipp homepage
 
-The existing homepage is ready to assemble for GitHub Pages, but publication is disabled. The repository remains private. No workflow deploys a site or changes repository visibility.
+The homepage is ready to assemble for GitHub Pages. The repository is public; the site is not deployed yet, and no workflow deploys it.
 
 ## Preview
 
