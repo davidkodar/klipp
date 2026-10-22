@@ -1491,6 +1491,11 @@ pub struct AppState {
     /// revision (advanced by every recorded edit, undo and redo) and the
     /// render queue's jobs. Shared with `klipp_control` by the app.
     pub control_shared: std::sync::Arc<klipp_core::ControlShared>,
+    /// The project's other sequences, published for the control socket's
+    /// `edit_from_selects` (#2385), and which sequences, with which open,
+    /// they were published for.
+    pub control_others: klipp_document::ops::SharedSelects,
+    pub control_others_for: Option<(Vec<klipp_core::SequenceId>, usize)>,
     /// Mirrors the `editing.undo_limit` pref so newly-created sequences
     /// can be initialised with the same per-sequence cap. Updated
     /// alongside `set_max_size` calls on existing histories.
@@ -4541,6 +4546,8 @@ impl Default for AppState {
             history_ops_since_save: 0,
             tracks_undo_gesture: None,
             control_shared: std::sync::Arc::new(klipp_core::ControlShared::default()),
+            control_others: Default::default(),
+            control_others_for: None,
             history_max_size: 1000,
             viewer_inspector_split: 0.6,
             upper_timeline_split: 0.65,

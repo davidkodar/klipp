@@ -517,6 +517,7 @@ fn main() -> Result<()> {
     // engine's channel. The UI drains this inbox every frame.
     let (control_tx, control_rx) = crossbeam_channel::unbounded::<klipp_document::control::ControlEnvelope>();
     let control_shared = std::sync::Arc::new(klipp_core::ControlShared::default());
+    let control_others = klipp_document::ops::SharedSelects::default();
     let repaint_ctx_for_control = std::sync::Arc::clone(&repaint_ctx);
     // Built whether or not the socket starts: the Colour Check window's
     // tools answer through it in this process too (#897).
@@ -529,6 +530,7 @@ fn main() -> Result<()> {
             }
         }),
         sequence: sequence.clone(),
+        others: control_others.clone(),
         media_pool: media_pool.clone(),
         frame_buffer: frame_buffer.clone(),
         perf_ring: perf_ring.clone(),
@@ -616,6 +618,7 @@ fn main() -> Result<()> {
             );
             app.set_control_inbox(control_rx);
             app.set_control_shared(control_shared);
+            app.set_control_others(control_others);
             app.set_local_control(std::sync::Arc::new(move |request| klipp_control::respond_local(&control_ctx, request)));
             Ok(Box::new(app))
         }),

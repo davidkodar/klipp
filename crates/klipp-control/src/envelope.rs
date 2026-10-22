@@ -349,7 +349,7 @@ pub(crate) fn send_full_envelope_for_project(
     expected_project_identity: Option<u64>,
     label: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    send_with_reply(ctx, commands, edits, batch, EnvelopeReply { expected_revision, expected_project_identity, label, source_indices: None })
+    send_with_reply(ctx, commands, edits, batch, EnvelopeReply { expected_revision, expected_project_identity, label, source_indices: None, expected_sources: Vec::new() })
 }
 
 pub(crate) struct EnvelopeReply {
@@ -357,6 +357,8 @@ pub(crate) struct EnvelopeReply {
     pub expected_project_identity: Option<u64>,
     pub label: Option<String>,
     pub source_indices: Option<Vec<usize>>,
+    /// The other sequences the edits copied from, as read (#2385).
+    pub expected_sources: Vec<(klipp_core::SequenceId, u64)>,
 }
 
 pub(crate) fn send_with_reply(
@@ -366,7 +368,7 @@ pub(crate) fn send_with_reply(
     batch: bool,
     reply: EnvelopeReply,
 ) -> Result<serde_json::Value, String> {
-    let EnvelopeReply { expected_revision, expected_project_identity, label, source_indices } = reply;
+    let EnvelopeReply { expected_revision, expected_project_identity, label, source_indices, expected_sources } = reply;
     // Read the generation *before* queueing, so any frame rendered in
     // response to this command is guaranteed to be newer than it.
     let generation = ctx
@@ -385,7 +387,7 @@ pub(crate) fn send_with_reply(
     };
     let operation_id = operations::queued(background_job);
     ctx.commands
-        .send(ControlEnvelope { commands, edits, batch, expected_revision, expected_project_identity, label, ack: Some(tx) })
+        .send(ControlEnvelope { commands, edits, batch, expected_revision, expected_project_identity, expected_sources, label, ack: Some(tx) })
         .map_err(|e| {
             operations::finished(&operation_id, ctx.shared.revision(), Some("app command channel closed".into()));
             format!("app command channel closed: {e}")

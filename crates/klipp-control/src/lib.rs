@@ -82,6 +82,9 @@ pub struct ControlContext {
     /// mouse next moved.
     pub wake_ui: std::sync::Arc<dyn Fn() + Send + Sync>,
     pub sequence: Arc<klipp_timeline::SharedSequence>,
+    /// The project's other sequences, published by the UI, which
+    /// `edit_from_selects` copies from (#2385).
+    pub others: klipp_document::ops::SharedSelects,
     pub media_pool: Arc<RwLock<klipp_media::MediaPool>>,
     pub frame_buffer: Arc<Mutex<klipp_engine::FrameBuffer>>,
     pub perf_ring: klipp_engine::perf::SharedPerfRing,

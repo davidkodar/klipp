@@ -1825,6 +1825,22 @@ pub enum Op {
         #[serde(default)]
         samples: Option<u8>,
     },
+    /// What lies from `from_secs` to `to_secs` in another sequence of the
+    /// project, `from` by its id or name, put into this one at `at` (its
+    /// In point when left out) as the app's Insert and Overwrite from
+    /// Selects do (#2385): every track cut and moved along, or over what
+    /// is there with `overwrite`. One undo step. Only `apply` sees the
+    /// other sequences, and the edit is refused if the one copied from
+    /// changed before it lands.
+    EditFromSelects {
+        from: String,
+        from_secs: f64,
+        to_secs: f64,
+        #[serde(default)]
+        at: Option<Anchor>,
+        #[serde(default)]
+        overwrite: bool,
+    },
     /// A strobe (#988): `clip_id`, or the stretch of it from `from` to
     /// `to`, cut into pieces `piece_frames` long, and of every `on` pieces
     /// kept the next `off` removed, so the shot flickers on and off. The
@@ -1914,7 +1930,7 @@ pub const OP_NAMES: &[&str] = &[
     "slip", "slide", "pin", "role", "match", "matte", "format", "stabilize", "reframe", "zoom", "pan", "follow", "refit", "highlight",
     "ramp", "grade_group", "remove_grade_group", "look", "qualify", "zones", "retime", "replace", "track_audio", "clean_audio",
     "transition", "style", "title", "compose", "camera", "crop", "generator", "depth", "label", "motion_blur",
-    "strobe", "set_length", "over_edits", "template",
+    "strobe", "set_length", "over_edits", "template", "edit_from_selects",
 ];
 
 pub use klipp_timeline::ShadowSpec;
@@ -2657,6 +2673,9 @@ pub struct Plan {
     /// Where the last picture ends; the timeline is as long as its
     /// longest track, which may be sound or captions.
     pub picture_end_secs: f64,
+    /// The other sequences the plan copied from, each with the content
+    /// revision it read (#2385): the plan is good only while they stand.
+    pub sources: Vec<(klipp_core::SequenceId, u64)>,
 }
 
 impl Plan {
@@ -3033,6 +3052,33 @@ pub fn resolve(seq: &Sequence, pool: &MediaPool, ops: &[Op]) -> Result<Plan, Ref
 
 /// [`resolve`], with the transcripts `captions` reads.
 pub fn resolve_with(seq: &Sequence, pool: &MediaPool, ops: &[Op], transcripts: &dyn Transcripts) -> Result<Plan, Refusal> {
+    resolve_in(seq, &[], pool, ops, transcripts)
+}
+
+/// Another sequence of the project as a plan may copy from it (#2385):
+/// its content and the revision it was read at
+/// ([`crate::clipboard::content_revision`]).
+#[derive(Debug, Clone)]
+pub struct Selects {
+    pub sequence: std::sync::Arc<Sequence>,
+    pub content: u64,
+}
+
+/// The project's other sequences as the UI last published them, for the
+/// control socket to plan `edit_from_selects` against (#2385).
+pub type SharedSelects = std::sync::Arc<std::sync::RwLock<Vec<Selects>>>;
+
+/// The other sequences a plan may copy from, and those it did.
+#[derive(Default)]
+struct SelectsCarry<'a> {
+    others: &'a [Selects],
+    read: Vec<(klipp_core::SequenceId, u64)>,
+}
+
+/// [`resolve_with`], seeing the project's `others` sequences, which
+/// `edit_from_selects` copies from (#2385); the plan names those it read.
+pub fn resolve_in(seq: &Sequence, others: &[Selects], pool: &MediaPool, ops: &[Op], transcripts: &dyn Transcripts) -> Result<Plan, Refusal> {
+    let mut selects = SelectsCarry { others, read: Vec::new() };
     let mut sims = vec![seq.clone()];
     let mut sim_pool = pool.clone();
     let mut sim_fps = seq.fps;
@@ -3045,7 +3091,7 @@ pub fn resolve_with(seq: &Sequence, pool: &MediaPool, ops: &[Op], transcripts: &
         let op = &bound;
         // The rate as the plan stands at this step: a place that set an
         // empty sequence's format changed it for every step after.
-        let (what, edit, touched) = resolve_one(sim, &sim_pool, sim.fps, op, i, transcripts, &mut carry)?;
+        let (what, edit, touched) = resolve_one(sim, &sim_pool, sim.fps, op, i, transcripts, &mut carry, &mut selects)?;
         made.push(touched.first().copied());
         let (clips_before, tracks_before) = contents(&sims[0]);
         let mut view = crate::apply::DocumentView { sequences: &mut sims, active: 0, media_pool: &mut sim_pool, fps: &mut sim_fps };
@@ -3057,7 +3103,7 @@ pub fn resolve_with(seq: &Sequence, pool: &MediaPool, ops: &[Op], transcripts: &
     }
     let picture_end_secs = sims[0].tracks.iter().filter(|t| t.kind == TrackKind::Video).flat_map(|t| t.clips.iter()).map(|c| secs(c.timeline_out)).fold(0.0, f64::max);
     let track_ids = sims[0].tracks.iter().map(|t| t.id).collect();
-    Ok(Plan { steps, track_ids, duration_secs: secs(sims[0].total_duration()), picture_end_secs })
+    Ok(Plan { steps, track_ids, duration_secs: secs(sims[0].total_duration()), picture_end_secs, sources: selects.read })
 }
 
 /// [`resolve_with`] for ops that stand on their own — a sweep of cuts,
@@ -3075,7 +3121,7 @@ pub fn resolve_each_with(seq: &Sequence, pool: &MediaPool, ops: &[Op], transcrip
     let mut made: Vec<Option<ClipId>> = Vec::with_capacity(ops.len());
     for (i, op) in ops.iter().enumerate() {
         let sim = &sims[0];
-        let resolved = bind_step_refs(op, i, &made).and_then(|op| resolve_one(sim, &sim_pool, sim.fps, &op, i, transcripts, &mut carry));
+        let resolved = bind_step_refs(op, i, &made).and_then(|op| resolve_one(sim, &sim_pool, sim.fps, &op, i, transcripts, &mut carry, &mut SelectsCarry::default()));
         let (what, edit, touched) = match resolved {
             Ok(resolved) => resolved,
             Err(r) => {
@@ -3095,7 +3141,7 @@ pub fn resolve_each_with(seq: &Sequence, pool: &MediaPool, ops: &[Op], transcrip
     }
     let picture_end_secs = sims[0].tracks.iter().filter(|t| t.kind == TrackKind::Video).flat_map(|t| t.clips.iter()).map(|c| secs(c.timeline_out)).fold(0.0, f64::max);
     let track_ids = sims[0].tracks.iter().map(|t| t.id).collect();
-    (Plan { steps, track_ids, duration_secs: secs(sims[0].total_duration()), picture_end_secs }, refused)
+    (Plan { steps, track_ids, duration_secs: secs(sims[0].total_duration()), picture_end_secs, sources: Vec::new() }, refused)
 }
 
 /// The clips and tracks a timeline holds, by id: what a step finds
@@ -3112,8 +3158,10 @@ fn contents(seq: &Sequence) -> (std::collections::HashSet<ClipId>, Vec<klipp_cor
 #[derive(Default)]
 struct PlaceCarry(std::collections::HashMap<usize, (i64, f64)>);
 
-fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, transcripts: &dyn Transcripts, carry: &mut PlaceCarry) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+#[allow(clippy::too_many_arguments)]
+fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, transcripts: &dyn Transcripts, carry: &mut PlaceCarry, selects: &mut SelectsCarry) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     match op {
+        Op::EditFromSelects { from, from_secs, to_secs, at, overwrite } => edit_from_selects(seq, fps, i, selects, from, *from_secs, *to_secs, at.as_ref(), *overwrite),
         Op::Strobe { clip_id, piece_frames, from, to, on, off, ripple } => {
             let (ops, what) = strobe_ops(seq, fps, i, clip_id, *piece_frames, from.as_ref(), to.as_ref(), *on, *off, *ripple)?;
             as_one_step(seq, pool, i, transcripts, &ops, "Strobe", what)
@@ -10727,6 +10775,64 @@ fn as_one_step(seq: &Sequence, pool: &MediaPool, i: usize, transcripts: &dyn Tra
     Ok((what, EditCommand::Named { label: label.to_string(), edit: Box::new(EditCommand::Batch(edits)) }, touched))
 }
 
+/// [`Op::EditFromSelects`]: the range copied from the other sequence and
+/// pasted here as the app pastes it, one step; the sequence and the
+/// revision it was read at noted, so the edit lands only on it as read.
+#[allow(clippy::too_many_arguments)]
+fn edit_from_selects(seq: &Sequence, fps: Fps, i: usize, selects: &mut SelectsCarry, from: &str, from_secs: f64, to_secs: f64, at: Option<&Anchor>, overwrite: bool) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    let named = |s: &Sequence| s.id.to_string() == from.trim() || s.name.trim().eq_ignore_ascii_case(from.trim());
+    if named(seq) {
+        return Err(refuse(i, "the selects and the cut are the same sequence", "name another sequence as from"));
+    }
+    let Some(source) = selects.others.iter().find(|s| named(&s.sequence)) else {
+        return Err(if selects.others.is_empty() {
+            refuse(i, "the project's other sequences aren't seen here", "send edit_from_selects with apply")
+        } else {
+            refuse(i, format!("no other sequence is {from:?}"), "name one by its id or name, as status lists them")
+        });
+    };
+    if !(from_secs >= 0.0 && to_secs > from_secs && to_secs.is_finite()) {
+        return Err(refuse(i, format!("{from_secs}-{to_secs} s is not a range"), "give from_secs before to_secs, at or after 0"));
+    }
+    let rate = source.sequence.fps.rate();
+    let range = (Timecode::from_secs_f64(from_secs, rate), Timecode::from_secs_f64(to_secs, rate));
+    let Some(copied) = crate::clipboard::copy_range(&source.sequence, range.0, range.1) else {
+        return Err(refuse(i, format!("nothing in \"{}\" from {from_secs:.2} to {to_secs:.2} s", source.sequence.name), "give a range with clips in it"));
+    };
+    let at = match at {
+        Some(a) => resolve_anchor(seq, fps, a, i)?,
+        None => seq.in_point.ok_or_else(|| refuse(i, "no at, and the sequence has no In point", "give at"))?,
+    };
+    let (mode, label) = if overwrite {
+        (crate::clipboard::PasteMode::Overwrite, "Overwrite from Selects")
+    } else {
+        (crate::clipboard::PasteMode::Insert, "Insert from Selects")
+    };
+    let pasted = crate::clipboard::paste(seq, &copied, at, mode);
+    if pasted.no_room {
+        return Err(refuse(i, "no room could be opened there (is a track locked?)", "unlock the tracks, or overwrite"));
+    }
+    if pasted.ids.is_empty() {
+        return Err(refuse(i, "no track here of the clips' kind", "add a track of that kind first"));
+    }
+    let mut edits = crate::clipboard::track_edits(seq, &pasted.sequence, &pasted.touched, label);
+    if pasted.sequence.node_labels != seq.node_labels {
+        edits.push(EditCommand::SetNodeLabels { old: seq.node_labels.clone(), new: pasted.sequence.node_labels.clone() });
+    }
+    if !selects.read.iter().any(|(id, _)| *id == source.sequence.id) {
+        selects.read.push((source.sequence.id, source.content));
+    }
+    let what = format!(
+        "{} {} clip{} from \"{}\" ({from_secs:.2}-{to_secs:.2} s) at {:.2} s",
+        if overwrite { "overwrote" } else { "inserted" },
+        pasted.ids.len(),
+        if pasted.ids.len() == 1 { "" } else { "s" },
+        source.sequence.name,
+        secs(at),
+    );
+    Ok((what, EditCommand::Named { label: label.to_string(), edit: Box::new(EditCommand::Batch(edits)) }, pasted.ids))
+}
+
 /// The splits and removes of a strobe (#988), and what it does in words.
 #[allow(clippy::too_many_arguments)]
 fn strobe_ops(seq: &Sequence, fps: Fps, i: usize, clip_ref: &ClipRef, piece: i64, from: Option<&Anchor>, to: Option<&Anchor>, on: u32, off: u32, ripple: bool) -> Result<(Vec<Op>, String), Refusal> {
@@ -16287,6 +16393,43 @@ mod edit_helper_tests {
         let mut s: Vec<(i64, i64)> = seq.tracks[track].clips.iter().filter(|c| !c.kind.is_gap()).map(|c| (frames(c.timeline_in), frames(c.timeline_out))).collect();
         s.sort_unstable();
         s
+    }
+
+    /// #2385: `edit_from_selects` puts another sequence's range in as the
+    /// app's Insert and Overwrite from Selects do, as one undo step, and
+    /// names the sequence and the content it read. Refused where the other
+    /// sequences aren't seen, from the same sequence, for a range that
+    /// isn't one, and where the range holds nothing.
+    #[test]
+    fn edit_from_selects_puts_another_sequences_range_in_as_the_app_does() {
+        let (cut, pool, _) = timeline(&[(0, 50), (50, 100)]);
+        let (mut selects, _, _) = timeline(&[(0, 100)]);
+        selects.id = klipp_core::SequenceId::new();
+        selects.name = "Selects".into();
+        let content = crate::clipboard::content_revision(&selects);
+        let others = [Selects { sequence: std::sync::Arc::new(selects.clone()), content }];
+        let op = |from: &str, a: f64, b: f64, overwrite| Op::EditFromSelects { from: from.into(), from_secs: a, to_secs: b, at: Some(Anchor::Secs(1.0)), overwrite };
+        let all = |seq: &Sequence| (0..seq.tracks.len()).map(|t| spans(seq, t)).collect::<Vec<_>>();
+        for (overwrite, mode, label) in [(false, crate::clipboard::PasteMode::Insert, "Insert from Selects"), (true, crate::clipboard::PasteMode::Overwrite, "Overwrite from Selects")] {
+            let plan = resolve_in(&cut, &others, &pool, &[op("selects", 1.0, 2.0, overwrite)], &NoTranscripts).unwrap_or_else(|r| panic!("{r}"));
+            assert_eq!(plan.sources, vec![(selects.id, content)], "the source and what it held");
+            assert_eq!((plan.steps.len(), plan.steps[0].edit.label()), (1, label));
+            let (mut seqs, mut p, mut fps) = (vec![cut.clone()], pool.clone(), cut.fps);
+            view(&mut seqs, &mut p, &mut fps).apply_forward(&plan.steps[0].edit);
+            // What the app's own paste of that range makes.
+            let copied = crate::clipboard::copy_range(&selects, tc(25), tc(50)).unwrap();
+            let app = crate::clipboard::paste(&cut, &copied, tc(25), mode);
+            assert_eq!(all(&seqs[0]), all(&app.sequence), "{label}");
+            view(&mut seqs, &mut p, &mut fps).apply_inverse(&plan.steps[0].edit);
+            assert_eq!(all(&seqs[0]), all(&cut), "one undo puts it back");
+        }
+        let refused = |others: &[Selects], op: Op| resolve_in(&cut, others, &pool, &[op], &NoTranscripts).unwrap_err().why;
+        assert!(refused(&[], op("Selects", 1.0, 2.0, false)).contains("aren't seen"));
+        assert!(refused(&others, op(&cut.name, 1.0, 2.0, false)).contains("same sequence"));
+        assert!(refused(&others, op("Selects", 2.0, 1.0, false)).contains("not a range"));
+        assert!(refused(&others, op("Selects", 30.0, 40.0, false)).contains("nothing in"));
+        assert!(refused(&others, op("Elsewhere", 1.0, 2.0, false)).contains("no other sequence"));
+        assert!(resolve(&cut, &pool, &[op("Selects", 1.0, 2.0, false)]).is_err(), "a plan that can't see them refuses");
     }
 
     #[test]

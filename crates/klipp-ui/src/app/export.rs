@@ -2802,6 +2802,7 @@ impl KlippApp {
             (project.undo_scope, project.redo_scope) = (undo_scope.map(str::to_owned), redo_scope.map(str::to_owned));
             (project.sequences, project.active_sequence) = self.state.sequence_summaries();
         }
+        self.publish_control_others();
         // And where the user is, so a frame read can put the playhead back.
         // Not while a seek is on its way: the playhead has not reached it
         // yet, and this would publish where it was before.

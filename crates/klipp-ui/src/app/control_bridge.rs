@@ -77,6 +77,11 @@ impl KlippApp {
                         }
                     }
                 }
+                // A sequence the edits copied from, changed since it was
+                // read: they would paste what it no longer holds (#2385).
+                if refused.is_none() {
+                    refused = changed_source(&self.state.sequences, &env.expected_sources);
+                }
                 if refused.is_none() {
                     self.apply_edits_as_one(&env.edits, env.label.as_deref().unwrap_or("Socket Edits"));
                     // A plan proposed for the person's approval opens
@@ -283,6 +288,36 @@ impl KlippApp {
             if *shown != compare {
                 *shown = compare;
             }
+        }
+    }
+
+    /// Where the project's other sequences are published for the control
+    /// socket (#2385).
+    pub fn set_control_others(&mut self, others: klipp_document::ops::SharedSelects) {
+        self.state.control_others = others;
+        self.state.control_others_for = None;
+    }
+
+    /// Publish the project's other sequences for the control socket when
+    /// which they are, or which is open, has changed (#2385): the only
+    /// times one of them can have changed, as edits go to the open one. A
+    /// publish behind its sequence is refused at apply, never pasted.
+    pub(crate) fn publish_control_others(&mut self) {
+        let key = (self.state.sequences.iter().map(|s| s.id).collect::<Vec<_>>(), self.state.active_sequence_idx);
+        if self.state.control_others_for.as_ref() == Some(&key) {
+            return;
+        }
+        let others = self
+            .state
+            .sequences
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != self.state.active_sequence_idx)
+            .map(|(_, s)| klipp_document::ops::Selects { content: klipp_document::clipboard::content_revision(s), sequence: std::sync::Arc::new(s.clone()) })
+            .collect();
+        if let Ok(mut published) = self.state.control_others.write() {
+            *published = others;
+            self.state.control_others_for = Some(key);
         }
     }
 
@@ -638,7 +673,7 @@ mod graph_batch_tests {
     use klipp_document::control::ControlEnvelope;
 
     fn envelope(commands: Vec<AppCommand>, edits: Vec<EditCommand>) -> ControlEnvelope {
-        ControlEnvelope { commands, edits, batch: false, expected_revision: None, expected_project_identity: None, label: None, ack: None }
+        ControlEnvelope { commands, edits, batch: false, expected_revision: None, expected_project_identity: None, expected_sources: Vec::new(), label: None, ack: None }
     }
 
     fn batch() -> AppCommand {
@@ -664,5 +699,34 @@ mod graph_batch_tests {
         let mut none = envelope(vec![AppCommand::Pause], Vec::new());
         assert!(matches!(graph_batch(&mut none), Ok(None)));
         assert_eq!(none.commands.len(), 1, "an envelope without a batch is left as it was");
+    }
+}
+
+/// Why edits that copied from `sources` can't land: one of them is gone,
+/// or holds other than it did when read (#2385). `None` when all stand.
+fn changed_source(sequences: &[klipp_timeline::Sequence], sources: &[(klipp_core::SequenceId, u64)]) -> Option<String> {
+    sources.iter().find_map(|(id, read)| match sequences.iter().find(|s| s.id == *id) {
+        None => Some("a sequence the plan copied from is gone; plan again".to_string()),
+        Some(s) if klipp_document::clipboard::content_revision(s) != *read => Some(format!("\"{}\" changed since the plan copied from it; plan again", s.name)),
+        Some(_) => None,
+    })
+}
+
+#[cfg(test)]
+mod changed_source_tests {
+    use super::changed_source;
+
+    /// #2385: edits that copied from a sequence land only while it holds
+    /// what was read; changed or gone, they are refused, naming it.
+    #[test]
+    fn a_copy_from_a_changed_or_gone_sequence_is_refused() {
+        let mut seqs = vec![klipp_timeline::Sequence::new_default(), klipp_timeline::Sequence::new_default()];
+        seqs[1].name = "Selects".into();
+        let read = vec![(seqs[1].id, klipp_document::clipboard::content_revision(&seqs[1]))];
+        assert_eq!(changed_source(&seqs, &read), None);
+        seqs[1].tracks.pop();
+        assert_eq!(changed_source(&seqs, &read).as_deref(), Some("\"Selects\" changed since the plan copied from it; plan again"));
+        seqs.pop();
+        assert!(changed_source(&seqs, &read).unwrap().contains("gone"));
     }
 }

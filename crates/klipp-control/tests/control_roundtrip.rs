@@ -29,6 +29,9 @@ struct Harness {
     /// Every command the stand-in UI took, in order.
     sent: Arc<Mutex<Vec<klipp_core::AppCommand>>>,
     edits_seen: Arc<Mutex<Vec<klipp_document::history::EditCommand>>>,
+    /// The other sequences the socket sees, and every envelope's sources.
+    others: klipp_document::ops::SharedSelects,
+    sources_seen: Arc<Mutex<Vec<(klipp_core::SequenceId, u64)>>>,
     shared: Arc<klipp_core::ControlShared>,
     media_pool: Arc<RwLock<klipp_media::MediaPool>>,
     sequence: Arc<klipp_timeline::SharedSequence>,
@@ -118,8 +121,11 @@ fn harness() -> Harness {
     let media_pool = Arc::new(RwLock::new(klipp_media::MediaPool::new()));
     let (sequence, ids) = sequence_with_two_clips();
     let sequence = Arc::new(klipp_timeline::SharedSequence::new(sequence));
+    let others = klipp_document::ops::SharedSelects::default();
+    let sources_seen = Arc::new(Mutex::new(Vec::new()));
     {
         let (envelopes, shared, edits_seen) = (Arc::clone(&envelopes), Arc::clone(&shared), Arc::clone(&edits_seen));
+        let sources_seen = Arc::clone(&sources_seen);
         let sent = Arc::clone(&sent);
         let media_pool = media_pool.clone();
         let delay = Arc::clone(&ack_delay_ms);
@@ -131,6 +137,7 @@ fn harness() -> Harness {
                 let ms = delay.load(std::sync::atomic::Ordering::Relaxed);
                 if ms > 0 { std::thread::sleep(std::time::Duration::from_millis(ms)); }
                 envelopes.lock().unwrap().push((env.batch, env.commands.len() + env.edits.len()));
+                sources_seen.lock().unwrap().extend(env.expected_sources.iter().copied());
                 // Inject a competing change after socket preflight, before
                 // this stand-in app thread checks the envelope guards.
                 match commit_change.swap(0, std::sync::atomic::Ordering::SeqCst) {
@@ -296,6 +303,7 @@ fn harness() -> Harness {
         frame_buffer: frame_buffer.clone(),
         perf_ring: klipp_engine::perf::shared(),
         log_path: log.clone(),
+        others: Arc::clone(&others),
     };
 
     let path = klipp_control::spawn(ctx).expect("control server starts");
@@ -308,7 +316,7 @@ fn harness() -> Harness {
         match UnixStream::connect(&sock) {
             Ok(stream) => {
                 let reader = BufReader::new(stream.try_clone().expect("clone"));
-                return Harness { _serial: serial, stream, frame_buffer, reader, cmd_rx, envelopes, sent, edits_seen, shared, media_pool, sequence, log, socket: sock, next_id: 0, ack_delay_ms, commit_change, project_switch_delay_ms, ids };
+                return Harness { _serial: serial, stream, frame_buffer, reader, cmd_rx, envelopes, sent, edits_seen, others, sources_seen, shared, media_pool, sequence, log, socket: sock, next_id: 0, ack_delay_ms, commit_change, project_switch_delay_ms, ids };
             }
             Err(e) => {
                 last_err = Some(e);
@@ -3496,6 +3504,32 @@ fn status_lists_the_sequences_and_switch_sequence_opens_one() {
         assert!(reply["error"].as_str().unwrap_or_default().contains(why), "{bad}: {}", reply["error"]);
     }
     assert_eq!(h.sent.lock().unwrap().len(), 2, "a refused switch sends nothing");
+}
+
+/// `edit_from_selects` (#2385) through `apply`: the socket plans it
+/// against the other sequences the UI published, the edit is one step,
+/// and the envelope names the sequence copied from and the content it
+/// read, which the UI checks before applying. `plan` sees them too; an
+/// edit plan's ops don't.
+#[test]
+fn edit_from_selects_names_the_sequence_and_content_it_copied() {
+    let mut h = harness();
+    let mut selects = klipp_timeline::Sequence::new_default();
+    selects.name = "Selects".into();
+    let mut track = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+    let at = |s| klipp_core::RationalTime::from_secs_f64(s, 24);
+    track.clips = vec![klipp_timeline::Clip::media(klipp_core::MediaId::new(), at(0.0), at(2.0), at(10.0), at(12.0))];
+    selects.tracks = vec![track];
+    let content = klipp_document::clipboard::content_revision(&selects);
+    *h.others.write().unwrap() = vec![klipp_document::ops::Selects { sequence: Arc::new(selects.clone()), content }];
+    let first = selects.tracks.iter().flat_map(|t| &t.clips).min_by_key(|c| c.timeline_in).expect("a clip");
+    let (a, b) = (first.timeline_in.to_secs_f64(), first.timeline_out.to_secs_f64());
+    let op = json!([{"op": "edit_from_selects", "from": "Selects", "from_secs": a, "to_secs": b, "at": {"secs": 0.0}}]);
+    let planned = h.ok(json!({"method": "plan", "ops": op}));
+    assert!(planned["text"].as_str().unwrap_or_default().contains("from \"Selects\""), "{planned}");
+    h.ok(json!({"method": "apply", "ops": op}));
+    assert_eq!(h.edits_seen.lock().unwrap().len(), 1, "one step");
+    assert_eq!(*h.sources_seen.lock().unwrap(), vec![(selects.id, content)]);
 }
 
 /// `remove_sequence` (#2366) removes one as its tab's Delete does, only

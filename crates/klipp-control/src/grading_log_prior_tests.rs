@@ -67,7 +67,7 @@ fn isolated_measurement_uses_its_own_media_metadata() {
         media_pool: Arc::new(RwLock::new(pool)),
         frame_buffer: fb,
         perf_ring: klipp_engine::perf::shared(),
-        log_path: root.join("unused.log"),
+        log_path: root.join("unused.log"), others: Default::default(),
     };
     assert_eq!(
         measure_at(&ctx, 1.0, None, Some(60_000)).unwrap().log_prior,

@@ -20,6 +20,10 @@ pub struct ControlEnvelope {
     /// The project identity the edits were planned against. Checked by
     /// the UI together with the revision before applying any of them.
     pub expected_project_identity: Option<u64>,
+    /// The other sequences the edits copied from, each with the content
+    /// revision it was read at (#2385): if one has changed since, they
+    /// are refused unapplied, as for the revision.
+    pub expected_sources: Vec<(klipp_core::SequenceId, u64)>,
     /// A name for the history entry, when a plan is applied.
     pub label: Option<String>,
     pub ack: Option<std::sync::mpsc::Sender<ControlAck>>,
