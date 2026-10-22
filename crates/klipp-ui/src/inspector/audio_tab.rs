@@ -759,14 +759,15 @@ fn show_clip_audio(
             .stroke(egui::Stroke::NONE)
             .shadow(egui::Shadow::NONE)
             .show(ui, |ui| {
-        let wf_rect_size = egui::vec2(ui.available_width(), 48.0);
         egui::Frame::default()
             .fill(theme.bg_raised)
             .stroke(egui::Stroke::new(1.0_f32, theme.border))
             .rounding(4.0)
             .inner_margin(egui::Margin::symmetric(4.0, 4.0))
             .show(ui, |ui| {
-                let (rect, _) = ui.allocate_exact_size(wf_rect_size, egui::Sense::hover());
+                // Measured inside the frame's margin: from outside it, the
+                // waveform came out 8 points wider than the column.
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 48.0), egui::Sense::hover());
                 let clip_peaks = waveform_peaks.map(|peaks| {
                     if peaks.is_empty() { return peaks; }
                     let total_dur = peaks.len() as f64;
