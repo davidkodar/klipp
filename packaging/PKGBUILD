@@ -54,6 +54,9 @@ optdepends=(
   'lsp-plugins-lv2: a large set of audio effects for the LV2 host'
   'calf: more LV2 audio effects'
   'piper-tts: the Piper narration voices'
+  'libxi: running in an X11 session (Wayland needs none of these three)'
+  'libxrandr: running in an X11 session'
+  'libxkbcommon-x11: keyboard handling in an X11 session'
 )
 options=('!lto' '!debug')
 
