@@ -50,6 +50,9 @@ pub const FLASH_SECS: f64 = 1.5;
 struct View {
     focus: Option<(KeyframeParamKind, f64)>,
     placement: Option<klipp_graph_format::path::NodePath>,
+    /// Each animated title-layer track's keys, by where they are held and
+    /// how many, with its track: a title row shows a track by its keys.
+    held: Vec<(usize, usize, KeyframeParamKind)>,
 }
 
 /// The row about to be drawn: its parameter and how many keys it has.
@@ -60,6 +63,11 @@ pub(crate) struct Tag {
 }
 
 impl Tag {
+    /// The track `kind`, with `keys` keys.
+    pub(crate) fn new(kind: KeyframeParamKind, keys: usize) -> Self {
+        Tag { kind, keys }
+    }
+
     pub(crate) fn keys(&self) -> usize {
         self.keys
     }
@@ -95,8 +103,19 @@ fn same_terms(placement: Option<&klipp_graph_format::path::NodePath>, kind: &Key
 pub fn begin_rows(ctx: &egui::Context, focus: Option<&ParamFocus>, clip: &Clip) {
     let placement = clip.placement_path();
     let focus = focus.filter(|f| f.clip_id == clip.id).map(|f| (same_terms(placement.as_ref(), &f.kind), f.at));
+    let mut held = Vec::new();
+    if let klipp_timeline::ClipKind::Title(title) = &clip.kind {
+        for object in &title.objects {
+            for param in crate::panels::title_curve::parameters(object) {
+                let keys = param.keyframes(clip, object.id.0);
+                if !keys.is_empty() {
+                    held.push((keys.as_ptr() as usize, keys.len(), KeyframeParamKind::Title { object_id: object.id.0, param }));
+                }
+            }
+        }
+    }
     ctx.data_mut(|d| {
-        d.insert_temp(view_id(), View { focus, placement });
+        d.insert_temp(view_id(), View { focus, placement, held });
         d.remove::<Tag>(tag_id());
         d.remove::<KeyframeParamKind>(request_id());
     });
@@ -107,6 +126,26 @@ pub fn begin_rows(ctx: &egui::Context, focus: Option<&ParamFocus>, clip: &Clip) 
 /// diamond says how many keys it has.
 pub fn tag(ui: &egui::Ui, clip: &Clip, kind: KeyframeParamKind) {
     let keys = crate::key_selection::track_keys(clip, &kind).len();
+    ui.ctx().data_mut(|d| d.insert_temp(tag_id(), Tag { kind, keys }));
+}
+
+/// The next row drawn is the title-layer track whose keys are `keys`,
+/// as the clip shown holds them: found by the keys themselves, so a row
+/// that reads a layer's keys needs no name for its track. Nothing for a
+/// track without keys.
+pub fn tag_keys(ui: &egui::Ui, keys: &[klipp_core::Keyframe]) {
+    if keys.is_empty() {
+        return;
+    }
+    let Some(view) = ui.ctx().data(|d| d.get_temp::<View>(view_id())) else { return };
+    if let Some((_, n, kind)) = view.held.into_iter().find(|(at, n, _)| *at == keys.as_ptr() as usize && *n == keys.len()) {
+        ui.ctx().data_mut(|d| d.insert_temp(tag_id(), Tag { kind, keys: n }));
+    }
+}
+
+/// The next row drawn is `kind`, with `keys` keys: for a row whose keys
+/// are not the clip's own (a sound effect's, read from its map).
+pub fn tag_counted(ui: &egui::Ui, kind: KeyframeParamKind, keys: usize) {
     ui.ctx().data_mut(|d| d.insert_temp(tag_id(), Tag { kind, keys }));
 }
 
@@ -285,5 +324,25 @@ mod tests {
         s.click("Opacity");
         let focus = s.state.param_focus.clone().expect("in focus");
         assert_eq!(tab_of(&animated_clip(), &focus.kind), Some(InspectorTab::Video), "{:?}", focus.kind);
+    }
+
+    /// A title layer's keyed position: listed on the Title tab, and its
+    /// row, found by its keys, takes a click into focus.
+    #[test]
+    fn a_title_layers_row_is_found_by_its_keys() {
+        let tc = |s: f64| klipp_core::Timecode::from_secs_f64(s, 24);
+        let mut td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Hello".into(), ..Default::default() });
+        let key = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
+        td.objects[0].transform.center_x_keyframes = vec![key(0.5, 0.2), key(1.5, 0.8)];
+        let clip = Clip { kind: klipp_timeline::ClipKind::Title(td), ..Clip::gap(tc(0.0), tc(4.0)) };
+        let listed = animated(&clip);
+        let (kind, _, tab) = listed.iter().find(|(k, ..)| matches!(k, KeyframeParamKind::Title { .. })).cloned().unwrap_or_else(|| panic!("a title track: {listed:?}"));
+        assert_eq!(tab, InspectorTab::Title);
+        let (clip_id, layer) = (clip.id, klipp_timeline::TitleObjectId(0));
+        let mut s = Shown::new(clip, InspectorTab::Title);
+        // The layer selected, as its position rows edit it.
+        s.state.selected_title_object = Some((clip_id, layer));
+        s.click("X");
+        assert_eq!(s.state.param_focus.as_ref().map(|f| &f.kind), Some(&kind));
     }
 }

@@ -1390,6 +1390,16 @@ impl KlippApp {
                     all_cmds.extend(panel_cmds);
                 }
             } else {
+                // A title layer's track in focus selects that layer once, so
+                // the Title tab's rows show its keys (#2296).
+                if let Some(f) = &self.state.param_focus {
+                    if let crate::state::KeyframeParamKind::Title { object_id, .. } = f.kind {
+                        if self.new_inspector.layer_followed != Some(f.at) {
+                            self.new_inspector.layer_followed = Some(f.at);
+                            self.state.selected_title_object = Some((f.clip_id, klipp_timeline::TitleObjectId(object_id)));
+                        }
+                    }
+                }
                 let panel_cmds = self.new_inspector.show(
                     ui, &self.state, &self.prefs, &self.theme,
                     &mut self.layout.active_inspector_tab,

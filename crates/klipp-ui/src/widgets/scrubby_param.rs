@@ -201,13 +201,15 @@ pub struct KeyStrip {
 /// Laid out right to left from where `ui` places it.
 pub fn key_strip(ui: &mut egui::Ui, ks: KeyframeState) -> KeyStrip {
     let mut out = KeyStrip::default();
+    // The row's track, when the caller named it (#2296).
+    let tag = crate::param_focus::take_tag(ui);
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         if ks.has_any_keyframes {
             out.next = nav_arrow(ui, ks.next_keyframe_time.is_some(), Icon::CaretRight);
         }
         let diamond = ui.add(egui::Button::new("").frame(false).min_size(egui::vec2(16.0, 18.0)).sense(egui::Sense::click()));
-        paint_diamond(ui, &diamond, Some(&ks), None);
+        paint_diamond(ui, &diamond, Some(&ks), tag.as_ref().map(|t| t.keys()));
         if diamond.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
@@ -219,6 +221,10 @@ pub fn key_strip(ui: &mut egui::Ui, ks: KeyframeState) -> KeyStrip {
             out.prev = nav_arrow(ui, ks.prev_keyframe_time.is_some(), Icon::CaretLeft);
         }
     });
+    // The whole row the controls end, lit when its track is in focus.
+    if let Some(tag) = &tag {
+        crate::param_focus::row_drawn(ui, tag, ui.min_rect(), out.toggled);
+    }
     out
 }
 
@@ -237,12 +243,14 @@ pub struct KeyControls {
 /// there is no interpolation menu.
 pub fn key_controls(ui: &mut egui::Ui, ks: KeyframeState) -> KeyControls {
     let mut out = KeyControls::default();
+    // The row's track, when the caller named it (#2296).
+    let tag = crate::param_focus::take_tag(ui);
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         if ks.has_any_keyframes {
             out.next = nav_arrow(ui, ks.next_keyframe_time.is_some(), Icon::CaretRight);
         }
         let diamond = ui.add(egui::Button::new("").frame(false).min_size(egui::vec2(16.0, 18.0)).sense(egui::Sense::click()));
-        paint_diamond(ui, &diamond, Some(&ks), None);
+        paint_diamond(ui, &diamond, Some(&ks), tag.as_ref().map(|t| t.keys()));
         if diamond.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
@@ -251,6 +259,10 @@ pub fn key_controls(ui: &mut egui::Ui, ks: KeyframeState) -> KeyControls {
             out.prev = nav_arrow(ui, ks.prev_keyframe_time.is_some(), Icon::CaretLeft);
         }
     });
+    // The whole row the controls end, lit when its track is in focus.
+    if let Some(tag) = &tag {
+        crate::param_focus::row_drawn(ui, tag, ui.min_rect(), out.toggled);
+    }
     out
 }
 
