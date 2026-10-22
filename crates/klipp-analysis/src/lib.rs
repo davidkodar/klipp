@@ -48,6 +48,8 @@ pub mod framing;
 pub mod screentext;
 #[cfg(feature = "subject_matte")]
 pub mod subject_matte;
+#[cfg(feature = "audio_role")]
+pub mod audio_role;
 
 use std::path::{Path, PathBuf};
 
@@ -244,6 +246,9 @@ pub fn analysers() -> Vec<Box<dyn Analyser>> {
     if screen_text_enabled() {
         v.push(Box::new(screentext::ScreenTextAnalyser));
     }
+    // Wants nothing until its model is downloaded.
+    #[cfg(feature = "audio_role")]
+    v.push(Box::new(audio_role::AudioRoleAnalyser));
     v
 }
 
@@ -279,6 +284,11 @@ pub fn download_models() -> Result<Vec<String>, String> {
     if screen_text_enabled() {
         screentext::ensure_models(true)?;
         got.extend(screentext::MODEL_IDS.iter().map(|s| s.to_string()));
+    }
+    #[cfg(feature = "audio_role")]
+    {
+        audio_role::ensure_model(true)?;
+        got.push(audio_role::MODEL_ID.to_string());
     }
     Ok(got)
 }

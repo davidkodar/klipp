@@ -9,6 +9,7 @@ impl KlippApp {
         self.drain_control_inbox();
         self.apply_analysis_markers();
         self.advance_refits();
+        self.propose_audio_roles();
         while let Ok(event) = self.event_rx.try_recv() {
             if super::event_writes::event_writes(&event) {
                 self.close_drag_for_result();
@@ -213,6 +214,7 @@ impl KlippApp {
                         synced_audio: None,
                         markers: Vec::new(),
                         screen_text: String::new(),
+                        audio_role: None,
                         span: None,
                     };
 

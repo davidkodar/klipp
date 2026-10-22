@@ -559,6 +559,7 @@ fn load_project_as(dir: &Path, form: crate::FileForm, strict: bool) -> Result<Lo
             synced_audio: item_json.synced_audio.clone(),
             markers: item_json.markers.clone(),
             screen_text: item_json.screen_text.clone(),
+            audio_role: item_json.audio_role,
             span: item_json.span,
         };
         // Re-run the log-format heuristic now that the metadata
@@ -949,6 +950,7 @@ fn load_sequence_from_json(
                         }).collect()
                     }).unwrap_or_default(),
                     role: c.role.unwrap_or_default(),
+                    role_source: c.role_source,
                     speed: c.speed.unwrap_or(1.0),
                     speed_keyframes: c.speed_keyframes.clone().unwrap_or_default(),
                     keep_pitch: c.keep_pitch.unwrap_or(false),

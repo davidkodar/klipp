@@ -1573,6 +1573,7 @@ impl Track {
             clip_markers: Vec::new(),
             frame_glide: None,
             role: ClipRole::default(),
+            role_source: klipp_core::RoleSource::Unset,
             speed: 1.0,
             speed_keyframes: Vec::new(),
             keep_pitch: false,
@@ -1882,6 +1883,7 @@ impl Track {
             // A glide is the whole clip's move: each piece keeps its share of the keys (#611).
             frame_glide: None,
             role: clip.role,
+            role_source: klipp_core::RoleSource::Unset,
             speed: clip.speed,
             speed_keyframes: clip.speed_keyframes.clone(),
             keep_pitch: clip.keep_pitch,
@@ -1959,6 +1961,7 @@ impl Track {
             // A glide is the whole clip's move: each piece keeps its share of the keys (#611).
             frame_glide: None,
             role: clip.role,
+            role_source: klipp_core::RoleSource::Unset,
             speed: clip.speed,
             speed_keyframes: clip.speed_keyframes.clone(),
             keep_pitch: clip.keep_pitch,
@@ -2410,6 +2413,10 @@ pub struct Clip {
     /// Content role — determines timeline color coding.
     #[serde(default)]
     pub role: ClipRole,
+    /// Whether the role was set by hand or proposed from the sound
+    /// (#2216).
+    #[serde(default, skip_serializing_if = "klipp_core::RoleSource::is_unset")]
+    pub role_source: klipp_core::RoleSource,
     /// Playback speed multiplier (1.0 = normal, 2.0 = 2x fast, 0.5 = half speed)
     #[serde(default = "default_speed")]
     pub speed: f64,
@@ -2930,6 +2937,7 @@ impl Clip {
             clip_markers: Vec::new(),
             frame_glide: None,
             role: ClipRole::default(),
+            role_source: klipp_core::RoleSource::Unset,
             speed: 1.0,
             speed_keyframes: Vec::new(),
             keep_pitch: false,
@@ -3045,6 +3053,7 @@ impl Clip {
             clip_markers: Vec::new(),
             frame_glide: None,
             role: ClipRole::default(),
+            role_source: klipp_core::RoleSource::Unset,
             speed: 1.0,
             speed_keyframes: Vec::new(),
             keep_pitch: false,
@@ -3149,6 +3158,7 @@ impl Clip {
             clip_markers: Vec::new(),
             frame_glide: None,
             role: ClipRole::default(),
+            role_source: klipp_core::RoleSource::Unset,
             speed: 1.0,
             speed_keyframes: Vec::new(),
             keep_pitch: false,

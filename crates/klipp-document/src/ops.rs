@@ -3128,7 +3128,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 other => return Err(refuse(i, format!("\"{other}\" is not a role"), "use dialogue, music, sfx, ambience, foley, voiceover, broll or graphics")),
             };
             let what = format!("{} is {}", clip_name(seq, pool, clip), role.trim().to_lowercase());
-            Ok((what, EditCommand::SetClipRole { clip_id: clip.id, old: clip.role, new }, vec![clip.id]))
+            Ok((what, EditCommand::SetClipRole { clip_id: clip.id, old: clip.role, new, old_source: clip.role_source }, vec![clip.id]))
         }
         Op::Matte { clip_id, source, channel, invert, feather_px, choke_px, show_source, clear } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
@@ -3596,6 +3596,9 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let library = transcripts.library_role(item);
             if let Some(role) = library {
                 clip.role = role;
+                // Proposed, not chosen: a hand-set role still replaces it,
+                // and the sound's own label is not offered again (#2216).
+                clip.role_source = klipp_core::RoleSource::Proposed;
             }
             // The sound with the picture, linked both ways, on the first
             // audio track — made at the bottom when there is none.
@@ -12004,7 +12007,12 @@ mod tests {
         let placed = |id: MediaId| {
             let plan = resolve_with(&seq, &pool, &[place(id)], &lib).unwrap_or_else(|r| panic!("refused: {}", r.why));
             let role = match &plan.steps[0].edit {
-                EditCommand::LegacyAppendClip { clip, .. } => clip.role,
+                // Proposed, not set by hand (#2216).
+                EditCommand::LegacyAppendClip { clip, .. } => {
+                    let source = if clip.role == klipp_core::ClipRole::default() { klipp_core::RoleSource::Unset } else { klipp_core::RoleSource::Proposed };
+                    assert_eq!(clip.role_source, source);
+                    clip.role
+                }
                 other => panic!("{other:?}"),
             };
             (role, plan.steps[0].what.clone())

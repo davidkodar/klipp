@@ -2848,6 +2848,7 @@ dependencies = [
  "klipp-jobs",
  "klipp-media",
  "klipp-ml",
+ "klipp-ml-candle",
  "klipp-ml-ort",
  "klipp-nodes",
  "libc",

@@ -71,6 +71,9 @@ pub enum ModelKind {
     Translator,
     /// A translation pair's vocabulary, read beside its model.
     TranslationVocabulary,
+    /// What a sound is, by AudioSet's classes: what proposes a clip's
+    /// audio role (#2216).
+    SoundTagger,
 }
 
 /// Which backend crate runs the model. Lets the registry pick the

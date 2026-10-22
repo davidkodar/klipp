@@ -2503,6 +2503,10 @@ pub struct AppState {
     /// they are reframed (#2211), by sequence, so switching tabs meanwhile
     /// reframes the right one when it is next open.
     pub pending_refits: Vec<PendingRefit>,
+    /// What the open sequence was when its clips were last proposed roles
+    /// from their sound (#2216): analysis, sequence, history and clip
+    /// count, so the look is taken again only when one changes.
+    pub role_sweep_key: Option<(u64, klipp_core::SequenceId, usize, usize)>,
     /// Per-session editing state for the subtitle editor panel.
     pub subtitle_editor: SubtitleEditorState,
     /// Live state for a running project-consolidation operation (None = no
@@ -4758,6 +4762,7 @@ impl Default for AppState {
             transcript_panel_hovered: false,
             pending_doc_ops: Vec::new(),
             pending_refits: Vec::new(),
+            role_sweep_key: None,
             show_project_notes: false,
             show_edit_plan: false,
             show_colour_check: false,

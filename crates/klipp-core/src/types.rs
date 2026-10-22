@@ -269,6 +269,35 @@ impl FadeCurve {
     }
 }
 
+/// Where a clip's role came from (#2216): never set, chosen by a person
+/// (or an agent asked to), or proposed once from what the sound is. A
+/// role set by hand is never replaced by a proposal, and a clip is
+/// proposed a role only once, so undoing a proposal keeps it undone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RoleSource {
+    #[default]
+    Unset,
+    ByHand,
+    Proposed,
+}
+
+impl RoleSource {
+    pub fn is_unset(&self) -> bool {
+        *self == RoleSource::Unset
+    }
+}
+
+/// What a media file's sound was classified as (#2216): the role it
+/// proposes for its clips, how sure the classifier is (0 to 1), and
+/// whether that is sure enough to apply without asking.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct RoleProposal {
+    pub role: ClipRole,
+    pub confidence: f32,
+    pub confident: bool,
+}
+
 /// Content role of a clip — determines timeline color coding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ClipRole {

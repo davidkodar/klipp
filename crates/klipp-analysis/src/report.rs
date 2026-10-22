@@ -16,6 +16,8 @@ pub struct MediaAnalysis {
     pub framing: Option<crate::framing::Framing>,
     #[cfg(feature = "ocr")]
     pub screentext: Option<crate::screentext::ScreenText>,
+    #[cfg(feature = "audio_role")]
+    pub audio_role: Option<crate::audio_role::AudioRoles>,
 }
 
 impl MediaAnalysis {
@@ -57,6 +59,8 @@ impl MediaAnalysis {
         let framing = crate::store::load(key, crate::framing::ID, crate::framing::VERSION).and_then(|v| serde_json::from_value(v).ok());
         #[cfg(feature = "ocr")]
         let screentext = crate::store::load(key, crate::screentext::ID, crate::screentext::VERSION).and_then(|v| serde_json::from_value(v).ok());
+        #[cfg(feature = "audio_role")]
+        let audio_role = crate::store::load(key, crate::audio_role::ID, crate::audio_role::VERSION).and_then(|v| serde_json::from_value(v).ok());
         Self {
             shots,
             audio,
@@ -68,6 +72,8 @@ impl MediaAnalysis {
             framing,
             #[cfg(feature = "ocr")]
             screentext,
+            #[cfg(feature = "audio_role")]
+            audio_role,
         }
     }
 
@@ -78,6 +84,10 @@ impl MediaAnalysis {
         }
         #[cfg(feature = "framing")]
         if self.framing.is_some() {
+            return false;
+        }
+        #[cfg(feature = "audio_role")]
+        if self.audio_role.is_some() {
             return false;
         }
         self.shots.is_none() && self.audio.is_none() && self.motion.is_none()
@@ -154,6 +164,20 @@ impl MediaAnalysis {
                 s.push_str(&t);
             }
         }
+        // What the clip's stretch of sound is (#2216), and how sure.
+        #[cfg(feature = "audio_role")]
+        if let Some(label) = self.audio_role.as_ref().and_then(|r| r.label(Some((from, to)))) {
+            if !s.is_empty() {
+                s.push_str("  ");
+            }
+            let kind = match label.kind {
+                crate::audio_role::SoundKind::Speech => "speech",
+                crate::audio_role::SoundKind::Music => "music",
+                crate::audio_role::SoundKind::Effects => "effects",
+                crate::audio_role::SoundKind::Ambience => "ambience",
+            };
+            let _ = write!(s, "sounds like {kind} ({:.0}%{})", label.confidence * 100.0, if label.confident { "" } else { ", unsure" });
+        }
         if let Some(audio) = &self.audio {
             if !s.is_empty() {
                 s.push_str("  ");
@@ -223,6 +247,10 @@ impl MediaAnalysis {
         }
         if let Some(bs) = &self.beatsheet {
             out.push_str(&bs.summary());
+        }
+        #[cfg(feature = "audio_role")]
+        if let Some(roles) = &self.audio_role {
+            out.push_str(&roles.summary());
         }
         #[cfg(feature = "ocr")]
         if let Some(st) = &self.screentext {

@@ -476,6 +476,20 @@ fn show_clip_audio(
                 cmds.push(AppCommand::SetClipRole { clip_id, role: new_role });
             }
         });
+        // What the sound was heard as (#2216), when that is not the role
+        // it has: a sure label is applied by itself, an unsure one is
+        // offered here.
+        let heard = clip.media_id().and_then(|m| state.media_pool.get(&m)).and_then(|m| m.audio_role).filter(|p| p.role != clip.role);
+        if let Some(p) = heard {
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                ui.add_space(14.0);
+                ui.label(egui::RichText::new(format!("Sounds like {} ({:.0}%)", p.role.label(), p.confidence * 100.0)).small().weak());
+                if ui.small_button("Use as role").on_hover_text("Set the clip's role to what its sound was classified as").clicked() {
+                    cmds.push(AppCommand::SetClipRole { clip_id, role: p.role });
+                }
+            });
+        }
         ui.add_space(4.0);
     });
 

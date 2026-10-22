@@ -222,6 +222,7 @@ mod tests {
             synced_audio: None,
             markers: Vec::new(),
             screen_text: String::new(),
+            audio_role: None,
             span: None,
         }
     }

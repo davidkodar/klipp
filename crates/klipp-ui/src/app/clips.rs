@@ -690,6 +690,8 @@ impl KlippApp {
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
                             clip.role = *role;
+                            // A role chosen by hand wins over the sound's (#2216).
+                            clip.role_source = klipp_core::RoleSource::ByHand;
                             break;
                         }
                     }
@@ -1884,6 +1886,7 @@ pub(super) fn duplicate_after(clip: &klipp_timeline::Clip) -> klipp_timeline::Cl
         clip_markers: clip.clip_markers.clone(),
         frame_glide: None,
         role: clip.role,
+        role_source: clip.role_source,
         speed: clip.speed,
         speed_keyframes: clip.speed_keyframes.clone(),
         keep_pitch: clip.keep_pitch,

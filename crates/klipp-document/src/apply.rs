@@ -233,9 +233,17 @@ impl DocumentView<'_> {
             EditCommand::SetReviews { old, .. } => {
                 self.sequences[self.active].reviews = old.clone();
             }
-            EditCommand::SetClipRole { clip_id, old, .. } => {
+            EditCommand::SetClipRole { clip_id, old, old_source, .. } => {
                 if let Some(c) = self.sequences[self.active].tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).find(|c| c.id == *clip_id) {
                     c.role = *old;
+                    c.role_source = *old_source;
+                }
+            }
+            EditCommand::ProposeClipRoles { changes } => {
+                for (clip_id, old, _) in changes {
+                    if let Some(c) = self.sequences[self.active].tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).find(|c| c.id == *clip_id) {
+                        c.role = *old;
+                    }
                 }
             }
             EditCommand::SetSequenceCamera { old, .. } => {
@@ -942,6 +950,15 @@ impl DocumentView<'_> {
             EditCommand::SetClipRole { clip_id, new, .. } => {
                 if let Some(c) = self.sequences[self.active].tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).find(|c| c.id == *clip_id) {
                     c.role = *new;
+                    c.role_source = klipp_core::RoleSource::ByHand;
+                }
+            }
+            EditCommand::ProposeClipRoles { changes } => {
+                for (clip_id, _, new) in changes {
+                    if let Some(c) = self.sequences[self.active].tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).find(|c| c.id == *clip_id) {
+                        c.role = *new;
+                        c.role_source = klipp_core::RoleSource::Proposed;
+                    }
                 }
             }
             EditCommand::SetSequenceCamera { new, .. } => {

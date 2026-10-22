@@ -1118,6 +1118,7 @@ impl KlippApp {
                         synced_audio: None,
                         markers: Vec::new(),
                         screen_text: String::new(),
+                        audio_role: None,
                         span: None,
                     };
                     let span_path = media_item.path.clone();
