@@ -405,7 +405,8 @@ pub mod jobs {
         }
     }
 
-    pub(super) fn cancelled(id: &str) {
+    /// Job `id` stopped by a cancel, nothing made.
+    pub fn cancelled(id: &str) {
         update(id, |j| {
             j.state = State::Cancelled;
             j.phase = "cancelled";
@@ -427,6 +428,25 @@ pub mod jobs {
                 j.error = Some(why);
             }
         });
+    }
+
+    /// Job `id` refused before it could start, into `language`: kept as
+    /// failed with `why`, so a reader given its id learns what happened
+    /// rather than that there is no such job. One that did start is
+    /// ended with `why` instead.
+    pub fn refused(id: &str, language: &str, why: &str) {
+        if get(id).is_some() {
+            finish(id, Err(why.to_string()));
+            return;
+        }
+        begin(id, language, 0);
+        finish(id, Err(why.to_string()));
+    }
+
+    /// Whether job `id` was asked to stop: a translation back from its
+    /// worker is then not put in place.
+    pub fn cancel_requested(id: &str) -> bool {
+        all_entries().iter().any(|e| e.job.id == id && e.cancel.load(Ordering::Relaxed))
     }
 
     /// Every job kept, oldest first.
@@ -698,6 +718,11 @@ mod tests {
     #[test]
     fn a_translation_job_is_followed_cancelled_and_closed() {
         let id = format!("test-{}", std::process::id());
+        // Refused before it started: kept as failed, with why.
+        let refused = format!("{id}-refused");
+        jobs::refused(&refused, "German", "no captions");
+        let j = jobs::get(&refused).unwrap();
+        assert_eq!((j.state, j.error.as_deref()), (jobs::State::Failed, Some("no captions")));
         let cancel = jobs::begin(&id, "German", 4);
         assert_eq!(jobs::running().map(|j| j.id), Some(id.clone()));
         jobs::update(&id, |j| {
@@ -707,8 +732,10 @@ mod tests {
         });
         let j = jobs::get(&id).unwrap();
         assert_eq!((j.phase, j.done, j.total, j.state), ("translating", 2, 4, jobs::State::Running));
+        assert!(!jobs::cancel_requested(&id));
         jobs::cancel(&id).unwrap();
         assert!(cancel.load(std::sync::atomic::Ordering::Relaxed), "the worker sees it");
+        assert!(jobs::cancel_requested(&id), "and so does whoever would put it in place");
         jobs::cancelled(&id);
         assert_eq!(jobs::get(&id).unwrap().state, jobs::State::Cancelled);
         assert!(jobs::cancel(&id).is_err(), "an ended job is not cancelled again");
