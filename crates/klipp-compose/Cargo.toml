@@ -32,8 +32,9 @@ klipp-compose = { workspace = true, features = ["fault-hook"] }
 klipp-timeline = { workspace = true, features = ["test-clip"] }
 klipp-color = { workspace = true }
 klipp-frei0r = { workspace = true }
-# The golden corpus's stored frames are one PNG (#1089).
-image = { version = "0.25", default-features = false, features = ["png"] }
+# The golden corpus's stored frames are one PNG (#1089); title image
+# layers are read from PNG and JPEG (#2077).
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 serde_json = { workspace = true }
 # Reading a generator's half-float frame in its tests (#190).
 half = { workspace = true }
