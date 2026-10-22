@@ -297,6 +297,24 @@ impl CurveScope {
     }
 }
 
+/// The keyed track `param` is, as the Inspector and the Dope Sheet name a
+/// parameter (#2296); `None` for one with no such track (speed, the
+/// camera) or an unreadable sound effect's key.
+fn focus_kind(param: &CurveParam) -> Option<KeyframeParamKind> {
+    Some(match param {
+        CurveParam::Title { object_id, param } => KeyframeParamKind::Title { object_id: *object_id, param: param.clone() },
+        CurveParam::Audio(p) => KeyframeParamKind::Audio(*p),
+        CurveParam::Video(p) => KeyframeParamKind::Video(*p),
+        CurveParam::AudioEffect(key) => {
+            let (index, name) = key.split_once(':')?;
+            KeyframeParamKind::AudioEffect { effect_index: index.parse().ok()?, param_name: name.to_string() }
+        }
+        CurveParam::Node { path, key, .. } => KeyframeParamKind::Node { path: path.clone(), key: key.clone() },
+        CurveParam::Mask { track, .. } => KeyframeParamKind::Mask(track.clone()),
+        CurveParam::Speed | CurveParam::Camera(_) => return None,
+    })
+}
+
 /// A key's influence handle as the Speed view draws it (#2275).
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct SpeedHandle {
@@ -398,6 +416,9 @@ pub struct CurveEditorPanel {
     value_entry: String,
     /// Showing the dope sheet (#2240) in place of the curves.
     dope: bool,
+    /// The newest parameter focus handled, the panel's own or followed
+    /// (#2296): a focus is followed once, and the panel's own not again.
+    focus_seen: f64,
     sheet: super::dope_sheet::Sheet,
     /// The last frame's graph, for a test to find a key on screen: its
     /// rect and the value range it maps.
@@ -429,6 +450,7 @@ impl Default for CurveEditorPanel {
             time_entry: String::new(),
             value_entry: String::new(),
             dope: false,
+            focus_seen: f64::NEG_INFINITY,
             sheet: Default::default(),
             #[cfg(test)]
             last_view: None,
@@ -655,6 +677,11 @@ impl CurveEditorPanel {
         if i == 0 { theme.accent } else { OTHERS[(i - 1) % OTHERS.len()] }
     }
 
+    /// The curve edited (#2296: what a focus followed shows).
+    pub fn active_curve(&self) -> &CurveParam {
+        self.param()
+    }
+
     /// The curves shown, in order, the active one among them (#2271).
     pub fn shown_curves(&self) -> &[ShownCurve] {
         &self.curves
@@ -670,7 +697,27 @@ impl CurveEditorPanel {
         state: &mut AppState,
         theme: &KlippTheme,
     ) -> Vec<AppCommand> {
+        // What the user picks here, a curve, a key or a dope-sheet row or
+        // key, is the parameter in focus (#2296), for the Inspector to
+        // show: what changed over the frame, a key before a curve.
+        let key_of = |state: &AppState| state.selected_keyframe.as_ref().map(|k| (k.clip_id, k.param_kind.clone(), k.keyframe_index));
+        let before = (focus_kind(self.param()), self.curves.len(), key_of(state));
         let cmds = self.show_inner(ui, state, theme);
+        let after_key = key_of(state);
+        let picked = if after_key != before.2 {
+            after_key.map(|(clip, kind, _)| (clip, kind))
+        } else if self.curves.len() > before.1 {
+            state.selected_clip.zip(self.curves.last().and_then(|c| focus_kind(&c.param)))
+        } else if focus_kind(self.param()) != before.0 {
+            state.selected_clip.zip(focus_kind(self.param()))
+        } else {
+            None
+        };
+        if let Some((clip_id, kind)) = picked {
+            let at = ui.input(|i| i.time);
+            state.param_focus = Some(crate::param_focus::ParamFocus { clip_id, kind, at });
+            self.focus_seen = at;
+        }
         // The effect track shown, for Previous / Next keyframe (#1401).
         state.curve_editor_track = match (self.param(), state.selected_clip) {
             (CurveParam::Node { path, key, .. }, Some(clip)) => Some((clip, path.clone(), key.clone())),
@@ -686,6 +733,27 @@ impl CurveEditorPanel {
             Some(clip) => crate::inspector::stack_view::route_placed(clip, cmds),
             None => cmds,
         }
+    }
+
+    /// Follow a parameter focus set elsewhere (#2296), the Inspector's
+    /// chips and rows: its curve shown and made the one edited, the
+    /// curves in place of the dope sheet, and the Curve Editor opened. Each
+    /// focus once, and never the panel's own; called every frame, open or
+    /// not.
+    pub fn follow_focus(&mut self, state: &mut AppState) {
+        let Some(focus) = state.param_focus.clone().filter(|f| f.at > self.focus_seen) else { return };
+        self.focus_seen = focus.at;
+        if state.selected_clip != Some(focus.clip_id) {
+            return;
+        }
+        let Some(clip) = state.sequence().all_clips().find(|c| c.id == focus.clip_id) else { return };
+        let Some(row) = super::dope_sheet::rows(clip).into_iter().find(|r| r.kind == focus.kind) else { return };
+        self.show_with(row.curve.clone());
+        self.set_param(row.curve);
+        self.dope = false;
+        self.drag = None;
+        self.needs_fit = true;
+        state.show_curve_editor = true;
     }
 
     fn show_inner(
@@ -2470,27 +2538,7 @@ impl CurveEditorPanel {
     }
 
     fn param_to_kind(&self) -> KeyframeParamKind {
-        match self.param() {
-            CurveParam::Title { object_id, param } => KeyframeParamKind::Title { object_id: *object_id, param: param.clone() },
-            CurveParam::Audio(p) => KeyframeParamKind::Audio(*p),
-            CurveParam::Video(p) => KeyframeParamKind::Video(*p),
-            CurveParam::AudioEffect(key) => {
-                if let Some((idx_str, name)) = key.split_once(':') {
-                    if let Ok(idx) = idx_str.parse::<usize>() {
-                        return KeyframeParamKind::AudioEffect {
-                            effect_index: idx,
-                            param_name: name.to_string(),
-                        };
-                    }
-                }
-                KeyframeParamKind::Video(VideoParam::Opacity)
-            }
-            CurveParam::Node { path, key, .. } => KeyframeParamKind::Node { path: path.clone(), key: key.clone() },
-            CurveParam::Mask { track, .. } => KeyframeParamKind::Mask(track.clone()),
-            CurveParam::Speed | CurveParam::Camera(_) => {
-                KeyframeParamKind::Video(VideoParam::Opacity) // fallback
-            }
-        }
+        focus_kind(self.param()).unwrap_or(KeyframeParamKind::Video(VideoParam::Opacity))
     }
 
     fn param_matches_kind(&self, kind: &KeyframeParamKind) -> bool {

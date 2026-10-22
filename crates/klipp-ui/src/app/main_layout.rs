@@ -78,6 +78,9 @@ impl KlippApp {
     }
 
     pub(super) fn render_main_layout(&mut self, ctx: &egui::Context, all_cmds: &mut Vec<AppCommand>) {
+        // A parameter focus set in the Inspector shows its curve, opening
+        // the Curve Editor (#2296), before the layout is worked out.
+        self.curve_editor.follow_focus(&mut self.state);
         if self.render_launch_screen(ctx, all_cmds) { return; }
         if self.render_fullscreen_viewer(ctx, all_cmds) { return; }
         {
