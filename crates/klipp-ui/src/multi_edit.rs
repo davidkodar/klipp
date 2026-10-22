@@ -121,6 +121,7 @@ pub fn copy_to(cmd: &AppCommand, primary: &Clip, other: &mut Clip) -> bool {
         AppCommand::BeginAudioChainDrag { .. } | AppCommand::EndAudioChainDrag { .. } => true,
         AppCommand::SetClipRole { .. } => {
             other.role = primary.role;
+            other.role_source = primary.role_source;
             true
         }
         AppCommand::SetClipBlendMode { .. } => {

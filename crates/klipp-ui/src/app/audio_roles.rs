@@ -20,6 +20,15 @@ pub(crate) fn role_proposals(seq: &klipp_timeline::Sequence, pool: &klipp_media:
         .collect()
 }
 
+/// The undo step that sets `clip_id`'s role to `role` by hand, keeping
+/// the old role and where it came from to put back (#2229); none when the
+/// clip is not in the sequence or already has that role by hand.
+pub(crate) fn hand_role_edit(seq: &klipp_timeline::Sequence, clip_id: klipp_core::ClipId, role: klipp_core::ClipRole) -> Option<EditCommand> {
+    let clip = seq.all_clips().find(|c| c.id == clip_id)?;
+    (clip.role != role || clip.role_source != klipp_core::RoleSource::ByHand)
+        .then_some(EditCommand::SetClipRole { clip_id, old: clip.role, new: role, old_source: clip.role_source })
+}
+
 impl KlippApp {
     /// Apply what the open sequence's sound proposes, as one undo step,
     /// when the analysis, the sequence, its history, its clips or its
@@ -87,5 +96,35 @@ mod tests {
         seqs[0].tracks[audio].locked = true;
         seqs[0].tracks[audio].clips[0].role_source = RoleSource::Unset;
         assert!(role_proposals(&seqs[0], &pool).is_empty(), "a locked track is left alone");
+    }
+
+    /// A role chosen in the inspector or a menu is one undo step (#2229):
+    /// undone, the clip has its old role and where that came from back.
+    #[test]
+    fn a_role_set_by_hand_is_undone_with_its_source() {
+        let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+        let mut pool = klipp_media::MediaPool::new();
+        let song = pool.add(klipp_media::MediaItem::synthetic_for_test("/tmp/song.wav".into(), None));
+        let mut seq = klipp_timeline::Sequence::new_default();
+        let audio = seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Audio).unwrap();
+        let mut clip = klipp_timeline::Clip::media(song, tc(0.0), tc(4.0), tc(0.0), tc(4.0));
+        clip.role = ClipRole::Music;
+        clip.role_source = RoleSource::Proposed;
+        let id = clip.id;
+        seq.tracks[audio].clips = vec![clip];
+        assert!(hand_role_edit(&seq, klipp_core::ClipId::new(), ClipRole::Foley).is_none(), "no such clip");
+
+        let edit = hand_role_edit(&seq, id, ClipRole::Foley).expect("a step");
+        let mut seqs = vec![seq];
+        let mut fps = klipp_core::Fps::new(24, 1);
+        let at = |seqs: &[klipp_timeline::Sequence]| (seqs[0].tracks[audio].clips[0].role, seqs[0].tracks[audio].clips[0].role_source);
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps };
+        view.apply_forward(&edit);
+        assert_eq!(at(&seqs), (ClipRole::Foley, RoleSource::ByHand));
+        assert!(hand_role_edit(&seqs[0], id, ClipRole::Foley).is_none(), "the same role by hand again is no step");
+        assert!(hand_role_edit(&seqs[0], id, ClipRole::Music).is_some(), "another one is");
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps };
+        view.apply_inverse(&edit);
+        assert_eq!(at(&seqs), (ClipRole::Music, RoleSource::Proposed), "undone");
     }
 }
