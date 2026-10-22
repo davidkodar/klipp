@@ -6502,6 +6502,13 @@ impl GpuEffectsPipeline {
         true
     }
 
+    /// The frame's canvas, clear where nothing has been laid on it: an
+    /// empty frame (a gap, a strobe's dark pieces) is this canvas, graded
+    /// and finished as any composite is (#2377).
+    pub fn stack_clear_canvas(&mut self) -> bool {
+        !self.is_device_lost() && self.stack_ensure_acc()
+    }
+
     /// The accumulator exists and is a canvas if nothing has been laid
     /// on it yet.
     fn stack_ensure_acc(&mut self) -> bool {

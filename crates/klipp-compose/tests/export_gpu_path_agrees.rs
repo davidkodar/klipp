@@ -661,7 +661,8 @@ fn the_stack_takes_what_the_single_clip_path_refuses() {
         ("a matte source", matte_source, Flat::default().with(&i, [128, 128, 128]), false),
         ("a zoom", zoomed, Flat::default().with(&j, [128, 128, 128]), true),
         ("a generator", generated, Flat::default(), true),
-        ("nothing on screen", empty, Flat::default(), false),
+        // Drawn on the GPU as the clear canvas, graded and finished (#2377).
+        ("nothing on screen", empty, Flat::default(), true),
     ];
 
     let mut any = false;

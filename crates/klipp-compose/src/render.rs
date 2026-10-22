@@ -1989,10 +1989,9 @@ impl Renderer {
         if !self.still_layers.is_empty() {
             self.still_layers.retain(|id, _| seq.tracks.iter().any(|t| t.clips.iter().any(|c| c.id == *id)));
         }
+        // An empty frame is the clear canvas, graded and finished on the
+        // GPU as any composite is (#2377).
         let stack = stack(seq, time);
-        if stack.is_empty() {
-            return self.gpu_stack_declines("nothing on screen");
-        }
 
         // What a clip needs that the stack does not have.
         let blocker = |c: &Clip| -> Option<&'static str> {
@@ -2256,6 +2255,12 @@ impl Renderer {
             stats.composite_ms += ms_since(t);
         }
 
+        // Nothing laid (nothing on screen, or every layer skipped): the
+        // clear canvas is the composite.
+        if !self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_clear_canvas()) {
+            return self.gpu_stack_declines("the canvas could not be cleared");
+        }
+
         // ── 4. The timeline grade, as `render_stack` runs it: the
         // composite graded as an adjustment layer over everything ──
         if let Some(tg) = self.timeline_grade(seq) {
@@ -2290,12 +2295,7 @@ impl Renderer {
         let t = Instant::now();
         let gpu = self.executor.gpu_pipeline_or_init()?;
         if !gpu.stack_finish_into_chain(opts.keep_alpha) {
-            // Nothing was laid on the canvas: an empty frame.
-            let acc = gpu.stack_acc_buffer()?;
-            let _ = acc;
-            if !gpu.stack_finish_into_chain(opts.keep_alpha) {
-                return self.gpu_stack_declines("nothing blended");
-            }
+            return self.gpu_stack_declines("the composite could not be finished");
         }
         stats.composite_ms += ms_since(t);
         stats.total_ms = ms_since(t0);
