@@ -48,6 +48,14 @@ impl KlippApp {
     /// closing the window, and exiting anyway is no worse than the
     /// behaviour this replaces.
     pub(super) fn exit_after_engine_shutdown(&mut self) -> ! {
+        // An install of the AAF converter stopped, its step killed, rather
+        // than left running after Klipp (#2086).
+        if let Some(install) = &self.state.aaf_install {
+            install.stop(std::time::Duration::from_secs(1));
+        }
+        if let Some(reading) = &self.state.aaf_reading {
+            reading.stop(std::time::Duration::from_secs(1));
+        }
         // Before anything that can hang: a lock left behind makes the
         // next open ask a question nobody needs to answer.
         if let Some(keeper) = self.lock_keeper.take() {

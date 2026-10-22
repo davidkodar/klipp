@@ -2832,6 +2832,10 @@ pub struct AppState {
     /// Clips carried by a Ctrl-drag from one stacked timeline to the
     /// other: the sequence they are in, and which (#82).
     pub clip_carry: Option<(klipp_core::SequenceId, Vec<ClipId>)>,
+    /// An AAF file waiting on OpenTimelineIO's converter (#2086).
+    pub aaf_install: Option<crate::aaf_install::AafInstall>,
+    /// An AAF being read through the converter, off the UI thread.
+    pub aaf_reading: Option<crate::aaf_install::AafReading>,
     /// Where project templates are kept (#618); `None` for the user's
     /// configuration folder's.
     pub project_templates_dir: Option<std::path::PathBuf>,
@@ -5013,6 +5017,8 @@ impl Default for AppState {
             selects_drag: None,
             selects_edit: false,
             clip_carry: None,
+            aaf_install: None,
+            aaf_reading: None,
             selects_height: 120.0,
             project_templates_dir: None,
             shared_library: crate::shared_library::dir().map(|d| crate::shared_library::SharedLibrary::load(&d)).unwrap_or_default(),

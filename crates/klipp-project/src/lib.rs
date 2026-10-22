@@ -52,6 +52,7 @@ pub mod mlt_export;
 pub mod mlt_import;
 pub mod import_report;
 pub mod otio_export;
+pub mod otio_tool;
 pub mod otio_import;
 pub mod path_util;
 mod save;

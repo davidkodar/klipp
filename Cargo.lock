@@ -3369,6 +3369,7 @@ dependencies = [
 name = "klipp-project"
 version = "0.1.0"
 dependencies = [
+ "dirs",
  "image",
  "klipp-core",
  "klipp-effects",
