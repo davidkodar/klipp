@@ -115,10 +115,20 @@ impl Clip {
         })
     }
 
-    /// An enabled SpeedRamp requesting frame blending. The caller
-    /// separately checks playback direction and speed at the current time.
+    /// An enabled SpeedRamp requesting frame blending, by cross-fade or
+    /// by optical flow. The caller separately checks playback direction
+    /// and speed at the current time.
     pub fn has_frame_blend_entry(&self) -> bool {
-        self.picture_entries().iter().any(|(e, on)| *on && matches!(e, BuiltinEffect::SpeedRamp { blend_mode: 1, .. }))
+        self.frame_blend_mode().is_some()
+    }
+
+    /// The blend mode of the first enabled SpeedRamp that blends frames:
+    /// 1 cross-fades, 2 follows the motion (#2215). `None` when none does.
+    pub fn frame_blend_mode(&self) -> Option<u32> {
+        self.picture_entries().iter().find_map(|(e, on)| match e {
+            BuiltinEffect::SpeedRamp { blend_mode: mode @ (1 | 2), .. } if *on => Some(*mode),
+            _ => None,
+        })
     }
 
     /// Whether an enabled plug-in matches a render-path requirement.

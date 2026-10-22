@@ -98,7 +98,7 @@ pub(super) static PARAMS: &[ParamEntry] = &[
     at(STABILIZE, "crop_ratio", P::scrub(0.002, 3)),
     at(STABILIZE, "zoom", toggle().label("Auto-zoom to fill")),
     at(RAMP, "speed", P::scrub(0.05, 2).suffix(Suffix::Text("×")).order(0)),
-    at(RAMP, "blend_mode", combo().label("Blend Mode").labels(&["Nearest", "Linear"]).order(1)),
+    at(RAMP, "blend_mode", combo().label("Blend Mode").labels(&["Nearest", "Linear", "Optical Flow"]).order(1)),
     // The plug-in and its values, drawn by its editor (M3 step 0d).
     at(FREI0R, "type_id", P::shown_as(Widget::Custom("frei0r_plugin")).group("Plug-in")),
     at(FREI0R, "params", P::shown_as(Widget::Custom("frei0r_plugin")).group("Plug-in")),

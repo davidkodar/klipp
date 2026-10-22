@@ -52,6 +52,7 @@ pub mod color_wgsl;
 pub mod colour_transform;
 pub mod composite;
 pub mod corner_pin;
+pub mod flow;
 pub mod frei0r_effect;
 pub mod generator;
 pub mod gpu;
@@ -800,9 +801,8 @@ pub enum BuiltinEffect {
         /// Playback speed multiplier (0.1=10% slow-mo, 1.0=normal, 4.0=4x fast)
         speed: f32,
         /// Blend mode: 0=nearest (no blend), 1=linear (cross-fade between
-        /// neighbouring frames). There is no optical-flow mode — see the
-        /// issue on retiming; this comment used to claim a mode 2 that
-        /// nothing implements and the inspector never offered.
+        /// neighbouring frames), 2=optical flow (the in-between frame
+        /// drawn by following the motion, [`flow`]; #2215).
         blend_mode: u32,
     },
     /// Third-party frei0r 1.x video plugin. The plugin universe is

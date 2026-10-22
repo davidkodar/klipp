@@ -5980,7 +5980,9 @@ fn source_nodes(clip: &Clip, blend: bool, denoise: Option<(f32, f32)>, inspected
     use klipp_nodes::{Node, NodeKind, NodeParams};
     let mut effects: Vec<BuiltinEffect> = Vec::new();
     if blend {
-        effects.push(BuiltinEffect::SpeedRamp { speed: 1.0, blend_mode: 1 });
+        // Cross-faded or followed by its motion (#2215), as the clip's
+        // ramp asks.
+        effects.push(BuiltinEffect::SpeedRamp { speed: 1.0, blend_mode: clip.frame_blend_mode().unwrap_or(1) });
     }
     if let Some((strength, threshold)) = denoise {
         effects.push(BuiltinEffect::TemporalDenoise { strength, threshold });
@@ -6019,7 +6021,7 @@ fn picture_source_nodes(clip: &Clip) -> (Option<NodeId>, Option<NodeId>) {
         })
         .collect();
     let first = |is: fn(&BuiltinEffect) -> bool| entries.iter().find(|(_, e)| is(e)).map(|(id, _)| *id);
-    (first(|e| matches!(e, BuiltinEffect::SpeedRamp { blend_mode: 1, .. })), first(|e| matches!(e, BuiltinEffect::TemporalDenoise { .. })))
+    (first(|e| matches!(e, BuiltinEffect::SpeedRamp { blend_mode: 1 | 2, .. })), first(|e| matches!(e, BuiltinEffect::TemporalDenoise { .. })))
 }
 
 /// `clip`'s display step as a plan node (step 11c), with an id fixed per
@@ -7032,8 +7034,9 @@ fn file_stamp(g: &klipp_core::GeneratorData) -> Option<(std::time::SystemTime, u
     Some((meta.modified().ok()?, meta.len()))
 }
 
-/// Whether `clip` frame-blends at `time`: a `SpeedRamp` in blend mode 1,
-/// not frozen, with the clip running below real time.
+/// Whether `clip` frame-blends at `time`: a `SpeedRamp` in blend mode 1
+/// or 2 (by optical flow), not frozen, with the clip running below real
+/// time.
 pub fn frame_blends(clip: &Clip, time: Timecode) -> bool {
     let blend = clip.has_frame_blend_entry();
     // A reversed clip's next frame is the one before: there is no

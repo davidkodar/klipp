@@ -5295,7 +5295,7 @@ impl GraphExecutor {
     /// with none, or no context, the input passes on. Each frame left out
     /// is declined (step 10): past the media's edge as a fallback, any
     /// other as a frame missing, which an export refuses.
-    fn at_the_source(&mut self, node_id: NodeId, effects: &[klipp_effects::BuiltinEffect], input: &[f32], ctx: Option<&mut crate::frame_context::FrameContext<'_>>) -> Vec<f32> {
+    fn at_the_source(&mut self, node_id: NodeId, effects: &[klipp_effects::BuiltinEffect], input: &[f32], width: u32, height: u32, ctx: Option<&mut crate::frame_context::FrameContext<'_>>) -> Vec<f32> {
         use crate::frame_context::Neighbour;
         self.source_runs += 1;
         let Some(ctx) = ctx else {
@@ -5313,9 +5313,10 @@ impl GraphExecutor {
             }
             // The frame blend (M4 step 7): the frame shown mixed toward the
             // media's next one by where the source time falls between their
-            // presentation times. Without either time, or with no next
+            // presentation times, cross-faded or, in blend mode 2, followed
+            // by its motion (#2215). Without either time, or with no next
             // frame, the frame as it is.
-            if let klipp_effects::BuiltinEffect::SpeedRamp { .. } = effect {
+            if let klipp_effects::BuiltinEffect::SpeedRamp { blend_mode, .. } = *effect {
                 let Some(mut pts) = ctx.source_pts else { continue };
                 // The frame after the one shown. A blend reads half a media
                 // frame early, so a source that gives the frame at or before
@@ -5337,8 +5338,14 @@ impl GraphExecutor {
                         if let Some(next_pts) = next.pts.filter(|p| *p > pts + 1e-6) {
                             let weight = (((ctx.source_secs - pts) / (next_pts - pts)).clamp(0.0, 1.0)) as f32;
                             if weight > 1e-4 && next.rgba.len() == out.len() {
-                                for (o, n) in out.iter_mut().zip(next.rgba.iter()) {
-                                    *o += (n - *o) * weight;
+                                let followed = (blend_mode == 2).then(|| self.follow_motion(node_id, effect, ctx.clip, &out, &next.rgba, (width, height), (pts, next_pts), weight)).flatten();
+                                match followed {
+                                    Some(pixels) => out = pixels,
+                                    None => {
+                                        for (o, n) in out.iter_mut().zip(next.rgba.iter()) {
+                                            *o += (n - *o) * weight;
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -5365,6 +5372,39 @@ impl GraphExecutor {
             out = klipp_effects::temporal_denoise::denoise_frame(&out, &refs, threshold, strength, klipp_color::linear::luma_coefs(self.working_colorspace));
         }
         out
+    }
+
+    /// The in-between frame at `weight` from `from` (shown at `pts.0`) to
+    /// `to` (at `pts.1`) by optical flow on the GPU (#2215), the pair's
+    /// flow kept for its later frames. `None`, for the caller to
+    /// cross-fade, without a GPU or when its draw fails; both recorded as
+    /// fallbacks. A frame whose motion can't be followed comes back
+    /// cross-faded whole (`klipp_effects::flow::UNRELIABLE_FRACTION`),
+    /// recorded the same way and declined as a fallback, so it shows in
+    /// the readiness report and not in the log alone.
+    #[allow(clippy::too_many_arguments)]
+    fn follow_motion(&mut self, node_id: NodeId, effect: &klipp_effects::BuiltinEffect, clip: klipp_core::ClipId, from: &[f32], to: &[f32], (width, height): (u32, u32), pts: (f64, f64), weight: f32) -> Option<Vec<f32>> {
+        use klipp_effects::residency::{self, Work};
+        self.ensure_gpu();
+        let luma = klipp_color::linear::luma_coefs(self.working_colorspace);
+        let key = klipp_effects::gpu::FlowKey { clip: clip.0.as_u128(), from_secs: pts.0, to_secs: pts.1 };
+        let made = match self.gpu.as_mut() {
+            Some(gpu) => gpu.interpolate_by_flow(key, from, to, width, height, weight, luma),
+            None => {
+                residency::record("frame_blend.optical_flow", "no GPU: the frames cross-faded", Work::Fallback);
+                return None;
+            }
+        };
+        let Some(made) = made else {
+            residency::record("frame_blend.optical_flow", "the GPU's draw failed: the frames cross-faded", Work::Fallback);
+            return None;
+        };
+        if made.cross_faded {
+            residency::record("frame_blend.optical_flow", "the motion couldn't be followed: the frame cross-faded", Work::Fallback);
+            let why = format!("{:.0}% of the frame couldn't be followed", made.unreliable * 100.0);
+            self.decline(node_id, NodeKind::Effect, crate::DeclineOutcome::Fallback, crate::decline::effect_name(effect), "its motion couldn't be followed, so the frames cross-faded", why);
+        }
+        Some(made.pixels)
     }
 
     /// The source's frames either side of the one drawn, for temporal
@@ -5548,7 +5588,7 @@ impl GraphExecutor {
             // A source-boundary node (M4 step 6): it reads the clip's
             // source at other times, which only its context gives it.
             NodeKind::Effect | NodeKind::EffectSegment if params.effects.iter().any(klipp_effects::registry::needs_source_neighbours) => {
-                self.at_the_source(node_id, &params.effects, primary_input, ctx)
+                self.at_the_source(node_id, &params.effects, primary_input, width, height, ctx)
             }
             // A frei0r plug-in on the CPU, its instances kept across
             // frames (M4 step 5).
