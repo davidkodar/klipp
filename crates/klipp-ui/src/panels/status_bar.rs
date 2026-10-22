@@ -37,6 +37,12 @@ pub fn show(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme) {
             };
             status_item(ui, theme, &audio_label);
 
+            // A GPU driver refusing work (#2394): Klipp goes on in
+            // software, and says why it is slower.
+            if let Some(warning) = klipp_engine::gpu_health::Refusals::now().warning() {
+                ui.colored_label(theme.marker_error, egui::RichText::new("GPU refusing work").size(11.0)).on_hover_text(warning);
+            }
+
             // Filmstrip generation progress
             if state.filmstrip_generating {
                 let elapsed = state.filmstrip_generate_start.elapsed().as_secs_f64();

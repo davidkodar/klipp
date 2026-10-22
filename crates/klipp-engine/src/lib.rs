@@ -75,6 +75,7 @@ pub mod engine;
 pub mod fast_path;
 pub mod scopes;
 pub mod frame;
+pub mod gpu_health;
 pub mod ffmpeg_caps;
 pub mod grade_resample;
 pub mod mix_thread;
