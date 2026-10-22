@@ -67,6 +67,10 @@ name = "held_gpu_drag"
 path = "tests/held_gpu_drag.rs"
 
 [[test]]
+name = "a_strobe_plays_through"
+path = "tests/a_strobe_plays_through.rs"
+
+[[test]]
 name = "a_cut_from_a_still_is_opened_ahead"
 path = "tests/a_cut_from_a_still_is_opened_ahead.rs"
 
