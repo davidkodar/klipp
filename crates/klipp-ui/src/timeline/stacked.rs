@@ -180,7 +180,7 @@ fn header_row(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, rect:
 /// selection it is in, carried as a copy to the other timeline, not moved.
 /// Whether it began one (a plain drag, or nothing stacked, does not).
 pub fn start_carry(state: &mut AppState, hit: klipp_core::ClipId, ctrl: bool) -> bool {
-    if !ctrl || !state.selects_edit || state.selects_sequence.is_none() {
+    if !ctrl || !stacked_edit(state) {
         return false;
     }
     let mut ids = state.selected_clips.clone();
@@ -194,6 +194,12 @@ pub fn start_carry(state: &mut AppState, hit: klipp_core::ClipId, ctrl: bool) ->
     true
 }
 
+/// Whether the selects are stacked above the cut as a timeline of their
+/// own: switched on, still a sequence, and not on the Colour page's strip.
+pub fn stacked_edit(state: &AppState) -> bool {
+    !state.show_color_panel && state.selects_edit && state.selects_sequence.is_some_and(|id| state.sequences.iter().any(|s| s.id == id))
+}
+
 /// How near, in points, a carried copy snaps to the playhead or a clip's
 /// edge, as a clip's drag does.
 const SNAP_PX: f32 = 8.0;
@@ -204,7 +210,7 @@ const SNAP_PX: f32 = 8.0;
 /// that timeline worked in and the copy made in one step (an overwrite
 /// with Alt). Let go over their own timeline or nowhere, nothing.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn carry_frame(st: &mut Stacked, ui: &egui::Ui, state: &mut AppState, theme: &KlippTheme, top: egui::Rect, cut: egui::Rect, cmds: &mut Vec<AppCommand>) {
+pub(super) fn carry_frame(st: &mut Stacked, ui: &egui::Ui, state: &mut AppState, theme: &KlippTheme, top: egui::Rect, cut: egui::Rect, cut_tracks: &[(usize, klipp_timeline::TrackKind, egui::Rect)], cmds: &mut Vec<AppCommand>) {
     let Some((from, ids)) = state.clip_carry.clone() else { return };
     let top_id = state.sequences[st.top_idx].id;
     let cut_idx = if state.active_sequence_idx == st.top_idx { st.view.active_sequence_idx } else { state.active_sequence_idx };
@@ -216,6 +222,9 @@ pub(super) fn carry_frame(st: &mut Stacked, ui: &egui::Ui, state: &mut AppState,
     let left = rect.min.x + state.track_header_width;
     let x_of = |secs: f64| left + secs as f32 * zoom - scroll;
     let over = ui.input(|i| i.pointer.latest_pos()).filter(|p| rect.contains(*p) && p.x >= left);
+    // The target's track under the pointer, as it was drawn this frame.
+    let tracks = if from == top_id { cut_tracks.to_vec() } else { st.old.frame_cache.track_rects.clone() };
+    let lane = over.and_then(|p| tracks.iter().find(|(_, _, r)| r.y_range().contains(p.y)).map(|(i, _, r)| (*i, *r)));
     let Some(source) = state.sequences.iter().find(|s| s.id == from) else {
         state.clip_carry = None;
         return;
@@ -234,7 +243,9 @@ pub(super) fn carry_frame(st: &mut Stacked, ui: &egui::Ui, state: &mut AppState,
     let overwrite = ui.input(|i| i.modifiers.alt);
     if let (Some(p), Some(at)) = (over, at) {
         let ghost = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, ui.id().with("clip_carry_ghost")));
-        let shape = egui::Rect::from_min_max(egui::pos2(x_of(at), p.y - 12.0), egui::pos2(x_of(at + span).max(x_of(at) + 4.0), p.y + 12.0));
+        // On the track it goes to, else under the pointer.
+        let (y0, y1) = lane.map_or((p.y - 12.0, p.y + 12.0), |(_, r)| (r.min.y + 2.0, r.max.y - 2.0));
+        let shape = egui::Rect::from_min_max(egui::pos2(x_of(at), y0), egui::pos2(x_of(at + span).max(x_of(at) + 4.0), y1));
         ghost.rect_filled(shape, 3.0, theme.accent.gamma_multiply(0.25));
         ghost.rect_stroke(shape, 3.0, egui::Stroke::new(1.0_f32, theme.accent));
         let n = carried.len();
@@ -249,7 +260,7 @@ pub(super) fn carry_frame(st: &mut Stacked, ui: &egui::Ui, state: &mut AppState,
             if !live {
                 focus(&mut st.view, state, cmds);
             }
-            cmds.push(AppCommand::PasteClipsFrom { from, ids, at: klipp_core::Timecode::from_secs_f64(at, fps.rate()), overwrite });
+            cmds.push(AppCommand::PasteClipsFrom { from, ids, at: klipp_core::Timecode::from_secs_f64(at, fps.rate()), overwrite, track: lane.map(|(i, _)| i), linked: state.linked_selection });
         }
     }
 }
@@ -598,5 +609,33 @@ mod tests {
         }
         let ids_of = |s: &klipp_timeline::Sequence| s.all_clips().map(|c| c.id).collect::<Vec<_>>();
         assert_eq!(ids_of(&seqs[0]), ids_of(&before), "undone");
+    }
+
+    /// A carry left set (let go outside the window, say) is dropped as
+    /// soon as no button is down, so a later plain click pastes nothing.
+    #[test]
+    fn a_stale_carry_is_dropped_and_never_pastes() {
+        let mut s = Stack::new();
+        let clip = s.state.sequences[0].all_clips().next().unwrap().id;
+        s.state.clip_carry = Some((s.state.sequences[0].id, vec![clip]));
+        s.frame(Vec::new());
+        assert!(s.state.clip_carry.is_none());
+        let on = egui::pos2(700.0, 34.0 + 24.0 + HEADER + 60.0);
+        let (sent, _) = s.drag(on, on, egui::Modifiers::NONE);
+        assert!(!sent.iter().any(|c| matches!(c, AppCommand::PasteClipsFrom { .. })), "{sent:?}");
+    }
+
+    /// Carried down onto a track of the cut, the clips go onto that track,
+    /// whatever track they were on, and the Linked switch is passed on.
+    #[test]
+    fn a_carry_lands_on_the_track_it_is_let_go_over() {
+        let mut s = Stack::new();
+        s.state.sequences[0].tracks.insert(0, klipp_timeline::Track::new("Video 2", TrackKind::Video));
+        s.state.linked_selection = false;
+        let texts = s.frame(Vec::new());
+        let lane_y = texts.iter().find(|(t, p)| t == "Video 2" && p.y > 300.0).expect("the cut's Video 2").1.y;
+        let selects_clip = texts.iter().find(|(t, p)| t.contains("stack.mov") && p.y < 280.0).expect("the selects' clip").1;
+        let (sent, _) = s.drag(selects_clip, egui::pos2(700.0, lane_y), egui::Modifiers::COMMAND);
+        assert!(sent.iter().any(|c| matches!(c, AppCommand::PasteClipsFrom { track: Some(0), linked: false, .. })), "{sent:?}");
     }
 }

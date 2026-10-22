@@ -107,7 +107,7 @@ impl NewTimelinePanel {
         }
 
         // ── The selects strip, stacked above the cut (#82) ──
-        let stacked_edit = !strip && state.selects_edit && state.selects_sequence.is_some_and(|id| state.sequences.iter().any(|s| s.id == id));
+        let stacked_edit = stacked::stacked_edit(state);
         let strip_h = if strip || state.selects_sequence.is_none() {
             0.0
         } else {
@@ -165,9 +165,14 @@ impl NewTimelinePanel {
         // Clips carried from one of the two to the other (#82).
         if stacked_edit && state.clip_carry.is_some() {
             if let Some(mut st) = self.stacked.take() {
-                stacked::carry_frame(&mut st, ui, state, theme, top_rect, content_rect, &mut cmds);
+                stacked::carry_frame(&mut st, ui, state, theme, top_rect, content_rect, &old_timeline.frame_cache.track_rects, &mut cmds);
                 self.stacked = Some(st);
             }
+        }
+        // A carry lives only while the button is down: let go anywhere,
+        // here or not, it is over, so it can never land on a later click.
+        if state.clip_carry.is_some() && !ui.input(|i| i.pointer.primary_down()) {
+            state.clip_carry = None;
         }
         cmds
     }

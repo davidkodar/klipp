@@ -141,6 +141,31 @@ fn target_track(seq: &Sequence, copied: &CopiedClip) -> Option<usize> {
         .or_else(|| (0..seq.tracks.len()).find(|&ti| usable(ti)))
 }
 
+/// `cb`, copied from `source`, made ready to go into `target` as a carry
+/// between stacked timelines puts it (#82): with `linked` off, only the
+/// clips `ids` themselves, as a move takes them; onto `track`, the
+/// topmost of that track's kind there and the others of its kind as far
+/// below it as they were (any that would fall past the last track left
+/// where the paste puts them).
+pub fn carried(source: &Sequence, target: &Sequence, mut cb: ClipboardContent, ids: &[ClipId], track: Option<usize>, linked: bool) -> ClipboardContent {
+    if !linked {
+        cb.clips.retain(|c| ids.contains(&c.clip.id));
+    }
+    if let Some(kind) = track.and_then(|t| target.tracks.get(t)).map(|t| t.kind) {
+        let kind_of = |i: usize| source.tracks.get(i).map(|t| t.kind);
+        if let Some(top) = cb.clips.iter().filter(|c| kind_of(c.track) == Some(kind)).map(|c| c.track).min() {
+            let to = track.unwrap_or(top);
+            for c in cb.clips.iter_mut().filter(|c| kind_of(c.track) == Some(kind)) {
+                let moved = to + (c.track - top);
+                if target.tracks.get(moved).is_some_and(|t| t.kind == kind) {
+                    c.track = moved;
+                }
+            }
+        }
+    }
+    cb
+}
+
 /// `cb` pasted into `seq` at `at`: new ids, each clip at its own offset
 /// from the first, a linked pair linked again and to nothing else, what
 /// belongs to the original alone left behind.
@@ -441,5 +466,39 @@ mod tests {
         assert_eq!(selection_for(x, Some(x), &[x, y]), vec![x, y]);
         assert_eq!(selection_for(z, Some(x), &[x, y]), vec![z]);
         assert_eq!(selection_for(x, Some(x), &[]), vec![x]);
+    }
+}
+
+#[cfg(test)]
+mod carried_tests {
+    use super::*;
+    use klipp_timeline::{Clip, Track, TrackKind};
+
+    fn t(s: f64) -> Timecode {
+        Timecode::from_secs_f64(s, 25)
+    }
+
+    /// A carry onto a track puts the topmost clip of that kind there; with
+    /// Linked off it takes the clip alone, not its sound.
+    #[test]
+    fn a_carry_goes_onto_its_track_and_alone_when_unlinked() {
+        let media = klipp_core::MediaId::new();
+        let mut v = Clip::media(media, t(0.0), t(2.0), t(0.0), t(2.0));
+        let mut a = Clip::media(media, t(0.0), t(2.0), t(0.0), t(2.0));
+        v.linked_clip_id = Some(a.id);
+        a.linked_clip_id = Some(v.id);
+        let vid = v.id;
+        let mut source = Sequence::new_default();
+        source.tracks = vec![Track::new("V1", TrackKind::Video), Track::new("A1", TrackKind::Audio)];
+        source.tracks[0].clips = vec![v];
+        source.tracks[1].clips = vec![a];
+        let mut target = Sequence::new_default();
+        target.tracks = vec![Track::new("V2", TrackKind::Video), Track::new("V1", TrackKind::Video), Track::new("A1", TrackKind::Audio)];
+        let cb = copy(&source, &[vid]).unwrap();
+        let both = carried(&source, &target, cb.clone(), &[vid], Some(1), true);
+        assert_eq!(both.clips.len(), 2, "with its sound");
+        assert_eq!(both.clips.iter().find(|c| c.clip.id == vid).unwrap().track, 1, "onto the track let go over");
+        let alone = carried(&source, &target, cb, &[vid], Some(0), false);
+        assert_eq!(alone.clips.iter().map(|c| (c.clip.id, c.track)).collect::<Vec<_>>(), vec![(vid, 0)]);
     }
 }
