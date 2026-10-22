@@ -110,7 +110,7 @@ fn fields(line: &str, delimiter: char) -> Vec<String> {
 /// Comments read back from `text`: the comment template, or any
 /// delimited table (comma, semicolon or tab) whose header names a time
 /// column and a comment column, or plain lines that begin with a
-/// timecode ("00:01:23 text", "[1:23] Name: text", "1:23 - text"). Lines
+/// timecode (`00:01:23 text`, `[1:23] Name: text`, `1:23 - text`). Lines
 /// starting with `#` are notes. `Err` when nothing in it is a comment.
 pub fn parse_comments(text: &str, fps: f64) -> Result<Vec<ReviewComment>, String> {
     let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).collect();
