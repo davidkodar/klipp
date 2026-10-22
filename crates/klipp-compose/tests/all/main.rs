@@ -106,6 +106,8 @@ mod title_image_gpu;
 mod title_keyed_position_gpu;
 #[path = "../title_layers_kept.rs"]
 mod title_layers_kept;
+#[path = "../title_moving_styles_gpu.rs"]
+mod title_moving_styles_gpu;
 #[path = "../title_routes_f16.rs"]
 mod title_routes_f16;
 #[path = "../truth_lanes_render.rs"]
