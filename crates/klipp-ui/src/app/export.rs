@@ -3325,6 +3325,10 @@ impl KlippApp {
                 self.import_timeline_report(path, *request_id);
                 true
             }
+            AppCommand::OpenFromAnotherEditor { path, request_id } => {
+                self.open_from_another_editor(path, *request_id);
+                true
+            }
             AppCommand::ConsolidateProject {
                 dest_dir,
                 include_proxies,
@@ -3775,11 +3779,51 @@ mod export_prefs_tests {
 impl super::KlippApp {
     pub(super) fn import_timeline_report(&mut self, path: &std::path::Path, request_id: uuid::Uuid) {
         let result = klipp_project::import_report::load(path, self.state.sequence().fps, &self.state.media_pool);
+        self.take_import(path, result, request_id, false);
+    }
+
+    /// A timeline from another editor opened as a new project (#2083). The
+    /// person's own request with unsaved changes asks about them first; a
+    /// socket's is refused, since nobody is there to answer.
+    pub(super) fn open_from_another_editor(&mut self, path: &std::path::Path, request_id: uuid::Uuid) {
+        if self.state.dirty {
+            if request_id.is_nil() {
+                self.state.show_unsaved_dialog = true;
+                self.state.unsaved_dialog_action = UnsavedAction::OpenFromAnotherEditor(path.to_path_buf());
+            } else {
+                let error = "the open project has unsaved changes: save it first, or import the timeline into it without new_project";
+                *self.state.control_shared.import_outcome.lock().unwrap_or_else(|e| e.into_inner()) = Some(serde_json::json!({"request_id":request_id,"error":error}));
+            }
+            return;
+        }
+        self.open_from_another_editor_now(path, request_id);
+    }
+
+    /// [`Self::open_from_another_editor`] with the open project's changes
+    /// saved or let go. The file is read before the project is closed, so
+    /// one that does not open leaves it as it was.
+    pub(super) fn open_from_another_editor_now(&mut self, path: &std::path::Path, request_id: uuid::Uuid) {
+        let result = klipp_project::import_report::load(path, self.state.sequence().fps, &self.state.media_pool);
+        if result.is_ok() {
+            self.do_new_project();
+        }
+        self.take_import(path, result, request_id, true);
+    }
+
+    /// An import's outcome taken in: its sequence added and opened, in
+    /// place of the fresh project's own when `replace`, its media with it,
+    /// and its report shown and published for the socket.
+    fn take_import(&mut self, path: &std::path::Path, result: Result<klipp_project::mlt_import::ImportResult, String>, request_id: uuid::Uuid, replace: bool) {
         let outcome = match result {
             Ok(result) => {
                 let report = klipp_project::import_report::ImportReport::from_import(path, &result);
                 for item in result.media_pool.all().cloned() { self.state.media_pool.add(item); }
-                self.state.sequences.push(result.sequence);
+                if replace {
+                    self.state.fps = result.sequence.fps;
+                    self.state.sequences = vec![result.sequence];
+                } else {
+                    self.state.sequences.push(result.sequence);
+                }
                 self.state.active_sequence_idx = self.state.sequences.len() - 1;
                 self.state.dirty = true;
                 self.state.show_import_report = true;

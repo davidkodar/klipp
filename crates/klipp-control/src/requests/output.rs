@@ -342,17 +342,18 @@ pub(crate) fn respond(
             Ok(v)
         }
 
-        ControlCommand::ImportTimeline { path } => {
+        ControlCommand::ImportTimeline { path, new_project } => {
             if in_batch { return Err("import_timeline must be sent on its own".into()); }
             let Some(path) = path else {
                 return Ok(ctx.shared.import_outcome.lock().map_err(|_| "import report lock poisoned")?.clone().unwrap_or(json!({"report":null})));
             };
             let path = std::path::PathBuf::from(path);
             if !path.is_absolute() || !path.is_file() { return Err("import path must name an existing absolute file".into()); }
-            let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("").to_ascii_lowercase();
-            if !matches!(ext.as_str(), "otio" | "fcpxml" | "xml" | "kdenlive" | "mlt" | "edl") { return Err("Import a .otio, .fcpxml/.xml, .kdenlive, .mlt or .edl timeline".into()); }
+            // The format is told from the file's content where it is read
+            // (#2083); one it is not is refused there, by name.
             let request_id = uuid::Uuid::new_v4();
-            let mut result = send(AppCommand::ImportTimeline { path, request_id })?;
+            let command = if new_project { AppCommand::OpenFromAnotherEditor { path, request_id } } else { AppCommand::ImportTimeline { path, request_id } };
+            let mut result = send(command)?;
             result["request_id"] = json!(request_id);
             let outcome = ctx.shared.import_outcome.lock().map_err(|_| "import report lock poisoned")?.clone();
             if let Some(outcome) = outcome.filter(|o| o["request_id"] == json!(request_id)) {

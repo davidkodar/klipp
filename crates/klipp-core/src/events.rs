@@ -1624,6 +1624,11 @@ pub enum AppCommand {
     ImportOtio { path: PathBuf },
     /// Import an existing supported interchange format and publish its report.
     ImportTimeline { path: PathBuf, request_id: uuid::Uuid },
+    /// A timeline from another editor opened as a new project (#2083),
+    /// its format told from its content, and its report published.
+    /// `request_id` nil is the person's own: unsaved changes are asked
+    /// about first; a socket's is refused while there are any.
+    OpenFromAnotherEditor { path: PathBuf, request_id: uuid::Uuid },
     /// Import a CMX 3600 EDL as a new sequence, its events matched to the
     /// media in the pool (#925).
     ImportEdl { path: PathBuf },

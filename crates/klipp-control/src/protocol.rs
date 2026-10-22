@@ -1043,8 +1043,14 @@ pub enum ControlCommand {
         #[serde(default)]
         download_models: bool,
     },
-    /// Append a supported interchange timeline; omit path to read the last outcome.
-    ImportTimeline { path: Option<String> },
+    /// Append a supported interchange timeline; omit path to read the last
+    /// outcome. With `new_project`, open it as a new project instead
+    /// (#2083), refused while the open one has unsaved changes.
+    ImportTimeline {
+        path: Option<String>,
+        #[serde(default)]
+        new_project: bool,
+    },
     /// What is said in a media file between two times, with when: the
     /// segments, and with `words` every word and its start and end, in
     /// the file's seconds. For setting a cut on the edge of a word.

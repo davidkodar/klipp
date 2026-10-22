@@ -99,7 +99,7 @@ impl KlippApp {
                 self.suppress_fps_prompt = true;
                 let touches_params = env.commands.iter().any(|c| matches!(c, AppCommand::SetNodeParam { .. } | AppCommand::AddKeyframe { .. } | AppCommand::RemoveKeyframe { .. }));
                 let import_request = env.commands.iter().find_map(|c| match c {
-                    AppCommand::ImportTimeline { request_id, .. } => Some(*request_id), _ => None,
+                    AppCommand::ImportTimeline { request_id, .. } | AppCommand::OpenFromAnotherEditor { request_id, .. } => Some(*request_id), _ => None,
                 });
                 let project_switch = env.commands.iter().any(|c| matches!(c, AppCommand::OpenProjectNow { .. } | AppCommand::CloseProjectNow { .. }));
                 let project_before = project_switch.then(|| self.state.control_shared.project.lock().unwrap_or_else(|e|e.into_inner()).generation);

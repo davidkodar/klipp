@@ -211,7 +211,7 @@ fn harness() -> Harness {
                             media_pool.write().unwrap_or_else(|e| e.into_inner()).add(item);
                         }
 
-                        if let klipp_core::AppCommand::ImportTimeline { path, request_id } = &c {
+                        if let klipp_core::AppCommand::ImportTimeline { path, request_id } | klipp_core::AppCommand::OpenFromAnotherEditor { path, request_id } = &c {
                             let pool = media_pool.read().unwrap();
                             let result = klipp_project::import_report::load(path, klipp_core::Fps::film_24(), &pool);
                             let outcome = match result {
@@ -3736,6 +3736,16 @@ fn timeline_import_returns_the_same_report_and_reports_failures() {
     let read = h.ok(json!({"method":"import_timeline"}));
     assert_eq!(read["report"], result["report"]);
     assert_eq!(read["request_id"], result["request_id"]);
+    // #2083: opened as a new project the same way, and a misnamed file by
+    // what is in it; a format not read yet is refused by name.
+    let misnamed = path.with_extension("xml");
+    std::fs::copy(&path, &misnamed).unwrap();
+    let opened = h.ok(json!({"method":"import_timeline","path":misnamed,"new_project":true}));
+    assert_eq!(opened["report"]["imported"], result["report"]["imported"], "{opened}");
+    std::fs::write(&misnamed, "<xmeml version=\"5\"/>").unwrap();
+    let xmeml = h.call(json!({"method":"import_timeline","path":misnamed,"new_project":true}));
+    assert!(xmeml["error"].as_str().unwrap().contains("xmeml"), "{xmeml}");
+    std::fs::remove_file(misnamed).unwrap();
     std::fs::write(&path, "not json").unwrap();
     let failed = h.call(json!({"method":"import_timeline","path":path}));
     assert_eq!(failed["ok"], false, "{failed}");

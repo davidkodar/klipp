@@ -74,14 +74,81 @@ impl ImportReport {
     }
 }
 
-/// Only formats already supported by the existing importers; conversion is
-/// deliberately not part of reporting.
+/// A timeline file's interchange format, told from what is in it (#2083).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Format {
+    Fcpxml,
+    /// Final Cut Pro 7 XML: told apart from FCPXML, not read yet (#2084).
+    Xmeml,
+    Otio,
+    /// Kdenlive's project, or any MLT XML.
+    Mlt,
+    Edl,
+    /// Advanced Authoring Format: a binary compound file, not read yet
+    /// (#2086).
+    Aaf,
+}
+
+/// What the formats Klipp opens are, for a refusal.
+pub const READS: &str = "FCPXML (.fcpxml, .xml), OpenTimelineIO (.otio), Kdenlive or MLT (.kdenlive, .mlt) and CMX 3600 EDL (.edl)";
+
+/// How far into a file its format is looked for.
+const SNIFF_BYTES: u64 = 64 * 1024;
+
+/// `path`'s format from its first bytes, whatever its extension: an XML
+/// file by its root element, OTIO by its schema, an EDL by its events, an
+/// AAF by its compound-file signature. `Err` names the file and says what
+/// is read.
+pub fn detect(path: &Path) -> Result<Format, String> {
+    use std::io::Read;
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string());
+    let mut head = Vec::new();
+    std::fs::File::open(path).and_then(|f| f.take(SNIFF_BYTES).read_to_end(&mut head)).map_err(|e| format!("{name}: {e}"))?;
+    detect_bytes(&head).ok_or_else(|| format!("{name} is not a timeline Klipp can open; it opens {READS}"))
+}
+
+/// [`detect`] on a file's first bytes.
+pub fn detect_bytes(head: &[u8]) -> Option<Format> {
+    // A compound file (AAF, and others built on it): its signature.
+    if head.starts_with(&[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]) {
+        return Some(Format::Aaf);
+    }
+    let text = String::from_utf8_lossy(head);
+    let text = text.trim_start_matches('\u{feff}').trim_start();
+    if text.starts_with('{') {
+        return text.contains("\"OTIO_SCHEMA\"").then_some(Format::Otio);
+    }
+    if text.starts_with('<') {
+        // The root element: the first tag that is not a declaration, a
+        // comment or a doctype.
+        let root = text.match_indices('<').map(|(i, _)| &text[i + 1..]).find(|t| !t.starts_with('?') && !t.starts_with('!'))?;
+        let tag: String = root.chars().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '-').collect();
+        return match tag.as_str() {
+            "fcpxml" => Some(Format::Fcpxml),
+            "xmeml" => Some(Format::Xmeml),
+            "mlt" => Some(Format::Mlt),
+            _ => None,
+        };
+    }
+    // An EDL: a TITLE line, or an event line (number, reel, track, edit).
+    let event = |l: &str| {
+        let f: Vec<&str> = l.split_whitespace().collect();
+        f.len() >= 4 && f[0].len() >= 3 && f[0].chars().all(|c| c.is_ascii_digit()) && matches!(f[2].chars().next(), Some('V' | 'A' | 'B'))
+    };
+    text.lines().take(50).any(|l| l.trim_start().starts_with("TITLE:") || event(l)).then_some(Format::Edl)
+}
+
+/// The timeline at `path`, read by the importer for its format, told from
+/// its content (#2083): a misnamed file opens as what it is. A format told
+/// apart but not read yet is refused by name, with what to export instead.
 pub fn load(path: &Path, fps: klipp_core::Fps, pool: &klipp_media::MediaPool) -> Result<ImportResult, String> {
-    match path.extension().and_then(|s| s.to_str()).unwrap_or("").to_ascii_lowercase().as_str() {
-        "otio" => crate::otio_import::load_otio(path).map_err(|e| e.to_string()),
-        "fcpxml" | "xml" => crate::fcpxml_import::load_fcpxml(path).map_err(|e| e.to_string()),
-        "kdenlive" | "mlt" => crate::mlt_import::load_kdenlive(path).map_err(|e| e.to_string()),
-        "edl" => {
+    match detect(path)? {
+        Format::Otio => crate::otio_import::load_otio(path).map_err(|e| e.to_string()),
+        Format::Fcpxml => crate::fcpxml_import::load_fcpxml(path).map_err(|e| e.to_string()),
+        Format::Mlt => crate::mlt_import::load_kdenlive(path).map_err(|e| e.to_string()),
+        Format::Xmeml => Err("Final Cut Pro 7 XML (xmeml) is not read yet; export FCPXML or OpenTimelineIO from the other editor".into()),
+        Format::Aaf => Err("AAF is not read yet; export OpenTimelineIO, FCPXML or an EDL from the other editor".into()),
+        Format::Edl => {
             let bytes = crate::path_util::read_capped(path, crate::path_util::MAX_INPUT_FILE_BYTES).map_err(|e| e.to_string())?;
             let edl = crate::edl_import::parse(&String::from_utf8_lossy(&bytes), fps);
             let name = edl.title.clone().unwrap_or_else(|| path.file_stem().unwrap_or_default().to_string_lossy().into_owned());
@@ -92,7 +159,6 @@ pub fn load(path: &Path, fps: klipp_core::Fps, pool: &klipp_media::MediaPool) ->
             }
             Ok(ImportResult { sequence, warnings, media_pool })
         }
-        _ => Err("Import a .otio, .fcpxml/.xml, .kdenlive, .mlt or .edl timeline".into()),
     }
 }
 
@@ -138,6 +204,43 @@ mod tests {
         assert_eq!(report.imported.clips, 1);
         assert_eq!(report.missing_media.len(), 1);
         assert_eq!(report.missing_media[0].id, id);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// #2083: each format is told from what is in the file, a misnamed one
+    /// too; one not read is refused by name with what is.
+    #[test]
+    fn formats_are_told_from_their_content() {
+        let fcpxml = br#"<?xml version="1.0"?>
+<!DOCTYPE fcpxml>
+<fcpxml version="1.9"></fcpxml>"#;
+        assert_eq!(detect_bytes(fcpxml), Some(Format::Fcpxml));
+        assert_eq!(detect_bytes(b"<?xml version=\"1.0\"?><!-- made by hand --><xmeml version=\"5\"></xmeml>"), Some(Format::Xmeml));
+        assert_eq!(detect_bytes(b"\xef\xbb\xbf<mlt LC_NUMERIC=\"C\"></mlt>"), Some(Format::Mlt));
+        assert_eq!(detect_bytes(include_bytes!("../tests/fixtures/otio_multitrack.otio")), Some(Format::Otio));
+        assert_eq!(detect_bytes(include_bytes!("../tests/fixtures/melt_two_clips.mlt")), Some(Format::Mlt));
+        assert_eq!(detect_bytes(b"TITLE: Cut\nFCM: NON-DROP FRAME\n"), Some(Format::Edl));
+        assert_eq!(detect_bytes(b"001  AX       V     C        00:00:00:00 00:00:01:00 01:00:00:00 01:00:01:00\n"), Some(Format::Edl));
+        assert_eq!(detect_bytes(&[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1, 0, 0]), Some(Format::Aaf));
+        assert_eq!(detect_bytes(b"{\"name\": \"not otio\"}"), None);
+        assert_eq!(detect_bytes(b"<html></html>"), None);
+        assert_eq!(detect_bytes(b"just some notes\n"), None);
+
+        let dir = std::env::temp_dir().join(format!("klipp-detect-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // An OTIO file named .xml opens as OTIO.
+        let misnamed = dir.join("cut.xml");
+        std::fs::write(&misnamed, include_str!("../tests/fixtures/otio_multitrack.otio")).unwrap();
+        assert_eq!(detect(&misnamed), Ok(Format::Otio));
+        assert!(load(&misnamed, klipp_core::Fps::film_24(), &klipp_media::MediaPool::new()).is_ok());
+        let notes = dir.join("notes.txt");
+        std::fs::write(&notes, "a shopping list").unwrap();
+        let why = detect(&notes).unwrap_err();
+        assert!(why.starts_with("notes.txt is not a timeline") && why.contains("OpenTimelineIO"), "{why}");
+        let xmeml = dir.join("fcp7.xml");
+        std::fs::write(&xmeml, "<xmeml version=\"5\"/>").unwrap();
+        let why = load(&xmeml, klipp_core::Fps::film_24(), &klipp_media::MediaPool::new()).unwrap_err();
+        assert!(why.contains("xmeml") && why.contains("export FCPXML"), "{why}");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
