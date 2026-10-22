@@ -107,6 +107,24 @@ fn fields(line: &str, delimiter: char) -> Vec<String> {
     out
 }
 
+/// Words a reviewer writes before a colon that label a comment rather
+/// than sign it.
+const LABELS: &[&str] = &[
+    "note", "notes", "todo", "fix", "question", "idea", "comment", "re", "nb", "ps", "edit", "cut", "music", "audio", "sound", "mix", "colour", "color",
+    "grade", "title", "titles", "text", "vfx", "gfx", "picture", "logo", "caption", "captions", "subtitle", "subtitles", "general", "overall", "client",
+];
+
+/// Whether `name` reads as a person's name: one to three words, each
+/// starting with a capital letter, no digits, not a label word.
+fn looks_like_a_name(name: &str) -> bool {
+    let words: Vec<&str> = name.split_whitespace().collect();
+    !words.is_empty()
+        && words.len() <= 3
+        && name.len() <= 32
+        && words.iter().all(|w| w.chars().next().is_some_and(char::is_uppercase) && !w.contains(char::is_numeric))
+        && !words.iter().any(|w| LABELS.contains(&w.to_lowercase().as_str()))
+}
+
 /// Comments read back from `text`: the comment template, or any
 /// delimited table (comma, semicolon or tab) whose header names a time
 /// column and a comment column, or plain lines that begin with a
@@ -143,9 +161,10 @@ pub fn parse_comments(text: &str, fps: f64) -> Result<Vec<ReviewComment>, String
         };
         let Some(secs) = parse_timecode(stamp, fps) else { continue };
         let rest = rest.trim().trim_start_matches(['-', '\u{2013}', '\u{2014}', ':']).trim();
-        // "Name: text" names its author when the name is short.
+        // "Name: text" names its author when what comes before the colon
+        // reads as a name, not a label such as "note:" or "music:".
         let (author, text) = match rest.split_once(':') {
-            Some((name, said)) if !name.is_empty() && name.len() <= 32 && !name.contains(char::is_numeric) => (name.trim().to_string(), said.trim().to_string()),
+            Some((name, said)) if looks_like_a_name(name) => (name.trim().to_string(), said.trim().to_string()),
             _ => (String::new(), rest.to_string()),
         };
         if !text.is_empty() {
@@ -236,6 +255,10 @@ mod tests {
         assert_eq!(c[1], ReviewComment { secs: 30.0, author: "Ana".into(), text: "cut the second shot".into() });
         assert_eq!(c[2], ReviewComment { secs: 65.0, author: String::new(), text: "end on the logo".into() });
         assert!(parse_comments("nothing here\n", 25.0).is_err());
+        // A label before the colon is part of the comment, not its author.
+        let c = parse_comments("0:10 note: shorter here\n0:20 Music: too loud\n0:30 ana: lower case\n0:40 Ana Lind: fine\n", 25.0).unwrap();
+        assert_eq!(c.iter().map(|c| c.author.as_str()).collect::<Vec<_>>(), vec!["", "", "", "Ana Lind"]);
+        assert_eq!(c[0].text, "note: shorter here");
     }
 
     #[test]
