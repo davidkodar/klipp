@@ -1453,6 +1453,7 @@ mod tests {
             match cmd {
                 AppCommand::BeginHistoryBatch => s.active_history_mut().begin_batch(),
                 AppCommand::EndHistoryBatch => s.active_history_mut().end_batch(),
+                AppCommand::EndHistoryBatchAs { label } => s.active_history_mut().end_batch_as(&label),
                 // The index add, as the app's old handler lands it.
                 AppCommand::AddBuiltinEffect { .. } => old(&mut s, id, EffectEdit::Add(&invert)),
                 cmd => run(&mut s, cmd),

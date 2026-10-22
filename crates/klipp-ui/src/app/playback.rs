@@ -29,6 +29,10 @@ impl KlippApp {
                 self.state.active_history_mut().end_batch();
                 true
             }
+            AppCommand::EndHistoryBatchAs { label } => {
+                self.state.active_history_mut().end_batch_as(label);
+                true
+            }
             AppCommand::SetRubberBandParam(param) => {
                 self.state.rubber_band_param = crate::state::RubberBandParam::ClipParam(*param);
                 true

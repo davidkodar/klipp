@@ -1466,6 +1466,10 @@ pub enum AppCommand {
     /// entry: what an agent's action is, however many edits it makes.
     BeginHistoryBatch,
     EndHistoryBatch,
+    /// Close the batch as `EndHistoryBatch` does, under `label`: the
+    /// step named for what the person did ("Ease In-Out"), not for the
+    /// first edit inside it.
+    EndHistoryBatchAs { label: String },
     SequenceUpdated,
     SetAntiClickFade(bool),
 

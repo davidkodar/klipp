@@ -388,6 +388,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::Redo
         | AppCommand::BeginHistoryBatch
         | AppCommand::EndHistoryBatch
+        | AppCommand::EndHistoryBatchAs { .. }
         | AppCommand::SetTrackOpacity { .. }
         | AppCommand::SetTrackVisibility { .. }
         | AppCommand::SetTrackVolume { .. }

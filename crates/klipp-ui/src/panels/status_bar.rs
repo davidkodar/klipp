@@ -243,11 +243,9 @@ fn left_fields(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme) {
     status_label_value(ui, theme, "Duration:", &dur_str);
 
     // Resolution + FPS
-    let fps = state.fps.as_f64() as u32;
-    let res_str = format!(
-        "{}x{} \u{00b7} {}fps",
-        state.sequence().resolution.width, state.sequence().resolution.height, fps
-    );
+    // The active sequence's own rate, 29.97 shown as such (#2356).
+    let seq = state.sequence();
+    let res_str = format!("{}x{} \u{00b7} {}fps", seq.resolution.width, seq.resolution.height, fps_text(seq.fps.as_f64()));
     if !fits(ui, &[&res_str]) {
         return;
     }
@@ -369,5 +367,25 @@ mod narrow_tests {
                 assert!(texts.iter().any(|(t, _)| t.starts_with("Project:")), "{width} px: the project is shown: {texts:?}");
             }
         }
+    }
+}
+
+/// A frame rate as the status bar shows it: whole rates plain, the
+/// fractional ones to two places (23.98, 29.97, 59.94).
+fn fps_text(fps: f64) -> String {
+    if (fps - fps.round()).abs() < 0.005 {
+        format!("{}", fps.round() as u32)
+    } else {
+        format!("{fps:.2}")
+    }
+}
+
+#[cfg(test)]
+mod fps_text_tests {
+    #[test]
+    fn whole_rates_plain_fractional_to_two_places() {
+        assert_eq!(super::fps_text(30.0), "30");
+        assert_eq!(super::fps_text(24000.0 / 1001.0), "23.98");
+        assert_eq!(super::fps_text(30000.0 / 1001.0), "29.97");
     }
 }
