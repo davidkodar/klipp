@@ -90,8 +90,14 @@ mod tests {
         let result = klipp_project::import_report::load(&path, klipp_core::Fps::film_24(), &klipp_media::MediaPool::new()).unwrap();
         let wanted: Vec<_> = result.media_pool.all().filter(|m| m.offline).map(klipp_media::relink::Wanted::from_item).collect();
         assert_eq!(wanted.len(), 1, "the clip's media is missing");
-        let dir = klipp_project::import_report::relink_search_dir(&path);
+        let dir = klipp_project::import_report::relink_search_dir(&path).expect("a folder to search");
         assert_eq!(dir, root.join("job"));
+        // Never the home folder or the root whole.
+        if let Some(home) = dirs::home_dir() {
+            assert_eq!(klipp_project::import_report::relink_search_dir(&home.join("cut.otio")), None);
+            assert_eq!(klipp_project::import_report::relink_search_dir(&home.join("job/cut.otio")), Some(home.join("job")));
+        }
+        assert_eq!(klipp_project::import_report::relink_search_dir(std::path::Path::new("/cut.otio")), None);
         let criteria = klipp_media::relink::Criteria::default();
         let found = klipp_media::relink::scan(&dir, &wanted, criteria, &std::sync::atomic::AtomicBool::new(false), |_| {});
         let proposals = klipp_media::relink::propose(&wanted, &found.candidates, criteria);

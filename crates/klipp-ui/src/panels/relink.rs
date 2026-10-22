@@ -371,10 +371,10 @@ impl Plan {
         let mut cmds = Vec::new();
         ui.horizontal(|ui| {
             if ui.add_enabled(!ready.is_empty(), egui::Button::new(format!("Relink {} Ticked", ready.len()))).clicked() {
-                cmds = ready
-                    .into_iter()
-                    .map(|(media_id, new_path)| AppCommand::RelinkMedia { media_id, new_path })
-                    .collect();
+                // Every one relinked as one step.
+                cmds.push(AppCommand::BeginHistoryBatch);
+                cmds.extend(ready.into_iter().map(|(media_id, new_path)| AppCommand::RelinkMedia { media_id, new_path }));
+                cmds.push(AppCommand::EndHistoryBatch);
                 for row in &mut self.rows {
                     row.apply = false;
                 }

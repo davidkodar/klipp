@@ -187,6 +187,16 @@ impl DocumentView<'_> {
         Effects { sync_sequence: true, sync_media_pool: media_id.is_some(), notify_engine: true, refresh_media_pictures: media_id.into_iter().collect(), ..Default::default() }
     }
 
+    /// Media item `media_id` pointed at `path`, there or not as `offline`
+    /// says: the pool synced and its pictures made again from that file.
+    fn relink(&mut self, media_id: MediaId, path: &std::path::Path, offline: bool) -> Effects {
+        if let Some(item) = self.media_pool.get_mut(&media_id) {
+            item.path = path.to_path_buf();
+            item.offline = offline;
+        }
+        Effects { sync_sequence: true, sync_media_pool: true, notify_engine: true, refresh_media_pictures: vec![media_id], ..Default::default() }
+    }
+
     pub fn apply_inverse(&mut self, cmd: &EditCommand) -> Effects {
         let mut effects = Effects::default();
         match cmd {
@@ -684,6 +694,9 @@ impl DocumentView<'_> {
                 if let Some(item) = self.media_pool.get_mut(media_id) {
                     item.color_label = klipp_media::ColorLabel::from_u8(*old_label);
                 }
+            }
+            EditCommand::RelinkMedia { media_id, old_path, old_offline, .. } => {
+                effects.merge(self.relink(*media_id, old_path, *old_offline));
             }
             EditCommand::RenameBin { old_name, new_name } => {
                 // Undo: rename Bin record back from new_name to old_name
@@ -1396,6 +1409,9 @@ impl DocumentView<'_> {
                 if let Some(item) = self.media_pool.get_mut(media_id) {
                     item.rating = *new_rating;
                 }
+            }
+            EditCommand::RelinkMedia { media_id, new_path, new_offline, .. } => {
+                effects.merge(self.relink(*media_id, new_path, *new_offline));
             }
             EditCommand::SetMediaColorLabel { media_id, new_label, .. } => {
                 if let Some(item) = self.media_pool.get_mut(media_id) {
@@ -2167,5 +2183,31 @@ mod picture_edit_tests {
         assert_eq!(redone.iter().map(|(id, _)| *id).collect::<Vec<_>>(), vec![ids[1], ids[0]]);
         assert!(matches!(redone[1].1, klipp_effects::BuiltinEffect::GaussianBlur { radius } if radius == 5.0));
         assert_eq!(entry.label(), "Edit Effects");
+    }
+}
+
+#[cfg(test)]
+mod relink_tests {
+    use super::*;
+
+    /// A relink undone points the item back at its old file, offline as it
+    /// was; redone, at the new one; each time the pool is synced and the
+    /// item's pictures made again (#2086).
+    #[test]
+    fn a_relink_is_undone_and_redone() {
+        let mut pool = MediaPool::new();
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/old/a.mov".into(), None);
+        item.offline = true;
+        let id = pool.add(item);
+        let mut sequences = vec![klipp_timeline::Sequence::new_default()];
+        let mut fps = klipp_core::Fps::film_24();
+        let edit = EditCommand::RelinkMedia { media_id: id, old_path: "/old/a.mov".into(), old_offline: true, new_path: "/new/a.mov".into(), new_offline: false };
+        let mut view = DocumentView { sequences: &mut sequences, active: 0, media_pool: &mut pool, fps: &mut fps };
+        let effects = view.apply_forward(&edit);
+        assert!(effects.sync_media_pool && effects.refresh_media_pictures == vec![id]);
+        assert_eq!((view.media_pool.get(&id).unwrap().path.as_path(), view.media_pool.get(&id).unwrap().offline), (std::path::Path::new("/new/a.mov"), false));
+        view.apply_inverse(&edit);
+        assert_eq!((view.media_pool.get(&id).unwrap().path.as_path(), view.media_pool.get(&id).unwrap().offline), (std::path::Path::new("/old/a.mov"), true));
+        assert_eq!(edit.scope(), crate::history::Scope::Project);
     }
 }

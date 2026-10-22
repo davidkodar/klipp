@@ -537,6 +537,9 @@ pub struct ScanResult {
 /// small enough that pointing it at `/` ends in seconds rather than hours.
 pub const MAX_FILES: usize = 200_000;
 
+/// How many folders below the one searched a search goes.
+pub const MAX_DEPTH: usize = 12;
+
 /// Walk `dir` for files that could be any of `wanted`, and read what is
 /// needed to score them.
 ///
@@ -557,9 +560,11 @@ pub fn scan(
 ) -> ScanResult {
     let mut out = ScanResult::default();
     let mut p = Progress::default();
-    let mut stack = vec![dir.to_path_buf()];
+    // No deeper than MAX_DEPTH folders below `dir`: a folder picked too
+    // high up is searched near its top, not to the bottom of the disk.
+    let mut stack = vec![(dir.to_path_buf(), 0usize)];
     let mut files = Vec::new();
-    while let Some(d) = stack.pop() {
+    while let Some((d, depth)) = stack.pop() {
         if cancel.load(Ordering::Relaxed) {
             out.cancelled = true;
             return out;
@@ -574,7 +579,11 @@ pub fn scan(
             if ft.is_symlink() && path.is_dir() {
                 out.skipped_dirs += 1;
             } else if ft.is_dir() {
-                stack.push(path);
+                if depth < MAX_DEPTH {
+                    stack.push((path, depth + 1));
+                } else {
+                    out.skipped_dirs += 1;
+                }
             } else if klipp_core::media_extensions::path_is_media(&path) {
                 p.files_seen += 1;
                 files.push(path);

@@ -3878,7 +3878,9 @@ impl super::KlippApp {
                 // Media it names that isn't here: the relink flow opened at
                 // once, already searching beside the imported file (#2086).
                 if !report.missing_media.is_empty() {
-                    self.relink_panel.request_scan(klipp_project::import_report::relink_search_dir(path));
+                    if let Some(dir) = klipp_project::import_report::relink_search_dir(path) {
+                        self.relink_panel.request_scan(dir);
+                    }
                     self.state.show_relink_dialog = true;
                 }
                 self.sync_media_pool_to_engine();

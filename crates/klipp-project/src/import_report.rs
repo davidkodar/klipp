@@ -160,14 +160,36 @@ pub fn load_aaf(path: &Path, cancel: &std::sync::atomic::AtomicBool) -> Result<I
 
 /// Where to look first for an import's missing media (#2086): the folder
 /// above the imported file's, so the folders beside it are searched with
-/// its own (media moved next to the timeline's folder), but the file's own
-/// folder alone when the one above is the filesystem's root or the home
-/// folder, which would be the whole disk.
-pub fn relink_search_dir(imported: &Path) -> PathBuf {
-    let folder = imported.parent().filter(|p| !p.as_os_str().is_empty()).map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+/// its own (media moved next to the timeline's folder), else the file's
+/// own folder. The climb stops short of the home folder, a drive's top (a
+/// mount point) and the filesystem's root: none of them is ever searched
+/// whole, and a timeline lying directly in one gets no search at all.
+pub fn relink_search_dir(imported: &Path) -> Option<PathBuf> {
+    let folder = imported.parent().filter(|p| !p.as_os_str().is_empty())?.to_path_buf();
+    let home = dirs::home_dir();
+    let too_wide = |p: &Path| p.parent().is_none() || home.as_deref() == Some(p) || is_mount_point(p);
+    if too_wide(&folder) {
+        return None;
+    }
     match folder.parent() {
-        Some(above) if above.parent().is_some() && dirs::home_dir().as_deref() != Some(above) => above.to_path_buf(),
-        _ => folder,
+        Some(above) if !too_wide(above) => Some(above.to_path_buf()),
+        _ => Some(folder),
+    }
+}
+
+/// Whether `p` is where a filesystem is mounted: it and the folder above
+/// are on different devices.
+fn is_mount_point(p: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let (Ok(here), Some(Ok(above))) = (std::fs::metadata(p), p.parent().map(std::fs::metadata)) else { return false };
+        here.dev() != above.dev()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = p;
+        false
     }
 }
 
