@@ -2102,6 +2102,9 @@ impl ViewerPanel {
             && state.eyedropper_mode == crate::state::EyedropperMode::None
             && !state.has_modal_open()
         {
+            // The selected clip's motion path (#2276), taking a press on
+            // its dots and handles before the gizmo can.
+            super::motion_path::show(ui, state, image_rect, video_w, video_h, cmds);
             let start = cmds.len();
             self.draw_transform_controls(ui, state, image_rect, frame.viewer_rect, video_w, video_h, cmds);
             // The gizmo moves the clip's placement by path, and adds no
@@ -5025,8 +5028,8 @@ impl ViewerPanel {
                 }
             }
         } else if let Some(pointer) = pointer_pos {
-            // Check for new drag start
-            if pointer_down && ui.input(|i| i.pointer.primary_pressed()) {
+            // Check for new drag start; not one the motion path took (#2276).
+            if pointer_down && ui.input(|i| i.pointer.primary_pressed()) && state.motion_path_drag.is_none() {
                 // Only start a drag if the pointer is within the image_rect (with some margin)
                 let expanded = image_rect.expand(40.0);
                 if expanded.contains(pointer) && viewer_rect.contains(pointer) {

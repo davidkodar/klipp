@@ -2852,6 +2852,8 @@ pub struct AppState {
     // Viewer transform controls
     /// Active drag on a viewer transform handle
     pub viewer_transform_drag: Option<ViewerTransformDrag>,
+    /// A drag on the selected clip's motion path in the viewer (#2276).
+    pub motion_path_drag: Option<crate::panels::motion_path::MotionPathDrag>,
     /// A corner-pin handle drag in the viewer.
     pub viewer_corner_pin_drag: Option<ViewerCornerPinDrag>,
     pub surface_tool: Option<SurfaceTool>,
@@ -4915,6 +4917,7 @@ impl Default for AppState {
             proxy_status_message: None,
             proxy_toast_dismissed: false,
             viewer_transform_drag: None,
+            motion_path_drag: None,
             viewer_corner_pin_drag: None,
             surface_tool: None,
             show_transform_controls: true,
