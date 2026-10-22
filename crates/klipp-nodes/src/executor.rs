@@ -1000,7 +1000,12 @@ impl GraphExecutor {
                 // for that goes on.
                 let _ = klipp_effects::gpu_context::GpuContext::shared();
                 let built = rx.recv().ok().flatten();
-                let _ = handle.join();
+                // A build that panicked (a shader that does not compile,
+                // in a debug build: #2344) fails here, where the frame
+                // is, rather than reading as a machine with no GPU.
+                if let Err(panic) = handle.join() {
+                    std::panic::resume_unwind(panic);
+                }
                 built
             }
             None => GpuEffectsPipeline::new(),

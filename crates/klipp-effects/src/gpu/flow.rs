@@ -472,15 +472,29 @@ fn pipeline(device: &wgpu::Device, label: &str, source: &str) -> wgpu::ComputePi
     })
 }
 
+/// The flow's shaders, by pipeline: what [`FlowGpu::new`] compiles, and
+/// what the WGSL validation reads (#2344).
+pub(super) fn sources() -> [(&'static str, String); 6] {
+    [
+        ("flow_luma", shader_luma()),
+        ("flow_halve", shader_halve()),
+        ("flow_search", shader_search()),
+        ("flow_smooth", shader_smooth()),
+        ("flow_count", shader_count()),
+        ("flow_synth", shader_synth()),
+    ]
+}
+
 impl FlowGpu {
     pub(super) fn new(device: &wgpu::Device) -> Self {
+        let [luma, halve, search, smooth, count, synth] = sources().map(|(label, source)| pipeline(device, label, &source));
         FlowGpu {
-            luma: pipeline(device, "flow_luma", &shader_luma()),
-            halve: pipeline(device, "flow_halve", &shader_halve()),
-            search: pipeline(device, "flow_search", &shader_search()),
-            smooth: pipeline(device, "flow_smooth", &shader_smooth()),
-            count: pipeline(device, "flow_count", &shader_count()),
-            synth: pipeline(device, "flow_synth", &shader_synth()),
+            luma,
+            halve,
+            search,
+            smooth,
+            count,
+            synth,
             pairs: Vec::new(),
             frame: None,
         }

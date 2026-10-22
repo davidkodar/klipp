@@ -452,3 +452,15 @@ fn main() {
     };
     el.run_app(&mut app).expect("event loop");
 }
+
+#[cfg(test)]
+mod shader_tests {
+    /// The presenter's shader compiles, with no GPU (#2344).
+    #[test]
+    fn the_shader_compiles() {
+        let module = naga::front::wgsl::parse_str(super::SHADER).unwrap_or_else(|e| panic!("{}", e.emit_to_string(super::SHADER)));
+        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
+            .validate(&module)
+            .unwrap_or_else(|e| panic!("{}", e.emit_to_string(super::SHADER)));
+    }
+}

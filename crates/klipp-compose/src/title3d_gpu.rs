@@ -655,6 +655,16 @@ fn project(scene: &Scene, width: u32, height: u32) -> Option<(ViewParams, [u32; 
 mod tests {
     use super::*;
     use klipp_title::text3d_mesh::{contours_of, extrude, BevelPx};
+
+    /// Both 3D title shaders compile, with no GPU (#2344).
+    #[test]
+    fn the_shaders_compile() {
+        for (name, source) in [("title3d_gpu", include_str!("title3d_gpu.wgsl")), ("title3d_resolve", include_str!("title3d_resolve.wgsl"))] {
+            if let Err(e) = klipp_effects::shader_check::validate(source) {
+                panic!("{name}: {e}");
+            }
+        }
+    }
     #[test]
     fn gpu_solids_preserve_cpu_holes_lighting_and_coverage() {
         let Some(mut gpu) = GpuEffectsPipeline::new() else {

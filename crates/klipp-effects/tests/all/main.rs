@@ -38,6 +38,8 @@ mod equalize_and_huesat_share_nothing;
 mod equalize_gpu;
 #[path = "../frame_upload_count.rs"]
 mod frame_upload_count;
+#[path = "../every_shader_is_validated.rs"]
+mod every_shader_is_validated;
 #[path = "../gpu_pipelines_build.rs"]
 mod gpu_pipelines_build;
 #[path = "../gpu_scopes.rs"]

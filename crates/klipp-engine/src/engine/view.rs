@@ -1507,10 +1507,10 @@ impl PlaybackEngine {
         if total_ms > 16.0 || self.in_node_param_edit {
             tracing::debug!(
                 "PERF view_frame: {total_ms:.1}ms {w}x{h} | render={:.1} (grade={:.1} ofx={:.1} fx={:.1} lut={:.1} composite={:.1}) \
-                 encode={encode_ms:.1} scope={scope_ms:.1} streams={} cached={} stills kept={} uploaded={} decoders gpu={streams_gpu} software={streams_software} shortened={} disk_short={} \
+                 encode={encode_ms:.1} scope={scope_ms:.1} streams={} cached={} stills kept={} uploaded={} decoders gpu={streams_gpu} software={streams_software} shortened={} disk_short={} shaders_failed={} \
                  grade[splice={:.1} analyses={:.1} prepare={:.1} seed={:.1} graph={:.1}]",
                 s.total_ms, s.grade_ms, s.ofx_ms, s.effects_ms, s.lut_ms, s.composite_ms,
-                self.streams.len(), stats.is_none(), s.stills_kept, s.stills_uploaded, super::streams_shortened(), super::streams_disk_short(),
+                self.streams.len(), stats.is_none(), s.stills_kept, s.stills_uploaded, super::streams_shortened(), super::streams_disk_short(), klipp_effects::shader_check::failed_shader_modules().len(),
                 s.grade_split.splice_ms, s.grade_split.analyses_ms, s.grade_split.prepare_ms, s.grade_split.seed_ms, s.grade_split.graph_ms,
             );
         }

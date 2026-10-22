@@ -510,7 +510,7 @@ impl GpuP010Converter {
             cache: None,
         });
         if let Some(err) = pollster::block_on(device.pop_error_scope()) {
-            warn!("P010 GPU converter: shader compilation failed: {err}");
+            crate::shader_check::shader_failed("P010 converter", &err.to_string());
             return None;
         }
 

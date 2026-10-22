@@ -8,6 +8,10 @@ license.workspace = true
 autotests = false
 
 [dependencies]
+# naga is a transitive dep of wgpu (same version pin); `shader_check`
+# parses and validates WGSL with it, so every crate's shaders are
+# checked in tests without a GPU (#2344).
+naga = { version = "22", features = ["wgsl-in"] }
 klipp-load-lock = { workspace = true }
 klipp-grade-model = { workspace = true }
 serde = { workspace = true }
@@ -50,9 +54,6 @@ klipp-testing = { workspace = true }
 klipp-title = { path = "../klipp-title" }
 klipp-timeline = { path = "../klipp-timeline" }
 serde_json = { workspace = true }
-# naga is a transitive dep of wgpu (same version pin); using it
-# directly in tests parses our WGSL strings without needing a GPU.
-naga = { version = "22", features = ["wgsl-in"] }
 
 [lints]
 workspace = true
