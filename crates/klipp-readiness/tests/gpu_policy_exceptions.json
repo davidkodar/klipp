@@ -9,7 +9,6 @@
   "generator.Star": "CpuCached #0",
   "generator.StillFrame": "CpuCached #0",
   "klipp.fx.clip_below": "Conditional #1465",
-  "klipp.fx.equalize": "RoundTrip #1215",
   "klipp.fx.frei0r": "RoundTrip #1465",
   "klipp.fx.grade_compound": "Conditional #1465",
   "klipp.fx.media_source": "Conditional #1465",

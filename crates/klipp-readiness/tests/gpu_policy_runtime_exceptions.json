@@ -1,9 +1,1 @@
-{
-  "klipp.fx.equalize": {
-    "features": [
-      "klipp.fx.equalize"
-    ],
-    "issue": 1215,
-    "max_readbacks": 1
-  }
-}
+{}

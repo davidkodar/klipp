@@ -1237,15 +1237,28 @@ pub const EQUALIZE_CDF_LEN: usize = 256;
 /// Histogram equalisation's lookup: the cumulative distribution of the
 /// display-encoded luma in [`EQUALIZE_CDF_LEN`] bins, normalised past
 /// the first occupied bin. The luma is by the working space's weights
-/// `yw`, as everywhere else (#1020). The GPU path builds it with this
-/// function too, then uploads it to its own storage buffer.
+/// `yw`, as everywhere else (#1020). The GPU builds the same in its
+/// histogram and CDF passes (#1215), held to this; its break path uses
+/// this function.
 pub fn equalize_cdf(linear: &[f32], yw: [f32; 3]) -> [f32; EQUALIZE_CDF_LEN] {
+    equalize_cdf_of(&equalize_histogram(linear, yw), linear.len() / 4)
+}
+
+/// Equalize's histogram: each pixel's display luma, `yw · encode(rgb)`
+/// clamped to 0–1, counted in bin `floor(l × 255)`.
+pub fn equalize_histogram(linear: &[f32], yw: [f32; 3]) -> [u32; EQUALIZE_CDF_LEN] {
     let mut hist = [0u32; EQUALIZE_CDF_LEN];
     for c in linear.chunks_exact(4) {
         let l = (yw[0] * encode(c[0]) + yw[1] * encode(c[1]) + yw[2] * encode(c[2])).clamp(0.0, 1.0);
         hist[(l * 255.0) as usize] += 1;
     }
-    let total = (linear.len() / 4) as f32;
+    hist
+}
+
+/// The CDF of `hist`, a histogram of `pixels` pixels, normalised past
+/// its first occupied bin; the identity ramp for a frame in one bin.
+pub fn equalize_cdf_of(hist: &[u32; EQUALIZE_CDF_LEN], pixels: usize) -> [f32; EQUALIZE_CDF_LEN] {
+    let total = pixels as f32;
     let first = hist.iter().position(|&h| h > 0).unwrap_or(0);
     let min_cum: u32 = hist[..=first].iter().sum();
     let mut cdf = [0.0f32; 256];

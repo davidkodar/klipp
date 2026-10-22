@@ -35,12 +35,10 @@ const GPU_BAR: f32 = 1.0 / 255.0;
 const CHANNELS: [MaskChannel; 3] = [MaskChannel::Red, MaskChannel::Luminance, MaskChannel::Alpha];
 
 /// Mixable effects whose node breaks the GPU chain today, masked or not.
-/// Equalize evens the whole frame's histogram, which the chain can't
-/// record: the read-back break #1211 pinned, which AR1's "no new decline"
-/// lets stand (D5: it stays mixable; a GPU histogram is #1215). The list
-/// is exact: an effect that stops declining, or another that starts,
-/// fails the matrix until it is updated.
-const KNOWN_DECLINES: [&str; 1] = ["equalize"];
+/// None: Equalize, the last, records its histogram on the GPU since #1215.
+/// The list is exact: an effect that starts declining fails the matrix
+/// until it is added here, with its reason.
+const KNOWN_DECLINES: [&str; 0] = [];
 
 /// A frame whose luminance, hue and alpha (0 to 1) each run across the
 /// picture, so every producer's coverage spans 0 to 1; its left strip is

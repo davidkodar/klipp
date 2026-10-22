@@ -94,7 +94,7 @@ pub fn effect(effect: &E) -> Capability {
         | E::BinocularVignette { .. }
         | E::Particles { .. }
         | E::Generator { .. } => cap(Gpu, "Effect recorder; input and output stay in GPU buffers", None),
-        E::Equalize { .. } => cap(RoundTrip, "Histogram/CDF breaks the recorded chain for CPU processing", Some(1215)),
+        E::Equalize { .. } => cap(Gpu, "Effect recorder; histogram, CDF and map passes stay in GPU buffers", None),
         E::Frei0r { .. } => cap(RoundTrip, "Plugin ABI consumes CPU pixels; explicit local CPU segment", Some(1465)),
         E::TemporalDenoise { .. } => cap(Conditional, "Source-neighbour boundary: GPU inputs use GPU kernel; CPU-neighbour and export paths require separate coverage", Some(1988)),
         E::MediaSource { .. } | E::ClipBelow { .. } | E::Merge { .. } | E::GradeCompound { .. } | E::SpeedRamp { .. } =>

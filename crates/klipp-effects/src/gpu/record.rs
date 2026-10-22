@@ -35,8 +35,8 @@ pub enum Recorded {
     /// the result is `src`.
     Identity,
     /// Not recorded: an arm not ported yet, or one that must break the
-    /// segment (Equalize reads the frame back). The caller submits what
-    /// it has recorded and runs the effect another way.
+    /// segment. The caller submits what it has recorded and runs the
+    /// effect another way.
     NotRecordable,
     /// The slots left are fewer than the effect needs. Nothing recorded:
     /// the caller submits, resets the slots and asks again.
@@ -114,7 +114,9 @@ pub fn slots_needed(effect: &BuiltinEffect) -> Option<usize> {
         | BuiltinEffect::Lut3D { .. }
         | BuiltinEffect::ColourSpaceTransform { .. }
         | BuiltinEffect::PictureTransform { .. }
-        | BuiltinEffect::Generator { .. } => Some(1),
+        | BuiltinEffect::Generator { .. }
+        // Its histogram, CDF and map passes share the one slot (#1215).
+        | BuiltinEffect::Equalize { .. } => Some(1),
         _ => None,
     }
 }
@@ -183,6 +185,34 @@ impl GpuEffectsPipeline {
             };
             let Some(slot) = rec.slots.claim_with_table(q, &params, u64::from(levels.to_bits()), table) else { return Recorded::OutOfSlots };
             self.record_with_table(rec, &self.posterize_pipeline, src, dst, slot, width, height);
+            return Recorded::Done;
+        }
+        // Equalize (#1215): the frame's histogram, its CDF, then the map
+        // through it, all in this encoder. The histogram is cleared here,
+        // before each Equalize counts, so a second one in the chain starts
+        // from nothing.
+        if let BuiltinEffect::Equalize { strength } = effect {
+            let params = EqualizeParams { width, height, strength: *strength, _pad0: 0, luma: [self.luma_coefs[0], self.luma_coefs[1], self.luma_coefs[2], 0.0] };
+            let Some(slot) = rec.slots.claim(q, &params) else { return Recorded::OutOfSlots };
+            let params = rec.slots.buffer(slot);
+            let bind = |label, a: &wgpu::Buffer, b: &wgpu::Buffer, c: &wgpu::Buffer| {
+                self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some(label),
+                    layout: &self.huesat_bgl,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: a.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 1, resource: b.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 2, resource: params.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 3, resource: c.as_entire_binding() },
+                    ],
+                })
+            };
+            let (hist, cdf) = (&self.equalize_hist_buf, &self.equalize_cdf_buf);
+            let pixels = (width * height).div_ceil(WORKGROUP_SIZE);
+            rec.encoder.clear_buffer(hist, 0, None);
+            Self::record_compute_dispatch(rec.encoder, &self.equalize_histogram_pipeline, &bind("equalize_histogram", src, hist, cdf), pixels);
+            Self::record_compute_dispatch(rec.encoder, &self.equalize_cdf_pipeline, &bind("equalize_cdf", hist, cdf, hist), 1);
+            Self::record_compute_dispatch(rec.encoder, &self.equalize_pipeline, &bind("equalize_map", src, dst, cdf), pixels);
             return Recorded::Done;
         }
         if let BuiltinEffect::Lut3D { prepared, opacity, tetrahedral, .. } = effect {

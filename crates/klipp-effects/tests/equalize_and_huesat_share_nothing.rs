@@ -16,9 +16,10 @@
 //!
 //!   * `upload` flushes before every write, so a recorded hue/sat
 //!     dispatch is submitted before the CDF lands on the LUT; and
-//!   * the equalize arm's first step is a `download` of the frame to
+//!   * the equalize arm's first step was a `download` of the frame to
 //!     build its histogram, which has to submit and wait for all prior
-//!     work anyway.
+//!     work anyway. (Since #1215 the chain builds the CDF on the GPU;
+//!     only the break path still reads the frame back.)
 //!
 //! So the sharing was safe twice over, by accident twice over. The
 //! buffers are separate now because an invariant resting on two

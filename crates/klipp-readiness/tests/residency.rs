@@ -122,12 +122,14 @@ fn built_in_catalogue_paths_are_explicit_and_gpu_probes_do_not_download() {
     }
 }
 
+/// Equalize builds its histogram and CDF on the GPU (#1215): resident, a
+/// run with it no break and no read-back.
 #[test]
-fn equalize_is_a_measured_round_trip_not_a_gpu_resident_claim() {
+fn equalize_is_gpu_resident_with_no_readback() {
     let Some(mut g) = gpu() else { return };
     let (w, h) = (32, 16);
     let fx = klipp_effects::BuiltinEffect::Equalize { strength: 0.7 };
-    assert_eq!(residency::effect(&fx).residency, Residency::RoundTrip);
+    assert_eq!(residency::effect(&fx).residency, Residency::Gpu);
     assert!(g.stack_begin(w, h, 1));
     let pixels: Vec<f32> = (0..w * h)
         .flat_map(|i| [(i % 16) as f32 / 16.0, 0.2, 0.3, 1.0])
@@ -140,9 +142,9 @@ fn equalize_is_a_measured_round_trip_not_a_gpu_resident_claim() {
     g.begin_chain();
     let result = g.chain_run_effects(&[fx], true, w, h);
     g.submit_chain();
-    assert!(result.complete && result.breaks > 0);
+    assert!(result.complete && result.breaks == 0, "{result:?}");
     let after = g.readback_stats();
-    assert!(after.count > before.count && after.bytes > before.bytes);
+    assert_eq!((after.count, after.bytes), (before.count, before.bytes), "no read-back");
 }
 
 #[test]

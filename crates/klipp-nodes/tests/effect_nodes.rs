@@ -143,19 +143,12 @@ fn recorded_effects_join_the_grades_chain_in_one_submit() {
     assert!(ex.last_run_effects_complete());
 }
 
-/// An effect no arm records: Equalize reads the frame back for its
-/// histogram, so it always breaks the chain. Every other effect records.
-fn not_recorded() -> Option<E> {
-    Some(E::Equalize { strength: 0.6 })
-        .filter(|e| klipp_effects::gpu::slots_needed(e).is_none() && !klipp_effects::has_frei0r(std::slice::from_ref(e)))
-}
-
+/// Equalize records its histogram, CDF and map in the chain (#1215), so a
+/// node with it between recorded effects is no break, and draws what the
+/// effects' own pipeline draws.
 #[test]
-fn an_effect_not_recorded_yet_is_a_counted_break_not_a_readback() {
-    let Some(odd) = not_recorded() else {
-        panic!("Equalize records now: count its break as 0 and drop this case");
-    };
-    let fx = vec![E::Gamma { gamma: 1.2 }, odd, E::Invert { mix: 0.3 }];
+fn equalize_between_recorded_effects_is_no_break() {
+    let fx = vec![E::Gamma { gamma: 1.2 }, E::Equalize { strength: 0.6 }, E::Invert { mix: 0.3 }];
     let each: Vec<Vec<E>> = fx.iter().map(|e| vec![e.clone()]).collect();
     let mut ex = GraphExecutor::new();
     if !has_gpu(&mut ex) {
@@ -165,7 +158,7 @@ fn an_effect_not_recorded_yet_is_a_counted_break_not_a_readback() {
     let got = run(&mut ex, &graph(&each, false));
     let stats = ex.last_run_chain_stats();
     assert_eq!(bits(&got), bits(&legacy(true, &fx)));
-    assert_eq!(stats.effect_breaks, 1, "{stats:?}");
+    assert_eq!(stats.effect_breaks, 0, "{stats:?}");
     assert_eq!((stats.cpu_nodes, stats.uploads), (base, 1), "the picture stays on the GPU: {stats:?}");
 }
 

@@ -159,11 +159,11 @@ fn a_run_of_recorded_effects_is_one_submit() {
     // Seventy passes overflow the 64 slots once: two runs.
     let seventy: Vec<E> = colour().into_iter().cycle().take(70).collect();
     assert_eq!(run(&mut g, &seventy).0, 3);
-    // Equalize reads the frame back mid-chain, a named break: the four
-    // recorded before it, its readback and pass, the five after.
+    // Equalize records its histogram, CDF and map in the chain (#1215):
+    // no break, the one submit and the download.
     let mut eq = colour();
     eq.insert(4, E::Equalize { strength: 0.5 });
-    assert_eq!(run(&mut g, &eq).0, 5);
+    assert_eq!(run(&mut g, &eq).0, 2);
 }
 
 #[test]
@@ -296,7 +296,8 @@ fn an_identity_never_asks_for_slots() {
 fn a_later_clean_break_does_not_hide_an_earlier_missing_effect() {
     let Some(mut g) = pipeline() else { return };
     // Refused recording: the gamma's break leaves it out; Equalize's break
-    // runs (it is never recorded), clean.
+    // runs (its CDF read back, the one effect the break way still runs),
+    // clean.
     let fx = [E::Gamma { gamma: 1.4 }, E::Equalize { strength: 0.5 }];
     g.refuse_recording(true);
     g.ensure_recording_buffers(W, H);
