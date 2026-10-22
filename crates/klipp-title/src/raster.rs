@@ -55,15 +55,6 @@ impl BoxRaster {
         Self { frame, x0, y0, w, h, texels }
     }
 
-    /// A box's own pixels, `w` × `h` from `(x0, y0)` of a `frame`
-    /// sized frame, as an f32 stack in byte units laid row by row over
-    /// the box alone.
-    pub fn from_box_stack(stack: &[f32], frame: (u32, u32), x0: u32, y0: u32, w: u32, h: u32) -> Self {
-        let k = 1.0 / 255.0;
-        let texels = stack.chunks_exact(4).flat_map(|p| [half(p[0] * k) | (half(p[1] * k) << 16), half(p[2] * k) | (half(p[3] * k) << 16)]).collect();
-        Self { frame, x0, y0, w, h, texels }
-    }
-
     /// Frame-sized RGBA8 as the byte path stored it.
     pub fn from_bytes(rgba: &[u8], frame: (u32, u32), rows: (u32, u32), cols: (u32, u32)) -> Self {
         let stack: Vec<f32> = rgba.iter().map(|&v| v as f32).collect();

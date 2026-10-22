@@ -595,10 +595,14 @@ pub struct TitleRenderer {
     /// Decoded image layers by path, with the file's stamp when read;
     /// `None` for a file that would not open, so it is not retried
     /// every frame. A file changed on disk is read again.
-    image_cache: HashMap<String, (Option<FileStamp>, Option<std::sync::Arc<DecodedImage>>)>,
-    /// Image layers fitted to their boxes, as the GPU places them, the
-    /// most recent last (#2077); at most [`IMAGE_SPRITE_CAP`].
-    image_sprites: std::collections::VecDeque<(u64, std::sync::Arc<BoxRaster>)>,
+    /// At most [`IMAGE_CACHE_BYTES`] of pictures are kept, the least
+    /// recently drawn let go first (#2342).
+    image_cache: HashMap<String, CachedImage>,
+    /// When each image file was last looked at, and what it was then:
+    /// a file is looked at again at most every [`STAMP_EVERY`] (#2342).
+    image_stamps: HashMap<String, (std::time::Instant, Option<FileStamp>)>,
+    /// The tick the image cache counts its uses by.
+    image_tick: u64,
     /// Whether a character a face lacks is looked for in the system's
     /// fonts before the ones that ship with the app (#1503); off in
     /// tests that must draw the same on every machine.
@@ -728,7 +732,8 @@ impl TitleRenderer {
             defer_layer_fades: false,
             matte_only: None,
             image_cache: HashMap::new(),
-            image_sprites: Default::default(),
+            image_stamps: HashMap::new(),
+            image_tick: 0,
             system_fallback: true,
             fallback_keys: HashMap::new(),
         }
@@ -3641,60 +3646,69 @@ impl TitleRenderer {
     }
 
     /// The decoded pixels of an image layer, read once per path and
-    /// again when the file changes.
-    fn decoded_image(&mut self, img: &ImageLayer) -> Option<std::sync::Arc<DecodedImage>> {
-        let stamp = file_stamp(&img.path);
-        if let Some((seen, cached)) = self.image_cache.get(&img.path) {
-            if *seen == stamp {
-                return cached.clone();
+    /// again when the file changes; the GPU keeps them by their `id`.
+    /// `None` when the file does not open.
+    pub fn decoded_image(&mut self, img: &ImageLayer) -> Option<std::sync::Arc<DecodedImage>> {
+        let stamp = self.file_stamp(&img.path);
+        self.image_tick += 1;
+        let tick = self.image_tick;
+        if let Some(cached) = self.image_cache.get_mut(&img.path) {
+            if cached.stamp == stamp {
+                cached.used = tick;
+                return cached.image.clone();
             }
         }
         let decoded = image::open(&img.path).ok().map(|i| {
             let rgba = i.to_rgba8();
-            std::sync::Arc::new(DecodedImage { w: rgba.width() as usize, h: rgba.height() as usize, rgba: rgba.into_raw() })
+            let (w, h) = (rgba.width() as usize, rgba.height() as usize);
+            let texels = rgba.into_raw().chunks_exact(4).map(|p| u32::from_le_bytes([p[0], p[1], p[2], p[3]])).collect();
+            use std::hash::{Hash, Hasher};
+            let mut hash = std::collections::hash_map::DefaultHasher::new();
+            "title image".hash(&mut hash);
+            img.path.hash(&mut hash);
+            stamp.hash(&mut hash);
+            std::sync::Arc::new(DecodedImage { w, h, texels, id: hash.finish() })
         });
         if decoded.is_none() {
             tracing::warn!("title image layer could not be read: {}", img.path);
         }
-        self.image_cache.insert(img.path.clone(), (stamp, decoded.clone()));
+        self.image_cache.remove(&img.path);
+        let size = decoded.as_ref().map_or(0, |d| d.texels.len() * 4);
+        while !self.image_cache.is_empty() && self.image_cache.values().map(|c| c.bytes()).sum::<usize>() + size > IMAGE_CACHE_BYTES {
+            let oldest = self.image_cache.iter().min_by_key(|(_, c)| c.used).map(|(k, _)| k.clone()).unwrap();
+            self.image_cache.remove(&oldest);
+        }
+        self.image_cache.insert(img.path.clone(), CachedImage { stamp, image: decoded.clone(), used: tick });
         decoded
     }
 
     /// Forget a decoded image so a changed file is read again.
     pub fn forget_image(&mut self, path: &str) {
         self.image_cache.remove(path);
+        self.image_stamps.remove(path);
     }
 
-    /// An image layer as it rests in `transform`'s box of a `width` ×
-    /// `height` frame (#2077): its picture fitted and sampled once, the
-    /// pixels the CPU paints, with an id that names exactly them, for
-    /// the GPU to keep. A changed file, fit, box or frame is a new id;
-    /// the last [`IMAGE_SPRITE_CAP`] are kept. `None` when the file
-    /// does not open or the picture covers nothing; the bool is whether
-    /// the picture was sampled now rather than kept.
-    pub fn image_sprite(&mut self, img: &ImageLayer, transform: &ObjectTransform, width: u32, height: u32) -> Option<(u64, std::sync::Arc<BoxRaster>, bool)> {
-        use std::hash::{Hash, Hasher};
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        "title image sprite".hash(&mut h);
-        img.path.hash(&mut h);
-        file_stamp(&img.path).hash(&mut h);
-        (img.fit as u8).hash(&mut h);
-        (width, height).hash(&mut h);
-        [transform.center.x, transform.center.y, transform.size.x, transform.size.y].map(f32::to_bits).hash(&mut h);
-        let id = h.finish();
-        if let Some(at) = self.image_sprites.iter().position(|(k, _)| *k == id) {
-            let kept = self.image_sprites.remove(at)?;
-            let pixels = kept.1.clone();
-            self.image_sprites.push_back(kept);
-            return Some((id, pixels, false));
+    /// A file's stamp, looked at again at most every [`STAMP_EVERY`]:
+    /// a title with many images, or on a slow mount, is not looked up
+    /// on the disk each frame.
+    fn file_stamp(&mut self, path: &str) -> Option<FileStamp> {
+        let now = std::time::Instant::now();
+        if let Some((at, stamp)) = self.image_stamps.get(path) {
+            if now.duration_since(*at) < STAMP_EVERY {
+                return *stamp;
+            }
         }
-        let decoded = self.decoded_image(img)?;
-        let pixels = std::sync::Arc::new(image_box(&decoded, img.fit, transform, width, height)?);
-        if self.image_sprites.len() >= IMAGE_SPRITE_CAP {
-            self.image_sprites.pop_front();
-        }
-        self.image_sprites.push_back((id, pixels.clone()));
-        Some((id, pixels, true))
+        let stamp = file_stamp(path);
+        self.image_stamps.insert(path.to_owned(), (now, stamp));
+        stamp
+    }
+
+    /// The stamps of a title's image layers' files, in layer order.
+    fn image_stamps(&mut self, title: &TitleData) -> Vec<Option<FileStamp>> {
+        title.objects.iter().filter_map(|o| match &o.content {
+            TitleObjectContent::Image(img) => Some(self.file_stamp(&img.path)),
+            _ => None,
+        }).collect()
     }
 
     /// Single-text rasterisation: layout → compose → texture-fill,
@@ -4108,7 +4122,7 @@ impl TitleRenderer {
     }
 
     fn cache_lookup(&mut self, title: &TitleData, width: u32, height: u32) -> Option<RestingSprite> {
-        let images = image_stamps(title);
+        let images = self.image_stamps(title);
         let pos = self.render_cache.iter().position(|c| {
             c.width == width && c.height == height && &c.title == title && c.images == images
         })?;
@@ -4135,10 +4149,11 @@ impl TitleRenderer {
         let cols = if raster.is_empty() { (0, 0) } else { (raster.x0, raster.x0 + raster.w) };
         let units = self.last_units.take();
         let pixels = std::sync::Arc::new(raster);
+        let images = self.image_stamps(&title);
         self.render_cache.insert(
             0,
             CachedRender {
-                images: image_stamps(&title),
+                images,
                 title,
                 width,
                 height,
@@ -5871,9 +5886,11 @@ fn apply_layer_mask<C: Channel, M: Channel>(layer: &mut [C], matte: &[M], kind: 
     });
 }
 
-/// How many fitted image layers a renderer keeps: a few titles' worth,
-/// each its covered box alone.
-pub const IMAGE_SPRITE_CAP: usize = 16;
+/// How many bytes of decoded pictures a renderer keeps.
+pub const IMAGE_CACHE_BYTES: usize = 256 << 20;
+
+/// How long a file's stamp is trusted before it is looked at again.
+pub const STAMP_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// A file's modified time and length, which change when it is written.
 type FileStamp = (std::time::SystemTime, u64);
@@ -5883,19 +5900,30 @@ fn file_stamp(path: &str) -> Option<FileStamp> {
     Some((m.modified().ok()?, m.len()))
 }
 
-/// The stamps of a title's image layers' files, in layer order.
-fn image_stamps(title: &TitleData) -> Vec<Option<FileStamp>> {
-    title.objects.iter().filter_map(|o| match &o.content {
-        TitleObjectContent::Image(img) => Some(file_stamp(&img.path)),
-        _ => None,
-    }).collect()
+/// A decoded image as cached: the file's stamp when read, the picture
+/// (`None` for a file that would not open, so it is not retried every
+/// frame) and when it was last drawn.
+struct CachedImage {
+    stamp: Option<FileStamp>,
+    image: Option<std::sync::Arc<DecodedImage>>,
+    used: u64,
 }
 
-/// An image layer's pixels, straight-alpha RGBA.
+impl CachedImage {
+    fn bytes(&self) -> usize {
+        self.image.as_ref().map_or(0, |d| d.texels.len() * 4)
+    }
+}
+
+/// An image layer's pixels, straight-alpha RGBA8 packed one to a `u32`
+/// (red in the low byte), as the GPU reads them too.
 pub struct DecodedImage {
     pub w: usize,
     pub h: usize,
-    pub rgba: Vec<u8>,
+    pub texels: Vec<u32>,
+    /// Names these pixels (the file and its stamp) to whoever keeps a
+    /// copy of them, the GPU.
+    pub id: u64,
 }
 
 impl DecodedImage {
@@ -5910,10 +5938,10 @@ impl DecodedImage {
         let (fx, fy) = (u - x0 as f32, v - y0 as f32);
         let mut out = [0.0; 4];
         for (x, y, k) in [(x0, y0, (1.0 - fx) * (1.0 - fy)), (x1, y0, fx * (1.0 - fy)), (x0, y1, (1.0 - fx) * fy), (x1, y1, fx * fy)] {
-            let i = (y * self.w + x) * 4;
-            let a = self.rgba[i + 3] as f32 * k;
+            let px = self.texels[y * self.w + x].to_le_bytes();
+            let a = px[3] as f32 * k;
             for c in 0..3 {
-                out[c] += self.rgba[i + c] as f32 * a;
+                out[c] += px[c] as f32 * a;
             }
             out[3] += a;
         }
@@ -5926,12 +5954,14 @@ impl DecodedImage {
     }
 }
 
-/// Where an image layer's picture lands in a `width` × `height` frame:
-/// its drawn rectangle (left, top, width, height) fitted, filled or
-/// stretched into the transform's box, and the pixel columns and rows
-/// it covers there, clipped to the box and the frame. `None` when it
-/// covers nothing.
-fn image_placement(img: &DecodedImage, fit: ImageFit, transform: &ObjectTransform, width: u32, height: u32) -> Option<([f32; 4], (u32, u32), (u32, u32))> {
+/// Where an image layer's picture lands in a `width` × `height` frame,
+/// fitted, filled or stretched into the transform's box: its drawn
+/// rectangle's left and top and the picture's pixels per frame pixel
+/// across and down, and the pixel columns and rows it covers, clipped
+/// to the box and the frame. `None` when it covers nothing. The scale
+/// is divided out once, here, so the CPU and the GPU sample from the
+/// same numbers (#2342).
+pub fn image_placement(img: &DecodedImage, fit: ImageFit, transform: &ObjectTransform, width: u32, height: u32) -> Option<([f32; 4], (u32, u32), (u32, u32))> {
     if img.w == 0 || img.h == 0 {
         return None;
     }
@@ -5957,39 +5987,12 @@ fn image_placement(img: &DecodedImage, fit: ImageFit, transform: &ObjectTransfor
     let y0 = top.max(cy - bh * 0.5).floor().max(0.0) as i32;
     let x1 = (cx + dw * 0.5).min(cx + bw * 0.5).ceil().min(w_f) as i32;
     let y1 = (cy + dh * 0.5).min(cy + bh * 0.5).ceil().min(h_f) as i32;
-    (x1 > x0 && y1 > y0).then_some(([left, top, dw, dh], (x0 as u32, x1 as u32), (y0 as u32, y1 as u32)))
-}
-
-/// An image layer's picture alone, over its covered box: sampled once,
-/// straight alpha, rounded to bytes as the CPU's layer holds it. The
-/// CPU paints these pixels into its layer and the GPU places them as a
-/// sprite, so the two draw one picture (#2077).
-fn image_box(img: &DecodedImage, fit: ImageFit, transform: &ObjectTransform, width: u32, height: u32) -> Option<raster::BoxRaster> {
-    let ([left, top, dw, dh], cols, rows) = image_placement(img, fit, transform, width, height)?;
-    let (iw, ih) = (img.w as f32, img.h as f32);
-    let (bw, bh) = ((cols.1 - cols.0) as usize, (rows.1 - rows.0) as usize);
-    let mut stack = vec![0.0f32; bw * bh * 4];
-    for y in rows.0..rows.1 {
-        let v = ((y as f32 + 0.5) - top) / dh * ih - 0.5;
-        for x in cols.0..cols.1 {
-            let u = ((x as f32 + 0.5) - left) / dw * iw - 0.5;
-            let src = img.sample(u, v);
-            let a = src[3].round().clamp(0.0, 255.0);
-            if a <= 0.0 {
-                continue;
-            }
-            let at = (((y - rows.0) as usize) * bw + (x - cols.0) as usize) * 4;
-            for c in 0..3 {
-                stack[at + c] = src[c].round().clamp(0.0, 255.0);
-            }
-            stack[at + 3] = a;
-        }
-    }
-    Some(raster::BoxRaster::from_box_stack(&stack, (width, height), cols.0, rows.0, bw as u32, bh as u32))
+    (x1 > x0 && y1 > y0).then_some(([left, top, iw / dw, ih / dh], (x0 as u32, x1 as u32), (y0 as u32, y1 as u32)))
 }
 
 /// Paint an image layer into its clear layer: the picture fitted,
-/// filled or stretched into its box, as [`image_box`] samples it.
+/// filled or stretched into its box, straight alpha, rounded to bytes.
+/// The GPU's `stack_title_image` samples it the same way (#2342).
 fn paint_image_layer(
     buf: &mut [u8],
     img: &DecodedImage,
@@ -5998,14 +6001,21 @@ fn paint_image_layer(
     width: u32,
     height: u32,
 ) {
-    let Some(px) = image_box(img, fit, transform, width, height) else { return };
-    for y in px.y0..px.y0 + px.h {
-        for x in px.x0..px.x0 + px.w {
-            let p = px.at(x as i64, y as i64);
-            let idx = ((y as usize) * (width as usize) + (x as usize)) * 4;
-            for i in 0..4 {
-                buf[idx + i] = p[i].round().clamp(0.0, 255.0) as u8;
+    let Some(([left, top, sx, sy], cols, rows)) = image_placement(img, fit, transform, width, height) else { return };
+    for y in rows.0..rows.1 {
+        let v = ((y as f32 + 0.5) - top) * sy - 0.5;
+        for x in cols.0..cols.1 {
+            let u = ((x as f32 + 0.5) - left) * sx - 0.5;
+            let src = img.sample(u, v);
+            let a = src[3].round().clamp(0.0, 255.0);
+            if a <= 0.0 {
+                continue;
             }
+            let idx = ((y as usize) * (width as usize) + (x as usize)) * 4;
+            for c in 0..3 {
+                buf[idx + c] = src[c].round().clamp(0.0, 255.0) as u8;
+            }
+            buf[idx + 3] = a as u8;
         }
     }
 }
@@ -8294,9 +8304,34 @@ mod tests {
     /// alone falling (#2077): the layer is straight alpha, so colour
     /// times alpha there would darken it twice once laid over, and a
     /// clear neighbour's colour must not bleed in.
+    /// A file's stamp is trusted for [`STAMP_EVERY`], so a title is not
+    /// looked up on the disk each frame (#2342), and looked at again
+    /// after it, or at once when the image is forgotten.
+    #[test]
+    fn an_image_file_is_looked_at_again_only_after_a_while() {
+        let dir = std::env::temp_dir().join(format!("klipp-title-stamp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.png");
+        let write = |v: u8, w: u32| image::RgbaImage::from_pixel(w, 1, image::Rgba([v, v, v, 255])).save(&path).unwrap();
+        write(10, 1);
+        let img = klipp_timeline::ImageLayer { path: path.to_string_lossy().into_owned(), fit: ImageFit::Stretch };
+        let mut r = TitleRenderer::new();
+        let first = r.decoded_image(&img).unwrap();
+        write(200, 2);
+        assert_eq!(r.decoded_image(&img).unwrap().id, first.id, "trusted for a while");
+        std::thread::sleep(STAMP_EVERY + std::time::Duration::from_millis(50));
+        let later = r.decoded_image(&img).unwrap();
+        assert_ne!(later.id, first.id);
+        assert_eq!(later.w, 2);
+        write(90, 3);
+        r.forget_image(&img.path);
+        assert_eq!(r.decoded_image(&img).unwrap().w, 3, "forgotten: read at once");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn an_image_edge_is_its_own_colour_fading() {
-        let img = DecodedImage { w: 2, h: 1, rgba: vec![250, 0, 200, 255, 0, 255, 0, 0] };
+        let img = DecodedImage { w: 2, h: 1, texels: vec![u32::from_le_bytes([250, 0, 200, 255]), u32::from_le_bytes([0, 255, 0, 0])], id: 0 };
         let mut t = klipp_timeline::default_text_transform();
         t.center = klipp_timeline::TitlePosition { x: 0.5, y: 0.5 };
         t.size = klipp_timeline::TitlePosition { x: 1.0, y: 1.0 };

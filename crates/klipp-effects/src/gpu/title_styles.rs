@@ -1204,6 +1204,51 @@ impl GpuEffectsPipeline {
         let mut enc=self.encoder(Some("title path copy"));enc.copy_buffer_to_buffer(scratch,0,layer,0,u64::from(w)*u64::from(h)*16);self.submit(enc);true
     }
 
+    /// Whether a picture of `texels` fits one GPU storage binding.
+    pub fn stack_title_image_fits(&self, texels: usize) -> bool {
+        (texels as u64).saturating_mul(4) <= u64::from(self.device.limits().max_storage_buffer_binding_size)
+    }
+
+    /// Whether the picture `id` is on the GPU already.
+    pub fn stack_title_image_resident(&self, id: u64) -> bool {
+        self.stack_sprites.iter().any(|r| r.id == id)
+    }
+
+    /// Layer `slot` takes an image layer's picture fitted into its box
+    /// (#2342): `texels` the decoded picture, packed RGBA8, `size` wide
+    /// and high, kept on the GPU as `id`; `rect` the drawn rectangle's
+    /// left and top and the picture's pixels per frame pixel across and
+    /// down, and `clip` the covered pixels (x0, y0,
+    /// x1, y1), as `klipp_title::image_placement` gives them. Sampled as
+    /// the CPU's layer is, so a keyed box is one pass and no upload.
+    pub fn stack_title_image(&mut self, slot: usize, id: u64, texels: &[u32], size: [u32; 2], rect: [f32; 4], clip: [u32; 4]) -> bool {
+        if self.is_device_lost() || slot >= self.stack_layers.len() || size[0] == 0 || size[1] == 0
+            || texels.len() as u64 != u64::from(size[0]) * u64::from(size[1]) || !self.stack_title_image_fits(texels.len())
+        { return false; }
+        let (w, h) = self.stack_dims;
+        let count = u64::from(w) * u64::from(h);
+        if self.title_post_scratch.as_ref().is_none_or(|b| b.size() < count * 16) {
+            self.title_post_scratch = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("title post scratch"),
+                size: count * 16,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+        }
+        let pos = self.resident_sprite(id, texels);
+        let picture = &self.stack_sprites[pos].buffer;
+        let layer = &self.stack_layers[slot];
+        let scratch = self.title_post_scratch.as_ref().unwrap();
+        let groups = (w * h).div_ceil(WORKGROUP_SIZE);
+        let params = StyleParams { width: w, height: h, frame_width: w, op: 54, x0: 0, y0: 0, offset_x: size[0] as i32, offset_y: size[1] as i32, color: rect,
+            matrix: [clip.map(|v| v as f32), [0.0; 4], [0.0; 4]] };
+        self.write_params(&params);
+        self.stack_pass(&self.title_style_pipeline, picture, scratch, groups, "title image fit");
+        self.write_params(&StyleParams { op: 11, matrix: self.authored_to_working, ..params });
+        self.stack_pass(&self.title_style_pipeline, scratch, layer, groups, "title image working");
+        true
+    }
+
     /// Match byte layers or the completed scene's packed-half source boundary.
     pub fn stack_title_precision(&mut self,slot:usize,bytes:bool)->bool {
         if !self.stack_title_alpha(slot,[0.0;4],1.0) {return false;}
