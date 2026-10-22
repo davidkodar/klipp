@@ -96,6 +96,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, rect: e
                 state.selects_range = None;
             }
             ui.label(egui::RichText::new("read-only").size(10.0).color(theme.text_dim));
+            if ui.small_button("Edit").on_hover_text("Work on the selects as a timeline of their own, above the cut").clicked() {
+                state.selects_edit = true;
+            }
             ui.separator();
             let range = state.selects_range.filter(|(a, b)| b > a);
             match range {

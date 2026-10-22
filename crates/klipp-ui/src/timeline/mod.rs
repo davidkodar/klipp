@@ -8,6 +8,7 @@ pub mod time_utils;
 pub mod range_visuals;
 pub mod grid_snap;
 pub mod camera_lane;
+pub mod stacked;
 pub mod mask_lane;
 pub mod param_lane;
 pub mod markers;
@@ -25,6 +26,8 @@ use klipp_core::AppCommand;
 #[derive(Default)]
 pub struct NewTimelinePanel {
     last_adaptive_fit: Option<(u32, u32, u32, u32)>,
+    /// The selects edited as a second timeline above this one (#82).
+    stacked: Option<Box<stacked::Stacked>>,
 }
 
 impl NewTimelinePanel {
@@ -104,6 +107,7 @@ impl NewTimelinePanel {
         }
 
         // ── The selects strip, stacked above the cut (#82) ──
+        let stacked_edit = !strip && state.selects_edit && state.selects_sequence.is_some_and(|id| state.sequences.iter().any(|s| s.id == id));
         let strip_h = if strip || state.selects_sequence.is_none() {
             0.0
         } else {
@@ -111,9 +115,11 @@ impl NewTimelinePanel {
         };
         if strip_h > 0.0 {
             let strip_rect = egui::Rect::from_min_size(egui::pos2(full_rect.min.x, tabs_rect.max.y), egui::vec2(full_rect.width(), strip_h));
-            crate::ui_util::allocate_clipped_ui(ui, strip_rect, |ui| {
-                crate::panels::selects_strip::show(ui, state, theme, strip_rect, &mut cmds);
-            });
+            if !stacked_edit {
+                crate::ui_util::allocate_clipped_ui(ui, strip_rect, |ui| {
+                    crate::panels::selects_strip::show(ui, state, theme, strip_rect, &mut cmds);
+                });
+            }
             // Its foot drags to resize it.
             let grip = egui::Rect::from_min_size(egui::pos2(strip_rect.min.x, strip_rect.max.y - 3.0), egui::vec2(strip_rect.width(), 6.0));
             let resize = ui.interact(grip, ui.id().with("selects_resize"), egui::Sense::drag()).on_hover_cursor(egui::CursorIcon::ResizeVertical);
@@ -127,6 +133,47 @@ impl NewTimelinePanel {
             egui::pos2(full_rect.min.x, tabs_rect.max.y + strip_h),
             full_rect.max,
         );
+
+        // The selects, edited as a timeline of their own (#82): drawn in
+        // the strip's place, the one not being worked in from its parked
+        // view, a press on it making it the one worked in.
+        let mut changed = false;
+        if stacked_edit {
+            let top_rect = egui::Rect::from_min_size(egui::pos2(full_rect.min.x, tabs_rect.max.y), egui::vec2(full_rect.width(), strip_h));
+            changed = stacked::show_top(self, ui, state, theme, top_rect, content_rect, &mut cmds);
+        }
+        // The cut parked while the selects are worked in (or became so this
+        // frame): drawn from its view, a press on it making it the one.
+        let cut_parked = stacked_edit && (changed || self.stacked.as_ref().is_some_and(|st| state.active_sequence_idx == st.top_idx));
+        match self.stacked.take() {
+            Some(mut st) if cut_parked => {
+                let take = !changed && stacked::taken(ui, state, content_rect);
+                stacked::draw_parked(&mut st.view, state, take, &mut cmds, |state, out| self.show_content(ui, state, theme, old_timeline, adaptive_fit, content_rect, out));
+                self.stacked = Some(st);
+            }
+            kept => {
+                self.stacked = kept;
+                self.show_content(ui, state, theme, old_timeline, adaptive_fit, content_rect, &mut cmds);
+            }
+        }
+        cmds
+    }
+
+    /// The tracks, their headers, the ruler and what is drawn over them,
+    /// in `content_rect`, for the sequence the state shows; what they do
+    /// added to `out`.
+    #[allow(clippy::too_many_arguments)]
+    fn show_content(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        theme: &KlippTheme,
+        old_timeline: &mut crate::panels::timeline::TimelinePanel,
+        adaptive_fit: bool,
+        content_rect: egui::Rect,
+        out: &mut Vec<AppCommand>,
+    ) {
+        let mut cmds = Vec::new();
 
         // ── Track headers (resizable) ──
         let header_w = state.track_header_width;
@@ -569,7 +616,7 @@ impl NewTimelinePanel {
         // editor, is drawn here once a frame.
         camera_lane::show_key_menu(ui, state, &mut cmds);
 
-        cmds
+        out.extend(cmds);
     }
 }
 
