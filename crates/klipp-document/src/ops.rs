@@ -2587,6 +2587,27 @@ pub struct Step {
     pub edit: EditCommand,
     /// The clips the step touched or made, as they are after it.
     pub after: Vec<ClipAfter>,
+    /// The clips the step made: in its `after`, not in the timeline
+    /// before it (#2364).
+    pub made_clips: Vec<ClipId>,
+    /// The tracks the step made.
+    pub made_tracks: Vec<klipp_core::TrackId>,
+}
+
+/// What one step of an apply made (#2364): the clips by id and the
+/// tracks by their index once the whole plan has run, so a following
+/// call names them without reading the timeline first. `ref` is how a
+/// later op of the same apply names the step's clip ("@N").
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Made {
+    /// The step, counted from 1 as the plan's text counts them.
+    pub step: usize,
+    #[serde(rename = "ref")]
+    pub reference: String,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub clip_ids: Vec<ClipId>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub tracks: Vec<usize>,
 }
 
 /// A plan as a client reads it: the steps without their commands.
@@ -2600,6 +2621,8 @@ pub struct StepReport {
 #[derive(Debug, Clone)]
 pub struct Plan {
     pub steps: Vec<Step>,
+    /// Each track's id by its index once the plan has run.
+    pub track_ids: Vec<klipp_core::TrackId>,
     /// The timeline's length once the plan has run, seconds.
     pub duration_secs: f64,
     /// Where the last picture ends; the timeline is as long as its
@@ -2608,6 +2631,21 @@ pub struct Plan {
 }
 
 impl Plan {
+    /// What each step made, for the steps that made anything (#2364).
+    pub fn made(&self) -> Vec<Made> {
+        self.steps
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| !s.made_clips.is_empty() || !s.made_tracks.is_empty())
+            .map(|(i, s)| Made {
+                step: i + 1,
+                reference: format!("@{i}"),
+                clip_ids: s.made_clips.clone(),
+                tracks: s.made_tracks.iter().filter_map(|id| self.track_ids.iter().position(|t| t == id)).collect(),
+            })
+            .collect()
+    }
+
     pub fn report(&self) -> Vec<StepReport> {
         self.steps.iter().map(|s| StepReport { op: s.op.clone(), what: s.what.clone(), after: s.after.clone() }).collect()
     }
@@ -2980,13 +3018,17 @@ pub fn resolve_with(seq: &Sequence, pool: &MediaPool, ops: &[Op], transcripts: &
         // empty sequence's format changed it for every step after.
         let (what, edit, touched) = resolve_one(sim, &sim_pool, sim.fps, op, i, transcripts, &mut carry)?;
         made.push(touched.first().copied());
+        let (clips_before, tracks_before) = contents(&sims[0]);
         let mut view = crate::apply::DocumentView { sequences: &mut sims, active: 0, media_pool: &mut sim_pool, fps: &mut sim_fps };
         view.apply_forward(&edit);
         let after = after_of(&sims[0], &touched);
-        steps.push(Step { op: op.clone(), what, edit, after });
+        let made_clips = after.iter().map(|c| c.clip_id).filter(|id| !clips_before.contains(id)).collect();
+        let made_tracks = sims[0].tracks.iter().map(|t| t.id).filter(|id| !tracks_before.contains(id)).collect();
+        steps.push(Step { op: op.clone(), what, edit, after, made_clips, made_tracks });
     }
     let picture_end_secs = sims[0].tracks.iter().filter(|t| t.kind == TrackKind::Video).flat_map(|t| t.clips.iter()).map(|c| secs(c.timeline_out)).fold(0.0, f64::max);
-    Ok(Plan { steps, duration_secs: secs(sims[0].total_duration()), picture_end_secs })
+    let track_ids = sims[0].tracks.iter().map(|t| t.id).collect();
+    Ok(Plan { steps, track_ids, duration_secs: secs(sims[0].total_duration()), picture_end_secs })
 }
 
 /// [`resolve_with`] for ops that stand on their own — a sweep of cuts,
@@ -3014,13 +3056,23 @@ pub fn resolve_each_with(seq: &Sequence, pool: &MediaPool, ops: &[Op], transcrip
             }
         };
         made.push(touched.first().copied());
+        let (clips_before, tracks_before) = contents(&sims[0]);
         let mut view = crate::apply::DocumentView { sequences: &mut sims, active: 0, media_pool: &mut sim_pool, fps: &mut sim_fps };
         view.apply_forward(&edit);
         let after = after_of(&sims[0], &touched);
-        steps.push(Step { op: op.clone(), what, edit, after });
+        let made_clips = after.iter().map(|c| c.clip_id).filter(|id| !clips_before.contains(id)).collect();
+        let made_tracks = sims[0].tracks.iter().map(|t| t.id).filter(|id| !tracks_before.contains(id)).collect();
+        steps.push(Step { op: op.clone(), what, edit, after, made_clips, made_tracks });
     }
     let picture_end_secs = sims[0].tracks.iter().filter(|t| t.kind == TrackKind::Video).flat_map(|t| t.clips.iter()).map(|c| secs(c.timeline_out)).fold(0.0, f64::max);
-    (Plan { steps, duration_secs: secs(sims[0].total_duration()), picture_end_secs }, refused)
+    let track_ids = sims[0].tracks.iter().map(|t| t.id).collect();
+    (Plan { steps, track_ids, duration_secs: secs(sims[0].total_duration()), picture_end_secs }, refused)
+}
+
+/// The clips and tracks a timeline holds, by id: what a step finds
+/// before it, to tell what it made.
+fn contents(seq: &Sequence) -> (std::collections::HashSet<ClipId>, Vec<klipp_core::TrackId>) {
+    (seq.tracks.iter().flat_map(|t| t.clips.iter().map(|c| c.id)).collect(), seq.tracks.iter().map(|t| t.id).collect())
 }
 
 /// Where each track's last place of a plan really ended, before its end
@@ -15707,6 +15759,39 @@ mod tests {
         assert!(too_far.why.contains("shorter than a frame"), "{too_far}");
         let no_cut = resolve(&seq, &pool, &[Op::JCut { incoming_clip: ClipRef::Id(a), frames: 5 }]).unwrap_err();
         assert!(no_cut.why.contains("no clip cut before"), "{no_cut}");
+    }
+
+    /// An apply says what each step made (#2364): a track by its index
+    /// once the plan has run, a title's clip by id with the ref a later op
+    /// of the same apply names it by, and nothing for a step that only
+    /// changed what was there.
+    #[test]
+    fn a_plan_says_what_each_step_made() {
+        let (seq, pool, _, _, _) = fixture();
+        let ops: Vec<Op> = serde_json::from_value(serde_json::json!([
+            {"op": "add_track", "kind": "video"},
+            {"op": "title", "text": "Hello", "at": {"secs": 1.0}, "secs": 2.0},
+            {"op": "title", "text": "Again", "at": {"secs": 4.0}, "secs": 1.0},
+            {"op": "set_text", "clip_id": "@1", "text": "Hello there"},
+        ])).unwrap();
+        let plan = resolve(&seq, &pool, &ops).unwrap();
+        let made = plan.made();
+        assert_eq!(made.len(), 3, "{made:?}");
+        assert_eq!((made[0].step, made[0].reference.as_str()), (1, "@0"));
+        assert!(made[0].clip_ids.is_empty() && made[0].tracks.len() == 1, "{made:?}");
+        let track = made[0].tracks[0];
+        assert_eq!(plan.track_ids.len(), seq.tracks.len() + plan.steps.iter().map(|s| s.made_tracks.len()).sum::<usize>());
+        assert!(track < plan.track_ids.len());
+        assert_eq!((made[1].step, made[1].reference.as_str(), made[1].clip_ids.len()), (2, "@1", 1));
+        assert_eq!((made[2].step, made[2].clip_ids.len()), (3, 1));
+        // The edit by ref names the clip step 2 made, and makes nothing.
+        assert_eq!(plan.steps[3].after.first().map(|c| c.clip_id), made[1].clip_ids.first().copied());
+        assert!(plan.steps[3].made_clips.is_empty());
+        // As the reply carries it.
+        let v = serde_json::to_value(&made[2]).unwrap();
+        assert_eq!(v["ref"], "@2");
+        // The second title goes on the text track the first made.
+        assert!(v.get("tracks").is_none(), "{v}");
     }
 
     #[test]

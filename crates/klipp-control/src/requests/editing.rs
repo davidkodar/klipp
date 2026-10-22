@@ -459,6 +459,12 @@ pub(crate) fn respond(
                 v["steps"] = json!(plan.report());
             }
             v["duration_secs"] = json!(plan.duration_secs);
+            // What the steps made, by id, so the next call needs no read
+            // of the timeline to name them (#2364).
+            let made = plan.made();
+            if !made.is_empty() {
+                v["made"] = json!(made);
+            }
             let brief = ctx.sequence.read().ok().and_then(|s| s.brief.clone());
             if let Some(next) = next_after_ops(&ops, brief.as_ref(), Trail::read(ctx, &ops)) {
                 v["next"] = json!(next);
