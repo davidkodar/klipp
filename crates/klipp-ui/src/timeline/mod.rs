@@ -146,10 +146,16 @@ impl NewTimelinePanel {
         // frame): drawn from its view, a press on it making it the one.
         let cut_parked = stacked_edit && (changed || self.stacked.as_ref().is_some_and(|st| state.active_sequence_idx == st.top_idx));
         match self.stacked.take() {
+            // Under its own id while stacked, so its widgets are not the
+            // selects'.
             Some(mut st) if cut_parked => {
                 let take = !changed && stacked::taken(ui, state, content_rect);
-                stacked::draw_parked(&mut st.view, state, take, &mut cmds, |state, out| self.show_content(ui, state, theme, old_timeline, adaptive_fit, content_rect, out));
+                ui.push_id("stacked_cut", |ui| stacked::draw_parked(&mut st.view, state, take, &mut cmds, |state, out| self.show_content(ui, state, theme, old_timeline, adaptive_fit, content_rect, out)));
                 self.stacked = Some(st);
+            }
+            kept if stacked_edit => {
+                self.stacked = kept;
+                ui.push_id("stacked_cut", |ui| self.show_content(ui, state, theme, old_timeline, adaptive_fit, content_rect, &mut cmds));
             }
             kept => {
                 self.stacked = kept;

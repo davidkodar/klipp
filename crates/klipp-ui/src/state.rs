@@ -564,10 +564,11 @@ macro_rules! timeline_view {
             pub const FIELDS: &'static [&'static str] = &[$(stringify!($field)),*];
 
             /// A timeline's own state, nothing selected or dragged, showing
-            /// sequence `sequence_idx` from `playhead` at `zoom`.
-            pub fn fresh(sequence_idx: usize, playhead: Timecode, zoom: f32) -> Self {
+            /// sequence `sequence_idx` at its `fps` from `playhead` at `zoom`.
+            pub fn fresh(sequence_idx: usize, fps: Fps, playhead: Timecode, zoom: f32) -> Self {
                 let mut view = TimelineView { $($field: $init,)* };
                 view.active_sequence_idx = sequence_idx;
+                view.fps = fps;
                 view.playhead = playhead;
                 view.playhead_anchor = playhead;
                 view.playhead_smooth_secs = playhead.to_secs_f64();
@@ -586,12 +587,24 @@ macro_rules! timeline_view {
 
 timeline_view! {
     active_sequence_idx: usize = 0,
+    fps: Fps = Fps::new(24, 1),
+    compound_clip_stack: Vec<(usize, klipp_core::Timecode)> = Vec::new(),
     playhead: Timecode = Timecode::zero(),
     playhead_smooth_secs: f64 = 0.0,
     playhead_anchor: Timecode = Timecode::zero(),
     timeline_zoom: f32 = 50.0,
     timeline_scroll_x: f32 = 0.0,
     timeline_scroll_y: f32 = 0.0,
+    timeline_resizing_track: Option<(usize, f32, f32)> = None,
+    timeline_track_pre_collapse: std::collections::HashMap<usize, f32> = Default::default(),
+    ruler_press_origin: Option<egui::Pos2> = None,
+    last_timeline_tracks_height: f32 = 0.0,
+    last_timeline_content_width: f32 = 0.0,
+    skim_speed_px_per_sec: f32 = 0.0,
+    skim_last_update: std::time::Instant = std::time::Instant::now(),
+    skim_last_x: f32 = 0.0,
+    program_skim_active: bool = false,
+    program_skim_revert_deadline: Option<std::time::Instant> = None,
     selected_clip: Option<ClipId> = None,
     selected_clips: Vec<ClipId> = Vec::new(),
     selected_edits: Vec<crate::edit_point::EditPoint> = Vec::new(),

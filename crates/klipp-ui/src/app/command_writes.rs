@@ -373,6 +373,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::DuplicateSequence { .. }
         | AppCommand::NewAspectVersion { .. }
         | AppCommand::SetActiveSequence { .. }
+        | AppCommand::FocusSequence { .. }
         | AppCommand::RenameSequence { .. }
         | AppCommand::DeleteSequence { .. }
         | AppCommand::ReorderSequences { .. }

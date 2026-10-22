@@ -64,7 +64,8 @@ pub fn show(
     let mut deferred_action: Option<TrackAction> = None;
     // A header dragged to reorder its track (#922): the track being
     // dragged, kept between frames, and every row drawn, to drop on.
-    let drag_key = egui::Id::new("track_header_reorder");
+    // Each timeline's own, two being stacked (#82).
+    let drag_key = ui.id().with("track_header_reorder");
     let dragging: Option<usize> = ui.data(|d| d.get_temp(drag_key));
     let mut rows: Vec<(usize, egui::Rect)> = Vec::new();
 

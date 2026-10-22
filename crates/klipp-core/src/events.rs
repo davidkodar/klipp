@@ -1425,6 +1425,10 @@ pub enum AppCommand {
     /// done, and its titles kept in title-safe (#2211).
     NewAspectVersion { sequence_idx: usize, width: u32, height: u32, name: String },
     SetActiveSequence { sequence_idx: usize },
+    /// Make a sequence the one shown as `SetActiveSequence` does, keeping
+    /// the selection the timeline taking over brings (a stacked timeline,
+    /// #82).
+    FocusSequence { sequence_idx: usize },
     RenameSequence { sequence_idx: usize, new_name: String },
     DeleteSequence { sequence_idx: usize },
     ReorderSequences { from_idx: usize, to_idx: usize },

@@ -34,7 +34,7 @@ impl Stacked {
         let playhead = state.sequences[parked].last_playhead.unwrap_or(klipp_core::RationalTime::from_frames(0, rate));
         let mut old = crate::panels::timeline::TimelinePanel::default();
         old.embedded = true;
-        Stacked { panel: NewTimelinePanel::default(), old, view: TimelineView::fresh(parked, playhead, state.timeline_zoom), top_idx }
+        Stacked { panel: NewTimelinePanel::default(), old, view: TimelineView::fresh(parked, state.sequences[parked].fps, playhead, state.timeline_zoom), top_idx }
     }
 
     /// Whether this still fits the state: the selects at `top_idx`, and
@@ -73,7 +73,8 @@ pub(super) fn draw_parked(view: &mut TimelineView, state: &mut AppState, take: b
 /// The parked timeline made the one worked in: the two views traded, and
 /// the sequence switched as a sequence tab switches it (its playhead kept
 /// on its sequence and the other's taken back, playback stopped, the
-/// engine given the sequence), the switch queued ahead of anything else.
+/// engine given the sequence) but keeping the selection the view brought,
+/// the switch queued ahead of anything else.
 fn focus(view: &mut TimelineView, state: &mut AppState, cmds: &mut Vec<AppCommand>) {
     let to = view.active_sequence_idx;
     state.sequences[to].last_playhead = Some(view.playhead);
@@ -85,7 +86,7 @@ fn focus(view: &mut TimelineView, state: &mut AppState, cmds: &mut Vec<AppComman
     state.playhead = playhead;
     state.playhead_smooth_secs = smooth;
     state.playhead_anchor = anchor;
-    cmds.insert(0, AppCommand::SetActiveSequence { sequence_idx: to });
+    cmds.insert(0, AppCommand::FocusSequence { sequence_idx: to });
 }
 
 /// The upper timeline in `rect`, its header first: drawn from the state
@@ -102,15 +103,27 @@ pub(super) fn show_top(main: &mut NewTimelinePanel, ui: &mut egui::Ui, state: &m
     let top_live = state.active_sequence_idx == top_idx;
     let header = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), HEADER));
     let lanes = egui::Rect::from_min_max(egui::pos2(rect.min.x, header.max.y), rect.max);
-    header_row(ui, state, theme, header, top_idx, if top_live { None } else { Some(&st.view) }, cut);
-    let changed = if top_live {
-        st.panel.show_content(ui, state, theme, &mut st.old, false, lanes, cmds);
-        false
-    } else {
-        let take = taken(ui, state, rect);
-        let Stacked { panel, old, view, .. } = &mut *st;
-        draw_parked(view, state, take, cmds, |state, out| panel.show_content(ui, state, theme, old, false, lanes, out))
-    };
+    let done = header_row(ui, state, theme, header, top_idx, if top_live { None } else { Some(&st.view) }, cut);
+    if done {
+        // Back to the strip: the cut worked in again first, so the main
+        // timeline is left on the cut, not the selects.
+        if top_live {
+            focus(&mut st.view, state, cmds);
+        }
+        state.selects_edit = false;
+        return top_live;
+    }
+    // Under its own id, so its widgets are not the cut's.
+    let changed = ui.push_id("stacked_selects", |ui| {
+        if top_live {
+            st.panel.show_content(ui, state, theme, &mut st.old, false, lanes, cmds);
+            false
+        } else {
+            let take = taken(ui, state, rect);
+            let Stacked { panel, old, view, .. } = &mut *st;
+            draw_parked(view, state, take, cmds, |state, out| panel.show_content(ui, state, theme, old, false, lanes, out))
+        }
+    }).inner;
     // The one worked in, outlined.
     let worked = if top_live != changed { rect } else { cut };
     ui.painter().rect_stroke(worked.shrink(0.5), 0.0, egui::Stroke::new(1.0_f32, theme.accent.gamma_multiply(0.6)));
@@ -121,7 +134,8 @@ pub(super) fn show_top(main: &mut NewTimelinePanel, ui: &mut egui::Ui, state: &m
 /// The header: what the upper timeline is, the way back to the strip, and
 /// the handle that carries its marked range (its In to Out, else its
 /// selected clips' span) down onto the cut.
-fn header_row(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, rect: egui::Rect, top_idx: usize, parked: Option<&TimelineView>, cut: egui::Rect) {
+/// Whether Done was pressed.
+fn header_row(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, rect: egui::Rect, top_idx: usize, parked: Option<&TimelineView>, cut: egui::Rect) -> bool {
     let seq = &state.sequences[top_idx];
     let (id, name) = (seq.id, seq.name.clone());
     let marked = match (seq.in_point, seq.out_point) {
@@ -137,13 +151,12 @@ fn header_row(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, rect:
     ui.painter().rect_filled(rect, 0.0, theme.bg_raised);
     ui.painter().hline(rect.x_range(), rect.max.y - 0.5, egui::Stroke::new(1.0_f32, theme.border));
     let mut carry = false;
+    let mut done = false;
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect.shrink2(egui::vec2(8.0, 1.0))), |ui| {
         ui.horizontal_centered(|ui| {
             ui.label(egui::RichText::new("SELECTS").size(10.0).strong().color(theme.accent));
             ui.label(egui::RichText::new(&name).size(11.0).color(theme.text_secondary));
-            if ui.small_button("Done").on_hover_text("Back to the read-only strip").clicked() {
-                state.selects_edit = false;
-            }
+            done = ui.small_button("Done").on_hover_text("Back to the read-only strip").clicked();
             ui.separator();
             let label = match marked {
                 Some(_) => "\u{21E9} Drag into the cut",
@@ -160,6 +173,7 @@ fn header_row(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, rect:
     if state.selects_drag.is_some() && ui.input(|i| i.pointer.any_released() && !i.pointer.latest_pos().is_some_and(|p| cut.contains(p))) {
         state.selects_drag = None;
     }
+    done
 }
 
 #[cfg(test)]
@@ -218,16 +232,23 @@ mod tests {
                     cmds = panel.show(ui, state, &theme, old, &kb, false);
                 });
             });
-            // The sequence switch as the app's sequence tabs make it.
+            // The sequence switch as the app's sequence tabs make it, the
+            // focus keeping the selection; a seek, as the app makes it.
             for cmd in &cmds {
-                if let AppCommand::SetActiveSequence { sequence_idx } = cmd {
-                    let from = self.state.active_sequence_idx;
-                    self.state.sequences[from].last_playhead = Some(self.state.playhead);
-                    self.state.active_sequence_idx = *sequence_idx;
-                    let rate = self.state.sequences[*sequence_idx].fps.rate();
-                    self.state.playhead = self.state.sequences[*sequence_idx].last_playhead.unwrap_or(RationalTime::from_frames(0, rate));
-                    self.state.selected_clip = None;
-                    self.state.selected_clips.clear();
+                match cmd {
+                    AppCommand::SetActiveSequence { sequence_idx } | AppCommand::FocusSequence { sequence_idx } => {
+                        let from = self.state.active_sequence_idx;
+                        self.state.sequences[from].last_playhead = Some(self.state.playhead);
+                        self.state.active_sequence_idx = *sequence_idx;
+                        let rate = self.state.sequences[*sequence_idx].fps.rate();
+                        self.state.playhead = self.state.sequences[*sequence_idx].last_playhead.unwrap_or(RationalTime::from_frames(0, rate));
+                        if matches!(cmd, AppCommand::SetActiveSequence { .. }) {
+                            self.state.selected_clip = None;
+                            self.state.selected_clips.clear();
+                        }
+                    }
+                    AppCommand::SeekTo(t) => self.state.playhead = *t,
+                    _ => {}
                 }
             }
             self.sent = cmds;
@@ -263,13 +284,16 @@ mod tests {
             "selected_subtitle_track", "command_palette_selected", "title_find_selected", "workspace_manager_selected", "preset_manager_selected", "show_camera_lane", "file_browser_video_skim_enabled", "file_browser_audio_skim_enabled",
             "save_hyperzoom_preset_name", "save_hyperzoom_preset_error", "save_hyperzoom_preset_source_clip", "hyperzoom_preset_registry", "render_cache_ranges", "render_range", "scope_legal_range",
             "multicam_at_playhead", "waveform_zoom", "viewer_text_edit_select_all", "viewer_text_selection", "viewer_text_selection_locked", "viewer_text_select_anchor",
+            "timeline_track_scale", "timeline_prefs", "timeline_search_next", "timeline_search_prev", "browser_skim_texture", "browser_skim_media_id", "skim_transcoding", "skim_in_flight_paths",
+            "skim_transcode_status", "skim_transcode_done_at", "browser_skim_pending", "skim_decode_in_flight", "skim_decode_started_at", "skim_queued_request", "skim_last_requested", "browser_skim_active_this_frame", "pending_skim_transcodes",
+            "upper_timeline_split", "magnetic_timeline_enabled", "perf_fps", "perf_video_fps",
             "filmstrip_hover_enabled", "transcript_panel_hovered", "speed_dialog_ripple", "ripple_enabled", "linked_selection", "drag_drop", "surface_snaps_pending", "consolidate_include_skims", "project_auto_skim",
         ];
-        let per_timeline = ["drag", "select", "hover", "lane", "zoom", "scroll", "playhead", "range", "trim", "key_selection", "keyframe"];
+        let per_timeline = ["drag", "select", "hover", "lane", "zoom", "scroll", "playhead", "range", "trim", "key_selection", "keyframe", "fps", "compound", "timeline_", "ruler_", "skim"];
         let mut missing = Vec::new();
         for line in body.lines() {
             let Some(name) = line.strip_prefix("    pub ").and_then(|l| l.split(':').next()) else { continue };
-            let looks = per_timeline.iter().any(|w| name.contains(w)) && !name.starts_with("show_") && !name.contains("skim_") && !name.contains("browser_skim");
+            let looks = per_timeline.iter().any(|w| name.contains(w)) && !name.starts_with("show_");
             if looks && !TimelineView::FIELDS.contains(&name) && !shared.contains(&name) {
                 missing.push(name.to_string());
             }
@@ -292,9 +316,9 @@ mod tests {
         }
         assert_eq!((s.state.active_sequence_idx, s.state.timeline_zoom, s.state.selected_clip), (0, 40.0, Some(cut_clip)), "the cut as it was");
         assert_eq!((s.view().active_sequence_idx, s.view().timeline_zoom), (1, 120.0), "the selects parked as they were");
-        assert!(!s.sent.iter().any(|c| matches!(c, AppCommand::SetActiveSequence { .. })));
+        assert!(!s.sent.iter().any(|c| matches!(c, AppCommand::FocusSequence { .. })));
         s.press(egui::pos2(600.0, 150.0));
-        assert!(matches!(s.sent.first(), Some(AppCommand::SetActiveSequence { sequence_idx: 1 })), "{:?}", s.sent);
+        assert!(matches!(s.sent.first(), Some(AppCommand::FocusSequence { sequence_idx: 1 })), "{:?}", s.sent);
         assert_eq!((s.state.active_sequence_idx, s.state.timeline_zoom), (1, 120.0), "the selects worked in, at their zoom");
         assert_eq!((s.view().active_sequence_idx, s.view().timeline_zoom), (0, 40.0), "the cut parked at its zoom");
     }
@@ -348,5 +372,63 @@ mod tests {
             view.apply_inverse(e);
         }
         assert_eq!(after[0].all_clips().count(), before.all_clips().count(), "undone");
+    }
+
+    /// Each timeline's widgets are its own: a press on the selects' ruler
+    /// seeks the selects, one on the cut's seeks the cut.
+    #[test]
+    fn each_ruler_seeks_its_own_timeline() {
+        let mut s = Stack::new();
+        let release = |p| egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE };
+        // The selects' ruler, under their header.
+        let top = egui::pos2(500.0, 34.0 + 24.0 + HEADER + 8.0);
+        s.press(top);
+        s.frame(vec![release(top)]);
+        assert_eq!(s.state.active_sequence_idx, 1);
+        let selects_at = s.state.playhead;
+        assert!(selects_at > Timecode::zero(), "the selects sought");
+        // The cut's ruler, under the selects.
+        let cut = egui::pos2(700.0, 34.0 + 24.0 + 220.0 + 8.0);
+        s.press(cut);
+        s.frame(vec![release(cut)]);
+        assert_eq!(s.state.active_sequence_idx, 0);
+        assert!(s.state.playhead > Timecode::zero(), "the cut sought");
+        assert_eq!(s.state.sequences[1].last_playhead, Some(selects_at), "the selects kept theirs");
+    }
+
+    /// The selection the selects had parked is theirs again when they
+    /// are worked in.
+    #[test]
+    fn a_focus_keeps_the_selection_it_brings() {
+        let mut s = Stack::new();
+        let selects_clip = s.state.sequences[1].all_clips().next().unwrap().id;
+        s.panel.stacked.as_mut().unwrap().view.selected_clips = vec![selects_clip];
+        s.panel.stacked.as_mut().unwrap().view.selected_clip = Some(selects_clip);
+        // On the selects' empty track space, right of their clip.
+        s.press(egui::pos2(900.0, 34.0 + 24.0 + HEADER + 60.0));
+        assert_eq!(s.state.active_sequence_idx, 1);
+        assert_eq!(s.state.selected_clip, Some(selects_clip), "{:?}", s.sent);
+    }
+
+    /// A track header dragged in the cut, the selects stacked above it,
+    /// still reorders the cut's tracks.
+    #[test]
+    fn the_cut_reorders_its_tracks_with_the_selects_stacked() {
+        let mut s = Stack::new();
+        // A second video track in the cut, for the first to swap with.
+        s.state.sequences[0].tracks.insert(0, klipp_timeline::Track::new("Video 2", TrackKind::Video));
+        let texts = s.frame(Vec::new());
+        let at = |name: &str| texts.iter().filter(|(t, p)| t == name && p.y > 300.0).map(|(_, p)| *p).next().unwrap_or_else(|| panic!("{name} in the cut: {texts:?}"));
+        let (from, to) = (at("Video 2"), at("Video 1"));
+        let b = |p, d| egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: d, modifiers: egui::Modifiers::NONE };
+        s.frame(vec![egui::Event::PointerMoved(from), b(from, true)]);
+        let mut sent = Vec::new();
+        for i in 1..=6 {
+            s.frame(vec![egui::Event::PointerMoved(from + (to - from) * (i as f32 / 6.0))]);
+            sent.extend(s.sent.clone());
+        }
+        s.frame(vec![egui::Event::PointerMoved(to), b(to, false)]);
+        sent.extend(s.sent.clone());
+        assert!(sent.iter().any(|c| matches!(c, AppCommand::MoveTrack { .. })), "{sent:?}");
     }
 }
