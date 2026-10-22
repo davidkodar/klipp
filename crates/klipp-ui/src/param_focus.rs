@@ -294,7 +294,7 @@ mod tests {
     fn a_chip_opens_its_tab_and_brings_its_parameter_into_focus() {
         let mut s = Shown::new(animated_clip(), InspectorTab::Audio);
         let drawn: Vec<String> = s.frame(Vec::new()).into_iter().map(|(t, _)| t).collect();
-        assert!(drawn.iter().any(|t| t == "Animated") && drawn.iter().any(|t| t.ends_with("\u{25C6}") && t.starts_with("VID")), "{drawn:?}");
+        assert!(drawn.iter().any(|t| t == "Animated" || t.ends_with(" animated")) && drawn.iter().any(|t| t.ends_with("\u{25C6}") && t.starts_with("VID")), "{drawn:?}");
         let chip = drawn.iter().find(|t| t.starts_with("\u{25C6} ") && t.contains("Position X")).expect("a Position X chip").clone();
         s.click(&chip);
         assert_eq!(s.tab, InspectorTab::Video);
@@ -344,5 +344,19 @@ mod tests {
         s.state.selected_title_object = Some((clip_id, layer));
         s.click("X");
         assert_eq!(s.state.param_focus.as_ref().map(|f| &f.kind), Some(&kind));
+    }
+
+    /// More than four animated parameters fold behind their count, which
+    /// opens on a click.
+    #[test]
+    fn many_animated_parameters_fold_behind_a_count() {
+        let t = |s| klipp_core::RationalTime::from_secs_f64(s, 24);
+        let clip = TestClip::of(Clip::media(klipp_core::MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0)))
+            .lane("opacity", 1.0, 0.5).lane("pos_x", 1.0, 10.0).lane("pos_y", 1.0, 10.0).lane("scale", 1.0, 1.5).lane("rotation", 1.0, 30.0).build();
+        let mut s = Shown::new(clip, InspectorTab::Video);
+        let chips = |s: &mut Shown| s.frame(Vec::new()).into_iter().filter(|(t, _)| t.starts_with("\u{25C6} ") && !t.ends_with(" animated")).count();
+        assert_eq!(chips(&mut s), 0, "folded");
+        s.click("\u{25C6} 5 animated");
+        assert_eq!(chips(&mut s), 5);
     }
 }

@@ -76,6 +76,8 @@ pub struct NewInspectorPanel {
     /// When the focus last selected a title track's layer, so it does so
     /// once per focus and the user's own layer pick is kept after.
     pub layer_followed: Option<f64>,
+    /// The Animated strip opened past its count (#2296).
+    animated_open: bool,
 }
 
 impl NewInspectorPanel {
@@ -247,12 +249,31 @@ impl NewInspectorPanel {
         // tab that holds one and brings it into focus.
         let animated = clip_info.map(|(_, c)| crate::param_focus::animated(c)).unwrap_or_default();
         if !animated.is_empty() {
+            // Up to this many chips show at once; more fold behind a count.
+            const SHOWN: usize = 4;
+            let accent = theme.accent;
+            let folded = animated.len() > SHOWN && !self.animated_open;
             ui.add_space(4.0);
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
-                ui.label(egui::RichText::new("Animated").size(10.0).color(theme.text_dim));
+                let count = egui::RichText::new(format!("\u{25C6} {} animated", animated.len())).size(10.0).color(accent);
+                if animated.len() > SHOWN {
+                    let tip = if folded { "Show every animated parameter" } else { "Show fewer" };
+                    if ui.add(egui::Button::new(count).frame(false).small()).on_hover_text(tip).clicked() {
+                        self.animated_open = !self.animated_open;
+                    }
+                } else {
+                    ui.label(egui::RichText::new("Animated").size(10.0).color(accent));
+                }
+                if folded {
+                    return;
+                }
                 for (kind, label, tab) in &animated {
-                    let chip = egui::Button::new(egui::RichText::new(format!("\u{25C6} {label}")).size(10.0)).small();
+                    let chip = egui::Button::new(egui::RichText::new(format!("\u{25C6} {label}")).size(10.0).color(accent))
+                        .fill(accent.gamma_multiply(0.12))
+                        .stroke(egui::Stroke::new(1.0_f32, accent.gamma_multiply(0.45)))
+                        .rounding(8.0)
+                        .small();
                     if ui.add(chip).on_hover_text("Show it here and its curve in the Curve Editor").clicked() {
                         *active_tab = *tab;
                         self.focus_request = Some(kind.clone());
