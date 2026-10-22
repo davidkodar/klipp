@@ -759,7 +759,7 @@ impl KlippApp {
                     self.state.dirty = true;
                     true
                 }
-                AppCommand::SetAudioKeyframeTangent { clip_id, param, keyframe_index, tangent_in, tangent_out } => {
+                AppCommand::SetAudioKeyframeTangent { clip_id, param, keyframe_index, tangent_in, tangent_out, handles } => {
                     let mut linked_partner_id = None;
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
@@ -769,14 +769,7 @@ impl KlippApp {
                                 klipp_core::AudioParam::Pan => &mut clip.pan_keyframes,
                                 klipp_core::AudioParam::Gain => &mut clip.gain_keyframes,
                             };
-                            if let Some(kf) = keyframes.get_mut(*keyframe_index) {
-                                if let Some(ti) = tangent_in {
-                                    kf.tangent_in = *ti;
-                                }
-                                if let Some(to) = tangent_out {
-                                    kf.tangent_out = *to;
-                                }
-                            }
+                            klipp_core::keyframe::edit_handles(keyframes, *keyframe_index, *tangent_in, *tangent_out, *handles);
                             break;
                         }
                     }
@@ -789,14 +782,7 @@ impl KlippApp {
                                     klipp_core::AudioParam::Pan => &mut partner.pan_keyframes,
                                     klipp_core::AudioParam::Gain => &mut partner.gain_keyframes,
                                 };
-                                if let Some(kf) = keyframes.get_mut(*keyframe_index) {
-                                    if let Some(ti) = tangent_in {
-                                        kf.tangent_in = *ti;
-                                    }
-                                    if let Some(to) = tangent_out {
-                                        kf.tangent_out = *to;
-                                    }
-                                }
+                                klipp_core::keyframe::edit_handles(keyframes, *keyframe_index, *tangent_in, *tangent_out, *handles);
                                 break;
                             }
                         }

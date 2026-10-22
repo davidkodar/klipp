@@ -660,3 +660,25 @@ fn the_key_tools_add_a_key_at_the_playhead_and_paste_copied_keys() {
     // A click selects the key and leaves its value exactly as it was (#2285).
     assert_eq!(keys(&e.state, e.clip, &pos_x), vec![(1.0, 10.0), (2.0, 20.0), (3.0, 20.0), (3.5, 10.0)]);
 }
+
+/// The key menu's handle kinds (#2273): a picture lane's key takes the
+/// kind chosen in one step that undo takes back; a mask's key, which has
+/// no handles, gets no commands.
+#[test]
+fn a_key_menu_handle_kind_is_one_step() {
+    let (mut state, id, node) = state();
+    let menu = |param_kind| crate::state::KeyframeContextMenu { clip_id: id, param_kind, keyframe_index: 0, screen_pos: egui::Pos2::ZERO };
+    let x = KeyframeParamKind::Video(VideoParam::PositionX);
+    let lane = |state: &AppState| crate::key_selection::track_keys(&clip(state, id), &x);
+    let before = lane(&state);
+    let mut cmds = vec![AppCommand::BeginHistoryBatch];
+    cmds.extend(crate::panels::timeline::key_handles_commands(&state, &menu(x.clone()), klipp_core::Handles::Flat));
+    cmds.push(AppCommand::EndHistoryBatch);
+    assert!(apply(&mut state, &cmds).is_empty());
+    let after = lane(&state);
+    assert_eq!((after[0].handles, after[0].interpolation), (klipp_core::Handles::Flat, klipp_core::Interpolation::Bezier), "{after:?}");
+    assert_eq!(after[0].tangent_out.1, 0.0, "a flat handle is level");
+    undo(&mut state);
+    assert_eq!(lane(&state), before);
+    assert!(crate::panels::timeline::key_handles_commands(&state, &menu(radius(node)), klipp_core::Handles::Auto).is_empty());
+}

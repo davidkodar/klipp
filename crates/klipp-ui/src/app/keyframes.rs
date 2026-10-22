@@ -535,11 +535,8 @@ pub(super) fn audio_effect_key_write(state: &mut crate::state::AppState, cmd: &A
                         }
                         keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
                     }
-                    AppCommand::SetAudioEffectKeyframeTangent { tangent_in, tangent_out, .. } => {
-                        if let Some(kf) = keyframes.get_mut(*keyframe_index) {
-                            if let Some(ti) = tangent_in { kf.tangent_in = *ti; }
-                            if let Some(to) = tangent_out { kf.tangent_out = *to; }
-                        }
+                    AppCommand::SetAudioEffectKeyframeTangent { tangent_in, tangent_out, handles, .. } => {
+                        klipp_core::keyframe::edit_handles(keyframes, *keyframe_index, *tangent_in, *tangent_out, *handles);
                     }
                     _ => {}
                 }

@@ -532,8 +532,8 @@ fn under_playhead_fingerprint(seq: &klipp_timeline::Sequence, tc: Timecode) -> u
     h.finish()
 }
 
-/// A speed ramp's shape: every keyframe's time, value, interpolation
-/// and tangents. A drag
+/// A speed ramp's shape: every keyframe's time, value, interpolation,
+/// tangents and handle kind. A drag
 /// on one keyframe changes which source frame each playhead shows
 /// without changing how many keyframes there are (#423).
 fn hash_speed_keyframes(keyframes: &[klipp_core::Keyframe], h: &mut impl std::hash::Hasher) {
@@ -545,6 +545,11 @@ fn hash_speed_keyframes(keyframes: &[klipp_core::Keyframe], h: &mut impl std::ha
         std::mem::discriminant(&k.interpolation).hash(h);
         (k.tangent_out.0.to_bits(), k.tangent_out.1.to_bits()).hash(h);
         (k.tangent_in.0.to_bits(), k.tangent_in.1.to_bits()).hash(h);
+        // Only a kind other than Broken, so a ramp's hash is as it was
+        // before keys had kinds.
+        if !k.handles.is_broken() {
+            k.handles.hash(h);
+        }
     }
 }
 

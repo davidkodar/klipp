@@ -980,7 +980,7 @@ fn handle_audio_param(
             for idx in [ki.saturating_sub(1), ki] {
                 if idx >= keyframes.len() { continue; }
                 let (t_in, t_out) = preset.compute_tangents(keyframes, idx);
-                cmds.push(AppCommand::SetAudioKeyframeTangent { clip_id, param, keyframe_index: idx, tangent_in: t_in, tangent_out: t_out });
+                cmds.push(AppCommand::SetAudioKeyframeTangent { clip_id, param, keyframe_index: idx, tangent_in: t_in, tangent_out: t_out, handles: None });
             }
         }
     }

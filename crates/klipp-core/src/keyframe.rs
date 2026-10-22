@@ -140,8 +140,8 @@ pub struct Keyframe {
 
 /// How a key's two Bezier handles are made, as a curve editor's key menu
 /// sets them. The worked-out kinds are solved from the neighbouring keys
-/// each time the curve is evaluated, so they follow a neighbour that
-/// moves; the stored tangents are only kept in step for show and for a
+/// each time the curve is evaluated ([`handles_at`]), so they follow a
+/// neighbour that moves; the stored tangents are only kept in step for show and for a
 /// later switch to a given kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -179,6 +179,126 @@ impl Handles {
 
     pub fn is_broken(&self) -> bool {
         *self == Handles::Broken
+    }
+}
+
+/// The handles of key `i` of `kfs` as the curve is evaluated with them,
+/// `(tangent_in, tangent_out)`: the stored ones for `Broken` and
+/// `Aligned`, else worked out from the neighbouring keys, each handle a
+/// third of its segment long. A side with no neighbour keeps its stored
+/// handle (no segment reads it).
+pub fn handles_at(kfs: &[Keyframe], i: usize) -> ((f64, f32), (f64, f32)) {
+    let k = &kfs[i];
+    let prev = i.checked_sub(1).and_then(|p| kfs.get(p));
+    let next = kfs.get(i + 1);
+    // The handles along `slope` (value per second), a third of each segment.
+    let along = |slope: f64| {
+        let tin = prev.map_or(k.tangent_in, |p| {
+            let d = (k.time_secs - p.time_secs) / 3.0;
+            (-d, (-slope * d) as f32)
+        });
+        let tout = next.map_or(k.tangent_out, |n| {
+            let d = (n.time_secs - k.time_secs) / 3.0;
+            (d, (slope * d) as f32)
+        });
+        (tin, tout)
+    };
+    let slope_to = |a: &Keyframe, b: &Keyframe| {
+        let d = b.time_secs - a.time_secs;
+        if d.abs() < 1e-12 { 0.0 } else { (b.value - a.value) as f64 / d }
+    };
+    match k.handles {
+        Handles::Broken | Handles::Aligned => (k.tangent_in, k.tangent_out),
+        Handles::Flat => along(0.0),
+        Handles::Auto => along(match (prev, next) {
+            (Some(p), Some(n)) => slope_to(p, n),
+            (Some(p), None) => slope_to(p, k),
+            (None, Some(n)) => slope_to(k, n),
+            (None, None) => 0.0,
+        }),
+        Handles::Clamped => {
+            let (Some(p), Some(n)) = (prev, next) else { return along(0.0) };
+            if (k.value - p.value) * (n.value - k.value) <= 0.0 {
+                return along(0.0);
+            }
+            // A handle a third along at this slope stays within its
+            // segment's values: no overshoot.
+            let limit = (3.0 * slope_to(p, k).abs()).min(3.0 * slope_to(k, n).abs());
+            let s = slope_to(p, n);
+            along(s.signum() * s.abs().min(limit))
+        }
+        Handles::LinearIn => {
+            let tin = prev.map_or(k.tangent_in, |p| (-(k.time_secs - p.time_secs) / 3.0, -(k.value - p.value) / 3.0));
+            (tin, k.tangent_out)
+        }
+        Handles::LinearOut => {
+            let tout = next.map_or(k.tangent_out, |n| ((n.time_secs - k.time_secs) / 3.0, (n.value - k.value) / 3.0));
+            (k.tangent_in, tout)
+        }
+    }
+}
+
+/// Give key `index` of `kfs` the handle kind `handles`, as a key menu
+/// does: the segments the kind shapes turn Bezier (both, or the one side
+/// of a Linear In or Out), a far key's handle on a segment that was not
+/// Bezier set where a straight line would put it so that end moves as it
+/// did, `Aligned` turns the in-handle into line with the out-handle, and
+/// the stored tangents take the handles the curve now evaluates with. An
+/// index past the end changes nothing.
+pub fn set_handles(kfs: &mut [Keyframe], index: usize, handles: Handles) {
+    if index >= kfs.len() {
+        return;
+    }
+    let (into, out_of) = match handles {
+        Handles::LinearIn => (true, false),
+        Handles::LinearOut => (false, true),
+        _ => (true, true),
+    };
+    if into && index > 0 {
+        let (a, b) = (index - 1, index);
+        if kfs[a].interpolation != Interpolation::Bezier {
+            let (d, v) = (kfs[b].time_secs - kfs[a].time_secs, kfs[b].value - kfs[a].value);
+            kfs[a].tangent_out = (d / 3.0, v / 3.0);
+            kfs[b].tangent_in = (-d / 3.0, -v / 3.0);
+            kfs[a].interpolation = Interpolation::Bezier;
+        }
+    }
+    if out_of && index + 1 < kfs.len() {
+        let (a, b) = (index, index + 1);
+        if kfs[a].interpolation != Interpolation::Bezier {
+            let (d, v) = (kfs[b].time_secs - kfs[a].time_secs, kfs[b].value - kfs[a].value);
+            kfs[a].tangent_out = (d / 3.0, v / 3.0);
+            kfs[b].tangent_in = (-d / 3.0, -v / 3.0);
+            kfs[a].interpolation = Interpolation::Bezier;
+        }
+    }
+    let k = &mut kfs[index];
+    if handles == Handles::Aligned {
+        let (ti, to) = (k.tangent_in, k.tangent_out);
+        if to.0.abs() > 1e-12 && ti.0.abs() > 1e-12 {
+            k.tangent_in = (ti.0, (to.1 as f64 * ti.0 / to.0) as f32);
+        }
+    }
+    k.handles = handles;
+    let (ti, to) = handles_at(kfs, index);
+    kfs[index].tangent_in = ti;
+    kfs[index].tangent_out = to;
+}
+
+/// A handle edit on key `index`, as the curve editor's handle drag and key
+/// menu send it: the kind set first when one is given ([`set_handles`]),
+/// then either handle that is given put in place.
+pub fn edit_handles(kfs: &mut [Keyframe], index: usize, tangent_in: Option<(f64, f32)>, tangent_out: Option<(f64, f32)>, handles: Option<Handles>) {
+    if let Some(h) = handles {
+        set_handles(kfs, index, h);
+    }
+    if let Some(kf) = kfs.get_mut(index) {
+        if let Some(ti) = tangent_in {
+            kf.tangent_in = ti;
+        }
+        if let Some(to) = tangent_out {
+            kf.tangent_out = to;
+        }
     }
 }
 
@@ -347,17 +467,20 @@ pub fn evaluate(keyframes: &[Keyframe], time_secs: f64, default: f32) -> f32 {
                 Interpolation::Linear => a.value + (b.value - a.value) * t as f32,
                 Interpolation::Bezier => {
                     let duration = b.time_secs - a.time_secs;
+                    // The handles as each key's kind makes them.
+                    let (_, a_out) = handles_at(keyframes, i);
+                    let (b_in, _) = handles_at(keyframes, i + 1);
 
                     // Value control points (Y dimension)
                     let y0 = a.value;
                     let y3 = b.value;
-                    let y1 = y0 + a.tangent_out.1;
-                    let y2 = y3 + b.tangent_in.1;
+                    let y1 = y0 + a_out.1;
+                    let y2 = y3 + b_in.1;
 
                     // Check if tangent time offsets are effectively zero —
                     // if so, use the simple linear-t evaluation (no Newton-Raphson needed).
-                    let tx_out = a.tangent_out.0;
-                    let tx_in = b.tangent_in.0;
+                    let tx_out = a_out.0;
+                    let tx_in = b_in.0;
                     let has_time_tangents = duration.abs() > 1e-9
                         && (tx_out.abs() > 1e-9 || tx_in.abs() > 1e-9);
 
@@ -494,6 +617,78 @@ mod tests {
             let k = Keyframe { handles: h, ..key.clone() };
             assert_eq!(serde_json::from_str::<Keyframe>(&serde_json::to_string(&k).unwrap()).unwrap(), k);
         }
+    }
+
+    /// The slope of the curve just either side of `t`.
+    fn slopes(keys: &[Keyframe], t: f64) -> (f32, f32) {
+        let h = 1e-4;
+        ((evaluate(keys, t, 0.0) - evaluate(keys, t - h, 0.0)) / h as f32, (evaluate(keys, t + h, 0.0) - evaluate(keys, t, 0.0)) / h as f32)
+    }
+
+    fn three(handles: Handles) -> Vec<Keyframe> {
+        let mut keys = vec![kf_linear(0.0, 0.0), kf_linear(1.0, 1.0), kf_linear(3.0, 1.05)];
+        set_handles(&mut keys, 1, handles);
+        keys
+    }
+
+    /// Auto handles run smooth through the key along the line between its
+    /// neighbours, and follow a neighbour that moves without being set
+    /// again; Flat ones are level there.
+    #[test]
+    fn auto_handles_are_smooth_and_follow_their_neighbours() {
+        let mut keys = three(Handles::Auto);
+        assert_eq!((keys[0].interpolation, keys[1].interpolation), (Interpolation::Bezier, Interpolation::Bezier));
+        let (l, r) = slopes(&keys, 1.0);
+        assert!((l - r).abs() < 0.01 && (l - 0.35).abs() < 0.01, "{l} {r}");
+        keys[2].value = 3.0;
+        let (l, r) = slopes(&keys, 1.0);
+        assert!((l - r).abs() < 0.01 && (l - 1.0).abs() < 0.01, "moved neighbour: {l} {r}");
+
+        let (l, r) = slopes(&three(Handles::Flat), 1.0);
+        assert!(l.abs() < 0.01 && r.abs() < 0.01, "{l} {r}");
+    }
+
+    /// Plain Auto overshoots past a key that is nearly level with the next;
+    /// Clamped stays within the neighbours' values, and goes flat at a peak.
+    #[test]
+    fn clamped_handles_never_overshoot() {
+        let over = |keys: &[Keyframe]| (0..=300).map(|i| evaluate(keys, i as f64 / 100.0, 0.0)).fold(f32::MIN, f32::max);
+        assert!(over(&three(Handles::Auto)) > 1.05 + 1e-3);
+        assert!(over(&three(Handles::Clamped)) <= 1.05 + 1e-4, "{}", over(&three(Handles::Clamped)));
+        let mut peak = vec![kf_linear(0.0, 0.0), kf_linear(1.0, 1.0), kf_linear(2.0, 0.0)];
+        set_handles(&mut peak, 1, Handles::Clamped);
+        let (l, r) = slopes(&peak, 1.0);
+        assert!(l.abs() < 0.01 && r.abs() < 0.01 && over(&peak) <= 1.0 + 1e-4);
+    }
+
+    /// Linear In aims the in-handle at the key before and leaves the
+    /// segment out alone; Aligned puts the handles in one line; Broken
+    /// keeps them as they are. The stored tangents end up as evaluated.
+    #[test]
+    fn linear_aligned_and_broken_handles() {
+        let keys = three(Handles::LinearIn);
+        assert_eq!(keys[1].interpolation, Interpolation::Linear, "the segment out is not this kind's");
+        assert!((evaluate(&keys, 0.5, 0.0) - 0.5).abs() < 1e-4, "a straight line in");
+        assert_eq!(handles_at(&keys, 1), (keys[1].tangent_in, keys[1].tangent_out));
+
+        let mut keys = vec![kf_bezier(0.0, 0.0, (0.3, 0.0), (0.0, 0.0)), kf_bezier(1.0, 1.0, (0.5, 0.5), (-0.2, 0.4)), kf_linear(2.0, 0.0)];
+        let broken = keys.clone();
+        set_handles(&mut keys, 1, Handles::Broken);
+        assert_eq!(keys[1].tangent_in, broken[1].tangent_in);
+        set_handles(&mut keys, 1, Handles::Aligned);
+        let (ti, to) = (keys[1].tangent_in, keys[1].tangent_out);
+        assert!(((ti.1 as f64) / ti.0 - (to.1 as f64) / to.0).abs() < 1e-6, "{ti:?} {to:?}");
+        assert_eq!(keys[1].handles, Handles::Aligned);
+    }
+
+    /// A handle drag on a worked-out key names the kind it becomes, then
+    /// the handle; the drag's handle is the one evaluated.
+    #[test]
+    fn a_handle_edit_sets_the_kind_then_the_handle() {
+        let mut keys = three(Handles::Auto);
+        edit_handles(&mut keys, 1, None, Some((0.4, 0.9)), Some(Handles::Broken));
+        assert_eq!(keys[1].handles, Handles::Broken);
+        assert_eq!(handles_at(&keys, 1).1, (0.4, 0.9));
     }
 
     fn kf_linear(time: f64, value: f32) -> Keyframe {

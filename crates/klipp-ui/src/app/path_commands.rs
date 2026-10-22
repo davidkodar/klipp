@@ -577,16 +577,9 @@ impl crate::state::AppState {
                 klipp_core::keyframe::set_interpolation_at(&mut keys, *keyframe_index, *interpolation);
                 (keys, "Set Keyframe Interpolation")
             }
-            C::SetVideoKeyframeTangent { keyframe_index, tangent_in, tangent_out, .. } => {
-                if let Some(kf) = keys.get_mut(*keyframe_index) {
-                    if let Some(ti) = tangent_in {
-                        kf.tangent_in = *ti;
-                    }
-                    if let Some(to) = tangent_out {
-                        kf.tangent_out = *to;
-                    }
-                }
-                (keys, "Set Keyframe Tangent")
+            C::SetVideoKeyframeTangent { keyframe_index, tangent_in, tangent_out, handles, .. } => {
+                klipp_core::keyframe::edit_handles(&mut keys, *keyframe_index, *tangent_in, *tangent_out, *handles);
+                (keys, if handles.is_some() { "Set Keyframe Handles" } else { "Set Keyframe Tangent" })
             }
             C::ScaleVideoKeyframeTiming { factor, .. } => {
                 for kf in keys.iter_mut() {
@@ -1353,7 +1346,7 @@ mod tests {
         assert_eq!(lane(&s0, id0, "pos_x"), vec![(0.5, 10.0), (1.0, 20.0), (1.5, 30.0)], "keyed by path");
         type Cmd = fn(ClipId) -> AppCommand;
         type Check = fn(&AppState, ClipId);
-        let families: [(&str, Cmd, Check); 11] = [
+        let families: [(&str, Cmd, Check); 12] = [
             ("add", |id| AppCommand::AddVideoKeyframe { clip_id: id, param: P::PositionX, time_secs: 0.75, value: 15.0 }, |s, id| assert_eq!(lane(s, id, "pos_x").len(), 4)),
             ("remove", |id| AppCommand::RemoveVideoKeyframe { clip_id: id, param: P::PositionX, time_secs: 1.0 }, |s, id| assert_eq!(lane(s, id, "pos_x"), vec![(0.5, 10.0), (1.5, 30.0)])),
             ("move", |id| AppCommand::MoveVideoKeyframe { clip_id: id, param: P::PositionX, index: 0, new_time_secs: 1.2, new_value: 12.0 }, |s, id| assert_eq!(lane(s, id, "pos_x"), vec![(1.0, 20.0), (1.2, 12.0), (1.5, 30.0)])),
@@ -1361,7 +1354,14 @@ mod tests {
                 let keys = crate::inspector::placement_by_path::lane_keys(clip(s, id), "pos_x");
                 assert!(keys[0].interpolation == Interpolation::Bezier && keys[1].interpolation == Interpolation::Bezier && keys[1].tangent_out.0 > 0.0, "{keys:?}");
             }),
-            ("tangent", |id| AppCommand::SetVideoKeyframeTangent { clip_id: id, param: P::PositionX, keyframe_index: 1, tangent_in: Some((-0.1, 2.0)), tangent_out: None }, |s, id| assert_eq!(crate::inspector::placement_by_path::lane_keys(clip(s, id), "pos_x")[1].tangent_in, (-0.1, 2.0))),
+            ("tangent", |id| AppCommand::SetVideoKeyframeTangent { clip_id: id, param: P::PositionX, keyframe_index: 1, tangent_in: Some((-0.1, 2.0)), tangent_out: None, handles: None }, |s, id| assert_eq!(crate::inspector::placement_by_path::lane_keys(clip(s, id), "pos_x")[1].tangent_in, (-0.1, 2.0))),
+            // A handle kind from the key menu (#2273): the key keeps it, both
+            // its segments Bezier, the curve smooth through it.
+            ("handles", |id| AppCommand::SetVideoKeyframeTangent { clip_id: id, param: P::PositionX, keyframe_index: 1, tangent_in: None, tangent_out: None, handles: Some(klipp_core::Handles::Auto) }, |s, id| {
+                let keys = crate::inspector::placement_by_path::lane_keys(clip(s, id), "pos_x");
+                assert!(keys[1].handles == klipp_core::Handles::Auto && keys[0].interpolation == Interpolation::Bezier && keys[1].interpolation == Interpolation::Bezier, "{keys:?}");
+                assert!((klipp_core::keyframe::evaluate(&keys, 0.75, 0.0) - 15.0).abs() < 1e-3, "a straight run stays straight");
+            }),
             ("scale timing", |id| AppCommand::ScaleVideoKeyframeTiming { clip_id: id, param: P::PositionX, factor: 0.5 }, |s, id| assert_eq!(lane(s, id, "pos_x"), vec![(0.25, 10.0), (0.5, 20.0), (0.75, 30.0)])),
             ("reverse", |id| AppCommand::ReverseVideoKeyframes { clip_id: id, param: P::PositionX }, |s, id| assert_eq!(lane(s, id, "pos_x"), vec![(0.0, 30.0), (0.5, 20.0), (1.0, 10.0)])),
             ("bump", |id| AppCommand::InsertVideoKeyframeBump { clip_id: id, param: P::Opacity, center_time: 1.5, bump_value: 0.2, base_value: 1.0, duration_secs: 0.4, ramp_secs: 0.1 }, |s, id| assert_eq!(lane(s, id, "opacity").len(), 6)),
