@@ -255,6 +255,32 @@ pub fn strip_ass_override_tags(s: &str) -> String {
     out
 }
 
+/// The language a WebVTT file's header names in a `Language:` line, as
+/// a lowercase tag; `None` for SRT, or a header without one (#2223).
+pub fn vtt_language(content: &str) -> Option<String> {
+    let content = content.strip_prefix('\u{feff}').unwrap_or(content);
+    if !content.starts_with("WEBVTT") {
+        return None;
+    }
+    content.lines().skip(1).take_while(|l| !l.trim().is_empty() && !l.contains("-->")).find_map(|l| {
+        let (name, value) = l.split_once(':')?;
+        name.trim().eq_ignore_ascii_case("language").then(|| value.trim().to_ascii_lowercase()).filter(|v| !v.is_empty())
+    })
+}
+
+/// The language the subtitle file at `path`, read as `bytes`, names,
+/// by its extension's format: TTML's `xml:lang`, EBU-STL's language code,
+/// a WebVTT `Language:` header; `None` for a format with none (#2223).
+pub fn file_language(path: &std::path::Path, bytes: &[u8]) -> Option<String> {
+    let ext = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).unwrap_or_default();
+    match ext.as_str() {
+        "stl" => stl::stl_language(bytes),
+        "ttml" | "dfxp" | "xml" | "itt" => ttml::ttml_language(std::str::from_utf8(bytes).ok()?),
+        "vtt" => vtt_language(std::str::from_utf8(bytes).ok()?),
+        _ => None,
+    }
+}
+
 /// Parse SRT or VTT subtitle content into timed entries.
 pub fn parse_srt_vtt(content: &str) -> Vec<SubtitleEntry> {
     let mut subs = Vec::new();
@@ -341,7 +367,17 @@ pub fn format_srt_time(secs: f64) -> String {
 
 /// Generate WebVTT format string from subtitle entries.
 pub fn generate_vtt(subs: &[SubtitleEntry]) -> String {
-    let mut out = String::from("WEBVTT\n\n");
+    generate_vtt_in(subs, None)
+}
+
+/// [`generate_vtt`], its header naming `language` (a BCP 47 tag) in a
+/// `Language:` line when it is known (#2223).
+pub fn generate_vtt_in(subs: &[SubtitleEntry], language: Option<&str>) -> String {
+    let mut out = String::from("WEBVTT\n");
+    if let Some(lang) = language.map(str::trim).filter(|l| !l.is_empty()) {
+        out.push_str(&format!("Language: {lang}\n"));
+    }
+    out.push('\n');
     out.push_str(&styled::vtt_colour_classes(subs.iter().flat_map(|s| s.spans.iter().filter_map(|sp| sp.style.color))));
     for sub in subs {
         out.push_str(&format!("{} --> {}\n", format_vtt_time(sub.start_secs), format_vtt_time(sub.end_secs)));
@@ -873,5 +909,35 @@ mod inline_styling_tests {
         let sub = SubtitleEntry { start_secs: e.start_secs, end_secs: e.end_secs, text: e.text.clone(), spans: e.spans.clone(), placement: e.placement };
         let (again, _) = parse_ass(&generate_ass(&[sub]));
         assert_eq!((again[0].text.as_str(), again[0].placement, &again[0].spans), (e.text.as_str(), e.placement, &e.spans));
+    }
+}
+
+#[cfg(test)]
+mod language_tests {
+    use super::*;
+
+    fn cues() -> Vec<SubtitleEntry> {
+        vec![SubtitleEntry { start_secs: 1.0, end_secs: 2.5, text: "Guten Morgen".into(), ..Default::default() }]
+    }
+
+    /// Each format that can say its language says what it was written
+    /// with, and is read back (#2223); SRT says none.
+    #[test]
+    fn a_files_language_is_written_and_read_back() {
+        let vtt = generate_vtt_in(&cues(), Some("de"));
+        assert!(vtt.starts_with("WEBVTT\nLanguage: de\n\n"), "{vtt}");
+        assert_eq!(vtt_language(&vtt).as_deref(), Some("de"));
+        assert_eq!(parse_srt_vtt(&vtt), parse_srt_vtt(&generate_vtt(&cues())), "the header line is not a cue");
+        assert_eq!(ttml::ttml_language(&ttml::generate_imsc(&cues(), "fr")).as_deref(), Some("fr"));
+        assert_eq!(stl::stl_language(&stl::generate_stl(&cues(), 25, "sv", "t")).as_deref(), Some("sv"));
+        assert_eq!(vtt_language(&generate_srt(&cues())), None);
+        assert_eq!(vtt_language(&generate_vtt(&cues())), None);
+    }
+
+    /// Without a language the WebVTT file is as it always was.
+    #[test]
+    fn a_vtt_without_a_language_is_unchanged() {
+        assert!(generate_vtt(&cues()).starts_with("WEBVTT\n\n00:00:01.000 --> "));
+        assert_eq!(generate_vtt(&cues()), generate_vtt_in(&cues(), Some("  ")));
     }
 }

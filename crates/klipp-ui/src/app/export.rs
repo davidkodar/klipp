@@ -3161,6 +3161,9 @@ impl KlippApp {
                             .unwrap();
                         let track = &mut seq.tracks[sub_track_idx];
                         track.source_file = Some(path.clone());
+                        // The language the file names, where its format
+                        // says one (#2223).
+                        track.language = klipp_captions::file_language(&path, if is_stl { &bytes } else { content.as_bytes() });
 
                         let imported_count;
                         if is_ass {
@@ -3428,51 +3431,57 @@ impl KlippApp {
                 true
             }
             AppCommand::ExportSubtitles { path } => {
-                let path = path.clone();
                 let seq = &self.state.sequences[self.state.active_sequence_idx];
-                let mut subs = Vec::new();
-                // Subtitle tracks are the captions. Text tracks stand in
-                // only when there are none: with both, the text tracks
-                // hold titles and lower thirds, and a speaker's name does
-                // not belong in a subtitle file.
-                let has_subtitles = seq.tracks.iter().any(|t| t.kind == klipp_timeline::TrackKind::Subtitle && !t.clips.is_empty());
-                for track in &seq.tracks {
-                    let wanted = if has_subtitles { track.kind == klipp_timeline::TrackKind::Subtitle } else { track.kind == klipp_timeline::TrackKind::Text };
-                    if !wanted {
-                        continue;
-                    }
-                    for clip in &track.clips {
+                let ext = path.extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                // A file a subtitle track, or one for them all (#2223).
+                let files = klipp_document::subtitle_export::files(seq, path);
+                let brief = seq.brief.as_ref().and_then(|b| b.language.as_deref());
+                let mut written = Vec::new();
+                for file in &files {
+                    let mut subs = Vec::new();
+                    for clip in file.tracks.iter().flat_map(|&i| &seq.tracks[i].clips) {
                         if let Some(td) = clip.title_data() {
                             // With its inline styling and placement (#1515).
                             subs.push(cue_of(clip.timeline_in.to_secs_f64(), clip.timeline_out.to_secs_f64(), td));
                         }
                     }
+                    subs.sort_by(|a, b| a.start_secs.partial_cmp(&b.start_secs).unwrap_or(std::cmp::Ordering::Equal));
+                    // The track's language, else the brief's; WebVTT's
+                    // header names only a track's own.
+                    let language = file.language.as_deref().or(brief).unwrap_or("");
+                    let content: Vec<u8> = match ext.as_str() {
+                        // EBU-STL for teletext, at the sequence's frame rate
+                        // family (#1516).
+                        "stl" => klipp_captions::stl::generate_stl(
+                            &subs,
+                            if (seq.fps.as_f64().round() as u32).is_multiple_of(30) { 30 } else { 25 },
+                            language,
+                            &seq.name,
+                        ),
+                        "vtt" => klipp_captions::generate_vtt_in(&subs, file.language.as_deref()).into_bytes(),
+                        "ass" | "ssa" => generate_ass(&subs).into_bytes(),
+                        // IMSC 1.1 Text (#1516).
+                        "ttml" | "dfxp" | "xml" | "itt" => klipp_captions::ttml::generate_imsc(&subs, language).into_bytes(),
+                        // CEA-608 pop-on captions on CC1 (#1516).
+                        "scc" => klipp_captions::scc::generate_scc(&subs).into_bytes(),
+                        _ => generate_srt(&subs).into_bytes(),
+                    };
+                    if let Err(e) = std::fs::write(&file.path, &content) {
+                        self.state.toast.show(format!("Failed to write {}: {e}", file.path.display()));
+                        return true;
+                    }
+                    written.push((subs.len(), &file.path));
                 }
-                subs.sort_by(|a, b| a.start_secs.partial_cmp(&b.start_secs).unwrap_or(std::cmp::Ordering::Equal));
-                let ext = path.extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("")
-                    .to_ascii_lowercase();
-                let content: Vec<u8> = match ext.as_str() {
-                    // EBU-STL for teletext, at the sequence's frame rate
-                    // family (#1516).
-                    "stl" => klipp_captions::stl::generate_stl(
-                        &subs,
-                        if (seq.fps.as_f64().round() as u32).is_multiple_of(30) { 30 } else { 25 },
-                        seq.brief.as_ref().and_then(|b| b.language.as_deref()).unwrap_or(""),
-                        &seq.name,
-                    ),
-                    "vtt" => generate_vtt(&subs).into_bytes(),
-                    "ass" | "ssa" => generate_ass(&subs).into_bytes(),
-                    // IMSC 1.1 Text, in the brief's language (#1516).
-                    "ttml" | "dfxp" | "xml" | "itt" => klipp_captions::ttml::generate_imsc(&subs, seq.brief.as_ref().and_then(|b| b.language.as_deref()).unwrap_or("")).into_bytes(),
-                    // CEA-608 pop-on captions on CC1 (#1516).
-                    "scc" => klipp_captions::scc::generate_scc(&subs).into_bytes(),
-                    _ => generate_srt(&subs).into_bytes(),
-                };
-                match std::fs::write(&path, &content) {
-                    Ok(_) => self.state.toast.show(format!("Exported {} subtitles to {}", subs.len(), path.display())),
-                    Err(e) => self.state.toast.show(format!("Failed to write: {e}")),
+                match &written[..] {
+                    [(n, p)] => self.state.toast.show(format!("Exported {n} subtitles to {}", p.display())),
+                    _ => self.state.toast.show(format!(
+                        "Exported {} subtitle files: {}",
+                        written.len(),
+                        written.iter().map(|(_, p)| p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()).collect::<Vec<_>>().join(", ")
+                    )),
                 }
                 true
             }

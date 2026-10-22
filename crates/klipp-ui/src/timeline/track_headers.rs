@@ -677,6 +677,33 @@ pub fn show(
                 }
             }
 
+            // The captions' language (#2223), what an export tags its file
+            // with.
+            if track_kind == TrackKind::Subtitle {
+                let current = state.sequence().tracks[track_idx].language.clone();
+                let label = match &current {
+                    Some(code) => format!("Language: {code}"),
+                    None => "Language".to_string(),
+                };
+                ui.menu_button(label, |ui| {
+                    let mut pick = |ui: &mut egui::Ui, text: String, language: Option<String>| {
+                        let mark = if current == language { "\u{2714} " } else { "    " };
+                        if ui.button(format!("{mark}{text}")).clicked() {
+                            cmds.push(AppCommand::SetTrackLanguage { track_id, language });
+                            ui.close_menu();
+                        }
+                    };
+                    pick(ui, "None".into(), None);
+                    // One set elsewhere (an imported file's) stays offered.
+                    if let Some(code) = current.as_ref().filter(|c| !klipp_document::subtitle_export::LANGUAGES.iter().any(|(t, _)| t == c)) {
+                        pick(ui, code.clone(), Some(code.clone()));
+                    }
+                    for (code, name) in klipp_document::subtitle_export::LANGUAGES {
+                        pick(ui, format!("{name} ({code})"), Some((*code).to_string()));
+                    }
+                });
+            }
+
             ui.separator();
             crate::panels::timeline::track_attribute_items(ui, state, track_idx, &mut cmds);
             ui.separator();

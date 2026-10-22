@@ -3092,6 +3092,8 @@ pub enum AppCommand {
     /// A track's sync lock on or off (#915): on, a ripple on another track
     /// moves its clips too.
     SetTrackSyncLock { track_id: TrackId, on: bool },
+    /// A subtitle track's language, a BCP 47 tag, or none (#2223).
+    SetTrackLanguage { track_id: TrackId, language: Option<String> },
     /// A track's targeting on or off (#915): edit-point navigation,
     /// paste, split at playhead and match frame act on targeted tracks.
     SetTrackTargeted { track_id: TrackId, on: bool },

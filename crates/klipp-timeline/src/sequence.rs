@@ -1280,6 +1280,11 @@ pub struct Track {
     /// already there. `None` keeps the default caption look.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caption_style: Option<CaptionStyle>,
+    /// The language of a subtitle track's captions (#2223), a BCP 47 tag
+    /// such as `de`: what an export tags the file with. `None` when not
+    /// known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
     /// Magnetic role of this track. Defaults to Free — backward compatible.
     #[serde(default)]
     pub magnetic_role: TrackRole,
@@ -1494,6 +1499,7 @@ impl Track {
             pan: 0.0,
             locked: false,
             caption_style: None,
+            language: None,
             magnetic_role: TrackRole::Free,
             storyline_anchor: None,
             custom_height: None,

@@ -2973,6 +2973,7 @@ dependencies = [
  "klipp-analysis",
  "klipp-audio",
  "klipp-audio-search",
+ "klipp-captions",
  "klipp-color",
  "klipp-compose",
  "klipp-core",

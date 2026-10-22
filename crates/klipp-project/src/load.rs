@@ -819,6 +819,7 @@ fn load_sequence_from_json(
             track.targeted = t.targeted;
             track.source_patch = t.source_patch;
             track.caption_style = t.caption_style.clone();
+            track.language = t.language.clone();
             track.source_file = t.source_file.as_ref().map(|p| resolve_media_path(project_dir, Path::new(p)));
             track.custom_height = t.custom_height;
             track.colour_label = t.colour_label;

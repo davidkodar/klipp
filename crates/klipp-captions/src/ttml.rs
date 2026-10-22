@@ -278,6 +278,15 @@ fn region_placement<'a>(n: roxmltree::Node<'a, 'a>) -> (Option<(f32, f32)>, Opti
     (at, styling(n, "textAlign"))
 }
 
+/// The language a TTML document's root names in `xml:lang`, as a
+/// lowercase tag; `None` when it isn't TTML or names none (#2223).
+pub fn ttml_language(content: &str) -> Option<String> {
+    let doc = roxmltree::Document::parse(content).ok()?;
+    let root = doc.root_element();
+    (root.tag_name().name() == "tt").then_some(())?;
+    root.attribute((roxmltree::NS_XML_URI, "lang")).map(|l| l.trim().to_ascii_lowercase()).filter(|l| !l.is_empty())
+}
+
 /// Cues from a TTML document of any of the family (TTML 1 and 2, DFXP,
 /// IMSC, iTT): each `p`'s timing (its own, offset by the `body`'s and the
 /// `div`s' it is in), its text with its `br`s as line breaks, its spans'

@@ -281,7 +281,14 @@ pub(crate) fn respond(
                     return Err(format!("the path ends .{ext} but the format asked for is {want}; end the path .{want}"));
                 }
             }
-            send(AppCommand::ExportSubtitles { path: p })
+            // A file a subtitle track when there are several (#2223).
+            let files = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                klipp_document::subtitle_export::files(&seq, &p)
+            };
+            let mut v = send(AppCommand::ExportSubtitles { path: p })?;
+            v["files"] = json!(files.iter().map(|f| json!({ "path": f.path.display().to_string(), "tracks": f.tracks, "language": f.language })).collect::<Vec<_>>());
+            Ok(v)
         }
 
         ControlCommand::TranslateCaptions { track, to, from, download_models } => {
@@ -368,8 +375,10 @@ pub(crate) fn respond(
             if !p.is_file() {
                 return Err(format!("no file at {path:?}"));
             }
+            let language = std::fs::read(&p).ok().and_then(|bytes| klipp_captions::file_language(&p, &bytes));
             let mut v = send(AppCommand::ImportSubtitles { path: p })?;
-            v["next"] = json!("The cues land on a new subtitle track named after the file; timeline shows it.");
+            v["language"] = json!(language);
+            v["next"] = json!("The cues land on a new subtitle track named after the file, in the language the file names (language, null when it names none); timeline shows it.");
             Ok(v)
         }
 

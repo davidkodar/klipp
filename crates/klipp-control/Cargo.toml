@@ -19,6 +19,7 @@ publish = false
 
 [dependencies]
 dirs = { workspace = true }
+klipp-captions = { workspace = true }
 klipp-color = { workspace = true }
 klipp-ml = { workspace = true }
 klipp-ml-candle = { workspace = true }

@@ -177,14 +177,16 @@ fn track_name(seq: &Sequence, source: &str, language: &str) -> String {
 /// to [`MAX_CHARS`] × [`MAX_LINES`]. Captions that read faster than
 /// [`MAX_CHARS_PER_SEC`], or run past the line limits once wrapped, are
 /// flagged, as are those in `cut` (a caption whose sentence the
-/// translator stopped short, with why).
-pub fn translated_track(seq: &Sequence, track: usize, translations: &[(ClipId, String)], cut: &[(ClipId, &'static str)], language: &str) -> Result<Translated, String> {
+/// translator stopped short, with why). The track is in `code`, the
+/// language's tag, and named after `language`, its name (#2223).
+pub fn translated_track(seq: &Sequence, track: usize, translations: &[(ClipId, String)], cut: &[(ClipId, &'static str)], language: &str, code: &str) -> Result<Translated, String> {
     let source = seq.tracks.get(track).ok_or("the caption track is gone")?;
     if !matches!(source.kind, TrackKind::Subtitle | TrackKind::Text) {
         return Err("that is not a caption track".into());
     }
     let mut new = Track::new(&track_name(seq, &source.name, language), TrackKind::Subtitle);
     new.caption_style = source.caption_style.clone();
+    new.language = Some(code.to_string());
     let mut flagged = Vec::new();
     for (id, text) in translations {
         let Some(clip) = source.clips.iter().find(|c| c.id == *id) else { continue };
@@ -279,7 +281,7 @@ mod tests {
     fn a_translated_track_keeps_each_captions_time_and_flags_the_hard_ones() {
         let (seq, ti, ids) = caption_sequence(&[(2.0, 4.0, "Good morning"), (0.0, 2.0, "Hello there")]);
         let long = "Dies ist ein sehr langer Satz, der in der kurzen Zeit auf dem Bildschirm kaum zu lesen ist.";
-        let out = translated_track(&seq, ti, &[(ids[1], "Hallo".into()), (ids[0], long.into())], &[], "German").unwrap();
+        let out = translated_track(&seq, ti, &[(ids[1], "Hallo".into()), (ids[0], long.into())], &[], "German", "de").unwrap();
         let EditCommand::AddTrack { index, track } = &out.edit else { panic!("an added track") };
         assert_eq!(*index, ti + 1, "the index after the source is the track under it");
         assert_eq!(track.name, "Subtitle 1 (German)");
@@ -315,7 +317,7 @@ mod tests {
         let cut = cut_captions(&s, &[Some("the translation reached its length limit: its end may be missing")]);
         assert_eq!(cut, vec![(ids[1], "the translation reached its length limit: its end may be missing")]);
         let per = per_caption(&s, &["Und dann gingen wir zum".into()]);
-        let out = translated_track(&seq, ti, &per, &cut, "German").unwrap();
+        let out = translated_track(&seq, ti, &per, &cut, "German", "de").unwrap();
         assert_eq!(out.flagged.len(), 1);
         assert!(out.flagged[0].why.contains("length limit"));
         assert!((out.flagged[0].at_secs - 3.0).abs() < 1e-6);
@@ -325,7 +327,7 @@ mod tests {
     fn a_caption_too_long_for_two_lines_is_flagged() {
         let (seq, ti, ids) = caption_sequence(&[(0.0, 30.0, "Hello")]);
         let long = "word ".repeat(40);
-        let out = translated_track(&seq, ti, &[(ids[0], long)], &[], "German").unwrap();
+        let out = translated_track(&seq, ti, &[(ids[0], long)], &[], "German", "de").unwrap();
         assert_eq!(out.flagged.len(), 1, "{:?}", out.flagged);
         assert_eq!(out.flagged[0].why, "too long for two lines");
     }
@@ -333,18 +335,19 @@ mod tests {
     #[test]
     fn a_second_translation_into_the_same_language_gets_its_own_name() {
         let (mut seq, ti, ids) = caption_sequence(&[(0.0, 2.0, "Hello")]);
-        let out = translated_track(&seq, ti, &[(ids[0], "Hallo".into())], &[], "German").unwrap();
+        let out = translated_track(&seq, ti, &[(ids[0], "Hallo".into())], &[], "German", "de").unwrap();
         let EditCommand::AddTrack { index, track } = out.edit else { panic!("an added track") };
         seq.tracks.insert(index, track);
-        let again = translated_track(&seq, ti, &[(ids[0], "Hallo".into())], &[], "German").unwrap();
+        let again = translated_track(&seq, ti, &[(ids[0], "Hallo".into())], &[], "German", "de").unwrap();
         let EditCommand::AddTrack { track, .. } = again.edit else { panic!("an added track") };
         assert_eq!(track.name, "Subtitle 1 (German 2)");
+        assert_eq!(track.language.as_deref(), Some("de"), "in the language's tag, not only its name");
     }
 
     #[test]
     fn nothing_to_translate_is_refused() {
         let (seq, ti, _) = caption_sequence(&[(0.0, 2.0, "Hello")]);
-        assert!(translated_track(&seq, ti, &[], &[], "German").is_err());
-        assert!(translated_track(&seq, 99, &[], &[], "German").is_err());
+        assert!(translated_track(&seq, ti, &[], &[], "German", "de").is_err());
+        assert!(translated_track(&seq, 99, &[], &[], "German", "de").is_err());
     }
 }
