@@ -229,8 +229,14 @@ fn bare(route: Route, gpu: bool, scene: Arc<Scene>) -> Result<Vec<f32>, String> 
 /// `rules` applied in turn to `bare_scene`'s frame as the node applies
 /// them (its bytes, sRGB8), decoded and flattened over the timeline's
 /// black: what the node draws on an opaque picture.
-fn ruled(route: Route, gpu: bool, bare_scene: Arc<Scene>, rules: &[fn([u8; 4]) -> [u8; 4]]) -> Result<Vec<f32>, String> {
-    let mut bytes = klipp_effects::linear_f32_rgba_to_srgb_u8(&bare(route, gpu, bare_scene)?);
+///
+/// The frame is the renderer's linear one on either route. A plug-in
+/// declines the viewer's GPU stack, so the node is drawn there by the
+/// renderer too, and that is its ground truth; the stack's display bytes
+/// for the bare scene can sit a byte apart (an adjustment layer over a
+/// clip does), which the node's own frame never sees.
+fn ruled(gpu: bool, bare_scene: Arc<Scene>, rules: &[fn([u8; 4]) -> [u8; 4]]) -> Result<Vec<f32>, String> {
+    let mut bytes = klipp_effects::linear_f32_rgba_to_srgb_u8(&bare(Route::Export, gpu, bare_scene)?);
     for px in bytes.chunks_exact_mut(4) {
         let mut p = [px[0], px[1], px[2], px[3]];
         for rule in rules {
@@ -306,12 +312,12 @@ pub fn run(report: &mut Report) {
             // draws (opaque either way).
             for at in [Entry::Title, Entry::Adjustment] {
                 report.case(&format!("ofx {route:?}: {subject} on {at:?}"), [key_at(subject, at, Some(route), Obligation::ExpectedPixels)], || {
-                    let want = ruled(route, true, placed(at, vec![])?, &[rule])?;
+                    let want = ruled(true, placed(at, vec![])?, &[rule])?;
                     draws(route, true, placed(at, vec![entry(subject, true, filter)])?, false, &want)
                 });
                 report.case(&format!("ofx {route:?}: {subject} on {at:?}, the CPU and the GPU agree"), [key_at(subject, at, Some(route), Obligation::CpuGpuAgree)], || {
                     for gpu in [false, true] {
-                        let want = ruled(route, gpu, placed(at, vec![])?, &[rule])?;
+                        let want = ruled(gpu, placed(at, vec![])?, &[rule])?;
                         draws(route, gpu, placed(at, vec![entry(subject, true, filter)])?, false, &want)?;
                     }
                     Ok(())
