@@ -206,6 +206,17 @@ impl Parked {
 
     /// [`Self::start_at`] with a clip `frames` long.
     fn start_spanning(src: PathBuf, width: u32, height: u32, fps: Fps, graded: bool, frames: i64, tweak: impl FnOnce(&mut Clip), hold: bool) -> Self {
+        Self::start_spanning_under(src, width, height, fps, graded, frames, tweak, hold, None)
+    }
+
+    /// [`Self::start`] with `title` on a text track over the clip, for
+    /// the parked drag with titles on screen (#2351).
+    pub fn start_under_title(src: PathBuf, width: u32, height: u32, title: klipp_timeline::TitleData) -> Self {
+        Self::start_spanning_under(src, width, height, Fps::new(FPS, 1), true, 50, |_| {}, true, Some(title))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn start_spanning_under(src: PathBuf, width: u32, height: u32, fps: Fps, graded: bool, frames: i64, tweak: impl FnOnce(&mut Clip), hold: bool, title: Option<klipp_timeline::TitleData>) -> Self {
         let tc = |f: i64| frame_tc(f, fps);
         let id = MediaId::new();
         let mut clip = Clip { kind: ClipKind::Media { media_id: id }, ..Clip::gap(tc(0), tc(frames)) };
@@ -221,6 +232,12 @@ impl Parked {
         let mut t = Track::new("V1", TrackKind::Video);
         t.clips = vec![clip];
         seq.tracks = vec![t];
+        if let Some(title) = title {
+            let mut text = Track::new("T1", TrackKind::Text);
+            text.clips = vec![Clip { kind: ClipKind::Title(title), ..Clip::gap(tc(0), tc(frames)) }];
+            // Tracks run top first.
+            seq.tracks.insert(0, text);
+        }
 
         let mut pool = MediaPool::default();
         pool.add(MediaItem {

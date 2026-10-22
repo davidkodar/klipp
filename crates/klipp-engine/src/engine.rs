@@ -888,6 +888,16 @@ pub fn streams_disk_short() -> u64 {
     STREAMS_DISK_SHORT.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Title layers laid over a fast path's bytes from a CPU raster (#2351).
+pub(crate) static CPU_TITLE_OVERLAYS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How many title layers the fast paths laid over their bytes from a CPU
+/// raster since the process began: none while the GPU stack may
+/// composite, which draws them as an export does (#2351).
+pub fn cpu_title_overlays() -> u64 {
+    CPU_TITLE_OVERLAYS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Whether `clip`'s grade reads a matte sequence: an External Matte bound
 /// to a tracked subject, or to a sequence's folder by path. The renderer
 /// finds the first's folder from the clip's media and holds both to the
@@ -8313,6 +8323,7 @@ impl PlaybackEngine {
             for clip in &layer.clips {
                 if let Some(sprite) = self.renderer.render_title_layer_u8(clip, self.playhead, width, height) {
                     klipp_compose::over_u8_straight(bytes, &sprite, width);
+                    CPU_TITLE_OVERLAYS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     n += 1;
                 }
             }
@@ -8517,6 +8528,26 @@ impl PlaybackEngine {
         self.display_path_blockers(mode).iter().all(|b| *b == "KLIPP_DIRECT_PRESENT=0")
     }
 
+    /// Whether the GPU stack takes a slider step on the parked frame with
+    /// titles over it (#2351): the paused present's blockers hold nothing
+    /// but the drag itself. The parked regrade grades only the clip, so it
+    /// laid the titles over from a CPU raster; the stack composites them
+    /// on the GPU, as an export does, and reads the value being dragged
+    /// from the sequence as the regrade does. A drag without titles keeps
+    /// the regrade.
+    fn titled_drag_on_stack(&self) -> bool {
+        self.state == PlaybackState::Paused
+            && self.in_node_param_edit
+            && klipp_compose::gpu_composite_enabled()
+            && self.display_path_blockers(FastPath::PausedPresent).iter().all(|b| matches!(*b, "KLIPP_DIRECT_PRESENT=0" | "node param edit in progress"))
+    }
+
+    /// Whether `seq` has title layers drawn plainly above the clip at
+    /// `time`: what the fast paths lay over their bytes.
+    pub(super) fn titles_over_clip(seq: &klipp_timeline::Sequence, time: RationalTime) -> bool {
+        matches!(klipp_compose::active_layers(seq, time).as_slice(), [bottom, rest @ ..] if !bottom.transition && !rest.is_empty() && rest.iter().all(|l| Self::title_overlay_layer(seq, l)))
+    }
+
     fn fast_path_blockers_for(&self, mode: FastPath) -> Vec<&'static str> {
         let mut blockers = self.display_path_blockers(mode);
         if blockers.iter().any(|b| matches!(*b, "KLIPP_DIRECT_PRESENT=0" | "not playing" | "not a slider drag on the parked frame")) {
@@ -8558,7 +8589,7 @@ impl PlaybackEngine {
             // over the presented bytes. The stack keeps the sprite on the
             // GPU and presents without a readback, so it takes them first.
             [bottom, rest @ ..] if !bottom.transition && rest.iter().all(|l| Self::title_overlay_layer(&seq, l)) => {
-                if self.gpu_composite_allowed() {
+                if self.gpu_composite_allowed() || (mode == FastPath::ParkedDrag && self.titled_drag_on_stack()) {
                     blockers.push("title layers: the GPU stack");
                     return blockers;
                 }
@@ -13769,6 +13800,69 @@ mod colour_pipeline_gate_tests {
         assert!(blocked(&engine), "on, with a LUT");
         engine.color_pipeline.enabled = false;
         assert!(!blocked(&engine), "a LUT loaded but switched off");
+    }
+}
+
+#[cfg(test)]
+mod title_fast_path_tests {
+    use super::*;
+    use klipp_timeline::Sequence;
+    use std::sync::Mutex;
+
+    /// #2351: a title over the primary clip keeps the frame off both fast
+    /// paths while the GPU stack may composite: the stack lays the title out
+    /// on the GPU, as an export does, where the fast paths would lay a CPU
+    /// raster over the decoded bytes. Only with the stack switched off
+    /// (`KLIPP_GPU_COMPOSITE=0`) do they take it, as the no-GPU fallback.
+    #[test]
+    fn a_title_over_the_clip_takes_the_gpu_stack() {
+        let tc = |s: f64| RationalTime::from_secs_f64(s, 30);
+        let mut seq = Sequence::new_default();
+        let mut v1 = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+        v1.clips = vec![klipp_timeline::Clip::media(MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0))];
+        let mut text = klipp_timeline::Track::new("T1", klipp_timeline::TrackKind::Text);
+        let title = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Over the clip".into(), ..Default::default() });
+        text.clips = vec![klipp_timeline::Clip { kind: klipp_timeline::ClipKind::Title(title), ..klipp_timeline::Clip::gap(tc(0.0), tc(2.0)) }];
+        // Tracks run top first: the text over V1.
+        seq.tracks = vec![text, v1];
+        let sequence = Arc::new(klipp_timeline::SharedSequence::new(seq));
+        let (_cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
+        let (ev_tx, _ev_rx) = crossbeam_channel::unbounded();
+        let fb = || Arc::new(Mutex::new(crate::texture::FrameBuffer::new(16, 16)));
+        let mut engine = PlaybackEngine::new(
+            cmd_rx, ev_tx, fb(), fb(),
+            Arc::clone(&sequence), Arc::new(RwLock::new(klipp_media::MediaPool::new())), Box::new(|| {}),
+            Arc::new(Mutex::new(None)), Arc::new(Mutex::new(crate::perf::PerfRing::default())),
+        );
+        engine.playhead = tc(1.0);
+        engine.current_track_index = 1;
+        if !klipp_compose::gpu_composite_enabled() || !direct_present_enabled() {
+            return;
+        }
+        for (state, mode) in [(PlaybackState::Paused, FastPath::PausedPresent), (PlaybackState::Playing, FastPath::Playing)] {
+            engine.state = state;
+            let blockers = engine.fast_path_blockers_for(mode);
+            assert!(blockers.contains(&"title layers: the GPU stack"), "{mode:?}: {blockers:?}");
+        }
+        // A slider dragged on the parked frame too: the stack takes it.
+        engine.state = PlaybackState::Paused;
+        engine.in_node_param_edit = true;
+        let blockers = engine.fast_path_blockers_for(FastPath::ParkedDrag);
+        assert!(blockers.contains(&"title layers: the GPU stack"), "ParkedDrag: {blockers:?}");
+        assert!(engine.titled_drag_on_stack());
+        engine.in_node_param_edit = false;
+
+        // Without the title, the clip alone is no reason to leave them,
+        // a drag included.
+        sequence.write().unwrap().tracks.remove(0);
+        engine.current_track_index = 0;
+        engine.state = PlaybackState::Paused;
+        let blockers = engine.fast_path_blockers_for(FastPath::PausedPresent);
+        assert!(!blockers.iter().any(|b| b.contains("title")), "{blockers:?}");
+        engine.in_node_param_edit = true;
+        let blockers = engine.fast_path_blockers_for(FastPath::ParkedDrag);
+        assert!(!blockers.iter().any(|b| b.contains("title")), "ParkedDrag: {blockers:?}");
+        assert!(!PlaybackEngine::titles_over_clip(&sequence.read().unwrap(), engine.playhead));
     }
 }
 

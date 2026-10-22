@@ -1108,7 +1108,8 @@ impl PlaybackEngine {
         // frame where the encode left it instead of reading 33 MB back
         // (#333). The stack declines what it cannot do yet and the full
         // path below takes the frame.
-        if !progress && inspect_is_plain(&inspect) && self.gpu_composite_allowed() {
+        if !progress && inspect_is_plain(&inspect)
+            && (self.gpu_composite_allowed() || (self.titled_drag_on_stack() && Self::titles_over_clip(&seq, self.playhead))) {
             let target = self.gpu_viewer_target(w, h);
             let want_bytes = target.is_none() || self.state != PlaybackState::Playing;
             let out = klipp_compose::DisplayDelivery { texture: target.as_deref(), bytes: want_bytes };

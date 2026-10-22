@@ -60,6 +60,8 @@ mod p010_gpu_acescg_parity;
 mod p010_gpu_frame_identity;
 #[path = "../p010_linear_output.rs"]
 mod p010_linear_output;
+#[path = "../parked_drag_with_title.rs"]
+mod parked_drag_with_title;
 #[path = "../parked_drag_matches_full_render.rs"]
 mod parked_drag_matches_full_render;
 #[path = "../paused_encode_cost.rs"]
