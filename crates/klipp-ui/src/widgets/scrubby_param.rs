@@ -199,6 +199,29 @@ pub fn key_menu(ui: &mut egui::Ui, current: Option<klipp_core::Interpolation>) -
     })
 }
 
+/// A keyframe diamond button 16 points wide, drawn as a number row's is
+/// (filled on a key, an accent outline between keys, dim with none), its
+/// hover saying how many of `keys` there are when given: for a control
+/// that draws its own row (#2296).
+pub fn diamond_button(ui: &mut egui::Ui, ks: &KeyframeState, keys: Option<usize>) -> egui::Response {
+    let resp = ui.add(egui::Button::new("").frame(false).min_size(egui::vec2(16.0, 18.0)).sense(egui::Sense::click()));
+    paint_diamond(ui, &resp, Some(ks), keys);
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    resp
+}
+
+/// `ui`'s value fields tinted with the accent, as an animated row's are.
+pub fn tint_animated(ui: &mut egui::Ui) {
+    let accent = ui.visuals().selection.stroke.color;
+    let w = &mut ui.visuals_mut().widgets;
+    for state in [&mut w.inactive, &mut w.hovered, &mut w.active] {
+        state.bg_stroke = egui::Stroke::new(1.0_f32, accent.gamma_multiply(0.55));
+        state.weak_bg_fill = state.weak_bg_fill.lerp_to_gamma(accent, 0.12);
+    }
+}
+
 /// What a key strip did this frame.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct KeyStrip {
@@ -561,12 +584,7 @@ fn scrubby_row(
             // A value that moves is tinted, so the row reads as animated
             // without its diamond.
             if animated {
-                let accent = ui.visuals().selection.stroke.color;
-                let w = &mut ui.visuals_mut().widgets;
-                for state in [&mut w.inactive, &mut w.hovered, &mut w.active] {
-                    state.bg_stroke = egui::Stroke::new(1.0_f32, accent.gamma_multiply(0.55));
-                    state.weak_bg_fill = state.weak_bg_fill.lerp_to_gamma(accent, 0.12);
-                }
+                tint_animated(ui);
             }
             let dv = egui::DragValue::new(value)
                 .speed(effective_speed)
