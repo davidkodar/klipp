@@ -55,11 +55,26 @@
 # reason, which the push's log keeps:
 #
 #     KLIPP_SKIP_PRE_GATE="<why>" git push
+#
+# The repository's owner turns the whole gate off, and on again, for
+# every push from this clone and its worktrees:
+#
+#     git config klipp.gate off
+#     git config klipp.gate on      (or unset: the default)
+#
+# Off, a push runs none of these checks and says so.
 
 set -e
 
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
 cd "$ROOT" || exit 0
+
+case "$(git config --get klipp.gate 2>/dev/null)" in
+    off|false|no|0)
+        printf '\n  pre-push: the gate is off (git config klipp.gate off) — checks NOT run.\n' >&2
+        printf '            git config klipp.gate on   turns it back on.\n\n' >&2
+        exit 0 ;;
+esac
 
 if [ "$KLIPP_SKIP_TESTS" = "1" ]; then
     printf '\n  pre-push: KLIPP_SKIP_TESTS=1 set — checks NOT run for this push.\n\n' >&2
