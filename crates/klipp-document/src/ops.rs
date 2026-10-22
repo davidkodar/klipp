@@ -5256,7 +5256,7 @@ fn cues_from_words(words: &[HeardWord], max_chars: usize, max_lines: usize, soun
 
 /// `text` on at most `max_lines` lines of about `max_chars`, the lines
 /// as even as the words allow.
-fn wrap_lines(text: &str, max_chars: usize, max_lines: usize) -> String {
+pub(crate) fn wrap_lines(text: &str, max_chars: usize, max_lines: usize) -> String {
     let total = text.chars().count();
     if total <= max_chars || max_lines <= 1 {
         return text.to_string();

@@ -21,6 +21,7 @@ publish = false
 dirs = { workspace = true }
 klipp-color = { workspace = true }
 klipp-ml = { workspace = true }
+klipp-ml-candle = { workspace = true }
 klipp-core = { workspace = true }
 klipp-document = { workspace = true }
 # Project templates by name (#618).

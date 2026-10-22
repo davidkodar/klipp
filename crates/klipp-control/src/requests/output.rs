@@ -284,6 +284,69 @@ pub(crate) fn respond(
             send(AppCommand::ExportSubtitles { path: p })
         }
 
+        ControlCommand::TranslateCaptions { track, to, from, download_models } => {
+            use klipp_document::caption_translation as ct;
+            use klipp_ml_candle::translation as tr;
+            if in_batch {
+                return Err("translate_captions runs a translation model; send it on its own".into());
+            }
+            let to = to.trim().to_ascii_lowercase();
+            let from = match from.map(|f| f.trim().to_ascii_lowercase()) {
+                Some(f) => f,
+                None if to == "en" => return Err("name the captions' language with from (de, fr, es, sv, it or nl) to translate into English".into()),
+                None => "en".into(),
+            };
+            let pairs = || tr::PAIRS.iter().map(|p| format!("{}→{}", p.source, p.target)).collect::<Vec<_>>().join(", ");
+            let pair = tr::pair(&from, &to).ok_or_else(|| format!("no translation from {from} to {to}; the pairs are {}", pairs()))?;
+            let (track_id, sentences) = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let ti = match track {
+                    Some(t) => t,
+                    None => seq
+                        .tracks
+                        .iter()
+                        .enumerate()
+                        .position(|(i, t)| t.kind == klipp_timeline::TrackKind::Subtitle && !ct::captions(&seq, i).is_empty())
+                        .ok_or("the sequence has no subtitle track with captions; make captions first (the captions op)")?,
+                };
+                let t = seq.tracks.get(ti).ok_or_else(|| format!("no track {ti}"))?;
+                if !matches!(t.kind, klipp_timeline::TrackKind::Subtitle | klipp_timeline::TrackKind::Text) {
+                    return Err(format!("track {ti} is not a subtitle or text track"));
+                }
+                (t.id, ct::sentences(&ct::captions(&seq, ti)))
+            };
+            if sentences.is_empty() {
+                return Err("that track has no captions to translate".into());
+            }
+            if !download_models {
+                tr::ensure_pair(&pair, false).map_err(|e| format!("{e}; send download_models true to fetch it (about 300 MB, CC BY 4.0, Helsinki-NLP OPUS-MT)"))?;
+            }
+            let started = std::time::Instant::now();
+            let lines: Vec<String> = sentences.iter().map(|s| s.text.clone()).collect();
+            let translated = tr::translate_lines(&from, &to, &lines)?;
+            let translations = ct::per_caption(&sentences, &translated);
+            let language = tr::language_name(&to);
+            let revision = ctx.shared.revision();
+            let built = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let ti = seq.tracks.iter().position(|t| t.id == track_id).ok_or("the caption track went while it was translated")?;
+                ct::translated_track(&seq, ti, &translations, language)?
+            };
+            let mut v = send_full_envelope(ctx, Vec::new(), vec![built.edit], true, Some(revision), Some("Translate Captions".into()))?;
+            let flagged: Vec<serde_json::Value> = built.flagged.iter().map(|f| json!({ "at_secs": f.at_secs, "text": f.text, "why": f.why })).collect();
+            v["track_index"] = json!(built.track_index);
+            v["sentences"] = json!(sentences.len());
+            v["captions"] = json!(translations.len());
+            v["translate_secs"] = json!(started.elapsed().as_secs_f64());
+            v["text"] = json!(format!(
+                "{} captions translated into {language} ({} sentences) on a new subtitle track, index {}; {} to check.",
+                translations.len(), sentences.len(), built.track_index, flagged.len()
+            ));
+            v["flagged"] = json!(flagged);
+            v["next"] = json!("Read the flagged captions and shorten or retime them; undo takes the new track back.");
+            Ok(v)
+        }
+
         ControlCommand::ImportTimeline { path } => {
             if in_batch { return Err("import_timeline must be sent on its own".into()); }
             let Some(path) = path else {

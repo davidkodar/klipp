@@ -24,6 +24,7 @@ klipp-color = { workspace = true }
 bitflags    = { workspace = true }
 thiserror   = { workspace = true }
 tracing     = { workspace = true }
+serde_json  = { workspace = true }
 
 # Real ML deps — only present with the `candle` feature. Pinned to a
 # specific minor so the API doesn't shift under us between releases.

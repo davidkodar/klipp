@@ -3501,6 +3501,24 @@ fn status_lists_the_sequences_and_switch_sequence_opens_one() {
 /// #1516: a subtitle file is read over the socket as the app reads it, onto
 /// a new track; a path that is relative, names no subtitle format or is not
 /// there is refused, and an export's format must be its path's.
+/// translate_captions says what it cannot do before any model runs
+/// (#2213): no such pair, English without the captions' language, and a
+/// sequence with no captions.
+#[test]
+fn translate_captions_refuses_what_it_cannot_translate() {
+    let mut h = harness();
+    for (req, why) in [
+        (json!({ "method": "translate_captions", "to": "xx" }), "no translation from en to xx"),
+        (json!({ "method": "translate_captions", "to": "en" }), "name the captions' language"),
+        (json!({ "method": "translate_captions", "to": "de" }), "no subtitle track with captions"),
+        (json!({ "method": "translate_captions", "to": "de", "track": 99 }), "no track 99"),
+    ] {
+        let r = h.call(req.clone());
+        assert_eq!(r["ok"], json!(false), "{req}: {r}");
+        assert!(r["error"].as_str().unwrap().contains(why), "{req}: {r}");
+    }
+}
+
 #[test]
 fn subtitles_import_over_the_socket_and_export_in_the_format_asked() {
     let mut h = harness();

@@ -1018,6 +1018,20 @@ pub enum ControlCommand {
     /// file onto a new subtitle track of the active sequence, as the app's
     /// Import Subtitles does (#1516).
     ImportSubtitles { path: String },
+    /// The captions on subtitle track `track` (the first one with
+    /// captions when left out) translated from `from` (English when left
+    /// out) into `to`, ISO 639-1 codes, sentence by sentence, onto a new
+    /// subtitle track under it at the same times, as one undo step
+    /// (#2213). The pair's model downloads only with `download_models`.
+    TranslateCaptions {
+        #[serde(default)]
+        track: Option<usize>,
+        to: String,
+        #[serde(default)]
+        from: Option<String>,
+        #[serde(default)]
+        download_models: bool,
+    },
     /// Append a supported interchange timeline; omit path to read the last outcome.
     ImportTimeline { path: Option<String> },
     /// What is said in a media file between two times, with when: the

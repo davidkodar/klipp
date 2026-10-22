@@ -67,6 +67,10 @@ pub enum ModelKind {
     /// Where in a sound someone is speaking: what the transcriber runs
     /// on, so it is not asked to find words in traffic.
     VoiceActivity,
+    /// Text from one language to another: a caption translation pair.
+    Translator,
+    /// A translation pair's vocabulary, read beside its model.
+    TranslationVocabulary,
 }
 
 /// Which backend crate runs the model. Lets the registry pick the

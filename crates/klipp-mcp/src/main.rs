@@ -57,7 +57,7 @@ const WRITE_TOOLS: &[&str] = &[
     "klipp_append_clip", "klipp_remove_clip", "klipp_attach_audio", "klipp_normalize", "klipp_set_append_audio", "klipp_select_clip",
     "klipp_add_node", "klipp_remove_node", "klipp_connect_nodes",
     "klipp_set_node_param", "klipp_toggle_node", "klipp_set_log_format",
-    "klipp_generator", "klipp_undo", "klipp_redo", "klipp_batch", "klipp_export", "klipp_export_subtitles", "klipp_import_subtitles", "klipp_apply",
+    "klipp_generator", "klipp_undo", "klipp_redo", "klipp_batch", "klipp_export", "klipp_export_subtitles", "klipp_import_subtitles", "klipp_translate_captions", "klipp_apply",
     "klipp_open_project", "klipp_close_project", "klipp_switch_sequence", "klipp_track_subject",
 ];
 
@@ -391,7 +391,7 @@ fn control_call(command: Value) -> Result<Value, String> {
     // The colour tools read every shot they grade, each clip rendered
     // alone (#719, #720): a whole piece is a minute or more on a busy
     // machine.
-    let long_call = matches!(method, "review" | "record" | "analyze" | "narrate"
+    let long_call = matches!(method, "review" | "record" | "analyze" | "narrate" | "translate_captions"
         | "search_music" | "search_sfx" | "add_music" | "grade_to_target" | "match_scenes" | "timeline_sheet" | "mix_loudness")
         || (method == "check" && command.get("color").and_then(Value::as_bool) == Some(true))
         || (!job_poll && command.get("wait").and_then(Value::as_bool) == Some(true));
@@ -1158,6 +1158,15 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             v
         }
         "klipp_import_subtitles" => json!({ "method": "import_subtitles", "path": arg_str(args, "path")? }),
+        "klipp_translate_captions" => {
+            let mut v = json!({ "method": "translate_captions", "to": arg_str(args, "to")?, "download_models": args.get("download_models").and_then(Value::as_bool).unwrap_or(false) });
+            for key in ["track", "from"] {
+                if let Some(x) = args.get(key).filter(|x| !x.is_null()) {
+                    v[key] = x.clone();
+                }
+            }
+            v
+        }
         "klipp_orient" => json!({ "method": "orient" }),
         "klipp_brief" => json!({ "method": "brief" }),
         "klipp_set_brief" => {
@@ -1984,7 +1993,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              }),
              vec![]),
         tool("klipp_analyze",
-             "Start background analysis of the pool or one item: shots, loudness, silence, transcript, and for screen footage the beat sheet and OCR. Models download only with download_models. Details: klipp_guide topic analyze.",
+             "Start background analysis of the pool or one item: shots, loudness, silence, transcript, screen beats and OCR. Models download only with download_models. Details: klipp_guide topic analyze.",
              json!({
                  "media_id": { "type": "string", "description": "From klipp_list_media; omit for every item" },
                  "wait": { "type": "boolean", "description": "Wait until all requested items end; inspect finished and succeeded" },
@@ -2147,11 +2156,14 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              }),
              vec!["path"]),
         tool("klipp_export_status",
-             "Every render job: status, progress, frames, stage, error, loudness, and where its time went (per-frame timings, encoders, GPU or CPU compositing and why); wait true waits for one job or all. Details: klipp_guide topic export_status.",
+             "Every render job: status, progress, error, loudness and where its time went; wait true waits for one or all. Details: klipp_guide topic export_status.",
              json!({ "wait": { "type": "boolean" }, "job_id": { "type": "string" }, "timeout_ms": { "type": "integer", "description": "Maximum wait, default one hour" } }), vec![]),
         tool("klipp_export_subtitles",
              "Write the subtitle clips (text clips if none) to an absolute path, as the extension says: .srt, .vtt, .ass, .ssa, .ttml (IMSC), .scc (608) or .stl (EBU); format, if given, must match.",
              json!({ "path": { "type": "string" }, "format": { "type": "string" } }), vec!["path"]),
+        tool("klipp_translate_captions",
+             "Translate a subtitle track onto a new one under it. Details: klipp_guide topic translate_captions.",
+             json!({ "to": { "type": "string", "description": "de fr es sv it nl fi da, or en" }, "from": { "type": "string", "description": "default en" }, "track": { "type": "integer" }, "download_models": { "type": "boolean" } }), vec!["to"]),
         tool("klipp_import_subtitles",
              "Read an .srt, .vtt, .ass, .ssa or TTML (.ttml, .dfxp, .xml, .itt), .scc or .stl file (absolute path) onto a new subtitle track.",
              json!({ "path": { "type": "string" } }), vec!["path"]),
@@ -2164,7 +2176,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({ "media_id": { "type": "string" }, "near_secs": { "type": "number" }, "from_secs": { "type": "number" }, "to_secs": { "type": "number" } }),
              vec!["media_id"]),
         tool("klipp_prepare_cut",
-             "Prepare a frame-exact cut in a timeline range: ranked candidates from pauses, words, shots and screen reveals, with evidence, the clips and the revision. Reads only. Details: klipp_guide topic prepare_cut.",
+             "Ranked frame-exact cut candidates in a timeline range, from pauses, words, shots and screen reveals. Reads only. Details: klipp_guide topic prepare_cut.",
              json!({ "from_secs": { "type": "number" }, "to_secs": { "type": "number" },
                      "near_secs": { "type": "number" }, "intent": { "type": "string" },
                      "max_candidates": { "type": "integer", "minimum": 1, "maximum": 32 } }),
@@ -3018,6 +3030,12 @@ mod project_change_notice_tests {
     #[test]
     fn subtitles_are_imported_and_exported_in_a_format() {
         assert_eq!(tool_to_command("klipp_import_subtitles", &json!({ "path": "/a/b.srt" })).unwrap(), json!({ "method": "import_subtitles", "path": "/a/b.srt" }));
+        assert_eq!(tool_to_command("klipp_translate_captions", &json!({ "to": "de" })).unwrap(), json!({ "method": "translate_captions", "to": "de", "download_models": false }));
+        assert_eq!(
+            tool_to_command("klipp_translate_captions", &json!({ "to": "en", "from": "sv", "track": 3, "download_models": true })).unwrap(),
+            json!({ "method": "translate_captions", "to": "en", "from": "sv", "track": 3, "download_models": true })
+        );
+        assert!(tool_to_command("klipp_translate_captions", &json!({})).is_err(), "to is needed");
         assert_eq!(tool_to_command("klipp_export_subtitles", &json!({ "path": "/a/b.vtt", "format": "vtt" })).unwrap(), json!({ "method": "export_subtitles", "path": "/a/b.vtt", "format": "vtt" }));
         assert_eq!(tool_to_command("klipp_export_subtitles", &json!({ "path": "/a/b.srt" })).unwrap(), json!({ "method": "export_subtitles", "path": "/a/b.srt" }));
     }

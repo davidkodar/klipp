@@ -652,6 +652,20 @@ pub fn show(
                 klipp_timeline::TrackRole::Primary => {}
             }
 
+            // A caption track in another language beside this one (#2213).
+            #[cfg(feature = "ai-candle")]
+            if matches!(track_kind, TrackKind::Subtitle | TrackKind::Text) && !state.sequence().tracks[track_idx].clips.is_empty() {
+                ui.menu_button("Translate Captions", |ui| {
+                    for pair in klipp_ml_candle::translation::PAIRS {
+                        let (from, to) = (klipp_ml_candle::translation::language_name(pair.source), klipp_ml_candle::translation::language_name(pair.target));
+                        if ui.button(format!("{from} \u{2192} {to}")).on_hover_text("A new subtitle track under this one, each caption translated at its own time; the model downloads the first time").clicked() {
+                            cmds.push(AppCommand::TranslateCaptions { track_id, source: pair.source.into(), target: pair.target.into() });
+                            ui.close_menu();
+                        }
+                    }
+                });
+            }
+
             ui.separator();
             crate::panels::timeline::track_attribute_items(ui, state, track_idx, &mut cmds);
             ui.separator();
