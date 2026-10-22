@@ -1883,7 +1883,7 @@ impl Track {
             // A glide is the whole clip's move: each piece keeps its share of the keys (#611).
             frame_glide: None,
             role: clip.role,
-            role_source: klipp_core::RoleSource::Unset,
+            role_source: clip.role_source,
             speed: clip.speed,
             speed_keyframes: clip.speed_keyframes.clone(),
             keep_pitch: clip.keep_pitch,
@@ -1961,7 +1961,7 @@ impl Track {
             // A glide is the whole clip's move: each piece keeps its share of the keys (#611).
             frame_glide: None,
             role: clip.role,
-            role_source: klipp_core::RoleSource::Unset,
+            role_source: clip.role_source,
             speed: clip.speed,
             speed_keyframes: clip.speed_keyframes.clone(),
             keep_pitch: clip.keep_pitch,
@@ -3729,6 +3729,21 @@ mod tests {
     /// it. A blade through a clip with a fade out used to leave a fade
     /// out on the left half and a fade in on the right, dipping to
     /// nothing at a join that should pass unnoticed.
+    /// #2216: a role set by hand stays set by hand in both halves, so a
+    /// proposal from the sound never replaces it after a blade.
+    #[test]
+    fn split_keeps_where_the_role_came_from() {
+        let mut c = make_clip(0, 96, 0, 96);
+        c.role = ClipRole::Music;
+        c.role_source = klipp_core::RoleSource::ByHand;
+        let id = c.id;
+        let mut track = make_track(vec![c]);
+        let (a, b) = track.split_at(id, tc(48)).expect("split");
+        for half in [&a, &b] {
+            assert_eq!((half.role, half.role_source), (ClipRole::Music, klipp_core::RoleSource::ByHand));
+        }
+    }
+
     #[test]
     fn split_keeps_each_half_only_its_own_outer_fade() {
         let mut c = make_clip(0, 96, 0, 96);

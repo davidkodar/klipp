@@ -1025,7 +1025,7 @@ sha256 = "0f1ccbde4f8c3cdf29d2fa4006cd3bcd5583c9afe4ebeb76eea334e75f0a08e3"
 license = "CC-BY-4.0"
 attribution = "Qiuqiang Kong et al., PANNs: Large-Scale Pretrained Audio Neural Networks for Audio Pattern Recognition, pretrained models (https://zenodo.org/records/3987831), CC-BY-4.0; as safetensors by nicofarr"
 sources = [
-    { url = "https://huggingface.co/nicofarr/panns_Cnn10/resolve/main/model.safetensors" },
+    { url = "https://huggingface.co/nicofarr/panns_Cnn10/resolve/bf3a3d704e95f01f6aab50ef222a8b1d1e299140/model.safetensors" },
 ]
 kind = "sound_tagger"
 runtime = "candle"

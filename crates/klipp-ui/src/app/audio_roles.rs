@@ -22,17 +22,23 @@ pub(crate) fn role_proposals(seq: &klipp_timeline::Sequence, pool: &klipp_media:
 
 impl KlippApp {
     /// Apply what the open sequence's sound proposes, as one undo step,
-    /// when the analysis, the sequence, its history or its clips changed.
+    /// when the analysis, the sequence, its history, its clips or its
+    /// track locks changed. Not while there is something to redo: a step
+    /// of its own would take that away, so it waits for the next edit.
     pub(super) fn propose_audio_roles(&mut self) {
         let seq = self.state.sequence();
-        let key = (self.state.analysis_generation, seq.id, self.state.active_history().undo_count(), seq.tracks.iter().map(|t| t.clips.len()).sum());
-        if self.state.role_sweep_key == Some(key) {
+        let clips: usize = seq.tracks.iter().map(|t| t.clips.len()).sum();
+        let locked = seq.tracks.iter().filter(|t| t.locked).count();
+        let key = (self.state.analysis_generation, seq.id, self.state.active_history().undo_count(), clips, locked);
+        if self.state.role_sweep_key == Some(key) || self.state.active_history().redo_count() > 0 {
             return;
         }
         let changes = role_proposals(seq, &self.state.media_pool);
         self.state.role_sweep_key = Some(key);
         if !changes.is_empty() {
+            let n = changes.len();
             self.apply_edits_as_one(&[EditCommand::ProposeClipRoles { changes }], "Classify Audio Roles");
+            self.state.toast.show(format!("Audio roles proposed for {n} clip{} from their sound", if n == 1 { "" } else { "s" }));
         }
     }
 }

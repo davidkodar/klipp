@@ -21,6 +21,7 @@ Open the dialog from **Window → AI Models**, from the AI Tools panel footer (`
 | **Piper en_US Lessac (medium)** | 63 MB | research only, **not for commercial use** | Piper | Kept for older projects that use it |
 | **DeepFilterNet3** | 8 MB | MIT OR Apache-2.0 | tract | Voice Isolation (speech enhancement) |
 | **OPUS-MT** (Helsinki-NLP; one model a pair: English to and from German, French, Spanish, Swedish, Italian, Dutch, English to Finnish and Danish) | about 300 MB + 5 MB a pair | CC BY 4.0, Tiedemann & Thottingal 2020 | candle | Translate Captions, on a subtitle track's menu |
+| **PANNs Cnn10** (Kong et al.) | 25 MB | CC BY 4.0 | candle | Audio roles: whether a clip's sound is speech, music, effects or ambience |
 
 ## Hosting
 
