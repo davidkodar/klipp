@@ -416,6 +416,88 @@ impl GlyphCache {
     }
 }
 
+/// Whether the glyph route lays `title` out (#2335): a lone text it can
+/// draw, whose layout or styles change over time, or that is still. One
+/// test for the route and for the warm-up thread, which has no resting
+/// raster to make for a title drawn here.
+pub fn takes_glyph_route(title: &TitleData, scene: Option<&TitleData>) -> bool {
+    let [o] = title.objects.as_slice() else {
+        return false;
+    };
+    let TitleObjectContent::TextBox(tb) = &o.content else {
+        return false;
+    };
+    let linked = matches!(tb.text_path, Some(klipp_timeline::TextPath::Layer { .. }));
+    let fx = o.fx();
+    if !o.visible
+        || o.opacity != 1.0
+        || !o.opacity_keyframes.is_empty()
+        || title.mixes_layers()
+        || matches!(title.background, TitleBackground::FullFrame { .. })
+        || (!linked && (o.transform.rotation != 0.0 || !o.transform.rotation_keyframes.is_empty()))
+        || tb.three_d.as_ref().is_some_and(|d| d.enabled)
+        || tb.extrusion.is_some()
+        || tb.glitch_intensity > 0.0
+        || tb.chromatic_aberration_px > 0.0
+        || tb.char_animation.as_ref().is_some_and(|c| c.enabled)
+        || !fx.edge_fade.is_none()
+        || fx.motion_blur.is_some()
+    {
+        return false;
+    }
+    let raster_animator = fx.animators.iter().any(|a| a.enabled && (a.props.blur != 0.0 || a.props.colour.is_some()));
+    let stagger_blur = fx.motion.enter.iter().chain(fx.motion.exit.iter()).any(|m|m.kind.blurs() && m.stagger!=klipp_timeline::StaggerUnit::None);
+    // Text on a still linked path that only moves is the resting sprite
+    // posed glyph by glyph, as the CPU draws it; translating it in the
+    // path layout would round each glyph's centre another way.
+    let still_link = match &tb.text_path {
+        Some(klipp_timeline::TextPath::Layer { layer, offset_keyframes, .. }) => offset_keyframes.is_empty()
+            && scene.unwrap_or(title).object(*layer).is_some_and(|l| {
+                let t = &l.transform;
+                t.center_x_keyframes.is_empty() && t.center_y_keyframes.is_empty() && t.size_x_keyframes.is_empty()
+                    && t.size_y_keyframes.is_empty() && t.rotation_keyframes.is_empty()
+                    && t.anchor_x_keyframes.is_empty() && t.anchor_y_keyframes.is_empty()
+                    && !matches!(&l.content, TitleObjectContent::Shape(s) if matches!(&s.kind,
+                        klipp_timeline::ShapeKind::Path(p) if !p.keyframes.is_empty() || p.trim.as_ref().is_some_and(|t| !t.keyframes.is_empty())))
+            }),
+        _ => false,
+    };
+    let translates = fx.motion.enter.iter().chain(fx.motion.exit.iter())
+        .any(|m| !matches!(m.kind, klipp_timeline::MotionKind::Fade | klipp_timeline::MotionKind::Flicker | klipp_timeline::MotionKind::Typewriter))
+        || fx.animators.iter().any(|a| a.enabled && (a.props.dx != 0.0 || a.props.dy != 0.0));
+    let changes = (linked && !(still_link && translates)) || raster_animator || stagger_blur || tb.gradient.as_ref().is_some_and(|g| g.has_keyframes())
+        || !o.transform.size_x_keyframes.is_empty()
+        || !o.transform.size_y_keyframes.is_empty()
+        // A keyed position lays the text out afresh where it is now,
+        // as the CPU raster does (#2335).
+        || !o.transform.center_x_keyframes.is_empty()
+        || !o.transform.center_y_keyframes.is_empty()
+        // Keyed styles under a live motion: the glyphs posed and the
+        // styles drawn from them at this time, as the CPU raster
+        // does; still, `style_source` keeps them (#2335).
+        || (fx.motion.is_active() && fx.styles_keyed())
+        || !tb.font_size_keyframes.is_empty()
+        || !tb.color_keyframes.is_empty()
+        || !tb.line_spacing_keyframes.is_empty()
+        || !tb.tracking_keyframes.is_empty()
+        || fx.loops.iter().any(|l| {
+            matches!(
+                l,
+                klipp_timeline::TitleLoop::ColorCycle { .. }
+                    | klipp_timeline::TitleLoop::ColorBlend { .. }
+                    | klipp_timeline::TitleLoop::Counter { .. }
+            )
+        });
+    // A still text is laid out and drawn here too, every frame: its
+    // first frame then waits on a glyph cache miss, about 12 ms at
+    // 1080p, where the CPU's resting raster took 50 to 90, and the
+    // viewer and the export draw it one way (#2335). Anything that
+    // moves keeps the route it was proven on.
+    // Keyed styles at rest stay with `style_source`, as they were proven.
+    let still = !fx.motion.is_active() && fx.loops.is_empty() && !fx.animators.iter().any(|a| a.enabled) && !fx.styles_keyed();
+    changes || still
+}
+
 impl TitleRenderer {
     /// Layout changes reuse each font glyph's coverage. Layout/shaping runs on
     /// CPU; the frame mask, fill and styles are assembled on GPU.
@@ -435,6 +517,9 @@ impl TitleRenderer {
         &mut self, title: &TitleData, width: u32, height: u32,
         time: f32, window: Option<f32>, scene: Option<&TitleData>,
     ) -> Option<GlyphSource> {
+        if !takes_glyph_route(title, scene) {
+            return None;
+        }
         let [o] = title.objects.as_slice() else {
             return None;
         };
@@ -443,68 +528,6 @@ impl TitleRenderer {
         };
         let linked = matches!(tb.text_path, Some(klipp_timeline::TextPath::Layer { .. }));
         let fx = o.fx();
-        if !o.visible
-            || o.opacity != 1.0
-            || !o.opacity_keyframes.is_empty()
-            || title.mixes_layers()
-            || matches!(title.background, TitleBackground::FullFrame { .. })
-            || (!linked && (o.transform.rotation != 0.0 || !o.transform.rotation_keyframes.is_empty()))
-            || tb.three_d.as_ref().is_some_and(|d| d.enabled)
-            || tb.extrusion.is_some()
-            || tb.glitch_intensity > 0.0
-            || tb.chromatic_aberration_px > 0.0
-            || tb.char_animation.as_ref().is_some_and(|c| c.enabled)
-            || !fx.edge_fade.is_none()
-            || fx.motion_blur.is_some()
-        {
-            return None;
-        }
-        let raster_animator = fx.animators.iter().any(|a| a.enabled && (a.props.blur != 0.0 || a.props.colour.is_some()));
-        let stagger_blur = fx.motion.enter.iter().chain(fx.motion.exit.iter()).any(|m|m.kind.blurs() && m.stagger!=klipp_timeline::StaggerUnit::None);
-        // Text on a still linked path that only moves is the resting sprite
-        // posed glyph by glyph, as the CPU draws it; translating it in the
-        // path layout would round each glyph's centre another way.
-        let still_link = match &tb.text_path {
-            Some(klipp_timeline::TextPath::Layer { layer, offset_keyframes, .. }) => offset_keyframes.is_empty()
-                && scene.unwrap_or(title).object(*layer).is_some_and(|l| {
-                    let t = &l.transform;
-                    t.center_x_keyframes.is_empty() && t.center_y_keyframes.is_empty() && t.size_x_keyframes.is_empty()
-                        && t.size_y_keyframes.is_empty() && t.rotation_keyframes.is_empty()
-                        && t.anchor_x_keyframes.is_empty() && t.anchor_y_keyframes.is_empty()
-                        && !matches!(&l.content, TitleObjectContent::Shape(s) if matches!(&s.kind,
-                            klipp_timeline::ShapeKind::Path(p) if !p.keyframes.is_empty() || p.trim.as_ref().is_some_and(|t| !t.keyframes.is_empty())))
-                }),
-            _ => false,
-        };
-        let translates = fx.motion.enter.iter().chain(fx.motion.exit.iter())
-            .any(|m| !matches!(m.kind, klipp_timeline::MotionKind::Fade | klipp_timeline::MotionKind::Flicker | klipp_timeline::MotionKind::Typewriter))
-            || fx.animators.iter().any(|a| a.enabled && (a.props.dx != 0.0 || a.props.dy != 0.0));
-        let changes = (linked && !(still_link && translates)) || raster_animator || stagger_blur || tb.gradient.as_ref().is_some_and(|g| g.has_keyframes())
-            || !o.transform.size_x_keyframes.is_empty()
-            || !o.transform.size_y_keyframes.is_empty()
-            // A keyed position lays the text out afresh where it is now,
-            // as the CPU raster does (#2335).
-            || !o.transform.center_x_keyframes.is_empty()
-            || !o.transform.center_y_keyframes.is_empty()
-            // Keyed styles under a live motion: the glyphs posed and the
-            // styles drawn from them at this time, as the CPU raster
-            // does; still, `style_source` keeps them (#2335).
-            || (fx.motion.is_active() && fx.styles_keyed())
-            || !tb.font_size_keyframes.is_empty()
-            || !tb.color_keyframes.is_empty()
-            || !tb.line_spacing_keyframes.is_empty()
-            || !tb.tracking_keyframes.is_empty()
-            || fx.loops.iter().any(|l| {
-                matches!(
-                    l,
-                    klipp_timeline::TitleLoop::ColorCycle { .. }
-                        | klipp_timeline::TitleLoop::ColorBlend { .. }
-                        | klipp_timeline::TitleLoop::Counter { .. }
-                )
-            });
-        if !changes {
-            return None;
-        }
         let mut evaluated = title.clone();
         let text = evaluated.primary_text_mut()?;
         *text = tb.at(time as f64);

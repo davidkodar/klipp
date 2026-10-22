@@ -48,7 +48,7 @@ mod vertical;
 mod gpu_styles;
 mod gpu_glyphs;
 mod outline_2d;
-pub use gpu_glyphs::{GlyphDraw, GlyphSource};
+pub use gpu_glyphs::{takes_glyph_route, GlyphDraw, GlyphSource};
 pub use colour::colour_bitmap_rasterizations;
 pub use gpu_styles::{StyleFaceWork, StyleSource};
 mod tracking;
