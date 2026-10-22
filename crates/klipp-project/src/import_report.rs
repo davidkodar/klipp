@@ -142,6 +142,22 @@ pub fn detect_bytes(head: &[u8]) -> Option<Format> {
 /// app offers the install on it.
 pub const AAF_NEEDS_CONVERTER: &str = "Opening AAF needs OpenTimelineIO's AAF converter, which isn't installed";
 
+/// The AAF timeline at `path`, converted to OpenTimelineIO's own format
+/// and read as any OTIO timeline is, named after the file; stopped once
+/// `cancel` is set.
+pub fn load_aaf(path: &Path, cancel: &std::sync::atomic::AtomicBool) -> Result<ImportResult, String> {
+    let Some(converter) = crate::otio_tool::find() else { return Err(AAF_NEEDS_CONVERTER.into()) };
+    let otio = std::env::temp_dir().join(format!("klipp-aaf-{}-{}.otio", std::process::id(), uuid::Uuid::new_v4()));
+    crate::otio_tool::convert(&converter, path, &otio, cancel).map_err(|e| e.to_string())?;
+    let read = crate::otio_import::load_otio(&otio).map_err(|e| e.to_string());
+    let _ = std::fs::remove_file(&otio);
+    let mut result = read?;
+    if let Some(name) = path.file_stem() {
+        result.sequence.name = name.to_string_lossy().into_owned();
+    }
+    Ok(result)
+}
+
 /// The timeline at `path`, read by the importer for its format, told from
 /// its content (#2083): a misnamed file opens as what it is. A format told
 /// apart but not read yet is refused by name, with what to export instead.
@@ -153,18 +169,7 @@ pub fn load(path: &Path, fps: klipp_core::Fps, pool: &klipp_media::MediaPool) ->
         Format::Xmeml => crate::xmeml_import::load_xmeml(path),
         // Through OpenTimelineIO's converter (#2086), into its own format,
         // read as any OTIO timeline is.
-        Format::Aaf => {
-            let Some(converter) = crate::otio_tool::find() else { return Err(AAF_NEEDS_CONVERTER.into()) };
-            let otio = std::env::temp_dir().join(format!("klipp-aaf-{}-{}.otio", std::process::id(), uuid::Uuid::new_v4()));
-            crate::otio_tool::convert(&converter, path, &otio).map_err(|e| e.to_string())?;
-            let read = crate::otio_import::load_otio(&otio).map_err(|e| e.to_string());
-            let _ = std::fs::remove_file(&otio);
-            let mut result = read?;
-            if let Some(name) = path.file_stem() {
-                result.sequence.name = name.to_string_lossy().into_owned();
-            }
-            Ok(result)
-        }
+        Format::Aaf => load_aaf(path, &std::sync::atomic::AtomicBool::new(false)),
         Format::Edl => {
             let bytes = crate::path_util::read_capped(path, crate::path_util::MAX_INPUT_FILE_BYTES).map_err(|e| e.to_string())?;
             let edl = crate::edl_import::parse(&String::from_utf8_lossy(&bytes), fps);

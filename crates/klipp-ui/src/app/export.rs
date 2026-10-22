@@ -3819,37 +3819,35 @@ impl super::KlippApp {
     }
 
     /// An AAF taken aside from the reading in this frame (#2086): while
-    /// the converter installs, said to wait; with no converter, the
-    /// person's own request asks to install one; else read through it on
-    /// a thread of its own, its outcome taken in when it is done
-    /// ([`Self::poll_aaf_reading`]). Whether it was an AAF so taken.
+    /// the converter installs or reads another, refused as busy (the
+    /// socket answered so); else read on a thread of its own, its outcome
+    /// taken in when it is done ([`Self::poll_aaf_reading`]). Whether it
+    /// was an AAF so taken.
     fn read_aaf_aside(&mut self, path: &std::path::Path, request_id: uuid::Uuid, new_project: bool) -> bool {
         if !matches!(klipp_project::import_report::detect(path), Ok(klipp_project::import_report::Format::Aaf)) {
             return false;
         }
         if self.state.aaf_install.as_ref().is_some_and(|i| i.is_running()) || self.state.aaf_reading.is_some() {
-            self.state.toast.show("The AAF converter is busy: open the file again when it has finished");
+            self.take_import(path, Err("the AAF converter is busy with another file: try again when it has finished".into()), request_id, new_project);
             return true;
         }
-        if klipp_project::otio_tool::find().is_none() {
-            if request_id.is_nil() {
-                self.state.aaf_install = Some(crate::aaf_install::AafInstall::ask(path.to_path_buf()));
-            } else {
-                self.take_import(path, Err(klipp_project::import_report::AAF_NEEDS_CONVERTER.to_string()), request_id, new_project);
-            }
-            return true;
-        }
-        self.state.aaf_reading = Some(crate::aaf_install::AafReading::start(path.to_path_buf(), request_id, new_project, self.state.sequence().fps));
+        self.state.aaf_reading = Some(crate::aaf_install::AafReading::start(path.to_path_buf(), request_id, new_project));
         true
     }
 
-    /// An AAF read aside, taken in once it is done.
+    /// An AAF read aside, taken in once it is done. With no converter, the
+    /// person's own request asks to install one; a socket's is answered
+    /// that it isn't there.
     pub(super) fn poll_aaf_reading(&mut self, ctx: &egui::Context) {
         let Some(reading) = self.state.aaf_reading.as_ref() else { return };
         match reading.take() {
             None => crate::aaf_install::show_reading(ctx, reading),
             Some(result) => {
                 let reading = self.state.aaf_reading.take().expect("reading");
+                if reading.request_id.is_nil() && result.as_ref().err().is_some_and(|e| e == klipp_project::import_report::AAF_NEEDS_CONVERTER) {
+                    self.state.aaf_install = Some(crate::aaf_install::AafInstall::ask(reading.path, reading.new_project));
+                    return;
+                }
                 if reading.new_project && result.is_ok() {
                     self.do_new_project();
                 }

@@ -46,22 +46,76 @@ fn on_path(name: &str, search_path: Option<&OsStr>) -> Option<PathBuf> {
     std::env::split_paths(search_path?).map(|dir| dir.join(name)).find(|p| p.is_file())
 }
 
-/// `program` with `args`, its output, given `timeout` to finish (killed
-/// past it); `None` when it can't start or runs over.
-fn run_for(program: &Path, args: &[&OsStr], timeout: std::time::Duration) -> Option<std::process::Output> {
-    let mut child = std::process::Command::new(program).args(args).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().ok()?;
-    let deadline = std::time::Instant::now() + timeout;
+/// A command made to start in a process group of its own, so that it and
+/// whatever it starts can be stopped together ([`kill_group`]).
+fn grouped(program: &Path) -> std::process::Command {
+    let mut command = std::process::Command::new(program);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    command
+}
+
+/// `command` started, tried again a few times while its program is still
+/// held open for writing ("text file busy": a script just written, which
+/// another process started meanwhile still has open).
+fn spawn(command: &mut std::process::Command) -> std::io::Result<std::process::Child> {
+    let mut tries = 0;
     loop {
-        match child.try_wait() {
-            Ok(Some(_)) => return child.wait_with_output().ok(),
-            Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(20)),
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
+        match command.spawn() {
+            Err(e) if e.raw_os_error() == Some(26) && tries < 20 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(25));
             }
+            other => return other,
         }
     }
+}
+
+/// `child` and every process it started stopped: its whole group, as
+/// `kill` sends it, then the child itself.
+fn kill_group(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        let _ = std::process::Command::new("kill").arg("-KILL").arg(format!("-{}", child.id())).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// `program` with `args`, what it wrote (both streams read as it goes, so
+/// a long-winded one never blocks on a full pipe), given `timeout` to
+/// finish; past it, or once `cancel` is set, stopped with all it started.
+/// `None` when it can't start, runs over or is stopped.
+fn run_for(program: &Path, args: &[&OsStr], timeout: std::time::Duration, cancel: &std::sync::atomic::AtomicBool) -> Option<(std::process::ExitStatus, Vec<u8>, Vec<u8>)> {
+    use std::io::Read;
+    let mut child = spawn(grouped(program).args(args).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())).ok()?;
+    let drain = |stream: Option<Box<dyn Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut out = Vec::new();
+            if let Some(mut stream) = stream {
+                let _ = stream.read_to_end(&mut out);
+            }
+            out
+        })
+    };
+    let stdout = drain(child.stdout.take().map(|s| Box::new(s) as Box<dyn Read + Send>));
+    let stderr = drain(child.stderr.take().map(|s| Box::new(s) as Box<dyn Read + Send>));
+    let deadline = std::time::Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if std::time::Instant::now() < deadline && !cancel.load(std::sync::atomic::Ordering::Relaxed) => std::thread::sleep(std::time::Duration::from_millis(20)),
+            _ => {
+                kill_group(&mut child);
+                break None;
+            }
+        }
+    };
+    let (out, err) = (stdout.join().unwrap_or_default(), stderr.join().unwrap_or_default());
+    status.map(|status| (status, out, err))
 }
 
 /// Whether OpenTimelineIO's plug-in listing names the AAF adapter: the
@@ -74,7 +128,7 @@ fn lists_aaf(info: &str) -> bool {
 /// its `otiopluginfo`, beside it, names it.
 fn has_aaf_adapter(converter: &Path) -> bool {
     let info = converter.with_file_name("otiopluginfo");
-    run_for(&info, &[], INFO_TIMEOUT).is_some_and(|ran| ran.status.success() && lists_aaf(&String::from_utf8_lossy(&ran.stdout)))
+    run_for(&info, &[], INFO_TIMEOUT, &std::sync::atomic::AtomicBool::new(false)).is_some_and(|(status, out, _)| status.success() && lists_aaf(&String::from_utf8_lossy(&out)))
 }
 
 /// The converter to read AAF with: one on `search_path` that has the AAF
@@ -186,11 +240,7 @@ pub fn run_steps(steps: &[Vec<String>], cancel: &std::sync::atomic::AtomicBool, 
     use std::io::{BufRead, BufReader};
     for (i, step) in steps.iter().enumerate() {
         line(format!("$ {}", shown(step)));
-        let child = std::process::Command::new(&step[0])
-            .args(&step[1..])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn();
+        let child = spawn(grouped(Path::new(&step[0])).args(&step[1..]).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()));
         let mut child = match child {
             Ok(child) => child,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound && i == 0 => return Err(InstallError::NoPython),
@@ -221,8 +271,8 @@ pub fn run_steps(steps: &[Vec<String>], cancel: &std::sync::atomic::AtomicBool, 
                 output.push(l);
             }
             if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                let _ = child.kill();
-                let _ = child.wait();
+                // pip and anything it started (a build from source).
+                kill_group(&mut child);
                 return Err(InstallError::Cancelled);
             }
             match child.try_wait() {
@@ -252,18 +302,22 @@ pub enum ConvertError {
     NotRun(String),
     #[error("OpenTimelineIO could not read the AAF: {0}")]
     Failed(String),
+    #[error("Reading the AAF was stopped")]
+    Stopped,
 }
 
 /// `aaf` converted to the OpenTimelineIO file `out` with `converter`, read
 /// with the AAF adapter by name whatever the file is called, given
-/// [`CONVERT_TIMEOUT`]. A failed conversion leaves no `out` behind.
-pub fn convert(converter: &Converter, aaf: &Path, out: &Path) -> Result<(), ConvertError> {
+/// [`CONVERT_TIMEOUT`] and stopped once `cancel` is set. A failed
+/// conversion leaves no `out` behind.
+pub fn convert(converter: &Converter, aaf: &Path, out: &Path, cancel: &std::sync::atomic::AtomicBool) -> Result<(), ConvertError> {
     let args: [&OsStr; 6] = ["-i".as_ref(), aaf.as_os_str(), "-o".as_ref(), out.as_os_str(), "--input-adapter".as_ref(), ADAPTER.as_ref()];
-    let outcome = match run_for(&converter.program, &args, CONVERT_TIMEOUT) {
+    let outcome = match run_for(&converter.program, &args, CONVERT_TIMEOUT, cancel) {
+        None if cancel.load(std::sync::atomic::Ordering::Relaxed) => Err(ConvertError::Stopped),
         None => Err(ConvertError::NotRun(format!("it didn't finish within {} minutes, or couldn't start", CONVERT_TIMEOUT.as_secs() / 60))),
-        Some(ran) if ran.status.success() => Ok(()),
-        Some(ran) => {
-            let said: Vec<String> = String::from_utf8_lossy(&ran.stderr).lines().map(str::to_string).collect();
+        Some((status, _, _)) if status.success() => Ok(()),
+        Some((_, _, err)) => {
+            let said: Vec<String> = String::from_utf8_lossy(&err).lines().map(str::to_string).collect();
             Err(ConvertError::Failed(last_said(&said)))
         }
     };
@@ -375,9 +429,21 @@ mod tests {
         let out = bin.join("out.otio");
         let args = bin.join("args");
         let conv = script(&bin, "otioconvert", &format!("echo \"$@\" > '{}'\necho partial > '{}'\necho 'Traceback' >&2\necho 'ValueError: bad AAF' >&2\nexit 1", args.display(), out.display()));
-        let got = convert(&Converter { program: conv, owned: false }, &bin.join("cut.bin"), &out);
+        let got = convert(&Converter { program: conv, owned: false }, &bin.join("cut.bin"), &out, &std::sync::atomic::AtomicBool::new(false));
         assert_eq!(got, Err(ConvertError::Failed("ValueError: bad AAF".into())));
         assert!(!out.exists(), "the partial file removed");
         assert!(std::fs::read_to_string(args).unwrap().contains("--input-adapter AAF"));
+    }
+
+    /// A converter that writes more than a pipe holds before it finishes
+    /// is read as it goes, not left blocked until the time runs out.
+    #[test]
+    fn a_long_winded_converter_does_not_block() {
+        let bin = scratch("chatty");
+        let out = bin.join("out.otio");
+        let conv = script(&bin, "otioconvert", &format!("i=0; while [ $i -lt 4000 ]; do echo 'a warning from the adapter, long enough to fill the pipe quickly' >&2; i=$((i+1)); done\necho done > '{}'", out.display()));
+        let started = std::time::Instant::now();
+        assert_eq!(convert(&Converter { program: conv, owned: false }, &bin.join("cut.aaf"), &out, &std::sync::atomic::AtomicBool::new(false)), Ok(()));
+        assert!(started.elapsed() < std::time::Duration::from_secs(20));
     }
 }
