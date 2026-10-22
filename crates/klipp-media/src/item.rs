@@ -301,6 +301,42 @@ pub struct MediaItem {
 }
 
 impl MediaItem {
+    /// What a probe of the file says of it, taken from `from`: the details
+    /// a relink's re-probe replaces, given back when the relink is undone
+    /// (#2327). What the person said of the item (rating, tags, notes,
+    /// bin, colour label, log format) is kept.
+    pub fn take_probed_details(&mut self, from: &MediaItem) {
+        self.filename = from.filename.clone();
+        self.duration = from.duration;
+        self.fps = from.fps;
+        self.resolution = from.resolution;
+        self.video_codec = from.video_codec.clone();
+        self.audio_codec = from.audio_codec.clone();
+        self.has_audio = from.has_audio;
+        self.file_size_bytes = from.file_size_bytes;
+        self.sample_rate = from.sample_rate;
+        self.audio_channels = from.audio_channels;
+        self.is_still = from.is_still;
+        self.fingerprint = from.fingerprint;
+        self.file_modified_at = from.file_modified_at;
+        self.media_created_at = from.media_created_at;
+        self.colour_space = from.colour_space;
+        self.source_rotation = from.source_rotation;
+        self.camera_make = from.camera_make.clone();
+        self.camera_model = from.camera_model.clone();
+        self.encoder = from.encoder.clone();
+        self.bit_depth = from.bit_depth;
+        self.video_bitrate_kbps = from.video_bitrate_kbps;
+        self.audio_bitrate_kbps = from.audio_bitrate_kbps;
+        self.color_primaries = from.color_primaries.clone();
+        self.color_transfer = from.color_transfer.clone();
+        self.pixel_format = from.pixel_format.clone();
+        self.detected_log_format = from.detected_log_format;
+        self.shot = from.shot.clone();
+        self.metadata_read = from.metadata_read;
+        self.truncated_from_secs = from.truncated_from_secs;
+    }
+
     /// True when this item is a subclip — a zone-within-parent virtual
     /// reference. Subclips share the parent's `path` but carry their own
     /// `default_source_in/out` describing the zone.

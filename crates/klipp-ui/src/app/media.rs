@@ -782,10 +782,10 @@ impl KlippApp {
                 AppCommand::RelinkMedia { media_id, new_path } => {
                     // A step undo takes back (#2086); several relinked at
                     // once arrive in one batch, one step.
-                    let before = self.state.media_pool.get(media_id).map(|m| (m.path.clone(), m.offline));
+                    let before = self.state.media_pool.get(media_id).cloned();
                     self.relink_media(*media_id, new_path);
-                    if let (Some((old_path, old_offline)), Some(item)) = (before, self.state.media_pool.get(media_id)) {
-                        let edit = crate::history::EditCommand::RelinkMedia { media_id: *media_id, old_path, old_offline, new_path: item.path.clone(), new_offline: item.offline };
+                    if let (Some(old), Some(item)) = (before, self.state.media_pool.get(media_id)) {
+                        let edit = crate::history::EditCommand::RelinkMedia { media_id: *media_id, old_path: old.path.clone(), old_offline: old.offline, old_item: Box::new(old), new_path: item.path.clone(), new_offline: item.offline };
                         self.state.push_history(edit);
                     }
                     self.state.dirty = true;

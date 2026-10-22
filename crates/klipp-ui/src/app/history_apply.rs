@@ -101,6 +101,12 @@ impl KlippApp {
         for media_id in self.state.pictures_to_remake(&effects) {
             self.refresh_media_pictures(media_id);
         }
+        // Files read again for what an edit pointed them at (#2327).
+        for media_id in &effects.reprobe_media {
+            if let Some(path) = self.state.media_pool.get(media_id).filter(|m| !m.offline).map(|m| m.path.clone()) {
+                let _ = self.cmd_tx.send(AppCommand::LoadMediaFile { path, media_id: *media_id });
+            }
+        }
     }
 
     fn apply_edit_inverse(&mut self, cmd: &EditCommand) {

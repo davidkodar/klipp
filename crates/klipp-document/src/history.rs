@@ -481,11 +481,14 @@ pub enum EditCommand {
         new_label: u8,
     },
     /// A media item pointed at another file (#2086): its path, and whether
-    /// that file was there, before and after.
+    /// that file was there, before and after; and the item as it was, whose
+    /// probed details an undo gives back (#2327). A redo has the new file
+    /// read again.
     RelinkMedia {
         media_id: MediaId,
         old_path: std::path::PathBuf,
         old_offline: bool,
+        old_item: Box<klipp_media::MediaItem>,
         new_path: std::path::PathBuf,
         new_offline: bool,
     },

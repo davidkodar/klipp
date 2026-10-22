@@ -35,6 +35,8 @@ pub struct Effects {
     /// Files whose decode settings changed (a camera encoding), so their
     /// thumbnail and filmstrip are made again for the new ones.
     pub refresh_media_pictures: Vec<MediaId>,
+    /// Files to read again, for what an edit pointed them at (#2327).
+    pub reprobe_media: Vec<MediaId>,
     /// The project's colour set-up as a command left it (#1875), for the
     /// host to take on and hand to the engine.
     pub project_colour: Option<Box<klipp_core::ProjectColour>>,
@@ -48,6 +50,7 @@ impl Effects {
         self.set_playhead |= other.set_playhead;
         self.rerender_titles.extend(other.rerender_titles);
         self.refresh_media_pictures.extend(other.refresh_media_pictures);
+        self.reprobe_media.extend(other.reprobe_media);
         if other.project_colour.is_some() {
             self.project_colour = other.project_colour;
         }
@@ -695,8 +698,12 @@ impl DocumentView<'_> {
                     item.color_label = klipp_media::ColorLabel::from_u8(*old_label);
                 }
             }
-            EditCommand::RelinkMedia { media_id, old_path, old_offline, .. } => {
+            EditCommand::RelinkMedia { media_id, old_path, old_offline, old_item, .. } => {
                 effects.merge(self.relink(*media_id, old_path, *old_offline));
+                // The old file's details, as they were.
+                if let Some(item) = self.media_pool.get_mut(media_id) {
+                    item.take_probed_details(old_item);
+                }
             }
             EditCommand::RenameBin { old_name, new_name } => {
                 // Undo: rename Bin record back from new_name to old_name
@@ -1412,6 +1419,10 @@ impl DocumentView<'_> {
             }
             EditCommand::RelinkMedia { media_id, new_path, new_offline, .. } => {
                 effects.merge(self.relink(*media_id, new_path, *new_offline));
+                // The new file's details, read from it again.
+                if !*new_offline {
+                    effects.reprobe_media.push(*media_id);
+                }
             }
             EditCommand::SetMediaColorLabel { media_id, new_label, .. } => {
                 if let Some(item) = self.media_pool.get_mut(media_id) {
@@ -2198,16 +2209,28 @@ mod relink_tests {
         let mut pool = MediaPool::new();
         let mut item = klipp_media::MediaItem::synthetic_for_test("/old/a.mov".into(), None);
         item.offline = true;
+        item.duration = klipp_core::RationalTime::from_secs_f64(10.0, 24);
+        item.video_codec = "prores".into();
+        let old_item = Box::new(item.clone());
         let id = pool.add(item);
         let mut sequences = vec![klipp_timeline::Sequence::new_default()];
         let mut fps = klipp_core::Fps::film_24();
-        let edit = EditCommand::RelinkMedia { media_id: id, old_path: "/old/a.mov".into(), old_offline: true, new_path: "/new/a.mov".into(), new_offline: false };
+        let edit = EditCommand::RelinkMedia { media_id: id, old_path: "/old/a.mov".into(), old_offline: true, old_item, new_path: "/new/a.mov".into(), new_offline: false };
         let mut view = DocumentView { sequences: &mut sequences, active: 0, media_pool: &mut pool, fps: &mut fps };
         let effects = view.apply_forward(&edit);
         assert!(effects.sync_media_pool && effects.refresh_media_pictures == vec![id]);
+        assert_eq!(effects.reprobe_media, vec![id], "the new file read again");
+        // As the re-probe of the new file leaves it: another length and codec.
+        let item = view.media_pool.get_mut(&id).unwrap();
+        item.duration = klipp_core::RationalTime::from_secs_f64(4.0, 24);
+        item.video_codec = "h264".into();
+        item.rating = 3;
         assert_eq!((view.media_pool.get(&id).unwrap().path.as_path(), view.media_pool.get(&id).unwrap().offline), (std::path::Path::new("/new/a.mov"), false));
         view.apply_inverse(&edit);
-        assert_eq!((view.media_pool.get(&id).unwrap().path.as_path(), view.media_pool.get(&id).unwrap().offline), (std::path::Path::new("/old/a.mov"), true));
+        let item = view.media_pool.get(&id).unwrap();
+        assert_eq!((item.path.as_path(), item.offline), (std::path::Path::new("/old/a.mov"), true));
+        assert_eq!((item.duration.to_secs_f64(), item.video_codec.as_str()), (10.0, "prores"), "the old file's details back");
+        assert_eq!(item.rating, 3, "what the person said kept");
         assert_eq!(edit.scope(), crate::history::Scope::Project);
     }
 }
