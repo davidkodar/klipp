@@ -789,6 +789,12 @@ const LIMITER_KNEE_DB: f32 = 1.3;
 /// how far past the arithmetic gain the corrections may take it.
 const LIMITED_GAIN_PASSES: usize = 5;
 const LIMITED_GAIN_EXTRA_DB: f32 = 3.0;
+/// The least loudness a dB of gain is taken to buy when the next gain is
+/// stepped by the slope two trials measured (#2361): through a limiter a
+/// dB of gain buys less than a dB, and stepping as if it bought one fell
+/// short trial after trial. Held above zero so one noisy pair can't send
+/// the gain off.
+const MIN_LOUDNESS_SLOPE: f32 = 0.25;
 /// How far under the true-peak ceiling the limiter's own ceiling may be
 /// pushed when a pass through it measures true peaks over: bright
 /// transients (a whoosh, a hi-hat) run further over their samples than
@@ -837,8 +843,14 @@ fn fit_limited(
     }
     let (mut gain_db, mut margin_db) = (arithmetic_gain_db, LIMITER_CEILING_MARGIN_DB);
     // No gain at or above one a trial found over the ceiling: the loudness
-    // can't climb back to a peak already measured (#1930).
+    // can't climb back to a peak already measured (#1930). A lossy codec's
+    // overshoot moves a few tenths with any change to what it encodes, so
+    // one trial over only through the codec doesn't set it; a second does
+    // (#2361).
     let mut gain_cap = f32::INFINITY;
+    let mut codec_overs = 0;
+    // Whether the extra-gain limit held a step back, for the note.
+    let mut held_by_extra = false;
     let mut tried: Vec<Tried> = Vec::new();
     for pass in 0..LIMITED_GAIN_PASSES {
         let mut trial = DeliveryChain::limited_by(sample_rate, target_lufs, gain_db, true, ceiling_dbtp, margin_db);
@@ -856,6 +868,20 @@ fn fit_limited(
             pass + 1, margin_db,
             coded.map_or(String::new(), |c| format!(", {c:+.2} as encoded")),
         );
+        // What a dB of gain bought between this trial and an earlier one at
+        // the same margin: the latest on the target's other side, so the
+        // next gain lies between the two; or, short of the target, the
+        // last one, to step up by. Stepping down goes a dB a dB: below
+        // the limiter that is what a dB buys, and a slope measured in it
+        // would overshoot.
+        let same_margin = |t: &&Tried| (t.margin_db - margin_db).abs() < 1e-3 && (gain_db - t.gain_db).abs() > 0.05;
+        let partner = tried
+            .iter()
+            .rev()
+            .filter(same_margin)
+            .find(|t| (target_lufs - t.lufs) * shortfall < 0.0)
+            .or_else(|| tried.last().filter(same_margin).filter(|_| shortfall > 0.0));
+        let slope = partner.map(|t| ((got - t.lufs) / (gain_db - t.gain_db)).clamp(MIN_LOUDNESS_SLOPE, 1.0));
         tried.push(Tried { gain_db, margin_db, over, lufs: got });
         if (shortfall.abs() < 0.1 && over <= 0.0) || pass + 1 == LIMITED_GAIN_PASSES {
             break;
@@ -870,7 +896,12 @@ fn fit_limited(
             // (a peak between samples the limiter leaves alone, or one the
             // codec rings up), the loudness short by that.
             let pad = LIMITER_OVERSHOOT_PAD_DB + if coded.is_some() { CODEC_OVERSHOOT_PAD_DB } else { 0.0 };
-            gain_cap = gain_cap.min(gain_db);
+            if mixed <= 0.0 {
+                codec_overs += 1;
+            }
+            if mixed > 0.0 || codec_overs > 1 {
+                gain_cap = gain_cap.min(gain_db);
+            }
             let now = (ceiling_dbtp - margin_db).min(trial.limiter_input_peak_dbfs());
             let wanted = ceiling_dbtp - (now - over - pad);
             let wider = wanted.min(LIMITER_CEILING_MARGIN_MAX_DB).max(margin_db);
@@ -879,9 +910,25 @@ fn fit_limited(
             // too. Never up while over.
             gain_db += shortfall.min(0.0) - (wanted - wider).max(0.0);
         } else {
-            // Under: the loudness, never more than the limiter can take
-            // without pumping, nor back to a gain found over.
-            gain_db = (gain_db + shortfall).min(arithmetic_gain_db + LIMITED_GAIN_EXTRA_DB).min(gain_cap - LIMITER_OVERSHOOT_PAD_DB);
+            // Under: the loudness, by the slope measured when there is one
+            // (a dB of gain through the limiter buys less than a dB), never
+            // more than the limiter can take without pumping, nor back to a
+            // gain found over. A margin widened by an earlier trial gives
+            // back what this one measured under the ceiling, past the pad,
+            // so the limiter stops taking loudness it needn't (#2361).
+            let step = shortfall / slope.unwrap_or(1.0);
+            let extra = arithmetic_gain_db + LIMITED_GAIN_EXTRA_DB;
+            held_by_extra = gain_db + step > extra;
+            gain_db = (gain_db + step).min(extra).min(gain_cap - LIMITER_OVERSHOOT_PAD_DB);
+            let room = -over - LIMITER_OVERSHOOT_PAD_DB - if coded.is_some() { CODEC_OVERSHOOT_PAD_DB } else { 0.0 };
+            if shortfall > 0.0 && room > 0.0 && margin_db > LIMITER_CEILING_MARGIN_DB {
+                margin_db = (margin_db - room).max(LIMITER_CEILING_MARGIN_DB);
+            }
+        }
+        // Held where the last trial was: running it again measures the
+        // same, so the fit is as near as it gets.
+        if tried.last().is_some_and(|t| (t.gain_db - gain_db).abs() < 1e-3 && (t.margin_db - margin_db).abs() < 1e-3) {
+            break;
         }
     }
     // The delivery is a trial that was measured, never a correction nobody
@@ -896,9 +943,27 @@ fn fit_limited(
     Ok(best.map(|t| LimitedFit {
         gain_db: t.gain_db,
         margin_db: t.margin_db,
-        note: (tried.len() == LIMITED_GAIN_PASSES
-            && ((t.lufs - target_lufs).abs() >= 0.1 || t.over > 0.0))
-            .then(|| format!("fitting stopped at the {LIMITED_GAIN_PASSES}-trial limit; using the best measured trial, prioritising the peak ceiling")),
+        note: ((t.lufs - target_lufs).abs() >= 0.1 || t.over > 0.0)
+            .then(|| {
+                // Why, and every trial, so a miss can be read from the
+                // report once the app's log is gone (#2361).
+                let why = if held_by_extra {
+                    format!("the limiter would have had to take more than {LIMITED_GAIN_EXTRA_DB} dB")
+                } else {
+                    "prioritising the peak ceiling".to_string()
+                };
+                let trials = tried
+                    .iter()
+                    .map(|t| format!("{:+.1} dB/{:.1} margin: {:.1} LUFS, {:+.1} dB peak", t.gain_db, t.margin_db, t.lufs, t.over))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                let stopped = if tried.len() == LIMITED_GAIN_PASSES {
+                    format!("fitting stopped at the {LIMITED_GAIN_PASSES}-trial limit")
+                } else {
+                    "fitting could go no further".to_string()
+                };
+                format!("{stopped}; using the best measured trial, {why} (trials: {trials})")
+            }),
     }))
 }
 
@@ -1491,6 +1556,87 @@ mod tests {
         assert!(!fitted.report().unwrap().contains("over the"), "{}", fitted.report().unwrap());
     }
 
+    /// A loud, dense mix (hits half the time over a quiet bed) and its
+    /// arithmetic gain, the gain that would bring it to `target` unlimited.
+    fn dense_mix(sr: u32, target: f32) -> (Vec<f32>, f32) {
+        let mix: Vec<f32> = (0..sr as usize * 4)
+            .flat_map(|i| {
+                let t = i as f32 / sr as f32;
+                let bed = 0.03 * (std::f32::consts::TAU * 150.0 * t).sin();
+                let hit = if i % (sr as usize / 10) < sr as usize / 20 { 0.7 * (std::f32::consts::TAU * 400.0 * t).sin() } else { 0.0 };
+                [bed + hit, bed + hit]
+            })
+            .collect();
+        let mut plain = DeliveryChain::limited_by(sr, target, 0.0, false, -1.0, LIMITER_CEILING_MARGIN_DB);
+        plain.process(&mut mix.clone());
+        let arithmetic = target - plain.measured_lufs().unwrap();
+        (mix, arithmetic)
+    }
+
+    /// #2361: through the limiter a dB of gain buys less than a dB of
+    /// loudness. Stepped as if it bought one, the fit crawled a tenth a
+    /// trial and stopped at the limit short of the target, blaming the
+    /// ceiling with a dB and more of headroom; stepped by the slope two
+    /// trials measured, it lands on it in a few. Past what the limiter may
+    /// take, it goes to that limit and says that is why.
+    #[test]
+    fn a_limited_fit_steps_by_the_measured_slope() {
+        let sr = 48000;
+        let fit_at = |target: f32| {
+            let (mix, arithmetic) = dense_mix(sr, target);
+            let feed = |chain: &mut DeliveryChain| {
+                for block in mix.chunks(3200) {
+                    chain.process(&mut block.to_vec());
+                }
+            };
+            let mut passes = 0;
+            let fit = fit_limited(sr, target, -1.0, arithmetic, "test", |trial, _| {
+                passes += 1;
+                feed(trial);
+                Ok(None)
+            })
+            .unwrap()
+            .expect("a measured trial");
+            let mut fitted = DeliveryChain::limited_by(sr, target, fit.gain_db, true, -1.0, fit.margin_db);
+            feed(&mut fitted);
+            (fit, arithmetic, passes, fitted.measured_lufs().unwrap(), fitted.measured_true_peak_dbtp().unwrap())
+        };
+        let (fit, _, passes, lufs, peak) = fit_at(-6.7);
+        assert!((lufs + 6.7).abs() < 0.15 && fit.note.is_none(), "{lufs:.2} LUFS against -6.7: {fit:?}");
+        assert!(passes <= 3 && peak <= -1.0, "{passes} passes, true peak {peak:.2} dBTP");
+        let (fit, arithmetic, ..) = fit_at(-6.0);
+        assert!((fit.gain_db - arithmetic - LIMITED_GAIN_EXTRA_DB).abs() < 1e-3, "to the limit: {fit:?}");
+        assert!(fit.note.unwrap().contains("more than 3 dB"));
+    }
+
+    /// #2361: one trial over only through the codec, whose overshoot moves
+    /// a few tenths with any change to what it encodes, doesn't cap the
+    /// gain; a widened margin gives back what later trials measure under
+    /// the ceiling. The fit still reaches the target.
+    #[test]
+    fn one_noisy_codec_overshoot_does_not_hold_the_fit_short() {
+        let sr = 48000;
+        let target = -8.0;
+        let (mix, arithmetic) = dense_mix(sr, target);
+        let mut pass = 0;
+        let fit = fit_limited(sr, target, -1.0, arithmetic, "test", |trial, _| {
+            pass += 1;
+            for block in mix.chunks(3200) {
+                trial.process(&mut block.to_vec());
+            }
+            // The first trial's encode rings up 0.8 dB over the ceiling.
+            Ok(Some(if pass == 1 { -0.2 } else { trial.measured_true_peak_dbtp().unwrap() }))
+        })
+        .unwrap()
+        .expect("a measured trial");
+        let mut fitted = DeliveryChain::limited_by(sr, target, fit.gain_db, true, -1.0, fit.margin_db);
+        for block in mix.chunks(3200) {
+            fitted.process(&mut block.to_vec());
+        }
+        let lufs = fitted.measured_lufs().unwrap();
+        assert!((lufs - target).abs() < 0.15 && fit.note.is_none(), "{lufs:.2} LUFS against {target}: {fit:?}");
+    }
+
     /// #1930: with no trial measuring a loudness, the fit gives no gain
     /// rather than one nothing measured; the export says the ceiling
     /// wasn't checked.
@@ -1569,8 +1715,11 @@ mod tests {
         assert!(delivery_status(&chain, None).unwrap().contains("written file could not be measured"));
     }
 
+    /// A fit that can't reach the target says so, with every trial it
+    /// measured; one held where it was stops rather than measure the same
+    /// trial again (#2361).
     #[test]
-    fn a_fit_that_exhausts_its_trials_reports_the_limit() {
+    fn a_fit_that_cannot_converge_reports_its_trials() {
         let mut passes = 0;
         let fit = fit_limited(48000, -16.0, -3.0, 0.0, "test", |trial, _| {
             // A fixed metered signal cannot converge as gain changes.
@@ -1578,8 +1727,9 @@ mod tests {
             passes += 1;
             Ok(Some(-6.0))
         }).unwrap().unwrap();
-        assert_eq!(passes, LIMITED_GAIN_PASSES);
-        assert!(fit.note.unwrap().contains("5-trial limit"));
+        assert!(passes < LIMITED_GAIN_PASSES, "no trial run twice: {passes}");
+        let note = fit.note.unwrap();
+        assert!(note.contains("using the best measured trial") && note.matches(" LUFS").count() == passes, "{note}");
     }
 
     #[test]
