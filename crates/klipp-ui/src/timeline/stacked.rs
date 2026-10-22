@@ -23,10 +23,13 @@ pub const FOCUS_BAR: f32 = 3.0;
 /// band across its top and a thin outline (#2324). Its left edge is the
 /// tracks' colour stripes, so the mark is along the top. Painted after
 /// both are drawn, so neither covers it.
-pub fn paint_focus(ui: &egui::Ui, theme: &KlippTheme, worked: egui::Rect) {
+pub fn paint_focus(ui: &egui::Ui, theme: &KlippTheme, worked: egui::Rect, other_ruler: egui::Rect) {
     let painter = ui.painter();
     painter.rect_stroke(worked.shrink(0.5), 0.0, egui::Stroke::new(1.0_f32, theme.accent.gamma_multiply(0.8)));
     painter.rect_filled(egui::Rect::from_min_size(worked.min, egui::vec2(worked.width(), FOCUS_BAR)), 0.0, theme.accent);
+    // The other steps back: a veil over its ruler, its playhead's head
+    // dimmed with it; its clips stay as they are, to be read and picked.
+    painter.rect_filled(other_ruler, 0.0, theme.bg_deep.gamma_multiply(0.55));
 }
 
 /// The height the upper timeline needs to show every track of sequence
@@ -100,7 +103,7 @@ pub(super) fn draw_parked(view: &mut TimelineView, state: &mut AppState, take: b
 /// on its sequence and the other's taken back, playback stopped, the
 /// engine given the sequence) but keeping the selection the view brought,
 /// the switch queued ahead of anything else.
-fn focus(view: &mut TimelineView, state: &mut AppState, cmds: &mut Vec<AppCommand>) {
+pub(crate) fn focus(view: &mut TimelineView, state: &mut AppState, cmds: &mut Vec<AppCommand>) {
     let to = view.active_sequence_idx;
     state.sequences[to].last_playhead = Some(view.playhead);
     let (from, playhead, smooth, anchor) = (state.active_sequence_idx, state.playhead, state.playhead_smooth_secs, state.playhead_anchor);
@@ -703,5 +706,22 @@ mod tests {
         let want = fitting_height(&s.state, top);
         let tracks: f32 = s.state.sequences[top].tracks.iter().map(crate::panels::timeline::track_row_height).sum();
         assert!(want >= (HEADER + crate::theme::RULER_HEIGHT + tracks).min(MAX_HEIGHT) && want <= MAX_HEIGHT, "{want}");
+    }
+
+    /// #2324: the shortcut's request swaps which of the two takes edits,
+    /// as a press on the other would, and the band follows; the other's
+    /// ruler is veiled.
+    #[test]
+    fn the_focus_swaps_by_its_shortcut() {
+        let mut s = Stack::new();
+        let top = s.state.sequences.iter().position(|q| q.name == "Selects").unwrap();
+        let before = s.state.active_sequence_idx;
+        s.state.stacked_focus_swap = true;
+        s.frame(Vec::new());
+        assert!(!s.state.stacked_focus_swap, "the request taken");
+        assert!(s.sent.iter().any(|c| matches!(c, AppCommand::FocusSequence { sequence_idx } if *sequence_idx == if before == top { 1 - top.min(1) } else { top })), "{:?}", s.sent);
+        s.frame(Vec::new());
+        let veil = KlippTheme::default().bg_deep.gamma_multiply(0.55);
+        assert!(s.shapes.iter().any(|c| matches!(&c.shape, egui::Shape::Rect(r) if r.fill == veil && (r.rect.height() - crate::theme::RULER_HEIGHT).abs() < 0.01)), "the other ruler veiled");
     }
 }

@@ -108,6 +108,12 @@ impl NewTimelinePanel {
 
         // ── The selects strip, stacked above the cut (#82) ──
         let stacked_edit = stacked::stacked_edit(state);
+        // Its shortcut swaps which of the two takes edits (#2324).
+        if std::mem::take(&mut state.stacked_focus_swap) && stacked_edit {
+            if let Some(st) = self.stacked.as_mut() {
+                stacked::focus(&mut st.view, state, &mut cmds);
+            }
+        }
         let strip_h = if strip || state.selects_sequence.is_none() {
             0.0
         } else {
@@ -168,8 +174,17 @@ impl NewTimelinePanel {
         }
         // The one of the two worked in, marked over both (#2324).
         if let (true, Some(st)) = (stacked_edit, self.stacked.as_ref()) {
-            let worked = if state.active_sequence_idx == st.top_idx { top_rect } else { content_rect };
-            stacked::paint_focus(ui, theme, worked);
+            let top_worked = state.active_sequence_idx == st.top_idx;
+            let worked = if top_worked { top_rect } else { content_rect };
+            // The other's ruler: under the header for the selects, at the
+            // top for the cut.
+            let ruler_h = crate::theme::RULER_HEIGHT;
+            let other_ruler = if top_worked {
+                egui::Rect::from_min_size(content_rect.min, egui::vec2(content_rect.width(), ruler_h))
+            } else {
+                egui::Rect::from_min_size(egui::pos2(top_rect.min.x, top_rect.min.y + stacked::HEADER), egui::vec2(top_rect.width(), ruler_h))
+            };
+            stacked::paint_focus(ui, theme, worked, other_ruler);
         }
         // Clips carried from one of the two to the other (#82).
         if stacked_edit && state.clip_carry.is_some() {

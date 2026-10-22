@@ -975,6 +975,10 @@ impl KlippApp {
             if kb.is_action_pressed("toggle_project_notes", i) {
                 self.state.show_project_notes = !self.state.show_project_notes;
             }
+            // The stacked timelines' focus swapped (#2324).
+            if kb.is_action_pressed("swap_stacked_focus", i) {
+                self.state.stacked_focus_swap = true;
+            }
             // Alt+Left — Navigate to previous keyframe
             if kb.is_action_pressed("prev_keyframe", i) {
                 if let Some(to) = keyframe_jump(&self.state, false) {
