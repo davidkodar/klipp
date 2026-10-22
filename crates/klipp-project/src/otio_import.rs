@@ -666,11 +666,17 @@ fn build_clip(
     let source_in = rt_from_otio(&source_range.start_time, fps_rate);
     let duration = rt_from_otio(&source_range.duration, fps_rate);
     // A constant speed: the clip keeps its length on the track and plays
-    // `time_scalar` of a second of its source each second.
-    let speed = raw.effects.iter().find(|fx| child_schema(fx).starts_with("LinearTimeWarp")).and_then(|fx| fx.get("time_scalar")).and_then(|v| v.as_f64()).filter(|s| s.abs() > 1e-9 && (s - 1.0).abs() > 1e-9);
-    let source_out = match speed {
-        Some(speed) => source_in + RationalTime::from_secs_f64(duration.to_secs_f64() * speed.abs(), fps_rate),
-        None => source_in + duration,
+    // `time_scalar` of a second of its source each second; warps stacked
+    // on one clip multiply.
+    let scalars: Vec<f64> = raw.effects.iter().filter(|fx| child_schema(fx).starts_with("LinearTimeWarp")).filter_map(|fx| fx.get("time_scalar").and_then(|v| v.as_f64())).collect();
+    let product: f64 = scalars.iter().product();
+    let speed = (!scalars.is_empty()).then_some(product).filter(|s| s.abs() > 1e-9 && (s - 1.0).abs() > 1e-9);
+    // OTIO reads source time as start + t × scalar: a reversed clip runs
+    // back from its start, so its range ends there.
+    let (source_in, source_out) = match speed {
+        Some(speed) if speed < 0.0 => (source_in - RationalTime::from_secs_f64(duration.to_secs_f64() * speed.abs(), fps_rate), source_in),
+        Some(speed) => (source_in, source_in + RationalTime::from_secs_f64(duration.to_secs_f64() * speed.abs(), fps_rate)),
+        None => (source_in, source_in + duration),
     };
     let timeline_in = cursor_timeline;
     let timeline_out = timeline_in + duration;
@@ -1422,6 +1428,29 @@ mod tests {
         assert!(((clip.timeline_out - clip.timeline_in).to_secs_f64() - 1.0).abs() < 1e-9);
         assert!(((clip.source_out - clip.source_in).to_secs_f64() - 0.5).abs() < 1e-9);
         assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    }
+
+    /// A reversed clip, as OTIO writes it: it starts at 2 s of its source
+    /// and runs back a second, so its range is 1 s to 2 s; two warps on one
+    /// clip multiply.
+    #[test]
+    fn a_reverse_warp_runs_back_from_its_start_and_warps_multiply() {
+        let warp = |s: f64| serde_json::json!({ "OTIO_SCHEMA": "LinearTimeWarp.1", "name": "w", "time_scalar": s, "metadata": {} });
+        let clip = |name: &str, warps: Vec<serde_json::Value>| serde_json::json!({
+            "OTIO_SCHEMA": "Clip.1", "name": name,
+            "source_range": { "OTIO_SCHEMA": "TimeRange.1",
+                "start_time": { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 48.0 },
+                "duration": { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 24.0 } },
+            "media_reference": { "OTIO_SCHEMA": "MissingReference.1", "metadata": {} },
+            "effects": warps
+        });
+        let json = timeline_with_track_children(serde_json::json!([clip("back", vec![warp(-1.0)]), clip("fast", vec![warp(2.0), warp(1.5)])]), serde_json::json!([]));
+        let result = load_inline(&json, "reverse");
+        let clips = &result.sequence.tracks[0].clips;
+        assert_eq!(clips[0].speed, -1.0);
+        assert!((clips[0].source_in.to_secs_f64() - 1.0).abs() < 1e-9 && (clips[0].source_out.to_secs_f64() - 2.0).abs() < 1e-9);
+        assert_eq!(clips[1].speed, 3.0);
+        assert!(((clips[1].source_out - clips[1].source_in).to_secs_f64() - 3.0).abs() < 1e-9);
     }
 
     /// A freeze is played at normal speed, said so; a clip's metadata is

@@ -181,8 +181,13 @@ fn build_track(
 
         children.push(clip_value(clip, media_pool, rate, &track.name, warnings));
         cursor_secs = cursor_secs.max(start) + dur;
-        // A transition out of this clip, at the cut after it.
+        // A transition out of this clip, at the cut after it. One beside
+        // something written as a gap cannot be read back as one.
         for t in track.transitions.iter().filter(|t| t.clip_a_id == clip.id) {
+            let media = |id| track.clips.iter().any(|c| c.id == id && matches!(c.kind, ClipKind::Media { .. }));
+            if !media(t.clip_a_id) || !media(t.clip_b_id) {
+                warnings.push(format!("Track '{}': a transition beside a clip written as a gap — kept in the file, but an import will not find a clip on that side", track.name));
+            }
             children.push(transition_value(t, rate, &track.name, warnings));
         }
     }
@@ -205,8 +210,14 @@ fn build_track(
 /// other kind as a custom transition named for it.
 fn transition_value(t: &klipp_timeline::Transition, rate: f64, track_name: &str, warnings: &mut Vec<String>) -> Value {
     let d = t.duration.to_secs_f64();
+    // In whole frames, so an odd-frame centred one keeps its length: the
+    // half before the cut rounded down, the rest after it.
+    let frames = (d * rate).round();
     let (before, after) = match t.alignment {
-        klipp_core::TransitionAlignment::Center => (d / 2.0, d / 2.0),
+        klipp_core::TransitionAlignment::Center => {
+            let before = (frames / 2.0).floor();
+            (before / rate, (frames - before) / rate)
+        }
         klipp_core::TransitionAlignment::EndAtCut => (d, 0.0),
         klipp_core::TransitionAlignment::StartAtCut => (0.0, d),
     };
@@ -309,17 +320,25 @@ fn clip_value(
         .collect();
 
     // A constant speed: OTIO keeps the clip's length on the track and says
-    // how fast it plays its source.
-    let effects: Vec<Value> = if (clip.speed - 1.0).abs() > 1e-9 {
+    // how fast it plays its source. A ramp has no OTIO form: the clip goes
+    // out at normal speed, said so.
+    let ramped = !clip.speed_keyframes.is_empty() || clip.has_speed_ramp();
+    if ramped {
+        warnings.push(format!("Track '{track_name}': '{name}' has a speed ramp, which OTIO has no form for — exported at normal speed"));
+    }
+    let effects: Vec<Value> = if !ramped && (clip.speed - 1.0).abs() > 1e-9 {
         vec![json!({ "OTIO_SCHEMA": "LinearTimeWarp.1", "name": "speed", "time_scalar": clip.speed, "metadata": {} })]
     } else {
         Vec::new()
     };
+    // OTIO reads source time as start + t × scalar, so a reversed clip
+    // starts at the end of its range, as Klipp plays it.
+    let start = if !ramped && clip.is_reversed() { clip.source_out } else { clip.source_in };
 
     json!({
         "OTIO_SCHEMA": "Clip.1",
         "name": name,
-        "source_range": time_range(clip.source_in.to_secs_f64(), dur, rate),
+        "source_range": time_range(start.to_secs_f64(), dur, rate),
         "media_reference": media_reference,
         "markers": markers,
         "effects": effects,
@@ -742,5 +761,41 @@ mod tests {
         assert_eq!(b.clip_markers[0].comment, "fix it");
         assert_eq!(back.sequence.markers[0].comment, "music");
         assert_eq!(back.sequence.resolution, klipp_core::Resolution { width: 1280, height: 720 });
+    }
+
+    /// A centred dissolve of an odd number of frames keeps its length; a
+    /// reversed clip keeps its range; a ramp goes out at normal speed, said.
+    #[test]
+    fn odd_dissolves_reverse_clips_and_ramps() {
+        let id = MediaId::new();
+        let mut pool = MediaPool::new();
+        pool.add(item(id, "/tmp/rt2.mov", 60.0, 24));
+        let a = media_clip(id, 0.0, 2.0, 0.0, 24);
+        let mut b = media_clip(id, 2.0, 4.0, 10.0, 24);
+        b.speed = -1.0;
+        let mut c = media_clip(id, 4.0, 6.0, 20.0, 24);
+        c.speed_keyframes = vec![klipp_core::Keyframe { time_secs: 0.0, value: 1.0, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }, klipp_core::Keyframe { time_secs: 2.0, value: 2.0, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }];
+        let mut v = Track::new("V1", TrackKind::Video);
+        v.transitions.push(klipp_timeline::Transition {
+            id: klipp_core::TransitionId::new(),
+            kind: klipp_core::TransitionKind::CrossDissolve,
+            duration: RationalTime::from_frames(5, 24),
+            clip_a_id: a.id,
+            clip_b_id: b.id,
+            user_params: Default::default(),
+            alignment: klipp_core::TransitionAlignment::Center,
+        });
+        v.clips = vec![a, b, c];
+        let seq = seq_with(Fps { num: 24, den: 1 }, vec![v]);
+        let out = generate_otio(&seq, &pool).unwrap();
+        assert!(out.warnings.iter().any(|w| w.contains("speed ramp")), "{:?}", out.warnings);
+        assert_eq!(out.json.matches("LinearTimeWarp").count(), 1, "the reversed clip's only");
+        let back = round_trip(&seq, &pool);
+        let track = &back.sequence.tracks[0];
+        assert_eq!(track.transitions[0].duration, RationalTime::from_frames(5, 24), "five frames, not six");
+        let b = &track.clips[1];
+        assert_eq!(b.speed, -1.0);
+        assert!((b.source_in.to_secs_f64() - 10.0).abs() < 1e-9 && (b.source_out.to_secs_f64() - 12.0).abs() < 1e-9, "{:?}..{:?}", b.source_in, b.source_out);
+        assert_eq!(track.clips[2].speed, 1.0);
     }
 }
