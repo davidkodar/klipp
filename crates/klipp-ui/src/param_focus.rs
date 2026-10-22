@@ -88,6 +88,9 @@ fn scrolled_id() -> egui::Id {
 fn rows_id() -> egui::Id {
     egui::Id::new("param_focus::rows")
 }
+fn noting_id() -> egui::Id {
+    egui::Id::new("param_focus::noting")
+}
 
 /// A placement or opacity lane as the clip's placement node holds it, so
 /// a row drawn by path and the Video tab's row are one parameter.
@@ -101,9 +104,10 @@ fn same_terms(placement: Option<&klipp_graph_format::path::NodePath>, kind: &Key
     }
 }
 
-/// Before the Inspector draws `clip`'s rows: the focus they show, and no
-/// row picked yet.
-pub fn begin_rows(ctx: &egui::Context, focus: Option<&ParamFocus>, clip: &Clip) {
+/// Before the Inspector draws `clip`'s rows: the focus they show, no row
+/// picked yet, and whether each row's place is noted for the Keyframes
+/// column (`note_rows`, only while it is shown).
+pub fn begin_rows(ctx: &egui::Context, focus: Option<&ParamFocus>, clip: &Clip, note_rows: bool) {
     let placement = clip.placement_path();
     let focus = focus.filter(|f| f.clip_id == clip.id).map(|f| (same_terms(placement.as_ref(), &f.kind), f.at));
     let mut held = Vec::new();
@@ -118,9 +122,11 @@ pub fn begin_rows(ctx: &egui::Context, focus: Option<&ParamFocus>, clip: &Clip) 
         }
     }
     ctx.data_mut(|d| {
-        d.insert_temp(view_id(), View { focus, placement, held });
+        // Shared, so a row reads it without copying the layers' keys.
+        d.insert_temp(view_id(), std::sync::Arc::new(View { focus, placement, held }));
         d.remove::<Tag>(tag_id());
         d.remove::<KeyframeParamKind>(request_id());
+        d.insert_temp(noting_id(), note_rows);
         d.insert_temp(rows_id(), Vec::<(KeyframeParamKind, egui::Rect)>::new());
     });
 }
@@ -131,6 +137,7 @@ pub fn take_rows(ctx: &egui::Context) -> Vec<(KeyframeParamKind, egui::Rect)> {
     ctx.data_mut(|d| {
         let rows = d.get_temp::<Vec<(KeyframeParamKind, egui::Rect)>>(rows_id()).unwrap_or_default();
         d.remove::<Vec<(KeyframeParamKind, egui::Rect)>>(rows_id());
+        d.insert_temp(noting_id(), false);
         rows
     })
 }
@@ -151,8 +158,8 @@ pub fn tag_keys(ui: &egui::Ui, keys: &[klipp_core::Keyframe]) {
     if keys.is_empty() {
         return;
     }
-    let Some(view) = ui.ctx().data(|d| d.get_temp::<View>(view_id())) else { return };
-    if let Some((_, n, kind)) = view.held.into_iter().find(|(at, n, _)| *at == keys.as_ptr() as usize && *n == keys.len()) {
+    let Some(view) = ui.ctx().data(|d| d.get_temp::<std::sync::Arc<View>>(view_id())) else { return };
+    if let Some((_, n, kind)) = view.held.iter().find(|(at, n, _)| *at == keys.as_ptr() as usize && *n == keys.len()).cloned() {
         ui.ctx().data_mut(|d| d.insert_temp(tag_id(), Tag { kind, keys: n }));
     }
 }
@@ -176,14 +183,13 @@ pub(crate) fn take_tag(ui: &egui::Ui) -> Option<Tag> {
 /// for [`FLASH_SECS`] after its parameter came into focus, and scrolled
 /// into view once.
 pub(crate) fn row_drawn(ui: &egui::Ui, tag: &Tag, rect: egui::Rect, clicked: bool) {
-    // Noted for the Keyframes column, while the Inspector is drawing rows.
+    // Noted for the Keyframes column while it is shown, in place.
     ui.ctx().data_mut(|d| {
-        if let Some(mut rows) = d.get_temp::<Vec<(KeyframeParamKind, egui::Rect)>>(rows_id()) {
-            rows.push((tag.kind.clone(), rect));
-            d.insert_temp(rows_id(), rows);
+        if d.get_temp::<bool>(noting_id()) == Some(true) {
+            d.get_temp_mut_or_default::<Vec<(KeyframeParamKind, egui::Rect)>>(rows_id()).push((tag.kind.clone(), rect));
         }
     });
-    let Some(view) = ui.ctx().data(|d| d.get_temp::<View>(view_id())) else { return };
+    let Some(view) = ui.ctx().data(|d| d.get_temp::<std::sync::Arc<View>>(view_id())) else { return };
     if clicked {
         ui.ctx().data_mut(|d| d.insert_temp(request_id(), tag.kind.clone()));
     }
