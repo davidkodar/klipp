@@ -680,10 +680,15 @@ impl ClipStreams {
     }
 
     /// Whether a stream asking `cost` fits what its drive gives, with the
-    /// others reading from it.
-    pub(crate) fn reads_fit(&self, cost: Cost) -> bool {
+    /// others reading from it. One alone on its drive always fits, however
+    /// much it reads: a 4K ProRes file on a share is still opened ahead of
+    /// its cut, rather than never.
+    fn reads_fit(&self, cost: Cost) -> bool {
         match cost.drive {
-            Some(drive) if cost.read_bytes > 0.0 => self.read_on(drive.device) + cost.read_bytes <= STREAM_DISK_SHARE * drive.kind.read_rate(),
+            Some(drive) if cost.read_bytes > 0.0 => {
+                let others = self.read_on(drive.device);
+                others == 0.0 || others + cost.read_bytes <= STREAM_DISK_SHARE * drive.kind.read_rate()
+            }
             _ => true,
         }
     }
@@ -914,10 +919,19 @@ mod tests {
         let resolve = |w: &Want| Some((path.clone(), 0, Cost { read_bytes: 40e6, drive: Some(drive(w.media)), ..Default::default() }));
         let want = |media: MediaId, ahead: bool| Want { clip: ClipId::new(), media, rotation: 0, source_secs: 0.0, reversed: false, ahead };
         let (a1, a2, a3) = (want(disk, true), want(disk, true), want(disk, true));
+        // Each 40 of the disk's 96: two fit, the third doesn't.
         let other = want(fast, true);
         let all = [a1.clone(), a2.clone(), a3.clone(), other.clone()];
         streams.sync(&all, frame, &resolve);
         assert!(streams.has(a1.clip) && streams.has(a2.clip), "two fit the disk");
+        // However much one reads, it is opened when its drive is idle.
+        let mut alone = ClipStreams::new();
+        alone.capacity = || f64::INFINITY;
+        alone.gpu_headroom = || f64::INFINITY;
+        let huge = |_: &Want| Some((path.clone(), 0, Cost { read_bytes: 500e6, drive: Some(drive(disk)), ..Default::default() }));
+        let first = want(disk, true);
+        alone.sync(std::slice::from_ref(&first), frame, &huge);
+        assert!(alone.has(first.clip), "alone on its drive, it is opened ahead");
         assert!(!streams.has(a3.clip), "a third ahead waits for it");
         assert!(streams.has(other.clip), "the other drive is not this one's");
         let short = super::super::streams_disk_short();

@@ -82,18 +82,24 @@ pub fn kind_from(fstype: Option<&str>, block_name: Option<&str>, rotational: Opt
     }
 }
 
-/// The filesystem type of the mount on device `major:minor`, from the text
-/// of `/proc/self/mountinfo`.
-pub fn fstype_in_mountinfo(mountinfo: &str, major: u64, minor: u64) -> Option<String> {
-    let want = format!("{major}:{minor}");
-    mountinfo.lines().find_map(|line| {
-        let fields: Vec<&str> = line.split_whitespace().collect();
-        if fields.get(2) != Some(&want.as_str()) {
-            return None;
-        }
-        let dash = fields.iter().position(|f| *f == "-")?;
-        fields.get(dash + 1).map(|s| s.to_string())
-    })
+/// The filesystem type of the mount `path` is under, and what it was
+/// mounted from (`/dev/sda2`, `/dev/mapper/root`, a share's address), from
+/// the text of `/proc/self/mountinfo`: the mount whose point is the
+/// longest that `path` lies in. By path, not by device: a btrfs
+/// subvolume's files have a device number of their own, which no mount
+/// line names.
+pub fn mount_for_path(mountinfo: &str, path: &Path) -> Option<(String, String)> {
+    mountinfo
+        .lines()
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            let point = fields.get(4)?.replace("\\040", " ");
+            let dash = fields.iter().position(|f| *f == "-")?;
+            let found = (fields.get(dash + 1)?.to_string(), fields.get(dash + 2).unwrap_or(&"").to_string());
+            path.starts_with(&point).then_some((point.len(), found))
+        })
+        .max_by_key(|(len, _)| *len)
+        .map(|(_, found)| found)
 }
 
 /// The kinds told so far, by device, and the drives of the files asked
@@ -108,33 +114,59 @@ pub fn drive_of(path: &Path) -> Drive {
     if let Some(drive) = FILES.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|f| f.get(path)) {
         return *drive;
     }
-    let device = device_of(path);
-    let kind = *KINDS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).entry(device).or_insert_with(|| classify(device));
+    // A file not there (yet) is asked about again when it is.
+    let Some(device) = device_of(path) else { return Drive { device: 0, kind: DriveKind::Unknown } };
+    let kind = *KINDS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).entry(device).or_insert_with(|| classify(device, path));
     let drive = Drive { device, kind };
     FILES.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(path.to_path_buf(), drive);
     drive
 }
 
 #[cfg(unix)]
-fn device_of(path: &Path) -> u64 {
+fn device_of(path: &Path) -> Option<u64> {
     use std::os::unix::fs::MetadataExt;
-    std::fs::metadata(path).map(|m| m.dev()).unwrap_or(0)
+    std::fs::metadata(path).ok().map(|m| m.dev())
 }
 
 #[cfg(not(unix))]
-fn device_of(_: &Path) -> u64 {
-    0
+fn device_of(_: &Path) -> Option<u64> {
+    None
 }
 
-/// Device `dev`'s kind, from `/proc/self/mountinfo` and `/sys/dev/block`.
+/// How many devices have been looked up in the kernel's tables: for the
+/// test that a second question about a file reads none of them.
+#[cfg(test)]
+static LOOKED_UP: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// A device number's major and minor, as glibc encodes them.
+fn split(dev: u64) -> (u64, u64) {
+    (((dev >> 32) & 0xffff_f000) | ((dev >> 8) & 0xfff), ((dev >> 12) & 0xffff_ff00) | (dev & 0xff))
+}
+
+/// The kind of device `dev`, which `path` is on, from
+/// `/proc/self/mountinfo` and `/sys/dev/block`. A filesystem on no block
+/// device of its own (btrfs, a mapped or encrypted volume) is followed to
+/// the device it was mounted from, and a mapped volume to the disk under
+/// it.
 #[cfg(target_os = "linux")]
-fn classify(dev: u64) -> DriveKind {
-    // glibc's encoding of a device number.
-    let major = ((dev >> 32) & 0xffff_f000) | ((dev >> 8) & 0xfff);
-    let minor = ((dev >> 12) & 0xffff_ff00) | (dev & 0xff);
-    let fstype = std::fs::read_to_string("/proc/self/mountinfo").ok().and_then(|m| fstype_in_mountinfo(&m, major, minor));
+fn classify(dev: u64, path: &Path) -> DriveKind {
+    use std::os::unix::fs::MetadataExt;
+    #[cfg(test)]
+    LOOKED_UP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let mount = std::fs::read_to_string("/proc/self/mountinfo").ok().and_then(|m| mount_for_path(&m, &canonical));
+    let fstype = mount.as_ref().map(|(fstype, _)| fstype.clone());
+    let sys = |(major, minor): (u64, u64)| std::fs::canonicalize(format!("/sys/dev/block/{major}:{minor}")).ok();
+    let mut block = sys(split(dev)).or_else(|| {
+        let source = mount.as_ref().map(|(_, source)| source.as_str()).filter(|s| s.starts_with("/dev/"))?;
+        sys(split(std::fs::metadata(source).ok()?.rdev()))
+    });
+    // A mapped volume (LUKS, LVM) is the disk under it: its first slave.
+    for _ in 0..4 {
+        let Some(slave) = block.as_ref().and_then(|b| std::fs::read_dir(b.join("slaves")).ok()?.flatten().next()) else { break };
+        block = std::fs::canonicalize(slave.path()).ok();
+    }
     // A partition's own folder has no queue: its disk's, one up, does.
-    let block = std::fs::canonicalize(format!("/sys/dev/block/{major}:{minor}")).ok();
     let disk = block.as_ref().map(|b| if b.join("partition").exists() { b.parent().map(Path::to_path_buf).unwrap_or_else(|| b.clone()) } else { b.clone() });
     let name = disk.as_ref().and_then(|d| d.file_name()).map(|n| n.to_string_lossy().into_owned());
     let rotational = disk.and_then(|d| std::fs::read_to_string(d.join("queue/rotational")).ok());
@@ -142,7 +174,7 @@ fn classify(dev: u64) -> DriveKind {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn classify(_: u64) -> DriveKind {
+fn classify(_: u64, _: &Path) -> DriveKind {
     DriveKind::Unknown
 }
 
@@ -178,16 +210,19 @@ mod tests {
         assert!(DriveKind::Hdd.extra_lead_secs() > 0.0 && DriveKind::Nvme.extra_lead_secs() == 0.0);
     }
 
-    /// The mount on a device, and its filesystem type, found in the
-    /// kernel's mount table.
+    /// The mount a path lies in, and its filesystem type and source, found
+    /// in the kernel's mount table by the longest mount point: a btrfs
+    /// subvolume's files by their path, whatever their own device.
     #[test]
-    fn a_mounts_filesystem_is_found_by_its_device() {
-        let mountinfo = "22 1 259:2 / / rw,relatime shared:1 - ext4 /dev/nvme0n1p2 rw\n\
+    fn a_paths_mount_is_found_by_its_point() {
+        let mountinfo = "22 1 0:29 /@ / rw,relatime shared:1 - btrfs /dev/mapper/root rw,subvol=/@\n\
+                         23 22 0:29 /@home /home rw,relatime shared:2 - btrfs /dev/mapper/root rw,subvol=/@home\n\
                          40 22 0:45 / /mnt/share rw,relatime shared:20 - nfs4 server:/export rw,vers=4.2\n\
-                         41 22 8:17 / /media/disk rw - ext4 /dev/sdb1 rw\n";
-        assert_eq!(fstype_in_mountinfo(mountinfo, 0, 45).as_deref(), Some("nfs4"));
-        assert_eq!(fstype_in_mountinfo(mountinfo, 8, 17).as_deref(), Some("ext4"));
-        assert_eq!(fstype_in_mountinfo(mountinfo, 9, 9), None);
+                         41 22 8:17 / /media/my\\040disk rw - ext4 /dev/sdb1 rw\n";
+        assert_eq!(mount_for_path(mountinfo, Path::new("/home/me/cut/a.mov")), Some(("btrfs".into(), "/dev/mapper/root".into())));
+        assert_eq!(mount_for_path(mountinfo, Path::new("/mnt/share/a.mov")), Some(("nfs4".into(), "server:/export".into())));
+        assert_eq!(mount_for_path(mountinfo, Path::new("/media/my disk/a.mov")), Some(("ext4".into(), "/dev/sdb1".into())));
+        assert_eq!(mount_for_path(mountinfo, Path::new("/mnt/sharelike/a.mov")).map(|m| m.0), Some("btrfs".into()), "a path, not a prefix of a name");
     }
 
     /// A file's read rate: its bit rates when probed, else its size over
@@ -199,10 +234,22 @@ mod tests {
         assert_eq!(read_bytes_per_sec(0, 0, 1_000_000, 0.0), 0.0);
     }
 
-    /// A file's drive is looked up once and kept: the same answer twice.
+    /// A file's drive is looked up once and kept: asked again, no table
+    /// is read. A file that isn't there is not kept, so it is looked up
+    /// once it is.
     #[test]
-    fn a_files_drive_is_kept() {
-        let here = std::env::temp_dir();
-        assert_eq!(drive_of(&here), drive_of(&here));
+    fn a_files_drive_is_kept_and_a_missing_one_is_not() {
+        use std::sync::atomic::Ordering;
+        let dir = std::env::temp_dir().join(format!("klipp-drive-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.mov");
+        assert_eq!(drive_of(&file), Drive { device: 0, kind: DriveKind::Unknown }, "not there");
+        std::fs::write(&file, b"x").unwrap();
+        let first = drive_of(&file);
+        assert_ne!(first.device, 0, "looked up once it is there");
+        let looked = LOOKED_UP.load(Ordering::Relaxed);
+        assert_eq!(drive_of(&file), first);
+        assert_eq!(LOOKED_UP.load(Ordering::Relaxed), looked, "asked again: no table read");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

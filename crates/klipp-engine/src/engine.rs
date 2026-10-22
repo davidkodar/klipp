@@ -9883,13 +9883,6 @@ impl PlaybackEngine {
         w as f64 * h as f64 * fps
     }
 
-    /// The media's proxy file, when it is made and there.
-    fn ready_proxy(&self, media_id: MediaId) -> Option<PathBuf> {
-        let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());
-        let item = pool.get(&media_id)?;
-        item.proxy_path.clone().filter(|p| item.proxy_ready && p.exists())
-    }
-
     fn path_for_media(&self, media_id: MediaId) -> Option<PathBuf> {
         self.resolve_media_path(media_id, true)
     }

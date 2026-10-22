@@ -604,18 +604,8 @@ impl PlaybackEngine {
             .iter()
             .filter(|w| !self.streams.has(w.clip))
             .filter_map(|w| {
-                let mut path = self.path_for_media(w.media)?;
-                let mut cost = self.media_cost(w.media, &path);
-                // A layer on screen whose drive is already giving all the
-                // streams may read is read from its proxy, when it has one
-                // ready (#2128).
-                if !w.ahead && !self.streams.reads_fit(cost) {
-                    if let Some(proxy) = self.ready_proxy(w.media).filter(|p| *p != path) {
-                        tracing::info!("clip streams: the {} is short, reading {:?} from its proxy", cost.drive.map_or("drive", |d| d.kind.name()), w.clip);
-                        cost = self.media_cost(w.media, &proxy);
-                        path = proxy;
-                    }
-                }
+                let path = self.path_for_media(w.media)?;
+                let cost = self.media_cost(w.media, &path);
                 let rot = self.effective_decode_rotation(w.media, &path, w.rotation);
                 Some((w.clip, (path, rot, cost)))
             })
