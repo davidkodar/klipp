@@ -36,6 +36,8 @@ mod effects_hdr_behaviour;
 mod equalize_and_huesat_share_nothing;
 #[path = "../equalize_gpu.rs"]
 mod equalize_gpu;
+#[path = "../flat_dispatch_splits.rs"]
+mod flat_dispatch_splits;
 #[path = "../frame_upload_count.rs"]
 mod frame_upload_count;
 #[path = "../every_shader_is_validated.rs"]

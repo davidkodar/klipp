@@ -48,7 +48,8 @@ fn enc(c: f32) -> u32 {
 }
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let i = gid.x;
     if i >= params.dst_w * params.dst_h { return; }
     let x = i % params.dst_w;

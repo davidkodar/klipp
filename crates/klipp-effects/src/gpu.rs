@@ -651,6 +651,54 @@ const EFFECT_PARAMS_RING_SIZE: usize = 64;
 const STACK_PARAMS_RING_SIZE: usize = 64;
 const WORKGROUP_SIZE: u32 = 256;
 
+/// The most workgroups a dispatch may take along one dimension: wgpu's
+/// default limit, which every adapter offers.
+const MAX_WORKGROUPS_PER_DIMENSION: u32 = 65_535;
+
+thread_local! {
+    /// [`MAX_WORKGROUPS_PER_DIMENSION`], lowered on one thread only by
+    /// [`WorkgroupCapForTest`].
+    static WORKGROUP_CAP: std::cell::Cell<u32> = const { std::cell::Cell::new(MAX_WORKGROUPS_PER_DIMENSION) };
+}
+
+/// `n` workgroups over x and, past the per-dimension limit, y (#2341): an
+/// 8K frame is 129,600 workgroups of 256 pixels. Every flat-indexed
+/// shader rebuilds its index from both, `gid.x + gid.y · nwg.x · size`,
+/// and its bounds check takes the few past the end.
+pub fn split_workgroups(n: u32) -> (u32, u32) {
+    let cap = WORKGROUP_CAP.with(std::cell::Cell::get).max(1);
+    if n <= cap {
+        return (n, 1);
+    }
+    let y = n.div_ceil(cap);
+    (n.div_ceil(y), y)
+}
+
+/// Dispatch `n` workgroups of a flat-indexed shader, split by
+/// [`split_workgroups`].
+pub fn dispatch_flat(pass: &mut wgpu::ComputePass<'_>, n: u32) {
+    let (x, y) = split_workgroups(n);
+    pass.dispatch_workgroups(x, y, 1);
+}
+
+/// The per-dimension limit lowered to `cap` on this thread while held, so
+/// a test sees small frames dispatched in 2D; other threads keep the real
+/// one, and it is restored on drop.
+#[doc(hidden)]
+pub struct WorkgroupCapForTest(u32);
+
+impl WorkgroupCapForTest {
+    pub fn new(cap: u32) -> Self {
+        Self(WORKGROUP_CAP.with(|c| c.replace(cap)))
+    }
+}
+
+impl Drop for WorkgroupCapForTest {
+    fn drop(&mut self) {
+        WORKGROUP_CAP.with(|c| c.set(self.0));
+    }
+}
+
 /// Maximum time to spin waiting for a `map_async` callback before
 /// giving up. 2 s is far longer than any real GPU operation needs,
 /// but short enough that a genuine hang gets flagged before the
@@ -2325,7 +2373,7 @@ impl GpuEffectsPipeline {
             });
             pass.set_pipeline(&self.rgb_curves_pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(workgroups, 1, 1);
+            dispatch_flat(&mut pass, workgroups);
         }
         self.submit(encoder);
         // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
@@ -2405,7 +2453,7 @@ impl GpuEffectsPipeline {
             });
             pass.set_pipeline(&self.bridge_u8_pipeline);
             pass.set_bind_group(0, &bg, &[]);
-            pass.dispatch_workgroups(workgroups, 1, 1);
+            dispatch_flat(&mut pass, workgroups);
         }
         let mut readback = self.readbacks.begin(out_bytes);
         encoder.copy_buffer_to_buffer(out_buf, 0, staging, 0, out_bytes);
@@ -2613,7 +2661,7 @@ impl GpuEffectsPipeline {
             );
             pass.set_pipeline(&self.bridge_u8_pipeline);
             pass.set_bind_group(0, &bg, &[]);
-            pass.dispatch_workgroups(workgroups, 1, 1);
+            dispatch_flat(&mut pass, workgroups);
         }
         // Copy the packed-u32 buffer straight into the texture. The
         // buffer layout matches `Rgba8Unorm`'s row-major RGBA bytes
@@ -2697,7 +2745,7 @@ impl GpuEffectsPipeline {
             );
             pass.set_pipeline(&self.bridge_u8_to_linear_pipeline);
             pass.set_bind_group(0, &bg, &[]);
-            pass.dispatch_workgroups(workgroups, 1, 1);
+            dispatch_flat(&mut pass, workgroups);
         }
         self.submit(encoder);
         true
@@ -2748,7 +2796,7 @@ impl GpuEffectsPipeline {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
             pass.set_pipeline(&self.bridge_u8_fit_pipeline);
             pass.set_bind_group(0, &bg, &[]);
-            pass.dispatch_workgroups(workgroups, 1, 1);
+            dispatch_flat(&mut pass, workgroups);
         }
         self.submit(encoder);
         true
@@ -3060,7 +3108,7 @@ impl GpuEffectsPipeline {
             });
             pass.set_pipeline(&self.hdr_nit_map_pipeline);
             pass.set_bind_group(0, &bg, &[]);
-            pass.dispatch_workgroups((mw * mh).div_ceil(WORKGROUP_SIZE), 1, 1);
+            dispatch_flat(&mut pass, (mw * mh).div_ceil(WORKGROUP_SIZE));
         }
         let mut readback = self.readbacks.begin(bytes);
         enc.copy_buffer_to_buffer(out, 0, staging, 0, bytes);
@@ -3144,7 +3192,7 @@ impl GpuEffectsPipeline {
             });
             pass.set_pipeline(&self.aces_rec709_pipeline);
             pass.set_bind_group(0, &bg, &[]);
-            pass.dispatch_workgroups((pixel_count as u32).div_ceil(WORKGROUP_SIZE), 1, 1);
+            dispatch_flat(&mut pass, (pixel_count as u32).div_ceil(WORKGROUP_SIZE));
         }
         self.submit(encoder);
 
@@ -3317,7 +3365,7 @@ impl GpuEffectsPipeline {
             });
             pass.set_pipeline(&self.bt2020_display_pipeline);
             pass.set_bind_group(0, &bg, &[]);
-            pass.dispatch_workgroups((pixel_count as u32).div_ceil(WORKGROUP_SIZE), 1, 1);
+            dispatch_flat(&mut pass, (pixel_count as u32).div_ceil(WORKGROUP_SIZE));
         }
         self.submit(encoder);
 
@@ -3411,7 +3459,7 @@ impl GpuEffectsPipeline {
             );
             pass.set_pipeline(&self.bridge_rgba64_to_linear_pipeline);
             pass.set_bind_group(0, &bg, &[]);
-            pass.dispatch_workgroups(workgroups, 1, 1);
+            dispatch_flat(&mut pass, workgroups);
         }
         self.submit(encoder);
         true
@@ -3488,7 +3536,7 @@ impl GpuEffectsPipeline {
             );
             pass.set_pipeline(if deep { &self.bridge_hdr16_pipeline } else { &self.bridge_hdr10_pipeline });
             pass.set_bind_group(0, &bg, &[]);
-            pass.dispatch_workgroups((pixel_count as u32).div_ceil(WORKGROUP_SIZE), 1, 1);
+            dispatch_flat(&mut pass, (pixel_count as u32).div_ceil(WORKGROUP_SIZE));
         }
         self.submit(encoder);
         true
@@ -3641,7 +3689,7 @@ impl GpuEffectsPipeline {
             );
             pass.set_pipeline(&self.display_u8_pipeline);
             pass.set_bind_group(0, &bg, &[]);
-            pass.dispatch_workgroups((pixel_count as u32).div_ceil(WORKGROUP_SIZE), 1, 1);
+            dispatch_flat(&mut pass, (pixel_count as u32).div_ceil(WORKGROUP_SIZE));
         }
         if let Some(t) = target {
             // Its own params buffer: the shared one is read by the encode
@@ -3783,7 +3831,7 @@ impl GpuEffectsPipeline {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
             pass.set_pipeline(&self.clarity_apply_pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(workgroups, 1, 1);
+            dispatch_flat(&mut pass, workgroups);
         }
         self.submit(encoder);
         // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
@@ -4010,7 +4058,7 @@ impl GpuEffectsPipeline {
             });
             pass.set_pipeline(&self.mask_pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(workgroups, 1, 1);
+            dispatch_flat(&mut pass, workgroups);
         }
         self.submit(encoder);
         self.device.poll(wgpu::Maintain::Poll);
@@ -4072,7 +4120,7 @@ impl GpuEffectsPipeline {
             });
             pass.set_pipeline(&self.huesat_pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(workgroups, 1, 1);
+            dispatch_flat(&mut pass, workgroups);
         }
         self.submit(encoder);
         // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
@@ -4148,7 +4196,7 @@ impl GpuEffectsPipeline {
             });
             pass.set_pipeline(&self.lut3d_pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(workgroups, 1, 1);
+            dispatch_flat(&mut pass, workgroups);
         }
         self.submit(encoder);
         // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
@@ -4498,7 +4546,7 @@ impl GpuEffectsPipeline {
         });
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, bind_group, &[]);
-        pass.dispatch_workgroups(workgroups, 1, 1);
+        dispatch_flat(&mut pass, workgroups);
     }
 
     /// Error message for inline `chain_encoder.as_mut().expect(...)` calls
@@ -5112,7 +5160,7 @@ impl GpuEffectsPipeline {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
             pass.set_pipeline(&self.bridge_u8_to_linear_pipeline);
             pass.set_bind_group(0, &bg, &[]);
-            pass.dispatch_workgroups((pixels as u32).div_ceil(WORKGROUP_SIZE), 1, 1);
+            dispatch_flat(&mut pass, (pixels as u32).div_ceil(WORKGROUP_SIZE));
         }
         self.queue.submit(std::iter::once(encoder.finish()));
         Some(std::sync::Arc::new(out))
@@ -5730,7 +5778,7 @@ impl GpuEffectsPipeline {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &bg, &[]);
-            pass.dispatch_workgroups(workgroups, 1, 1);
+            dispatch_flat(&mut pass, workgroups);
         }
         self.submit(enc);
     }
@@ -6274,7 +6322,7 @@ impl GpuEffectsPipeline {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
             pass.set_pipeline(&self.sprite_glyphs_pipeline);
             pass.set_bind_group(0, &bg, &[]);
-            pass.dispatch_workgroups(rows_px.div_ceil(WORKGROUP_SIZE), 1, 1);
+            dispatch_flat(&mut pass, rows_px.div_ceil(WORKGROUP_SIZE));
         }
         self.submit(enc);
         true
@@ -6445,7 +6493,7 @@ impl GpuEffectsPipeline {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
             pass.set_pipeline(&self.transition_pipeline);
             pass.set_bind_group(0, &bg, &[]);
-            pass.dispatch_workgroups(wg, 1, 1);
+            dispatch_flat(&mut pass, wg);
         }
         self.submit(enc);
         self.write_params(&AlphaFormParams { width, height, unpremultiply: 1, _pad: 0 });
@@ -6697,7 +6745,7 @@ impl GpuEffectsPipeline {
                         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
                         pass.set_pipeline(&self.equalize_pipeline);
                         pass.set_bind_group(0, &bg, &[]);
-                        pass.dispatch_workgroups(workgroups, 1, 1);
+                        dispatch_flat(&mut pass, workgroups);
                     }
                     self.submit(encoder);
                     // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
@@ -7316,7 +7364,7 @@ impl GpuEffectsPipeline {
             });
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(workgroups, 1, 1);
+            dispatch_flat(&mut pass, workgroups);
         }
         self.submit(encoder);
     }
@@ -7593,7 +7641,7 @@ impl GpuEffectsPipeline {
             });
             pass.set_pipeline(&self.transition_pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(workgroups, 1, 1);
+            dispatch_flat(&mut pass, workgroups);
         }
         self.submit(encoder);
         // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
@@ -7686,7 +7734,7 @@ impl GpuEffectsPipeline {
             });
             pass.set_pipeline(&self.transition_pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(workgroups, 1, 1);
+            dispatch_flat(&mut pass, workgroups);
         }
         self.submit(encoder);
         self.device.poll(wgpu::Maintain::Poll);
@@ -7746,7 +7794,7 @@ impl GpuEffectsPipeline {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
             pass.set_pipeline(&self.pieces_pipeline);
             pass.set_bind_group(0, &bg, &[]);
-            pass.dispatch_workgroups((plan.width * plan.height).div_ceil(WORKGROUP_SIZE), 1, 1);
+            dispatch_flat(&mut pass, (plan.width * plan.height).div_ceil(WORKGROUP_SIZE));
         }
         self.submit(enc);
     }
@@ -7854,7 +7902,7 @@ impl GpuEffectsPipeline {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
             pass.set_pipeline(&self.shutter_pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups((self.stack_pixel_count() as u32).div_ceil(WORKGROUP_SIZE), 1, 1);
+            dispatch_flat(&mut pass, (self.stack_pixel_count() as u32).div_ceil(WORKGROUP_SIZE));
         }
         enc
     }
@@ -7900,7 +7948,7 @@ impl GpuEffectsPipeline {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(workgroups, 1, 1);
+            dispatch_flat(&mut pass, workgroups);
         }
         self.submit(enc);
         self.device.poll(wgpu::Maintain::Poll);
@@ -9821,7 +9869,8 @@ fn placed(k: u32, x: f32, y: f32) -> vec4<f32> {
 }
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let x = f32(idx % params.width);
@@ -10408,7 +10457,8 @@ struct Params {
     shader_linear_helpers_wgsl!(),
     "
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let pixel = unpack(input[idx]);
@@ -10436,7 +10486,8 @@ struct Params {
 @group(0) @binding(2) var<uniform> params: Params;
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     output[idx] = pack(mix(params.color, unpack(input[idx]), params.progress));
@@ -10465,7 +10516,8 @@ struct Params {
     shader_linear_helpers_wgsl!(),
     "
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     let y = idx / params.width;
     let x = idx % params.width;
@@ -10501,7 +10553,8 @@ struct Params {
     shader_linear_helpers_wgsl!(),
     "
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     let y = idx / params.width;
     let x = idx % params.width;
@@ -10537,7 +10590,8 @@ struct Params {
     shader_linear_helpers_wgsl!(),
     "
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     let y = idx / params.width;
     let x = idx % params.width;
@@ -10589,7 +10643,8 @@ struct Params {
 @group(0) @binding(2) var<uniform> params: Params;
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     let y = idx / params.width;
     let x = idx % params.width;
@@ -10653,7 +10708,8 @@ struct Params {
 ",
     "
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     let y = idx / params.width;
     let x = idx % params.width;
@@ -10780,7 +10836,8 @@ struct Params {
 ",
     "
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     let y = idx / params.width;
     let x = idx % params.width;
@@ -10868,7 +10925,8 @@ fn rgb_to_cbcr(r: f32, g: f32, b: f32) -> vec2<f32> {
 }
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
 
@@ -10951,7 +11009,8 @@ struct Params {
 const REF_WHITE_NITS: f32 = 203.0;
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let map_height = (params.height + params.step - 1u) / params.step;
     let idx = gid.x;
     if idx >= params.map_width * map_height { return; }
@@ -11011,7 +11070,8 @@ fn h_working_luma() -> vec3<f32> {
     shader_hdr_display_light_wgsl!(),
     "
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let p = unpack(input[idx]);
@@ -11061,7 +11121,8 @@ struct Params {
 @group(0) @binding(2) var<uniform> params: Params;
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let p = input[idx];
@@ -11090,7 +11151,8 @@ struct Params {
 @group(0) @binding(2) var<uniform> params: Params;
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let rg = input[idx * 2u];
@@ -11158,7 +11220,8 @@ fn filmic(x: f32) -> f32 {
 }
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let px = unpack(input[idx]);
@@ -11207,7 +11270,8 @@ fn linear_to_srgb_c(c: f32) -> f32 {
 }
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let pixel = unpack(input[idx]);
@@ -11278,7 +11342,8 @@ fn blend3(mode: u32, d: vec3<f32>, s: vec3<f32>) -> vec3<f32> {
     }
 }
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = params.y0 * params.width + gid.x;
     if idx >= params.y1 * params.width { return; }
     let d = unpack(acc[idx]);
@@ -11328,7 +11393,8 @@ fn srgb_to_linear_c(c: f32) -> f32 {
 }
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = params.y0 * params.width + gid.x;
     if idx >= params.y1 * params.width { return; }
     let rg = unpack2x16float(input[idx * 2u]);
@@ -11357,7 +11423,8 @@ fn srgb_to_linear_c(c: f32) -> f32 {
 }
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let i = gid.x;
     if i >= params.bw * params.bh { return; }
     let x = params.bx0 + i % params.bw;
@@ -11389,7 +11456,8 @@ fn srgb_to_linear_c(c: f32) -> f32 {
 }
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = params.y0 * params.width + gid.x;
     if idx >= params.y1 * params.width { return; }
     let packed = input[idx];
@@ -11513,7 +11581,8 @@ fn resized_colour(x:i32,y:i32)->vec4<f32> {
 }
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = params.y0 * params.width + gid.x;
     if idx >= params.y1 * params.width { return; }
     let x = i32(idx % params.width);
@@ -11666,7 +11735,8 @@ fn tap(x: i32, y: i32, g: u32) -> vec4<f32> {
 }
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = params.y0 * params.width + gid.x;
     if idx >= params.y1 * params.width { return; }
     let x = i32(idx % params.width);
@@ -11729,7 +11799,8 @@ struct Params { width: u32, height: u32, channel: u32, invert: u32, luma_r: f32,
 @group(0) @binding(1) var<storage, read_write> matte: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let p = unpack(source[idx]);
@@ -11761,7 +11832,8 @@ struct Params { width: u32, height: u32, radius: u32, _pad: u32 }
 @group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let y = idx / params.width;
@@ -11786,7 +11858,8 @@ struct Params { width: u32, height: u32, radius: u32, _pad: u32 }
 @group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let y = i32(idx / params.width);
@@ -11812,7 +11885,8 @@ struct Params { width: u32, height: u32, factor: f32, _pad: u32 }
 @group(0) @binding(1) var<storage, read_write> layer: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let p = unpack(layer[idx]);
@@ -11848,7 +11922,8 @@ struct Params { width: u32, height: u32, factor: f32, _pad: u32 }
 @group(0) @binding(1) var<storage, read_write> layer: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let p = unpack(layer[idx]);
@@ -11867,7 +11942,8 @@ struct Params { width: u32, height: u32, _pad0: u32, _pad1: u32 }
 @group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let p = unpack(input[idx]);
@@ -11887,7 +11963,8 @@ struct Params { width: u32, height: u32, unpremultiply: u32, _pad: u32 }
 @group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let p = unpack(input[idx]);
@@ -11938,7 +12015,8 @@ struct Params { width: u32, height: u32, _pad0: u32, _pad1: u32 }
 @group(0) @binding(3) var<storage, read> srgb8: array<f32>;
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let packed = input[idx];
@@ -11975,7 +12053,8 @@ fn tap(x: u32, y: u32) -> vec4<f32> {
 }
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.out_w * params.out_h { return; }
     let ox = idx % params.out_w;
@@ -12677,7 +12756,8 @@ struct Params { width: u32, height: u32, _pad0: u32, _pad1: u32 }
 @group(0) @binding(3) var<storage, read> tables: array<f32>;
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let px = unpack(input[idx]);
@@ -12711,7 +12791,8 @@ struct Params { width: u32, height: u32, _pad0: u32, _pad1: u32 }
 ",
     shader_aces_rec709_wgsl!(),
     "@compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let px = unpack(input[idx]);
@@ -13086,7 +13167,8 @@ struct Params {
 @group(0) @binding(3) var<storage, read> srgb16: array<f32>;
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     // RGBA64LE: R,G in the first u32 (low half first), B,A in the second.
@@ -13265,7 +13347,8 @@ fn piece_gap(e: f32) -> f32 {
 }
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
 
@@ -14846,7 +14929,8 @@ fn coverage(base: u32, sd: f32) -> f32 {
 }
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let x = f32(idx % params.width) + 0.5;
@@ -15048,7 +15132,8 @@ fn log_wheel_weights(l: f32) -> vec3<f32> {
     return vec3<f32>(grade_gauss(l, low, 0.14), grade_gauss(l, MID_GREY_ENCODED, 0.16), grade_gauss(l, high, 0.14));
 }
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
 
@@ -15172,7 +15257,8 @@ fn lut_lookup(curve: u32, t: f32) -> f32 {
 }
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
 
@@ -15340,7 +15426,8 @@ fn soft_range(val: f32, lo: f32, hi: f32, soft: f32) -> f32 {
 }
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
 
@@ -15509,7 +15596,8 @@ fn diff_soft_step(val: f32, lo: f32, hi: f32) -> f32 {
 }
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
 
@@ -15572,7 +15660,8 @@ fn td_luma(p: vec3<f32>) -> f32 {
 }
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let cur = unpack(input[idx]);
@@ -15631,7 +15720,8 @@ fn soft_range(val: f32, lo: f32, hi: f32, soft: f32) -> f32 {
 }
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
 
@@ -15710,7 +15800,8 @@ fn soft_clip_value(x: f32, threshold: f32, knee: f32) -> f32 {
 }
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
 
@@ -15762,7 +15853,8 @@ fn wang_hash(seed: u32) -> f32 {
 }
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
 
@@ -15820,7 +15912,8 @@ struct Params {
 @group(0) @binding(2) var<uniform> params: Params;
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let y = idx / params.width;
@@ -15852,7 +15945,8 @@ struct Params {
 @group(0) @binding(2) var<uniform> params: Params;
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let y = idx / params.width;
@@ -15884,7 +15978,8 @@ struct Params {
 @group(0) @binding(2) var<uniform> params: Params;
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let y = idx / params.width;
@@ -15928,7 +16023,8 @@ struct Params {
     shader_linear_helpers_wgsl!(),
     "
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let px = unpack(input[idx]);
@@ -15960,7 +16056,8 @@ struct Params { width: u32, height: u32, intensity: f32, _pad: u32 }
     shader_linear_helpers_wgsl!(),
     "
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let o = unpack(original[idx]);
@@ -15989,7 +16086,8 @@ struct Params {
     shader_linear_helpers_wgsl!(),
     "
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let o = unpack(original[idx]);
@@ -16021,7 +16119,8 @@ struct Params {
     shader_linear_helpers_wgsl!(),
     "
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let x = f32(idx % params.width);
@@ -16080,7 +16179,8 @@ fn linear(c: f32) -> f32 {
     return pow((c + 0.055) / 1.055, 2.4);
 }
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let i = gid.x;
     if i >= params.width * params.height { return; }
     let wh = vec2<f32>(f32(params.width), f32(params.height));
@@ -16138,7 +16238,8 @@ fn grain_at(x: u32, y: u32, frame: u32) -> f32 {
     return (f32(h) / 4294967296.0) * 2.0 - 1.0;
 }
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let i = gid.x;
     if i >= params.width * params.height { return; }
     let gx = u32(f32(i % params.width) / params.cell);
@@ -16170,7 +16271,8 @@ fn linear(c: f32) -> f32 {
     return pow((c + 0.055) / 1.055, 2.4);
 }
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let i = gid.x;
     if i >= params.width * params.height { return; }
     let x = i % params.width;
@@ -16201,7 +16303,8 @@ struct Params {
     shader_linear_helpers_wgsl!(),
     "
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let d = vec2<f32>(f32(idx % params.width) + 0.5, f32(idx / params.width) + 0.5) - params.centre;
@@ -16227,7 +16330,8 @@ struct Params { width: u32, height: u32, amount: f32, size: f32, softness: f32, 
     shader_linear_helpers_wgsl!(),
     "
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let x = f32(idx % params.width);
@@ -16266,7 +16370,8 @@ struct Params {
     shader_linear_helpers_wgsl!(),
     "
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let px = f32(idx % params.width);
@@ -16324,7 +16429,8 @@ struct Params {
     shader_linear_helpers_wgsl!(),
     "
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let x = idx % params.width;
@@ -16375,7 +16481,8 @@ struct Params {
     shader_linear_helpers_wgsl!(),
     "
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let o = unpack(original[idx]);
@@ -16439,7 +16546,8 @@ fn srgb_to_linear_component(c: f32) -> f32 {
 }
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let pixel_idx = gid.x;
     if pixel_idx >= params.width * params.height { return; }
 
@@ -16552,7 +16660,8 @@ struct Params {
     shader_linear_helpers_wgsl!(),
     "
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let p = unpack(input[idx]);
@@ -16616,7 +16725,8 @@ fn band(v: f32) -> f32 {
 }
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let p = unpack(input[idx]);
@@ -16674,7 +16784,8 @@ fn curve_encode(base: u32, v: f32) -> f32 {
 }
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let p = unpack(input[idx]);
@@ -16714,7 +16825,8 @@ struct Params {
 @group(0) @binding(2) var<uniform> params: Params;
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let x = idx % params.width;
@@ -16757,7 +16869,8 @@ fn get_lum(x: i32, y: i32) -> f32 {
 }
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let x = i32(idx % params.width);
@@ -16810,7 +16923,8 @@ struct Params {
     shader_linear_helpers_wgsl!(),
     "
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let p = unpack(input[idx]);
@@ -16850,7 +16964,8 @@ struct Params {
     shader_linear_helpers_wgsl!(),
     "
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let x = f32(idx % params.width);
@@ -16904,7 +17019,8 @@ struct Params {
     shader_linear_helpers_wgsl!(),
     "
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     let w = params.width;
     let h = params.height;
@@ -16954,7 +17070,8 @@ struct Params {
 @group(0) @binding(2) var<uniform> params: Params;
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let x = idx % params.width;
@@ -17006,7 +17123,8 @@ fn sample_pixel(sx: f32, sy: f32, w: u32, h: u32) -> vec4<f32> {
 }
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     let w = params.width;
     let h = params.height;
@@ -17041,7 +17159,8 @@ struct Params {
 @group(0) @binding(2) var<uniform> params: Params;
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     let w = params.width;
     let h = params.height;
@@ -17079,7 +17198,8 @@ struct Params {
 @group(0) @binding(2) var<uniform> params: Params;
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     let w = params.width;
     let h = params.height;
@@ -17125,7 +17245,8 @@ struct Params {
     shader_linear_helpers_wgsl!(),
     "
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     let w = params.width;
     let h = params.height;
@@ -17203,7 +17324,8 @@ struct Params {
     shader_linear_helpers_wgsl!(),
     "
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let p = unpack(input[idx]);
@@ -17241,7 +17363,8 @@ struct Params {
     shader_linear_helpers_wgsl!(),
     "
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let p = unpack(input[idx]);
@@ -17322,7 +17445,8 @@ fn hash(p: u32) -> f32 {
 }
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let v = unpack(input[idx]);
@@ -17372,7 +17496,8 @@ fn hash(p: u32) -> f32 {
 }
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let x = idx % params.width;
@@ -17415,7 +17540,8 @@ struct Params { width: u32, height: u32, vertical: u32, band: f32 }
     shader_linear_helpers_wgsl!(),
     "
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     var u = (f32(idx % params.width) + 0.5) / f32(params.width);
@@ -17446,7 +17572,8 @@ struct Params { width: u32, height: u32, radius: i32, _pad: u32 }
     shader_linear_helpers_wgsl!(),
     "
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let p = unpack(input[idx]);
@@ -17469,7 +17596,8 @@ struct Params {
     shader_linear_helpers_wgsl!(),
     "
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let y = idx / params.width;
@@ -17514,7 +17642,8 @@ fn sample_clamped(x: f32, y: f32) -> vec4<f32> {
 }
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let x = idx % params.width;
@@ -17591,7 +17720,8 @@ fn sample_clamped(x: f32, yi: i32) -> vec4<f32> {
 }
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let x = idx % params.width;
@@ -17646,7 +17776,8 @@ struct Params {
 @group(0) @binding(2) var<uniform> params: Params;
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     let w = params.width;
     let h = params.height;
@@ -17752,7 +17883,8 @@ fn sample_linear_rgb(fx: f32, fy: f32, w: u32, h: u32) -> vec3<f32> {
 }
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     let w = params.width;
     let h = params.height;
@@ -17818,7 +17950,8 @@ struct Params {
     shader_linear_helpers_wgsl!(),
     "
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let p = unpack(input[idx]);
@@ -17866,7 +17999,8 @@ var<workgroup> local: array<atomic<u32>, 256>;
     shader_linear_helpers_wgsl!(),
     "
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_index) li: u32) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>, @builtin(local_invocation_index) li: u32) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     atomicStore(&local[li], 0u);
     workgroupBarrier();
     let idx = gid.x;
@@ -17956,7 +18090,8 @@ struct Params {
     shader_linear_helpers_wgsl!(),
     "
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
 
@@ -18002,7 +18137,8 @@ struct Params {
 @group(0) @binding(2) var<uniform> params: Params;
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     let w = params.width;
     let h = params.height;
@@ -18091,7 +18227,8 @@ fn sstep(lo: f32, hi: f32, x: f32) -> f32 {
 }
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let p = params;
@@ -18203,7 +18340,8 @@ fn sample_bilinear(fx: f32, fy: f32, w: u32, h: u32) -> vec4<f32> {
 }
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     let w = params.width;
     let h = params.height;
@@ -18281,7 +18419,8 @@ fn sample_bilinear(fx: f32, fy: f32, w: u32, h: u32) -> vec4<f32> {
 }
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     let w = params.width;
     let h = params.height;
@@ -18358,7 +18497,8 @@ fn sample_bilinear(fx: f32, fy: f32) -> vec4<f32> {
 }
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let x = idx % params.width;
@@ -18419,7 +18559,8 @@ fn sample_bilinear(fx: f32, fy: f32) -> vec4<f32> {
 }
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let px = idx % params.width;
@@ -18464,7 +18605,8 @@ struct Params {
     shader_linear_helpers_wgsl!(),
     "
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
 
@@ -18529,7 +18671,8 @@ fn zone_weight(i: u32, s: f32, b: f32, f: f32) -> f32 {
 }
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let orig = unpack(input[idx]);
@@ -18583,7 +18726,8 @@ struct Params {
     shader_linear_helpers_wgsl!(),
     "
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
 
@@ -18676,7 +18820,8 @@ fn curve(channel: u32, val: f32) -> f32 {
 }
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
 
@@ -18742,7 +18887,8 @@ struct Params {
 @group(0) @binding(3) var<storage, read> points: array<vec2<f32>>;
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let x = idx % params.width;
@@ -18773,7 +18919,8 @@ struct Params {
     shader_linear_helpers_wgsl!(),
     "
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let p = unpack(input[idx]);
@@ -18840,7 +18987,8 @@ fn get_sat_shift(sector: u32) -> f32 {
 }
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let p = unpack(input[idx]);
@@ -18882,7 +19030,8 @@ struct Params {
     shader_linear_helpers_wgsl!(),
     "
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let x = i32(idx % params.width);
@@ -18916,7 +19065,8 @@ struct Params {
 @group(0) @binding(2) var<uniform> params: Params;
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let x = i32(idx % params.width);
@@ -18951,7 +19101,8 @@ struct Params { width: u32, height: u32, _pad0: u32, _pad1: u32, }
     shader_linear_helpers_wgsl!(),
     "
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let p = unpack(input[idx]);
@@ -18984,7 +19135,8 @@ struct Params { width: u32, height: u32, mix: f32, channel: u32, luma: vec3<f32>
     shader_linear_helpers_wgsl!(),
     "
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let graded = unpack(input[idx]);
@@ -19015,7 +19167,8 @@ struct Params { width: u32, height: u32, mix: f32, _pad: u32, }
     shader_linear_helpers_wgsl!(),
     "
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let p = unpack(input[idx]);
@@ -19047,7 +19200,8 @@ struct Params { width: u32, height: u32, gain: f32, strength: f32, }
 // Alpha is left alone — the frame got darker, it did not become more
 // transparent.
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let p = unpack(input[idx]);
@@ -19075,7 +19229,8 @@ struct Params { width: u32, height: u32, mix: f32, _pad: u32, }
 // the same picture. Two different pictures have two different mattes,
 // and the mix has to carry them both.
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let a = unpack(input[idx]);
@@ -19102,7 +19257,8 @@ struct Params { width: u32, height: u32, mix: f32, _pad: u32, }
 // 1, so stacking two half-transparent layers gives 0.75 and stays
 // available to whatever reads the matte downstream.
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let f = unpack(input[idx]);
@@ -19134,7 +19290,8 @@ struct Params {
     shader_linear_helpers_wgsl!(),
     "
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let p = unpack(input[idx]);

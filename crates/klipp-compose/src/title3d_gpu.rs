@@ -514,7 +514,7 @@ impl GpuText3d {
             });
             pass.set_pipeline(&self.resolve);
             pass.set_bind_group(0, &resolve_bg, &[]);
-            pass.dispatch_workgroups((roi[2] * roi[3]).div_ceil(256), 1, 1);
+            klipp_effects::gpu::dispatch_flat(&mut pass, (roi[2] * roi[3]).div_ceil(256));
         }
         self.queue.submit(Some(encoder.finish()));
         Some(roi)

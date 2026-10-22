@@ -482,9 +482,9 @@ impl GpuEffectsPipeline {
         cpass.set_pipeline(&lg.spill[pass]);
         cpass.set_bind_group(0, &bind_group, &[]);
         match workgroups {
-            Some(n) => cpass.dispatch_workgroups(n, 1, 1),
+            Some(n) => crate::gpu::dispatch_flat(&mut cpass, n),
             // The reset is one thread; the region's passes are sized by it.
-            None if pass == RESET => cpass.dispatch_workgroups(1, 1, 1),
+            None if pass == RESET => crate::gpu::dispatch_flat(&mut cpass, 1),
             // A thread a row, a thread a column, else a thread a pixel.
             None if pass == BLUR_H => cpass.dispatch_workgroups_indirect(&lg.spill_args, 12),
             None if pass == BLUR_V => cpass.dispatch_workgroups_indirect(&lg.spill_args, 24),
@@ -505,7 +505,8 @@ struct Params {
 @group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>; // not-pixels: per-row opaque bounds
 @group(0) @binding(2) var<uniform> params: Params;
 @compute @workgroup_size(256)
-fn rows(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn rows(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let y = gid.x;
     if y >= params.height { return; }
     var left = params.width;
@@ -533,7 +534,8 @@ struct Params {
 @group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>; // not-pixels: reduced opaque bounds
 @group(0) @binding(2) var<uniform> params: Params;
 @compute @workgroup_size(256)
-fn bounds(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn bounds(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     if gid.x != 0u { return; }
     var box = vec4<f32>(f32(params.width), f32(params.height), 0.0, 0.0);
     for (var y = 0u; y < params.height; y++) {
@@ -557,7 +559,8 @@ struct Params {
 @group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 @compute @workgroup_size(256)
-fn make_cast(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn make_cast(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let x = i32(idx % params.width) - params.offset_x;
@@ -627,7 +630,8 @@ var<workgroup> wy0: atomic<i32>;
 var<workgroup> wx1: atomic<i32>;
 var<workgroup> wy1: atomic<i32>;
 @compute @workgroup_size(256)
-fn spill_bounds(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_index) li: u32) {
+fn spill_bounds(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>, @builtin(local_invocation_index) li: u32) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     if li == 0u {
         atomicStore(&wx0, i32(params.width));
         atomicStore(&wy0, i32(params.height));
@@ -658,6 +662,20 @@ fn spill_bounds(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_in
 /// dispatch that covers them: nothing when the layer is all transparent.
 const SPILL_REGION: &str = concat!(shader_pixel_storage_wgsl!(), spill_head!(), r#"
 @group(0) @binding(5) var<storage, read_write> args: array<u32, 12>; // not-pixels: the region's indirect dispatches
+// `n` workgroups over x and, past the per-dimension limit, y, as
+// `split_workgroups` splits a direct dispatch (#2341): the passes rebuild
+// their index from both.
+fn split(at: u32, n: u32) {
+    var x = n;
+    var y = 1u;
+    if n > 65535u {
+        y = (n + 65534u) / 65535u;
+        x = (n + y - 1u) / y;
+    }
+    args[at] = x;
+    args[at + 1u] = y;
+    args[at + 2u] = 1u;
+}
 @compute @workgroup_size(1)
 fn spill_region() {
     let b = rect();
@@ -676,18 +694,12 @@ fn spill_region() {
     atomicStore(&region.y1, r.w);
     let n = u32((r.z - r.x) * (r.w - r.y));
     // A thread a pixel; a thread a row; a thread a column.
-    args[0] = (n + 255u) / 256u;
-    args[1] = 1u;
-    args[2] = 1u;
+    split(0u, (n + 255u) / 256u);
     // A thread a 32-pixel stretch of a row, or of a column.
     let rw = u32(r.z - r.x);
     let rh = u32(r.w - r.y);
-    args[3] = (rh * ((rw + 31u) / 32u) + 63u) / 64u;
-    args[4] = 1u;
-    args[5] = 1u;
-    args[6] = (rw * ((rh + 31u) / 32u) + 63u) / 64u;
-    args[7] = 1u;
-    args[8] = 1u;
+    split(3u, (rh * ((rw + 31u) / 32u) + 63u) / 64u);
+    split(6u, (rw * ((rh + 31u) / 32u) + 63u) / 64u);
 }
 "#);
 
@@ -697,7 +709,8 @@ const SPILL_CAST: &str = concat!(shader_pixel_storage_wgsl!(), spill_head!(), r#
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
 @group(0) @binding(2) var<storage, read_write> output: array<f32>; // not-pixels: a cast's alpha
 @compute @workgroup_size(256)
-fn spill_cast(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn spill_cast(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let r = rect();
     let p = region_pixel(r, gid.x);
     if p.x < 0 { return; }
@@ -731,7 +744,8 @@ fn at_x(r: vec4<i32>, x: i32, y: i32) -> u32 {
     return u32(round(clamp(input[u32(y) * params.width + u32(cx)], 0.0, 1.0) * fixed_scale()));
 }
 @compute @workgroup_size(64)
-fn spill_blur_h(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn spill_blur_h(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 64u, 0u, gid_flat.z);
     let r = rect();
     let stretches = (r.z - r.x + 31) / 32;
     if stretches <= 0 { return; }
@@ -762,7 +776,8 @@ fn at_y(r: vec4<i32>, x: i32, y: i32) -> u32 {
     return u32(round(clamp(input[u32(cy) * params.width + u32(x)], 0.0, 1.0) * fixed_scale()));
 }
 @compute @workgroup_size(64)
-fn spill_blur_v(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn spill_blur_v(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 64u, 0u, gid_flat.z);
     let r = rect();
     let cols = r.z - r.x;
     if cols <= 0 { return; }
@@ -791,7 +806,8 @@ const SPILL_LAY: &str = concat!(shader_pixel_storage_wgsl!(), spill_head!(), r#"
 @group(0) @binding(1) var<storage, read> second: array<vec4<f32>>;
 @group(0) @binding(2) var<storage, read_write> output: array<vec4<f32>>;
 @compute @workgroup_size(256)
-fn spill_lay(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn spill_lay(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let r = rect();
     let p = region_pixel(r, gid.x);
     if p.x < 0 { return; }
@@ -819,7 +835,8 @@ const SPILL_FINAL: &str = concat!(shader_pixel_storage_wgsl!(), spill_head!(), r
 @group(0) @binding(1) var<storage, read> second: array<vec4<f32>>;
 @group(0) @binding(2) var<storage, read_write> output: array<vec4<f32>>;
 @compute @workgroup_size(256)
-fn spill_final(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn spill_final(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let top = unpack(input[idx]);
@@ -861,7 +878,8 @@ struct Params {
 @group(0) @binding(2) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(3) var<uniform> params: Params;
 @compute @workgroup_size(256)
-fn corners(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn corners(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let box = second[0];
@@ -892,7 +910,8 @@ struct Params {
 @group(0) @binding(2) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(3) var<uniform> params: Params;
 @compute @workgroup_size(256)
-fn over(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn over(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let top = unpack(input[idx]);
@@ -946,7 +965,8 @@ struct FillParams {
     fill_bilinear_wgsl!("input"),
     r#"
 @compute @workgroup_size(256)
-fn fill_small(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn fill_small(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.small_w * params.small_h { return; }
     let box = second[0];
@@ -984,7 +1004,8 @@ struct FillParams {
     fill_bilinear_wgsl!("second"),
     r#"
 @compute @workgroup_size(256)
-fn fill_over(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn fill_over(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let rx = f32(params.small_w) / f32(params.width);
