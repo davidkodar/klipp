@@ -8,6 +8,8 @@
 // per file here.
 #![allow(clippy::duplicate_mod)]
 
+#[path = "../an_export_without_gpu_planes_composites_on_the_gpu.rs"]
+mod an_export_without_gpu_planes_composites_on_the_gpu;
 #[path = "../audio_only_export.rs"]
 mod audio_only_export;
 #[path = "../captions_608_export.rs"]

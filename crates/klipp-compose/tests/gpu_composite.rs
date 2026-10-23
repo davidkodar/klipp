@@ -2374,3 +2374,40 @@ fn an_untracked_cut_out_fails_the_frame_and_the_check() {
     assert_eq!(short.len(), 1, "the export's check counts it: {short:?}");
     assert_eq!((short[0].subject, short[0].covered), (Some(0), 0));
 }
+
+/// #2488: an export whose encoder takes no planes made on the GPU, or
+/// whose picture is letterboxed, takes the stack's frame brought back
+/// once, and it is the CPU renderer's frame: the title, the blended
+/// generator and layers, and footage under vignette, sharpen, denoise and
+/// fill bars, in each working space.
+#[test]
+fn the_stacks_frame_brought_back_is_the_renderers_frame() {
+    use klipp_core::WorkingColorspace as Ws;
+    use klipp_effects::BuiltinEffect as E;
+    let (mut seq, mut src) = stack();
+    let base = seq.tracks.last_mut().unwrap();
+    let c = base.clips[0].clone();
+    base.clips[0] = TestClip::of(c).effects([
+        E::Vignette { amount: -0.4, size: 0.8, softness: 0.5, roundness: 0.7 },
+        E::Sharpen { amount: 0.4 },
+        E::Denoise { spatial_sigma: 2.0, color_sigma: 0.05, iterations: 1 },
+        E::FillBars { blur: 0.07, zoom: 1.0, darken: 0.25 },
+    ]).build();
+    for ws in [Ws::Rec709Linear, Ws::AcesCG, Ws::Bt2020Linear] {
+        let shown = |linear: &[f32]| klipp_color::display::display_transform_ws_to(linear, klipp_color::display::ToneMapOp::None, ws, klipp_core::SdrTransfer::Srgb);
+        let mut r = renderer();
+        r.set_gpu_enabled(true);
+        r.set_working_colorspace(ws);
+        let Some(gpu) = r.render_linear_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()) else {
+            if r.last_decline().is_none() {
+                no_gpu("no usable GPU");
+                return;
+            }
+            panic!("{ws:?}: the GPU stack declined it: {:?}", r.last_decline());
+        };
+        assert_eq!(gpu.len(), (W * H * 4) as usize);
+        let cpu = r.cpu_render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default());
+        let d = worst(&shown(&cpu), &shown(&gpu));
+        assert!(d <= 1, "{ws:?}: the stack's frame differs from the CPU renderer by {d} levels");
+    }
+}

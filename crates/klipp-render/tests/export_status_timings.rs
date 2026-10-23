@@ -93,22 +93,19 @@ fn an_export_says_where_its_time_went_and_how_it_was_composited() {
         return;
     };
 
-    // Letterboxed in an output of another shape: padded on the CPU,
-    // every frame, and said so.
-    let boxed = export(&src, Some((128, 128)), &tmp("boxed.mp4"));
-    holds(&boxed.timings, "letterboxed");
-    assert_eq!(boxed.timings.cpu_composited, 10, "{:?}", boxed.timings);
-    assert_eq!(boxed.timings.fallbacks.first().map(|f| (f.reason.as_str(), f.frames)), Some(("the picture is letterboxed in the output, padded on the CPU", 10)));
-    assert!(boxed.timings.compositing().unwrap().starts_with("CPU: the picture is letterboxed"), "{:?}", boxed.timings.compositing());
-
     // Its own size: made on the GPU where there is one, and the encoder
     // named whichever way the frames went.
     let full = export(&src, None, &tmp("full.mp4"));
     holds(&full.timings, "full size");
     assert!(full.hardware.contains("Encode:"), "the hardware line, whichever way the frames went: {:?}", full.hardware);
+    // Letterboxed in an output of another shape: composited on the GPU
+    // all the same, and padded after (#2488).
+    let boxed = export(&src, Some((128, 128)), &tmp("boxed.mp4"));
+    holds(&boxed.timings, "letterboxed");
     if full.timings.gpu_composited == 0 {
         eprintln!("UNVERIFIED: no frame was composited on the GPU here ({:?}); the GPU half is not checked", full.timings.compositing());
         return;
     }
     assert_eq!(full.timings.compositing().as_deref(), Some("GPU"), "{:?}", full.timings);
+    assert_eq!(boxed.timings.compositing().as_deref(), Some("GPU"), "{:?}", boxed.timings);
 }
