@@ -503,7 +503,7 @@ pub(crate) fn respond(
                     return Err(format!("{name} is a fraction of the frame, above 0 to 1"));
                 }
             }
-            let (data, fw, fh) = grab_frame_rgba(ctx, secs, timeout_ms)?;
+            let (data, fw, fh, _) = grab_picture_rgba(ctx, secs, timeout_ms)?;
             let (cut, cw, ch) = klipp_color::measure::crop(&data, fw as usize, fh as usize, [x, y, w, h]);
             let m = klipp_color::measure::measure_frame(&cut, cw, ch, &[]);
             let look = look_for(ctx, secs);
@@ -1142,7 +1142,7 @@ reference:   {}",
                     fb.shown_presented().map(|t| t.to_secs_f64()).unwrap_or(0.0)
                 }
             };
-            let (data, w, h) = grab_scope(ctx, m, secs, timeout_ms)?;
+            let (data, w, h, alone) = grab_scope(ctx, m, secs, timeout_ms)?;
             let out = match path {
                 Some(p) => std::path::PathBuf::from(p),
                 None => {
@@ -1154,7 +1154,7 @@ reference:   {}",
             Ok(json!({
                 "path": out.to_string_lossy(),
                 "width": w, "height": h, "mode": name, "secs": secs,
-                "text": format!("{name} scope of the frame at {secs:.2} s, {w}x{h}, written to {}", out.display()),
+                "text": format!("{name} scope of {} at {secs:.2} s, {w}x{h}, written to {}", if alone { "the picture clip alone (titles above it and its fill left out)" } else { "the frame" }, out.display()),
                 "next": "The scope is the colourist's second eye; frame_stats gives the same frame as numbers to grade to.",
             }))
         }

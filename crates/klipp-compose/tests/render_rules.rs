@@ -923,6 +923,32 @@ fn a_clip_rendered_alone_is_its_own_graded_picture() {
     assert_eq!(r.render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()), whole);
 }
 
+/// #2475: a clip measured alone is its own picture, not the fill it
+/// draws in its bars. Halved and filled, its bars show the blurred fill
+/// in the frame; rendered `only` they are empty, as the measure finds
+/// bars, and the picture is the same.
+#[test]
+fn a_clip_rendered_alone_leaves_out_the_fill_in_its_bars() {
+    let mut c = media(0.0, 2.0);
+    c = TestClip::of(c).effects(vec![
+        BuiltinEffect::Transform {
+            position_x: 0.0, position_y: 0.0, scale_x: 0.5, scale_y: 0.5, rotation: 0.0,
+            anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None,
+        },
+        BuiltinEffect::FillBars { blur: 0.05, zoom: 1.0, darken: 0.25 },
+    ]).build();
+    let seq = sequence(vec![vec![c.clone()]]);
+    let mut src = Flat::default().grey(&c, 0.4);
+    let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+    r.set_gpu_enabled(false);
+    let whole = r.render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default());
+    assert!(px(&whole, 1, 1)[0] > 0.05, "the fill is in the bars: {:?}", px(&whole, 1, 1));
+    let inspect = Inspect { only: Some(c.id), ..Default::default() };
+    let (alone, _) = r.render_inspected(&seq, tc(1.0), W, H, &mut src, RenderOptions::default(), inspect);
+    assert_px("bars alone", px(&alone, 1, 1), [0.0; 3], 1e-4);
+    assert_px("picture alone", px(&alone, 16, 9), px(&whole, 16, 9), 0.005);
+}
+
 /// `active_layers` names what a render stacks: a transition's two clips
 /// on its track, a clip above it, bottom first.
 #[test]
