@@ -399,8 +399,18 @@ impl ToolbarPanel {
                             .unwrap_or_default()
                     });
                 }
-                // AAF through OpenTimelineIO's converter, where installed (#89).
-                if ui.button("AAF (via OpenTimelineIO)...").clicked() {
+                // AAF through OpenTimelineIO's converter, where installed (#89);
+                // greyed, saying what to install, where it is not.
+                let missing = match klipp_project::otio_export::aaf_support() {
+                    klipp_project::otio_export::AafSupport::Missing(what) => Some(what),
+                    _ => None,
+                };
+                let aaf = ui.add_enabled(missing.is_none(), egui::Button::new("AAF (via OpenTimelineIO)..."));
+                let aaf = match missing {
+                    Some(what) => aaf.on_disabled_hover_text(format!("Needs {what}: {}", klipp_project::otio_export::AAF_INSTALL)),
+                    None => aaf,
+                };
+                if aaf.clicked() {
                     ui.close_menu();
                     crate::file_dialog::spawn(move || {
                         rfd::FileDialog::new()

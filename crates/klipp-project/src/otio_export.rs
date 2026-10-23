@@ -446,6 +446,59 @@ pub fn convert(otio: &Path, out: &Path) -> Result<(), ConvertError> {
     convert_with("otioconvert", otio, out)
 }
 
+/// What to do when AAF can't be written here.
+pub const AAF_INSTALL: &str = "install OpenTimelineIO and its AAF adapter (pip install opentimelineio otio-aaf-adapter), or export OpenTimelineIO and convert it yourself";
+
+/// Whether an AAF export can run here: its converter and adapter are
+/// installed or not, or the check is still running.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AafSupport {
+    Checking,
+    Ready,
+    /// What is missing: the converter, or its AAF adapter.
+    Missing(&'static str),
+}
+
+/// [`AafSupport`], checked once, on a thread of its own, the first time
+/// it is asked: a menu drawn every frame asks it, and the check runs the
+/// converter, a Python program that takes a second to start.
+pub fn aaf_support() -> AafSupport {
+    static FOUND: std::sync::Mutex<Option<AafSupport>> = std::sync::Mutex::new(None);
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    STARTED.call_once(|| {
+        let spawned = std::thread::Builder::new().name("aaf check".into()).spawn(|| {
+            let found = aaf_support_with("otioconvert");
+            *FOUND.lock().unwrap_or_else(|e| e.into_inner()) = Some(found);
+        });
+        if spawned.is_err() {
+            *FOUND.lock().unwrap_or_else(|e| e.into_inner()) = Some(AafSupport::Ready);
+        }
+    });
+    FOUND.lock().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or(AafSupport::Checking)
+}
+
+/// [`aaf_support`] with the converter named `program`: an empty timeline
+/// converted, as an export would be. Missing only for what an export
+/// would say is missing; any other failure is one for a real timeline to
+/// meet, and the export says it then.
+fn aaf_support_with(program: &str) -> AafSupport {
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let base = std::env::temp_dir().join(format!("klipp-aaf-check-{}-{stamp}", std::process::id()));
+    let (otio, aaf) = (base.with_extension("otio"), base.with_extension("aaf"));
+    let empty = r#"{"OTIO_SCHEMA": "Timeline.1", "name": "check", "tracks": {"OTIO_SCHEMA": "Stack.1", "children": []}}"#;
+    if std::fs::write(&otio, empty).is_err() {
+        return AafSupport::Ready;
+    }
+    let found = match convert_with(program, &otio, &aaf) {
+        Err(ConvertError::NoConverter) => AafSupport::Missing("OpenTimelineIO's otioconvert"),
+        Err(ConvertError::NoAdapter(_)) => AafSupport::Missing("OpenTimelineIO's AAF adapter"),
+        _ => AafSupport::Ready,
+    };
+    let _ = std::fs::remove_file(&otio);
+    let _ = std::fs::remove_file(&aaf);
+    found
+}
+
 /// [`convert`] with the converter named `program`.
 fn convert_with(program: &str, otio: &Path, out: &Path) -> Result<(), ConvertError> {
     let ran = std::process::Command::new(program).arg("-i").arg(otio).arg("-o").arg(out).output();
@@ -698,6 +751,20 @@ mod tests {
         let dir = std::env::temp_dir();
         let got = super::convert_with("klipp-no-such-otioconvert", &dir.join("in.otio"), &dir.join("out.aaf"));
         assert_eq!(got, Err(super::ConvertError::NoConverter));
+    }
+
+    /// The check behind the AAF menu item: missing names what an export
+    /// would say is missing, and leaves no file behind; where OpenTimelineIO
+    /// is installed, it says the AAF adapter is there, or that it is not.
+    #[test]
+    fn the_aaf_check_names_what_is_missing() {
+        assert_eq!(super::aaf_support_with("klipp-no-such-otioconvert"), super::AafSupport::Missing("OpenTimelineIO's otioconvert"));
+        let left = std::fs::read_dir(std::env::temp_dir()).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with(&format!("klipp-aaf-check-{}-", std::process::id()))).count();
+        assert_eq!(left, 0, "the check's files are gone");
+        match super::aaf_support_with("otioconvert") {
+            super::AafSupport::Missing("OpenTimelineIO's otioconvert") => eprintln!("skipping: no otioconvert"),
+            got => assert!(matches!(got, super::AafSupport::Ready | super::AafSupport::Missing("OpenTimelineIO's AAF adapter")), "{got:?}"),
+        }
     }
 
     /// With OpenTimelineIO installed: a file it has an adapter for is

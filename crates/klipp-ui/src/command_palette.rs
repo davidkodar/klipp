@@ -185,7 +185,8 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
     e.push(PaletteEntry { label: Cow::Borrowed("Export OpenTimelineIO (.otio)…"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::OpenDialog(DialogKind::ExportOtio), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Export AAF (via OpenTimelineIO)…"), shortcut: Cow::Borrowed(""),
-        action: PaletteAction::OpenDialog(DialogKind::ExportAaf), enabled: true });
+        action: PaletteAction::OpenDialog(DialogKind::ExportAaf),
+        enabled: !matches!(klipp_project::otio_export::aaf_support(), klipp_project::otio_export::AafSupport::Missing(_)) });
     e.push(PaletteEntry { label: Cow::Borrowed("Export Kdenlive Project…"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::OpenDialog(DialogKind::ExportKdenlive), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Render Queue"), shortcut: Cow::Borrowed(""),
