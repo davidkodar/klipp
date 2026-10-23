@@ -5588,21 +5588,13 @@ pub fn heard_words(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcrip
     // the sound clip's.
     let tracks = seq.tracks.iter().filter(|t| t.kind == TrackKind::Audio).chain(seq.tracks.iter().filter(|t| t.kind == TrackKind::Video));
     for track in tracks {
-        if track.muted || !matches!(track.kind, TrackKind::Audio | TrackKind::Video) {
-            continue;
-        }
         for clip in &track.clips {
             let ClipKind::Media { media_id } = &clip.kind else { continue };
-            if !clip.enabled || clip.volume == 0.0 {
+            // Heard as playback hears it: not on a muted track, not muted
+            // or silenced (a picture placed without its sound is), its
+            // sound settings read where a linked sound keeps them.
+            if !is_heard(seq, pool, track, clip) {
                 continue;
-            }
-            if track.kind == TrackKind::Video {
-                let partner_on_audio = clip.linked_clip_id.is_some_and(|lid| {
-                    seq.tracks.iter().any(|t| t.kind == TrackKind::Audio && t.clips.iter().any(|c| c.id == lid))
-                });
-                if partner_on_audio {
-                    continue;
-                }
             }
             let Some(item) = pool.get(media_id) else { continue };
             let Some(words) = cache.entry(*media_id).or_insert_with(|| transcripts.words(item)).as_ref() else { continue };
@@ -13026,6 +13018,7 @@ mod tests {
                 "talk.mov" => [say(0.2, "Hello there friends."), say(1.4, "This is the talk."), vec![SpokenWord { start_secs: 3.57, end_secs: 3.57, text: " Bye.".into(), confidence: 1.0 }], say(3.7, "And more words here.")].concat(),
                 "camera.mov" => say(0.3, "Other angle words."),
                 "song.wav" => say(1.0, "la la la la."),
+                "broll.mov" => say(0.1, "Muted words."),
                 _ => return None,
             })
         }
@@ -13073,6 +13066,12 @@ mod tests {
         angle.linked_clip_id = Some(camera_sound.id);
         let mut music = Clip::media(song, tc(0.0), tc(8.0), tc(0.0), tc(8.0));
         music.role = klipp_core::ClipRole::Music;
+        // B-roll over the talk, placed without its sound (volume 0), and
+        // a transcribed file on a muted track: neither is heard.
+        let broll_media = add("/tmp/broll.mov", true);
+        let mut broll = Clip::media(broll_media, tc(1.0), tc(3.0), tc(0.0), tc(2.0));
+        broll.volume = 0.0;
+        let aside = Clip::media(broll_media, tc(4.0), tc(6.0), tc(0.0), tc(2.0));
         let track = |name: &str, kind, clips: Vec<Clip>| {
             let mut t = Track::new(name, kind);
             t.clips = clips;
@@ -13084,6 +13083,12 @@ mod tests {
             track("A1", TrackKind::Audio, vec![talk_a, talk_b]),
             track("A2", TrackKind::Audio, vec![camera_sound]),
             track("A3", TrackKind::Audio, vec![music]),
+            track("V3", TrackKind::Video, vec![broll]),
+            {
+                let mut t = track("A4", TrackKind::Audio, vec![aside]);
+                t.muted = true;
+                t
+            },
         ];
 
         let heard = heard_words(&seq, &pool, &Heard);
@@ -13091,6 +13096,7 @@ mod tests {
         assert_eq!(of(talk), "Hello there friends. This is the talk. Bye. And more words here.", "the talk once");
         assert_eq!(of(camera), "", "the angle whose sound the group does not play is not heard");
         assert_eq!(of(song), "la la la la.", "the song is heard, as music");
+        assert_eq!(of(broll_media), "", "a muted picture and a muted track are not heard");
         assert!(heard.iter().filter(|w| w.media_id == song).all(|w| w.role == klipp_core::ClipRole::Music));
 
         let plan = resolve_with(&seq, &pool, &[Op::Captions { track: None, from: None, to: None, max_chars: 42, max_lines: 2, replace: false }], &Heard).unwrap();
