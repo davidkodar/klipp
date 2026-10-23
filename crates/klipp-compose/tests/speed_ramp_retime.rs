@@ -75,3 +75,19 @@ fn speed_ramp_retimes_once() {
         }
     }
 }
+
+/// #2479: a clip set to blend or follow its in-between frames does so at
+/// full speed too, where a file of a lower frame rate than the timeline's
+/// is conformed; not sped up, reversed, or with nothing set.
+#[test]
+fn a_blending_clip_conforms_at_full_speed() {
+    let blend = |speed: f64| {
+        let c = Clip { speed, ..Clip::media(MediaId::new(), tc(0.0), tc(4.0), tc(0.0), tc(4.0)) };
+        TestClip::of(c).effect(klipp_effects::BuiltinEffect::SpeedRamp { speed: 1.0, blend_mode: 2 }).build()
+    };
+    assert!(klipp_compose::frame_blends(&blend(1.0), tc(1.0)), "at full speed");
+    assert!(klipp_compose::frame_blends(&blend(0.5), tc(1.0)), "slowed");
+    assert!(!klipp_compose::frame_blends(&blend(2.0), tc(1.0)), "sped up");
+    let plain = Clip::media(MediaId::new(), tc(0.0), tc(4.0), tc(0.0), tc(4.0));
+    assert!(!klipp_compose::frame_blends(&plain, tc(1.0)), "nothing set");
+}
