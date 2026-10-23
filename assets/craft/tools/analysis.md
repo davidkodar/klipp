@@ -4,7 +4,7 @@ What each of these tools does in full: the details its short description leaves 
 
 ## klipp_analyze
 
-Background analysis: shot boundaries, EBU R128 loudness/true peak, silence, and word-timed transcript/language if the speech model is installed. Beat sheet and OCR require screen footage (no camera metadata or tagged screen via klipp_tag_media) and their installed models. Omit media_id for the pool; analysed items are free. Also runs on import without downloads. wait true waits, then read klipp_media_analysis. download_models fetches missing enabled-in-preferences models with user knowledge: speech hundreds of MB, OCR pair about 10 MB.
+Background analysis: shot boundaries, EBU R128 loudness/true peak, silence, and word-timed transcript/language if the speech model is installed. Beat sheet and OCR require screen footage (no camera metadata or tagged screen via klipp_tag_media) and their installed models. A still is read for its people and faces (framing), so refit and the grading tools can use them. Omit media_id for the pool; analysed items are free. An item nothing applies to is done at once with nothing_ran saying why. Also runs on import without downloads. wait true waits, then read klipp_media_analysis. download_models fetches missing enabled-in-preferences models with user knowledge: speech hundreds of MB, OCR pair about 10 MB.
 
 ## klipp_audio_spectrum
 

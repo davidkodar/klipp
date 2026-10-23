@@ -60,11 +60,27 @@ pub struct Status {
     /// CPU" says why, so a GPU left unused shows (#2250).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub execution_providers: Vec<String>,
+    /// Why nothing ran, when no analyser applies to the file (#2490):
+    /// "done" with nothing done read as analysed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nothing_ran: Option<String>,
 }
 
 impl Status {
     fn new(item: &MediaItem, state: State, kind: &'static str) -> Self {
-        Status { media_id: item.id.0.to_string(), filename: item.filename.clone(), state, done: Vec::new(), failed: Vec::new(), current: None, current_for_secs: None, current_since: None, kind, progress: None, artifact: None, execution_providers: Vec::new() }
+        Status { media_id: item.id.0.to_string(), filename: item.filename.clone(), state, done: Vec::new(), failed: Vec::new(), current: None, current_for_secs: None, current_since: None, kind, progress: None, artifact: None, execution_providers: Vec::new(), nothing_ran: None }
+    }
+}
+
+/// Why no analyser applies to `item`: a still is read for the people and
+/// faces in it, by a model that is fetched on request.
+fn why_nothing_runs(item: &MediaItem) -> String {
+    if item.is_still {
+        "a still is analysed for the people and faces in it, and the framing model is not downloaded: analyze with download_models true".into()
+    } else if item.video_codec.is_empty() && !item.has_audio {
+        "the file has neither picture nor sound to analyse".into()
+    } else {
+        "no analysis applies to it with the models downloaded now: analyze with download_models true".into()
     }
 }
 
@@ -98,6 +114,13 @@ pub fn request(item: &MediaItem) -> Status {
         if matches!(st.state, State::Queued | State::Running) {
             return st.clone();
         }
+    }
+    // Nothing to run: done at once, and said why.
+    if !analysers().iter().any(|a| a.wants(item)) {
+        let st = Status { nothing_ran: Some(why_nothing_runs(item)), ..Status::new(item, State::Done, "analysis") };
+        s.statuses.insert(item.id, st.clone());
+        s.completed.push(item.id);
+        return st;
     }
     // Everything stored already: done without a thread.
     if let Some(key) = crate::store::key_for(&item.path) {
@@ -354,6 +377,24 @@ fn edit_queue(s: &mut Service, priority: Option<MediaId>, cancel_pending: bool) 
 #[cfg(test)]
 mod queue_tests {
     use super::*;
+
+    /// #2490: a file nothing analyses is done at once, saying why, not
+    /// "done" as though it were analysed; a still is the framing
+    /// model's to read.
+    #[test]
+    fn nothing_to_run_is_said() {
+        let mut still = MediaItem::synthetic_for_test("/tmp/klipp-2490-photo.jpg".into(), None);
+        still.is_still = true;
+        still.video_codec = "mjpeg".into();
+        assert!(why_nothing_runs(&still).contains("framing model"));
+        let mut empty = MediaItem::synthetic_for_test("/tmp/klipp-2490-empty.bin".into(), None);
+        empty.video_codec.clear();
+        empty.has_audio = false;
+        assert!(why_nothing_runs(&empty).contains("neither picture nor sound"));
+        let st = request(&empty);
+        assert_eq!(st.state, State::Done);
+        assert!(st.nothing_ran.is_some() && st.done.is_empty(), "{st:?}");
+    }
 
     #[test]
     fn cancel_one_queued_analysis_without_touching_other_work() {
