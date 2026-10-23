@@ -46,6 +46,10 @@ Shots across every analysed item, every condition given holding: framing (close-
 
 Where analysis stands. With wait true, the reply is held until the selected items end or timeout_ms passes (an hour by default; the wait never cancels the work). It reports finished, succeeded and timed_out, and failed items carry their errors.
 
+## klipp_search_transcripts
+
+Find where something is said: every transcript segment containing the query, matched without regard to case, with its media item and its start and end in the file's seconds. max_hits caps the list.
+
 ## klipp_media_analysis
 
 What is known about a media item, as text: its shots with their ranges, its loudness, range and true peak, and its silences. The timeline view shows the same facts per clip in brief. Times are seconds from the file's start; a clip's source_in maps them to the timeline.

@@ -365,6 +365,57 @@ pub(crate) fn respond(
             Ok(result)
         }
 
+        ControlCommand::ExportTimeline { path, format, overwrite } => {
+            if in_batch {
+                return read_in_batch("export_timeline");
+            }
+            let out = std::path::PathBuf::from(&path);
+            if !out.is_absolute() || !out.parent().is_some_and(|p| p.is_dir()) {
+                return Err(format!("export path must be absolute, in a folder that exists (got {path:?})"));
+            }
+            let ext = out.extension().and_then(|e| e.to_str()).unwrap_or_default().to_ascii_lowercase();
+            let Some(kind) = interchange_format(&ext) else {
+                return Err(format!("{path:?} names no interchange format: end it in .fcpxml, .edl, .otio, .aaf or .kdenlive"));
+            };
+            if let Some(f) = format.as_deref().map(str::to_ascii_lowercase) {
+                if interchange_format(&f) != Some(kind) {
+                    return Err(format!("format {f:?} is not the path's .{ext}"));
+                }
+            }
+            if out.exists() && !overwrite {
+                return Err(format!("{path:?} exists: send overwrite true to replace it"));
+            }
+            let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?.clone();
+            let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?.clone();
+            let dropped: Vec<String> = match kind {
+                "fcpxml" => klipp_project::fcpxml::export_fcpxml(&seq, &pool, &out).map(|_| Vec::new())?,
+                "edl" => klipp_project::fcpxml::export_edl(&seq, &pool, &out).map(|_| Vec::new())?,
+                "kdenlive" => klipp_project::mlt_export::export_kdenlive(&seq, &pool, &out).map(|_| Vec::new())?,
+                "otio" => klipp_project::otio_export::export_otio(&seq, &pool, &out).map_err(|e| e.to_string())?,
+                _ => {
+                    // AAF: OpenTimelineIO's own file first, then its
+                    // converter, as the menu's export does.
+                    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+                    let otio = std::env::temp_dir().join(format!("klipp-aaf-{}-{stamp}.otio", std::process::id()));
+                    let dropped = klipp_project::otio_export::export_otio(&seq, &pool, &otio).map_err(|e| e.to_string());
+                    let converted = dropped.is_ok().then(|| klipp_project::otio_export::convert(&otio, &out));
+                    let _ = std::fs::remove_file(&otio);
+                    let install = "install OpenTimelineIO and its AAF adapter (pip install opentimelineio otio-aaf-adapter), or export .otio and convert it";
+                    match converted {
+                        Some(Err(klipp_project::otio_export::ConvertError::NoConverter | klipp_project::otio_export::ConvertError::NoAdapter(_))) => return Err(format!("AAF export needs OpenTimelineIO: {install}")),
+                        Some(Err(e)) => return Err(format!("AAF export failed: {e}")),
+                        _ => dropped?,
+                    }
+                }
+            };
+            let clips = seq.tracks.iter().flat_map(|t| &t.clips).filter(|c| !c.kind.is_gap()).count();
+            let text = match dropped.len() {
+                0 => format!("\"{}\" written as {kind} to {path}: {clips} clips", seq.name),
+                n => format!("\"{}\" written as {kind} to {path}: {clips} clips; {n} thing(s) the format cannot carry were left out (dropped lists them)", seq.name),
+            };
+            Ok(json!({ "path": path, "format": kind, "sequence": seq.name, "clips": clips, "dropped": dropped, "text": text }))
+        }
+
         ControlCommand::ImportSubtitles { path } => {
             let p = std::path::PathBuf::from(&path);
             if !p.is_absolute() {
@@ -734,6 +785,18 @@ pub(crate) fn respond(
 /// The container comes from the path, so it must be the preset's
 /// (#1583). Returns the preset's name, for the reply.
 /// A viewer frame's phases (#1850), as the `perf` reply gives them.
+/// The interchange format an extension or `format` names.
+fn interchange_format(name: &str) -> Option<&'static str> {
+    match name {
+        "fcpxml" => Some("fcpxml"),
+        "edl" => Some("edl"),
+        "otio" => Some("otio"),
+        "aaf" => Some("aaf"),
+        "kdenlive" => Some("kdenlive"),
+        _ => None,
+    }
+}
+
 /// What a sheet's tile at `secs` shows: the pictures, and titles over
 /// them. Of a multicam group, only the angle its cut list has live there:
 /// the others are under the playhead too, and every angle used to be
