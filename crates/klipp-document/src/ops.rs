@@ -7434,7 +7434,7 @@ fn refit(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, i: usi
     use crate::subject_path::{by_time, camera_keys, subject_track};
     let (fw, fh) = (seq.resolution.width as f32, seq.resolution.height as f32);
     let (mut edits, mut ids) = (Vec::new(), Vec::new());
-    let (mut followed, mut still, mut kept) = (0usize, 0usize, 0usize);
+    let (mut followed, mut still, mut kept, mut screens) = (0usize, 0usize, 0usize, 0usize);
     let mut review: Vec<(&Clip, String, &'static str)> = Vec::new();
     let mut shrunk: Vec<String> = Vec::new();
     for (ti, track) in seq.tracks.iter().enumerate().filter(|(_, t)| !t.locked) {
@@ -7492,6 +7492,28 @@ fn refit(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, i: usi
                 continue;
             }
             let (s_in, s_out) = (secs(clip.source_in), secs(clip.source_out));
+            // A screen recording follows what is being worked on, where its
+            // beat sheet saw the screen change: the face of a camera in its
+            // corner is not what it shows (#2432). Through a stretch where
+            // nothing changed, it holds on where the last change was.
+            if let Some(beats) = transcripts.screen_beats(item) {
+                let rate = dur / (s_out - s_in).max(1e-6);
+                let at = |x: f32, y: f32| [0.5 + (x - 0.5) * picture.0 / fw, 0.5 + (y - 0.5) * picture.1 / fh];
+                let mut points: Vec<(f64, [f32; 2])> = beats.spots.iter().filter(|(t, _, _)| *t >= s_in && *t < s_out).map(|(t, x, y)| ((t - s_in) * rate, at(*x, *y))).collect();
+                if points.is_empty() {
+                    points.extend(beats.spots.iter().filter(|(t, _, _)| *t < s_in).last().map(|(_, x, y)| (0.0, at(*x, *y))));
+                }
+                if points.is_empty() {
+                    review.push((clip, format!("{name}: a screen recording with no change seen on it"), "no subject"));
+                } else {
+                    screens += 1;
+                }
+                let keys = camera_keys(&points, dur, scale, (fw, fh), picture);
+                let (_, edit, _) = pan(seq, pool, i, ti, clip, &keys, "refit", true)?;
+                edits.push(edit);
+                ids.push(clip.id);
+                continue;
+            }
             // Detections in the clip's stretch, at clip seconds; a still's
             // are all of it.
             let in_clip = |found: Vec<(f64, [f32; 4])>| -> Vec<(f64, [f32; 4])> {
@@ -7550,6 +7572,9 @@ fn refit(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, i: usi
     let mut what = format!("refit to {}x{}: {followed} pictures follow their subject, {still} stills hold on theirs", seq.resolution.width, seq.resolution.height);
     if kept > 0 {
         what += &format!(", {kept} keep their reframe");
+    }
+    if screens > 0 {
+        what += &format!(", {screens} screen recordings follow what changes on screen");
     }
     if !review.is_empty() {
         what += &format!("; {} centred for review: {}", review.len(), review.iter().map(|(_, why, _)| why.as_str()).collect::<Vec<_>>().join("; "));
@@ -16915,6 +16940,44 @@ mod tests {
         assert!((point(&seqs[0], b) - 0.5).abs() < 1e-3, "the other is centred");
         let scale = placement_lanes(&clip_in(&seqs[0], a))[2].0.first().map(|k| k.value).unwrap();
         assert!((scale - 1920.0 / 607.5).abs() < 1e-3, "it fills the tall frame: {scale}");
+    }
+
+    /// #2432: a screen recording with a face camera in its corner is refit
+    /// to a tall frame on what changes on the screen, not on the face; a
+    /// stretch where nothing changed holds on where the last change was.
+    #[test]
+    fn a_screen_recording_is_refit_on_what_changes_on_it() {
+        struct Screen;
+        impl Transcripts for Screen {
+            fn words(&self, _item: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>> {
+                None
+            }
+            fn faces(&self, _item: &klipp_media::MediaItem) -> Vec<(f64, [f32; 4])> {
+                // The face camera, in the top right corner all through.
+                (0..16).map(|k| (k as f64 * 0.5, [0.88, 0.05, 0.08, 0.12])).collect()
+            }
+            fn screen_beats(&self, _item: &klipp_media::MediaItem) -> Option<ScreenBeats> {
+                // Work at a quarter across, in the first clip's stretch only.
+                Some(ScreenBeats { action: Vec::new(), settles: Vec::new(), holds: Vec::new(), spots: vec![(1.0, 0.25, 0.5), (3.0, 0.3, 0.5)] })
+            }
+        }
+        let (mut seq, pool, _, a, b) = fixture();
+        seq.resolution = klipp_core::Resolution { width: 1080, height: 1920 };
+        let plan = resolve_with(&seq, &pool, &[Op::Refit { markers: false }], &Screen).unwrap();
+        let what = &plan.steps[0].what;
+        assert!(what.contains("2 screen recordings follow what changes on screen") && what.contains("0 pictures follow their subject"), "{what}");
+        let EditCommand::Named { edit, .. } = &plan.steps[0].edit else { panic!() };
+        let EditCommand::Batch(edits) = edit.as_ref() else { panic!() };
+        let keys = |id: ClipId| edits.iter().find_map(|e| match e { EditCommand::EditKeyframes { clip_id, new_state, .. } if *clip_id == id => Some(new_state.transform_pos_x_keyframes.clone()), _ => None }).expect("refit");
+        // The picture moves right to bring a point left of the middle in:
+        // on the work, not on the face, which would move it left.
+        let fill = 1920.0 / 607.5;
+        let toward = |x: f32| -(x - 0.5) * fill * 1080.0;
+        for (id, what) in [(a, "the clip with the work in it"), (b, "the one after, held where the work was")] {
+            let pos = keys(id);
+            assert!(pos.iter().all(|k| k.value >= toward(0.3) - 1.0 && k.value <= toward(0.25) + 1.0), "{what}: on the work: {pos:?}");
+        }
+        assert!(keys(b).iter().all(|k| (k.value - toward(0.3)).abs() < 1.0), "the one after holds on the last change");
     }
 
     /// #2211: a picture panned for the wide frame is refit for the tall one,
