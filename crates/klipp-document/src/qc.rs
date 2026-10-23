@@ -88,6 +88,19 @@ impl Report {
     }
 }
 
+/// How many new pictures a second a clip of a `media_fps` file at `speed`
+/// shows on a `timeline_fps` timeline, when a picture is held about every
+/// ten frames or more often: a judder (#2479). A file a frame a second
+/// short of the timeline's rate, 24 on 25, is the usual conform and not
+/// said. `None` when it is smooth, or a rate is unknown.
+pub fn judders(media_fps: f64, speed: f64, timeline_fps: f64) -> Option<f64> {
+    if !(media_fps > 0.0 && timeline_fps > 0.0 && speed.abs() > 1e-6) {
+        return None;
+    }
+    let new = media_fps * speed.abs();
+    (new < timeline_fps * 0.9).then_some(new)
+}
+
 fn secs(t: klipp_core::Timecode) -> f64 {
     t.to_secs_f64()
 }
@@ -494,6 +507,16 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
                     _ => {}
                 }
             }
+        }
+    }
+
+    // A clip that shows fewer new pictures a second than the timeline
+    // plays, each held for more than a frame: a slowed or lower-rate clip
+    // judders unless its in-between frames are blended (#2479).
+    for (_, c) in pictures.iter().filter(|(_, c)| c.enabled && c.speed_keyframes.is_empty() && !c.has_frame_blend_entry()) {
+        let Some(m) = c.media_id().and_then(|id| pool.get(&id)).filter(|m| !m.is_still && !m.video_codec.is_empty()) else { continue };
+        if let Some(new) = judders(m.fps.as_f64(), c.speed, seq.fps.as_f64()) {
+            add(Severity::Note, "judder", Some(secs(c.timeline_in)), format!("{} shows {new:.1} new pictures a second on a {:.3} fps timeline ({:.3} fps at {:.2}x), each held for more than a frame", clip_label(pool, c), seq.fps.as_f64(), m.fps.as_f64(), c.speed.abs()), "Retime it with interpolation blend, or flow to follow the motion, if the steps show");
         }
     }
 
@@ -1863,6 +1886,26 @@ mod tests {
         to_end(&mut seq, 7.2);
         let r = check(&seq, &pool, &Spoken(talk));
         assert!(rules(&r).contains(&"word_cut"), "cut inside the word before the end: {}", r.text());
+    }
+
+    /// #2479: a clip that holds its pictures for more than a frame is
+    /// noted, unless its in-between frames are blended.
+    #[test]
+    fn a_juddering_retime_is_noted() {
+        assert_eq!(judders(16.0, 0.6, 30.0).map(|n| (n * 10.0).round()), Some(96.0));
+        assert_eq!(judders(30.0, 1.0, 30.0), None);
+        assert_eq!(judders(29.97, 1.0, 30.0), None, "a rounding of the rate is no judder");
+        assert_eq!(judders(24.0, 1.0, 25.0), None, "the usual conform");
+        assert!(judders(24.0, 1.0, 30.0).is_some());
+        assert_eq!(judders(60.0, 0.5, 30.0), None, "high-rate slow motion is smooth");
+        let (mut seq, pool, talk, _) = piece();
+        let v = seq.tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        seq.tracks[v].clips[0].speed = 0.5;
+        let r = check(&seq, &pool, &Spoken(talk));
+        assert!(rules(&r).contains(&"judder"), "{}", r.text());
+        seq.tracks[v].clips[0] = klipp_timeline::test_clip::TestClip::of(seq.tracks[v].clips[0].clone()).effect(klipp_effects::BuiltinEffect::SpeedRamp { speed: 1.0, blend_mode: 2 }).build();
+        let r = check(&seq, &pool, &Spoken(talk));
+        assert!(!rules(&r).contains(&"judder"), "blended, it does not: {}", r.text());
     }
 
     #[test]

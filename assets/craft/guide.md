@@ -370,7 +370,14 @@ exist until the plan runs.
   other tracks are untouched. (A speed ramp's own sound is silent.)
   With `ripple` the clips after it on its tracks move by the change in
   length; without it a gap is left where it shrinks, and a clip that
-  would grow into the next one is refused.
+  would grow into the next one is refused. `interpolation` is how the
+  frames between the file's are drawn when it is slowed, or when the file
+  has a lower frame rate than the timeline at full speed: `sample` (or
+  `nearest`) repeats the nearest, `blend` cross-fades the two either side,
+  `flow` (or `optical_flow`) follows the motion between them. Given alone
+  it changes only that. A clip that will show its pictures held, a 16 fps
+  file at 0.6x on a 30 fps timeline showing 9.6 a second, is said in the
+  reply and by check (`judder`).
 - `replace {clip_id, media_id, source_in?}`: another file, or another part
   of one, in a clip's slot: the same place, length and speed, with its
   grade, effects, role, volume, links and transitions kept and its linked

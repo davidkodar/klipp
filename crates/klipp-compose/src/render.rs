@@ -7209,13 +7209,16 @@ fn file_stamp(g: &klipp_core::GeneratorData) -> Option<(std::time::SystemTime, u
 }
 
 /// Whether `clip` frame-blends at `time`: a `SpeedRamp` in blend mode 1
-/// or 2 (by optical flow), not frozen, with the clip running below real
-/// time.
+/// or 2 (by optical flow), not frozen, with the clip running at real time
+/// or below. At real time a file of a lower frame rate than the timeline's
+/// is conformed by it (#2479); at the timeline's own rate each frame falls
+/// on one of the file's and nothing is mixed.
 pub fn frame_blends(clip: &Clip, time: Timecode) -> bool {
     let blend = clip.has_frame_blend_entry();
     // A reversed clip's next frame is the one before: there is no
     // following frame to blend toward.
-    blend && !clip.is_reversed() && clip.speed_at(eval_clip_time(clip, time)).abs() < 1.0 - 1e-6
+    let speed = clip.speed_at(eval_clip_time(clip, time)).abs();
+    blend && !clip.is_reversed() && speed > 1e-6 && speed <= 1.0 + 1e-6
 }
 
 /// Whether `clip`'s picture holds a frei0r plug-in node, on or off (M4

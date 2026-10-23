@@ -569,10 +569,17 @@ fn a_frame_blend_and_a_denoise_after_it_are_each_inspected() {
             assert!(found.thumbs.contains_key(&at_blend) && found.thumbs.contains_key(&at_denoise), "{what}: {:?}", found.unavailable);
         }
     }
-    // At full speed the blend doesn't run: said so, never another node's.
-    let (full, clip) = moving_clip(&[blend, denoise], false, None);
+    // Sped up the blend doesn't run: said so, never another node's. (At
+    // full speed it does, conforming a file of a lower rate, #2479.)
+    let (mut fast, _) = moving_clip(&[blend, denoise], false, None);
+    {
+        let c = &mut fast.tracks[0].clips[0];
+        c.speed = 2.0;
+        c.source_out = tc(4.0);
+    }
+    let clip = fast.tracks[0].clips[0].clone();
     let at = picture_node(&clip, klipp_graph_format::lifted::types::FRAME_BLEND);
-    let (_, found) = moving_render(&full, false, 0.5, Inspect { clip: Some(clip.id), scope_tap: Some(at.clone()), ..Default::default() });
+    let (_, found) = moving_render(&fast, false, 0.5, Inspect { clip: Some(clip.id), scope_tap: Some(at.clone()), ..Default::default() });
     assert!(found.scope_tap.is_none(), "a tap on a blend that doesn't run");
     let why = found.unavailable.iter().find(|(a, _)| *a == at).map(|(_, w)| w.clone()).expect("said to be unavailable");
     assert!(why.contains("doesn't run"), "{why}");

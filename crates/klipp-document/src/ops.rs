@@ -1485,12 +1485,13 @@ pub enum Op {
         /// room before the next one is refused rather than laid over it.
         #[serde(default)]
         ripple: bool,
-        /// How a slowed clip's in-between frames are drawn: "sample"
-        /// repeats the nearest frame, "blend" cross-fades the two either
-        /// side, "flow" follows the motion between them by optical flow
-        /// (#2215), falling back to the cross-fade where it can't. Left
-        /// out, the clip keeps what it has. Given alone, without `speed`
-        /// or `fit`, only this changes.
+        /// How a slowed clip's in-between frames are drawn, and a file of a
+        /// lower frame rate than the timeline's at full speed (#2479):
+        /// "sample" ("nearest") repeats the nearest frame, "blend"
+        /// cross-fades the two either side, "flow" ("optical_flow") follows
+        /// the motion between them by optical flow (#2215), falling back to
+        /// the cross-fade where it can't. Left out, the clip keeps what it
+        /// has. Given alone, without `speed` or `fit`, only this changes.
         #[serde(default)]
         interpolation: Option<String>,
     },
@@ -3522,7 +3523,17 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             } else {
                 *speed
             };
-            let (what, edit, touched) = retime(seq, pool, fps, i, clip.id, speed, *ripple)?;
+            let (mut what, edit, touched) = retime(seq, pool, fps, i, clip.id, speed, *ripple)?;
+            // Said where it is chosen, as check says it after (#2479): a
+            // speed that holds each picture for frames, nothing blending.
+            let blends = match interpolation.as_deref().map(|h| h.trim().to_ascii_lowercase()) {
+                Some(h) => h != "sample" && h != "nearest",
+                None => clip.has_frame_blend_entry(),
+            };
+            let media = clip.media_id().and_then(|m| pool.get(&m)).filter(|m| !m.is_still && !m.video_codec.is_empty());
+            if let Some(new) = media.filter(|_| !blends).and_then(|m| crate::qc::judders(m.fps.as_f64(), speed, fps.as_f64())) {
+                what.push_str(&format!(" (it shows {new:.1} new pictures a second on the {:.3} fps timeline, which judders; interpolation blend or flow draws the frames between)", fps.as_f64()));
+            }
             match interpolated {
                 Some((how, frames)) => Ok((format!("{what}; {how}"), EditCommand::Batch(vec![edit, frames]), touched)),
                 None => Ok((what, edit, touched)),
@@ -8530,11 +8541,11 @@ fn stabilize(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip,
 /// ("flow", #2215).
 fn interpolation_edit(seq: &Sequence, pool: &MediaPool, i: usize, clip: &Clip, how: &str) -> Result<Option<(String, EditCommand)>, Refusal> {
     use klipp_effects::BuiltinEffect as E;
-    let blend_mode = match how {
-        "sample" => None,
+    let blend_mode = match how.trim().to_ascii_lowercase().as_str() {
+        "sample" | "nearest" => None,
         "blend" => Some(1),
-        "flow" => Some(2),
-        other => return Err(refuse(i, format!("interpolation \"{other}\" is not one of sample, blend or flow"), "give interpolation sample, blend or flow")),
+        "flow" | "optical_flow" => Some(2),
+        other => return Err(refuse(i, format!("interpolation \"{other}\" is not one of sample (nearest), blend or flow (optical_flow)"), "give interpolation sample, blend or flow")),
     };
     if !matches!(clip.kind, ClipKind::Media { .. }) {
         return Err(refuse(i, format!("{} has no source frames to interpolate", clip_name(seq, pool, clip)), "set interpolation on a media clip"));
@@ -15204,8 +15215,13 @@ mod tests {
         assert_eq!(view.sequences[0].tracks[0].clips[0].frame_blend_mode(), None);
         let plan = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 2.0, fit: false, ripple: false, interpolation: Some("blend".into()) }]).unwrap();
         assert!(plan.steps[0].what.contains("2.00x") && plan.steps[0].what.contains("cross-fade"), "{}", plan.steps[0].what);
+        // A slowed clip that will judder says so, and says nothing blended.
+        let slowed = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 0.4, fit: false, ripple: true, interpolation: Some("nearest".into()) }]).unwrap();
+        assert!(slowed.steps[0].what.contains("which judders"), "{}", slowed.steps[0].what);
+        let flowed = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 0.4, fit: false, ripple: true, interpolation: Some("optical_flow".into()) }]).unwrap();
+        assert!(!flowed.steps[0].what.contains("judders") && flowed.steps[0].what.contains("follow the motion"), "{}", flowed.steps[0].what);
         let unknown = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 0.0, fit: false, ripple: false, interpolation: Some("morph".into()) }]).unwrap_err();
-        assert!(unknown.why.contains("not one of sample, blend or flow"), "{}", unknown.why);
+        assert!(unknown.why.contains("not one of sample (nearest), blend or flow (optical_flow)"), "{}", unknown.why);
         // Sample on a clip with no Speed Ramp changes nothing: refused
         // alone, left out beside a speed.
         let nothing = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 0.0, fit: false, ripple: false, interpolation: Some("sample".into()) }]).unwrap_err();
