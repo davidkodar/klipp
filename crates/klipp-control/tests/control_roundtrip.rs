@@ -2528,6 +2528,16 @@ fn orient_hands_over_the_whole_situation() {
     // not apply edits, so the brief stays as the sequence holds it).
     assert!(r["media"].is_array() && r["clips"].is_number());
     assert!(r["guide"].as_str().unwrap().contains("klipp_guide"));
+    // A sound file has no picture size or rate to report (#2492).
+    let mut song = klipp_media::MediaItem::synthetic_for_test("/tmp/orient-song.wav".into(), None);
+    song.video_codec = String::new();
+    h.media_pool.write().unwrap().add(song);
+    h.media_pool.write().unwrap().add(klipp_media::MediaItem::synthetic_for_test("/tmp/orient-take.mov".into(), None));
+    let r = h.ok(json!({ "method": "orient" }));
+    let of = |name: &str| r["media"].as_array().unwrap().iter().find(|m| m["filename"] == name).cloned().unwrap();
+    let (song, take) = (of("orient-song.wav"), of("orient-take.mov"));
+    assert_eq!((song["width"].clone(), song["fps"].clone(), song["has_picture"].clone()), (json!(null), json!(null), json!(false)), "{song}");
+    assert_eq!((take["width"].clone(), take["has_picture"].clone()), (json!(1920), json!(true)), "{take}");
 }
 
 /// The scope readings measure a made frame: a mid-grey field reads
