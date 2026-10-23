@@ -454,8 +454,8 @@ pub(crate) fn respond(
             let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?.clone();
             let dropped: Vec<String> = match kind {
                 "fcpxml" => klipp_project::fcpxml::export_fcpxml(&seq, &pool, &out)?,
-                "edl" => klipp_project::fcpxml::export_edl(&seq, &pool, &out).map(|_| Vec::new())?,
-                "kdenlive" => klipp_project::mlt_export::export_kdenlive(&seq, &pool, &out).map(|_| Vec::new())?,
+                "edl" => klipp_project::fcpxml::export_edl(&seq, &pool, &out)?,
+                "kdenlive" => klipp_project::mlt_export::export_kdenlive(&seq, &pool, &out)?,
                 "otio" => klipp_project::otio_export::export_otio(&seq, &pool, &out).map_err(|e| e.to_string())?,
                 _ => {
                     // AAF: OpenTimelineIO's own file first, then its

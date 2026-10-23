@@ -24,16 +24,23 @@ use std::path::Path;
 
 /// Export a sequence as MLT XML (`.kdenlive`) to the given path.
 ///
-/// Returns `Err(String)` on IO failure; `generate_mlt_xml` itself is
-/// infallible. Signature matches `fcpxml::export_fcpxml` for handler symmetry.
+/// Returns `Err(String)` on IO failure, else what the project does not
+/// carry, one line each (#2520), as `fcpxml::export_fcpxml` does.
 pub fn export_kdenlive(
     seq: &Sequence,
     media_pool: &MediaPool,
     output_path: &Path,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
     let xml = generate_mlt_xml(seq, media_pool);
     std::fs::write(output_path, xml)
-        .map_err(|e| format!("Failed to write Kdenlive project: {e}"))
+        .map_err(|e| format!("Failed to write Kdenlive project: {e}"))?;
+    Ok(kdenlive_not_carried(seq, media_pool))
+}
+
+/// What this cuts-only Kdenlive project leaves out of `seq`: every track
+/// comes across, clip by clip, and nothing else of them.
+pub fn kdenlive_not_carried(seq: &Sequence, media_pool: &MediaPool) -> Vec<String> {
+    crate::not_carried::not_carried(seq, media_pool, &crate::not_carried::Format { name: "the Kdenlive project", transitions: false, video_tracks: None, audio_tracks: None, drops_disabled: false })
 }
 
 /// Generate the MLT XML document as a String. Never panics.

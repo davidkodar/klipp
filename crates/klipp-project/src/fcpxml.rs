@@ -354,7 +354,7 @@ fn what_name(clip: &Clip, pool: &MediaPool) -> String {
 }
 
 /// A clip as the dropped list names it.
-fn describe(clip: &Clip, pool: &MediaPool) -> String {
+pub(crate) fn describe(clip: &Clip, pool: &MediaPool) -> String {
     match &clip.kind {
         ClipKind::Media { .. } => format!("'{}'", what_name(clip, pool)),
         ClipKind::Title(td) => {
@@ -372,14 +372,23 @@ fn describe(clip: &Clip, pool: &MediaPool) -> String {
 }
 
 /// Also generate a simple EDL (CMX 3600 format) for broader compatibility.
+/// Returns what the EDL does not carry, one line each (#2520).
 pub fn export_edl(
     seq: &Sequence,
     media_pool: &MediaPool,
     output_path: &Path,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
     let edl = generate_edl(seq, media_pool);
     std::fs::write(output_path, edl)
-        .map_err(|e| format!("Failed to write EDL: {e}"))
+        .map_err(|e| format!("Failed to write EDL: {e}"))?;
+    Ok(edl_not_carried(seq, media_pool))
+}
+
+/// What a CMX 3600 EDL leaves out of `seq`: one picture track and four
+/// sound channels, cuts and transitions, nothing of a clip but its source
+/// range; a clip switched off is not written.
+pub fn edl_not_carried(seq: &Sequence, media_pool: &MediaPool) -> Vec<String> {
+    crate::not_carried::not_carried(seq, media_pool, &crate::not_carried::Format { name: "an EDL", transitions: true, video_tracks: Some(1), audio_tracks: Some(4), drops_disabled: true })
 }
 
 /// Generate CMX 3600 EDL from a sequence.
@@ -1643,5 +1652,60 @@ mod tests {
         said("Track 'Captions': 1 Subtitle clip(s)");
         said("Track 'A1': 'take.mov' at 0.000 s — its volume changes, its fades");
         assert!(xml.contains("ref=\"r1\"") && xml.contains("name=\"Basic Title\""), "a title names its effect:\n{xml}");
+    }
+
+    // ── #2520: what an EDL and a Kdenlive project leave out ──
+
+    #[test]
+    fn plain_cuts_leave_nothing_out() {
+        let mut seq = empty_sequence(Fps { num: 25, den: 1 });
+        let mut pool = MediaPool::new();
+        let mid = MediaId::new();
+        pool.add(make_media_item(mid, "take.mov", 250, 25));
+        let t = |s: i64| RationalTime { value: s * 25, rate: 25 };
+        seq.tracks[0].clips = vec![make_media_clip(mid, t(0), t(4), t(0), t(4)), make_media_clip(mid, t(4), t(8), t(4), t(8))];
+        assert_eq!(edl_not_carried(&seq, &pool), Vec::<String>::new());
+        assert_eq!(crate::mlt_export::kdenlive_not_carried(&seq, &pool), Vec::<String>::new());
+    }
+
+    #[test]
+    fn what_an_edl_and_a_kdenlive_project_leave_out_is_listed() {
+        let (mut seq, pool, [a, _, _]) = three_tracks();
+        let b = seq.tracks[1].clips[1].id;
+        seq.tracks[1].transitions.push(klipp_timeline::Transition {
+            id: klipp_core::TransitionId::new(),
+            kind: klipp_core::TransitionKind::CrossDissolve,
+            duration: RationalTime { value: 10, rate: 25 },
+            clip_a_id: a,
+            clip_b_id: b,
+            user_params: Default::default(),
+            alignment: klipp_core::TransitionAlignment::Center,
+        });
+        seq.tracks[1].clips[1].speed = 2.0;
+        seq.tracks[1].clips[1].enabled = false;
+        let mut td = TitleData::default();
+        if let Some(tb) = td.primary_text_mut() { tb.text = "Name".into(); }
+        seq.tracks[0].clips.push(make_clip_with_kind(ClipKind::Title(td), RationalTime { value: 150, rate: 25 }, RationalTime { value: 175, rate: 25 }));
+        seq.tracks[2].clips[0].fade_in_secs = 0.5;
+        let mut subs = Track::new("Captions", TrackKind::Subtitle);
+        subs.clips.push(make_clip_with_kind(ClipKind::Title(TitleData::default()), RationalTime { value: 0, rate: 25 }, RationalTime { value: 25, rate: 25 }));
+        seq.tracks.push(subs);
+        seq.markers.push(Marker { review: None, id: MarkerId::new(), position: RationalTime { value: 25, rate: 25 }, label: "Intro".into(), color: MarkerColor::Blue, duration: None, comment: String::new(), kind: Default::default() });
+
+        let edl = edl_not_carried(&seq, &pool);
+        let said = |list: &[String], what: &str| assert!(list.iter().any(|d| d.contains(what)), "{what}: {list:#?}");
+        said(&edl, "Track 'V1': an EDL has one picture track");
+        said(&edl, "the title \"Name\" at 6.000 s — an EDL cannot carry it");
+        said(&edl, "is switched off — left out");
+        said(&edl, "its speed change");
+        said(&edl, "Track 'A1': 'take.mov' at 0.000 s — its fades");
+        said(&edl, "Track 'Captions': 1 Subtitle clip(s)");
+        said(&edl, "1 sequence marker(s)");
+        assert!(!edl.iter().any(|d| d.contains("transition")), "an EDL carries the dissolve: {edl:#?}");
+
+        let mlt = crate::mlt_export::kdenlive_not_carried(&seq, &pool);
+        said(&mlt, "CrossDissolve transition");
+        said(&mlt, "is switched off — written as on");
+        assert!(!mlt.iter().any(|d| d.contains("one picture track")), "every track comes across: {mlt:#?}");
     }
 }

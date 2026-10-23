@@ -3568,7 +3568,7 @@ impl KlippApp {
             AppCommand::ExportKdenlive { path } => {
                 let seq = &self.state.sequences[self.state.active_sequence_idx];
                 match klipp_project::mlt_export::export_kdenlive(seq, &self.state.media_pool, path) {
-                    Ok(_) => self.state.toast.show(format!("Kdenlive project exported to {}", path.display())),
+                    Ok(dropped) => self.state.toast.show(interchange_written("Kdenlive project", path, &dropped)),
                     Err(e) => self.state.toast.show(format!("Kdenlive export failed: {e}")),
                 }
                 true
@@ -3576,7 +3576,7 @@ impl KlippApp {
             AppCommand::ExportEdl { path } => {
                 let seq = &self.state.sequences[self.state.active_sequence_idx];
                 match klipp_project::fcpxml::export_edl(seq, &self.state.media_pool, path) {
-                    Ok(_) => self.state.toast.show(format!("EDL exported to {}", path.display())),
+                    Ok(dropped) => self.state.toast.show(interchange_written("EDL", path, &dropped)),
                     Err(e) => self.state.toast.show(format!("EDL export failed: {e}")),
                 }
                 true
