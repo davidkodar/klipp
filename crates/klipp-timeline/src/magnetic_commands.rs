@@ -95,6 +95,10 @@ pub enum MagneticEditCommand {
         old_source_in: RationalTime,
         new_timeline_in: RationalTime,
         new_source_in: RationalTime,
+        /// A multicam primary's cut list before and after: the cuts move
+        /// with the picture under the start (`Clip::keep_angle_cuts_on_picture`).
+        old_multicam_cuts: Vec<(f64, u8)>,
+        new_multicam_cuts: Vec<(f64, u8)>,
         rippled_clips: Vec<RippleRecord>,
         cascaded_clips: Vec<CascadeRecord>,
     },

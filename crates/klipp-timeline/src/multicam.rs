@@ -87,6 +87,42 @@ pub fn rebased_cuts(cuts: &[(f64, u8)], shift: f64) -> Vec<(f64, u8)> {
         .collect()
 }
 
+/// A multicam primary's cut times count from its start, so every edit
+/// that makes a piece of a clip, or moves the picture under its start,
+/// goes through one of these: a cut left as it was lands on another
+/// picture, and the angle seen at each moment changes.
+impl Clip {
+    /// This clip made the piece of itself from `from` to `to` seconds
+    /// after its start: a blade's half, what an insert, an overwrite or a
+    /// lift leaves either side. Its cuts stay on the picture they cut.
+    pub fn keep_angle_cuts_on_piece(&mut self, from: f64, to: f64) {
+        if self.multicam_cuts.is_empty() {
+            return;
+        }
+        let len = to - from;
+        self.multicam_cuts = rebased_cuts(&self.multicam_cuts, from).into_iter().filter(|(at, _)| *at < len).collect();
+    }
+
+    /// The picture under this clip moved `secs` seconds earlier against
+    /// its start: a head trimmed, rolled or slid, or a slip. Its cuts
+    /// stay on the picture they cut.
+    pub fn keep_angle_cuts_on_picture(&mut self, secs: f64) {
+        if self.multicam_cuts.is_empty() {
+            return;
+        }
+        self.multicam_cuts = rebased_cuts(&self.multicam_cuts, secs);
+    }
+
+    /// How far a slip of `source_secs` seconds of the file moves this
+    /// clip's picture against its start, in seconds of the timeline: by
+    /// its speed, and the other way when it plays reversed.
+    pub fn picture_moved_by_slip(&self, source_secs: f64) -> f64 {
+        let speed = if self.speed.is_finite() && self.speed != 0.0 { self.speed.abs() } else { 1.0 };
+        let moved = source_secs / speed;
+        if self.is_reversed() { -moved } else { moved }
+    }
+}
+
 impl Sequence {
     /// The group and angle whose sound `clip` is: its own when it is an
     /// angle's picture, its linked picture's when it is that picture's

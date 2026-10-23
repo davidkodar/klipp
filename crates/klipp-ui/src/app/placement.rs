@@ -452,6 +452,7 @@ impl KlippApp {
             track.clips[i].source_out = clip.source_in + left_dur;
             // A glide is the whole clip's move; the pieces keep their keys (#611).
             track.clips[i].frame_glide = None;
+            track.clips[i].keep_angle_cuts_on_piece(0.0, left_dur.to_secs_f64());
 
             // Right portion
             let right_offset = range_out - clip.timeline_in;
@@ -536,6 +537,7 @@ impl KlippApp {
             // A picture-truth clip's picture (its masks, mixes) goes with
             // the piece made from its fields.
             right_clip.take_picture_truth_of(&clip);
+            right_clip.keep_angle_cuts_on_piece(right_offset.to_secs_f64(), (clip.timeline_out - clip.timeline_in).to_secs_f64());
             track.clips.insert(i + 1, right_clip);
         }
 
@@ -551,6 +553,7 @@ impl KlippApp {
             let trim = range_out - track.clips[i].timeline_in;
             track.clips[i].source_in += trim;
             track.clips[i].timeline_in = range_out;
+            track.clips[i].keep_angle_cuts_on_picture(trim.to_secs_f64());
         }
 
         // Remove fully covered (reverse order)

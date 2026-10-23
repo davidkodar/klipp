@@ -130,6 +130,8 @@ mod compound;
 mod clips;
 #[cfg(test)]
 mod picture_truth_rebuild_tests;
+#[cfg(test)]
+mod multicam_piece_tests;
 mod timeline_edit;
 mod surfaces;
 mod colour;

@@ -1923,7 +1923,7 @@ impl Track {
             transform_link: None,
             multicam_group: clip.multicam_group,
             multicam_angle: clip.multicam_angle,
-            multicam_cuts: clip.multicam_cuts.iter().copied().filter(|(at, _)| *at < cut_secs).collect(),
+            multicam_cuts: clip.multicam_cuts.clone(),
             multicam_sound: clip.multicam_sound,
             audio_effects: clip.audio_effects.clone(),
             audio_effect_keyframes: audio_effect_kfs_a,
@@ -2002,8 +2002,7 @@ impl Track {
             transform_link: None,
             multicam_group: clip.multicam_group,
             multicam_angle: clip.multicam_angle,
-            // Cut times are from the clip's start, which is now the cut.
-            multicam_cuts: crate::multicam::rebased_cuts(&clip.multicam_cuts, cut_secs),
+            multicam_cuts: clip.multicam_cuts.clone(),
             multicam_sound: clip.multicam_sound,
             audio_effects: clip.audio_effects,
             audio_effect_keyframes: audio_effect_kfs_b,
@@ -2023,13 +2022,16 @@ impl Track {
             clip_a.take_picture_truth_of(source);
             clip_b.take_picture_truth_of(source);
         }
-        let (clip_a, clip_b) = match cut {
+        let (mut clip_a, mut clip_b) = match cut {
             Ok((a, b)) => (Clip::from_picture(&clip_a, a), Clip::from_picture(&clip_b, b)),
             Err(why) => {
                 tracing::warn!("split: clip {:?}: its picture: {why}", clip_a.id);
                 (clip_a, clip_b)
             }
         };
+        let whole = (clip.timeline_out - clip.timeline_in).to_secs_f64();
+        clip_a.keep_angle_cuts_on_piece(0.0, cut_secs);
+        clip_b.keep_angle_cuts_on_piece(cut_secs, whole);
 
         self.clips.remove(pos);
         self.clips.insert(pos, clip_b.clone());

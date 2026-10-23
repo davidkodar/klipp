@@ -328,10 +328,7 @@ pub fn overwrite_insert_clip_on_track(
         track.clips[i].source_out = clip.source_in + left_dur;
         // A glide is the whole clip's move; the pieces keep their keys (#611).
         track.clips[i].frame_glide = None;
-        // A multicam primary's cuts count from its start: the left piece
-        // keeps those before its end, as a blade's does.
-        let left_secs = left_dur.to_secs_f64();
-        track.clips[i].multicam_cuts.retain(|(at, _)| *at < left_secs);
+        track.clips[i].keep_angle_cuts_on_piece(0.0, left_dur.to_secs_f64());
 
         // Right portion: new clip starting at new_out. The clip's own
         // copy, picture and all; what belongs to the clip alone is not.
@@ -346,8 +343,7 @@ pub fn overwrite_insert_clip_on_track(
         right_clip.grade_flag = Default::default();
         right_clip.precomp = None;
         right_clip.baked_own = None;
-        // Its cuts from its own start, each on the picture it cuts.
-        right_clip.multicam_cuts = klipp_timeline::multicam::rebased_cuts(&clip.multicam_cuts, right_offset.to_secs_f64());
+        right_clip.keep_angle_cuts_on_piece(right_offset.to_secs_f64(), (clip.timeline_out - clip.timeline_in).to_secs_f64());
         track.clips.insert(i + 1, right_clip);
     }
 
@@ -355,10 +351,9 @@ pub fn overwrite_insert_clip_on_track(
     for &i in &to_trim_left {
         let clip = &track.clips[i];
         let trim_amount = new_out - clip.timeline_in;
-        let cuts = klipp_timeline::multicam::rebased_cuts(&clip.multicam_cuts, trim_amount.to_secs_f64());
         track.clips[i].source_in += trim_amount;
         track.clips[i].timeline_in = new_out;
-        track.clips[i].multicam_cuts = cuts;
+        track.clips[i].keep_angle_cuts_on_picture(trim_amount.to_secs_f64());
     }
 
     // Trim right edges back (clip starts before new_in, ends after)
