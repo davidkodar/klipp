@@ -913,14 +913,18 @@ mod tests {
         let resolve = |_: &Want| Some((path.clone(), 0, Cost { rate: 0.0, frame_bytes: 0.0, ..Default::default() }));
         let ahead = Want { clip: ClipId::new(), media: MediaId::new(), rotation: 0, source_secs: 1.0, reversed: false, ahead: true };
         let mut streams = ClipStreams::new();
-        // Whatever other tests ask of the process's GPU budget.
+        // Whatever other tests ask of the process's decode budget.
+        streams.capacity = || f64::INFINITY;
         streams.gpu_headroom = || f64::INFINITY;
         streams.sync(std::slice::from_ref(&ahead), frame, &resolve);
         assert!(streams.has(ahead.clip) && streams.ready(frame), "opening ahead: nothing waits for it");
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        // An open that fails, as one can on a busy GPU, is forgotten and
+        // asked for again by the next sync, as playback does (#2222).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         while !streams.streams.contains_key(&ahead.clip) {
             assert!(std::time::Instant::now() < deadline, "the stream never opened");
             std::thread::sleep(std::time::Duration::from_millis(5));
+            streams.sync(std::slice::from_ref(&ahead), frame, &resolve);
             streams.pump(frame);
         }
         streams.streams.get_mut(&ahead.clip).unwrap().seeking = Some(1.0);
@@ -1258,11 +1262,15 @@ mod tests {
         let w = want(1.0);
         let mut streams = ClipStreams::new();
         let resolve = |_: &Want| Some((path.clone(), 0, Cost { rate: 0.0, frame_bytes: 0.0, ..Default::default() }));
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        // Until it is open and holds its frame: an open that fails, as
+        // one can on a busy GPU, leaves nothing to wait for, and is asked
+        // for again by the next sync, as playback does (#2222).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         streams.sync(std::slice::from_ref(&w), frame, &resolve);
-        while !streams.ready(frame) {
+        while !(streams.streams.contains_key(&w.clip) && streams.ready(frame)) {
             assert!(std::time::Instant::now() < deadline, "the stream never held its frame");
             std::thread::sleep(std::time::Duration::from_millis(5));
+            streams.sync(std::slice::from_ref(&w), frame, &resolve);
             streams.pump(frame);
         }
         let s = streams.streams.get_mut(&w.clip).unwrap();
