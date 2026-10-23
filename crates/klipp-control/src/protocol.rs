@@ -994,6 +994,14 @@ pub enum ControlCommand {
         /// with a PQ delivery.
         #[serde(default)]
         hdr10plus: Option<bool>,
+        /// The output transfer (#2477): sdr, hlg or pq. HDR is written at
+        /// 10 bits in hevc, h264 or ProRes, as the export dialog allows.
+        #[serde(default)]
+        hdr: Option<String>,
+        /// The mastering peak of a PQ delivery, cd/m²: 1000, 2000 or 4000
+        /// as the dialog offers, 100 to 10000 in all (default 1000).
+        #[serde(default)]
+        peak_nits: Option<f32>,
         /// One of the app's built-in export presets, by name ("ProRes 422",
         /// "YouTube 4K", ...) or id: its codecs, size, quality and
         /// loudness, under any field given here as well (#1583). The

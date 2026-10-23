@@ -29,7 +29,7 @@ pub(crate) fn respond(
                 return Err("the timeline is empty; nothing to review".into());
             }
             let _ = std::fs::remove_file(&draft);
-            handle(ctx, ControlCommand::Export { path: draft.to_string_lossy().to_string(), width: Some(w), height: Some(h), fps: None, crf: Some(30), bit_depth: None, target_lufs: None, true_peak_dbtp: None, burn_captions: None, captions_608: None, hdr10plus: None, preset: None, codec: None, audio_codec: None, bitrate_kbps: None, encoder_speed: None }, &mut None)?;
+            handle(ctx, ControlCommand::Export { path: draft.to_string_lossy().to_string(), width: Some(w), height: Some(h), fps: None, crf: Some(30), bit_depth: None, target_lufs: None, true_peak_dbtp: None, burn_captions: None, captions_608: None, hdr10plus: None, hdr: None, peak_nits: None, preset: None, codec: None, audio_codec: None, bitrate_kbps: None, encoder_speed: None }, &mut None)?;
             let started = std::time::Instant::now();
             // The draft, waited for: a review is the picture as rendered.
             let rendered = || -> Result<klipp_core::ExportStatus, String> {
