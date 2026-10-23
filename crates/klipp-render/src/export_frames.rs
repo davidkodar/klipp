@@ -117,6 +117,9 @@ pub struct ExportFrameMaker {
     /// Why the last frame was composited on the CPU; `None` when the GPU
     /// stack made it (#1924).
     last_cpu_why: Option<&'static str>,
+    /// Whether a frame the encoder takes no planes of is composited on the
+    /// GPU and brought back (#2488): off once the device is lost.
+    gpu_linear: bool,
 }
 
 impl ExportFrameMaker {
@@ -148,7 +151,7 @@ impl ExportFrameMaker {
         // HDR encode (an ACES PQ transform renders its own from SDR).
         let opts = RenderOptions { hdr_peak_nits: settings.renders_hdr().then(|| settings.hdr_peak_nits()), ..Default::default() };
         let no_gpu_why = if (fit.0, fit.1) != out { "the picture is letterboxed in the output, padded on the CPU" } else { "the encoder takes no frames made on the GPU" };
-        Self { out, fit, opts, gpu_yuv, declined_stack: None, gpu_attempts: 0, label, last_pad: std::time::Duration::ZERO, declined_why: "", no_gpu_why, last_cpu_why: None }
+        Self { out, fit, opts, gpu_yuv, declined_stack: None, gpu_attempts: 0, label, last_pad: std::time::Duration::ZERO, declined_why: "", no_gpu_why, last_cpu_why: None, gpu_linear: true }
     }
 
     /// The output size frames come at.
@@ -228,6 +231,29 @@ impl ExportFrameMaker {
                 self.declined_stack = Some(on_screen(timeline, time));
                 self.declined_why = renderer.last_decline().unwrap_or("the GPU stack declined the frame");
                 debug!("{}: GPU frame conversion off from {time:?} while its clips are on screen", self.label);
+            }
+        }
+        // No planes made on the GPU for this encoder, or a letterboxed
+        // picture: the stack still composites the frame, brought back once
+        // to be padded and converted here (#2488). The CPU composition
+        // only where the stack declines.
+        if ask.is_none() && self.declined_stack.is_none() && self.gpu_linear {
+            if let Some(picture) = renderer.render_linear_on_gpu(timeline, time, fit_w, fit_h, frames, self.opts) {
+                frames.end_frame()?;
+                self.last_cpu_why = None;
+                let t = std::time::Instant::now();
+                let picture = pad_linear(picture, fit_w, fit_h, self.out.0, self.out.1, fit_x, fit_y);
+                self.last_pad = t.elapsed();
+                return Ok(ExportFrame::Linear(picture));
+            }
+            self.last_cpu_why = Some(renderer.last_decline().unwrap_or("the GPU stack declined the frame"));
+            if renderer.gpu_export_declined_after_work() {
+                if renderer.gpu_pipeline().is_none_or(|g| g.is_device_lost()) {
+                    self.gpu_linear = false;
+                } else {
+                    self.declined_stack = Some(on_screen(timeline, time));
+                    self.declined_why = renderer.last_decline().unwrap_or("the GPU stack declined the frame");
+                }
             }
         }
         let (picture, found) = renderer.render_inspected(timeline, time, fit_w, fit_h, frames, self.opts, Default::default());

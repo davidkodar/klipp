@@ -1572,6 +1572,46 @@ impl Renderer {
         planes
     }
 
+    /// The frame composited on the GPU stack and brought back once, as
+    /// the linear frame [`Self::render`] gives: for an export whose encoder
+    /// takes no Y'CbCr planes made on the GPU (ProRes, DNxHD) or whose
+    /// picture is letterboxed, padded after (#2488). The CPU composition
+    /// those used ran each layer's effects with a download of its own and
+    /// rastered generators on the CPU. `None`, the reason in
+    /// [`Self::last_decline`], when the stack cannot take the frame.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_linear_on_gpu(
+        &mut self,
+        seq: &Sequence,
+        time: Timecode,
+        width: u32,
+        height: u32,
+        src: &mut dyn FrameSource,
+        opts: RenderOptions,
+    ) -> Option<Vec<f32>> {
+        let _residency = residency::frame("export", time.to_secs_f64());
+        self.gpu_export_declined_after_work = false;
+        self.frame_decline = None;
+        self.found.declines.clear();
+        let composited = self.composite_on_gpu(seq, time, width, height, src, opts).is_some();
+        if let Some(gpu) = self.executor.gpu_pipeline_mut() {
+            gpu.stack_end();
+        }
+        if !composited {
+            // The stack recorded why it declined.
+            self.frame_decline.get_or_insert("the GPU pipeline was unavailable");
+            return None;
+        }
+        let gpu = self.executor.gpu_pipeline_mut()?;
+        let pixels = gpu.download_chain_output_linear(true, width as usize * height as usize);
+        if pixels.len() != width as usize * height as usize * 4 {
+            self.gpu_export_declined_after_work = true;
+            self.frame_decline = Some("the frame's download failed");
+            return None;
+        }
+        Some(pixels)
+    }
+
     /// [`Self::render_yuv420_on_gpu`] for the render that is one clip's
     /// grade, which needs no stack at all: `ForTheStack` sends anything
     /// else to the stack, `Refused` is a frame neither can take.
