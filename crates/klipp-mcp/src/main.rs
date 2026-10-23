@@ -2319,7 +2319,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({ "path": { "type": "string" }, "format": { "type": "string" } }), vec!["path"]),
         tool("klipp_translate_captions",
              "Translate a subtitle track onto a new one under it. Details: klipp_guide topic translate_captions.",
-             json!({ "to": { "type": "string", "description": "de fr es sv it nl fi da, or en" }, "from": { "type": "string", "description": "default en" }, "track": { "type": "integer" }, "glossary": { "type": "object", "additionalProperties": { "type": "string" } }, "download_models": { "type": "boolean" } }), vec!["to"]),
+             json!({ "to": { "type": "string", "description": "de fr es sv it nl fi da, or en" }, "from": { "type": "string", "description": "default track language, else en" }, "track": { "type": "integer" }, "glossary": { "type": "object", "additionalProperties": { "type": "string" } }, "download_models": { "type": "boolean" } }), vec!["to"]),
         tool("klipp_import_subtitles",
              "Read an .srt, .vtt, .ass, .ssa or TTML (.ttml, .dfxp, .xml, .itt), .scc or .stl file (absolute path) onto a new subtitle track.",
              json!({ "path": { "type": "string" } }), vec!["path"]),

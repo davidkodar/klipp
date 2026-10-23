@@ -518,11 +518,19 @@ pub fn respell(t: &mut Transcript, spellings: &[String]) {
     let mut fixes: Vec<(String, String)> = Vec::new();
     let mut i = 0;
     while i < t.words.len() {
+        // A word put right by hand stays as it was put.
+        if t.words[i].corrected {
+            i += 1;
+            continue;
+        }
         let mut took = 0;
         for term in &terms {
             let whole: String = plain(&term.join(""));
             // The same letters, over up to three words of the transcript.
             for n in (1..=3usize.min(t.words.len() - i)).rev() {
+                if t.words[i..i + n].iter().any(|w| w.corrected) {
+                    continue;
+                }
                 let heard: String = t.words[i..i + n].iter().map(|w| plain(&w.text)).collect();
                 if heard == whole && whole.chars().count() >= 3 {
                     took = n;
@@ -530,7 +538,7 @@ pub fn respell(t: &mut Transcript, spellings: &[String]) {
                 }
             }
             // Word for word, by ear.
-            if took == 0 && i + term.len() <= t.words.len() {
+            if took == 0 && i + term.len() <= t.words.len() && !t.words[i..i + term.len()].iter().any(|w| w.corrected) {
                 let heard = &t.words[i..i + term.len()];
                 let exact = heard.iter().zip(term.iter()).filter(|(h, w)| plain(&h.text) == plain(w)).count();
                 let all_sound = heard.iter().zip(term.iter()).all(|(h, w)| sounds_like(&h.text, w));

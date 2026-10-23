@@ -68,7 +68,7 @@ What was on the screen of a screen recording and when: every line OCR read, fold
 
 ## klipp_selects
 
-Cut a long take down to its selects: the runs of speech between the real pauses, each with the time it runs from and to and what is said, marked keep or drop (a run that is only filler — um, uh — or too short to use is a drop). Use it to build a tight cut from a loose recording: place each keep range in order and close the gaps. min_gap_secs sets the pause that starts a new select (0.6 by default). A read; changes nothing.
+Cut a long take down to its selects: the runs of speech between the real pauses, each with the time it runs from and to and what is said, marked keep or drop (a run that is only filler — um, uh — or too short to use is a drop). Use it to build a tight cut from a loose recording: place each keep range in order and close the gaps. min_gap_secs sets the pause that starts a new select (0.6 by default). A take with next to no speech (under a tenth of a take of half a minute or more), or whose word times collapsed, is cut by its picture instead: one select a shot, `by` "picture" in the reply. A read; changes nothing.
 
 ## klipp_style_profile
 

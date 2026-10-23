@@ -33,6 +33,13 @@ impl MediaAnalysis {
         if crate::is_licensed_audio(path) {
             report.transcript = None;
         }
+        // Spelt as the brief spells things now, whenever it was made: a
+        // brief set after a file was transcribed reaches its captions,
+        // search and selects too (#2489).
+        #[cfg(feature = "transcript")]
+        if let Some(t) = report.transcript.as_mut() {
+            crate::transcript::respell(t, &crate::transcript::vocabulary());
+        }
         report
     }
 

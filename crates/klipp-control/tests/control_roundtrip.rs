@@ -2735,6 +2735,23 @@ fn selects_split_a_take_and_drop_the_filler() {
     assert!(!sel[2].filler && sel[2].text.contains("point stands"));
 }
 
+/// #2489: a long take with a few words, or words whose times collapsed,
+/// is too thin to cut by speech; its selects are its shots.
+#[test]
+fn a_take_with_next_to_no_speech_is_cut_by_its_picture() {
+    let few = vec![(10.0f64, 10.4, "hello".into()), (40.0, 40.3, "okay".into())];
+    assert!(klipp_control::speech_too_thin(&few, 60.0));
+    let collapsed: Vec<(f64, f64, String)> = (0..7).map(|k| (20.0 + k as f64 * 0.01, 20.0 + k as f64 * 0.01 + 0.02, format!("w{k}"))).collect();
+    assert!(klipp_control::speech_too_thin(&collapsed, 8.0), "seven words in a quarter second");
+    let talk: Vec<(f64, f64, String)> = (0..40).map(|k| (k as f64 * 0.5, k as f64 * 0.5 + 0.4, "word".into())).collect();
+    assert!(!klipp_control::speech_too_thin(&talk, 25.0));
+    let shots = klipp_control::picture_selects(&[12.0, 30.0], 60.0);
+    let spans: Vec<(f64, f64)> = shots.iter().map(|s| (s.in_secs, s.out_secs)).collect();
+    assert_eq!(spans, [(0.0, 12.0), (12.0, 30.0), (30.0, 60.0)]);
+    assert!(shots.iter().all(|s| !s.filler && s.text.contains("picture")));
+    assert_eq!(klipp_control::picture_selects(&[], 60.0).len(), 1, "no shots found: the whole take");
+}
+
 /// style_cut_summary reads pace from the shot lengths and finds how many
 /// cuts land on the beat.
 #[test]
@@ -3765,14 +3782,15 @@ fn duplicate_sequence_copies_and_opens_the_copy() {
 /// a new track; a path that is relative, names no subtitle format or is not
 /// there is refused, and an export's format must be its path's.
 /// translate_captions says what it cannot do before any model runs
-/// (#2213): no such pair, English without the captions' language, and a
-/// sequence with no captions.
+/// (#2213): no language to translate into, and a sequence with no
+/// captions; into English, the captions' language comes from `from` or the
+/// track's tag (#2489), so with no captions that is what is said.
 #[test]
 fn translate_captions_refuses_what_it_cannot_translate() {
     let mut h = harness();
     for (req, why) in [
-        (json!({ "method": "translate_captions", "to": "xx" }), "no translation from en to xx"),
-        (json!({ "method": "translate_captions", "to": "en" }), "name the captions' language"),
+        (json!({ "method": "translate_captions", "to": "xx" }), "no translation into xx"),
+        (json!({ "method": "translate_captions", "to": "en" }), "no subtitle track with captions"),
         (json!({ "method": "translate_captions", "to": "de" }), "no subtitle track with captions"),
         (json!({ "method": "translate_captions", "to": "de", "track": 99 }), "no track 99"),
     ] {
