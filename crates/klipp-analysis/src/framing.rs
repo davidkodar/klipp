@@ -376,9 +376,10 @@ impl crate::Analyser for FramingAnalyser {
         VERSION
     }
     fn wants(&self, item: &klipp_media::MediaItem) -> bool {
-        !item.is_still
-            && !item.video_codec.is_empty()
-            && item.duration.to_secs_f64() > 0.0
+        // A still too (#2490): who is in a photo is what a refit centres
+        // and a grade reads skin by, as in a shot.
+        !item.video_codec.is_empty()
+            && (item.is_still || item.duration.to_secs_f64() > 0.0)
             && model_path().is_some()
             && klipp_ml_ort::runtime_resolve::ensure_runtime_loadable().is_ok()
     }
@@ -391,9 +392,10 @@ impl crate::Analyser for FramingAnalyser {
         let (model_id, model) = model_path().ok_or_else(|| format!("no detection model downloaded; ask with download_models ({MODEL_ID})"))?;
         let duration = item.duration.to_secs_f64();
         // The shots, as stored; a file with no shot analysis is cut
-        // into stretches of five seconds instead.
+        // into stretches of five seconds instead. A still is one shot,
+        // its one picture read once, at its start (#2490).
         let key = crate::store::key_for(&item.path).ok_or("file not readable")?;
-        let shots: Vec<(f64, f64)> = match crate::store::load(&key, crate::shots::ID, crate::shots::VERSION)
+        let shots: Vec<(f64, f64)> = if item.is_still { vec![(0.0, duration.max(0.1))] } else { match crate::store::load(&key, crate::shots::ID, crate::shots::VERSION)
             .and_then(|v| serde_json::from_value::<crate::shots::Shots>(v).ok())
         {
             Some(s) => s.shots.iter().map(|sh| (sh.start_secs, sh.end_secs)).collect(),
@@ -406,7 +408,7 @@ impl crate::Analyser for FramingAnalyser {
                 }
                 v
             }
-        };
+        } };
         let chosen: Vec<(f64, f64)> = if shots.len() > MAX_SHOTS {
             (0..MAX_SHOTS).map(|i| shots[i * shots.len() / MAX_SHOTS]).collect()
         } else {
@@ -415,10 +417,10 @@ impl crate::Analyser for FramingAnalyser {
         let mut times: Vec<(usize, f64)> = Vec::new();
         for (si, (a, b)) in chosen.iter().enumerate() {
             let len = b - a;
-            let n = if len < 1.0 { 1 } else { SAMPLES_PER_SHOT };
+            let n = if len < 1.0 || item.is_still { 1 } else { SAMPLES_PER_SHOT };
             for k in 0..n {
                 let t = a + len * (k as f64 + 0.5) / n as f64;
-                times.push((si, t.min(duration - 0.05).max(0.0)));
+                times.push((si, if item.is_still { 0.0 } else { t.min(duration - 0.05).max(0.0) }));
             }
         }
         // And a time grid, so a face is never more than a couple of
@@ -429,7 +431,7 @@ impl crate::Analyser for FramingAnalyser {
         const MAX_FRAMES: usize = 360;
         let step = GRID_SECS.max(duration / MAX_FRAMES as f64);
         let mut t = step / 2.0;
-        while t < duration {
+        while t < duration && !item.is_still {
             if !times.iter().any(|(_, x)| (x - t).abs() < step * 0.5) {
                 let si = chosen.iter().position(|(a, b)| t >= *a && t < *b).unwrap_or(chosen.len().saturating_sub(1));
                 times.push((si, t.min(duration - 0.05).max(0.0)));
