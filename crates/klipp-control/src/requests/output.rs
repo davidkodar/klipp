@@ -516,7 +516,7 @@ pub(crate) fn respond(
             if in_batch {
                 return read_in_batch("frame_stats");
             }
-            let (data, width, height) = grab_frame_rgba(ctx, secs, timeout_ms)?;
+            let (data, width, height, clip) = grab_picture_rgba(ctx, secs, timeout_ms)?;
             let mut v = frame_stats(&data, width, height, secs);
             let faces = skin_regions(ctx, secs, &data, width, height);
             let mut m = klipp_color::measure::measure_frame(&data, width, height, &faces);
@@ -550,6 +550,10 @@ pub(crate) fn respond(
                 }
             }
             text.push_str(&format!("\nAgainst the look \"{}\": {}", look.name, findings.iter().filter(|f| f.verdict != klipp_color::measure::Verdict::Pass).map(|f| format!("{:?} {}", f.verdict, f.what)).collect::<Vec<_>>().join("; ").replace("Fail", "FAIL").replace("Warn", "warn")));
+            if let Some(c) = clip {
+                text.push_str("\nRead from the picture clip alone: titles and clips above it, and its fill, shadow or glow, are left out.");
+                v["clip_id"] = json!(c.0.to_string());
+            }
             v["text"] = json!(text);
             v["lab"] = json!(m);
             v["look"] = json!(look);

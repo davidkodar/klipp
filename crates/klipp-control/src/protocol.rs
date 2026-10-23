@@ -1173,7 +1173,9 @@ pub enum ControlCommand {
     },
     /// A scope image of a frame: waveform, parade, vectorscope or
     /// histogram, GPU-drawn from the frame at `secs`, written to `path`.
-    /// Measures the frame without disturbing the viewer's own scopes.
+    /// Measures the frame without disturbing the viewer's own scopes:
+    /// the picture clip there alone, before titles and clips above it and
+    /// without its fill, shadow or glow (#2475).
     Scope {
         #[serde(default)]
         mode: Option<String>,
@@ -1554,7 +1556,8 @@ pub enum ControlCommand {
     /// `secs`: the black, mid and white luma points, the RGB balance,
     /// the saturation, how much is clipped, and where skin tones sit —
     /// so a grade is set to numbers, not by eye. Seeks there and back
-    /// like frame_at.
+    /// like frame_at. Read from the picture clip there alone, as the
+    /// scope is.
     FrameStats {
         secs: f64,
         #[serde(default)]

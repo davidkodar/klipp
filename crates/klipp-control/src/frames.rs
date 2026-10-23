@@ -89,6 +89,15 @@ pub(crate) fn grab_frame_rgba_of(ctx: &ControlContext, secs: f64, only: Option<k
     Ok((data[..expected].to_vec(), width, height))
 }
 
+/// The frame a grading read measures (#2475): the picture clip at `secs`
+/// alone, before the titles and overlays above it and without the fill,
+/// shadow or glow it draws around itself, and that clip; the whole frame
+/// when no picture clip is there.
+pub(crate) fn grab_picture_rgba(ctx: &ControlContext, secs: f64, timeout_ms: Option<u64>) -> Result<(Vec<u8>, u32, u32, Option<klipp_core::ClipId>), String> {
+    let clip = picture_clip_at(ctx, secs);
+    grab_frame_rgba_of(ctx, secs, clip, timeout_ms).map(|(d, w, h)| (d, w, h, clip))
+}
+
 /// A frame read in progress: ending it, or dropping it on an early
 /// return, puts the viewer back as it was — the engine rendering the
 /// whole picture again after a clip-alone read (#719), then the playhead
@@ -126,8 +135,8 @@ impl Drop for SoloRead<'_> {
 /// 3 histogram) of the frame at `secs`, as RGBA plus its size. Grabs the
 /// frame, has the engine draw the scope into its snapshot store — apart
 /// from the viewer's live scopes — and reads it back.
-pub(crate) fn grab_scope(ctx: &ControlContext, mode: u8, secs: f64, timeout_ms: Option<u64>) -> Result<(Vec<u8>, u32, u32), String> {
-    let (rgba, w, h) = grab_frame_rgba(ctx, secs, timeout_ms)?;
+pub(crate) fn grab_scope(ctx: &ControlContext, mode: u8, secs: f64, timeout_ms: Option<u64>) -> Result<(Vec<u8>, u32, u32, bool), String> {
+    let (rgba, w, h, clip) = grab_picture_rgba(ctx, secs, timeout_ms)?;
     let before = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?
         .snapshot_scope_textures.get(&mode).map(|e| e.generation);
     send_envelope(ctx, vec![AppCommand::RenderScopeSnapshot { modes: vec![mode], rgba, width: w, height: h }], false)?;
@@ -138,7 +147,7 @@ pub(crate) fn grab_scope(ctx: &ControlContext, mode: u8, secs: f64, timeout_ms: 
             let fb = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?;
             if let Some(e) = fb.snapshot_scope_textures.get(&mode) {
                 if !e.data.is_empty() && Some(e.generation) != before {
-                    return Ok((e.data.clone(), e.w, e.h));
+                    return Ok((e.data.clone(), e.w, e.h, clip.is_some()));
                 }
             }
         }

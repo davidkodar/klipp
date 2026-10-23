@@ -3716,6 +3716,15 @@ impl Renderer {
             self.found.ungraded = Some(before);
         }
         let (mut fx, opacity) = clip_effects(clip, time, fps, transforms.get(&clip.id).copied(), self.pins.get(&clip.id).copied());
+        // Measured alone, the clip is its own picture (#2475): a fill in
+        // its bars, a shadow or a glow drawn around it is not its footage,
+        // and a fill hid the bars the measure leaves out. Each is an
+        // identity in its place, so the chain keeps its order.
+        if self.inspect.only == Some(clip.id) {
+            for e in fx.iter_mut().filter(|e| klipp_effects::draws_outside_the_picture(e)) {
+                *e = BuiltinEffect::Opacity { value: 1.0 };
+            }
+        }
         self.authored_colours(&mut fx);
         self.at_render_scale(&mut fx);
         self.title_light(clip, &mut fx);
