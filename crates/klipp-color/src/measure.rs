@@ -1869,7 +1869,10 @@ pub fn judge(m: &FrameMeasure, t: &LookTarget) -> Vec<Finding> {
     if let (Some(ta), Some(tb)) = (t.cast_a, t.cast_b) {
         if m.neutral_pct >= 1.0 {
             let off = ((m.cast_a - ta).powi(2) + (m.cast_b - tb).powi(2)).sqrt();
-            let dir = cast_name(m.cast_a - ta, m.cast_b - tb);
+            // Said against the look's target, not as the frame's own cast:
+            // a warm frame short of a warmer target read "toward blue
+            // (cool)" with its b* positive (#2493).
+            let dir = cast_against_target(m.cast_a - ta, m.cast_b - tb);
             // Without a true neutral in the frame there is nothing to
             // balance to, so the reading is a note, never a failure.
             let verdict = if !m.neutral_solid {
@@ -1886,7 +1889,7 @@ pub fn judge(m: &FrameMeasure, t: &LookTarget) -> Vec<Finding> {
             } else {
                 "nothing in the frame is neutral, so this is its least-coloured quarter and may be the subject's own colour".to_string()
             };
-            out.push(Finding { rule: "cast", verdict, reading: off, target: 0.0, tolerance: 3.0, what: format!("neutrals sit {off:.1} toward {dir} (a* {:.1}, b* {:.1}; {how})", m.cast_a, m.cast_b), fix: "temperature (b*) and tint (a*) until the neutrals read a* b* near the target" });
+            out.push(Finding { rule: "cast", verdict, reading: off, target: 0.0, tolerance: 3.0, what: format!("neutrals sit {off:.1} {dir} the look's target (a* {:.1}, b* {:.1} against its {ta:.1}, {tb:.1}; {how})", m.cast_a, m.cast_b), fix: "temperature (b*) and tint (a*) until the neutrals read a* b* near the target" });
         }
     }
     // Camera log with no input transform on it: everything below would
@@ -1985,6 +1988,20 @@ pub fn cast_name(a: f32, b: f32) -> &'static str {
         171..=230 => "cyan",
         231..=320 => "blue (cool)",
         _ => "magenta",
+    }
+}
+
+/// How a reading `a`/`b` off a target leans, as a comparison with it:
+/// "cooler (bluer) than", and so on round [`cast_name`]'s hues.
+pub fn cast_against_target(a: f32, b: f32) -> &'static str {
+    match cast_name(a, b) {
+        "magenta-red" => "redder than",
+        "orange (warm)" => "warmer than",
+        "yellow" => "yellower than",
+        "green" => "greener than",
+        "cyan" => "more cyan than",
+        "blue (cool)" => "cooler (bluer) than",
+        _ => "more magenta than",
     }
 }
 
@@ -3037,5 +3054,24 @@ mod range_tests {
         assert!(!range_tag_holds("pc", &limited_ui), "a limited picture tagged full");
         assert!(range_tag_holds("pc", &full_ui));
         assert!(!range_tag_holds("unknown", &full_ui) && !range_tag_holds("tv", &[]));
+    }
+}
+
+#[cfg(test)]
+mod cast_wording_tests {
+    use super::*;
+
+    /// #2493: a warm frame short of a warmer look reads as cooler than
+    /// the look's target, its own b* still positive in the line; it said
+    /// "toward blue (cool)", as if the frame were blue.
+    #[test]
+    fn a_cast_is_said_against_the_looks_target() {
+        let m = FrameMeasure { neutral_pct: 30.0, neutral_solid: true, cast_a: 0.5, cast_b: 4.0, ..Default::default() };
+        let look = LookTarget { cast_a: Some(0.5), cast_b: Some(15.6), ..LookTarget::preset("broadcast_neutral").unwrap() };
+        let cast = judge(&m, &look).into_iter().find(|f| f.rule == "cast").expect("a cast finding");
+        assert!(cast.what.starts_with("neutrals sit 11.6 cooler (bluer) than the look's target"), "{}", cast.what);
+        assert!(cast.what.contains("b* 4.0 against its 0.5, 15.6"), "{}", cast.what);
+        assert_eq!(cast_against_target(0.0, 5.0), "yellower than");
+        assert_eq!(cast_against_target(4.0, 3.0), "warmer than");
     }
 }

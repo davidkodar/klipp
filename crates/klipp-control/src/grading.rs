@@ -46,6 +46,17 @@ pub(crate) fn skin_regions(ctx: &ControlContext, secs: f64, data: &[u8], w: u32,
     let source = clip.source_secs_at((secs - clip.timeline_in.to_secs_f64()).max(0.0), seq.fps.as_f64());
     let Some(framing) = klipp_analysis::report::MediaAnalysis::load(&item.path).framing else { return Vec::new() };
     let Some(sample) = framing.people_at(source, 4.0) else { return Vec::new() };
+    let source_h = if item.source_rotation.rem_euclid(180) == 90 { item.resolution.width } else { item.resolution.height };
+    skin_regions_in(sample, framing.detects_faces(), source_h, data, w, h)
+}
+
+/// [`skin_regions`] for one framing `sample` of a file `source_h` pixels
+/// tall, with `detects_faces` whether a face model looked.
+pub(crate) fn skin_regions_in(sample: &klipp_analysis::framing::FrameSample, detects_faces: bool, source_h: u32, data: &[u8], w: u32, h: u32) -> Vec<[f32; 4]> {
+    // Too few of the file's own pixels to read skin from (#2493): on a
+    // low-resolution clip a face a dozen pixels tall read as background,
+    // and failed the look.
+    let readable = |fh: f32| source_h == 0 || fh * source_h as f32 >= MIN_SKIN_PX;
     if !sample.faces.is_empty() {
         // The cheek band between the eyes and the mouth, which is skin
         // and nothing else; the box drawn in, when the landmarks are no
@@ -53,17 +64,24 @@ pub(crate) fn skin_regions(ctx: &ControlContext, secs: f64, data: &[u8], w: u32,
         return sample
             .faces
             .iter()
+            .filter(|f| readable(f.h))
             .map(|f| klipp_color::measure::skin_band(&f.landmarks).unwrap_or([f.x + f.w * 0.12, f.y + f.h * 0.15, f.w * 0.76, f.h * 0.72]))
             .collect();
     }
     // A face detector looked and saw no face: someone walking away, or
     // too small. There is no skin to read, and the back of a head read
     // as one failed every skin check on hair.
-    if framing.detects_faces() {
+    if detects_faces {
         return Vec::new();
     }
-    sample.people.iter().map(|p| { let p = [p.0, p.1, p.2, p.3]; klipp_color::measure::skin_region(data, w, h, p).unwrap_or_else(|| klipp_color::measure::head_region(p)) }).collect()
+    // A person's skin, where their box has any: a head's place guessed
+    // in a box with none is the background behind them (#2493).
+    sample.people.iter().filter_map(|p| klipp_color::measure::skin_region(data, w, h, [p.0, p.1, p.2, p.3])).filter(|r| readable(r[3])).collect()
 }
+
+/// The fewest of the file's own pixel rows a face or skin region needs to
+/// be read as skin (#2493).
+const MIN_SKIN_PX: f32 = 24.0;
 
 /// The face's path across a clip, as window keys in clip time.
 ///
@@ -1222,5 +1240,27 @@ mod delivery_tests {
         assert!(delivery_findings(-7.1, 0.4, None, -1.0)[0].2.contains("-7.1 LUFS") , "the measurement said");
         // Silence: measured, nothing judged.
         assert_eq!(rules(&delivery_findings(-70.0, -90.0, Some(-14.0), -1.0)), vec![(Note, "loudness_measured")]);
+    }
+}
+
+#[cfg(test)]
+mod skin_region_tests {
+    use super::skin_regions_in;
+    use klipp_analysis::framing::{FaceBox, FrameSample};
+
+    /// #2493: a face too few of the file's pixels tall to read skin
+    /// from is not read, and with no face model a person whose box holds
+    /// no skin gives none: a head's place guessed there was background.
+    #[test]
+    fn a_face_too_small_or_a_person_with_no_skin_is_not_read() {
+        let face = |h: f32| FaceBox { x: 0.4, y: 0.2, w: h * 0.75, h, score: 0.95, landmarks: vec![] };
+        let grey = vec![128u8; 64 * 36 * 4];
+        let sample = FrameSample { secs: 0.0, people: vec![(0.3, 0.1, 0.4, 0.8)], faces: vec![face(0.03), face(0.3)] };
+        // At 360 rows the small face is 11 rows; at 2160, 65.
+        assert_eq!(skin_regions_in(&sample, true, 360, &grey, 64, 36).len(), 1, "only the large face at 360p");
+        assert_eq!(skin_regions_in(&sample, true, 2160, &grey, 64, 36).len(), 2, "both at 2160p");
+        // No face model, a grey person: nothing to read.
+        let person = FrameSample { secs: 0.0, people: vec![(0.3, 0.1, 0.4, 0.8)], faces: vec![] };
+        assert!(skin_regions_in(&person, false, 360, &grey, 64, 36).is_empty());
     }
 }
