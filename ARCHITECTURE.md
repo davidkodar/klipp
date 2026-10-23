@@ -235,12 +235,14 @@ set's `retired` list rather than freed, so the pointer a plugin was given
 reads the same bytes until `remove_propset` destroys the set, as the OFX
 spec expects (#2449).
 
-One known latent issue remains: `paramGetValue` / `paramSetValue` (and
-the `…AtTime`, derivative and integral getters) are variadic in the OFX
-spec but implemented as non-variadic and `mem::transmute`'d into the
-suite table (`param.rs`). This works today by coincidence on the x86-64
-SysV ABI with the OpenFX C++ support lib's call convention, but is
-formally UB. How to fix it is still open.
+`paramGetValue` / `paramSetValue` and the `…AtTime`, derivative and
+integral getters are variadic in the OFX spec, and are C functions in
+`klipp-plugin/src/ofx_param_shim.c`, built by `build.rs` with the `cc`
+crate (#2455): only C reads a `va_list`. Each asks Rust what the
+parameter holds (`klipp_ofx_param_shape`: double, int or string, and how
+many components), reads that many arguments, a pointer per component to
+get into or each value as C promotes it to set, and calls a typed Rust
+function with a plain array, inside the same `ofx_guard!`.
 
 ### File I/O trust boundary
 

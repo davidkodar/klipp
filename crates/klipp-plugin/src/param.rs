@@ -15,12 +15,12 @@
 //! value` writes are sound: the null check has already fired, and
 //! plugins that pass non-owned pointers violate the OFX spec.
 //!
-//! **The one non-obvious unsafe site** is the `PARAM_SUITE_V1`
-//! construction at the bottom of this file, where non-variadic
-//! implementations are `mem::transmute`'d into the variadic fn
-//! pointer slots the OFX ABI defines. That block carries its own
-//! long-form `// SAFETY:` comment explaining why it works in
-//! practice (and why it's formally unsound — tracked as CRIT-1).
+//! The suite's variadic members (paramGetValue, paramSetValue and their
+//! AtTime, Derivative and Integral forms) are C functions in
+//! `ofx_param_shim.c` (#2455): only C reads a `va_list`. Each asks
+//! [`klipp_ofx_param_shape`] what the parameter holds, reads or writes
+//! that many arguments, and calls one of the typed functions here with a
+//! plain array.
 
 use crate::ffi::*;
 use crate::property::PropertySet;
@@ -447,21 +447,26 @@ fn value_at_time(keyframes: &[Keyframe], time: f64) -> Option<ParamValue> {
     Some(interpolate_param(&k0.value, &k1.value, t))
 }
 
-/// Extract the first f64 from a ParamValue (for derivative/integral math).
-fn param_value_as_f64(v: &ParamValue) -> f64 {
+/// A value's numbers, each component, for derivative and integral math:
+/// a 2D or 3D double, an RGB or RGBA has one per component.
+fn components(v: &ParamValue) -> Vec<f64> {
     match v {
-        ParamValue::Double(v) => *v,
-        ParamValue::Int(v) => *v as f64,
-        ParamValue::Bool(v) => if *v { 1.0 } else { 0.0 },
-        ParamValue::Choice(v) => *v as f64,
-        ParamValue::Double2(a, _) => *a,
-        ParamValue::Double3(a, _, _) => *a,
-        ParamValue::Int2(a, _) => *a as f64,
-        ParamValue::Int3(a, _, _) => *a as f64,
-        ParamValue::Rgba(r, _, _, _) => *r,
-        ParamValue::Rgb(r, _, _) => *r,
-        _ => 0.0,
+        ParamValue::Double(v) => vec![*v],
+        ParamValue::Int(v) | ParamValue::Choice(v) => vec![*v as f64],
+        ParamValue::Bool(v) => vec![if *v { 1.0 } else { 0.0 }],
+        ParamValue::Double2(a, b) => vec![*a, *b],
+        ParamValue::Double3(a, b, c) | ParamValue::Rgb(a, b, c) => vec![*a, *b, *c],
+        ParamValue::Int2(a, b) => vec![*a as f64, *b as f64],
+        ParamValue::Int3(a, b, c) => vec![*a as f64, *b as f64, *c as f64],
+        ParamValue::Rgba(r, g, b, a) => vec![*r, *g, *b, *a],
+        _ => Vec::new(),
     }
+}
+
+/// Write `vals` to `out`, as many as the parameter's type has: each
+/// component of a derivative or an integral.
+unsafe fn write_components(out: *mut c_void, vals: &[f64]) {
+    write_f64s(out, &vals[..vals.len().min(4)]);
 }
 
 /// Insert a keyframe at the given time (sorted), replacing if time matches.
@@ -688,9 +693,8 @@ unsafe extern "C" fn param_get_property_set_fn(
     })
 }
 
-/// paramGetValue — reads the current value into output pointer(s).
-/// The C signature is variadic but we receive it as a single *mut c_void
-/// pointing to the first output argument. We dispatch based on param type.
+/// paramGetValue — the current value into `out`: the shim's array of the
+/// parameter's components (doubles or 32-bit ints), or a string pointer.
 pub(crate) unsafe extern "C" fn param_get_value_fn(handle: OfxParamHandle, out: *mut c_void) -> OfxStatus {
     ofx_guard!({
     check_non_null!(out);
@@ -748,9 +752,10 @@ unsafe extern "C" fn param_get_derivative_fn(
         return K_OFX_STAT_ERR_BAD_HANDLE;
     };
 
+    let n = components(&pi.value).len().max(1);
     if pi.keyframes.len() < 2 {
         // Constant — derivative is 0
-        *(out as *mut f64) = 0.0;
+        write_components(out, &vec![0.0; n]);
         return K_OFX_STAT_OK;
     }
 
@@ -766,13 +771,13 @@ unsafe extern "C" fn param_get_derivative_fn(
     };
 
     let dt = k1.time - k0.time;
-    let derivative = if dt.abs() < KEYFRAME_TIME_EPSILON {
-        0.0
+    let derivative: Vec<f64> = if dt.abs() < KEYFRAME_TIME_EPSILON {
+        vec![0.0; n]
     } else {
-        (param_value_as_f64(&k1.value) - param_value_as_f64(&k0.value)) / dt
+        components(&k1.value).iter().zip(components(&k0.value)).map(|(b, a)| (b - a) / dt).collect()
     };
 
-    *(out as *mut f64) = derivative;
+    write_components(out, &derivative);
     K_OFX_STAT_OK
     })
 }
@@ -795,17 +800,22 @@ unsafe extern "C" fn param_get_integral_fn(
 
     if pi.keyframes.is_empty() {
         // Constant value — integral = value * duration
-        let v = param_value_as_f64(&pi.value);
-        *(out as *mut f64) = v * (time2 - time1);
+        let v: Vec<f64> = components(&pi.value).iter().map(|v| v * (time2 - time1)).collect();
+        write_components(out, &v);
         return K_OFX_STAT_OK;
     }
 
-    // Trapezoidal integration: sample at keyframe boundaries within [time1, time2]
+    // Trapezoidal integration, each component: sample at keyframe
+    // boundaries within [time1, time2]
     let kf = &pi.keyframes;
-    let mut integral = 0.0;
     let mut t_prev = time1;
-    let v_prev_val = value_at_time(kf, time1).unwrap_or_else(|| pi.value.clone());
-    let mut v_prev = param_value_as_f64(&v_prev_val);
+    let mut v_prev = components(&value_at_time(kf, time1).unwrap_or_else(|| pi.value.clone()));
+    let mut integral = vec![0.0; v_prev.len()];
+    let add = |integral: &mut Vec<f64>, a: &[f64], b: &[f64], dt: f64| {
+        for (i, (a, b)) in a.iter().zip(b).enumerate() {
+            integral[i] += (a + b) * 0.5 * dt;
+        }
+    };
 
     for k in kf {
         if k.time <= time1 {
@@ -814,18 +824,17 @@ unsafe extern "C" fn param_get_integral_fn(
         if k.time >= time2 {
             break;
         }
-        let v_curr = param_value_as_f64(&k.value);
-        integral += (v_prev + v_curr) * 0.5 * (k.time - t_prev);
+        let v_curr = components(&k.value);
+        add(&mut integral, &v_prev, &v_curr, k.time - t_prev);
         t_prev = k.time;
         v_prev = v_curr;
     }
 
     // Final segment to time2
-    let v_end_val = value_at_time(kf, time2).unwrap_or_else(|| pi.value.clone());
-    let v_end = param_value_as_f64(&v_end_val);
-    integral += (v_prev + v_end) * 0.5 * (time2 - t_prev);
+    let v_end = components(&value_at_time(kf, time2).unwrap_or_else(|| pi.value.clone()));
+    add(&mut integral, &v_prev, &v_end, time2 - t_prev);
 
-    *(out as *mut f64) = integral;
+    write_components(out, &integral);
     K_OFX_STAT_OK
     })
 }
@@ -1143,61 +1152,200 @@ unsafe extern "C" fn param_edit_end_fn(_param_set: OfxParamSetHandle) -> OfxStat
     })
 }
 
-/// Static OfxParameterSuiteV1 table.
-///
-/// The variadic functions (paramGetValue, paramSetValue, etc.) are stored as
-/// non-variadic function pointers. This is **formally unsound** and only works
-/// by coincidence — see the SAFETY comment below.
-#[allow(clippy::missing_transmute_annotations)]
-pub static PARAM_SUITE_V1: OfxParameterSuiteV1 = {
-    // SAFETY: this transmute is the known-unsound hack documented as a
-    // critical item in the workspace audit. The OFX spec defines
-    // paramGetValue / paramSetValue etc. as variadic C functions —
-    // `extern "C" fn(handle, ...) -> OfxStatus`. Our implementations
-    // are non-variadic and expect contiguous pointer arguments.
-    //
-    // On x86_64 SysV, a variadic caller places the first pointer arg
-    // in `rsi`, the second in `rdx`, the third in `rcx` — and also
-    // sets the `al` register to indicate the number of vector regs
-    // used. Our non-variadic callee reads `rsi` as `out` and then
-    // does `*out.add(1)` / `*out.add(2)` for multi-component params,
-    // effectively assuming the plugin has laid out its output
-    // pointers *contiguously* on its own stack.
-    //
-    // That happens to be true in the common case because the OpenFX
-    // C++ support library (which every plugin we've tested uses)
-    // passes struct fields from a single local struct, so the
-    // pointers *are* contiguous. For a hypothetical plugin that
-    // passed separate stack locals, `*out.add(1)` would write into
-    // an arbitrary location adjacent to `out_int_0` on the plugin's
-    // stack — a silent out-of-bounds write.
-    //
-    // The correct long-term fix is either a nightly `c_variadic`
-    // implementation or a redesign to per-type entry points
-    // (`paramGetValue_Double2D` etc.). Both are out-of-scope for the
-    // current audit pass and tracked as R-17 / CRIT-1. For now this
-    // transmute is the least-worst option — the alternative is
-    // plugins that simply can't talk to the host.
-    unsafe {
-        OfxParameterSuiteV1 {
-            param_define: param_define_fn,
-            param_get_handle: param_get_handle_fn,
-            param_set_get_property_set: param_set_get_property_set_fn,
-            param_get_property_set: param_get_property_set_fn,
-            param_get_value: std::mem::transmute(param_get_value_fn as unsafe extern "C" fn(OfxParamHandle, *mut c_void) -> OfxStatus),
-            param_get_value_at_time: std::mem::transmute(param_get_value_at_time_fn as unsafe extern "C" fn(OfxParamHandle, c_double, *mut c_void) -> OfxStatus),
-            param_get_derivative: std::mem::transmute(param_get_derivative_fn as unsafe extern "C" fn(OfxParamHandle, c_double, *mut c_void) -> OfxStatus),
-            param_get_integral: std::mem::transmute(param_get_integral_fn as unsafe extern "C" fn(OfxParamHandle, c_double, c_double, *mut c_void) -> OfxStatus),
-            param_set_value: std::mem::transmute(param_set_value_fn as unsafe extern "C" fn(OfxParamHandle, *const c_void) -> OfxStatus),
-            param_set_value_at_time: std::mem::transmute(param_set_value_at_time_fn as unsafe extern "C" fn(OfxParamHandle, c_double, *const c_void) -> OfxStatus),
-            param_get_num_keys: param_get_num_keys_fn,
-            param_get_key_time: param_get_key_time_fn,
-            param_get_key_index: param_get_key_index_fn,
-            param_delete_key: param_delete_key_fn,
-            param_delete_all_keys: param_delete_all_keys_fn,
-            param_copy: param_copy_fn,
-            param_edit_begin: param_edit_begin_fn,
-            param_edit_end: param_edit_end_fn,
+// ── The variadic members, through the C shim ──────────────────────
+
+/// What a parameter's value is, for `ofx_param_shim.c`.
+const PARAM_NONE: c_int = 0;
+const PARAM_DOUBLE: c_int = 1;
+const PARAM_INT: c_int = 2;
+const PARAM_STRING: c_int = 3;
+
+/// What the parameter holds, for the C shim to read or write that many
+/// arguments: its kind (double, int or string; none for a group, page,
+/// button or custom parameter) and how many components.
+#[export_name = "klipp_ofx_param_shape"]
+unsafe extern "C" fn param_shape_fn(handle: OfxParamHandle, kind: *mut c_int, count: *mut c_int) -> OfxStatus {
+    ofx_guard!({
+    check_non_null!(kind, count);
+    let store = PARAM_STORE.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(pi) = store.get(&(handle as usize)) else {
+        warn!("[OFX] paramGetValue/SetValue: BAD_HANDLE param={:?}", handle);
+        return K_OFX_STAT_ERR_BAD_HANDLE;
+    };
+    let (k, n) = match pi.descriptor.param_type {
+        ParamType::Double => (PARAM_DOUBLE, 1),
+        ParamType::Double2 => (PARAM_DOUBLE, 2),
+        ParamType::Double3 | ParamType::Rgb => (PARAM_DOUBLE, 3),
+        ParamType::Rgba => (PARAM_DOUBLE, 4),
+        ParamType::Int | ParamType::Bool | ParamType::Choice => (PARAM_INT, 1),
+        ParamType::Int2 => (PARAM_INT, 2),
+        ParamType::Int3 => (PARAM_INT, 3),
+        ParamType::String => (PARAM_STRING, 1),
+        ParamType::Group | ParamType::Page | ParamType::Parametric | ParamType::PushButton | ParamType::Custom => (PARAM_NONE, 0),
+    };
+    (*kind, *count) = (k, n);
+    K_OFX_STAT_OK
+    })
+}
+
+/// The value now, or at `time` when `at_time`, into the shim's array.
+#[export_name = "klipp_ofx_param_get_typed"]
+unsafe extern "C" fn param_get_typed_fn(handle: OfxParamHandle, at_time: c_int, time: c_double, out: *mut c_void) -> OfxStatus {
+    if at_time != 0 { param_get_value_at_time_fn(handle, time, out) } else { param_get_value_fn(handle, out) }
+}
+
+/// The value from the shim's array, set now, or keyed at `time` when `at_time`.
+#[export_name = "klipp_ofx_param_set_typed"]
+unsafe extern "C" fn param_set_typed_fn(handle: OfxParamHandle, at_time: c_int, time: c_double, input: *const c_void) -> OfxStatus {
+    if at_time != 0 { param_set_value_at_time_fn(handle, time, input) } else { param_set_value_fn(handle, input) }
+}
+
+#[export_name = "klipp_ofx_param_derivative_typed"]
+unsafe extern "C" fn param_derivative_typed_fn(handle: OfxParamHandle, time: c_double, out: *mut c_double) -> OfxStatus {
+    param_get_derivative_fn(handle, time, out as *mut c_void)
+}
+
+#[export_name = "klipp_ofx_param_integral_typed"]
+unsafe extern "C" fn param_integral_typed_fn(handle: OfxParamHandle, time1: c_double, time2: c_double, out: *mut c_double) -> OfxStatus {
+    param_get_integral_fn(handle, time1, time2, out as *mut c_void)
+}
+
+// In ofx_param_shim.c: the OFX signatures, variadic as C defines them.
+extern "C" {
+    fn klipp_ofx_param_get_value(handle: OfxParamHandle, ...) -> OfxStatus;
+    fn klipp_ofx_param_get_value_at_time(handle: OfxParamHandle, time: c_double, ...) -> OfxStatus;
+    fn klipp_ofx_param_get_derivative(handle: OfxParamHandle, time: c_double, ...) -> OfxStatus;
+    fn klipp_ofx_param_get_integral(handle: OfxParamHandle, time1: c_double, time2: c_double, ...) -> OfxStatus;
+    fn klipp_ofx_param_set_value(handle: OfxParamHandle, ...) -> OfxStatus;
+    fn klipp_ofx_param_set_value_at_time(handle: OfxParamHandle, time: c_double, ...) -> OfxStatus;
+}
+
+/// Static OfxParameterSuiteV1 table. Its variadic members are the C
+/// shim's, which read their arguments as C passes them (#2455).
+pub static PARAM_SUITE_V1: OfxParameterSuiteV1 = OfxParameterSuiteV1 {
+    param_define: param_define_fn,
+    param_get_handle: param_get_handle_fn,
+    param_set_get_property_set: param_set_get_property_set_fn,
+    param_get_property_set: param_get_property_set_fn,
+    param_get_value: klipp_ofx_param_get_value,
+    param_get_value_at_time: klipp_ofx_param_get_value_at_time,
+    param_get_derivative: klipp_ofx_param_get_derivative,
+    param_get_integral: klipp_ofx_param_get_integral,
+    param_set_value: klipp_ofx_param_set_value,
+    param_set_value_at_time: klipp_ofx_param_set_value_at_time,
+    param_get_num_keys: param_get_num_keys_fn,
+    param_get_key_time: param_get_key_time_fn,
+    param_get_key_index: param_get_key_index_fn,
+    param_delete_key: param_delete_key_fn,
+    param_delete_all_keys: param_delete_all_keys_fn,
+    param_copy: param_copy_fn,
+    param_edit_begin: param_edit_begin_fn,
+    param_edit_end: param_edit_end_fn,
+};
+
+#[cfg(test)]
+mod variadic_tests {
+    //! The suite's variadic members called as a C plug-in calls them
+    //! (#2455): one pointer per component to read into, each its own
+    //! variable, and values passed by value, promoted as C promotes them.
+    use super::*;
+
+    /// A parameter of `ofx_type` in a set of its own.
+    fn param(ofx_type: &std::ffi::CStr) -> OfxParamHandle {
+        let pset = register_param_set();
+        let mut props: OfxPropertySetHandle = std::ptr::null_mut();
+        // SAFETY: the suite's define, given a live set and NUL-terminated names.
+        assert_eq!(unsafe { param_define_fn(pset, ofx_type.as_ptr(), c"P".as_ptr(), &mut props) }, K_OFX_STAT_OK);
+        with_param_set(pset, |s| s.param_handles["P"]).unwrap() as OfxParamHandle
+    }
+
+    #[test]
+    fn every_kind_of_value_is_set_and_read_through_the_varargs() {
+        let s = &PARAM_SUITE_V1;
+        // SAFETY (all blocks): the suite's own entry points, given live
+        // handles and as many arguments as each parameter's type has.
+        unsafe {
+            let h = param(c"OfxParamTypeDouble");
+            assert_eq!((s.param_set_value)(h, 0.25f64), K_OFX_STAT_OK);
+            let mut a = 0.0f64;
+            assert_eq!((s.param_get_value)(h, &mut a as *mut f64), K_OFX_STAT_OK);
+            assert_eq!(a, 0.25);
+
+            let h = param(c"OfxParamTypeDouble2D");
+            (s.param_set_value)(h, 1.5f64, -2.0f64);
+            let (mut x, mut y) = (0.0f64, 0.0f64);
+            (s.param_get_value)(h, &mut x as *mut f64, &mut y as *mut f64);
+            assert_eq!((x, y), (1.5, -2.0));
+
+            for (ty, n) in [(c"OfxParamTypeDouble3D", 3), (c"OfxParamTypeRGB", 3), (c"OfxParamTypeRGBA", 4)] {
+                let h = param(ty);
+                match n {
+                    3 => (s.param_set_value)(h, 0.1f64, 0.2f64, 0.3f64),
+                    _ => (s.param_set_value)(h, 0.1f64, 0.2f64, 0.3f64, 0.4f64),
+                };
+                let (mut a, mut b, mut c, mut d) = (0.0f64, 0.0f64, 0.0f64, 9.0f64);
+                (s.param_get_value)(h, &mut a as *mut f64, &mut b as *mut f64, &mut c as *mut f64, &mut d as *mut f64);
+                assert_eq!((a, b, c), (0.1, 0.2, 0.3), "{ty:?}");
+                assert_eq!(d, if n == 4 { 0.4 } else { 9.0 }, "{ty:?}: no more than its components are written");
+            }
+
+            for (ty, v) in [(c"OfxParamTypeInteger", 7), (c"OfxParamTypeBoolean", 1), (c"OfxParamTypeChoice", 2)] {
+                let h = param(ty);
+                (s.param_set_value)(h, v as c_int);
+                let mut got: c_int = -1;
+                (s.param_get_value)(h, &mut got as *mut c_int);
+                assert_eq!(got, v, "{ty:?}");
+            }
+
+            let h = param(c"OfxParamTypeInteger2D");
+            (s.param_set_value)(h, 3 as c_int, -4 as c_int);
+            let (mut a, mut b): (c_int, c_int) = (0, 0);
+            (s.param_get_value)(h, &mut a as *mut c_int, &mut b as *mut c_int);
+            assert_eq!((a, b), (3, -4));
+
+            let h = param(c"OfxParamTypeInteger3D");
+            (s.param_set_value)(h, 5 as c_int, 6 as c_int, 7 as c_int);
+            let (mut a, mut b, mut c): (c_int, c_int, c_int) = (0, 0, 0);
+            (s.param_get_value)(h, &mut a as *mut c_int, &mut b as *mut c_int, &mut c as *mut c_int);
+            assert_eq!((a, b, c), (5, 6, 7));
+
+            let h = param(c"OfxParamTypeString");
+            (s.param_set_value)(h, c"a title".as_ptr());
+            let mut got: *const c_char = std::ptr::null();
+            (s.param_get_value)(h, &mut got as *mut *const c_char);
+            assert_eq!(CStr::from_ptr(got).to_str().unwrap(), "a title");
         }
     }
-};
+
+    #[test]
+    fn values_keyed_at_times_are_read_at_a_time_with_their_rates_and_areas() {
+        let s = &PARAM_SUITE_V1;
+        // SAFETY: as above.
+        unsafe {
+            let h = param(c"OfxParamTypeDouble2D");
+            assert_eq!((s.param_set_value_at_time)(h, 0.0f64, 1.0f64, 10.0f64), K_OFX_STAT_OK);
+            assert_eq!((s.param_set_value_at_time)(h, 10.0f64, 3.0f64, 0.0f64), K_OFX_STAT_OK);
+            let (mut x, mut y) = (0.0f64, 0.0f64);
+            assert_eq!((s.param_get_value_at_time)(h, 5.0f64, &mut x as *mut f64, &mut y as *mut f64), K_OFX_STAT_OK);
+            assert_eq!((x, y), (2.0, 5.0), "halfway between the keys");
+            let (mut dx, mut dy) = (0.0f64, 0.0f64);
+            assert_eq!((s.param_get_derivative)(h, 5.0f64, &mut dx as *mut f64, &mut dy as *mut f64), K_OFX_STAT_OK);
+            assert!((dx - 0.2).abs() < 1e-12 && (dy + 1.0).abs() < 1e-12, "each component's rate: {dx}, {dy}");
+            let (mut ix, mut iy) = (0.0f64, 0.0f64);
+            assert_eq!((s.param_get_integral)(h, 0.0f64, 10.0f64, &mut ix as *mut f64, &mut iy as *mut f64), K_OFX_STAT_OK);
+            assert!((ix - 20.0).abs() < 1e-9 && (iy - 50.0).abs() < 1e-9, "each component's area: {ix}, {iy}");
+
+            let h = param(c"OfxParamTypeInteger");
+            assert_eq!((s.param_set_value_at_time)(h, 2.0f64, 4 as c_int), K_OFX_STAT_OK);
+            let mut got: c_int = 0;
+            (s.param_get_value_at_time)(h, 2.0f64, &mut got as *mut c_int);
+            assert_eq!(got, 4);
+            let mut d = 0.0f64;
+            assert_eq!((s.param_get_derivative)(h, 2.0f64, &mut d as *mut f64), K_OFX_STAT_ERR_VALUE, "an integer has no derivative");
+
+            let bogus = 0x1 as OfxParamHandle;
+            assert_eq!((s.param_set_value)(bogus, 1.0f64), K_OFX_STAT_ERR_BAD_HANDLE);
+            assert_eq!((s.param_get_value)(bogus, &mut d as *mut f64), K_OFX_STAT_ERR_BAD_HANDLE);
+        }
+    }
+}

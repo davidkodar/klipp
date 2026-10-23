@@ -24,18 +24,12 @@
 //!   plugin. The guard converts any panic into
 //!   `K_OFX_STAT_ERR_FATAL` plus a `tracing::error!`.
 //!
-//! # Known outstanding issues
-//!
-//! * `param.rs`'s variadic-transmute — `paramGetValue` / `paramSetValue`
-//!   are variadic in the OFX spec but implemented here as non-variadic
-//!   and `mem::transmute`'d into the suite table. Works by coincidence
-//!   on x86-64 SysV ABI with the OpenFX C++ support lib's calling
-//!   convention, but is formally UB. Needs a per-type entry-point
-//!   redesign.
-//!
-//! It is tracked for a dedicated plugin-host refactor pass. (A string
-//! `prop_get_string_fn` returns now lives until its property set is
-//! destroyed, #2449.)
+//! The parameter suite's variadic members (`paramGetValue`,
+//! `paramSetValue` and their AtTime, Derivative and Integral forms) are C
+//! functions in `ofx_param_shim.c`, which read the arguments as C passes
+//! them and call typed Rust functions (#2455). A string
+//! `prop_get_string_fn` returns lives until its property set is
+//! destroyed (#2449).
 
 /// Guard an OFX callback against plugin-supplied null pointers.
 ///
