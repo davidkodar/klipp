@@ -24,15 +24,22 @@ pub(crate) fn respond(
                 return Err(format!("{} has no transcript yet (analysis: {state}); analyze it first", item.filename));
             };
             let words: Vec<(f64, f64, String)> = t.words.iter().map(|w| (w.start_secs, w.end_secs, w.text.clone())).collect();
-            if words.is_empty() {
-                return Err(format!("{} has no speech to cut down", item.filename));
-            }
-            let gap = min_gap_secs.unwrap_or(0.6).max(0.1);
-            let selects = suggest_selects(&words, gap, 0.35);
+            let dur = item.duration.to_secs_f64();
+            // A take with next to no speech, or words whose times the
+            // transcriber lost, is cut by its picture: its shots (#2489).
+            let by_picture = speech_too_thin(&words, dur);
+            let selects = if by_picture {
+                picture_selects(report.shots.as_ref().map(|s| s.boundaries.as_slice()).unwrap_or(&[]), dur)
+            } else {
+                suggest_selects(&words, min_gap_secs.unwrap_or(0.6).max(0.1), 0.35)
+            };
             let keep: Vec<&Select> = selects.iter().filter(|s| !s.filler).collect();
             let kept_secs: f64 = keep.iter().map(|s| s.out_secs - s.in_secs).sum();
-            let dur = item.duration.to_secs_f64();
-            let mut text = format!("{}: {} selects to keep out of {} runs, {:.1} s of {:.1} s ({:.0}%). Place each keep range, in order, closing the gaps.\n", item.filename, keep.len(), selects.len(), kept_secs, dur, if dur > 0.0 { 100.0 * kept_secs / dur } else { 0.0 });
+            let mut text = if by_picture {
+                format!("{}: too little speech to cut by ({} words over {:.1} s), so {} selects by picture, one a shot{}. Look at each (contact_sheet, find_shots) and keep what shows the brief.\n", item.filename, words.len(), dur, selects.len(), if report.shots.is_none() { "; its shots are not found yet, so the whole take is one: analyze it" } else { "" })
+            } else {
+                format!("{}: {} selects to keep out of {} runs, {:.1} s of {:.1} s ({:.0}%). Place each keep range, in order, closing the gaps.\n", item.filename, keep.len(), selects.len(), kept_secs, dur, if dur > 0.0 { 100.0 * kept_secs / dur } else { 0.0 })
+            };
             for s in &selects {
                 let mark = if s.filler { "drop" } else { "keep" };
                 let mut line = s.text.clone();
@@ -43,7 +50,7 @@ pub(crate) fn respond(
             Ok(json!({
                 "text": text, "cut": cut, "media_id": media_id, "filename": item.filename,
                 "selects": selects.iter().map(|s| json!({ "in_secs": s.in_secs, "out_secs": s.out_secs, "text": s.text, "keep": !s.filler })).collect::<Vec<_>>(),
-                "kept_secs": kept_secs, "duration_secs": dur,
+                "kept_secs": kept_secs, "duration_secs": dur, "by": if by_picture { "picture" } else { "speech" },
                 "next": "Place each keep range (place with the clip's source in/out at these times), in order, on the timeline; drop the rest. Then cover any jump cuts and check.",
             }))
         }

@@ -355,14 +355,11 @@ pub(crate) fn respond(
                 return Err("translate_captions runs a translation model; send it on its own".into());
             }
             let to = to.trim().to_ascii_lowercase();
-            let from = match from.map(|f| f.trim().to_ascii_lowercase()) {
-                Some(f) => f,
-                None if to == "en" => return Err("name the captions' language with from (de, fr, es, sv, it or nl) to translate into English".into()),
-                None => "en".into(),
-            };
             let pairs = || tr::PAIRS.iter().map(|p| format!("{}→{}", p.source, p.target)).collect::<Vec<_>>().join(", ");
-            let pair = tr::pair(&from, &to).ok_or_else(|| format!("no translation from {from} to {to}; the pairs are {}", pairs()))?;
-            let (track_id, sentences) = {
+            if !tr::PAIRS.iter().any(|p| p.target == to) {
+                return Err(format!("no translation into {to}; the pairs are {}", pairs()));
+            }
+            let (track_id, sentences, tagged) = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
                 let ti = match track {
                     Some(t) => t,
@@ -377,8 +374,18 @@ pub(crate) fn respond(
                 if !matches!(t.kind, klipp_timeline::TrackKind::Subtitle | klipp_timeline::TrackKind::Text) {
                     return Err(format!("track {ti} is not a subtitle or text track"));
                 }
-                (t.id, ct::sentences(&ct::captions(&seq, ti)))
+                // The track's own language, when it is tagged with one
+                // (set_track language, or a translation's): the captions
+                // are in it (#2489). A region (pt-br) is the language's.
+                let tagged = t.language.as_deref().map(|l| l.split('-').next().unwrap_or(l).to_string());
+                (t.id, ct::sentences(&ct::captions(&seq, ti)), tagged)
             };
+            let from = match from.map(|f| f.trim().to_ascii_lowercase()).or(tagged) {
+                Some(f) => f,
+                None if to == "en" => return Err("name the captions' language with from (de, fr, es, sv, it or nl), or tag the track with it (set_track language), to translate into English".into()),
+                None => "en".into(),
+            };
+            let pair = tr::pair(&from, &to).ok_or_else(|| format!("no translation from {from} to {to}; the pairs are {}", pairs()))?;
             if sentences.is_empty() {
                 return Err("that track has no captions to translate".into());
             }

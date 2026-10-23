@@ -253,6 +253,44 @@ pub struct Line {
     pub cut: Option<&'static str>,
 }
 
+/// How many words `text` has.
+fn words(text: &str) -> usize {
+    text.split_whitespace().count()
+}
+
+/// Whether a translation of `source` came back with too few words to
+/// hold it all: under half of a line of eight words or more. A
+/// translation runs somewhat shorter or longer than its source, never
+/// half; OPUS-MT drops a clause of a long sentence now and then.
+pub fn left_some_out(source: &str, translation: &str) -> bool {
+    let n = words(source);
+    n >= 8 && words(translation) * 2 < n
+}
+
+/// `source` in its clauses, cut after a comma, semicolon or colon, or at
+/// its middle word when it has none: each short enough that the model
+/// keeps it whole. Every word lands in one, in order.
+pub fn clauses(source: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut cur: Vec<&str> = Vec::new();
+    for w in source.split_whitespace() {
+        cur.push(w);
+        if w.ends_with([',', ';', ':']) && cur.len() >= 2 {
+            out.push(cur.join(" "));
+            cur.clear();
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur.join(" "));
+    }
+    if out.len() == 1 {
+        let all: Vec<&str> = source.split_whitespace().collect();
+        let mid = all.len() / 2;
+        return [all[..mid].join(" "), all[mid..].join(" ")].into_iter().filter(|s| !s.is_empty()).collect();
+    }
+    out
+}
+
 /// The most tokens of a line the encoder reads: its 512 positions, less
 /// room for `</s>`. A longer line is translated up to there and flagged.
 pub const MAX_INPUT_TOKENS: usize = 500;
@@ -316,7 +354,20 @@ fn run(id: &str, pair: &Pair, lines: &[String], cancel: &std::sync::atomic::Atom
             if cancel.load(std::sync::atomic::Ordering::Relaxed) {
                 return Err(CANCELLED.into());
             }
-            out.push(t.translate(line).map_err(|e| e.to_string())?);
+            let mut said = t.translate(line).map_err(|e| e.to_string())?;
+            // A clause the model left out (#2489): the line again a clause
+            // at a time, kept when it says more.
+            if said.cut.is_none() && left_some_out(line, &said.text) {
+                let mut parts = Vec::new();
+                for clause in clauses(line) {
+                    parts.push(t.translate(&clause).map_err(|e| e.to_string())?.text);
+                }
+                let again = parts.join(" ");
+                if words(&again) > words(&said.text) {
+                    said.text = again;
+                }
+            }
+            out.push(said);
             jobs::update(id, |j| {
                 j.phase = "translating";
                 j.done = i + 1;
@@ -669,6 +720,21 @@ mod tests {
         let json = r#"{"model":{"type":"Unigram","unk_id":2,"vocab":[
             ["</s>",0.0],["<unk>",0.0],["▁",-5.0],["▁the",-1.0],["▁cat",-1.5],["▁ca",-3.0],["t",-2.0],["s",-2.5],["▁sleep",-2.0],["<pad>",0.0]]}}"#;
         Unigram::from_json(json).unwrap()
+    }
+
+    /// #2489: a translation with under half its source's words lost a
+    /// clause; the source is then cut into its clauses, every word kept.
+    #[test]
+    fn a_translation_that_left_a_clause_out_is_told() {
+        let source = "We went down to the harbour with my grandmother, and she showed us the boats.";
+        assert!(left_some_out(source, "Wir gingen zum Hafen."));
+        assert!(!left_some_out(source, "Wir gingen mit meiner Großmutter zum Hafen, und sie zeigte uns die Boote."));
+        assert!(!left_some_out("Thank you all.", "Danke."), "a short line is left alone");
+        let parts = clauses(source);
+        assert_eq!(parts, ["We went down to the harbour with my grandmother,", "and she showed us the boats."]);
+        let plain = clauses("one two three four five six seven eight");
+        assert_eq!(plain.join(" "), "one two three four five six seven eight");
+        assert_eq!(plain.len(), 2, "cut at the middle with no commas");
     }
 
     #[test]

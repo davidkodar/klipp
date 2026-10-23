@@ -21,6 +21,34 @@ pub(crate) fn is_filler_word(w: &str) -> bool {
     matches!(t.as_str(), "um" | "uh" | "uhh" | "umm" | "erm" | "er" | "hmm" | "mm" | "mmm" | "ah" | "eh")
 }
 
+/// Whether a take's words are too thin to cut it by (#2489): a take of
+/// half a minute or more with speech under a tenth of it, or words whose
+/// times collapsed (most under a twentieth of a second, the transcriber
+/// unsure where they fell). A select made of them is a word for a whole
+/// take, or seven words in a quarter second.
+pub fn speech_too_thin(words: &[(f64, f64, String)], duration_secs: f64) -> bool {
+    if words.is_empty() {
+        return true;
+    }
+    let spoken: f64 = words.iter().map(|(a, b, _)| (b - a).max(0.0)).sum();
+    let collapsed = words.iter().filter(|(a, b, _)| b - a < 0.05).count();
+    (duration_secs >= 30.0 && spoken < duration_secs * 0.1) || collapsed * 2 > words.len()
+}
+
+/// A take's selects from its picture: one per shot, at the shot changes
+/// the analysis found (`boundaries`, after the first shot's start), the
+/// whole take as one when it found none.
+pub fn picture_selects(boundaries: &[f64], duration_secs: f64) -> Vec<Select> {
+    let mut edges: Vec<f64> = std::iter::once(0.0).chain(boundaries.iter().copied().filter(|b| *b > 0.0 && *b < duration_secs)).collect();
+    edges.push(duration_secs);
+    edges
+        .windows(2)
+        .enumerate()
+        .filter(|(_, w)| w[1] - w[0] > 0.0)
+        .map(|(k, w)| Select { in_secs: w[0], out_secs: w[1], text: format!("shot {} (picture)", k + 1), filler: false })
+        .collect()
+}
+
 /// Group a long take's words into selects — the runs of speech between
 /// the real pauses — so an agent can keep the good takes and drop the
 /// dead air and the filler, building a tight cut from a loose one. A gap

@@ -8,16 +8,32 @@ use super::*;
 /// before it runs, from the app as from the socket. Without a brief the
 /// language is detected.
 pub(crate) fn brief_to_transcription(brief: Option<&klipp_timeline::Brief>) {
-    if let Some(b) = brief {
-        klipp_analysis::transcript::set_vocabulary(b.spellings());
-    }
+    klipp_analysis::transcript::set_vocabulary(brief.map(|b| b.spellings()).unwrap_or_default());
     klipp_analysis::transcript::set_language(brief.and_then(|b| b.language.clone()));
 }
+
+/// The spellings and language last handed to the transcriber.
+static GIVEN: std::sync::Mutex<Option<(Vec<String>, Option<String>)>> = std::sync::Mutex::new(None);
 
 impl KlippApp {
     /// [`brief_to_transcription`] with the active sequence's brief.
     pub(super) fn apply_brief_to_transcription(&self) {
         brief_to_transcription(self.state.sequences.get(self.state.active_sequence_idx).and_then(|s| s.brief.as_ref()));
+    }
+
+    /// Each frame: the active brief's spellings and language to the
+    /// transcriber when they changed, however they changed — set over
+    /// the socket or here, undone, another project opened (#2489). A
+    /// transcript made, or read, after the brief was set has them; set
+    /// only when analysis was asked for, one made later had none.
+    pub(super) fn keep_brief_with_transcription(&self) {
+        let brief = self.state.sequences.get(self.state.active_sequence_idx).and_then(|s| s.brief.as_ref());
+        let now = brief.map(|b| (b.spellings(), b.language.clone())).unwrap_or_default();
+        let mut given = GIVEN.lock().unwrap_or_else(|e| e.into_inner());
+        if given.as_ref() != Some(&now) {
+            brief_to_transcription(brief);
+            *given = Some(now);
+        }
     }
 
     /// The transcript commands: `false` for any other.

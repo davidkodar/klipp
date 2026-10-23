@@ -5738,28 +5738,51 @@ fn cues_from_words(words: &[HeardWord], max_chars: usize, max_lines: usize, soun
     const LONGEST_SECS: f64 = 6.0;
     const SENTENCE_MIN_CHARS: usize = 18;
     let room = max_chars * max_lines;
-    let mut cues: Vec<Cue> = Vec::new();
+    let chars = |ws: &[&HeardWord]| ws.iter().map(|x| x.text.chars().count() + 1).sum::<usize>();
+    // Each group of words, and whether it closed only for being full.
+    let mut groups: Vec<(Vec<&HeardWord>, bool)> = Vec::new();
     let mut cur: Vec<&HeardWord> = Vec::new();
-    let close = |cur: &mut Vec<&HeardWord>, cues: &mut Vec<Cue>| {
-        if let (Some(a), Some(b)) = (cur.first(), cur.last()) {
-            let text = cur.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" ");
-            cues.push(Cue { start: a.start, end: b.end, text });
-        }
-        cur.clear();
-    };
     for w in words {
         if let Some(last) = cur.last() {
-            let len: usize = cur.iter().map(|x| x.text.chars().count() + 1).sum();
+            let len = chars(&cur);
             let sentence_done = last.text.ends_with(['.', '?', '!']) && len >= SENTENCE_MIN_CHARS;
             let full = len + w.text.chars().count() > room;
             let long = w.end - cur[0].start > LONGEST_SECS;
-            if w.after_cut || w.start - last.end > PAUSE_SECS || sentence_done || full || long {
-                close(&mut cur, &mut cues);
+            let broken = w.after_cut || w.start - last.end > PAUSE_SECS || sentence_done || long;
+            if broken || full {
+                groups.push((std::mem::take(&mut cur), full && !broken));
             }
         }
         cur.push(w);
     }
-    close(&mut cur, &mut cues);
+    if !cur.is_empty() {
+        groups.push((cur, false));
+    }
+    // A full cue whose last word or two spilled into a cue of their own
+    // is shared out between the two instead (#2489): a one-word caption
+    // after a full one reads as a stray. Split where the two come out
+    // most even, each still fitting.
+    for k in 1..groups.len() {
+        let spilled = groups[k - 1].1 && groups[k].0.len() <= 2 && chars(&groups[k].0) * 4 < room;
+        if !spilled {
+            continue;
+        }
+        let both: Vec<&HeardWord> = groups[k - 1].0.iter().chain(groups[k].0.iter()).copied().collect();
+        let best = (1..both.len())
+            .filter(|&j| chars(&both[..j]) <= room + 1 && chars(&both[j..]) <= room + 1)
+            .min_by_key(|&j| chars(&both[..j]).abs_diff(chars(&both[j..])));
+        if let Some(j) = best {
+            groups[k].0 = both[j..].to_vec();
+            groups[k - 1].0 = both[..j].to_vec();
+        }
+    }
+    let mut cues: Vec<Cue> = groups
+        .iter()
+        .filter_map(|(ws, _)| {
+            let (a, b) = (ws.first()?, ws.last()?);
+            Some(Cue { start: a.start, end: b.end, text: ws.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" ") })
+        })
+        .collect();
     // A cue that would be up for less than a moment, its words' times
     // collapsed or the next cue right on it, goes with its neighbour:
     // a caption flashed for a frame cannot be read (#2416).
@@ -13424,6 +13447,35 @@ mod tests {
     /// #2427: on a tall frame captions are larger, up in the lower
     /// third, their lines no longer than fit across; a refit after a
     /// format to a tall frame gives captions made wide the same look.
+    /// #2489: a sentence one word longer than a cue holds is shared out
+    /// between two cues of about the same length, not a full one and a
+    /// one-word stray; a cue broken by a pause is left as it is.
+    #[test]
+    fn a_cue_spilling_one_word_is_balanced_with_the_one_before() {
+        let (clip_id, media_id) = (ClipId::new(), MediaId::new());
+        let say = |text: &str, from: f64, pause_before_last: f64| -> Vec<HeardWord> {
+            let n = text.split(' ').count();
+            text.split(' ')
+                .enumerate()
+                .map(|(k, w)| {
+                    let start = from + k as f64 * 0.3 + if k + 1 == n { pause_before_last } else { 0.0 };
+                    HeardWord { start, end: start + 0.25, text: w.into(), after_cut: k == 0, clip_id, media_id, role: Default::default(), clip_in: 0.0, clip_out: 60.0 }
+                })
+                .collect()
+        };
+        // 20 characters a line, two lines: 40 a cue.
+        let words = say("We walk down to the harbour every single morning.", 0.0, 0.0);
+        let cues = cues_from_words(&words, 20, 2, 30.0);
+        assert_eq!(cues.len(), 2, "{cues:?}");
+        assert!(cues.iter().all(|c| c.text.split_whitespace().count() >= 3), "no stray: {cues:?}");
+        let (a, b) = (cues[0].text.replace('\n', " ").len(), cues[1].text.replace('\n', " ").len());
+        assert!(a.abs_diff(b) <= 12, "about even: {cues:?}");
+        // A word after a pause is a cue of its own on purpose.
+        let paused = say("We walk down to the harbour every single morning.", 0.0, 2.0);
+        let cues = cues_from_words(&paused, 20, 2, 30.0);
+        assert_eq!(cues.last().unwrap().text, "morning.", "{cues:?}");
+    }
+
     #[test]
     fn captions_suit_a_tall_frame() {
         let caption = |td: &klipp_timeline::TitleData| {
