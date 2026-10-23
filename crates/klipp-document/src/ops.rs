@@ -8614,6 +8614,7 @@ fn retime(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id: ClipId,
     let mut moves = Vec::new();
     let mut ids = Vec::new();
     let mut moved_later = 0;
+    let mut rippled: Vec<(&Clip, Timecode)> = Vec::new();
     let mut deltas: Vec<Timecode> = Vec::new();
     let mut new_out_of_clip = clip.timeline_out;
     for &(mti, m) in &members {
@@ -8642,6 +8643,7 @@ fn retime(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id: ClipId,
                     linked_partner: None,
                 });
                 ids.push(c.id);
+                rippled.push((c, delta));
             }
             moved_later += later.len();
         } else if let Some(n) = later.iter().find(|c| c.timeline_in < new_out) {
@@ -8665,8 +8667,43 @@ fn retime(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id: ClipId,
     if ripple && moved_later > 0 && deltas.windows(2).any(|d| (secs(d[0]) - secs(d[1])).abs() > secs(one_frame(fps)) * 0.5) {
         return Err(refuse(i, "the clip and its linked sound are different lengths (a J or L cut), so a ripple would move their tracks apart", "retime without ripple, after making room, or line the two up first"));
     }
+    // A later clip's linked sound (or picture) on a track that does not
+    // ripple goes with it: left behind, the pair played out of step by
+    // the change (#2473). One that would land on a clip staying put is
+    // refused rather than laid over it.
+    let moving: std::collections::HashSet<ClipId> = members.iter().map(|(_, m)| m.id).chain(rippled.iter().map(|(c, _)| c.id)).collect();
+    let mut partners: Vec<(usize, &Clip, Timecode)> = Vec::new();
+    for &(c, delta) in &rippled {
+        let Some((pti, _, p)) = c.linked_clip_id.and_then(|lid| find_clip(seq, lid)) else { continue };
+        if !moving.contains(&p.id) && !partners.iter().any(|(_, q, _)| q.id == p.id) {
+            partners.push((pti, p, delta));
+        }
+    }
+    for &(pti, p, delta) in &partners {
+        if seq.tracks[pti].locked {
+            return Err(refuse(i, format!("the sound linked to a later clip is on locked track {pti}"), "unlock it first, or retime without ripple"));
+        }
+        let (new_in, new_out) = (p.timeline_in + delta, p.timeline_out + delta);
+        let staying = |c: &&Clip| c.id != p.id && !moving.contains(&c.id) && !partners.iter().any(|(_, q, _)| q.id == c.id);
+        if let Some(n) = seq.tracks[pti].clips.iter().filter(staying).find(|c| c.timeline_in < new_out && new_in < c.timeline_out) {
+            return Err(refuse(
+                i,
+                format!("{}, linked to a later clip, would run over {} at {:.2} s on track {pti}", clip_name(seq, pool, p), clip_name(seq, pool, n), secs(n.timeline_in)),
+                "retime without ripple, or make room on that track first",
+            ));
+        }
+        moves.push(EditCommand::LegacyMoveClip {
+            clip_id: p.id,
+            old_timeline_in: p.timeline_in,
+            old_timeline_out: p.timeline_out,
+            new_timeline_in: new_in,
+            new_timeline_out: new_out,
+            linked_partner: None,
+        });
+        ids.push(p.id);
+    }
     let what = format!(
-        "retime {} to {:.2}x{} (now {:.2}-{:.2} s){}{}",
+        "retime {} to {:.2}x{} (now {:.2}-{:.2} s){}{}{}",
         clip_name(seq, pool, clip),
         speed.abs(),
         if speed < 0.0 { " reversed, its sound backward" } else if (speed - 1.0).abs() > 1e-6 { ", its sound at that speed" } else { "" },
@@ -8674,6 +8711,7 @@ fn retime(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id: ClipId,
         secs(new_out_of_clip),
         if members.len() > 1 { ", its linked sound with it" } else { "" },
         if moved_later > 0 { format!("; {moved_later} later clip(s) moved {:+.2} s", secs(deltas[0])) } else { String::new() },
+        if partners.is_empty() { String::new() } else { format!(", {} linked to them on other tracks with them", partners.len()) },
     );
     let mut edits: Vec<EditCommand> = speeds.into_iter().chain(moves).collect();
     let edit = if edits.len() == 1 { edits.remove(0) } else { EditCommand::Batch(edits) };
@@ -14886,6 +14924,36 @@ mod tests {
         assert_eq!(after.iter().filter(|e| matches!(e, E::LumaKey { .. })).count(), 1, "{after:?}");
         assert_eq!(after.iter().filter(|e| matches!(e, E::ChromaKey { .. })).count(), 1, "{after:?}");
         assert!(matches!(after.last(), Some(E::LumaKey { high, .. }) if (*high - 0.2).abs() < 1e-6));
+    }
+
+    /// #2473: a ripple retime of a clip with no sound of its own moves a
+    /// later clip's linked sound on another track along with it, so the
+    /// pair stays in step; a sound that would land on a clip staying put
+    /// is refused; undo puts everything back.
+    #[test]
+    fn a_ripple_retime_moves_later_linked_sound_with_its_picture() {
+        let (mut seq, pool, media, a, b) = fixture();
+        seq.tracks[0].clips[0].linked_clip_id = None;
+        seq.tracks[1].clips.remove(0);
+        let ab = seq.tracks[1].clips[0].id;
+        let plan = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 0.5, fit: false, ripple: true, interpolation: None }]).unwrap();
+        assert!(plan.steps[0].what.contains("1 linked to them on other tracks with them"), "{}", plan.steps[0].what);
+        let mut seqs = vec![seq.clone()];
+        let (mut p, mut f) = (pool.clone(), seq.fps);
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut f };
+        view.apply_forward(&plan.steps[0].edit);
+        let at = |view: &crate::apply::DocumentView, id: ClipId| find_clip(&view.sequences[0], id).map(|(_, _, c)| (c.timeline_in, c.timeline_out)).unwrap();
+        assert_eq!(at(&view, b), (tc(8.0), tc(12.0)), "the later picture moved on");
+        assert_eq!(at(&view, ab), (tc(8.0), tc(12.0)), "its sound with it");
+        view.apply_inverse(&plan.steps[0].edit);
+        assert_eq!(serde_json::to_value(&view.sequences[0]).unwrap(), serde_json::to_value(&seq).unwrap(), "undo restores it");
+
+        // A clip on the sound track where the sound would land stays put:
+        // refused, not laid over.
+        let mut blocked = seq.clone();
+        blocked.tracks[1].clips.push(Clip::media(media, tc(9.0), tc(10.0), tc(0.0), tc(1.0)));
+        let refused = resolve(&blocked, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 0.5, fit: false, ripple: true, interpolation: None }]).unwrap_err();
+        assert!(refused.why.contains("linked to a later clip, would run over"), "{}", refused.why);
     }
 
     #[test]
