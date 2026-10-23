@@ -26,13 +26,12 @@
 //!    a pointer they own. Individual blocks do not need separate
 //!    `// SAFETY:` comments because they all fit this pattern.
 //!
-//! The **known exception** is `prop_get_string_fn`, which returns a
-//! `*const c_char` that borrows from a `CString` inside the
-//! `PROP_STORE` mutex. The mutex drops before the plugin sees the
-//! pointer; if a parallel caller then `remove_propset`s the same set
-//! the CString is freed and the plugin holds a dangling pointer.
-//! Tracked as CRIT-3 for a dedicated fix (append-only string store
-//! keyed by propset + name).
+//! `prop_get_string_fn` and `prop_get_string_n_fn` return a
+//! `*const c_char` into a `CString` the property set owns, read after
+//! the `PROP_STORE` mutex drops. A string replaced or reset is kept by
+//! its set (`PropertySet::retired`) rather than freed, so a pointer a
+//! plugin was given reads the same bytes until the set is destroyed,
+//! as the OFX spec expects of a string property's value (#2449).
 
 use crate::ffi::*;
 use std::collections::HashMap;
@@ -59,6 +58,9 @@ unsafe impl Send for PropValue {}
 #[derive(Debug, Default)]
 pub struct PropertySet {
     props: HashMap<String, PropValue>,
+    /// Strings replaced or reset, kept until the set is destroyed: a
+    /// plugin may still hold a pointer to one it was given (#2449).
+    retired: Vec<CString>,
 }
 
 impl PropertySet {
@@ -71,7 +73,10 @@ impl PropertySet {
             if v.len() <= index {
                 v.resize(index + 1, CString::default());
             }
-            v[index] = CString::new(value).unwrap_or_default();
+            // A CString's bytes are its own allocation, kept where they
+            // are as the vector grows or the string moves to `retired`.
+            let old = std::mem::replace(&mut v[index], CString::new(value).unwrap_or_default());
+            self.retired.push(old);
         }
     }
 
@@ -166,7 +171,9 @@ impl PropertySet {
     }
 
     pub fn reset(&mut self, name: &str) {
-        self.props.remove(name);
+        if let Some(PropValue::String(v)) = self.props.remove(name) {
+            self.retired.extend(v);
+        }
     }
 }
 
@@ -726,6 +733,40 @@ mod tests {
 
         remove_propset(handle);
         assert!(with_propset(handle, |_| ()).is_none());
+    }
+
+    /// #2449: a string handed to a plugin stays readable after the
+    /// property is set again or reset, until its set is destroyed.
+    #[test]
+    fn a_string_given_out_outlives_a_new_value() {
+        let mut ps = PropertySet::default();
+        ps.set_string("OfxPropLabel", 0, "first");
+        let handle = register_propset(ps);
+        let name = CString::new("OfxPropLabel").unwrap();
+        let get = |index: c_int| {
+            let mut out: *const c_char = std::ptr::null();
+            // SAFETY: the suite's own entry point, given a live handle,
+            // a NUL-terminated name and somewhere to write the pointer.
+            let status = unsafe { (PROPERTY_SUITE_V1.prop_get_string)(handle, name.as_ptr(), index, &mut out) };
+            assert_eq!(status, K_OFX_STAT_OK);
+            out
+        };
+        let first = get(0);
+        with_propset(handle, |ps| {
+            ps.set_string("OfxPropLabel", 0, "second, and longer than the first");
+            ps.set_string("OfxPropLabel", 3, "grown");
+        });
+        // SAFETY: the pointer the suite gave out; the set still exists.
+        let read = |p: *const c_char| unsafe { CStr::from_ptr(p) }.to_str().unwrap().to_owned();
+        assert_eq!(read(first), "first", "the first pointer still reads the old bytes");
+        // Kept by the set, the very allocation given out: reading freed
+        // memory could pass the line above by chance.
+        assert!(with_propset(handle, |ps| ps.retired.iter().any(|s| s.as_ptr() == first)).unwrap(), "the set keeps the string given out");
+        assert_eq!(read(get(0)), "second, and longer than the first");
+        let second = get(0);
+        with_propset(handle, |ps| ps.reset("OfxPropLabel"));
+        assert_eq!(read(second), "second, and longer than the first", "a reset keeps it too");
+        remove_propset(handle);
     }
 
     #[test]
