@@ -2570,7 +2570,11 @@ fn decode_thread_main(
     // stamped with the time asked, rather than reading the file again
     // (#2474). Read again, a large JPEG's frame never came: the seek back
     // to its one frame reached the end of the file with nothing decoded.
-    let mut still_frame: Option<LinearFrame> = None;
+    // Kept as the decoder gave it, not as converted: 12 MP of 4:2:0 is
+    // 18 MB, where its f32 RGBA at the source's size is ten times that.
+    let mut still_picture: Option<ffmpeg_next::frame::Video> = None;
+    // A seek asked for the still again: the next frame is `still_picture`.
+    let mut still_replay = false;
 
     // Decoder selection ladder (each tier is attempted; if its
     // `decoder.video()` open fails — codec / profile not supported,
@@ -2808,19 +2812,12 @@ fn decode_thread_main(
         }
         if let Some((secs, epoch, decode_on)) = latest_seek {
             seek_epoch = epoch;
-            if let Some(picture) = still_frame.as_ref() {
-                let mut again = copy_of_still(picture);
-                again.pts = RationalTime::from_secs_f64(secs, 90000);
-                again.seek_epoch = epoch;
-                let mut eof = LinearFrame::eof();
-                eof.seek_epoch = epoch;
-                let mut queue = frame_queue.lock().unwrap_or_else(|e| e.into_inner());
-                queue.clear();
-                queue.push(again);
-                queue.push(eof);
-                drop(queue);
-                publish_pts(&last_decoded_pts, Some(secs));
-                eof_sent = true;
+            if still_picture.is_some() {
+                replay_still(secs, &mut still_at, &mut still_replay, &frame_queue);
+                seek_target = None;
+                eof_sent = false;
+                eof_from_demuxer = true;
+                pending_packet = None;
                 continue;
             }
             let (secs, decode_on) = still_seek(still, secs, decode_on, &mut still_at);
@@ -2904,6 +2901,14 @@ fn decode_thread_main(
                 if inner_return { return; }
                 if let Some((secs, epoch, decode_on)) = latest_inner_seek {
                     seek_epoch = epoch;
+                    if still_picture.is_some() {
+                        replay_still(secs, &mut still_at, &mut still_replay, &frame_queue);
+                        seek_target = None;
+                        eof_sent = false;
+                        eof_from_demuxer = true;
+                        pending_packet = None;
+                        continue;
+                    }
                     let (secs, decode_on) = still_seek(still, secs, decode_on, &mut still_at);
                     if decode_on {
                         let kept = frame_queue.lock().unwrap_or_else(|e| e.into_inner()).keep_from(secs - SEEK_PTS_SLACK, epoch);
@@ -2935,7 +2940,17 @@ fn decode_thread_main(
             }
 
             let t_decode = std::time::Instant::now();
-            let got_frame = decoder.receive_frame(&mut received_frame).is_ok();
+            let got_frame = match still_picture.as_ref().filter(|_| still_replay) {
+                Some(picture) => {
+                    still_replay = false;
+                    received_frame = picture.clone();
+                    true
+                }
+                None => decoder.receive_frame(&mut received_frame).is_ok(),
+            };
+            if still && got_frame && still_picture.is_none() {
+                still_picture = Some(received_frame.clone());
+            }
             let this_decode_us = t_decode.elapsed().as_micros() as u64;
             perf_decode_us += this_decode_us;
 
@@ -3058,9 +3073,6 @@ fn decode_thread_main(
             // because this is the only place that knows: a frame already in
             // flight when a seek arrives was converted under the old epoch.
             linear_frame.seek_epoch = seek_epoch;
-            if still && still_frame.is_none() {
-                still_frame = Some(copy_of_still(&linear_frame));
-            }
             let (frame_w, frame_h) = (linear_frame.width, linear_frame.height);
 
             let t_queue = std::time::Instant::now();
@@ -3152,19 +3164,14 @@ fn decode_thread_main(
     }
 }
 
-/// A still's picture, again: what each seek on a still gives (#2474).
-fn copy_of_still(f: &LinearFrame) -> LinearFrame {
-    LinearFrame {
-        pts: f.pts,
-        width: f.width,
-        height: f.height,
-        data: f.data.clone(),
-        is_eof: false,
-        gpu_source: f.gpu_source.clone(),
-        colorspace: f.colorspace,
-        hdr: f.hdr.clone(),
-        seek_epoch: f.seek_epoch,
-    }
+/// A seek on a still whose picture is kept (#2474): the queue emptied,
+/// and the picture converted again as the next frame, stamped `secs`.
+/// The file is not read: the caller marks the demuxer done, so an end of
+/// stream follows the picture.
+fn replay_still(secs: f64, still_at: &mut Option<f64>, still_replay: &mut bool, frame_queue: &std::sync::Mutex<FrameQueue>) {
+    *still_at = Some(secs);
+    *still_replay = true;
+    frame_queue.lock().unwrap_or_else(|e| e.into_inner()).clear();
 }
 
 /// A seek as the decode thread carries it out (#978): for a still image,
