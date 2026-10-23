@@ -1142,6 +1142,16 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             v
         }
         "klipp_import_timeline" => json!({"method":"import_timeline","path":args.get("path"),"new_project":args.get("new_project").and_then(Value::as_bool).unwrap_or(false)}),
+        "klipp_export_timeline" => {
+            let mut v = json!({ "method": "export_timeline", "path": arg_str(args, "path")? });
+            if let Some(f) = args.get("format").and_then(Value::as_str) {
+                v["format"] = json!(f);
+            }
+            if args.get("overwrite").and_then(Value::as_bool) == Some(true) {
+                v["overwrite"] = json!(true);
+            }
+            v
+        }
         "klipp_node_types" => {
             let mut v = json!({ "method": "node_types" });
             if let Some(c) = args.get("category").and_then(|v| v.as_str()) { v["category"] = json!(c); }
@@ -2118,8 +2128,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "Frame timings (decode, grade, composite, drops, readbacks) and presented_fps over the last 2 s, to tell whether a change made playback faster. Details: klipp_guide topic perf.",
              json!({}), vec![]),
         tool("klipp_log_tail",
-             "Tail of Klipp's debug log. The engine logs its decisions here, including \
-              why the direct-present fast path did or did not engage.",
+             "Tail of Klipp's debug log. Details: klipp_guide topic log_tail.",
              json!({ "lines": { "type": "integer", "description": "How many lines (default 100)" } }),
              vec![]),
         tool("klipp_timeline",
@@ -2151,8 +2160,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              }),
              vec![]),
         tool("klipp_search_transcripts",
-             "Find where something is said: every transcript segment containing the query, \
-              case-insensitively, with its media item and its start and end in the file.",
+             "Find where something is said in the transcripts. Details: klipp_guide topic search_transcripts.",
              json!({ "query": { "type": "string" }, "max_hits": { "type": "integer" } }),
              vec!["query"]),
         tool("klipp_screen_text",
@@ -2268,8 +2276,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                      "label": { "type": "string", "description": "A name for the history entry" },
                      "detail": { "type": "boolean", "description": "every step in full and each touched clip's range as JSON; off by default, when the reply is the plan as text with long runs of one kind of step folded" } }),
              vec!["ops"]),
-        tool("klipp_undo", "One step back in the active sequence's edit history. Every write \
-              made through these tools is one step; a klipp_batch is one step as a whole.",
+        tool("klipp_undo", "One step back in the edit history. Details: klipp_guide topic undo.",
              json!({}), vec![]),
         tool("klipp_redo", "One step forward in the edit history.", json!({}), vec![]),
         tool("klipp_batch",
@@ -2510,6 +2517,9 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
         tool("klipp_import_timeline",
              "Import or open a timeline; no path: last outcome. Guide: klipp_guide topic import_timeline.",
              json!({"path":{"type":"string"},"new_project":{"type":"boolean"}}), vec![]),
+        tool("klipp_export_timeline",
+             "Write the open sequence to a timeline file. Guide: klipp_guide topic export_timeline.",
+             json!({"path":{"type":"string"},"format":{"type":"string"},"overwrite":{"type":"boolean"}}), vec!["path"]),
         tool("klipp_open_project",
              "Open a project by path or recent name; protect unsaved changes. Guide: klipp_guide topic open_project.",
              json!({ "path": { "type": "string" }, "name": { "type": "string" }, "save": { "type": "boolean" }, "discard_changes": { "type": "boolean" } }), vec![]),
@@ -3194,6 +3204,18 @@ mod project_change_notice_tests {
             json!({ "method": "duplicate_sequence", "sequence_id": "abc", "name": "Vertical", "open": false })
         );
         assert!(tool_to_command("klipp_duplicate_sequence", &json!({ "index": 0, "sequence_id": "abc" })).unwrap_err().contains("not both"));
+    }
+
+    /// #2434: klipp_export_timeline writes the open sequence to a path,
+    /// a format and overwrite passed on when given.
+    #[test]
+    fn export_timeline_takes_a_path() {
+        assert_eq!(tool_to_command("klipp_export_timeline", &json!({ "path": "/tmp/cut.otio" })).unwrap(), json!({ "method": "export_timeline", "path": "/tmp/cut.otio" }));
+        assert_eq!(
+            tool_to_command("klipp_export_timeline", &json!({ "path": "/tmp/cut.edl", "format": "edl", "overwrite": true })).unwrap(),
+            json!({ "method": "export_timeline", "path": "/tmp/cut.edl", "format": "edl", "overwrite": true })
+        );
+        assert!(tool_to_command("klipp_export_timeline", &json!({})).is_err());
     }
 
     /// Every tool that sends its details to a guide topic names one that

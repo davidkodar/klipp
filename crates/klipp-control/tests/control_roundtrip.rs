@@ -3569,6 +3569,39 @@ fn remove_sequence_is_refused_until_confirmed_and_never_for_a_held_or_only_one()
     refused(&mut h, json!({"method": "remove_sequence", "index": 0, "confirm": true}), "only sequence");
 }
 
+/// `export_timeline` (#2434) writes the open sequence as the extension
+/// says, the counterpart of `import_timeline`; a relative path, a name no
+/// format has, a format that is not the path's, a file there already
+/// (until overwrite) and a batch are refused, writing nothing.
+#[test]
+fn export_timeline_writes_the_open_sequence_as_its_extension_says() {
+    let mut h = harness();
+    let dir = std::env::temp_dir().join(format!("klipp-export-timeline-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let clips = h.sequence.read().unwrap().tracks.iter().flat_map(|t| &t.clips).filter(|c| !c.kind.is_gap()).count();
+    for (ext, format) in [("fcpxml", "fcpxml"), ("edl", "edl"), ("otio", "otio"), ("kdenlive", "kdenlive")] {
+        let path = dir.join(format!("cut.{ext}"));
+        let reply = h.ok(json!({"method": "export_timeline", "path": path, "format": format}));
+        assert_eq!((reply["format"].clone(), reply["clips"].clone()), (json!(format), json!(clips)), "{reply}");
+        assert!(std::fs::metadata(&path).is_ok_and(|m| m.len() > 0), "{ext} written");
+    }
+    let otio = dir.join("cut.otio");
+    let refused = |h: &mut Harness, cmd: Value, why: &str| {
+        let reply = h.call(cmd.clone());
+        assert_eq!(reply["ok"], json!(false), "{cmd}");
+        assert!(reply["error"].as_str().unwrap_or_default().contains(why), "{cmd}: {}", reply["error"]);
+    };
+    refused(&mut h, json!({"method": "export_timeline", "path": "cut.fcpxml"}), "absolute");
+    refused(&mut h, json!({"method": "export_timeline", "path": dir.join("cut.mov")}), "names no interchange format");
+    refused(&mut h, json!({"method": "export_timeline", "path": dir.join("other.edl"), "format": "fcpxml"}), "not the path's");
+    refused(&mut h, json!({"method": "export_timeline", "path": otio}), "overwrite true");
+    refused(&mut h, json!({"method": "batch", "commands": [{"method": "export_timeline", "path": dir.join("b.edl")}]}), "batch");
+    assert!(!dir.join("other.edl").exists() && !dir.join("b.edl").exists(), "a refusal writes nothing");
+    h.ok(json!({"method": "export_timeline", "path": otio, "overwrite": true}));
+    assert!(h.sent.lock().unwrap().is_empty(), "an export sends the app nothing");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// `duplicate_sequence` (#2433) copies the open sequence, or one by index
 /// or id, as its tab's Duplicate does, named "<name> copy" unless named,
 /// and opens the copy, which goes last; not in a batch.

@@ -118,6 +118,14 @@ Add a sequence to the project and open it, at a picture size and rate: a vertica
 
 Name the active sequence: what the timeline is called in the app and in the project file. A new project's sequence has a default or inherited name until it is named; the brief's title does not rename it.
 
+## klipp_undo
+
+One step back in the edit history: the open sequence's, or the project's for a step of the whole project. Every write made through these tools is one step, and a klipp_batch or a klipp_apply is one step as a whole. klipp_redo takes it forward again.
+
+## klipp_log_tail
+
+The last lines of Klipp's debug log (100 unless lines says). The engine logs its decisions here, among them why the direct-present fast path did or did not engage.
+
 ## klipp_switch_sequence
 
 Open another of the project's sequences, as clicking its tab does: by index or sequence_id, as klipp_status lists them. The tools then work on it.

@@ -1057,6 +1057,19 @@ pub enum ControlCommand {
         #[serde(default)]
         new_project: bool,
     },
+    /// Write the open sequence to an interchange file at the absolute
+    /// `path`, in the format its extension names: .fcpxml, .edl, .otio,
+    /// .aaf (through OpenTimelineIO's otioconvert and its AAF adapter) or
+    /// .kdenlive. `format`, if given, must match it. An existing file is
+    /// refused unless `overwrite`. Answers with what the format could not
+    /// carry, where it says. The counterpart of `import_timeline`.
+    ExportTimeline {
+        path: String,
+        #[serde(default)]
+        format: Option<String>,
+        #[serde(default)]
+        overwrite: bool,
+    },
     /// What is said in a media file between two times, with when: the
     /// segments, and with `words` every word and its start and end, in
     /// the file's seconds. For setting a cut on the edge of a word.

@@ -812,6 +812,7 @@ fn handle(
             | ControlCommand::ImportSubtitles { .. }
             | ControlCommand::TranslateCaptions { .. }
             | ControlCommand::ImportTimeline { .. }
+            | ControlCommand::ExportTimeline { .. }
             | ControlCommand::SaveProject { .. }
             | ControlCommand::OpenProject { .. }
             | ControlCommand::CloseProject { .. }

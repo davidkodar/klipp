@@ -28,6 +28,10 @@ The `data` argument:
 
 Preview a native generator clip; apply true places it as one undo step. Give at_secs, secs (positive, at most one day), optional video track index, and data in the native generator format: {SolidColor:{color:[r,g,b,a]}}, {Gradient:{top:[r,g,b,a],bottom:[r,g,b,a],angle_deg:0}}, {LivingGradient:{a:[r,g,b,a],b:[r,g,b,a],angle_deg:20,drift_deg_per_sec:4,glow:0.35}}, {Grain:{color:[r,g,b,a],amount:0.35,size_px:2,speed:24}}, {Polygon:{sides:24,color:[r,g,b,a],fill:true}} for a circle, {Placeholder:{label:missing,color:[r,g,b,a]}}, or the string Countdown. Colour channels are bytes 0..255. Omit track to use/create a bottom Background video track. Overlaps and locked tracks are refused.
 
+## klipp_export_timeline
+
+Write the open sequence to an interchange timeline file, for another editor or a round trip through klipp_import_timeline. path is absolute, in a folder that exists, and its extension names the format: .fcpxml (Final Cut Pro X), .edl (CMX 3600), .otio (OpenTimelineIO), .aaf (written through OpenTimelineIO's otioconvert and its AAF adapter, which must be installed) or .kdenlive. format, if given, must match the extension. An existing file is refused unless overwrite is true: ask before replacing one. The reply names the format, the clip count, and in dropped what the format could not carry (OpenTimelineIO and AAF list titles, grades and effects left out); the other formats carry what they can without a list. Not part of a batch.
+
 ## klipp_import_timeline
 
 Import a timeline and inspect its report.
