@@ -467,7 +467,7 @@ exist until the plan runs.
   `loop: "none"` stops a loop. The typesetting fields restyle as `title`
   takes them; `runs` replaces a title's runs (`[]` clears them) and needs
   one `clip_id`, since its words are that title's.
-- `lower_third {name, role?, at, secs?, track?, side?, x?, y?, backing?}`: a name
+- `lower_third {name, role?, at, secs?, track?, side?, x?, y?, backing?, in_picture?}`: a name
   and a role bottom left in title-safe, four seconds unless you say
   otherwise, fading in and out, on a text track with room (one is made
   on top if none has, which moves every other index down by one).
@@ -478,8 +478,11 @@ exist until the plan runs.
   and `y` (the name's line) place it, as fractions of the frame inside
   title-safe. A name under the wrong person is worse than none.
   `backing` keeps it legible: `shadow` (the default) a close dark
-  shadow and outline, `box` a dark box behind both lines for a light,
-  busy picture, `none` the soft lift alone.
+  shadow and outline, `box` a dark box behind each line for a light,
+  busy picture, `none` the soft lift alone. Over a pillarboxed shot (a
+  tall picture in a wide frame), `in_picture: true` keeps it in from the
+  picture's own edge instead of on the bar. A title's `backing` panel
+  (style, title) sits behind every line of it.
 - `title {text, at, secs?, style?, track?, x?, y?, size?, color?, font?, bold?, align?, backing?, backing_color?, full_frame?, outline?, outline_color?, glow?, glow_color?, gradient?, animate?, animate_secs?, stagger?, loop?, glitch?, chromatic?, enter?, exit?, over_faces?, shadow?, weight?, axes?, features?, last_line?, valign?, underline?, runs?, animators?, keys?, on_path?, blend?, mask?, three_d?}`:
   a title from scratch: a heading, a callout or a hero card, on a text
   track (one is made on top if left out). `style` names a look, one of

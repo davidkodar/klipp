@@ -3355,9 +3355,11 @@ impl TitleRenderer {
         // buffer, no blend needed.
         let mut buf_untouched = matte_only.is_some() || !matches!(title.background, TitleBackground::FullFrame { .. });
         // A colour backing is a box round the words, so it is the text
-        // layer that knows where it goes: the first text box carries it.
-        // Dropped from every layer, as it was, it was never painted.
-        let mut backing = (matches!(title.background, TitleBackground::Color { .. }) && matte_only.is_none()).then(|| title.background.clone());
+        // layer that knows where it goes: each text box carries its own,
+        // so every line of a lower third is legible (#2487); on the first
+        // alone, the second line had none. Dropped from every layer, as
+        // it once was, it was never painted.
+        let backing = (matches!(title.background, TitleBackground::Color { .. }) && matte_only.is_none()).then(|| title.background.clone());
         for obj in &title.objects {
             // A layer that blends or is masked is drawn on its own and
             // then mixed with what is below it (#1513); a matte is drawn
@@ -3408,12 +3410,12 @@ impl TitleRenderer {
                     // then route through the existing single-text raster
                     // path. A full-frame `background` is painted once,
                     // above, and not per text layer; a colour backing
-                    // goes with the first text box.
+                    // goes with every text box.
                     // Its keyed size, tracking and spacing as they are
                     // now (#1511).
                     let tb = time_secs.map_or_else(|| tb.clone(), |t| tb.at(t as f64));
                     let mut single = TitleData::single_text_fx(tb, obj.fx().clone());
-                    single.background = backing.take().unwrap_or(TitleBackground::None);
+                    single.background = backing.clone().unwrap_or(TitleBackground::None);
                     if let Some(o) = single.objects.first_mut() {
                         o.transform = effective_transform.clone();
                     }
@@ -8570,6 +8572,26 @@ mod tests {
         let boxed = buf.chunks_exact(4).filter(|p| p[3] >= 190 && p[0] < 20).count();
         assert!(boxed > 200, "the backing was not painted ({boxed} px)");
         assert_eq!(buf[3], 0, "the corner of the frame is outside it");
+    }
+
+    /// #2487: a title of two lines, each a text box of its own, has the
+    /// backing behind both, not the first alone.
+    #[test]
+    fn a_colour_backing_is_behind_every_line() {
+        use klipp_timeline::{default_text_transform, ObjectTransform, TitleObjectContent, TitlePosition};
+        let mut renderer = TitleRenderer::new();
+        let mut td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "NAME".to_string(), ..Default::default() });
+        td.objects.clear();
+        let at = |y: f32| ObjectTransform { center: TitlePosition { x: 0.5, y }, ..default_text_transform() };
+        td.add_object(TitleObjectContent::TextBox(klipp_timeline::TextBox { text: "NAME".to_string(), ..Default::default() }), at(0.25));
+        td.add_object(TitleObjectContent::TextBox(klipp_timeline::TextBox { text: "ROLE".to_string(), ..Default::default() }), at(0.75));
+        td.background = TitleBackground::Color { color: [0, 0, 0, 200], padding: 10.0 };
+        let (w, h) = (320usize, 240usize);
+        let buf = renderer.render(&td, w as u32, h as u32);
+        let boxed = |rows: std::ops::Range<usize>| rows.flat_map(|y| (0..w).map(move |x| (y * w + x) * 4)).filter(|&i| buf[i + 3] >= 190 && buf[i] < 20).count();
+        assert!(boxed(0..h / 2) > 200, "the first line has its backing");
+        assert!(boxed(h / 2..h) > 200, "and the second line its own");
+        assert_eq!(buf[(h / 2 * w + 2) * 4 + 3], 0, "between them is no box");
     }
 
     #[test]

@@ -979,7 +979,12 @@ pub enum Op {
     ///
     /// `backing` keeps it legible over any picture: "shadow" (the
     /// default) gives both lines a close dark shadow and a thin outline,
-    /// "box" a dark box behind them, "none" the soft lift alone.
+    /// "box" a dark box behind each, "none" the soft lift alone.
+    ///
+    /// `in_picture` keeps it inside the picture of the shot under it, as
+    /// fitted to the frame: on a pillarboxed shot (a tall picture in a
+    /// wide frame) it sits in from the picture's edge, not on the bar
+    /// (#2487). A given `x` or `y` is still a fraction of the frame.
     LowerThird {
         name: String,
         #[serde(default)]
@@ -997,6 +1002,8 @@ pub enum Op {
         y: Option<f32>,
         #[serde(default)]
         backing: Option<String>,
+        #[serde(default)]
+        in_picture: bool,
     },
     /// The words of a title or a caption: a cue the transcript misheard,
     /// a name spelt as the cast list spells it. The first text box of
@@ -3680,9 +3687,12 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             }
             place_title(seq, fps, i, at, *held, track.as_ref(), td, &format!("template \"{name}\""), "")
         }
-        Op::LowerThird { name, role, at, secs: hold, track, side, x, y, backing } => {
+        Op::LowerThird { name, role, at, secs: hold, track, side, x, y, backing, in_picture } => {
             let at = resolve_anchor(seq, fps, at, i)?;
-            let place = lower_third_place(i, side.as_deref(), *x, *y, backing.as_deref(), role.as_deref().is_some_and(|r| !r.trim().is_empty()))?;
+            let mut place = lower_third_place(i, side.as_deref(), *x, *y, backing.as_deref(), role.as_deref().is_some_and(|r| !r.trim().is_empty()))?;
+            if *in_picture {
+                place.picture = picture_area_at(seq, pool, at).ok_or_else(|| refuse(i, format!("no picture at {:.2} s to keep the lower third in", secs(at)), "leave in_picture out, or place it over a shot"))?;
+            }
             lower_third(seq, fps, i, name, role.as_deref(), at, *hold, track.as_ref(), place)
         }
         Op::SetText { clip_id, text } => {
@@ -9626,6 +9636,26 @@ struct LowerThirdPlace {
     x: Option<f32>,
     y: Option<f32>,
     backing: LowerThirdBacking,
+    /// The area its own place is inside, as (left, top, width, height)
+    /// fractions of the frame: the whole frame, or the picture of the
+    /// shot under it (#2487).
+    picture: (f32, f32, f32, f32),
+}
+
+/// Where the top picture at `at` lies in the frame, fitted and never
+/// stretched, as (left, top, width, height) fractions: inside its bars
+/// when it is pillarboxed or letterboxed.
+fn picture_area_at(seq: &Sequence, pool: &MediaPool, at: Timecode) -> Option<(f32, f32, f32, f32)> {
+    let clip = seq
+        .tracks
+        .iter()
+        .filter(|t| t.kind == TrackKind::Video && t.visible)
+        .flat_map(|t| t.clips.iter())
+        .find(|c| c.enabled && matches!(c.kind, ClipKind::Media { .. }) && c.timeline_in <= at && at < c.timeline_out)?;
+    let (w, h) = (seq.resolution.width as f32, seq.resolution.height as f32);
+    let (pw, ph) = fitted_size(clip, pool, w, h);
+    let (fw, fh) = ((pw / w).min(1.0), (ph / h).min(1.0));
+    Some(((1.0 - fw) / 2.0, (1.0 - fh) / 2.0, fw, fh))
 }
 
 /// What keeps a lower third legible over the picture (#2428).
@@ -9667,7 +9697,7 @@ fn lower_third_place(i: usize, side: Option<&str>, x: Option<f32>, y: Option<f32
             return Err(refuse(i, format!("y {y} is outside title-safe"), format!("y is the name's line as a fraction of the height, from 0.05 to {lowest:.2}")));
         }
     }
-    Ok(LowerThirdPlace { right, x, y, backing })
+    Ok(LowerThirdPlace { right, x, y, backing, picture: (0.0, 0.0, 1.0, 1.0) })
 }
 
 fn lower_third_title(name: &str, role: Option<&str>, place: LowerThirdPlace) -> klipp_timeline::TitleData {
@@ -9688,8 +9718,9 @@ fn lower_third_title(name: &str, role: Option<&str>, place: LowerThirdPlace) -> 
             Motion::new(MotionKind::Fade).duration(0.4).easing(Easing::InCubic),
         )
     };
-    let edge = place.x.unwrap_or(if place.right { 0.92 } else { 0.08 });
-    let name_y = place.y.unwrap_or(if role.is_some() { 0.815 } else { 0.85 });
+    let (left, top, width, height) = place.picture;
+    let edge = place.x.unwrap_or(left + width * if place.right { 0.92 } else { 0.08 });
+    let name_y = place.y.unwrap_or(top + height * if role.is_some() { 0.815 } else { 0.85 });
     let alignment = if place.right { TextAlignment::Right } else { TextAlignment::Left };
     let at = |y: f32| ObjectTransform { center: TitlePosition { x: edge, y }, anchor_norm: TitlePosition { x: if place.right { 1.0 } else { 0.0 }, y: 0.5 }, ..default_text_transform() };
     let mut td = klipp_timeline::TitleData {
@@ -16192,6 +16223,37 @@ mod tests {
         edits.iter().filter_map(|e| match e { EditCommand::LegacyAppendClip { clip, .. } => clip.title_data().cloned(), _ => None }).nth(k).expect("a caption")
     }
 
+    /// #2487: over a tall picture fitted into a wide frame, `in_picture`
+    /// sets the lower third in from the picture's own edge and up from
+    /// its foot, not on the bar; with no picture under it, refused.
+    #[test]
+    fn a_lower_third_keeps_inside_a_pillarboxed_picture() {
+        let (mut seq, mut pool, media, _, _) = fixture();
+        seq.resolution = klipp_core::Resolution { width: 1920, height: 1080 };
+        let item = pool.get_mut(&media).unwrap();
+        item.resolution = klipp_core::Resolution { width: 1080, height: 1920 };
+        let lt = |in_picture: bool| Op::LowerThird { name: "A Speaker".into(), role: Some("A role".into()), at: Anchor::Secs(4.4), secs: 3.0, track: None, side: None, x: None, y: None, backing: None, in_picture };
+        let name_at = |in_picture: bool| {
+            let plan = resolve(&seq, &pool, &[lt(in_picture)]).unwrap();
+            let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!("a title clip") };
+            let c = clip.title_data().unwrap().objects[0].transform.center;
+            (c.x, c.y)
+        };
+        assert_eq!(name_at(false), (0.08, 0.815), "the frame's own place");
+        // The picture is 1080 * 1080/1920 = 607.5 px of the 1920 wide.
+        let width = 607.5 / 1920.0;
+        let left = (1.0 - width) / 2.0;
+        let (x, y) = name_at(true);
+        assert!((x - (left + width * 0.08)).abs() < 1e-4 && x > left, "in from the picture's left edge: {x}");
+        assert!((y - 0.815).abs() < 1e-4, "a pillarbox is the frame's full height: {y}");
+        let mut empty = seq.clone();
+        for t in &mut empty.tracks {
+            t.clips.retain(|c| c.timeline_out <= tc(4.0));
+        }
+        let refused = resolve(&empty, &pool, &[lt(true)]).unwrap_err();
+        assert!(refused.why.contains("no picture"), "{}", refused.why);
+    }
+
     /// #2428: a lower third is legible over a light picture by default,
     /// both lines with a close dark shadow and an outline; `box` puts a
     /// dark box behind them, `none` keeps the soft lift alone, and a
@@ -16199,7 +16261,7 @@ mod tests {
     #[test]
     fn a_lower_third_has_a_backing() {
         let (seq, pool, _, _, _) = fixture();
-        let lt = |backing: Option<&str>| Op::LowerThird { name: "A Speaker".into(), role: Some("A role".into()), at: Anchor::Secs(4.4), secs: 3.0, track: None, side: None, x: None, y: None, backing: backing.map(str::to_string) };
+        let lt = |backing: Option<&str>| Op::LowerThird { name: "A Speaker".into(), role: Some("A role".into()), at: Anchor::Secs(4.4), secs: 3.0, track: None, side: None, x: None, y: None, backing: backing.map(str::to_string), in_picture: false };
         let made = |backing: Option<&str>| {
             let plan = resolve(&seq, &pool, &[lt(backing)]).unwrap();
             let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!("a title clip") };
@@ -16223,7 +16285,7 @@ mod tests {
     #[test]
     fn a_lower_third_sits_inside_a_shot() {
         let (seq, pool, _, _, _) = fixture();
-        let lt = |at: f64, secs: f64| Op::LowerThird { name: "David Heinemeier Hansson".into(), role: Some("Creator of Omarchy".into()), at: Anchor::Secs(at), secs, track: None, side: None, x: None, y: None, backing: None };
+        let lt = |at: f64, secs: f64| Op::LowerThird { name: "David Heinemeier Hansson".into(), role: Some("Creator of Omarchy".into()), at: Anchor::Secs(at), secs, track: None, side: None, x: None, y: None, backing: None, in_picture: false };
         let plan = resolve(&seq, &pool, &[lt(4.4, 3.0)]).unwrap();
         assert!(plan.steps[0].what.contains("a new text track 0"), "{}", plan.steps[0].what);
         assert_eq!((plan.steps[0].after[0].track, plan.steps[0].after[0].timeline_in_secs, plan.steps[0].after[0].timeline_out_secs), (0, 4.4, 7.4));
@@ -16238,7 +16300,7 @@ mod tests {
         // Too short to read, no name, past the end: refused.
         assert!(resolve(&seq, &pool, &[lt(4.5, 1.0)]).is_err());
         assert!(resolve(&seq, &pool, &[lt(6.0, 3.0)]).unwrap_err().why.contains("past the end"));
-        let nameless = Op::LowerThird { name: " ".into(), role: None, at: Anchor::Secs(4.5), secs: 3.0, track: None, side: None, x: None, y: None, backing: None };
+        let nameless = Op::LowerThird { name: " ".into(), role: None, at: Anchor::Secs(4.5), secs: 3.0, track: None, side: None, x: None, y: None, backing: None, in_picture: false };
         assert!(resolve(&seq, &pool, &[nameless]).unwrap_err().hint.contains("cast list"));
 
         // With a cast list in the brief, the name is the list's and so is the role.
@@ -16247,10 +16309,10 @@ mod tests {
             cast: vec![klipp_timeline::CastMember { name: "David Heinemeier Hansson".into(), role: "Creator of Omarchy".into(), described: "on the right".into() }],
             ..Default::default()
         });
-        let from_cast = Op::LowerThird { name: "david heinemeier hansson".into(), role: None, at: Anchor::Secs(4.4), secs: 3.0, track: None, side: None, x: None, y: None, backing: None };
+        let from_cast = Op::LowerThird { name: "david heinemeier hansson".into(), role: None, at: Anchor::Secs(4.4), secs: 3.0, track: None, side: None, x: None, y: None, backing: None, in_picture: false };
         let plan = resolve(&briefed, &pool, &[from_cast]).unwrap();
         assert!(plan.steps[0].what.contains("\"David Heinemeier Hansson\", \"Creator of Omarchy\""), "{}", plan.steps[0].what);
-        let stranger = Op::LowerThird { name: "Brodie".into(), role: None, at: Anchor::Secs(4.4), secs: 3.0, track: None, side: None, x: None, y: None, backing: None };
+        let stranger = Op::LowerThird { name: "Brodie".into(), role: None, at: Anchor::Secs(4.4), secs: 3.0, track: None, side: None, x: None, y: None, backing: None, in_picture: false };
         let err = resolve(&briefed, &pool, &[stranger]).unwrap_err();
         assert!(err.why.contains("not in the brief's cast") && err.hint.contains("David Heinemeier Hansson"), "{err}");
 
