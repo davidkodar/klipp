@@ -543,7 +543,7 @@ fn project_switch_command(method: &str, args: &Value) -> Result<Value, String> {
 /// The socket command a tool call is, shared by single and batch calls.
 fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
     if matches!(name, "klipp_plan" | "klipp_apply") {
-        edit_schema::validate_ops(args)?;
+        edit_schema::validate_ops(args).map_err(|e| format!("{e}; every op's form: klipp_guide topic ops"))?;
     }
     let mut command = match name {
         "klipp_status" => json!({ "method": "status" }),
@@ -1455,7 +1455,12 @@ fn guide_topic(topic: &str) -> Result<String, String> {
 
 /// The guide's own list of the ops: its `## Ops` section.
 fn ops_section() -> &'static str {
-    GUIDE.find("\n## Ops\n").map_or("", |at| {
+    guide_section("Ops")
+}
+
+/// The guide's section headed `title`, its heading included.
+fn guide_section(title: &str) -> &'static str {
+    GUIDE.find(&format!("\n## {title}\n")).map_or("", |at| {
         let rest = &GUIDE[at + 1..];
         &rest[..rest[1..].find("\n## ").map_or(rest.len(), |e| e + 2)]
     })
@@ -1536,6 +1541,10 @@ fn ops_overview(fields_only: bool) -> String {
     if !rules.is_empty() {
         out.push_str(&format!("\n{}\n", rules.join("\n\n").trim_end()));
     }
+    // Where an op points, and how a later step names what an earlier one
+    // made: the forms the catalogue no longer spells out (#2514 review).
+    out.push_str(&format!("\n{}\n", guide_section("Anchors").trim_end()));
+    out.push_str("\nWithin one apply, \"@N\" in a field that names a clip is the clip step N made or changed (0 is the first step).\n");
     out
 }
 
@@ -1941,12 +1950,11 @@ fn tool(name: &str, description: &str, mut properties: Value, required: Vec<&str
         properties[field]["description"] = json!(format!("Its format: klipp_guide topic {}.", &name["klipp_".len()..]));
     }
     let description = description.split_whitespace().collect::<Vec<_>>().join(" ");
-    // The common ops' strict shapes once, on the preview; the apply takes
-    // the same ops (#1667).
-    if name == "klipp_plan" {
-        properties["ops"] = edit_schema::ops_schema();
-    } else if name == "klipp_apply" {
-        properties["ops"] = json!({"type":"array","minItems":1,"items":{"type":"object","required":["op"]},"description":"The ops of klipp_plan's schema; every op: klipp_guide topic ops."});
+    // The ops by name, their forms in the guide: the strict shapes of the
+    // common ones cost a sixteenth of the catalogue on the preview alone,
+    // and are checked here before any call either way (#1667).
+    if matches!(name, "klipp_plan" | "klipp_apply") {
+        properties["ops"] = json!({"type":"array","minItems":1,"items":{"type":"object","required":["op"]},"description":"every op's form: klipp_guide topic ops"});
     }
     let mut schema=json!({"type":"object","properties":properties});
     // An omitted required list means no required arguments. Avoid paying
@@ -2876,16 +2884,45 @@ mod interface_tests {
         eprintln!("legacy tool catalog: {} tools, {catalog_bytes} bytes", legacy.len());
         assert!(catalog_bytes < 90_000, "catalog is {catalog_bytes} bytes");
         let plan = modern.iter().find(|tool| tool["name"] == "klipp_plan").unwrap();
-        assert_eq!(plan["inputSchema"]["properties"]["ops"]["items"]["oneOf"][0]["properties"]["op"]["const"], "cut");
-        assert_eq!(plan["inputSchema"]["properties"]["ops"]["items"]["oneOf"][0]["properties"]["from"]["$ref"], "#/properties/ops/$defs/anchor");
+        let apply = modern.iter().find(|tool| tool["name"] == "klipp_apply").unwrap();
+        assert_eq!(plan["inputSchema"]["properties"]["ops"], apply["inputSchema"]["properties"]["ops"], "the same ops, by name");
+        assert!(plan["inputSchema"]["properties"]["ops"]["description"].as_str().unwrap().contains("topic ops"));
         assert_eq!(plan["outputSchema"]["type"], "object");
         assert!(legacy.iter().all(|tool| tool.get("outputSchema").is_none()));
     }
 
+    /// Each tool's share of the catalogue (#2514 review): a thousand bytes,
+    /// the few that hold a language of their own at the size they are, and
+    /// the whole under 60 KB. A tool that outgrows its share fails here,
+    /// not the next tool to land; what does not fit goes to its guide topic.
+    #[test]
+    fn every_tool_keeps_to_its_share_of_the_catalogue() {
+        const SHARE: usize = 1_000;
+        const LARGER: &[(&str, usize)] = &[("klipp_graph", 2_186), ("klipp_export", 1_379), ("klipp_track_surface", 1_210)];
+        let tools = tool_definitions_for(false);
+        let over: Vec<String> = tools
+            .iter()
+            .filter_map(|t| {
+                let name = t["name"].as_str().unwrap_or("?");
+                let bytes = serde_json::to_vec(t).unwrap().len();
+                let share = LARGER.iter().find(|(n, _)| *n == name).map_or(SHARE, |(_, b)| *b);
+                (bytes > share).then(|| format!("{name}: {bytes} > {share}"))
+            })
+            .collect();
+        assert!(over.is_empty(), "past their share; move detail to the tool's guide topic: {over:?}");
+        let total = serde_json::to_vec(&tools).unwrap().len();
+        assert!(total < 60_000, "the catalogue is {total} bytes");
+        // The ops' forms are in the guide, anchors and step references too.
+        let ops = guide_topic("ops").unwrap();
+        assert!(ops.contains("clip_start") && ops.contains("@"), "the ops topic gives the anchor and clip forms");
+    }
+
     #[test]
     fn malformed_edit_is_refused_before_any_socket_call() {
-        let error = tool_to_command("klipp_apply", &json!({"ops":[{"op":"cut","from":{"frame":1},"to":{"fram":2}}]})).unwrap_err();
-        assert!(error.contains("anchor form"), "{error}");
+        for name in ["klipp_plan", "klipp_apply"] {
+            let error = tool_to_command(name, &json!({"ops":[{"op":"cut","from":{"frame":1},"to":{"fram":2}}]})).unwrap_err();
+            assert!(error.contains("anchor form") && error.contains("klipp_guide topic ops"), "{error}");
+        }
     }
 
     #[test]
@@ -3274,9 +3311,6 @@ mod review_boundary_tests {
                 assert!(tool_to_command(name, &invalid).is_err());
             }
         }
-        let schema = edit_schema::ops_schema();
-        let place = schema["items"]["oneOf"].as_array().unwrap().iter().find(|v| v["properties"]["op"]["const"] == "place").unwrap();
-        assert_eq!(place["properties"]["sync_source_secs"]["minimum"], 0);
     }
 
     #[test]
