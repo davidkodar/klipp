@@ -229,18 +229,19 @@ Every `unsafe extern "C" fn` a plugin can call goes through two guards:
   converts a Rust panic into `K_OFX_STAT_ERR_FATAL`. Panicking across
   `extern "C"` is UB on Rust 2021 and aborts on 2024.
 
-Two known latent issues remain:
+A string property handed to a plugin (`prop_get_string_fn`,
+`prop_get_string_n_fn`) is a `*const c_char` into a `CString` its
+property set owns. A string that is replaced or reset is kept in the
+set's `retired` list rather than freed, so the pointer a plugin was given
+reads the same bytes until `remove_propset` destroys the set, as the OFX
+spec expects (#2449).
 
-1. `paramGetValue` / `paramSetValue` (and the `…AtTime`, derivative and
-   integral getters) are variadic in the OFX spec but implemented as
-   non-variadic and `mem::transmute`'d into the suite table
-   (`param.rs`). Works today by coincidence on the x86-64 SysV ABI with
-   the OpenFX C++ support lib's call convention, but is formally UB.
-   How to fix it is still open.
-2. `prop_get_string_fn` returns a raw `*const c_char` that borrows from
-   a `CString` inside a Mutex-protected store. The Mutex drops before
-   the plugin sees the pointer; a later `remove_propset` or `set_string`
-   on the same propset frees the underlying `CString`. Tracked as #2449.
+One known latent issue remains: `paramGetValue` / `paramSetValue` (and
+the `…AtTime`, derivative and integral getters) are variadic in the OFX
+spec but implemented as non-variadic and `mem::transmute`'d into the
+suite table (`param.rs`). This works today by coincidence on the x86-64
+SysV ABI with the OpenFX C++ support lib's call convention, but is
+formally UB. How to fix it is still open.
 
 ### File I/O trust boundary
 
