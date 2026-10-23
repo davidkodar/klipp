@@ -1,6 +1,9 @@
 //! The GPU stack's frame is the CPU renderer's frame: the same layers,
 //! blends and opacities, encoded to display bytes, within a level.
 
+#[path = "support/cpu_reference.rs"]
+mod cpu_reference;
+use cpu_reference::{no_gpu, CpuReference};
 use klipp_timeline::GradeAccess;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -88,10 +91,10 @@ fn the_gpu_stack_is_the_renderers_frame() {
     let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
     r.set_gpu_enabled(true);
     let Some((gpu, _)) = r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()) else {
-        eprintln!("skipping: the GPU stack declined (no usable GPU?)");
+        no_gpu("the GPU stack declined (no usable GPU?)");
         return;
     };
-    let cpu = display(&r.render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()));
+    let cpu = display(&r.cpu_render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()));
     let d = worst(&cpu, &gpu);
     assert!(d <= 1, "GPU stack differs from the CPU renderer by {d} levels");
 }
@@ -108,19 +111,19 @@ fn the_gpu_stack_is_the_renderers_frame_in_a_wide_working_space() {
     let (seq, mut src) = stack();
     let shown = |linear: &[f32], ws: Ws| klipp_color::display::display_transform_ws_to(linear, klipp_color::display::ToneMapOp::None, ws, klipp_core::SdrTransfer::Srgb);
     let mut rec709 = renderer();
-    let narrow = rec709.render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default());
+    let narrow = rec709.cpu_render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default());
     for ws in [Ws::AcesCG, Ws::Bt2020Linear] {
         let mut r = renderer();
         r.set_working_colorspace(ws);
         let Some((gpu, _)) = r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()) else {
             if r.last_decline().is_none() {
-                eprintln!("skipping: no usable GPU");
+                no_gpu("no usable GPU");
                 return;
             }
             panic!("{ws:?}: the GPU stack declined it: {:?}", r.last_decline());
         };
         assert_eq!(r.last_decline(), None, "{ws:?}: taken by the stack");
-        let cpu = shown(&r.render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()), ws);
+        let cpu = shown(&r.cpu_render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()), ws);
         let d = worst(&cpu, &gpu);
         assert!(d <= 1, "{ws:?}: the GPU stack differs from the CPU renderer by {d} levels");
         let off = worst(&shown(&narrow, ws), &gpu);
@@ -148,7 +151,7 @@ fn the_stack_reads_the_frei0r_plug_in_from_the_picture() {
     let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
     r.set_gpu_enabled(true);
     if r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()).is_none() {
-        eprintln!("skipping: the GPU stack declined the plain stack (no usable GPU?)");
+        no_gpu("the GPU stack declined the plain stack (no usable GPU?)");
         return;
     }
     let mut diverged = seq.clone();
@@ -174,7 +177,7 @@ fn the_gpu_stack_declines_a_frei0r_plug_in() {
     let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
     r.set_gpu_enabled(true);
     if r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()).is_none() {
-        eprintln!("skipping: the GPU stack declined the plain stack (no usable GPU?)");
+        no_gpu("the GPU stack declined the plain stack (no usable GPU?)");
         return;
     }
     // On a clip.
@@ -432,7 +435,7 @@ enum Verdict {
 fn judge(cases: impl IntoIterator<Item = Sequence>, plain: &[u8], src: &mut Flat) -> Verdict {
     for s in cases {
         let mut r = renderer();
-        let cpu = display(&r.render(&s, tc(1.0), W, H, src, RenderOptions::default()));
+        let cpu = display(&r.cpu_render(&s, tc(1.0), W, H, src, RenderOptions::default()));
         if worst(&cpu, plain) <= 1 {
             continue;
         }
@@ -479,10 +482,10 @@ fn every_effect_and_grade_node_is_drawn_by_the_stack_or_declined() {
     let (seq, mut src) = probe_stack();
     let mut r = renderer();
     if r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()).is_none() {
-        eprintln!("skipping: the GPU stack declined the plain probe (no usable GPU?)");
+        no_gpu("the GPU stack declined the plain probe (no usable GPU?)");
         return;
     }
-    let plain = display(&renderer().render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()));
+    let plain = display(&renderer().cpu_render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()));
     let (mut wrong, mut unshown, mut probed_names) = (Vec::new(), Vec::new(), Vec::new());
     let mut verdict = |name: String, v: Verdict| {
         match v {
@@ -497,7 +500,7 @@ fn every_effect_and_grade_node_is_drawn_by_the_stack_or_declined() {
     let shrunk = {
         let mut s = seq.clone();
         probed(&mut s).set_effect_list(vec![shrink()], vec![true]);
-        display(&renderer().render(&s, tc(1.0), W, H, &mut src, RenderOptions::default()))
+        display(&renderer().cpu_render(&s, tc(1.0), W, H, &mut src, RenderOptions::default()))
     };
     let with = |list: Vec<klipp_effects::BuiltinEffect>| {
         let mut s = seq.clone();
@@ -569,10 +572,10 @@ fn every_multi_port_grade_node_is_drawn_by_the_stack_or_declined() {
     let (seq, mut src) = probe_stack();
     let mut r = renderer();
     if r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()).is_none() {
-        eprintln!("skipping: the GPU stack declined the plain probe (no usable GPU?)");
+        no_gpu("the GPU stack declined the plain probe (no usable GPU?)");
         return;
     }
-    let plain = display(&renderer().render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()));
+    let plain = display(&renderer().cpu_render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()));
     let lut = rotating_lut();
     let (mut wrong, mut unshown, mut probed_names) = (Vec::new(), Vec::new(), Vec::new());
     let bright = || {
@@ -654,13 +657,13 @@ fn renderer() -> Renderer {
 fn both(seq: &Sequence, src: &mut Flat) -> Option<(Vec<u8>, Vec<u8>)> {
     let mut r = renderer();
     let (gpu, _) = r.render_display_u8_on_gpu(seq, tc(1.0), W, H, src, RenderOptions::default())?;
-    let cpu = display(&r.render(seq, tc(1.0), W, H, src, RenderOptions::default()));
+    let cpu = display(&r.cpu_render(seq, tc(1.0), W, H, src, RenderOptions::default()));
     Some((cpu, gpu))
 }
 
 fn assert_match(name: &str, seq: &Sequence, src: &mut Flat) {
     let Some((cpu, gpu)) = both(seq, src) else {
-        eprintln!("skipping {name}: the GPU stack declined (no usable GPU?)");
+        no_gpu(&format!("{name}: the GPU stack declined (no usable GPU?)"));
         return;
     };
     let d = worst(&cpu, &gpu);
@@ -763,10 +766,10 @@ fn the_piece_transitions_match() {
         for t in [1.7, 2.3] {
             let mut r = renderer();
             let Some((gpu, _)) = r.render_display_u8_on_gpu(&seq, tc(t), W, H, &mut src, RenderOptions::default()) else {
-                eprintln!("skipping {kind:?}: the GPU stack declined (no usable GPU?)");
+                no_gpu(&format!("{kind:?}: the GPU stack declined (no usable GPU?)"));
                 return;
             };
-            let cpu = display(&r.render(&seq, tc(t), W, H, &mut src, RenderOptions::default()));
+            let cpu = display(&r.cpu_render(&seq, tc(t), W, H, &mut src, RenderOptions::default()));
             assert!(cpu != display(&picture(0.0)) && cpu != display(&picture(0.5)), "{kind:?} at {t} s: under way");
             let d = worst(&cpu, &gpu);
             assert!(d <= 1, "{kind:?} with a {shutter_deg} degree shutter at {t} s: GPU stack differs from the CPU renderer by {d} levels");
@@ -812,7 +815,7 @@ fn a_dip_holds_the_colour_picked_in_a_wide_working_space() {
     for ws in [Ws::AcesCG, Ws::Bt2020Linear] {
         let mut r = renderer();
         r.set_working_colorspace(ws);
-        let cpu = r.render(&seq, tc(2.0), W, H, &mut src, RenderOptions::default());
+        let cpu = r.cpu_render(&seq, tc(2.0), W, H, &mut src, RenderOptions::default());
         let m = klipp_color::primaries::working_space_conversion_matrix(Ws::Rec709Linear, ws).unwrap();
         let want = klipp_color::primaries::matrix3_mul_vec(m, [0, 1, 2].map(|c| klipp_color::transfer::srgb_to_linear(picked[c])));
         let i = (((H / 2) * W + W / 2) * 4) as usize;
@@ -918,7 +921,7 @@ fn an_empty_frame_is_drawn_and_graded_on_the_stack() {
         };
         let events = klipp_effects::residency::last_frame().events;
         assert!(!events.iter().any(|e| e.work == klipp_effects::residency::Work::Fallback), "graded={graded}: {events:?}");
-        let cpu = display(&r.render(&seq, gap, W, H, &mut src, RenderOptions::default()));
+        let cpu = display(&r.cpu_render(&seq, gap, W, H, &mut src, RenderOptions::default()));
         let d = worst(&cpu, &gpu);
         assert!(d <= 1, "graded={graded}: the empty frame differs from the CPU renderer by {d} levels");
     }
@@ -957,10 +960,10 @@ fn a_global_lut_over_the_stack_matches() {
     let mut r = renderer();
     r.set_global_lut(Some(klipp_compose::GlobalLut { lut: lut.clone(), opacity: 0.9 }));
     let Some((gpu, _)) = r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()) else {
-        eprintln!("skipping: the GPU stack declined (no usable GPU?)");
+        no_gpu("the GPU stack declined (no usable GPU?)");
         return;
     };
-    let cpu = display(&r.render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()));
+    let cpu = display(&r.cpu_render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()));
     let d = worst(&cpu, &gpu);
     assert!(d <= 1, "LUT over the stack: GPU differs from the CPU renderer by {d} levels");
     let mut plain = renderer();
@@ -989,19 +992,19 @@ fn a_global_lut_in_an_acescg_project_is_bracketed_on_both_sides() {
     let mut plain = renderer();
     plain.set_lut_tetrahedral(true);
     plain.set_working_colorspace(AcesCG);
-    let mut want = plain.render(&seq, tc(1.0), W, H, &mut src, straight);
+    let mut want = plain.cpu_render(&seq, tc(1.0), W, H, &mut src, straight);
     klipp_color::apply_3d_lut_linear_ws(&mut want, &lut, 0.9, AcesCG, true);
     let mut r = renderer();
     r.set_lut_tetrahedral(true);
     r.set_working_colorspace(AcesCG);
     r.set_global_lut(Some(klipp_compose::GlobalLut { lut, opacity: 0.9 }));
-    let d = worst(&ap1_display(&want), &ap1_display(&r.render(&seq, tc(1.0), W, H, &mut src, straight)));
+    let d = worst(&ap1_display(&want), &ap1_display(&r.cpu_render(&seq, tc(1.0), W, H, &mut src, straight)));
     assert!(d <= 1, "the CPU renderer's LUT is not the node's bracketed lookup: {d} levels");
     let Some((gpu, _)) = r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()) else {
-        eprintln!("skipping: the GPU stack declined (no usable GPU?)");
+        no_gpu("the GPU stack declined (no usable GPU?)");
         return;
     };
-    let cpu = r.render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default());
+    let cpu = r.cpu_render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default());
     let d = worst(&ap1_display(&cpu), &gpu);
     assert!(d <= 1, "LUT in ACEScg: GPU differs from the CPU renderer by {d} levels");
 }
@@ -1019,10 +1022,10 @@ fn a_rolling_title_placed_on_the_gpu_matches() {
     for t in [1.0, 2.5, 4.0] {
         let mut r = renderer();
         let Some((gpu, _)) = r.render_display_u8_on_gpu(&seq, tc(t), W, H, &mut src, RenderOptions::default()) else {
-            eprintln!("skipping: the GPU stack declined (no usable GPU?)");
+            no_gpu("the GPU stack declined (no usable GPU?)");
             return;
         };
-        let cpu = display(&r.render(&seq, tc(t), W, H, &mut src, RenderOptions::default()));
+        let cpu = display(&r.cpu_render(&seq, tc(t), W, H, &mut src, RenderOptions::default()));
         let d = worst(&cpu, &gpu);
         assert!(d <= 1, "rolling title at {t}s: GPU differs from the CPU renderer by {d} levels");
     }
@@ -1051,10 +1054,10 @@ fn a_soft_focus_roll_on_the_gpu_matches() {
     for t in [1.0, 2.5, 4.0] {
         let mut r = renderer();
         let Some((gpu, _)) = r.render_display_u8_on_gpu(&seq, tc(t), W, H, &mut src, RenderOptions::default()) else {
-            eprintln!("skipping: the GPU stack declined (no usable GPU?)");
+            no_gpu("the GPU stack declined (no usable GPU?)");
             return;
         };
-        let cpu = display(&r.render(&seq, tc(t), W, H, &mut src, RenderOptions::default()));
+        let cpu = display(&r.cpu_render(&seq, tc(t), W, H, &mut src, RenderOptions::default()));
         let d = worst(&cpu, &gpu);
         assert!(d <= 2, "soft-focus roll at {t}s: GPU differs from the CPU renderer by {d} levels");
     }
@@ -1126,7 +1129,7 @@ fn a_layer_of_another_size_is_fitted_on_the_gpu() {
         let Some((gpu, _)) = r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()) else {
             panic!("{w}x{h}: the GPU stack declined a layer of another size");
         };
-        let cpu = display(&r.render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()));
+        let cpu = display(&r.cpu_render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()));
         let d = worst(&cpu, &gpu);
         assert!(d <= 1, "{w}x{h}: GPU fit differs from the CPU fit by {d} levels");
     }
@@ -1201,10 +1204,10 @@ fn a_graded_clip_with_a_gpu_effect_stays_on_the_stack() {
 
     let mut r = renderer();
     let Some((gpu, _)) = r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()) else {
-        eprintln!("skipping: the GPU stack declined (no usable GPU?)");
+        no_gpu("the GPU stack declined (no usable GPU?)");
         return;
     };
-    let cpu = display(&r.render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()));
+    let cpu = display(&r.cpu_render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()));
     let d = worst(&cpu, &gpu);
     assert!(d <= 1, "graded + GPU effect: GPU stack differs from the CPU renderer by {d} levels");
 }
@@ -1362,13 +1365,13 @@ fn a_scene_referred_clip_with_a_crop_transform_and_fade_stays_on_the_stack() {
                     panic!("{case}: the GPU stack declined it: {:?}", r.last_decline());
                 };
                 assert_eq!(r.last_decline(), None, "{case}: taken by the stack");
-                let cpu = display(&r.render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()));
+                let cpu = display(&r.cpu_render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()));
                 let d = worst(&cpu, &gpu);
                 assert!(d <= 1, "{case}: the GPU stack differs from the CPU renderer by {d} levels");
                 // The control: without its display step the frame is
                 // another picture, and the bar says so.
                 src.linear = true;
-                let undisplayed = display(&renderer().render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()));
+                let undisplayed = display(&renderer().cpu_render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()));
                 let off = worst(&undisplayed, &gpu);
                 assert!(off > 1, "{case}: a frame without its display step is only {off} levels off: the bar wouldn't see it missing");
             }
@@ -1395,7 +1398,7 @@ fn a_deep_scene_referred_clip_stays_on_the_stack() {
                 panic!("{case}: the GPU stack declined it: {:?}", r.last_decline());
             };
             assert_eq!(r.last_decline(), None, "{case}: taken by the stack");
-            let cpu = display(&r.render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()));
+            let cpu = display(&r.cpu_render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()));
             let d = worst(&cpu, &gpu);
             assert!(d <= 1, "{case}: the GPU stack differs from the CPU renderer by {d} levels");
         }
@@ -1434,7 +1437,7 @@ fn a_transition_from_a_scene_referred_clip_stays_on_the_stack() {
         panic!("the GPU stack declined the transition: {:?}", r.last_decline());
     };
     assert_eq!(r.last_decline(), None);
-    let cpu = display(&r.render(&seq, tc(2.0), W, H, &mut src, RenderOptions::default()));
+    let cpu = display(&r.cpu_render(&seq, tc(2.0), W, H, &mut src, RenderOptions::default()));
     let d = worst(&cpu, &gpu);
     assert!(d <= 1, "the transition differs from the CPU renderer by {d} levels");
 }
@@ -1464,7 +1467,7 @@ fn a_scene_referred_layer_refused_part_way_leaves_nothing_queued() {
     let Some((gpu, _)) = r.render_display_u8_on_gpu(&plain, tc(1.0), W, H, &mut src, RenderOptions::default()) else {
         panic!("the GPU stack declined the SDR layer: {:?}", r.last_decline());
     };
-    let cpu = display(&renderer().render(&plain, tc(1.0), W, H, &mut src, RenderOptions::default()));
+    let cpu = display(&renderer().cpu_render(&plain, tc(1.0), W, H, &mut src, RenderOptions::default()));
     let d = worst(&cpu, &gpu);
     assert!(d <= 1, "the SDR layer after the refusal differs from its CPU render by {d} levels");
 }
@@ -1487,7 +1490,7 @@ fn a_still_generator_is_kept_and_a_changed_one_redrawn() {
     let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
     let blue = one(klipp_core::GeneratorData::SolidColor { color: [20, 40, 220, 255] });
     let Some(first) = at(&blue, &mut r, 1.0, W, H) else {
-        eprintln!("skipping: no GPU stack");
+        no_gpu("no GPU stack");
         return;
     };
     assert_eq!(at(&blue, &mut r, 2.0, W, H).unwrap(), first, "the next frame draws the same");
@@ -1533,10 +1536,10 @@ fn particles_match() {
             let _ = r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default());
             let _ = r.render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default());
             let Some((gpu, _)) = r.render_display_u8_on_gpu(&seq, tc(0.5), W, H, &mut src, RenderOptions::default()) else {
-                eprintln!("skipping: the GPU stack declined");
+                no_gpu("the GPU stack declined");
                 return;
             };
-            let cpu = display(&r.render(&seq, tc(0.5), W, H, &mut src, RenderOptions::default()));
+            let cpu = display(&r.cpu_render(&seq, tc(0.5), W, H, &mut src, RenderOptions::default()));
             let over: Vec<usize> = (0..cpu.len()).filter(|&i| cpu[i].abs_diff(gpu[i]) > 1).collect();
             for &i in over.iter().take(4) {
                 let p = i / 4;
@@ -1607,7 +1610,7 @@ fn a_matte_sequence_gates_the_grade_frame_by_frame_on_both_routes() {
     let mut r = renderer();
     let mut frames = Vec::new();
     for t in [1.0, 2.0] {
-        let cpu = display(&r.render(&seq, tc(t), W, H, &mut src, RenderOptions::default()));
+        let cpu = display(&r.cpu_render(&seq, tc(t), W, H, &mut src, RenderOptions::default()));
         assert!(r.frame_declines().iter().all(|d| !d.fails()), "at {t} s: {:?}", r.frame_declines());
         if let Some((gpu, _)) = r.render_display_u8_on_gpu(&seq, tc(t), W, H, &mut src, RenderOptions::default()) {
             let d = worst(&cpu, &gpu);
@@ -1687,7 +1690,7 @@ fn a_transition_cuts_round_the_subject_on_both_routes() {
     let mut src = Matted(flat, Some(dir.clone()));
     let mut r = renderer();
     // 1.9 s: 45% through, the shards most of the way gone, the subject still.
-    let (cpu, found) = r.render_inspected(&seq, tc(1.9), W, H, &mut src, RenderOptions::default(), klipp_compose::Inspect::default());
+    let (cpu, found) = r.cpu_render_inspected(&seq, tc(1.9), W, H, &mut src, RenderOptions::default(), klipp_compose::Inspect::default());
     let cpu = display(&cpu);
     assert!(found.declines.iter().all(|d| !d.fails()), "{:?}", found.declines);
     assert_eq!(&cpu[centre..centre + 3], &outgoing[centre..centre + 3], "the subject in place");
@@ -1706,7 +1709,7 @@ fn a_transition_cuts_round_the_subject_on_both_routes() {
     // No matte made: the plain pieces, said on both routes.
     src.1 = None;
     let mut r = renderer();
-    let (plain, found) = r.render_inspected(&seq, tc(1.9), W, H, &mut src, RenderOptions::default(), klipp_compose::Inspect::default());
+    let (plain, found) = r.cpu_render_inspected(&seq, tc(1.9), W, H, &mut src, RenderOptions::default(), klipp_compose::Inspect::default());
     let plain = display(&plain);
     let mut routes = vec![("CPU", found.declines, plain.clone())];
     match r.render_display_u8_on_gpu(&seq, tc(1.9), W, H, &mut src, RenderOptions::default()) {
@@ -1800,7 +1803,7 @@ fn a_transitions_subject_matte_is_placed_as_its_picture() {
         // subject not yet moving.
         let at = tc(2.2);
         let mut r = renderer();
-        let (cpu, found) = r.render_inspected(&seq, at, W, H, &mut src, RenderOptions::default(), klipp_compose::Inspect::default());
+        let (cpu, found) = r.cpu_render_inspected(&seq, at, W, H, &mut src, RenderOptions::default(), klipp_compose::Inspect::default());
         assert!(found.declines.iter().all(|d| !d.fails()), "{what}: {:?}", found.declines);
         let mut routes = vec![("CPU", display(&cpu))];
         match r.render_display_u8_on_gpu(&seq, at, W, H, &mut src, RenderOptions::default()) {
@@ -1910,7 +1913,7 @@ fn a_subject_bound_grade_follows_its_media() {
     for (dir, desaturated) in [(&all, true), (&none, false)] {
         let mut src = Shaped { frames: frames.clone(), dir: dir.clone(), length: None };
         let mut r = renderer();
-        let (cpu, found) = r.render_inspected(&seq, tc(1.0), W, H, &mut src, RenderOptions::default(), klipp_compose::Inspect::default());
+        let (cpu, found) = r.cpu_render_inspected(&seq, tc(1.0), W, H, &mut src, RenderOptions::default(), klipp_compose::Inspect::default());
         let cpu = display(&cpu);
         assert!(found.declines.iter().all(|d| !d.fails()), "{:?}", found.declines);
         assert_eq!(grey(&cpu), desaturated, "{}: the grade reads the folder its media has", dir.display());
@@ -2024,14 +2027,14 @@ fn an_animated_clip_s_hold_stays_on_the_stack_without_a_jump() {
         eprintln!("UNVERIFIED: the GPU stack declined the hold ({:?})", r.last_decline());
         return;
     };
-    let cpu = display(&r.render(&seq, tc(2.0), W, H, &mut src, RenderOptions::default()));
+    let cpu = display(&r.cpu_render(&seq, tc(2.0), W, H, &mut src, RenderOptions::default()));
     let d = worst(&cpu, &held);
     assert!(d <= 1, "the held card on the stack differs from the CPU's by {d} levels");
     for t in [0.5, 1.0] {
         let Some((moving, _)) = r.render_display_u8_on_gpu(&seq, tc(t), W, H, &mut src, RenderOptions::default()) else {
             panic!("the entrance at {t} s is blurred on the stack: declined for {:?}", r.last_decline());
         };
-        let d = worst(&display(&r.render(&seq, tc(t), W, H, &mut src, RenderOptions::default())), &moving);
+        let d = worst(&display(&r.cpu_render(&seq, tc(t), W, H, &mut src, RenderOptions::default())), &moving);
         assert!(d <= 1, "the blurred card at {t} s differs from the CPU's by {d} levels");
     }
     // Frame 24 (1.000 s) still moves at the start of its shutter; frame 25
@@ -2055,7 +2058,7 @@ fn an_animated_clip_s_hold_stays_on_the_stack_without_a_jump() {
     };
     let (a, b) = (centre(&last_blurred), centre(&first_held));
     assert!((a - b).abs() < 1.0, "the card jumps {:.2} px where the stack takes over: {a:.2} then {b:.2}", b - a);
-    let cpu_first_held = display(&r.render(&seq, tc(25.0 / 24.0), W, H, &mut src, RenderOptions::default()));
+    let cpu_first_held = display(&r.cpu_render(&seq, tc(25.0 / 24.0), W, H, &mut src, RenderOptions::default()));
     let d = worst(&cpu_first_held, &first_held);
     assert!(d <= 1, "the first held frame differs between the paths by {d} levels");
 }
@@ -2157,7 +2160,7 @@ fn a_moving_clip_is_smeared_on_the_stack_as_the_cpu_smears_it() {
                 eprintln!("UNVERIFIED: {name}: the GPU stack declined ({why:?})");
                 return;
             };
-            let cpu = display(&r.render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()));
+            let cpu = display(&r.cpu_render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()));
             let d = worst(&cpu, &gpu);
             assert!(d <= 1, "{name} at {shutter} degrees, {samples} samples: the stack's smear differs from the CPU's by {d} levels");
         }
@@ -2206,11 +2209,11 @@ fn a_moving_clip_with_effects_after_its_move_stays_on_the_stack() {
         return;
     };
     assert_eq!(stats.cpu_layers, 0, "no layer rendered on the CPU");
-    let cpu = display(&r.render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()));
+    let cpu = display(&r.cpu_render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()));
     let d = worst(&cpu, &gpu);
     assert!(d <= 1, "the stack's smear with its effects differs from the CPU's by {d} levels");
     let (plain, mut plain_src) = scene(false);
-    let without = display(&r.render(&plain, tc(1.0), W, H, &mut plain_src, RenderOptions::default()));
+    let without = display(&r.cpu_render(&plain, tc(1.0), W, H, &mut plain_src, RenderOptions::default()));
     assert!(worst(&without, &gpu) > 8, "the control: without the effects it is another picture");
 }
 
@@ -2312,7 +2315,7 @@ fn a_subject_matte_cuts_the_clip_out() {
         let shown = |c: [f32; 4]| display(&c.repeat(4))[..3].to_vec();
         let (want_top, want_below) = (shown(top_col), shown(below_col));
         let mut r = renderer();
-        let (cpu, found) = r.render_inspected(&seq, tc(1.0), W, H, &mut src, RenderOptions::default(), klipp_compose::Inspect::default());
+        let (cpu, found) = r.cpu_render_inspected(&seq, tc(1.0), W, H, &mut src, RenderOptions::default(), klipp_compose::Inspect::default());
         assert!(found.declines.iter().all(|d| !d.fails()), "{what}: {:?}", found.declines);
         let mut routes = vec![("CPU", display(&cpu))];
         match r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()) {

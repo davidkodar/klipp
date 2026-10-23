@@ -17,6 +17,9 @@
 //! *does* refuse — and for the one it accepts, assert the planes carry
 //! the same picture the ordinary render does.
 
+#[path = "support/cpu_reference.rs"]
+mod cpu_reference;
+use cpu_reference::{no_gpu, CpuReference};
 use klipp_timeline::GradeAccess;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -320,7 +323,7 @@ fn cpu_luma_ws(
 ) -> Vec<u8> {
     let mut r = renderer();
     r.set_working_colorspace(ws);
-    let px = r.render(seq, tc(t), W, H, src, RenderOptions::default());
+    let px = r.cpu_render(seq, tc(t), W, H, src, RenderOptions::default());
     let display = klipp_color::display::ExportDisplay::new(
         klipp_core::ToneMapOp::None,
         ws,
@@ -353,7 +356,7 @@ fn a_plain_single_clip_agrees_with_the_renderer() {
         }
 
         let Some(planes) = gpu_planes(&seq, 0.5, &mut src) else {
-            eprintln!("skipping: the GPU path refused (no usable GPU)");
+            no_gpu("the GPU path refused (no usable GPU)");
             return;
         };
         let want = cpu_luma(&seq, 0.5, &mut src);
@@ -392,8 +395,7 @@ fn a_grained_gradient_exports_its_grain_as_the_renderer_draws_it() {
         let seq = make(grain);
         let mut src = Flat::default();
         let Some(planes) = gpu_planes(&seq, 1.2, &mut src) else {
-            assert_ne!(std::env::var("KLIPP_TEST_REQUIRE_GPU").as_deref(), Ok("1"), "the GPU path refused a lone generator");
-            eprintln!("skipping: the GPU path refused (no usable GPU)");
+            no_gpu("the GPU path refused a lone generator");
             return;
         };
         let want = cpu_luma(&seq, 1.2, &mut src);
@@ -423,8 +425,7 @@ fn an_equalised_gradient_exports_as_the_renderer_draws_it() {
         let seq = sequence(vec![vec![TestClip::of(gradient.clone()).effects(fx.clone()).build()]]);
         let mut src = Flat::default();
         let Some(planes) = gpu_planes(&seq, 1.0, &mut src) else {
-            assert_ne!(std::env::var("KLIPP_TEST_REQUIRE_GPU").as_deref(), Ok("1"), "the GPU path refused an equalised generator");
-            eprintln!("skipping: the GPU path refused (no usable GPU)");
+            no_gpu("the GPU path refused an equalised generator");
             return;
         };
         let want = cpu_luma(&seq, 1.0, &mut src);
@@ -454,7 +455,7 @@ fn a_keyed_grade_exports_each_frame_as_the_renderer_draws_it() {
     });
     let seq = sequence(vec![vec![c.clone()]]);
     if !gpu_path_available() {
-        eprintln!("skipping: the GPU path refused (no usable GPU)");
+        no_gpu("the GPU path refused (no usable GPU)");
         return;
     }
     let mut means = Vec::new();
@@ -487,7 +488,7 @@ fn an_ungraded_clip_agrees_with_the_renderer() {
     let mut src = Flat::default().with(&c, [46, 128, 230]).on_gpu();
 
     let Some(planes) = gpu_planes(&seq, 0.5, &mut src) else {
-        eprintln!("skipping: the GPU path refused (no usable GPU)");
+        no_gpu("the GPU path refused (no usable GPU)");
         return;
     };
     let want = cpu_luma(&seq, 0.5, &mut src);
@@ -529,7 +530,7 @@ fn a_bt2020_project_agrees_with_the_renderer() {
     let mut src = Flat::default().with(&c, [144, 224, 240]).on_gpu();
 
     let Some(planes) = gpu_planes_ws(&seq, 0.5, &mut src, Bt2020Linear, bt2020_target()) else {
-        eprintln!("skipping: the GPU path refused (no usable GPU)");
+        no_gpu("the GPU path refused (no usable GPU)");
         return;
     };
     let want = cpu_luma_ws(&seq, 0.5, &mut src, Bt2020Linear);
@@ -678,7 +679,7 @@ fn the_stack_takes_what_the_single_clip_path_refuses() {
         assert!(worst <= 1, "{what}: the stack's export luma differs from the renderer by {worst} levels");
     }
     if !any {
-        eprintln!("skipping: the GPU stack declined every shape (no usable GPU?)");
+        no_gpu("the GPU stack declined every shape (no usable GPU?)");
     }
 }
 
@@ -721,7 +722,7 @@ fn the_stack_exports_a_wide_working_space_as_the_renderer_does() {
         ];
         for (what, seq, mut src) in cases {
             let Some(planes) = gpu_planes_ws(&seq, 0.5, &mut src.clone_for_gpu(), ws, target) else {
-                eprintln!("skipping: the GPU path refused (no usable GPU)");
+                no_gpu("the GPU path refused (no usable GPU)");
                 return;
             };
             let want = cpu_luma_ws(&seq, 0.5, &mut src, ws);
@@ -763,7 +764,7 @@ fn the_stack_takes_an_hdr_delivery_as_the_renderer_does() {
     use klipp_color::hdr::HdrTransfer;
     use klipp_core::{HdrMode, WorkingColorspace as Ws};
     if !gpu_path_available() {
-        eprintln!("skipping: no usable GPU");
+        no_gpu("no usable GPU");
         return;
     }
     let hlg_target = |peak: f32| klipp_effects::gpu::Yuv420Target { hdr_op: 2, ..pq_target(peak) };
@@ -800,7 +801,7 @@ fn the_stack_takes_an_hdr_delivery_as_the_renderer_does() {
                     .unwrap_or_else(|| panic!("{case}: the GPU path refused: {:?}", r.last_decline()));
                 let mut cpu = renderer();
                 cpu.set_working_colorspace(ws);
-                let (want, max, sum) = hdr_luma(&cpu.render(&seq, tc(0.5), W, H, &mut src, opts), ws, mode, 1000.0);
+                let (want, max, sum) = hdr_luma(&cpu.cpu_render(&seq, tc(0.5), W, H, &mut src, opts), ws, mode, 1000.0);
                 let got: Vec<u16> = planes[..want.len() * 2].chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]]) >> 6).collect();
                 let worst = |a: &[u16], b: &[u16]| a.iter().zip(b).map(|(x, y)| (*x as i32 - *y as i32).abs()).max().unwrap_or(0);
                 let w = worst(&got, &want);
@@ -815,7 +816,7 @@ fn the_stack_takes_an_hdr_delivery_as_the_renderer_does() {
                 if scene {
                     let mut sdr = renderer();
                     sdr.set_working_colorspace(ws);
-                    let (off, _, _) = hdr_luma(&sdr.render(&seq, tc(0.5), W, H, &mut src, RenderOptions::default()), ws, mode, 1000.0);
+                    let (off, _, _) = hdr_luma(&sdr.cpu_render(&seq, tc(0.5), W, H, &mut src, RenderOptions::default()), ws, mode, 1000.0);
                     assert!(worst(&got, &off) > 1, "{case}: the SDR step is within a level, so the bar can't see display light");
                 }
             }
@@ -832,7 +833,7 @@ fn the_stack_takes_an_hdr_delivery_as_the_renderer_does() {
 fn a_titles_hdr_brightness_is_the_renderers_on_the_stack() {
     use klipp_timeline::{Shape, ShapeKind, TitleData, TitleObjectContent, TitlePosition};
     if !gpu_path_available() {
-        eprintln!("skipping: no usable GPU");
+        no_gpu("no usable GPU");
         return;
     }
     let mut td = TitleData::default();
@@ -847,7 +848,7 @@ fn a_titles_hdr_brightness_is_the_renderers_on_the_stack() {
         let mut seq = sequence(vec![vec![title.clone()]]);
         seq.title_nits = nits;
         let mut cpu = renderer();
-        let px = cpu.render(&seq, tc(0.5), W, H, &mut Flat::default(), opts);
+        let px = cpu.cpu_render(&seq, tc(0.5), W, H, &mut Flat::default(), opts);
         let mid = &px[((H / 2 * W + W / 2) * 4) as usize..][..4];
         assert!(mid[..3].iter().all(|v| (v - want).abs() <= want * 1e-3), "{nits} nits: the renderer drew {mid:?}, want {want}");
         let (want_luma, _, _) = hdr_luma(&px, klipp_core::WorkingColorspace::Rec709Linear, klipp_core::HdrMode::Pq, 1000.0);
@@ -862,7 +863,7 @@ fn a_titles_hdr_brightness_is_the_renderers_on_the_stack() {
     // An SDR render has no say in it.
     let mut seq = sequence(vec![vec![title]]);
     seq.title_nits = 600.0;
-    let px = renderer().render(&seq, tc(0.5), W, H, &mut Flat::default(), RenderOptions::default());
+    let px = renderer().cpu_render(&seq, tc(0.5), W, H, &mut Flat::default(), RenderOptions::default());
     assert!(px[..3].iter().all(|v| (v - 1.0).abs() < 1e-3), "SDR: {:?}", &px[..4]);
 }
 
@@ -885,7 +886,7 @@ fn a_height_keyed_apart_agrees_with_the_renderer() {
         assert!(at(x, y) > 100, "({x}, {y}) is {}: no picture where the width's lane puts it", at(x, y));
     }
     let Some(planes) = gpu_planes(&seq, 0.5, &mut src.clone_for_gpu()) else {
-        eprintln!("skipping the GPU half: the stack declined (no usable GPU?)");
+        no_gpu("the stack declined (no usable GPU?)");
         return;
     };
     let worst = planes[..want.len()].iter().zip(&want).map(|(g, w)| (*g as i32 - *w as i32).abs()).max().unwrap_or(0);
@@ -910,12 +911,12 @@ fn a_global_lut_over_a_composite_agrees_with_the_renderer() {
     let Some((planes, _)) =
         r.render_yuv420_on_gpu(&seq, tc(0.5), W, H, &mut src, RenderOptions::default(), plain_target())
     else {
-        eprintln!("skipping: the GPU stack declined (no usable GPU?)");
+        no_gpu("the GPU stack declined (no usable GPU?)");
         return;
     };
     let mut rr = renderer();
     rr.set_global_lut(Some(klipp_compose::GlobalLut { lut, opacity: 0.8 }));
-    let px = rr.render(&seq, tc(0.5), W, H, &mut src, RenderOptions::default());
+    let px = rr.cpu_render(&seq, tc(0.5), W, H, &mut src, RenderOptions::default());
     let display = klipp_color::display::ExportDisplay::new(
         klipp_core::ToneMapOp::None,
         klipp_core::WorkingColorspace::Rec709Linear,
@@ -951,7 +952,7 @@ fn a_timeline_grade_over_a_single_clip_agrees_with_the_renderer() {
     seq.timeline_grade_slot().set(Some(graded(0.0, 1.0, -1.0).grade().clone()));
     let mut src = Flat::default().with(&a, [190, 110, 70]).on_gpu();
     let Some(got) = gpu_planes(&seq, 0.5, &mut src) else {
-        eprintln!("skipping: the GPU path declined (no usable GPU?)");
+        no_gpu("the GPU path declined (no usable GPU?)");
         return;
     };
     let want = cpu_luma(&seq, 0.5, &mut src);
@@ -1005,14 +1006,14 @@ fn a_pq_delivery_agrees_with_the_renderer() {
     let Some((planes, light)) =
         renderer().render_yuv420_on_gpu(&seq, tc(0.5), W, H, &mut src, opts, pq_target(1000.0))
     else {
-        eprintln!("skipping: the GPU path refused (no usable GPU)");
+        no_gpu("the GPU path refused (no usable GPU)");
         return;
     };
 
     // The renderer's own frame, encoded the way the CPU export encodes a
     // PQ delivery, and its light accumulated the same way.
     let mut r = renderer();
-    let px = r.render(&seq, tc(0.5), W, H, &mut src, opts);
+    let px = r.cpu_render(&seq, tc(0.5), W, H, &mut src, opts);
     let display = klipp_color::display::ExportDisplay::hdr(
         klipp_core::WorkingColorspace::Rec709Linear,
         klipp_core::HdrMode::Pq,
@@ -1079,14 +1080,14 @@ fn a_global_lut_is_applied_and_agrees_with_the_renderer() {
         RenderOptions::default(),
         plain_target(),
     ) else {
-        eprintln!("skipping: the GPU path refused (no usable GPU)");
+        no_gpu("the GPU path refused (no usable GPU)");
         return;
     };
 
     // The renderer's own frame, with the same LUT, encoded the same way.
     let mut rr = renderer();
     rr.set_global_lut(Some(klipp_compose::GlobalLut { lut: lut.clone(), opacity: 1.0 }));
-    let px = rr.render(&seq, tc(0.5), W, H, &mut src, RenderOptions::default());
+    let px = rr.cpu_render(&seq, tc(0.5), W, H, &mut src, RenderOptions::default());
     let display = klipp_color::display::ExportDisplay::new(
         klipp_core::ToneMapOp::None,
         klipp_core::WorkingColorspace::Rec709Linear,
@@ -1286,7 +1287,7 @@ fn the_acescg_odts_agree_with_the_renderer() {
                 RenderOptions::default(),
                 target,
             ) else {
-                eprintln!("skipping: the GPU path refused (no usable GPU)");
+                no_gpu("the GPU path refused (no usable GPU)");
                 return;
             };
             assert!(light.is_none(), "{odt:?}: an ODT delivery measures no light");
@@ -1294,7 +1295,7 @@ fn the_acescg_odts_agree_with_the_renderer() {
             // The renderer's frame through the same ExportDisplay.
             let mut r = renderer();
             r.set_working_colorspace(working);
-            let px = r.render(&seq, tc(0.5), W, H, &mut src, RenderOptions::default());
+            let px = r.cpu_render(&seq, tc(0.5), W, H, &mut src, RenderOptions::default());
             let want: Vec<u8> = px
                 .chunks_exact(4)
                 .map(|p| {
@@ -1395,7 +1396,7 @@ fn a_scene_referred_source_agrees_with_the_renderer() {
         ("S-Log3", HdrTransfer::Log(klipp_core::ColorTransfer::SLog3)),
     ];
     if !gpu_path_available() {
-        eprintln!("skipping: no usable GPU");
+        no_gpu("no usable GPU");
         return;
     }
     let cases = transfers.into_iter().flat_map(|t| {
@@ -1427,7 +1428,7 @@ fn a_scene_referred_source_agrees_with_the_renderer() {
 
             // The renderer's own frame, encoded as the CPU export encodes it.
             let mut rr = renderer();
-            let px = rr.render(&seq, tc(0.5), W, H, &mut src, opts);
+            let px = rr.cpu_render(&seq, tc(0.5), W, H, &mut src, opts);
             let display = if hdr {
                 klipp_color::display::ExportDisplay::hdr(
                     W::Rec709Linear,
@@ -1541,7 +1542,7 @@ fn a_scene_referred_source_agrees_with_the_renderer() {
 fn an_ungraded_scene_referred_clip_is_its_cancelled_graded_self() {
     use klipp_color::hdr::HdrTransfer;
     if !gpu_path_available() {
-        eprintln!("skipping: no usable GPU");
+        no_gpu("no usable GPU");
         return;
     }
     for transfer in [HdrTransfer::Pq, HdrTransfer::Hlg, HdrTransfer::Log(klipp_core::ColorTransfer::SLog3)] {
@@ -1590,7 +1591,7 @@ fn an_ungraded_scene_referred_clip_is_its_cancelled_graded_self() {
 fn alternating_frames_on_one_renderer_keep_no_stale_seed() {
     use klipp_color::hdr::HdrTransfer;
     if !gpu_path_available() {
-        eprintln!("skipping: no usable GPU");
+        no_gpu("no usable GPU");
         return;
     }
     let (ungraded, graded_clip, sdr) = (media(0.0, 1.0), graded(0.0, 1.0, 0.5), graded(0.0, 1.0, 0.3));
