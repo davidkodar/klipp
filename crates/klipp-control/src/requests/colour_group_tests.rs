@@ -30,7 +30,7 @@ fn context() -> ControlContext {
             if let Some(ack) = envelope.ack {
                 ack.send(klipp_document::control::ControlAck {
                     revision: 0, refused: None, refused_op: None,
-                    renamed: Vec::new(), ungated: Vec::new(),
+                    renamed: Vec::new(), ungated: Vec::new(), picture_refused: None,
                 }).unwrap();
             }
         }

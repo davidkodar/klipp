@@ -420,6 +420,10 @@ pub(crate) fn send_with_reply(
             if !ack.ungated.is_empty() {
                 reply["ungated"] = json!(ungated);
             }
+            // A write that left its clip as it was (#2458): the rest applied.
+            if let Some(why) = ack.picture_refused {
+                reply["picture_write_refused"] = json!(why);
+            }
             Ok(reply)
         }
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {

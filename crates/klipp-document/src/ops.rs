@@ -3106,7 +3106,9 @@ pub fn resolve_in(seq: &Sequence, others: &[Selects], pool: &MediaPool, ops: &[O
         made.push(touched.first().copied());
         let (clips_before, tracks_before) = contents(&sims[0]);
         let mut view = crate::apply::DocumentView { sequences: &mut sims, active: 0, media_pool: &mut sim_pool, fps: &mut sim_fps };
-        view.apply_forward(&edit);
+        if let Some(why) = picture_refusal_of(&mut view, &edit) {
+            return Err(refuse(i, why, "the clip's picture holds what this edit would take away (a mask or a mix): change it in the clip's node graph"));
+        }
         let after = after_of(&sims[0], &touched);
         let made_clips = after.iter().map(|c| c.clip_id).filter(|id| !clips_before.contains(id)).collect();
         let made_tracks = sims[0].tracks.iter().map(|t| t.id).filter(|id| !tracks_before.contains(id)).collect();
@@ -3115,6 +3117,17 @@ pub fn resolve_in(seq: &Sequence, others: &[Selects], pool: &MediaPool, ops: &[O
     let picture_end_secs = sims[0].tracks.iter().filter(|t| t.kind == TrackKind::Video).flat_map(|t| t.clips.iter()).map(|c| secs(c.timeline_out)).fold(0.0, f64::max);
     let track_ids = sims[0].tracks.iter().map(|t| t.id).collect();
     Ok(Plan { steps, track_ids, duration_secs: secs(sims[0].total_duration()), picture_end_secs, sources: selects.read })
+}
+
+/// `edit` applied, and why a write it makes through a picture-truth
+/// clip's fields was refused, if one was (#2458): the clip is left as it
+/// was and the refusal kept on this thread, where only the app's frame
+/// loop read it, so an op that would be refused when applied was planned
+/// and applied without a word.
+fn picture_refusal_of(view: &mut crate::apply::DocumentView, edit: &EditCommand) -> Option<String> {
+    klipp_timeline::take_picture_refusal();
+    view.apply_forward(edit);
+    klipp_timeline::take_picture_refusal()
 }
 
 /// [`resolve_with`] for ops that stand on their own — a sweep of cuts,
@@ -3141,10 +3154,16 @@ pub fn resolve_each_with(seq: &Sequence, pool: &MediaPool, ops: &[Op], transcrip
                 continue;
             }
         };
-        made.push(touched.first().copied());
         let (clips_before, tracks_before) = contents(&sims[0]);
         let mut view = crate::apply::DocumentView { sequences: &mut sims, active: 0, media_pool: &mut sim_pool, fps: &mut sim_fps };
-        view.apply_forward(&edit);
+        if let Some(why) = picture_refusal_of(&mut view, &edit) {
+            // Taken back, as if it had not been asked for.
+            view.apply_inverse(&edit);
+            refused.push(refuse(i, why, "the clip's picture holds what this edit would take away (a mask or a mix): change it in the clip's node graph"));
+            made.push(None);
+            continue;
+        }
+        made.push(touched.first().copied());
         let after = after_of(&sims[0], &touched);
         let made_clips = after.iter().map(|c| c.clip_id).filter(|id| !clips_before.contains(id)).collect();
         let made_tracks = sims[0].tracks.iter().map(|t| t.id).filter(|id| !tracks_before.contains(id)).collect();
@@ -16898,6 +16917,66 @@ mod tests {
         let EditCommand::Named { edit, .. } = &plan.steps[0].edit else { panic!() };
         let EditCommand::Batch(edits) = edit.as_ref() else { panic!() };
         assert!(!edits.iter().any(|e| matches!(e, EditCommand::SetMarkers { .. })));
+    }
+
+    /// #2458: a planned edit whose write through a picture-truth clip's
+    /// fields is refused (a list without the blur its mask and mix hang
+    /// on) is said where the plan is made, and leaves the clip as it was;
+    /// a stale refusal from before it is not taken for its own.
+    #[test]
+    fn a_refused_picture_write_is_said_where_the_edit_is_planned() {
+        use klipp_effects::BuiltinEffect as E;
+        use klipp_graph_format::lifted::types as lt;
+        use klipp_graph_format::path::{NodePath, Root};
+        use klipp_graph_lift::ops::GraphOp;
+        use klipp_nodes::{Edge, Node, NodeGraph, NodeKind, NodeParams};
+        let (mut seq, pool, _, a, _) = fixture();
+        let clip = seq.tracks[0].clips.iter_mut().find(|c| c.id == a).unwrap();
+        clip.push_effect(E::GaussianBlur { radius: 3.0 });
+        clip.push_effect(E::Vignette { amount: 0.5, size: 0.5, softness: 0.5, roundness: 0.5 });
+        let mut g = NodeGraph::default();
+        g.ensure_corrector();
+        let source = g.nodes.iter().find(|n| n.kind == NodeKind::Source).unwrap().id;
+        let qualifier = Node { id: uuid::Uuid::new_v4(), kind: NodeKind::Qualifier, label: String::new(), enabled: true, params: NodeParams::default(), keyframes: Default::default(), output_link: None, input_links: Vec::new() };
+        g.edges.push(Edge { from_node: source, from_port: 0, to_node: qualifier.id, to_port: 0 });
+        let q = qualifier.id;
+        g.nodes.push(qualifier);
+        clip.set_grade(g);
+        let p = clip.picture_v2().unwrap().picture.clone();
+        let group = p.graph.nodes.iter().find(|n| n.type_id.as_str() == lt::GROUP).unwrap().id;
+        let blur = p.graph.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_format::types::LEGACY_EFFECT).unwrap().id;
+        let at = |id| NodePath::new(Root::Clip { clip: a.0 }, [id]);
+        clip.apply_picture_ops(&[
+            GraphOp::PublishOutput { group: at(group), endpoint: klipp_graph_format::PortBinding { node: q, port: "out".into() }, key: "matte_selection".into(), label: "Selection".into() },
+            GraphOp::Connect { from: at(group), from_port: "matte_selection".into(), to: at(blur), to_port: "mask".into() },
+            GraphOp::SetMix { path: at(blur), mix: Some(0.5) },
+        ])
+        .unwrap();
+        assert!(clip.is_picture_truth());
+        let effects = clip.builtin_effects().to_vec();
+        let without_blur = EditCommand::SetBuiltinEffects {
+            clip_id: a,
+            old_effects: effects.clone(),
+            old_enabled: vec![true, true],
+            new_effects: vec![effects[1].clone()],
+            new_enabled: vec![true],
+            old_ids: Vec::new(),
+            new_ids: Vec::new(),
+        };
+        let mut seqs = vec![seq.clone()];
+        let (mut p, mut fps) = (pool.clone(), seq.fps);
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        let why = picture_refusal_of(&mut view, &without_blur).expect("refused");
+        assert!(why.contains("the effect list"), "{why}");
+        assert_eq!(clip_in(&seqs[0], a).builtin_effects().len(), 2, "the clip is as it was");
+
+        // A refusal left from before is not this edit's.
+        klipp_timeline::take_picture_refusal();
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        let _ = picture_refusal_of(&mut view, &without_blur);
+        let fine = EditCommand::SetMarkers { old: Vec::new(), new: Vec::new() };
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        assert_eq!(picture_refusal_of(&mut view, &fine), None);
     }
 
     /// #2431: a punch-in made with reframe stays on its part of the

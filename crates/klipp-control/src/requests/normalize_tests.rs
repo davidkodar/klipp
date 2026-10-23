@@ -47,7 +47,7 @@ fn context() -> Option<(ControlContext, Vec<klipp_core::ClipId>, Arc<Mutex<Vec<A
         while let Ok(envelope) = receiver.try_recv() {
             got.lock().unwrap().extend(envelope.commands);
             if let Some(ack) = envelope.ack {
-                ack.send(klipp_document::control::ControlAck { revision: 1, refused: None, refused_op: None, renamed: Vec::new(), ungated: Vec::new() }).unwrap();
+                ack.send(klipp_document::control::ControlAck { revision: 1, refused: None, refused_op: None, renamed: Vec::new(), ungated: Vec::new(), picture_refused: None }).unwrap();
             }
         }
     });
