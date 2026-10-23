@@ -54,6 +54,7 @@ fn isolated_measurement_uses_its_own_media_metadata() {
                     refused_op: None,
                     renamed: Vec::new(),
                     ungated: Vec::new(),
+                    picture_refused: None,
                 })
                 .unwrap();
             }

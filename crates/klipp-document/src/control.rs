@@ -46,4 +46,8 @@ pub struct ControlAck {
     pub renamed: Vec<(klipp_graph_format::NodeId, klipp_graph_format::NodeId)>,
     /// Surviving nodes whose mask was removed by this applied batch.
     pub ungated: Vec<klipp_graph_lift::edit_planner::Ungated>,
+    /// Why a write through a picture-truth clip's fields was refused while
+    /// the envelope was applied (#2458): that write left its clip as it
+    /// was, the rest of the envelope applied.
+    pub picture_refused: Option<String>,
 }

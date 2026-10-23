@@ -39,6 +39,8 @@ struct Harness {
     socket: std::path::PathBuf,
     next_id: u64,
     ack_delay_ms: Arc<std::sync::atomic::AtomicU64>,
+    /// A picture write the stand-in UI says it refused, in its next ack.
+    picture_refusal: Arc<Mutex<Option<String>>>,
     commit_change: Arc<std::sync::atomic::AtomicU8>,
     project_switch_delay_ms: Arc<std::sync::atomic::AtomicU64>,
     /// Two clips, each with its own Corrector, and a node nested inside
@@ -115,6 +117,7 @@ fn harness() -> Harness {
     let sent: Arc<Mutex<Vec<klipp_core::AppCommand>>> = Arc::new(Mutex::new(Vec::new()));
     let edits_seen: Arc<Mutex<Vec<klipp_document::history::EditCommand>>> = Arc::new(Mutex::new(Vec::new()));
     let ack_delay_ms = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let picture_refusal: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let commit_change = Arc::new(std::sync::atomic::AtomicU8::new(0));
     let project_switch_delay_ms = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let shared = Arc::new(klipp_core::ControlShared::default());
@@ -129,6 +132,7 @@ fn harness() -> Harness {
         let sent = Arc::clone(&sent);
         let media_pool = media_pool.clone();
         let delay = Arc::clone(&ack_delay_ms);
+        let picture_refused_next = Arc::clone(&picture_refusal);
         let sequence = Arc::clone(&sequence);
         let commit_change = Arc::clone(&commit_change);
         let project_switch_delay = Arc::clone(&project_switch_delay_ms);
@@ -275,7 +279,8 @@ fn harness() -> Harness {
                 }
                 let revision = if refused.is_none() { shared.bump_revision() } else { shared.revision() };
                 if let Some(ack) = env.ack {
-                    let _ = ack.send(klipp_document::control::ControlAck { revision, refused, refused_op, renamed, ungated });
+                    let picture_refused = picture_refused_next.lock().unwrap().take();
+                    let _ = ack.send(klipp_document::control::ControlAck { revision, refused, refused_op, renamed, ungated, picture_refused });
                 }
             }
         });
@@ -316,7 +321,7 @@ fn harness() -> Harness {
         match UnixStream::connect(&sock) {
             Ok(stream) => {
                 let reader = BufReader::new(stream.try_clone().expect("clone"));
-                return Harness { _serial: serial, stream, frame_buffer, reader, cmd_rx, envelopes, sent, edits_seen, others, sources_seen, shared, media_pool, sequence, log, socket: sock, next_id: 0, ack_delay_ms, commit_change, project_switch_delay_ms, ids };
+                return Harness { _serial: serial, stream, frame_buffer, reader, cmd_rx, envelopes, sent, edits_seen, others, sources_seen, shared, media_pool, sequence, log, socket: sock, next_id: 0, ack_delay_ms, picture_refusal, commit_change, project_switch_delay_ms, ids };
             }
             Err(e) => {
                 last_err = Some(e);
@@ -3600,6 +3605,20 @@ fn export_timeline_writes_the_open_sequence_as_its_extension_says() {
     h.ok(json!({"method": "export_timeline", "path": otio, "overwrite": true}));
     assert!(h.sent.lock().unwrap().is_empty(), "an export sends the app nothing");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// #2458: a write through a picture-truth clip's fields that the app
+/// refused while applying a command is in that command's reply, the rest
+/// of it applied.
+#[test]
+fn a_refused_picture_write_is_in_the_reply() {
+    let mut h = harness();
+    *h.picture_refusal.lock().unwrap() = Some("Shot 1: an effect's settings not done: its mask would be lost".into());
+    let reply = h.ok(json!({"method": "rename_sequence", "name": "Cut"}));
+    assert_eq!(reply["applied"], json!(true), "{reply}");
+    assert_eq!(reply["picture_write_refused"], json!("Shot 1: an effect's settings not done: its mask would be lost"), "{reply}");
+    let reply = h.ok(json!({"method": "rename_sequence", "name": "Cut 2"}));
+    assert!(reply.get("picture_write_refused").is_none(), "only the envelope it was refused in: {reply}");
 }
 
 /// `duplicate_sequence` (#2433) copies the open sequence, or one by index

@@ -58,6 +58,8 @@ impl KlippApp {
             // play or a seek over a project unsaved for another reason
             // (analysis markers arriving) used to relabel it as edits.
             let was_dirty = self.state.dirty;
+            // A refusal from before this envelope is not its.
+            klipp_timeline::take_picture_refusal();
             // A resolved plan: its commands forward, in order, as one
             // history entry — unless the document moved since it was
             // resolved, in which case it was made for a document that no
@@ -160,7 +162,14 @@ impl KlippApp {
                 // the position from before it and put the playhead back
                 // there. What this envelope sought is where the user is.
                 self.publish_transport(sought);
-                let _ = ack.send(klipp_document::control::ControlAck { revision: self.state.control_shared.revision(), refused, refused_op, renamed, ungated });
+                // A write through a picture-truth clip's fields refused
+                // while this envelope applied: for the caller, and the
+                // person, as the frame loop would have said it (#2458).
+                let picture_refused = klipp_timeline::take_picture_refusal();
+                if let Some(why) = &picture_refused {
+                    self.state.toast.show(why.clone());
+                }
+                let _ = ack.send(klipp_document::control::ControlAck { revision: self.state.control_shared.revision(), refused, refused_op, renamed, ungated, picture_refused });
             }
         }
     }

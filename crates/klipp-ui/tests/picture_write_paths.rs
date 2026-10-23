@@ -26,8 +26,8 @@ const FILES: &[(&str, &str)] = &[
 /// (file, entry, count): every constructor left, tests included.
 const KNOWN: &[(&str, &str, usize)] = &[
     // The whole-list write the placed kinds fall back to (and reframe's
-    // Transform), and the tests that check for it.
-    ("klipp-document/src/ops.rs", "SetBuiltinEffects", 3),
+    // Transform), and the tests that check for it and for its refusal.
+    ("klipp-document/src/ops.rs", "SetBuiltinEffects", 4),
     // The document ops' grade builders (grade, look, qualify, zones, track
     // and stage grades) and their tests.
     ("klipp-document/src/ops.rs", "SetNodeGraph", 22),
