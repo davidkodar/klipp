@@ -32,14 +32,10 @@
 //!   on x86-64 SysV ABI with the OpenFX C++ support lib's calling
 //!   convention, but is formally UB. Needs a per-type entry-point
 //!   redesign.
-//! * `prop_get_string_fn` returns a raw `*const c_char` that borrows
-//!   from a `CString` inside the Mutex-protected `PROP_STORE`. The
-//!   Mutex drops before the plugin sees the pointer; a subsequent
-//!   `remove_propset` / `set_string` on the same propset frees or
-//!   reallocates the underlying `CString`. Needs an append-only
-//!   handle-keyed string store.
 //!
-//! Both are tracked for a dedicated plugin-host refactor pass.
+//! It is tracked for a dedicated plugin-host refactor pass. (A string
+//! `prop_get_string_fn` returns now lives until its property set is
+//! destroyed, #2449.)
 
 /// Guard an OFX callback against plugin-supplied null pointers.
 ///
