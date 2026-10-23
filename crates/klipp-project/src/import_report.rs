@@ -53,7 +53,8 @@ impl ImportReport {
         let mut groups = BTreeMap::<&str, Vec<String>>::new();
         for warning in &result.warnings {
             let lower = warning.to_lowercase();
-            let kind = if lower.contains("offline") || lower.contains("not found") || lower.contains("no media") { "Missing media" }
+            let kind = if lower.contains("outside its media") { "Source ranges" }
+                else if lower.contains("offline") || lower.contains("not found") || lower.contains("no media") { "Missing media" }
                 else if lower.contains("transition") { "Transitions" }
                 else if lower.contains("effect") || lower.contains("filter") { "Effects" }
                 else if lower.contains("grade") || lower.contains("colour") || lower.contains("color") { "Colour grades" }
@@ -219,6 +220,72 @@ pub fn load(path: &Path, fps: klipp_core::Fps, pool: &klipp_media::MediaPool) ->
     }
 }
 
+/// An imported timeline made to sit in the project it joins (#2472): a
+/// file the pool already holds, or that two of its items name, is that one
+/// item; its sequence takes a name none of `names` has; and a clip whose
+/// source runs outside its media is named in its warnings.
+pub fn fit_into(mut result: ImportResult, pool: &klipp_media::MediaPool, names: &[&str]) -> ImportResult {
+    use std::collections::HashMap;
+    let key = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let mut by_path: HashMap<std::path::PathBuf, klipp_core::MediaId> = pool.all().map(|m| (key(&m.path), m.id)).collect();
+    let mut same: HashMap<klipp_core::MediaId, klipp_core::MediaId> = HashMap::new();
+    let mut ids: Vec<klipp_core::MediaId> = result.media_pool.all().map(|m| m.id).collect();
+    ids.sort_by_key(|id| result.media_pool.get(id).map(|m| m.path.clone()));
+    for id in ids {
+        let path = key(&result.media_pool.get(&id).expect("listed").path);
+        match by_path.get(&path) {
+            Some(&kept) if kept != id => {
+                same.insert(id, kept);
+                result.media_pool.remove(&id);
+            }
+            Some(_) => {}
+            None => {
+                by_path.insert(path, id);
+            }
+        }
+    }
+    for clip in result.sequence.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()) {
+        if let ClipKind::Media { media_id } = &mut clip.kind {
+            if let Some(kept) = same.get(media_id) {
+                *media_id = *kept;
+            }
+        }
+    }
+
+    let base = result.sequence.name.clone();
+    let mut n = 1;
+    while names.contains(&result.sequence.name.as_str()) {
+        n += 1;
+        result.sequence.name = format!("{base} {n}");
+    }
+    if n > 1 {
+        result.warnings.push(format!("Sequence '{base}' is named '{}' here: the project has one called '{base}' already", result.sequence.name));
+    }
+
+    // Half a frame of slack: an interchange file rounds its times.
+    let slack = 0.5 / result.sequence.fps.as_f64();
+    for track in &result.sequence.tracks {
+        for clip in &track.clips {
+            let Some(id) = clip.media_id() else { continue };
+            let Some(item) = result.media_pool.get(&id).or_else(|| pool.get(&id)) else { continue };
+            let len = item.duration.to_secs_f64();
+            if item.is_still || len <= 0.0 {
+                continue;
+            }
+            let (from, to) = (clip.source_in.to_secs_f64(), clip.source_out.to_secs_f64());
+            if from < -slack || to > len + slack {
+                result.warnings.push(format!(
+                    "Clip '{}' on track '{}' at {:.3} s: its source runs from {from:.3} s to {to:.3} s, outside its media, which is {len:.3} s long",
+                    item.filename,
+                    track.name,
+                    clip.timeline_in.to_secs_f64(),
+                ));
+            }
+        }
+    }
+    result
+}
+
 /// A file another editor's timeline names, as a media item: what the
 /// timeline says of it, probed for the rest once it is found (#2084).
 pub(crate) fn interchange_media_item(path: std::path::PathBuf, name: String, duration: klipp_core::RationalTime, fps: klipp_core::Fps) -> klipp_media::MediaItem {
@@ -318,6 +385,44 @@ pub fn read(dir: &Path) -> Result<Option<ImportReport>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #2472: an FCPXML brought into a project that holds its file shows
+    /// the pool's item, not a second one, even named by two assets; its
+    /// sequence takes a name of its own; a clip running past its file's
+    /// end is reported.
+    #[test]
+    fn an_import_reuses_pool_media_takes_a_free_name_and_reports_overruns() {
+        let path = std::env::temp_dir().join(format!("klipp-fit-{}", uuid::Uuid::new_v4())).join("take.mov");
+        let mut held = klipp_media::MediaItem::synthetic_for_test(path.clone(), None);
+        held.duration = klipp_core::RationalTime::from_secs_f64(10.0, 25);
+        let held_id = held.id;
+        let mut pool = klipp_media::MediaPool::new();
+        pool.add(held);
+        let src = path.display();
+        let xml = format!(r#"<?xml version="1.0"?>
+<!DOCTYPE fcpxml>
+<fcpxml version="1.9"><resources><format id="r0" frameDuration="1/25s" width="1920" height="1080"/>
+<asset id="a1" name="take.mov" src="file://{src}" start="0s" duration="10s" hasVideo="1" format="r0"/>
+<asset id="a2" name="take.mov" src="file://{src}" start="0s" duration="10s" hasVideo="1" format="r0"/></resources>
+<library><event><project name="Cut"><sequence format="r0" duration="8s"><spine>
+<asset-clip ref="a1" offset="0s" start="0s" duration="4s"/>
+<asset-clip ref="a2" offset="4s" start="8s" duration="4s"/>
+</spine></sequence></project></event></library></fcpxml>"#);
+        let result = fit_into(crate::fcpxml_import::parse_fcpxml(&xml).unwrap(), &pool, &["Cut", "Cut 2"]);
+        assert_eq!(result.media_pool.all().count(), 0, "nothing new for the pool");
+        let ids: Vec<_> = result.sequence.tracks.iter().flat_map(|t| &t.clips).filter_map(|c| c.media_id()).collect();
+        assert_eq!(ids, [held_id, held_id], "both clips show the held item");
+        assert_eq!(result.sequence.name, "Cut 3");
+        let over: Vec<_> = result.warnings.iter().filter(|w| w.contains("outside its media")).collect();
+        assert_eq!(over.len(), 1, "{:?}", result.warnings);
+        assert!(over[0].contains("at 4.000 s: its source runs from 8.000 s to 12.000 s") && over[0].contains("10.000 s long"), "{}", over[0]);
+        let report = ImportReport::from_import(&path, &result);
+        assert!(report.warnings.iter().any(|g| g.kind == "Source ranges" && g.warning_count == 1), "{:?}", report.warnings);
+
+        // Into a fresh project: its own items, its own name.
+        let fresh = fit_into(crate::fcpxml_import::parse_fcpxml(&xml).unwrap(), &klipp_media::MediaPool::new(), &[]);
+        assert_eq!((fresh.media_pool.all().count(), fresh.sequence.name.as_str()), (1, "Cut"), "the two assets of one file are one item");
+    }
     #[test]
     fn xml_extension_and_edl_existing_offline_media_are_preserved() {
         let dir = std::env::temp_dir().join(format!("klipp-report-formats-{}", uuid::Uuid::new_v4()));

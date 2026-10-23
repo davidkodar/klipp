@@ -303,7 +303,7 @@ impl ClipXml<'_> {
                         dropped.push(format!("Track '{}': {what} at {at:.3} s — its speed ramp, written as one even speed over the same frames", track.name));
                     }
                 }
-                if clip.volume_keyframes.is_empty() && (clip.volume - 1.0).abs() > 1e-6 && clip.volume > 0.0 {
+                if (sound_track || !linked_sound) && clip.volume_keyframes.is_empty() && (clip.volume - 1.0).abs() > 1e-6 && clip.volume > 0.0 {
                     body.push_str(&format!("<adjust-volume amount=\"{:.2}dB\"/>\n", 20.0 * f64::from(clip.volume).log10()));
                 }
                 for marker in &clip.clip_markers {
