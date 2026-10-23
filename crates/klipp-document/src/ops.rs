@@ -3323,8 +3323,15 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 None => seq.fps,
             };
             let new = (klipp_core::Resolution { width: *width, height: *height }, new_fps);
-            let what = format!("the sequence becomes {width}x{height} at {:.3} fps (was {}x{} at {:.3})", new_fps.as_f64(), seq.resolution.width, seq.resolution.height, seq.fps.as_f64());
-            Ok((what, EditCommand::SetSequenceFormat { old: (seq.resolution, seq.fps), new }, Vec::new()))
+            let mut what = format!("the sequence becomes {width}x{height} at {:.3} fps (was {}x{} at {:.3})", new_fps.as_f64(), seq.resolution.width, seq.resolution.height, seq.fps.as_f64());
+            let format = EditCommand::SetSequenceFormat { old: (seq.resolution, seq.fps), new };
+            // Each reframe stays on its picture in the new frame.
+            let kept = reframes_kept(seq, pool, new.0);
+            if kept.is_empty() {
+                return Ok((what, format, Vec::new()));
+            }
+            what += &format!("; {} reframe(s) kept on their picture", kept.len());
+            Ok((what, EditCommand::Batch(std::iter::once(format).chain(kept).collect()), Vec::new()))
         }
         Op::Reframe { clip_id, scale, x, y } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
@@ -7332,13 +7339,102 @@ fn reach_of(scale: f32, pic: f32, dim: f32) -> f32 {
     ((scale * pic - dim) * 0.5).max(0.0)
 }
 
+/// A picture's framing as an editor set it (#2431): a reframe's scale and
+/// pan, held still, not keyed. Its pan is in pixels of `frame`, so it is
+/// read as the point of the picture it centres, in fractions of the
+/// picture, which any frame can show again. `None` for a clip with no
+/// reframe, or one keyed, cropped or placed as an inset.
+fn reframe_of(clip: &Clip, pool: &MediaPool, frame: (f32, f32)) -> Option<([f32; 2], f32)> {
+    let [px, py, sc, _] = placement_lanes(clip);
+    if !px.0.is_empty() || !py.0.is_empty() || !sc.0.is_empty() || CropSides::of(clip).is_some() {
+        return None;
+    }
+    let scale = sc.1;
+    if scale < 0.999 || ((scale - 1.0).abs() < 1e-4 && px.1.abs() < 0.5 && py.1.abs() < 0.5) {
+        return None;
+    }
+    let pic = fitted_size(clip, pool, frame.0, frame.1);
+    Some(([0.5 - px.1 / (scale * pic.0), 0.5 - py.1 / (scale * pic.1)], scale))
+}
+
+/// The frame point, in fractions of `frame`, the picture `point` of
+/// `clip` (fitted into `frame` at scale 1) falls on.
+fn point_in_frame(clip: &Clip, pool: &MediaPool, frame: (f32, f32), point: [f32; 2]) -> [f32; 2] {
+    let pic = fitted_size(clip, pool, frame.0, frame.1);
+    [(0.5 + (point[0] - 0.5) * pic.0 / frame.0).clamp(0.0, 1.0), (0.5 + (point[1] - 0.5) * pic.1 / frame.1).clamp(0.0, 1.0)]
+}
+
+/// The edits that keep each reframe in `seq` on its picture when its frame
+/// becomes `to` (#2431): the same point of the picture in the middle at the
+/// same scale, its pan in pixels of the new frame, as far as the picture
+/// reaches. A pan in pixels left as it was moves a punch-in somewhere
+/// else, and a refit took it for no reframe at all.
+pub fn reframes_kept(seq: &Sequence, pool: &MediaPool, to: klipp_core::Resolution) -> Vec<EditCommand> {
+    use klipp_effects::BuiltinEffect as E;
+    let (from, to) = ((seq.resolution.width as f32, seq.resolution.height as f32), (to.width as f32, to.height as f32));
+    if from == to {
+        return Vec::new();
+    }
+    let mut edits = Vec::new();
+    for track in seq.tracks.iter().filter(|t| t.kind == TrackKind::Video && !t.locked) {
+        for clip in &track.clips {
+            let Some((point, scale)) = reframe_of(clip, pool, from) else { continue };
+            // The placement the reframe's Transform is, the rest of it kept.
+            let Ok(view) = clip.picture_v2() else { continue };
+            let pl = &view.picture.placement;
+            let [x, y] = point_in_frame(clip, pool, to, point);
+            let (nx, ny) = pan_position(scale, x, y, to, fitted_size(clip, pool, to.0, to.1));
+            if (nx - pl.pos_x.unwrap_or(0.0)).abs() < 0.01 && (ny - pl.pos_y.unwrap_or(0.0)).abs() < 0.01 {
+                continue;
+            }
+            let moved = E::Transform {
+                position_x: nx,
+                position_y: ny,
+                scale_x: scale,
+                scale_y: scale * pl.aspect.unwrap_or(1.0),
+                rotation: pl.rotation.unwrap_or(0.0),
+                anchor_x: pl.anchor_x.unwrap_or(0.5),
+                anchor_y: pl.anchor_y.unwrap_or(0.5),
+                rotation_x: pl.tilt_x.unwrap_or(0.0),
+                rotation_y: pl.tilt_y.unwrap_or(0.0),
+                perspective: pl.perspective.unwrap_or(0.0),
+                focal_ref: pl.focal_ref.clone().and_then(|v| serde_json::from_value(v).ok()),
+            };
+            if let Ok(edit) = effects_edit(clip, |e: &E| matches!(e, E::Transform { .. }), Some((moved, Place::First))) {
+                edits.push(edit);
+            }
+        }
+    }
+    edits
+}
+
+/// [`reframes_kept`] on a sequence whose frame was `from` and is already
+/// its new one: a version at another aspect, or a size set in the
+/// sequence's settings.
+pub fn keep_reframes(seq: &mut Sequence, pool: &MediaPool, from: klipp_core::Resolution) {
+    let to = seq.resolution;
+    let mut before = seq.clone();
+    before.resolution = from;
+    let edits = reframes_kept(&before, pool, to);
+    if edits.is_empty() {
+        return;
+    }
+    let mut seqs = vec![std::mem::replace(seq, before)];
+    let (mut pool, mut fps) = (pool.clone(), seqs[0].fps);
+    let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps };
+    for edit in &edits {
+        view.apply_forward(edit);
+    }
+    *seq = seqs.remove(0);
+}
+
 /// [`Op::Refit`]: every picture and title fitted to the frame the
 /// sequence now has (#2211), as one undoable step.
 fn refit(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, i: usize, markers: bool) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     use crate::subject_path::{by_time, camera_keys, subject_track};
     let (fw, fh) = (seq.resolution.width as f32, seq.resolution.height as f32);
     let (mut edits, mut ids) = (Vec::new(), Vec::new());
-    let (mut followed, mut still) = (0usize, 0usize);
+    let (mut followed, mut still, mut kept) = (0usize, 0usize, 0usize);
     let mut review: Vec<(&Clip, String, &'static str)> = Vec::new();
     let mut shrunk: Vec<String> = Vec::new();
     for (ti, track) in seq.tracks.iter().enumerate().filter(|(_, t)| !t.locked) {
@@ -7384,6 +7480,17 @@ fn refit(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, i: usi
                 continue;
             }
             let dur = (secs(clip.timeline_out) - secs(clip.timeline_in)).max(0.05);
+            // An editor's reframe stays on the part of the picture it was
+            // punched in on, filling the new frame (#2431).
+            if let Some((point, _)) = reframe_of(clip, pool, (fw, fh)) {
+                let [x, y] = point_in_frame(clip, pool, (fw, fh), point);
+                let keys: Vec<PanKey> = [0.0, dur].iter().map(|t| PanKey { secs: *t, scale, x, y, ease: Default::default() }).collect();
+                let (_, edit, _) = pan(seq, pool, i, ti, clip, &keys, "refit", true)?;
+                edits.push(edit);
+                ids.push(clip.id);
+                kept += 1;
+                continue;
+            }
             let (s_in, s_out) = (secs(clip.source_in), secs(clip.source_out));
             // Detections in the clip's stretch, at clip seconds; a still's
             // are all of it.
@@ -7441,6 +7548,9 @@ fn refit(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, i: usi
         return Err(refuse(i, "nothing to refit", "the sequence has no picture or title on an unlocked track"));
     }
     let mut what = format!("refit to {}x{}: {followed} pictures follow their subject, {still} stills hold on theirs", seq.resolution.width, seq.resolution.height);
+    if kept > 0 {
+        what += &format!(", {kept} keep their reframe");
+    }
     if !review.is_empty() {
         what += &format!("; {} centred for review: {}", review.len(), review.iter().map(|(_, why, _)| why.as_str()).collect::<Vec<_>>().join("; "));
     }
@@ -16763,6 +16873,48 @@ mod tests {
         let EditCommand::Named { edit, .. } = &plan.steps[0].edit else { panic!() };
         let EditCommand::Batch(edits) = edit.as_ref() else { panic!() };
         assert!(!edits.iter().any(|e| matches!(e, EditCommand::SetMarkers { .. })));
+    }
+
+    /// #2431: a punch-in made with reframe stays on its part of the
+    /// picture through a format and a refit to a tall frame, where filling
+    /// alone already needs more than its scale; the picture beside it with
+    /// no reframe is centred, as before. Each step undoes exactly.
+    #[test]
+    fn a_reframe_is_kept_through_format_and_refit() {
+        let (seq, pool, _, a, b) = fixture();
+        let mut seqs = vec![seq.clone()];
+        let (mut p, mut fps) = (pool.clone(), seq.fps);
+        let mut step = |seqs: &mut Vec<Sequence>, op: Op| -> (String, EditCommand) {
+            let plan = resolve(&seqs[0], &p, &[op]).unwrap();
+            let (what, edit) = (plan.steps[0].what.clone(), plan.steps[0].edit.clone());
+            let before = serde_json::to_value(&seqs[0]).unwrap();
+            let mut view = crate::apply::DocumentView { sequences: seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+            view.apply_forward(&edit);
+            view.apply_inverse(&edit);
+            assert_eq!(serde_json::to_value(&view.sequences[0]).unwrap(), before, "{what}: undo puts it back");
+            view.apply_forward(&edit);
+            (what, edit)
+        };
+        // A third of the picture, toward its right and its top.
+        step(&mut seqs, Op::Reframe { clip_id: ClipRef::Id(a), scale: Some(3.0), x: Some(0.9), y: Some(-0.5) });
+        let point = |s: &Sequence, id: ClipId| {
+            let c = clip_in(s, id);
+            let [px, _, sc, _] = placement_lanes(&c);
+            let (pos, scale) = (px.0.first().map_or(px.1, |k| k.value), sc.0.first().map_or(sc.1, |k| k.value));
+            let pic = fitted_size(&c, &pool, s.resolution.width as f32, s.resolution.height as f32);
+            0.5 - pos / (scale * pic.0)
+        };
+        let wide = point(&seqs[0], a);
+        assert!((wide - 0.8).abs() < 1e-3, "{wide}");
+        let (what, _) = step(&mut seqs, Op::Format { width: 1080, height: 1920, fps: None });
+        assert!(what.contains("1 reframe(s) kept"), "{what}");
+        assert!((point(&seqs[0], a) - wide).abs() < 1e-3, "the format keeps it on its picture");
+        let (what, _) = step(&mut seqs, Op::Refit { markers: false });
+        assert!(what.contains("1 keep their reframe"), "{what}");
+        assert!((point(&seqs[0], a) - wide).abs() < 1e-3, "the refit keeps it there: {}", point(&seqs[0], a));
+        assert!((point(&seqs[0], b) - 0.5).abs() < 1e-3, "the other is centred");
+        let scale = placement_lanes(&clip_in(&seqs[0], a))[2].0.first().map(|k| k.value).unwrap();
+        assert!((scale - 1920.0 / 607.5).abs() < 1e-3, "it fills the tall frame: {scale}");
     }
 
     /// #2211: a picture panned for the wide frame is refit for the tall one,

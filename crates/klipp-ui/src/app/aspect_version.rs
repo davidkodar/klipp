@@ -27,7 +27,10 @@ pub(super) fn add_version(state: &mut crate::state::AppState, source: usize, siz
     let mut version = state.sequences.get(source)?.clone();
     version.id = klipp_core::SequenceId::new();
     version.name = name.to_string();
+    let from = version.resolution;
     version.resolution = klipp_core::Resolution { width: size.0, height: size.1 };
+    // Each reframe on its picture in the new frame, for the refit to keep.
+    klipp_document::ops::keep_reframes(&mut version, &state.media_pool, from);
     version.awaiting_refit = true;
     state.sequences.push(version);
     state.dirty = true;
