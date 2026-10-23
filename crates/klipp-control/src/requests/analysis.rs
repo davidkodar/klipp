@@ -508,7 +508,13 @@ pub(crate) fn respond(
             });
             // What each model opened runs on; a line on the CPU says why,
             // a GPU left unused among them (#2250).
-            reply["execution_providers"] = json!(klipp_analysis::providers::lines());
+            let mut lines: Vec<String> = reply["execution_providers"].as_array().map(|a| a.iter().filter_map(|l| l.as_str().map(String::from)).collect()).unwrap_or_default();
+            for line in klipp_analysis::providers::lines() {
+                if !lines.contains(&line) {
+                    lines.push(line);
+                }
+            }
+            reply["execution_providers"] = json!(lines);
             reply["note"] = json!("current is the analyser at work and current_for_secs how long it has been; a transcript takes about a third of the file's length");
             Ok(reply)
         }

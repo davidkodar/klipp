@@ -53,7 +53,7 @@ pub(crate) fn respond(
             // came after the render and a review of a two-and-a-half
             // minute piece outran the tool's two minutes (#519).
             let (job, check) = std::thread::scope(|s| {
-                let check = s.spawn(|| handle(ctx, ControlCommand::Check { color: true, loudness: true }, &mut None));
+                let check = s.spawn(|| handle(ctx, ControlCommand::Check { color: true, loudness: true, min_severity: None }, &mut None));
                 // The render's own time, not the check's if that ends later.
                 let job = rendered().map(|j| (j, started.elapsed().as_secs_f64()));
                 (job, check.join().unwrap_or_else(|_| Err("the check stopped unexpectedly".into())))

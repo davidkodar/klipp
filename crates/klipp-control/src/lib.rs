@@ -810,7 +810,7 @@ fn handle(
             | ControlCommand::SelectClip { .. }
             | ControlCommand::Plan { .. }
             | ControlCommand::Apply { .. }
-            | ControlCommand::Fonts
+            | ControlCommand::Fonts { .. }
             | ControlCommand::TitleTemplates
             | ControlCommand::NodeTypes { .. }
             | ControlCommand::GraphRead { .. }

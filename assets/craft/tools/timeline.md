@@ -136,7 +136,7 @@ Left out, max_width gives the viewer's frame, at most 1280 wide; the viewer deco
 
 ## klipp_fonts
 
-The font families a title or a brief's type style can name: those bundled with Klipp, always there, and those installed on this machine. Any other name falls back to Inter; set_brief, plan and apply warn when one is named.
+The font families a title or a brief's type style can name: those bundled with Klipp, always there, and those installed on this machine. Any other name falls back to Inter; set_brief, plan and apply warn when one is named. The text names the bundled families and counts the installed ones, which are listed in installed; query (a word, e.g. "serif" or "mono") lists only the families whose name holds it.
 
 ## klipp_screenshot
 

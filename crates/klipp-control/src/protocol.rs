@@ -1133,8 +1133,12 @@ pub enum ControlCommand {
         remove: bool,
     },
     /// The font families titles can be set in: bundled with Klipp, and
-    /// installed on this machine (#738).
-    Fonts,
+    /// installed on this machine (#738); with `query`, those whose name
+    /// holds it (#2492).
+    Fonts {
+        #[serde(default)]
+        query: Option<String>,
+    },
     /// The title templates, built-in (#1724) and saved (#1139), each with
     /// the fields it keeps editable: what a `template` op places and sets.
     TitleTemplates,
@@ -1528,6 +1532,10 @@ pub enum ControlCommand {
         color: bool,
         #[serde(default)]
         loudness: bool,
+        /// The least severity listed: error, warning or note (all, the
+        /// default). The counts count every finding (#2492).
+        #[serde(default)]
+        min_severity: Option<String>,
     },
     /// Save a decision about one of check's findings, by the id check
     /// gave it (#1932): `accepted` keeps it on purpose and needs a

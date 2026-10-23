@@ -191,6 +191,36 @@ pub(crate) fn planned_cut_changes(ctx: &ControlContext, edits: &[klipp_document:
     Ok(json!({ "changes": changes, "shifted": shifted, "retracked": retracked }))
 }
 
+/// [`planned_cut_changes`]' changes as the clips' ids alone: created,
+/// removed, and changed in place (#2492).
+pub(crate) fn changes_by_id(changes: &serde_json::Value) -> serde_json::Value {
+    let ids = |want: &dyn Fn(&serde_json::Value) -> bool| -> Vec<serde_json::Value> {
+        changes.as_array().into_iter().flatten().filter(|c| want(c)).map(|c| c["clip_id"].clone()).collect()
+    };
+    let is = |c: &serde_json::Value, k: &str| c[k] == true;
+    json!({
+        "created": ids(&|c| is(c, "created")),
+        "removed": ids(&|c| is(c, "removed")),
+        "changed": ids(&|c| !is(c, "created") && !is(c, "removed")),
+        "detail": "each clip's before and after with detail: true",
+    })
+}
+
+#[cfg(test)]
+mod changes_by_id_tests {
+    /// #2492: without detail a cut's changes are the clips' ids.
+    #[test]
+    fn a_cuts_changes_are_ids_without_detail() {
+        let full = serde_json::json!([
+            { "clip_id": "a", "before": {}, "after": null, "created": false, "removed": true },
+            { "clip_id": "b", "before": null, "after": {}, "created": true, "removed": false },
+            { "clip_id": "c", "before": {}, "after": {}, "created": false, "removed": false },
+        ]);
+        let v = super::changes_by_id(&full);
+        assert_eq!((v["removed"].clone(), v["created"].clone(), v["changed"].clone()), (serde_json::json!(["a"]), serde_json::json!(["b"]), serde_json::json!(["c"])));
+    }
+}
+
 /// Every reply carries which project it is about: the generation moves
 /// when a project is made, opened or saved, and a client that sees it
 /// move knows the timeline and the pool it was working on are gone.

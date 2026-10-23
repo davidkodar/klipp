@@ -257,7 +257,7 @@ fn follow(job_id: &str, max_wait: Option<std::time::Duration>, every: i64, mut s
         let terminal = matches!(state.as_str(), "completed" | "failed" | "cancelled" | "unavailable");
         let news = match &told {
             None => true,
-            Some((s, p, at)) => *s != state || *p != phase || terminal || percent >= at + every.max(1),
+            Some((s, p, at)) => *s != state || phase_kind(p) != phase_kind(&phase) || terminal || percent >= at + every.max(1),
         };
         if news {
             let line = result["text"].as_str().and_then(|t| t.lines().next()).map(str::to_owned).unwrap_or_else(|| job_line(&job));
@@ -271,6 +271,12 @@ fn follow(job_id: &str, max_wait: Option<std::time::Duration>, every: i64, mut s
             return Ok((job, false));
         }
     }
+}
+
+/// A job's phase without its numbers: "trial 2 of up to 6" is the same
+/// phase as "trial 3 of up to 6", and a follow said every one (#2492).
+fn phase_kind(phase: &str) -> String {
+    phase.chars().filter(|c| !c.is_ascii_digit()).collect()
 }
 
 /// A job in words when Klipp's reply carries no line of its own.
@@ -1129,7 +1135,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             if let Some(x) = args.get("max_offset_secs").and_then(|v| v.as_f64()) { v["max_offset_secs"] = json!(x); }
             v
         }
-        "klipp_fonts" => json!({ "method": "fonts" }),
+        "klipp_fonts" => json!({ "method": "fonts", "query": args.get("query").and_then(|v| v.as_str()) }),
         "klipp_title_templates" => json!({ "method": "title_templates" }),
         "klipp_graph" | "klipp_graph_read" => {
             let mut v = args.clone();
@@ -1218,7 +1224,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             "apply": args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false),
             "detail": args.get("detail").and_then(|v| v.as_bool()).unwrap_or(false),
         }),
-        "klipp_check" => json!({ "method": "check", "color": args.get("color").and_then(|v| v.as_bool()).unwrap_or(false), "loudness": args.get("loudness").and_then(|v| v.as_bool()).unwrap_or(false) }),
+        "klipp_check" => json!({ "method": "check", "color": args.get("color").and_then(|v| v.as_bool()).unwrap_or(false), "loudness": args.get("loudness").and_then(|v| v.as_bool()).unwrap_or(false), "min_severity": args.get("min_severity").and_then(|v| v.as_str()) }),
         "klipp_rename_sequence" => json!({ "method": "rename_sequence", "name": arg_str(args, "name")? }),
         "klipp_review_finding" => json!({ "method": "review_finding", "finding_id": arg_str(args, "finding_id")?, "decision": arg_str(args, "decision")?, "rationale": args.get("rationale").and_then(Value::as_str) }),
         "klipp_switch_sequence" => match (args.get("index").and_then(Value::as_u64), args.get("sequence_id").and_then(Value::as_str)) {
@@ -2377,7 +2383,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({}), vec![]),
         tool("klipp_fonts",
              "The font families a title can name. Details: klipp_guide topic fonts.",
-             json!({}), vec![]),
+             json!({ "query": { "type": "string" } }), vec![]),
         tool("klipp_graph",
              "Atomic graph edit, one undo step; read graph_read/node_types first. Guide: klipp_guide topic graph.",
              json!({"ops":graph_schema::ops_schema(),"label":{"type":"string"},"expected_revision":{"type":"integer","minimum":0},"expected_project_identity":{"type":"integer","minimum":0}}), vec!["ops"]),
@@ -2418,7 +2424,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({ "apply": { "type": "boolean" }, "detail": { "type": "boolean" } }), vec![]),
         tool("klipp_check",
              "Read-only checks of the cut before export, against craft and the brief: each finding with where, why and the fix. Optional colour and loudness passes. Details: klipp_guide topic check.",
-             json!({ "color": { "type": "boolean" }, "loudness": { "type": "boolean" } }), vec![]),
+             json!({ "color": { "type": "boolean" }, "loudness": { "type": "boolean" }, "min_severity": { "type": "string", "enum": ["error", "warning", "note"] } }), vec![]),
         tool("klipp_review_finding",
              "Decide a klipp_check finding by id: accepted (with rationale), to_fix or clear. Details: klipp_guide topic review_finding.",
              json!({ "finding_id": { "type": "string" }, "decision": { "type": "string" }, "rationale": { "type": "string" } }), vec!["finding_id", "decision"]),
@@ -3293,5 +3299,16 @@ mod review_boundary_tests {
                 assert_eq!(review["finding_id"], id);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod follow_tests {
+    /// #2492: the follow log says a phase once, not each numbered step of it.
+    #[test]
+    fn a_numbered_step_is_the_same_phase() {
+        let kind = super::phase_kind;
+        assert_eq!(kind("Fitting loudness under the ceiling, trial 2 of up to 6"), kind("Fitting loudness under the ceiling, trial 3 of up to 6"));
+        assert_ne!(kind("Measuring loudness…"), kind("Encoding video (H.264)…"));
     }
 }

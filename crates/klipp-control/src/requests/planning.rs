@@ -326,10 +326,12 @@ pub(crate) fn respond(
             Ok(v)
         }
 
-        ControlCommand::Check { color, loudness } => {
+        ControlCommand::Check { color, loudness, min_severity } => {
             if in_batch {
                 return read_in_batch("check");
             }
+            let floor = severity_rank(min_severity.as_deref().unwrap_or("note")).ok_or_else(|| format!("min_severity {:?}: give error, warning or note", min_severity.as_deref().unwrap_or("")))?;
+            let shown = |severity: &str| severity_rank(severity).unwrap_or(0) >= floor;
             // The colour pass grabs frames, so it takes the sequence read
             // lock for a moment only; work out the times first, then let go.
             let (mut report, color_times, audio_media, to_read, banding_snapshot) = {
@@ -620,7 +622,9 @@ pub(crate) fn respond(
             } else {
                 "Clean. Export at the brief's loudness, poll export_status, then save_project."
             };
-            let mut text = report.text();
+            // The craft lines at or over the floor; the counts at the top
+            // count them all.
+            let mut text = report.text().lines().filter(|l| l.strip_prefix('[').and_then(|r| r.split(']').next()).is_none_or(&shown)).collect::<Vec<_>>().join("\n");
             if errors != report.errors || warnings != report.warnings {
                 let notes = report.findings.len() - report.errors - report.warnings;
                 let head = format!(
@@ -644,9 +648,8 @@ pub(crate) fn respond(
                 } else if color_findings.is_empty() {
                     text.push_str(" nothing amiss.");
                 } else {
-                    for f in &color_findings {
-                        text.push_str(&format!("\n[{}] {:.2} s  {}. {}", f.0, f.1, f.2, f.3));
-                    }
+                    let listed: Vec<(&str, f64, &str, &str)> = color_findings.iter().filter(|f| shown(&f.0)).map(|f| (f.0.as_str(), f.1, f.2.as_str(), f.3.as_str())).collect();
+                    text.push_str(&colour_lines(&listed));
                 }
                 // A group that leaves the look on purpose is said once, not
                 // as a taste finding on every shot of it (#793).
@@ -660,7 +663,7 @@ pub(crate) fn respond(
             }
             if !audio_findings.is_empty() {
                 text.push_str("\n\nSound:");
-                for f in &audio_findings {
+                for f in audio_findings.iter().filter(|f| shown(f.severity)) {
                     text.push_str(&format!("\n[{}] {}: {}. {}", f.severity, f.media, f.what, f.hint));
                 }
             }
@@ -686,9 +689,14 @@ pub(crate) fn respond(
                 v["review"] = json!(review_of(id));
                 v
             }).collect();
-            let findings_json: Vec<serde_json::Value> = color_findings.iter().map(|f| json!({ "id": f.4, "severity": f.0, "rule": "color", "at_secs": f.1, "what": f.2, "hint": f.3, "review": review_of(&f.4) })).collect();
-            let audio_json: Vec<serde_json::Value> = audio_findings.iter().zip(&sound_ids).map(|(f, id)| json!({ "id": id, "severity": f.severity, "rule": "sound", "at_secs": f.at, "media": f.media, "what": f.what, "hint": f.hint, "role": f.role, "review": review_of(id) })).collect();
-            Ok(json!({ "text": text, "errors": errors, "warnings": warnings, "findings": craft_json, "accepted": accepted, "lapsed_reviews": lapsed, "color_findings": findings_json, "departing_groups": departing, "shots_on_target": shots_on_target, "colour_coverage": if color { json!({ "footage": color_times.len() - unread.len() - graphics_read, "graphics": graphics_read, "unread": unread.len() }) } else { json!(null) }, "sound_findings": audio_json, "duration_secs": report.duration_secs, "revision": ctx.shared.revision(), "next": next }))
+            let craft_json: Vec<serde_json::Value> = craft_json.into_iter().filter(|f| shown(f["severity"].as_str().unwrap_or("note"))).collect();
+            let below_floor = color_findings.iter().filter(|f| !shown(&f.0)).count() + audio_findings.iter().filter(|f| !shown(f.severity)).count() + craft.iter().filter(|(f, _)| !shown(severity_name(f.severity))).count();
+            let findings_json: Vec<serde_json::Value> = color_findings.iter().filter(|f| shown(&f.0)).map(|f| json!({ "id": f.4, "severity": f.0, "rule": "color", "at_secs": f.1, "what": f.2, "hint": f.3, "review": review_of(&f.4) })).collect();
+            let audio_json: Vec<serde_json::Value> = audio_findings.iter().zip(&sound_ids).filter(|(f, _)| shown(f.severity)).map(|(f, id)| json!({ "id": id, "severity": f.severity, "rule": "sound", "at_secs": f.at, "media": f.media, "what": f.what, "hint": f.hint, "role": f.role, "review": review_of(id) })).collect();
+            if below_floor > 0 {
+                text.push_str(&format!("\n\n{below_floor} finding{} under {} not listed, counted above.", if below_floor == 1 { "" } else { "s" }, min_severity.as_deref().unwrap_or("note")));
+            }
+            Ok(json!({ "text": text, "errors": errors, "warnings": warnings, "below_floor": below_floor, "findings": craft_json, "accepted": accepted, "lapsed_reviews": lapsed, "color_findings": findings_json, "departing_groups": departing, "shots_on_target": shots_on_target, "colour_coverage": if color { json!({ "footage": color_times.len() - unread.len() - graphics_read, "graphics": graphics_read, "unread": unread.len() }) } else { json!(null) }, "sound_findings": audio_json, "duration_secs": report.duration_secs, "revision": ctx.shared.revision(), "next": next }))
         }
 
         // Said what they did (#741): the step taken back or put back, as
@@ -786,6 +794,57 @@ pub(crate) fn respond(
         }
 
         _ => Err("internal: a request was routed to the wrong area".into()),
+    }
+}
+
+/// A severity's rank for check's floor (#2492): note 0, warning 1,
+/// error 2; `None` for no severity.
+fn severity_rank(name: &str) -> Option<u8> {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "note" => Some(0),
+        "warning" => Some(1),
+        "error" => Some(2),
+        _ => None,
+    }
+}
+
+fn severity_name(s: klipp_document::qc::Severity) -> &'static str {
+    match s {
+        klipp_document::qc::Severity::Error => "error",
+        klipp_document::qc::Severity::Warning => "warning",
+        klipp_document::qc::Severity::Note => "note",
+    }
+}
+
+/// The colour findings as lines, grouped by shot (#2492): a shot's time
+/// once, its findings under it, and a fix said once already as "as
+/// above". Twenty-two shots wrote each time and the same fix on every
+/// line, some 63 KB.
+pub(crate) fn colour_lines(findings: &[(&str, f64, &str, &str)]) -> String {
+    let mut out = String::new();
+    let mut said: Vec<&str> = Vec::new();
+    let mut at: Option<f64> = None;
+    for &(severity, t, what, hint) in findings {
+        if at.is_none_or(|a| (a - t).abs() > 1e-6) {
+            out.push_str(&format!("\n{t:.2} s:"));
+            at = Some(t);
+        }
+        let fix = if said.contains(&hint) { "Fix as above.".to_string() } else { said.push(hint); hint.to_string() };
+        out.push_str(&format!("\n  [{severity}] {what}. {fix}"));
+    }
+    out
+}
+
+#[cfg(test)]
+mod colour_lines_tests {
+    /// #2492: one line for each shot's time, its findings under it, a
+    /// repeated fix said once; the floor's names known.
+    #[test]
+    fn colour_findings_are_grouped_by_shot() {
+        let fix = "temperature until the neutrals read near the target";
+        let text = super::colour_lines(&[("warning", 1.0, "cast", fix), ("error", 1.0, "clipped", "lower gain"), ("warning", 4.5, "cast", fix)]);
+        assert_eq!(text, format!("\n1.00 s:\n  [warning] cast. {fix}\n  [error] clipped. lower gain\n4.50 s:\n  [warning] cast. Fix as above."));
+        assert_eq!((super::severity_rank("Error"), super::severity_rank("note"), super::severity_rank("big")), (Some(2), Some(0), None));
     }
 }
 
