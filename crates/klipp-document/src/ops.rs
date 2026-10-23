@@ -16979,6 +16979,118 @@ mod tests {
         assert_eq!(picture_refusal_of(&mut view, &fine), None);
     }
 
+    /// The #2459 guarantee: an edit replayed through a picture-truth clip's
+    /// fields undoes exactly. Each command forward, then undone, leaves the
+    /// clip's whole picture as it was (an automatic move; a blur masked by
+    /// a published grade port and mixed at a half), and the one edit that
+    /// would take the mask away is refused and changes nothing. A field
+    /// write merges into the picture and carries what only the picture
+    /// holds, and one that would drop it is refused, so there is nothing
+    /// for an undo through the fields to leave behind.
+    #[test]
+    fn an_edit_through_a_picture_truth_clips_fields_undoes_exactly() {
+        use klipp_effects::BuiltinEffect as E;
+        use klipp_graph_format::lifted::types as lt;
+        use klipp_graph_format::path::{NodePath, Root};
+        use klipp_graph_format::{ParamKey, ParamValue};
+        use klipp_graph_lift::ops::GraphOp;
+        use klipp_nodes::{Edge, Node, NodeGraph, NodeKind, NodeParams};
+        let key = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
+        let qualifier = |label: &str| Node { id: uuid::Uuid::new_v4(), kind: NodeKind::Qualifier, label: label.into(), enabled: true, params: NodeParams::default(), keyframes: Default::default(), output_link: None, input_links: Vec::new() };
+        let keys = |clip: &Clip, f: &dyn Fn(&mut crate::history::KeyframeSnapshot)| {
+            let old_state = crate::history::KeyframeSnapshot::from_clip(clip);
+            let mut new_state = old_state.clone();
+            f(&mut new_state);
+            EditCommand::EditKeyframes { clip_id: clip.id, linked_clip_id: None, description: "Keys", old_state, new_state, old_linked_state: None, new_linked_state: None }
+        };
+        // Forward, then undone: (whether it was refused, the picture after).
+        let round_trip = |seq: &Sequence, pool: &MediaPool, edit: &EditCommand, id: ClipId| {
+            let mut seqs = vec![seq.clone()];
+            klipp_timeline::take_picture_refusal();
+            applied(&mut seqs, pool, edit, false);
+            let refused = klipp_timeline::take_picture_refusal().is_some();
+            let changed = clip_in(&seqs[0], id).picture_v2().unwrap().picture.clone();
+            applied(&mut seqs, pool, edit, true);
+            (refused, changed, clip_in(&seqs[0], id).picture_v2().unwrap().picture.clone())
+        };
+
+        // An automatic move.
+        let (mut seq, pool, _, a, _) = fixture();
+        let c = seq.tracks[0].clips.iter_mut().find(|c| c.id == a).unwrap();
+        c.set_effect_list(vec![E::Transform { position_x: 40.0, position_y: 0.0, scale_x: 1.0, scale_y: 1.0, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None }], vec![true]);
+        let path = c.placement_path().unwrap();
+        c.apply_picture_ops(&[GraphOp::SetParam { path, key: ParamKey::from("mode"), value: ParamValue::Enum(lt::PLACEMENT_AUTO) }]).unwrap();
+        assert!(c.is_picture_truth());
+        let clip = clip_in(&seq, a);
+        let before = clip.picture_v2().unwrap().picture.clone();
+        for (what, edit) in [
+            ("position keys", keys(&clip, &|s| s.transform_pos_x_keyframes = vec![key(0.0, 10.0), key(2.0, 90.0)])),
+            ("opacity keys", keys(&clip, &|s| s.opacity_keyframes = vec![key(0.0, 0.0), key(1.0, 1.0)])),
+        ] {
+            let (refused, changed, after) = round_trip(&seq, &pool, &edit, a);
+            assert!(!refused && changed != before, "{what}: applied");
+            assert!(after == before, "{what}: undone exactly");
+        }
+
+        // A blur masked by the grade's published qualifier and mixed at a
+        // half, and a vignette.
+        let (mut seq, pool, _, a, _) = fixture();
+        let clip = seq.tracks[0].clips.iter_mut().find(|c| c.id == a).unwrap();
+        clip.push_effect(E::GaussianBlur { radius: 3.0 });
+        clip.push_effect(E::Vignette { amount: 0.5, size: 0.5, softness: 0.5, roundness: 0.5 });
+        let mut g = NodeGraph::default();
+        g.ensure_corrector();
+        let source = g.nodes.iter().find(|n| n.kind == NodeKind::Source).unwrap().id;
+        let q = qualifier("");
+        g.edges.push(Edge { from_node: source, from_port: 0, to_node: q.id, to_port: 0 });
+        let qid = q.id;
+        g.nodes.push(q);
+        clip.set_grade(g);
+        let p = clip.picture_v2().unwrap().picture.clone();
+        let group = p.graph.nodes.iter().find(|n| n.type_id.as_str() == lt::GROUP).unwrap().id;
+        let blur = p.graph.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_format::types::LEGACY_EFFECT).unwrap().id;
+        let at = |id| NodePath::new(Root::Clip { clip: a.0 }, [id]);
+        clip.apply_picture_ops(&[
+            GraphOp::PublishOutput { group: at(group), endpoint: klipp_graph_format::PortBinding { node: qid, port: "out".into() }, key: "matte_selection".into(), label: "Selection".into() },
+            GraphOp::Connect { from: at(group), from_port: "matte_selection".into(), to: at(blur), to_port: "mask".into() },
+            GraphOp::SetMix { path: at(blur), mix: Some(0.5) },
+        ])
+        .unwrap();
+        let clip = clip_in(&seq, a);
+        let before = clip.picture_v2().unwrap().picture.clone();
+        let (fx, ids) = (clip.builtin_effects().to_vec(), clip.effect_id_list());
+        // Each list put on in place of the clip's own, and back.
+        let list = |new: Vec<E>, enabled: Vec<bool>, new_ids: Vec<klipp_timeline::EffectId>| EditCommand::SetBuiltinEffects {
+            clip_id: a,
+            old_effects: fx.clone(),
+            old_enabled: vec![true; fx.len()],
+            new_effects: new,
+            new_enabled: enabled,
+            old_ids: ids.clone(),
+            new_ids,
+        };
+        let mut grown = clip.grade().clone();
+        grown.nodes.push(qualifier("added"));
+        let vignette = E::Vignette { amount: 0.9, size: 0.5, softness: 0.5, roundness: 0.5 };
+        for (what, edit) in [
+            ("opacity keys", keys(&clip, &|s| s.opacity_keyframes = vec![key(0.0, 0.0), key(1.0, 1.0)])),
+            ("a node added to the grade", EditCommand::SetNodeGraph { clip_id: a, old_graph: clip.grade().clone(), new_graph: grown }),
+            ("the vignette's amount", list(vec![fx[0].clone(), vignette], vec![true, true], ids.clone())),
+            ("the two swapped", list(vec![fx[1].clone(), fx[0].clone()], vec![true, true], vec![ids[1], ids[0]])),
+            ("the blur turned off", list(fx.clone(), vec![false, true], ids.clone())),
+        ] {
+            let (refused, changed, after) = round_trip(&seq, &pool, &edit, a);
+            assert!(!refused && changed != before, "{what}: applied");
+            assert!(after == before, "{what}: undone exactly, mask and mix included");
+        }
+        // A sharpen before the blur would take its mask and mix to another
+        // place: refused, and nothing changes.
+        let insert = list(vec![E::Sharpen { amount: 0.5 }, fx[0].clone(), fx[1].clone()], vec![true, true, true], Vec::new());
+        let (refused, changed, after) = round_trip(&seq, &pool, &insert, a);
+        assert!(refused, "the insert is refused");
+        assert!(changed == before && after == before, "and changes nothing");
+    }
+
     /// #2431: a punch-in made with reframe stays on its part of the
     /// picture through a format and a refit to a tall frame, where filling
     /// alone already needs more than its scale; the picture beside it with

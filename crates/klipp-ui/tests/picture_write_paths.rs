@@ -26,11 +26,13 @@ const FILES: &[(&str, &str)] = &[
 /// (file, entry, count): every constructor left, tests included.
 const KNOWN: &[(&str, &str, usize)] = &[
     // The whole-list write the placed kinds fall back to (and reframe's
-    // Transform), and the tests that check for it and for its refusal.
-    ("klipp-document/src/ops.rs", "SetBuiltinEffects", 4),
+    // Transform), and the tests that check for it, for its refusal, and
+    // that it undoes exactly on a picture-truth clip (#2459).
+    ("klipp-document/src/ops.rs", "SetBuiltinEffects", 5),
     // The document ops' grade builders (grade, look, qualify, zones, track
-    // and stage grades) and their tests.
-    ("klipp-document/src/ops.rs", "SetNodeGraph", 22),
+    // and stage grades) and their tests, and the test that a grade change
+    // undoes exactly on a picture-truth clip (#2459).
+    ("klipp-document/src/ops.rs", "SetNodeGraph", 23),
     // A drag left open, closed on the state alone (M3 step 2). The list
     // handlers and their drags go through the picture (M4 step 12c-5).
     ("klipp-ui/src/app/effects.rs", "EditBuiltinEffect", 2),
