@@ -747,9 +747,31 @@ pub(crate) fn respond(
                 }
                 std::thread::sleep(std::time::Duration::from_millis(10));
             };
+            // Wider than the viewer's frame, which is decoded at the
+            // playback size, and the timeline has it: drawn from the files
+            // at that size, as the export draws it (#2491).
+            let viewer_width = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?.latest_frame().1;
+            let (seq_w, seq_h) = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                (seq.resolution.width.max(2), seq.resolution.height.max(2))
+            };
+            if let Some((w, h)) = full_size_for(max_width, viewer_width, (seq_w, seq_h)) {
+                restore_transport(ctx, held);
+                let still = full_size_frame(ctx, secs, w, h)?;
+                if let Some(p) = path.as_deref().filter(|p| !std::path::Path::new(p).is_absolute()) {
+                    return Err(format!("screenshot path must be absolute (got {p:?})"));
+                }
+                let out = path.map(std::path::PathBuf::from).unwrap_or_else(|| std::env::temp_dir().join(format!("klipp-frame-{}.png", uuid::Uuid::new_v4())));
+                write_png(&out, &still.rgba, still.width, still.height)?;
+                return Ok(json!({
+                    "path": out.to_string_lossy(), "width": still.width, "height": still.height,
+                    "secs": secs, "frame": (secs * fps.as_f64()).round() as i64,
+                    "drawn": "from the files at this size, as the export draws it; the viewer shows the playback size",
+                }));
+            }
             let shot = handle(
                 ctx,
-                ControlCommand::Screenshot { path, max_width, min_generation: Some(generation), timeout_ms },
+                ControlCommand::Screenshot { path, max_width: Some(max_width.unwrap_or(1280)), min_generation: Some(generation), timeout_ms },
                 &mut None,
             );
             // Back where the playhead was, whatever the capture did.
@@ -980,6 +1002,43 @@ fn set_crf(settings: &mut klipp_core::ExportSettings, crf: u32) {
     settings.rate_control = klipp_core::RateControl::Crf;
 }
 
+/// The size `frame_at` draws its frame at from the files (#2491): the
+/// width asked for, up to the timeline's, when it is wider than the
+/// viewer's frame; `None` when the viewer's frame does.
+fn full_size_for(max_width: Option<u32>, viewer_width: u32, (seq_w, seq_h): (u32, u32)) -> Option<(u32, u32)> {
+    let w = max_width?.min(seq_w) & !1;
+    (w > viewer_width && w >= 2).then(|| (w, ((w as u64 * seq_h as u64 / seq_w.max(1) as u64) as u32).max(2) & !1))
+}
+
+/// The timeline's frame at `secs` drawn from the files at `width` x
+/// `height`, with the project's colour set-up and the viewer's LUT
+/// (#2491).
+fn full_size_frame(ctx: &ControlContext, secs: f64, width: u32, height: u32) -> Result<klipp_render::still::Still, String> {
+    let seq: klipp_timeline::Sequence = (*ctx.sequence.read().map_err(|_| "sequence lock poisoned")?).clone();
+    let mut all: Vec<klipp_timeline::Sequence> = ctx.others.read().map_err(|_| "sequences lock poisoned")?.iter().map(|s| (*s.sequence).clone()).collect();
+    if !all.iter().any(|s| s.id == seq.id) {
+        all.push(seq.clone());
+    }
+    let lut = ctx.shared.project.lock().ok().and_then(|p| p.viewer_lut.clone());
+    let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+    let mut snapshot = klipp_render::SequenceSnapshot::from_sequence_with_all(
+        &seq,
+        &all,
+        &pool,
+        &klipp_core::ExportSettings::default(),
+        lut.as_ref().map(|(p, _)| p.clone()),
+        false,
+        klipp_engine::video_decoder::working_colorspace(),
+    )
+    .map_err(|e| e.to_string())?;
+    drop(pool);
+    snapshot.grade_encoding = klipp_core::grade_encoding();
+    if let Some((_, opacity)) = lut {
+        snapshot.video.global_lut_opacity = opacity;
+    }
+    klipp_render::still::timeline_still(&snapshot, secs, width, height).map_err(|e| format!("no frame at {secs:.3} s: {e}"))
+}
+
 /// An output transfer by the name an agent gives it (#2477).
 fn hdr_mode_named(name: &str) -> Result<klipp_core::HdrMode, String> {
     match name.trim().to_ascii_lowercase().as_str() {
@@ -1050,6 +1109,24 @@ fn ttml_family(f: &str) -> &str {
 fn subtitle_format(p: &std::path::Path) -> Option<&'static str> {
     let ext = p.extension()?.to_str()?.to_ascii_lowercase();
     SUBTITLE_FORMATS.iter().copied().find(|f| *f == ext)
+}
+
+#[cfg(test)]
+mod frame_size_tests {
+    use super::full_size_for;
+
+    /// #2491: asked wider than the viewer's frame, frame_at draws at the
+    /// width asked, up to the timeline's, at its shape; else the viewer's.
+    #[test]
+    fn a_frame_is_drawn_at_the_width_asked_up_to_the_timelines() {
+        let uhd = (3840, 2160);
+        assert_eq!(full_size_for(Some(3840), 852, uhd), Some((3840, 2160)));
+        assert_eq!(full_size_for(Some(8000), 852, uhd), Some((3840, 2160)), "no wider than the timeline");
+        assert_eq!(full_size_for(Some(1921), 852, uhd), Some((1920, 1080)), "even sides");
+        assert_eq!(full_size_for(Some(640), 852, uhd), None, "the viewer's frame is wide enough");
+        assert_eq!(full_size_for(None, 852, uhd), None, "no width asked: the viewer's");
+        assert_eq!(full_size_for(Some(1920), 1920, (1920, 1080)), None);
+    }
 }
 
 #[cfg(test)]

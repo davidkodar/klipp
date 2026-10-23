@@ -5255,6 +5255,11 @@ pub struct ProjectStatus {
     /// review (#1976).
     #[serde(default)]
     pub picture_transform: String,
+    /// The LUT the viewer applies over the picture and at what opacity,
+    /// when it is switched on: what a frame rendered off screen applies
+    /// too (#2491).
+    #[serde(default)]
+    pub viewer_lut: Option<(PathBuf, f32)>,
     /// Every sequence in the project, in the order its tabs list them,
     /// and which one is open: a client can reach each (M3 step 18).
     #[serde(default)]
@@ -5307,7 +5312,7 @@ pub struct SequenceSummary {
 
 impl Default for ProjectStatus {
     fn default() -> Self {
-        Self { path: None, dirty: false, generation: 0, last_error: None, identity: launch_identity_base(), changed_by: None, undo: None, redo: None, undo_depth: 0, redo_depth: 0, undo_scope: None, redo_scope: None, sequences: Vec::new(), active_sequence: 0, global_lut: None, picture_transform: String::new(), recent_projects: Vec::new() }
+        Self { path: None, dirty: false, generation: 0, last_error: None, identity: launch_identity_base(), changed_by: None, undo: None, redo: None, undo_depth: 0, redo_depth: 0, undo_scope: None, redo_scope: None, sequences: Vec::new(), active_sequence: 0, global_lut: None, picture_transform: String::new(), viewer_lut: None, recent_projects: Vec::new() }
     }
 }
 

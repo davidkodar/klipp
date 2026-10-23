@@ -55,6 +55,32 @@ pub fn clip_still(clip: &Clip, pool: &klipp_media::MediaPool, at_secs: f64, widt
     still_from_linear(&linear, width, height, working)
 }
 
+/// The timeline's frame at `secs`, `width` × `height`, read from the files
+/// at their own size and drawn as the export draws it, on the GPU stack
+/// where it takes the frame: a frame larger than the viewer's preview,
+/// which is decoded at the playback size (#2491). An error for a frame a
+/// file would not give or a node the render refused.
+pub fn timeline_still(snapshot: &crate::SequenceSnapshot, secs: f64, width: u32, height: u32) -> Result<Still, String> {
+    let timeline = &snapshot.video.sequence;
+    let mut renderer = crate::export_frames::export_renderer(snapshot, "frame");
+    renderer.set_gpu_enabled(true);
+    let mut src = ExportFrameSource::new(&snapshot.video.media, snapshot.fps, snapshot.working_colorspace);
+    let time = RationalTime::from_secs_f64(secs.max(0.0), snapshot.fps_num);
+    let opts = klipp_compose::RenderOptions::default();
+    let linear = match renderer.render_linear_on_gpu(timeline, time, width, height, &mut src, opts) {
+        Some(linear) => linear,
+        None => {
+            let (linear, found) = renderer.render_inspected(timeline, time, width, height, &mut src, opts, Default::default());
+            if let Some(why) = crate::export_frames::refused(&found.declines) {
+                return Err(why);
+            }
+            linear
+        }
+    };
+    src.end_frame().map_err(|e| e.to_string())?;
+    still_from_linear(&linear, width, height, snapshot.working_colorspace)
+}
+
 /// The still of a rendered linear frame, `width × height`, encoded for
 /// display; an error, not a still, when the frame is not that size
 /// (#1913): a thumbnail of the wrong size crashed the app.
