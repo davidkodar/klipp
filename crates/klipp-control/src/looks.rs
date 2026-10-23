@@ -128,3 +128,27 @@ pub fn match_grade_knobs(target: &serde_json::Value, reference: &serde_json::Val
 
     MatchKnobs { exposure, lift, gain, temperature, tint }
 }
+
+/// Holds `knobs` short of clipping the target `m`, as grade_to_target
+/// does (#2476): a picture already losing its highlights is not
+/// brightened at all, and none is brightened past the headroom above
+/// its 95th percentile. A match had taken a shot up a stop and left a
+/// fifth of the frame at white. Returns why, when a knob was held.
+pub fn hold_match_for_highlights(knobs: &mut MatchKnobs, m: &klipp_color::measure::FrameMeasure) -> Option<String> {
+    let clipping = m.clip_hi_pct > 1.0 || m.gamut_clip_pct > klipp_color::measure::GAMUT_WARN;
+    let room = klipp_color::measure::exposure_headroom(m);
+    let wanted = knobs.exposure.unwrap_or(0.0);
+    let why = if clipping && (wanted > 0.0 || knobs.gain.is_some_and(|g| g > 0.0)) {
+        knobs.exposure = knobs.exposure.filter(|e| *e < 0.0);
+        knobs.gain = knobs.gain.filter(|g| *g < 0.0);
+        format!("not brightened: {:.1}% of the shot is already at white", m.clip_hi_pct.max(m.gamut_clip_pct))
+    } else if wanted > room + 0.01 {
+        // A hold this close to nothing is no move at all.
+        knobs.exposure = (room > 0.05).then_some(room);
+        knobs.gain = knobs.gain.filter(|g| *g < 0.0);
+        format!("exposure held at {room:+.2} of the {wanted:+.2} the match wanted: more would clip the shot's highlights")
+    } else {
+        return None;
+    };
+    Some(why)
+}

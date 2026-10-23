@@ -1082,8 +1082,19 @@ pub(crate) fn respond(
             let target_stats = frame_stats(&td, tw, th, t_mid);
             let (rd, rw, rh) = grab_frame_rgba_of(ctx, r_mid, clip_of(&r), Some(4000))?;
             let ref_stats = frame_stats(&rd, rw, rh, r_mid);
-            let knobs = match_grade_knobs(&target_stats, &ref_stats);
+            let mut knobs = match_grade_knobs(&target_stats, &ref_stats);
+            let held = hold_match_for_highlights(&mut knobs, &klipp_color::measure::measure_frame(&td, tw, th, &[]));
             if knobs.is_empty() {
+                if let Some(why) = &held {
+                    return Ok(json!({
+                        "text": format!("{t_name} left as it is: {why}.
+target:    {}
+reference: {}", target_stats["text"].as_str().unwrap_or(""), ref_stats["text"].as_str().unwrap_or("")),
+                        "applied": false,
+                        "held_for_highlights": why,
+                        "target": target_stats, "reference": ref_stats,
+                    }));
+                }
                 return Ok(json!({
                     "text": format!("{t_name} already matches the reference within tolerance; nothing to change.
 target:    {}
@@ -1116,6 +1127,10 @@ reference:   {}",
                 target_stats["text"].as_str().unwrap_or(""),
                 ref_stats["text"].as_str().unwrap_or(""),
             ));
+            if let Some(why) = &held {
+                v["text"] = json!(format!("{}\n[held] {why}", v["text"].as_str().unwrap_or("")));
+            }
+            v["held_for_highlights"] = json!(held);
             v["target_before"] = target_stats;
             v["reference"] = ref_stats;
             v["knobs_moved"] = json!(moved);

@@ -2014,6 +2014,13 @@ pub struct PrimaryStep {
 /// and clipped the window, 6.6% of the frame (#501).
 pub const HIGHLIGHT_HEADROOM_L: f32 = 97.0;
 
+/// How many stops `m` can be brightened before a large part of it goes
+/// to white: at about 15 L* a stop, the room above its 95th percentile
+/// up to [`HIGHLIGHT_HEADROOM_L`].
+pub fn exposure_headroom(m: &FrameMeasure) -> f32 {
+    ((HIGHLIGHT_HEADROOM_L - m.l_p95) / 15.0).max(0.0)
+}
+
 pub fn primaries_toward(m: &FrameMeasure, t: &LookTarget) -> PrimaryStep {
     const DAMP: f32 = 0.7;
     let mut s = PrimaryStep::default();
@@ -2049,7 +2056,7 @@ pub fn primaries_toward(m: &FrameMeasure, t: &LookTarget) -> PrimaryStep {
             // Nor brighten one into losing them: at about 15 L* a stop,
             // the headroom above the 95th percentile says how far it can
             // go before a large part of the frame is white.
-            let room = ((HIGHLIGHT_HEADROOM_L - m.l_p95) / 15.0).max(0.0);
+            let room = exposure_headroom(m);
             if s.exposure > room + 0.01 {
                 s.exposure = room;
                 s.held_for_highlights = true;
