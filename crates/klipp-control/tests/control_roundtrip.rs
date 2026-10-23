@@ -2624,6 +2624,34 @@ fn match_grade_knobs_close_the_gap() {
     assert!(same.is_empty(), "no gap, no grade: {same:?}");
 }
 
+/// #2476: match_grade stops short of clipping the shot it brightens, as
+/// grade_to_target does, and says why; a shot with room is left alone,
+/// and one already at white is not brightened at all.
+#[test]
+fn a_match_is_held_short_of_clipping() {
+    use klipp_control::{hold_match_for_highlights, MatchKnobs};
+    use klipp_color::measure::FrameMeasure;
+    let up = MatchKnobs { exposure: Some(1.0), gain: Some(0.1), ..Default::default() };
+    // Bright at the top: half a stop of room.
+    let mut k = up;
+    let why = hold_match_for_highlights(&mut k, &FrameMeasure { l_p95: 90.0, ..Default::default() }).expect("held");
+    let e = k.exposure.unwrap();
+    assert!((e - 7.0 / 15.0).abs() < 1e-3 && k.gain.is_none(), "{k:?}");
+    assert!(why.contains("clip"), "{why}");
+    // Plenty of room: the match goes through as it was.
+    let mut k = up;
+    assert_eq!(hold_match_for_highlights(&mut k, &FrameMeasure { l_p95: 50.0, ..Default::default() }), None);
+    assert_eq!(k, up);
+    // Already clipped: nothing that brightens, a darkening lift kept.
+    let mut k = MatchKnobs { lift: Some(-0.05), ..up };
+    let why = hold_match_for_highlights(&mut k, &FrameMeasure { l_p95: 99.0, clip_hi_pct: 19.0, ..Default::default() }).expect("held");
+    assert!(k.exposure.is_none() && k.gain.is_none() && k.lift == Some(-0.05), "{k:?}");
+    assert!(why.contains("19.0%"), "{why}");
+    // Darkening is never held.
+    let mut k = MatchKnobs { exposure: Some(-0.5), ..Default::default() };
+    assert_eq!(hold_match_for_highlights(&mut k, &FrameMeasure { l_p95: 99.0, clip_hi_pct: 19.0, ..Default::default() }), None);
+}
+
 /// resolve_look picks a look by a distinctive word, takes an absolute
 /// .cube path as-is, and says so when a name matches nothing.
 #[test]
