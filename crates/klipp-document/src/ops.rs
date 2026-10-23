@@ -764,14 +764,18 @@ pub enum Op {
     },
     /// A track's own settings (#2246): `visible` shows or hides its
     /// picture or captions, its header's eye; `language` (a BCP 47 tag,
-    /// empty for none) is what a subtitle export tags its file with. One
-    /// undo step.
+    /// empty for none) is what a subtitle export tags its file with;
+    /// `locked` keeps its clips out of every edit, an insert's ripple and
+    /// a cut among them, so a music bed stays whole (#2486). One undo
+    /// step.
     SetTrack {
         track: TrackRef,
         #[serde(default)]
         visible: Option<bool>,
         #[serde(default)]
         language: Option<String>,
+        #[serde(default)]
+        locked: Option<bool>,
     },
     /// A track's own automation (#2306): `mode` how it is played (off,
     /// read, touch, latch, write), and `keys` for its `param`, volume or
@@ -3920,7 +3924,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             join(seq, pool, i, ti, clip, *side)
         }
         Op::RemoveTrack { track, with_clips } => remove_track(seq, i, track, *with_clips),
-        Op::SetTrack { track, visible, language } => set_track(seq, i, track, *visible, language.as_deref()),
+        Op::SetTrack { track, visible, language, locked } => set_track(seq, i, track, *visible, language.as_deref(), *locked),
         Op::TrackAutomation { track, param, mode, keys } => track_automation(seq, i, track, *param, *mode, keys.as_deref()),
         Op::Split { clip_id: clip_ref, at } => {
             let (ti, ci, clip) = resolve_clip(seq, fps, clip_ref, i)?;
@@ -4755,11 +4759,11 @@ fn join(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, side
 
 /// [`Op::RemoveTrack`].
 /// [`Op::SetTrack`]: the track with what was given changed.
-fn set_track(seq: &Sequence, i: usize, track: &TrackRef, visible: Option<bool>, language: Option<&str>) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+fn set_track(seq: &Sequence, i: usize, track: &TrackRef, visible: Option<bool>, language: Option<&str>, locked: Option<bool>) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     let ti = resolve_track(seq, track, i)?;
     let t = &seq.tracks[ti];
-    if visible.is_none() && language.is_none() {
-        return Err(refuse(i, "nothing to set", "give visible, language or both"));
+    if visible.is_none() && language.is_none() && locked.is_none() {
+        return Err(refuse(i, "nothing to set", "give visible, language, locked or more than one"));
     }
     let mut new = t.clone();
     let mut what = Vec::new();
@@ -4774,6 +4778,10 @@ fn set_track(seq: &Sequence, i: usize, track: &TrackRef, visible: Option<bool>, 
         }
         what.push(if l.is_empty() { "no language".to_string() } else { format!("in {l}") });
         new.language = (!l.is_empty()).then_some(l);
+    }
+    if let Some(l) = locked {
+        new.locked = l;
+        what.push(if l { "locked" } else { "unlocked" }.to_string());
     }
     let edit = EditCommand::SetTrack { description: "Track", track_index: ti, old: Box::new(t.clone()), new: Box::new(new) };
     Ok((format!("track {ti} \"{}\" {}", t.name, what.join(", ")), edit, Vec::new()))
@@ -14006,6 +14014,26 @@ mod tests {
         assert!(!new.visible && new.language.as_deref() == Some("de"), "{}", hide.steps[0].what);
         assert!(one(&seq, serde_json::json!({ "op": "set_track", "track": 0 })).unwrap_err().why.contains("nothing to set"));
         assert!(one(&seq, serde_json::json!({ "op": "set_track", "track": 0, "language": "de de" })).is_err());
+        // Locked (#2486): an insert ripples every other track and splits
+        // nothing on it; unlocked again, it is edited as before.
+        let lock = one(&seq, serde_json::json!({ "op": "set_track", "track": "audio", "locked": true })).unwrap();
+        assert!(lock.steps[0].what.contains("locked"), "{}", lock.steps[0].what);
+        let mut seqs = vec![seq.clone()];
+        let (mut p, mut f) = (pool.clone(), seq.fps);
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut f };
+        view.apply_forward(&lock.steps[0].edit);
+        let locked = view.sequences[0].clone();
+        let ai = locked.tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap();
+        assert!(locked.tracks[ai].locked);
+        let bed: Vec<_> = locked.tracks[ai].clips.iter().map(|c| (c.id, c.timeline_in, c.timeline_out)).collect();
+        let media = seq.tracks.iter().flat_map(|t| &t.clips).find_map(|c| c.media_id()).unwrap();
+        let insert = one(&locked, serde_json::json!({ "op": "place", "media_id": media.0.to_string(), "track": 0, "at": { "secs": 1.0 }, "source_in": 0.0, "source_out": 1.0, "insert": true, "with_audio": false })).unwrap();
+        view.apply_forward(&insert.steps[0].edit);
+        let after: Vec<_> = view.sequences[0].tracks[ai].clips.iter().map(|c| (c.id, c.timeline_in, c.timeline_out)).collect();
+        assert_eq!(after, bed, "the locked bed is whole and in place");
+        let unlock = one(&locked, serde_json::json!({ "op": "set_track", "track": "audio", "locked": false })).unwrap();
+        let EditCommand::SetTrack { new, .. } = &unlock.steps[0].edit else { panic!() };
+        assert!(!new.locked, "{}", unlock.steps[0].what);
         // A track's own automation (#2306): a fade to silence keyed in dB,
         // its mode, one undo step; a picture track, or keys without
         // their control, refused.

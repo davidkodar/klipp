@@ -192,10 +192,12 @@ exist until the plan runs.
   kind; every track below moves up by one. Refused while it holds clips
   unless `with_clips`, which takes them too and unlinks anything on
   another track from them. One undo step puts it back.
-- `set_track {track, visible?, language?}`: a track's own settings, one
-  undo step. `visible` false hides its picture or captions (its eye),
-  true shows them; `language` is a BCP 47 tag (`de`, `pt-br`; empty for
-  none) a subtitle export tags its file with. A translated caption track
+- `set_track {track, visible?, language?, locked?}`: a track's own
+  settings, one undo step. `visible` false hides its picture or captions
+  (its eye), true shows them; `language` is a BCP 47 tag (`de`, `pt-br`;
+  empty for none) a subtitle export tags its file with; `locked` true
+  keeps every edit off its clips, so an insert or a cut leaves a music
+  bed whole, and false lets them be edited again. A translated caption track
   starts hidden so two languages don't draw over each other: show it,
   and hide its source, to see it.
 - `track_automation {track, param?, mode?, keys?}`: an audio track's own
