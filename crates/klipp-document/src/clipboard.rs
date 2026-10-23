@@ -6,7 +6,7 @@
 
 use klipp_core::{ClipId, Timecode};
 use crate::history::{EditCommand, TrackContents};
-use klipp_timeline::{Clip, ClipKind, GradeAccess, Sequence, TrackKind, Transition};
+use klipp_timeline::{Clip, ClipKind, Sequence, TrackKind, Transition};
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// One copied clip and where it came from.
@@ -328,89 +328,26 @@ pub fn overwrite_insert_clip_on_track(
         track.clips[i].source_out = clip.source_in + left_dur;
         // A glide is the whole clip's move; the pieces keep their keys (#611).
         track.clips[i].frame_glide = None;
+        // A multicam primary's cuts count from its start: the left piece
+        // keeps those before its end, as a blade's does.
+        let left_secs = left_dur.to_secs_f64();
+        track.clips[i].multicam_cuts.retain(|(at, _)| *at < left_secs);
 
-        // Right portion: new clip starting at new_out
-        let mut right_clip = klipp_timeline::Clip {
-            id: klipp_core::ClipId::new(),
-            kind: clip.kind.clone(),
-            timeline_in: new_out,
-            timeline_out: clip.timeline_out,
-            source_in: clip.source_in + right_offset,
-            source_out: clip.source_out,
-            picture: klipp_timeline::ClipPictureParts {
-                ofx_effects: clip.ofx_effects().to_vec(),
-                builtin_effects: clip.builtin_effects().to_vec(),
-                builtin_effects_enabled: clip.builtin_effects_enabled().to_vec(),
-                opacity_keyframes: clip.opacity_keyframes().to_vec(),
-                transform_pos_x_keyframes: clip.transform_pos_x_keyframes().to_vec(),
-                transform_pos_y_keyframes: clip.transform_pos_y_keyframes().to_vec(),
-                transform_scale_keyframes: clip.transform_scale_keyframes().to_vec(),
-                transform_scale_y_keyframes: clip.transform_scale_y_keyframes().to_vec(),
-                transform_rotation_keyframes: clip.transform_rotation_keyframes().to_vec(),
-                transform_tilt_x_keyframes: clip.transform_tilt_x_keyframes().to_vec(),
-                transform_tilt_y_keyframes: clip.transform_tilt_y_keyframes().to_vec(),
-                effect_keyframes: clip.effect_keyframes().clone(),
-                param_modifiers: clip.param_modifiers().clone(),
-                grade_versions: clip.grade_versions().to_vec(),
-                active_grade_version: clip.active_grade_version(),
-                ..Default::default()
-            }
-            .into(),
-            linked_clip_id: clip.linked_clip_id,
-            linked_title_asset_id: clip.linked_title_asset_id,
-            group_id: clip.group_id,
-            grade_group: clip.grade_group,
-            magnetic_anchor: None,
-            gain: clip.gain,
-            volume: clip.volume,
-            pan: clip.pan,
-            fade_in_secs: clip.fade_in_secs,
-            fade_out_secs: clip.fade_out_secs,
-            fade_in_curve: clip.fade_in_curve,
-            fade_out_curve: clip.fade_out_curve,
-            channel_config: clip.channel_config,
-            volume_keyframes: clip.volume_keyframes.clone(),
-            pan_keyframes: clip.pan_keyframes.clone(),
-            gain_keyframes: clip.gain_keyframes.clone(),
-            matte_feather_keyframes: clip.matte_feather_keyframes.clone(),
-            matte_choke_keyframes: clip.matte_choke_keyframes.clone(),
-            clip_markers: clip.clip_markers.clone(),
-            frame_glide: None,
-            role: clip.role,
-            role_source: clip.role_source,
-            matched_to: None,
-            speed: clip.speed,
-            speed_keyframes: clip.speed_keyframes.clone(),
-            keep_pitch: clip.keep_pitch,
-            source_rotation: clip.source_rotation,
-            enabled: clip.enabled,
-            solo: clip.solo,
-            blend_mode: clip.blend_mode,
-            depth: clip.depth,
-            matte_source: clip.matte_source.clone(),
-            matte_stencil: clip.matte_stencil.clone(),
-            consumed_as_matte: clip.consumed_as_matte,
-            transform_link: None,
-            multicam_group: clip.multicam_group,
-            multicam_angle: clip.multicam_angle,
-            multicam_cuts: clip.multicam_cuts.clone(),
-            multicam_sound: clip.multicam_sound,
-            audio_effects: clip.audio_effects.clone(),
-            audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
-            track_points: Vec::new(),
-            // A piece of the clip keeps its track (#684).
-            surfaces: clip.surfaces.clone(),
-            surface_pin: clip.surface_pin,
-            name: clip.name.clone(),
-            colour_label: clip.colour_label,
-            grade_flag: Default::default(),
-            precomp: None,
-            baked_own: None,
-        };
-        right_clip.set_grade(clip.grade().clone());
-        // A picture-truth clip's picture (its masks, mixes) goes with
-        // the piece made from its fields.
-        right_clip.take_picture_truth_of(&clip);
+        // Right portion: new clip starting at new_out. The clip's own
+        // copy, picture and all; what belongs to the clip alone is not.
+        let mut right_clip = clip.clone();
+        right_clip.id = klipp_core::ClipId::new();
+        (right_clip.timeline_in, right_clip.source_in) = (new_out, clip.source_in + right_offset);
+        right_clip.magnetic_anchor = None;
+        right_clip.frame_glide = None;
+        right_clip.matched_to = None;
+        right_clip.transform_link = None;
+        right_clip.track_points = Vec::new();
+        right_clip.grade_flag = Default::default();
+        right_clip.precomp = None;
+        right_clip.baked_own = None;
+        // Its cuts from its own start, each on the picture it cuts.
+        right_clip.multicam_cuts = klipp_timeline::multicam::rebased_cuts(&clip.multicam_cuts, right_offset.to_secs_f64());
         track.clips.insert(i + 1, right_clip);
     }
 
@@ -418,8 +355,10 @@ pub fn overwrite_insert_clip_on_track(
     for &i in &to_trim_left {
         let clip = &track.clips[i];
         let trim_amount = new_out - clip.timeline_in;
+        let cuts = klipp_timeline::multicam::rebased_cuts(&clip.multicam_cuts, trim_amount.to_secs_f64());
         track.clips[i].source_in += trim_amount;
         track.clips[i].timeline_in = new_out;
+        track.clips[i].multicam_cuts = cuts;
     }
 
     // Trim right edges back (clip starts before new_in, ends after)
@@ -470,6 +409,32 @@ mod tests {
         a1.clips = vec![sa, d];
         seq.tracks = vec![v1, a1];
         (seq, ids)
+    }
+
+    /// An overwrite paste into a multicam primary leaves each angle cut on
+    /// the picture it cuts: the piece after the paste counts its cuts from
+    /// its own start, and one whose head is pasted over from its new start.
+    /// The angle at every moment outside the paste is the one it was.
+    #[test]
+    fn an_overwrite_paste_keeps_each_angle_at_its_moment() {
+        let g = klipp_core::GroupId::new();
+        let angle = |n: u8| {
+            let mut c = clip(0.0, 10.0);
+            (c.multicam_group, c.multicam_angle) = (Some(g), n);
+            c
+        };
+        let mut primary = angle(0);
+        primary.multicam_cuts = vec![(2.0, 1), (4.0, 0), (6.0, 1)];
+        let mut seq = Sequence::new_default();
+        seq.tracks = [primary, angle(1)].into_iter().map(|c| Track { clips: vec![c], ..Track::new("V", TrackKind::Video) }).collect();
+        let at = |s: &Sequence, xs: &[f64]| xs.iter().map(|x| s.multicam_at(None, tc(*x)).map(|m| m.active)).collect::<Vec<_>>();
+        for (from, to, outside) in [(3.0, 5.0, vec![1.0, 2.5, 5.5, 6.5, 9.0]), (0.0, 3.0, vec![3.5, 4.5, 6.5, 9.0])] {
+            let mut pasted = seq.clone();
+            for track in &mut pasted.tracks {
+                overwrite_insert_clip_on_track(track, clip(from, to));
+            }
+            assert_eq!(at(&pasted, &outside), at(&seq, &outside), "pasted over {from}-{to} s");
+        }
     }
 
     /// #1753: a copied clip's node labels go with it, onto the paste's
