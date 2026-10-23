@@ -2964,13 +2964,14 @@ impl Renderer {
                 _=>self.executor.gpu_pipeline_or_init()?.stack_layer_clear(slot),
             };
             if !initialized {return None;}
-            let mut backing=matches!(td.background,klipp_timeline::TitleBackground::Color{..}).then(||td.background.clone());
+            // Every text box its own backing, as the CPU title (#2487).
+            let backing=matches!(td.background,klipp_timeline::TitleBackground::Color{..}).then(||td.background.clone());
             let mut crop_faded_matte_scene=false;
             for object in td.objects.iter().filter(|o| o.visible && !td.is_matte(o.id)) {
                 let opacity = object.evaluated_opacity(clip_time).clamp(0.0,1.0);
                 let mut single = td.clone();
                 single.objects = vec![object.clone()];
-                single.background=if matches!(object.content,klipp_timeline::TitleObjectContent::TextBox(_)) {backing.take().unwrap_or_default()} else {klipp_timeline::TitleBackground::None};
+                single.background=if matches!(object.content,klipp_timeline::TitleObjectContent::TextBox(_)) {backing.clone().unwrap_or_default()} else {klipp_timeline::TitleBackground::None};
                 single.objects[0].opacity = 1.0;
                 single.objects[0].opacity_keyframes.clear();
                 single.objects[0].blend=klipp_core::BlendMode::Normal;
