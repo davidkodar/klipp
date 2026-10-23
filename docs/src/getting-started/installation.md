@@ -1,6 +1,6 @@
 # Installation
 
-Klipp is built from source using the Rust toolchain. Pre-built binaries are not yet available.
+Release candidates are published as an unsigned Arch package on the [releases page](https://github.com/davidkodar/klipp/releases); install one with `sudo pacman -U` after checking it against `SHA256SUMS`. Otherwise Klipp is built from source using the Rust toolchain.
 
 ## Arch / Omarchy: recommended route
 
