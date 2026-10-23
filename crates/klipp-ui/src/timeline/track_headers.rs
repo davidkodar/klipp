@@ -15,6 +15,7 @@ pub fn show(
     state: &mut AppState,
     theme: &KlippTheme,
     header_rect: egui::Rect,
+    kb: &crate::keybindings::KeyBindings,
 ) -> Vec<AppCommand> {
     let ruler_h = crate::theme::RULER_HEIGHT;
 
@@ -648,7 +649,11 @@ pub fn show(
             }
             match track_role {
                 klipp_timeline::TrackRole::Connected => {
-                    if ui.button("Create Storyline (Shift+S)").clicked() {
+                    // The storyline key acts on a selected clip on this
+                    // track; it shares its binding with audio skim.
+                    let key = kb.display_for("toggle_audio_skim");
+                    let label = if key.is_empty() { "Create Storyline".to_string() } else { format!("Create Storyline ({key})") };
+                    if ui.button(label).clicked() {
                         deferred_action = Some(TrackAction::PromoteToStoryline(track_idx));
                         ui.close_menu();
                     }

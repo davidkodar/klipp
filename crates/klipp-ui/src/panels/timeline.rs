@@ -1278,7 +1278,7 @@ pub(crate) fn resolve_fade_drag_target_short(
 }
 
 impl TimelinePanel {
-    pub fn show(&mut self, ui: &mut egui::Ui, state: &mut AppState) -> Vec<AppCommand> {
+    pub fn show(&mut self, ui: &mut egui::Ui, state: &mut AppState, kb: &crate::keybindings::KeyBindings) -> Vec<AppCommand> {
         // Sync timeline prefs into thread-locals for this frame
         sync_timeline_prefs(&state.timeline_prefs);
         sync_editing_prefs_to_timeline(state.snap_threshold_px);
@@ -1627,7 +1627,7 @@ impl TimelinePanel {
             let lane_painter = painter.with_clip_rect(track_rect.intersect(tracks_clip));
             self.draw_track_clips(
                 ui, &lane_painter, &track_rect, &content_rect,
-                state, &mut cmds, track_idx, true,
+                state, &mut cmds, track_idx, true, kb,
             );
 
             self.handle_media_dnd_over_track(ui, state, track_idx, track_kind, &track_name, track_rect, &painter, &mut cmds);
@@ -8400,6 +8400,7 @@ impl TimelinePanel {
         track_rect: &egui::Rect,
         pointer_pos: Option<egui::Pos2>,
         fps: klipp_core::Fps,
+        kb: &crate::keybindings::KeyBindings,
     ) {
         // Right-click context menu on clips (suppressed when keyframe context menu was opened)
         if track_response.secondary_clicked() && !self.suppress_clip_context_menu {
@@ -9517,15 +9518,19 @@ impl TimelinePanel {
                     // Storyline promotion
                     let track_role = state.sequence().tracks.get(track_idx)
                         .map(|t| t.magnetic_role.clone());
+                    // The storyline key (shared with audio skim) acts on
+                    // a selected clip on a connected track.
+                    let storyline_key = kb.display_for("toggle_audio_skim");
+                    let with_key = |label: &str| if storyline_key.is_empty() { label.to_string() } else { format!("{label} ({storyline_key})") };
                     if let Some(role) = track_role {
                         if role == klipp_timeline::TrackRole::Connected {
-                            if ui.button("Promote to Storyline (Shift+S)").clicked() {
+                            if ui.button(with_key("Promote to Storyline")).clicked() {
                                 cmds.push(AppCommand::ToggleStoryline { clip_id });
                                 ui.close_menu();
                             }
                         } else if role == klipp_timeline::TrackRole::ConnectedStoryline {
                             ui.label("\u{1F517} Connected Storyline");
-                            if ui.button("Break Apart Storyline (Shift+S)").clicked() {
+                            if ui.button(with_key("Break Apart Storyline")).clicked() {
                                 cmds.push(AppCommand::ToggleStoryline { clip_id });
                                 ui.close_menu();
                             }
@@ -11986,6 +11991,7 @@ impl TimelinePanel {
         cmds: &mut Vec<AppCommand>,
         track_idx: usize,
         interactive: bool,
+        kb: &crate::keybindings::KeyBindings,
     ) {
         let track_kind = state.sequence().tracks[track_idx].kind;
         let track_id = state.sequence().tracks[track_idx].id;
@@ -12155,7 +12161,7 @@ impl TimelinePanel {
             }
         }
 
-        self.show_clip_context_menu(ui, &track_response, state, cmds, track_idx, content_rect, zoom, scroll, track_height, track_rect, pointer_pos, fps);
+        self.show_clip_context_menu(ui, &track_response, state, cmds, track_idx, content_rect, zoom, scroll, track_height, track_rect, pointer_pos, fps, kb);
 
         // A click on a cut selects the edit point (#913); anywhere else is
         // the clip's click as before.

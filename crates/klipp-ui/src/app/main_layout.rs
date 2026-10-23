@@ -568,6 +568,7 @@ impl KlippApp {
             &self.theme,
             video_rect,
             klipp_core::ViewerMode::Source,
+            &self.key_bindings,
             all_cmds,
         );
 
@@ -627,7 +628,7 @@ impl KlippApp {
                 .inner_margin(egui::Margin::ZERO);
             frame.show(ui, |ui| {
                 ui.set_min_size(ui.available_size());
-                let panel_cmds = self.viewer.show(ui, &mut self.state, &self.theme);
+                let panel_cmds = self.viewer.show(ui, &mut self.state, &self.theme, &self.key_bindings);
                 all_cmds.extend(panel_cmds);
             });
         });

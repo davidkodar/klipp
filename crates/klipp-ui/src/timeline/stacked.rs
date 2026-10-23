@@ -122,7 +122,7 @@ pub(crate) fn focus(view: &mut TimelineView, state: &mut AppState, cmds: &mut Ve
 /// its header goes to the cut in `cut`. Whether the selects became the
 /// one worked in this frame.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn show_top(main: &mut NewTimelinePanel, ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, rect: egui::Rect, cut: egui::Rect, cmds: &mut Vec<AppCommand>) -> bool {
+pub(super) fn show_top(main: &mut NewTimelinePanel, ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, rect: egui::Rect, cut: egui::Rect, kb: &crate::keybindings::KeyBindings, cmds: &mut Vec<AppCommand>) -> bool {
     let Some(top_idx) = state.selects_sequence.and_then(|id| state.sequences.iter().position(|s| s.id == id)) else { return false };
     let mut st = match main.stacked.take() {
         Some(st) if st.fits(state, top_idx) => st,
@@ -144,12 +144,12 @@ pub(super) fn show_top(main: &mut NewTimelinePanel, ui: &mut egui::Ui, state: &m
     // Under its own id, so its widgets are not the cut's.
     let changed = ui.push_id("stacked_selects", |ui| {
         if top_live {
-            st.panel.show_content(ui, state, theme, &mut st.old, false, lanes, cmds);
+            st.panel.show_content(ui, state, theme, &mut st.old, false, lanes, kb, cmds);
             false
         } else {
             let take = taken(ui, state, rect);
             let Stacked { panel, old, view, .. } = &mut *st;
-            draw_parked(view, state, take, cmds, |state, out| panel.show_content(ui, state, theme, old, false, lanes, out))
+            draw_parked(view, state, take, cmds, |state, out| panel.show_content(ui, state, theme, old, false, lanes, kb, out))
         }
     }).inner;
     main.stacked = Some(st);

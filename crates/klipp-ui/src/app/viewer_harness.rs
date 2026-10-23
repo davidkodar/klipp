@@ -44,7 +44,7 @@ impl Viewer {
         let mut cmds = Vec::new();
         let (panel, state, theme) = (&mut self.panel, &mut self.state, &self.theme);
         let _ = self.ctx.run(input, |ctx| {
-            egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| cmds = panel.show(ui, state, theme));
+            egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| cmds = panel.show(ui, state, theme, &crate::keybindings::KeyBindings::default()));
         });
         for cmd in cmds {
             self.apply(&cmd);
@@ -136,7 +136,7 @@ mod multicam_mode_program_tests {
         let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0))), time: Some(v.clock), ..Default::default() };
         let (panel, state, theme) = (&mut v.panel, &mut v.state, &v.theme);
         let out = v.ctx.run(input, |ctx| {
-            egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| { panel.show(ui, state, theme); });
+            egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| { panel.show(ui, state, theme, &crate::keybindings::KeyBindings::default()); });
         });
         out.shapes.iter().map(|s| match &s.shape {
             egui::Shape::Text(t) => format!("text {} at {:?}", t.galley.text(), t.pos),
