@@ -10,6 +10,8 @@
 
 #[path = "../auto_move_save.rs"]
 mod auto_move_save;
+#[path = "../rich_round_trip.rs"]
+mod rich_round_trip;
 #[path = "../autosave_restore_paths.rs"]
 mod autosave_restore_paths;
 #[path = "../brief_round_trip.rs"]

@@ -68,6 +68,8 @@ mod title_composed_export;
 mod title_fit_export;
 #[path = "../pan_inside_a_card.rs"]
 mod pan_inside_a_card;
+#[path = "../frames_survive_save.rs"]
+mod frames_survive_save;
 #[path = "../scene_layers.rs"]
 mod scene_layers;
 #[path = "../place_by_sync.rs"]
