@@ -9084,7 +9084,9 @@ fn overlap(dur: Timecode, alignment: klipp_core::TransitionAlignment, fps: Fps) 
 /// they are not where it is drawn from.
 fn handle_room(pool: &MediaPool, a: &Clip, b: &Clip, tail: Timecode, head: Timecode) -> (bool, bool) {
     let media_dur = |c: &Clip| c.media_id().and_then(|m| pool.get(&m)).map(|m| m.duration);
-    let drawn = |c: &Clip| matches!(c.kind, ClipKind::Generator(_) | ClipKind::Title(_));
+    // A still is the same picture at any time: it has a handle as long as
+    // any transition (#2483).
+    let drawn = |c: &Clip| matches!(c.kind, ClipKind::Generator(_) | ClipKind::Title(_)) || c.media_id().and_then(|m| pool.get(&m)).is_some_and(|m| m.is_still);
     (drawn(a) || media_dur(a).is_none_or(|d| a.source_out + tail <= d), drawn(b) || b.source_in >= head)
 }
 
@@ -14387,6 +14389,38 @@ mod tests {
         // Another transition there still wants the handle.
         let dissolve = [Op::Transition { clip_id: ClipRef::Id(a), kind: "cross_dissolve".into(), secs: 0.32, remove: false, pieces: None }];
         assert!(resolve(&seq, &pool, &dissolve).unwrap_err().why.contains("no footage beyond the cut"));
+    }
+
+    /// #2483: a still is the same picture at any time, so a dissolve or a
+    /// dip onto or off one needs no handle; footage cut the same way does.
+    #[test]
+    fn a_transition_on_stills_needs_no_handle() {
+        let mut seq = Sequence::new_default();
+        seq.fps = Fps::new(25, 1);
+        let mut pool = MediaPool::new();
+        let mut add = |name: &str, still: bool| {
+            let mut item = klipp_media::MediaItem::synthetic_for_test(format!("/tmp/{name}").into(), None);
+            item.duration = tc(4.0);
+            item.is_still = still;
+            pool.add(item)
+        };
+        let (p1, p2, f1, f2) = (add("a.jpg", true), add("b.jpg", true), add("c.mov", false), add("d.mov", false));
+        let track = |x: MediaId, y: MediaId| {
+            let mut v = Track::new("V1", TrackKind::Video);
+            // Each clip uses all of its source: nothing past either side of the cut.
+            v.clips = vec![Clip::media(x, tc(0.0), tc(4.0), tc(0.0), tc(4.0)), Clip::media(y, tc(4.0), tc(8.0), tc(0.0), tc(4.0))];
+            v
+        };
+        seq.tracks = vec![track(p1, p2)];
+        let a = seq.tracks[0].clips[0].id;
+        for kind in ["cross_dissolve", "dip_to_black"] {
+            let op = [Op::Transition { clip_id: ClipRef::Id(a), kind: kind.into(), secs: 1.0, remove: false, pieces: None }];
+            resolve(&seq, &pool, &op).unwrap_or_else(|e| panic!("{kind} between stills: {e}"));
+        }
+        seq.tracks = vec![track(f1, f2)];
+        let a = seq.tracks[0].clips[0].id;
+        let op = [Op::Transition { clip_id: ClipRef::Id(a), kind: "cross_dissolve".into(), secs: 1.0, remove: false, pieces: None }];
+        assert!(resolve(&seq, &pool, &op).unwrap_err().why.contains("no footage beyond the cut"));
     }
 
     #[test]
