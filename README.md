@@ -7,6 +7,8 @@
 
 **A native video editor for Linux.**
 
+[Website](https://davidkodar.github.io/klipp/) · [Download 0.1.0-rc.1](https://github.com/davidkodar/klipp/releases/tag/v0.1.0-rc.1)
+
 Edit on a magnetic timeline, grade in scene-linear colour, and automate workflows with local AI tools and an MCP-compatible assistant.
 
 **Pre-release · Vulkan GPU required · Arch package or source · GPL-3.0-only**
