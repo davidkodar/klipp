@@ -1033,6 +1033,12 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             if let Some(b) = args.get("hdr10plus").and_then(|v| v.as_bool()) {
                 v["hdr10plus"] = json!(b);
             }
+            if let Some(h) = args.get("hdr").and_then(|v| v.as_str()) {
+                v["hdr"] = json!(h);
+            }
+            if let Some(p) = args.get("peak_nits").and_then(|v| v.as_f64()) {
+                v["peak_nits"] = json!(p);
+            }
             if let Some(b) = args.get("burn_captions").and_then(|v| v.as_bool()) {
                 v["burn_captions"] = json!(b);
             }
@@ -2294,10 +2300,11 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                  "fps": { "type": "number" },
                  "crf": { "type": "integer", "description": "Quality, lower is better (default 23)" },
                  "target_lufs": { "type": "number", "description": "Loudness target: -14 web, -23 broadcast; default the brief's" },
-                 "true_peak_dbtp": { "type": "number", "description": "True-peak ceiling, -10 to 0 (default -1; ATSC A/85 -2)" },
-                 "burn_captions": { "type": "boolean", "description": "Captions (subtitle tracks) burnt in (default on); titles are burnt in either way; the reply says which" },
-                 "captions_608": { "type": "boolean", "description": "Captions as CEA-608 inside the video stream (h264/hevc)" },
-                 "hdr10plus": { "type": "boolean", "description": "Per-shot ST 2094-40 metadata (hevc, PQ)" },
+                 "true_peak_dbtp": { "type": "number", "description": "True-peak ceiling, -10 to 0 (default -1)" },
+                 "burn_captions": { "type": "boolean", "description": "Captions burnt in (default on); titles always are; the reply says which" },
+                 "captions_608": { "type": "boolean", "description": "CEA-608 in the video stream (h264/hevc)" },
+                 "hdr10plus": { "type": "boolean", "description": "ST 2094-40 per shot (hevc, pq)" },
+                 "hdr": { "type": "string", "enum": ["sdr", "hlg", "pq"] }, "peak_nits": { "type": "number" },
                  "preset": export_preset_schema(),
                  "encoder_speed": { "type": "string", "enum": klipp_control::ENCODER_SPEEDS },
                  "codec": { "type": "string" }, "audio_codec": { "type": "string" },

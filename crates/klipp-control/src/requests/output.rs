@@ -12,7 +12,7 @@ pub(crate) fn respond(
     let mut send = sender!(ctx, collect);
 
     match cmd {
-        ControlCommand::Export { path, width, height, fps, crf, bit_depth, target_lufs, true_peak_dbtp, burn_captions, captions_608, hdr10plus, preset, codec, audio_codec, bitrate_kbps, encoder_speed } => {
+        ControlCommand::Export { path, width, height, fps, crf, bit_depth, target_lufs, true_peak_dbtp, burn_captions, captions_608, hdr10plus, hdr, peak_nits, preset, codec, audio_codec, bitrate_kbps, encoder_speed } => {
             let out = std::path::PathBuf::from(&path);
             if !out.is_absolute() {
                 return Err(format!("export path must be absolute (got {path:?})"));
@@ -186,6 +186,41 @@ pub(crate) fn respond(
                 }
                 settings.captions_608 = cc;
             }
+            // The output transfer, under the dialog's rules (#2477): HDR in
+            // ProRes, or at 10 bits in h264 or hevc; an output transform
+            // that does not serve the delivery is dropped, as there.
+            let hdr_warning = match hdr.as_deref() {
+                None => None,
+                Some(name) => {
+                    let mode = hdr_mode_named(name)?;
+                    if mode != klipp_core::HdrMode::Sdr {
+                        let prores = matches!(settings.video_codec, V::ProRes422 | V::ProRes422HQ | V::ProRes4444);
+                        if !prores {
+                            if !matches!(settings.video_codec, V::H264 | V::H265) {
+                                return Err(format!("{} writes no HDR; hdr {name} needs hevc, h264 or ProRes", settings.video_codec.label()));
+                            }
+                            if bit_depth == Some(8) {
+                                return Err(format!("hdr {name} is written at 10 bits; leave bit_depth out or give 10"));
+                            }
+                            settings.bit_depth = 10;
+                        }
+                    }
+                    settings.hdr_mode = mode;
+                    if !settings.odt.fits(mode) {
+                        settings.odt = klipp_core::OdtChoice::MatchViewer;
+                    }
+                    settings.video_codec.hdr_advice(mode).map(|a| a.headline.to_string())
+                }
+            };
+            if let Some(peak) = peak_nits {
+                if settings.delivery() != klipp_core::HdrMode::Pq || settings.odt.is_pq() {
+                    return Err("peak_nits is a PQ delivery's mastering peak; give hdr pq with it (HLG is mastered at 1000 nits)".into());
+                }
+                if !peak.is_finite() || !klipp_core::MASTERING_PEAK_RANGE.contains(&peak) {
+                    return Err(format!("a mastering peak of {peak} nits: give 1000, 2000 or 4000"));
+                }
+                settings.mastering_peak_nits = peak;
+            }
             if let Some(on) = hdr10plus {
                 if on && !(matches!(settings.video_codec, V::H265) && settings.delivery() == klipp_core::HdrMode::Pq) {
                     return Err("hdr10plus needs a PQ delivery in hevc".into());
@@ -201,6 +236,9 @@ pub(crate) fn respond(
                 "titles_burnt_in": true,
                 "captions_608": settings.captions_608,
                 "hdr10plus": settings.hdr10plus,
+                "hdr": match settings.delivery() { klipp_core::HdrMode::Sdr => "sdr", klipp_core::HdrMode::Hlg => "hlg", klipp_core::HdrMode::Pq => "pq" },
+                "peak_nits": settings.renders_hdr().then(|| settings.hdr_peak_nits()),
+                "hdr_warning": hdr_warning,
                 "target_lufs": settings.target_lufs,
                 "loudness_from": loudness_from,
                 "loudness_warning": loudness_warning,
@@ -933,6 +971,16 @@ fn apply_export_preset(settings: &mut klipp_core::ExportSettings, name: &str) ->
 fn set_crf(settings: &mut klipp_core::ExportSettings, crf: u32) {
     settings.crf = crf;
     settings.rate_control = klipp_core::RateControl::Crf;
+}
+
+/// An output transfer by the name an agent gives it (#2477).
+fn hdr_mode_named(name: &str) -> Result<klipp_core::HdrMode, String> {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "sdr" | "rec709" | "bt709" => Ok(klipp_core::HdrMode::Sdr),
+        "hlg" => Ok(klipp_core::HdrMode::Hlg),
+        "pq" | "hdr10" => Ok(klipp_core::HdrMode::Pq),
+        _ => Err(format!("{name:?} is not an output transfer; give sdr, hlg or pq")),
+    }
 }
 
 /// A video codec by the name an agent gives it (#1583).

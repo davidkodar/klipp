@@ -1573,6 +1573,53 @@ fn an_export_keeps_the_briefs_loudness_unless_told_otherwise() {
     assert_eq!((s.target_lufs, r["export"]["loudness_from"].as_str()), (Some(-23.0), Some("the call")), "{r}");
 }
 
+/// #2477: an export chooses its output transfer, under the dialog's
+/// rules: HDR at 10 bits in hevc, h264 or ProRes, a mastering peak for PQ
+/// only, and the reply says what it delivers.
+#[test]
+fn an_export_delivers_hdr_as_the_dialog_allows() {
+    let mut h = harness();
+    let media = h.media_pool.write().unwrap().add(klipp_media::MediaItem::synthetic_for_test("/tmp/export-hdr-fixture.mov".into(), None));
+    for c in h.sequence.write().unwrap().tracks.iter_mut().flat_map(|t| t.clips.iter_mut()) {
+        c.kind = klipp_timeline::ClipKind::Media { media_id: media };
+    }
+    let sent = |h: &mut Harness, req: serde_json::Value| -> (serde_json::Value, klipp_core::ExportSettings) {
+        let r = h.ok(req);
+        match h.cmd_rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(klipp_core::AppCommand::ExportSequence { settings }) => (r, settings),
+            other => panic!("expected ExportSequence, got {other:?}"),
+        }
+    };
+    use klipp_core::HdrMode;
+    // PQ in hevc: ten bits set, the peak taken.
+    let (r, s) = sent(&mut h, json!({ "method": "export", "path": "/tmp/klipp-hdr-pq.mp4", "codec": "hevc", "hdr": "pq", "peak_nits": 2000 }));
+    assert_eq!((s.hdr_mode, s.bit_depth, s.mastering_peak_nits), (HdrMode::Pq, 10, 2000.0), "{r}");
+    assert_eq!((r["export"]["hdr"].as_str(), r["export"]["peak_nits"].as_f64(), r["export"]["bit_depth"].as_i64()), (Some("pq"), Some(2000.0), Some(10)), "{r}");
+    assert!(r["export"]["hdr_warning"].is_null(), "{r}");
+    // HLG in h264: delivered, with the codec's warning.
+    let (r, s) = sent(&mut h, json!({ "method": "export", "path": "/tmp/klipp-hdr-hlg.mp4", "hdr": "hlg" }));
+    assert_eq!((s.hdr_mode, s.bit_depth), (HdrMode::Hlg, 10), "{r}");
+    assert!(r["export"]["hdr_warning"].is_string(), "{r}");
+    // ProRes keeps its own depth.
+    let (_, s) = sent(&mut h, json!({ "method": "export", "path": "/tmp/klipp-hdr-prores.mov", "codec": "prores", "hdr": "hlg" }));
+    assert_eq!(s.hdr_mode, HdrMode::Hlg);
+    // SDR by default.
+    let (r, s) = sent(&mut h, json!({ "method": "export", "path": "/tmp/klipp-hdr-sdr.mp4" }));
+    assert_eq!((s.hdr_mode, r["export"]["hdr"].as_str(), r["export"]["peak_nits"].is_null()), (HdrMode::Sdr, Some("sdr"), true), "{r}");
+    // Refused before anything is sent.
+    for (req, says) in [
+        (json!({ "method": "export", "path": "/tmp/klipp-hdr-x.mp4", "hdr": "pq", "bit_depth": 8 }), "10 bits"),
+        (json!({ "method": "export", "path": "/tmp/klipp-hdr-x.webm", "hdr": "pq" }), "writes no HDR"),
+        (json!({ "method": "export", "path": "/tmp/klipp-hdr-x.mp4", "hdr": "hlg", "peak_nits": 2000 }), "PQ delivery"),
+        (json!({ "method": "export", "path": "/tmp/klipp-hdr-x.mp4", "hdr": "pq", "peak_nits": 50 }), "1000, 2000 or 4000"),
+        (json!({ "method": "export", "path": "/tmp/klipp-hdr-x.mp4", "hdr": "dolby" }), "not an output transfer"),
+    ] {
+        let err = h.call(req);
+        assert!(err["error"].as_str().is_some_and(|e| e.contains(says)), "{says}: {err}");
+        assert!(h.cmd_rx.try_recv().is_err(), "nothing sent for {says}");
+    }
+}
+
 /// #1583: an export over the socket chooses its codec. A built-in preset
 /// by name gives its codecs and rate (fields beside it win); a codec, a
 /// bit depth and a bitrate are taken as asked; and what the container
