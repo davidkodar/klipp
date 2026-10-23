@@ -2104,6 +2104,7 @@ impl KlippApp {
             if project.picture_transform != now {
                 project.picture_transform = now;
             }
+            project.viewer_lut = self.state.global_lut_path.clone().filter(|_| self.state.global_lut_enabled).map(|p| (p, self.state.global_lut_opacity));
         }
     }
 

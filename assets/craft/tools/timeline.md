@@ -130,6 +130,8 @@ Every marker on the timeline in time order, with its id, time, range, label, not
 
 The frame at a time on the timeline, as a PNG, without leaving the playhead where it was: seeks there, waits for the frame, captures, seeks back. Use it to look at what you did at a specific point. Seconds from timeline start.
 
+Left out, max_width gives the viewer's frame, at most 1280 wide; the viewer decodes at the playback size, which can be smaller. A max_width wider than the viewer's frame is drawn from the files at that width, up to the timeline's, as the export draws it, for judging small type and fine detail at full size; the reply's drawn says so.
+
 ## klipp_fonts
 
 The font families a title or a brief's type style can name: those bundled with Klipp, always there, and those installed on this machine. Any other name falls back to Inter; set_brief, plan and apply warn when one is named.

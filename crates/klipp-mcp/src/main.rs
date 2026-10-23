@@ -1360,8 +1360,12 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             let mut v = json!({
                 "method": "frame_at",
                 "secs": args.get("secs").and_then(|v| v.as_f64()).ok_or("missing required argument: secs")?,
-                "max_width": args.get("max_width").and_then(|v| v.as_u64()).unwrap_or(1280),
             });
+            // Left out, the viewer's frame at most 1280 wide; given, that
+            // width, drawn from the files when the viewer's is narrower (#2491).
+            if let Some(w) = args.get("max_width").and_then(|v| v.as_u64()) {
+                v["max_width"] = json!(w);
+            }
             if let Some(p) = args.get("path").and_then(|v| v.as_str()) {
                 v["path"] = json!(p);
             }
@@ -2552,7 +2556,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "The timeline's frame at a time, as a PNG, the playhead left where it was. Details: klipp_guide topic frame_at.",
              json!({
                  "secs": { "type": "number" },
-                 "max_width": { "type": "integer", "description": "Downscale to at most this wide (default 1280)" },
+                 "max_width": { "type": "integer", "description": "Width, up to the timeline's (default 1280)" },
                  "path": { "type": "string", "description": "Absolute PNG path; temp dir when omitted" },
                  "timeout_ms": { "type": "integer" },
              }),

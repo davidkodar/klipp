@@ -10,6 +10,8 @@
 
 #[path = "../an_export_without_gpu_planes_composites_on_the_gpu.rs"]
 mod an_export_without_gpu_planes_composites_on_the_gpu;
+#[path = "../a_timeline_frame_at_full_size.rs"]
+mod a_timeline_frame_at_full_size;
 #[path = "../audio_only_export.rs"]
 mod audio_only_export;
 #[path = "../captions_608_export.rs"]
