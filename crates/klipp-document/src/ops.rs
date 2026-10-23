@@ -972,6 +972,10 @@ pub enum Op {
     /// put where it belongs: `side` "right" sets it against the right
     /// edge, `x` is that edge and `y` the name's line, both as a
     /// fraction of the frame and kept inside title-safe.
+    ///
+    /// `backing` keeps it legible over any picture: "shadow" (the
+    /// default) gives both lines a close dark shadow and a thin outline,
+    /// "box" a dark box behind them, "none" the soft lift alone.
     LowerThird {
         name: String,
         #[serde(default)]
@@ -987,6 +991,8 @@ pub enum Op {
         x: Option<f32>,
         #[serde(default)]
         y: Option<f32>,
+        #[serde(default)]
+        backing: Option<String>,
     },
     /// The words of a title or a caption: a cue the transcript misheard,
     /// a name spelt as the cast list spells it. The first text box of
@@ -3644,9 +3650,9 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             }
             place_title(seq, fps, i, at, *held, track.as_ref(), td, &format!("template \"{name}\""), "")
         }
-        Op::LowerThird { name, role, at, secs: hold, track, side, x, y } => {
+        Op::LowerThird { name, role, at, secs: hold, track, side, x, y, backing } => {
             let at = resolve_anchor(seq, fps, at, i)?;
-            let place = lower_third_place(i, side.as_deref(), *x, *y, role.as_deref().is_some_and(|r| !r.trim().is_empty()))?;
+            let place = lower_third_place(i, side.as_deref(), *x, *y, backing.as_deref(), role.as_deref().is_some_and(|r| !r.trim().is_empty()))?;
             lower_third(seq, fps, i, name, role.as_deref(), at, *hold, track.as_ref(), place)
         }
         Op::SetText { clip_id, text } => {
@@ -9323,12 +9329,31 @@ struct LowerThirdPlace {
     right: bool,
     x: Option<f32>,
     y: Option<f32>,
+    backing: LowerThirdBacking,
+}
+
+/// What keeps a lower third legible over the picture (#2428).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum LowerThirdBacking {
+    /// A close dark shadow and a thin outline on both lines: read over
+    /// a light, busy picture, and still no panel over the shot.
+    Shadow,
+    /// A dark box behind both lines.
+    Box,
+    /// The soft lift alone.
+    None,
 }
 
 /// The role sits this far under the name.
 const LOWER_THIRD_ROLE_DROP: f32 = 0.053;
 
-fn lower_third_place(i: usize, side: Option<&str>, x: Option<f32>, y: Option<f32>, with_role: bool) -> Result<LowerThirdPlace, Refusal> {
+fn lower_third_place(i: usize, side: Option<&str>, x: Option<f32>, y: Option<f32>, backing: Option<&str>, with_role: bool) -> Result<LowerThirdPlace, Refusal> {
+    let backing = match backing.map(|s| s.trim().to_lowercase()).as_deref() {
+        None | Some("") | Some("shadow") => LowerThirdBacking::Shadow,
+        Some("box") => LowerThirdBacking::Box,
+        Some("none") => LowerThirdBacking::None,
+        Some(other) => return Err(refuse(i, format!("\"{other}\" is not a backing"), "use shadow, box or none")),
+    };
     let right = match side.map(|s| s.trim().to_lowercase()).as_deref() {
         None | Some("") | Some("left") => false,
         Some("right") => true,
@@ -9346,7 +9371,7 @@ fn lower_third_place(i: usize, side: Option<&str>, x: Option<f32>, y: Option<f32
             return Err(refuse(i, format!("y {y} is outside title-safe"), format!("y is the name's line as a fraction of the height, from 0.05 to {lowest:.2}")));
         }
     }
-    Ok(LowerThirdPlace { right, x, y })
+    Ok(LowerThirdPlace { right, x, y, backing })
 }
 
 fn lower_third_title(name: &str, role: Option<&str>, place: LowerThirdPlace) -> klipp_timeline::TitleData {
@@ -9389,9 +9414,23 @@ fn lower_third_title(name: &str, role: Option<&str>, place: LowerThirdPlace) -> 
         alignment,
         ..Default::default()
     };
+    // Legible over a light picture too (#2428): a close dark shadow and a
+    // thin outline, or a dark box behind the lines.
+    let close = klipp_timeline::TitleShadow { color: [0, 0, 0, 210], offset_y: 2.0, blur: 4.0, ..lift.clone() };
+    let outline = |width: f32| klipp_timeline::TextOutline { color: [0, 0, 0, 170], width, enabled: true, width_keyframes: Vec::new() };
+    let legible = |fx: &mut klipp_timeline::LayerFx, width: f32| {
+        fx.shadows.push(lift.clone());
+        if place.backing == LowerThirdBacking::Shadow {
+            fx.shadows.push(close.clone());
+            fx.outlines.push(outline(width));
+        }
+    };
+    if place.backing == LowerThirdBacking::Box {
+        td.background = klipp_timeline::TitleBackground::Color { color: [0, 0, 0, 200], padding: 14.0 };
+    }
     let name_id = td.add_object(TitleObjectContent::TextBox(name_box), at(name_y));
     let name_fx = td.object_mut(name_id).expect("just added").fx_mut();
-    name_fx.shadows.push(lift.clone());
+    legible(name_fx, 1.5);
     name_fx.motion = motion(0.0);
     if let Some(role) = role {
         let mut role_box = TextBox {
@@ -9407,7 +9446,7 @@ fn lower_third_title(name: &str, role: Option<&str>, place: LowerThirdPlace) -> 
         role_box.tracking = 3.0;
         let role_id = td.add_object(TitleObjectContent::TextBox(role_box), at(name_y + LOWER_THIRD_ROLE_DROP));
         let role_fx = td.object_mut(role_id).expect("just added").fx_mut();
-        role_fx.shadows.push(lift);
+        legible(role_fx, 1.0);
         role_fx.motion = motion(0.1);
     }
     td
@@ -15732,10 +15771,38 @@ mod tests {
         edits.iter().filter_map(|e| match e { EditCommand::LegacyAppendClip { clip, .. } => clip.title_data().cloned(), _ => None }).nth(k).expect("a caption")
     }
 
+    /// #2428: a lower third is legible over a light picture by default,
+    /// both lines with a close dark shadow and an outline; `box` puts a
+    /// dark box behind them, `none` keeps the soft lift alone, and a
+    /// backing Klipp does not know is refused.
+    #[test]
+    fn a_lower_third_has_a_backing() {
+        let (seq, pool, _, _, _) = fixture();
+        let lt = |backing: Option<&str>| Op::LowerThird { name: "A Speaker".into(), role: Some("A role".into()), at: Anchor::Secs(4.4), secs: 3.0, track: None, side: None, x: None, y: None, backing: backing.map(str::to_string) };
+        let made = |backing: Option<&str>| {
+            let plan = resolve(&seq, &pool, &[lt(backing)]).unwrap();
+            let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!("a title clip") };
+            clip.title_data().unwrap().clone()
+        };
+        let fx = |td: &klipp_timeline::TitleData, k: usize| td.objects[k].fx.clone().unwrap_or_default();
+        let shadow = made(None);
+        assert_eq!(made(Some("shadow")), shadow, "shadow is the default");
+        for k in 0..2 {
+            assert!(!fx(&shadow, k).outlines.is_empty() && fx(&shadow, k).shadows.len() == 2, "line {k}: an outline and a close shadow over the lift");
+        }
+        assert!(matches!(shadow.background, klipp_timeline::TitleBackground::None));
+        let boxed = made(Some("box"));
+        assert!(matches!(boxed.background, klipp_timeline::TitleBackground::Color { color, .. } if color[3] >= 180), "a dark box: {:?}", boxed.background);
+        let bare = made(Some("none"));
+        assert!(fx(&bare, 0).outlines.is_empty() && fx(&bare, 0).shadows.len() == 1, "the lift alone");
+        let err = resolve(&seq, &pool, &[lt(Some("glow"))]).unwrap_err();
+        assert!(err.why.contains("not a backing") && err.hint.contains("shadow, box or none"), "{err}");
+    }
+
     #[test]
     fn a_lower_third_sits_inside_a_shot() {
         let (seq, pool, _, _, _) = fixture();
-        let lt = |at: f64, secs: f64| Op::LowerThird { name: "David Heinemeier Hansson".into(), role: Some("Creator of Omarchy".into()), at: Anchor::Secs(at), secs, track: None, side: None, x: None, y: None };
+        let lt = |at: f64, secs: f64| Op::LowerThird { name: "David Heinemeier Hansson".into(), role: Some("Creator of Omarchy".into()), at: Anchor::Secs(at), secs, track: None, side: None, x: None, y: None, backing: None };
         let plan = resolve(&seq, &pool, &[lt(4.4, 3.0)]).unwrap();
         assert!(plan.steps[0].what.contains("a new text track 0"), "{}", plan.steps[0].what);
         assert_eq!((plan.steps[0].after[0].track, plan.steps[0].after[0].timeline_in_secs, plan.steps[0].after[0].timeline_out_secs), (0, 4.4, 7.4));
@@ -15750,7 +15817,7 @@ mod tests {
         // Too short to read, no name, past the end: refused.
         assert!(resolve(&seq, &pool, &[lt(4.5, 1.0)]).is_err());
         assert!(resolve(&seq, &pool, &[lt(6.0, 3.0)]).unwrap_err().why.contains("past the end"));
-        let nameless = Op::LowerThird { name: " ".into(), role: None, at: Anchor::Secs(4.5), secs: 3.0, track: None, side: None, x: None, y: None };
+        let nameless = Op::LowerThird { name: " ".into(), role: None, at: Anchor::Secs(4.5), secs: 3.0, track: None, side: None, x: None, y: None, backing: None };
         assert!(resolve(&seq, &pool, &[nameless]).unwrap_err().hint.contains("cast list"));
 
         // With a cast list in the brief, the name is the list's and so is the role.
@@ -15759,10 +15826,10 @@ mod tests {
             cast: vec![klipp_timeline::CastMember { name: "David Heinemeier Hansson".into(), role: "Creator of Omarchy".into(), described: "on the right".into() }],
             ..Default::default()
         });
-        let from_cast = Op::LowerThird { name: "david heinemeier hansson".into(), role: None, at: Anchor::Secs(4.4), secs: 3.0, track: None, side: None, x: None, y: None };
+        let from_cast = Op::LowerThird { name: "david heinemeier hansson".into(), role: None, at: Anchor::Secs(4.4), secs: 3.0, track: None, side: None, x: None, y: None, backing: None };
         let plan = resolve(&briefed, &pool, &[from_cast]).unwrap();
         assert!(plan.steps[0].what.contains("\"David Heinemeier Hansson\", \"Creator of Omarchy\""), "{}", plan.steps[0].what);
-        let stranger = Op::LowerThird { name: "Brodie".into(), role: None, at: Anchor::Secs(4.4), secs: 3.0, track: None, side: None, x: None, y: None };
+        let stranger = Op::LowerThird { name: "Brodie".into(), role: None, at: Anchor::Secs(4.4), secs: 3.0, track: None, side: None, x: None, y: None, backing: None };
         let err = resolve(&briefed, &pool, &[stranger]).unwrap_err();
         assert!(err.why.contains("not in the brief's cast") && err.hint.contains("David Heinemeier Hansson"), "{err}");
 
