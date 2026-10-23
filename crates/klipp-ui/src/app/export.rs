@@ -3861,6 +3861,10 @@ impl super::KlippApp {
     fn take_import(&mut self, path: &std::path::Path, result: Result<klipp_project::mlt_import::ImportResult, String>, request_id: uuid::Uuid, replace: bool) {
         let outcome = match result {
             Ok(result) => {
+                // Into an open project, its files and names are the
+                // project's; a fresh one has none to meet (#2472).
+                let names: Vec<&str> = if replace { Vec::new() } else { self.state.sequences.iter().map(|s| s.name.as_str()).collect() };
+                let result = klipp_project::import_report::fit_into(result, &self.state.media_pool, &names);
                 let report = klipp_project::import_report::ImportReport::from_import(path, &result);
                 for item in result.media_pool.all().cloned() { self.state.media_pool.add(item); }
                 if replace {
@@ -3894,4 +3898,3 @@ impl super::KlippApp {
         *self.state.control_shared.import_outcome.lock().unwrap_or_else(|e| e.into_inner()) = Some(outcome);
     }
 }
-
