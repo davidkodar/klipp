@@ -832,4 +832,21 @@ fn the_ease_shortcuts_act_on_the_selected_key() {
     assert!(apply(&mut state, &cmds).is_empty());
     assert_eq!(interp(&state)[1], klipp_core::Interpolation::Linear);
     assert_eq!(state.active_history().undo_count(), steps + 2);
+    assert_eq!(state.active_history().undo_label(), Some("Linear"), "named for the action (#2358)");
+}
+
+/// Easing several selected keys is one step named for the ease and the
+/// count, not for its first command (#2358).
+#[test]
+fn easing_several_keys_names_the_step_with_their_count() {
+    use crate::widgets::scrubby_param::EasePreset;
+    let (mut state, id, row) = blur_state();
+    let c = clip(&state, id);
+    crate::key_selection::click(&mut state, &c, &row.kind, 0, false);
+    crate::key_selection::click(&mut state, &c, &row.kind, 1, true);
+    let steps = state.active_history().undo_count();
+    let cmds = super::shortcuts::key_ease_shortcut(&state, Some(EasePreset::EaseBoth));
+    assert!(apply(&mut state, &cmds).is_empty());
+    assert_eq!(state.active_history().undo_count(), steps + 1, "one step for both");
+    assert_eq!(state.active_history().undo_label(), Some("Ease In-Out (2 keys)"));
 }
