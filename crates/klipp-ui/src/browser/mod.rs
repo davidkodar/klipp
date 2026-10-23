@@ -1609,10 +1609,7 @@ impl BrowserPanel {
                         // AND-combined across categories, OR-combined
                         // within the colour-label bitmask.
                         self.render_media_filter_toolbar(ui, theme, state);
-                        // Footage found by what is in its picture (#2212).
-                        if ui.small_button("Find by Picture\u{2026}").on_hover_text("Describe a shot (\u{201c}a dog on a beach\u{201d}) to find the footage that looks like it").clicked() {
-                            state.visual_search.get_or_insert_with(Default::default);
-                        }
+                        find_by_picture_button(ui, &mut cmds);
                         let tab_cmds = media_tab::show(
                             ui,
                             state,
@@ -1653,6 +1650,7 @@ impl BrowserPanel {
                     // visible when Files is pinned, which is poor
                     // discoverability.
                     self.render_media_filter_toolbar(ui, theme, state);
+                    find_by_picture_button(ui, &mut cmds);
                     let tab_cmds = media_tab::show(
                         ui,
                         state,
@@ -5503,6 +5501,14 @@ fn create_folder_in(parent: &std::path::Path, name: &str) -> Result<std::path::P
     Ok(target)
 }
 
+/// Opens Find by Picture (#2212): footage found by what is in its
+/// picture. Drawn above the media list in the single and split views.
+fn find_by_picture_button(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>) {
+    if ui.small_button("Find by Picture\u{2026}").on_hover_text("Describe a shot (\u{201c}a dog on a beach\u{201d}) to find the footage that looks like it").clicked() {
+        cmds.push(AppCommand::OpenVisualSearch);
+    }
+}
+
 #[cfg(test)]
 mod new_folder_tests {
     //! Tests for the file-browser "New folder" feature (#11 in the
@@ -6765,5 +6771,32 @@ mod files_row_style_tests {
         let mut cmds = f.frame(vec![egui::Event::PointerMoved(item), primary(true)]).2;
         cmds.extend(f.frame(vec![primary(false)]).2);
         assert!(cmds.iter().any(|c| matches!(c, AppCommand::LoadMediaFile { path, .. } if path.ends_with("clip.mov"))), "{cmds:?}");
+    }
+
+    /// The media pool opens Find by Picture with Files pinned beside it
+    /// and without. (Only the pinned view had the button.)
+    #[test]
+    fn the_media_pool_opens_find_by_picture_in_both_views() {
+        for files_pinned in [false, true] {
+            let (ctx, mut panel, mut state, theme) = (egui::Context::default(), BrowserPanel::default(), AppState::default(), KlippTheme::default());
+            let mut frame = |events: Vec<egui::Event>| {
+                let (mut tab, mut pinned, mut ratio) = (BrowserTab::Media, files_pinned, 0.5);
+                let mut cmds = Vec::new();
+                let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 900.0))), events, ..Default::default() }, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| cmds = panel.show(ui, &mut state, &theme, &mut tab, &mut pinned, &mut ratio));
+                });
+                let at = out.shapes.iter().find_map(|s| match &s.shape {
+                    egui::Shape::Text(t) if t.galley.text() == "Find by Picture\u{2026}" => Some(t.pos + t.galley.size() / 2.0),
+                    _ => None,
+                });
+                (at, cmds)
+            };
+            frame(Vec::new());
+            let at = frame(Vec::new()).0.unwrap_or_else(|| panic!("no Find by Picture button (Files pinned: {files_pinned})"));
+            let primary = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+            let mut cmds = frame(vec![egui::Event::PointerMoved(at), primary(true)]).1;
+            cmds.extend(frame(vec![primary(false)]).1);
+            assert!(cmds.iter().any(|c| matches!(c, AppCommand::OpenVisualSearch)), "Files pinned: {files_pinned}: {cmds:?}");
+        }
     }
 }

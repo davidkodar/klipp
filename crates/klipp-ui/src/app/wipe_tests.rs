@@ -57,7 +57,7 @@ fn the_viewer_wipes_against_another_clip_graded() {
         let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0))), time: Some(t as f64 * 0.05), ..Default::default() };
         let out = ctx.run(input, |ctx| {
             egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
-                let _ = panel.show(ui, &mut state, &theme);
+                let _ = panel.show(ui, &mut state, &theme, &crate::keybindings::KeyBindings::default());
             });
         });
         shapes = out.shapes;
@@ -72,7 +72,7 @@ fn the_viewer_wipes_against_another_clip_graded() {
     let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0))), time: Some(1.0), ..Default::default() };
     let out = ctx.run(input, |ctx| {
         egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
-            let _ = panel.show(ui, &mut state, &theme);
+            let _ = panel.show(ui, &mut state, &theme, &crate::keybindings::KeyBindings::default());
         });
     });
     assert!(!out.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Mesh(m) if m.texture_id == frame) || matches!(&s.shape, egui::Shape::Rect(r) if r.fill_texture_id == frame)), "the Edit page's viewer wipes");

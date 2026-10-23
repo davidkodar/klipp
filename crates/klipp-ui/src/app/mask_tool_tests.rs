@@ -291,7 +291,7 @@ fn the_overlay_reads_on_any_picture() {
     let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0))), time: Some(v.clock + 0.05), ..Default::default() };
     let (panel, state, theme) = (&mut v.panel, &mut v.state, &v.theme);
     let out = v.ctx.run(input, |ctx| {
-        egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| { panel.show(ui, state, theme); });
+        egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| { panel.show(ui, state, theme, &crate::keybindings::KeyBindings::default()); });
     });
     let fills: Vec<(egui::Rect, egui::Color32)> = out.shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Rect(r) => Some((r.rect, r.fill)), _ => None }).collect();
     let point = |x: f32, y: f32| at(&v, x, y);

@@ -392,6 +392,7 @@ impl ViewerPanel {
         ui: &mut egui::Ui,
         state: &mut AppState,
         theme: &KlippTheme,
+        kb: &crate::keybindings::KeyBindings,
     ) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
         // Use max_rect to get the FULL allocated rect — no insets from cursor/spacing
@@ -456,6 +457,7 @@ impl ViewerPanel {
             theme,
             viewer_rect,
             ViewerMode::Program,
+            kb,
             &mut cmds,
         );
         // The nodes this frame didn't draw as asked (M4 step 10): after
@@ -5745,6 +5747,7 @@ impl ViewerPanel {
         theme: &KlippTheme,
         video_rect: egui::Rect,
         viewer_kind: ViewerMode,
+        kb: &crate::keybindings::KeyBindings,
         cmds: &mut Vec<AppCommand>,
     ) {
         const BTN_SIZE: f32 = 24.0;
@@ -5815,7 +5818,7 @@ impl ViewerPanel {
             egui::PopupCloseBehavior::CloseOnClickOutside,
             |ui| {
                 ui.set_min_width(220.0);
-                Self::draw_viewer_overflow_menu_content(ui, state, theme, viewer_kind, cmds);
+                Self::draw_viewer_overflow_menu_content(ui, state, theme, viewer_kind, kb, cmds);
             },
         );
     }
@@ -5825,6 +5828,7 @@ impl ViewerPanel {
         state: &mut AppState,
         theme: &KlippTheme,
         viewer_kind: ViewerMode,
+        kb: &crate::keybindings::KeyBindings,
         cmds: &mut Vec<AppCommand>,
     ) {
         let section_label = |ui: &mut egui::Ui, text: &str| {
@@ -5913,10 +5917,15 @@ impl ViewerPanel {
 
         // ── Overlays ──
         section_label(ui, "OVERLAYS");
-        ui.checkbox(&mut state.viewer_overlays.safe_areas, "Safe areas (Alt+S)");
-        ui.checkbox(&mut state.viewer_overlays.grid, "Grid (Alt+G)");
-        ui.checkbox(&mut state.viewer_overlays.zebras, "Zebras (Z)");
-        ui.checkbox(&mut state.viewer_overlays.false_color, "False colour (Alt+F)");
+        // Shortcuts read from the bindings, so a rebind shows here.
+        let with_key = |label: &str, action: &str| match kb.display_for(action) {
+            key if key.is_empty() => label.to_string(),
+            key => format!("{label} ({key})"),
+        };
+        ui.checkbox(&mut state.viewer_overlays.safe_areas, with_key("Safe areas", "toggle_safe_areas"));
+        ui.checkbox(&mut state.viewer_overlays.grid, with_key("Grid", "toggle_grid_overlay"));
+        ui.checkbox(&mut state.viewer_overlays.zebras, with_key("Zebras", "toggle_zebra"));
+        ui.checkbox(&mut state.viewer_overlays.false_color, with_key("False colour", "toggle_false_color"));
         ui.checkbox(&mut state.viewer_overlays.focus_peaking, "Focus peaking (Ctrl+P)");
         ui.checkbox(&mut state.viewer_overlays.checkerboard, "Checkerboard");
 

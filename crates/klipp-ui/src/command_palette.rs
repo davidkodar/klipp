@@ -561,6 +561,8 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
         action: PaletteAction::ToggleState(|s| { s.timeline_search_next = true; }), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Find Previous"), shortcut: Cow::Borrowed("Shift+Enter"),
         action: PaletteAction::ToggleState(|s| { s.timeline_search_prev = true; }), enabled: true });
+    e.push(PaletteEntry { label: Cow::Borrowed("Find by Picture\u{2026}"), shortcut: Cow::Borrowed(""),
+        action: PaletteAction::Cmd(AppCommand::OpenVisualSearch), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Find and Replace in Titles\u{2026}"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::SetState(|s| s.show_title_find = true), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Toggle History Panel"), shortcut: Cow::Borrowed(""),

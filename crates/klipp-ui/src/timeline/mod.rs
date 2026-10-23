@@ -150,7 +150,7 @@ impl NewTimelinePanel {
         let mut changed = false;
         let top_rect = egui::Rect::from_min_size(egui::pos2(full_rect.min.x, tabs_rect.max.y), egui::vec2(full_rect.width(), strip_h));
         if stacked_edit {
-            changed = stacked::show_top(self, ui, state, theme, top_rect, content_rect, &mut cmds);
+            changed = stacked::show_top(self, ui, state, theme, top_rect, content_rect, kb, &mut cmds);
         }
         // The cut parked while the selects are worked in (or became so this
         // frame): drawn from its view, a press on it making it the one.
@@ -160,16 +160,16 @@ impl NewTimelinePanel {
             // selects'.
             Some(mut st) if cut_parked => {
                 let take = !changed && stacked::taken(ui, state, content_rect);
-                ui.push_id("stacked_cut", |ui| stacked::draw_parked(&mut st.view, state, take, &mut cmds, |state, out| self.show_content(ui, state, theme, old_timeline, adaptive_fit, content_rect, out)));
+                ui.push_id("stacked_cut", |ui| stacked::draw_parked(&mut st.view, state, take, &mut cmds, |state, out| self.show_content(ui, state, theme, old_timeline, adaptive_fit, content_rect, kb, out)));
                 self.stacked = Some(st);
             }
             kept if stacked_edit => {
                 self.stacked = kept;
-                ui.push_id("stacked_cut", |ui| self.show_content(ui, state, theme, old_timeline, adaptive_fit, content_rect, &mut cmds));
+                ui.push_id("stacked_cut", |ui| self.show_content(ui, state, theme, old_timeline, adaptive_fit, content_rect, kb, &mut cmds));
             }
             kept => {
                 self.stacked = kept;
-                self.show_content(ui, state, theme, old_timeline, adaptive_fit, content_rect, &mut cmds);
+                self.show_content(ui, state, theme, old_timeline, adaptive_fit, content_rect, kb, &mut cmds);
             }
         }
         // The one of the two worked in, marked over both (#2324).
@@ -213,6 +213,7 @@ impl NewTimelinePanel {
         old_timeline: &mut crate::panels::timeline::TimelinePanel,
         adaptive_fit: bool,
         content_rect: egui::Rect,
+        kb: &crate::keybindings::KeyBindings,
         out: &mut Vec<AppCommand>,
     ) {
         let mut cmds = Vec::new();
@@ -254,7 +255,7 @@ impl NewTimelinePanel {
                 header_rect.y_range(),
                 egui::Stroke::new(1.0_f32, theme.border),
             );
-            let header_cmds = track_headers::show(ui, state, theme, header_rect);
+            let header_cmds = track_headers::show(ui, state, theme, header_rect, kb);
             cmds.extend(header_cmds);
         });
 
@@ -619,7 +620,7 @@ impl NewTimelinePanel {
             state.active_tool = klipp_core::Tool::Select;
         }
         crate::ui_util::allocate_clipped_ui(ui, tracks_rect, |ui| {
-            let old_cmds = old_timeline.show(ui, state);
+            let old_cmds = old_timeline.show(ui, state, kb);
             cmds.extend(old_cmds);
         });
         if text_tool && state.active_tool == klipp_core::Tool::Select {

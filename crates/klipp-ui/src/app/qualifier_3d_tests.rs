@@ -61,7 +61,7 @@ fn the_viewer_turns_a_drag_into_a_stroke() {
         let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0))), time: Some(clock), events, ..Default::default() };
         let mut cmds = Vec::new();
         let _ = ctx.run(input, |ctx| {
-            egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| cmds = panel.show(ui, state, &theme));
+            egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| cmds = panel.show(ui, state, &theme, &crate::keybindings::KeyBindings::default()));
         });
         cmds
     };
