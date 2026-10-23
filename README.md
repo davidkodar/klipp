@@ -30,7 +30,7 @@ Klipp is under active development. Expect rough edges and breaking changes; broa
 - **Mix:** multitrack audio with recorded track automation, EQ and dynamics, voice isolation, loudness and true-peak delivery, and dual-system sound sync.
 - **Captions:** SRT, VTT, ASS, IMSC/TTML, SCC and EBU-STL in and out, captions embedded as CEA-608, and on-device translation.
 - **Automate:** analyse footage, propose an edit plan, assemble a sequence, check it, and export through the control socket and an MCP server with over 120 tools.
-- **Exchange:** import and export OTIO, FCPXML, EDL and AAF (through OpenTimelineIO), import FCP7 XML and MLT, export Kdenlive, and save your work as a `.klipp` project.
+- **Exchange:** move an edit to and from other editors as OTIO, FCPXML, EDL or AAF (through OpenTimelineIO), import FCP7 XML and MLT, and export Kdenlive. The edit comes across (clips, cuts, timing, markers); grades, most effects and titles don't, and every import lists what it carried and what it left out. Your own work is saved as a `.klipp` project.
 
 Explore the [feature reference](docs/project-reference.md#features) and [user guide](docs/src/SUMMARY.md).
 
