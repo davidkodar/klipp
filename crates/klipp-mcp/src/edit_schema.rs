@@ -1,7 +1,8 @@
-//! Small, strict schemas for the edits agents use most often. Other ops
-//! remain discoverable through the guide and are checked by the resolver.
+//! Strict checks of the edits agents use most often, made before any
+//! call; their forms, and every other op's, are in the guide's ops topic,
+//! and the rest are checked by the resolver.
 
-use serde_json::{json, Value};
+use serde_json::Value;
 
 const COMMON: &[&str] = &[
     "cut",
@@ -12,72 +13,6 @@ const COMMON: &[&str] = &[
     "remove",
     "add_track",
 ];
-
-pub(super) fn ops_schema() -> Value {
-    let anchor = json!({"oneOf": [
-        {"type":"object","properties":{"secs":{"type":"number","minimum":0}},"required":["secs"],"additionalProperties":false},
-        {"type":"object","properties":{"frame":{"type":"integer","minimum":0}},"required":["frame"],"additionalProperties":false},
-        {"type":"object","properties":{"clip_start":{"$ref":"#/properties/ops/$defs/clip_ref"}},"required":["clip_start"],"additionalProperties":false},
-        {"type":"object","properties":{"clip_end":{"$ref":"#/properties/ops/$defs/clip_ref"}},"required":["clip_end"],"additionalProperties":false},
-        {"type":"object","properties":{"track_end":{"$ref":"#/properties/ops/$defs/track_ref"}},"required":["track_end"],"additionalProperties":false},
-        {"type":"object","properties":{"marker":{"type":"string","minLength":1}},"required":["marker"],"additionalProperties":false},
-        {"type":"object","properties":{"offset":{"type":"object","properties":{"from":{"$ref":"#/properties/ops/$defs/anchor"},"secs":{"type":"number"}},"required":["from","secs"],"additionalProperties":false}},"required":["offset"],"additionalProperties":false}
-    ]});
-    let clip_ref = json!({"oneOf":[
-        {"type":"string","minLength":1,"description":"Clip id or \"@N\": clip made or changed by step N (zero-based)"},
-        {"type":"object","properties":{"track":{"type":"integer","minimum":0},"secs":{"type":"number","minimum":0}},"required":["track","secs"],"additionalProperties":false}
-    ]});
-    let track_ref = json!({"oneOf":[{"type":"integer","minimum":0},{"type":"string","description":"Track kind, case insensitive: video, audio, text/title, subtitle/subtitles/captions"}]});
-    let common = [
-        variant(
-            "cut",
-            &["from", "to"],
-            json!({"from":{"$ref":"#/properties/ops/$defs/anchor"},"to":{"$ref":"#/properties/ops/$defs/anchor"}}),
-        ),
-        variant(
-            "split",
-            &["clip_id", "at"],
-            json!({"clip_id":{"$ref":"#/properties/ops/$defs/clip_ref"},"at":{"$ref":"#/properties/ops/$defs/anchor"}}),
-        ),
-        variant(
-            "trim",
-            &["clip_id", "edge", "to"],
-            json!({"clip_id":{"$ref":"#/properties/ops/$defs/clip_ref"},"edge":{"type":"string","enum":["in","out"]},"to":{"$ref":"#/properties/ops/$defs/anchor"},"ripple":{"type":"boolean"},"linked":{"type":"boolean"}}),
-        ),
-        variant(
-            "place",
-            &["media_id", "track", "at"],
-            json!({"media_id":{"type":"string","minLength":1},"track":{"$ref":"#/properties/ops/$defs/track_ref"},"at":{"$ref":"#/properties/ops/$defs/anchor"},"source_in":{"type":"number","minimum":0},"source_out":{"type":"number","minimum":0},"insert":{"type":"boolean"},"with_audio":{"type":"boolean"},"sync_source_secs":{"type":"number","minimum":0}}),
-        ),
-        variant(
-            "move",
-            &["clip_id", "to"],
-            json!({"clip_id":{"$ref":"#/properties/ops/$defs/clip_ref"},"to":{"$ref":"#/properties/ops/$defs/anchor"}}),
-        ),
-        variant(
-            "remove",
-            &["clip_id"],
-            json!({"clip_id":{"$ref":"#/properties/ops/$defs/clip_ref"},"ripple":{"type":"boolean"},"linked":{"type":"boolean"}}),
-        ),
-        variant(
-            "add_track",
-            &["kind"],
-            json!({"kind":{"type":"string","description":"Track kind, case insensitive: video, audio, text/title, subtitle/subtitles/captions"},"name":{"type":"string"}}),
-        ),
-    ];
-    // The rest by name in the guide, which lists every op (#1667).
-    let mut alternatives = common.to_vec();
-    alternatives.push(json!({"type":"object","properties":{"op":{"type":"string","not":{"enum":COMMON}}},"required":["op"],"description":"Another op: klipp_guide topic ops."}));
-    json!({"type":"array","minItems":1,"items":{"oneOf":alternatives},"$defs":{"anchor":anchor,"clip_ref":clip_ref,"track_ref":track_ref}})
-}
-
-fn variant(name: &str, required: &[&str], fields: Value) -> Value {
-    let mut properties = fields.as_object().cloned().unwrap_or_default();
-    properties.insert("op".into(), json!({"const":name}));
-    let mut required = required.to_vec();
-    required.push("op");
-    json!({"type":"object","properties":properties,"required":required,"additionalProperties":false})
-}
 
 pub(super) fn validate_ops(args: &Value) -> Result<(), String> {
     let ops = args
@@ -256,6 +191,7 @@ fn validate_anchor(value: &Value, path: &str, depth: usize) -> Result<(), String
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn strict_common_edits() {
@@ -271,16 +207,5 @@ mod tests {
         )
         .unwrap_err()
         .contains("clip ID"));
-    }
-
-    #[test]
-    fn schema_lists_precise_common_variants() {
-        let schema = ops_schema();
-        assert_eq!(schema["items"]["oneOf"][0]["additionalProperties"], false);
-        assert_eq!(
-            schema["items"]["oneOf"][0]["properties"]["op"]["const"],
-            "cut"
-        );
-        assert!(schema["$defs"]["anchor"]["oneOf"].as_array().unwrap().len() >= 7);
     }
 }
