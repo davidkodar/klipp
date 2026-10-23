@@ -973,8 +973,9 @@ pub enum ControlCommand {
         /// left out, which EBU R128 and streaming ask; -2 for ATSC A/85.
         #[serde(default)]
         true_peak_dbtp: Option<f32>,
-        /// Whether captions and titles are burnt into the picture. Left
-        /// out, they are, which is what the app's own export does.
+        /// Whether captions (subtitle tracks) are burnt into the picture.
+        /// Left out, they are, which is what the app's own export does.
+        /// Titles are part of the picture either way (#2426).
         #[serde(default)]
         burn_captions: Option<bool>,
         /// The subtitle track as CEA-608 closed captions inside the video
