@@ -73,7 +73,7 @@ const RETRYABLE_TOOLS: &[&str] = &[
     "klipp_build_edit_plan", "klipp_rename_sequence", "klipp_create_multicam",
     "klipp_switch_angle", "klipp_set_multicam_sound", "klipp_add_marker",
     "klipp_update_marker", "klipp_remove_marker", "klipp_new_project", "klipp_new_sequence",
-    "klipp_save_project", "klipp_relink_media", "klipp_tag_media",
+    "klipp_save_project", "klipp_relink_media", "klipp_tag_media", "klipp_make_proxies",
     "klipp_cancel_job",
 ];
 
@@ -1331,6 +1331,11 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             "folder": args.get("folder").cloned().unwrap_or(json!(null)),
             "force": args.get("force").and_then(|v| v.as_bool()).unwrap_or(false),
         }),
+        "klipp_make_proxies" => json!({
+            "method": "make_proxies",
+            "media_ids": args.get("media_ids").cloned().unwrap_or(json!([])),
+            "use_proxies": args.get("use_proxies").cloned().unwrap_or(json!(null)),
+        }),
         "klipp_tag_media" => json!({
             "method": "tag_media",
             "media_id": arg_str(args, "media_id")?,
@@ -2531,6 +2536,9 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                  "folder": { "type": "string" },
                  "force": { "type": "boolean", "description": "relink a probable mismatch anyway" }
              }), vec![]),
+        tool("klipp_make_proxies",
+             "Make playback proxies (the timeline's files by default) as a job; use_proxies turns their playback on or off. Details: klipp_guide topic make_proxies.",
+             json!({ "media_ids": { "type": "array", "items": { "type": "string" } }, "use_proxies": { "type": "boolean" } }), vec![]),
         tool("klipp_tag_media",
              "Tag a media item, or remove tags. Details: klipp_guide topic tag_media.",
              json!({

@@ -5187,6 +5187,20 @@ pub struct ControlShared {
     /// against the ungraded frame or a grade still — so a client reading
     /// the viewer's frame knows the person is looking at something else.
     pub viewer_compare: std::sync::Mutex<Option<String>>,
+    /// Proxies as the UI last saw them (#2478).
+    pub proxies: std::sync::Mutex<ProxyStatus>,
+}
+
+/// Proxies as a client sees them (#2478): whether playback reads them,
+/// and the ones being made or that failed.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ProxyStatus {
+    /// Playback reads a file's proxy where it has one, else the original.
+    pub use_proxies: bool,
+    /// Files whose proxy is being made, with how far along it is (0..1).
+    pub making: Vec<(MediaId, f32)>,
+    /// Files whose last proxy failed, with why.
+    pub failed: Vec<(MediaId, String)>,
 }
 
 /// Where the user's playhead is, as the UI last saw it.

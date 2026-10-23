@@ -148,6 +148,68 @@ pub(crate) fn respond(
             Ok(v)
         }
 
+        ControlCommand::MakeProxies { media_ids, use_proxies } => {
+            if in_batch {
+                return Err("make_proxies starts a job; send it on its own".into());
+            }
+            // The files asked for, or every picture file the timeline
+            // shows; one with its proxy made already is left be.
+            let (wanted, ready) = {
+                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let ids: Vec<klipp_core::MediaId> = if media_ids.is_empty() {
+                    let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                    let mut on: Vec<klipp_core::MediaId> = seq.tracks.iter().flat_map(|t| &t.clips).filter_map(|c| c.media_id()).collect();
+                    on.sort_by_key(|id| id.0);
+                    on.dedup();
+                    on
+                } else {
+                    media_ids.iter().map(|m| parse_uuid(m, "media_id").map(klipp_core::MediaId)).collect::<Result<_, _>>()?
+                };
+                let mut wanted = Vec::new();
+                let mut ready = 0;
+                for id in ids {
+                    let item = pool.get(&id).ok_or_else(|| format!("no media item {}", id.0))?;
+                    if item.video_codec.is_empty() || item.is_still || item.kind != klipp_media::MediaItemKind::File {
+                        if !media_ids.is_empty() {
+                            return Err(format!("{} has no moving picture to make a proxy of", item.filename));
+                        }
+                        continue;
+                    }
+                    if item.offline {
+                        return Err(format!("{} is offline: relink it first", item.filename));
+                    }
+                    if item.proxy_ready { ready += 1 } else { wanted.push(id) }
+                }
+                (wanted, ready)
+            };
+            let mut commands: Vec<AppCommand> = wanted.iter().map(|id| AppCommand::GenerateProxy { media_id: *id }).collect();
+            if let Some(on) = use_proxies {
+                commands.push(AppCommand::SetUseProxies(on));
+            }
+            if commands.is_empty() {
+                return Ok(json!({ "made": 0, "ready": ready, "text": format!("{ready} file(s) have their proxies already; nothing to make") }));
+            }
+            let mut v = send_envelope(ctx, commands, false)?;
+            let job_id = format!("proxies-{}", uuid::Uuid::new_v4());
+            if !wanted.is_empty() {
+                jobs::register_proxies(&job_id, wanted.clone());
+                v["job_id"] = json!(job_id);
+            }
+            let using = match use_proxies {
+                Some(true) => " Playback reads proxies where a file has one.",
+                Some(false) => " Playback reads the originals.",
+                None => "",
+            };
+            v["making"] = json!(wanted.len());
+            v["ready"] = json!(ready);
+            v["text"] = json!(if wanted.is_empty() {
+                format!("{ready} file(s) have their proxies already.{using}")
+            } else {
+                format!("Making {} prox{} ({ready} ready already) as job {job_id}; follow it with job_status.{using}", wanted.len(), if wanted.len() == 1 { "y" } else { "ies" })
+            });
+            Ok(v)
+        }
+
         ControlCommand::TagMedia { media_id, add, remove } => {
             let id = klipp_core::MediaId(parse_uuid(&media_id, "media_id")?);
             let tags = {

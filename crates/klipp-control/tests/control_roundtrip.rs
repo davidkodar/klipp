@@ -2717,6 +2717,56 @@ fn looks_resolve_by_name_and_path() {
     assert!(miss.contains("no look matches"), "{miss}");
 }
 
+/// #2478: proxies are made over the socket as the media pool makes them:
+/// the timeline's picture files by default, a job that follows each to its
+/// proxy, a failure named, and status saying what playback reads.
+#[test]
+fn proxies_are_made_as_a_job_and_status_says_what_playback_reads() {
+    let mut h = harness();
+    let (a, b) = {
+        let mut pool = h.media_pool.write().unwrap();
+        (pool.add(klipp_media::MediaItem::synthetic_for_test("/tmp/proxy-a.mov".into(), None)), pool.add(klipp_media::MediaItem::synthetic_for_test("/tmp/proxy-b.mov".into(), None)))
+    };
+    {
+        let mut seq = h.sequence.write().unwrap();
+        let clips: Vec<&mut klipp_timeline::Clip> = seq.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).collect();
+        for (k, c) in clips.into_iter().enumerate() {
+            c.kind = klipp_timeline::ClipKind::Media { media_id: if k == 0 { a } else { b } };
+        }
+    }
+    let reply = h.ok(json!({ "method": "make_proxies", "use_proxies": true }));
+    let job = reply["job_id"].as_str().expect("a job").to_string();
+    assert_eq!(reply["making"], 2, "{reply}");
+    let sent = h.sent.lock().unwrap().clone();
+    for id in [a, b] {
+        assert!(sent.iter().any(|c| matches!(c, klipp_core::AppCommand::GenerateProxy { media_id } if *media_id == id)), "{sent:?}");
+    }
+    assert!(sent.iter().any(|c| matches!(c, klipp_core::AppCommand::SetUseProxies(true))));
+
+    // Half of one made: running at a quarter.
+    *h.shared.proxies.lock().unwrap() = klipp_core::ProxyStatus { use_proxies: true, making: vec![(a, 0.5)], failed: Vec::new() };
+    let status = h.ok(json!({ "method": "job_status", "job_id": job }));
+    assert_eq!((status["jobs"][0]["kind"].as_str(), status["jobs"][0]["state"].as_str()), (Some("proxies"), Some("running")), "{status}");
+    assert_eq!(status["jobs"][0]["progress"], json!(0.25));
+    // One made, the other failed: failed, naming it.
+    h.media_pool.write().unwrap().get_mut(&a).unwrap().proxy_ready = true;
+    *h.shared.proxies.lock().unwrap() = klipp_core::ProxyStatus { use_proxies: true, making: Vec::new(), failed: vec![(b, "ffmpeg exited with error".into())] };
+    let status = h.ok(json!({ "method": "job_status", "job_id": job }));
+    assert_eq!(status["jobs"][0]["state"], "failed", "{status}");
+    assert!(status["jobs"][0]["error"].as_str().unwrap().contains("proxy-b.mov"), "{status}");
+    let text = h.ok(json!({ "method": "status" }))["text"].as_str().unwrap().to_string();
+    assert!(text.contains("Playback reads proxies: 1 of the 2"), "{text}");
+
+    // A still has no moving picture to make a proxy of.
+    let still = {
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/proxy-still.png".into(), None);
+        item.is_still = true;
+        h.media_pool.write().unwrap().add(item)
+    };
+    let refused = h.call(json!({ "method": "make_proxies", "media_ids": [still.0.to_string()] }));
+    assert!(refused["error"].as_str().unwrap().contains("no moving picture"), "{refused}");
+}
+
 /// suggest_selects splits speech at the real pauses and flags filler and
 /// too-short runs to drop.
 #[test]
