@@ -152,6 +152,7 @@ mod tests {
     #[test]
     #[serial]
     fn a_picture_goes_up_to_a_surface_with_its_timestamp() {
+        let _watch = crate::test_watchdog::Watchdog::start();
         ffmpeg_next::init().unwrap();
         let Some(node) = any_vaapi_node() else {
             eprintln!("skipped: no render node");
@@ -180,6 +181,7 @@ mod tests {
     #[test]
     #[serial]
     fn a_node_that_is_not_there_is_an_error_not_a_crash() {
+        let _watch = crate::test_watchdog::Watchdog::start();
         ffmpeg_next::init().unwrap();
         let mut ctx = context(320, 180);
         let err = attach(&mut ctx, Path::new("/dev/dri/renderD999"), ffmpeg_next::format::Pixel::NV12, 320, 180)

@@ -1233,6 +1233,7 @@ mod tests {
 
     #[test]
     fn gpu_detection_runs() {
+        let _watch = crate::test_watchdog::Watchdog::start();
         let gpu = detect_gpu();
         println!("Detected GPU: {:?}", gpu);
         // Just verify it doesn't crash
@@ -1242,6 +1243,7 @@ mod tests {
     #[ignore = "requires TEST_MEDIA_FILE env var pointing to a video file"]
     #[serial]
     fn decoder_produces_frames() {
+        let _watch = crate::test_watchdog::Watchdog::start();
         let path = test_media_path().expect("set TEST_MEDIA_FILE env var");
         let fps = 30.0;
         let duration_secs = 2.0;
@@ -1273,6 +1275,7 @@ mod tests {
     #[ignore = "requires TEST_MEDIA_FILE env var pointing to a video file"]
     #[serial]
     fn decoder_seeks_correctly() {
+        let _watch = crate::test_watchdog::Watchdog::start();
         let path = test_media_path().expect("set TEST_MEDIA_FILE env var");
         let fps = 30.0;
         let duration_secs = 2.0;
@@ -1296,6 +1299,7 @@ mod tests {
     #[ignore = "requires TEST_MEDIA_FILE env var pointing to a video file"]
     #[serial]
     fn decoder_respects_source_end() {
+        let _watch = crate::test_watchdog::Watchdog::start();
         let path = test_media_path().expect("set TEST_MEDIA_FILE env var");
         let fps = 30.0;
         let duration_secs = 0.5;
@@ -1329,6 +1333,7 @@ mod tests {
     #[ignore = "perf probe: needs KLIPP_TENBIT"]
     #[serial]
     fn tenbit_decode_cost() {
+        let _watch = crate::test_watchdog::Watchdog::start();
         let Ok(path) = std::env::var("KLIPP_TENBIT") else {
             eprintln!("skipping: set KLIPP_TENBIT to a 10-bit file");
             return;

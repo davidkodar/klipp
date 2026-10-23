@@ -2169,6 +2169,7 @@ mod tests {
     /// says the same thing on a machine with no NVENC at all.
     #[test]
     fn ten_bit_h264_never_uses_a_hardware_encoder() {
+        let _watch = crate::test_watchdog::Watchdog::start();
         let (name, hw) = pick_video_encoder(&ExportVideoCodec::H264, 3840, 2160, true);
         assert!(!hw, "10-bit H.264 picked the hardware encoder {name}, which cannot do it");
         // And 8-bit is left alone: the point is not to give up hardware
@@ -2245,6 +2246,7 @@ mod tests {
     #[test]
     #[serial]
     fn a_hardware_encoder_that_will_not_open_falls_back_to_software() {
+        let _watch = crate::test_watchdog::Watchdog::start();
         let (path, settings, snapshot) = fallback_settings("test_hw_fallback.mp4");
         if !pick_video_encoder(&ExportVideoCodec::H264, snapshot.width, snapshot.height, false).1 {
             eprintln!("skipped: this FFmpeg has no hardware H.264 encoder, so there is nothing to fall back from");
@@ -2283,6 +2285,7 @@ mod tests {
     #[test]
     #[serial]
     fn when_both_encoders_fail_the_error_names_both() {
+        let _watch = crate::test_watchdog::Watchdog::start();
         let (path, settings, snapshot) = fallback_settings("test_hw_both_fail.mp4");
         let (hw, had_hardware) = pick_video_encoder(&ExportVideoCodec::H264, snapshot.width, snapshot.height, false);
         if !had_hardware {
@@ -2306,6 +2309,7 @@ mod tests {
     #[test]
     #[serial]
     fn every_frame_rendered_is_played() {
+        let _watch = crate::test_watchdog::Watchdog::start();
         let (path, settings, snapshot) = fallback_settings("test_last_frame.mp4");
         let mut enc = Encoder::open(&path, &settings, &snapshot).unwrap();
         for colour in [[0u8, 128, 255, 255], [255, 64, 0, 255]] {
@@ -2336,6 +2340,7 @@ mod tests {
     /// to software.
     #[test]
     fn every_hardware_encoder_is_tried_before_software() {
+        let _watch = crate::test_watchdog::Watchdog::start();
         ffmpeg_next::init().unwrap();
         let nodes = [std::path::PathBuf::from("/dev/dri/renderD128"), std::path::PathBuf::from("/dev/dri/renderD129")];
         let attempts = video_encoder_attempts(&ExportVideoCodec::H265, 1920, 1080, true, &nodes);
@@ -2378,6 +2383,7 @@ mod tests {
     /// hardware, and on an AMD machine it opens.
     #[test]
     fn amf_is_given_options_it_accepts() {
+        let _watch = crate::test_watchdog::Watchdog::start();
         ffmpeg_next::init().unwrap();
         for (codec, name) in [
             (ExportVideoCodec::H264, "h264_amf"),
@@ -2413,6 +2419,7 @@ mod tests {
     #[test]
     #[serial]
     fn a_vaapi_render_encodes_or_falls_back_to_software() {
+        let _watch = crate::test_watchdog::Watchdog::start();
         ffmpeg_next::init().unwrap();
         let Some((node, _)) = klipp_core::GpuVendor::render_nodes().into_iter().next() else {
             eprintln!("skipped: no render node");
@@ -2477,6 +2484,7 @@ mod tests {
     #[test]
     #[serial]
     fn ten_bit_av1_is_ten_bits_in_the_file() {
+        let _watch = crate::test_watchdog::Watchdog::start();
         ffmpeg_next::init().unwrap();
         let mut candidates = vec![EncoderAttempt { name: "libsvtav1", hardware: false, vaapi: None }];
         if ffmpeg_next::encoder::find_by_name("av1_nvenc").is_some() {
@@ -2531,6 +2539,7 @@ mod tests {
     #[test]
     #[serial]
     fn encode_h264_10_frames() {
+        let _watch = crate::test_watchdog::Watchdog::start();
         let dir = std::env::temp_dir().join("klipp_render_test");
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("test_h264.mp4");
@@ -2578,6 +2587,7 @@ mod tests {
     #[test]
     #[serial]
     fn encode_h264_with_aac_audio() {
+        let _watch = crate::test_watchdog::Watchdog::start();
         let dir = std::env::temp_dir().join("klipp_render_test");
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("test_h264_aac.mp4");
@@ -2616,6 +2626,7 @@ mod tests {
     #[test]
     #[serial]
     fn sdr_tags_follow_the_output_transform() {
+        let _watch = crate::test_watchdog::Watchdog::start();
         let dir = std::env::temp_dir().join("klipp_render_test");
         let _ = std::fs::create_dir_all(&dir);
         use klipp_core::{OdtChoice as O, WorkingColorspace as W};
@@ -2667,6 +2678,7 @@ mod tests {
     #[test]
     #[serial]
     fn a_rec2020_sdr_export_decodes_to_the_transform_by_the_bt2020_matrix() {
+        let _watch = crate::test_watchdog::Watchdog::start();
         let dir = std::env::temp_dir().join("klipp_render_test");
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("rec2020_sdr_patches.mp4");
@@ -2738,6 +2750,7 @@ mod tests {
     #[test]
     #[serial]
     fn prores_in_mkv_is_written_as_matroska() {
+        let _watch = crate::test_watchdog::Watchdog::start();
         let dir = std::env::temp_dir().join("klipp_render_test");
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("prores.mkv");
@@ -2766,6 +2779,7 @@ mod tests {
     /// written, naming both halves.
     #[test]
     fn a_pair_the_container_cannot_hold_is_refused_before_writing() {
+        let _watch = crate::test_watchdog::Watchdog::start();
         let path = std::env::temp_dir().join("klipp_render_test").join("h264.webm");
         let mut settings = make_settings(ExportVideoCodec::H264, path.to_str().unwrap());
         settings.format = ExportFormat::WebM;
@@ -2779,6 +2793,7 @@ mod tests {
     #[test]
     #[serial]
     fn encode_h265_video_only() {
+        let _watch = crate::test_watchdog::Watchdog::start();
         let dir = std::env::temp_dir().join("klipp_render_test");
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("test_h265.mp4");
@@ -2814,6 +2829,7 @@ mod tests {
     #[test]
     #[serial]
     fn hdr10_side_data_attached_for_pq_export() {
+        let _watch = crate::test_watchdog::Watchdog::start();
         let dir = std::env::temp_dir().join("klipp_render_test");
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("test_hdr10.mp4");
