@@ -200,12 +200,15 @@ impl MagneticEditor {
             left.timeline_out = at_time;
             left.source_out = original.source_in + offset;
             left.magnetic_anchor = original.magnetic_anchor.clone();
+            let (at, whole) = (offset.to_secs_f64(), (original.timeline_out - original.timeline_in).to_secs_f64());
+            left.keep_angle_cuts_on_piece(0.0, at);
 
             let mut right = original.clone();
             right.id = ClipId::new();
             right.timeline_in = at_time;
             right.source_in = original.source_in + offset;
             right.magnetic_anchor = None;
+            right.keep_angle_cuts_on_piece(at, whole);
 
             // Remove original, insert left + new_clip + right
             sequence.tracks[primary_idx].clips.remove(split_idx);
@@ -283,6 +286,7 @@ impl MagneticEditor {
                 left.id = ClipId::new();
                 left.timeline_out = region_in;
                 left.source_out = clip.source_in + left_dur;
+                left.keep_angle_cuts_on_piece(0.0, left_dur.to_secs_f64());
                 trimmed_clips.push(RippleRecord {
                     clip_id: left.id,
                     old_in: cin,
@@ -302,6 +306,7 @@ impl MagneticEditor {
                 right.timeline_in = region_out;
                 right.source_in = clip.source_in + right_offset;
                 right.magnetic_anchor = None;
+                right.keep_angle_cuts_on_piece(right_offset.to_secs_f64(), (cout - cin).to_secs_f64());
                 trimmed_clips.push(RippleRecord {
                     clip_id: right.id,
                     old_in: cin,
@@ -334,6 +339,7 @@ impl MagneticEditor {
                 let trim_amount = region_out - cin;
                 trimmed.timeline_in = region_out;
                 trimmed.source_in += trim_amount;
+                trimmed.keep_angle_cuts_on_picture(trim_amount.to_secs_f64());
                 trimmed_clips.push(RippleRecord {
                     clip_id: trimmed.id,
                     old_in: cin,
@@ -791,6 +797,8 @@ impl MagneticEditor {
         left_clip.fade_out_secs = 0.0;
         left_clip.fade_in_secs = left_clip.fade_in_secs.min(offset.to_secs_f64() as f32);
         // Left keeps magnetic_anchor (and its id).
+        let (at, whole) = (offset.to_secs_f64(), (original.timeline_out - original.timeline_in).to_secs_f64());
+        left_clip.keep_angle_cuts_on_piece(0.0, at);
 
         let mut right_clip = original.clone();
         right_clip.id = ClipId::new();
@@ -798,6 +806,7 @@ impl MagneticEditor {
         right_clip.source_in = original.source_in + offset;
         right_clip.fade_in_secs = 0.0;
         right_clip.fade_out_secs = right_clip.fade_out_secs.min((original.timeline_out - at_time).to_secs_f64() as f32);
+        right_clip.keep_angle_cuts_on_piece(at, whole);
         // Right keeps magnetic_anchor too (the anchor is a relationship
         // TO some other clip — both halves sit at the anchored location,
         // so both should stay connected). Dropping it on the right half
@@ -872,8 +881,12 @@ impl MagneticEditor {
         let new_source_in = old_source_in + delta;
 
         // Apply the trim
-        sequence.tracks[track_idx].clips[clip_idx].timeline_in = new_timeline_in;
-        sequence.tracks[track_idx].clips[clip_idx].source_in = new_source_in;
+        let trimmed = &mut sequence.tracks[track_idx].clips[clip_idx];
+        let old_multicam_cuts = trimmed.multicam_cuts.clone();
+        trimmed.timeline_in = new_timeline_in;
+        trimmed.source_in = new_source_in;
+        trimmed.keep_angle_cuts_on_picture(delta.to_secs_f64());
+        let new_multicam_cuts = trimmed.multicam_cuts.clone();
 
         // For primary track: repack to enforce gapless
         let rippled_clips = if sequence.tracks[track_idx].magnetic_role == TrackRole::Primary {
@@ -897,6 +910,8 @@ impl MagneticEditor {
                 old_source_in,
                 new_timeline_in,
                 new_source_in,
+                old_multicam_cuts,
+                new_multicam_cuts,
                 rippled_clips,
                 cascaded_clips,
             },
@@ -1650,6 +1665,7 @@ impl MagneticEditor {
             MagneticEditCommand::TrimHead {
                 clip_id,
                 track_index: _,
+                old_multicam_cuts,
                 old_timeline_in,
                 old_source_in,
                 rippled_clips,
@@ -1665,6 +1681,7 @@ impl MagneticEditor {
                 if let Some((ti, ci)) = sequence.find_clip(*clip_id) {
                     sequence.tracks[ti].clips[ci].timeline_in = *old_timeline_in;
                     sequence.tracks[ti].clips[ci].source_in = *old_source_in;
+                    sequence.tracks[ti].clips[ci].multicam_cuts = old_multicam_cuts.clone();
                 }
             }
             MagneticEditCommand::TrimTail {
@@ -1946,6 +1963,7 @@ impl MagneticEditor {
                 clip_id,
                 new_timeline_in,
                 new_source_in,
+                new_multicam_cuts,
                 rippled_clips,
                 cascaded_clips,
                 ..
@@ -1953,6 +1971,7 @@ impl MagneticEditor {
                 if let Some((ti, ci)) = sequence.find_clip(*clip_id) {
                     sequence.tracks[ti].clips[ci].timeline_in = *new_timeline_in;
                     sequence.tracks[ti].clips[ci].source_in = *new_source_in;
+                    sequence.tracks[ti].clips[ci].multicam_cuts = new_multicam_cuts.clone();
                 }
                 for rr in rippled_clips {
                     sequence.set_clip_position(rr.clip_id, rr.new_in, rr.new_out);
@@ -2529,6 +2548,62 @@ mod tests {
     // ─────────────────────────────────────────────────────────────
     // blade
     // ─────────────────────────────────────────────────────────────
+    /// A 10 s multicam primary on the storyline, cut to angle 1 at 2 s and
+    /// 6 s and back at 4 s and 8 s; its source is the timeline's.
+    fn cut_primary() -> Sequence {
+        let mut seq = make_sequence(&[]);
+        let mut c = media_clip_with_source(0, 240, 0, 240);
+        (c.multicam_group, c.multicam_angle) = (Some(klipp_core::GroupId::new()), 0);
+        c.multicam_cuts = vec![(2.0, 1), (4.0, 0), (6.0, 1), (8.0, 0)];
+        seq.tracks[0].clips = vec![c];
+        seq
+    }
+
+    /// The angle a moment of the file is cut to, read through whichever
+    /// piece of the primary shows it: `None` where none does.
+    fn angle_of_picture(seq: &Sequence, s: f64) -> Option<u8> {
+        seq.tracks[0].clips.iter().filter(|c| c.multicam_group.is_some()).find(|c| s >= c.source_in.to_secs_f64() && s < c.source_out.to_secs_f64()).map(|c| {
+            let rel = s - c.source_in.to_secs_f64();
+            c.multicam_cuts.iter().rfind(|(at, _)| *at <= rel + 1e-9).map_or(0, |(_, a)| *a)
+        })
+    }
+
+    /// #2418 follow-up: the storyline's blade, insert, overwrite and head
+    /// trim leave every moment of the picture cut to the angle it was;
+    /// the head trim's undo puts the cut list back as it was.
+    #[test]
+    fn storyline_edits_keep_each_angle_on_its_picture() {
+        let picture: Vec<f64> = (0..20).map(|k| k as f64 * 0.5 + 0.25).collect();
+        let before = cut_primary();
+        let check = |after: &Sequence, what: &str| {
+            for &s in &picture {
+                if let Some(now) = angle_of_picture(after, s) {
+                    assert_eq!(Some(now), angle_of_picture(&before, s), "{what}: the picture at {s} s of the file");
+                }
+            }
+        };
+        let id = before.tracks[0].clips[0].id;
+
+        let mut seq = before.clone();
+        MagneticEditor::blade(&mut seq, id, tc(120)).unwrap();
+        check(&seq, "blade");
+
+        let mut seq = before.clone();
+        MagneticEditor::insert_primary(&mut seq, media_clip(0, 24), tc(120), None, None);
+        check(&seq, "insert");
+
+        let mut seq = before.clone();
+        MagneticEditor::overwrite_primary(&mut seq, media_clip(0, 48), tc(72));
+        check(&seq, "overwrite");
+        assert!(angle_of_picture(&seq, 3.5).is_none(), "what the overwrite covered is gone");
+
+        let mut seq = before.clone();
+        let trim = MagneticEditor::trim_head(&mut seq, id, tc(60));
+        check(&seq, "head trim");
+        MagneticEditor::apply_inverse(&mut seq, &trim.command);
+        assert_eq!(seq.tracks[0].clips[0].multicam_cuts, before.tracks[0].clips[0].multicam_cuts, "undo puts the cuts back");
+    }
+
     #[test]
     fn test_blade() {
         // One clip [0..48] with source [0..48]

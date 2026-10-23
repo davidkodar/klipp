@@ -10721,21 +10721,30 @@ impl TimelinePanel {
                             let old_l_out = slide.original_left_out;
                             let r_id = slide.right_clip_id;
                             let old_r_in = slide.original_right_in;
-                            state.active_history_mut().push(crate::history::HistoryEntry {
-                                command: crate::history::EditCommand::LegacySlideClip {
-                                    clip_id: cid,
-                                    old_timeline_in: old_tl_in,
-                                    old_timeline_out: old_tl_out,
-                                    new_timeline_in: new_tl_in,
-                                    new_timeline_out: new_tl_out,
-                                    left_clip_id: l_id,
-                                    old_left_out: old_l_out,
-                                    new_left_out,
-                                    right_clip_id: r_id,
-                                    old_right_in: old_r_in,
-                                    new_right_in,
-                                },
-                            });
+                            let slid = crate::history::EditCommand::LegacySlideClip {
+                                clip_id: cid,
+                                old_timeline_in: old_tl_in,
+                                old_timeline_out: old_tl_out,
+                                new_timeline_in: new_tl_in,
+                                new_timeline_out: new_tl_out,
+                                left_clip_id: l_id,
+                                old_left_out: old_l_out,
+                                new_left_out,
+                                right_clip_id: r_id,
+                                old_right_in: old_r_in,
+                                new_right_in,
+                            };
+                            // The right neighbour's picture moved against its
+                            // start: its angle cuts stay on what they cut.
+                            let cuts = match (r_id, old_r_in, new_right_in) {
+                                (Some(rid), Some(old), Some(new)) => klipp_document::ops::keep_angle_cuts(state.sequence_mut(), rid, (new - old).to_secs_f64()),
+                                _ => None,
+                            };
+                            let command = match cuts {
+                                Some(cuts) => crate::history::EditCommand::Batch(vec![slid, cuts]),
+                                None => slid,
+                            };
+                            state.active_history_mut().push(crate::history::HistoryEntry { command });
                             cmds.push(AppCommand::SlideClip {
                                 clip_id: cid,
                                 new_timeline_in: new_tl_in,
@@ -10848,15 +10857,21 @@ impl TimelinePanel {
                             let cid = slip.clip_id;
                             let old_si = slip.original_source_in;
                             let old_so = slip.original_source_out;
-                            state.active_history_mut().push(crate::history::HistoryEntry {
-                                command: crate::history::EditCommand::LegacySlipClip {
-                                    clip_id: cid,
-                                    old_source_in: old_si,
-                                    old_source_out: old_so,
-                                    new_source_in: new_src_in,
-                                    new_source_out: new_src_out,
-                                },
-                            });
+                            let slipped = crate::history::EditCommand::LegacySlipClip {
+                                clip_id: cid,
+                                old_source_in: old_si,
+                                old_source_out: old_so,
+                                new_source_in: new_src_in,
+                                new_source_out: new_src_out,
+                            };
+                            // The angle cuts follow the picture.
+                            let moved = state.sequence().find_clip(cid).map(|(ti, ci)| state.sequence().tracks[ti].clips[ci].picture_moved_by_slip((new_src_in - old_si).to_secs_f64()));
+                            let cuts = moved.and_then(|m| klipp_document::ops::keep_angle_cuts(state.sequence_mut(), cid, m));
+                            let command = match cuts {
+                                Some(cuts) => crate::history::EditCommand::Batch(vec![slipped, cuts]),
+                                None => slipped,
+                            };
+                            state.active_history_mut().push(crate::history::HistoryEntry { command });
                             cmds.push(AppCommand::SlipClip {
                                 clip_id: cid,
                                 new_source_in: new_src_in,

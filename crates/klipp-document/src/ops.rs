@@ -4641,6 +4641,15 @@ fn through_edit(a: &Clip, b: &Clip) -> bool {
 fn joined(seq: &Sequence, ti: usize, a: &Clip, b: &Clip) -> Vec<EditCommand> {
     let mut whole = a.clone();
     whole.timeline_out = b.timeline_out;
+    // A multicam primary's cuts: `a`'s, the angle `b` starts on from the
+    // join, then `b`'s own, each on the picture it cuts.
+    let a_len = secs(a.timeline_out - a.timeline_in);
+    let b_start = b.multicam_cuts.iter().rfind(|(at, _)| *at <= 1e-9).map_or(0, |(_, x)| *x);
+    let cuts: Vec<(f64, u8)> = a.multicam_cuts.iter().copied().filter(|(at, _)| *at < a_len)
+        .chain(std::iter::once((a_len, b_start)))
+        .chain(b.multicam_cuts.iter().filter(|(at, _)| *at > 1e-9).map(|(at, x)| (at + a_len, *x)))
+        .collect();
+    whole.multicam_cuts = klipp_timeline::multicam::rebased_cuts(&cuts, 0.0);
     if a.is_reversed() {
         whole.source_in = b.source_in;
     } else {
@@ -5151,22 +5160,43 @@ fn resolve_trim_pair(seq: &Sequence, pool: &MediaPool, i: usize, clip_id: ClipId
 #[allow(clippy::too_many_arguments)]
 fn trim_clip(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, ci: usize, clip: &Clip, edge: Edge, target: Timecode, ripple: bool) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     let (what, edit, ids) = trim_range(seq, pool, fps, i, ti, ci, clip, edge, target, ripple)?;
-    // A multicam primary's cut times are from its start: a head trim
-    // moves the picture against the start, and the cuts go with it.
+    // A head trim moves the picture against the start.
     let original = &seq.tracks[ti].clips[ci];
-    if edge != Edge::In || original.multicam_angle != 0 || original.multicam_cuts.is_empty() {
+    if edge != Edge::In {
         return Ok((what, edit, ids));
     }
-    let shift = secs(target - original.timeline_in);
-    let mut trimmed = original.clone();
     let (EditCommand::LegacyTrimClip { new_source_in, new_source_out, new_timeline_in, new_timeline_out, .. } | EditCommand::LegacyRippleTrimClip { new_source_in, new_source_out, new_timeline_in, new_timeline_out, .. }) = &edit else {
         return Ok((what, edit, ids));
     };
+    let mut trimmed = original.clone();
     (trimmed.source_in, trimmed.source_out, trimmed.timeline_in, trimmed.timeline_out) = (*new_source_in, *new_source_out, *new_timeline_in, *new_timeline_out);
-    let mut cut = trimmed.clone();
-    cut.multicam_cuts = klipp_timeline::multicam::rebased_cuts(&original.multicam_cuts, shift);
-    let cuts = EditCommand::ReplaceClip { description: "Trim Clip", old: Box::new(trimmed), new: Box::new(cut) };
-    Ok((what, EditCommand::Batch(vec![edit, cuts]), ids))
+    match angle_cuts_edit(&trimmed, secs(target - original.timeline_in)) {
+        Some(cuts) => Ok((what, EditCommand::Batch(vec![edit, cuts]), ids)),
+        None => Ok((what, edit, ids)),
+    }
+}
+
+/// The edit that keeps a multicam primary's cuts on the picture they cut
+/// after an edit that moved the picture `secs` seconds earlier against its
+/// start (a head trimmed, rolled or slid, a slip), as one more step of
+/// that edit: `after` is the clip as the edit leaves it. `None` when it
+/// has no cuts, or they don't move.
+pub fn angle_cuts_edit(after: &Clip, secs: f64) -> Option<EditCommand> {
+    let mut kept = after.clone();
+    kept.keep_angle_cuts_on_picture(secs);
+    (kept.multicam_cuts != after.multicam_cuts).then(|| EditCommand::ReplaceClip { description: "Angle Cuts", old: Box::new(after.clone()), new: Box::new(kept) })
+}
+
+/// [`angle_cuts_edit`] for an edit already made on `seq` (a drag that
+/// edits as it goes): the cuts of `clip_id` kept in `seq` now, and the
+/// edit to record with it for undo.
+pub fn keep_angle_cuts(seq: &mut Sequence, clip_id: ClipId, secs: f64) -> Option<EditCommand> {
+    let (ti, ci) = seq.find_clip(clip_id)?;
+    let edit = angle_cuts_edit(&seq.tracks[ti].clips[ci], secs)?;
+    if let EditCommand::ReplaceClip { new, .. } = &edit {
+        seq.tracks[ti].clips[ci].multicam_cuts = new.multicam_cuts.clone();
+    }
+    Some(edit)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -8128,7 +8158,15 @@ fn slip(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, clip: &
         }
     }
     let what = format!("slip {} by {:+.2} s: it now shows {:.2}-{:.2} s of the file, where it was", clip_name(seq, pool, clip), if by >= 0.0 { secs(shift) } else { -secs(shift) }, secs(new_in), secs(new_out));
-    Ok((what, EditCommand::LegacySlipClip { clip_id: clip.id, old_source_in: clip.source_in, old_source_out: clip.source_out, new_source_in: new_in, new_source_out: new_out }, vec![clip.id]))
+    let edit = EditCommand::LegacySlipClip { clip_id: clip.id, old_source_in: clip.source_in, old_source_out: clip.source_out, new_source_in: new_in, new_source_out: new_out };
+    // The cuts follow the picture.
+    let mut slipped = clip.clone();
+    (slipped.source_in, slipped.source_out) = (new_in, new_out);
+    let edit = match angle_cuts_edit(&slipped, clip.picture_moved_by_slip(secs(new_in - clip.source_in))) {
+        Some(cuts) => EditCommand::Batch(vec![edit, cuts]),
+        None => edit,
+    };
+    Ok((what, edit, vec![clip.id]))
 }
 
 /// [`Op::Slide`]: a trim of the neighbour it slides into, a move, and a
@@ -12352,6 +12390,47 @@ mod tests {
         let mut seqs = vec![seq.clone()];
         applied(&mut seqs, &pool, &plan.steps[0].edit, false);
         assert_eq!(spans(&seqs[0])[0], before[0], "the other angle stays");
+    }
+
+    /// The angle a moment of the file is cut to, read through whichever
+    /// piece of the primary (track 0) shows it: `None` where none does.
+    fn angle_of_picture(seq: &Sequence, s: f64) -> Option<u8> {
+        seq.tracks[0].clips.iter().find(|c| s >= secs(c.source_in) && s < secs(c.source_out)).map(|c| {
+            let rel = s - secs(c.source_in);
+            c.multicam_cuts.iter().rfind(|(at, _)| *at <= rel + 1e-9).map_or(0, |(_, a)| *a)
+        })
+    }
+
+    /// #2418 follow-up: a slip, a slide and a join leave every moment of
+    /// the picture cut to the angle it was, and undo puts the cuts back.
+    #[test]
+    fn slip_slide_and_join_keep_each_angle_on_its_picture() {
+        let (mut seq, pool, ids) = multicam_fixture();
+        // The second stretch's primary cut too: to angle 1 a second in,
+        // back at three.
+        seq.tracks[0].clips[1].multicam_cuts = vec![(1.0, 1), (3.0, 0)];
+        let picture: Vec<f64> = (0..32).map(|k| 1.0 + k as f64 * 0.25 + 0.125).collect();
+        let ops = [
+            ("slip", Op::Slip { clip_id: ClipRef::Id(ids[0][0]), secs: 0.5 }),
+            ("slide", Op::Slide { clip_id: ClipRef::Id(ids[0][0]), secs: 0.5 }),
+            ("join", Op::Join { clip_id: ClipRef::Id(ids[0][0]), side: JoinSide::Next }),
+        ];
+        for (what, op) in ops {
+            let plan = resolve(&seq, &pool, &[op]).unwrap_or_else(|e| panic!("{what}: {e}"));
+            let mut seqs = vec![seq.clone()];
+            applied(&mut seqs, &pool, &plan.steps[0].edit, false);
+            let mut shown = 0;
+            for &s in &picture {
+                if let Some(now) = angle_of_picture(&seqs[0], s) {
+                    assert_eq!(Some(now), angle_of_picture(&seq, s), "{what}: the picture at {s} s of the file");
+                    shown += 1;
+                }
+            }
+            assert!(shown > 20, "{what}: most of the picture is still shown");
+            applied(&mut seqs, &pool, &plan.steps[0].edit, true);
+            let cuts = |s: &Sequence| s.tracks[0].clips.iter().map(|c| c.multicam_cuts.clone()).collect::<Vec<_>>();
+            assert_eq!(cuts(&seqs[0]), cuts(&seq), "{what}: undo puts the cuts back");
+        }
     }
 
     /// #2418: a head trim without ripple moves the primary's start; its

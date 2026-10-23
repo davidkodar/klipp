@@ -349,6 +349,9 @@ impl KlippApp {
                                 partner_edits.push(EditCommand::ReplaceClip { description: "Roll", old: Box::new(old), new: Box::new(c.clone()) });
                             }
                         }
+                        // B's picture moved against its start: a multicam
+                        // primary's cuts stay on the picture they cut.
+                        partner_edits.extend(klipp_document::ops::keep_angle_cuts(seq, *clip_b_id, b_tl.to_secs_f64()));
                         for edit in partner_edits {
                             self.state.push_history(edit);
                         }
