@@ -60,7 +60,7 @@ Saving the project keeps the report for reopening, including Save As.
 
 ## klipp_list_clips
 
-Every track and its clips, one line a clip: clip id, kind, range in seconds, name (file, title text or generator) and media id, with speed, off, graded and effects only where set. Narrow it to a track, a stretch of time or one media item; full adds source ranges, frames, blend, grade group and paths. Each track lists its transitions too: kind, length, the stretch they cover and their two clips. Clip ids from here are what the grade tools take.
+Every track and its clips, one line a clip: clip id, kind, range in seconds, name (file or generator, or the clip's own) and media id, with speed, off, graded and effects only where set. A title or caption has its whole `text`, line breaks as `\n`, in both forms: read it back to correct a cue with set_text. Narrow it to a track, a stretch of time or one media item; full adds source ranges, frames, blend, grade group and paths. Each track lists its transitions too: kind, length, the stretch they cover and their two clips. Clip ids from here are what the grade tools take.
 
 ## klipp_prepare_cut
 

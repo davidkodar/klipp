@@ -276,11 +276,8 @@ pub(crate) fn list_clips(seq: &klipp_timeline::Sequence, pool: &klipp_media::Med
     let name = |c: &klipp_timeline::Clip| -> Option<String> {
         match &c.kind {
             klipp_timeline::ClipKind::Media { media_id } => pool.get(media_id).map(|m| m.filename.clone()),
-            klipp_timeline::ClipKind::Title(td) => {
-                let one_line = td.text().lines().collect::<Vec<_>>().join(" / ");
-                let shown: String = one_line.chars().take(40).collect();
-                Some(if one_line.chars().count() > 40 { format!("{shown}…") } else { shown })
-            }
+            // A title or caption says what it says in `text`, whole.
+            klipp_timeline::ClipKind::Title(_) => None,
             klipp_timeline::ClipKind::Generator(g) => format!("{g:?}").split(['{', '(', ' ']).next().map(str::to_string),
             _ => None,
         }
@@ -314,6 +311,9 @@ pub(crate) fn list_clips(seq: &klipp_timeline::Sequence, pool: &klipp_media::Med
                         "log_format": log_format_json(m),
                     })),
             });
+            if let Some(td) = c.title_data() {
+                v["text"] = json!(td.text());
+            }
             surfaces_json(c, fps, &mut v);
             sound_json(seq, c, true, &mut v);
             return v;
@@ -327,6 +327,11 @@ pub(crate) fn list_clips(seq: &klipp_timeline::Sequence, pool: &klipp_media::Med
         // Its own name when it has one (#920), else its media's or text.
         if let Some(n) = c.name.clone().filter(|n| !n.trim().is_empty()).or_else(|| name(c)) {
             v["name"] = json!(n);
+        }
+        // A title's or caption's words, whole and with their line breaks:
+        // what is read back to correct a cue with set_text (#2430).
+        if let Some(td) = c.title_data() {
+            v["text"] = json!(td.text());
         }
         if c.colour_label != 0 {
             v["colour"] = json!(klipp_media::ColorLabel::from_u8(c.colour_label).label().to_lowercase());
@@ -519,4 +524,30 @@ pub(crate) fn log_format_json(m: &klipp_media::MediaItem) -> serde_json::Value {
         "detected": format!("{:?}", m.detected_log_format),
         "effective": format!("{:?}", m.effective_log_format()),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #2430: a caption's or title's words come back whole, with their
+    /// line breaks, in the short form and in full.
+    #[test]
+    fn a_caption_lists_its_whole_text() {
+        let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let words = "A first line that runs well past forty characters\nand a second line";
+        let td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: words.into(), ..Default::default() });
+        let caption = klipp_timeline::Clip { kind: klipp_timeline::ClipKind::Title(td), source_in: tc(0.0), source_out: tc(2.0), ..klipp_timeline::Clip::gap(tc(1.0), tc(3.0)) };
+        let mut subs = klipp_timeline::Track::new("Subtitle 1", klipp_timeline::TrackKind::Subtitle);
+        subs.clips.push(caption);
+        let mut seq = klipp_timeline::Sequence::new_default();
+        seq.tracks = vec![subs];
+        let pool = klipp_media::MediaPool::new();
+        for full in [false, true] {
+            let v = list_clips(&seq, &pool, 0, &ClipFilter { full, track: None, from_secs: None, to_secs: None, media_id: None }).unwrap();
+            let clip = &v["tracks"][0]["clips"][0];
+            assert_eq!(clip["text"].as_str(), Some(words), "full {full}: {clip}");
+            assert!(clip.get("name").is_none(), "no cut-short copy beside it: {clip}");
+        }
+    }
 }
