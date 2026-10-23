@@ -392,7 +392,7 @@ pub(crate) fn respond(
             let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?.clone();
             let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?.clone();
             let dropped: Vec<String> = match kind {
-                "fcpxml" => klipp_project::fcpxml::export_fcpxml(&seq, &pool, &out).map(|_| Vec::new())?,
+                "fcpxml" => klipp_project::fcpxml::export_fcpxml(&seq, &pool, &out)?,
                 "edl" => klipp_project::fcpxml::export_edl(&seq, &pool, &out).map(|_| Vec::new())?,
                 "kdenlive" => klipp_project::mlt_export::export_kdenlive(&seq, &pool, &out).map(|_| Vec::new())?,
                 "otio" => klipp_project::otio_export::export_otio(&seq, &pool, &out).map_err(|e| e.to_string())?,

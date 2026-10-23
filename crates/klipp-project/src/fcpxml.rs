@@ -3,173 +3,186 @@
 //! Generates a valid FCPXML document from a Klipp sequence with media references,
 //! clip timing, transitions, and markers.
 
+use klipp_core::{MediaId, RationalTime};
 use klipp_media::MediaPool;
-use klipp_timeline::{ClipKind, Sequence, TrackKind};
+use klipp_timeline::{Clip, ClipKind, Sequence, Track, TrackKind};
 use std::path::Path;
 
-/// Export a sequence as FCPXML 1.9 to the given path.
+/// Export a sequence as FCPXML 1.9 to the given path. Returns what the
+/// file does not carry, one line each (see [`generate_fcpxml_reporting`]).
 pub fn export_fcpxml(
     seq: &Sequence,
     media_pool: &MediaPool,
     output_path: &Path,
-) -> Result<(), String> {
-    let xml = generate_fcpxml(seq, media_pool);
+) -> Result<Vec<String>, String> {
+    let (xml, dropped) = generate_fcpxml_reporting(seq, media_pool);
     std::fs::write(output_path, xml)
-        .map_err(|e| format!("Failed to write FCPXML: {e}"))
+        .map_err(|e| format!("Failed to write FCPXML: {e}"))?;
+    Ok(dropped)
 }
 
 /// Generate FCPXML 1.9 string from a sequence.
 pub fn generate_fcpxml(seq: &Sequence, media_pool: &MediaPool) -> String {
+    generate_fcpxml_reporting(seq, media_pool).0
+}
+
+/// One element of the spine: where it sits on the timeline, the local time
+/// its `start` names, and the clips connected to it.
+struct SpineElement {
+    at: RationalTime,
+    local: RationalTime,
+    tag: &'static str,
+    attrs: String,
+    body: String,
+    connected: String,
+}
+
+/// The FCPXML for `seq` and what it leaves out (#2471). The lowest picture
+/// track is the spine, with a gap for every hole in it; every other picture
+/// track is a connected lane above it and every sound track one under it.
+/// A file is one asset whatever number of clips show it. A constant speed
+/// is a `timeMap`. What the format is not given here (grades and effects,
+/// transitions, captions, sound levels other than a constant volume, and
+/// generators, adjustment layers and compound clips, which keep their
+/// length as gaps) is named in the list, so nothing is lost unsaid.
+pub fn generate_fcpxml_reporting(seq: &Sequence, media_pool: &MediaPool) -> (String, Vec<String>) {
     let mut xml = String::with_capacity(8192);
+    let mut dropped = Vec::new();
     let fps = &seq.fps;
-    let _framerate_str = format!("{}fps", fps_display(fps));
     let frame_dur = rational_time_str(1, fps.num, fps.den);
 
     xml.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
     xml.push_str("<!DOCTYPE fcpxml>\n");
     xml.push_str("<fcpxml version=\"1.9\">\n");
-
-    // Resources: formats and media assets
     xml.push_str("  <resources>\n");
-
-    // Format resource for the sequence
     let format_id = "r0";
     xml.push_str(&format!(
         "    <format id=\"{format_id}\" name=\"FFVideoFormat{}p{}\" frameDuration=\"{}\" width=\"{}\" height=\"{}\"/>\n",
         seq.resolution.height, fps_display(fps), frame_dur, seq.resolution.width, seq.resolution.height
     ));
 
-    // Collect unique media references
-    let mut assets = Vec::new();
-    for (ti, track) in seq.tracks.iter().enumerate() {
-        for clip in &track.clips {
-            if let ClipKind::Media { media_id } = &clip.kind {
-                if let Some(item) = media_pool.get(media_id) {
-                    let asset_id = format!("r{}_{}", ti, clip.id.0.as_u128() & 0xFFFF);
-                    assets.push((asset_id.clone(), item.path.clone(), *media_id));
-                    let path_str = escape_xml(&item.path.to_string_lossy());
-                    let dur = clip_duration_str(clip, fps);
-                    xml.push_str(&format!(
-                        "    <asset id=\"{}\" name=\"{}\" src=\"file://{}\" start=\"0s\" duration=\"{}\" format=\"{}\"/>\n",
-                        asset_id,
-                        escape_xml(&item.path.file_name().unwrap_or_default().to_string_lossy()),
-                        path_str,
-                        dur,
-                        format_id,
-                    ));
-                }
-            }
+    // One asset per file, in the order the timeline first shows them.
+    let mut assets: Vec<(MediaId, String)> = Vec::new();
+    for clip in seq.tracks.iter().filter(|t| matches!(t.kind, TrackKind::Video | TrackKind::Audio)).flat_map(|t| &t.clips) {
+        let ClipKind::Media { media_id } = &clip.kind else { continue };
+        let Some(item) = media_pool.get(media_id) else { continue };
+        if assets.iter().any(|(id, _)| id == media_id) {
+            continue;
         }
+        let asset_id = format!("r{}", assets.len() + 2);
+        let has_video = item.is_still || !item.video_codec.is_empty();
+        xml.push_str(&format!(
+            "    <asset id=\"{asset_id}\" name=\"{}\" src=\"file://{}\" start=\"0s\" duration=\"{}\" hasVideo=\"{}\" hasAudio=\"{}\" format=\"{format_id}\"/>\n",
+            escape_xml(&item.path.file_name().unwrap_or_default().to_string_lossy()),
+            escape_xml(&item.path.to_string_lossy()),
+            tc_str(item.duration, fps),
+            u8::from(has_video),
+            u8::from(item.has_audio),
+        ));
+        assets.push((*media_id, asset_id));
     }
-
+    let title_effect = "r1";
+    if seq.tracks.iter().flat_map(|t| &t.clips).any(|c| matches!(c.kind, ClipKind::Title(_))) {
+        xml.push_str(&format!(
+            "    <effect id=\"{title_effect}\" name=\"Basic Title\" uid=\".../Titles.localized/Bumper:Opener.localized/Basic Title.localized/Basic Title.moti\"/>\n"
+        ));
+    }
     xml.push_str("  </resources>\n");
 
-    // Library > Event > Project > Sequence
     xml.push_str("  <library>\n");
     xml.push_str("    <event name=\"Klipp Export\">\n");
-    xml.push_str(&format!(
-        "      <project name=\"{}\">\n",
-        escape_xml(&seq.name)
-    ));
-
-    // Sequence element
-    let seq_dur = sequence_duration(seq, fps);
+    xml.push_str(&format!("      <project name=\"{}\">\n", escape_xml(&seq.name)));
     xml.push_str(&format!(
         "        <sequence format=\"{}\" duration=\"{}\" tcStart=\"0s\">\n",
-        format_id, seq_dur
+        format_id,
+        sequence_duration(seq, fps)
     ));
 
-    // Spine (primary storyline)
-    xml.push_str("          <spine>\n");
+    let ctx = ClipXml { seq, pool: media_pool, assets: &assets, title_effect };
+    let seq_end = seq.tracks.iter().flat_map(|t| &t.clips).map(|c| c.timeline_out).max().unwrap_or(RationalTime::ZERO);
+    let video: Vec<usize> = (0..seq.tracks.len()).filter(|&i| seq.tracks[i].kind == TrackKind::Video).collect();
+    let storyline = video.last().copied();
 
-    // Export video tracks (primary storyline = first video track)
-    let primary_track = seq.tracks.iter()
-        .find(|t| matches!(t.kind, TrackKind::Video));
-
-    if let Some(track) = primary_track {
-        let mut _asset_idx = 0;
-        for clip in &track.clips {
-            match &clip.kind {
-                ClipKind::Media { media_id } => {
-                    let asset_id = assets.iter()
-                        .find(|(_, _, mid)| mid == media_id)
-                        .map(|(id, _, _)| id.as_str())
-                        .unwrap_or("r0");
-                    let name = media_pool.get(media_id)
-                        .map(|m| m.path.file_name().unwrap_or_default().to_string_lossy().to_string())
-                        .unwrap_or_else(|| "Untitled".into());
-                    let offset = tc_str(clip.timeline_in, fps);
-                    let duration = tc_str(clip.duration(), fps);
-                    let start = tc_str(clip.source_in, fps);
-
-                    xml.push_str(&format!(
-                        "            <asset-clip ref=\"{}\" name=\"{}\" offset=\"{}\" duration=\"{}\" start=\"{}\"",
-                        asset_id, escape_xml(&name), offset, duration, start
-                    ));
-
-                    if !clip.enabled {
-                        xml.push_str(" enabled=\"0\"");
-                    }
-
-                    // Check for transitions or markers
-                    let has_markers = !clip.clip_markers.is_empty();
-                    if has_markers {
-                        xml.push_str(">\n");
-                        for marker in &clip.clip_markers {
-                            let marker_offset = format!("{}s", format_decimal(marker.time_secs));
-                            xml.push_str(&format!(
-                                "              <marker start=\"{}\" duration=\"1/{}s\" value=\"{}\"/>\n",
-                                marker_offset, fps.num, escape_xml(&marker.name)
-                            ));
-                        }
-                        xml.push_str("            </asset-clip>\n");
-                    } else {
-                        xml.push_str("/>\n");
-                    }
-                    _asset_idx += 1;
-                }
-                ClipKind::Title(td) => {
-                    let offset = tc_str(clip.timeline_in, fps);
-                    let duration = tc_str(clip.duration(), fps);
-                    xml.push_str(&format!(
-                        "            <title name=\"{}\" offset=\"{}\" duration=\"{}\">\n",
-                        escape_xml(&td.text()), offset, duration
-                    ));
-                    xml.push_str(&format!(
-                        "              <text>{}</text>\n",
-                        escape_xml(&td.text())
-                    ));
-                    xml.push_str("            </title>\n");
-                }
-                ClipKind::Gap => {
-                    let offset = tc_str(clip.timeline_in, fps);
-                    let duration = tc_str(clip.duration(), fps);
-                    xml.push_str(&format!(
-                        "            <gap offset=\"{}\" duration=\"{}\"/>\n",
-                        offset, duration
-                    ));
-                }
-                ClipKind::Sequence { .. } | ClipKind::Precomposition { .. } | ClipKind::TemplatePrecomposition { .. } => {
-                    let offset = tc_str(clip.timeline_in, fps);
-                    let duration = tc_str(clip.duration(), fps);
-                    xml.push_str(&format!(
-                        "            <gap name=\"Compound Clip\" offset=\"{}\" duration=\"{}\"/>\n",
-                        offset, duration
-                    ));
-                }
-                ClipKind::Generator(_) | ClipKind::AdjustmentLayer => {
-                    let offset = tc_str(clip.timeline_in, fps);
-                    let duration = tc_str(clip.duration(), fps);
-                    let name = if matches!(clip.kind, ClipKind::AdjustmentLayer) { "Adjustment Layer" } else { "Generator" };
-                    xml.push_str(&format!(
-                        "            <gap name=\"{}\" offset=\"{}\" duration=\"{}\"/>\n",
-                        name, offset, duration
-                    ));
-                }
+    // The spine, its holes filled, and a gap after it to the end so a
+    // clip connected past its last clip has something to hang from.
+    let mut spine: Vec<SpineElement> = Vec::new();
+    let mut cursor = RationalTime::ZERO;
+    let gap = |at: RationalTime, dur: RationalTime| SpineElement {
+        at,
+        local: RationalTime::ZERO,
+        tag: "gap",
+        attrs: format!("offset=\"{}\" duration=\"{}\"", tc_str(at, fps), tc_str(dur, fps)),
+        body: String::new(),
+        connected: String::new(),
+    };
+    if let Some(ti) = storyline {
+        let track = &seq.tracks[ti];
+        let mut clips: Vec<&Clip> = track.clips.iter().filter(|c| c.timeline_out > c.timeline_in).collect();
+        clips.sort_by_key(|c| c.timeline_in);
+        for clip in clips {
+            if clip.timeline_in < cursor {
+                dropped.push(format!("Track '{}': {} at {:.3} s lies over the clip before it, which the primary storyline cannot hold — left out", track.name, describe(clip, media_pool), clip.timeline_in.to_secs_f64()));
+                continue;
             }
+            if clip.timeline_in > cursor {
+                spine.push(gap(cursor, clip.timeline_in - cursor));
+            }
+            let offset = tc_str(clip.timeline_in, fps);
+            let (tag, attrs, body) = ctx.element(track, clip, None, &offset, &mut dropped);
+            spine.push(SpineElement { at: clip.timeline_in, local: if tag == "gap" { RationalTime::ZERO } else { clip.source_in }, tag, attrs, body, connected: String::new() });
+            cursor = clip.timeline_out;
+        }
+    }
+    if cursor < seq_end {
+        spine.push(gap(cursor, seq_end - cursor));
+    }
+
+    // Lanes: picture tracks above the storyline count up from it, sound
+    // tracks count down from it in their order.
+    let mut lanes: Vec<(usize, i64)> = Vec::new();
+    if let Some(s) = storyline {
+        lanes.extend(video.iter().rev().filter(|&&i| i != s).enumerate().map(|(n, &i)| (i, n as i64 + 1)));
+    }
+    let sound = (0..seq.tracks.len()).filter(|&i| seq.tracks[i].kind == TrackKind::Audio);
+    lanes.extend(sound.enumerate().map(|(n, i)| (i, -(n as i64) - 1)));
+    for &(ti, lane) in &lanes {
+        let track = &seq.tracks[ti];
+        for clip in track.clips.iter().filter(|c| c.timeline_out > c.timeline_in) {
+            if matches!(clip.kind, ClipKind::Gap) {
+                continue;
+            }
+            let Some(parent) = spine.iter_mut().rev().find(|e| e.at <= clip.timeline_in) else { continue };
+            let offset = tc_str(clip.timeline_in - parent.at + parent.local, fps);
+            let (tag, attrs, body) = ctx.element(track, clip, Some(lane), &offset, &mut dropped);
+            if tag == "gap" {
+                continue;
+            }
+            parent.connected.push_str(&render(tag, &attrs, &body, "", "              "));
+        }
+    }
+    for track in &seq.tracks {
+        if !matches!(track.kind, TrackKind::Video | TrackKind::Audio) {
+            let n = track.clips.iter().filter(|c| !c.kind.is_gap()).count();
+            if n > 0 {
+                dropped.push(format!("Track '{}': {n} {:?} clip(s) — FCPXML export does not write captions; use subtitle export for them", track.name, track.kind));
+            }
+            continue;
+        }
+        for t in &track.transitions {
+            dropped.push(format!("Track '{}': a {:?} transition of {:.3} s — the file has a cut there", track.name, t.kind, t.duration.to_secs_f64()));
+        }
+        if track.muted && track.kind == TrackKind::Audio {
+            dropped.push(format!("Track '{}' is muted — its clips are written as playing", track.name));
+        }
+        if !track.visible && track.kind == TrackKind::Video {
+            dropped.push(format!("Track '{}' is hidden — its clips are written as showing", track.name));
         }
     }
 
+    xml.push_str("          <spine>\n");
+    for e in &spine {
+        xml.push_str(&render(e.tag, &e.attrs, &e.body, &e.connected, "            "));
+    }
     xml.push_str("          </spine>\n");
 
     // Sequence markers. Range markers emit their real duration; point
@@ -207,7 +220,155 @@ pub fn generate_fcpxml(seq: &Sequence, media_pool: &MediaPool) -> String {
     xml.push_str("  </library>\n");
     xml.push_str("</fcpxml>\n");
 
-    xml
+    (xml, dropped)
+}
+
+/// An element at `indent`, self-closed when it holds nothing: its own
+/// children a step in, its connected clips rendered at that depth already.
+fn render(tag: &str, attrs: &str, body: &str, connected: &str, indent: &str) -> String {
+    if body.is_empty() && connected.is_empty() {
+        return format!("{indent}<{tag} {attrs}/>\n");
+    }
+    let inner: String = body.lines().map(|l| format!("{indent}  {l}\n")).collect();
+    format!("{indent}<{tag} {attrs}>\n{inner}{connected}{indent}</{tag}>\n")
+}
+
+/// What a clip's element is written from.
+struct ClipXml<'a> {
+    seq: &'a Sequence,
+    pool: &'a MediaPool,
+    assets: &'a [(MediaId, String)],
+    title_effect: &'a str,
+}
+
+impl ClipXml<'_> {
+    /// A clip's element: its tag, attributes and children (unindented), on
+    /// `lane` when connected; what of it the element leaves out goes in
+    /// `dropped`.
+    fn element(&self, track: &Track, clip: &Clip, lane: Option<i64>, offset: &str, dropped: &mut Vec<String>) -> (&'static str, String, String) {
+        let fps = &self.seq.fps;
+        let lane_attr = lane.map(|l| format!(" lane=\"{l}\"")).unwrap_or_default();
+        let duration = tc_str(clip.duration(), fps);
+        let at = clip.timeline_in.to_secs_f64();
+        let what = describe(clip, self.pool);
+        let enabled = if clip.enabled { "" } else { " enabled=\"0\"" };
+        let gap = |name: Option<&str>| {
+            let name = name.map(|n| format!("name=\"{n}\" ")).unwrap_or_default();
+            ("gap", format!("{name}offset=\"{offset}\" duration=\"{duration}\""), String::new())
+        };
+        match &clip.kind {
+            ClipKind::Gap => gap(None),
+            ClipKind::Title(td) => {
+                dropped.push(format!("Track '{}': {what} at {at:.3} s — its text and length only, not its look", track.name));
+                let text = escape_xml(&td.text());
+                (
+                    "title",
+                    format!("name=\"{text}\" ref=\"{}\"{lane_attr} offset=\"{offset}\" duration=\"{duration}\"{enabled}", self.title_effect),
+                    format!("<text>{text}</text>\n"),
+                )
+            }
+            ClipKind::Media { media_id } => {
+                let Some((_, asset)) = self.assets.iter().find(|(id, _)| id == media_id) else {
+                    dropped.push(format!("Track '{}': {what} at {at:.3} s — its media is not in the pool, left out", track.name));
+                    return gap(None);
+                };
+                let sound_track = track.kind == TrackKind::Audio;
+                // The picture of a clip whose sound is a linked clip of its
+                // own plays no sound of its own, as on Klipp's timeline.
+                let linked_sound = clip.linked_clip_id.is_some_and(|id| self.seq.tracks.iter().any(|t| t.kind == TrackKind::Audio && t.clips.iter().any(|c| c.id == id)));
+                let src = if sound_track { " srcEnable=\"audio\"" } else if linked_sound { " srcEnable=\"video\"" } else { "" };
+                let attrs = format!(
+                    "ref=\"{asset}\" name=\"{}\"{lane_attr} offset=\"{offset}\" duration=\"{duration}\" start=\"{}\"{src}{enabled}",
+                    escape_xml(&what_name(clip, self.pool)),
+                    tc_str(clip.source_in, fps),
+                );
+                let mut body = String::new();
+                // A constant speed: local time runs from the clip's start
+                // at the source frame it plays first, so `start` stays
+                // the source in and the clip ends at its source out.
+                let ramped = !clip.speed_keyframes.is_empty();
+                if ramped || (clip.speed - 1.0).abs() > 1e-9 {
+                    let (first, last) = if clip.is_reversed() { (clip.source_out, clip.source_in) } else { (clip.source_in, clip.source_out) };
+                    let sampling = match clip.frame_blend_mode() {
+                        Some(1) => " frameSampling=\"frame-blending\"",
+                        Some(_) => " frameSampling=\"optical-flow-classic\"",
+                        None => "",
+                    };
+                    let pitch = if clip.keep_pitch { "" } else { " preservesPitch=\"0\"" };
+                    body.push_str(&format!("<timeMap{sampling}{pitch}>\n"));
+                    body.push_str(&format!("  <timept time=\"{}\" value=\"{}\" interp=\"linear\"/>\n", tc_str(clip.source_in, fps), tc_str(first, fps)));
+                    body.push_str(&format!("  <timept time=\"{}\" value=\"{}\" interp=\"linear\"/>\n", tc_str(clip.source_in + clip.duration(), fps), tc_str(last, fps)));
+                    body.push_str("</timeMap>\n");
+                    if ramped {
+                        dropped.push(format!("Track '{}': {what} at {at:.3} s — its speed ramp, written as one even speed over the same frames", track.name));
+                    }
+                }
+                if clip.volume_keyframes.is_empty() && (clip.volume - 1.0).abs() > 1e-6 && clip.volume > 0.0 {
+                    body.push_str(&format!("<adjust-volume amount=\"{:.2}dB\"/>\n", 20.0 * f64::from(clip.volume).log10()));
+                }
+                for marker in &clip.clip_markers {
+                    body.push_str(&format!(
+                        "<marker start=\"{}s\" duration=\"1/{}s\" value=\"{}\"/>\n",
+                        format_decimal(clip.source_in.to_secs_f64() + marker.time_secs), fps.num, escape_xml(&marker.name)
+                    ));
+                }
+                let mut left = Vec::new();
+                if !sound_track && (!clip.grade_is_identity() || clip.has_plugin_entries() || clip.effect_node_at(false, 1).is_some() || (clip.effect_node_at(false, 0).is_some() && !clip.has_speed_ramp())) {
+                    left.push("its grade and picture effects");
+                }
+                if (sound_track || !linked_sound) && (!clip.volume_keyframes.is_empty() || clip.volume <= 0.0) {
+                    left.push("its volume changes");
+                }
+                if (sound_track || !linked_sound) && (clip.pan.abs() > 1e-6 || !clip.pan_keyframes.is_empty()) {
+                    left.push("its pan");
+                }
+                if clip.fade_in_secs > 0.0 || clip.fade_out_secs > 0.0 {
+                    left.push("its fades");
+                }
+                if !clip.audio_effects.is_empty() {
+                    left.push("its sound effects");
+                }
+                if !left.is_empty() {
+                    dropped.push(format!("Track '{}': {what} at {at:.3} s — {}", track.name, left.join(", ")));
+                }
+                ("asset-clip", attrs, body)
+            }
+            ClipKind::Generator(_) | ClipKind::AdjustmentLayer | ClipKind::Sequence { .. } | ClipKind::Precomposition { .. } | ClipKind::TemplatePrecomposition { .. } => {
+                dropped.push(format!("Track '{}': {what} at {at:.3} s — FCPXML export does not write it{}", track.name, if lane.is_none() { "; a gap keeps its length" } else { "" }));
+                gap(Some(match clip.kind {
+                    ClipKind::AdjustmentLayer => "Adjustment Layer",
+                    ClipKind::Generator(_) => "Generator",
+                    _ => "Compound Clip",
+                }))
+            }
+        }
+    }
+}
+
+/// A clip's file name, or what it is.
+fn what_name(clip: &Clip, pool: &MediaPool) -> String {
+    match &clip.kind {
+        ClipKind::Media { media_id } => pool.get(media_id).map(|m| m.filename.clone()).unwrap_or_else(|| "Untitled".into()),
+        _ => describe(clip, pool),
+    }
+}
+
+/// A clip as the dropped list names it.
+fn describe(clip: &Clip, pool: &MediaPool) -> String {
+    match &clip.kind {
+        ClipKind::Media { .. } => format!("'{}'", what_name(clip, pool)),
+        ClipKind::Title(td) => {
+            let text = td.text();
+            let text = text.trim();
+            if text.is_empty() { "a title".to_string() } else { format!("the title \"{}\"", text.chars().take(40).collect::<String>()) }
+        }
+        ClipKind::Generator(_) => "a generator".to_string(),
+        ClipKind::AdjustmentLayer => "an adjustment layer".to_string(),
+        ClipKind::Sequence { .. } => "a compound clip".to_string(),
+        ClipKind::Precomposition { .. } => "a precomposition".to_string(),
+        ClipKind::TemplatePrecomposition { .. } => "a template precomposition".to_string(),
+        ClipKind::Gap => "a gap".to_string(),
+    }
 }
 
 /// Also generate a simple EDL (CMX 3600 format) for broader compatibility.
@@ -338,10 +499,6 @@ fn rational_time_str(frames: i64, fps_num: u32, fps_den: u32) -> String {
     } else {
         format!("{}/{fps_num}s", frames * fps_den as i64)
     }
-}
-
-fn clip_duration_str(clip: &klipp_timeline::Clip, fps: &klipp_core::Fps) -> String {
-    tc_str(clip.source_out - clip.source_in, fps)
 }
 
 fn sequence_duration(seq: &Sequence, fps: &klipp_core::Fps) -> String {
@@ -1376,5 +1533,115 @@ mod tests {
         assert!(xml.contains("<note>Trim two frames off the head</note>"));
         // Plain marker stays self-closing.
         assert!(xml.contains("<marker start=\"48/24s\" duration=\"1/24s\" value=\"Plain\"/>"));
+    }
+
+    // ── #2471: every track, speed, and what is left out ──
+
+    /// A picture track over the storyline, a sound track under it, one
+    /// file shown by three clips: the file is one asset, the clips are on
+    /// their lanes at their places, and the sound comes from the sound clip.
+    fn three_tracks() -> (Sequence, MediaPool, [ClipId; 3]) {
+        let fps = Fps { num: 25, den: 1 };
+        let mut seq = empty_sequence(fps);
+        let mut pool = MediaPool::new();
+        let mid = MediaId::new();
+        pool.add(make_media_item(mid, "take.mov", 250, 25));
+        let t = |s: i64| RationalTime { value: s * 25, rate: 25 };
+        // Storyline: 0-4 s from 2 s of the file; a hole; then 6-8 s.
+        let mut a = make_media_clip(mid, t(0), t(4), t(2), t(6));
+        let b = make_media_clip(mid, t(6), t(8), t(0), t(2));
+        let over = make_media_clip(mid, t(1), t(3), t(5), t(7));
+        let mut sound = make_media_clip(mid, t(0), t(4), t(2), t(6));
+        a.linked_clip_id = Some(sound.id);
+        sound.linked_clip_id = Some(a.id);
+        let ids = [a.id, over.id, sound.id];
+        seq.tracks[0].name = "V1".into();
+        seq.tracks[0].clips = vec![a, b];
+        let mut v2 = Track::new("V2", TrackKind::Video);
+        v2.clips.push(over);
+        let mut a1 = Track::new("A1", TrackKind::Audio);
+        a1.clips.push(sound);
+        seq.tracks = vec![v2, seq.tracks.remove(0), a1];
+        (seq, pool, ids)
+    }
+
+    #[test]
+    fn every_track_goes_out_on_its_lane() {
+        let (seq, pool, _) = three_tracks();
+        let (xml, dropped) = generate_fcpxml_reporting(&seq, &pool);
+        roxmltree::Document::parse_with_options(&xml, roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() }).expect("well-formed");
+        assert_eq!(xml.matches("<asset id=").count(), 1, "one asset for one file:\n{xml}");
+        assert!(xml.contains("duration=\"250/25s\" hasVideo=\"1\" hasAudio=\"1\""), "the file's own length:\n{xml}");
+        // The hole on the storyline is a gap, so 6 s stays 6 s.
+        assert!(xml.contains("<gap offset=\"100/25s\" duration=\"50/25s\"/>"), "{xml}");
+        // Connected to the first clip, in its local time: 1 s in, from 2 s.
+        assert!(xml.contains("lane=\"1\" offset=\"75/25s\" duration=\"50/25s\" start=\"125/25s\""), "{xml}");
+        assert!(xml.contains("lane=\"-1\" offset=\"50/25s\" duration=\"100/25s\" start=\"50/25s\" srcEnable=\"audio\""), "{xml}");
+        assert!(xml.contains("offset=\"0/25s\" duration=\"100/25s\" start=\"50/25s\" srcEnable=\"video\""), "the picture leaves its sound to the sound clip:\n{xml}");
+        assert!(dropped.is_empty(), "{dropped:?}");
+    }
+
+    #[test]
+    fn what_goes_out_comes_back_in_on_the_same_tracks() {
+        let (seq, pool, _) = three_tracks();
+        let back = crate::fcpxml_import::parse_fcpxml(&generate_fcpxml(&seq, &pool)).unwrap();
+        let places = |s: &Sequence| -> Vec<(String, Vec<(i64, i64, i64)>)> {
+            s.tracks.iter().map(|t| (format!("{:?}", t.kind), t.clips.iter().filter(|c| !c.kind.is_gap()).map(|c| (c.timeline_in.rescale_to(25).value, c.timeline_out.rescale_to(25).value, c.source_in.rescale_to(25).value)).collect())).collect()
+        };
+        assert_eq!(places(&back.sequence), places(&seq), "{:?}", back.warnings);
+    }
+
+    #[test]
+    fn a_speed_change_is_a_time_map_inside_its_media() {
+        let (mut seq, pool, _) = three_tracks();
+        // 2x: 4 s of the file in 2 s, then reversed.
+        let clip = &mut seq.tracks[1].clips[1];
+        clip.source_in = RationalTime { value: 100, rate: 25 };
+        clip.source_out = RationalTime { value: 200, rate: 25 };
+        clip.speed = 2.0;
+        let xml = generate_fcpxml(&seq, &pool);
+        assert!(xml.contains("<timept time=\"100/25s\" value=\"100/25s\" interp=\"linear\"/>"), "{xml}");
+        assert!(xml.contains("<timept time=\"150/25s\" value=\"200/25s\" interp=\"linear\"/>"), "ends at its source out, not 2 s past it:\n{xml}");
+        let back = crate::fcpxml_import::parse_fcpxml(&xml).unwrap();
+        let c = back.sequence.tracks[1].clips.iter().find(|c| c.timeline_in.rescale_to(25).value == 150).unwrap();
+        assert_eq!((c.speed, c.source_out.rescale_to(25).value), (2.0, 200));
+
+        seq.tracks[1].clips[1].speed = -2.0;
+        let xml = generate_fcpxml(&seq, &pool);
+        assert!(xml.contains("<timept time=\"100/25s\" value=\"200/25s\" interp=\"linear\"/>"), "reversed: from its source out:\n{xml}");
+        assert!(xml.contains("<timept time=\"150/25s\" value=\"100/25s\" interp=\"linear\"/>"), "{xml}");
+    }
+
+    #[test]
+    fn what_the_file_does_not_carry_is_listed() {
+        let (mut seq, pool, [a, _, _]) = three_tracks();
+        let b = seq.tracks[1].clips[1].id;
+        seq.tracks[1].transitions.push(klipp_timeline::Transition {
+            id: klipp_core::TransitionId::new(),
+            kind: klipp_core::TransitionKind::CrossDissolve,
+            duration: RationalTime { value: 10, rate: 25 },
+            clip_a_id: a,
+            clip_b_id: b,
+            user_params: Default::default(),
+            alignment: klipp_core::TransitionAlignment::Center,
+        });
+        let mut td = TitleData::default();
+        if let Some(tb) = td.primary_text_mut() { tb.text = "Name".into(); }
+        seq.tracks[0].clips.push(make_clip_with_kind(ClipKind::Title(td), RationalTime { value: 150, rate: 25 }, RationalTime { value: 175, rate: 25 }));
+        seq.tracks[0].clips.push(make_clip_with_kind(ClipKind::AdjustmentLayer, RationalTime { value: 200, rate: 25 }, RationalTime { value: 225, rate: 25 }));
+        let mut subs = Track::new("Captions", TrackKind::Subtitle);
+        subs.clips.push(make_clip_with_kind(ClipKind::Title(TitleData::default()), RationalTime { value: 0, rate: 25 }, RationalTime { value: 25, rate: 25 }));
+        seq.tracks.push(subs);
+        seq.tracks[2].clips[0].fade_in_secs = 0.5;
+        seq.tracks[2].clips[0].volume_keyframes.push(klipp_core::Keyframe { time_secs: 0.0, value: 0.5, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() });
+        let (xml, dropped) = generate_fcpxml_reporting(&seq, &pool);
+        roxmltree::Document::parse_with_options(&xml, roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() }).expect("well-formed");
+        let said = |what: &str| assert!(dropped.iter().any(|d| d.contains(what)), "{what}: {dropped:#?}");
+        said("CrossDissolve transition");
+        said("the title \"Name\" at 6.000 s — its text and length only");
+        said("an adjustment layer at 8.000 s");
+        said("Track 'Captions': 1 Subtitle clip(s)");
+        said("Track 'A1': 'take.mov' at 0.000 s — its volume changes, its fades");
+        assert!(xml.contains("ref=\"r1\"") && xml.contains("name=\"Basic Title\""), "a title names its effect:\n{xml}");
     }
 }

@@ -3560,7 +3560,7 @@ impl KlippApp {
             AppCommand::ExportFcpxml { path } => {
                 let seq = &self.state.sequences[self.state.active_sequence_idx];
                 match klipp_project::fcpxml::export_fcpxml(seq, &self.state.media_pool, path) {
-                    Ok(_) => self.state.toast.show(format!("FCPXML exported to {}", path.display())),
+                    Ok(dropped) => self.state.toast.show(interchange_written("FCPXML", path, &dropped)),
                     Err(e) => self.state.toast.show(format!("FCPXML export failed: {e}")),
                 }
                 true
@@ -3584,30 +3584,7 @@ impl KlippApp {
             AppCommand::ExportOtio { path } => {
                 let seq = &self.state.sequences[self.state.active_sequence_idx];
                 match klipp_project::otio_export::export_otio(seq, &self.state.media_pool, path) {
-                    Ok(warnings) if warnings.is_empty() => {
-                        self.state.toast.show(format!("OTIO exported to {}", path.display()));
-                    }
-                    Ok(warnings) => {
-                        // OTIO cannot carry a title, a grade or an effect.
-                        // The editor is told how much was left behind, and
-                        // the detail goes beside the file — the same shape
-                        // the importer uses for what it drops, so neither
-                        // side of an interchange is a surprise.
-                        let note = path.with_extension("export_warnings.txt");
-                        let body = warnings.join("\n");
-                        let n = warnings.len();
-                        match std::fs::write(&note, &body) {
-                            Ok(()) => self.state.toast.show(format!(
-                                "OTIO exported to {} — {n} thing(s) the format cannot carry, listed in {}",
-                                path.display(),
-                                note.file_name().unwrap_or_default().to_string_lossy(),
-                            )),
-                            Err(e) => self.state.toast.show(format!(
-                                "OTIO exported to {} — {n} thing(s) dropped (could not write the list: {e})",
-                                path.display(),
-                            )),
-                        }
-                    }
+                    Ok(warnings) => self.state.toast.show(interchange_written("OTIO", path, &warnings)),
                     Err(e) => self.state.toast.show(format!("OTIO export failed: {e}")),
                 }
                 true
@@ -3718,6 +3695,27 @@ pub(super) fn crf_mbps_range(codec: klipp_core::ExportVideoCodec, crf: u32, px: 
         * (fps.max(1.0) / 30.0).powf(0.6)
         * 2f64.powf((default_crf - crf as f64) / 6.0);
     Some((3.0 * scale, 12.0 * scale))
+}
+
+/// What an interchange export says once written. A format cannot carry a
+/// title's look, a grade or an effect: the editor is told how much was
+/// left behind, and the detail goes beside the file — the same shape the
+/// importer uses for what it drops, so neither side of an interchange is
+/// a surprise.
+fn interchange_written(format: &str, path: &std::path::Path, dropped: &[String]) -> String {
+    if dropped.is_empty() {
+        return format!("{format} exported to {}", path.display());
+    }
+    let note = path.with_extension("export_warnings.txt");
+    let n = dropped.len();
+    match std::fs::write(&note, dropped.join("\n")) {
+        Ok(()) => format!(
+            "{format} exported to {} — {n} thing(s) the format cannot carry, listed in {}",
+            path.display(),
+            note.file_name().unwrap_or_default().to_string_lossy(),
+        ),
+        Err(e) => format!("{format} exported to {} — {n} thing(s) dropped (could not write the list: {e})", path.display()),
+    }
 }
 
 #[cfg(test)]
@@ -3896,3 +3894,4 @@ impl super::KlippApp {
         *self.state.control_shared.import_outcome.lock().unwrap_or_else(|e| e.into_inner()) = Some(outcome);
     }
 }
+
