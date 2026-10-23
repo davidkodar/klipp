@@ -2294,7 +2294,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                  "crf": { "type": "integer", "description": "Quality, lower is better (default 23)" },
                  "target_lufs": { "type": "number", "description": "Loudness target: -14 web, -23 broadcast; default the brief's" },
                  "true_peak_dbtp": { "type": "number", "description": "True-peak ceiling, -10 to 0 (default -1; ATSC A/85 -2)" },
-                 "burn_captions": { "type": "boolean", "description": "Captions and titles burnt in (default on); the reply says which" },
+                 "burn_captions": { "type": "boolean", "description": "Captions (subtitle tracks) burnt in (default on); titles are burnt in either way; the reply says which" },
                  "captions_608": { "type": "boolean", "description": "Captions as CEA-608 inside the video stream (h264/hevc)" },
                  "hdr10plus": { "type": "boolean", "description": "Per-shot ST 2094-40 metadata (hevc, PQ)" },
                  "preset": export_preset_schema(),

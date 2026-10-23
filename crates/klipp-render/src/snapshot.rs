@@ -502,9 +502,10 @@ impl SequenceSnapshot {
             }
         }
 
-        // Video: the viewer's flattened timeline, as it is. Text and
-        // subtitle tracks render into the picture only when burning in
-        // (the user can still export sidecar SRT/VTT).
+        // Video: the viewer's flattened timeline, as it is. Subtitle
+        // tracks render into the picture only when burning captions in
+        // (the user can still export sidecar SRT/VTT); titles on text
+        // tracks are part of the picture either way (#2426).
         let mut timeline = klipp_timeline::flatten::flatten_sequence(seq, all_sequences);
         // A precomposition's sound, wherever the precomposition sits:
         // the runtime tracks flattening made for it, the scene's and the
@@ -515,7 +516,7 @@ impl SequenceSnapshot {
         }
         if !burn_in {
             for t in &mut timeline.tracks {
-                if matches!(t.kind, TrackKind::Text | TrackKind::Subtitle) {
+                if t.kind == TrackKind::Subtitle {
                     t.visible = false;
                 }
             }
@@ -1551,12 +1552,13 @@ mod tests {
         }
     }
 
-    /// Text and subtitle tracks render into the picture only when burning
-    /// subtitles in.
+    /// Subtitle tracks render into the picture only when burning captions
+    /// in; titles on a text track are burnt in either way (#2426).
     #[test]
     fn subtitle_tracks_are_hidden_unless_burned_in() {
         let mut seq = make_sequence();
         seq.tracks.insert(0, Track::new("Subtitles", TrackKind::Subtitle));
+        seq.tracks.insert(0, Track::new("Titles", TrackKind::Text));
         let pool = MediaPool::new();
         for burn in [true, false] {
             let mut settings = make_settings();
@@ -1564,6 +1566,8 @@ mod tests {
             let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
             let sub = snap.video.sequence.tracks.iter().find(|t| t.kind == TrackKind::Subtitle).unwrap();
             assert_eq!(sub.visible, burn);
+            let titles = snap.video.sequence.tracks.iter().find(|t| t.kind == TrackKind::Text).unwrap();
+            assert!(titles.visible, "titles stay with burn_in_subtitles {burn}");
         }
     }
 

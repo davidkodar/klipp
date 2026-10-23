@@ -181,7 +181,10 @@ pub(crate) fn respond(
             // Said, because it cannot be seen from the reply otherwise and
             // decides whether a sidecar file is needed.
             let said = json!({
-                "captions_and_titles_burnt_in": settings.burn_in_subtitles,
+                "captions_burnt_in": settings.burn_in_subtitles,
+                // Titles are part of the picture; a title track left out
+                // of a delivery is hidden (#2426).
+                "titles_burnt_in": true,
                 "captions_608": settings.captions_608,
                 "hdr10plus": settings.hdr10plus,
                 "target_lufs": settings.target_lufs,
@@ -206,7 +209,7 @@ pub(crate) fn respond(
                 },
                 "bit_depth": if settings.bit_depth == 10 { 10 } else { 8 },
             });
-            let burnt = said["captions_and_titles_burnt_in"].as_bool().unwrap_or(true);
+            let burnt = said["captions_burnt_in"].as_bool().unwrap_or(true);
             let known_jobs: std::collections::HashSet<String> = ctx.shared.exports.lock().unwrap_or_else(|e| e.into_inner())
                 .iter().map(|job| job.job_id.clone()).collect();
             let mut v = send(AppCommand::ExportSequence { settings })?;
