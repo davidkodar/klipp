@@ -141,7 +141,7 @@ fn main() {
                 if write_tx.try_send(req).is_err() {
                     send_response(&stdout, &busy_response(id, "write queue is full; retry shortly"));
                 }
-            } else if active_reads.fetch_update(Ordering::AcqRel, Ordering::Acquire,
+            } else if active_reads.try_update(Ordering::AcqRel, Ordering::Acquire,
                 |count| (count < MAX_CONCURRENT_READS).then_some(count + 1)).is_ok() {
                 let output = Arc::clone(&stdout);
                 let count = Arc::clone(&active_reads);
