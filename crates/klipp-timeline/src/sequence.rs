@@ -1184,15 +1184,16 @@ impl Sequence {
     #[cfg(debug_assertions)]
     pub fn assert_primary_gapless(&self) {
         if let Some(primary) = self.primary_track() {
+            // Compared exactly: rescaled to the rate of a zero start, a
+            // gap under a second went unseen.
             let mut expected = RationalTime::ZERO;
             for clip in &primary.clips {
-                let clip_in = clip.timeline_in.rescale_to(expected.rate);
-                assert_eq!(
-                    clip_in, expected,
+                assert!(
+                    clip.timeline_in.cmp(&expected).is_eq(),
                     "Primary storyline gap detected before clip {:?} (expected {:?}, got {:?})",
                     clip.id, expected, clip.timeline_in
                 );
-                expected = clip.timeline_out.rescale_to(expected.rate);
+                expected = clip.timeline_out;
             }
         }
     }
