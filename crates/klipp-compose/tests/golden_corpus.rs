@@ -1464,7 +1464,7 @@ fn every_path_draws_the_corpus_alike() {
 //
 // To record them again, on main, with a reason for the commit message:
 //
-//     KLIPP_RECORD_GOLDENS="<why>" cargo test -p klipp-compose --test golden_corpus every_path_draws_its_recorded_frames
+//     KLIPP_RECORD_GOLDENS="<why>" cargo test -p klipp-compose --test all golden_corpus::every_path_draws_its_recorded_frames
 //
 // A rule change records only the cases it moves, every other frame held
 // to its stored one: add `KLIPP_RECORD_GOLDEN_CASE="<case>|<case>"`.
