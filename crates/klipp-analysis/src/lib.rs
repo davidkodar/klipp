@@ -422,7 +422,14 @@ fn grab_batch(ffmpeg: &Path, item: &klipp_media::MediaItem, times: &[f64], width
         cmd.args(["-hide_banner", "-nostats", "-loglevel", "error"]);
         let input_args = decode_input_args(ffmpeg, plan, &item.video_codec);
         for t in times {
-            cmd.args(&input_args).arg("-ss").arg(format!("{t:.3}")).arg("-i").arg(media);
+            cmd.args(&input_args);
+            // A still is its one picture, read from the start: a seek
+            // before a JPEG (even to 0) gave no frame and no error, so
+            // its framing failed (#2474, #2515 review).
+            if !item.is_still {
+                cmd.arg("-ss").arg(format!("{t:.3}"));
+            }
+            cmd.arg("-i").arg(media);
         }
         let scale = scale_filter(ffmpeg, plan, width, height);
         let mut graph = String::new();
@@ -495,6 +502,33 @@ mod ai_toggle_tests {
         assert!(!none.contains(&"transcript") && !none.contains(&"framing"), "AI gone: {none:?}");
         super::set_transcription_enabled(true);
         super::set_subject_detection_enabled(true);
+    }
+}
+
+#[cfg(test)]
+mod still_frame_tests {
+    /// A 4032x3024 phone JPEG (4:2:0, full range) gives its picture to
+    /// the analysers: a seek before it gave nothing at all (#2515 review).
+    #[test]
+    fn a_large_jpeg_still_gives_its_frame() {
+        let path = std::env::temp_dir().join(format!("klipp-analysis-photo-{}.jpeg", std::process::id()));
+        let made = std::process::Command::new("ffmpeg")
+            .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=4032x3024", "-frames:v", "1", "-pix_fmt", "yuvj420p", "-q:v", "3"])
+            .arg(&path)
+            .status()
+            .is_ok_and(|s| s.success());
+        if !made {
+            eprintln!("skipping: no ffmpeg");
+            return;
+        }
+        let mut item = klipp_media::MediaItem::synthetic_for_test(path.clone(), None);
+        item.is_still = true;
+        item.video_codec = "mjpeg".into();
+        let bytes = 64 * 48 * 4;
+        let frames = super::grab_frames(std::path::Path::new("ffmpeg"), &item, &[0.0], 64, 48, "", bytes).expect("the still's frame");
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(frames.len(), 1);
+        assert!(frames[0].len() == bytes && frames[0].chunks_exact(4).any(|p| p[0] > 16 || p[1] > 16 || p[2] > 16), "a picture, not black");
     }
 }
 
