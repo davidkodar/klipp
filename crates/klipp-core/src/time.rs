@@ -55,8 +55,10 @@ pub struct RationalTime {
 }
 
 impl RationalTime {
-    /// Zero time with rate=1. Safe for comparisons and as an accumulator starting point.
-    /// WARNING: Do NOT use as a clip's timeline_in — clips must inherit rate from source media.
+    /// Zero time with rate=1. Arithmetic with it takes the other side's
+    /// rate (#2450): `ZERO - t` and `ZERO + t` are `t`'s rate and exact,
+    /// where they used to be rounded to whole seconds.
+    /// A clip's timeline_in still takes its rate from its media.
     pub const ZERO: Self = Self { value: 0, rate: 1 };
 
     /// Returns zero time with rate=1.
@@ -111,13 +113,23 @@ impl RationalTime {
     }
 }
 
+impl RationalTime {
+    /// The rate a sum or difference with `other` is reckoned at: this
+    /// one's, unless this is a zero at rate 1 ([`Self::ZERO`]), which has
+    /// no rate of its own to keep and takes `other`'s. Reckoned at rate 1,
+    /// `other` was rounded to whole seconds.
+    fn rate_with(self, other: Self) -> u32 {
+        if self.value == 0 && self.rate == 1 { other.rate } else { self.rate }
+    }
+}
+
 impl Add for RationalTime {
     type Output = Self;
     fn add(self, rhs: Self) -> Self {
-        let rhs_rescaled = rhs.rescale_to(self.rate);
+        let rate = self.rate_with(rhs);
         Self {
-            value: self.value + rhs_rescaled.value,
-            rate: self.rate,
+            value: self.rescale_to(rate).value + rhs.rescale_to(rate).value,
+            rate,
         }
     }
 }
@@ -125,25 +137,23 @@ impl Add for RationalTime {
 impl Sub for RationalTime {
     type Output = Self;
     fn sub(self, rhs: Self) -> Self {
-        let rhs_rescaled = rhs.rescale_to(self.rate);
+        let rate = self.rate_with(rhs);
         Self {
-            value: self.value - rhs_rescaled.value,
-            rate: self.rate,
+            value: self.rescale_to(rate).value - rhs.rescale_to(rate).value,
+            rate,
         }
     }
 }
 
 impl AddAssign for RationalTime {
     fn add_assign(&mut self, rhs: Self) {
-        let rhs_rescaled = rhs.rescale_to(self.rate);
-        self.value += rhs_rescaled.value;
+        *self = *self + rhs;
     }
 }
 
 impl SubAssign for RationalTime {
     fn sub_assign(&mut self, rhs: Self) {
-        let rhs_rescaled = rhs.rescale_to(self.rate);
-        self.value -= rhs_rescaled.value;
+        *self = *self - rhs;
     }
 }
 
@@ -371,5 +381,38 @@ mod timecode_display_tests {
         let df = ndf.parse("01:00:00;00").expect("semicolon");
         let plain = ndf.parse("01:00:00:00").expect("colon");
         assert_ne!(df, plain);
+    }
+}
+
+#[cfg(test)]
+mod zero_tests {
+    use super::*;
+
+    /// #2450: a sum or difference with `ZERO` is exact, at the other
+    /// side's rate, whichever side the zero is on; a zero at another rate
+    /// keeps its own, as any time does.
+    #[test]
+    fn arithmetic_with_zero_keeps_the_other_sides_rate_and_value() {
+        let t = RationalTime { value: 1_234_567, rate: 48_000 };
+        let neg = RationalTime { value: -1_234_567, rate: 48_000 };
+        assert_eq!(RationalTime::ZERO - t, neg);
+        assert_eq!(t - RationalTime::ZERO, t);
+        assert_eq!(RationalTime::ZERO + t, t);
+        assert_eq!(t + RationalTime::ZERO, t);
+        let mut sum = RationalTime::ZERO;
+        sum += t;
+        sum += t;
+        assert_eq!(sum, RationalTime { value: 2_469_134, rate: 48_000 }, "an accumulator from zero");
+        let mut back = RationalTime::zero();
+        back -= t;
+        assert_eq!(back, neg);
+        assert_eq!(RationalTime::ZERO + RationalTime::ZERO, RationalTime::ZERO);
+        // A zero at a frame rate is a time on that grid, and stays on it.
+        let frame_zero = RationalTime { value: 0, rate: 24 };
+        assert_eq!((frame_zero + RationalTime { value: 48, rate: 24 }).rate, 24);
+        // Comparisons were exact already.
+        assert!(RationalTime::ZERO < t && neg < RationalTime::ZERO);
+        assert_eq!(RationalTime::ZERO.cmp(&frame_zero), std::cmp::Ordering::Equal);
+        assert_eq!(RationalTime::ZERO.max(t), t);
     }
 }

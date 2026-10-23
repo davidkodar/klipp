@@ -12,9 +12,8 @@
 //!   [`SequenceId`], [`MarkerId`], [`TransitionId`], [`GroupId`]. All are
 //!   UUID-backed newtypes; copy-cheap, hash-cheap, compare-cheap.
 //! * **Timing** — [`RationalTime`], [`Timecode`], [`Fps`], [`TimeRange`].
-//!   See the [`time`] module for the [`RationalTime::ZERO`] gotcha
-//!   (rate = 1; never use as the LHS of arithmetic against a higher-rate
-//!   time, the result rescales down to whole seconds).
+//!   [`RationalTime::ZERO`] has rate 1 and takes the other side's rate
+//!   in arithmetic, so a sum or difference with it is exact.
 //! * **Events** — [`AppCommand`] (UI → engine), [`AppEvent`] (engine → UI),
 //!   [`ExportSettings`] and its sibling enums for the render pipeline.
 //! * **Transitions** — [`TransitionKind`] + the compile-time

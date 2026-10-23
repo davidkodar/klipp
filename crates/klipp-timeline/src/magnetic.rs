@@ -1168,11 +1168,8 @@ impl MagneticEditor {
         anchor_clip_id: ClipId,
     ) -> MagneticResult {
         // Resolve the anchor clip first so we know the rate to use for the
-        // empty-track fallback below. RationalTime::ZERO has rate=1, and
-        // subtracting (anchor rate N) from (rate 1) rescales the anchor to
-        // whole seconds — losing sub-second precision in the storyline
-        // offset. Taking the rate from the anchor clip keeps the math honest
-        // even when the track being promoted happens to be empty.
+        // empty-track fallback below: the storyline's offset is kept at the
+        // anchor's rate even when the track being promoted is empty.
         let anchor_in = sequence
             .find_clip(anchor_clip_id)
             .map(|(ti, ci)| sequence.tracks[ti].clips[ci].timeline_in)
@@ -1249,9 +1246,8 @@ impl MagneticEditor {
             .take()
             .expect("break_apart_storyline: no storyline anchor");
 
-        // Zero at the anchor's rate rather than RationalTime::ZERO (rate=1)
-        // so the stored start round-trips correctly through promote's undo
-        // path when the track is empty.
+        // Zero at the anchor's rate, so the stored start round-trips through
+        // promote's undo path when the track is empty.
         let storyline_start = track
             .clips
             .first()
