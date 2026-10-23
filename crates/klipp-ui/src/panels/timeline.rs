@@ -20015,6 +20015,22 @@ mod track_effects_menu_tests {
         let engine: Vec<&str> = klipp_audio::dsp::available_effects().into_iter().map(|(t, _)| t).collect();
         assert_eq!(klipp_document::ops::AUDIO_EFFECT_TYPES, engine.as_slice());
     }
+
+    /// The param names the ops accept are each effect's own (#2484), and
+    /// the ops guide names every one of them.
+    #[test]
+    fn the_ops_name_every_audio_effect_param() {
+        let ops_md = include_str!("../../../../assets/craft/ops.md");
+        let entry = ops_md.lines().find(|l| l.starts_with("track_audio ")).expect("track_audio in ops.md");
+        for (effect, names) in klipp_document::ops::AUDIO_EFFECT_PARAMS {
+            let fx = klipp_audio::dsp::create_effect(effect, 48_000).unwrap_or_else(|| panic!("no {effect} in the engine"));
+            let engine: Vec<&str> = fx.param_descriptors().iter().map(|d| d.name).collect();
+            assert_eq!(*names, engine.as_slice(), "{effect}");
+            assert!(entry.contains(&format!("{effect} ")), "ops.md lists no params for {effect}");
+        }
+        let listed: Vec<&str> = klipp_document::ops::AUDIO_EFFECT_PARAMS.iter().map(|(t, _)| *t).collect();
+        assert_eq!(klipp_document::ops::AUDIO_EFFECT_TYPES, listed.as_slice());
+    }
 }
 
 #[cfg(test)]

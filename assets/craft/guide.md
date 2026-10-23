@@ -322,7 +322,8 @@ exist until the plan runs.
   `voice_isolation`, `deesser`, `hum_removal`, `noise_reduction`,
   `declick`, `normalize`, `reverb`, `delay`, `chorus`, `pitch_shift` or
   `multiband_compressor`; `params` by name set it (the rest stay at their
-  defaults), on the one there or a new one at the end; `bypass` switches
+  defaults), on the one there or a new one at the end (a name the effect
+  lacks is refused; topic `op.track_audio` lists them); `bypass` switches
   it off or on; `remove` takes it off. Set once, it holds for every clip
   of the track.
   Kinds: `vignette`, `grain` (`film_grain`), `glow`, `bloom`, `diffusion`
