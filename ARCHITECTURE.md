@@ -75,13 +75,12 @@ The editor's time primitive is [`klipp_core::RationalTime`]: a `(value:
 i64, rate: u32)` pair. Arithmetic on two times rescales the right-hand
 side to the left-hand side's rate.
 
-**The `RationalTime::ZERO` gotcha** — the constant has `rate = 1`. Using
-it as the LHS of subtraction against a higher-rate time (typical clip
-timeline: rate 24 or 48000) silently rescales the RHS down to whole
-seconds, losing sub-second precision. Use
-`RationalTime::from_frames(0, rate)` when you need a rate-preserving
-zero. This has bitten us three times during audit; the magnetic timeline
-especially is allergic to ZERO. Removing the trap is tracked as #2450.
+**`RationalTime::ZERO`** has `rate = 1` and takes the other side's rate
+in arithmetic, whichever side it is on: `ZERO + t` and `ZERO - t` are
+exact at `t`'s rate (#2450). Ordering (`<`, `cmp`) compares values
+across rates. Equality does not: `==` is structural, so `ZERO` is not
+`==` a zero at rate 24. Compare times for "the same moment" with `cmp`,
+or `== RationalTime::from_frames(0, rate)` at the rate you mean.
 
 ### Magnetic timeline
 
@@ -389,7 +388,9 @@ A small honest-map of the landmines we've hit:
   uses different media, not just seek. If only clip 1's audio plays
   through the timeline, `seek_all_audio_to_timecode`'s media-mismatch
   check regressed.
-* **RationalTime::ZERO in magnetic ops** — see above.
+* **`==` on times at different rates** — structural, so `ZERO` is not
+  `==` a zero at another rate; use `cmp` or a rate-matched zero (see
+  Timing).
 * **Single-variant enums after deletion** — when removing a variant,
   consider flattening the enum if only one remains (`FrameData::Nv12`
   was deleted; `FrameData` became `Vec<u8>` directly).
