@@ -3675,7 +3675,7 @@ fn translate_captions_hands_the_track_to_the_app_as_a_job() {
     let job_id = r["job_id"].as_str().expect("a job id").to_string();
     assert_eq!(r["sentences"], json!(1));
     match h.cmd_rx.recv_timeout(std::time::Duration::from_secs(5)) {
-        Ok(klipp_core::AppCommand::TranslateCaptions { track_id: t, source, target, job_id: j }) => {
+        Ok(klipp_core::AppCommand::TranslateCaptions { track_id: t, source, target, job_id: j, .. }) => {
             assert_eq!((t, source.as_str(), target.as_str(), j.as_str()), (track_id, "en", "de", job_id.as_str()));
         }
         other => panic!("expected TranslateCaptions, got {other:?}"),

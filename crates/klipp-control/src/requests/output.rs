@@ -294,7 +294,7 @@ pub(crate) fn respond(
             Ok(v)
         }
 
-        ControlCommand::TranslateCaptions { track, to, from, download_models } => {
+        ControlCommand::TranslateCaptions { track, to, from, download_models, glossary } => {
             use klipp_document::caption_translation as ct;
             use klipp_ml_candle::translation as tr;
             if in_batch {
@@ -337,7 +337,8 @@ pub(crate) fn respond(
             // The app runs it, as its menu does: a job with progress and
             // cancel, the track added when it is done.
             let job_id = uuid::Uuid::new_v4().to_string();
-            let mut v = send(AppCommand::TranslateCaptions { track_id, source: from.clone(), target: to.clone(), job_id: job_id.clone() })?;
+            let glossary: Vec<(String, String)> = glossary.into_iter().filter(|(from, _)| !from.trim().is_empty()).collect();
+            let mut v = send(AppCommand::TranslateCaptions { track_id, source: from.clone(), target: to.clone(), job_id: job_id.clone(), glossary })?;
             v["job_id"] = json!(job_id);
             v["sentences"] = json!(sentences.len());
             v["text"] = json!(format!("Translating {} sentences into {} as job {job_id}.", sentences.len(), tr::language_name(&to)));

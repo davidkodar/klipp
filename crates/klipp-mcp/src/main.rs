@@ -1181,7 +1181,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
         "klipp_import_subtitles" => json!({ "method": "import_subtitles", "path": arg_str(args, "path")? }),
         "klipp_translate_captions" => {
             let mut v = json!({ "method": "translate_captions", "to": arg_str(args, "to")?, "download_models": args.get("download_models").and_then(Value::as_bool).unwrap_or(false) });
-            for key in ["track", "from"] {
+            for key in ["track", "from", "glossary"] {
                 if let Some(x) = args.get(key).filter(|x| !x.is_null()) {
                     v[key] = x.clone();
                 }
@@ -2311,7 +2311,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({ "path": { "type": "string" }, "format": { "type": "string" } }), vec!["path"]),
         tool("klipp_translate_captions",
              "Translate a subtitle track onto a new one under it. Details: klipp_guide topic translate_captions.",
-             json!({ "to": { "type": "string", "description": "de fr es sv it nl fi da, or en" }, "from": { "type": "string", "description": "default en" }, "track": { "type": "integer" }, "download_models": { "type": "boolean" } }), vec!["to"]),
+             json!({ "to": { "type": "string", "description": "de fr es sv it nl fi da, or en" }, "from": { "type": "string", "description": "default en" }, "track": { "type": "integer" }, "glossary": { "type": "object", "additionalProperties": { "type": "string" } }, "download_models": { "type": "boolean" } }), vec!["to"]),
         tool("klipp_import_subtitles",
              "Read an .srt, .vtt, .ass, .ssa or TTML (.ttml, .dfxp, .xml, .itt), .scc or .stl file (absolute path) onto a new subtitle track.",
              json!({ "path": { "type": "string" } }), vec!["path"]),

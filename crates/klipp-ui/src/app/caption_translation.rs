@@ -17,6 +17,8 @@ pub(super) struct Pending {
     /// The target language's tag, for the new track (#2223).
     code: String,
     sentences: Vec<ct::Sentence>,
+    /// What each sentence's placeholders come back as (#2429).
+    kept: Vec<Vec<String>>,
     rx: std::sync::mpsc::Receiver<Result<Vec<tr::Line>, String>>,
 }
 
@@ -24,7 +26,7 @@ impl KlippApp {
     /// The captions on `track_id`, as whole sentences, translated from
     /// `source` into `target` as job `job_id`; the pair's model fetched
     /// first when it is not downloaded yet.
-    pub(super) fn translate_captions(&mut self, track_id: klipp_core::TrackId, source: &str, target: &str, job_id: &str) {
+    pub(super) fn translate_captions(&mut self, track_id: klipp_core::TrackId, source: &str, target: &str, job_id: &str, glossary: &[(String, String)]) {
         let language = tr::language_name(target).to_string();
         // Refused before it starts, the job is still kept, failed with
         // why: an agent was given its id.
@@ -41,11 +43,14 @@ impl KlippApp {
             return refuse(self, "that track has no captions to translate");
         }
         let sentences = ct::sentences(&captions);
-        let lines: Vec<String> = sentences.iter().map(|s| s.text.clone()).collect();
+        // The brief's names and terms, and the glossary's, kept through
+        // the model as placeholders it copies (#2429).
+        let terms = ct::keep_terms(seq.brief.as_ref(), glossary);
+        let (lines, kept): (Vec<String>, Vec<Vec<String>>) = sentences.iter().map(|s| ct::protect(&s.text, &terms)).unzip();
         match tr::start(job_id.to_string(), source, target, lines) {
             Ok(rx) => {
                 self.state.toast.show(format!("Translating {} captions into {language}…", captions.len()));
-                self.translation = Some(Pending { job_id: job_id.to_string(), track_id, language, code: target.to_string(), sentences, rx });
+                self.translation = Some(Pending { job_id: job_id.to_string(), track_id, language, code: target.to_string(), sentences, kept, rx });
             }
             Err(why) => refuse(self, &why),
         }
@@ -88,8 +93,15 @@ impl KlippApp {
             self.state.toast.show("Translation cancelled");
             return;
         }
-        let texts: Vec<String> = lines.iter().map(|l| l.text.clone()).collect();
-        let cuts: Vec<Option<&'static str>> = lines.iter().map(|l| l.cut).collect();
+        // The kept terms put back; a sentence that lost one is flagged.
+        let (texts, cuts): (Vec<String>, Vec<Option<&'static str>>) = lines
+            .iter()
+            .enumerate()
+            .map(|(k, l)| {
+                let (text, lost) = ct::restore(&l.text, pending.kept.get(k).map(Vec::as_slice).unwrap_or(&[]));
+                (text, l.cut.or(lost.then_some(ct::TERM_LOST)))
+            })
+            .unzip();
         let translations = ct::per_caption(&pending.sentences, &texts);
         let cut = ct::cut_captions(&pending.sentences, &cuts);
         let seq = self.state.sequence();
