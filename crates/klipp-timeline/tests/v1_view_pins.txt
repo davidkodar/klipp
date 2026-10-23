@@ -11,10 +11,10 @@
 # from its picture, and the two tests that do so read the list back. All go
 # in 12f with the lists.
 # Raised for #891: Clip::grade_nodes reads a grade node's kind and key tracks from its legacy record (LEGACY_NODE) to list grade tracks in the curve editor.
-builtin_effects 111
-builtin_effects_enabled 40
+builtin_effects 110
+builtin_effects_enabled 39
 ClipPictureFields 18
-ClipPictureParts 14
+ClipPictureParts 13
 delift 38
 edit_effect_keyframes 19
 edit_effect_keyframes_of 19
@@ -37,7 +37,7 @@ edit_video_param_keyframes 25
 effect_entries 19
 effect_id_at 37
 effect_id_list 12
-effect_keyframes 50
+effect_keyframes 49
 effect_param_keyframes 2
 effects_state 5
 insert_effect 10
@@ -46,11 +46,11 @@ LEGACY_EFFECT 82
 LEGACY_OFX 44
 move_builtin_effect 15
 move_effect 10
-ofx_effects 31
-opacity_keyframes 27
+ofx_effects 30
+opacity_keyframes 26
 own_effects 1
 ParamId::Effect 49
-param_modifiers 58
+param_modifiers 57
 PictureView 16
 push_effect 81
 refresh_effect_ids 3
@@ -72,13 +72,13 @@ set_own_effects 1
 set_video_effect_list 16
 # +1 (#1214): a track's effect list edited by path is lowered to its stored v1 list, as unlift lowers it.
 to_v1 50
-transform_pos_x_keyframes 15
-transform_pos_y_keyframes 13
-transform_rotation_keyframes 10
-transform_scale_keyframes 22
-transform_scale_y_keyframes 9
-transform_tilt_x_keyframes 9
-transform_tilt_y_keyframes 10
+transform_pos_x_keyframes 14
+transform_pos_y_keyframes 12
+transform_rotation_keyframes 9
+transform_scale_keyframes 21
+transform_scale_y_keyframes 8
+transform_tilt_x_keyframes 8
+transform_tilt_y_keyframes 9
 unlift 27
 video_effects 16
 video_effects_enabled 8
