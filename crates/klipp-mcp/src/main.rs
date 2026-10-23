@@ -58,7 +58,7 @@ const WRITE_TOOLS: &[&str] = &[
     "klipp_add_node", "klipp_remove_node", "klipp_connect_nodes",
     "klipp_set_node_param", "klipp_toggle_node", "klipp_set_log_format",
     "klipp_generator", "klipp_undo", "klipp_redo", "klipp_batch", "klipp_export", "klipp_export_subtitles", "klipp_import_subtitles", "klipp_translate_captions", "klipp_apply",
-    "klipp_open_project", "klipp_close_project", "klipp_switch_sequence", "klipp_remove_sequence", "klipp_track_subject",
+    "klipp_open_project", "klipp_close_project", "klipp_switch_sequence", "klipp_duplicate_sequence", "klipp_remove_sequence", "klipp_track_subject",
 ];
 
 /// Calls with side effects may be replayed after a lost socket reply. The
@@ -1210,6 +1210,21 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             (None, Some(id)) => json!({ "method": "switch_sequence", "sequence_id": id }),
             _ => return Err("give index or sequence_id (one of them), as klipp_status lists the sequences".into()),
         },
+        "klipp_duplicate_sequence" => {
+            let mut v = match (args.get("index").and_then(Value::as_u64), args.get("sequence_id").and_then(Value::as_str)) {
+                (Some(index), None) => json!({ "method": "duplicate_sequence", "index": index }),
+                (None, Some(id)) => json!({ "method": "duplicate_sequence", "sequence_id": id }),
+                (None, None) => json!({ "method": "duplicate_sequence" }),
+                _ => return Err("give index or sequence_id, not both, or neither for the open sequence".into()),
+            };
+            if let Some(name) = args.get("name").and_then(Value::as_str) {
+                v["name"] = json!(name);
+            }
+            if let Some(open) = args.get("open").and_then(Value::as_bool) {
+                v["open"] = json!(open);
+            }
+            v
+        }
         "klipp_remove_sequence" => match (args.get("index").and_then(Value::as_u64), args.get("sequence_id").and_then(Value::as_str)) {
             (Some(index), None) => json!({ "method": "remove_sequence", "index": index, "confirm": args.get("confirm").and_then(Value::as_bool).unwrap_or(false) }),
             (None, Some(id)) => json!({ "method": "remove_sequence", "sequence_id": id, "confirm": args.get("confirm").and_then(Value::as_bool).unwrap_or(false) }),
@@ -1976,13 +1991,11 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "Preview a native generator clip; apply true places it. Details: klipp_guide topic generator.",
              json!({ "data": { "type": ["object", "string"] }, "at_secs": { "type": "number" }, "secs": { "type": "number" }, "track": { "type": "integer" }, "apply": { "type": "boolean" } }), vec!["data", "at_secs", "secs"]),
         tool("klipp_import_media",
-             "Import media: one path, several paths, or a folder's media files. Each is answered \
-              with its media_id or error; no media_id yet means still probing: follow its job_id.",
+             "Import media: a path, paths, or a folder's files. Details: klipp_guide topic import_media.",
              json!({ "path": { "type": "string" }, "paths": { "type": "array", "items": { "type": "string" } }, "folder": { "type": "string" }, "analyze": { "type": "boolean", "description": "default true" } }),
              vec![]),
         tool("klipp_append_clip",
-             "Append a media pool item to the timeline as a new clip. A clip at a different \
-              frame rate from the project is added without changing the project's rate.",
+             "Append a media pool item to the timeline as a new clip. Details: klipp_guide topic append_clip.",
              json!({
                  "media_id": { "type": "string", "description": "From klipp_list_media" },
                  "track": { "type": "integer", "description": "Track index; omit for the default track" },
@@ -2205,7 +2218,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              vec!["query"]),
         tool("klipp_analysis_queue", "Put media_id first in the analysis queue, or cancel the pending items. Details: klipp_guide topic analysis_queue.",
              json!({ "media_id": { "type": "string" }, "cancel_pending": { "type": "boolean" } }), vec![]),
-        tool("klipp_analysis_status", "Where analysis stands. With wait true, holds the response until the selected items end or timeout. Reports finished, succeeded and timed_out; failed items carry errors.",
+        tool("klipp_analysis_status", "Where analysis stands, or wait for it. Details: klipp_guide topic analysis_status.",
              json!({ "wait": { "type": "boolean" }, "media_id": { "type": "string" }, "timeout_ms": { "type": "integer", "description": "Maximum wait, default one hour; does not cancel work" } }), vec![]),
         tool("klipp_media_analysis",
              "What is known about a media item as text: its shots, loudness, true peak and silences, in seconds of the file. Details: klipp_guide topic media_analysis.",
@@ -2287,7 +2300,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "Every render job: status, progress, error, loudness and where its time went; wait true waits for one or all. Details: klipp_guide topic export_status.",
              json!({ "wait": { "type": "boolean" }, "job_id": { "type": "string" }, "timeout_ms": { "type": "integer", "description": "Maximum wait, default one hour" } }), vec![]),
         tool("klipp_export_subtitles",
-             "Write the subtitle clips (text clips if none) to an absolute path, as the extension says: .srt, .vtt, .ass, .ssa, .ttml (IMSC), .scc (608) or .stl (EBU); format, if given, must match.",
+             "Write the subtitle clips to a subtitle file. Details: klipp_guide topic export_subtitles.",
              json!({ "path": { "type": "string" }, "format": { "type": "string" } }), vec!["path"]),
         tool("klipp_translate_captions",
              "Translate a subtitle track onto a new one under it. Details: klipp_guide topic translate_captions.",
@@ -2394,9 +2407,11 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "Name the active sequence. Details: klipp_guide topic rename_sequence.",
              json!({ "name": { "type": "string" } }), vec!["name"]),
         tool("klipp_switch_sequence",
-             "Open another of the project's sequences, as clicking its tab does: by index or sequence_id, as \
-              klipp_status lists them. The tools then work on it.",
+             "Open another sequence, by index or sequence_id. Details: klipp_guide topic switch_sequence.",
              json!({ "index": { "type": "integer" }, "sequence_id": { "type": "string" } }), vec![]),
+        tool("klipp_duplicate_sequence",
+             "Copy a sequence and open the copy. Details: klipp_guide topic duplicate_sequence.",
+             json!({ "sequence_id": { "type": "string" }, "name": { "type": "string" }, "open": { "type": "boolean" } }), vec![]),
         tool("klipp_remove_sequence",
              "Remove a sequence, by index or sequence_id; final, so confirm true after asking. Details: klipp_guide topic remove_sequence.",
              json!({ "index": { "type": "integer" }, "sequence_id": { "type": "string" }, "confirm": { "type": "boolean" } }), vec![]),
@@ -2432,8 +2447,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "Every timeline marker in time order: id, time, label, note, kind; a todo is work asked for. Details: klipp_guide topic list_markers.",
              json!({}), vec![]),
         tool("klipp_update_marker",
-             "Change a marker's label, note, colour or kind, by id (from klipp_list_markers). \
-              Mark a todo done by changing its kind or colour, rather than removing the note.",
+             "Change a marker's label, note, colour or kind, by id. Details: klipp_guide topic update_marker.",
              json!({
                  "marker_id": { "type": "string" },
                  "label": { "type": "string" },
@@ -2484,8 +2498,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                  "force": { "type": "boolean", "description": "relink even a file the check says is probably not the clip" }
              }), vec!["media_id", "path"]),
         tool("klipp_tag_media",
-             "Tag a media item with words that sort the pool (a person, a place, \"b-roll\", \
-              \"hero\"), or remove tags. klipp_list_media shows each item's tags.",
+             "Tag a media item, or remove tags. Details: klipp_guide topic tag_media.",
              json!({
                  "media_id": { "type": "string" },
                  "add": { "type": "array", "items": { "type": "string" } },
@@ -3168,6 +3181,31 @@ mod project_change_notice_tests {
         assert_eq!(tool_to_command("klipp_switch_sequence", &json!({ "sequence_id": "abc" })).unwrap(), json!({ "method": "switch_sequence", "sequence_id": "abc" }));
         for args in [json!({}), json!({ "index": 0, "sequence_id": "abc" })] {
             assert!(tool_to_command("klipp_switch_sequence", &args).unwrap_err().contains("index or sequence_id"), "{args}");
+        }
+    }
+
+    /// #2433: klipp_duplicate_sequence copies the open sequence, or one by
+    /// index or sequence_id, with a name and open as given.
+    #[test]
+    fn duplicate_sequence_copies_the_open_one_or_one_named() {
+        assert_eq!(tool_to_command("klipp_duplicate_sequence", &json!({})).unwrap(), json!({ "method": "duplicate_sequence" }));
+        assert_eq!(
+            tool_to_command("klipp_duplicate_sequence", &json!({ "sequence_id": "abc", "name": "Vertical", "open": false })).unwrap(),
+            json!({ "method": "duplicate_sequence", "sequence_id": "abc", "name": "Vertical", "open": false })
+        );
+        assert!(tool_to_command("klipp_duplicate_sequence", &json!({ "index": 0, "sequence_id": "abc" })).unwrap_err().contains("not both"));
+    }
+
+    /// Every tool that sends its details to a guide topic names one that
+    /// is there.
+    #[test]
+    fn every_details_pointer_names_a_topic() {
+        for t in tool_definitions_for(false) {
+            let description = t["description"].as_str().unwrap_or_default();
+            if let Some(topic) = description.split("klipp_guide topic ").nth(1) {
+                let topic = topic.trim_end_matches('.').split_whitespace().next().unwrap_or_default().trim_end_matches(['.', ',', ';']);
+                assert!(guide_topic(topic).is_ok(), "{}: no guide topic {topic}", t["name"]);
+            }
         }
     }
 

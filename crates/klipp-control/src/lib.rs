@@ -760,6 +760,7 @@ fn handle(
             | ControlCommand::NewSequence { .. }
             | ControlCommand::RenameSequence { .. }
             | ControlCommand::SwitchSequence { .. }
+            | ControlCommand::DuplicateSequence { .. }
             | ControlCommand::RemoveSequence { .. }
             | ControlCommand::AppendClip { .. }
             | ControlCommand::RemoveClip { .. }
