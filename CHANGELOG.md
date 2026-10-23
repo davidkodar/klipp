@@ -14,6 +14,10 @@ Each release lists what changed for people using Klipp. Versions follow
 - The assistant can duplicate a sequence and export the timeline (FCPXML,
   EDL, OTIO, AAF or Kdenlive) over MCP. As from the menu, an export carries
   the edit, not grades, most effects or most titles.
+- Opening a project says how many media files are offline, and media can be
+  relinked from a whole folder at once.
+- The assistant can export HDR (HLG or PQ), make proxies, lock tracks, and
+  look at frames at full size over MCP.
 
 ### Fixed
 
@@ -55,6 +59,22 @@ Each release lists what changed for people using Klipp. Versions follow
   set correctly.
 - A project holding the same clip id twice is repaired when saved.
 - An edit that is refused says so, and why, instead of reporting success.
+- Large phone photos (JPEG stills) show in the viewer and are analysed for
+  the people and faces in them.
+- Grading measurements read the clip's own picture, not titles drawn over it
+  or the blurred fill in its bars, and matching a grade stops before it clips
+  the highlights.
+- Every line of a title gets its backing, and a lower third can keep inside
+  the picture of a pillarboxed shot.
+- Dissolves and dips onto or off a still need no extra footage.
+- A misspelt audio effect setting is refused with the valid names.
+- Exports to ProRes, DNxHD or with letterboxing are composited on the GPU.
+- Captions use the brief's spellings in every transcript, avoid one-word
+  cues, and translation keeps whole sentences; selects on a take with no
+  speech are made from its shots.
+- A lower-frame-rate clip can be conformed by blending or optical flow at
+  full speed, and the check notes clips that will judder.
+- EDL and Kdenlive exports list what they leave out, as FCPXML and OTIO do.
 
 ### Changed
 
