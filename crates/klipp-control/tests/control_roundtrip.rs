@@ -3569,6 +3569,38 @@ fn remove_sequence_is_refused_until_confirmed_and_never_for_a_held_or_only_one()
     refused(&mut h, json!({"method": "remove_sequence", "index": 0, "confirm": true}), "only sequence");
 }
 
+/// `duplicate_sequence` (#2433) copies the open sequence, or one by index
+/// or id, as its tab's Duplicate does, named "<name> copy" unless named,
+/// and opens the copy, which goes last; not in a batch.
+#[test]
+fn duplicate_sequence_copies_and_opens_the_copy() {
+    let mut h = harness();
+    let summary = |id: &str, name: &str| klipp_core::SequenceSummary { id: id.into(), name: name.into(), clips: 1, used_in: None };
+    let (a, b) = ("00000000-0000-4000-8000-00000000000a", "00000000-0000-4000-8000-00000000000b");
+    {
+        let mut p = h.shared.project.lock().unwrap();
+        p.sequences = vec![summary(a, "Main"), summary(b, "Demo")];
+        p.active_sequence = 1;
+    }
+    let reply = h.ok(json!({"method": "duplicate_sequence"}));
+    assert_eq!((reply["index"].clone(), reply["name"].clone()), (json!(2), json!("Demo copy")), "{reply}");
+    let sent = std::mem::take(&mut *h.sent.lock().unwrap());
+    assert!(matches!(&sent[..], [klipp_core::AppCommand::DuplicateSequence { sequence_idx: 1, new_name }, klipp_core::AppCommand::SetActiveSequence { sequence_idx: 2 }] if new_name == "Demo copy"), "{sent:?}");
+    h.ok(json!({"method": "duplicate_sequence", "sequence_id": a, "name": "Vertical", "open": false}));
+    let sent = std::mem::take(&mut *h.sent.lock().unwrap());
+    assert!(matches!(&sent[..], [klipp_core::AppCommand::DuplicateSequence { sequence_idx: 0, new_name }] if new_name == "Vertical"), "{sent:?}");
+    for (cmd, why) in [
+        (json!({"method": "duplicate_sequence", "index": 4}), "no such sequence"),
+        (json!({"method": "duplicate_sequence", "index": 0, "name": " "}), "needs a name"),
+        (json!({"method": "batch", "commands": [{"method": "duplicate_sequence"}]}), "not part of a batch"),
+    ] {
+        let reply = h.call(cmd.clone());
+        assert_eq!(reply["ok"], json!(false), "{cmd}");
+        assert!(reply["error"].as_str().unwrap_or_default().contains(why), "{cmd}: {}", reply["error"]);
+    }
+    assert!(h.sent.lock().unwrap().is_empty(), "a refusal sends nothing");
+}
+
 /// #1516: a subtitle file is read over the socket as the app reads it, onto
 /// a new track; a path that is relative, names no subtitle format or is not
 /// there is refused, and an export's format must be its path's.

@@ -42,6 +42,10 @@ The clean places to cut in a media file, ranked: the measured pauses (strength 3
 
 Shots across every analysed item, every condition given holding: framing (close-up, medium close-up, medium, wide, very wide, inset: a small figure in a corner or a face cam over a screen; none for no people, as B-roll wants), at least so many people, a detector object (cat, car, cup…), motion (static, gentle, moving, busy; needs decoded measurements, and a missing bin is not static), speech or not, a minimum length. Each hit: the media id and the shot's start and end in the file. A take over 12 s is also searched moment by moment, split where the camera settles or moves or the framing changes; those hits carry a moment number and steady (still enough to use), so static or gentle finds a steady stretch inside a walk.
 
+## klipp_analysis_status
+
+Where analysis stands. With wait true, the reply is held until the selected items end or timeout_ms passes (an hour by default; the wait never cancels the work). It reports finished, succeeded and timed_out, and failed items carry their errors.
+
 ## klipp_media_analysis
 
 What is known about a media item, as text: its shots with their ranges, its loudness, range and true peak, and its silences. The timeline view shows the same facts per clip in brief. Times are seconds from the file's start; a clip's source_in maps them to the timeline.

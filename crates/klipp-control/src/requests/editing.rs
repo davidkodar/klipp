@@ -209,6 +209,38 @@ pub(crate) fn respond(
             send(AppCommand::SetActiveSequence { sequence_idx })
         }
 
+        ControlCommand::DuplicateSequence { index, sequence_id, name, open } => {
+            // Indices move as a batch's steps add and remove sequences.
+            if in_batch {
+                return Err("duplicate_sequence is not part of a batch; send it on its own".into());
+            }
+            let project = ctx.shared.project.lock().map_err(|_| "project status lock poisoned")?;
+            let found = match (index, sequence_id.as_deref()) {
+                (Some(i), None) => (i < project.sequences.len()).then_some(i),
+                (None, Some(id)) => project.sequences.iter().position(|s| s.id == id),
+                (None, None) => (project.active_sequence < project.sequences.len()).then_some(project.active_sequence),
+                _ => return Err("give the sequence's index or its sequence_id, not both".into()),
+            };
+            let Some(sequence_idx) = found else {
+                return Err(format!("no such sequence; the project has {}", project.sequences.len()));
+            };
+            let name = name.map(|n| n.trim().to_string()).unwrap_or_else(|| format!("{} copy", project.sequences[sequence_idx].name));
+            if name.is_empty() {
+                return Err("a sequence needs a name".into());
+            }
+            let (from, copy_idx) = (project.sequences[sequence_idx].name.clone(), project.sequences.len());
+            drop(project);
+            let mut cmds = vec![AppCommand::DuplicateSequence { sequence_idx, new_name: name.clone() }];
+            if open {
+                cmds.push(AppCommand::SetActiveSequence { sequence_idx: copy_idx });
+            }
+            let mut reply = send_envelope(ctx, cmds, false)?;
+            reply["index"] = json!(copy_idx);
+            reply["name"] = json!(name);
+            reply["text"] = json!(format!("\"{name}\" is a copy of \"{from}\", sequence {copy_idx}{}", if open { ", open now" } else { "" }));
+            Ok(reply)
+        }
+
         ControlCommand::RemoveSequence { index, sequence_id, confirm } => {
             let project = ctx.shared.project.lock().map_err(|_| "project status lock poisoned")?;
             let found = match (index, sequence_id.as_deref()) {

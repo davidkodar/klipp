@@ -14,6 +14,7 @@
 use serde::{Deserialize, Serialize};
 
 fn graph_read_depth() -> usize { 1 }
+fn default_true() -> bool { true }
 
 fn strict_motion_fields(value: &serde_json::Value) -> Result<(), String> {
     let Some(object) = value.as_object() else { return Ok(()) };
@@ -1318,6 +1319,21 @@ pub enum ControlCommand {
         sequence_id: Option<String>,
         #[serde(default)]
         confirm: bool,
+    },
+    /// Copy one of the project's sequences, as its tab's Duplicate does: by
+    /// `index` or `sequence_id`, the open one when neither is given. The
+    /// copy is called `name` ("<name> copy" left out), goes last, and is
+    /// opened unless `open` is false: a second version of a cut, such as
+    /// a vertical one, starts from it. Not part of a batch.
+    DuplicateSequence {
+        #[serde(default)]
+        index: Option<usize>,
+        #[serde(default)]
+        sequence_id: Option<String>,
+        #[serde(default)]
+        name: Option<String>,
+        #[serde(default = "default_true")]
+        open: bool,
     },
     /// Open another of the project's sequences, as clicking its tab does:
     /// by `index` or `sequence_id`, the `index` and `id` `status`'s

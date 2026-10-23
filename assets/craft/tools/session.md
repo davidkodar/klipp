@@ -118,6 +118,22 @@ Add a sequence to the project and open it, at a picture size and rate: a vertica
 
 Name the active sequence: what the timeline is called in the app and in the project file. A new project's sequence has a default or inherited name until it is named; the brief's title does not rename it.
 
+## klipp_switch_sequence
+
+Open another of the project's sequences, as clicking its tab does: by index or sequence_id, as klipp_status lists them. The tools then work on it.
+
+## klipp_import_media
+
+Import media: one path, several paths, or a folder's media files. Each is answered with its media_id or an error; an item with no media_id yet is still being probed: follow its job_id.
+
+## klipp_tag_media
+
+Tag a media item with words that sort the pool (a person, a place, "b-roll", "hero"), or remove tags. klipp_list_media shows each item's tags.
+
+## klipp_duplicate_sequence
+
+Copy one of the project's sequences, as its tab's Duplicate does: by index or sequence_id as klipp_status lists them, or the open one when neither is given. The copy has every track, clip, grade, title and marker of the original, is called name (the original's name plus " copy" when left out), and goes after the others. It is opened unless open is false, so the tools then work on the copy and the original stays as it was: make a vertical or shorter version from a finished cut this way, then format and refit the copy. Not part of a batch.
+
 ## klipp_remove_sequence
 
 Remove one of the project's sequences, as its tab's Delete does: by index or sequence_id, as klipp_status lists them; prefer sequence_id, which doesn't shift when another is removed. Refused for the project's only sequence, and for one held as a compound clip in another (klipp_status shows it as used_in) until that clip is removed. It takes the sequence's own undo history with it and can't be undone: without confirm true it is refused, naming the sequence and its clip count. Ask the user, as the app's own dialog does, and only then send confirm true. The pool's media stays.
