@@ -64,6 +64,29 @@ impl Sequence {
     }
 }
 
+/// A primary's cut list for its clip once the picture under it has moved
+/// `shift` seconds earlier against the clip's start: a blade's right half
+/// (`shift` its left half's length), or a head trim. The cuts stay with
+/// the picture they cut, and the angle in effect where the clip now starts
+/// is kept there. Cut times are from the clip's start, so a list left as
+/// it was put each cut `shift` seconds late.
+pub fn rebased_cuts(cuts: &[(f64, u8)], shift: f64) -> Vec<(f64, u8)> {
+    // A head made longer shows, from its new start, the angle its old
+    // start had.
+    let at_start = cuts.iter().rfind(|(at, _)| *at <= shift.max(0.0) + 1e-9).map_or(0, |(_, a)| *a);
+    let moved = cuts.iter().map(|(at, a)| (at - shift, *a)).filter(|(at, _)| *at > 1e-9);
+    // A cut to the angle already in effect cuts nothing.
+    let mut on = 0;
+    std::iter::once((0.0, at_start))
+        .chain(moved)
+        .filter(|(_, a)| {
+            let changes = *a != on;
+            on = *a;
+            changes
+        })
+        .collect()
+}
+
 impl Sequence {
     /// The group and angle whose sound `clip` is: its own when it is an
     /// angle's picture, its linked picture's when it is that picture's
@@ -214,6 +237,30 @@ mod tests {
         assert!(s.multicam_at(None, tc(11.0)).is_none());
         assert!(s.multicam_angle_clip(g, 3, tc(3.0)).is_some());
         assert!(s.multicam_angle_clip(g, 0, tc(3.0)).is_none(), "the primary is disabled");
+    }
+
+    /// #2418: a blade through a primary leaves each cut on the picture it
+    /// cuts. The right half's cut times are from its own start, with the
+    /// angle in effect at the blade kept from there; the angle at every
+    /// moment is the one it was.
+    #[test]
+    fn a_blade_keeps_each_cut_on_its_picture() {
+        let g = GroupId::new();
+        let mut primary = angle(g, 0);
+        primary.multicam_cuts = vec![(2.0, 1), (4.0, 0), (6.0, 1)];
+        let mut s = seq(vec![primary, angle(g, 1)]);
+        let at = |s: &Sequence| [0.5, 2.5, 3.5, 4.5, 5.5, 6.5, 9.5].map(|x| s.multicam_at(None, tc(x)).map(|m| m.active));
+        let before = at(&s);
+        for ti in 0..2 {
+            let id = s.tracks[ti].clips[0].id;
+            s.tracks[ti].split_at(id, tc(3.0)).expect("split");
+        }
+        assert_eq!(at(&s), before);
+        assert_eq!(s.tracks[0].clips[0].multicam_cuts, vec![(2.0, 1)], "the left half keeps its own");
+        assert_eq!(s.tracks[0].clips[1].multicam_cuts, vec![(0.0, 1), (1.0, 0), (3.0, 1)]);
+        // A head made longer: the cuts move later, the primary from the start.
+        assert_eq!(super::rebased_cuts(&[(2.0, 1)], -1.0), vec![(3.0, 1)]);
+        assert_eq!(super::rebased_cuts(&[(0.0, 1), (2.0, 0)], -1.0), vec![(0.0, 1), (3.0, 0)], "the angle at the old start, from the new one");
     }
 
     /// Whose sound a group plays (#478). By default angle 0's, whatever
