@@ -897,7 +897,10 @@ impl KlippApp {
             AppCommand::SetSequenceResolution { sequence_idx, width, height } => {
                 if *sequence_idx < self.state.sequences.len() && *width > 0 && *height > 0 {
                     let res = klipp_core::Resolution { width: *width, height: *height };
+                    let from = self.state.sequences[*sequence_idx].resolution;
                     self.state.sequences[*sequence_idx].resolution = res;
+                    // Each reframe stays on its picture in the new frame.
+                    klipp_document::ops::keep_reframes(&mut self.state.sequences[*sequence_idx], &self.state.media_pool, from);
                     self.state.sequences[*sequence_idx].first_clip_autoset.resolution = false;
                     self.state.dirty = true;
                 }
