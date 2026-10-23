@@ -481,6 +481,7 @@ pub fn synthesize(req: &Request) -> Result<PathBuf, String> {
     }
     if kokoro::is_kokoro(voice) {
         kokoro::speak(text, voice, req.speed, req.pause_secs, req.download, &out)?;
+        finish_take(&out)?;
         return Ok(out);
     }
     let piper = piper()?;
@@ -507,12 +508,174 @@ pub fn synthesize(req: &Request) -> Result<PathBuf, String> {
     if !done.status.success() || !out.is_file() {
         return Err(format!("piper failed ({}): {}", done.status, String::from_utf8_lossy(&done.stderr).trim()));
     }
+    finish_take(&out)?;
     Ok(out)
 }
+
+/// A RIFF WAVE file's channels, rate and data byte range when it is 16-bit
+/// PCM; `None` for anything else.
+fn pcm16_layout(bytes: &[u8]) -> Option<(u16, u32, std::ops::Range<usize>)> {
+    if bytes.get(0..4)? != b"RIFF" || bytes.get(8..12)? != b"WAVE" {
+        return None;
+    }
+    let (mut at, mut fmt) = (12usize, None);
+    while at + 8 <= bytes.len() {
+        let id = &bytes[at..at + 4];
+        let size = u32::from_le_bytes(bytes[at + 4..at + 8].try_into().ok()?) as usize;
+        let body = at + 8;
+        if id == b"fmt " {
+            let f = bytes.get(body..body + 16)?;
+            let (format, channels, rate, bits) = (u16::from_le_bytes([f[0], f[1]]), u16::from_le_bytes([f[2], f[3]]), u32::from_le_bytes([f[4], f[5], f[6], f[7]]), u16::from_le_bytes([f[14], f[15]]));
+            fmt = (format == 1 && bits == 16 && channels > 0).then_some((channels, rate));
+        } else if id == b"data" {
+            let (channels, rate) = fmt?;
+            let end = (body + size).min(bytes.len());
+            return Some((channels, rate, body..body + (end - body) / 2 * 2));
+        }
+        at = body + size + size % 2;
+    }
+    None
+}
+
+/// A 2-pole Butterworth high-pass (RBJ's cookbook, Q = 1/sqrt 2).
+#[derive(Clone, Copy)]
+struct Biquad {
+    b: [f32; 3],
+    a: [f32; 2],
+    x: [f32; 2],
+    y: [f32; 2],
+}
+
+impl Biquad {
+    fn high_pass(hz: f32, rate: f32) -> Self {
+        let w = std::f32::consts::TAU * hz / rate;
+        let alpha = w.sin() / std::f32::consts::SQRT_2;
+        let (cos, a0) = (w.cos(), 1.0 + alpha);
+        Biquad { b: [(1.0 + cos) / 2.0 / a0, -(1.0 + cos) / a0, (1.0 + cos) / 2.0 / a0], a: [-2.0 * cos / a0, (1.0 - alpha) / a0], x: [0.0; 2], y: [0.0; 2] }
+    }
+
+    fn run(&mut self, x: f32) -> f32 {
+        let y = self.b[0] * x + self.b[1] * self.x[0] + self.b[2] * self.x[1] - self.a[0] * self.y[0] - self.a[1] * self.y[1];
+        self.x = [x, self.x[0]];
+        self.y = [y, self.y[0]];
+        y
+    }
+}
+
+/// Where a take's low end is cut: under a voice's fundamental. A synthetic
+/// voice (Piper's in particular) carries energy under 60 Hz that nothing
+/// speaks there, and that the sound check reads as wind or handling (#2482).
+const TAKE_HIGH_PASS_HZ: f32 = 90.0;
+
+/// The true peak a take is brought down to, dBTP: Piper writes its takes
+/// at full scale, and a lossy encode of a take at 0 dBTP clips (#2482).
+const TAKE_CEILING_DBTP: f32 = -1.0;
+
+/// A take as it is kept: its low end under [`TAKE_HIGH_PASS_HZ`] taken
+/// off (three 2-pole high-passes, 36 dB an octave), then brought down,
+/// never up, to a true peak of [`TAKE_CEILING_DBTP`]. A 16-bit PCM WAV,
+/// rewritten in place; another format is left as it is.
+fn finish_take(path: &Path) -> Result<(), String> {
+    let mut bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let Some((channels, rate, data)) = pcm16_layout(&bytes) else { return Ok(()) };
+    let mut samples: Vec<f32> = bytes[data.clone()].chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0).collect();
+    let ch = channels as usize;
+    for c in 0..ch {
+        let mut stages = [Biquad::high_pass(TAKE_HIGH_PASS_HZ, rate as f32); 3];
+        for frame in samples.chunks_exact_mut(ch) {
+            frame[c] = stages.iter_mut().fold(frame[c], |x, st| st.run(x));
+        }
+    }
+    let mut meter = crate::TruePeakDetector::new(rate);
+    let mut peak = 0.0f32;
+    for frame in samples.chunks_exact(ch) {
+        let (l, r) = (frame[0], frame[ch.min(2) - 1]);
+        peak = peak.max(meter.process(l, r));
+    }
+    peak = peak.max(meter.flush());
+    let ceiling = 10f32.powf(TAKE_CEILING_DBTP / 20.0);
+    let gain = if peak > ceiling { ceiling / peak } else { 1.0 };
+    for (dst, s) in bytes[data].chunks_exact_mut(2).zip(&samples) {
+        dst.copy_from_slice(&(((s * gain).clamp(-1.0, 1.0) * 32767.0).round() as i16).to_le_bytes());
+    }
+    std::fs::write(path, bytes).map_err(|e| format!("{}: {e}", path.display()))
+}
+
 
 #[cfg(test)]
 mod tests {
     use super::{commercial_use, config_beside, delivery_args, take_key, text_hash, DEFAULT_VOICE, UNNAMED_VOICE};
+
+    /// A 16-bit mono WAV at `rate` of `samples`.
+    fn wav(rate: u32, samples: &[f32]) -> Vec<u8> {
+        let data = samples.len() as u32 * 2;
+        let mut b = Vec::new();
+        b.extend_from_slice(b"RIFF");
+        b.extend_from_slice(&(36 + data).to_le_bytes());
+        b.extend_from_slice(b"WAVEfmt ");
+        b.extend_from_slice(&16u32.to_le_bytes());
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&rate.to_le_bytes());
+        b.extend_from_slice(&(rate * 2).to_le_bytes());
+        b.extend_from_slice(&2u16.to_le_bytes());
+        b.extend_from_slice(&16u16.to_le_bytes());
+        b.extend_from_slice(b"data");
+        b.extend_from_slice(&data.to_le_bytes());
+        for s in samples {
+            b.extend_from_slice(&((s.clamp(-1.0, 1.0) * 32767.0).round() as i16).to_le_bytes());
+        }
+        b
+    }
+
+    /// The level of `hz` in `samples`, dB (a Goertzel bin).
+    fn level_db(samples: &[f32], rate: f32, hz: f32) -> f32 {
+        let k = 2.0 * (std::f32::consts::TAU * hz / rate).cos();
+        let (mut s1, mut s2) = (0.0f32, 0.0f32);
+        for &x in samples {
+            let s0 = x + k * s1 - s2;
+            (s2, s1) = (s1, s0);
+        }
+        10.0 * (s1 * s1 + s2 * s2 - k * s1 * s2).max(1e-20).log10()
+    }
+
+    fn read(path: &std::path::Path) -> Vec<f32> {
+        let b = std::fs::read(path).unwrap();
+        let (_, _, data) = super::pcm16_layout(&b).unwrap();
+        b[data].chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0).collect()
+    }
+
+    /// #2482: a take at full scale, as Piper writes one, with energy under
+    /// 60 Hz, comes back with its true peak at -1 dBTP or under and its low
+    /// end down by 25 dB against the voice; a quiet take is not raised.
+    #[test]
+    fn a_take_gets_headroom_and_loses_its_low_end() {
+        let rate = 22_050u32;
+        let tone = |hz: f32, i: usize| (std::f32::consts::TAU * hz * i as f32 / rate as f32).sin();
+        let loud: Vec<f32> = (0..rate as usize * 2).map(|i| 0.7 * tone(300.0, i) + 0.3 * tone(40.0, i)).collect();
+        let dir = std::env::temp_dir().join(format!("klipp_take_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("take.wav");
+        std::fs::write(&path, wav(rate, &loud)).unwrap();
+        super::finish_take(&path).unwrap();
+        let after = read(&path);
+        let mut meter = crate::TruePeakDetector::new(rate);
+        let peak = after.iter().map(|s| meter.process(*s, *s)).fold(0.0f32, f32::max).max(meter.flush());
+        assert!(20.0 * peak.log10() <= -0.95, "true peak {:.2} dBTP", 20.0 * peak.log10());
+        let tail = &after[rate as usize..];
+        let (before_tail, r) = (&loud[rate as usize..], rate as f32);
+        let low_drop = (level_db(before_tail, r, 40.0) - level_db(before_tail, r, 300.0)) - (level_db(tail, r, 40.0) - level_db(tail, r, 300.0));
+        assert!(low_drop >= 25.0, "the 40 Hz band came down {low_drop:.1} dB against the voice");
+
+        // A quiet take keeps its level: nothing is raised.
+        let quiet: Vec<f32> = (0..rate as usize).map(|i| 0.1 * tone(300.0, i)).collect();
+        std::fs::write(&path, wav(rate, &quiet)).unwrap();
+        super::finish_take(&path).unwrap();
+        let back = read(&path);
+        let rms = |s: &[f32]| (s.iter().map(|v| v * v).sum::<f32>() / s.len() as f32).sqrt();
+        assert!((20.0 * (rms(&back[rate as usize / 2..]) / rms(&quiet[rate as usize / 2..])).log10()).abs() < 0.5, "not raised");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// #112: a take is fitted to a length within a frame in a few passes,
     /// though a voice is not exactly inverse in its speed; held at the
