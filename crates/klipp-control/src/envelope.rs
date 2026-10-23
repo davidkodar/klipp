@@ -201,7 +201,29 @@ pub(crate) fn analysis_reply(ids: &[klipp_core::MediaId], wait: bool, timeout_ms
         Ok((items, finished))
     })?;
     let succeeded = finished && items.iter().all(|s| s.state == klipp_analysis::service::State::Done);
-    Ok(json!({ "items": items, "finished": finished, "succeeded": succeeded, "timed_out": wait && !finished }))
+    // What the models ran on, said once for the reply rather than again
+    // in every item: the same lines on each of 20 files (#2492).
+    let mut providers: Vec<String> = Vec::new();
+    let items: Vec<serde_json::Value> = items
+        .into_iter()
+        .map(|s| {
+            for line in &s.execution_providers {
+                if !providers.contains(line) {
+                    providers.push(line.clone());
+                }
+            }
+            let mut v = json!(s);
+            if let Some(o) = v.as_object_mut() {
+                o.remove("execution_providers");
+            }
+            v
+        })
+        .collect();
+    let mut reply = json!({ "items": items, "finished": finished, "succeeded": succeeded, "timed_out": wait && !finished });
+    if !providers.is_empty() {
+        reply["execution_providers"] = json!(providers);
+    }
+    Ok(reply)
 }
 
 /// How long a write waits for the UI to apply it before answering

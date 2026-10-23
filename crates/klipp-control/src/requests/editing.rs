@@ -7,6 +7,49 @@ use crate::*;
 #[path = "normalize_tests.rs"]
 mod normalize_tests;
 
+/// The fonts reply (#2492): each family once, in the JSON; the text
+/// names the bundled ones and how many are installed, or with `query`
+/// every family whose name holds it, either way.
+pub(crate) fn fonts_reply(bundled: Vec<String>, installed: Vec<String>, query: Option<&str>) -> serde_json::Value {
+    let fallback = klipp_title::bundled::DEFAULT_FAMILY;
+    let Some(q) = query.map(|q| q.trim().to_lowercase()).filter(|q| !q.is_empty()) else {
+        let text = format!(
+            "Bundled with Klipp, always there: {}.\n{} families installed on this machine: in installed, or ask with query for those whose name holds a word.\nA title or type style takes any of these by its family name; anything else falls back to {fallback}.",
+            bundled.join(", "),
+            installed.len(),
+        );
+        return json!({ "text": text, "bundled": bundled, "installed": installed, "fallback": fallback });
+    };
+    let hit = |names: Vec<String>| -> Vec<String> { names.into_iter().filter(|n| n.to_lowercase().contains(&q)).collect() };
+    let (bundled, installed) = (hit(bundled), hit(installed));
+    let text = match (bundled.is_empty(), installed.is_empty()) {
+        (true, true) => format!("No family's name holds \"{q}\"; anything a title names that isn't here falls back to {fallback}."),
+        _ => format!("Families whose name holds \"{q}\": bundled {}; installed {}.", if bundled.is_empty() { "none".into() } else { bundled.join(", ") }, if installed.is_empty() { "none".into() } else { installed.join(", ") }),
+    };
+    json!({ "text": text, "bundled": bundled, "installed": installed, "fallback": fallback, "query": q })
+}
+
+#[cfg(test)]
+mod fonts_reply_tests {
+    use super::fonts_reply;
+
+    /// #2492: each family once, the installed ones in the JSON alone, and
+    /// a query narrows both lists.
+    #[test]
+    fn fonts_are_listed_once_and_found_by_a_word() {
+        let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let all = fonts_reply(names(&["Inter", "Playfair Display"]), names(&["DejaVu Sans", "Noto Serif Display"]), None);
+        let text = all["text"].as_str().unwrap();
+        assert!(text.contains("Inter, Playfair Display") && text.contains("2 families installed") && !text.contains("DejaVu"), "{text}");
+        assert_eq!(all["installed"].as_array().unwrap().len(), 2);
+        let found = fonts_reply(names(&["Inter", "Playfair Display"]), names(&["DejaVu Sans", "Noto Serif Display"]), Some("display"));
+        assert_eq!((found["bundled"].as_array().unwrap().len(), found["installed"].as_array().unwrap().len()), (1, 1), "{found}");
+        assert!(found["text"].as_str().unwrap().contains("Noto Serif Display"));
+        let none = fonts_reply(names(&["Inter"]), names(&[]), Some("gothic"));
+        assert!(none["text"].as_str().unwrap().starts_with("No family's name holds"));
+    }
+}
+
 /// Where the user's project templates are kept (#618), as the app keeps
 /// them.
 fn templates_dir() -> std::path::PathBuf {
@@ -506,7 +549,10 @@ pub(crate) fn respond(
             let mut v = send_with_reply(ctx, Vec::new(), edits, true, reply)?;
             if v["applied"] == true {
                 if let Some(changes) = cut_changes {
-                    v["changes"] = changes["changes"].clone();
+                    // Each clip's before and after with detail; else which
+                    // clips, by id: a cut over a long timeline listed every
+                    // one in full (#2492).
+                    v["changes"] = if detail { changes["changes"].clone() } else { changes_by_id(&changes["changes"]) };
                     v["shifted"] = changes["shifted"].clone();
                     v["retracked"] = changes["retracked"].clone();
                 }
@@ -541,17 +587,13 @@ pub(crate) fn respond(
             Ok(crate::plans::title_templates(crate::plans::template_dir().as_deref()))
         }
 
-        ControlCommand::Fonts => {
+        ControlCommand::Fonts { query } => {
             if in_batch {
                 return read_in_batch("fonts");
             }
             let bundled: Vec<String> = klipp_title::bundled::families().into_iter().map(|(name, _)| name.to_owned()).collect();
             let installed: Vec<String> = klipp_title::font_discovery::discover_system_fonts().keys().cloned().collect();
-            let text = format!(
-                "Bundled with Klipp, always there: {}.\nInstalled on this machine ({}): {}.\nA title or type style takes any of these by its family name; anything else falls back to {}.",
-                bundled.join(", "), installed.len(), installed.join(", "), klipp_title::bundled::DEFAULT_FAMILY,
-            );
-            Ok(json!({ "text": text, "bundled": bundled, "installed": installed, "fallback": klipp_title::bundled::DEFAULT_FAMILY }))
+            Ok(fonts_reply(bundled, installed, query.as_deref()))
         }
 
         ControlCommand::GraphOps { ops, expected_revision, expected_project_identity, label } => {

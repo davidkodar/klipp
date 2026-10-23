@@ -2043,7 +2043,7 @@ fn plans_are_dry_runs_and_applies_are_one_envelope_of_edits() {
     assert!(reply["error"].as_str().unwrap().contains("not inside"), "{}", reply["error"]);
 
     let before = h.shared.revision();
-    let v = h.ok(json!({ "method": "apply", "label": "split for the test", "expected_revision": before, "ops": [ { "op": "split", "clip_id": clip, "at": { "secs": 1.0 } } ] }));
+    let v = h.ok(json!({ "method": "apply", "label": "split for the test", "detail": true, "expected_revision": before, "ops": [ { "op": "split", "clip_id": clip, "at": { "secs": 1.0 } } ] }));
     assert!(v["next"].as_str().unwrap().contains("check"), "apply points at the next step: {v}");
     assert_eq!(v["applied"], json!(true));
     assert_eq!(v["revision"], json!(before + 1));
@@ -2158,7 +2158,7 @@ fn a_ripple_cut_reports_linked_picture_and_sound_at_matching_frames() {
         sequence.tracks.push(audio);
     }
     h.shared.bump_revision();
-    let result = h.ok(json!({ "method": "apply", "expected_revision": h.shared.revision(),
+    let result = h.ok(json!({ "method": "apply", "expected_revision": h.shared.revision(), "detail": true,
         "ops": [{ "op": "cut", "from": { "secs": 1.0 }, "to": { "secs": 2.0 } }] }));
     assert_eq!(result["applied"], true);
     let changes = result["changes"].as_array().unwrap();
@@ -2187,7 +2187,7 @@ fn ripple_reports_later_clips_as_one_bounded_shift() {
         }).collect();
     }
     h.shared.bump_revision();
-    let result = h.ok(json!({ "method": "apply", "expected_revision": h.shared.revision(),
+    let result = h.ok(json!({ "method": "apply", "expected_revision": h.shared.revision(), "detail": true,
         "ops": [{ "op": "cut", "from": { "frame": 24 }, "to": { "frame": 48 } }] }));
     assert_eq!(result["applied"], true);
     assert!(result["changes"].as_array().unwrap().len() <= 3, "{result}");
@@ -2209,7 +2209,7 @@ fn clips_that_only_change_track_index_are_folded() {
         }).collect();
     }
     h.shared.bump_revision();
-    let result = h.ok(json!({ "method": "apply", "expected_revision": h.shared.revision(),
+    let result = h.ok(json!({ "method": "apply", "expected_revision": h.shared.revision(), "detail": true,
         "ops": [{ "op": "add_track", "kind": "video" }, { "op": "split", "clip_id": { "track": 1, "secs": 2.0 }, "at": { "secs": 2.0 } }] }));
     assert_eq!(result["applied"], true);
     assert!(result["changes"].as_array().unwrap().len() <= 3, "{result}");
