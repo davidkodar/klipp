@@ -788,8 +788,25 @@ pub(crate) fn respond(
 fn note_loudness_drops(report: &mut klipp_document::qc::Report, seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool) {
     const STEP: f64 = 1.0;
     let Ok(snapshot) = klipp_render::SequenceSnapshot::from_sequence(seq, pool, &klipp_core::ExportSettings::default(), None, false, klipp_core::WorkingColorspace::Rec709Linear) else { return };
+    if snapshot.audio_tracks.iter().all(|t| t.clips.is_empty()) {
+        return;
+    }
+    // The whole mix as delivered: its loudness and true peak against the
+    // brief's target and the ceiling (#2481).
+    if let Ok((integrated, peak)) = mix_delivery(&snapshot) {
+        let target = seq.brief.as_ref().and_then(|b| b.loudness_lufs);
+        for (severity, rule, what, hint) in crate::grading::delivery_findings(integrated, peak, target, klipp_core::DEFAULT_TRUE_PEAK_DBTP) {
+            match severity {
+                klipp_document::qc::Severity::Error => report.errors += 1,
+                klipp_document::qc::Severity::Warning => report.warnings += 1,
+                _ => {}
+            }
+            report.findings.push(klipp_document::qc::Finding { severity, rule, at_secs: None, what, hint });
+        }
+    }
     let end = snapshot.end_frame() as f64 / snapshot.fps.max(1.0);
-    if end < 2.0 * STEP + 3.0 || snapshot.audio_tracks.iter().all(|t| t.clips.is_empty()) {
+    if end < 2.0 * STEP + 3.0 {
+        report.findings.sort_by(|a, b| a.severity.cmp(&b.severity).then(a.at_secs.unwrap_or(-1.0).total_cmp(&b.at_secs.unwrap_or(-1.0))));
         return;
     }
     let Ok(rows) = mix_loudness(&snapshot, 0.0, end, STEP) else { return };
