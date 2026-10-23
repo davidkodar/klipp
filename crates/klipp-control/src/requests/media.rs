@@ -7,17 +7,22 @@ use crate::*;
 /// stands (#2480): how many, how many the timeline uses, the first few
 /// names, and what finds them. `None` when every file is there.
 pub(crate) fn offline_media(ctx: &ControlContext) -> Option<serde_json::Value> {
-    let pool = ctx.media_pool.read().ok()?;
-    let offline: Vec<&klipp_media::MediaItem> = pool.all().filter(|m| m.offline).collect();
+    // Taken and let go before the sequence is read: the rest of the
+    // socket reads the sequence first, and holding both the other way
+    // round could deadlock against a writer.
+    let offline: Vec<(klipp_core::MediaId, String)> = {
+        let pool = ctx.media_pool.read().ok()?;
+        pool.all().filter(|m| m.offline).map(|m| (m.id, m.filename.clone())).collect()
+    };
     if offline.is_empty() {
         return None;
     }
     let used = {
         let seq = ctx.sequence.read().ok()?;
         let on_timeline: std::collections::HashSet<klipp_core::MediaId> = seq.tracks.iter().flat_map(|t| &t.clips).filter_map(|c| c.media_id()).collect();
-        offline.iter().filter(|m| on_timeline.contains(&m.id)).count()
+        offline.iter().filter(|(id, _)| on_timeline.contains(id)).count()
     };
-    let mut names: Vec<&str> = offline.iter().map(|m| m.filename.as_str()).collect();
+    let mut names: Vec<&str> = offline.iter().map(|(_, name)| name.as_str()).collect();
     names.sort_unstable();
     let shown = names.iter().take(5).copied().collect::<Vec<_>>().join(", ");
     let more = if names.len() > 5 { format!(" and {} more", names.len() - 5) } else { String::new() };
