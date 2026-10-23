@@ -3647,7 +3647,7 @@ impl KlippApp {
 /// file went and what OTIO could not carry, or what to install.
 fn aaf_outcome(path: &std::path::Path, converted: Result<(), klipp_project::otio_export::ConvertError>, dropped: usize) -> String {
     use klipp_project::otio_export::ConvertError;
-    let install = "install OpenTimelineIO and its AAF adapter (pip install opentimelineio otio-aaf-adapter), or export OpenTimelineIO and convert it yourself";
+    let install = klipp_project::otio_export::AAF_INSTALL;
     match converted {
         Ok(()) if dropped == 0 => format!("AAF exported to {}", path.display()),
         Ok(()) => format!("AAF exported to {}: {dropped} thing(s) OTIO cannot carry were left out (Export OpenTimelineIO lists them)", path.display()),
