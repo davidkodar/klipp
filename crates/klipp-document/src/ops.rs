@@ -7501,7 +7501,7 @@ fn refit(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, i: usi
                 let at = |x: f32, y: f32| [0.5 + (x - 0.5) * picture.0 / fw, 0.5 + (y - 0.5) * picture.1 / fh];
                 let mut points: Vec<(f64, [f32; 2])> = beats.spots.iter().filter(|(t, _, _)| *t >= s_in && *t < s_out).map(|(t, x, y)| ((t - s_in) * rate, at(*x, *y))).collect();
                 if points.is_empty() {
-                    points.extend(beats.spots.iter().filter(|(t, _, _)| *t < s_in).last().map(|(_, x, y)| (0.0, at(*x, *y))));
+                    points.extend(beats.spots.iter().rfind(|(t, _, _)| *t < s_in).map(|(_, x, y)| (0.0, at(*x, *y))));
                 }
                 if points.is_empty() {
                     review.push((clip, format!("{name}: a screen recording with no change seen on it"), "no subject"));
