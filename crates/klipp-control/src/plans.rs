@@ -251,6 +251,10 @@ impl klipp_document::ops::Transcripts for AnalysedTranscripts {
         Some(t.words.into_iter().map(|w| klipp_document::ops::SpokenWord { start_secs: w.start_secs, end_secs: w.end_secs, text: w.text, confidence: w.confidence }).collect())
     }
 
+    fn language(&self, item: &klipp_media::MediaItem) -> Option<String> {
+        klipp_analysis::report::MediaAnalysis::load(&item.path).transcript?.language
+    }
+
     fn silences(&self, item: &klipp_media::MediaItem) -> Vec<(f64, f64)> {
         klipp_analysis::report::MediaAnalysis::load(&item.path).audio.map(|a| a.silences.iter().map(|s| (s.start_secs, s.end_secs)).collect()).unwrap_or_default()
     }
