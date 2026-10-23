@@ -51,6 +51,12 @@ pub(crate) fn timeline_text(
     if let Some(p) = playhead_secs {
         let _ = writeln!(out, "Playhead {:.2} s ({} f)", p, (p * fps).round() as i64);
     }
+    // A grade over the whole timeline is said once here: each clip's own
+    // reads "none" under it, which read as ungraded (#2492).
+    let timeline_graded = seq.timeline_grade().is_some_and(|g| !g.is_identity());
+    if let Some(g) = seq.timeline_grade().filter(|_| timeline_graded) {
+        let _ = writeln!(out, "Timeline grade: {} nodes, over every clip after its own and its track's.", g.nodes.len());
+    }
     let _ = writeln!(out, "Tracks, top first. Times are seconds and frames at {:.3} fps.", fps);
     if view.narrowed() {
         let mut said = Vec::new();
@@ -144,8 +150,21 @@ pub(crate) fn timeline_text(
                 let _ = write!(line, "  blend {:?}", c.blend_mode);
             }
             let own = c.own_grade();
-            let grade = if own.is_identity() { "none".to_string() } else { format!("{} nodes", own.nodes.len()) };
+            let over: Vec<&str> = [(t.effects.track_grade().is_some_and(|g| !g.is_identity()), "track's"), (timeline_graded, "timeline's")].into_iter().filter(|(on, _)| *on).map(|(_, w)| w).collect();
+            let grade = match (own.is_identity(), over.is_empty()) {
+                (true, true) => "none".to_string(),
+                (true, false) => format!("none of its own, under the {} grade", over.join(" and ")),
+                (false, _) => format!("{} nodes", own.nodes.len()),
+            };
             let _ = write!(line, "  grade {grade}");
+            // A push or pull on the picture, a still's especially (#2492).
+            if let (Some(a), Some(b)) = (c.transform_scale_keyframes().first(), c.transform_scale_keyframes().last()) {
+                if (a.value - b.value).abs() > 1e-3 {
+                    let _ = write!(line, "  zoom {:.2} to {:.2}", a.value, b.value);
+                } else if (a.value - 1.0).abs() > 1e-3 {
+                    let _ = write!(line, "  zoom {:.2}", a.value);
+                }
+            }
             // The grade group it grades inside (#237).
             if let Some(g) = c.grade_group.and_then(|g| seq.grade_group(g)) {
                 let _ = write!(line, " in group \"{}\"", g.name);
@@ -529,6 +548,28 @@ pub(crate) fn log_format_json(m: &klipp_media::MediaItem) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #2492: a timeline grade is said, and a clip with none of its own
+    /// reads as under it, not as ungraded; a still's zoom is said.
+    #[test]
+    fn a_timeline_grade_and_a_zoom_are_said() {
+        let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let still = klipp_timeline::test_clip::TestClip::of(klipp_timeline::Clip::gap(tc(0.0), tc(4.0))).lane("scale", 0.0, 1.0).lane("scale", 4.0, 1.2).build();
+        let mut seq = klipp_timeline::Sequence::new_default();
+        seq.tracks[0].clips = vec![still];
+        let pool = klipp_media::MediaPool::new();
+        let plain = timeline_text(&seq, &pool, None, 1, TimelineView::default());
+        assert!(plain.contains("grade none") && !plain.contains("Timeline grade") && plain.contains("zoom 1.00 to 1.20"), "{plain}");
+        use klipp_nodes::{graph::{Edge, Node, NodeGraph, NodeId}, kinds::NodeKind, params::NodeParams};
+        let node = |kind: NodeKind, params: NodeParams| Node { id: NodeId::new_v4(), kind, label: format!("{kind:?}"), enabled: true, params, keyframes: Default::default(), output_link: None, input_links: vec![] };
+        let nodes = vec![node(NodeKind::Source, NodeParams::default()), node(NodeKind::Exposure, NodeParams { exposure: Some(0.5), ..Default::default() }), node(NodeKind::Output, NodeParams::default())];
+        let edges = (0..2).map(|i| Edge { from_node: nodes[i].id, from_port: 0, to_node: nodes[i + 1].id, to_port: 0 }).collect();
+        let graph = NodeGraph { output_node_id: nodes[2].id, nodes, edges, node_positions: Default::default(), working_space_override: None, frames: vec![], sticky_notes: vec![] };
+        assert!(!graph.is_identity());
+        seq.timeline_grade_slot().set(Some(graph));
+        let text = timeline_text(&seq, &pool, None, 1, TimelineView::default());
+        assert!(text.contains("Timeline grade: 3 nodes") && text.contains("grade none of its own, under the timeline's grade"), "{text}");
+    }
 
     /// #2430: a caption's or title's words come back whole, with their
     /// line breaks, in the short form and in full.

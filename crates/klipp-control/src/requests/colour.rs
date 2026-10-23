@@ -840,7 +840,13 @@ pub(crate) fn respond(
             if undo_steps > 1 {
                 lines.push(format!("The pass is {undo_steps} undo steps, not one: the document changed while it ran."));
             }
-            Ok(json!({ "text": lines.join("\n"), "shots": per_shot, "scene_groups": groups, "strength": limits.name, "applied": apply, "undo_steps": undo_steps, "revision": ctx.shared.revision(), "look_from_brief": briefed, "next": if apply { "check with color reads every shot again; match_scenes holds the shots to each other, which is what the eye sees at a cut; skin_balance for a face still off the band; a look (klipp_look) for style, after the grade." } else { "That is where every shot stands against the look and the first step each would take. Run it with apply true to grade them, as one undo step." } }))
+            // Applied only where it changed a grade: a pass that found every
+            // shot on target, or held, wrote nothing (#2492).
+            let changed = apply && undo_steps > 0;
+            if apply && !changed {
+                lines.push("Nothing was changed: no shot needed a step it could take.".to_string());
+            }
+            Ok(json!({ "text": lines.join("\n"), "shots": per_shot, "scene_groups": groups, "strength": limits.name, "applied": changed, "undo_steps": undo_steps, "revision": ctx.shared.revision(), "look_from_brief": briefed, "next": if apply { "check with color reads every shot again; match_scenes holds the shots to each other, which is what the eye sees at a cut; skin_balance for a face still off the band; a look (klipp_look) for style, after the grade." } else { "That is where every shot stands against the look and the first step each would take. Run it with apply true to grade them, as one undo step." } }))
         }
 
         ControlCommand::GetGrade { clip_id: c } => {

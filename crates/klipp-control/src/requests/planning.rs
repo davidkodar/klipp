@@ -31,16 +31,22 @@ pub(crate) fn respond(
             };
             let (media, all_analysed, any_running) = {
                 let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
-                let media: Vec<serde_json::Value> = pool.all().map(|m| json!({
-                    "media_id": m.id.0.to_string(),
-                    "filename": m.filename,
-                    "duration_secs": m.duration.to_secs_f64(),
-                    "width": m.resolution.width,
-                    "height": m.resolution.height,
-                    "fps": m.fps.as_f64(),
-                    "has_audio": m.has_audio,
-                    "analysis": state_of(&m.path),
-                })).collect();
+                // A size and rate only for a picture: a sound file read as
+                // 1920x1080 at 24 fps, the pool's defaults (#2492).
+                let media: Vec<serde_json::Value> = pool.all().map(|m| {
+                    let picture = !m.video_codec.is_empty();
+                    json!({
+                        "media_id": m.id.0.to_string(),
+                        "filename": m.filename,
+                        "duration_secs": m.duration.to_secs_f64(),
+                        "width": picture.then_some(m.resolution.width),
+                        "height": picture.then_some(m.resolution.height),
+                        "fps": (picture && !m.is_still).then(|| m.fps.as_f64()),
+                        "has_picture": picture,
+                        "has_audio": m.has_audio,
+                        "analysis": state_of(&m.path),
+                    })
+                }).collect();
                 let all_analysed = !media.is_empty() && statuses.iter().filter(|s| pool.all().any(|m| m.filename == s.filename)).all(|s| matches!(s.state, klipp_analysis::service::State::Done));
                 let any_running = statuses.iter().any(|s| matches!(s.state, klipp_analysis::service::State::Queued | klipp_analysis::service::State::Running));
                 (media, all_analysed, any_running)

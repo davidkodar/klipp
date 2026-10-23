@@ -116,11 +116,16 @@ pub(crate) fn respond(
                 let (plan, revision) = resolve_plan(ctx, &ops)?;
                 let edits: Vec<klipp_document::history::EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
                 let placed = send_full_envelope(ctx, Vec::new(), edits, true, Some(revision), Some("Narrate".into()))?;
+                // Applied is what it put on the timeline (#2492): the
+                // import alone is not.
+                v["applied"] = json!(placed["applied"] == true);
                 v["placed"] = placed;
                 v["text"] = json!(format!("Narration made and placed at {at:.2} s on the Voice track as dialogue: {}", plan.text()));
                 v["next"] = json!("Duck the music under it (duck), and transcript reads the words back with their times for cutting to them.");
             } else {
-                v["text"] = json!(format!("Narration made and imported as {media_id}: {}", out.display()));
+                v["applied"] = json!(false);
+                v["imported"] = json!(true);
+                v["text"] = json!(format!("Narration made and imported as {media_id}, not placed: {}", out.display()));
                 v["next"] = json!("Place it (place on an audio track, role dialogue), or run narrate again with apply true and at_secs.");
             }
             Ok(v)
