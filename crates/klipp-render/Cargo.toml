@@ -38,6 +38,7 @@ klipp-document = { workspace = true }
 klipp-testing = { workspace = true }
 klipp-project = { workspace = true }
 klipp-graph-lift = { workspace = true }
+klipp-graph-format = { workspace = true }
 tracing-subscriber = { workspace = true }
 klipp-core     = { workspace = true }
 klipp-timeline = { workspace = true, features = ["test-clip"] }

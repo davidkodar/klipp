@@ -28,11 +28,14 @@ fn fixture_name(row: &str) -> String {
 
 /// The revision-3 fixture of `row`, copied into a scratch folder of its own
 /// (the conversion's saved check writes there): its folder and its
-/// project file's text.
+/// project file's text. Each call its own folder, so tests reading one
+/// fixture at once don't share one.
 fn fixture(row: &str) -> Result<(PathBuf, String), String> {
+    static CALL: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let name = fixture_name(row);
     let from = Path::new(FIXTURES).join(&name);
-    let dir = std::env::temp_dir().join(format!("klipp-readiness-format-{name}-{}", std::process::id())).join("p.klipp");
+    let call = CALL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("klipp-readiness-format-{name}-{}-{call}", std::process::id())).join("p.klipp");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("media")).map_err(|e| e.to_string())?;
     for file in ["project.json", "media/manifest.json"] {
@@ -121,7 +124,7 @@ fn saved(dir: &Path, converted: &str) -> Result<(), String> {
     klipp_project::save_project(&again, &loaded.0, &loaded.1)?;
     let stamp = |v: &mut Value| {
         if let Some(o) = v.as_object_mut() {
-            for k in ["generation", "saved_at", "created_at", "active_sequence_id"] {
+            for k in ["generation", "saved_at", "klipp_version", "platform", "created_at", "active_sequence_id"] {
                 o.remove(k);
             }
         }
@@ -130,7 +133,7 @@ fn saved(dir: &Path, converted: &str) -> Result<(), String> {
     stamp(&mut a);
     stamp(&mut b);
     if a != b {
-        return Err("the converted project saves again to another document".into());
+        return Err(format!("the converted project saves again to another document, first at {}", first_change(&a, &b, "")));
     }
     Ok(())
 }
@@ -289,6 +292,27 @@ pub fn run(report: &mut Report) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #2461: every revision-3 fixture converts to revision 4, opens
+    /// strictly, and saves again to the same document, in a default run
+    /// (the readiness gate that checks this too is `#[ignore]`d).
+    #[test]
+    fn every_revision_3_fixture_converts_opens_and_saves_again_the_same() {
+        let mut names: Vec<String> = std::fs::read_dir(FIXTURES)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().join("project.json").is_file())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert!(names.len() >= 8, "the fixtures: {names:?}");
+        for name in names {
+            let (dir, text) = fixture(&name).unwrap();
+            let (_, _, converted) = convert(&text).unwrap_or_else(|e| panic!("{name}: {e}"));
+            saved(&dir, &converted).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+        }
+    }
 
     /// The fixtures' rows.
     const FIXTURE_ROWS: [&str; 8] = ["#1406", "#1394", "#1386", "#1409", "#1321", "#1391", "klipp.frei0r", "klipp.ofx"];

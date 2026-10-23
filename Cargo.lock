@@ -3430,6 +3430,7 @@ dependencies = [
  "klipp-core",
  "klipp-document",
  "klipp-effects",
+ "klipp-graph-format",
  "klipp-graph-lift",
  "klipp-media",
  "klipp-nodes",
