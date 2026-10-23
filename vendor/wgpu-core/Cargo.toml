@@ -106,7 +106,7 @@ version = "22.0.0"
 package = "wgpu-types"
 
 [build-dependencies.cfg_aliases]
-version = "0.1"
+version = "0.2.2"
 
 [features]
 api_log_info = []

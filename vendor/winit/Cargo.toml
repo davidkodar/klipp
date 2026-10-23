@@ -217,7 +217,7 @@ version = "0.3.18"
 features = ["env-filter"]
 
 [build-dependencies.cfg_aliases]
-version = "0.2.1"
+version = "0.2.2"
 
 [target.'cfg(all(target_family = "wasm", target_feature = "atomics"))'.dependencies.atomic-waker]
 version = "1"

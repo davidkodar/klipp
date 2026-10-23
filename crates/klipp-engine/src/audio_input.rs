@@ -230,7 +230,7 @@ impl AudioInput {
 /// thread must not wait.
 fn note_peak(peak: &std::sync::atomic::AtomicU32, data: &[f32]) {
     let loudest = data.iter().fold(0.0f32, |m, s| m.max(s.abs()));
-    let _ = peak.fetch_update(std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed, |was| {
+    let _ = peak.try_update(std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed, |was| {
         (loudest > f32::from_bits(was)).then_some(loudest.to_bits())
     });
 }

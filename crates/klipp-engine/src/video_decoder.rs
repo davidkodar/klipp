@@ -2968,7 +2968,7 @@ fn decode_thread_main(
             let t_transfer = std::time::Instant::now();
             let frame_result = if is_hw_frame {
                 hw_active_flag.store(true, std::sync::atomic::Ordering::Relaxed);
-                let refused = REFUSE_HW_FRAMES.fetch_update(std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed, |n| n.checked_sub(1)).is_ok();
+                let refused = REFUSE_HW_FRAMES.try_update(std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed, |n| n.checked_sub(1)).is_ok();
                 if refused { None } else { unsafe { download_hw_frame(&received_frame, &mut hw_scaler, gpu_nv12.as_mut(), &mut gpu_p010, source_rotation, cs_baseline) } }
             } else {
                 sw_frame_on_gpu(&received_frame, &mut sw_repack, &mut gpu_nv12, &mut gpu_p010, source_rotation, cs_baseline)
