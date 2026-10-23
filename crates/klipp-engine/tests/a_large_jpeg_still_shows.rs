@@ -53,6 +53,9 @@ fn a_large_jpeg_still_hands_over_its_picture() {
         std::thread::sleep(Duration::from_millis(5));
     };
     assert!(again.width == frame.width);
+    // The same picture, converted again from the one kept.
+    assert!(again.data == frame.data, "the picture after the seek differs from the first");
+    assert!((again.pts.to_secs_f64() - 3.0).abs() < 1e-3, "stamped with the time asked: {:?}", again.pts);
     assert!(!dec.hw_active.load(std::sync::atomic::Ordering::Relaxed), "decoded in software");
     let _ = std::fs::remove_file(&path);
 }
