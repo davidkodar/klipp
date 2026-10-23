@@ -521,16 +521,7 @@ pub(crate) fn respond(
                         cuts.windows(2).map(|w| (w[0] + w[1]) / 2.0).take(60).collect()
                     }
                 };
-                // What is on each tile: the pictures, and titles over them.
-                let seen = || seq.tracks.iter().filter(|t| matches!(t.kind, klipp_timeline::TrackKind::Video | klipp_timeline::TrackKind::Text) && t.visible).flat_map(|t| t.clips.iter()).filter(|c| c.enabled && !c.consumed_as_matte);
-                let names = times.iter().map(|t| {
-                    seen().filter(|c| c.timeline_in.to_secs_f64() <= *t && c.timeline_out.to_secs_f64() > *t).map(|c| match &c.kind {
-                        klipp_timeline::ClipKind::Media { media_id } => pool.get(media_id).map(|m| m.filename.clone()).unwrap_or_else(|| "media".into()),
-                        klipp_timeline::ClipKind::Title(td) => format!("title \"{}\"", td.text().lines().next().unwrap_or("").chars().take(24).collect::<String>()),
-                        klipp_timeline::ClipKind::Generator(_) => "generator".into(),
-                        _ => "clip".into(),
-                    }).collect::<Vec<_>>().join(" over ")
-                }).collect();
+                let names = times.iter().map(|t| shown_at(&seq, &pool, *t)).collect();
                 (times, names)
             };
             let tw = tile_width.unwrap_or(320).clamp(80, 960);
@@ -743,6 +734,31 @@ pub(crate) fn respond(
 /// The container comes from the path, so it must be the preset's
 /// (#1583). Returns the preset's name, for the reply.
 /// A viewer frame's phases (#1850), as the `perf` reply gives them.
+/// What a sheet's tile at `secs` shows: the pictures, and titles over
+/// them. Of a multicam group, only the angle its cut list has live there:
+/// the others are under the playhead too, and every angle used to be
+/// named, top track first, whichever was seen (#2419).
+fn shown_at(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, secs: f64) -> String {
+    let at = klipp_core::Timecode::from_secs_f64(secs, seq.fps.rate());
+    let live = |c: &klipp_timeline::Clip| match c.multicam_group.and_then(|g| seq.multicam_at(Some(g), at)) {
+        Some(m) => c.multicam_angle == m.active,
+        None => true,
+    };
+    seq.tracks
+        .iter()
+        .filter(|t| matches!(t.kind, klipp_timeline::TrackKind::Video | klipp_timeline::TrackKind::Text) && t.visible)
+        .flat_map(|t| t.clips.iter())
+        .filter(|c| c.enabled && !c.consumed_as_matte && c.timeline_in.to_secs_f64() <= secs && c.timeline_out.to_secs_f64() > secs && live(c))
+        .map(|c| match &c.kind {
+            klipp_timeline::ClipKind::Media { media_id } => pool.get(media_id).map(|m| m.filename.clone()).unwrap_or_else(|| "media".into()),
+            klipp_timeline::ClipKind::Title(td) => format!("title \"{}\"", td.text().lines().next().unwrap_or("").chars().take(24).collect::<String>()),
+            klipp_timeline::ClipKind::Generator(_) => "generator".into(),
+            _ => "clip".into(),
+        })
+        .collect::<Vec<_>>()
+        .join(" over ")
+}
+
 fn phases(p: &klipp_engine::perf::FramePhases) -> serde_json::Value {
     json!({
         "sync_ms": p.sync_ms,
@@ -929,6 +945,43 @@ mod credits_tests {
         titles.sort();
         assert_eq!(titles, ["riser", "whoosh"]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod sheet_tests {
+    use klipp_core::{GroupId, MediaId, RationalTime};
+    use klipp_timeline::{Clip, Sequence, Track, TrackKind};
+
+    /// #2419: a tile names the angle its multicam cut has live, not every
+    /// angle under the playhead, and a clip in no group as before.
+    #[test]
+    fn a_tile_names_the_live_angle() {
+        let tc = |s: f64| RationalTime::from_secs_f64(s, 25);
+        let mut pool = klipp_media::MediaPool::new();
+        let mut file = |name: &str| {
+            let mut item = klipp_media::MediaItem::synthetic_for_test(format!("/tmp/{name}").into(), None);
+            item.filename = name.into();
+            pool.add(item)
+        };
+        let (wide, close, other): (MediaId, MediaId, MediaId) = (file("wide.mp4"), file("close.mkv"), file("other.mp4"));
+        let g = GroupId::new();
+        let angle = |m: MediaId, n: u8| {
+            let mut c = Clip::media(m, tc(0.0), tc(10.0), tc(0.0), tc(10.0));
+            (c.multicam_group, c.multicam_angle) = (Some(g), n);
+            c
+        };
+        let mut primary = angle(wide, 0);
+        primary.multicam_cuts = vec![(4.0, 1)];
+        let mut seq = Sequence::new_default();
+        seq.fps = klipp_core::Fps::new(25, 1);
+        seq.tracks = [vec![angle(close, 1)], vec![primary], vec![Clip::media(other, tc(10.0), tc(12.0), tc(0.0), tc(2.0))]]
+            .into_iter()
+            .map(|clips| Track { clips, ..Track::new("V", TrackKind::Video) })
+            .collect();
+        assert_eq!(super::shown_at(&seq, &pool, 2.0), "wide.mp4");
+        assert_eq!(super::shown_at(&seq, &pool, 6.0), "close.mkv");
+        assert_eq!(super::shown_at(&seq, &pool, 11.0), "other.mp4");
     }
 }
 
