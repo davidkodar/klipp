@@ -61,7 +61,7 @@ Bins and rule-based smart bins, markers, shot logging, metadata (EXIF stills, So
 
 ### Interchange and captions
 
-Timelines: import and export OTIO, FCPXML, CMX3600 EDL and AAF (AAF through OpenTimelineIO's converter, installed only with your consent); import FCP7 XML and MLT; export Kdenlive (cuts only). Each import ends with a report of what came across and what didn't, and another editor's project can be opened in one command.
+Timelines: these formats carry the edit (clips, cuts and timing, and markers where the format has them), not grades, most effects or most titles. Import and export OTIO, FCPXML, CMX3600 EDL and AAF (AAF through OpenTimelineIO's converter, installed only with your consent); import FCP7 XML and MLT; export Kdenlive (cuts only). Each import ends with a report of what came across and what didn't, and another editor's project can be opened in one command.
 
 Captions: SRT, VTT, ASS/SSA, TTML/DFXP/iTT (written as IMSC 1.1), SCC (CEA-608) and EBU-STL, read and written; captions can also be embedded in the video as CEA-608. Caption tracks carry a language and a visibility, and can be translated on the machine.
 
