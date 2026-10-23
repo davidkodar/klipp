@@ -10,69 +10,56 @@ every crate now carries a `//!` overview.
 
 ## Workspace
 
-Klipp is a 42-crate Cargo workspace. Dependencies flow strictly
-bottom-up — no cycles — and every crate depends on `klipp-core`.
+Klipp is a 42-crate Cargo workspace with no dependency cycles (Cargo
+enforces that). Most crates depend on `klipp-core`; the 15 that don't
+are self-contained: file formats, maths, vendored code, the ML
+runtimes, the job scheduler, and two of the binaries. Three binaries ship: `klipp-app` (the editor),
+`klipp-mcp` (the MCP server an assistant starts) and `klipp-hdr-out`
+(the HDR reference presenter the viewer starts). The converter and the
+harnesses have binaries of their own for development.
 
-```
-klipp-app ── the binary; wires everything.
-    └── klipp-ui ── egui desktop editor
-            ├── klipp-control ── socket control surface for a running app
-            │       └── klipp-mcp ── Model Context Protocol server
-            ├── klipp-document ── undoable edit history + command apply
-            ├── klipp-analysis ── shots, audio, motion, transcript, framing
-            └── klipp-engine ── real-time playback
-                    ├── klipp-compose ── the one definition of a rendered frame
-                    ├── klipp-render ── offline export
-                    │       └── klipp-export ── render-queue model
-                    ├── klipp-hdr-out ── HDR reference output (viewer + export)
-                    ├── klipp-effects ── GPU effects + scope pipeline (wgpu)
-                    ├── klipp-color ── colour grading, LUTs, scopes, log decoders
-                    │       └── klipp-grade-model ── primary-grade maths (BT.1886)
-                    ├── klipp-audio ── DSP, LUFS, mixer
-                    ├── klipp-nodes ── colour-grading node graph
-                    ├── klipp-plugin ── OFX 1.5 host (C ABI, dlopen)
-                    ├── klipp-frei0r ── frei0r 1.x host
-                    ├── klipp-title ── title / text rasteriser
-                    ├── klipp-transitions ── transition kernels
-                    ├── klipp-ml ── model manifest + registry
-                    │       ├── klipp-ml-ort ── ONNX (ort) inference
-                    │       └── klipp-ml-candle ── Candle inference
-                    ├── klipp-timeline ── Sequence / Track / Clip model
-                    │       └── klipp-validation ── invariant checks
-                    ├── klipp-project ── .klipp save/load + importers
-                    └── klipp-media ── MediaPool + on-disk caches
-                            └── klipp-core ── IDs, time, events, config
-```
-
-`klipp-jobs` (background scheduling), `klipp-perf`, `klipp-smoke` and
-`klipp-testing` (perf / headless / snapshot harnesses) sit off to the
-side of the editor layers.
+| Group | Crates |
+|---|---|
+| App and surfaces | `klipp-app` (the binary; wires everything), `klipp-ui` (the egui editor), `klipp-control` (socket control of a running app), `klipp-mcp` (Model Context Protocol server over that socket) |
+| Editing model | `klipp-timeline` (Sequence / Track / Clip, the magnetic editor), `klipp-document` (undoable edits, agent ops, plans, quality check), `klipp-project` (`.klipp` save/load, importers and exporters), `klipp-validation` (pre-flight checks), `klipp-graph-format` (how a clip's picture graph is written), `klipp-graph-lift` (the picture lifted to the graph and back), `klipp-convert` (the one-time project conversions) |
+| Picture | `klipp-compose` (the one definition of a rendered frame), `klipp-nodes` (the per-clip node graph and its executor), `klipp-effects` (GPU effects and scopes on wgpu, with their CPU references), `klipp-color` (colour science, ACES, LUTs, log decoders), `klipp-grade-model` (primary-grade maths), `klipp-title` (titles and text), `klipp-linebreak` (vendored line breaking for titles), `klipp-transitions` (transition kernels), `klipp-plugin` (OFX 1.5 host), `klipp-frei0r` (frei0r host) |
+| Playback and delivery | `klipp-engine` (real-time playback), `klipp-render` (export), `klipp-export` (render-queue model), `klipp-hdr-out` (HDR reference output, a separate process) |
+| Media and sound | `klipp-media` (MediaPool, on-disk caches), `klipp-audio` (DSP, LUFS, the mixer), `klipp-captions` (subtitle file formats), `klipp-audio-search` (music and effects search), `klipp-deepfilter` (vendored DeepFilterNet3 voice isolation) |
+| Analysis and ML | `klipp-analysis` (analysers that turn footage into facts), `klipp-ml` (model manifest and registry), `klipp-ml-ort` (ONNX Runtime, loaded at run time), `klipp-ml-candle` (Candle inference) |
+| Foundations | `klipp-core` (IDs, time, events, settings), `klipp-jobs` (background scheduling that yields to playback), `klipp-load-lock` (one lock around loading a library and starting a GPU) |
+| Harnesses | `klipp-perf`, `klipp-smoke`, `klipp-testing`, `klipp-corpus` (reproducible test media and projects), `klipp-readiness` (the readiness and residency inventories) |
 
 Structural rule: if two crates both need a shared type, it goes down to
-`klipp-core` (or, for timeline-model types, `klipp-timeline`). Crates
-never import from peers at the same layer.
+`klipp-core` (or, for timeline-model types, `klipp-timeline`) rather
+than one crate reaching up into another.
 
 ---
 
 ## Threading model
 
-Klipp is single-process with a small handful of long-lived threads.
+The editor is one process. Two companions run as processes of their
+own: `klipp-mcp`, started by an assistant and talking to the editor's
+control socket, and `klipp-hdr-out`, started by the viewer to show the
+HDR picture on a surface that can carry it. Inside the editor a few
+threads live as long as the app, and named workers come and go.
 
 | Thread | Crate | Role |
 |---|---|---|
 | UI thread | `klipp-ui` | egui rendering, user input, state mutations. **Must not block.** |
 | Engine thread | `klipp-engine` | Owns `PlaybackEngine`, drains `AppCommand`s, advances the playhead, composites frames. |
-| Video decode threads | `klipp-engine` | One per open `VideoDecoder`. ffmpeg-next software / CUDA / VAAPI. |
+| Video decode threads | `klipp-engine` | One per open `VideoDecoder`: NVDEC (cuvid) / CUDA / VAAPI, or software. A stream whose GPU decoder refuses work goes on in software. |
 | Audio decode threads | `klipp-engine` | One per active `AudioDecoder`. Feeds a lock-free ringbuf. |
 | Mix thread | `klipp-engine` | Drains per-track audio stagings, sums, applies per-clip FX, writes to the cpal output ring. FTZ+DAZ enabled to avoid denormal stalls. |
 | cpal callback | `klipp-engine` | OS-owned. Pulls from the mix ring and drives the output device. |
 | Thumbnail / filmstrip worker | `klipp-ui` | On-demand rendering of browser thumbs and timeline filmstrips. |
-| Export thread | `klipp-render` | One per active `ExportJob`. Bounded pool via `klipp-export::RenderQueue`. |
-| Scene detect / stabilise / analyse | various | Short-lived; fire-and-join per job. |
+| Export thread | `klipp-render` | One per active `ExportJob`, queued by `klipp-export::RenderQueue`. |
+| Control socket | `klipp-control` | A listener, and a thread per connection (an MCP server, a script). |
+| Background jobs | `klipp-jobs` | A scheduler for skim files, filmstrips and audio conform that yields to playback. |
+| Workers | various | Named, on demand: analysis, model downloads and inference, translation, narration, multicam sync, scene detect, stabilise. |
 
-Communication is exclusively via crossbeam channels (`AppCommand` /
-`AppEvent` in `klipp-core`). There is no direct cross-thread method call
-between the UI and the engine. Shared state (the current `Sequence`, the
+The UI and the engine talk through crossbeam channels (`AppCommand` /
+`AppEvent` in `klipp-core`); there is no direct cross-thread method call
+between them. Shared state (the current `Sequence`, the
 `MediaPool`, the `FrameBuffer`) lives behind `Arc<Mutex<_>>` /
 `Arc<RwLock<_>>` and is recovered from lock poisoning via
 `.unwrap_or_else(|e| e.into_inner())` everywhere — a single worker-thread
@@ -94,7 +81,7 @@ timeline: rate 24 or 48000) silently rescales the RHS down to whole
 seconds, losing sub-second precision. Use
 `RationalTime::from_frames(0, rate)` when you need a rate-preserving
 zero. This has bitten us three times during audit; the magnetic timeline
-especially is allergic to ZERO.
+especially is allergic to ZERO. Removing the trap is tracked as #2450.
 
 ### Magnetic timeline
 
@@ -105,10 +92,14 @@ can round-trip without snapshotting the full sequence. New editing
 features should add a variant to `MagneticEditCommand` and both halves
 (apply + invert) to `apply_forward` / `apply_inverse`.
 
-There is a parallel path (`Track::blade_at`, `Track::ripple_trim_left`,
-`Track::ripple_trim_right`, `Track::ripple_remove` in `sequence.rs`)
-that mutates state without emitting commands and therefore bypasses
-undo. Prefer `MagneticEditor::` for any new call.
+`Track::blade_at`, `Track::ripple_trim_left`, `Track::ripple_trim_right`
+and `Track::ripple_remove` in `sequence.rs` change a track without
+emitting a command of their own. Their production callers all run inside
+a recorded history step: the stabilisation scene split (recorded as
+`LegacySplitAtSceneMarkers`), the document blade on a non-magnetic track
+(`LegacyBladeClip`), the `apply` of `LegacyRippleRemove` and
+`LegacyCutClip`, and the planner's blade on a scratch copy. The two
+trims are left to tests. Prefer `MagneticEditor::` for any new call.
 
 ### Playback engine
 
@@ -129,22 +120,38 @@ with B-frames, VP9). On EAGAIN from `send_packet`, drain output frames
 then retry once — all helpers in this crate follow the rule; new code
 must too.
 
-### Offline render
+### Rendering: viewer and export
 
-`klipp-render` is the export pipeline. The live `Sequence` is frozen
-into a `SequenceSnapshot` and handed to an `ExportJob`:
+A clip's picture is a node graph. Each clip carries its grade, effects
+and picture animation; lifted to the graph format (`klipp-graph-lift`,
+written as `klipp-graph-format`), they are one chain in render order:
+the grade nodes, the display conversion, OFX plug-ins, the built-in
+effects, and the placement where the clip's transform goes. A
+picture-truth clip, whose graph holds what the older fields cannot (an
+effect's mix or mask, a published grade port), keeps the graph itself
+as the truth. Project files are at format revision 4.
 
-```
-snapshot → decode → colour grade → OFX effects → builtin effects
-        → compositor → encoder (ffmpeg / NVENC)
-        ↘ audio mixdown → encoder audio
-```
+`klipp-compose` is the one definition of a rendered frame, and the
+viewer (`klipp-engine`) and export (`klipp-render`) both call its
+`Renderer`. Per frame it renders each visible track's clip as its own
+layer, running the clip's graph through `klipp-nodes`' `GraphExecutor`
+at clip-relative time, stacks the layers bottom to top with clip ×
+track opacity applied once at the blend, renders a transition from both
+of its clips as full layers, and applies the global LUT to the
+composite. Its rules are listed at the top of `render.rs`. On a usable
+GPU the work runs there (wgpu, with decoded NV12 / P010 frames converted
+by shaders and kept resident); the CPU path is the fallback and the
+reference the GPU is tested against. `docs/rendering-residency.md`
+lists what stays on the GPU.
 
-Stage order is fixed (colour grade → OFX → builtin). Every failure
-becomes a `RenderError` and aborts the job — partial or drifted output
-files are never preferred over a loud failure. Export is currently
-**not atomic** (writes directly to the target path); a
-`.tmp` + rename refactor is tracked.
+Export freezes the live `Sequence` into a `SequenceSnapshot` and hands
+it to an `ExportJob`. `export_frames` makes each frame with the same
+renderer, converting to the encoder's YUV planes on the GPU when the
+delivery allows; the audio is mixed down beside it with the playback
+mix's rules. Every failure becomes a `RenderError` and aborts the job.
+Export is atomic: the encode goes to a `.partial` sibling of the target
+and is renamed into place only when it is complete (`export_job.rs`),
+so a failed or cancelled export never leaves a file at the target path.
 
 ### Colour pipeline
 
@@ -154,24 +161,30 @@ linear values, and a single display transform at the end of the chain
 encodes for the viewer or the export. Working space is a per-project
 choice — `klipp_core::WorkingColorspace` selects between
 `Rec709Linear` (default), `AcesCG` (AP1 primaries), and `Bt2020Linear`
-(stub today, aliased to Rec.709 in display).
+(BT.2020 primaries; converted and gamut-mapped to BT.709 for an SDR
+display). The ACEScg path is the most tested.
 
-`klipp-color` houses the maths: the ACES 1.3 RRT line-for-line, four
-Output Display Transforms (Rec.709 SDR cinema, Rec.2100 PQ at 1000 /
-4000 nit, DCI-P3 D65 48 nit), primaries matrices between every
+`klipp-color` houses the maths: the ACES 1.3 RRT line-for-line, five
+Output Display Transforms (Rec.709 SDR, Rec.2100 PQ at 1000 / 4000
+nit, DCI-P3 D65 48 nit, Rec.2020 SDR), each checked against OpenColorIO
+(`tests/ocio_parity.rs`), primaries matrices between every
 working-space pair (numerical f64 inverses so round-trips are exact),
 and per-working-space luma coefficients for all gamut-aware grade ops
 (saturation, vibrance, tone controls, lift/gamma/gain, log wheels,
 etc.) Each op has a `_ws` variant; the `_bt709` form is a thin
 wrapper kept for byte-identity with pre-Phase-E code.
 
-Camera-log decoders (`klipp-color::transforms`) are whitepaper-correct
-where verified — Apple Log, LogC3/4, SLog2/3, PQ, HLG. Nikon N-Log
-and a few others are still pending verification against reference
-material. The IDT lifts log-encoded YUV / RGB straight to the
+Camera-log decoders (`klipp-color::camera_log`) are whitepaper-correct
+where verified — Apple Log, LogC3/4, SLog2/3, PQ, HLG — and the curves
+are checked across all 1024 10-bit code values against OpenColorIO and
+colour-science (`tests/camera_log_parity.rs`). Nikon N-Log and one or
+two others still want a reference round-trip. The IDT lifts log-encoded YUV / RGB straight to the
 project working space — no sRGB re-encode round-trip.
 
-The grade graph (`klipp-nodes`) carries an optional per-chain
+`klipp-nodes` is the picture graph, not only a grade graph: besides
+the grading nodes it has keys and mattes, layer and blend nodes, the
+effect, OFX and frei0r nodes, denoise, film grain, compounds and the
+display conversion. A graph carries an optional per-chain
 `working_space_override`. When set, the executor swaps its active
 working colorspace + GPU luma uniform for the duration of that
 chain's execution and restores on every exit. The migration node
@@ -183,10 +196,10 @@ pixels after a working-space switch.
 
 Export (`klipp-render`) carries a delivery-target ODT choice
 (`klipp_core::OdtChoice`) on `ExportSettings`. The default
-`MatchViewer` mirrors the viewer's display path; explicit Rec.709 SDR
-/ HDR PQ / DCI-P3 D65 ODTs route through the AcesCG-basis chain (with
-a BT.709 → AP1 walk when the project is Rec.709-linear so the ODT
-sees the right basis).
+`MatchViewer` mirrors the viewer's display path; the explicit ODTs
+route through the AcesCG-basis chain (with a walk into AP1 when the
+project is in another working space, so the ODT sees the right basis),
+and `Srgb` is the legacy encode without the RRT.
 
 LUTs in `klipp-color::lut` carry input/output primaries tags on
 `LutData`. The lookup itself is always on the sRGB encoding (as a
@@ -216,16 +229,18 @@ Every `unsafe extern "C" fn` a plugin can call goes through two guards:
   converts a Rust panic into `K_OFX_STAT_ERR_FATAL`. Panicking across
   `extern "C"` is UB on Rust 2021 and aborts on 2024.
 
-Two known latent issues still need a dedicated refactor pass:
+Two known latent issues remain:
 
-1. `paramGetValue` / `paramSetValue` are variadic in the OFX spec but
-   implemented as non-variadic and `mem::transmute`'d into the suite
-   table. Works today by coincidence on x86-64 SysV ABI with the
-   OpenFX C++ support lib's call convention, but is formally UB.
-2. `prop_get_string_fn` returns a raw `*const c_char` that borrows
-   from a `CString` inside a Mutex-protected store. The Mutex drops
-   before the plugin sees the pointer; a subsequent `remove_propset`
-   or `set_string` on the same propset frees the underlying `CString`.
+1. `paramGetValue` / `paramSetValue` (and the `…AtTime`, derivative and
+   integral getters) are variadic in the OFX spec but implemented as
+   non-variadic and `mem::transmute`'d into the suite table
+   (`param.rs`). Works today by coincidence on the x86-64 SysV ABI with
+   the OpenFX C++ support lib's call convention, but is formally UB.
+   How to fix it is still open.
+2. `prop_get_string_fn` returns a raw `*const c_char` that borrows from
+   a `CString` inside a Mutex-protected store. The Mutex drops before
+   the plugin sees the pointer; a later `remove_propset` or `set_string`
+   on the same propset frees the underlying `CString`. Tracked as #2449.
 
 ### File I/O trust boundary
 
@@ -234,14 +249,21 @@ Two known latent issues still need a dedicated refactor pass:
 | Source | Trust | Path resolver |
 |---|---|---|
 | Our own `.klipp` load | trusted (we wrote it via `save::save_project`) | `path_util::resolve_media_path` — no traversal check |
-| MLT / Kdenlive import | untrusted | `path_util::safe_resolve` — rejects `..` escape |
-| FCPXML import | untrusted | `path_util::safe_resolve` |
-| OTIO import | untrusted | `path_util::safe_resolve` |
+| MLT / Kdenlive import | untrusted | `path_util::safe_resolve` — rejects a relative path whose `..` escapes the project folder |
+| OTIO import (and AAF, through OTIO) | untrusted | `path_util::safe_resolve` |
+| FCPXML import | untrusted | `file://` URL decoded, then `path_util::normalize_path` (the format's paths are absolute) |
+| FCP7 XML (xmeml) import | untrusted | `file://` URL percent-decoded to an absolute path |
+| EDL import | untrusted | no paths: events are matched to media already in the pool |
 | Media consolidation | untrusted outputs | symlink rejection on every copy source |
 
-All file reads go through `read_to_string_capped` / `read_capped` (64
-MiB default cap); all XML through `parse_xml_safe` (roxmltree with
-`allow_dtd: false`, 1M-node limit). All atomic writes go through
+Absolute paths are allowed everywhere, because media legitimately lives
+outside the project folder; a path that resolves to nothing becomes
+offline media, never an ffmpeg input.
+
+Every importer reads its file through `read_to_string_capped` /
+`read_capped` (64 MiB cap), and every XML format through
+`parse_xml_safe` (roxmltree with `allow_dtd: false`, 1M-node limit).
+All atomic writes go through
 `path_util::atomic_write` with a collision-proof
 `.<file>.tmp.<pid>.<nanos>` scratch name.
 
@@ -254,7 +276,8 @@ back to absolute on load). Offline media is represented by
 `MediaItem::offline = true`, never by removal — the UI and engine both
 check the flag before opening the file.
 
-Three on-disk caches sit alongside the pool:
+Smart bins (rules over logged fields), relink and camera-card import
+live beside it. Three on-disk caches sit alongside the pool:
 
 * **Audio cache** (`audio_cache`) — conformed PCM keyed by media
   fingerprint. Lets the engine skim / scrub at zero decode cost.
@@ -284,8 +307,12 @@ hand edit.
   ffmpeg or on-device-model pass cached on disk: shot boundaries,
   the audio envelope (silence, EBU R128 loudness, and the spectral
   bands that tell wind / rumble / hum / hiss apart), motion, the
-  transcript (Whisper, with word times), and framing (RF-DETR).
-  `audio_sync` cross-correlates two clips' sound for dual-system sync.
+  transcript (Whisper, with word times), framing (RF-DETR), music beats
+  and structure, a screen recording's beat sheet and on-screen text
+  (OCR), what the picture shows (CLIP embeddings, for search), what a
+  file's sound is (speech, music, effects, ambience) and subject
+  mattes. `audio_sync` cross-correlates two clips' sound for
+  dual-system sync.
 
 * **`klipp-control`** exposes a running instance over a Unix-socket
   JSON protocol (`ControlCommand` in `protocol.rs`): read the state,
@@ -299,9 +326,10 @@ hand edit.
   for an agent to read. The craft guidance it serves lives in
   `assets/craft/`.
 
-The control layer runs inside the app process and talks to the engine
-through the same `AppCommand` / `AppEvent` channels as the UI; it never
-reaches into engine state directly.
+The control layer runs inside the app process. It reads the shared
+`Sequence`, `MediaPool` and frame buffer as the UI does, and sends every
+write to the UI's command router (not the engine's channel), so an
+agent's edit is applied, recorded and undone exactly as a hand edit is.
 
 ---
 
@@ -310,34 +338,44 @@ reaches into engine state directly.
 ```bash
 cargo rr                 # release build + run
 cargo c                  # workspace clippy (aliases in .cargo/config.toml)
-cargo test --workspace   # all tests
-cargo test -p klipp-engine --lib    # single-crate
+cargo test -p klipp-engine          # one crate, the usual way to test
+CARGO_BUILD_JOBS=4 cargo test -p klipp-compose   # fewer parallel links
 ```
+
+The big crates compile their integration tests into one `tests/all`
+binary each, to keep link time down. GPU tests skip quietly without a
+usable GPU; `KLIPP_TEST_REQUIRE_GPU=1` turns a skip into a failure.
 
 The workspace uses `lld` as the linker (`.cargo/config.toml`). `mold`
 is not currently wired in.
 
-Logs land in `klipp-debug.log` in the workspace root — tail it while
-running to watch engine events.
+Logs land in `klipp-debug.log` in the working directory the app was
+started from (the previous run's is kept as `klipp-debug.log.1`) — tail
+it while running to watch engine events.
 
 ---
 
 ## Conventions
 
-* **Error handling is a patchwork.** New code should prefer
-  per-crate `thiserror` enums (`klipp-render::RenderError`,
-  `klipp-project::MltImportError`, etc.) and either propagate via `?`
-  or convert with explicit `map_err`. Avoid `Result<_, String>` — it
-  loses source chains and isn't pattern-matchable. `klipp-core` has a
-  `KlippError` that is under-adopted and will be expanded rather than
-  replaced.
+* **Error handling is per crate.** There is no workspace-wide error
+  type. Library crates use `thiserror` enums (`klipp-render::RenderError`,
+  `klipp-project::MltImportError`, etc.) and propagate with `?` or an
+  explicit `map_err`. The agent-facing layers (`klipp-control`,
+  `klipp-document`) answer with messages written for the reader, a
+  `Refusal` naming the step, the reason and the fix, rather than error
+  enums.
 * **Every `.lock()` / `.read()` / `.write()` on shared state** uses
   `.unwrap_or_else(|e| e.into_inner())` to recover from poisoning. A
   worker-thread panic should surface as a UI toast, not a freeze.
-* **Unsafe** blocks in new code carry a `// SAFETY:` comment explaining
-  preconditions. The existing surface is audit-in-progress.
-* **Commits** are single-purpose. Commit messages focus on the *why*.
-  No `Co-Authored-By` trailers.
+* **Unsafe** is kept to where it is needed: the OFX and frei0r hosts,
+  ffmpeg and hardware-decode FFI, a few libc calls (socket peer
+  credentials, process groups), environment writes that Rust 2024 marks
+  unsafe, and a few buffer hand-offs. Nine crates forbid it outright,
+  and `klipp-plugin` holds most of it. Review asks every touched unsafe
+  block for a `// SAFETY:` comment explaining its preconditions.
+* **Commits** are single-purpose, signed off (DCO; see
+  `CONTRIBUTING.md`), and the message focuses on the *why*. No
+  `Co-Authored-By` trailers.
 
 ---
 
