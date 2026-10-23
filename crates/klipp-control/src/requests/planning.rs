@@ -601,7 +601,9 @@ pub(crate) fn respond(
             // was announced as "0 errors, 0 warnings" and `next` said
             // "Clean. Export." — which is what an agent reads.
             let colour_errors = color_findings.iter().filter(|f| f.0 == "error").count();
-            let errors = report.errors + colour_errors;
+            // A shot that could not be read is an error: nothing under it
+            // was judged, and the viewer cannot show it either (#2474).
+            let errors = report.errors + colour_errors + unread.len();
             let warnings = report.warnings + (color_findings.len() - colour_errors) + audio_findings.iter().filter(|f| f.severity == "warning").count();
             let next = if errors > 0 {
                 "Fix the errors before you deliver — each finding says what and where. Then check again."
@@ -645,7 +647,7 @@ pub(crate) fn respond(
                 }
                 // A shot that could not be read is not one that passed.
                 if !unread.is_empty() {
-                    text.push_str(&format!("\n[warning] {} shot{} could not be read, so are not judged: {}", unread.len(), if unread.len() == 1 { "" } else { "s" }, unread.join("; ")));
+                    text.push_str(&format!("\n[error] {} shot{} could not be read, so are not judged: {}", unread.len(), if unread.len() == 1 { "" } else { "s" }, unread.join("; ")));
                 }
             }
             if !audio_findings.is_empty() {

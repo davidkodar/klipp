@@ -2566,6 +2566,11 @@ fn decode_thread_main(
     let still = klipp_core::media_extensions::is_still_image_demuxer(format_ctx.format().name());
     // The time the next frame is stamped with, for a still.
     let mut still_at: Option<f64> = None;
+    // A still's one picture, once decoded: each seek gives it again,
+    // stamped with the time asked, rather than reading the file again
+    // (#2474). Read again, a large JPEG's frame never came: the seek back
+    // to its one frame reached the end of the file with nothing decoded.
+    let mut still_frame: Option<LinearFrame> = None;
 
     // Decoder selection ladder (each tier is attempted; if its
     // `decoder.video()` open fails — codec / profile not supported,
@@ -2618,9 +2623,11 @@ fn decode_thread_main(
     // when it runs out (#2394).
     let hw_opened = if hw_enabled && !still { open_hardware_in_time(&path, try_cuvid) } else { None };
     let hw_opened = hw_opened.and_then(|opened| opened.map_err(|e| warn!("decode_thread: the GPU decoder would not open ({e}); decoding in software")).ok());
-    // A still opens as it always did; a GPU open that failed or ran out
-    // of time, or no GPU wanted, goes on in software.
-    let opened = match hw_opened.map_or_else(|| open_video_decoder(&video_stream, hw_enabled && still, try_cuvid && still, sw_threads), Ok) {
+    // A still is decoded in software (#2474): read again on each seek, the
+    // GPU's JPEG decoder reached the file's end with no frame, and the
+    // viewer showed nothing where the export drew it. A GPU open that
+    // failed or ran out of time, or no GPU wanted, goes on in software too.
+    let opened = match hw_opened.map_or_else(|| open_video_decoder(&video_stream, false, false, sw_threads), Ok) {
         Ok(o) => o,
         Err(e) => {
             warn!("decode_thread: video decoder error: {e}");
@@ -2801,6 +2808,21 @@ fn decode_thread_main(
         }
         if let Some((secs, epoch, decode_on)) = latest_seek {
             seek_epoch = epoch;
+            if let Some(picture) = still_frame.as_ref() {
+                let mut again = copy_of_still(picture);
+                again.pts = RationalTime::from_secs_f64(secs, 90000);
+                again.seek_epoch = epoch;
+                let mut eof = LinearFrame::eof();
+                eof.seek_epoch = epoch;
+                let mut queue = frame_queue.lock().unwrap_or_else(|e| e.into_inner());
+                queue.clear();
+                queue.push(again);
+                queue.push(eof);
+                drop(queue);
+                publish_pts(&last_decoded_pts, Some(secs));
+                eof_sent = true;
+                continue;
+            }
             let (secs, decode_on) = still_seek(still, secs, decode_on, &mut still_at);
             if decode_on {
                 // Keep decoding forward and skip up to the target: a
@@ -3036,6 +3058,9 @@ fn decode_thread_main(
             // because this is the only place that knows: a frame already in
             // flight when a seek arrives was converted under the old epoch.
             linear_frame.seek_epoch = seek_epoch;
+            if still && still_frame.is_none() {
+                still_frame = Some(copy_of_still(&linear_frame));
+            }
             let (frame_w, frame_h) = (linear_frame.width, linear_frame.height);
 
             let t_queue = std::time::Instant::now();
@@ -3124,6 +3149,21 @@ fn decode_thread_main(
             frame_queue.lock().unwrap_or_else(|e| e.into_inner()).push(eof);
             eof_sent = true;
         }
+    }
+}
+
+/// A still's picture, again: what each seek on a still gives (#2474).
+fn copy_of_still(f: &LinearFrame) -> LinearFrame {
+    LinearFrame {
+        pts: f.pts,
+        width: f.width,
+        height: f.height,
+        data: f.data.clone(),
+        is_eof: false,
+        gpu_source: f.gpu_source.clone(),
+        colorspace: f.colorspace,
+        hdr: f.hdr.clone(),
+        seek_epoch: f.seek_epoch,
     }
 }
 

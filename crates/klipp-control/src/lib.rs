@@ -579,6 +579,41 @@ mod offline_frame_tests {
         assert_eq!(offline_picture_at(&seq, &pool, tc(1.0)), None);
         std::fs::remove_file(&here_path).ok();
     }
+
+    /// #2474: a file under the time that cannot be decoded is named with
+    /// why; a still that decodes is not, at any time into its clip.
+    #[test]
+    fn an_undecodable_file_under_the_time_is_named() {
+        use super::undecodable_picture_at;
+        let dir = std::env::temp_dir().join(format!("klipp-undecodable-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let broken_path = dir.join("broken.mov");
+        std::fs::write(&broken_path, b"not a video").unwrap();
+        let still_path = dir.join("still.jpg");
+        let made = std::process::Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=gray:s=64x48", "-frames:v", "1"])
+            .arg(&still_path)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        let mut pool = klipp_media::MediaPool::new();
+        let broken = pool.add(klipp_media::MediaItem::synthetic_for_test(broken_path.clone(), None));
+        let mut still_item = klipp_media::MediaItem::synthetic_for_test(still_path, None);
+        still_item.is_still = true;
+        let still = pool.add(still_item);
+        let tc = |s: f64| klipp_core::Timecode::from_secs_f64(s, 24);
+        let mut seq = klipp_timeline::Sequence::new_default();
+        let mut v = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+        v.clips = vec![
+            klipp_timeline::Clip::media(broken, tc(0.0), tc(2.0), tc(0.0), tc(2.0)),
+            klipp_timeline::Clip::media(still, tc(2.0), tc(6.0), tc(0.0), tc(4.0)),
+        ];
+        seq.tracks = vec![v];
+        let said = undecodable_picture_at(&seq, &pool, tc(1.0)).expect("the broken file is named");
+        assert!(said.contains("broken.mov") && said.contains("could not be decoded"), "{said}");
+        assert_eq!(undecodable_picture_at(&seq, &pool, tc(5.0)), None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
 
 #[cfg(test)]
