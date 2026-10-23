@@ -30,7 +30,7 @@ pub fn overlay(seq: &Sequence, round: u32) -> Sequence {
     while t < end {
         let to = (t + 1.0).min(end);
         let text = format!("REVIEW \u{b7} {} \u{b7} round {round} \u{b7} {}", seq.name, clock(t));
-        let clip = crate::ops::title_clip(crate::ops::caption_title(&text), crate::ops::snap(t, fps), crate::ops::snap(to, fps), fps);
+        let clip = crate::ops::title_clip(crate::ops::caption_title(&text, seq.resolution), crate::ops::snap(t, fps), crate::ops::snap(to, fps), fps);
         track.clips.push(clip);
         t = to;
     }
