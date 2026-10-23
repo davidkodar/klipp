@@ -3,6 +3,29 @@
 #[allow(unused_imports)]
 use crate::*;
 
+/// Whether playback reads proxies or the originals (#2478), and how many
+/// of the picture files the timeline shows have one. Reads the sequence
+/// and the pool one after the other, never both held.
+fn proxy_line(ctx: &ControlContext) -> serde_json::Value {
+    let status = ctx.shared.proxies.lock().map(|s| s.clone()).unwrap_or_default();
+    let shown: std::collections::HashSet<klipp_core::MediaId> = ctx.sequence.read().map(|seq| seq.tracks.iter().flat_map(|t| &t.clips).filter_map(|c| c.media_id()).collect()).unwrap_or_default();
+    let (videos, ready) = ctx
+        .media_pool
+        .read()
+        .map(|pool| {
+            let videos: Vec<&klipp_media::MediaItem> = shown.iter().filter_map(|id| pool.get(id)).filter(|m| !m.video_codec.is_empty() && !m.is_still).collect();
+            (videos.len(), videos.iter().filter(|m| m.proxy_ready).count())
+        })
+        .unwrap_or((0, 0));
+    let making = status.making.len();
+    let text = match (status.use_proxies, ready) {
+        (true, 0) => format!("Playback reads the originals: proxies are on, but none of the {videos} picture file(s) on the timeline has one yet (make_proxies)"),
+        (true, r) => format!("Playback reads proxies: {r} of the {videos} picture file(s) on the timeline have one; the rest play their originals"),
+        (false, _) => format!("Playback reads the originals: proxies are off ({ready} of {videos} picture file(s) on the timeline have one)"),
+    } + &if making > 0 { format!("; {making} being made") } else { String::new() };
+    json!({ "use_proxies": status.use_proxies, "on_timeline": videos, "ready": ready, "making": making, "text": text })
+}
+
 pub(crate) fn respond(
     ctx: &ControlContext,
     cmd: ControlCommand,
@@ -76,6 +99,7 @@ pub(crate) fn respond(
             let recent_projects = crate::project_access::status_recents(&project);
             // Before the sequence is held: it reads it too.
             let offline = super::media::offline_media(ctx);
+            let proxies = proxy_line(ctx);
             let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
             let fb = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?;
             let perf = ctx.perf_ring.lock().ok().and_then(|r| r.latest().cloned());
@@ -95,6 +119,7 @@ pub(crate) fn respond(
             if let Some(o) = &offline {
                 text.push_str(&format!("\n{}", o["text"].as_str().unwrap_or("")));
             }
+            text.push_str(&format!("\n{}", proxies["text"].as_str().unwrap_or("")));
             if !recent_projects.is_empty() {
                 text.push_str("\nRecent projects (open_project by name or path):");
                 for p in &recent_projects { text.push_str(&format!("\n{} — {}", p["name"], p["path"])); }
@@ -143,6 +168,7 @@ pub(crate) fn respond(
                 "revision": ctx.shared.revision(),
                 "active_jobs": active_jobs,
                 "offline_media": offline,
+                "proxies": proxies,
                 "recent_projects": recent_projects,
                 "execution_providers": klipp_analysis::providers::lines(),
                 "gpu_refusing": gpu_refusing,

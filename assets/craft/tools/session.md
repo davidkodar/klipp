@@ -66,6 +66,10 @@ Point a media item at a file: an offline item found again, or a better copy. The
 
 With folder (an absolute folder) instead of path, every offline item, or the one media_id names, is looked for under it, down to twelve levels: by content, name (any extension), reel, start timecode and length. One file that is clearly the item is relinked; the reply's relinked lists them with what matched. choose lists items with several equal files, or only a name or a length to go on: relink each with media_id and path. not_found says why close files were turned down. A file whose picture is turned (a phone video) is compared at its upright size. klipp_status, klipp_orient and klipp_open_project count the offline files.
 
+## klipp_make_proxies
+
+Make proxies, light copies playback reads in place of heavy originals (4K, camera codecs), as the media pool's Generate Proxy does: for media_ids, or every picture file on the timeline when none are given; a file with its proxy made already is left be. It runs as a job of kind proxies: follow it with klipp_job_status (files done of all, the share transcoded); a failed file is named with why. use_proxies true has playback read a file's proxy where it has one, false the originals; export always reads the originals. klipp_status says which playback reads, and how many files on the timeline have a proxy.
+
 ## klipp_save_project
 
 Save the project: to an absolute path (a folder ending in .klipp, made if needed), or where it was last saved when no path is given. Save before a long piece of work and when you are done, so the user can carry on by hand. klipp_status says where the project is saved and whether it has unsaved changes.

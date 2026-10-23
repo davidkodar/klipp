@@ -782,6 +782,7 @@ fn handle(
         ) => requests::review::respond(ctx, cmd, collect),
         cmd @ (ControlCommand::Timeline { .. }
             | ControlCommand::RelinkMedia { .. }
+            | ControlCommand::MakeProxies { .. }
             | ControlCommand::TagMedia { .. }
             | ControlCommand::ListMedia
             | ControlCommand::ImportMedia { .. }

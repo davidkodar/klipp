@@ -168,6 +168,7 @@ impl KlippApp {
             }
             match event {
                 AppEvent::ProxyGenerationStarted { media_id } => {
+                    self.note_proxy_failure(media_id, None);
                     let filename = self.state.media_pool.get(&media_id)
                         .map(|m| m.filename.clone())
                         .unwrap_or_else(|| format!("{media_id}"));
@@ -203,6 +204,7 @@ impl KlippApp {
                     self.sync_media_pool_to_engine();
                 }
                 AppEvent::ProxyGenerationFailed { media_id, error } => {
+                    self.note_proxy_failure(media_id, Some(error.clone()));
                     self.state.proxy_generating.remove(&media_id);
                     self.state.proxy_progress.remove(&media_id);
                     self.state.proxy_start_times.remove(&media_id);
@@ -527,6 +529,26 @@ impl KlippApp {
     pub(super) fn drain_proxy_progress(&mut self) {
         while let Ok((media_id, pct)) = self.proxy_progress_rx.try_recv() {
             self.state.proxy_progress.insert(media_id, pct);
+        }
+        self.publish_proxies();
+    }
+
+    /// The proxies as the control socket sees them (#2478): whether
+    /// playback uses them and the ones being made. Failures are noted as
+    /// they come.
+    fn publish_proxies(&self) {
+        let Ok(mut shared) = self.state.control_shared.proxies.lock() else { return };
+        shared.use_proxies = self.state.use_proxies;
+        shared.making = self.state.proxy_generating.iter().map(|id| (*id, self.state.proxy_progress.get(id).copied().unwrap_or(0.0))).collect();
+    }
+
+    /// A proxy's failure for the control socket, or a new start clearing
+    /// the last one.
+    fn note_proxy_failure(&self, media_id: MediaId, error: Option<String>) {
+        let Ok(mut shared) = self.state.control_shared.proxies.lock() else { return };
+        shared.failed.retain(|(id, _)| *id != media_id);
+        if let Some(e) = error {
+            shared.failed.push((media_id, e));
         }
     }
 }

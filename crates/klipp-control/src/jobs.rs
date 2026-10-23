@@ -42,6 +42,8 @@ enum Submitted {
     /// session.
     Import { path: std::path::PathBuf, analyze: bool, project_identity: u64, media_id: Option<klipp_core::MediaId> },
     Sync { media_ids: Vec<String>, existing_groups: Vec<String>, project_identity: u64 },
+    /// Proxies asked for (#2478): done as each file's proxy is ready.
+    Proxies { media_ids: Vec<klipp_core::MediaId> },
 }
 
 static SUBMITTED: OnceLock<Mutex<HashMap<String, Submitted>>> = OnceLock::new();
@@ -86,6 +88,45 @@ pub(super) fn existing_multicam_groups(ctx: &ControlContext) -> Vec<String> {
         .collect()
 }
 
+pub(super) fn register_proxies(job_id: &str, media_ids: Vec<klipp_core::MediaId>) {
+    submitted().lock().unwrap_or_else(|e| e.into_inner()).insert(job_id.to_owned(), Submitted::Proxies { media_ids });
+}
+
+/// A proxies job as it stands: each file ready (in the pool), being made
+/// (its share done) or failed, as the UI last said.
+fn proxies_job(ctx: &ControlContext, job_id: &str, media_ids: &[klipp_core::MediaId]) -> Value {
+    let status = ctx.shared.proxies.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let (mut done, mut share, mut failed, mut gone) = (0usize, 0.0f32, Vec::new(), 0usize);
+    if let Ok(pool) = ctx.media_pool.read() {
+        for id in media_ids {
+            let Some(item) = pool.get(id) else {
+                gone += 1;
+                continue;
+            };
+            if item.proxy_ready {
+                done += 1;
+                share += 1.0;
+            } else if let Some((_, why)) = status.failed.iter().find(|(f, _)| f == id) {
+                failed.push(format!("{}: {why}", item.filename));
+            } else if let Some((_, p)) = status.making.iter().find(|(m, _)| m == id) {
+                share += p.clamp(0.0, 1.0);
+            }
+        }
+    }
+    let n = media_ids.len().max(1);
+    let settled = done + failed.len() + gone >= media_ids.len();
+    let state = if !settled { "running" } else if failed.is_empty() && gone == 0 { "completed" } else { "failed" };
+    json!({
+        "job_id": job_id, "kind": "proxies", "state": state,
+        "phase": if settled { state } else { "transcoding" },
+        "progress": share / n as f32,
+        "completed_units": done, "total_units": media_ids.len(), "unit": "files",
+        "eta_secs": null,
+        "error": (!failed.is_empty() || gone > 0).then(|| { let mut e = failed.join("; "); if gone > 0 { e.push_str(&format!("{}{gone} file(s) left the pool", if e.is_empty() { "" } else { "; " })); } e }),
+        "artifact": null, "result": (state == "completed").then(|| json!({ "ready": done })),
+    })
+}
+
 pub(super) fn register_sync(ctx: &ControlContext, operation_id: &str, media_ids: Vec<String>, existing_groups: Vec<String>) {
     submitted().lock().unwrap_or_else(|e| e.into_inner()).insert(operation_id.to_owned(),
         Submitted::Sync { media_ids, existing_groups, project_identity: project_identity(ctx) });
@@ -126,7 +167,7 @@ fn prune_submitted(jobs: &[Value]) {
     const RETAIN_MS: u128 = 10 * 60 * 1_000;
     let now = now_ms();
     let mut terminal: Vec<_> = jobs.iter()
-        .filter(|job| matches!(job["kind"].as_str(), Some("import" | "sync")) && is_terminal(job))
+        .filter(|job| matches!(job["kind"].as_str(), Some("import" | "sync" | "proxies")) && is_terminal(job))
         .filter_map(|job| Some((job["job_id"].as_str()?.to_owned(), job["finished_at_ms"].as_u64()? as u128)))
         .collect();
     terminal.sort_by_key(|(_, finished)| *finished);
@@ -231,6 +272,7 @@ pub(super) fn snapshot(ctx: &ControlContext) -> Vec<Value> {
         let refused = operation.as_ref().is_some_and(|status| status["state"] == "refused");
         let error = operation.as_ref().and_then(|status| status["reason"].as_str()).map(str::to_owned);
         match work {
+            Submitted::Proxies { media_ids } => jobs.push(proxies_job(ctx, &operation_id, &media_ids)),
             Submitted::Import { path, analyze, project_identity: expected_project, media_id: known } => {
                 let project_changed = expected_project != project_identity(ctx);
                 let found = ctx.media_pool.read().ok().and_then(|pool| imported_item(&pool, known, &path));

@@ -264,6 +264,17 @@ pub enum ControlCommand {
         #[serde(default)]
         force: bool,
     },
+    /// Make proxies, the light copies playback can read in place of the
+    /// originals, for `media_ids` (every picture file on the timeline
+    /// when empty), as the media pool's own Generate Proxy does: a
+    /// `proxies` job, followed with job_status. `use_proxies` sets
+    /// whether playback reads them (#2478).
+    MakeProxies {
+        #[serde(default)]
+        media_ids: Vec<String>,
+        #[serde(default)]
+        use_proxies: Option<bool>,
+    },
     /// The whole window as the person sees it (panels, dialogs, the
     /// viewer through its monitor LUT and overlays) to a PNG at `path`,
     /// or a temporary file, no wider than `max_width`. For checking a
