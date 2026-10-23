@@ -368,19 +368,7 @@ pub(crate) fn respond(
                 // Generators and title cards are pictures too, read and
                 // judged as graphics (#1919): a piece made only of them
                 // read as zero shots and "nothing amiss".
-                let times: Vec<(f64, (f64, f64), klipp_core::ClipId, bool)> = if color {
-                    let clips: Vec<&klipp_timeline::Clip> = seq.tracks.iter()
-                        .filter(|t| matches!(t.kind, klipp_timeline::TrackKind::Video | klipp_timeline::TrackKind::Text) && t.visible)
-                        .flat_map(|t| t.clips.iter().filter(move |c| (t.kind == klipp_timeline::TrackKind::Video && is_picture_clip(c)) || is_generated_picture(c)))
-                        .collect();
-                    let per_clip = (48 / clips.len().max(1)).clamp(1, 6);
-                    clips.into_iter()
-                        .flat_map(|c| clip_shot_spans(c, &pool, seq.fps.as_f64(), per_clip).into_iter().map(move |span| (span, c.id, is_generated_picture(c))))
-                        .map(|((a, b), id, made)| ((a + b) / 2.0, (a, b), id, made))
-                        .take(48).collect()
-                } else {
-                    Vec::new()
-                };
+                let times: Vec<(f64, (f64, f64), klipp_core::ClipId, bool)> = if color { colour_read_times(&seq, &pool) } else { Vec::new() };
                 // Each distinct piece of media that carries sound, with a
                 // time it plays at — for reading its spectral faults off
                 // the analysis (no rendering, so this is always on).
@@ -907,10 +895,68 @@ fn sound_finding(at: f64, media: &str, what: &str, fix: &str, used: SoundUse) ->
     }
 }
 
+/// The moments the colour pass reads, each with its shot's span, the
+/// clip and whether it is a made picture (a generator, a card): up to six
+/// shots a clip, fewer when there are many clips, 48 in all. A multicam
+/// angle is read only where its group cuts to it: elsewhere the program
+/// shows another angle, and the angle alone renders black (#2417).
+pub(crate) fn colour_read_times(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool) -> Vec<(f64, (f64, f64), klipp_core::ClipId, bool)> {
+    let clips: Vec<&klipp_timeline::Clip> = seq.tracks.iter()
+        .filter(|t| matches!(t.kind, klipp_timeline::TrackKind::Video | klipp_timeline::TrackKind::Text) && t.visible)
+        .flat_map(|t| t.clips.iter().filter(move |c| (t.kind == klipp_timeline::TrackKind::Video && is_picture_clip(c)) || is_generated_picture(c)))
+        .collect();
+    let per_clip = (48 / clips.len().max(1)).clamp(1, 6);
+    let frame = 1.0 / seq.fps.as_f64().max(1.0);
+    let shown = |c: &klipp_timeline::Clip, (a, b): (f64, f64)| -> Vec<(f64, f64)> {
+        match seq.multicam_shown_spans(c) {
+            None => vec![(a, b)],
+            Some(on) => on.into_iter().map(|(x, y)| (a.max(x), b.min(y))).filter(|(x, y)| y - x >= frame).collect(),
+        }
+    };
+    clips.into_iter()
+        .flat_map(|c| clip_shot_spans(c, pool, seq.fps.as_f64(), per_clip).into_iter().flat_map(move |span| shown(c, span)).map(move |span| (span, c.id, is_generated_picture(c))))
+        .map(|((a, b), id, made)| ((a + b) / 2.0, (a, b), id, made))
+        .take(48)
+        .collect()
+}
+
 #[cfg(test)]
 mod sound_role_tests {
     use super::*;
     use klipp_core::ClipRole as R;
+
+    /// #2417: the colour pass reads a multicam angle only where the group
+    /// cuts to it, once a stretch; a clip in no group is read as before.
+    #[test]
+    fn the_colour_pass_reads_what_the_program_shows() {
+        use klipp_core::RationalTime;
+        let tc = |s: f64| RationalTime::from_secs_f64(s, 25);
+        let mut pool = klipp_media::MediaPool::new();
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/no-analysis-2417.mov".into(), None);
+        item.duration = tc(20.0);
+        item.video_codec = "hevc".into();
+        let media = pool.add(item);
+        let group = klipp_core::GroupId::new();
+        let mut primary = klipp_timeline::Clip::media(media, tc(0.0), tc(10.0), tc(0.0), tc(10.0));
+        (primary.multicam_group, primary.multicam_angle, primary.multicam_cuts) = (Some(group), 0, vec![(4.0, 1)]);
+        let mut second = klipp_timeline::Clip::media(media, tc(0.0), tc(10.0), tc(0.0), tc(10.0));
+        (second.multicam_group, second.multicam_angle) = (Some(group), 1);
+        let after = klipp_timeline::Clip::media(media, tc(10.0), tc(12.0), tc(12.0), tc(14.0));
+        let (p, s2, a) = (primary.id, second.id, after.id);
+        let mut seq = klipp_timeline::Sequence::new_default();
+        let mut v1 = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+        v1.clips = vec![primary, after];
+        let mut v2 = klipp_timeline::Track::new("V2", klipp_timeline::TrackKind::Video);
+        v2.clips = vec![second];
+        seq.tracks = vec![v1, v2];
+        let times = colour_read_times(&seq, &pool);
+        let of = |id| times.iter().filter(|t| t.2 == id).map(|t| t.1).collect::<Vec<_>>();
+        let close = |got: Vec<(f64, f64)>, want: (f64, f64)| got.len() == 1 && (got[0].0 - want.0).abs() < 0.05 && (got[0].1 - want.1).abs() < 0.05;
+        assert!(close(of(p), (0.0, 4.0)), "angle 0 until the cut: {times:?}");
+        assert!(close(of(s2), (4.0, 10.0)), "angle 1 after it: {times:?}");
+        assert!(close(of(a), (10.0, 12.0)), "a clip in no group, whole: {times:?}");
+        assert_eq!(times.len(), 3, "once a stretch: {times:?}");
+    }
 
     const RUMBLE: &str = "a strong low-frequency rumble — wind or handling — sits under the sound";
     const HISS: &str = "high-frequency hiss or air is loud against the sound";
