@@ -154,17 +154,19 @@ pub(crate) fn respond(
             }
             // The files asked for, or every picture file the timeline
             // shows; one with its proxy made already is left be.
+            // The sequence read and let go before the pool is: the rest of
+            // the socket reads them in that order.
+            let ids: Vec<klipp_core::MediaId> = if media_ids.is_empty() {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let mut on: Vec<klipp_core::MediaId> = seq.tracks.iter().flat_map(|t| &t.clips).filter_map(|c| c.media_id()).collect();
+                on.sort_by_key(|id| id.0);
+                on.dedup();
+                on
+            } else {
+                media_ids.iter().map(|m| parse_uuid(m, "media_id").map(klipp_core::MediaId)).collect::<Result<_, _>>()?
+            };
             let (wanted, ready) = {
                 let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
-                let ids: Vec<klipp_core::MediaId> = if media_ids.is_empty() {
-                    let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-                    let mut on: Vec<klipp_core::MediaId> = seq.tracks.iter().flat_map(|t| &t.clips).filter_map(|c| c.media_id()).collect();
-                    on.sort_by_key(|id| id.0);
-                    on.dedup();
-                    on
-                } else {
-                    media_ids.iter().map(|m| parse_uuid(m, "media_id").map(klipp_core::MediaId)).collect::<Result<_, _>>()?
-                };
                 let mut wanted = Vec::new();
                 let mut ready = 0;
                 for id in ids {
