@@ -5,6 +5,16 @@ Each release lists what changed for people using Klipp. Versions follow
 
 ## Unreleased
 
+### Added
+
+- Lower thirds have a backing (a shadow and outline by default, or a box) so
+  they read over any picture.
+- Caption translation keeps the brief's names and terms as written, and takes
+  a glossary for recurring terms.
+- The assistant can duplicate a sequence and export the timeline (FCPXML,
+  EDL, OTIO, AAF or Kdenlive) over MCP. As from the menu, an export carries
+  the edit, not grades, most effects or most titles.
+
 ### Fixed
 
 - Captions are made only from the speech you hear: each word once, from the
@@ -23,12 +33,20 @@ Each release lists what changed for people using Klipp. Versions follow
   have bound.
 - Preferences and scope texts describe Klipp's own features without naming
   other editors.
+- Exporting without burnt-in captions keeps titles such as lower thirds.
+- Captions on a vertical frame are larger and higher, and refit adapts them.
+- Refit keeps a clip's own reframe, and on a screen recording it follows what
+  changes on screen rather than the face camera.
+- Listing clips over MCP gives each caption's and title's full text.
 
 ### Changed
 
 - Builds without warnings on Rust 1.99.
 - The user guide, README and website describe the app as it is today, and
   point to the release download.
+- The README and feature reference say what timeline interchange carries:
+  the edit (clips, cuts, timing, and markers where the format has them), not
+  grades, most effects or most titles.
 
 ## 0.1.0-rc.1 — 2026-10-23
 
