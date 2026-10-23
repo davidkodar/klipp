@@ -5778,14 +5778,38 @@ pub(crate) fn wrap_lines(text: &str, max_chars: usize, max_lines: usize) -> Stri
     lines.join("\n")
 }
 
+/// A caption's size, in the 1080-line units a title's size is in, and
+/// the height of its line, for `frame` (#2427): low on a wide frame; on
+/// a tall one larger, and up in the lower third, clear of the controls a
+/// phone puts at the bottom.
+pub(crate) fn caption_look(frame: klipp_core::Resolution) -> (f32, f32) {
+    if frame.height as f32 > frame.width as f32 * 1.2 {
+        (58.0, 0.72)
+    } else {
+        (40.0, 0.88)
+    }
+}
+
+/// How far past its even share [`wrap_lines`] lets a line run.
+const WRAP_SLACK: usize = 4;
+
+/// The most characters a caption line of `size` holds across title-safe
+/// in `frame`, as [`text_extent`] measures text.
+pub(crate) fn caption_line_chars(frame: klipp_core::Resolution, size: f32) -> usize {
+    let (w, h) = (frame.width.max(1) as f32, frame.height.max(1) as f32);
+    let per_char = 0.55 * size * w.min(h) / 1080.0 / w;
+    ((SAFE_WIDTH / per_char.max(1e-6)).floor() as usize).max(8)
+}
+
 /// A caption's look: white on a dark backing, centred low in the
-/// frame. The backing is what keeps it readable over a picture with
-/// writing of its own down there (a name plate, a ticker); an outline
-/// alone is lost in it.
-pub(crate) fn caption_title(text: &str) -> klipp_timeline::TitleData {
+/// frame, sized for it ([`caption_look`]). The backing is what keeps it
+/// readable over a picture with writing of its own down there (a name
+/// plate, a ticker); an outline alone is lost in it.
+pub(crate) fn caption_title(text: &str, frame: klipp_core::Resolution) -> klipp_timeline::TitleData {
+    let (size, y) = caption_look(frame);
     let tb = klipp_timeline::TextBox {
         text: text.to_string(),
-        font_size: 40.0,
+        font_size: size,
         font_name: String::new(),
         alignment: klipp_timeline::TextAlignment::Center,
         ..Default::default()
@@ -5797,7 +5821,7 @@ pub(crate) fn caption_title(text: &str) -> klipp_timeline::TitleData {
     // like a three-quarters black.
     td.background = klipp_timeline::TitleBackground::Color { color: [0, 0, 0, 235], padding: 12.0 };
     if let Some(o) = td.objects.first_mut() {
-        o.transform.center = klipp_timeline::TitlePosition { x: 0.5, y: 0.88 };
+        o.transform.center = klipp_timeline::TitlePosition { x: 0.5, y };
     }
     td
 }
@@ -5858,6 +5882,13 @@ fn captions(
         return Err(refuse(i, "no transcribed speech is heard on the timeline there", "captions come from the transcripts: run analyze and wait for it, and place the speech first"));
     }
     let sound_ends = secs(seq.total_duration());
+    // No longer a line than fits across the frame at the captions' size:
+    // a tall frame holds about thirty characters (#2427).
+    let style_size = match track {
+        Some(t) => resolve_track(seq, t, i).ok().and_then(|ti| seq.tracks[ti].caption_style.as_ref()).map(|s| s.size),
+        None => seq.tracks.iter().find(|t| t.kind == TrackKind::Subtitle).and_then(|t| t.caption_style.as_ref()).map(|s| s.size),
+    };
+    let max_chars = max_chars.min(caption_line_chars(seq.resolution, style_size.unwrap_or(caption_look(seq.resolution).0)).saturating_sub(WRAP_SLACK).max(8));
     let cues = cues_from_words(&words, max_chars, max_lines, sound_ends);
     // The track: the one named, else the first subtitle track, else a new one at the bottom.
     let existing = match track {
@@ -5912,7 +5943,7 @@ fn captions(
             }
         }
         // A track with a caption style gives its new captions that look (#70).
-        let td = caption_title(&cue.text);
+        let td = caption_title(&cue.text, seq.resolution);
         let td = match seq.tracks.get(ti).and_then(|t| t.caption_style.as_ref()) {
             Some(s) => apply_caption_style(&td, s),
             None => td,
@@ -7312,6 +7343,16 @@ fn refit(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, i: usi
     let mut shrunk: Vec<String> = Vec::new();
     for (ti, track) in seq.tracks.iter().enumerate().filter(|(_, t)| !t.locked) {
         for clip in &track.clips {
+            // A caption takes the caption look of the new frame, its lines
+            // wrapped again to fit, unless its track has a style of its
+            // own (#2427).
+            if let (TrackKind::Subtitle, None, Some(td)) = (track.kind, track.caption_style.as_ref(), clip.title_data()) {
+                if let Some(new) = recaption(td, seq.resolution) {
+                    edits.push(EditCommand::EditTitle { clip_id: clip.id, description: "Refit Caption", old_data: td.clone(), new_data: new });
+                    ids.push(clip.id);
+                }
+                continue;
+            }
             if let Some(td) = clip.title_data() {
                 if let Some((new, shrank)) = relay_title(td, seq.resolution) {
                     if shrank {
@@ -7407,6 +7448,25 @@ fn refit(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, i: usi
         what += &format!("; titles shrunk to fit: {}", shrunk.join(", "));
     }
     Ok((what, EditCommand::Named { label: "Refit to Frame".into(), edit: Box::new(EditCommand::Batch(edits)) }, ids))
+}
+
+/// A caption as the caption look sets it in `frame`: its size, its line's
+/// height, and its words wrapped again to the lines that fit there, on as
+/// many lines as it had (two at least) or as they need. `None` when
+/// nothing changes.
+fn recaption(td: &klipp_timeline::TitleData, frame: klipp_core::Resolution) -> Option<klipp_timeline::TitleData> {
+    let (size, y) = caption_look(frame);
+    let mut new = td.clone();
+    let obj = new.objects.iter_mut().find(|o| matches!(o.content, klipp_timeline::TitleObjectContent::TextBox(_)))?;
+    let klipp_timeline::TitleObjectContent::TextBox(tb) = &mut obj.content else { return None };
+    let words = tb.text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let chars = caption_line_chars(frame, size).saturating_sub(WRAP_SLACK).max(8);
+    // As many lines as it had, or as its words need at the new width.
+    let lines = tb.text.lines().count().max(2).max(words.chars().count().div_ceil(chars));
+    tb.text = wrap_lines(&words, chars, lines);
+    tb.font_size = size;
+    obj.transform.center.y = y;
+    (new != *td).then_some(new)
 }
 
 /// A title's words kept inside title-safe in `frame` (#2211): a text box
@@ -13091,6 +13151,46 @@ mod tests {
         assert_eq!((plan.steps[1].after[0].timeline_in_secs, plan.steps[1].after[0].timeline_out_secs), (9.0, 10.0));
     }
 
+    /// #2427: on a tall frame captions are larger, up in the lower
+    /// third, their lines no longer than fit across; a refit after a
+    /// format to a tall frame gives captions made wide the same look.
+    #[test]
+    fn captions_suit_a_tall_frame() {
+        let caption = |td: &klipp_timeline::TitleData| {
+            let klipp_timeline::TitleObjectContent::TextBox(tb) = &td.objects[0].content else { panic!("a text box") };
+            (tb.font_size, td.objects[0].transform.center.y, tb.text.clone())
+        };
+        let tall = klipp_core::Resolution { width: 1080, height: 1920 };
+        let fits = caption_line_chars(tall, caption_look(tall).0);
+        assert!((20..=34).contains(&fits), "about thirty characters across a tall frame: {fits}");
+
+        let (mut seq, pool, _, _, _) = fixture();
+        seq.resolution = tall;
+        let plan = resolve_with(&seq, &pool, &[Op::Captions { track: None, from: None, to: None, max_chars: 42, max_lines: 2, replace: false }], &Spoken).unwrap();
+        let (size, y, text) = caption(&plan_caption(&plan, 1));
+        assert!(size > 40.0 && (0.6..0.8).contains(&y), "larger, in the lower third: {size} at {y}");
+        assert!(text.lines().all(|l| l.chars().count() <= fits), "lines fit across: {text:?}");
+
+        // Made wide, then the frame turned tall: refit gives them the look.
+        let (mut seq, pool, _, _, _) = fixture();
+        let plan = resolve_with(&seq, &pool, &[Op::Captions { track: None, from: None, to: None, max_chars: 42, max_lines: 2, replace: false }], &Spoken).unwrap();
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&plan.steps[0].edit);
+        seq = view.sequences[0].clone();
+        let wide = caption(seq.tracks.last().unwrap().clips[1].title_data().unwrap());
+        assert_eq!((wide.0, wide.1), (40.0, 0.88));
+        seq.resolution = tall;
+        let plan = resolve_with(&seq, &pool, &[Op::Refit { markers: false }], &Spoken).unwrap();
+        let EditCommand::Named { edit, .. } = &plan.steps[0].edit else { panic!("a named batch") };
+        let EditCommand::Batch(edits) = edit.as_ref() else { panic!("a batch") };
+        let refit: Vec<_> = edits.iter().filter_map(|e| match e { EditCommand::EditTitle { description: "Refit Caption", new_data, .. } => Some(caption(new_data)), _ => None }).collect();
+        assert_eq!(refit.len(), seq.tracks.last().unwrap().clips.len(), "every caption: {refit:?}");
+        assert!(refit.iter().all(|(size, y, text)| *size > 40.0 && (0.6..0.8).contains(y) && text.lines().all(|l| l.chars().count() <= fits)), "{refit:?}");
+    }
+
     /// #70: captions made on a track with a caption style take it.
     #[test]
     fn captions_made_on_a_styled_track_take_its_style() {
@@ -13116,7 +13216,7 @@ mod tests {
             assert!(o.fx.as_ref().is_some_and(|fx| !fx.shadows.is_empty()), "the shadow");
         }
         // The default look is unchanged for an unstyled track.
-        let plain = apply_caption_style(&caption_title("hi"), &klipp_timeline::CaptionStyle::default());
+        let plain = apply_caption_style(&caption_title("hi", klipp_core::Resolution::hd_1080()), &klipp_timeline::CaptionStyle::default());
         let klipp_timeline::TitleObjectContent::TextBox(tb) = &plain.objects[0].content else { panic!() };
         assert_eq!(tb.font_size, 40.0);
     }

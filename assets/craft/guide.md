@@ -209,7 +209,9 @@ exist until the plan runs.
 - `captions {track?, from?, to?, max_chars?, max_lines?, replace?}`: captions for
   what is heard on the timeline, from the transcripts. Each word lands
   where its clip puts it; a cue closes at a sentence, a pause or a cut;
-  two lines of 42 characters unless you say otherwise. They go on the
+  two lines of 42 characters unless you say otherwise, fewer on a tall
+  frame, where captions are larger and sit up in the lower third (a
+  `refit` after `format` gives existing captions that look). They go on the
   first subtitle track, made at the bottom if there is none. The reply
   lists every cue: read them, and correct one with `set_text`. Do it
   last, once the speech is where it will stay: a trim afterwards does

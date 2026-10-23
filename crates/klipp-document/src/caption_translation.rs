@@ -208,7 +208,7 @@ pub fn translated_track(seq: &Sequence, track: usize, translations: &[(ClipId, S
         } else if wrapped.lines().count() > MAX_LINES || wrapped.lines().any(|l| l.chars().count() > MAX_CHARS + 4) {
             flagged.push(Flagged { at_secs: at, text: text.to_string(), why: "too long for two lines" });
         }
-        let td = crate::ops::caption_title(&wrapped);
+        let td = crate::ops::caption_title(&wrapped, seq.resolution);
         let td = match new.caption_style.as_ref() {
             Some(style) => crate::ops::apply_caption_style(&td, style),
             None => td,
@@ -233,7 +233,7 @@ mod tests {
         let tc = |s: f64| klipp_core::Timecode::from_secs_f64(s, rate);
         let mut ids = Vec::new();
         for (from, to, text) in lines {
-            let clip = crate::ops::title_clip(crate::ops::caption_title(text), tc(*from), tc(*to), seq.fps);
+            let clip = crate::ops::title_clip(crate::ops::caption_title(text, seq.resolution), tc(*from), tc(*to), seq.fps);
             ids.push(clip.id);
             track.clips.push(clip);
         }
