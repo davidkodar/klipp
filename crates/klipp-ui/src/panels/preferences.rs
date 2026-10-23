@@ -789,7 +789,7 @@ impl PreferencesPanel {
         Self::setting_row_with_subtitle(
             ui,
             "Optimised playback",
-            "Use the lighter skim file for playback when source media is too heavy (mirrors DaVinci Optimised Media / FCP Proxy)",
+            "Use the lighter skim file for playback when source media is too heavy",
             theme,
             |ui| {
                 use crate::prefs::OptimisedPlayback;
@@ -3263,7 +3263,7 @@ impl PreferencesPanel {
                  \u{2022}  4K HDR 60 fps ~14 GB  (tonemap adds ~20%)\n\n\
                  Presets:\n\
                  \u{2022}  High     — ~2x Standard, near-transparent quality\n\
-                 \u{2022}  Standard — FCP / DaVinci proxy equivalent\n\
+                 \u{2022}  Standard — typical proxy quality\n\
                  \u{2022}  Low      — ~0.5x Standard, visible compression\n\
                  \u{2022}  Draft    — ~0.25x Standard, blocky but viable\n\n\
                  Cache is regenerated on demand — delete anytime in the \

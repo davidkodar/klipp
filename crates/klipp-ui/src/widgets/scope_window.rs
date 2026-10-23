@@ -1172,7 +1172,7 @@ fn draw_pane_settings(
         ScopeType::FalseColour => {
             ui.label("No settings available.");
             ui.small("The picture repainted by exposure. Purple is at black and red is at white — both mean detail already gone.");
-            ui.small("Pink means skin is exposed as the look asks, as it is on an ARRI or a Blackmagic, taken from the brief's skin level, so it agrees with the skin findings rather than being a second opinion.");
+            ui.small("Pink means skin is exposed as the look asks, taken from the brief's skin level, so it agrees with the skin findings rather than being a second opinion.");
         }
         ScopeType::AudioSpectrum => {
             ui.label("No settings available.");
