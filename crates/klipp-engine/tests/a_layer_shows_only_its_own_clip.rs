@@ -105,14 +105,24 @@ fn a_cut_on_another_track_never_takes_the_prerolled_shot() {
     }
     let reached = *playhead.lock().unwrap();
     cmd.send(AppCommand::Pause).unwrap();
-    std::thread::sleep(Duration::from_millis(200));
     common::settle(&fb);
-    let px = {
+    let centre = || {
         let fb = fb.lock().unwrap();
         let (data, w, h, _) = fb.latest_frame();
         let i = ((h / 2 * w + w / 2) * 4) as usize;
         [data[i], data[i + 1], data[i + 2]]
     };
+    // Yellow: red and green up, blue down. The prerolled shot was blue.
+    let yellow = |px: [u8; 3]| px[0] > 180 && px[1] > 180 && px[2] < 80;
+    // Until the parked frame shows yellow, however busy the machine: a
+    // quiet moment can come while the shot before it is still held, its
+    // stream not yet open (#2222). A wrong shot stays wrong.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut px = centre();
+    while !yellow(px) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+        px = centre();
+    }
     let at = *playhead.lock().unwrap();
     let _ = cmd.send(AppCommand::Quit);
     let _ = thread.join();
@@ -120,6 +130,5 @@ fn a_cut_on_another_track_never_takes_the_prerolled_shot() {
 
     assert!(reached >= 3.2, "playback never reached the yellow shot: at {reached} s");
     assert!((2.6..4.0).contains(&at), "parked at {at} s, not on the yellow shot");
-    // Yellow: red and green up, blue down. The prerolled shot was blue.
-    assert!(px[0] > 180 && px[1] > 180 && px[2] < 80, "at {at} s the yellow shot shows {px:?}, not yellow");
+    assert!(yellow(px), "at {at} s the yellow shot shows {px:?}, not yellow");
 }
