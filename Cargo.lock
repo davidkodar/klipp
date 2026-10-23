@@ -3358,6 +3358,7 @@ dependencies = [
 name = "klipp-plugin"
 version = "0.1.0-rc.1"
 dependencies = [
+ "cc",
  "dirs",
  "klipp-core",
  "klipp-load-lock",
