@@ -109,8 +109,13 @@ impl Run {
             }
             return;
         }
-        if matches!(cmd, AppCommand::SeekTo(_)) {
-            return;
+        // The key menu wraps its edits in one named step (#2374).
+        match &cmd {
+            AppCommand::SeekTo(_) => return,
+            AppCommand::BeginHistoryBatch => return self.state.active_history_mut().begin_batch(),
+            AppCommand::EndHistoryBatch => return self.state.active_history_mut().end_batch(),
+            AppCommand::EndHistoryBatchAs { label } => return self.state.active_history_mut().end_batch_as(label),
+            _ => {}
         }
         let mut host = InspectorEditHost { state: &mut self.state, side: &Sink };
         if !host.apply_keyframe_drag(&cmd) && !host.apply(&cmd) {
