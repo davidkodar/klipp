@@ -21,8 +21,6 @@ Each release lists what changed for people using Klipp. Versions follow
   the command palette.
 - Menu and tooltip shortcuts (viewer overlays, storylines) show the keys you
   have bound.
-- The undo step for easing keys is named after the ease and how many keys it
-  changed.
 - Preferences and scope texts describe Klipp's own features without naming
   other editors.
 
