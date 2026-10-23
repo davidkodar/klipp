@@ -328,6 +328,10 @@ pub fn overwrite_insert_clip_on_track(
         track.clips[i].source_out = clip.source_in + left_dur;
         // A glide is the whole clip's move; the pieces keep their keys (#611).
         track.clips[i].frame_glide = None;
+        // A multicam primary's cuts count from its start: the left piece
+        // keeps those before its end, as a blade's does.
+        let left_secs = left_dur.to_secs_f64();
+        track.clips[i].multicam_cuts.retain(|(at, _)| *at < left_secs);
 
         // Right portion: new clip starting at new_out. The clip's own
         // copy, picture and all; what belongs to the clip alone is not.
@@ -342,6 +346,8 @@ pub fn overwrite_insert_clip_on_track(
         right_clip.grade_flag = Default::default();
         right_clip.precomp = None;
         right_clip.baked_own = None;
+        // Its cuts from its own start, each on the picture it cuts.
+        right_clip.multicam_cuts = klipp_timeline::multicam::rebased_cuts(&clip.multicam_cuts, right_offset.to_secs_f64());
         track.clips.insert(i + 1, right_clip);
     }
 
@@ -349,8 +355,10 @@ pub fn overwrite_insert_clip_on_track(
     for &i in &to_trim_left {
         let clip = &track.clips[i];
         let trim_amount = new_out - clip.timeline_in;
+        let cuts = klipp_timeline::multicam::rebased_cuts(&clip.multicam_cuts, trim_amount.to_secs_f64());
         track.clips[i].source_in += trim_amount;
         track.clips[i].timeline_in = new_out;
+        track.clips[i].multicam_cuts = cuts;
     }
 
     // Trim right edges back (clip starts before new_in, ends after)
@@ -401,6 +409,32 @@ mod tests {
         a1.clips = vec![sa, d];
         seq.tracks = vec![v1, a1];
         (seq, ids)
+    }
+
+    /// An overwrite paste into a multicam primary leaves each angle cut on
+    /// the picture it cuts: the piece after the paste counts its cuts from
+    /// its own start, and one whose head is pasted over from its new start.
+    /// The angle at every moment outside the paste is the one it was.
+    #[test]
+    fn an_overwrite_paste_keeps_each_angle_at_its_moment() {
+        let g = klipp_core::GroupId::new();
+        let angle = |n: u8| {
+            let mut c = clip(0.0, 10.0);
+            (c.multicam_group, c.multicam_angle) = (Some(g), n);
+            c
+        };
+        let mut primary = angle(0);
+        primary.multicam_cuts = vec![(2.0, 1), (4.0, 0), (6.0, 1)];
+        let mut seq = Sequence::new_default();
+        seq.tracks = [primary, angle(1)].into_iter().map(|c| Track { clips: vec![c], ..Track::new("V", TrackKind::Video) }).collect();
+        let at = |s: &Sequence, xs: &[f64]| xs.iter().map(|x| s.multicam_at(None, tc(*x)).map(|m| m.active)).collect::<Vec<_>>();
+        for (from, to, outside) in [(3.0, 5.0, vec![1.0, 2.5, 5.5, 6.5, 9.0]), (0.0, 3.0, vec![3.5, 4.5, 6.5, 9.0])] {
+            let mut pasted = seq.clone();
+            for track in &mut pasted.tracks {
+                overwrite_insert_clip_on_track(track, clip(from, to));
+            }
+            assert_eq!(at(&pasted, &outside), at(&seq, &outside), "pasted over {from}-{to} s");
+        }
     }
 
     /// #1753: a copied clip's node labels go with it, onto the paste's
