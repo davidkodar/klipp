@@ -225,6 +225,32 @@ pub(crate) fn offline_picture_at(seq: &klipp_timeline::Sequence, pool: &klipp_me
     clips.iter().find_map(|c| missing(c))
 }
 
+/// The picture files under `tc` that ffmpeg cannot decode a frame of,
+/// when none under it can: why a frame never came, said with the file
+/// and the error rather than as where the viewer stopped (#2474).
+pub(crate) fn undecodable_picture_at(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, tc: klipp_core::Timecode) -> Option<String> {
+    let fps = seq.fps.as_f64();
+    let mut failed = Vec::new();
+    for clip in seq
+        .tracks
+        .iter()
+        .filter(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible)
+        .filter_map(|t| t.clip_at_timecode(tc).map(|(_, c)| c))
+        .filter(|c| c.enabled && !matches!(c.kind, klipp_timeline::ClipKind::Gap))
+    {
+        // A title or generator draws without a file: the frame is not
+        // held up by decoding.
+        let item = clip.media_id().and_then(|id| pool.get(&id)).filter(|m| !m.is_synthetic())?;
+        let secs = clip.source_time_for_sequence_time(tc, fps).map(|t| t.to_secs_f64()).unwrap_or(0.0);
+        let secs = if item.is_still { 0.0 } else { secs };
+        match decode_frame_rgba_sized(&item.path, secs, 16, 16) {
+            Ok(_) => return None,
+            Err(e) => failed.push(format!("{} could not be decoded ({e}): {}", item.filename, item.path.display())),
+        }
+    }
+    (!failed.is_empty()).then(|| failed.join("; "))
+}
+
 /// Decode one frame of a media file at `secs` to 320x180 RGBA through
 /// ffmpeg, for measuring a reference clip's look off the file (not the
 /// timeline). Scaled small: the scope stats read colour and luma, which a

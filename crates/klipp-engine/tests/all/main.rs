@@ -8,6 +8,8 @@
 // per file here.
 #![allow(clippy::duplicate_mod)]
 
+#[path = "../a_large_jpeg_still_shows.rs"]
+mod a_large_jpeg_still_shows;
 #[path = "../a_live_drag_reaches.rs"]
 mod a_live_drag_reaches;
 #[path = "../a_parked_step_keeps_its_neighbours.rs"]

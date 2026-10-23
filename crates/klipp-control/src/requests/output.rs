@@ -674,6 +674,15 @@ pub(crate) fn respond(
                 }
                 if std::time::Instant::now() >= deadline {
                     restore_transport(ctx, held);
+                    // A file under the target that cannot be decoded is
+                    // why: said by name, not as where the viewer stopped.
+                    if !at_target {
+                        let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                        let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                        if let Some(why) = undecodable_picture_at(&seq, &pool, target) {
+                            return Err(format!("no frame at {secs:.3} s: {why}"));
+                        }
+                    }
                     let state = match (at_target, complete) {
                         (false, _) => format!(
                             "the viewer is at {} s, not {secs:.3} s",
