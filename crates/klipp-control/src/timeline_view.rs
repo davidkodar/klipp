@@ -553,7 +553,6 @@ mod tests {
     /// reads as under it, not as ungraded; a still's zoom is said.
     #[test]
     fn a_timeline_grade_and_a_zoom_are_said() {
-        use klipp_timeline::GradeAccess;
         let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
         let still = klipp_timeline::test_clip::TestClip::of(klipp_timeline::Clip::gap(tc(0.0), tc(4.0))).lane("scale", 0.0, 1.0).lane("scale", 4.0, 1.2).build();
         let mut seq = klipp_timeline::Sequence::new_default();
