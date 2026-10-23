@@ -56,6 +56,7 @@ pub mod otio_tool;
 pub mod otio_import;
 pub mod path_util;
 mod save;
+mod unique_ids;
 pub mod template;
 pub mod workspace;
 

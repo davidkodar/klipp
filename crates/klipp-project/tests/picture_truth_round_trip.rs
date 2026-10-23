@@ -161,3 +161,40 @@ fn a_corrections_mix_saves_with_its_capability_and_reopens_the_same() {
     let _ = std::fs::remove_dir_all(&first);
     let _ = std::fs::remove_dir_all(&second);
 }
+
+/// #2457: a clip id twice in one sequence. Each picture-truth clip is
+/// saved and read back whole (its mask and its mix), the later one under
+/// an id of its own; the clip linked to it follows it there; and a second
+/// save writes the same ids again.
+#[test]
+fn a_repeated_clip_id_keeps_each_clips_picture() {
+    let (mut seq, masked, _) = sequence();
+    let t = |s: f64| RationalTime::from_secs_f64(s, 24);
+    let mut again = masked.clone();
+    (again.timeline_in, again.timeline_out) = (t(8.0), t(12.0));
+    let mut sound = Clip::media(MediaId::new(), t(8.0), t(12.0), t(0.0), t(4.0));
+    sound.linked_clip_id = Some(masked.id);
+    seq.tracks[0].clips.push(again);
+    let audio = seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Audio).expect("an audio track");
+    seq.tracks[audio].clips.push(sound);
+    let first = scratch("repeated");
+    save_project(&first, std::slice::from_ref(&seq), &MediaPool::new()).unwrap();
+
+    let loaded = load_project(&first).unwrap();
+    let pictures: Vec<&Clip> = loaded.0[0].tracks[0].clips.iter().filter(|c| c.is_picture_truth()).collect();
+    assert_eq!(pictures.len(), 2, "both read back as picture-truth clips");
+    for c in &pictures {
+        let p = serde_json::to_string(&c.picture_v2().unwrap().picture).unwrap();
+        assert!(p.contains("matte_selection") && p.contains("0.5"), "each keeps its mask and its mix: {p}");
+    }
+    assert_eq!(pictures[0].id, masked.id, "the first keeps its id");
+    assert_ne!(pictures[1].id, masked.id, "the later one has its own");
+    let linked = loaded.0[0].tracks[audio].clips[0].linked_clip_id;
+    assert_eq!(linked, Some(pictures[1].id), "its linked sound follows it");
+
+    let second = scratch("repeated_again");
+    save_project(&second, std::slice::from_ref(&seq), &MediaPool::new()).unwrap();
+    assert_eq!(project_text(&second), project_text(&first), "the same ids, save after save");
+    let _ = std::fs::remove_dir_all(&first);
+    let _ = std::fs::remove_dir_all(&second);
+}
