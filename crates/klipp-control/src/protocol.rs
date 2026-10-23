@@ -250,9 +250,17 @@ pub enum ControlCommand {
     /// timecode, length, rate, size) and relinked, the answer saying
     /// whether it is the same clip. A file that is probably not the
     /// clip is refused unless `force`: a relink is not an undo step.
+    /// With `folder` instead of `path`, every offline item (or the one
+    /// `media_id` names) is looked for under it by content, name, reel,
+    /// timecode and length, and relinked where one file clearly is it;
+    /// the rest are named with why (#2480).
     RelinkMedia {
-        media_id: String,
-        path: String,
+        #[serde(default)]
+        media_id: Option<String>,
+        #[serde(default)]
+        path: Option<String>,
+        #[serde(default)]
+        folder: Option<String>,
         #[serde(default)]
         force: bool,
     },

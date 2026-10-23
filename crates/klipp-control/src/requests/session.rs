@@ -74,6 +74,8 @@ pub(crate) fn respond(
             let active_jobs = jobs::active(ctx);
             let project = project_status(ctx)?;
             let recent_projects = crate::project_access::status_recents(&project);
+            // Before the sequence is held: it reads it too.
+            let offline = super::media::offline_media(ctx);
             let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
             let fb = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?;
             let perf = ctx.perf_ring.lock().ok().and_then(|r| r.latest().cloned());
@@ -90,6 +92,9 @@ pub(crate) fn respond(
                 playhead_secs: presented.unwrap_or(0.0),
                 playing,
             });
+            if let Some(o) = &offline {
+                text.push_str(&format!("\n{}", o["text"].as_str().unwrap_or("")));
+            }
             if !recent_projects.is_empty() {
                 text.push_str("\nRecent projects (open_project by name or path):");
                 for p in &recent_projects { text.push_str(&format!("\n{} — {}", p["name"], p["path"])); }
@@ -137,6 +142,7 @@ pub(crate) fn respond(
                 "pid": std::process::id(),
                 "revision": ctx.shared.revision(),
                 "active_jobs": active_jobs,
+                "offline_media": offline,
                 "recent_projects": recent_projects,
                 "execution_providers": klipp_analysis::providers::lines(),
                 "gpu_refusing": gpu_refusing,

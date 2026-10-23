@@ -109,7 +109,11 @@ pub struct Wanted {
     /// Seconds; `None` for a still or when never read.
     pub duration_secs: Option<f64>,
     pub fps: Option<f64>,
+    /// The picture's size upright, as the project shows it.
     pub resolution: Option<(u32, u32)>,
+    /// Degrees the file's picture is turned to stand upright (0, 90, 180,
+    /// 270): a file reads its size as stored, on its side at 90 and 270.
+    pub rotation: i32,
 }
 
 impl Wanted {
@@ -128,6 +132,7 @@ impl Wanted {
             duration_secs: (!item.is_still && duration > 0.0).then_some(duration),
             fps: (fps > 0.0).then_some(fps),
             resolution: (w > 0 && h > 0).then_some((w, h)),
+            rotation: item.source_rotation,
         }
     }
 }
@@ -263,6 +268,9 @@ fn score(w: &Wanted, c: &Candidate, criteria: Criteria) -> Result<Scored, (Strin
             }
         }
         if let (Some((ww, wh)), Some((cw, ch))) = (w.resolution, facts.resolution) {
+            // Read as stored: a picture turned a quarter is its upright
+            // size on its side, and the same file (#2480).
+            let (ww, wh) = if w.rotation.rem_euclid(180) == 90 { (wh, ww) } else { (ww, wh) };
             if (ww, wh) != (cw, ch) {
                 warnings.push(format!("{cw}×{ch}, not {ww}×{wh}"));
             }
@@ -792,6 +800,24 @@ mod tests {
         match &propose(&[w], &c, Criteria::default())[0] {
             Proposal::Found(s) => assert_eq!(s.candidate, 1),
             other => panic!("expected the matching timecode, got {other:?}"),
+        }
+    }
+
+    /// #2480: a phone video turned a quarter is upright in the project and
+    /// on its side in the file; the same file is no size mismatch, and
+    /// one really another size still is.
+    #[test]
+    fn a_turned_picture_is_its_own_size_on_its_side() {
+        let w = [Wanted { resolution: Some((2160, 3840)), rotation: 90, ..wanted("IMG_0001.MOV") }];
+        let stored = Facts { resolution: Some((3840, 2160)), ..ten_seconds() };
+        match &propose(&w, &[cand("/p/IMG_0001.MOV", stored)], Criteria::default())[0] {
+            Proposal::Found(s) => assert!(s.warnings.is_empty(), "{:?}", s.warnings),
+            other => panic!("expected a clean match, got {other:?}"),
+        }
+        let small = Facts { resolution: Some((1920, 1080)), ..ten_seconds() };
+        match &propose(&w, &[cand("/p/IMG_0001.MOV", small)], Criteria::default())[0] {
+            Proposal::Found(s) => assert_eq!(s.warnings, vec!["1920×1080, not 3840×2160".to_string()]),
+            other => panic!("expected a warned match, got {other:?}"),
         }
     }
 

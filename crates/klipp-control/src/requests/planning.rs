@@ -69,8 +69,16 @@ pub(crate) fn respond(
             } else {
                 "Clips are down. Look with frame_at and contact_sheet, run check to hold the cut to the brief and the craft, fix what it finds, then export at the brief's loudness and save_project."
             };
+            // Offline files first: nothing else reads right until they are
+            // found (#2480).
+            let offline = super::media::offline_media(ctx);
+            let next = match &offline {
+                Some(o) => format!("{} Then: {next}", o["text"].as_str().unwrap_or("")),
+                None => next.to_string(),
+            };
             Ok(json!({
                 "build": build_json(),
+                "offline_media": offline,
                 "project": {
                     "path": project.path.as_ref().map(|p| p.to_string_lossy().to_string()),
                     "unsaved_changes": project.dirty,
