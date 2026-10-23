@@ -3981,6 +3981,34 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 }
                 None => (main, String::new()),
             };
+            // A multicam group closes up as one: its other angles across
+            // the same stretch go too, with their sound. Rippled alone, one
+            // angle's later clips moved and the others' stayed.
+            let mut angles: Vec<(usize, &Clip)> = Vec::new();
+            if *ripple && *linked {
+                for f in multicam_followers(seq, clip) {
+                    let Some((fti, fci, fc)) = find_clip(seq, f) else { continue };
+                    let fp = fc.linked_clip_id.and_then(|lid| find_clip(seq, lid));
+                    for (ati, aci, a) in std::iter::once((fti, fci, fc)).chain(fp) {
+                        if ati == ti || partner.is_some_and(|(pti, _, _)| pti == ati) || angles.iter().any(|(t, _)| *t == ati) {
+                            continue;
+                        }
+                        if seq.tracks[ati].locked {
+                            return Err(refuse(i, format!("another angle of its multicam group is on locked track {ati}; closing up the others would change sync"), "unlock that track, or use ripple: false to leave later clips in place"));
+                        }
+                        if !a.timeline_in.cmp(&clip.timeline_in).is_eq() || !a.timeline_out.cmp(&clip.timeline_out).is_eq() {
+                            return Err(refuse(i, "the multicam group's angles have different timeline ranges here; closing their gaps separately would change sync", "trim the angles to the same edges first, or use ripple: false"));
+                        }
+                        let (ae, aids) = take(ati, aci, a);
+                        ids.extend(aids);
+                        edit = EditCommand::Batch(vec![edit, ae]);
+                        angles.push((ati, a));
+                    }
+                }
+                if !angles.is_empty() {
+                    with = format!("{with}, the multicam group's other angles with it");
+                }
+            }
             // A transition joining a removed clip goes with it (#979): left
             // behind, it named a clip that was gone, survived saving, and
             // nothing could remove it. Undo puts it back with its clips.
@@ -3990,6 +4018,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                     gone.push(p.id);
                 }
             }
+            gone.extend(angles.iter().map(|(_, a)| a.id));
             let transitions = transitions_removed_with(seq, &gone);
             if !transitions.is_empty() {
                 with = format!("{with}, {} transition{} on it", transitions.len(), if transitions.len() == 1 { "" } else { "s" });
@@ -3999,6 +4028,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             if *ripple {
                 let mut skip = vec![ti];
                 skip.extend(partner.map(|(pti, _, _)| pti));
+                skip.extend(angles.iter().map(|(t, _)| *t));
                 let shifts = sync_lock_shifts(seq, i, &skip, clip.timeline_out, clip.timeline_in - clip.timeline_out)?;
                 if !shifts.is_empty() {
                     with = format!("{with}, {} sync-locked track(s) with it", shifts.len());
@@ -4989,12 +5019,59 @@ fn resolve_trim(seq: &Sequence, pool: &MediaPool, i: usize, clip_id: ClipId, edg
     if let Some((pti, _, _)) = clip.linked_clip_id.filter(|_| linked).and_then(|lid| find_clip(seq, lid)) {
         skip.push(pti);
     }
-    let shifts = sync_lock_shifts(seq, i, &skip, clip.timeline_out, delta)?;
-    if shifts.is_empty() {
-        return Ok((what, edit, ids));
+    // A multicam group ripples as one: its other angles, and their sound,
+    // are trimmed by the same amount from their own edges. Rippled alone,
+    // one angle's later clips moved and the others' stayed, and the group
+    // was out of sync from the edit on.
+    let (mut edits, mut ids, mut what) = (vec![edit], ids, what);
+    let moved = target - match edge { Edge::In => clip.timeline_in, Edge::Out => clip.timeline_out };
+    let followers = if linked { multicam_followers(seq, clip) } else { Vec::new() };
+    for f in &followers {
+        let Some((fti, _, fc)) = find_clip(seq, *f) else { continue };
+        if skip.contains(&fti) {
+            continue;
+        }
+        let f_target = match edge { Edge::In => fc.timeline_in, Edge::Out => fc.timeline_out } + moved;
+        let (_, f_edit, f_ids) = resolve_trim_pair(seq, pool, i, *f, edge, f_target, true, true).map_err(|mut r| {
+            r.why = format!("another angle of its multicam group cannot follow: {}", r.why);
+            r
+        })?;
+        skip.push(fti);
+        if let Some((pti, _, _)) = fc.linked_clip_id.and_then(|lid| find_clip(seq, lid)) {
+            skip.push(pti);
+        }
+        edits.push(f_edit);
+        ids.extend(f_ids);
     }
-    let n = shifts.len();
-    Ok((format!("{what}; {n} sync-locked track(s) follow"), EditCommand::Batch(std::iter::once(edit).chain(shifts).collect()), ids))
+    if edits.len() > 1 {
+        what = format!("{what}; the multicam group's {} other angle(s) follow", edits.len() - 1);
+    }
+    let shifts = sync_lock_shifts(seq, i, &skip, clip.timeline_out, delta)?;
+    if !shifts.is_empty() {
+        what = format!("{what}; {} sync-locked track(s) follow", shifts.len());
+    }
+    edits.extend(shifts);
+    let edit = if edits.len() == 1 { edits.remove(0) } else { EditCommand::Batch(edits) };
+    Ok((what, edit, ids))
+}
+
+/// The other angles of the multicam group `clip` is in, or whose sound it
+/// is: each picture clip of the group, on another track, across the same
+/// stretch of the timeline as `clip`'s picture. Empty outside a group.
+fn multicam_followers(seq: &Sequence, clip: &Clip) -> Vec<ClipId> {
+    let picture = if clip.multicam_group.is_some() {
+        Some(clip)
+    } else {
+        clip.linked_clip_id.and_then(|lid| find_clip(seq, lid)).map(|(_, _, p)| p).filter(|p| p.multicam_group.is_some())
+    };
+    let Some(picture) = picture else { return Vec::new() };
+    seq.tracks
+        .iter()
+        .filter(|t| t.kind != TrackKind::Audio)
+        .flat_map(|t| t.clips.iter())
+        .filter(|c| c.id != picture.id && c.multicam_group == picture.multicam_group && c.timeline_in < picture.timeline_out && picture.timeline_in < c.timeline_out)
+        .map(|c| c.id)
+        .collect()
 }
 
 /// The clips of every sync-locked track not in `skip`, from `point` on,
@@ -5068,6 +5145,27 @@ fn resolve_trim_pair(seq: &Sequence, pool: &MediaPool, i: usize, clip_id: ClipId
 
 #[allow(clippy::too_many_arguments)]
 fn trim_clip(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, ci: usize, clip: &Clip, edge: Edge, target: Timecode, ripple: bool) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    let (what, edit, ids) = trim_range(seq, pool, fps, i, ti, ci, clip, edge, target, ripple)?;
+    // A multicam primary's cut times are from its start: a head trim
+    // moves the picture against the start, and the cuts go with it.
+    let original = &seq.tracks[ti].clips[ci];
+    if edge != Edge::In || original.multicam_angle != 0 || original.multicam_cuts.is_empty() {
+        return Ok((what, edit, ids));
+    }
+    let shift = secs(target - original.timeline_in);
+    let mut trimmed = original.clone();
+    let (EditCommand::LegacyTrimClip { new_source_in, new_source_out, new_timeline_in, new_timeline_out, .. } | EditCommand::LegacyRippleTrimClip { new_source_in, new_source_out, new_timeline_in, new_timeline_out, .. }) = &edit else {
+        return Ok((what, edit, ids));
+    };
+    (trimmed.source_in, trimmed.source_out, trimmed.timeline_in, trimmed.timeline_out) = (*new_source_in, *new_source_out, *new_timeline_in, *new_timeline_out);
+    let mut cut = trimmed.clone();
+    cut.multicam_cuts = klipp_timeline::multicam::rebased_cuts(&original.multicam_cuts, shift);
+    let cuts = EditCommand::ReplaceClip { description: "Trim Clip", old: Box::new(trimmed), new: Box::new(cut) };
+    Ok((what, EditCommand::Batch(vec![edit, cuts]), ids))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn trim_range(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, ci: usize, clip: &Clip, edge: Edge, target: Timecode, ripple: bool) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     // A sound trimmed to the sample is reckoned at the sample: its source
     // edge moves by the samples its timeline edge does, not by the
     // nearest frame (#1588). Only where its times are whole samples, so
@@ -12112,6 +12210,122 @@ mod tests {
         // Past the file's start is refused.
         let refused = resolve(&seq, &pool, &[Op::Trim { clip_id: ClipRef::Id(a), edge: Edge::Out, to: Anchor::Secs(7.0), ripple: false, linked: false }]).unwrap_err();
         assert!(refused.why.contains("reversed"), "{}", refused.why);
+    }
+
+    /// Two angles of one multicam group, bladed at 4 s, each picture over
+    /// its own linked sound: V1 is angle 0, the primary, cut to angle 1 at
+    /// 0.5 s and back at 2 s; V2 angle 1. Tracks V1, V2, A1, A2. The clips
+    /// (by track) and the first primary.
+    fn multicam_fixture() -> (Sequence, MediaPool, [[ClipId; 2]; 4]) {
+        let (seq, pool, media_id, _, _) = fixture();
+        let mut seq = Sequence { tracks: Vec::new(), ..seq };
+        let group = klipp_core::GroupId::new();
+        let mut ids = [[ClipId::new(); 2]; 4];
+        let mut pictures = Vec::new();
+        let mut sounds = Vec::new();
+        for angle in 0..2u8 {
+            let (mut v, mut a) = (Track::new(&format!("V{}", angle + 1), TrackKind::Video), Track::new(&format!("A{}", angle + 1), TrackKind::Audio));
+            for (k, (from, to)) in [(0.0, 4.0), (4.0, 8.0)].into_iter().enumerate() {
+                let mut pic = Clip::media(media_id, tc(from), tc(to), tc(from + 1.0), tc(to + 1.0));
+                let mut snd = Clip::media(media_id, tc(from), tc(to), tc(from + 1.0), tc(to + 1.0));
+                (pic.multicam_group, pic.multicam_angle) = (Some(group), angle);
+                if angle == 0 && k == 0 {
+                    pic.multicam_cuts = vec![(0.5, 1), (2.0, 0)];
+                }
+                pic.linked_clip_id = Some(snd.id);
+                snd.linked_clip_id = Some(pic.id);
+                ids[angle as usize][k] = pic.id;
+                ids[angle as usize + 2][k] = snd.id;
+                v.clips.push(pic);
+                a.clips.push(snd);
+            }
+            pictures.push(v);
+            sounds.push(a);
+        }
+        seq.tracks = pictures.into_iter().chain(sounds).collect();
+        (seq, pool, ids)
+    }
+
+    /// Each track's clips as (in, out) seconds.
+    fn spans(seq: &Sequence) -> Vec<Vec<(f64, f64)>> {
+        seq.tracks.iter().map(|t| t.clips.iter().map(|c| (secs(c.timeline_in), secs(c.timeline_out))).collect()).collect()
+    }
+
+    /// #2418: a ripple trim on any clip of a multicam group, an angle or
+    /// an angle's sound, trims the group's other angles and their sound by
+    /// the same amount, and every track's later clips close up together.
+    /// Undo puts every track back.
+    #[test]
+    fn a_ripple_trim_on_one_angle_moves_the_whole_multicam_group() {
+        let (seq, pool, ids) = multicam_fixture();
+        let before = spans(&seq);
+        // The second angle's tail, a second earlier.
+        let plan = resolve(&seq, &pool, &[Op::Trim { clip_id: ClipRef::Id(ids[1][0]), edge: Edge::Out, to: Anchor::Secs(3.0), ripple: true, linked: true }]).unwrap();
+        assert!(plan.steps[0].what.contains("other angle"), "{}", plan.steps[0].what);
+        let mut seqs = vec![seq.clone()];
+        applied(&mut seqs, &pool, &plan.steps[0].edit, false);
+        assert_eq!(spans(&seqs[0]), vec![vec![(0.0, 3.0), (3.0, 7.0)]; 4], "every angle and its sound close up together");
+        applied(&mut seqs, &pool, &plan.steps[0].edit, true);
+        assert_eq!(spans(&seqs[0]), before, "undo puts every track back");
+
+        // The first angle's sound, its head a second later: all four keep
+        // their starts, are a second shorter, and what follows moves up.
+        let plan = resolve(&seq, &pool, &[Op::Trim { clip_id: ClipRef::Id(ids[2][0]), edge: Edge::In, to: Anchor::Secs(1.0), ripple: true, linked: true }]).unwrap();
+        let mut seqs = vec![seq.clone()];
+        applied(&mut seqs, &pool, &plan.steps[0].edit, false);
+        assert_eq!(spans(&seqs[0]), vec![vec![(0.0, 3.0), (3.0, 7.0)]; 4]);
+        for t in &seqs[0].tracks {
+            assert_eq!(secs(t.clips[0].source_in), 2.0, "track {}: each source starts a second later", t.name);
+        }
+        // The cuts stay with the picture they cut: the cut to angle 1, at
+        // 0.5 s, now before the clip's start, is in effect from its start;
+        // the cut back, at 2 s, is now at 1 s.
+        assert_eq!(clip_in(&seqs[0], ids[0][0]).multicam_cuts, vec![(0.0, 1), (1.0, 0)]);
+        applied(&mut seqs, &pool, &plan.steps[0].edit, true);
+        assert_eq!(spans(&seqs[0]), spans(&seq));
+        assert_eq!(clip_in(&seqs[0], ids[0][0]).multicam_cuts, vec![(0.5, 1), (2.0, 0)], "undo puts the cuts back");
+
+        // Linked false trims the clip alone, as before.
+        let plan = resolve(&seq, &pool, &[Op::Trim { clip_id: ClipRef::Id(ids[1][0]), edge: Edge::Out, to: Anchor::Secs(3.0), ripple: true, linked: false }]).unwrap();
+        let mut seqs = vec![seq.clone()];
+        applied(&mut seqs, &pool, &plan.steps[0].edit, false);
+        assert_eq!(spans(&seqs[0])[0], before[0], "the other angle stays");
+    }
+
+    /// #2418: a head trim without ripple moves the primary's start; its
+    /// cuts stay at the picture they cut.
+    #[test]
+    fn a_head_trim_keeps_a_primarys_cuts_on_their_picture() {
+        let (seq, pool, ids) = multicam_fixture();
+        let plan = resolve(&seq, &pool, &[Op::Trim { clip_id: ClipRef::Id(ids[0][0]), edge: Edge::In, to: Anchor::Secs(1.0), ripple: false, linked: false }]).unwrap();
+        let mut seqs = vec![seq.clone()];
+        applied(&mut seqs, &pool, &plan.steps[0].edit, false);
+        let primary = clip_in(&seqs[0], ids[0][0]);
+        assert_eq!(secs(primary.timeline_in), 1.0);
+        assert_eq!(primary.multicam_cuts, vec![(0.0, 1), (1.0, 0)], "angle 1 from the new start, angle 0 again at 2 s on the timeline");
+        assert_eq!(seqs[0].multicam_at(None, tc(2.5)).map(|m| m.active), Some(0));
+        assert_eq!(seqs[0].multicam_at(None, tc(1.5)).map(|m| m.active), Some(1));
+    }
+
+    /// #2418: a ripple remove of one angle takes the group's other angles
+    /// across the same stretch, and all their sound, and every track
+    /// closes up together; undo puts them back.
+    #[test]
+    fn a_ripple_remove_of_one_angle_takes_the_whole_multicam_group() {
+        let (seq, pool, ids) = multicam_fixture();
+        let plan = resolve(&seq, &pool, &[Op::Remove { clip_id: ClipRef::Id(ids[1][0]), ripple: true, linked: true }]).unwrap();
+        assert!(plan.steps[0].what.contains("other angles"), "{}", plan.steps[0].what);
+        let mut seqs = vec![seq.clone()];
+        applied(&mut seqs, &pool, &plan.steps[0].edit, false);
+        assert_eq!(spans(&seqs[0]), vec![vec![(0.0, 4.0)]; 4], "every track closes up by the same 4 s");
+        applied(&mut seqs, &pool, &plan.steps[0].edit, true);
+        assert_eq!(spans(&seqs[0]), spans(&seq));
+
+        // Angles whose edges differ here are refused, not torn apart.
+        let mut uneven = seq.clone();
+        uneven.tracks[1].clips[0].timeline_out = tc(3.5);
+        let refused = resolve(&uneven, &pool, &[Op::Remove { clip_id: ClipRef::Id(ids[0][0]), ripple: true, linked: true }]).unwrap_err();
+        assert!(refused.why.contains("different timeline ranges"), "{}", refused.why);
     }
 
     #[test]

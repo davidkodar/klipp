@@ -1923,7 +1923,7 @@ impl Track {
             transform_link: None,
             multicam_group: clip.multicam_group,
             multicam_angle: clip.multicam_angle,
-            multicam_cuts: clip.multicam_cuts.clone(),
+            multicam_cuts: clip.multicam_cuts.iter().copied().filter(|(at, _)| *at < cut_secs).collect(),
             multicam_sound: clip.multicam_sound,
             audio_effects: clip.audio_effects.clone(),
             audio_effect_keyframes: audio_effect_kfs_a,
@@ -2002,7 +2002,8 @@ impl Track {
             transform_link: None,
             multicam_group: clip.multicam_group,
             multicam_angle: clip.multicam_angle,
-            multicam_cuts: clip.multicam_cuts.clone(),
+            // Cut times are from the clip's start, which is now the cut.
+            multicam_cuts: crate::multicam::rebased_cuts(&clip.multicam_cuts, cut_secs),
             multicam_sound: clip.multicam_sound,
             audio_effects: clip.audio_effects,
             audio_effect_keyframes: audio_effect_kfs_b,
