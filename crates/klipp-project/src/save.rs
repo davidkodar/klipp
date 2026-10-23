@@ -155,6 +155,10 @@ fn save_project_full_as(
     title_assets: &std::collections::HashMap<klipp_core::MediaId, klipp_timeline::TitleAsset>,
     form: crate::FileForm,
 ) -> Result<(), String> {
+    // A clip id twice in a sequence is saved under an id of its own, so
+    // its picture is written whole (#2457).
+    let unique = crate::unique_ids::unique_clip_ids(sequences);
+    let sequences = unique.as_deref().unwrap_or(sequences);
     // Create directory structure
     std::fs::create_dir_all(dir.join("media"))
         .map_err(|e| format!("Failed to create project directory: {e}"))?;
