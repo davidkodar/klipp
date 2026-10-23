@@ -1395,12 +1395,17 @@ impl Clip {
                 // For the person who made the edit: the clip by its name,
                 // or its id when it has none.
                 let clip = self.name.clone().filter(|n| !n.is_empty()).unwrap_or_else(|| format!("clip {}", self.id.0));
-                let why = format!("{clip}: {what} not done: {why}");
-                PICTURE_WRITES_REFUSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                REFUSAL.with(|r| *r.borrow_mut() = Some(why));
+                refuse_picture_write(format!("{clip}: {what} not done: {why}"));
             }
         }
     }
+}
+
+/// Count a refused write through a picture-truth clip's fields and keep
+/// why, for [`take_picture_refusal`].
+pub(crate) fn refuse_picture_write(why: String) {
+    PICTURE_WRITES_REFUSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    REFUSAL.with(|r| *r.borrow_mut() = Some(why));
 }
 
 /// Writes through a picture-truth clip's fields that were refused

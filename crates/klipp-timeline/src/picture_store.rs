@@ -14,7 +14,7 @@
 //! each edit, never changed in place, so clones stay apart. No reader may
 //! write the view back on such a clip: an edit goes to the picture as
 //! graph ops ([`crate::Clip::apply_picture_ops`]), or through the guard for
-//! the writes that aren't ops yet ([`crate::Clip::guard_field_write`]).
+//! the writes that aren't ops yet (`Clip::view_mut`, `Clip::through_truth`).
 
 use serde::{Deserialize, Serialize};
 use crate::{GradeVersion, OwnEffects};
@@ -55,6 +55,10 @@ pub struct ClipPictureFields {
     /// stored picture, not with the clip's own serde.
     #[serde(skip)]
     truth: Option<Arc<LiftedPicture>>,
+    /// Where a write that skipped the guard on a picture-truth clip goes,
+    /// to be dropped: never the view, which the picture is (#2460).
+    #[serde(skip)]
+    stray: Option<Box<Self>>,
 }
 
 impl ClipPictureFields {
@@ -66,14 +70,19 @@ impl ClipPictureFields {
     /// The picture's fields, to change: the lifted picture no longer
     /// matches them, so it is dropped.
     ///
-    /// On a picture-truth clip the fields are a view of the picture and a
-    /// write here would be lost from it, so a write that reaches here is a
-    /// writer that skipped the guard: a debug build stops on it, and a
-    /// release build keeps the picture and says so.
+    /// On a picture-truth clip the fields are a view of the picture, so a
+    /// write that reaches here is a writer that skipped the guard
+    /// (`Clip::view_mut`): it is refused, in every build alike (#2460).
+    /// It lands on a copy that is dropped, the view and the picture stay
+    /// as they were and agree, and why is kept for
+    /// [`crate::take_picture_refusal`]. A release build used to let the
+    /// write land in the view, apart from the picture.
     pub(crate) fn view_mut(&mut self) -> &mut PictureView {
         if self.truth.is_some() {
-            debug_assert!(false, "a field write on a picture-truth clip skipped its guard (Clip::view_mut)");
-            tracing::warn!("a field write on a picture-truth clip skipped the guard; the clip's picture is kept and the write is lost from it");
+            tracing::warn!("a field write on a picture-truth clip skipped the guard; refused, the clip's picture is kept");
+            crate::picture_ops::refuse_picture_write("a write to a clip's fields that skipped its guard was not done".into());
+            let stray = self.stray.insert(Box::new(Self::from(self.view.clone())));
+            return &mut stray.view;
         }
         self.lifted = Lifted::default();
         &mut self.view
@@ -127,7 +136,7 @@ impl ClipPictureFields {
 
 impl From<PictureView> for ClipPictureFields {
     fn from(view: PictureView) -> Self {
-        Self { view, lifted: Lifted::default(), effect_ids: Default::default(), truth: None }
+        Self { view, lifted: Lifted::default(), effect_ids: Default::default(), truth: None, stray: None }
     }
 }
 

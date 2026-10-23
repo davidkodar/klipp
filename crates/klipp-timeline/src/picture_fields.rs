@@ -380,18 +380,23 @@ mod tests {
         assert!(std::sync::Arc::ptr_eq(&first, &original.picture_v2().unwrap()));
     }
 
-    /// A write that reaches the fields of a picture-truth clip without its
-    /// guard (`Clip::view_mut`) would be lost from the picture: a debug
-    /// build stops on it.
+    /// #2460: a write that reaches the fields of a picture-truth clip
+    /// without its guard (`Clip::view_mut`) is refused, in a release build
+    /// as in a debug one: the fields and the picture stay as they were,
+    /// still agreeing, and the refusal is said.
     #[test]
-    #[cfg(debug_assertions)]
-    #[should_panic(expected = "skipped its guard")]
-    fn a_field_write_that_skips_the_guard_stops_a_debug_build() {
+    fn a_field_write_that_skips_the_guard_is_refused_in_every_build() {
         let mut clip = clip();
         let mut truth = (*clip.picture_v2().unwrap()).clone();
         truth.picture.requires.push(klipp_graph_format::lifted::PICTURE_TRUTH_CAPABILITY.into());
-        clip.picture.set_truth(Some(std::sync::Arc::new(truth)));
-        clip.picture.view_mut().active_grade_version = Some(0);
+        let truth = std::sync::Arc::new(truth);
+        clip.picture.set_truth(Some(truth.clone()));
+        let before = clip.picture.view().active_grade_version;
+        crate::take_picture_refusal();
+        clip.picture.view_mut().active_grade_version = Some(7);
+        assert_eq!(clip.picture.view().active_grade_version, before, "the write did not land in the fields");
+        assert!(std::sync::Arc::ptr_eq(clip.picture.truth().unwrap(), &truth), "the picture is the same one");
+        assert!(crate::take_picture_refusal().is_some_and(|why| why.contains("skipped its guard")), "and the refusal is said");
     }
 
     #[test]
