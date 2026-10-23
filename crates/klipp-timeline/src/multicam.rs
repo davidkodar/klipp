@@ -125,26 +125,40 @@ impl Sequence {
                         out.push((start, end));
                     }
                 }
-                MulticamSound::FollowPicture => {
-                    // As `multicam_at` reads the cut list: the last cut at
-                    // or before a moment, the primary before the first.
-                    let mut from = start;
-                    let mut on = 0;
-                    for &(at, a) in &p.multicam_cuts {
-                        let t = (start + at).clamp(start, end);
-                        if t > from && member(on) != angle {
-                            out.push((from, t));
-                        }
-                        from = from.max(t);
-                        on = a;
-                    }
-                    if end > from && member(on) != angle {
-                        out.push((from, end));
-                    }
-                }
+                MulticamSound::FollowPicture => out.extend(off_screen_under(p, &member, angle)),
             }
         }
         out
+    }
+
+    /// The stretches of `clip`, in timeline seconds, over which the
+    /// program shows it: `None` for a clip in no multicam group, which
+    /// shows wherever it is. An angle is on screen under its group's
+    /// primaries only where the cut list picks it, and outside them as any
+    /// clip is. What a check reads as a shot of the piece (#2417).
+    pub fn multicam_shown_spans(&self, clip: &Clip) -> Option<Vec<(f64, f64)>> {
+        let group = clip.multicam_group?;
+        let pictures = || self.tracks.iter().filter(|t| t.kind != TrackKind::Audio).flat_map(|t| t.clips.iter()).filter(|c| c.multicam_group == Some(group));
+        let angles: Vec<u8> = pictures().map(|c| c.multicam_angle).collect();
+        let member = |a: u8| if angles.contains(&a) { a } else { 0 };
+        let mut hidden: Vec<(f64, f64)> = pictures().filter(|c| c.multicam_angle == 0).flat_map(|p| off_screen_under(p, &member, clip.multicam_angle)).collect();
+        hidden.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut shown = Vec::new();
+        let (mut from, end) = (clip.timeline_in.to_secs_f64(), clip.timeline_out.to_secs_f64());
+        for (a, b) in hidden {
+            if a > from {
+                shown.push((from, a.min(end)));
+            }
+            from = from.max(b);
+            if from >= end {
+                break;
+            }
+        }
+        if end > from {
+            shown.push((from, end));
+        }
+        shown.retain(|(a, b)| b > a);
+        Some(shown)
     }
 
     /// Whether `clip`'s sound is heard at `time`: always for a clip in no
@@ -188,6 +202,29 @@ impl Sequence {
     }
 }
 
+/// The stretches under primary `p`, timeline seconds, over which its cut
+/// list shows another angle than `angle`; `member` maps an angle the group
+/// lacks to the primary's. As `multicam_at` reads the cut list: the last
+/// cut at or before a moment, the primary before the first.
+fn off_screen_under(p: &Clip, member: &dyn Fn(u8) -> u8, angle: u8) -> Vec<(f64, f64)> {
+    let (start, end) = (p.timeline_in.to_secs_f64(), p.timeline_out.to_secs_f64());
+    let mut out = Vec::new();
+    let mut from = start;
+    let mut on = 0;
+    for &(at, a) in &p.multicam_cuts {
+        let t = (start + at).clamp(start, end);
+        if t > from && member(on) != angle {
+            out.push((from, t));
+        }
+        from = from.max(t);
+        on = a;
+    }
+    if end > from && member(on) != angle {
+        out.push((from, end));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{Clip, Sequence, Track, TrackKind};
@@ -216,6 +253,25 @@ mod tests {
             })
             .collect();
         s
+    }
+
+    /// #2417: the stretches the program shows of each angle, as the cut
+    /// list picks them; a cut to an angle the group lacks shows the
+    /// primary; a clip in no group has none to say.
+    #[test]
+    fn the_stretches_each_angle_is_on_screen() {
+        let g = GroupId::new();
+        let mut primary = angle(g, 0);
+        primary.multicam_cuts = vec![(2.0, 1), (5.0, 0), (7.0, 9)];
+        let s = seq(vec![primary, angle(g, 1)]);
+        let near = |got: Option<Vec<(f64, f64)>>, want: &[(f64, f64)]| {
+            let got = got.expect("in a group");
+            assert_eq!(got.len(), want.len(), "{got:?}");
+            assert!(got.iter().zip(want).all(|(a, b)| (a.0 - b.0).abs() < 0.05 && (a.1 - b.1).abs() < 0.05), "{got:?} vs {want:?}");
+        };
+        near(s.multicam_shown_spans(&s.tracks[0].clips[0]), &[(0.0, 2.0), (5.0, 10.0)]);
+        near(s.multicam_shown_spans(&s.tracks[1].clips[0]), &[(2.0, 5.0)]);
+        assert_eq!(s.multicam_shown_spans(&Clip::media(MediaId::new(), tc(0.0), tc(1.0), tc(0.0), tc(1.0))), None);
     }
 
     /// As the creation paths make a group: picture clips only, one track

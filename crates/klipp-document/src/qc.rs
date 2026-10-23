@@ -689,22 +689,26 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
     // changing lands mid-action; a screen needs time to be read.
     for (_, c) in &pictures {
         let Some(beats) = c.media_id().and_then(&mut beats_of) else { continue };
-        let (s_in, s_out, t_in, t_out) = (secs(c.source_in), secs(c.source_out), secs(c.timeline_in), secs(c.timeline_out));
         let label = clip_label(pool, c);
-        let inside = |t: f64| beats.action.iter().find(|(a, b)| t > *a + 0.15 && t < *b - 0.05).copied();
-        if let Some((a, b)) = inside(s_in) {
-            let settle = beats.settles.iter().copied().filter(|s| *s >= s_in).fold(None, |m: Option<f64>, s| Some(m.map_or(s, |m| m.min(s))));
-            add(Severity::Warning, "cut_mid_action", Some(t_in), format!("{label} cuts in at {s_in:.2} s of the file while the screen is still changing ({a:.2}-{b:.2} s)"), &match settle {
-                Some(s) => format!("Cut in at {s:.2} s of the file, where the change has settled, or at {a:.2} s before it starts"),
-                None => format!("Cut in before the change starts at {a:.2} s, or after it settles at {b:.2} s"),
-            });
-        }
-        if let Some((a, b)) = inside(s_out) {
-            add(Severity::Warning, "cut_mid_action", Some(t_out), format!("{label} cuts away at {s_out:.2} s of the file in the middle of a change ({a:.2}-{b:.2} s)"), &format!("Hold until it settles at {b:.2} s of the file, or cut before the change starts at {a:.2} s"));
-        }
-        let len = t_out - t_in;
-        if len + 1e-6 < READ_MIN_SECS && (len * fps).round() as i64 >= 8 && !in_montage(t_in, t_out) {
-            add(Severity::Warning, "too_short_to_read", Some(t_in), format!("{label} shows a screen for {len:.1} s"), "A screen needs about two seconds to be read: hold it, or take it out");
+        // Each stretch the program shows of it: a multicam angle only where
+        // its group cuts to it, so a hidden angle's edges are no cut and a
+        // switch to it is one (#2417).
+        for (t_in, t_out, s_in, s_out) in shown_pieces(seq, c) {
+            let inside = |t: f64| beats.action.iter().find(|(a, b)| t > *a + 0.15 && t < *b - 0.05).copied();
+            if let Some((a, b)) = inside(s_in) {
+                let settle = beats.settles.iter().copied().filter(|s| *s >= s_in).fold(None, |m: Option<f64>, s| Some(m.map_or(s, |m| m.min(s))));
+                add(Severity::Warning, "cut_mid_action", Some(t_in), format!("{label} cuts in at {s_in:.2} s of the file while the screen is still changing ({a:.2}-{b:.2} s)"), &match settle {
+                    Some(s) => format!("Cut in at {s:.2} s of the file, where the change has settled, or at {a:.2} s before it starts"),
+                    None => format!("Cut in before the change starts at {a:.2} s, or after it settles at {b:.2} s"),
+                });
+            }
+            if let Some((a, b)) = inside(s_out) {
+                add(Severity::Warning, "cut_mid_action", Some(t_out), format!("{label} cuts away at {s_out:.2} s of the file in the middle of a change ({a:.2}-{b:.2} s)"), &format!("Hold until it settles at {b:.2} s of the file, or cut before the change starts at {a:.2} s"));
+            }
+            let len = t_out - t_in;
+            if len + 1e-6 < READ_MIN_SECS && (len * fps).round() as i64 >= 8 && !in_montage(t_in, t_out) {
+                add(Severity::Warning, "too_short_to_read", Some(t_in), format!("{label} shows a screen for {len:.1} s"), "A screen needs about two seconds to be read: hold it, or take it out");
+            }
         }
     }
 
@@ -715,11 +719,12 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
         let Some(media_id) = c.media_id() else { continue };
         let Some(item) = pool.get(&media_id) else { continue };
         let found = sensitive_cache.entry(media_id).or_insert_with(|| transcripts.screen_sensitive(item));
-        let (s_in, s_out, t_in) = (secs(c.source_in), secs(c.source_out), secs(c.timeline_in));
-        for s in found.iter().filter(|s| s.end_secs > s_in && s.start_secs < s_out) {
-            let from = t_in + (s.start_secs - s_in).max(0.0);
-            let to = t_in + (s.end_secs.min(s_out) - s_in);
-            add(Severity::Error, "sensitive_on_screen", Some(from), format!("{} shows what looks like a {} ({}) from {from:.2} to {to:.2} s, at {:.0}% across and {:.0}% down the frame", clip_label(pool, c), s.kind, s.masked, s.x * 100.0, s.y * 100.0), "Redact it: the redact op with this clip, from, to and the box (auto_redact does every finding at once), or cut it out");
+        for (t_in, _, s_in, s_out) in shown_pieces(seq, c) {
+            for s in found.iter().filter(|s| s.end_secs > s_in && s.start_secs < s_out) {
+                let from = t_in + (s.start_secs - s_in).max(0.0);
+                let to = t_in + (s.end_secs.min(s_out) - s_in);
+                add(Severity::Error, "sensitive_on_screen", Some(from), format!("{} shows what looks like a {} ({}) from {from:.2} to {to:.2} s, at {:.0}% across and {:.0}% down the frame", clip_label(pool, c), s.kind, s.masked, s.x * 100.0, s.y * 100.0), "Redact it: the redact op with this clip, from, to and the box (auto_redact does every finding at once), or cut it out");
+            }
         }
     }
 
@@ -1022,6 +1027,18 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
     Report { duration_secs: duration, errors, warnings, findings: f }
 }
 
+/// The stretches of `c` the program shows, each as (timeline in, out,
+/// file in, out): the whole clip, or for a multicam angle the stretches its
+/// group cuts to it (#2417).
+fn shown_pieces(seq: &Sequence, c: &Clip) -> Vec<(f64, f64, f64, f64)> {
+    let (t_in, t_out, s_in, s_out) = (secs(c.timeline_in), secs(c.timeline_out), secs(c.source_in), secs(c.source_out));
+    let rate = if t_out > t_in { (s_out - s_in) / (t_out - t_in) } else { 1.0 };
+    match seq.multicam_shown_spans(c) {
+        None => vec![(t_in, t_out, s_in, s_out)],
+        Some(spans) => spans.into_iter().map(|(a, b)| (a, b, s_in + (a - t_in) * rate, s_in + (b - t_in) * rate)).collect(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -1220,6 +1237,29 @@ mod tests {
             // A face top-centre from 40 to 44 s of the file.
             if item.id == self.0 { vec![(40.5, [0.4, 0.06, 0.2, 0.28]), (42.5, [0.4, 0.06, 0.2, 0.28])] } else { vec![] }
         }
+    }
+
+    /// #2417: a multicam group's edges are read where the program shows
+    /// an angle, once a shot. Two angles of the screen end together at 31
+    /// s, inside the change at 30-33 s; the group cuts to angle 1 at 5 s,
+    /// so the cut away is angle 1's alone. The switch itself, at 5 s of
+    /// the file, lands on a still screen.
+    #[test]
+    fn a_multicam_cut_is_read_once_from_the_angle_on_screen() {
+        let (mut seq, pool, screen) = screencast(&[(0.0, 31.0, 0.0)]);
+        let group = klipp_core::GroupId::new();
+        let mut second = seq.tracks[0].clips[0].clone();
+        second.id = klipp_core::ClipId::new();
+        (second.multicam_group, second.multicam_angle) = (Some(group), 1);
+        let primary = &mut seq.tracks[0].clips[0];
+        (primary.multicam_group, primary.multicam_angle, primary.multicam_cuts) = (Some(group), 0, vec![(5.0, 1)]);
+        let mut v2 = Track::new("V2", TrackKind::Video);
+        v2.clips.push(second.clone());
+        seq.tracks.push(v2);
+        let r = check(&seq, &pool, &Screen(screen));
+        let mid: Vec<&Finding> = r.findings.iter().filter(|f| f.rule == "cut_mid_action").collect();
+        assert_eq!(mid.len(), 1, "once, not once an angle:\n{}", r.text());
+        assert!(mid[0].what.contains("cuts away at 31.00 s") && (mid[0].at_secs.unwrap() - 31.0).abs() < 1e-6, "{}", r.text());
     }
 
     /// A title over the face at 40-44 s reports the actual sample time;
