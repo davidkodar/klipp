@@ -1506,13 +1506,29 @@ pub enum Op {
         source_in: Option<f64>,
     },
     /// A track's own audio chain (#846): `effect` (an audio effect's type,
-    /// "eq", "compressor", "limiter", "denoiser"…) added at the end of the
-    /// chain the track runs after every clip's own, with `params` by name
-    /// (the rest at their defaults); `bypass` switches the track's effect
-    /// of that type off (true) or on (false) without taking it off;
-    /// `remove` takes it off.
+    /// "eq", "compressor", "limiter", "denoiser"…, or an installed LV2 or
+    /// CLAP plug-in's id, "lv2:…" or "clap:…", #2485) added at the end of
+    /// the chain the track runs after every clip's own, with `params` by
+    /// name (a plug-in's by its name or key, inside its range; the rest at
+    /// their defaults); `bypass` switches the track's effect of that type
+    /// off (true) or on (false) without taking it off; `remove` takes it
+    /// off.
     TrackAudio {
         track: TrackRef,
+        effect: String,
+        #[serde(default)]
+        params: std::collections::BTreeMap<String, f32>,
+        #[serde(default)]
+        bypass: Option<bool>,
+        #[serde(default)]
+        remove: bool,
+    },
+    /// A clip's own audio chain, as [`Op::TrackAudio`] is a track's
+    /// (#2485): a built-in effect or an installed plug-in added, set,
+    /// bypassed or taken off, on the clip that holds its sound settings
+    /// (a linked pair's picture, as clean_audio).
+    ClipAudio {
+        clip_id: ClipRef,
         effect: String,
         #[serde(default)]
         params: std::collections::BTreeMap<String, f32>,
@@ -1945,7 +1961,7 @@ pub const OP_NAMES: &[&str] = &[
     "graphics", "vector_path", "connector", "place", "add_track", "remove_track", "set_track", "track_automation", "trim", "j_cut", "l_cut", "split", "join", "remove", "move", "cut",
     "captions", "audio", "volume", "duck", "lower_third", "set_text", "grade", "effect", "redact",
     "slip", "slide", "pin", "role", "match", "matte", "format", "stabilize", "reframe", "zoom", "pan", "follow", "refit", "highlight",
-    "ramp", "grade_group", "remove_grade_group", "look", "qualify", "zones", "retime", "replace", "track_audio", "clean_audio",
+    "ramp", "grade_group", "remove_grade_group", "look", "qualify", "zones", "retime", "replace", "track_audio", "clip_audio", "clean_audio",
     "transition", "style", "title", "compose", "camera", "crop", "generator", "depth", "label", "motion_blur",
     "strobe", "set_length", "over_edits", "template", "edit_from_selects",
 ];
@@ -2419,9 +2435,34 @@ pub(crate) fn spoken_spans(clip: &Clip, words: Option<&[SpokenWord]>, fps: f64) 
     Some(phrases.into_iter().filter(|p| p.2 > 1 || p.3 >= ALONE).map(|p| (p.0, p.1)).collect())
 }
 
+/// An installed LV2 or CLAP audio plug-in as an edit is checked against
+/// it (#2485): its id ("lv2:<uri>", "clap:<id>"), name and parameters.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AudioPlugin {
+    pub id: String,
+    pub name: String,
+    pub params: Vec<AudioPluginParam>,
+}
+
+/// One parameter of an [`AudioPlugin`]: the key a chain stores it by, the
+/// name a person knows it by, and its range.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AudioPluginParam {
+    pub key: String,
+    pub name: String,
+    pub min: f32,
+    pub max: f32,
+    pub default: f32,
+}
+
 /// Where the resolver gets transcripts from. The document does not know
 /// how speech is recognised; whoever asks for a plan does.
 pub trait Transcripts {
+    /// The installed audio plug-in `id` names (#2485), `None` when there
+    /// is none: the host knows what is installed, the document does not.
+    fn audio_plugin(&self, _id: &str) -> Option<AudioPlugin> {
+        None
+    }
     /// The words of `item`, in order, or `None` when it has no transcript.
     fn words(&self, item: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>>;
     /// The language `item`'s transcript is in, as a code ("en"), when it
@@ -3532,7 +3573,11 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             replace_media(seq, pool, fps, i, clip, *media_id, *source_in)
         }
-        Op::TrackAudio { track, effect, params, bypass, remove } => track_audio(seq, fps, i, track, effect, params, *bypass, *remove),
+        Op::TrackAudio { track, effect, params, bypass, remove } => track_audio(seq, fps, i, track, AudioChainEdit { effect, params, bypass: *bypass, remove: *remove }, transcripts),
+        Op::ClipAudio { clip_id, effect, params, bypass, remove } => {
+            let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            clip_audio(seq, pool, i, clip, AudioChainEdit { effect, params, bypass: *bypass, remove: *remove }, transcripts)
+        }
         Op::CleanAudio { clip_id, voice, reduction_db, wind, hiss, hum, deess } => {
             let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             clean_audio(seq, pool, i, clip, CleanFlags { voice: *voice, reduction_db: *reduction_db, wind: *wind, hiss: *hiss, hum: *hum, deess: *deess })
@@ -6621,43 +6666,70 @@ pub const AUDIO_EFFECT_PARAMS: &[(&str, &[&str])] = &[
 /// `track_audio`: the track's own audio chain (#846), one effect of a
 /// type added (with `params` set), switched, or taken off.
 #[allow(clippy::too_many_arguments)]
-fn track_audio(seq: &Sequence, fps: Fps, i: usize, track: &TrackRef, effect: &str, params: &std::collections::BTreeMap<String, f32>, bypass: Option<bool>, remove: bool) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
-    let on = TrackSpan::resolve(seq, fps, i, track, None, None)?;
-    let t = &seq.tracks[on.ti];
-    if !matches!(t.kind, TrackKind::Audio | TrackKind::Video) {
-        return Err(refuse(i, format!("{} carries no sound", on.name), "name an audio track, or a video track whose clips play their own sound"));
-    }
-    let effect = effect.trim().to_lowercase();
-    if !AUDIO_EFFECT_TYPES.contains(&effect.as_str()) {
-        return Err(refuse(i, format!("\"{effect}\" is not an audio effect"), format!("use one of {}", AUDIO_EFFECT_TYPES.join(", "))));
-    }
-    let known = AUDIO_EFFECT_PARAMS.iter().find(|(t, _)| *t == effect).map(|(_, names)| *names).unwrap_or(&[]);
-    for (name, v) in params {
-        if !known.contains(&name.as_str()) {
-            return Err(refuse(i, format!("{effect} has no param \"{name}\""), format!("use one of {}", known.join(", "))));
-        }
+/// What an audio chain edit asks for: [`Op::TrackAudio`]'s and
+/// [`Op::ClipAudio`]'s fields.
+struct AudioChainEdit<'a> {
+    effect: &'a str,
+    params: &'a std::collections::BTreeMap<String, f32>,
+    bypass: Option<bool>,
+    remove: bool,
+}
+
+/// The effect type an edit names and its params by the keys the chain
+/// stores them by: a built-in's names checked against its list, an
+/// installed plug-in's by its name or key and inside its range (#2485).
+fn audio_chain_effect(i: usize, edit: &AudioChainEdit, transcripts: &dyn Transcripts) -> Result<(String, Vec<(String, f32)>), Refusal> {
+    for (name, v) in edit.params {
         if !v.is_finite() {
             return Err(refuse(i, format!("{name} {v} is not a number"), "give each param a finite value"));
         }
     }
-    let old = t.settings();
-    let mut new = old.clone();
-    let chain = &mut new.effects.audio;
+    let given = edit.effect.trim();
+    if given.starts_with("lv2:") || given.starts_with("clap:") {
+        let plugin = transcripts.audio_plugin(given).ok_or_else(|| refuse(i, format!("no installed plug-in {given}"), "audio_plugins lists the installed LV2 and CLAP plug-ins and their ids"))?;
+        let mut params = Vec::new();
+        for (name, v) in edit.params {
+            let p = plugin
+                .params
+                .iter()
+                .find(|p| p.key == *name || p.name.eq_ignore_ascii_case(name))
+                .ok_or_else(|| refuse(i, format!("{} has no param \"{name}\"", plugin.name), format!("use one of {}", plugin.params.iter().map(|p| p.name.as_str()).take(24).collect::<Vec<_>>().join(", "))))?;
+            if *v < p.min || *v > p.max {
+                return Err(refuse(i, format!("{} {v} is outside {}..{}", p.name, p.min, p.max), format!("give {} inside its range", p.name)));
+            }
+            params.push((p.key.clone(), *v));
+        }
+        return Ok((plugin.id, params));
+    }
+    let effect = given.to_lowercase();
+    if !AUDIO_EFFECT_TYPES.contains(&effect.as_str()) {
+        return Err(refuse(i, format!("\"{effect}\" is not an audio effect"), format!("use one of {}, or an installed plug-in's id (audio_plugins)", AUDIO_EFFECT_TYPES.join(", "))));
+    }
+    let known = AUDIO_EFFECT_PARAMS.iter().find(|(t, _)| *t == effect).map(|(_, names)| *names).unwrap_or(&[]);
+    if let Some(name) = edit.params.keys().find(|n| !known.contains(&n.as_str())) {
+        return Err(refuse(i, format!("{effect} has no param \"{name}\""), format!("use one of {}", known.join(", "))));
+    }
+    Ok((effect, edit.params.iter().map(|(n, v)| (n.clone(), *v)).collect()))
+}
+
+/// `chain` with the edit made: the effect added (or the one there set),
+/// bypassed or taken off; what was done, said of `on`.
+fn edit_audio_chain(i: usize, chain: &mut Vec<klipp_core::AudioEffectInstance>, on: &str, effect: &str, params: &[(String, f32)], bypass: Option<bool>, remove: bool) -> Result<String, Refusal> {
     let at = chain.iter().rposition(|e| e.effect_type == effect);
-    let what = if remove {
-        let k = at.ok_or_else(|| refuse(i, format!("{} has no {effect}", on.name), "nothing to take off"))?;
+    Ok(if remove {
+        let k = at.ok_or_else(|| refuse(i, format!("{on} has no {effect}"), "nothing to take off"))?;
         chain.remove(k);
-        format!("take {effect} off {}", on.name)
+        format!("take {effect} off {on}")
     } else if let (Some(off), true) = (bypass, params.is_empty()) {
-        let k = at.ok_or_else(|| refuse(i, format!("{} has no {effect}", on.name), "add it first"))?;
+        let k = at.ok_or_else(|| refuse(i, format!("{on} has no {effect}"), "add it first"))?;
         chain[k].enabled = !off;
-        format!("{effect} on {} {}", on.name, if off { "bypassed" } else { "on again" })
+        format!("{effect} on {on} {}", if off { "bypassed" } else { "on again" })
     } else {
         // Set on the one already there, or added at the end of the chain.
         let k = match at {
             Some(k) => k,
             None => {
-                chain.push(klipp_core::AudioEffectInstance { effect_type: effect.clone(), enabled: true, wet_dry: 1.0, params: Vec::new() });
+                chain.push(klipp_core::AudioEffectInstance { effect_type: effect.to_string(), enabled: true, wet_dry: 1.0, params: Vec::new() });
                 chain.len() - 1
             }
         };
@@ -6673,9 +6745,38 @@ fn track_audio(seq: &Sequence, fps: Fps, i: usize, track: &TrackRef, effect: &st
         }
         let set: Vec<String> = params.iter().map(|(n, v)| format!("{n} {v}")).collect();
         let how = if set.is_empty() { String::new() } else { format!(" ({})", set.join(", ")) };
-        format!("{effect}{how} on {}, after every clip's own chain", on.name)
-    };
+        format!("{effect}{how} on {on}")
+    })
+}
+
+fn track_audio(seq: &Sequence, fps: Fps, i: usize, track: &TrackRef, edit: AudioChainEdit, transcripts: &dyn Transcripts) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    let on = TrackSpan::resolve(seq, fps, i, track, None, None)?;
+    let t = &seq.tracks[on.ti];
+    if !matches!(t.kind, TrackKind::Audio | TrackKind::Video) {
+        return Err(refuse(i, format!("{} carries no sound", on.name), "name an audio track, or a video track whose clips play their own sound"));
+    }
+    let (effect, params) = audio_chain_effect(i, &edit, transcripts)?;
+    let old = t.settings();
+    let mut new = old.clone();
+    let mut what = edit_audio_chain(i, &mut new.effects.audio, &on.name, &effect, &params, edit.bypass, edit.remove)?;
+    if !edit.remove && (edit.bypass.is_none() || !params.is_empty()) {
+        what.push_str(", after every clip's own chain");
+    }
     Ok((what, EditCommand::SetTrackSettings { changes: vec![(t.id, old, new)] }, Vec::new()))
+}
+
+/// [`Op::ClipAudio`]: the chain of the clip that holds the sound's
+/// settings, a linked pair's picture, as [`clean_audio`] puts it.
+fn clip_audio(seq: &Sequence, pool: &MediaPool, i: usize, given: &Clip, edit: AudioChainEdit, transcripts: &dyn Transcripts) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    let clip = sound_settings_clip(seq, given);
+    if !clip.media_id().and_then(|id| pool.get(&id)).is_some_and(|m| m.has_audio) {
+        return Err(refuse(i, format!("{} has no sound", clip_name(seq, pool, clip)), "name a clip whose media has audio"));
+    }
+    let (effect, params) = audio_chain_effect(i, &edit, transcripts)?;
+    let mut new_state = crate::history::AudioChainSnapshot::from_clip(clip);
+    let what = edit_audio_chain(i, &mut new_state.audio_effects, &clip_name(seq, pool, given), &effect, &params, edit.bypass, edit.remove)?;
+    let edit = EditCommand::EditAudioChain { clip_id: clip.id, description: "Clip Audio", old_state: crate::history::AudioChainSnapshot::from_clip(clip), new_state };
+    Ok((what, edit, vec![given.id]))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -15136,6 +15237,49 @@ mod tests {
         blocked.tracks[1].clips.push(Clip::media(media, tc(9.0), tc(10.0), tc(0.0), tc(1.0)));
         let refused = resolve(&blocked, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 0.5, fit: false, ripple: true, interpolation: None }]).unwrap_err();
         assert!(refused.why.contains("linked to a later clip, would run over"), "{}", refused.why);
+    }
+
+    /// #2485: an installed plug-in goes on a clip's sound or a track by
+    /// its id, its params by name or key and inside their ranges; one not
+    /// installed, a param it lacks or a value past its range is refused; a
+    /// built-in goes on a clip's own chain as on a track's.
+    #[test]
+    fn an_installed_audio_plugin_goes_on_a_clip_or_a_track() {
+        struct Installed;
+        impl Transcripts for Installed {
+            fn words(&self, _: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>> {
+                None
+            }
+            fn audio_plugin(&self, id: &str) -> Option<AudioPlugin> {
+                (id == "lv2:urn:test:room").then(|| AudioPlugin {
+                    id: id.into(),
+                    name: "Room".into(),
+                    params: vec![AudioPluginParam { key: "size".into(), name: "Room size".into(), min: 0.0, max: 10.0, default: 2.0 }],
+                })
+            }
+        }
+        let (seq, pool, _, a, _) = fixture();
+        let one = |op: serde_json::Value| resolve_with(&seq, &pool, &[serde_json::from_value(op).unwrap()], &Installed);
+        // On the clip's sound, by the param's name: stored by its key.
+        let plan = one(serde_json::json!({ "op": "clip_audio", "clip_id": a.0.to_string(), "effect": "lv2:urn:test:room", "params": { "room size": 4.0 } })).unwrap();
+        let EditCommand::EditAudioChain { new_state, clip_id, .. } = &plan.steps[0].edit else { panic!("{:?}", plan.steps[0].edit) };
+        assert_eq!(*clip_id, a, "the clip that holds the pair's sound settings: the picture");
+        assert_eq!(new_state.audio_effects.last().map(|e| (e.effect_type.as_str(), e.params.clone())), Some(("lv2:urn:test:room", vec![("size".to_string(), 4.0)])));
+        // On a track, by its key.
+        let plan = one(serde_json::json!({ "op": "track_audio", "track": "audio", "effect": "lv2:urn:test:room", "params": { "size": 9.0 } })).unwrap();
+        let EditCommand::SetTrackSettings { changes } = &plan.steps[0].edit else { panic!() };
+        assert_eq!(changes[0].2.effects.audio.last().unwrap().effect_type, "lv2:urn:test:room");
+        // Refused: not installed, no such param, past the range.
+        let why = |op: serde_json::Value| one(op).unwrap_err().why;
+        assert!(why(serde_json::json!({ "op": "clip_audio", "clip_id": a.0.to_string(), "effect": "clap:com.example.none" })).contains("no installed plug-in"));
+        assert!(why(serde_json::json!({ "op": "clip_audio", "clip_id": a.0.to_string(), "effect": "lv2:urn:test:room", "params": { "decay": 1.0 } })).contains("no param \"decay\""));
+        assert!(why(serde_json::json!({ "op": "clip_audio", "clip_id": a.0.to_string(), "effect": "lv2:urn:test:room", "params": { "size": 11.0 } })).contains("outside 0..10"));
+        assert!(resolve(&seq, &pool, &[serde_json::from_value(serde_json::json!({ "op": "clip_audio", "clip_id": a.0.to_string(), "effect": "lv2:urn:test:room" })).unwrap()]).unwrap_err().why.contains("no installed plug-in"), "a host that knows none refuses it");
+        // A built-in on the clip, then bypassed and taken off.
+        let plan = one(serde_json::json!({ "op": "clip_audio", "clip_id": a.0.to_string(), "effect": "compressor", "params": { "ratio": 3.0 } })).unwrap();
+        let EditCommand::EditAudioChain { new_state, .. } = &plan.steps[0].edit else { panic!() };
+        assert_eq!(new_state.audio_effects.last().unwrap().effect_type, "compressor");
+        assert!(why(serde_json::json!({ "op": "clip_audio", "clip_id": a.0.to_string(), "effect": "compressor", "remove": true })).contains("has no compressor"), "nothing to take off yet");
     }
 
     #[test]

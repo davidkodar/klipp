@@ -419,6 +419,30 @@ pub(crate) fn respond(
             }))
         }
 
+        ControlCommand::AudioPlugins { query } => {
+            let want = query.as_deref().map(|q| q.trim().to_lowercase()).filter(|q| !q.is_empty());
+            let all = crate::plans::installed_audio_plugins();
+            let found: Vec<&klipp_document::ops::AudioPlugin> = all.iter().filter(|p| want.as_ref().is_none_or(|q| p.name.to_lowercase().contains(q) || p.id.to_lowercase().contains(q))).collect();
+            let mut text = match (all.len(), &want) {
+                (0, _) => "No LV2 or CLAP audio plug-ins are installed here (the app looks in the usual LV2_PATH and CLAP_PATH folders when it starts).".to_string(),
+                (n, Some(q)) => format!("{} of the {n} installed audio plug-ins match \"{q}\":", found.len()),
+                (n, None) => format!("{n} installed audio plug-ins:"),
+            };
+            for p in found.iter().take(60) {
+                let params: Vec<String> = p.params.iter().take(12).map(|c| format!("{} {}..{}", c.name, c.min, c.max)).collect();
+                let more = if p.params.len() > 12 { format!(" and {} more", p.params.len() - 12) } else { String::new() };
+                text.push_str(&format!("\n  {} — {}{}", p.id, p.name, if params.is_empty() { String::new() } else { format!(": {}{more}", params.join(", ")) }));
+            }
+            if found.len() > 60 {
+                text.push_str(&format!("\n  and {} more: narrow with query", found.len() - 60));
+            }
+            let listed: Vec<serde_json::Value> = found.iter().take(60).map(|p| json!({
+                "id": p.id, "name": p.name,
+                "params": p.params.iter().map(|c| json!({ "key": c.key, "name": c.name, "min": c.min, "max": c.max, "default": c.default })).collect::<Vec<_>>(),
+            })).collect();
+            Ok(json!({ "plugins": listed, "installed": all.len(), "text": text, "next": "Add one with the clip_audio or track_audio op: effect its id, params by name." }))
+        }
+
         ControlCommand::AudioSpectrum { media_id, from_secs, to_secs } => {
             if in_batch {
                 return read_in_batch("audio_spectrum");

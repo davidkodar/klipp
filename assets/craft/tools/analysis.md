@@ -6,6 +6,10 @@ What each of these tools does in full: the details its short description leaves 
 
 Background analysis: shot boundaries, EBU R128 loudness/true peak, silence, and word-timed transcript/language if the speech model is installed. Beat sheet and OCR require screen footage (no camera metadata or tagged screen via klipp_tag_media) and their installed models. A still is read for its people and faces (framing), so refit and the grading tools can use them. Omit media_id for the pool; analysed items are free. An item nothing applies to is done at once with nothing_ran saying why. Also runs on import without downloads. wait true waits, then read klipp_media_analysis. download_models fetches missing enabled-in-preferences models with user knowledge: speech hundreds of MB, OCR pair about 10 MB.
 
+## klipp_audio_plugins
+
+The LV2 and CLAP audio plug-ins installed on this machine (found in the LV2_PATH and CLAP_PATH folders when the app starts), those whose name or id holds query when one is given. Each has its id (lv2:<uri>, clap:<id>), its name, and its parameters with their keys, ranges and defaults. Put one on a clip's sound with the clip_audio op, or on a whole track's with track_audio: effect is its id, params by name or key, each inside its range, the rest at their defaults; bypass and remove work as for the built-in effects. A read; changes nothing.
+
 ## klipp_audio_spectrum
 
 A file's sound as frequency against time: where a hum starts, when a hiss creeps in, which stretch has the air conditioning in it. The scrolling analyser in the app shows what is playing; this reads the whole file at once, which is the only way to answer *when*. Answers with named findings and the band levels a second at a time -- rumble, hum, voice, sibilance, hiss -- each judged relative to the voice's own level rather than as an absolute, because a quiet recording of a clean room and a loud one of a noisy room have the same noise floor and different problems.

@@ -743,6 +743,7 @@ fn handle(
             | ControlCommand::AutoSfx { .. }
             | ControlCommand::MixLoudness { .. }
             | ControlCommand::AudioSpectrum { .. }
+            | ControlCommand::AudioPlugins { .. }
             | ControlCommand::AnalysisQueue { .. }
             | ControlCommand::AnalysisStatus { .. }
             | ControlCommand::MediaAnalysis { .. }
