@@ -38,6 +38,23 @@ Each release lists what changed for people using Klipp. Versions follow
 - Refit keeps a clip's own reframe, and on a screen recording it follows what
   changes on screen rather than the face camera.
 - Listing clips over MCP gives each caption's and title's full text.
+- The reverb keeps a sound near its own level; it used to raise it by about
+  17 dB and could clip the export.
+- FCPXML export writes every picture and sound track and constant speed
+  changes, and lists what the format leaves out (grades, effects,
+  transitions, captions, title looks, fades) beside the file.
+- Importing a timeline reuses media already in the project, gives the new
+  sequence a name of its own, and reports clips that run past their media.
+- A ripple retime moves later clips' linked sound with them, so picture and
+  sound stay in sync.
+- Narration takes keep headroom (-1 dBTP) and lose the synthetic voice's
+  low rumble.
+- The loudness check measures the whole mix against the delivery, and an
+  export with a preset keeps the brief's loudness unless told otherwise.
+- OFX plug-in parameters with several values (colours, points) are read and
+  set correctly.
+- A project holding the same clip id twice is repaired when saved.
+- An edit that is refused says so, and why, instead of reporting success.
 
 ### Changed
 
