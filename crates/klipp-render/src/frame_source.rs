@@ -835,6 +835,7 @@ mod temporal_frames_tests {
     /// decodes it, never the media's alone.
     #[test]
     fn a_subject_matte_is_read_by_the_clips_turn() {
+        let _watch = crate::test_watchdog::Watchdog::start();
         let dir = std::env::temp_dir().join(format!("klipp-matte-turn-{}", ClipId::new().0));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("take.mov");
@@ -871,6 +872,7 @@ mod temporal_frames_tests {
     /// between those routes and not the reader's to settle.
     #[test]
     fn a_neighbour_is_the_frame_export_decodes_at_that_time() {
+        let _watch = crate::test_watchdog::Watchdog::start();
         let dir = std::env::temp_dir().join(format!("klipp-tf-nb-{}", ClipId::new().0));
         std::fs::create_dir_all(&dir).unwrap();
         let encode = |name: &str, pix_fmt: &str, matrix: &str| {
@@ -943,6 +945,7 @@ mod temporal_frames_tests {
     /// clip would carry a whole extra frame for nothing.
     #[test]
     fn only_a_clip_asked_for_neighbours_keeps_the_frame_before() {
+        let _watch = crate::test_watchdog::Watchdog::start();
         let dir = std::env::temp_dir().join(format!("klipp-tf-prev-{}", ClipId::new().0));
         std::fs::create_dir_all(&dir).unwrap();
         let Some(path) = test_clip_file(&dir) else {
@@ -967,6 +970,7 @@ mod temporal_frames_tests {
     /// something different from what the viewer showed.
     #[test]
     fn export_gives_a_plugin_the_frames_it_asks_for() {
+        let _watch = crate::test_watchdog::Watchdog::start();
         let dir = std::env::temp_dir().join(format!("klipp-tf-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let Some(path) = test_clip_file(&dir) else {
@@ -1036,6 +1040,7 @@ mod temporal_frames_tests {
     /// takes BT.601 and is many levels off.
     #[test]
     fn a_plug_ins_neighbour_is_its_frame_in_an_acescg_project() {
+        let _watch = crate::test_watchdog::Watchdog::start();
         let dir = std::env::temp_dir().join(format!("klipp-ofx-acescg-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let Some(path) = made(&dir, "flat", "color=c=0xC83C3C:s=64x36:r=24:d=1",
@@ -1065,6 +1070,7 @@ mod temporal_frames_tests {
     /// edge is reported, not held.
     #[test]
     fn a_plug_ins_neighbour_on_4_2_0_matches_in_flat_areas() {
+        let _watch = crate::test_watchdog::Watchdog::start();
         let dir = std::env::temp_dir().join(format!("klipp-ofx-420-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let Some(path) = made(&dir, "bars", "testsrc2=s=320x180:r=24:d=1",
@@ -1102,6 +1108,7 @@ mod temporal_frames_tests {
     /// HLG and S-Log3).
     #[test]
     fn a_scene_referred_neighbour_is_the_frame_after_its_display_step() {
+        let _watch = crate::test_watchdog::Watchdog::start();
         let dir = std::env::temp_dir().join(format!("klipp-ofx-hlg-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let Some(hlg) = made(&dir, "hlg", "color=c=0x8A6A50:s=64x36:r=24:d=1",
@@ -1143,6 +1150,7 @@ mod temporal_frames_tests {
     /// wrong part of the media, which looks plausible and is not.
     #[test]
     fn the_provider_reads_from_the_clips_source_in() {
+        let _watch = crate::test_watchdog::Watchdog::start();
         let dir = std::env::temp_dir().join(format!("klipp-tf-si-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let Some(path) = test_clip_file(&dir) else {

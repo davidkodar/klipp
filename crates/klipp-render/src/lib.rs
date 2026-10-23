@@ -64,6 +64,8 @@ pub mod pre_analysis;
 pub mod banding;
 pub mod pixel_check;
 pub mod still;
+#[cfg(test)]
+mod test_watchdog;
 
 pub use audio_mixdown::AudioMixdown;
 pub use clip_decoder::{detect_gpu, hardware_decoders_open, live_render_decoders, GpuVendor, RenderDecoder};
