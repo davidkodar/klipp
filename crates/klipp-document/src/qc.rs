@@ -922,8 +922,11 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
                 if silences.iter().any(|(a, b)| edge >= *a - 0.01 && edge <= *b + 0.01) {
                     continue;
                 }
-                if let Some(w) = inside.iter().find(|w| w.start_secs + INTO < edge && w.end_secs - INTO > edge) {
-                    let to = if name == "starts" { w.start_secs } else { w.end_secs };
+                // A word is no longer than the file: a last word timed past
+                // its end is not cut by a clip that plays to the end (#2493).
+                let file_end = Some(secs(item.duration)).filter(|d| *d > 0.0).unwrap_or(f64::INFINITY);
+                if let Some(w) = inside.iter().find(|w| w.start_secs + INTO < edge && w.end_secs.min(file_end) - INTO > edge) {
+                    let to = if name == "starts" { w.start_secs } else { w.end_secs.min(file_end) };
                     add(Severity::Warning, "word_cut", Some(at), format!("the sound {name} inside the word \"{}\"", w.text.trim()), &format!("Trim that edge to {to:.2} s of the file, the word's own edge, plus a beat"));
                 }
             }
@@ -1840,6 +1843,26 @@ mod tests {
         assert!(rules(&r).contains(&"ends_apart"), "a fade to half is still picture: {}", r.text());
         let r = check(&fade(0.0), &pool, &Spoken(talk));
         assert!(!rules(&r).contains(&"ends_apart"), "the last shot fades out: {}", r.text());
+    }
+
+    /// #2493: a clip that plays to the end of its file does not cut its
+    /// last word, whose transcript time runs past the end; a cut short of
+    /// the end inside it still does.
+    #[test]
+    fn a_word_timed_past_the_files_end_is_not_cut_there() {
+        let (mut seq, mut pool, talk, _) = piece();
+        // "eight" is timed 7.0 to 7.6 s; the file ends at 7.3.
+        pool.get_mut(&talk).unwrap().duration = tc(7.3);
+        let to_end = |seq: &mut Sequence, out: f64| for t in seq.tracks.iter_mut() {
+            let c = &mut t.clips[1];
+            (c.timeline_out, c.source_out) = (tc(out), tc(out));
+        };
+        to_end(&mut seq, 7.3);
+        let r = check(&seq, &pool, &Spoken(talk));
+        assert!(!rules(&r).contains(&"word_cut"), "played to the file's end: {}", r.text());
+        to_end(&mut seq, 7.2);
+        let r = check(&seq, &pool, &Spoken(talk));
+        assert!(rules(&r).contains(&"word_cut"), "cut inside the word before the end: {}", r.text());
     }
 
     #[test]
