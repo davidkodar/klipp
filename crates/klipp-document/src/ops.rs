@@ -2407,6 +2407,11 @@ pub(crate) fn spoken_spans(clip: &Clip, words: Option<&[SpokenWord]>, fps: f64) 
 pub trait Transcripts {
     /// The words of `item`, in order, or `None` when it has no transcript.
     fn words(&self, item: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>>;
+    /// The language `item`'s transcript is in, as a code ("en"), when it
+    /// says.
+    fn language(&self, _item: &klipp_media::MediaItem) -> Option<String> {
+        None
+    }
     /// Where `item`'s sound was measured silent, in the file's seconds.
     /// A cut there is clean whatever the words' times say: those are a
     /// model's estimate, the silence is a measurement.
@@ -5326,6 +5331,10 @@ pub struct HeardWord {
     pub after_cut: bool,
     /// The clip it is heard from.
     pub clip_id: ClipId,
+    /// The file it is heard from.
+    pub media_id: MediaId,
+    /// What that clip's sound is (dialogue, music, …).
+    pub role: klipp_core::ClipRole,
     /// Where that clip starts and ends on the timeline, in seconds: what
     /// lies outside is not this word's pause but whatever the timeline
     /// puts there.
@@ -5566,47 +5575,71 @@ fn cut_range(seq: &Sequence, pool: &MediaPool, i: usize, from: Timecode, to: Tim
 /// The words heard on the timeline, in order: every enabled clip whose
 /// sound plays — audio-track clips, and video clips with no audio clip
 /// linked to them — that is not muted, its transcript's words moved from
-/// the file's time to where the clip puts them.
+/// the file's time to where the clip puts them. A multicam angle's words
+/// count only where the group plays that angle's sound, and one word of
+/// a file is heard once at a time however many clips of it play there:
+/// a picture and its sound, or the two sides of a cut (#2416).
 pub fn heard_words(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) -> Vec<HeardWord> {
     let mut cache: std::collections::HashMap<MediaId, Option<Vec<SpokenWord>>> = std::collections::HashMap::new();
+    // Where each word of each file has been heard so far, timeline seconds.
+    let mut heard: std::collections::HashMap<(MediaId, usize), Vec<f64>> = std::collections::HashMap::new();
     let mut out = Vec::new();
-    for track in &seq.tracks {
-        if track.muted || !matches!(track.kind, TrackKind::Audio | TrackKind::Video) {
-            continue;
-        }
+    // Sound tracks first, so a word heard from a picture and its sound is
+    // the sound clip's.
+    let tracks = seq.tracks.iter().filter(|t| t.kind == TrackKind::Audio).chain(seq.tracks.iter().filter(|t| t.kind == TrackKind::Video));
+    for track in tracks {
         for clip in &track.clips {
             let ClipKind::Media { media_id } = &clip.kind else { continue };
-            if !clip.enabled || clip.volume == 0.0 {
+            // Heard as playback hears it: not on a muted track, not muted
+            // or silenced (a picture placed without its sound is), its
+            // sound settings read where a linked sound keeps them.
+            if !is_heard(seq, pool, track, clip) {
                 continue;
-            }
-            if track.kind == TrackKind::Video {
-                let partner_on_audio = clip.linked_clip_id.is_some_and(|lid| {
-                    seq.tracks.iter().any(|t| t.kind == TrackKind::Audio && t.clips.iter().any(|c| c.id == lid))
-                });
-                if partner_on_audio {
-                    continue;
-                }
             }
             let Some(item) = pool.get(media_id) else { continue };
             let Some(words) = cache.entry(*media_id).or_insert_with(|| transcripts.words(item)).as_ref() else { continue };
             let (s_in, s_out) = (secs(clip.source_in), secs(clip.source_out));
             let (t_in, t_out) = (secs(clip.timeline_in), secs(clip.timeline_out));
             let speed = if clip.speed > 0.0 { clip.speed } else { 1.0 };
+            let rate = clip.timeline_in.rate.max(1);
             let mut first = true;
-            for w in words.iter().filter(|w| w.start_secs >= s_in - 0.05 && w.start_secs < s_out) {
+            for (index, w) in words.iter().enumerate().filter(|(_, w)| w.start_secs >= s_in - 0.05 && w.start_secs < s_out) {
                 let text = w.text.trim();
                 if text.is_empty() {
                     continue;
                 }
                 let start = (t_in + (w.start_secs - s_in) / speed).max(t_in);
                 let end = (t_in + (w.end_secs - s_in) / speed).clamp(start, t_out);
-                out.push(HeardWord { start, end, text: text.to_string(), after_cut: first, clip_id: clip.id, clip_in: t_in, clip_out: t_out });
+                if !seq.multicam_sounds_at(clip, Timecode::from_secs_f64(start, rate)) {
+                    continue;
+                }
+                let at = heard.entry((*media_id, index)).or_default();
+                if at.iter().any(|t| (t - start).abs() < 1.0) {
+                    continue;
+                }
+                at.push(start);
+                out.push(HeardWord { start, end, text: text.to_string(), after_cut: first, clip_id: clip.id, media_id: *media_id, role: clip.role, clip_in: t_in, clip_out: t_out });
                 first = false;
             }
         }
     }
     out.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(std::cmp::Ordering::Equal));
     out
+}
+
+/// The language most of `words` are in, as their files' transcripts say.
+fn spoken_language(words: &[HeardWord], pool: &MediaPool, transcripts: &dyn Transcripts) -> Option<String> {
+    let mut by_media: std::collections::HashMap<MediaId, usize> = std::collections::HashMap::new();
+    for w in words {
+        *by_media.entry(w.media_id).or_default() += 1;
+    }
+    let mut by_language: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for (media, n) in by_media {
+        if let Some(lang) = pool.get(&media).and_then(|item| transcripts.language(item)).map(|l| l.trim().to_lowercase()).filter(|l| !l.is_empty()) {
+            *by_language.entry(lang).or_default() += n;
+        }
+    }
+    by_language.into_iter().max_by_key(|(_, n)| *n).map(|(lang, _)| lang)
 }
 
 /// A caption: its time on the timeline and its lines.
@@ -5647,6 +5680,28 @@ fn cues_from_words(words: &[HeardWord], max_chars: usize, max_lines: usize, soun
         cur.push(w);
     }
     close(&mut cur, &mut cues);
+    // A cue that would be up for less than a moment, its words' times
+    // collapsed or the next cue right on it, goes with its neighbour:
+    // a caption flashed for a frame cannot be read (#2416).
+    const SHORTEST_SECS: f64 = 0.5;
+    let mut k = 0;
+    while cues.len() > 1 && k < cues.len() {
+        let until = cues.get(k + 1).map(|c| c.start).unwrap_or(sound_ends);
+        if until - cues[k].start >= SHORTEST_SECS {
+            k += 1;
+            continue;
+        }
+        let short = cues.remove(k);
+        if k < cues.len() {
+            let next = &mut cues[k];
+            next.text = format!("{} {}", short.text, next.text);
+            next.start = short.start;
+        } else {
+            let prev = &mut cues[k - 1];
+            prev.text = format!("{} {}", prev.text, short.text);
+            prev.end = prev.end.max(short.end);
+        }
+    }
     // Held a moment past the last word, at least long enough to read,
     // and never into the next cue.
     let n = cues.len();
@@ -5759,7 +5814,10 @@ fn captions(
     if to_s <= from_s {
         return Err(refuse(i, "the range ends before it starts", "give from before to"));
     }
-    let words: Vec<HeardWord> = heard_words(seq, pool, transcripts).into_iter().filter(|w| w.start >= from_s && w.start < to_s).collect();
+    // Speech only: a song's lyrics or a sound effect's transcript is not
+    // what is said (#2416).
+    let speech = |r: klipp_core::ClipRole| !matches!(r, klipp_core::ClipRole::Music | klipp_core::ClipRole::SFX | klipp_core::ClipRole::Ambience | klipp_core::ClipRole::Foley);
+    let words: Vec<HeardWord> = heard_words(seq, pool, transcripts).into_iter().filter(|w| w.start >= from_s && w.start < to_s && speech(w.role)).collect();
     if words.is_empty() {
         return Err(refuse(i, "no transcribed speech is heard on the timeline there", "captions come from the transcripts: run analyze and wait for it, and place the speech first"));
     }
@@ -5783,7 +5841,11 @@ fn captions(
     let mut edits = Vec::with_capacity(cues.len() + 1);
     if existing.is_none() {
         let n = seq.tracks.iter().filter(|t| t.kind == TrackKind::Subtitle).count() + 1;
-        edits.push(EditCommand::AddTrack { index: ti, track: klipp_timeline::Track::new(&format!("Subtitle {n}"), TrackKind::Subtitle) });
+        let mut new = klipp_timeline::Track::new(&format!("Subtitle {n}"), TrackKind::Subtitle);
+        // In the language most of its words are in, as the transcripts
+        // say, so a sidecar file is named for it (#2416).
+        new.language = spoken_language(&words, pool, transcripts);
+        edits.push(EditCommand::AddTrack { index: ti, track: new });
     }
     // The captions already there go first, when asked: last to first, so
     // each one's place in the track is still its place when it is taken.
@@ -12939,6 +13001,118 @@ mod tests {
         let plain = apply_caption_style(&caption_title("hi"), &klipp_timeline::CaptionStyle::default());
         let klipp_timeline::TitleObjectContent::TextBox(tb) = &plain.objects[0].content else { panic!() };
         assert_eq!(tb.font_size, 40.0);
+    }
+
+    /// A talk, a second camera of it and a song, as each file's transcript
+    /// says, by the file's name.
+    struct Heard;
+
+    impl Transcripts for Heard {
+        fn words(&self, item: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>> {
+            let say = |at: f64, text: &str| -> Vec<SpokenWord> {
+                text.split(' ').enumerate().map(|(k, w)| SpokenWord { start_secs: at + k as f64 * 0.2, end_secs: at + k as f64 * 0.2 + 0.18, text: format!(" {w}"), confidence: 1.0 }).collect()
+            };
+            let name = item.path.file_name()?.to_str()?;
+            Some(match name {
+                // One word's time collapsed, just before the cut at 3.6 s.
+                "talk.mov" => [say(0.2, "Hello there friends."), say(1.4, "This is the talk."), vec![SpokenWord { start_secs: 3.57, end_secs: 3.57, text: " Bye.".into(), confidence: 1.0 }], say(3.7, "And more words here.")].concat(),
+                "camera.mov" => say(0.3, "Other angle words."),
+                "song.wav" => say(1.0, "la la la la."),
+                "broll.mov" => say(0.1, "Muted words."),
+                _ => return None,
+            })
+        }
+        fn language(&self, _item: &klipp_media::MediaItem) -> Option<String> {
+            Some("en".into())
+        }
+    }
+
+    /// #2416: captions are the speech heard: the talk's file once though
+    /// its picture and its sound both play it and a cut repeats a word
+    /// at its edge, only the multicam angle whose sound plays, never the
+    /// song; no cue up for a flash; the new track in the transcript's
+    /// language.
+    #[test]
+    fn captions_are_the_speech_heard_once() {
+        let mut seq = Sequence::new_default();
+        seq.fps = Fps::new(25, 1);
+        let mut pool = MediaPool::new();
+        let mut add = |path: &str, video: bool| {
+            let mut item = klipp_media::MediaItem::synthetic_for_test(path.into(), None);
+            item.duration = tc(10.0);
+            if video {
+                item.video_codec = "hevc".into();
+            }
+            item.has_audio = true;
+            pool.add(item)
+        };
+        let (talk, camera, song) = (add("/tmp/talk.mov", true), add("/tmp/camera.mov", true), add("/tmp/song.wav", false));
+        let group = klipp_core::GroupId::new();
+        // Angle 0, the talk, whose sound the group plays; the picture
+        // cuts to angle 1 at 2 s.
+        let mut primary = Clip::media(talk, tc(0.0), tc(8.0), tc(0.0), tc(8.0));
+        (primary.multicam_group, primary.multicam_angle, primary.multicam_sound) = (Some(group), 0, klipp_core::MulticamSound::Angle(0));
+        primary.multicam_cuts = vec![(2.0, 1)];
+        let mut angle = Clip::media(camera, tc(0.0), tc(8.0), tc(0.0), tc(8.0));
+        (angle.multicam_group, angle.multicam_angle) = (Some(group), 1);
+        // The talk's sound, cut at 3.6 s, each piece naming the picture
+        // and the picture naming none: a link written on one side only.
+        let mut talk_a = Clip::media(talk, tc(0.0), tc(3.6), tc(0.0), tc(3.6));
+        let mut talk_b = Clip::media(talk, tc(3.6), tc(8.0), tc(3.6), tc(8.0));
+        talk_a.linked_clip_id = Some(primary.id);
+        talk_b.linked_clip_id = Some(primary.id);
+        let mut camera_sound = Clip::media(camera, tc(0.0), tc(8.0), tc(0.0), tc(8.0));
+        camera_sound.linked_clip_id = Some(angle.id);
+        angle.linked_clip_id = Some(camera_sound.id);
+        let mut music = Clip::media(song, tc(0.0), tc(8.0), tc(0.0), tc(8.0));
+        music.role = klipp_core::ClipRole::Music;
+        // B-roll over the talk, placed without its sound (volume 0), and
+        // a transcribed file on a muted track: neither is heard.
+        let broll_media = add("/tmp/broll.mov", true);
+        let mut broll = Clip::media(broll_media, tc(1.0), tc(3.0), tc(0.0), tc(2.0));
+        broll.volume = 0.0;
+        let aside = Clip::media(broll_media, tc(4.0), tc(6.0), tc(0.0), tc(2.0));
+        let track = |name: &str, kind, clips: Vec<Clip>| {
+            let mut t = Track::new(name, kind);
+            t.clips = clips;
+            t
+        };
+        seq.tracks = vec![
+            track("V1", TrackKind::Video, vec![primary]),
+            track("V2", TrackKind::Video, vec![angle]),
+            track("A1", TrackKind::Audio, vec![talk_a, talk_b]),
+            track("A2", TrackKind::Audio, vec![camera_sound]),
+            track("A3", TrackKind::Audio, vec![music]),
+            track("V3", TrackKind::Video, vec![broll]),
+            {
+                let mut t = track("A4", TrackKind::Audio, vec![aside]);
+                t.muted = true;
+                t
+            },
+        ];
+
+        let heard = heard_words(&seq, &pool, &Heard);
+        let of = |m: MediaId| heard.iter().filter(|w| w.media_id == m).map(|w| w.text.as_str()).collect::<Vec<_>>().join(" ");
+        assert_eq!(of(talk), "Hello there friends. This is the talk. Bye. And more words here.", "the talk once");
+        assert_eq!(of(camera), "", "the angle whose sound the group does not play is not heard");
+        assert_eq!(of(song), "la la la la.", "the song is heard, as music");
+        assert_eq!(of(broll_media), "", "a muted picture and a muted track are not heard");
+        assert!(heard.iter().filter(|w| w.media_id == song).all(|w| w.role == klipp_core::ClipRole::Music));
+
+        let plan = resolve_with(&seq, &pool, &[Op::Captions { track: None, from: None, to: None, max_chars: 42, max_lines: 2, replace: false }], &Heard).unwrap();
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&plan.steps[0].edit);
+        let subs = view.sequences[0].tracks.last().unwrap();
+        assert_eq!(subs.kind, TrackKind::Subtitle);
+        assert_eq!(subs.language.as_deref(), Some("en"), "in the transcript's language");
+        let texts: Vec<String> = subs.clips.iter().map(|c| c.title_data().unwrap().text().replace('\n', " ")).collect();
+        assert_eq!(texts.join(" "), "Hello there friends. This is the talk. Bye. And more words here.", "speech only, each word once: {texts:?}");
+        for c in &subs.clips {
+            assert!(secs(c.timeline_out) - secs(c.timeline_in) >= 0.5 - 1e-9, "no cue up for a flash: {:.2}-{:.2}", secs(c.timeline_in), secs(c.timeline_out));
+        }
     }
 
     #[test]
