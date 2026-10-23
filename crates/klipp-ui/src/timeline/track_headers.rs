@@ -689,7 +689,7 @@ pub fn show(
                             for pair in tr::PAIRS {
                                 let (from, to) = (tr::language_name(pair.source), tr::language_name(pair.target));
                                 if ui.button(format!("{from} \u{2192} {to}")).on_hover_text("A new subtitle track under this one, each caption translated at its own time; the model downloads the first time").clicked() {
-                                    cmds.push(AppCommand::TranslateCaptions { track_id, source: pair.source.into(), target: pair.target.into(), job_id: uuid::Uuid::new_v4().to_string() });
+                                    cmds.push(AppCommand::TranslateCaptions { track_id, source: pair.source.into(), target: pair.target.into(), job_id: uuid::Uuid::new_v4().to_string(), glossary: Vec::new() });
                                     ui.close_menu();
                                 }
                             }

@@ -1049,6 +1049,11 @@ pub enum ControlCommand {
         from: Option<String>,
         #[serde(default)]
         download_models: bool,
+        /// Terms to translate a set way, source term to its translation
+        /// (#2429); the brief's names and vocabulary are kept as written
+        /// without being named here.
+        #[serde(default)]
+        glossary: std::collections::BTreeMap<String, String>,
     },
     /// Append a supported interchange timeline; omit path to read the last
     /// outcome. With `new_project`, open it as a new project instead

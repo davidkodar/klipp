@@ -4331,7 +4331,10 @@ pub enum AppCommand {
     /// (ISO 639-1 codes) as translation job `job_id`, off the UI thread,
     /// its progress and cancel in the translation jobs; when it is done a
     /// new subtitle track under it carries them, as one undo step (#2213).
-    TranslateCaptions { track_id: TrackId, source: String, target: String, job_id: String },
+    /// The brief's names and vocabulary are kept as written, and each
+    /// `glossary` term (source, translation) comes out as its translation
+    /// (#2429).
+    TranslateCaptions { track_id: TrackId, source: String, target: String, job_id: String, glossary: Vec<(String, String)> },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

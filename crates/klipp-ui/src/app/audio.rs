@@ -819,8 +819,8 @@ impl KlippApp {
                     self.apply_clip_gains(gains);
                     true
                 }
-                AppCommand::TranslateCaptions { track_id, source, target, job_id } => {
-                    self.translate_captions(*track_id, source, target, job_id);
+                AppCommand::TranslateCaptions { track_id, source, target, job_id, glossary } => {
+                    self.translate_captions(*track_id, source, target, job_id, glossary);
                     true
                 }
                 AppCommand::AutoDuckAudio { target_clip_id, sidechain_track_idx, duck_level, attack_secs, release_secs, threshold } => {

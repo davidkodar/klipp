@@ -68,6 +68,86 @@ fn ends_sentence(text: &str) -> bool {
     t.ends_with(['.', '!', '?', '…', '。', '！', '？'])
 }
 
+/// Why a caption is flagged when a name or term kept from translation
+/// did not come back from the model.
+pub const TERM_LOST: &str = "a name or term the brief or glossary keeps was lost in translation";
+
+/// What a translation keeps (#2429): each term with what it comes out as.
+/// The brief's names and vocabulary come out as the brief spells them; a
+/// glossary entry's source term comes out as its translation. Longest
+/// first, so a longer term is kept before a shorter one inside it.
+pub fn keep_terms(brief: Option<&klipp_timeline::Brief>, glossary: &[(String, String)]) -> Vec<(String, String)> {
+    let mut terms: Vec<(String, String)> = glossary.iter().filter(|(from, _)| !from.trim().is_empty()).map(|(from, to)| (from.trim().to_string(), to.trim().to_string())).collect();
+    for spelt in brief.map(|b| b.spellings()).unwrap_or_default() {
+        let spelt = spelt.trim().to_string();
+        if !terms.iter().any(|(from, _)| from.eq_ignore_ascii_case(&spelt)) {
+            terms.push((spelt.clone(), spelt));
+        }
+    }
+    terms.sort_by_key(|(from, _)| std::cmp::Reverse(from.chars().count()));
+    terms
+}
+
+/// `text` with each kept term, matched as a whole word in any case, put
+/// as a placeholder the model copies through (`ZXQ0`, `ZXQ1`, …: OPUS-MT
+/// was measured to keep those as they are, where it translated a name
+/// as a word), and what each placeholder comes back as.
+pub fn protect(text: &str, terms: &[(String, String)]) -> (String, Vec<String>) {
+    let is_word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric());
+    let mut out = String::with_capacity(text.len());
+    let mut kept: Vec<String> = Vec::new();
+    let mut at = 0;
+    'scan: while at < text.len() {
+        let before = text[..at].chars().next_back();
+        if !is_word(before) {
+            for (from, to) in terms {
+                let Some(found) = text.get(at..at + from.len()) else { continue };
+                if found.eq_ignore_ascii_case(from) && !is_word(text[at + from.len()..].chars().next()) {
+                    let n = match kept.iter().position(|k| k == to) {
+                        Some(n) => n,
+                        None => {
+                            kept.push(to.clone());
+                            kept.len() - 1
+                        }
+                    };
+                    out.push_str(&format!("ZXQ{n}"));
+                    at += from.len();
+                    continue 'scan;
+                }
+            }
+        }
+        let c = text[at..].chars().next().expect("inside the text");
+        out.push(c);
+        at += c.len_utf8();
+    }
+    (out, kept)
+}
+
+/// `text` with each placeholder [`protect`] put in back as what it keeps,
+/// and whether one of `kept` did not come back.
+pub fn restore(text: &str, kept: &[String]) -> (String, bool) {
+    let mut out = String::with_capacity(text.len());
+    let mut seen = vec![false; kept.len()];
+    let mut rest = text;
+    while let Some(i) = rest.char_indices().find(|(i, _)| rest[*i..].get(..3).is_some_and(|w| w.eq_ignore_ascii_case("ZXQ"))).map(|(i, _)| i) {
+        let digits: String = rest[i + 3..].chars().take_while(char::is_ascii_digit).collect();
+        match digits.parse::<usize>().ok().filter(|n| *n < kept.len()) {
+            Some(n) => {
+                out.push_str(&rest[..i]);
+                out.push_str(&kept[n]);
+                seen[n] = true;
+                rest = &rest[i + 3 + digits.len()..];
+            }
+            None => {
+                out.push_str(&rest[..i + 3]);
+                rest = &rest[i + 3..];
+            }
+        }
+    }
+    out.push_str(rest);
+    (out, seen.iter().any(|s| !s))
+}
+
 /// `captions` gathered into sentences: consecutive captions joined until
 /// one ends a sentence, a pause longer than [`SENTENCE_GAP_SECS`] comes,
 /// or the next would take it past [`MAX_SENTENCE_CHARS`]; always at a
@@ -225,6 +305,25 @@ pub fn translated_track(seq: &Sequence, track: usize, translations: &[(ClipId, S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #2429: the brief's names and vocabulary come back as written, a
+    /// glossary term as its translation, matched as whole words in any
+    /// case; a placeholder the model dropped is said.
+    #[test]
+    fn kept_terms_survive_translation() {
+        let brief = klipp_timeline::Brief { vocabulary: vec!["Bottles".into(), "GTK".into()], ..Default::default() };
+        let terms = keep_terms(Some(&brief), &[("application".into(), "program".into())]);
+        let (masked, kept) = protect("Now one Application I use is called bottles, built on GTK; bottlesque is not.", &terms);
+        assert_eq!(masked, "Now one ZXQ0 I use is called ZXQ1, built on ZXQ2; bottlesque is not.");
+        assert_eq!(kept, vec!["program".to_string(), "Bottles".into(), "GTK".into()]);
+        // As the model gave it back, in its own words around them.
+        let (back, lost) = restore("Nu kallas ett zxq0 som jag använder ZXQ1, byggt på ZXQ2.", &kept);
+        assert_eq!(back, "Nu kallas ett program som jag använder Bottles, byggt på GTK.");
+        assert!(!lost);
+        let (_, lost) = restore("Nu kallas ett program som jag använder Flaskor.", &kept);
+        assert!(lost, "a dropped placeholder is said");
+        assert_eq!(protect("nothing kept here", &terms), ("nothing kept here".to_string(), vec![]));
+    }
 
     fn caption_sequence(lines: &[(f64, f64, &str)]) -> (Sequence, usize, Vec<ClipId>) {
         let mut seq = Sequence::new_default();
