@@ -1314,8 +1314,9 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
         }
         "klipp_relink_media" => json!({
             "method": "relink_media",
-            "media_id": arg_str(args, "media_id")?,
-            "path": arg_str(args, "path")?,
+            "media_id": args.get("media_id").cloned().unwrap_or(json!(null)),
+            "path": args.get("path").cloned().unwrap_or(json!(null)),
+            "folder": args.get("folder").cloned().unwrap_or(json!(null)),
             "force": args.get("force").and_then(|v| v.as_bool()).unwrap_or(false),
         }),
         "klipp_tag_media" => json!({
@@ -2498,12 +2499,13 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "Save the project to an absolute .klipp folder, or where it was last saved. Details: klipp_guide topic save_project.",
              json!({ "path": { "type": "string" } }), vec![]),
         tool("klipp_relink_media",
-             "Point a media item at a file, judged against what the project knew of it; a probable mismatch is refused unless force is true. Details: klipp_guide topic relink_media.",
+             "Point a media item at a file, judged against what the project knew of it; a probable mismatch is refused unless force is true, or search a folder. Details: klipp_guide topic relink_media.",
              json!({
                  "media_id": { "type": "string" },
                  "path": { "type": "string", "description": "absolute path of the file" },
-                 "force": { "type": "boolean", "description": "relink even a file the check says is probably not the clip" }
-             }), vec!["media_id", "path"]),
+                 "folder": { "type": "string" },
+                 "force": { "type": "boolean", "description": "relink a probable mismatch anyway" }
+             }), vec![]),
         tool("klipp_tag_media",
              "Tag a media item, or remove tags. Details: klipp_guide topic tag_media.",
              json!({

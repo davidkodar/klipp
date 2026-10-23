@@ -3,6 +3,36 @@
 #[allow(unused_imports)]
 use crate::*;
 
+/// The pool's offline files, for the replies that say how a project
+/// stands (#2480): how many, how many the timeline uses, the first few
+/// names, and what finds them. `None` when every file is there.
+pub(crate) fn offline_media(ctx: &ControlContext) -> Option<serde_json::Value> {
+    // Taken and let go before the sequence is read: the rest of the
+    // socket reads the sequence first, and holding both the other way
+    // round could deadlock against a writer.
+    let offline: Vec<(klipp_core::MediaId, String)> = {
+        let pool = ctx.media_pool.read().ok()?;
+        pool.all().filter(|m| m.offline).map(|m| (m.id, m.filename.clone())).collect()
+    };
+    if offline.is_empty() {
+        return None;
+    }
+    let used = {
+        let seq = ctx.sequence.read().ok()?;
+        let on_timeline: std::collections::HashSet<klipp_core::MediaId> = seq.tracks.iter().flat_map(|t| &t.clips).filter_map(|c| c.media_id()).collect();
+        offline.iter().filter(|(id, _)| on_timeline.contains(id)).count()
+    };
+    let mut names: Vec<&str> = offline.iter().map(|(_, name)| name.as_str()).collect();
+    names.sort_unstable();
+    let shown = names.iter().take(5).copied().collect::<Vec<_>>().join(", ");
+    let more = if names.len() > 5 { format!(" and {} more", names.len() - 5) } else { String::new() };
+    let text = format!(
+        "{} media file(s) are offline (moved or missing), {used} of them on the timeline: {shown}{more}. relink_media with folder finds them there by content, name, reel, timecode and length.",
+        offline.len()
+    );
+    Some(json!({ "count": offline.len(), "on_timeline": used, "files": names, "text": text }))
+}
+
 pub(crate) fn respond(
     ctx: &ControlContext,
     cmd: ControlCommand,
@@ -33,7 +63,65 @@ pub(crate) fn respond(
             Ok(json!({ "text": text, "cut": cut, "chars": full.len(), "revision": ctx.shared.revision() }))
         }
 
-        ControlCommand::RelinkMedia { media_id, path, force } => {
+        ControlCommand::RelinkMedia { media_id, path: None, folder: Some(folder), .. } => {
+            if in_batch {
+                return Err("a folder relink searches the disk; send it on its own".into());
+            }
+            let dir = std::path::PathBuf::from(&folder);
+            if !dir.is_absolute() || !dir.is_dir() {
+                return Err(format!("no folder at {folder:?} (give an absolute path)"));
+            }
+            let only = media_id.as_deref().map(|m| parse_uuid(m, "media_id").map(klipp_core::MediaId)).transpose()?;
+            let wanted: Vec<klipp_media::relink::Wanted> = {
+                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                match only {
+                    Some(id) => vec![klipp_media::relink::Wanted::from_item(pool.get(&id).ok_or_else(|| format!("no media item {}", id.0))?)],
+                    None => pool.all().filter(|m| m.offline).map(klipp_media::relink::Wanted::from_item).collect(),
+                }
+            };
+            if wanted.is_empty() {
+                return Ok(json!({ "relinked": [], "text": "No media is offline: nothing to look for." }));
+            }
+            let criteria = klipp_media::relink::Criteria::default();
+            let found = klipp_media::relink::scan(&dir, &wanted, criteria, &std::sync::atomic::AtomicBool::new(false), |_| {});
+            let proposals = klipp_media::relink::propose(&wanted, &found.candidates, criteria);
+            let (mut relinked, mut choose, mut missing, mut commands) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+            for (w, proposal) in wanted.iter().zip(proposals) {
+                let path_of = |i: usize| found.candidates[i].path.to_string_lossy().into_owned();
+                let id = w.media_id.0.to_string();
+                match proposal {
+                    // Only evidence enough to be sure relinks unasked: a
+                    // name alone is a suggestion.
+                    klipp_media::relink::Proposal::Found(s) if s.is_strong() => {
+                        let p = found.candidates[s.candidate].path.clone();
+                        commands.push(AppCommand::RelinkMedia { media_id: w.media_id, new_path: p });
+                        relinked.push(json!({ "media_id": id, "file": w.filename, "path": path_of(s.candidate), "matched": s.matched.iter().map(|c| c.label()).collect::<Vec<_>>(), "differences": s.warnings }));
+                    }
+                    klipp_media::relink::Proposal::Found(s) => choose.push(json!({ "media_id": id, "file": w.filename, "candidates": [path_of(s.candidate)], "why": format!("only its {} match", s.matched.iter().map(|c| c.label()).collect::<Vec<_>>().join(" and ")) })),
+                    klipp_media::relink::Proposal::Ambiguous(hits) => choose.push(json!({ "media_id": id, "file": w.filename, "candidates": hits.iter().map(|h| path_of(h.candidate)).collect::<Vec<_>>(), "why": "several files match it equally" })),
+                    klipp_media::relink::Proposal::NotFound { rejected } => missing.push(json!({ "media_id": id, "file": w.filename, "rejected": rejected })),
+                }
+            }
+            if !commands.is_empty() {
+                send_envelope(ctx, commands, false)?;
+            }
+            let mut text = format!("Searched {folder} ({} media files): {} of {} relinked", found.candidates.len(), relinked.len(), wanted.len());
+            if !choose.is_empty() {
+                text.push_str(&format!("; {} to choose (relink_media with media_id and path)", choose.len()));
+            }
+            if !missing.is_empty() {
+                text.push_str(&format!("; {} not found there", missing.len()));
+            }
+            if found.hit_file_limit {
+                text.push_str("; the search stopped at its file limit, so pick a folder nearer the footage");
+            }
+            Ok(json!({ "relinked": relinked, "choose": choose, "not_found": missing, "files_searched": found.candidates.len(), "text": text }))
+        }
+
+        ControlCommand::RelinkMedia { media_id, path, force, .. } => {
+            let (Some(media_id), Some(path)) = (media_id, path) else {
+                return Err("give media_id and path for one file, or folder to look for the offline media in".into());
+            };
             let id = klipp_core::MediaId(parse_uuid(&media_id, "media_id")?);
             let p = std::path::PathBuf::from(&path);
             if !p.is_absolute() || !p.is_file() {

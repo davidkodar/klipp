@@ -64,6 +64,8 @@ For a live demonstration, record without waiting: wait false starts the recorder
 
 Point a media item at a file: an offline item found again, or a better copy. The file is judged against what the project knew of the item (reel, start timecode, length, rate, size) and relinked; the answer's check says how sure that is. A file that is probably not the clip is refused with the reason; force: true relinks it anyway (a relink is not undone by undo). klipp_list_media marks items offline.
 
+With folder (an absolute folder) instead of path, every offline item, or the one media_id names, is looked for under it, down to twelve levels: by content, name (any extension), reel, start timecode and length. One file that is clearly the item is relinked; the reply's relinked lists them with what matched. choose lists items with several equal files, or only a name or a length to go on: relink each with media_id and path. not_found says why close files were turned down. A file whose picture is turned (a phone video) is compared at its upright size. klipp_status, klipp_orient and klipp_open_project count the offline files.
+
 ## klipp_save_project
 
 Save the project: to an absolute path (a folder ending in .klipp, made if needed), or where it was last saved when no path is given. Save before a long piece of work and when you are done, so the user can carry on by hand. klipp_status says where the project is saved and whether it has unsaved changes.

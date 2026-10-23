@@ -705,6 +705,9 @@ mod respond_local_tests {
         assert!(matches!(parse(json!({ "method": "match_scenes", "apply": true })), ControlCommand::MatchScenes { clip_ids: None, .. }));
         assert!(matches!(parse(json!({ "method": "skin_balance", "clip_id": "x", "apply": true })), ControlCommand::SkinBalance { apply: true, .. }));
         assert!(matches!(parse(json!({ "method": "grade_to_target", "clip_id": "x", "apply": true })), ControlCommand::GradeToTarget { apply: true, clip_id: Some(_), .. }));
+        // One file, or a folder to search for the offline media (#2480).
+        assert!(matches!(parse(json!({ "method": "relink_media", "media_id": "m", "path": "/a.mov" })), ControlCommand::RelinkMedia { media_id: Some(_), path: Some(_), folder: None, .. }));
+        assert!(matches!(parse(json!({ "method": "relink_media", "folder": "/footage" })), ControlCommand::RelinkMedia { media_id: None, path: None, folder: Some(_), .. }));
         assert!(matches!(parse(json!({ "method": "adopt_look", "from_timeline": true, "apply": true })), ControlCommand::AdoptLook { from_timeline: true, apply: true, .. }));
         assert!(matches!(parse(json!({ "method": "adopt_look", "media_id": "m", "apply": true })), ControlCommand::AdoptLook { media_id: Some(_), .. }));
     }
