@@ -835,6 +835,51 @@ pub(crate) fn mix_loudness(snapshot: &klipp_render::SequenceSnapshot, from: f64,
     Ok(rows)
 }
 
+/// The whole mix as an export without a target of its own delivers it:
+/// its integrated loudness, LUFS, and its true peak, dBTP (4x
+/// oversampled), unclamped as the export's loudness pass reads it (#2481).
+pub(crate) fn mix_delivery(snapshot: &klipp_render::SequenceSnapshot) -> Result<(f32, f32), String> {
+    let mut mix = klipp_render::AudioMixdown::new(snapshot).map_err(|e| format!("the mix could not be read: {e}"))?;
+    let mut meter = klipp_audio::LufsMeter::new(snapshot.sample_rate as f32, true);
+    for frame in 0..snapshot.end_frame() {
+        meter.process(&mix.get_frame_audio_unclamped(frame));
+    }
+    let r = meter.readings();
+    Ok((r.integrated, r.true_peak_dbfs))
+}
+
+/// How far a mix may sit from its target before `check` says the export
+/// has far to take it, LU.
+const TARGET_FAR_LU: f32 = 6.0;
+
+/// What `check` says of a mix measured at `integrated` LUFS with a true
+/// peak of `peak` dBTP (#2481): with the brief's `target`, the export
+/// brings it there, so the question is whether it can under `ceiling`;
+/// without one the mix is what is delivered, and an over clips. Each as
+/// (severity, rule, what, hint).
+pub(crate) fn delivery_findings(integrated: f32, peak: f32, target: Option<f32>, ceiling: f32) -> Vec<(klipp_document::qc::Severity, &'static str, String, String)> {
+    use klipp_document::qc::Severity;
+    let mut out = vec![(Severity::Note, "loudness_measured", format!("the mix measures {integrated:.1} LUFS integrated, true peak {peak:+.1} dBTP"), "mix_loudness shows it second by second".to_string())];
+    if !integrated.is_finite() || integrated < -60.0 {
+        return out;
+    }
+    match target {
+        Some(t) => {
+            let gain = t - integrated;
+            let after = peak + gain;
+            if after > ceiling + 0.1 {
+                out.push((Severity::Error, "loudness_target", format!("reaching the brief's {t:.0} LUFS takes {gain:+.1} dB, which puts the true peak at {after:+.1} dBTP, over the {ceiling:.1} ceiling: the export will fall short of it"), "Bring the peaks down on the track that has them (a compressor or limiter, or its level), then check again".to_string()));
+            } else if gain.abs() >= TARGET_FAR_LU {
+                out.push((Severity::Warning, "loudness_target", format!("the mix is {integrated:.1} LUFS, {:.1} LU from the brief's {t:.0}: an export to the brief's target takes it there, one with another target or none does not", gain.abs()), "Export with the brief's target (the default), or bring the mix nearer it".to_string()));
+            }
+        }
+        None if peak > 0.0 => out.push((Severity::Error, "loudness_overs", format!("the mix runs past full scale, true peak {peak:+.1} dBTP, and with no loudness target nothing brings it down: the delivery clips"), "Lower the loud tracks, or give the brief a loudness (or the export a target_lufs) so it is normalised under the ceiling".to_string())),
+        None if peak > ceiling => out.push((Severity::Warning, "loudness_overs", format!("the mix's true peak is {peak:+.1} dBTP, over the {ceiling:.1} ceiling: a lossy encode may clip it"), "Lower the loud tracks, or export with a loudness target".to_string())),
+        None => {}
+    }
+    out
+}
+
 /// How far under the piece's median short-term loudness a stretch of the
 /// mix sits before `check` says so (#1584), and how long it must last: a
 /// spliced bed left 10 LU down for a section went unremarked.
@@ -1143,5 +1188,39 @@ mod look_resolve_tests {
         assert!(warm.protects("skin") && !warm.protects("sky"));
         let numbers = LookTarget { name: "mine".into(), cast_b: Some(7.0), mid_l: Some(50.0), ..Default::default() };
         assert_eq!(resolve_look_target(numbers.clone()), numbers);
+    }
+}
+
+#[cfg(test)]
+mod delivery_tests {
+    use super::delivery_findings;
+    use klipp_document::qc::Severity;
+
+    fn rules(found: &[(Severity, &'static str, String, String)]) -> Vec<(Severity, &'static str)> {
+        found.iter().map(|f| (f.0, f.1)).collect()
+    }
+
+    /// #2481: with no target, a mix past full scale is an error (it is what
+    /// is delivered) and one over the ceiling a warning; with the brief's
+    /// target, a mix the export can bring there under the ceiling is fine,
+    /// one far from it a warning, and one whose peaks the gain would push
+    /// over the ceiling an error. The measurement is always said.
+    #[test]
+    fn the_mix_is_judged_as_its_delivery() {
+        use Severity::{Error, Note, Warning};
+        // The film's master: -7.1 LUFS, +0.4 dBTP.
+        assert_eq!(rules(&delivery_findings(-7.1, 0.4, None, -1.0)), vec![(Note, "loudness_measured"), (Error, "loudness_overs")]);
+        assert_eq!(rules(&delivery_findings(-14.0, -0.5, None, -1.0)), vec![(Note, "loudness_measured"), (Warning, "loudness_overs")]);
+        assert_eq!(rules(&delivery_findings(-14.0, -3.0, None, -1.0)), vec![(Note, "loudness_measured")]);
+        // With the brief's -14: brought down 6.9 dB, its peak -6.5 dBTP.
+        assert_eq!(rules(&delivery_findings(-7.1, 0.4, Some(-14.0), -1.0)), vec![(Note, "loudness_measured"), (Warning, "loudness_target")]);
+        assert_eq!(rules(&delivery_findings(-15.0, -4.0, Some(-14.0), -1.0)), vec![(Note, "loudness_measured")]);
+        // A quiet mix with a loud peak: +10 dB would put it at +2 dBTP.
+        let short = delivery_findings(-24.0, -8.0, Some(-14.0), -1.0);
+        assert_eq!(rules(&short), vec![(Note, "loudness_measured"), (Error, "loudness_target")]);
+        assert!(short[1].2.contains("+10.0 dB") && short[1].2.contains("fall short"), "{}", short[1].2);
+        assert!(delivery_findings(-7.1, 0.4, None, -1.0)[0].2.contains("-7.1 LUFS") , "the measurement said");
+        // Silence: measured, nothing judged.
+        assert_eq!(rules(&delivery_findings(-70.0, -90.0, Some(-14.0), -1.0)), vec![(Note, "loudness_measured")]);
     }
 }

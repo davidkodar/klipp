@@ -151,12 +151,26 @@ pub(crate) fn respond(
                     return Err(format!("encoder_speed does nothing here: {why}; leave it out"));
                 }
             }
-            // Loudness: as asked, else the preset's, else the brief's.
-            match target_lufs {
-                Some(l) => settings.target_lufs = Some(l),
-                None if preset_name.is_none() && brief_lufs.is_some() => settings.target_lufs = brief_lufs,
-                None => {}
-            }
+            // Loudness: as asked, else the preset's own, else the brief's. A
+            // preset with no target of its own (a master) used to drop the
+            // brief's, unsaid (#2481).
+            let loudness_from = match target_lufs {
+                Some(l) => {
+                    settings.target_lufs = Some(l);
+                    "the call"
+                }
+                None if settings.target_lufs.is_some() => "the preset",
+                None if brief_lufs.is_some() => {
+                    settings.target_lufs = brief_lufs;
+                    "the brief"
+                }
+                None => "nothing",
+            };
+            // Said when the delivery is not at the brief's loudness.
+            let loudness_warning = brief_lufs.and_then(|b| match settings.target_lufs {
+                Some(t) if (t - b).abs() > 0.5 => Some(format!("normalised to {t:.1} LUFS from {loudness_from}, not the brief's {b:.1} LUFS")),
+                _ => None,
+            });
             if let Some(ceiling) = true_peak_dbtp {
                 if !ceiling.is_finite() || !(-10.0..=0.0).contains(&ceiling) {
                     return Err(format!("a true-peak ceiling of {ceiling} dBTP: give one from -10 to 0, -2 for ATSC A/85"));
@@ -188,6 +202,8 @@ pub(crate) fn respond(
                 "captions_608": settings.captions_608,
                 "hdr10plus": settings.hdr10plus,
                 "target_lufs": settings.target_lufs,
+                "loudness_from": loudness_from,
+                "loudness_warning": loudness_warning,
                 "true_peak_dbtp": settings.target_lufs.map(|_| settings.true_peak_dbtp.unwrap_or(-1.0)),
                 // The size it is encoded at: an odd side is rounded down,
                 // as 4:2:0 video needs (hunt #2), and said so.

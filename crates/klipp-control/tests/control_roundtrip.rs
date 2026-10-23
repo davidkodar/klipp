@@ -1540,6 +1540,39 @@ fn a_batch_is_one_envelope_or_nothing_and_writes_answer_with_the_revision() {
     assert!(err["error"].as_str().is_some_and(|e| e.contains("the tracks are")), "{err}");
 }
 
+/// #2481: an export takes the loudness the call names, else the preset's
+/// own, else the brief's, and says where it came from; a preset with no
+/// target of its own (a master) used to drop the brief's. A delivery not
+/// at the brief's loudness says so.
+#[test]
+fn an_export_keeps_the_briefs_loudness_unless_told_otherwise() {
+    let mut h = harness();
+    let media = h.media_pool.write().unwrap().add(klipp_media::MediaItem::synthetic_for_test("/tmp/export-loudness-fixture.mov".into(), None));
+    for c in h.sequence.write().unwrap().tracks.iter_mut().flat_map(|t| t.clips.iter_mut()) {
+        c.kind = klipp_timeline::ClipKind::Media { media_id: media };
+    }
+    h.sequence.write().unwrap().brief = Some(klipp_timeline::Brief { loudness_lufs: Some(-16.0), ..Default::default() });
+    let sent = |h: &mut Harness, req: serde_json::Value| -> (serde_json::Value, klipp_core::ExportSettings) {
+        let r = h.ok(req);
+        match h.cmd_rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(klipp_core::AppCommand::ExportSequence { settings }) => (r, settings),
+            other => panic!("expected ExportSequence, got {other:?}"),
+        }
+    };
+    // A master preset has no target: the brief's applies.
+    let (r, s) = sent(&mut h, json!({ "method": "export", "path": "/tmp/klipp-loudness-master.mov", "preset": "prores 422" }));
+    assert_eq!(s.target_lufs, Some(-16.0), "{r}");
+    assert_eq!((r["export"]["loudness_from"].as_str(), r["export"]["loudness_warning"].is_null()), (Some("the brief"), true), "{r}");
+    // A web preset's own -14 wins, and the reply says it isn't the brief's.
+    let (r, s) = sent(&mut h, json!({ "method": "export", "path": "/tmp/klipp-loudness-web.mp4", "preset": "YouTube 1080p" }));
+    assert_eq!(s.target_lufs, Some(-14.0));
+    assert_eq!(r["export"]["loudness_from"], "the preset", "{r}");
+    assert!(r["export"]["loudness_warning"].as_str().is_some_and(|w| w.contains("-14.0") && w.contains("brief's -16.0")), "{r}");
+    // Named in the call: that.
+    let (r, s) = sent(&mut h, json!({ "method": "export", "path": "/tmp/klipp-loudness-asked.mp4", "target_lufs": -23.0 }));
+    assert_eq!((s.target_lufs, r["export"]["loudness_from"].as_str()), (Some(-23.0), Some("the call")), "{r}");
+}
+
 /// #1583: an export over the socket chooses its codec. A built-in preset
 /// by name gives its codecs and rate (fields beside it win); a codec, a
 /// bit depth and a bitrate are taken as asked; and what the container
