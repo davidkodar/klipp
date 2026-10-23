@@ -34,6 +34,16 @@ Klipp is under active development. Expect rough edges and breaking changes; broa
 
 Explore the [feature reference](docs/project-reference.md#features) and [user guide](docs/src/SUMMARY.md).
 
+## How it is built and tested
+
+Klipp is written in Rust as a 42-crate workspace. Pictures are processed on the GPU through Vulkan, with a CPU path kept as a reference to check the GPU against. [ARCHITECTURE.md](ARCHITECTURE.md) maps the crates, the threading model, the main subsystems, and where things tend to break.
+
+- **Over 8,000 automated tests** across 39 crates; run one crate's with `cargo test -p <crate>`.
+- **CPU/GPU parity tests** render the same frames both ways and compare the pixels, for effects, transitions, keys, grades and the compositor.
+- **A golden corpus** of small projects is drawn through every render path and compared.
+- **Colour is checked against independent references:** the ACES 1.3 output transforms against OpenColorIO, and the camera log curves against OpenColorIO and colour-science across all 1024 10-bit code values.
+- **The release package** is built and test-installed in clean Arch containers.
+
 ## Try Klipp
 
 The primary target is **x86_64 Arch Linux / Omarchy with a working Vulkan driver**. A Vulkan 1.1 GPU is required; integrated GPUs are supported in principle, with broader hardware validation ongoing. Other distributions are less tested.
