@@ -977,17 +977,17 @@ unsafe fn try_init_vaapi(codec_ctx_ptr: *mut ffmpeg_next::ffi::AVCodecContext) -
         return false;
     }
 
-    let device_paths: &[&[u8]] = &[
-        b"/dev/dri/renderD128\0",
-        b"/dev/dri/renderD129\0",
-        b"\0",
-    ];
-    for path in device_paths {
+    // Never NVIDIA's node: its VAAPI driver can deadlock the process
+    // against a CUDA decoder opening on another thread.
+    for node in GpuVendor::vaapi_nodes() {
+        let Ok(path) = std::ffi::CString::new(std::os::unix::ffi::OsStrExt::as_bytes(node.as_os_str())) else {
+            continue;
+        };
         let mut hw_device_ctx: *mut AVBufferRef = std::ptr::null_mut();
         let ret = av_hwdevice_ctx_create(
             &mut hw_device_ctx,
             device_type,
-            path.as_ptr() as *const i8,
+            path.as_ptr(),
             std::ptr::null_mut(),
             0,
         );
@@ -1226,6 +1226,67 @@ mod tests {
     // loading nvidia-vaapi-driver, the deadlock #568 found with NVENC, so
     // they take the same lock as the encoder and VAAPI tests.
     use serial_test::serial;
+
+    /// A CUDA decoder and a VAAPI one opening at the same moment, each
+    /// the first of its process, never deadlock. NVIDIA's VAAPI driver
+    /// initialises CUDA from its constructor under the loader's lock, and
+    /// a thread in its first cuInit waits for that lock: the VAAPI side
+    /// must never open NVIDIA's node. Each round is a fresh process, as
+    /// only a process's first initialisation can meet the other.
+    #[test]
+    fn cuda_and_vaapi_opening_together_never_deadlock() {
+        let _watch = crate::test_watchdog::Watchdog::start();
+        const CHILD: &str = "KLIPP_HWDEVICE_RACE_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            ffmpeg_next::init().unwrap();
+            let start = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let open = |cuda: bool| {
+                let start = start.clone();
+                std::thread::spawn(move || {
+                    let mut ctx = ffmpeg_next::codec::context::Context::new();
+                    start.wait();
+                    // SAFETY: `ctx` is a fresh, unopened codec context
+                    // this thread owns; each call only gives it a device.
+                    unsafe { if cuda { try_init_cuda(ctx.as_mut_ptr()) } else { try_init_vaapi(ctx.as_mut_ptr()) } }
+                })
+            };
+            let (cuda, vaapi) = (open(true), open(false));
+            cuda.join().unwrap();
+            vaapi.join().unwrap();
+            return;
+        }
+        if std::env::var_os("KLIPP_TEST_REQUIRE_GPU").is_none() {
+            eprintln!("skipped: set KLIPP_TEST_REQUIRE_GPU=1 to open the GPU's devices");
+            return;
+        }
+        let rounds: usize = std::env::var("KLIPP_HWDEVICE_RACE_ROUNDS").ok().and_then(|n| n.parse().ok()).unwrap_or(20);
+        let exe = std::env::current_exe().unwrap();
+        let mut stuck = 0;
+        for _ in 0..rounds {
+            let mut child = std::process::Command::new(&exe)
+                .args(["--exact", "clip_decoder::tests::cuda_and_vaapi_opening_together_never_deadlock", "--test-threads=1"])
+                .env(CHILD, "1")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .unwrap();
+            let began = std::time::Instant::now();
+            loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    assert!(status.success(), "a round failed: {status}");
+                    break;
+                }
+                if began.elapsed() > std::time::Duration::from_secs(5) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    stuck += 1;
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+        assert_eq!(stuck, 0, "{stuck} of {rounds} rounds deadlocked opening CUDA and VAAPI together");
+    }
 
     fn test_media_path() -> Option<PathBuf> {
         std::env::var("TEST_MEDIA_FILE").ok().map(PathBuf::from)

@@ -86,6 +86,22 @@ impl GpuVendor {
         nodes.into_iter().map(|(_, path, vendor)| (path, vendor)).collect()
     }
 
+    /// The render nodes a VAAPI decoder may open a device on: every one
+    /// but NVIDIA's, in node order.
+    ///
+    /// NVIDIA's VAAPI driver initialises CUDA from its constructor, while
+    /// the dynamic loader's lock is held. A thread already in its first
+    /// `cuInit` (a CUDA decoder or NVENC opening) takes that lock in turn,
+    /// and the process deadlocks: every later library load waits behind
+    /// it. CUDA is that card's decoder anyway.
+    pub fn vaapi_nodes() -> Vec<std::path::PathBuf> {
+        Self::vaapi_nodes_of(Self::render_nodes())
+    }
+
+    fn vaapi_nodes_of(nodes: Vec<(std::path::PathBuf, Self)>) -> Vec<std::path::PathBuf> {
+        nodes.into_iter().filter(|(_, vendor)| *vendor != GpuVendor::Nvidia).map(|(node, _)| node).collect()
+    }
+
     /// Should VAAPI be attempted for this vendor?
     ///
     /// NVIDIA is excluded because `nvidia-vaapi-driver` writes probe errors
@@ -197,6 +213,17 @@ mod tests {
         write_vendor(&base, 1, "0x1002");
         assert_eq!(GpuVendor::detect_in(&base), GpuVendor::Amd);
         let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn vaapi_never_opens_an_nvidia_node() {
+        let nodes = vec![
+            (PathBuf::from("/dev/dri/renderD128"), GpuVendor::Intel),
+            (PathBuf::from("/dev/dri/renderD129"), GpuVendor::Nvidia),
+            (PathBuf::from("/dev/dri/renderD130"), GpuVendor::Unknown),
+        ];
+        assert_eq!(GpuVendor::vaapi_nodes_of(nodes), [PathBuf::from("/dev/dri/renderD128"), PathBuf::from("/dev/dri/renderD130")]);
+        assert!(GpuVendor::vaapi_nodes_of(vec![(PathBuf::from("/dev/dri/renderD128"), GpuVendor::Nvidia)]).is_empty());
     }
 
     #[test]

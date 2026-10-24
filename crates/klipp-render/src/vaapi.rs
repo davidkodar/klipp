@@ -131,6 +131,8 @@ mod tests {
     // nvidia-vaapi-driver, whose constructor calls cuInit inside dlopen,
     // and an NVENC test opening at the same time holds cuInit's lock while
     // it waits for the loader's: the test binary hung for good (#568).
+    // A CUDA decoder opening in a test that is not serial met it all the
+    // same, so CUDA is made ready before NVIDIA's node is touched.
     use serial_test::serial;
 
     /// The render nodes of this machine, whatever their vendor: NVIDIA's
@@ -138,7 +140,31 @@ mod tests {
     /// encode, so on an NVIDIA-only machine this still exercises every
     /// raw call here.
     fn any_vaapi_node() -> Option<PathBuf> {
-        klipp_core::GpuVendor::render_nodes().into_iter().map(|(node, _)| node).next()
+        let (node, vendor) = klipp_core::GpuVendor::render_nodes().into_iter().next()?;
+        if vendor == klipp_core::GpuVendor::Nvidia {
+            cuda_ready();
+        }
+        Some(node)
+    }
+
+    /// CUDA initialised for this process, before NVIDIA's VAAPI driver is
+    /// loaded: its constructor's cuInit, run under the loader's lock, then
+    /// finds the work done instead of waiting on a thread that is in its
+    /// first cuInit and wants the loader's lock (#568). Once is enough.
+    fn cuda_ready() {
+        static READY: std::sync::Once = std::sync::Once::new();
+        READY.call_once(|| {
+            let mut device: *mut ffi::AVBufferRef = std::ptr::null_mut();
+            // SAFETY: `device` is an out-pointer to a local; a null device
+            // name and dictionary pick the default device with no options.
+            // A device made is released at once: only the initialisation
+            // is wanted.
+            unsafe {
+                if ffi::av_hwdevice_ctx_create(&mut device, ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA, std::ptr::null(), std::ptr::null_mut(), 0) >= 0 {
+                    ffi::av_buffer_unref(&mut device);
+                }
+            }
+        });
     }
 
     fn context(w: u32, h: u32) -> ffmpeg_next::codec::encoder::video::Video {
