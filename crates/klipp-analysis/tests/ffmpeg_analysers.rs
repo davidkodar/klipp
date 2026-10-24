@@ -274,23 +274,23 @@ fn a_tune_reads_as_music_and_words_as_speech() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Footage found by its picture (#2212), with CLIP at `KLIPP_CLIP` and its
-/// tokenizer at `KLIPP_CLIP_TOKENIZER`: in a file that is red for 6 s then
+/// Footage found by its picture (#2212), with CLIP in the model cache:
+/// in a file that is red for 6 s then
 /// blue for 6 s, "a red picture" finds the first half and "a blue
 /// picture" the second.
 #[cfg(feature = "visual")]
 #[test]
 fn a_described_picture_is_found_where_it_shows() {
     let ctx = AnalysisCtx::default();
-    let (Ok(weights), Ok(tokenizer)) = (std::env::var("KLIPP_CLIP"), std::env::var("KLIPP_CLIP_TOKENIZER")) else {
-        eprintln!("skipping: set KLIPP_CLIP and KLIPP_CLIP_TOKENIZER");
+    let Some(p) = klipp_analysis::visual::model_paths() else {
+        eprintln!("skipping: the picture search model is not downloaded");
         return;
     };
     if !ctx.ffmpeg_available() {
         eprintln!("skipping: no ffmpeg");
         return;
     }
-    let clip = klipp_ml_candle::clip::Clip::load(std::path::Path::new(&weights), std::path::Path::new(&tokenizer)).unwrap();
+    let clip = klipp_ml_ort::clip::Clip::load(&p.vision, &p.text, &p.tokenizer, klipp_ml::DevicePreference::GpuPreferCpu).unwrap();
     let dir = std::env::temp_dir().join(format!("klipp-visual-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("red-blue.mp4");

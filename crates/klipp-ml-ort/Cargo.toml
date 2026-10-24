@@ -25,6 +25,7 @@ klipp-color = { workspace = true }
 bitflags    = { workspace = true }
 thiserror   = { workspace = true }
 tracing     = { workspace = true }
+serde_json  = { workspace = true }
 ort         = { workspace = true, optional = true }
 # Used by runtime_resolve to expand `~/.local/lib/onnxruntime/...`
 # candidate paths when probing for libonnxruntime.so.
