@@ -939,10 +939,8 @@ fn register_real_models(r: &mut klipp_ml::ModelRegistry) {
         register_birefnet(r);
         register_rf_detr_seg(r);
         register_rf_detr_seg_medium(r);
+        register_mobile_sam(r);
     }
-
-    #[cfg(feature = "ai-candle")]
-    register_mobile_sam(r);
 }
 
 /// Build the single shared `Arc<RwLock<ModelRegistry>>` that backs
@@ -969,14 +967,14 @@ fn build_shared_registry() -> std::sync::Arc<std::sync::RwLock<klipp_ml::ModelRe
     std::sync::Arc::new(std::sync::RwLock::new(r))
 }
 
-#[cfg(feature = "ai-candle")]
+#[cfg(feature = "ai-ort")]
 fn register_mobile_sam(r: &mut klipp_ml::ModelRegistry) {
-    use klipp_ml_candle::{MobileSamBuilder, MOBILE_SAM_MODEL_ID};
+    use klipp_ml_ort::{MobileSamBuilder, MOBILE_SAM_DECODER_ID, MOBILE_SAM_MODEL_ID};
 
     let manifest = match klipp_ml::manifest::load_effective() {
         Ok(m) => m,
         Err(e) => {
-            tracing::warn!(target: "klipp_ui", "ai-candle: skipping MobileSAM (manifest load failed: {e})");
+            tracing::warn!(target: "klipp_ui", "ai-ort: skipping MobileSAM (manifest load failed: {e})");
             return;
         }
     };
@@ -985,7 +983,7 @@ fn register_mobile_sam(r: &mut klipp_ml::ModelRegistry) {
         None => {
             tracing::warn!(
                 target: "klipp_ui",
-                "ai-candle: skipping MobileSAM (no manifest entry for {})",
+                "ai-ort: skipping MobileSAM (no manifest entry for {})",
                 MOBILE_SAM_MODEL_ID
             );
             return;
@@ -994,11 +992,12 @@ fn register_mobile_sam(r: &mut klipp_ml::ModelRegistry) {
     let cache = match klipp_ml::ModelCache::open() {
         Ok(c) => c,
         Err(e) => {
-            tracing::warn!(target: "klipp_ui", "ai-candle: skipping MobileSAM (cache open failed: {e})");
+            tracing::warn!(target: "klipp_ui", "ai-ort: skipping MobileSAM (cache open failed: {e})");
             return;
         }
     };
     let weights_path = cache.path_for(&entry);
+    let decoder_path = cache.path_for_id(MOBILE_SAM_DECODER_ID);
 
     r.register(
         klipp_ml::ModelInfo {
@@ -1014,6 +1013,7 @@ fn register_mobile_sam(r: &mut klipp_ml::ModelRegistry) {
         Box::new(move || {
             MobileSamBuilder::new()
                 .weights(weights_path.clone())
+                .decoder(decoder_path.clone())
                 .build()
                 .map(|g| Box::new(g) as Box<dyn klipp_ml::MaskGenerator>)
         }),
@@ -1225,20 +1225,30 @@ pub fn register_custom_model(
                 "Custom BiRefNet model requires --features ai-ort".into(),
             ))
         }),
-        #[cfg(feature = "ai-candle")]
+        // A custom SAM-family image encoder (ONNX) with MobileSAM's mask
+        // decoder from the model cache: SAM's decoder reads any of their
+        // embeddings.
+        #[cfg(feature = "ai-ort")]
         CustomAdapter::MobileSam => {
             let path = weights_path.clone();
+            let decoder = klipp_ml::ModelCache::open().map(|c| c.path_for_id(klipp_ml_ort::MOBILE_SAM_DECODER_ID)).ok();
             Box::new(move || {
-                klipp_ml_candle::MobileSamBuilder::new()
+                let Some(decoder) = decoder.clone().filter(|p| p.is_file()) else {
+                    return Err(klipp_ml::MaskError::BackendInit(
+                        "A custom MobileSAM model uses MobileSAM's mask decoder: download MobileSAM first".into(),
+                    ));
+                };
+                klipp_ml_ort::MobileSamBuilder::new()
                     .weights(path.clone())
+                    .decoder(decoder)
                     .build()
                     .map(|g| Box::new(g) as Box<dyn klipp_ml::MaskGenerator>)
             })
         }
-        #[cfg(not(feature = "ai-candle"))]
+        #[cfg(not(feature = "ai-ort"))]
         CustomAdapter::MobileSam => Box::new(|| {
             Err(klipp_ml::MaskError::BackendInit(
-                "Custom MobileSAM model requires --features ai-candle".into(),
+                "Custom MobileSAM model requires --features ai-ort".into(),
             ))
         }),
         #[cfg(feature = "ai-ort")]

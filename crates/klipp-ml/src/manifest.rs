@@ -262,6 +262,12 @@ pub struct ModelEntry {
     /// capabilities until its manifest is upgraded.
     #[serde(default = "default_prompt_kinds")]
     pub prompts: PromptKinds,
+    /// Other entries' ids whose files this model needs beside its own
+    /// (MobileSAM's mask decoder with its encoder, #2245): fetched with
+    /// it, counted in its size and presence, removed with it, and not
+    /// listed as models of their own.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub with: Vec<ModelId>,
 }
 
 /// One download source. Wrapped in a struct (not a bare `String`) so
@@ -332,6 +338,14 @@ impl ModelManifest {
     pub fn validate(&self) -> Result<(), ManifestError> {
         let mut seen_ids = std::collections::HashSet::new();
         for entry in &self.models {
+            for part in &entry.with {
+                if !self.models.iter().any(|m| &m.id == part && m.with.is_empty()) {
+                    return Err(ManifestError::Invalid(format!(
+                        "model {} comes with {part}, which is not an entry of its own",
+                        entry.id
+                    )));
+                }
+            }
             if entry.id.is_empty() {
                 return Err(ManifestError::Invalid("model id is empty".into()));
             }
@@ -406,6 +420,18 @@ impl ModelManifest {
     /// Look up a model by its stable id.
     pub fn get(&self, id: &str) -> Option<&ModelEntry> {
         self.models.iter().find(|m| m.id == id)
+    }
+
+    /// `entry` and the entries that come with it ([`ModelEntry::with`]),
+    /// in that order.
+    pub fn parts<'a>(&'a self, entry: &'a ModelEntry) -> Vec<&'a ModelEntry> {
+        std::iter::once(entry).chain(entry.with.iter().filter_map(|id| self.get(id))).collect()
+    }
+
+    /// Whether `id` comes with another model rather than being one of
+    /// its own.
+    pub fn is_part(&self, id: &str) -> bool {
+        self.models.iter().any(|m| m.with.iter().any(|w| w == id))
     }
 
     /// Merge a user-override manifest on top of this one. User entries
@@ -485,6 +511,25 @@ sources = [
         assert_eq!(m.version, "1");
         assert_eq!(m.models.len(), 1);
         assert_eq!(m.models[0].id, "sam2_1_tiny");
+    }
+
+    /// A model's companion files are its parts, not models of their own,
+    /// and one that names a missing entry is refused.
+    #[test]
+    fn a_model_comes_with_its_parts() {
+        let entry = |id: &str, with: &str| {
+            format!(
+                "[[model]]\nid = \"{id}\"\ndisplay_name = \"{id}\"\nsize_bytes = 1\nsha256 = \"{}\"\nlicense = \"MIT\"\nattribution = \"x\"\nsources = [{{ url = \"https://example.com/{id}\" }}]\n{with}\n",
+                "0".repeat(64)
+            )
+        };
+        let s = format!("version = \"1\"\n\n{}{}", entry("enc", "with = [\"dec\"]"), entry("dec", ""));
+        let m = ModelManifest::parse(&s).expect("valid");
+        let enc = m.get("enc").unwrap();
+        assert_eq!(m.parts(enc).iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), ["enc", "dec"]);
+        assert!(m.is_part("dec") && !m.is_part("enc"));
+        let missing = format!("version = \"1\"\n\n{}", entry("enc", "with = [\"dec\"]"));
+        assert!(matches!(ModelManifest::parse(&missing), Err(ManifestError::Invalid(_))));
     }
 
     #[test]

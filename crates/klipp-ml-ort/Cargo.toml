@@ -3,7 +3,7 @@ name = "klipp-ml-ort"
 version.workspace = true
 edition = "2021"
 license.workspace = true
-description = "ONNX Runtime backend for klipp-ml — BiRefNet, RF-DETR-Seg, future SAM2 video"
+description = "ONNX Runtime backend for klipp-ml — BiRefNet, RF-DETR-Seg, MobileSAM, CLIP, OCR, faces, voices"
 
 [features]
 default = []

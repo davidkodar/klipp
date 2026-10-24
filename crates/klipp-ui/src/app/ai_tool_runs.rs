@@ -25,7 +25,8 @@ impl KlippApp {
             return;
         };
         if let Ok(cache) = klipp_ml::ModelCache::open() {
-            if let Ok(klipp_ml::CachedStatus::Verified) = cache.is_cached(entry) {
+            // Downloaded only when every file that comes with it is too.
+            if manifest.parts(entry).iter().all(|e| matches!(cache.is_cached(e), Ok(klipp_ml::CachedStatus::Verified))) {
                 self.state.toast.show(
                     format!("'{}' is already downloaded.", entry.display_name),
                 );

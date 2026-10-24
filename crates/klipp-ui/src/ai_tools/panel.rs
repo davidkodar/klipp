@@ -488,7 +488,7 @@ pub(super) fn pick_default_model_for_task(
 fn recommended_model_for_task(task: AiTask) -> Option<&'static str> {
     match task {
         AiTask::RemoveBackground => Some("birefnet_lite_v1"),
-        AiTask::IsolateObject => Some("mobile_sam_v1"),
+        AiTask::IsolateObject => Some("mobile_sam_onnx"),
         AiTask::DetectObjects => Some("rf_detr_seg_medium_v1"),
         AiTask::TrackObject => None,
     }
@@ -2075,7 +2075,7 @@ mod tests {
         );
         assert_eq!(
             recommended_model_for_task(AiTask::IsolateObject),
-            Some("mobile_sam_v1"),
+            Some("mobile_sam_onnx"),
         );
         assert_eq!(
             recommended_model_for_task(AiTask::DetectObjects),

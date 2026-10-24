@@ -55,7 +55,7 @@ impl KlippApp {
                             .spacing([16.0, 4.0])
                             .show(ui, |ui| {
                                 ui.label("Size:");
-                                ui.label(fmt_bytes(entry.size_bytes));
+                                ui.label(fmt_bytes(crate::model_download::download_size(&entry)));
                                 ui.end_row();
                                 ui.label("Source:");
                                 ui.label(
@@ -91,7 +91,7 @@ impl KlippApp {
                             if ui.button("Cancel").clicked() {
                                 close_kind = Some("cancel");
                             }
-                            if ui.button(format!("Download ({})", fmt_bytes(entry.size_bytes))).clicked() {
+                            if ui.button(format!("Download ({})", fmt_bytes(crate::model_download::download_size(&entry)))).clicked() {
                                 close_kind = Some("start");
                             }
                         });
@@ -104,7 +104,7 @@ impl KlippApp {
                         let handle = spawn_download(entry.clone(), ctx.clone());
                         next = ModelDownloadState::Downloading {
                             entry: entry.clone(),
-                            total: entry.size_bytes,
+                            total: crate::model_download::download_size(&entry),
                             downloaded: 0,
                             started_at: std::time::Instant::now(),
                             handle,

@@ -51,6 +51,7 @@
 pub mod birefnet_lite;
 pub mod clip;
 pub mod kokoro;
+pub mod mobile_sam;
 pub mod postprocess;
 pub mod ppocr;
 pub mod preprocess;
@@ -60,6 +61,7 @@ pub mod yunet;
 pub mod runtime_resolve;
 
 pub use birefnet_lite::{BiRefNetLite, BiRefNetLiteBuilder, BIREFNET_LITE_MODEL_ID};
+pub use mobile_sam::{MobileSam, MobileSamBuilder, MOBILE_SAM_DECODER_ID, MOBILE_SAM_DISPLAY_NAME, MOBILE_SAM_MODEL_ID};
 pub use rf_detr_seg::{
     coco_label, coco_label_for, RfDetrSeg, RfDetrSegBuilder, COCO_91_LABELS, COCO_LABELS, RF_DETR_INPUT_SIZE,
     RF_DETR_PROTOTYPE_COUNT, RF_DETR_SEG_DISPLAY_NAME, RF_DETR_SEG_MEDIUM_DISPLAY_NAME,

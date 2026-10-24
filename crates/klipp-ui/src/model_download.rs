@@ -64,9 +64,8 @@ struct ChannelProgress {
 }
 
 impl ProgressSink for ChannelProgress {
-    fn started(&mut self, total_bytes: u64) {
-        let _ = self.tx.send(DownloadEvent::Started { total: total_bytes });
-        self.ctx.request_repaint();
+    fn started(&mut self, _total_bytes: u64) {
+        // Said once for all of a model's files, before the first.
     }
     fn advance(&mut self, bytes_delta: u64) {
         let _ = self.tx.send(DownloadEvent::Advanced { delta: bytes_delta });
@@ -79,9 +78,25 @@ impl ProgressSink for ChannelProgress {
     }
 }
 
-/// Spawn a download on a worker thread. The UI thread keeps the
-/// returned [`DownloadHandle`] and polls `recv` each frame to drain
-/// progress events.
+/// `entry` and the files that come with it (the manifest's `with`),
+/// in download order.
+pub fn parts_of(entry: &ModelEntry) -> Vec<ModelEntry> {
+    match klipp_ml::manifest::load_effective() {
+        Ok(m) => m.parts(entry).into_iter().cloned().collect(),
+        Err(_) => vec![entry.clone()],
+    }
+}
+
+/// The bytes a download of `entry` fetches: its files and those that
+/// come with it.
+pub fn download_size(entry: &ModelEntry) -> u64 {
+    parts_of(entry).iter().map(|e| e.size_bytes).sum()
+}
+
+/// Spawn a download on a worker thread: `entry` and the files that come
+/// with it, each verified, those already in the cache skipped. The UI
+/// thread keeps the returned [`DownloadHandle`] and polls `recv` each
+/// frame to drain progress events.
 pub fn spawn_download(entry: ModelEntry, ctx: egui::Context) -> DownloadHandle {
     let (tx, rx) = crossbeam_channel::unbounded();
     let cancel = Arc::new(AtomicBool::new(false));
@@ -107,9 +122,24 @@ pub fn spawn_download(entry: ModelEntry, ctx: egui::Context) -> DownloadHandle {
                 tx: tx_for_worker.clone(),
                 ctx: ctx_for_worker.clone(),
             };
-            let result = klipp_ml::download_to_cache(
-                &cache, &entry_for_worker, &mut sink, &cancel_for_worker,
-            );
+            let parts = parts_of(&entry_for_worker);
+            let _ = tx_for_worker.send(DownloadEvent::Started { total: parts.iter().map(|e| e.size_bytes).sum() });
+            ctx_for_worker.request_repaint();
+            let mut result = Ok(cache.path_for(&entry_for_worker));
+            for part in &parts {
+                if let Ok(klipp_ml::CachedStatus::Verified) = cache.is_cached(part) {
+                    let _ = tx_for_worker.send(DownloadEvent::Advanced { delta: part.size_bytes });
+                    continue;
+                }
+                match klipp_ml::download_to_cache(&cache, part, &mut sink, &cancel_for_worker) {
+                    Ok(path) if part.id == entry_for_worker.id => result = Ok(path),
+                    Ok(_) => {}
+                    Err(e) => {
+                        result = Err(e);
+                        break;
+                    }
+                }
+            }
             let event = match result {
                 Ok(path) => DownloadEvent::Finished { path },
                 Err(e) => DownloadEvent::Failed { error: e.to_string() },
@@ -278,6 +308,7 @@ mod tests {
             kind: klipp_ml::ModelKind::default(),
             runtime: klipp_ml::ModelRuntime::default(),
             prompts: klipp_ml::PromptKinds::empty(),
+            with: Vec::new(),
         }
     }
 

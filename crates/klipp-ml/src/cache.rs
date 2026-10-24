@@ -185,6 +185,7 @@ mod tests {
             kind: crate::manifest::ModelKind::default(),
             runtime: crate::manifest::ModelRuntime::default(),
             prompts: crate::manifest::PromptKinds::empty(),
+            with: Vec::new(),
         }
     }
 
