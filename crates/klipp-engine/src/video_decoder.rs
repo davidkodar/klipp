@@ -603,6 +603,9 @@ impl VideoDecoder {
             })
             .map_err(|e| DecoderError::Open(format!("spawn thread: {e}")))?;
 
+        DECODERS_OPENED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let open = DECODERS_OPEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        DECODERS_OPEN_MOST.fetch_max(open, std::sync::atomic::Ordering::Relaxed);
         Ok(Self {
             frame_queue,
             seek_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -719,7 +722,30 @@ impl VideoDecoder {
 impl Drop for VideoDecoder {
     fn drop(&mut self) {
         self.stop();
+        DECODERS_OPEN.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
     }
+}
+
+/// Video decoders opened since the process began, and how many are open
+/// now and at most since [`reset_most_decoders_open`] (#2397).
+static DECODERS_OPENED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static DECODERS_OPEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static DECODERS_OPEN_MOST: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Video decoders opened since the process began: every file opened for
+/// playback, the primary track's, its preroll's, clip streams' and skims'.
+pub fn decoders_opened() -> u64 {
+    DECODERS_OPENED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// (open now, the most open at once since [`reset_most_decoders_open`]).
+pub fn decoders_open() -> (usize, usize) {
+    (DECODERS_OPEN.load(std::sync::atomic::Ordering::Relaxed), DECODERS_OPEN_MOST.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// Start counting the most open at once from those open now.
+pub fn reset_most_decoders_open() {
+    DECODERS_OPEN_MOST.store(DECODERS_OPEN.load(std::sync::atomic::Ordering::Relaxed), std::sync::atomic::Ordering::Relaxed);
 }
 
 /// How many decode threads are alive, so the process can avoid exiting

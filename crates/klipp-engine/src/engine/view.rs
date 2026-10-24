@@ -13,7 +13,7 @@ use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
 use klipp_compose::{FrameSource, Inspect, Inspection, RenderOptions, RenderStats, SourceFrame};
-use klipp_core::{AppEvent, ClipId};
+use klipp_core::{AppEvent, ClipId, MediaId};
 use klipp_media::MediaPool;
 use klipp_timeline::{Clip, GradeAccess, Sequence};
 
@@ -261,6 +261,13 @@ pub(super) fn prerender_sizes(full: (u32, u32), divisor: u8) -> Vec<(u32, u32)> 
     if reduced == full { vec![full] } else { vec![full, reduced] }
 }
 
+/// The most streams of one file opened ahead of their shots, the soonest
+/// (#2397): two files cut against each other on a layer had every shot
+/// within the lead open, seven decoders and 3.5 GB of the GPU's memory.
+/// The next opens as the one before comes on screen, a shot ahead, which
+/// was in time for 6-frame shots of long-GOP 4K files.
+const AHEAD_PER_FILE: usize = 1;
+
 /// The fewest lines Playback Quality reduces the viewer to.
 pub(super) const MIN_REDUCED_HEIGHT: u32 = 180;
 
@@ -283,12 +290,23 @@ fn upcoming(seq: &Sequence, time: klipp_core::Timecode, playing: bool, primary_t
     }
     let (from, to) = (time.to_secs_f64(), time.to_secs_f64() + super::seek_lead::MAX_LEAD_SECS);
     let fps = seq.fps.as_f64();
+    let frame = 1.0 / fps.max(1e-6);
     let mut out: Vec<(Want, f64)> = seq.tracks
         .iter()
         .enumerate()
         .filter(|(i, t)| t.kind == klipp_timeline::TrackKind::Video && t.visible && Some(*i) != primary_track)
-        .flat_map(|(_, t)| t.clips.iter())
-        .filter(|c| c.enabled && c.timeline_in.to_secs_f64() > from && c.timeline_in.to_secs_f64() <= to)
+        .flat_map(|(_, t)| t.clips.iter().enumerate().map(move |(i, c)| (t, i, c)))
+        .filter(|(_, _, c)| c.enabled && c.timeline_in.to_secs_f64() > from && c.timeline_in.to_secs_f64() <= to)
+        // Not one the stream of the shot before it goes on into, a little
+        // further in the same file, at the cut (#2397): two files cut
+        // against each other on a layer held seven decoders and 3.5 GB.
+        // Only where the two meet: a layer's stream closes as its shot
+        // leaves the screen, so none goes on through a gap.
+        .filter(|(t, i, c)| {
+            let prev = i.checked_sub(1).and_then(|p| t.clips.get(p));
+            !prev.is_some_and(|p| (c.timeline_in.to_secs_f64() - p.timeline_out.to_secs_f64()).abs() < 0.5 * frame && super::decodes_on(t, p, c, frame))
+        })
+        .map(|(_, _, c)| c)
         .filter_map(|c| Some((Want { clip: c.id, media: c.media_id()?, rotation: c.source_rotation, source_secs: c.source_secs_at(0.0, fps), reversed: c.is_reversed(), ahead: true }, c.timeline_in.to_secs_f64() - from)))
         .collect();
     // The soonest first: with the decoders all open, the one due next.
@@ -597,8 +615,14 @@ impl PlaybackEngine {
         // Clips on screen with no stream yet: opened late, if playing.
         let late: Vec<ClipId> = if playing { wants.iter().filter(|w| !self.streams.has(w.clip)).map(|w| w.clip).collect() } else { Vec::new() };
         // Each coming clip as early as its own seek needs (#2108): one
-        // already open is kept; one due within its lead is opened.
+        // already open is kept; one due within its lead is opened. At most
+        // [`AHEAD_PER_FILE`] of one file, the soonest (#2397).
+        let mut per_file: HashMap<MediaId, usize> = HashMap::new();
         for (w, due_in) in ahead {
+            let of_file = per_file.entry(w.media).or_default();
+            if *of_file >= AHEAD_PER_FILE {
+                continue;
+            }
             let open = self.streams.has(w.clip);
             let lead = match (open, self.path_for_media(w.media)) {
                 (true, _) | (false, None) => super::seek_lead::MAX_LEAD_SECS,
@@ -611,6 +635,7 @@ impl PlaybackEngine {
                 }
             };
             if due_in <= lead {
+                *of_file += 1;
                 wants.push(w);
             }
         }

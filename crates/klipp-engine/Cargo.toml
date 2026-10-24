@@ -205,3 +205,7 @@ path = "tests/a_layer_shows_only_its_own_clip.rs"
 [[test]]
 name = "a_strobe_keeps_its_vram"
 path = "tests/a_strobe_keeps_its_vram.rs"
+
+[[test]]
+name = "a_cut_in_one_file_decodes_on"
+path = "tests/a_cut_in_one_file_decodes_on.rs"
