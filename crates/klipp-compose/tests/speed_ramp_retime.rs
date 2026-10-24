@@ -81,13 +81,31 @@ fn speed_ramp_retimes_once() {
 /// is conformed; not sped up, reversed, or with nothing set.
 #[test]
 fn a_blending_clip_conforms_at_full_speed() {
+    use klipp_compose::frame_blends;
     let blend = |speed: f64| {
         let c = Clip { speed, ..Clip::media(MediaId::new(), tc(0.0), tc(4.0), tc(0.0), tc(4.0)) };
         TestClip::of(c).effect(klipp_effects::BuiltinEffect::SpeedRamp { speed: 1.0, blend_mode: 2 }).build()
     };
-    assert!(klipp_compose::frame_blends(&blend(1.0), tc(1.0)), "at full speed");
-    assert!(klipp_compose::frame_blends(&blend(0.5), tc(1.0)), "slowed");
-    assert!(!klipp_compose::frame_blends(&blend(2.0), tc(1.0)), "sped up");
+    assert!(frame_blends(&blend(1.0), tc(1.0), Some(0.8 * FPS), FPS), "at full speed from a lower frame rate");
+    assert!(frame_blends(&blend(0.5), tc(1.0), None, FPS), "slowed");
+    assert!(!frame_blends(&blend(2.0), tc(1.0), Some(0.8 * FPS), FPS), "sped up");
     let plain = Clip::media(MediaId::new(), tc(0.0), tc(4.0), tc(0.0), tc(4.0));
-    assert!(!klipp_compose::frame_blends(&plain, tc(1.0)), "nothing set");
+    assert!(!frame_blends(&plain, tc(1.0), Some(0.8 * FPS), FPS), "nothing set");
+}
+
+/// A blending clip whose every frame falls on one of its file's mixes
+/// nothing, and stays on the GPU stack: at full speed from a file of the
+/// timeline's rate, or slowed by half from one of twice it. Since #2479 a
+/// blending clip at full speed was declined by the stack for nothing.
+#[test]
+fn a_blending_clip_on_its_files_frames_does_not_blend() {
+    use klipp_compose::frame_blends;
+    let blend = |speed: f64| {
+        let c = Clip { speed, ..Clip::media(MediaId::new(), tc(0.0), tc(4.0), tc(0.0), tc(4.0)) };
+        TestClip::of(c).effect(klipp_effects::BuiltinEffect::SpeedRamp { speed: 1.0, blend_mode: 1 }).build()
+    };
+    assert!(!frame_blends(&blend(1.0), tc(1.0), Some(FPS), FPS), "full speed, the timeline's rate");
+    assert!(!frame_blends(&blend(1.0), tc(1.0), None, FPS), "full speed, the file's rate not known");
+    assert!(!frame_blends(&blend(0.5), tc(1.0), Some(2.0 * FPS), FPS), "slowed by half from twice the rate");
+    assert!(frame_blends(&blend(0.5), tc(1.0), Some(FPS), FPS), "slowed by half from the timeline's rate");
 }

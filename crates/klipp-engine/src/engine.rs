@@ -8999,7 +8999,7 @@ impl PlaybackEngine {
             Some(_) => {
                 let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
                 let Some(clip) = seq.tracks.get(self.current_track_index).and_then(|t| t.clips.get(self.current_clip_index)) else { return false };
-                Arc::new(klipp_compose::render::graph_with_source_nodes(clip, self.playhead, seq.fps.as_f64(), &graph))
+                Arc::new(klipp_compose::render::graph_with_source_nodes(clip, self.playhead, seq.fps.as_f64(), self.clip_media_fps(clip), &graph))
             }
             None => graph,
         };
@@ -9415,10 +9415,18 @@ impl PlaybackEngine {
     /// Whether the primary clip frame-blends at the playhead.
     fn parked_clip_frame_blends(&self) -> bool {
         let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+        let fps = seq.fps.as_f64();
         seq.tracks
             .get(self.current_track_index)
             .and_then(|t| t.clips.get(self.current_clip_index))
-            .is_some_and(|clip| klipp_compose::frame_blends(clip, self.playhead))
+            .is_some_and(|clip| klipp_compose::frame_blends(clip, self.playhead, self.clip_media_fps(clip), fps))
+    }
+
+    /// The frame rate of `clip`'s media in the pool, as the viewer's
+    /// source gives the renderer.
+    fn clip_media_fps(&self, clip: &klipp_timeline::Clip) -> Option<f64> {
+        let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());
+        Some(pool.get(&clip.media_id()?)?.fps.as_f64())
     }
 
     /// Look at the timeline's layout, and if it changed since the last
