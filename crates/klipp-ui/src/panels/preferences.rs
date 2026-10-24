@@ -603,7 +603,10 @@ impl PreferencesPanel {
 
         Self::section_header(ui, "UPDATES", theme);
         Self::setting_row_with_subtitle(ui, "Check automatically", "Checks GitHub for new releases once a day", theme, |ui| {
-            if ui.add(Switch::new(&mut prefs.general.check_for_updates, theme)).changed() { *dirty = true; }
+            if ui.add(Switch::new(&mut prefs.general.check_for_updates, theme)).changed() {
+                prefs.general.update_checks_answered = true;
+                *dirty = true;
+            }
         });
         Self::setting_row(ui, "Include preview releases", theme, |ui| {
             if crate::updates::preview_switch(&mut prefs.general, ui, |ui, on| ui.add(Switch::new(on, theme))) { *dirty = true; }
