@@ -516,6 +516,39 @@ impl AudioEffectChain {
     }
 }
 
+/// Plug-ins whose host refused to run them, by type id, with the
+/// host's reason. Their sound goes through untouched, which nobody hears
+/// as a fault: a run refused for an unconnected port went unnoticed for
+/// every x42 and LSP plug-in. Kept so the plug-in can be named.
+static REFUSED_RUNS: std::sync::Mutex<std::collections::BTreeMap<String, String>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// A plug-in's host refused to run it: warned about once per plug-in,
+/// and kept for [`refused_run`].
+pub fn note_refused_run(type_id: &str, why: &str) {
+    let mut refused = REFUSED_RUNS.lock().unwrap_or_else(|e| e.into_inner());
+    if !refused.contains_key(type_id) {
+        tracing::warn!("{type_id} cannot run ({why}): its sound goes through untouched");
+        refused.insert(type_id.to_string(), why.to_string());
+    }
+}
+
+/// Why `type_id`'s host refused to run it, if it has.
+pub fn refused_run(type_id: &str) -> Option<String> {
+    REFUSED_RUNS.lock().unwrap_or_else(|e| e.into_inner()).get(type_id).cloned()
+}
+
+/// Whether `type_id` loads and runs here: made and given one block of
+/// silence. The reason when it does not.
+pub fn probe_run(type_id: &str, sample_rate: u32) -> Result<(), String> {
+    if let Some(why) = refused_run(type_id) {
+        return Err(why);
+    }
+    let mut effect = create_effect(type_id, sample_rate).ok_or_else(|| "it does not load".to_string())?;
+    let mut block = vec![0.0f32; 256 * 2];
+    effect.process(&mut block, &AudioProcessContext { sample_rate, channels: 2, clip_time_secs: 0.0 });
+    refused_run(type_id).map_or(Ok(()), Err)
+}
+
 /// Factory: create effect by type ID.
 ///
 /// LADSPA plugins use a composite type_id: `"ladspa:{path}:{label}"`. The

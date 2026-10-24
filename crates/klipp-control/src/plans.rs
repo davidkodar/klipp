@@ -284,18 +284,22 @@ pub(crate) fn installed_audio_plugins() -> Vec<klipp_document::ops::AudioPlugin>
         id: p.type_id(),
         name: p.name.clone(),
         params: p.control_inputs.iter().map(|c| AudioPluginParam { key: c.symbol.clone(), name: c.name.clone(), min: c.min.unwrap_or(0.0), max: c.max.unwrap_or(1.0), default: c.default }).collect(),
+        cannot_run: None,
     });
     let clap = klipp_audio::clap::registry_snapshot().into_iter().map(|p| AudioPlugin {
         id: p.type_id(),
         name: p.name.clone(),
         params: p.params.iter().map(|c| AudioPluginParam { key: c.key(), name: c.name.clone(), min: c.min, max: c.max, default: c.default }).collect(),
+        cannot_run: None,
     });
     lv2.chain(clap).collect()
 }
 
 impl klipp_document::ops::Transcripts for AnalysedTranscripts {
     fn audio_plugin(&self, id: &str) -> Option<klipp_document::ops::AudioPlugin> {
-        installed_audio_plugins().into_iter().find(|p| p.id == id)
+        // Run once before an edit puts it on: a host that refuses it would
+        // pass the sound through untouched.
+        installed_audio_plugins().into_iter().find(|p| p.id == id).map(|p| klipp_document::ops::AudioPlugin { cannot_run: klipp_audio::dsp::probe_run(id, 48_000).err(), ..p })
     }
 
     fn words(&self, item: &klipp_media::MediaItem) -> Option<Vec<klipp_document::ops::SpokenWord>> {
