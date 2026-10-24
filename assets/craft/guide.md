@@ -325,7 +325,12 @@ exist until the plan runs.
   defaults), on the one there or a new one at the end (a name the effect
   lacks is refused; topic `op.track_audio` lists them); `bypass` switches
   it off or on; `remove` takes it off. Set once, it holds for every clip
-  of the track.
+  of the track. `effect` may also be an installed LV2 or CLAP plug-in's
+  id (`lv2:…`, `clap:…`; `audio_plugins` lists them), its `params` by
+  name or key and inside their ranges.
+- `clip_audio {clip_id, effect, params?, bypass?, remove?}`: the same on
+  one clip's own chain (a linked pair's, either clip named): a built-in
+  effect or an installed plug-in.
   Kinds: `vignette`, `grain` (`film_grain`), `glow`, `bloom`, `diffusion`
   (`pro_mist`), `halation` (`film_halation`), `light_rays` (`god_rays`),
   `lens_flare`, `anamorphic` (`anamorphic_streak`, `streak`), `light_wrap`,

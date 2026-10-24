@@ -41,7 +41,9 @@ pub(crate) fn not_carried(seq: &Sequence, pool: &MediaPool, format: &Format) -> 
         }
         if let (TrackKind::Video, Some(max)) = (track.kind, format.video_tracks) {
             if video > max && !clips.is_empty() {
-                out.push(format!("Track '{}': {name} has one picture track, so its clips are events among the first track's, not over them", track.name));
+                // Every picture track goes out as V events, in track order:
+                // this one's sit among the others', not layered over them.
+                out.push(format!("Track '{}': {name} has one picture track, so its clips go out as V events beside the other picture tracks', not layered over them", track.name));
             }
         }
         if let (TrackKind::Audio, Some(max)) = (track.kind, format.audio_tracks) {

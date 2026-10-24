@@ -2777,6 +2777,35 @@ fn proxies_are_made_as_a_job_and_status_says_what_playback_reads() {
     assert!(refused["error"].as_str().unwrap().contains("no moving picture"), "{refused}");
 }
 
+/// #2485: the installed audio plug-ins are listed with their ids and
+/// parameters, and one goes on a clip by id through the ops.
+#[test]
+fn installed_audio_plugins_are_listed_and_one_goes_on_a_clip() {
+    let mut h = harness();
+    klipp_audio::lv2::set_plugin_registry(vec![klipp_audio::lv2::Lv2PluginInfo {
+        uri: "urn:klipp-test:room".into(),
+        name: "Test Room".into(),
+        audio_inputs: 2,
+        audio_outputs: 2,
+        control_inputs: vec![klipp_audio::lv2::Lv2ControlPort { symbol: "size".into(), name: "Room size".into(), default: 2.0, min: Some(0.0), max: Some(10.0), index: 0 }],
+    }]);
+    let listed = h.ok(json!({ "method": "audio_plugins", "query": "room" }));
+    assert_eq!(listed["plugins"][0]["id"], "lv2:urn:klipp-test:room", "{listed}");
+    assert_eq!(listed["plugins"][0]["params"][0]["key"], "size");
+    assert!(listed["text"].as_str().unwrap().contains("Room size 0..10"), "{listed}");
+    let media = h.media_pool.write().unwrap().add(klipp_media::MediaItem::synthetic_for_test("/tmp/plugin-fixture.mov".into(), None));
+    let clip = {
+        let mut seq = h.sequence.write().unwrap();
+        let c = seq.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).next().unwrap();
+        c.kind = klipp_timeline::ClipKind::Media { media_id: media };
+        c.linked_clip_id = None;
+        c.id.0.to_string()
+    };
+    let plan = h.ok(json!({ "method": "plan", "ops": [{ "op": "clip_audio", "clip_id": clip, "effect": "lv2:urn:klipp-test:room", "params": { "Room size": 5.0 } }] }));
+    assert!(plan["text"].as_str().unwrap().contains("lv2:urn:klipp-test:room (size 5)"), "{plan}");
+    klipp_audio::lv2::set_plugin_registry(Vec::new());
+}
+
 /// suggest_selects splits speech at the real pauses and flags filler and
 /// too-short runs to drop.
 #[test]

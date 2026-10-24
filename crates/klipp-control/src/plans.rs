@@ -275,7 +275,29 @@ pub(crate) fn with_klipp_extension(mut path: std::path::PathBuf) -> std::path::P
 /// The transcripts analysis has made, for the resolver's `captions`.
 pub(crate) struct AnalysedTranscripts;
 
+/// The installed LV2 and CLAP plug-ins as the resolver checks an edit
+/// against them (#2485), from the registries the app filled at start.
+/// An LV2 port that declares no bound gets 0..1, as the inspector shows.
+pub(crate) fn installed_audio_plugins() -> Vec<klipp_document::ops::AudioPlugin> {
+    use klipp_document::ops::{AudioPlugin, AudioPluginParam};
+    let lv2 = klipp_audio::lv2::registry_snapshot().into_iter().map(|p| AudioPlugin {
+        id: p.type_id(),
+        name: p.name.clone(),
+        params: p.control_inputs.iter().map(|c| AudioPluginParam { key: c.symbol.clone(), name: c.name.clone(), min: c.min.unwrap_or(0.0), max: c.max.unwrap_or(1.0), default: c.default }).collect(),
+    });
+    let clap = klipp_audio::clap::registry_snapshot().into_iter().map(|p| AudioPlugin {
+        id: p.type_id(),
+        name: p.name.clone(),
+        params: p.params.iter().map(|c| AudioPluginParam { key: c.key(), name: c.name.clone(), min: c.min, max: c.max, default: c.default }).collect(),
+    });
+    lv2.chain(clap).collect()
+}
+
 impl klipp_document::ops::Transcripts for AnalysedTranscripts {
+    fn audio_plugin(&self, id: &str) -> Option<klipp_document::ops::AudioPlugin> {
+        installed_audio_plugins().into_iter().find(|p| p.id == id)
+    }
+
     fn words(&self, item: &klipp_media::MediaItem) -> Option<Vec<klipp_document::ops::SpokenWord>> {
         let t = klipp_analysis::report::MediaAnalysis::load(&item.path).transcript?;
         Some(t.words.into_iter().map(|w| klipp_document::ops::SpokenWord { start_secs: w.start_secs, end_secs: w.end_secs, text: w.text, confidence: w.confidence }).collect())

@@ -720,6 +720,13 @@ pub enum ControlCommand {
         #[serde(default)]
         apply: bool,
     },
+    /// The LV2 and CLAP audio plug-ins installed here (#2485), those whose
+    /// name or id holds `query` when given: each id, name and parameters
+    /// with their keys and ranges, what clip_audio and track_audio take.
+    AudioPlugins {
+        #[serde(default)]
+        query: Option<String>,
+    },
     /// A file's sound as frequency against time: where a hum starts,
     /// when a hiss creeps in, which stretch has the air conditioning.
     AudioSpectrum {
