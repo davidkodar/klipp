@@ -606,7 +606,7 @@ impl PreferencesPanel {
             if ui.add(Switch::new(&mut prefs.general.check_for_updates, theme)).changed() { *dirty = true; }
         });
         Self::setting_row(ui, "Include preview releases", theme, |ui| {
-            if ui.add(Switch::new(&mut prefs.general.preview_updates, theme)).changed() { *dirty = true; }
+            if crate::updates::preview_switch(&mut prefs.general, ui, |ui, on| ui.add(Switch::new(on, theme))) { *dirty = true; }
         });
         Self::setting_row(ui, "Installed version", theme, |ui| {
             ui.label(klipp_core::build_info::get().version);

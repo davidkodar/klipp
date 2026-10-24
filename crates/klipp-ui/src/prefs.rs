@@ -190,9 +190,13 @@ pub struct GeneralPrefs {
     /// defaulted on, so its serialized value cannot establish user consent.
     #[serde(default, rename = "automatic_update_checks_opt_in")]
     pub check_for_updates: bool,
-    /// Preview releases are never offered unless explicitly enabled.
-    #[serde(default)]
-    pub preview_updates: bool,
+    /// Whether the update check offers preview releases, when the user
+    /// has said; unset, a preview build offers them and a stable one
+    /// doesn't (`updates::include_previews`). A key of its own: the
+    /// earlier `preview_updates` was always written, `false` when never
+    /// touched, so it cannot tell a choice from the default.
+    #[serde(default, rename = "include_preview_releases")]
+    pub preview_updates: Option<bool>,
     #[serde(default)]
     pub last_update_check: u64,
     #[serde(default)]
@@ -905,7 +909,7 @@ impl Default for GeneralPrefs {
         Self {
             auto_save_interval_secs: 300,
             check_for_updates: false,
-            preview_updates: false,
+            preview_updates: None,
             last_update_check: 0,
             dismissed_update: None,
             auto_save_op_threshold: default_auto_save_ops(),
