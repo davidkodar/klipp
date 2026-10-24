@@ -49,6 +49,7 @@
 //! (per kalosm-style architecture).
 
 pub mod birefnet_lite;
+pub mod clip;
 pub mod kokoro;
 pub mod postprocess;
 pub mod ppocr;

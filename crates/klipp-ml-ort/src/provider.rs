@@ -16,7 +16,7 @@ use klipp_ml::DevicePreference;
 
 /// The provider a model's session runs on, and why not the GPU when it
 /// is the CPU.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ProviderUse {
     pub model: String,
     /// "CUDA", "WebGPU" or "CPU".
@@ -24,6 +24,9 @@ pub struct ProviderUse {
     /// Why the CPU, in plain words: asked for, no GPU, or what kept the
     /// GPU's provider from loading. `None` on the GPU.
     pub why_cpu: Option<String>,
+    /// Milliseconds a frame (or a text) took in the latest run, where the
+    /// model reports it ([`timed`]), so the GPU's gain shows.
+    pub ms_per_frame: Option<f64>,
 }
 
 impl ProviderUse {
@@ -32,11 +35,13 @@ impl ProviderUse {
         self.provider == "CPU" && self.why_cpu.as_deref().is_some_and(|w| !w.starts_with(CPU_ASKED) && !w.starts_with(NO_GPU))
     }
 
-    /// One line for a status or a log: "rf_detr_seg on CPU: …".
+    /// One line for a status or a log: "rf_detr_seg on CPU: …", or
+    /// "clip_vit_b32_vision on WebGPU, 0.8 ms a frame".
     pub fn line(&self) -> String {
+        let timing = self.ms_per_frame.map(|ms| format!(", {ms:.1} ms a frame")).unwrap_or_default();
         match &self.why_cpu {
-            Some(why) => format!("{} on {}: {why}", self.model, self.provider),
-            None => format!("{} on {}", self.model, self.provider),
+            Some(why) => format!("{} on {}{timing}: {why}", self.model, self.provider),
+            None => format!("{} on {}{timing}", self.model, self.provider),
         }
     }
 }
@@ -67,6 +72,19 @@ pub fn record(u: ProviderUse) {
         match used.iter_mut().find(|e| e.model == u.model) {
             Some(e) => *e = u,
             None => used.push(u),
+        }
+    }
+}
+
+/// `frames` frames run through `model` in `took`: kept as its time a
+/// frame.
+pub fn timed(model: &str, frames: usize, took: std::time::Duration) {
+    if frames == 0 {
+        return;
+    }
+    if let Ok(mut used) = USED.lock() {
+        if let Some(e) = used.iter_mut().find(|e| e.model == model) {
+            e.ms_per_frame = Some(took.as_secs_f64() * 1000.0 / frames as f64);
         }
     }
 }
@@ -131,7 +149,7 @@ pub fn runtime_has_cuda() -> Option<bool> {
 /// An error only when `device` requires the GPU and it didn't load.
 #[cfg(feature = "ort")]
 pub fn on_device(builder: ort::session::builder::SessionBuilder, device: DevicePreference, model: &str) -> Result<ort::session::builder::SessionBuilder, String> {
-    let cpu = |why: String| ProviderUse { model: model.to_string(), provider: "CPU", why_cpu: Some(why) };
+    let cpu = |why: String| ProviderUse { model: model.to_string(), provider: "CPU", why_cpu: Some(why), ms_per_frame: None };
     if device == DevicePreference::Cpu {
         record(cpu(CPU_ASKED.to_string()));
         return Ok(builder);
@@ -146,7 +164,7 @@ pub fn on_device(builder: ort::session::builder::SessionBuilder, device: DeviceP
     };
     match failure {
         Ok(provider) => {
-            record(ProviderUse { model: model.to_string(), provider, why_cpu: None });
+            record(ProviderUse { model: model.to_string(), provider, why_cpu: None, ms_per_frame: None });
             Ok(builder)
         }
         Err(failure) => {
@@ -203,19 +221,26 @@ mod tests {
 
     #[test]
     fn a_cpu_session_beside_a_gpu_is_said_loudly() {
-        let missed = ProviderUse { model: "m".into(), provider: "CPU", why_cpu: Some("an NVIDIA GPU is present, but x".into()) };
+        let missed = ProviderUse { model: "m".into(), provider: "CPU", why_cpu: Some("an NVIDIA GPU is present, but x".into()), ms_per_frame: None };
         assert!(missed.misses_a_gpu());
         assert_eq!(missed.line(), "m on CPU: an NVIDIA GPU is present, but x");
         for why in [CPU_ASKED, NO_GPU] {
-            assert!(!ProviderUse { model: "m".into(), provider: "CPU", why_cpu: Some(why.into()) }.misses_a_gpu());
+            assert!(!ProviderUse { model: "m".into(), provider: "CPU", why_cpu: Some(why.into()), ms_per_frame: None }.misses_a_gpu());
         }
-        assert!(!ProviderUse { model: "m".into(), provider: "CUDA", why_cpu: None }.misses_a_gpu());
+        assert!(!ProviderUse { model: "m".into(), provider: "CUDA", why_cpu: None, ms_per_frame: None }.misses_a_gpu());
+    }
+
+    #[test]
+    fn a_models_time_a_frame_is_said() {
+        record(ProviderUse { model: "provider-timed".into(), provider: "WebGPU", why_cpu: None, ms_per_frame: None });
+        timed("provider-timed", 16, std::time::Duration::from_millis(12));
+        assert_eq!(used_by("provider-timed").map(|u| u.line()).as_deref(), Some("provider-timed on WebGPU, 0.8 ms a frame"));
     }
 
     #[test]
     fn a_models_latest_session_is_kept() {
-        record(ProviderUse { model: "provider-test".into(), provider: "CUDA", why_cpu: None });
-        record(ProviderUse { model: "provider-test".into(), provider: "CPU", why_cpu: Some(NO_GPU.into()) });
+        record(ProviderUse { model: "provider-test".into(), provider: "CUDA", why_cpu: None, ms_per_frame: None });
+        record(ProviderUse { model: "provider-test".into(), provider: "CPU", why_cpu: Some(NO_GPU.into()), ms_per_frame: None });
         assert_eq!(used_by("provider-test").map(|u| u.provider), Some("CPU"));
         assert_eq!(used().iter().filter(|u| u.model == "provider-test").count(), 1);
     }

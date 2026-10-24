@@ -300,7 +300,7 @@ pub fn download_models() -> Result<Vec<String>, String> {
     #[cfg(feature = "visual")]
     {
         visual::ensure_models(true)?;
-        got.extend([visual::TOKENIZER_ID.to_string(), visual::MODEL_ID.to_string()]);
+        got.extend(visual::MODEL_IDS.iter().map(|s| s.to_string()));
     }
     Ok(got)
 }

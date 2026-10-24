@@ -31,7 +31,7 @@ pub fn missed_gpu() -> Vec<String> {
 pub(crate) fn to_json() -> Vec<serde_json::Value> {
     #[cfg(feature = "ort-models")]
     {
-        klipp_ml_ort::provider::used().iter().map(|u| serde_json::json!({ "model": u.model, "provider": u.provider, "why_cpu": u.why_cpu })).collect()
+        klipp_ml_ort::provider::used().iter().map(|u| serde_json::json!({ "model": u.model, "provider": u.provider, "why_cpu": u.why_cpu, "ms_per_frame": u.ms_per_frame })).collect()
     }
     #[cfg(not(feature = "ort-models"))]
     {
@@ -50,7 +50,8 @@ pub(crate) fn record_json(used: &serde_json::Value) {
             _ => "CPU",
         };
         let why_cpu = u["why_cpu"].as_str().map(str::to_string);
-        klipp_ml_ort::provider::record(klipp_ml_ort::provider::ProviderUse { model: model.to_string(), provider, why_cpu });
+        let ms_per_frame = u["ms_per_frame"].as_f64();
+        klipp_ml_ort::provider::record(klipp_ml_ort::provider::ProviderUse { model: model.to_string(), provider, why_cpu, ms_per_frame });
     }
     #[cfg(not(feature = "ort-models"))]
     let _ = used;

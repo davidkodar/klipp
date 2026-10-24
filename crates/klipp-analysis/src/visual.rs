@@ -7,7 +7,14 @@ use serde::{Deserialize, Serialize};
 
 pub const ID: &str = "visual";
 pub const VERSION: u32 = 1;
-pub use klipp_ml_candle::clip::{CLIP_MODEL_ID as MODEL_ID, CLIP_TOKENIZER_ID as TOKENIZER_ID};
+pub use klipp_ml_ort::clip::{CLIP_TEXT_ID as TEXT_ID, CLIP_TOKENIZER_ID as TOKENIZER_ID, CLIP_VISION_ID as VISION_ID};
+
+/// The files the model needs, in the order they are fetched.
+pub const MODEL_IDS: [&str; 3] = [TOKENIZER_ID, TEXT_ID, VISION_ID];
+
+/// The model as one candle file, before the ONNX encoders (#2245): its
+/// size and hash as the manifest gave them, so only that file is removed.
+const CANDLE_WEIGHTS: (&str, u64, &str) = (klipp_ml_ort::clip::CLIP_CANDLE_ID, 605_157_884, "99d28a652e6ec46629ab7047a0ac82c69b1fe11e0ce672c43af65d3a9a3fc05d");
 
 /// Seconds between samples.
 const EVERY_SECS: f64 = 2.0;
@@ -82,27 +89,34 @@ pub fn load(path: &std::path::Path) -> Option<Visual> {
     crate::store::load(&key, ID, VERSION).and_then(|v| serde_json::from_value(v).ok())
 }
 
-/// The model and tokenizer in the app's model cache.
-pub fn model_paths() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
-    let manifest = klipp_ml::manifest::load_effective().ok()?;
-    let cache = klipp_ml::cache::ModelCache::open().ok()?;
-    let weights = cache.path_for(manifest.get(MODEL_ID)?);
-    let tokenizer = cache.path_for(manifest.get(TOKENIZER_ID)?);
-    (weights.is_file() && tokenizer.is_file()).then_some((weights, tokenizer))
+/// Where the model's files are.
+pub struct ModelPaths {
+    pub vision: std::path::PathBuf,
+    pub text: std::path::PathBuf,
+    pub tokenizer: std::path::PathBuf,
 }
 
-/// The model and tokenizer, downloaded and verified when `download` and
-/// not there.
-pub fn ensure_models(download: bool) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
+/// The model's files in the app's model cache, when all are there.
+pub fn model_paths() -> Option<ModelPaths> {
+    let manifest = klipp_ml::manifest::load_effective().ok()?;
+    let cache = klipp_ml::cache::ModelCache::open().ok()?;
+    let path = |id: &str| manifest.get(id).map(|e| cache.path_for(e)).filter(|p| p.is_file());
+    Some(ModelPaths { vision: path(VISION_ID)?, text: path(TEXT_ID)?, tokenizer: path(TOKENIZER_ID)? })
+}
+
+/// The model's files, downloaded and verified when `download` and not
+/// there.
+pub fn ensure_models(download: bool) -> Result<ModelPaths, String> {
     if let Some(p) = model_paths() {
+        remove_candle_weights();
         return Ok(p);
     }
     if !download {
-        return Err(format!("the picture search model {MODEL_ID} is not downloaded; ask with download_models"));
+        return Err(format!("the picture search model {VISION_ID} is not downloaded; ask with download_models"));
     }
     let manifest = klipp_ml::manifest::load_effective().map_err(|e| format!("model manifest: {e:?}"))?;
     let cache = klipp_ml::cache::ModelCache::open().map_err(|e| format!("model cache: {e:?}"))?;
-    for id in [TOKENIZER_ID, MODEL_ID] {
+    for id in MODEL_IDS {
         let entry = manifest.get(id).ok_or_else(|| format!("no manifest entry {id}"))?;
         if cache.path_for(entry).is_file() {
             continue;
@@ -111,19 +125,37 @@ pub fn ensure_models(download: bool) -> Result<(std::path::PathBuf, std::path::P
         let mut progress = klipp_ml::download::NoOpProgress;
         klipp_ml::download::download_to_cache(&cache, entry, &mut progress, &cancel).map_err(|e| format!("download of {id}: {e:?}"))?;
     }
-    model_paths().ok_or_else(|| "the picture search model did not land in the cache".into())
+    let paths = model_paths().ok_or_else(|| "the picture search model did not land in the cache".to_string())?;
+    remove_candle_weights();
+    Ok(paths)
+}
+
+/// The candle weights the ONNX encoders replaced, removed from the model
+/// cache once those are there: checked once a process, and only the file
+/// the old manifest entry named.
+fn remove_candle_weights() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let Ok(cache) = klipp_ml::cache::ModelCache::open() else { return };
+        let (id, size, sha) = CANDLE_WEIGHTS;
+        match cache.remove_replaced(id, size, sha) {
+            Ok(Some(bytes)) => tracing::info!("removed the old picture search weights ({id}, {} MB): the ONNX encoders replace them", bytes / 1_000_000),
+            Ok(None) => {}
+            Err(e) => tracing::warn!("the old picture search weights ({id}) could not be removed: {e}"),
+        }
+    });
 }
 
 /// The model, loaded once for the process: a search should not wait the
 /// second or two a load takes.
-fn model() -> Result<std::sync::Arc<klipp_ml_candle::clip::Clip>, String> {
-    static LOADED: std::sync::Mutex<Option<std::sync::Arc<klipp_ml_candle::clip::Clip>>> = std::sync::Mutex::new(None);
+fn model() -> Result<std::sync::Arc<klipp_ml_ort::clip::Clip>, String> {
+    static LOADED: std::sync::Mutex<Option<std::sync::Arc<klipp_ml_ort::clip::Clip>>> = std::sync::Mutex::new(None);
     let mut loaded = LOADED.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(m) = loaded.as_ref() {
         return Ok(std::sync::Arc::clone(m));
     }
-    let (weights, tokenizer) = ensure_models(false)?;
-    let m = std::sync::Arc::new(klipp_ml_candle::clip::Clip::load(&weights, &tokenizer)?);
+    let p = ensure_models(false)?;
+    let m = std::sync::Arc::new(klipp_ml_ort::clip::Clip::load(&p.vision, &p.text, &p.tokenizer, klipp_ml::DevicePreference::GpuPreferCpu)?);
     *loaded = Some(std::sync::Arc::clone(&m));
     Ok(m)
 }
@@ -175,10 +207,10 @@ impl crate::Analyser for VisualAnalyser {
 }
 
 /// `item`'s picture samples, embedded by `clip`.
-pub fn look(clip: &klipp_ml_candle::clip::Clip, item: &klipp_media::MediaItem, ctx: &crate::AnalysisCtx) -> Result<Visual, String> {
+pub fn look(clip: &klipp_ml_ort::clip::Clip, item: &klipp_media::MediaItem, ctx: &crate::AnalysisCtx) -> Result<Visual, String> {
     {
         let times = sample_times(item.duration.to_secs_f64(), item.is_still);
-        let side = klipp_ml_candle::clip::IMAGE_SIZE;
+        let side = klipp_ml_ort::clip::IMAGE_SIZE;
         // The short side to the model's, then the middle square, as CLIP
         // was trained to see.
         let crop = format!("scale={side}:{side}:force_original_aspect_ratio=increase:flags=bicubic,crop={side}:{side}");

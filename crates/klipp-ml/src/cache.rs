@@ -129,6 +129,24 @@ impl ModelCache {
             Ok(CachedStatus::Mismatch)
         }
     }
+
+    /// Remove the file a model `id` no longer in the manifest was kept
+    /// in, once its replacement is in place: only when it is exactly the
+    /// file that id named (`size_bytes` long, hashing to `sha256`), so a
+    /// file put there by hand stays. The bytes freed, when it was
+    /// removed.
+    pub fn remove_replaced(&self, id: &str, size_bytes: u64, sha256: &str) -> Result<Option<u64>, CacheError> {
+        let path = self.path_for_id(id);
+        match std::fs::metadata(&path) {
+            Ok(m) if m.is_file() && m.len() == size_bytes => {}
+            _ => return Ok(None),
+        }
+        if !sha256_of_file(&path)?.eq_ignore_ascii_case(sha256) {
+            return Ok(None);
+        }
+        std::fs::remove_file(&path)?;
+        Ok(Some(size_bytes))
+    }
 }
 
 /// Compute the SHA-256 of a file as a 64-char lowercase hex string.
@@ -252,6 +270,26 @@ mod tests {
         let partial = cache.partial_path_for(&entry);
         assert_ne!(final_path, partial);
         assert!(partial.to_string_lossy().ends_with(PARTIAL_SUFFIX));
+    }
+
+    /// A replaced model's file goes only when it is the file its id
+    /// named; one of another size or hash stays.
+    #[test]
+    fn only_the_replaced_file_itself_is_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = ModelCache::open_at(dir.path());
+        let bytes = b"klipp test bytes";
+        let sha = "0".repeat(64);
+        let real_sha = {
+            std::fs::write(cache.path_for_id("old"), bytes).unwrap();
+            sha256_of_file(&cache.path_for_id("old")).unwrap()
+        };
+        assert_eq!(cache.remove_replaced("old", bytes.len() as u64, &sha).unwrap(), None, "another hash stays");
+        assert_eq!(cache.remove_replaced("old", 3, &real_sha).unwrap(), None, "another size stays");
+        assert!(cache.path_for_id("old").is_file());
+        assert_eq!(cache.remove_replaced("old", bytes.len() as u64, &real_sha).unwrap(), Some(bytes.len() as u64));
+        assert!(!cache.path_for_id("old").exists());
+        assert_eq!(cache.remove_replaced("old", bytes.len() as u64, &real_sha).unwrap(), None, "nothing left to remove");
     }
 
     #[test]
