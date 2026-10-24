@@ -1612,36 +1612,31 @@ pub(crate) unsafe fn try_init_vaapi(codec_ctx_ptr: *mut ffmpeg_next::ffi::AVCode
         return false;
     }
 
-    let device_paths: &[&[u8]] = &[
-        b"/dev/dri/renderD128\0",
-        b"/dev/dri/renderD129\0",
-        b"\0",
-    ];
-
     let mut hw_device_ctx: *mut AVBufferRef = std::ptr::null_mut();
 
-    for device_path in device_paths {
+    // Never NVIDIA's node: its VAAPI driver can deadlock the process
+    // against a CUDA decoder opening on another thread.
+    for node in klipp_core::GpuVendor::vaapi_nodes() {
+        let Ok(device_path) = std::ffi::CString::new(std::os::unix::ffi::OsStrExt::as_bytes(node.as_os_str())) else {
+            continue;
+        };
         let ret = av_hwdevice_ctx_create(
             &mut hw_device_ctx,
             device_type,
-            device_path.as_ptr() as *const _,
+            device_path.as_ptr(),
             std::ptr::null_mut(),
             0,
         );
         if ret >= 0 {
             (*codec_ctx_ptr).hw_device_ctx = av_buffer_ref(hw_device_ctx);
             (*codec_ctx_ptr).get_format = Some(vaapi_get_format);
-            let path_str = std::str::from_utf8(device_path)
-                .unwrap_or("?")
-                .trim_end_matches('\0');
-            let path_display = if path_str.is_empty() { "auto" } else { path_str };
-            info!("Hardware decode: VAAPI active on {path_display}");
+            info!("Hardware decode: VAAPI active on {}", node.display());
             av_buffer_unref(&mut hw_device_ctx);
             return true;
         }
     }
 
-    warn!("Hardware decode: VAAPI init failed on all device paths");
+    warn!("Hardware decode: VAAPI init failed on every render node but NVIDIA's");
     false
 }
 
