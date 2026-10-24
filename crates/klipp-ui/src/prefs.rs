@@ -190,6 +190,16 @@ pub struct GeneralPrefs {
     /// defaulted on, so its serialized value cannot establish user consent.
     #[serde(default, rename = "automatic_update_checks_opt_in")]
     pub check_for_updates: bool,
+    /// Whether the user has answered whether to check automatically: by
+    /// the question Klipp asks, a switch, or leaving the question
+    /// unanswered too often. `check_for_updates` false is ambiguous in
+    /// older prefs files (it was always written), so the answer is kept
+    /// apart; true there was always the user's own.
+    #[serde(default)]
+    pub update_checks_answered: bool,
+    /// Starts the question was shown at and left unanswered.
+    #[serde(default)]
+    pub update_checks_asked: u32,
     /// Whether the update check offers preview releases, when the user
     /// has said; unset, a preview build offers them and a stable one
     /// doesn't (`updates::include_previews`). A key of its own: the
@@ -909,6 +919,8 @@ impl Default for GeneralPrefs {
         Self {
             auto_save_interval_secs: 300,
             check_for_updates: false,
+            update_checks_answered: false,
+            update_checks_asked: 0,
             preview_updates: None,
             last_update_check: 0,
             dismissed_update: None,

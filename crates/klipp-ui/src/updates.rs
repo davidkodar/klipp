@@ -83,6 +83,32 @@ pub(crate) fn preview_switch(prefs: &mut GeneralPrefs, ui: &mut egui::Ui, add: i
     changed
 }
 
+/// Starts the question about automatic checks is shown at before going
+/// unanswered counts as no.
+const ASK_STARTS: u32 = 3;
+
+/// Whether to ask at this start whether to check automatically: not
+/// when answered, or when checks are on (always the user's own choice),
+/// and not past [`ASK_STARTS`] unanswered starts, which then count as no.
+/// An ask counts as one of those starts.
+fn ask_this_start(prefs: &mut GeneralPrefs) -> bool {
+    if prefs.update_checks_answered || prefs.check_for_updates {
+        return false;
+    }
+    if prefs.update_checks_asked >= ASK_STARTS {
+        prefs.update_checks_answered = true;
+        return false;
+    }
+    prefs.update_checks_asked += 1;
+    true
+}
+
+/// The user's answer to the question, kept as their choice.
+fn answer(prefs: &mut GeneralPrefs, yes: bool) {
+    prefs.check_for_updates = yes;
+    prefs.update_checks_answered = true;
+}
+
 fn newest(releases: &[Release], current: &str, preview: bool) -> Result<Option<Version>, String> {
     let current =
         Version::parse(current).map_err(|_| "This build has an invalid release version.")?;
@@ -138,6 +164,10 @@ struct Check {
 }
 
 pub(crate) struct Updates {
+    /// Whether this start's question about automatic checks is decided
+    /// yet, and whether it is on screen.
+    asked: bool,
+    asking: bool,
     open: bool,
     check_on_open: bool,
     started: Instant,
@@ -149,6 +179,8 @@ pub(crate) struct Updates {
 impl Default for Updates {
     fn default() -> Self {
         Self {
+            asked: false,
+            asking: false,
             open: false,
             check_on_open: false,
             started: Instant::now(),
@@ -194,7 +226,50 @@ impl Updates {
         });
     }
 
+    /// The question whether to check automatically: a notice in the
+    /// corner, not in the way. Closed unanswered, it is asked again at the
+    /// next start ([`ask_this_start`]).
+    fn ask(&mut self, ctx: &egui::Context, prefs: &mut GeneralPrefs, dirty: &mut bool) {
+        egui::Area::new(egui::Id::new("update_checks_question"))
+            .anchor(egui::Align2::RIGHT_TOP, [-16.0, 48.0])
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.set_max_width(340.0);
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Check for new Klipp versions automatically?").strong());
+                        if ui.small_button("✕").on_hover_text("Ask me next time").clicked() {
+                            self.asking = false;
+                        }
+                    });
+                    ui.label("Klipp asks GitHub once a day; no project information is sent.");
+                    ui.horizontal(|ui| {
+                        if ui.button("Yes, check daily").clicked() {
+                            answer(prefs, true);
+                            self.asking = false;
+                            *dirty = true;
+                        }
+                        if ui.button("No thanks").clicked() {
+                            answer(prefs, false);
+                            self.asking = false;
+                            *dirty = true;
+                        }
+                    });
+                    ui.small("You can change this in Preferences.");
+                });
+            });
+    }
+
     pub(crate) fn show(&mut self, ctx: &egui::Context, prefs: &mut GeneralPrefs, dirty: &mut bool) {
+        if !std::mem::replace(&mut self.asked, true) {
+            let before = (prefs.update_checks_answered, prefs.update_checks_asked);
+            self.asking = ask_this_start(prefs);
+            if (prefs.update_checks_answered, prefs.update_checks_asked) != before {
+                *dirty = true;
+            }
+        }
+        if self.asking && !prefs.update_checks_answered {
+            self.ask(ctx, prefs, dirty);
+        }
         if std::mem::take(&mut self.check_on_open) {
             self.start(ctx, prefs, dirty);
         }
@@ -261,7 +336,10 @@ impl Updates {
         egui::Window::new("Klipp updates").open(&mut open).collapsible(false).resizable(false)
             .default_width(420.0).show(ctx, |ui| {
                 ui.label(format!("Installed version: {}", klipp_core::build_info::get().version));
-                if ui.checkbox(&mut prefs.check_for_updates, "Check automatically once a day").changed() { *dirty = true; }
+                if ui.checkbox(&mut prefs.check_for_updates, "Check automatically once a day").changed() {
+                    prefs.update_checks_answered = true;
+                    *dirty = true;
+                }
                 if preview_switch(prefs, ui, |ui, on| ui.checkbox(on, "Include preview releases")) {
                     *dirty = true; self.result = None;
                 }
@@ -522,6 +600,57 @@ mod tests {
         let roundtrip: GeneralPrefs =
             serde_json::from_value(serde_json::to_value(opted_in).unwrap()).unwrap();
         assert!(roundtrip.check_for_updates);
+    }
+
+    /// Asked from the first start; unanswered, at the next two starts
+    /// too, then it counts as no and isn't asked again.
+    #[test]
+    fn the_question_is_asked_three_starts_then_counts_as_no() {
+        let mut prefs = GeneralPrefs::default();
+        for start in 1..=ASK_STARTS {
+            assert!(ask_this_start(&mut prefs), "start {start}");
+        }
+        assert!(!ask_this_start(&mut prefs));
+        assert!(prefs.update_checks_answered && !prefs.check_for_updates);
+        assert!(!ask_this_start(&mut prefs), "and stays answered");
+    }
+
+    /// An answer, or checks already turned on, is never asked about.
+    #[test]
+    fn an_answer_or_checks_already_on_are_not_asked() {
+        for yes in [true, false] {
+            let mut prefs = GeneralPrefs::default();
+            assert!(ask_this_start(&mut prefs));
+            answer(&mut prefs, yes);
+            assert_eq!(prefs.check_for_updates, yes);
+            assert!(!ask_this_start(&mut prefs));
+        }
+        // Turned on in an earlier build, where only the user could.
+        let mut json = serde_json::to_value(GeneralPrefs::default()).unwrap();
+        json.as_object_mut().unwrap().remove("update_checks_answered");
+        json.as_object_mut().unwrap().remove("update_checks_asked");
+        json["automatic_update_checks_opt_in"] = true.into();
+        let mut on: GeneralPrefs = serde_json::from_value(json.clone()).unwrap();
+        assert!(!ask_this_start(&mut on));
+        // Off there was written whether chosen or not: asked.
+        json["automatic_update_checks_opt_in"] = false.into();
+        let mut off: GeneralPrefs = serde_json::from_value(json).unwrap();
+        assert!(ask_this_start(&mut off));
+    }
+
+    /// The question shows at the first start, in the corner with its
+    /// wording, and goes once answered.
+    #[test]
+    fn the_question_shows_at_the_first_start_until_answered() {
+        let mut prefs = GeneralPrefs::default();
+        let mut updates = Updates::default();
+        let text = ui_text(&mut updates, &mut prefs);
+        assert!(text.contains("Check for new Klipp versions automatically?"), "{text}");
+        assert!(text.contains("Klipp asks GitHub once a day; no project information is sent."));
+        assert!(text.contains("Yes, check daily") && text.contains("No thanks"));
+        assert_eq!(prefs.update_checks_asked, 1, "one start, however many frames");
+        answer(&mut prefs, false);
+        assert!(!ui_text(&mut updates, &mut prefs).contains("automatically?"));
     }
 
     #[test]
