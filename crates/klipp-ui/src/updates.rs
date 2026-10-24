@@ -59,6 +59,30 @@ fn probe_installation(exe: &Path, pacman: &Path, pacman_conf: &Path) -> (Install
     (install, repository)
 }
 
+/// Whether a build of version `current` offers preview releases when
+/// the user hasn't said: a preview build (0.1.0-rc.2) is told of the
+/// next preview, a stable one only of stable releases.
+fn previews_by_default(current: &str) -> bool {
+    Version::parse(current).is_ok_and(|v| !v.pre.is_empty())
+}
+
+/// Whether the update check offers preview releases: the user's choice,
+/// else what this build offers by default.
+pub(crate) fn include_previews(prefs: &GeneralPrefs) -> bool {
+    prefs.preview_updates.unwrap_or_else(|| previews_by_default(klipp_core::build_info::get().version))
+}
+
+/// The switch for preview releases: shows what the check does, and
+/// keeps a change as the user's choice. Whether it changed.
+pub(crate) fn preview_switch(prefs: &mut GeneralPrefs, ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui, &mut bool) -> egui::Response) -> bool {
+    let mut on = include_previews(prefs);
+    let changed = add(ui, &mut on).changed();
+    if changed {
+        prefs.preview_updates = Some(on);
+    }
+    changed
+}
+
 fn newest(releases: &[Release], current: &str, preview: bool) -> Result<Option<Version>, String> {
     let current =
         Version::parse(current).map_err(|_| "This build has an invalid release version.")?;
@@ -148,7 +172,7 @@ impl Updates {
         prefs.last_update_check = now();
         *dirty = true;
         self.result = None;
-        let preview = prefs.preview_updates;
+        let preview = include_previews(prefs);
         let ctx = ctx.clone();
         let (tx, rx) = mpsc::channel();
         self.pending = Some(rx);
@@ -192,7 +216,7 @@ impl Updates {
         if self
             .result
             .as_ref()
-            .is_some_and(|r| r.preview != prefs.preview_updates)
+            .is_some_and(|r| r.preview != include_previews(prefs))
         {
             self.result = None;
         }
@@ -238,8 +262,11 @@ impl Updates {
             .default_width(420.0).show(ctx, |ui| {
                 ui.label(format!("Installed version: {}", klipp_core::build_info::get().version));
                 if ui.checkbox(&mut prefs.check_for_updates, "Check automatically once a day").changed() { *dirty = true; }
-                if ui.checkbox(&mut prefs.preview_updates, "Include preview releases").changed() {
+                if preview_switch(prefs, ui, |ui, on| ui.checkbox(on, "Include preview releases")) {
                     *dirty = true; self.result = None;
+                }
+                if prefs.preview_updates.is_none() && previews_by_default(klipp_core::build_info::get().version) {
+                    ui.small("On by default because this is a preview build.");
                 }
                 ui.small("Checks GitHub for releases. No project information is sent.");
                 if ui.add_enabled(self.pending.is_none(), egui::Button::new("Check now")).clicked() {
@@ -333,6 +360,40 @@ mod tests {
         );
         assert!(newest(&items, "0.20.0", true).unwrap().is_none());
     }
+    /// A preview build is told of the next preview unless the user said
+    /// otherwise; a stable build of stable releases only.
+    #[test]
+    fn a_preview_build_offers_the_next_preview_by_default() {
+        assert!(previews_by_default("0.1.0-rc.2"));
+        assert!(!previews_by_default("0.1.0"));
+        assert!(!previews_by_default("invalid"));
+        let r: Vec<Release> = serde_json::from_str(
+            r#"[{"tag_name":"v0.1.0-rc.3","draft":false,"prerelease":true},
+                {"tag_name":"v0.1.0-rc.2","draft":false,"prerelease":true}]"#,
+        )
+        .unwrap();
+        let next = |current: &str| newest(&r, current, previews_by_default(current)).unwrap().map(|v| v.to_string());
+        assert_eq!(next("0.1.0-rc.2").as_deref(), Some("0.1.0-rc.3"));
+        assert_eq!(next("0.0.9"), None, "a stable build stays on stable releases");
+    }
+
+    /// The user's choice wins over the default either way, and the old
+    /// key, always written as `false`, is not taken for one.
+    #[test]
+    fn an_explicit_choice_wins_and_the_old_default_is_not_one() {
+        // A prefs file as written, with the key under test.
+        let base = toml::to_string(&GeneralPrefs::default()).unwrap();
+        let general = |key: &str| toml::from_str::<GeneralPrefs>(&format!("{key}\n{base}")).unwrap();
+        assert_eq!(general("preview_updates = false").preview_updates, None);
+        assert_eq!(general("include_preview_releases = false").preview_updates, Some(false));
+        assert!(!include_previews(&general("include_preview_releases = false")));
+        assert!(include_previews(&general("include_preview_releases = true")));
+        let default = previews_by_default(klipp_core::build_info::get().version);
+        assert_eq!(include_previews(&general("")), default);
+        let written = toml::to_string(&GeneralPrefs { preview_updates: Some(true), ..GeneralPrefs::default() }).unwrap();
+        assert!(written.contains("include_preview_releases = true") && !written.contains("preview_updates"), "{written}");
+    }
+
     #[test]
     fn metadata_does_not_offer_a_same_version_update() {
         let r = vec![Release {
@@ -403,8 +464,10 @@ mod tests {
 
     #[test]
     fn notifications_respect_disabled_checks_and_dismissal() {
+        // A stable-channel result, on the stable channel.
         let mut prefs = GeneralPrefs {
             check_for_updates: true,
+            preview_updates: Some(false),
             ..Default::default()
         };
         let mut updates = available(Installation::Source);
@@ -418,7 +481,7 @@ mod tests {
 
     #[test]
     fn package_action_is_not_shown_to_source_users() {
-        let mut prefs = GeneralPrefs::default();
+        let mut prefs = GeneralPrefs { preview_updates: Some(false), ..Default::default() };
         let mut updates = available(Installation::ArchRelease);
         updates.open = true;
         assert!(ui_text(&mut updates, &mut prefs).contains("Open system updater"));
