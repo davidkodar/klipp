@@ -75,6 +75,11 @@ Each release lists what changed for people using Klipp. Versions follow
 - A lower-frame-rate clip can be conformed by blending or optical flow at
   full speed, and the check notes clips that will judder.
 - EDL and Kdenlive exports list what they leave out, as FCPXML and OTIO do.
+- The colour check names a cast against the look's target, no longer reads
+  faces in the background of low-resolution clips, and a clip played to its
+  file's end no longer counts as cutting its last word.
+- Replies over MCP are shorter (fonts, the colour check grouped by shot,
+  cut summaries) and say a change was applied only when one was made.
 
 ### Changed
 
