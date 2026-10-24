@@ -80,6 +80,17 @@ Each release lists what changed for people using Klipp. Versions follow
   file's end no longer counts as cutting its last word.
 - Replies over MCP are shorter (fonts, the colour check grouped by shot,
   cut summaries) and say a change was applied only when one was made.
+- LV2 plug-ins that passed the sound through untouched now process it, and a
+  plug-in that cannot run is refused when it is added, with the reason.
+- Audio plug-ins are applied in exports, loudness measurement and the check,
+  not only while playing.
+- Shots placed on a beat grid meet, with no frame left between them and no
+  place refused as an overlap.
+- Fast cuts within one file play every frame, and layered tracks cut between
+  files hold fewer decoders and less GPU memory.
+- Stacked stills stay on the GPU instead of being uploaded again after the
+  first frame.
+- Opening video on NVIDIA no longer risks a hang from the VA-API driver.
 
 ### Changed
 
