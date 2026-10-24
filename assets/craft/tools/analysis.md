@@ -8,7 +8,7 @@ Background analysis: shot boundaries, EBU R128 loudness/true peak, silence, and 
 
 ## klipp_audio_plugins
 
-The LV2 and CLAP audio plug-ins installed on this machine (found in the LV2_PATH and CLAP_PATH folders when the app starts), those whose name or id holds query when one is given. Each has its id (lv2:<uri>, clap:<id>), its name, and its parameters with their keys, ranges and defaults. Put one on a clip's sound with the clip_audio op, or on a whole track's with track_audio: effect is its id, params by name or key, each inside its range, the rest at their defaults; bypass and remove work as for the built-in effects. A read; changes nothing.
+The LV2 and CLAP audio plug-ins installed on this machine (found in the LV2_PATH and CLAP_PATH folders when the app starts), those whose name or id holds query when one is given: each id (lv2:<uri>, clap:<id>), name and number of parameters, thirty at most. When query is one plug-in's id, or holds only one, its parameters come with their keys, ranges and defaults, thirty at most; param picks those whose name or key holds a word ("threshold"). Put one on a clip's sound with the clip_audio op, or on a whole track's with track_audio: effect is its id, params by name or key, each inside its range, the rest at their defaults; bypass and remove work as for the built-in effects. A read; changes nothing.
 
 ## klipp_audio_spectrum
 
