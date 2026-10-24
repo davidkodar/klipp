@@ -4,9 +4,10 @@
 //! registered, and says so only in its own log: with a CPU-only
 //! libonnxruntime on a machine with an NVIDIA GPU, every model ran on the
 //! CPU and nothing showed it. A session here is built through
-//! [`on_device`], which registers CUDA so a failure is an error, keeps
-//! the session on the CPU then, and records what it got and why: read by
-//! the AI models panel, the analysis status and the log.
+//! [`on_device`], which tries the GPU's providers in turn (CUDA, then
+//! WebGPU, #2245) so a failure is an error, keeps the session on the CPU
+//! when none loads, and records what it got and why: read by the AI
+//! models panel, the analysis status and the log.
 
 use std::sync::Mutex;
 
@@ -18,7 +19,7 @@ use klipp_ml::DevicePreference;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderUse {
     pub model: String,
-    /// "CUDA" or "CPU".
+    /// "CUDA", "WebGPU" or "CPU".
     pub provider: &'static str,
     /// Why the CPU, in plain words: asked for, no GPU, or what kept the
     /// GPU's provider from loading. `None` on the GPU.
@@ -71,15 +72,48 @@ pub fn record(u: ProviderUse) {
 }
 
 /// Why a session wanting the GPU is on the CPU, from what the machine has
-/// and what kept the GPU's provider from loading (`failure`).
+/// and what kept the GPU's providers from loading (`failure`).
 #[cfg(feature = "ort")]
 fn why_not_gpu(failure: &str) -> String {
     use crate::runtime_resolve::{detect_gpu_vendor, GpuVendor};
     match detect_gpu_vendor() {
         GpuVendor::None => NO_GPU.to_string(),
-        GpuVendor::Nvidia => format!("an NVIDIA GPU is present, but {failure}"),
-        v @ (GpuVendor::Amd | GpuVendor::Intel) => format!("{} GPUs have no provider in Klipp's onnxruntime yet ({failure})", v.display_label()),
+        v @ (GpuVendor::Nvidia | GpuVendor::Amd | GpuVendor::Intel) => format!("an {} GPU is present, but {failure}", v.display_label()),
         GpuVendor::Unknown => format!("no GPU provider loaded ({failure})"),
+    }
+}
+
+/// What to install for this machine's GPU, said when the onnxruntime in
+/// use has no provider for it.
+#[cfg(feature = "ort")]
+fn gpu_runtime_hint() -> &'static str {
+    use crate::runtime_resolve::{detect_gpu_vendor, GpuVendor};
+    match detect_gpu_vendor() {
+        GpuVendor::Nvidia => "a GPU build (onnxruntime-cuda, or ORT_DYLIB_PATH to a CUDA or WebGPU build) runs it on the GPU",
+        _ => "a WebGPU build of onnxruntime, set through ORT_DYLIB_PATH, runs it on the GPU",
+    }
+}
+
+/// Whether the onnxruntime library loaded was built with the WebGPU
+/// provider; `None` before it can be asked.
+#[cfg(feature = "ort")]
+pub fn runtime_has_webgpu() -> Option<bool> {
+    use ort::execution_providers::ExecutionProvider;
+    crate::runtime_resolve::ensure_runtime_loadable().ok()?;
+    ort::ep::WebGPU::default().is_available().ok()
+}
+
+/// The GPU provider a session would get here: CUDA when this build has
+/// it and the onnxruntime loaded does, else WebGPU when the onnxruntime
+/// does, else none.
+#[cfg(feature = "ort")]
+pub fn gpu_provider() -> Option<&'static str> {
+    if cfg!(feature = "cuda") && runtime_has_cuda() == Some(true) {
+        Some("CUDA")
+    } else if runtime_has_webgpu() == Some(true) {
+        Some("WebGPU")
+    } else {
+        None
     }
 }
 
@@ -102,13 +136,20 @@ pub fn on_device(builder: ort::session::builder::SessionBuilder, device: DeviceP
         record(cpu(CPU_ASKED.to_string()));
         return Ok(builder);
     }
-    let (builder, failure) = with_cuda(builder);
+    let (builder, cuda_failure) = with_cuda(builder);
+    let (builder, failure) = match cuda_failure {
+        None => (builder, Ok("CUDA")),
+        Some(cuda_failure) => match with_webgpu(builder) {
+            (b, None) => (b, Ok("WebGPU")),
+            (b, Some(webgpu_failure)) => (b, Err(format!("{cuda_failure}; {webgpu_failure}"))),
+        },
+    };
     match failure {
-        None => {
-            record(ProviderUse { model: model.to_string(), provider: "CUDA", why_cpu: None });
+        Ok(provider) => {
+            record(ProviderUse { model: model.to_string(), provider, why_cpu: None });
             Ok(builder)
         }
-        Some(failure) => {
+        Err(failure) => {
             let why = why_not_gpu(&failure);
             record(cpu(why.clone()));
             if device == DevicePreference::GpuRequired {
@@ -124,7 +165,7 @@ pub fn on_device(builder: ort::session::builder::SessionBuilder, device: DeviceP
 fn with_cuda(builder: ort::session::builder::SessionBuilder) -> (ort::session::builder::SessionBuilder, Option<String>) {
     if runtime_has_cuda() == Some(false) {
         let lib = crate::runtime_resolve::find_libonnxruntime().map(|p| p.display().to_string()).unwrap_or_else(|| "libonnxruntime".into());
-        return (builder, Some(format!("the onnxruntime in use ({lib}) is a CPU-only build, with no CUDA provider; a GPU build (onnxruntime-cuda, or ORT_DYLIB_PATH to one) runs it on the GPU")));
+        return (builder, Some(format!("the onnxruntime in use ({lib}) has no CUDA provider")));
     }
     match builder.with_execution_providers([ort::execution_providers::CUDAExecutionProvider::default().build().error_on_failure()]) {
         Ok(b) => (b, None),
@@ -137,7 +178,23 @@ fn with_cuda(builder: ort::session::builder::SessionBuilder) -> (ort::session::b
 
 #[cfg(all(feature = "ort", not(feature = "cuda")))]
 fn with_cuda(builder: ort::session::builder::SessionBuilder) -> (ort::session::builder::SessionBuilder, Option<String>) {
-    (builder, Some("this build of Klipp has no GPU provider for ort (the cuda feature is off)".into()))
+    (builder, Some("this build of Klipp has no CUDA support (the cuda feature is off)".into()))
+}
+
+/// `builder` with WebGPU registered, or as it was with why it isn't, and
+/// what to install.
+#[cfg(feature = "ort")]
+fn with_webgpu(builder: ort::session::builder::SessionBuilder) -> (ort::session::builder::SessionBuilder, Option<String>) {
+    if runtime_has_webgpu() == Some(false) {
+        return (builder, Some(format!("nor a WebGPU provider: {}", gpu_runtime_hint())));
+    }
+    match builder.with_execution_providers([ort::ep::WebGPU::default().build().error_on_failure()]) {
+        Ok(b) => (b, None),
+        Err(e) => {
+            let why = format!("its WebGPU provider didn't load: {e}");
+            (e.recover(), Some(why))
+        }
+    }
 }
 
 #[cfg(test)]

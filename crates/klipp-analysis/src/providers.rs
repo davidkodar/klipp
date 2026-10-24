@@ -44,7 +44,11 @@ pub(crate) fn record_json(used: &serde_json::Value) {
     #[cfg(feature = "ort-models")]
     for u in used.as_array().into_iter().flatten() {
         let (Some(model), Some(provider)) = (u["model"].as_str(), u["provider"].as_str()) else { continue };
-        let provider = if provider == "CUDA" { "CUDA" } else { "CPU" };
+        let provider = match provider {
+            "CUDA" => "CUDA",
+            "WebGPU" => "WebGPU",
+            _ => "CPU",
+        };
         let why_cpu = u["why_cpu"].as_str().map(str::to_string);
         klipp_ml_ort::provider::record(klipp_ml_ort::provider::ProviderUse { model: model.to_string(), provider, why_cpu });
     }

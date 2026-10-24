@@ -45,12 +45,14 @@ impl FaceDetector {
     pub fn open(weights: &std::path::Path) -> Result<Self, String> {
         use ort::session::builder::GraphOptimizationLevel;
         crate::runtime_resolve::ensure_runtime_loadable()?;
-        let session = ort::session::Session::builder()
+        let builder = ort::session::Session::builder()
             .map_err(|e| format!("session builder: {e}"))?
             .with_optimization_level(GraphOptimizationLevel::Level3)
             .map_err(|e| format!("set optimisation: {e}"))?
             .with_intra_threads(4)
-            .map_err(|e| format!("set threads: {e}"))?
+            .map_err(|e| format!("set threads: {e}"))?;
+        let model = weights.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let session = crate::provider::on_device(builder, klipp_ml::DevicePreference::GpuPreferCpu, &model)?
             .commit_from_file(weights)
             .map_err(|e| format!("load {}: {e}", weights.display()))?;
         Ok(Self { session })
@@ -246,5 +248,33 @@ mod without_ort {
     fn opening_the_detector_says_there_is_no_runtime() {
         let err = super::FaceDetector::open(std::path::Path::new("/nowhere/yunet.onnx")).err().expect("no detector without ONNX Runtime");
         assert!(err.contains("no ONNX Runtime"), "{err}");
+    }
+}
+
+/// The face detector's session goes through the provider ladder, so it
+/// runs on the GPU wherever the runtime has a provider for it (#2245).
+#[cfg(all(test, feature = "ort"))]
+mod on_the_gpu {
+    #[test]
+    fn the_detector_runs_on_the_gpu_the_runtime_offers() {
+        let Ok(cache) = klipp_ml::ModelCache::open() else { return };
+        let weights = cache.path_for_id("yunet_face_2023mar");
+        if !weights.is_file() || crate::runtime_resolve::ensure_runtime_loadable().is_err() {
+            eprintln!("skipped: no face model or no ONNX Runtime");
+            return;
+        }
+        let mut faces = super::FaceDetector::open(&weights).expect("the detector opens");
+        faces.detect(&[128; 64 * 36 * 4], 64, 36).expect("it runs");
+        let used = crate::provider::used_by("yunet_face_2023mar").expect("its provider is recorded");
+        let offered = crate::provider::gpu_provider();
+        assert_eq!(used.provider, offered.unwrap_or("CPU"), "{}", used.line());
+        if offered.is_none() {
+            let why = used.why_cpu.as_deref().unwrap_or_default();
+            assert!(why.contains("CUDA") && why.contains("WebGPU"), "both GPU providers are named: {why}");
+        }
+        // Set where the runtime is a GPU build (ORT_DYLIB_PATH).
+        if std::env::var("KLIPP_TEST_REQUIRE_ORT_GPU").as_deref() == Ok("1") {
+            assert!(offered.is_some(), "a GPU provider was required: {}", used.line());
+        }
     }
 }
