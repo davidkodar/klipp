@@ -3,7 +3,7 @@ name = "klipp-ml-candle"
 version.workspace = true
 edition = "2021"
 license.workspace = true
-description = "Candle (pure-Rust) backend for klipp-ml — MobileSAM, SAM v1, future SAM-family models"
+description = "Candle (pure-Rust) backend for klipp-ml — translation and the sound tagger"
 
 [features]
 default = []
@@ -20,7 +20,6 @@ cuda = ["candle", "candle-core?/cuda", "candle-nn?/cuda"]
 
 [dependencies]
 klipp-ml    = { workspace = true }
-klipp-color = { workspace = true }
 bitflags    = { workspace = true }
 thiserror   = { workspace = true }
 tracing     = { workspace = true }

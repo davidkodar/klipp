@@ -3294,7 +3294,6 @@ dependencies = [
  "candle-core",
  "candle-nn",
  "candle-transformers",
- "klipp-color",
  "klipp-ml",
  "serde_json",
  "thiserror 1.0.69",

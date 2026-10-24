@@ -395,7 +395,7 @@ mod tests {
         let mut state = AiToolsState::default();
         state.last_picked_model_per_task.insert(
             AiTask::IsolateObject,
-            "mobile_sam_v1".to_string(),
+            "mobile_sam_onnx".to_string(),
         );
         let cfg = AiToolsConfig::from_state(&state);
         let body = toml::to_string_pretty(&cfg).expect("serialize");

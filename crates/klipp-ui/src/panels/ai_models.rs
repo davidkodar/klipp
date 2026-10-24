@@ -88,7 +88,7 @@ impl ModelSort {
 /// (`recommended = true`) once we want users to extend this list
 /// for their own custom entries.
 fn is_recommended(id: &str) -> bool {
-    matches!(id, "birefnet_lite_v1" | "rf_detr_seg_medium_v1" | "mobile_sam_v1")
+    matches!(id, "birefnet_lite_v1" | "rf_detr_seg_medium_v1" | "mobile_sam_onnx")
 }
 
 /// Hardcoded short description rendered in the (i) info-icon
@@ -102,8 +102,8 @@ fn description_for(id: &str) -> &'static str {
             "High-detail mask generator. Best edge quality of the lite-tier \
              foreground/background matting models."
         }
-        "mobile_sam_v1" => {
-            "Click-to-mask SAM-family model. Tiny (~40 MB) and fast; one \
+        "mobile_sam_onnx" => {
+            "Click-to-mask SAM-family model. Tiny (~45 MB) and fast; one \
              foreground click usually nails the silhouette."
         }
         "rf_detr_seg_v1" => {
@@ -156,7 +156,7 @@ const STALE_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 /// `klipp_ml::cache::CachedStatus` so the dialog can carry a
 /// "FilePresent (size in bytes, but unverified)" state without
 /// pretending it's verified.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ModelInstallStatus {
     /// File exists at the cache path. We haven't re-verified the
     /// SHA-256 on this dialog open, but the downloader verifies on
@@ -219,6 +219,8 @@ fn filter_and_sort<'m>(
         // A voice is one row: its settings file and the small Kokoro
         // voices come with the download they belong to.
         .filter(|e| klipp_audio::narration::shown_in_model_manager(&e.id))
+        // A file that comes with another model is that model's row.
+        .filter(|e| !manifest.is_part(&e.id))
         .filter(|e| {
             match_search(
                 &state.search,
@@ -433,16 +435,18 @@ fn is_stale(entry: &ModelEntry, telemetry: &HashMap<String, ModelTelemetry>) -> 
 }
 
 /// Compute install status for a single entry by hitting the
-/// filesystem. Cheap: stat-only, no hash compute.
-fn install_status_for(cache: &ModelCache, entry: &ModelEntry) -> ModelInstallStatus {
-    let path = cache.path_for(entry);
-    match path.metadata() {
-        Ok(m) => ModelInstallStatus::Present {
-            size_bytes: m.len(),
-        },
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => ModelInstallStatus::Missing,
-        Err(e) => ModelInstallStatus::Unknown(e.to_string()),
+/// filesystem: present only with every file that comes with it, its
+/// size theirs together. Cheap: stat-only, no hash compute.
+fn install_status_for(cache: &ModelCache, manifest: &klipp_ml::manifest::ModelManifest, entry: &ModelEntry) -> ModelInstallStatus {
+    let mut size_bytes = 0;
+    for part in manifest.parts(entry) {
+        match cache.path_for(part).metadata() {
+            Ok(m) => size_bytes += m.len(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return ModelInstallStatus::Missing,
+            Err(e) => return ModelInstallStatus::Unknown(e.to_string()),
+        }
     }
+    ModelInstallStatus::Present { size_bytes }
 }
 
 /// Render the AI Models dialog. No-op when
@@ -714,7 +718,7 @@ pub fn show_ai_models_dialog(ctx: &egui::Context, state: &mut AppState, theme: &
                                 ModelInstallStatus::Pending
                             } else {
                                 match &cache {
-                                    Some(c) => install_status_for(c, entry),
+                                    Some(c) => install_status_for(c, &manifest, entry),
                                     None => ModelInstallStatus::Unknown(
                                         "cache open failed".into(),
                                     ),
@@ -780,6 +784,7 @@ pub fn show_ai_models_dialog(ctx: &egui::Context, state: &mut AppState, theme: &
                     .models
                     .iter()
                     .filter(|e| e.size_bytes > 0
+                        && !manifest.is_part(&e.id)
                         && c.path_for(e).metadata().is_ok())
                     .count(),
                 None => 0,
@@ -790,6 +795,7 @@ pub fn show_ai_models_dialog(ctx: &egui::Context, state: &mut AppState, theme: &
                     .iter()
                     .filter(|e| {
                         e.size_bytes > 0
+                            && !manifest.is_part(&e.id)
                             && c.path_for(e).metadata().is_ok()
                             && is_stale(e, &state.ai_tools_state.model_telemetry)
                     })
@@ -1256,7 +1262,7 @@ fn show_bulk_uninstall_confirm(
     let installed: Vec<(klipp_ml::manifest::ModelEntry, u64)> = manifest
         .models
         .iter()
-        .filter(|e| e.size_bytes > 0)
+        .filter(|e| e.size_bytes > 0 && !manifest.is_part(&e.id))
         .filter_map(|e| c.path_for(e).metadata().ok().map(|m| (e.clone(), m.len())))
         .collect();
     let total: u64 = installed.iter().map(|(_, s)| *s).sum();
@@ -1384,7 +1390,7 @@ fn show_stale_uninstall_confirm(
     let stale: Vec<(klipp_ml::manifest::ModelEntry, u64, SystemTime)> = manifest
         .models
         .iter()
-        .filter(|e| e.size_bytes > 0 && is_stale(e, &state.ai_tools_state.model_telemetry))
+        .filter(|e| e.size_bytes > 0 && !manifest.is_part(&e.id) && is_stale(e, &state.ai_tools_state.model_telemetry))
         .filter_map(|e| {
             let size = c.path_for(e).metadata().ok()?.len();
             let last_used = state
@@ -1515,6 +1521,7 @@ fn execute_bulk_uninstall(
     cache: &ModelCache,
 ) {
     let registry = state.ai_tools_registry.shared();
+    let manifest = klipp_ml::manifest::load_effective().ok();
     let mut deleted = 0u32;
     let mut errors: Vec<String> = Vec::new();
     let mut freed: u64 = 0;
@@ -1523,6 +1530,14 @@ fn execute_bulk_uninstall(
         // next dispatch rebuilds rather than reusing a stale Box.
         if let Ok(g) = registry.read() {
             let _ = g.clear_instance(&entry.id);
+        }
+        // The files that come with it go with it.
+        for part in manifest.iter().flat_map(|m| m.parts(entry).into_iter().skip(1)) {
+            if let Ok(m) = std::fs::metadata(cache.path_for(part)) {
+                if std::fs::remove_file(cache.path_for(part)).is_ok() {
+                    freed += m.len();
+                }
+            }
         }
         let path = cache.path_for(entry);
         match std::fs::remove_file(&path) {
@@ -2350,10 +2365,14 @@ fn execute_uninstall(
     }
 
     // A row stands for the files that come with it (the Kokoro voices,
-    // a Piper voice's settings), and they go with it.
+    // a Piper voice's settings, a model's `with` parts), and they go
+    // with it.
     if let Ok(manifest) = klipp_ml::manifest::load_effective() {
         for extra in klipp_audio::narration::extra_files(c, &manifest, &entry.id) {
             let _ = std::fs::remove_file(extra);
+        }
+        for part in manifest.parts(entry).into_iter().skip(1) {
+            let _ = std::fs::remove_file(c.path_for(part));
         }
     }
     match std::fs::remove_file(&path) {
@@ -3053,6 +3072,25 @@ mod tests {
         assert!(format_bytes(3 * 1024 * 1024 * 1024).contains("GB"));
     }
 
+    /// A model that comes with another file is one row, installed only
+    /// with both, its size theirs together (#2245).
+    #[test]
+    fn a_model_and_its_parts_are_one_row() {
+        let mut enc = make_entry("enc");
+        enc.with = vec!["dec".into()];
+        let manifest = klipp_ml::manifest::ModelManifest { version: "1".into(), models: vec![enc.clone(), make_entry("dec")] };
+        let dir = std::env::temp_dir().join(format!("klipp-model-parts-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache = ModelCache::open_at(&dir);
+        std::fs::write(cache.path_for_id("enc"), [0u8; 30]).unwrap();
+        assert_eq!(install_status_for(&cache, &manifest, &enc), ModelInstallStatus::Missing, "the decoder is missing");
+        std::fs::write(cache.path_for_id("dec"), [0u8; 12]).unwrap();
+        assert_eq!(install_status_for(&cache, &manifest, &enc), ModelInstallStatus::Present { size_bytes: 42 });
+        let rows = filter_and_sort(&manifest, Some(&cache), &AiModelsDialogState::default(), &HashMap::new());
+        assert_eq!(rows.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), ["enc"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn install_status_label_distinguishes_states() {
         let s = ModelInstallStatus::Present { size_bytes: 100 };
@@ -3077,6 +3115,7 @@ mod tests {
             kind: klipp_ml::manifest::ModelKind::MaskGenerator,
             runtime: klipp_ml::manifest::ModelRuntime::default(),
             prompts: klipp_ml::manifest::PromptKinds::default(),
+            with: Vec::new(),
         }
     }
 
