@@ -3238,8 +3238,12 @@ fn contents(seq: &Sequence) -> (std::collections::HashSet<ClipId>, Vec<klipp_cor
 /// seconds), by track. The next place at that track's end starts from the
 /// exact end, so a chain of places stays on the grid it was computed
 /// against rather than adding up each one's rounding (#506).
+///
+/// And where each start and end placed in the plan was asked to be, by
+/// track and rounded value, so a later place meets an edge whose exact
+/// time is within half a frame of its own (#2367).
 #[derive(Default)]
-struct PlaceCarry(std::collections::HashMap<usize, (i64, f64)>);
+struct PlaceCarry(std::collections::HashMap<usize, (i64, f64)>, std::collections::HashMap<(usize, i64), f64>);
 
 #[allow(clippy::too_many_arguments)]
 fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, transcripts: &dyn Transcripts, carry: &mut PlaceCarry, selects: &mut SelectsCarry) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
@@ -3849,8 +3853,26 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                     (snap(start, grid), start, Some((*sync, exact_start)))
                 }
             };
+            // A start or an end within half a frame of a clip already on
+            // the track meets it (#2367): rounded each on its own, a beat
+            // time's start and the end before it fell a frame apart, a
+            // gap or an overlap.
+            let half = 0.5 / grid.as_f64();
+            let meets = !*insert && landing.is_none();
+            let asked = |edge: Timecode| carry.1.get(&(ti, edge.value)).copied().unwrap_or_else(|| secs(edge));
+            let tl_in = seq.tracks[ti]
+                .clips
+                .iter()
+                .map(|c| c.timeline_out.rescale_to(tl_in.rate))
+                .find(|e| meets && *e != tl_in && (asked(*e) - exact_start).abs() < half)
+                .unwrap_or(tl_in);
             let exact_end = exact_start + (s_out - s_in);
-            let end = snap(exact_end, grid).rescale_to(tl_in.rate);
+            let end = seq.tracks[ti]
+                .clips
+                .iter()
+                .map(|c| c.timeline_in.rescale_to(tl_in.rate))
+                .find(|s| meets && s.value > tl_in.value && (asked(*s) - exact_end).abs() < half)
+                .unwrap_or_else(|| snap(exact_end, grid).rescale_to(tl_in.rate));
             let one = snap(1.0 / grid.as_f64(), grid).rescale_to(tl_in.rate).value;
             let mut frames = (end.value - tl_in.value).max(one);
             // Never past the end of the file: rounding up there is a frame
@@ -3864,6 +3886,13 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             // The source runs as long as the clip does on the timeline.
             let src_out = src_in + (tl_out - tl_in).rescale_to(src_in.rate);
             carry.0.insert(ti, (tl_out.value, if (secs(tl_out) - exact_end).abs() < 1.0 / fps.as_f64() { exact_end } else { secs(tl_out) }));
+            if *insert {
+                // The clips after it move: their edges are not where they were.
+                carry.1.retain(|(t, _), _| *t != ti);
+            } else {
+                carry.1.insert((ti, tl_in.value), exact_start);
+                carry.1.insert((ti, tl_out.value), exact_end);
+            }
             let mut clip = Clip::media(*media_id, tl_in, tl_out, src_in, src_out);
             // A library's music is music and its effects are effects from
             // the start: left unmarked, a bed was unknown sound to duck and
@@ -12760,6 +12789,42 @@ mod tests {
             other => panic!("{other:?}"),
         };
         assert_eq!((c.source_out - c.source_in).rescale_to(c.timeline_in.rate).value, (c.timeline_out - c.timeline_in).value);
+    }
+
+    /// #2367: shots placed at beat times, each with a source range its
+    /// tool rounded to the millisecond, meet: no frame's gap or overlap
+    /// where one's rounded end and the next one's rounded start part.
+    #[test]
+    fn shots_placed_on_a_beat_grid_meet() {
+        let mut seq = Sequence::new_default();
+        seq.fps = Fps::new(30, 1);
+        seq.tracks = vec![Track::new("V1", TrackKind::Video)];
+        let mut pool = MediaPool::new();
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/beats.mov".into(), None);
+        item.duration = tc(200.0);
+        item.video_codec = "hevc".into();
+        item.fps = Fps::new(30, 1);
+        let media = pool.add(item);
+        let ms = |x: f64| (x * 1000.0).round() / 1000.0;
+        // 0.4295 s left a frame's gap at 5.57 s, 0.43 s a frame's overlap
+        // at 2.15 s, each end and start rounded on its own.
+        for beat in [0.4295, 0.43] {
+        let place = |k: usize| Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::Secs(ms(k as f64 * beat)), source_in: Some(ms(0.137 + k as f64 * 2.0)), source_out: Some(ms(0.137 + k as f64 * 2.0 + beat)), insert: false, with_audio: false, sync_source_secs: None };
+        let forward: Vec<Op> = (0..48).map(place).collect();
+        // Back to front too: each end is placed before the start it meets.
+        let backward: Vec<Op> = (0..48).rev().map(place).collect();
+        for ops in [forward, backward] {
+            let plan = resolve(&seq, &pool, &ops).unwrap();
+            let mut spans: Vec<(f64, f64)> = plan.steps.iter().map(|s| (s.after[0].timeline_in_secs, s.after[0].timeline_out_secs)).collect();
+            spans.sort_by(|a, b| a.0.total_cmp(&b.0));
+            for w in spans.windows(2) {
+                assert!((w[0].1 - w[1].0).abs() < 1e-9, "a cut at {:.4} s: one ends at {:.4} s, the next starts at {:.4} s", w[1].0, w[0].1, w[1].0);
+            }
+            for (k, (start, _)) in spans.iter().enumerate() {
+                assert!((start - k as f64 * beat).abs() <= 1.0 / 30.0 + 1e-9, "shot {k} starts at {start:.4} s, its beat is {:.4} s", k as f64 * beat);
+            }
+        }
+        }
     }
 
     /// The fixture's file says a sentence in each clip and one the
