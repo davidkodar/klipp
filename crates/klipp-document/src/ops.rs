@@ -2437,12 +2437,14 @@ pub(crate) fn spoken_spans(clip: &Clip, words: Option<&[SpokenWord]>, fps: f64) 
 }
 
 /// An installed LV2 or CLAP audio plug-in as an edit is checked against
-/// it (#2485): its id ("lv2:<uri>", "clap:<id>"), name and parameters.
+/// it (#2485): its id ("lv2:<uri>", "clap:<id>"), name and parameters,
+/// and why it cannot run here when its host refuses it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AudioPlugin {
     pub id: String,
     pub name: String,
     pub params: Vec<AudioPluginParam>,
+    pub cannot_run: Option<String>,
 }
 
 /// One parameter of an [`AudioPlugin`]: the key a chain stores it by, the
@@ -6727,6 +6729,11 @@ fn audio_chain_effect(i: usize, edit: &AudioChainEdit, transcripts: &dyn Transcr
     let given = edit.effect.trim();
     if given.starts_with("lv2:") || given.starts_with("clap:") {
         let plugin = transcripts.audio_plugin(given).ok_or_else(|| refuse(i, format!("no installed plug-in {given}"), "audio_plugins lists the installed LV2 and CLAP plug-ins and their ids"))?;
+        // A plug-in that cannot run passes the sound through untouched:
+        // never put on, though one already there may be taken off.
+        if let (Some(why), false) = (&plugin.cannot_run, edit.remove) {
+            return Err(refuse(i, format!("{} cannot run here: {why}", plugin.name), "use another plug-in or a built-in effect"));
+        }
         let mut params = Vec::new();
         for (name, v) in edit.params {
             let p = plugin
@@ -15331,7 +15338,8 @@ mod tests {
                     id: id.into(),
                     name: "Room".into(),
                     params: vec![AudioPluginParam { key: "size".into(), name: "Room size".into(), min: 0.0, max: 10.0, default: 2.0 }],
-                })
+                    cannot_run: None,
+                }).or_else(|| (id == "lv2:urn:test:broken").then(|| AudioPlugin { id: id.into(), name: "Broken".into(), params: Vec::new(), cannot_run: Some("expected 1 atom sequence inputs but found 0".into()) }))
             }
         }
         let (seq, pool, _, a, _) = fixture();
@@ -15350,6 +15358,7 @@ mod tests {
         assert!(why(serde_json::json!({ "op": "clip_audio", "clip_id": a.0.to_string(), "effect": "clap:com.example.none" })).contains("no installed plug-in"));
         assert!(why(serde_json::json!({ "op": "clip_audio", "clip_id": a.0.to_string(), "effect": "lv2:urn:test:room", "params": { "decay": 1.0 } })).contains("no param \"decay\""));
         assert!(why(serde_json::json!({ "op": "clip_audio", "clip_id": a.0.to_string(), "effect": "lv2:urn:test:room", "params": { "size": 11.0 } })).contains("outside 0..10"));
+        assert!(why(serde_json::json!({ "op": "clip_audio", "clip_id": a.0.to_string(), "effect": "lv2:urn:test:broken" })).contains("Broken cannot run here: expected 1 atom"));
         assert!(resolve(&seq, &pool, &[serde_json::from_value(serde_json::json!({ "op": "clip_audio", "clip_id": a.0.to_string(), "effect": "lv2:urn:test:room" })).unwrap()]).unwrap_err().why.contains("no installed plug-in"), "a host that knows none refuses it");
         // A built-in on the clip, then bypassed and taken off.
         let plan = one(serde_json::json!({ "op": "clip_audio", "clip_id": a.0.to_string(), "effect": "compressor", "params": { "ratio": 3.0 } })).unwrap();

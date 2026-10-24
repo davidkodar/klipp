@@ -777,13 +777,17 @@ impl AudioEffect for ClapEffect {
 
         match self.layout {
             ChannelLayout::StereoNative => {
-                process_stereo_native(&mut self.slots[0], buffer, host_channels, frames);
+                if let Err(e) = process_stereo_native(&mut self.slots[0], buffer, host_channels, frames) {
+                    crate::dsp::note_refused_run(self.type_id_static, &e);
+                }
             }
             ChannelLayout::DualMono => {
                 let slots_len = self.slots.len();
                 for ch in 0..host_channels.min(2) {
                     let slot = &mut self.slots[ch.min(slots_len - 1)];
-                    process_dual_mono_channel(slot, buffer, host_channels, frames, ch);
+                    if let Err(e) = process_dual_mono_channel(slot, buffer, host_channels, frames, ch) {
+                        crate::dsp::note_refused_run(self.type_id_static, &e);
+                    }
                 }
             }
         }
@@ -847,7 +851,7 @@ fn process_stereo_native(
     buffer: &mut [f32],
     host_channels: usize,
     frames: usize,
-) {
+) -> Result<(), String> {
     let needed = frames * 2;
     if slot.in_buf.len() < needed {
         slot.in_buf.resize(needed, 0.0);
@@ -875,7 +879,7 @@ fn process_stereo_native(
     }
 
     let Some(processor) = slot.processor.as_mut() else {
-        return;
+        return Ok(());
     };
 
     // Build input port — one port carrying both channels via
@@ -913,8 +917,7 @@ fn process_stereo_native(
         None,
     );
     if let Err(e) = res {
-        tracing::debug!("CLAP run failed: {e}");
-        return;
+        return Err(e.to_string());
     }
 
     // Drop the audio-buffer wrappers so the borrows on slot.in_buf /
@@ -931,6 +934,7 @@ fn process_stereo_native(
     }
 
     slot.steady_counter += frames as u64;
+    Ok(())
 }
 
 /// Dual-mono per-channel process. Called twice per host block (once
@@ -941,7 +945,7 @@ fn process_dual_mono_channel(
     host_channels: usize,
     frames: usize,
     ch: usize,
-) {
+) -> Result<(), String> {
     if slot.in_buf.len() < frames {
         slot.in_buf.resize(frames, 0.0);
     }
@@ -957,7 +961,7 @@ fn process_dual_mono_channel(
     }
 
     let Some(processor) = slot.processor.as_mut() else {
-        return;
+        return Ok(());
     };
 
     let in_slice: &mut [f32] = &mut slot.in_buf[..frames];
@@ -987,8 +991,7 @@ fn process_dual_mono_channel(
         None,
     );
     if let Err(e) = res {
-        tracing::debug!("CLAP dual-mono run failed: {e}");
-        return;
+        return Err(e.to_string());
     }
     drop(inputs);
     drop(outputs);
@@ -998,6 +1001,7 @@ fn process_dual_mono_channel(
     }
 
     slot.steady_counter += frames as u64;
+    Ok(())
 }
 
 /// Public factory used by [`crate::dsp::create_effect`] when the

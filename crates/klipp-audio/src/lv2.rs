@@ -368,6 +368,12 @@ pub struct Lv2Effect {
     scratch_in_r: Vec<f32>,
     scratch_out_l: Vec<f32>,
     scratch_out_r: Vec<f32>,
+    /// One empty event sequence for each of the plug-in's atom ports,
+    /// shared by its instances, which run one after another. A port left
+    /// unconnected made livi refuse every run, and the sound went
+    /// through untouched: any x42 or LSP plug-in did nothing.
+    atoms_in: Vec<livi::event::LV2AtomSequence>,
+    atoms_out: Vec<livi::event::LV2AtomSequence>,
     /// AudioEffect requires &'static str — leak runtime strings once
     /// per instance lifetime. Bounded by chain edits, not per-block.
     type_id_static: &'static str,
@@ -376,6 +382,20 @@ pub struct Lv2Effect {
 }
 
 unsafe impl Send for Lv2Effect {}
+
+/// Room for what a plug-in reports on an atom output in one block:
+/// meter readings and notifications, which nothing here reads.
+const ATOM_OUT_BYTES: usize = 8192;
+
+/// Event sequences for `plugin`'s atom inputs and outputs, made with the
+/// `features` its instances are made with.
+fn atom_ports(plugin: &livi::Plugin, features: &livi::Features) -> (Vec<livi::event::LV2AtomSequence>, Vec<livi::event::LV2AtomSequence>) {
+    let counts = plugin.port_counts();
+    (
+        (0..counts.atom_sequence_inputs).map(|_| livi::event::LV2AtomSequence::new(features, 64)).collect(),
+        (0..counts.atom_sequence_outputs).map(|_| livi::event::LV2AtomSequence::new(features, ATOM_OUT_BYTES)).collect(),
+    )
+}
 
 /// `count` instances of `plugin` at `sample_rate`: what an effect is made
 /// with, and what a reset makes afresh.
@@ -418,6 +438,7 @@ impl Lv2Effect {
             ChannelLayout::DualMono => 2,
         };
         let instances = instantiate(&plugin, &features, count, sample_rate)?;
+        let (atoms_in, atoms_out) = atom_ports(&plugin, &features);
 
         let control_values: Vec<f32> = info.control_inputs.iter().map(|p| p.default).collect();
         let symbol_to_idx: HashMap<String, usize> = info
@@ -457,6 +478,8 @@ impl Lv2Effect {
             scratch_in_r: Vec::new(),
             scratch_out_l: Vec::new(),
             scratch_out_r: Vec::new(),
+            atoms_in,
+            atoms_out,
             type_id_static: Box::leak(type_id.into_boxed_str()),
             name_static: Box::leak(name.into_boxed_str()),
             empty_descs: [],
@@ -585,11 +608,15 @@ impl AudioEffect for Lv2Effect {
                 };
                 let inputs: [&[f32]; 2] = [in_l, in_r];
                 let outputs: [&mut [f32]; 2] = [out_l, out_r];
+                self.atoms_in.iter_mut().for_each(livi::event::LV2AtomSequence::clear);
+                self.atoms_out.iter_mut().for_each(livi::event::LV2AtomSequence::clear_as_chunk);
                 let ports = livi::EmptyPortConnections::new()
                     .with_audio_inputs(inputs.into_iter())
-                    .with_audio_outputs(outputs.into_iter());
+                    .with_audio_outputs(outputs.into_iter())
+                    .with_atom_sequence_inputs(self.atoms_in.iter())
+                    .with_atom_sequence_outputs(self.atoms_out.iter_mut());
                 if let Err(e) = unsafe { self.instances[0].run(frames, ports) } {
-                    tracing::debug!("LV2 '{}' run failed: {e}", self.info.name);
+                    crate::dsp::note_refused_run(self.type_id_static, &e.to_string());
                     return;
                 }
                 for f in 0..frames {
@@ -614,17 +641,18 @@ impl AudioEffect for Lv2Effect {
                     let out_buf: &mut [f32] = &mut self.scratch_out_l[..frames];
                     let inputs: [&[f32]; 1] = [in_buf];
                     let outputs: [&mut [f32]; 1] = [out_buf];
+                    self.atoms_in.iter_mut().for_each(livi::event::LV2AtomSequence::clear);
+                    self.atoms_out.iter_mut().for_each(livi::event::LV2AtomSequence::clear_as_chunk);
                     let ports = livi::EmptyPortConnections::new()
                         .with_audio_inputs(inputs.into_iter())
-                        .with_audio_outputs(outputs.into_iter());
+                        .with_audio_outputs(outputs.into_iter())
+                        .with_atom_sequence_inputs(self.atoms_in.iter())
+                        .with_atom_sequence_outputs(self.atoms_out.iter_mut());
                     let inst_idx = ch.min(self.instances.len() - 1);
                     if let Err(e) =
                         unsafe { self.instances[inst_idx].run(frames, ports) }
                     {
-                        tracing::debug!(
-                            "LV2 '{}' channel {ch} run failed: {e}",
-                            self.info.name
-                        );
+                        crate::dsp::note_refused_run(self.type_id_static, &e.to_string());
                         continue;
                     }
                     for f in 0..frames {
@@ -652,6 +680,7 @@ impl AudioEffect for Lv2Effect {
         // producing audio).
         if let Ok(fresh) = instantiate(&plugin, &features, self.instances.len(), self.sample_rate) {
             self.instances = fresh;
+            (self.atoms_in, self.atoms_out) = atom_ports(&plugin, &features);
         }
     }
 
@@ -982,5 +1011,36 @@ mod tests {
         let mut buf = vec![0.1f32; 256 * 2];
         fx.process(&mut buf, &AudioProcessContext { sample_rate: 44_100, channels: 2, clip_time_secs: 0.0 });
         assert!(buf.iter().all(|v| v.is_finite()), "it plays after the reset");
+    }
+
+    /// A plug-in with atom ports runs: x42's dpl, held at -8 dB, limits
+    /// a 0.95 tone. Its unconnected control and notify ports made livi
+    /// refuse every run, and the tone went through at 0.95. Skipped where
+    /// dpl is not installed.
+    #[test]
+    fn a_plugin_with_atom_ports_processes() {
+        const DPL: &str = "lv2:http://gareus.org/oss/lv2/dpl#mono";
+        let _env = env_lock();
+        let Some(mut fx) = instantiate_from_type_id(DPL, 48_000, &[("threshold".into(), -8.0)]) else {
+            eprintln!("skipped: x42 dpl is not installed");
+            return;
+        };
+        let ctx = AudioProcessContext { sample_rate: 48_000, channels: 2, clip_time_secs: 0.0 };
+        let mut peak = 0f32;
+        for block in 0..48 {
+            let mut buf: Vec<f32> = (0..1024)
+                .flat_map(|n| {
+                    let v = 0.95 * (std::f32::consts::TAU * 440.0 * (block * 1024 + n) as f32 / 48_000.0).sin();
+                    [v, v]
+                })
+                .collect();
+            fx.process(&mut buf, &ctx);
+            if block >= 24 {
+                peak = buf.iter().fold(peak, |m, v| m.max(v.abs()));
+            }
+        }
+        assert!(peak < 0.45, "held at -8 dB, the tone peaks at {peak}");
+        assert_eq!(crate::dsp::refused_run(DPL), None);
+        assert_eq!(crate::dsp::probe_run(DPL, 48_000), Ok(()));
     }
 }

@@ -2803,8 +2803,10 @@ fn installed_audio_plugins_are_listed_and_one_goes_on_a_clip() {
         c.linked_clip_id = None;
         c.id.0.to_string()
     };
-    let plan = h.ok(json!({ "method": "plan", "ops": [{ "op": "clip_audio", "clip_id": clip, "effect": "lv2:urn:klipp-test:room", "params": { "Room size": 5.0 } }] }));
-    assert!(plan["text"].as_str().unwrap().contains("lv2:urn:klipp-test:room (size 5)"), "{plan}");
+    // Listed, but with no plug-in behind the listing it cannot run, and
+    // one that cannot run would pass the sound through: refused.
+    let plan = h.call(json!({ "method": "plan", "ops": [{ "op": "clip_audio", "clip_id": clip, "effect": "lv2:urn:klipp-test:room", "params": { "Room size": 5.0 } }] }));
+    assert!(plan["error"].as_str().unwrap().contains("Test Room cannot run here: it does not load"), "{plan}");
     klipp_audio::lv2::set_plugin_registry(Vec::new());
 }
 
