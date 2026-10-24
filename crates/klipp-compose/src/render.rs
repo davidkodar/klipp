@@ -2029,7 +2029,11 @@ impl Renderer {
         let fps = seq.fps.as_f64();
         // Kept still layers of clips this sequence no longer has (another
         // project, a deleted clip) let go of their GPU memory (#2092).
-        if !self.still_layers.is_empty() {
+        // A frame with no clips at all is the engine's warm-up of the stack
+        // (#2386), drawn with the sequence's clips left out: no sign they
+        // are gone. Pruned on it, every still kept went up again on the
+        // next frame.
+        if !self.still_layers.is_empty() && seq.tracks.iter().any(|t| !t.clips.is_empty()) {
             self.still_layers.retain(|id, _| seq.tracks.iter().any(|t| t.clips.iter().any(|c| c.id == *id)));
         }
         // An empty frame is the clear canvas, graded and finished on the
