@@ -2789,10 +2789,12 @@ fn installed_audio_plugins_are_listed_and_one_goes_on_a_clip() {
         audio_outputs: 2,
         control_inputs: vec![klipp_audio::lv2::Lv2ControlPort { symbol: "size".into(), name: "Room size".into(), default: 2.0, min: Some(0.0), max: Some(10.0), index: 0 }],
     }]);
-    let listed = h.ok(json!({ "method": "audio_plugins", "query": "room" }));
-    assert_eq!(listed["plugins"][0]["id"], "lv2:urn:klipp-test:room", "{listed}");
-    assert_eq!(listed["plugins"][0]["params"][0]["key"], "size");
-    assert!(listed["text"].as_str().unwrap().contains("Room size 0..10"), "{listed}");
+    let one = h.ok(json!({ "method": "audio_plugins", "query": "room" }));
+    assert_eq!(one["plugin"]["id"], "lv2:urn:klipp-test:room", "{one}");
+    assert_eq!(one["plugin"]["params"][0]["key"], "size");
+    assert!(one["text"].as_str().unwrap().contains("Room size (size) 0..10"), "{one}");
+    let none = h.ok(json!({ "method": "audio_plugins", "query": "lv2:urn:klipp-test:room", "param": "wet" }));
+    assert_eq!(none["plugin"]["params"].as_array().unwrap().len(), 0, "{none}");
     let media = h.media_pool.write().unwrap().add(klipp_media::MediaItem::synthetic_for_test("/tmp/plugin-fixture.mov".into(), None));
     let clip = {
         let mut seq = h.sequence.write().unwrap();
@@ -2803,6 +2805,35 @@ fn installed_audio_plugins_are_listed_and_one_goes_on_a_clip() {
     };
     let plan = h.ok(json!({ "method": "plan", "ops": [{ "op": "clip_audio", "clip_id": clip, "effect": "lv2:urn:klipp-test:room", "params": { "Room size": 5.0 } }] }));
     assert!(plan["text"].as_str().unwrap().contains("lv2:urn:klipp-test:room (size 5)"), "{plan}");
+    klipp_audio::lv2::set_plugin_registry(Vec::new());
+}
+
+/// A broad query over plug-ins with hundreds of parameters each lists
+/// ids and counts alone, and stays small.
+#[test]
+fn a_broad_plugin_query_lists_ids_alone() {
+    let mut h = harness();
+    let port = |k: usize| klipp_audio::lv2::Lv2ControlPort { symbol: format!("p{k}"), name: format!("Parameter {k}"), default: 0.0, min: Some(0.0), max: Some(1.0), index: k };
+    klipp_audio::lv2::set_plugin_registry((0..40).map(|i| klipp_audio::lv2::Lv2PluginInfo {
+        uri: format!("http://example.org/plugins/lv2/limiter_{i}"),
+        name: format!("Limiter {i}"),
+        audio_inputs: 2,
+        audio_outputs: 2,
+        control_inputs: (0..250).map(port).collect(),
+    }).collect());
+    let broad = h.ok(json!({ "method": "audio_plugins", "query": "limiter" }));
+    assert_eq!(broad["plugins"].as_array().unwrap().len(), 30, "{broad}");
+    assert_eq!(broad["plugins"][0]["param_count"], 250);
+    assert!(broad["text"].as_str().unwrap().contains("and 10 more"));
+    assert!(serde_json::to_string_pretty(&broad).unwrap().len() < 8_000);
+    let one = h.ok(json!({ "method": "audio_plugins", "query": "lv2:http://example.org/plugins/lv2/limiter_1" }));
+    assert_eq!(one["plugin"]["params"].as_array().unwrap().len(), 30, "the exact id, not limiter_10..19 too");
+    assert!(serde_json::to_string_pretty(&one).unwrap().len() < 8_000);
+    let picked = h.ok(json!({ "method": "audio_plugins", "query": "limiter_1", "param": "parameter 24" }));
+    assert!(picked["plugins"].is_array(), "limiter_1 is in eleven ids: a list");
+    let picked = h.ok(json!({ "method": "audio_plugins", "query": "lv2:http://example.org/plugins/lv2/limiter_1", "param": "parameter 24" }));
+    let keys: Vec<&str> = picked["plugin"]["params"].as_array().unwrap().iter().map(|c| c["key"].as_str().unwrap()).collect();
+    assert_eq!(keys, ["p24", "p240", "p241", "p242", "p243", "p244", "p245", "p246", "p247", "p248", "p249"]);
     klipp_audio::lv2::set_plugin_registry(Vec::new());
 }
 

@@ -721,11 +721,15 @@ pub enum ControlCommand {
         apply: bool,
     },
     /// The LV2 and CLAP audio plug-ins installed here (#2485), those whose
-    /// name or id holds `query` when given: each id, name and parameters
-    /// with their keys and ranges, what clip_audio and track_audio take.
+    /// name or id holds `query` when given: each id, name and count of
+    /// parameters, and the parameters with their keys and ranges (those
+    /// whose name or key holds `param`) when the query names one plug-in,
+    /// what clip_audio and track_audio take.
     AudioPlugins {
         #[serde(default)]
         query: Option<String>,
+        #[serde(default)]
+        param: Option<String>,
     },
     /// A file's sound as frequency against time: where a hum starts,
     /// when a hiss creeps in, which stretch has the air conditioning.

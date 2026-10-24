@@ -419,28 +419,48 @@ pub(crate) fn respond(
             }))
         }
 
-        ControlCommand::AudioPlugins { query } => {
+        ControlCommand::AudioPlugins { query, param } => {
+            // A broad query lists ids alone: a limiter suite has hundreds
+            // of parameters a plug-in, which ran a list to 100 KB. The
+            // parameters come when the query names one plug-in.
+            const LISTED: usize = 30;
             let want = query.as_deref().map(|q| q.trim().to_lowercase()).filter(|q| !q.is_empty());
             let all = crate::plans::installed_audio_plugins();
-            let found: Vec<&klipp_document::ops::AudioPlugin> = all.iter().filter(|p| want.as_ref().is_none_or(|q| p.name.to_lowercase().contains(q) || p.id.to_lowercase().contains(q))).collect();
+            let exact = want.as_ref().and_then(|q| all.iter().find(|p| p.id.to_lowercase() == *q));
+            let found: Vec<&klipp_document::ops::AudioPlugin> = match exact {
+                Some(p) => vec![p],
+                None => all.iter().filter(|p| want.as_ref().is_none_or(|q| p.name.to_lowercase().contains(q) || p.id.to_lowercase().contains(q))).collect(),
+            };
+            if let [p] = found[..] {
+                let word = param.as_deref().map(|w| w.trim().to_lowercase()).filter(|w| !w.is_empty());
+                let params: Vec<&klipp_document::ops::AudioPluginParam> = p.params.iter().filter(|c| word.as_ref().is_none_or(|w| c.name.to_lowercase().contains(w) || c.key.to_lowercase().contains(w))).collect();
+                let mut text = format!("{} — {}, {} parameters", p.id, p.name, p.params.len());
+                if let Some(w) = &word {
+                    text.push_str(&format!(", {} holding \"{w}\"", params.len()));
+                }
+                text.push(':');
+                for c in params.iter().take(LISTED) {
+                    text.push_str(&format!("\n  {} ({}) {}..{}, default {}", c.name, c.key, c.min, c.max, c.default));
+                }
+                if params.len() > LISTED {
+                    text.push_str(&format!("\n  and {} more: narrow with param", params.len() - LISTED));
+                }
+                let listed: Vec<serde_json::Value> = params.iter().take(LISTED).map(|c| json!({ "key": c.key, "name": c.name, "min": c.min, "max": c.max, "default": c.default })).collect();
+                return Ok(json!({ "plugin": { "id": p.id, "name": p.name, "param_count": p.params.len(), "params": listed }, "text": text, "next": "Add it with the clip_audio or track_audio op: effect its id, params by name or key." }));
+            }
             let mut text = match (all.len(), &want) {
                 (0, _) => "No LV2 or CLAP audio plug-ins are installed here (the app looks in the usual LV2_PATH and CLAP_PATH folders when it starts).".to_string(),
                 (n, Some(q)) => format!("{} of the {n} installed audio plug-ins match \"{q}\":", found.len()),
                 (n, None) => format!("{n} installed audio plug-ins:"),
             };
-            for p in found.iter().take(60) {
-                let params: Vec<String> = p.params.iter().take(12).map(|c| format!("{} {}..{}", c.name, c.min, c.max)).collect();
-                let more = if p.params.len() > 12 { format!(" and {} more", p.params.len() - 12) } else { String::new() };
-                text.push_str(&format!("\n  {} — {}{}", p.id, p.name, if params.is_empty() { String::new() } else { format!(": {}{more}", params.join(", ")) }));
+            for p in found.iter().take(LISTED) {
+                text.push_str(&format!("\n  {} — {} ({} parameters)", p.id, p.name, p.params.len()));
             }
-            if found.len() > 60 {
-                text.push_str(&format!("\n  and {} more: narrow with query", found.len() - 60));
+            if found.len() > LISTED {
+                text.push_str(&format!("\n  and {} more: narrow with query", found.len() - LISTED));
             }
-            let listed: Vec<serde_json::Value> = found.iter().take(60).map(|p| json!({
-                "id": p.id, "name": p.name,
-                "params": p.params.iter().map(|c| json!({ "key": c.key, "name": c.name, "min": c.min, "max": c.max, "default": c.default })).collect::<Vec<_>>(),
-            })).collect();
-            Ok(json!({ "plugins": listed, "installed": all.len(), "text": text, "next": "Add one with the clip_audio or track_audio op: effect its id, params by name." }))
+            let listed: Vec<serde_json::Value> = found.iter().take(LISTED).map(|p| json!({ "id": p.id, "name": p.name, "param_count": p.params.len() })).collect();
+            Ok(json!({ "plugins": listed, "installed": all.len(), "text": text, "next": "Query one plug-in's id (or a word only it holds) for its parameters." }))
         }
 
         ControlCommand::AudioSpectrum { media_id, from_secs, to_secs } => {
