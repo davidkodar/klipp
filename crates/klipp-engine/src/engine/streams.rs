@@ -308,6 +308,9 @@ struct ClipStream {
     /// Opened for a clip coming up, not on screen yet (#2108): no frame
     /// waits for it.
     ahead: bool,
+    /// The file and rotation it decodes, for the shot after its own to go
+    /// on with it (#2397). None for a decoder taken over from the primary.
+    file: Option<(PathBuf, i32)>,
 }
 
 impl ClipStream {
@@ -321,7 +324,7 @@ impl ClipStream {
         }
         decoder.resume();
         debug!("clip stream opened for {:?} at {target:.3}s", want.clip);
-        Some(Self { decoder: Some(decoder), held: None, previous: None, target, seeking: Some(target), ended: false, held_from_seek: false, ahead: want.ahead })
+        Some(Self { decoder: Some(decoder), held: None, previous: None, target, seeking: Some(target), ended: false, held_from_seek: false, ahead: want.ahead, file: Some((path.to_path_buf(), rotation)) })
     }
 
     fn dec(&self) -> &VideoDecoder {
@@ -512,6 +515,7 @@ impl ClipStreams {
     /// last, so those go to software first, then the top-most layers.
     pub fn sync(&mut self, wants: &[Want], frame_secs: f64, resolve: &dyn Fn(&Want) -> Option<(PathBuf, i32, Cost)>) {
         crate::decode_budget::sample();
+        self.hand_on(wants, frame_secs, resolve);
         self.streams.retain(|id, _| wants.iter().any(|w| w.clip == *id && !w.reversed));
         // One no longer wanted is let go: opened, it is dropped on its own
         // thread, its decoder stopped there.
@@ -602,6 +606,44 @@ impl ClipStreams {
             s.pump(half);
         }
         self.forget_rates();
+    }
+
+    /// A shot coming on screen that goes on from one leaving it, a little
+    /// further in the same file, takes over the leaving one's stream, and
+    /// its seek decodes on (#2397): nothing was opened ahead for it, as
+    /// [`super::decodes_on`] says. Two files cut against each other on a
+    /// layer opened a stream for every shot.
+    fn hand_on(&mut self, wants: &[Want], frame_secs: f64, resolve: &dyn Fn(&Want) -> Option<(PathBuf, i32, Cost)>) {
+        // As far on as the cut may land, past the last frame the leaving
+        // shot was asked for.
+        let reach = super::DECODE_ON_CUT_SECS + 2.0 * frame_secs;
+        for w in wants {
+            if w.reversed || self.streams.contains_key(&w.clip) || self.opening.contains_key(&w.clip) {
+                continue;
+            }
+            let target = w.source_secs.max(0.0);
+            let leaving = |id: &ClipId, s: &ClipStream, file: &(PathBuf, i32)| {
+                !wants.iter().any(|x| x.clip == *id) && s.file.as_ref() == Some(file) && target - s.target > -1e-3 && target - s.target <= reach
+            };
+            let Some((path, rotation, _)) = resolve(w) else { continue };
+            let file = (path, rotation);
+            let Some(from) = self.streams.iter().find(|(id, s)| leaving(id, s, &file)).map(|(id, _)| *id) else { continue };
+            let Some(mut s) = self.streams.remove(&from) else { continue };
+            debug!("clip streams: {:?} goes on with {from:?}'s stream at {target:.3}s", w.clip);
+            s.ahead = w.ahead;
+            s.seek(target);
+            s.target = target;
+            self.streams.insert(w.clip, s);
+            for held in [&mut self.rates, &mut self.bytes, &mut self.vram] {
+                if let Some(v) = held.remove(&from) {
+                    held.insert(w.clip, v);
+                }
+            }
+            if let Some(r) = self.reads.remove(&from) {
+                self.reads.insert(w.clip, r);
+            }
+            super::STREAMS_HANDED_ON.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
     }
 
     /// Room for a stream asking `cost` (#2128): how many frames it may
@@ -800,7 +842,7 @@ impl ClipStreams {
     /// `held` is the frame the decoder gave at the cut, when the caller
     /// took it from the queue (#1494).
     pub fn adopt(&mut self, clip: ClipId, decoder: VideoDecoder, source_secs: f64, held: Option<HeldFrame>) {
-        self.streams.insert(clip, ClipStream { decoder: Some(decoder), held, previous: None, target: source_secs.max(0.0), seeking: None, ended: false, held_from_seek: false, ahead: false });
+        self.streams.insert(clip, ClipStream { decoder: Some(decoder), held, previous: None, target: source_secs.max(0.0), seeking: None, ended: false, held_from_seek: false, ahead: false, file: None });
     }
 
     /// `clip`'s decoder, open and seeked where its stream is, and the frame
@@ -1193,8 +1235,9 @@ mod tests {
         }
         assert!(streams.opening.is_empty() && streams.streams.contains_key(&w.clip));
         eprintln!("sync returned in {asked:?}");
-        // A stream still opening is taken over once it lands.
-        let late = Want { clip: ClipId::new(), ..w.clone() };
+        // A stream still opening is taken over once it lands. Back in the
+        // file from the one leaving: not its stream going on (#2397).
+        let late = Want { clip: ClipId::new(), source_secs: 0.0, ..w.clone() };
         streams.sync(std::slice::from_ref(&late), frame, &|_: &Want| Some((path.clone(), 0, Cost { rate: 0.0, frame_bytes: 0.0, ..Default::default() })));
         assert!(streams.opening.contains_key(&late.clip));
         assert!(streams.take(late.clip).is_some(), "taken over while it opened");

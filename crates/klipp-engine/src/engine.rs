@@ -854,6 +854,112 @@ pub fn decoders_handed_on() -> u64 {
 /// shot starts.
 const HAND_ON_GAP_FRAMES: f64 = 12.0;
 
+/// How far on in the same file a cut may land and still be decoded on
+/// by the decoder playing the shot before it, rather than another one
+/// opened and sought for it (#2397). Decoding on costs a frame per frame
+/// skipped, at the cut; a seek costs every frame from the keyframe
+/// before, which a preroll pays ahead of time.
+pub(crate) const DECODE_ON_CUT_SECS: f64 = 0.5;
+
+/// Whether the shot `next` goes on from `cur` in the same file, at most
+/// [`DECODE_ON_CUT_SECS`] further on than where `cur` ends: a rippled
+/// strobe's pieces, a jump cut with frames taken out (#2397). Its cut is
+/// then the playing decoder's, decoding on, and nothing is opened ahead
+/// for it. Across a gap, only the shot going on exactly from where `cur`
+/// stopped, as far as the gap is long, whose decoder is handed on
+/// through the gap (#2376). Never across a transition on `track`, which
+/// shows both sides at once.
+pub(crate) fn decodes_on(track: &klipp_timeline::Track, cur: &klipp_timeline::Clip, next: &klipp_timeline::Clip, frame_secs: f64) -> bool {
+    let plain = |c: &klipp_timeline::Clip| !c.is_reversed() && c.speed_keyframes.is_empty();
+    if cur.media_id().is_none() || cur.media_id() != next.media_id() || !plain(cur) || !plain(next) {
+        return false;
+    }
+    if track.transitions.iter().any(|t| t.clip_a_id == cur.id || t.clip_b_id == next.id) {
+        return false;
+    }
+    if (cur.speed - next.speed).abs() > 1e-6 || cur.source_rotation != next.source_rotation {
+        return false;
+    }
+    let gap = next.timeline_in.to_secs_f64() - cur.timeline_out.to_secs_f64();
+    let on = next.source_in.to_secs_f64() - cur.source_out.to_secs_f64() - gap.max(0.0) * cur.speed;
+    if gap > frame_secs * GAP_AS_CUT_FRAMES {
+        gap <= frame_secs * HAND_ON_GAP_FRAMES && on.abs() < 0.5 * frame_secs
+    } else {
+        gap > -0.5 * frame_secs && on > -1e-3 && on <= DECODE_ON_CUT_SECS
+    }
+}
+
+#[cfg(test)]
+mod decodes_on_tests {
+    use super::*;
+    use klipp_timeline::{Clip, ClipKind, Track, TrackKind, Transition};
+
+    const FRAME: f64 = 1.0 / 25.0;
+
+    fn tc(f: i64) -> Timecode {
+        RationalTime { value: f, rate: 25 }
+    }
+
+    /// A shot of `media` at frames `at`..`at + len` of the timeline, from
+    /// frame `from` of its file.
+    fn shot(media: MediaId, at: i64, len: i64, from: i64) -> Clip {
+        Clip { kind: ClipKind::Media { media_id: media }, source_in: tc(from), source_out: tc(from + len), ..Clip::gap(tc(at), tc(at + len)) }
+    }
+
+    /// A shot going on a little further in the same file, where the one
+    /// before ends, is decoded on into; one too far on, back, or of
+    /// another file is not (#2397).
+    #[test]
+    fn a_cut_a_little_further_in_one_file_is_decoded_on() {
+        let (a, b) = (MediaId::new(), MediaId::new());
+        let track = Track::new("V1", TrackKind::Video);
+        let cur = shot(a, 0, 4, 0);
+        assert!(decodes_on(&track, &cur, &shot(a, 4, 4, 4), FRAME), "straight on");
+        assert!(decodes_on(&track, &cur, &shot(a, 4, 4, 8), FRAME), "four frames left out");
+        assert!(decodes_on(&track, &cur, &shot(a, 4, 4, 16), FRAME), "twelve frames left out, within half a second");
+        assert!(!decodes_on(&track, &cur, &shot(a, 4, 4, 20), FRAME), "past half a second on");
+        assert!(!decodes_on(&track, &cur, &shot(a, 4, 4, 2), FRAME), "back in the file");
+        assert!(!decodes_on(&track, &cur, &shot(b, 4, 4, 8), FRAME), "another file");
+        let mut faster = shot(a, 4, 4, 8);
+        faster.speed = 2.0;
+        assert!(!decodes_on(&track, &cur, &faster, FRAME), "another speed");
+        let mut turned = shot(a, 4, 4, 8);
+        turned.source_rotation = 90;
+        assert!(!decodes_on(&track, &cur, &turned, FRAME), "another rotation");
+    }
+
+    /// Across a gap only a shot going on exactly from where the one before
+    /// stopped, its decoder handed on through the gap (#2376).
+    #[test]
+    fn across_a_gap_only_a_shot_going_straight_on_is_decoded_on() {
+        let a = MediaId::new();
+        let track = Track::new("V1", TrackKind::Video);
+        let cur = shot(a, 0, 4, 0);
+        assert!(decodes_on(&track, &cur, &shot(a, 8, 4, 8), FRAME), "the gap's frames left out");
+        assert!(!decodes_on(&track, &cur, &shot(a, 8, 4, 12), FRAME), "more left out than the gap is long");
+        assert!(!decodes_on(&track, &cur, &shot(a, 20, 4, 20), FRAME), "a gap longer than a hand-on");
+    }
+
+    /// A transition shows both sides at once: each needs its decoder.
+    #[test]
+    fn a_cut_with_a_transition_is_not_decoded_on() {
+        let a = MediaId::new();
+        let mut track = Track::new("V1", TrackKind::Video);
+        let (cur, next) = (shot(a, 0, 25, 0), shot(a, 25, 25, 30));
+        assert!(decodes_on(&track, &cur, &next, FRAME));
+        track.transitions.push(Transition {
+            id: klipp_core::TransitionId::new(),
+            kind: klipp_core::TransitionKind::CrossDissolve,
+            duration: tc(10),
+            clip_a_id: cur.id,
+            clip_b_id: next.id,
+            user_params: Default::default(),
+            alignment: Default::default(),
+        });
+        assert!(!decodes_on(&track, &cur, &next, FRAME));
+    }
+}
+
 /// (warm, cold) hand-overs at the end of a gap since the process began.
 pub fn gap_hand_overs() -> (u64, u64) {
     (GAP_HAND_OVERS_WARM.load(std::sync::atomic::Ordering::Relaxed), GAP_HAND_OVERS_COLD.load(std::sync::atomic::Ordering::Relaxed))
@@ -869,6 +975,9 @@ static STREAM_TAKE_OVERS: std::sync::atomic::AtomicU64 = std::sync::atomic::Atom
 pub(crate) static STREAMS_OPENED_ON_SCREEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// Clip streams opened, on screen or ahead.
 pub(crate) static STREAMS_OPENED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Clip streams a shot took over from the one before it in the same
+/// file (#2397).
+pub(crate) static STREAMS_HANDED_ON: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// Layers on screen opened with a shorter queue of frames, memory being
 /// short (#2128).
 pub(crate) static STREAMS_SHORTENED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -898,6 +1007,12 @@ pub fn streams_opened_on_screen() -> u64 {
 /// Clip streams opened, on screen or ahead, since the process began.
 pub fn streams_opened() -> u64 {
     STREAMS_OPENED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Clip streams a shot took over from the one before it in the same
+/// file, since the process began (#2397).
+pub fn streams_handed_on() -> u64 {
+    STREAMS_HANDED_ON.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Layers on screen opened with fewer frames queued than the preference,
@@ -6409,11 +6524,19 @@ impl PlaybackEngine {
         let next_info = {
             let mut result = None;
             if let Some(track) = seq.tracks.get(self.current_track_index) {
-                if track.clips.get(self.current_clip_index).and_then(|c| c.media_id()).is_some() {
+                if let Some(cur) = track.clips.get(self.current_clip_index).filter(|c| c.media_id().is_some()) {
                     for idx in next_idx..track.clips.len() {
                         let clip = &track.clips[idx];
                         if let Some(media_id) = clip.media_id() {
-                            result = Some((idx, media_id, clip.source_in.to_secs_f64(), clip.source_rotation, clip.timeline_in));
+                            // Going on a little further in this file: the
+                            // playing decoder decodes on to it at the cut.
+                            // A preroll opened for each 4-frame piece of a
+                            // strobe had the piece's 160 ms to seek in, and
+                            // showed a third of its frames (#2397).
+                            let decoded_on = self.v1_decoder.is_some() && decodes_on(track, cur, clip, self.fps.frame_duration_secs());
+                            if !decoded_on {
+                                result = Some((idx, media_id, clip.source_in.to_secs_f64(), clip.source_rotation, clip.timeline_in));
+                            }
                             break;
                         }
                     }
