@@ -361,6 +361,7 @@ fn ort_section() -> ReportSection {
     let mut rows = Vec::new();
     let status = klipp_ml_ort::resolve_runtime_status();
     rows.push(("Status".into(), format!("{status:?}")));
+    rows.push(("GPU provider".into(), klipp_ml_ort::provider::gpu_provider().unwrap_or("none").into()));
     if let Some(path) = klipp_ml_ort::find_libonnxruntime() {
         rows.push((
             "libonnxruntime".into(),

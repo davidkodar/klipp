@@ -80,26 +80,16 @@ pub enum RuntimeStatus {
     /// No GPU detected — inference will run on the CPU EP.
     /// Surfaces as a neutral "CPU only" indicator.
     CpuOnly,
-    /// GPU vendor detected AND a libonnxruntime that should
-    /// support it is reachable (via `ORT_DYLIB_PATH` or a
-    /// standard install path). Inference will attempt GPU
-    /// acceleration. We don't introspect the .so for vendor-
-    /// specific symbols here — the trust is "if the user set up
-    /// libort and they have GPU vendor X, they meant GPU X".
+    /// GPU vendor detected AND the libonnxruntime loaded has a GPU
+    /// provider this build can use ([`crate::provider::gpu_provider`]:
+    /// CUDA, or WebGPU for any vendor). Inference runs on the GPU.
     GpuAccelerationActive(GpuVendor),
     /// GPU vendor detected but no libonnxruntime found. The
-    /// dialog can offer "Install GPU runtime" — for AMD/Intel
-    /// that points at the (eventual) klipp-runtimes download
-    /// flow; for NVIDIA it points at the pyke download.
+    /// dialog suggests installing a GPU runtime.
     GpuAvailableNotInstalled(GpuVendor),
-    /// GPU vendor detected but Klipp doesn't ship a runtime for
-    /// it yet (AMD before F-97-AMD-ROCM lands, Intel before
-    /// F-97-INTEL-OPENVINO). User stays on CPU; tooltip says
-    /// "vendor X — not yet supported, on the roadmap".
-    GpuVendorUnsupported(GpuVendor),
     /// GPU vendor detected and a libonnxruntime found, but one built
-    /// without that GPU's provider (a CPU-only package): inference runs
-    /// on the CPU (#2250).
+    /// without a provider for that GPU (a CPU-only package): inference
+    /// runs on the CPU (#2250).
     GpuRuntimeCpuOnly(GpuVendor),
 }
 
@@ -111,9 +101,6 @@ impl RuntimeStatus {
             Self::GpuAccelerationActive(v) => format!("GPU ({})", v.display_label()),
             Self::GpuAvailableNotInstalled(v) => {
                 format!("{} — runtime missing", v.display_label())
-            }
-            Self::GpuVendorUnsupported(v) => {
-                format!("{} — not yet supported", v.display_label())
             }
             Self::GpuRuntimeCpuOnly(v) => format!("{} — CPU-only runtime", v.display_label()),
         }
@@ -127,7 +114,7 @@ impl RuntimeStatus {
         match self {
             Self::CpuOnly => StatusSeverity::Neutral,
             Self::GpuAccelerationActive(_) => StatusSeverity::Active,
-            Self::GpuAvailableNotInstalled(_) | Self::GpuVendorUnsupported(_) | Self::GpuRuntimeCpuOnly(_) => {
+            Self::GpuAvailableNotInstalled(_) | Self::GpuRuntimeCpuOnly(_) => {
                 StatusSeverity::Warning
             }
         }
@@ -163,42 +150,29 @@ pub fn detect_gpu_vendor() -> GpuVendor {
 }
 
 /// Resolve the current runtime status — combines vendor
-/// detection with a libonnxruntime-presence probe.
+/// detection with what the libonnxruntime found can run on.
 ///
-/// Vendor support matrix (current state):
-/// * NVIDIA  — GPU runtime available via pyke CUDA build (user
-///   installs ORT GPU tarball + sets ORT_DYLIB_PATH).
-/// * AMD     — GPU runtime not yet available
-///   (F-97-AMD-ROCM tracks the build infrastructure work).
-/// * Intel   — GPU runtime not yet available
-///   (F-97-INTEL-OPENVINO).
-/// * None    — CPU only.
-/// * Unknown — CPU only (probe failed).
+/// * NVIDIA — the GPU through CUDA (onnxruntime-cuda, or a CUDA build
+///   through ORT_DYLIB_PATH), or WebGPU.
+/// * AMD, Intel — the GPU through a WebGPU build (#2245).
+/// * None — CPU only.
 pub fn resolve_runtime_status() -> RuntimeStatus {
     let vendor = detect_gpu_vendor();
     match vendor {
-        GpuVendor::Nvidia => {
-            if find_libonnxruntime().is_some() {
-                // A library is there; whether it can run on the GPU is
-                // asked of it, once (#2250).
-                #[cfg(feature = "ort")]
-                {
-                    static HAS_CUDA: std::sync::OnceLock<Option<bool>> = std::sync::OnceLock::new();
-                    if *HAS_CUDA.get_or_init(crate::provider::runtime_has_cuda) == Some(false) {
-                        return RuntimeStatus::GpuRuntimeCpuOnly(vendor);
-                    }
-                }
-                RuntimeStatus::GpuAccelerationActive(vendor)
-            } else {
-                RuntimeStatus::GpuAvailableNotInstalled(vendor)
+        GpuVendor::Nvidia | GpuVendor::Amd | GpuVendor::Intel => {
+            if find_libonnxruntime().is_none() {
+                return RuntimeStatus::GpuAvailableNotInstalled(vendor);
             }
-        }
-        GpuVendor::Amd | GpuVendor::Intel => {
-            // No Klipp-shipped runtime exists yet for these
-            // vendors. Don't even bother checking the lib path
-            // because the user can't install something we don't
-            // build.
-            RuntimeStatus::GpuVendorUnsupported(vendor)
+            // A library is there; what it can run on is asked of it,
+            // once (#2250).
+            #[cfg(feature = "ort")]
+            {
+                static GPU: std::sync::OnceLock<Option<&'static str>> = std::sync::OnceLock::new();
+                if GPU.get_or_init(crate::provider::gpu_provider).is_some() {
+                    return RuntimeStatus::GpuAccelerationActive(vendor);
+                }
+            }
+            RuntimeStatus::GpuRuntimeCpuOnly(vendor)
         }
         GpuVendor::None | GpuVendor::Unknown => RuntimeStatus::CpuOnly,
     }
@@ -490,8 +464,8 @@ mod tests {
             "NVIDIA — runtime missing"
         );
         assert_eq!(
-            RuntimeStatus::GpuVendorUnsupported(GpuVendor::Amd).label(),
-            "AMD — not yet supported"
+            RuntimeStatus::GpuRuntimeCpuOnly(GpuVendor::Amd).label(),
+            "AMD — CPU-only runtime"
         );
     }
 
@@ -507,7 +481,7 @@ mod tests {
             StatusSeverity::Warning
         );
         assert_eq!(
-            RuntimeStatus::GpuVendorUnsupported(GpuVendor::Intel).severity(),
+            RuntimeStatus::GpuRuntimeCpuOnly(GpuVendor::Intel).severity(),
             StatusSeverity::Warning
         );
     }
@@ -538,7 +512,6 @@ mod tests {
             RuntimeStatus::CpuOnly
             | RuntimeStatus::GpuAccelerationActive(_)
             | RuntimeStatus::GpuAvailableNotInstalled(_)
-            | RuntimeStatus::GpuVendorUnsupported(_)
             | RuntimeStatus::GpuRuntimeCpuOnly(_) => {}
         }
     }

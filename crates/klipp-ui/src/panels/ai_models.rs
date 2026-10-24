@@ -2882,94 +2882,55 @@ fn models_on() -> String {
 #[cfg(feature = "ai-ort")]
 fn inference_status_label(theme: &KlippTheme) -> (String, egui::Color32, String) {
     use klipp_ml_ort::{GpuVendor, RuntimeStatus};
-    let cuda_feature_on =
-        cfg!(feature = "ai-ort-cuda") || cfg!(feature = "ai-candle-cuda");
     let runtime = klipp_ml_ort::resolve_runtime_status();
+    // What to install for each vendor when the runtime can't use its GPU.
+    let install = |v: GpuVendor| match v {
+        GpuVendor::Nvidia => "Install a GPU build of onnxruntime (onnxruntime-cuda, with CUDA and cuDNN), or set ORT_DYLIB_PATH to a CUDA or WebGPU build.",
+        _ => "Set ORT_DYLIB_PATH to a WebGPU build of onnxruntime, which runs on any vendor's GPU.",
+    };
 
-    // Match every relevant combination once + return text + color
-    // + tooltip. Verbose but explicit — every state has its own
-    // recommended action in the tooltip.
-    match (runtime, cuda_feature_on) {
-        (RuntimeStatus::CpuOnly, _) => (
+    // Every state with its text, colour and tooltip; the tooltip says
+    // what to do about it.
+    match runtime {
+        RuntimeStatus::CpuOnly => (
             "CPU only".into(),
             theme.text_secondary,
             "No GPU detected on this machine. Klipp's AI Tools \
              will run inference on the CPU EP."
                 .into(),
         ),
-        (RuntimeStatus::GpuAccelerationActive(GpuVendor::Nvidia), true) => (
-            "GPU (NVIDIA)".into(),
+        RuntimeStatus::GpuAccelerationActive(v) => (
+            format!("GPU ({})", v.display_label()),
             theme.text_secondary,
             format!(
-                "ort+CUDA active. AI Tools inference offloads to the \
-                 GPU once the session opens; a model whose CUDA \
-                 provider doesn't load (CUDA or cuDNN missing) runs on \
-                 the CPU, listed below.{}",
+                "AI Tools and analysis run on the GPU through {}. A \
+                 model whose GPU provider doesn't load runs on the CPU, \
+                 listed below.{}",
+                klipp_ml_ort::provider::gpu_provider().unwrap_or("its GPU provider"),
                 models_on(),
             ),
         ),
-        (RuntimeStatus::GpuAccelerationActive(GpuVendor::Nvidia), false) => (
-            "⚠ Built without GPU support".into(),
+        RuntimeStatus::GpuAvailableNotInstalled(v) => (
+            format!("⚠ {} — runtime missing", v.display_label()),
             theme.marker_warning,
-            "NVIDIA GPU detected, but Klipp was compiled without \
-             --features ai-ort-cuda. AI Tools will run on the \
-             CPU. Rebuild with the cuda feature to enable \
-             acceleration."
-                .into(),
+            format!(
+                "{} GPU detected, but no libonnxruntime.so resolved \
+                 (checked ORT_DYLIB_PATH + standard install paths). {}",
+                v.display_label(),
+                install(v),
+            ),
         ),
-        (RuntimeStatus::GpuAvailableNotInstalled(GpuVendor::Nvidia), true) => (
-            "⚠ NVIDIA — runtime missing".into(),
-            theme.marker_warning,
-            "NVIDIA GPU detected and Klipp built with the cuda \
-             feature, but no libonnxruntime.so resolved (checked \
-             ORT_DYLIB_PATH + standard install paths). Install \
-             onnxruntime-linux-x64-gpu-1.24.4 from \
-             github.com/microsoft/onnxruntime/releases and set \
-             ORT_DYLIB_PATH to its libonnxruntime.so."
-                .into(),
-        ),
-        (RuntimeStatus::GpuAvailableNotInstalled(GpuVendor::Nvidia), false) => (
-            "⚠ NVIDIA — needs setup".into(),
-            theme.marker_warning,
-            "NVIDIA GPU detected. Two things missing: rebuild Klipp \
-             with --features ai-ort-cuda, and install \
-             onnxruntime GPU build (set ORT_DYLIB_PATH)."
-                .into(),
-        ),
-        (RuntimeStatus::GpuRuntimeCpuOnly(v), _) => (
+        RuntimeStatus::GpuRuntimeCpuOnly(v) => (
             format!("⚠ {} — CPU-only runtime", v.display_label()),
             theme.marker_warning,
             format!(
-                "{} GPU detected, but the onnxruntime library in use is a \
-                 CPU-only build, with no GPU provider: AI Tools and \
-                 analysis run on the CPU. Install a GPU build \
-                 (onnxruntime-cuda) or set ORT_DYLIB_PATH to one.{}",
+                "{} GPU detected, but the onnxruntime library in use has \
+                 no provider for it: AI Tools and analysis run on the \
+                 CPU. {}{}",
                 v.display_label(),
+                install(v),
                 models_on(),
             ),
-        ),
-        (RuntimeStatus::GpuVendorUnsupported(v), _) => (
-            format!("⚠ {} — coming soon", v.display_label()),
-            theme.marker_warning,
-            format!(
-                "{} GPU detected. Klipp doesn't ship a custom \
-                 libonnxruntime build for {} yet — tracked under \
-                 F-97-AMD-ROCM (AMD via MIGraphX EP) and \
-                 F-97-INTEL-OPENVINO (Intel via OpenVINO EP). \
-                 Falling back to the CPU EP for now.",
-                v.display_label(),
-                v.display_label(),
-            ),
-        ),
-        // Catch-all: unexpected (vendor, feature) combos. Return a
-        // generic "GPU detected" so the user isn't told their GPU
-        // doesn't exist when egui hits a state we didn't enumerate.
-        (other, _) => (
-            format!("⚠ {}", other.label()),
-            theme.marker_warning,
-            "Unexpected GPU runtime state — falling back to CPU. \
-             Open an issue if this persists."
-                .into(),
         ),
     }
 }

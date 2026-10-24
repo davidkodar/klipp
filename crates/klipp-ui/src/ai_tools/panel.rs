@@ -737,11 +737,9 @@ fn model_subline(info: &ModelInfo, _task: Option<AiTask>) -> String {
 }
 
 /// Device label for the model card's "Inferring on {device}"
-/// sub-line during the running state. Combines the cuda feature
-/// flag with the runtime vendor probe so AMD / Intel users see
-/// "GPU (AMD) — falling back to CPU" rather than a flat "CPU"
-/// that hides the fact that they DO have a GPU but Klipp's not
-/// using it yet.
+/// sub-line during the running state. From the runtime probe, so a
+/// machine with a GPU the runtime can't use says so rather than a flat
+/// "CPU" that hides it.
 #[cfg(not(feature = "ai-ort"))]
 fn inference_device_label() -> String {
     "CPU".into()
@@ -749,26 +747,16 @@ fn inference_device_label() -> String {
 
 #[cfg(feature = "ai-ort")]
 fn inference_device_label() -> String {
-    use klipp_ml_ort::{GpuVendor, RuntimeStatus};
-    let cuda_feature_on =
-        cfg!(feature = "ai-ort-cuda") || cfg!(feature = "ai-candle-cuda");
+    use klipp_ml_ort::RuntimeStatus;
     match klipp_ml_ort::resolve_runtime_status() {
-        RuntimeStatus::GpuAccelerationActive(GpuVendor::Nvidia) if cuda_feature_on => {
-            "GPU (NVIDIA)".into()
-        }
-        RuntimeStatus::GpuAccelerationActive(GpuVendor::Nvidia) => {
-            "CPU (NVIDIA detected, GPU support not built)".into()
-        }
-        RuntimeStatus::GpuAvailableNotInstalled(GpuVendor::Nvidia) => {
-            "CPU (NVIDIA detected, GPU runtime missing)".into()
-        }
-        RuntimeStatus::GpuVendorUnsupported(v) => {
-            format!("CPU ({} GPU not yet supported)", v.display_label())
+        RuntimeStatus::GpuAccelerationActive(v) => format!("GPU ({})", v.display_label()),
+        RuntimeStatus::GpuAvailableNotInstalled(v) => {
+            format!("CPU ({} detected, GPU runtime missing)", v.display_label())
         }
         RuntimeStatus::GpuRuntimeCpuOnly(v) => {
-            format!("CPU ({} detected, onnxruntime is a CPU-only build)", v.display_label())
+            format!("CPU ({} detected, onnxruntime has no provider for it)", v.display_label())
         }
-        _ => "CPU".into(),
+        RuntimeStatus::CpuOnly => "CPU".into(),
     }
 }
 
