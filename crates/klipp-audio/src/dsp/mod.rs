@@ -516,6 +516,21 @@ impl AudioEffectChain {
     }
 }
 
+/// The most frames a plug-in instance is told it may be handed in one
+/// run. An offline mix hands an effect a whole clip at once, so plug-in
+/// hosts run it in slices of at most this many: LV2 and CLAP plug-ins
+/// refuse a longer run outright.
+pub(crate) const PLUGIN_MAX_BLOCK: usize = 4096;
+
+/// Runs `block` over `buffer` (interleaved, `channels` wide) in slices of
+/// at most [`PLUGIN_MAX_BLOCK`] frames, in order, so plug-in state
+/// carries from one slice to the next.
+pub(crate) fn in_plugin_blocks(buffer: &mut [f32], channels: usize, mut block: impl FnMut(&mut [f32])) {
+    for slice in buffer.chunks_mut(PLUGIN_MAX_BLOCK * channels.max(1)) {
+        block(slice);
+    }
+}
+
 /// Plug-ins whose host refused to run them, by type id, with the
 /// host's reason. Their sound goes through untouched, which nobody hears
 /// as a fault: a run refused for an unconnected port went unnoticed for

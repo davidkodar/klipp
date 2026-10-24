@@ -672,7 +672,7 @@ fn build_slot(
     let configuration = PluginAudioConfiguration {
         sample_rate: sample_rate as f64,
         min_frames_count: 1,
-        max_frames_count: 4096,
+        max_frames_count: crate::dsp::PLUGIN_MAX_BLOCK as u32,
     };
     let stopped = instance
         .activate(|_, _| (), configuration)
@@ -740,29 +740,9 @@ fn refill_event_buffer(slot: &mut InstanceSlot, param_values: &std::collections:
     }
 }
 
-impl AudioEffect for ClapEffect {
-    fn type_id(&self) -> &'static str {
-        self.type_id_static
-    }
-    fn name(&self) -> &'static str {
-        self.name_static
-    }
-    fn param_descriptors(&self) -> &[AudioParamDescriptor] {
-        &self.empty_descs
-    }
-    fn get_param(&self, name: &str) -> Option<f32> {
-        let id = parse_param_id(name)?;
-        self.param_values.get(&id).copied()
-    }
-    fn set_param(&mut self, name: &str, value: f32) {
-        self.set_control_by_key(name, value);
-    }
-
-    fn process(&mut self, buffer: &mut [f32], ctx: &AudioProcessContext) {
-        let host_channels = ctx.channels.max(1) as usize;
-        if buffer.is_empty() || host_channels == 0 {
-            return;
-        }
+impl ClapEffect {
+    /// One run of at most [`crate::dsp::PLUGIN_MAX_BLOCK`] frames.
+    fn process_block(&mut self, buffer: &mut [f32], host_channels: usize) {
         let frames = buffer.len() / host_channels;
         if frames == 0 {
             return;
@@ -791,6 +771,30 @@ impl AudioEffect for ClapEffect {
                 }
             }
         }
+    }
+}
+
+impl AudioEffect for ClapEffect {
+    fn type_id(&self) -> &'static str {
+        self.type_id_static
+    }
+    fn name(&self) -> &'static str {
+        self.name_static
+    }
+    fn param_descriptors(&self) -> &[AudioParamDescriptor] {
+        &self.empty_descs
+    }
+    fn get_param(&self, name: &str) -> Option<f32> {
+        let id = parse_param_id(name)?;
+        self.param_values.get(&id).copied()
+    }
+    fn set_param(&mut self, name: &str, value: f32) {
+        self.set_control_by_key(name, value);
+    }
+
+    fn process(&mut self, buffer: &mut [f32], ctx: &AudioProcessContext) {
+        let host_channels = ctx.channels.max(1) as usize;
+        crate::dsp::in_plugin_blocks(buffer, host_channels, |block| self.process_block(block, host_channels));
     }
 
     fn reset(&mut self) {

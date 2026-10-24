@@ -419,7 +419,7 @@ impl Lv2Effect {
 
         let features = world.build_features(livi::FeaturesBuilder {
             min_block_length: 1,
-            max_block_length: 4096,
+            max_block_length: crate::dsp::PLUGIN_MAX_BLOCK,
         });
 
         let layout = match (info.audio_inputs, info.audio_outputs) {
@@ -537,38 +537,9 @@ impl Lv2Effect {
             }
         }
     }
-}
 
-impl AudioEffect for Lv2Effect {
-    fn type_id(&self) -> &'static str {
-        self.type_id_static
-    }
-
-    fn name(&self) -> &'static str {
-        self.name_static
-    }
-
-    fn param_descriptors(&self) -> &[AudioParamDescriptor] {
-        // Static descriptors would require leaking per-instance
-        // strings. UI handles LV2 via state.lv2_plugins directly
-        // (mirror LADSPA precedent at ladspa.rs:860).
-        &self.empty_descs
-    }
-
-    fn get_param(&self, name: &str) -> Option<f32> {
-        let idx = *self.symbol_to_idx.get(name)?;
-        self.control_values.get(idx).copied()
-    }
-
-    fn set_param(&mut self, name: &str, value: f32) {
-        self.set_control_by_symbol(name, value);
-    }
-
-    fn process(&mut self, buffer: &mut [f32], ctx: &AudioProcessContext) {
-        let host_channels = ctx.channels.max(1) as usize;
-        if buffer.is_empty() || host_channels == 0 {
-            return;
-        }
+    /// One run of at most [`crate::dsp::PLUGIN_MAX_BLOCK`] frames.
+    fn process_block(&mut self, buffer: &mut [f32], host_channels: usize) {
         let frames = buffer.len() / host_channels;
         if frames == 0 {
             return;
@@ -662,6 +633,37 @@ impl AudioEffect for Lv2Effect {
             }
         }
     }
+}
+
+impl AudioEffect for Lv2Effect {
+    fn type_id(&self) -> &'static str {
+        self.type_id_static
+    }
+
+    fn name(&self) -> &'static str {
+        self.name_static
+    }
+
+    fn param_descriptors(&self) -> &[AudioParamDescriptor] {
+        // Static descriptors would require leaking per-instance
+        // strings. UI handles LV2 via state.lv2_plugins directly
+        // (mirror LADSPA precedent at ladspa.rs:860).
+        &self.empty_descs
+    }
+
+    fn get_param(&self, name: &str) -> Option<f32> {
+        let idx = *self.symbol_to_idx.get(name)?;
+        self.control_values.get(idx).copied()
+    }
+
+    fn set_param(&mut self, name: &str, value: f32) {
+        self.set_control_by_symbol(name, value);
+    }
+
+    fn process(&mut self, buffer: &mut [f32], ctx: &AudioProcessContext) {
+        let host_channels = ctx.channels.max(1) as usize;
+        crate::dsp::in_plugin_blocks(buffer, host_channels, |block| self.process_block(block, host_channels));
+    }
 
     fn reset(&mut self) {
         // livi has no public reset/activate API. Re-instantiate against
@@ -673,7 +675,7 @@ impl AudioEffect for Lv2Effect {
         };
         let features = world.build_features(livi::FeaturesBuilder {
             min_block_length: 1,
-            max_block_length: 4096,
+            max_block_length: crate::dsp::PLUGIN_MAX_BLOCK,
         });
         // Replace instances with fresh ones at the effect's own rate; on
         // any failure keep the old (state is leaked but the chain keeps
@@ -1042,5 +1044,28 @@ mod tests {
         assert!(peak < 0.45, "held at -8 dB, the tone peaks at {peak}");
         assert_eq!(crate::dsp::refused_run(DPL), None);
         assert_eq!(crate::dsp::probe_run(DPL, 48_000), Ok(()));
+    }
+
+    /// An offline mix hands an effect a whole clip in one call, far
+    /// past the most frames an instance may be run with.
+    #[test]
+    fn a_whole_clip_in_one_call_is_processed() {
+        const DPL: &str = "lv2:http://gareus.org/oss/lv2/dpl#stereo";
+        let _env = env_lock();
+        let Some(mut fx) = instantiate_from_type_id(DPL, 48_000, &[("threshold".into(), -8.0)]) else {
+            eprintln!("skipped: x42 dpl is not installed");
+            return;
+        };
+        let ctx = AudioProcessContext { sample_rate: 48_000, channels: 2, clip_time_secs: 0.0 };
+        let mut buf: Vec<f32> = (0..10 * 48_000)
+            .flat_map(|n| {
+                let v = 0.95 * (std::f32::consts::TAU * 440.0 * n as f32 / 48_000.0).sin();
+                [v, v]
+            })
+            .collect();
+        fx.process(&mut buf, &ctx);
+        let peak = buf[buf.len() / 2..].iter().fold(0f32, |m, v| m.max(v.abs()));
+        assert!(peak < 0.45, "held at -8 dB, the tone peaks at {peak}");
+        assert_eq!(crate::dsp::refused_run(DPL), None);
     }
 }
