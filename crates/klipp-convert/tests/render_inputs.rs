@@ -171,7 +171,7 @@ fn render_inputs(c: &Clip, fps: f64) -> Value {
                 "effects": fx,
                 "opacity": opacity,
                 "temporal_denoise": if media { temporal_denoise_of(c, t, fps) } else { None },
-                "frame_blends": media && frame_blends(c, t),
+                "frame_blends": media && frame_blends(c, t, None, fps),
             })
         })
         .collect();

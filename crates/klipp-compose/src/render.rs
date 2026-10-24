@@ -1695,7 +1695,8 @@ impl Renderer {
         }
         // Two frames blended for a speed ramp is a CPU operation on the
         // source, before the grade even starts.
-        if frame_blends(clip, time) {
+        let media_fps = src.media_fps(clip);
+        if frame_blends(clip, time, media_fps, fps) {
             return Single::ForTheStack;
         }
         // Only while it really moves under the open shutter: a still
@@ -2041,7 +2042,7 @@ impl Renderer {
         let stack = stack(seq, time);
 
         // What a clip needs that the stack does not have.
-        let blocker = |c: &Clip| -> Option<&'static str> {
+        let blocker = |c: &Clip, media_fps: Option<f64>| -> Option<&'static str> {
             if c.has_enabled_plugins() {
                 Some("OFX plugin")
             } else if has_frei0r_node(c) {
@@ -2056,7 +2057,7 @@ impl Renderer {
                 // A grade in the chain runs in the timeline render's plan
                 // for now (#1746).
                 Some("grade compound")
-            } else if frame_blends(c, time) {
+            } else if frame_blends(c, time, media_fps, fps) {
                 Some("frame blending")
             } else if title_motion_blur(c).is_some() && !title_blur_on_stack(c, time, fps) {
                 Some("title motion blur")
@@ -2081,7 +2082,7 @@ impl Renderer {
             match item {
                 TrackItem::Clip(c) => {
                     let _clip_residency = residency::clip(c.id.0);
-                    if let Some(why) = blocker(c) {
+                    if let Some(why) = blocker(c, src.media_fps(c)) {
                         return self.gpu_stack_declines(why);
                     }
                     if let Some(b) = &c.matte_source {
@@ -2100,7 +2101,7 @@ impl Renderer {
                         return self.gpu_stack_declines("smooth cut");
                     }
                     for side in [a, b] {
-                        if let Some(why) = blocker(side) {
+                        if let Some(why) = blocker(side, src.media_fps(side)) {
                             return self.gpu_stack_declines(why);
                         }
                         if side.consumed_as_matte || side.matte_source.is_some() || side.matte_stencil.is_some() || matches!(side.kind, ClipKind::AdjustmentLayer) {
@@ -3683,7 +3684,7 @@ impl Renderer {
                 let at = source_secs(clip, time, fps);
                 // Blended by its node at the head of the grade's run, from
                 // the stream's next frame (M4 step 7).
-                let blending = frame_blends(clip, time);
+                let blending = frame_blends(clip, time, src.media_fps(clip), fps);
                 // A source reads the frame nearest the time asked; a blend
                 // mixes from the frame at or before it toward the next, so
                 // it asks half a media frame earlier. Otherwise a time
@@ -4796,7 +4797,7 @@ impl Renderer {
     fn grade_at_source(&mut self, clip: &Clip, input: GradeInput, time: Timecode, clip_time: f64, fps: f64, width: u32, height: u32, src: &mut dyn FrameSource, source_pts: Option<f64>, hdr: Option<klipp_color::hdr::HdrTransfer>) -> Vec<f32> {
         use klipp_nodes::frame_context::BoundedSources;
         let denoise = matches!(clip.kind, ClipKind::Media { .. }).then(|| temporal_denoise_of(clip, time, fps)).flatten();
-        let blend = matches!(clip.kind, ClipKind::Media { .. }) && frame_blends(clip, time);
+        let blend = matches!(clip.kind, ClipKind::Media { .. }) && frame_blends(clip, time, src.media_fps(clip), fps);
         // A clip the grade tools read inside runs each as the picture's
         // node, so a thumbnail, tap or solo on one reads it (#1305).
         let inspected = self.inspects_the_grade_of(clip).then(|| picture_source_nodes(clip));
@@ -6103,10 +6104,11 @@ pub fn held_source_of(clip: &Clip, clip_time: f64, at: f64, pts: f64, decoded: (
 /// `graph`, `clip`'s grade, with the clip's source-boundary node spliced
 /// after its Source as the renderer runs it at `time` (#1863): the graph
 /// the viewer's GPU path runs when it takes the node's output held. The
-/// node's id is the clip's, so the two key it alike.
-pub fn graph_with_source_nodes(clip: &Clip, time: Timecode, fps: f64, graph: &klipp_nodes::NodeGraph) -> klipp_nodes::NodeGraph {
+/// node's id is the clip's, so the two key it alike. `media_fps` is its
+/// file's frame rate, as the renderer's source gives it.
+pub fn graph_with_source_nodes(clip: &Clip, time: Timecode, fps: f64, media_fps: Option<f64>, graph: &klipp_nodes::NodeGraph) -> klipp_nodes::NodeGraph {
     let denoise = matches!(clip.kind, ClipKind::Media { .. }).then(|| temporal_denoise_of(clip, time, fps)).flatten();
-    let blend = matches!(clip.kind, ClipKind::Media { .. }) && frame_blends(clip, time);
+    let blend = matches!(clip.kind, ClipKind::Media { .. }) && frame_blends(clip, time, media_fps, fps);
     let mut out = graph.clone();
     for node in source_nodes(clip, blend, denoise, None).into_iter().rev() {
         out.splice_after_source(node);
@@ -7213,16 +7215,20 @@ fn file_stamp(g: &klipp_core::GeneratorData) -> Option<(std::time::SystemTime, u
 }
 
 /// Whether `clip` frame-blends at `time`: a `SpeedRamp` in blend mode 1
-/// or 2 (by optical flow), not frozen, with the clip running at real time
-/// or below. At real time a file of a lower frame rate than the timeline's
-/// is conformed by it (#2479); at the timeline's own rate each frame falls
-/// on one of the file's and nothing is mixed.
-pub fn frame_blends(clip: &Clip, time: Timecode) -> bool {
+/// or 2 (by optical flow), not frozen, where its file gives fewer frames
+/// than the timeline at `fps` shows. Slowed, or at real time from a file
+/// of a lower frame rate (`media_fps`), conformed by it (#2479). Where each
+/// frame falls on one of the file's, nothing is mixed: at real time from a
+/// file of the timeline's rate, a blending clip left the GPU stack for the
+/// CPU for nothing. A file whose rate is not known is taken to be at the
+/// timeline's.
+pub fn frame_blends(clip: &Clip, time: Timecode, media_fps: Option<f64>, fps: f64) -> bool {
     let blend = clip.has_frame_blend_entry();
     // A reversed clip's next frame is the one before: there is no
     // following frame to blend toward.
     let speed = clip.speed_at(eval_clip_time(clip, time)).abs();
-    blend && !clip.is_reversed() && speed > 1e-6 && speed <= 1.0 + 1e-6
+    let rate = media_fps.filter(|r| *r > 0.0).unwrap_or(fps);
+    blend && !clip.is_reversed() && speed > 1e-6 && speed * rate < fps * (1.0 - 1e-6)
 }
 
 /// Whether `clip`'s picture holds a frei0r plug-in node, on or off (M4
