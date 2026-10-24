@@ -2810,6 +2810,99 @@ fn installed_audio_plugins_are_listed_and_one_goes_on_a_clip() {
     klipp_audio::lv2::set_plugin_registry(Vec::new());
 }
 
+/// The harness's first clip, made a clip of a media file.
+fn plugin_clip(h: &mut Harness) -> klipp_core::ClipId {
+    let media = h.media_pool.write().unwrap().add(klipp_media::MediaItem::synthetic_for_test("/tmp/plugin-settings.mov".into(), None));
+    let mut seq = h.sequence.write().unwrap();
+    let c = seq.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).next().unwrap();
+    c.kind = klipp_timeline::ClipKind::Media { media_id: media };
+    c.linked_clip_id = None;
+    c.id
+}
+
+/// The project saved and opened again: the clip's effect chain in the
+/// reopened project (#1191).
+fn reopened_chain(h: &Harness, clip_id: klipp_core::ClipId) -> Vec<klipp_core::AudioEffectInstance> {
+    let dir = std::env::temp_dir().join(format!("klipp-plugin-settings-{}.klipp", clip_id.0));
+    let seq = h.sequence.read().unwrap().clone();
+    klipp_project::save_project(&dir, std::slice::from_ref(&seq), &h.media_pool.read().unwrap()).unwrap();
+    let (sequences, ..) = klipp_project::load_project(&dir).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    let chain = sequences[0].all_clips().find(|c| c.id == clip_id).expect("the clip in the reopened project").audio_effects.clone();
+    chain
+}
+
+/// #1191: a plug-in's settings put on a clip over the ops are saved
+/// with the project and come back when it is opened.
+#[test]
+fn a_plugins_settings_survive_save_and_reopen() {
+    let mut h = harness();
+    klipp_audio::lv2::set_plugin_registry(vec![klipp_audio::lv2::Lv2PluginInfo {
+        uri: "urn:klipp-test:room".into(),
+        name: "Test Room".into(),
+        audio_inputs: 2,
+        audio_outputs: 2,
+        control_inputs: vec![klipp_audio::lv2::Lv2ControlPort { symbol: "size".into(), name: "Room size".into(), default: 2.0, min: Some(0.0), max: Some(10.0), index: 0 }],
+    }]);
+    let clip_id = plugin_clip(&mut h);
+    let made = vec![klipp_core::AudioEffectInstance { effect_type: "lv2:urn:klipp-test:room".into(), enabled: true, wet_dry: 0.8, params: vec![("size".into(), 5.0)] }];
+    h.sequence.write().unwrap().all_clips_mut().find(|c| c.id == clip_id).unwrap().audio_effects = made.clone();
+    let reopened = reopened_chain(&h, clip_id);
+    klipp_audio::lv2::set_plugin_registry(Vec::new());
+    assert_eq!(reopened.len(), 1);
+    assert_eq!(reopened[0].wet_dry, 0.8);
+    assert_eq!((&reopened[0].effect_type, &reopened[0].params, reopened[0].enabled), (&made[0].effect_type, &made[0].params, made[0].enabled));
+}
+
+/// #1191: an installed LV2 limiter's settings come back from the saved
+/// project into a new instance, which limits a loud tone exactly as the
+/// first did and unlike the plug-in's defaults. Skipped where x42's dpl
+/// is not installed.
+#[test]
+fn an_installed_limiters_settings_survive_and_sound_the_same() {
+    const DPL: &str = "http://gareus.org/oss/lv2/dpl#mono";
+    let installed = klipp_audio::lv2::discover_lv2_plugins();
+    if !installed.iter().any(|p| p.uri == DPL) {
+        eprintln!("skipped: x42 dpl is not installed");
+        return;
+    }
+    let mut h = harness();
+    klipp_audio::lv2::set_plugin_registry(installed);
+    let clip_id = plugin_clip(&mut h);
+    h.ok(json!({ "method": "apply", "ops": [{ "op": "clip_audio", "clip_id": clip_id.0.to_string(), "effect": format!("lv2:{DPL}"), "params": { "Threshold": -8.0 } }] }));
+    let chain = h.edits_seen.lock().unwrap().iter().rev().find_map(|e| match e {
+        klipp_document::history::EditCommand::EditAudioChain { clip_id: c, new_state, .. } if *c == clip_id => Some(new_state.clone()),
+        _ => None,
+    }).expect("clip_audio edits the clip's chain");
+    chain.apply_to_clip(h.sequence.write().unwrap().all_clips_mut().find(|c| c.id == clip_id).unwrap());
+    let (made, reopened) = (chain.audio_effects, reopened_chain(&h, clip_id));
+    klipp_audio::lv2::set_plugin_registry(Vec::new());
+    assert!(made[0].params.iter().any(|(k, v)| k == "threshold" && *v == -8.0), "{:?}", made[0].params);
+    assert_eq!(reopened[0].params, made[0].params);
+    let rate = 48_000;
+    let ctx = klipp_audio::dsp::AudioProcessContext { sample_rate: rate, channels: 2, clip_time_secs: 0.0 };
+    let play = |chain: &[klipp_core::AudioEffectInstance]| {
+        let mut chain = klipp_audio::dsp::AudioEffectChain::from_instances(chain, rate);
+        let mut out = Vec::new();
+        for block in 0..48 {
+            let mut buf: Vec<f32> = (0..1024).flat_map(|n| {
+                let t = (block * 1024 + n) as f32 / rate as f32;
+                let v = 0.95 * (std::f32::consts::TAU * 440.0 * t).sin();
+                [v, v]
+            }).collect();
+            chain.process(&mut buf, &ctx);
+            out.extend(buf);
+        }
+        out
+    };
+    assert!(klipp_audio::dsp::create_effect(&made[0].effect_type, rate).is_some(), "dpl loads");
+    let (first, again) = (play(&made), play(&reopened));
+    assert_eq!(first, again, "the reopened limiter sounds as the first did");
+    let defaults = vec![klipp_core::AudioEffectInstance { params: Vec::new(), ..made[0].clone() }];
+    let peak = |s: &[f32]| s[s.len() / 2..].iter().fold(0f32, |m, v| m.max(v.abs()));
+    assert!(peak(&first) < 0.45 && peak(&play(&defaults)) > 0.8, "limited at -8 dB: {} against the defaults' {}", peak(&first), peak(&play(&defaults)));
+}
+
 /// A broad query over plug-ins with hundreds of parameters each lists
 /// ids and counts alone, and stays small.
 #[test]
