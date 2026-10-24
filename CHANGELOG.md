@@ -5,6 +5,8 @@ Each release lists what changed for people using Klipp. Versions follow
 
 ## Unreleased
 
+## 0.1.0-rc.2 — 2026-10-24
+
 ### Added
 
 - Lower thirds have a backing (a shadow and outline by default, or a box) so
@@ -94,6 +96,11 @@ Each release lists what changed for people using Klipp. Versions follow
 
 ### Changed
 
+- Picture search and Isolate Object run 4–20× faster on the CPU, and on the
+  GPU when a GPU build of ONNX Runtime is installed (onnxruntime-cuda on
+  NVIDIA); the AI models panel says which each model uses. Both download new
+  model files once, and the old ones are removed.
+- Face detection uses the GPU when ONNX Runtime offers one.
 - Builds without warnings on Rust 1.99.
 - The user guide, README and website describe the app as it is today, and
   point to the release download.
