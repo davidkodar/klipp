@@ -1201,26 +1201,23 @@ impl KlippApp {
                     true
                 }
                 AppCommand::MoveItemToBin { media_id, bin } => {
-                    // Also sync bin_id from bin name
-                    let new_bin_id = bin.as_ref().map(|name| self.state.media_pool.find_or_create_bin(name));
-                    if let Some(item) = self.state.media_pool.get_mut(media_id) {
-                        let from_bin = item.bin.clone();
-                        let from_bin_id = item.bin_id;
-                        if from_bin != *bin {
-                            item.bin = bin.clone();
-                            item.bin_id = new_bin_id;
-                            // The pool's own record: a project step, reachable from any
-                            // sequence (#1986).
-                            self.state.push_history(crate::history::EditCommand::MoveMediaToBin {
-                                media_id: *media_id,
-                                from_bin,
-                                to_bin: bin.clone(),
-                                from_bin_id,
-                                to_bin_id: new_bin_id,
-                            });
-                            self.state.dirty = true;
-                        }
-                    }
+                    self.state.move_media_to_bin(&[*media_id], bin.as_deref());
+                    true
+                }
+                AppCommand::MoveItemsToBin { media_ids, bin } => {
+                    self.state.move_media_to_bin(media_ids, bin.as_deref());
+                    true
+                }
+                AppCommand::NewBin { media_ids } => {
+                    let name = self.state.media_pool.unused_bin_name();
+                    self.state.media_pool.find_or_create_bin(&name);
+                    self.state.move_media_to_bin(media_ids, Some(&name));
+                    self.state.dirty = true;
+                    // Shown, all of the pool, the name ready to type over.
+                    self.state.show_browser_panel = true;
+                    self.layout.active_browser_tab = crate::layout_state::BrowserTab::Media;
+                    self.browser.media_selected_bin = None;
+                    self.browser.renaming_bin = Some((name.clone(), name));
                     true
                 }
                 AppCommand::OpenBatchRenameDialog { media_ids } => {
@@ -2184,6 +2181,33 @@ mod retarget_drop_tests {
 }
 
 impl crate::state::AppState {
+    /// Move the media items `ids` into the bin named `bin`, made if there
+    /// is none, or out of their bins with `None`: one undo step, however
+    /// many move.
+    pub(crate) fn move_media_to_bin(&mut self, ids: &[klipp_core::MediaId], bin: Option<&str>) {
+        let to_bin = bin.map(str::to_string);
+        let to_bin_id = bin.map(|name| self.media_pool.find_or_create_bin(name));
+        let batch = !self.project_history_mut().is_batching();
+        if batch {
+            self.project_history_mut().begin_batch();
+        }
+        for id in ids {
+            let Some(item) = self.media_pool.get_mut(id) else { continue };
+            if item.bin == to_bin {
+                continue;
+            }
+            let (from_bin, from_bin_id) = (std::mem::replace(&mut item.bin, to_bin.clone()), item.bin_id);
+            item.bin_id = to_bin_id;
+            // The pool's own record: a project step, reachable from any
+            // sequence (#1986).
+            self.push_history(crate::history::EditCommand::MoveMediaToBin { media_id: *id, from_bin, to_bin: to_bin.clone(), from_bin_id, to_bin_id });
+            self.dirty = true;
+        }
+        if batch {
+            self.project_history_mut().end_batch_as("Move to Bin");
+        }
+    }
+
     /// The editor's marker on media item `id`, in time order: an edit.
     pub(crate) fn add_media_marker(&mut self, id: klipp_core::MediaId, marker: klipp_core::MediaMarker) {
         if let Some(item) = self.media_pool.get_mut(&id) {

@@ -194,7 +194,6 @@ pub fn show(
     view_mode: &mut BrowserViewMode,
     columns: &mut Vec<Field>,
     renaming_bin: &mut Option<(String, String)>,
-    creating_bin: &mut Option<String>,
     scroll_to_media_id: &mut Option<MediaId>,
     smart_filter: &super::SmartBinFilter,
     min_rating_filter: Option<u8>,
@@ -306,12 +305,16 @@ pub fn show(
         items.reverse();
     }
 
-    // Group by bin
-    let mut bins_seen: Vec<Option<String>> = Vec::new();
-    for item in &items {
-        if !bins_seen.contains(&item.bin) {
-            bins_seen.push(item.bin.clone());
-        }
+    // Bins first, by name, then the clips in none (#2621). An empty bin
+    // shows while nothing narrows the pool: it was made to be filled.
+    let narrowed = items.len() < state.media_pool.all().count();
+    let mut bins_seen: Vec<Option<String>> = bin_names(&state.media_pool)
+        .into_iter()
+        .filter(|name| !narrowed || items.iter().any(|i| i.bin.as_deref() == Some(name.as_str())))
+        .map(Some)
+        .collect();
+    if items.iter().any(|i| i.bin.is_none()) {
+        bins_seen.push(None);
     }
 
     // Ordered list of all visible IDs (used for Shift+click range selection)
@@ -328,8 +331,14 @@ pub fn show(
     }
 
     // Render
-    egui::ScrollArea::vertical().id_salt("browser_media_scroll").show(ui, |ui| {
-        if items.is_empty() {
+    egui::ScrollArea::vertical().id_salt("browser_media_scroll").auto_shrink([false, false]).show(ui, |ui| {
+        // The pool's own menu wherever a right-click lands on no item: a
+        // backdrop under the whole visible list, the items drawn over it.
+        // Only the space below the last item had it, and a full pool has
+        // none (#2621).
+        let backdrop = ui.interact(ui.clip_rect(), ui.id().with("media_pool_backdrop"), egui::Sense::click());
+        backdrop.context_menu(|ui| menu_body(ui, |ui| pool_menu(ui, view_mode, sort_by, sort_ascending, &mut cmds)));
+        if bins_seen.is_empty() {
             ui.add_space(40.0);
             ui.centered_and_justified(|ui| {
                 ui.label(
@@ -341,74 +350,14 @@ pub fn show(
         } else {
             match view_mode {
                 BrowserViewMode::List => {
-                    render_list_view(ui, state, theme, &bins_seen, &items, &all_ordered_ids, &mut cmds, renaming_bin, creating_bin, scroll_to_media_id, columns, sort_by, sort_ascending);
+                    render_list_view(ui, state, theme, &bins_seen, &items, &all_ordered_ids, &mut cmds, renaming_bin, scroll_to_media_id, columns, sort_by, sort_ascending);
                 }
                 BrowserViewMode::Grid => {
-                    render_grid_view(ui, state, theme, &bins_seen, &items, &all_ordered_ids, &mut cmds, renaming_bin, creating_bin, scroll_to_media_id);
+                    render_grid_view(ui, state, theme, &bins_seen, &items, &all_ordered_ids, &mut cmds, renaming_bin, scroll_to_media_id);
                 }
             }
         }
 
-        // Empty-area context menu: claim remaining space below items
-        let remaining = ui.available_rect_before_wrap();
-        let min_h = 40.0_f32.max(remaining.height());
-        let bg_rect = egui::Rect::from_min_size(remaining.min, egui::vec2(remaining.width(), min_h));
-        let bg_resp = ui.allocate_rect(bg_rect, egui::Sense::click());
-        bg_resp.context_menu(|ui| menu_body(ui, |ui| {
-            ui.set_min_width(180.0);
-
-            if menu_item(ui, "New Folder", "").clicked() {
-                *creating_bin = Some("New Folder".to_string());
-                ui.close_menu();
-            }
-
-            ui.separator();
-
-            if menu_item(ui, "Import Media\u{2026}", "").clicked() {
-                crate::file_dialog::spawn(crate::command_palette::import_media_commands);
-                ui.close_menu();
-            }
-
-            if menu_item(ui, "Import Folder\u{2026}", "").clicked() {
-                crate::file_dialog::spawn(move || {
-                    rfd::FileDialog::new()
-                        .pick_folder()
-                        .map(|dir| vec![AppCommand::ImportMediaFolder { directory: dir }])
-                        .unwrap_or_default()
-                });
-                ui.close_menu();
-            }
-
-            ui.separator();
-
-            ui.menu_button("Sort By", |ui| menu_body(ui, |ui| {
-                for f in Field::SORTABLE {
-                    ui.selectable_value(sort_by, f, f.label());
-                }
-            }));
-
-            ui.menu_button("View", |ui| menu_body(ui, |ui| {
-                if ui.selectable_value(view_mode, BrowserViewMode::List, "List").clicked() {
-                    ui.close_menu();
-                }
-                if ui.selectable_value(view_mode, BrowserViewMode::Grid, "Grid").clicked() {
-                    ui.close_menu();
-                }
-            }));
-
-            let (sort_icon, sort_text) = if *sort_ascending {
-                (Icon::SortAscending, "Ascending")
-            } else {
-                (Icon::SortDescending, "Descending")
-            };
-            if ui.add(egui::Button::image_and_text(
-                sort_icon.image(12.0),
-                sort_text,
-            )).clicked() {
-                *sort_ascending = !*sort_ascending;
-                ui.close_menu();
-            }
-        }));
     });
 
     // ── File-browser drag-and-drop ──
@@ -447,6 +396,62 @@ pub fn show(
     }
 
     cmds
+}
+
+/// The media pool's menu, on its backdrop: New Bin, import, and how the
+/// pool is shown.
+fn pool_menu(ui: &mut egui::Ui, view_mode: &mut BrowserViewMode, sort_by: &mut SortBy, sort_ascending: &mut bool, cmds: &mut Vec<AppCommand>) {
+    ui.set_min_width(180.0);
+    if menu_item(ui, "New Bin", "").clicked() {
+        cmds.push(AppCommand::NewBin { media_ids: Vec::new() });
+        ui.close_menu();
+    }
+    ui.separator();
+    if menu_item(ui, "Import Media\u{2026}", "").clicked() {
+        crate::file_dialog::spawn(crate::command_palette::import_media_commands);
+        ui.close_menu();
+    }
+    if menu_item(ui, "Import Folder\u{2026}", "").clicked() {
+        crate::file_dialog::spawn(move || {
+            rfd::FileDialog::new()
+                .pick_folder()
+                .map(|dir| vec![AppCommand::ImportMediaFolder { directory: dir }])
+                .unwrap_or_default()
+        });
+        ui.close_menu();
+    }
+    ui.separator();
+    ui.menu_button("Sort By", |ui| menu_body(ui, |ui| {
+        for f in Field::SORTABLE {
+            ui.selectable_value(sort_by, f, f.label());
+        }
+    }));
+    ui.menu_button("View", |ui| menu_body(ui, |ui| {
+        if ui.selectable_value(view_mode, BrowserViewMode::List, "List").clicked() {
+            ui.close_menu();
+        }
+        if ui.selectable_value(view_mode, BrowserViewMode::Grid, "Grid").clicked() {
+            ui.close_menu();
+        }
+    }));
+    let (sort_icon, sort_text) = if *sort_ascending {
+        (Icon::SortAscending, "Ascending")
+    } else {
+        (Icon::SortDescending, "Descending")
+    };
+    if ui.add(egui::Button::image_and_text(sort_icon.image(12.0), sort_text)).clicked() {
+        *sort_ascending = !*sort_ascending;
+        ui.close_menu();
+    }
+}
+
+/// Every bin's name, by name: the pool's bins and any an item names.
+fn bin_names(pool: &klipp_media::MediaPool) -> Vec<String> {
+    let mut names: Vec<String> = pool.bins.iter().filter(|b| b.parent_id.is_none()).map(|b| b.name.clone()).collect();
+    names.extend(pool.all().filter_map(|m| m.bin.clone()));
+    names.sort_by_key(|n| n.to_lowercase());
+    names.dedup();
+    names
 }
 
 /// A grid card's caption, as the list's columns read it: a clip's
@@ -975,89 +980,17 @@ fn render_list_view(
     all_ordered_ids: &[MediaId],
     cmds: &mut Vec<AppCommand>,
     renaming_bin: &mut Option<(String, String)>,
-    creating_bin: &mut Option<String>,
     scroll_to_media_id: &mut Option<MediaId>,
     columns: &mut Vec<Field>,
     sort_by: &mut SortBy,
     sort_ascending: &mut bool,
 ) {
     render_column_header(ui, theme, columns, sort_by, sort_ascending);
-    // Inline edit for new bin creation (triggered by "New Folder" context menu item)
-    if creating_bin.is_some() {
-        let mut should_clear = false;
-        if let Some(ref mut edit_text) = creating_bin {
-            let resp = ui.horizontal(|ui| {
-                ui.add_space(10.0);
-                ui.add(Icon::Folder.image(12.0).tint(theme.text_dim));
-                let text_resp = ui.add(
-                    egui::TextEdit::singleline(edit_text)
-                        .desired_width(140.0)
-                        .font(egui::FontId::proportional(crate::theme::type_scale::CONTROL)),
-                );
-                if text_resp.lost_focus() {
-                    let name = edit_text.trim().to_string();
-                    if !name.is_empty() {
-                        cmds.push(AppCommand::CreateBin { name });
-                    }
-                    should_clear = true;
-                }
-                text_resp.request_focus();
-            });
-            let _ = resp;
-        }
-        if should_clear {
-            *creating_bin = None;
-        }
-    }
-
+    let bin_list = bin_names(&state.media_pool);
     for bin in bins_seen {
         let bin_items: Vec<_> = items.iter().filter(|i| &i.bin == bin).collect();
-
-        // Folder header
-        let header_resp = render_bin_header(ui, theme, bin, renaming_bin, cmds);
-
-        // Bin header context menu (only for named bins)
-        if let Some(bin_name) = bin {
-            header_resp.context_menu(|ui| menu_body(ui, |ui| {
-                if menu_item(ui, "New Sub-Folder", "").clicked() {
-                    if let Some(bin_record) = state.media_pool.bins.iter().find(|b| b.name == *bin_name) {
-                        cmds.push(AppCommand::CreateSubBin {
-                            parent_id: bin_record.id,
-                            name: "New Sub-Folder".to_string(),
-                        });
-                    }
-                    ui.close_menu();
-                }
-                ui.separator();
-                if menu_item(ui, "Rename Bin", "").clicked() {
-                    *renaming_bin = Some((bin_name.clone(), bin_name.clone()));
-                    ui.close_menu();
-                }
-                if menu_item(ui, "Delete Bin", "").clicked() {
-                    cmds.push(AppCommand::DeleteBin { name: bin_name.clone() });
-                    ui.close_menu();
-                }
-            }));
-        }
-
-        // Drag-to-bin highlight
-        if let Some(dragging_id) = state.dragging_media {
-            if bin.is_some() && header_resp.hovered() {
-                ui.painter().rect_stroke(
-                    header_resp.rect,
-                    2.0,
-                    egui::Stroke::new(2.0_f32, theme.accent),
-                );
-                if !ui.ctx().input(|i| i.pointer.primary_down()) {
-                    // Released over bin header — move item
-                    cmds.push(AppCommand::MoveItemToBin {
-                        media_id: dragging_id,
-                        bin: bin.clone(),
-                    });
-                    state.dragging_media = None;
-                    state.dragging_media_group.clear();
-                }
-            }
+        if !bin_section(ui, state, theme, bin, bins_seen, bin_items.len(), renaming_bin, cmds) {
+            continue;
         }
 
         // Render order: parents first, each followed immediately by its
@@ -1270,9 +1203,9 @@ fn render_list_view(
             }
             resp.context_menu(|ui| menu_body(ui, |ui| {
                 if state.selected_media_ids.len() > 1 && state.selected_media_ids.contains(&item.id) {
-                    show_multi_context_menu(ui, &state.selected_media_ids, sync_pair_of(state), state.multicam_default_sync, cmds);
+                    show_multi_context_menu(ui, &state.selected_media_ids, sync_pair_of(state), state.multicam_default_sync, &bin_list, cmds);
                 } else {
-                    show_context_menu(ui, item.id, &item.path, item.offline, &item.filename, item.has_zone, item.parent_media_id.is_some(), item.synced_audio, &item.span_parts, cmds);
+                    show_context_menu(ui, item.id, &item.path, item.offline, &item.filename, item.has_zone, item.parent_media_id.is_some(), item.synced_audio, &item.span_parts, &bin_list, item.bin.as_deref(), cmds);
                 }
             }));
         }
@@ -1304,7 +1237,6 @@ fn render_grid_view(
     all_ordered_ids: &[MediaId],
     cmds: &mut Vec<AppCommand>,
     renaming_bin: &mut Option<(String, String)>,
-    creating_bin: &mut Option<String>,
     scroll_to_media_id: &mut Option<MediaId>,
 ) {
     // Use the clip rect (the actually-visible width) rather than
@@ -1326,59 +1258,11 @@ fn render_grid_view(
     let thumb_h = (card_w / GRID_THUMB_ASPECT).round();
     let card_h = thumb_h + GRID_INFO_H;
 
-    // Inline edit for new bin creation (triggered by "New Folder" context menu item)
-    if creating_bin.is_some() {
-        let mut should_clear = false;
-        if let Some(ref mut edit_text) = creating_bin {
-            ui.horizontal(|ui| {
-                ui.add_space(10.0);
-                ui.add(Icon::Folder.image(12.0).tint(theme.text_dim));
-                let text_resp = ui.add(
-                    egui::TextEdit::singleline(edit_text)
-                        .desired_width(140.0)
-                        .font(egui::FontId::proportional(crate::theme::type_scale::CONTROL)),
-                );
-                if text_resp.lost_focus() {
-                    let name = edit_text.trim().to_string();
-                    if !name.is_empty() {
-                        cmds.push(AppCommand::CreateBin { name });
-                    }
-                    should_clear = true;
-                }
-                text_resp.request_focus();
-            });
-        }
-        if should_clear {
-            *creating_bin = None;
-        }
-    }
-
+    let bin_list = bin_names(&state.media_pool);
     for bin in bins_seen {
         let bin_items: Vec<_> = items.iter().filter(|i| &i.bin == bin).collect();
-
-        // Folder header with rename support
-        let header_resp = render_bin_header(ui, theme, bin, renaming_bin, cmds);
-        if let Some(bin_name) = bin {
-            header_resp.context_menu(|ui| menu_body(ui, |ui| {
-                if menu_item(ui, "New Sub-Folder", "").clicked() {
-                    if let Some(bin_record) = state.media_pool.bins.iter().find(|b| b.name == *bin_name) {
-                        cmds.push(AppCommand::CreateSubBin {
-                            parent_id: bin_record.id,
-                            name: "New Sub-Folder".to_string(),
-                        });
-                    }
-                    ui.close_menu();
-                }
-                ui.separator();
-                if menu_item(ui, "Rename Bin", "").clicked() {
-                    *renaming_bin = Some((bin_name.clone(), bin_name.clone()));
-                    ui.close_menu();
-                }
-                if menu_item(ui, "Delete Bin", "").clicked() {
-                    cmds.push(AppCommand::DeleteBin { name: bin_name.clone() });
-                    ui.close_menu();
-                }
-            }));
+        if !bin_section(ui, state, theme, bin, bins_seen, bin_items.len(), renaming_bin, cmds) {
+            continue;
         }
         ui.add_space(4.0);
 
@@ -1637,9 +1521,9 @@ fn render_grid_view(
 
             card_resp.context_menu(|ui| menu_body(ui, |ui| {
                 if state.selected_media_ids.len() > 1 && state.selected_media_ids.contains(&item.id) {
-                    show_multi_context_menu(ui, &state.selected_media_ids, sync_pair_of(state), state.multicam_default_sync, cmds);
+                    show_multi_context_menu(ui, &state.selected_media_ids, sync_pair_of(state), state.multicam_default_sync, &bin_list, cmds);
                 } else {
-                    show_context_menu(ui, item.id, &item.path, item.offline, &item.filename, item.has_zone, item.parent_media_id.is_some(), item.synced_audio, &item.span_parts, cmds);
+                    show_context_menu(ui, item.id, &item.path, item.offline, &item.filename, item.has_zone, item.parent_media_id.is_some(), item.synced_audio, &item.span_parts, &bin_list, item.bin.as_deref(), cmds);
                 }
             }));
 
@@ -1682,22 +1566,94 @@ fn truncate_to_width(text: &str, font: egui::FontId, max_w: f32, ui: &egui::Ui) 
     "\u{2026}".to_string()
 }
 
-/// Render a bin folder header, with inline rename support.
-fn render_bin_header(
+/// A bin's header, its menu and its drop target, or the divider before
+/// the clips in no bin: whether the section's items are shown. A bin's
+/// header opens and closes it (#2621).
+#[allow(clippy::too_many_arguments)]
+fn bin_section(
     ui: &mut egui::Ui,
+    state: &mut AppState,
     theme: &KlippTheme,
     bin: &Option<String>,
+    bins_seen: &[Option<String>],
+    count: usize,
     renaming_bin: &mut Option<(String, String)>,
     cmds: &mut Vec<AppCommand>,
-) -> egui::Response {
-    let bin_label = bin.as_deref().unwrap_or("Ungrouped");
+) -> bool {
+    let Some(name) = bin else {
+        // The clips in no bin, set apart from the bins above them.
+        if bins_seen.iter().any(Option::is_some) {
+            ui.add_space(6.0);
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.set_min_height(crate::theme::control::COMPACT);
+                ui.add_space(10.0);
+                ui.label(egui::RichText::new("NOT IN A BIN").size(crate::theme::type_scale::CAPTION).strong().color(theme.text_dim));
+            });
+        }
+        return true;
+    };
+    let closed_id = egui::Id::new(("media_bin_closed", name.as_str()));
+    let closed = ui.data(|d| d.get_temp::<bool>(closed_id)).unwrap_or(false);
+    let Some(resp) = bin_header(ui, theme, name, count, closed, renaming_bin, cmds) else {
+        return !closed;
+    };
+    if resp.clicked() {
+        ui.data_mut(|d| d.insert_temp(closed_id, !closed));
+    }
+    resp.context_menu(|ui| menu_body(ui, |ui| {
+        if menu_item(ui, "New Bin", "").clicked() {
+            cmds.push(AppCommand::NewBin { media_ids: Vec::new() });
+            ui.close_menu();
+        }
+        ui.separator();
+        if menu_item(ui, "Rename Bin", "").clicked() {
+            *renaming_bin = Some((name.clone(), name.clone()));
+            ui.close_menu();
+        }
+        if menu_item(ui, "Delete Bin", "").on_hover_text("Its clips stay in the pool, in no bin.").clicked() {
+            cmds.push(AppCommand::DeleteBin { name: name.clone() });
+            ui.close_menu();
+        }
+    }));
+    // Items dragged onto the header go into the bin.
+    if let Some(dragging) = state.dragging_media {
+        if resp.contains_pointer() {
+            ui.painter().rect_stroke(resp.rect, 2.0, egui::Stroke::new(2.0_f32, theme.accent));
+            if !ui.ctx().input(|i| i.pointer.primary_down()) {
+                let media_ids = if state.dragging_media_group.is_empty() { vec![dragging] } else { state.dragging_media_group.clone() };
+                cmds.push(AppCommand::MoveItemsToBin { media_ids, bin: Some(name.clone()) });
+                state.dragging_media = None;
+                state.dragging_media_group.clear();
+            }
+        }
+    }
+    if !closed && count == 0 {
+        ui.horizontal(|ui| {
+            ui.add_space(30.0);
+            ui.label(egui::RichText::new("Empty: drag clips here, or use Move to Bin").size(crate::theme::type_scale::CAPTION).color(theme.text_dim));
+        });
+    }
+    !closed
+}
 
-    // Check if we're renaming this bin
-    let mut should_clear_rename = false;
-    if let Some((ref old_name, ref mut edit_text)) = renaming_bin {
-        if bin.as_deref() == Some(old_name.as_str()) {
-            let old_clone = old_name.clone();
-            let resp = ui.horizontal(|ui| {
+/// A bin's header row: open or closed, its name and how many items it
+/// shows. While the bin is being renamed, the name's text field instead,
+/// and no response.
+fn bin_header(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    name: &str,
+    count: usize,
+    closed: bool,
+    renaming_bin: &mut Option<(String, String)>,
+    cmds: &mut Vec<AppCommand>,
+) -> Option<egui::Response> {
+    if let Some((old_name, edit_text)) = renaming_bin {
+        if old_name == name {
+            let old_name = old_name.clone();
+            let mut done = false;
+            ui.horizontal(|ui| {
                 ui.add_space(10.0);
                 ui.add(Icon::Folder.image(12.0).tint(theme.text_dim));
                 let text_resp = ui.add(
@@ -1708,37 +1664,31 @@ fn render_bin_header(
                 // Commit on lost focus (Enter, click away, Escape)
                 if text_resp.lost_focus() {
                     let new_name = edit_text.trim().to_string();
-                    if !new_name.is_empty() && new_name != old_clone {
-                        cmds.push(AppCommand::RenameBin {
-                            old_name: old_clone,
-                            new_name,
-                        });
+                    if !new_name.is_empty() && new_name != old_name {
+                        cmds.push(AppCommand::RenameBin { old_name, new_name });
                     }
-                    should_clear_rename = true;
+                    done = true;
                 }
                 text_resp.request_focus();
             });
-            if should_clear_rename {
+            if done {
                 *renaming_bin = None;
             }
-            return resp.response;
+            return None;
         }
     }
-
-    // Normal header
-    // A caption-height group row: folder glyph, name in small caps.
-    let resp = ui.horizontal(|ui| {
-        ui.set_min_height(crate::theme::control::COMPACT);
-        ui.add_space(10.0);
-        ui.add(Icon::Folder.image(12.0).tint(theme.text_dim));
-        ui.label(
-            egui::RichText::new(bin_label.to_uppercase())
-                .size(crate::theme::type_scale::CAPTION)
-                .strong()
-                .color(theme.text_secondary),
-        );
-    });
-    resp.response
+    ui.add_space(2.0);
+    let width = (ui.clip_rect().right() - ui.cursor().min.x).max(1.0);
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, crate::theme::control::COMPACT + 4.0), egui::Sense::click());
+    let painter = ui.painter();
+    painter.rect_filled(rect.shrink2(egui::vec2(4.0, 0.0)), 3.0, if resp.hovered() { theme.bg_hover } else { theme.bg_raised });
+    let icon = |x: f32| egui::Rect::from_center_size(egui::pos2(rect.left() + x, rect.center().y), egui::vec2(12.0, 12.0));
+    (if closed { Icon::CaretRight } else { Icon::CaretDown }).image(12.0).tint(theme.text_secondary).paint_at(ui, icon(16.0));
+    Icon::Folder.image(12.0).tint(theme.text_secondary).paint_at(ui, icon(32.0));
+    let font = egui::FontId::proportional(crate::theme::type_scale::CONTROL);
+    painter.text(egui::pos2(rect.left() + 44.0, rect.center().y), egui::Align2::LEFT_CENTER, name, font.clone(), theme.text_primary);
+    painter.text(egui::pos2(rect.right() - 12.0, rect.center().y), egui::Align2::RIGHT_CENTER, count.to_string(), font, theme.text_dim);
+    Some(resp.on_hover_text(if closed { "Show the bin's clips" } else { "Hide the bin's clips" }))
 }
 
 /// Handle hover skimming: when hovering over a browser clip, show it in the source viewer.
@@ -1936,6 +1886,8 @@ fn show_context_menu(
     is_subclip: bool,
     synced_audio: bool,
     span_parts: &[MediaId],
+    bins: &[String],
+    bin: Option<&str>,
     cmds: &mut Vec<AppCommand>,
 ) {
     if span_parts.len() >= 2 && menu_item(ui, &format!("Add All {} Parts to Timeline", span_parts.len()), "")
@@ -2057,10 +2009,7 @@ fn show_context_menu(
         }
     }));
     ui.separator();
-    if menu_item(ui, "Move to Root", "").clicked() {
-        cmds.push(AppCommand::MoveItemToBin { media_id, bin: None });
-        ui.close_menu();
-    }
+    bin_menu_items(ui, bins, &[media_id], bin, bin.is_some(), cmds);
     ui.separator();
     if menu_item(ui, "Remove from Project", "").clicked() {
         cmds.push(AppCommand::RemoveFromPool { media_id });
@@ -2159,11 +2108,41 @@ fn sync_pair_of(state: &AppState) -> Option<(MediaId, MediaId)> {
 
 use klipp_core::MulticamSync;
 
+/// Move to Bin, with every bin and a new one, and New Bin from
+/// Selection, for the items `ids`: `current` is the bin they are in, and
+/// Remove from Bin shows when any is in one.
+fn bin_menu_items(ui: &mut egui::Ui, bins: &[String], ids: &[MediaId], current: Option<&str>, in_a_bin: bool, cmds: &mut Vec<AppCommand>) {
+    ui.menu_button("Move to Bin", |ui| menu_body(ui, |ui| {
+        for bin in bins {
+            if ui.add_enabled_ui(current != Some(bin.as_str()), |ui| menu_item(ui, bin, "")).inner.clicked() {
+                cmds.push(AppCommand::MoveItemsToBin { media_ids: ids.to_vec(), bin: Some(bin.clone()) });
+                ui.close_menu();
+            }
+        }
+        if !bins.is_empty() {
+            ui.separator();
+        }
+        if menu_item(ui, "New Bin\u{2026}", "").on_hover_text("A new bin with these in it. Its name is ready to type.").clicked() {
+            cmds.push(AppCommand::NewBin { media_ids: ids.to_vec() });
+            ui.close_menu();
+        }
+        if in_a_bin && menu_item(ui, "Remove from Bin", "").clicked() {
+            cmds.push(AppCommand::MoveItemsToBin { media_ids: ids.to_vec(), bin: None });
+            ui.close_menu();
+        }
+    }));
+    if menu_item(ui, "New Bin from Selection", "").on_hover_text("A new bin with the selected clips in it.").clicked() {
+        cmds.push(AppCommand::NewBin { media_ids: ids.to_vec() });
+        ui.close_menu();
+    }
+}
+
 fn show_multi_context_menu(
     ui: &mut egui::Ui,
     selected_ids: &std::collections::HashSet<MediaId>,
     sync_pair: Option<(MediaId, MediaId)>,
     default_sync: MulticamSync,
+    bins: &[String],
     cmds: &mut Vec<AppCommand>,
 ) {
     let count = selected_ids.len();
@@ -2220,14 +2199,7 @@ fn show_multi_context_menu(
         }
     }
     ui.separator();
-    ui.menu_button("Move to bin", |ui| menu_body(ui, |ui| {
-        if menu_item(ui, "Root (no bin)", "").clicked() {
-            for &id in selected_ids {
-                cmds.push(AppCommand::MoveItemToBin { media_id: id, bin: None });
-            }
-            ui.close_menu();
-        }
-    }));
+    bin_menu_items(ui, bins, &selected_ids.iter().copied().collect::<Vec<_>>(), None, true, cmds);
     ui.menu_button("Set Rating", |ui| menu_body(ui, |ui| {
         for r in 0..=5u8 {
             let label = if r == 0 {
@@ -2583,7 +2555,7 @@ mod default_multicam_sync_tests {
             let mut cmds = Vec::new();
             let mut at = None;
             let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 800.0))), events, ..Default::default() }, |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| show_multi_context_menu(ui, &ids, None, default_sync, &mut cmds));
+                egui::CentralPanel::default().show(ctx, |ui| show_multi_context_menu(ui, &ids, None, default_sync, &[], &mut cmds));
             });
             for s in &out.shapes {
                 if let egui::Shape::Text(t) = &s.shape {
@@ -2684,5 +2656,208 @@ mod pool_style_tests {
         still.is_still = true;
         still.resolution = klipp_core::Resolution { width: 1920, height: 1080 };
         assert_eq!(card_caption(&still), "Still \u{00b7} 1920\u{00d7}1080");
+    }
+}
+
+#[cfg(test)]
+mod bin_menu_tests {
+    use super::*;
+
+    /// The whole media pool, drawn as the app draws it.
+    struct Pool {
+        ctx: egui::Context,
+        state: AppState,
+        panel: crate::browser::BrowserPanel,
+        /// The window's size.
+        size: egui::Vec2,
+    }
+
+    impl Pool {
+        fn new(view: BrowserViewMode, names: &[&str]) -> Self {
+            let mut state = AppState::default();
+            for name in names {
+                state.media_pool.add(klipp_media::MediaItem::synthetic_for_test(format!("/footage/{name}").into(), None));
+            }
+            let panel = crate::browser::BrowserPanel { browser_view_mode: view, ..Default::default() };
+            Self { ctx: egui::Context::default(), state, panel, size: egui::vec2(700.0, 1600.0) }
+        }
+
+        /// One frame with `events`: the text drawn, with where, and what
+        /// the pool asked the app to do.
+        fn frame(&mut self, events: Vec<egui::Event>) -> (Vec<(String, egui::Pos2)>, Vec<AppCommand>) {
+            let theme = KlippTheme::default();
+            let mut tab = crate::layout_state::BrowserTab::Media;
+            let (mut pinned, mut ratio) = (false, 0.5);
+            let mut cmds = Vec::new();
+            let (state, panel) = (&mut self.state, &mut self.panel);
+            let out = self.ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, self.size)), events, ..Default::default() }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| cmds = panel.show(ui, state, &theme, &mut tab, &mut pinned, &mut ratio));
+            });
+            let texts = out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
+                _ => None,
+            }).collect();
+            (texts, cmds)
+        }
+
+        fn texts(&mut self) -> Vec<(String, egui::Pos2)> {
+            self.frame(Vec::new()).0
+        }
+
+        /// Where `text` is drawn: on top, in an open menu, when it is
+        /// drawn twice.
+        fn at(&mut self, text: &str) -> egui::Pos2 {
+            let texts = self.texts();
+            texts.iter().rfind(|(t, _)| t == text).unwrap_or_else(|| panic!("{text:?} is drawn: {texts:?}")).1
+        }
+
+        /// Right-click at `at`: the text drawn with the menu open.
+        fn right_click(&mut self, at: egui::Pos2) -> Vec<String> {
+            let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Secondary, pressed, modifiers: egui::Modifiers::NONE };
+            self.frame(vec![egui::Event::PointerMoved(at), button(true)]);
+            self.frame(vec![button(false)]);
+            self.texts().into_iter().map(|(t, _)| t).collect()
+        }
+
+        /// Click `text` where it is drawn: what the pool asked for.
+        fn click(&mut self, text: &str) -> Vec<AppCommand> {
+            let at = self.at(text);
+            let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+            let mut cmds = self.frame(vec![egui::Event::PointerMoved(at), button(true)]).1;
+            cmds.extend(self.frame(vec![button(false)]).1);
+            cmds
+        }
+    }
+
+    fn in_bin(pool: &mut Pool, name: &str, bin: &str) -> MediaId {
+        let id = pool.state.media_pool.all().find(|m| m.filename == name).expect("the item").id;
+        pool.state.media_pool.find_or_create_bin(bin);
+        pool.state.media_pool.get_mut(&id).expect("the item").bin = Some(bin.into());
+        id
+    }
+
+    fn missing<'a>(menu: &[String], items: &[&'a str]) -> Vec<&'a str> {
+        items.iter().copied().filter(|item| !menu.iter().any(|t| t == item)).collect()
+    }
+
+    /// #2621: a right-click where no item is opens the pool's menu with
+    /// New Bin: below the items, and on the divider before the clips in
+    /// no bin, in both views.
+    #[test]
+    fn a_right_click_on_no_item_opens_the_pools_menu() {
+        for view in [BrowserViewMode::Grid, BrowserViewMode::List] {
+            let mut pool = Pool::new(view, &["a.mov", "b.mov"]);
+            in_bin(&mut pool, "a.mov", "Selects");
+            let below = pool.at("b.mov") + egui::vec2(0.0, 300.0);
+            let menu = pool.right_click(below);
+            assert!(missing(&menu, &["New Bin", "Import Media\u{2026}"]).is_empty(), "{view:?} below: {menu:?}");
+            pool.frame(vec![egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]);
+            let divider = pool.at("NOT IN A BIN");
+            let menu = pool.right_click(divider);
+            assert!(menu.iter().any(|t| t == "New Bin"), "{view:?} divider: {menu:?}");
+            // A pool too long for its panel, with no space below its items.
+            let names: Vec<String> = (0..60).map(|n| format!("clip{n:02}.mov")).collect();
+            let mut pool = Pool::new(view, &names.iter().map(String::as_str).collect::<Vec<_>>());
+            in_bin(&mut pool, "clip00.mov", "Selects");
+            pool.size = egui::vec2(700.0, 700.0);
+            let divider = pool.at("NOT IN A BIN");
+            let menu = pool.right_click(divider);
+            assert!(menu.iter().any(|t| t == "New Bin"), "{view:?} full pool: {menu:?}");
+        }
+    }
+
+    /// Bins come first, each with a header, the empty ones too, then a
+    /// divider and the clips in no bin; a header's click closes the bin
+    /// and opens it again.
+    #[test]
+    fn bins_are_listed_first_and_close() {
+        for view in [BrowserViewMode::Grid, BrowserViewMode::List] {
+            let mut pool = Pool::new(view, &["a.mov", "z.mov"]);
+            in_bin(&mut pool, "z.mov", "Selects");
+            pool.state.media_pool.find_or_create_bin("Empty");
+            let texts = pool.texts();
+            let y = |t: &str| texts.iter().find(|(s, _)| s == t).unwrap_or_else(|| panic!("{view:?}: {t:?} in {texts:?}")).1.y;
+            assert!(y("Empty") < y("Selects") && y("Selects") < y("z.mov") && y("z.mov") < y("NOT IN A BIN") && y("NOT IN A BIN") < y("a.mov"), "{view:?}: {texts:?}");
+            let header = pool.at("Selects");
+            let button = |pressed| egui::Event::PointerButton { pos: header, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+            pool.frame(vec![egui::Event::PointerMoved(header), button(true)]);
+            pool.frame(vec![button(false)]);
+            assert!(!pool.texts().iter().any(|(t, _)| t == "z.mov"), "{view:?}: closed");
+            pool.frame(vec![egui::Event::PointerMoved(header), button(true)]);
+            pool.frame(vec![button(false)]);
+            assert!(pool.texts().iter().any(|(t, _)| t == "z.mov"), "{view:?}: open again");
+        }
+    }
+
+    /// A bin header's menu has New Bin, Rename Bin and Delete Bin.
+    #[test]
+    fn a_bin_headers_menu_has_its_items() {
+        for view in [BrowserViewMode::Grid, BrowserViewMode::List] {
+            let mut pool = Pool::new(view, &["a.mov"]);
+            in_bin(&mut pool, "a.mov", "Selects");
+            let header = pool.at("Selects");
+            let menu = pool.right_click(header);
+            let lacking = missing(&menu, &["New Bin", "Rename Bin", "Delete Bin"]);
+            assert!(lacking.is_empty(), "{view:?}: lacks {lacking:?} in {menu:?}");
+        }
+    }
+
+    /// A clip's Move to Bin lists every bin, the one it is in greyed, and
+    /// New Bin…; New Bin from Selection is beside it.
+    #[test]
+    fn move_to_bin_lists_every_bin() {
+        for view in [BrowserViewMode::Grid, BrowserViewMode::List] {
+            let mut pool = Pool::new(view, &["a.mov", "b.mov"]);
+            in_bin(&mut pool, "b.mov", "Selects");
+            pool.state.media_pool.find_or_create_bin("B-roll");
+            let at = pool.at("a.mov");
+            let menu = pool.right_click(at);
+            assert!(missing(&menu, &["Move to Bin", "New Bin from Selection"]).is_empty(), "{view:?}: {menu:?}");
+            let sub = pool.at("Move to Bin");
+            pool.frame(vec![egui::Event::PointerMoved(sub)]);
+            pool.frame(vec![egui::Event::PointerMoved(sub)]);
+            let menu: Vec<String> = pool.texts().into_iter().map(|(t, _)| t).collect();
+            let lacking = missing(&menu, &["B-roll", "Selects", "New Bin\u{2026}"]);
+            assert!(lacking.is_empty(), "{view:?}: Move to Bin lacks {lacking:?} in {menu:?}");
+            let cmds = pool.click("Selects");
+            let a = pool.state.media_pool.all().find(|m| m.filename == "a.mov").expect("a").id;
+            assert!(cmds.iter().any(|c| matches!(c, AppCommand::MoveItemsToBin { media_ids, bin: Some(b) } if *media_ids == [a] && b == "Selects")), "{view:?}: {cmds:?}");
+        }
+    }
+
+    /// New Bin from Selection, on a multi-selection's menu, makes a bin
+    /// of every selected item.
+    #[test]
+    fn new_bin_from_selection_takes_every_selected_item() {
+        let mut pool = Pool::new(BrowserViewMode::List, &["a.mov", "b.mov", "c.mov"]);
+        let ids: Vec<MediaId> = pool.state.media_pool.all().filter(|m| m.filename != "c.mov").map(|m| m.id).collect();
+        pool.state.selected_media_ids = ids.iter().copied().collect();
+        let at = pool.at("a.mov");
+        let menu = pool.right_click(at);
+        assert!(menu.iter().any(|t| t == "2 items selected"), "the selection's menu: {menu:?}");
+        let cmds = pool.click("New Bin from Selection");
+        let made: Vec<_> = cmds.iter().filter_map(|c| match c { AppCommand::NewBin { media_ids } => Some(media_ids.clone()), _ => None }).collect();
+        assert_eq!(made.len(), 1, "{cmds:?}");
+        let mut got = made[0].clone();
+        got.sort_by_key(|id| id.to_string());
+        let mut want = ids;
+        want.sort_by_key(|id| id.to_string());
+        assert_eq!(got, want);
+    }
+
+    /// Several items moved to a bin are one undo step; undoing it takes
+    /// them all back out.
+    #[test]
+    fn moving_several_items_is_one_step() {
+        let mut state = AppState::default();
+        let ids: Vec<MediaId> = ["a.mov", "b.mov"].iter().map(|n| state.media_pool.add(klipp_media::MediaItem::synthetic_for_test(format!("/footage/{n}").into(), None))).collect();
+        state.move_media_to_bin(&ids, Some("Selects"));
+        assert!(ids.iter().all(|id| state.media_pool.get(id).expect("item").bin.as_deref() == Some("Selects")));
+        let step = state.project_history_mut().undo().expect("a step");
+        assert!(state.project_history_mut().undo().is_none(), "one step for both");
+        let mut pool = state.media_pool.clone();
+        let (mut sequences, mut fps) = (state.sequences.clone(), state.fps);
+        klipp_document::apply::DocumentView { sequences: &mut sequences, active: 0, media_pool: &mut pool, fps: &mut fps }.apply_inverse(&step.command);
+        assert!(ids.iter().all(|id| pool.get(id).expect("item").bin.is_none()), "undone, both are out");
     }
 }

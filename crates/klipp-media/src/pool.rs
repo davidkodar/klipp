@@ -84,6 +84,16 @@ impl MediaPool {
         }
     }
 
+    /// "New Bin", or else "New Bin 2", "New Bin 3"…: the first name no
+    /// bin has, nor any item's bin.
+    pub fn unused_bin_name(&self) -> String {
+        let taken = |name: &str| self.bins.iter().any(|b| b.name == name) || self.all().any(|m| m.bin.as_deref() == Some(name));
+        std::iter::once("New Bin".to_string())
+            .chain((2..).map(|n| format!("New Bin {n}")))
+            .find(|name| !taken(name))
+            .expect("an unused name")
+    }
+
     /// Get the display name for a bin_id, walking up to build "Parent / Child" path.
     pub fn bin_display_name(&self, bin_id: &BinId) -> String {
         let mut parts = Vec::new();
@@ -98,5 +108,24 @@ impl MediaPool {
         }
         parts.reverse();
         parts.join(" / ")
+    }
+}
+
+#[cfg(test)]
+mod bin_name_tests {
+    use super::*;
+
+    /// A new bin is named apart from the bins there are and from the
+    /// bins items name.
+    #[test]
+    fn a_new_bins_name_is_one_no_bin_has() {
+        let mut pool = MediaPool::new();
+        assert_eq!(pool.unused_bin_name(), "New Bin");
+        pool.find_or_create_bin("New Bin");
+        assert_eq!(pool.unused_bin_name(), "New Bin 2");
+        let mut item = MediaItem::synthetic_for_test("/footage/a.mov".into(), None);
+        item.bin = Some("New Bin 2".into());
+        pool.add(item);
+        assert_eq!(pool.unused_bin_name(), "New Bin 3");
     }
 }

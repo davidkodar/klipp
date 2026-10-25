@@ -706,7 +706,6 @@ pub struct BrowserPanel {
     pub browser_view_mode: media_tab::BrowserViewMode,
     // Bin management state
     pub renaming_bin: Option<(String, String)>,  // (old_name, current_edit_text)
-    pub creating_bin: Option<String>,             // new bin name being typed
     // Effects tab state
     pub effects_category: effects_tab::EffectCategory,
     // Audio FX tab state — kept distinct from effects_category so the
@@ -966,8 +965,6 @@ pub struct BrowserPanel {
     /// Inline "create new folder" state. `Some(text)` while a temporary
     /// row is showing at the top of the file list with a TextEdit for
     /// the user to type the folder name. `None` when not creating.
-    /// Modeled on `media_tab::creating_bin` — the same pattern but
-    /// committing to the real filesystem instead of the media pool.
     creating_folder: Option<String>,
     /// Inline rename state. `Some((original_path, current_edit_text))`
     /// while a file/folder row is in edit mode. `None` when idle.
@@ -1020,7 +1017,6 @@ impl Default for BrowserPanel {
             metadata_filter: MetadataFilter::Any,
             browser_view_mode: media_tab::BrowserViewMode::default(),
             renaming_bin: None,
-            creating_bin: None,
             effects_category: effects_tab::EffectCategory::All,
             audio_fx_category: effects_tab::EffectCategory::AudioAll,
             audio_fx_source_filter: audio_fx_tab::AudioSourceFilter::All,
@@ -1618,7 +1614,7 @@ impl BrowserPanel {
                         // AND-combined across categories, OR-combined
                         // within the colour-label bitmask.
                         self.render_media_filter_toolbar(ui, theme, state);
-                        find_by_picture_button(ui, &mut cmds);
+                        media_pool_buttons(ui, &mut cmds);
                         let tab_cmds = media_tab::show(
                             ui,
                             state,
@@ -1630,7 +1626,6 @@ impl BrowserPanel {
                             &mut self.browser_view_mode,
                             &mut self.list_columns,
                             &mut self.renaming_bin,
-                            &mut self.creating_bin,
                             &mut self.scroll_to_media_id,
                             &self.smart_bin_filter,
                             self.min_rating_filter,
@@ -1659,7 +1654,7 @@ impl BrowserPanel {
                     // visible when Files is pinned, which is poor
                     // discoverability.
                     self.render_media_filter_toolbar(ui, theme, state);
-                    find_by_picture_button(ui, &mut cmds);
+                    media_pool_buttons(ui, &mut cmds);
                     let tab_cmds = media_tab::show(
                         ui,
                         state,
@@ -1671,7 +1666,6 @@ impl BrowserPanel {
                         &mut self.browser_view_mode,
                         &mut self.list_columns,
                         &mut self.renaming_bin,
-                        &mut self.creating_bin,
                         &mut self.scroll_to_media_id,
                         &self.smart_bin_filter,
                         self.min_rating_filter,
@@ -5513,10 +5507,16 @@ fn create_folder_in(parent: &std::path::Path, name: &str) -> Result<std::path::P
 
 /// Opens Find by Picture (#2212): footage found by what is in its
 /// picture. Drawn above the media list in the single and split views.
-fn find_by_picture_button(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>) {
-    if ui.small_button("Find by Picture\u{2026}").on_hover_text("Describe a shot (\u{201c}a dog on a beach\u{201d}) to find the footage that looks like it").clicked() {
-        cmds.push(AppCommand::OpenVisualSearch);
-    }
+/// The media pool's buttons under its filters: New Bin and Find by Picture.
+fn media_pool_buttons(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>) {
+    ui.horizontal(|ui| {
+        if ui.small_button("New Bin").on_hover_text("A bin to gather clips in. Its name is ready to type.").clicked() {
+            cmds.push(AppCommand::NewBin { media_ids: Vec::new() });
+        }
+        if ui.small_button("Find by Picture\u{2026}").on_hover_text("Describe a shot (\u{201c}a dog on a beach\u{201d}) to find the footage that looks like it").clicked() {
+            cmds.push(AppCommand::OpenVisualSearch);
+        }
+    });
 }
 
 #[cfg(test)]
