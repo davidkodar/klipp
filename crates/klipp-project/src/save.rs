@@ -155,19 +155,69 @@ fn save_project_full_as(
     title_assets: &std::collections::HashMap<klipp_core::MediaId, klipp_timeline::TitleAsset>,
     form: crate::FileForm,
 ) -> Result<(), String> {
-    // A clip id twice in a sequence is saved under an id of its own, so
-    // its picture is written whole (#2457).
-    let unique = crate::unique_ids::unique_clip_ids(sequences);
-    let sequences = unique.as_deref().unwrap_or(sequences);
     // Create directory structure
     std::fs::create_dir_all(dir.join("media"))
         .map_err(|e| format!("Failed to create project directory: {e}"))?;
 
-    // Build project.json
-    let now = iso8601_now();
+    // One id for this save, written into both files (#821), and into the
+    // pending mark while it is under way (#840).
+    let generation = new_generation();
+    let view = View { timeline_zoom, timeline_scroll_x, timeline_track_scale };
+    let (project_json, manifest_json) = project_files(
+        dir, sequences, media_pool, color, active_sequence_id, created_at, notes, view, title_assets, form,
+        Stamp { generation: generation.clone(), saved_at: iso8601_now() },
+    )?;
 
+    commit_pair(dir, project_json.as_bytes(), manifest_json.as_bytes(), backup_count, &generation)?;
+
+    info!("Project saved to {:?}", dir);
+    Ok(())
+}
+
+/// The timeline's view as a save keeps it.
+#[derive(Clone, Copy, Default)]
+struct View {
+    timeline_zoom: Option<f32>,
+    timeline_scroll_x: Option<f32>,
+    timeline_track_scale: Option<f32>,
+}
+
+/// What marks one save: its id and when it was made.
+struct Stamp {
+    generation: String,
+    saved_at: String,
+}
+
+/// The two files a save writes, project.json and media/manifest.json, as
+/// text: the one place they are built, for a save and for
+/// [`project_digest`] alike.
+#[allow(clippy::too_many_arguments)]
+fn project_files(
+    dir: &Path,
+    sequences: &[Sequence],
+    media_pool: &MediaPool,
+    color: &ColorSettings,
+    active_sequence_id: Option<&str>,
+    created_at: Option<&str>,
+    notes: &str,
+    view: View,
+    title_assets: &std::collections::HashMap<klipp_core::MediaId, klipp_timeline::TitleAsset>,
+    form: crate::FileForm,
+    stamp: Stamp,
+) -> Result<(String, String), String> {
+    // A clip id twice in a sequence is saved under an id of its own, so
+    // its picture is written whole (#2457).
+    let unique = crate::unique_ids::unique_clip_ids(sequences);
+    let sequences = unique.as_deref().unwrap_or(sequences);
+    let View { timeline_zoom, timeline_scroll_x, timeline_track_scale } = view;
+    let Stamp { generation, saved_at } = stamp;
+
+    // By id: the assets are a hash map, whose order changes from run to
+    // run, and an unchanged project should save the same.
+    let mut title_assets: Vec<_> = title_assets.iter().collect();
+    title_assets.sort_by_key(|(id, _)| id.0);
     let title_assets_json: Vec<crate::format::TitleAssetJson> = title_assets
-        .iter()
+        .into_iter()
         .map(|(id, asset)| crate::format::TitleAssetJson {
             id: id.0.to_string(),
             display_name: asset.display_name.clone(),
@@ -176,17 +226,13 @@ fn save_project_full_as(
         })
         .collect();
 
-    // One id for this save, written into both files (#821), and into the
-    // pending mark while it is under way (#840).
-    let generation = new_generation();
-    let saving = generation.clone();
     let project = ProjectJson {
         version: "1.0.0".to_string(),
         klipp_version_min: "0.1.0".to_string(),
         format_revision: crate::FORMAT_REVISION,
         generation: Some(generation.clone()),
         klipp_version: Some(env!("CARGO_PKG_VERSION").to_string()),
-        saved_at: Some(now),
+        saved_at: Some(saved_at),
         created_at: created_at.map(|s| s.to_string()),
         platform: Some(format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)),
         sequences: sequences.iter().map(|s| sequence_to_json(s, color, dir)).collect(),
@@ -235,11 +281,38 @@ fn save_project_full_as(
     };
     let manifest_json = serde_json::to_string_pretty(&manifest)
         .map_err(|e| format!("Failed to serialize media manifest: {e}"))?;
+    Ok((project_json, manifest_json))
+}
 
-    commit_pair(dir, project_json.as_bytes(), manifest_json.as_bytes(), backup_count, &saving)?;
-
-    info!("Project saved to {:?}", dir);
-    Ok(())
+/// A digest of what a save of this project would write that is the
+/// project's content (#2626): the project unsaved is exactly its digest
+/// differing from the one at the last load or save. Left out are what
+/// marks a save (its id and time) and how the timeline is being viewed
+/// (zoom, scroll, track height, header width, which sequence is open):
+/// those are saved with the project, but a change to them alone is not
+/// a change to it. Stable within a run, which is all it is compared in.
+#[allow(clippy::too_many_arguments)]
+pub fn project_digest(
+    dir: &Path,
+    sequences: &[Sequence],
+    media_pool: &MediaPool,
+    color: &ColorSettings,
+    created_at: Option<&str>,
+    notes: &str,
+    title_assets: &std::collections::HashMap<klipp_core::MediaId, klipp_timeline::TitleAsset>,
+    looks: &[Look],
+) -> Result<u64, String> {
+    use std::hash::{Hash, Hasher};
+    let color = ColorSettings { track_header_width: ColorSettings::default().track_header_width, ..color.clone() };
+    let (project, manifest) = project_files(
+        dir, sequences, media_pool, &color, None, created_at, notes, View::default(), title_assets,
+        crate::FileForm::Revision2, Stamp { generation: String::new(), saved_at: String::new() },
+    )?;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    project.hash(&mut h);
+    manifest.hash(&mut h);
+    serde_json::to_string(looks).map_err(|e| format!("Failed to serialize looks: {e}"))?.hash(&mut h);
+    Ok(h.finish())
 }
 
 /// A fresh id for one save: the time to the nanosecond and the process,
@@ -1010,6 +1083,86 @@ mod save_alike_tests {
         probed.metadata_read = !stored.metadata_read;
         probed.needs_reprobe = !stored.needs_reprobe;
         assert!(media_items_save_alike(&stored, &probed));
+    }
+
+    /// An item with everything the editor and the analysis said about
+    /// it, as a project stores it.
+    fn described() -> MediaItem {
+        let mut m = item();
+        m.rating = 4;
+        m.tags = vec!["harbour".into()];
+        m.user_notes = "the good one".into();
+        m.bin = Some("Selects".into());
+        m.bin_id = Some(klipp_core::BinId::new());
+        m.color_label = klipp_media::ColorLabel::from_u8(2);
+        m.default_source_in = Some(klipp_core::Timecode::from_frames(12, 24));
+        m.default_source_out = Some(klipp_core::Timecode::from_frames(96, 24));
+        m.added_at = 1_700_000_000;
+        m.log.scene = "4".into();
+        m.markers = vec![klipp_core::MediaMarker { secs: 1.5, duration_secs: 0.0, name: "cut".into(), kind: klipp_core::MediaMarkerKind::Analysis }];
+        m.screen_text = "File · Edit · Export".into();
+        m.audio_role = Some(klipp_core::RoleProposal { role: klipp_core::ClipRole::Music, confidence: 0.9, confident: true });
+        m
+    }
+
+    /// What the open's re-read of the same, unchanged file makes before
+    /// the merge: the file's facts, and nothing anyone said about it.
+    fn reread(stored: &MediaItem) -> MediaItem {
+        MediaItem {
+            rating: 0,
+            tags: Vec::new(),
+            user_notes: String::new(),
+            bin: None,
+            bin_id: None,
+            color_label: Default::default(),
+            default_source_in: None,
+            default_source_out: None,
+            added_at: stored.added_at + 600,
+            log: Default::default(),
+            markers: Vec::new(),
+            screen_text: String::new(),
+            audio_role: None,
+            metadata_read: true,
+            ..stored.clone()
+        }
+    }
+
+    /// #2626: every open re-reads every file, and the merge left out the
+    /// screen text and the sound role, so the item no longer saved alike
+    /// and the project opened unsaved. Merged, a re-read of the same file
+    /// saves as it was stored.
+    #[test]
+    fn a_reread_of_the_same_file_merged_saves_as_stored() {
+        let stored = described();
+        let mut fresh = reread(&stored);
+        assert!(!media_items_save_alike(&stored, &fresh), "the fixture must differ before the merge");
+        klipp_media::merge_reprobed(&stored, &mut fresh);
+        assert!(media_items_save_alike(&stored, &fresh), "the merge kept what was saved");
+    }
+
+    /// A still's length is the editor's: a re-read gives the default one,
+    /// and the merge keeps the stored length for the same file.
+    #[test]
+    fn a_reread_still_keeps_its_length() {
+        let mut stored = described();
+        stored.is_still = true;
+        stored.duration = klipp_core::Timecode::from_frames(240, 25);
+        stored.fps = klipp_core::Fps::pal_25();
+        let mut fresh = reread(&stored);
+        fresh.duration = klipp_core::Timecode::from_frames(125, 25);
+        klipp_media::merge_reprobed(&stored, &mut fresh);
+        assert!(media_items_save_alike(&stored, &fresh));
+    }
+
+    /// A different file at the path keeps what the editor said, not what
+    /// was made from the old pixels.
+    #[test]
+    fn a_changed_file_drops_what_was_made_from_the_old_one() {
+        let stored = described();
+        let mut fresh = reread(&stored);
+        fresh.file_size_bytes += 1;
+        klipp_media::merge_reprobed(&stored, &mut fresh);
+        assert_eq!((fresh.rating, fresh.screen_text.as_str(), fresh.audio_role), (4, "", None));
     }
 
     #[test]

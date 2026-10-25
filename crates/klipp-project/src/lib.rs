@@ -98,4 +98,4 @@ pub use save::{save_looks_v1, save_project_v1};
 #[cfg(feature = "v1-oracle")]
 pub use grade_stills::{load_grade_stills_v1, save_grade_stills_v1};
 pub use made_media::{adopt_made_media, MediaAdoption};
-pub use save::{iso8601_now, media_items_save_alike, save_looks, save_project, save_project_full, save_project_with_color, save_project_with_color_and_backups, ColorSettings};
+pub use save::{iso8601_now, media_items_save_alike, project_digest, save_looks, save_project, save_project_full, save_project_with_color, save_project_with_color_and_backups, ColorSettings};

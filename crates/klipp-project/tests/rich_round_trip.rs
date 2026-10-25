@@ -186,3 +186,41 @@ fn a_picture_truth_clip_through_its_own_serde_is_its_view_and_a_save_keeps_it() 
     assert_eq!(back[0].tracks[0].clips[0].picture_v2().unwrap().picture, c.picture_v2().unwrap().picture);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+fn digest_of(dir: &Path, seqs: &[Sequence], pool: &MediaPool, color: &klipp_project::ColorSettings) -> u64 {
+    klipp_project::project_digest(dir, seqs, pool, color, None, "", &Default::default(), &[]).unwrap()
+}
+
+/// #2626: a project opened is what was saved. Opened again its digest is
+/// the one it had before the save, a second save leaves the same bytes
+/// in both files, and how the timeline is viewed is not part of it.
+#[test]
+fn an_opened_project_digests_as_it_was_saved() {
+    let made = vec![rich(), second(), Sequence { tracks: vec![{ let mut v = Track::new("V1", TrackKind::Video); v.clips.push(truth_clip(0.0)); v }], ..Sequence::new_default() }];
+    let pool = MediaPool::new();
+    let color = klipp_project::ColorSettings::default();
+    let first = scratch("digest_first");
+    let before = digest_of(&first, &made, &pool, &color);
+    assert_eq!(before, digest_of(&first, &made, &pool, &color), "the same within a run");
+    klipp_project::save_project_full(&first, &made, &pool, &color, None, None, "", 0, Some(1.0), Some(0.0), Some(1.0), &Default::default()).unwrap();
+    let (seqs, pool_back, color_back, active, created, notes, zoom, scroll, scale, assets) = load_project_strict(&first).unwrap();
+    assert_eq!(digest_of(&first, &seqs, &pool_back, &color_back), before, "opened, it is what was saved");
+
+    // Only the timeline's view differs: the same project.
+    let viewed = klipp_project::ColorSettings { track_header_width: color_back.track_header_width + 80.0, ..color_back.clone() };
+    assert_eq!(digest_of(&first, &seqs, &pool_back, &viewed), before, "the header width is how it is viewed");
+
+    // Saved again with nothing changed: the same bytes in both files.
+    let again = scratch("digest_again");
+    klipp_project::save_project_full(&again, &seqs, &pool_back, &color_back, active.as_deref(), created.as_deref(), &notes, 0, zoom, scroll, scale, &assets).unwrap();
+    assert_eq!(project_text(&again), project_text(&first), "project.json byte for byte, stamps aside");
+    let manifest = |dir: &Path| std::fs::read_to_string(dir.join("media/manifest.json")).unwrap().lines().filter(|l| !l.starts_with("  \"generation\":")).collect::<Vec<_>>().join("\n");
+    assert_eq!(manifest(&again), manifest(&first), "the media manifest byte for byte");
+
+    // A real edit is a different project.
+    let mut edited = seqs.clone();
+    edited[0].name.push_str(" (cut)");
+    assert_ne!(digest_of(&first, &edited, &pool_back, &color_back), before, "an edit changes it");
+    let _ = std::fs::remove_dir_all(&first);
+    let _ = std::fs::remove_dir_all(&again);
+}

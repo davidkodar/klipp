@@ -57,7 +57,7 @@ impl KlippApp {
             // "edits" as the cause only when this envelope made it so. A
             // play or a seek over a project unsaved for another reason
             // (analysis markers arriving) used to relabel it as edits.
-            let was_dirty = self.state.dirty;
+            let was_unsaved = self.is_unsaved();
             // A refusal from before this envelope is not its.
             klipp_timeline::take_picture_refusal();
             // A resolved plan: its commands forward, in order, as one
@@ -141,10 +141,11 @@ impl KlippApp {
                 // The project's state as of this write, for a status read
                 // straight after it: the per-frame mirror had not run yet,
                 // and the project read as saved a moment after an edit.
+                let unsaved = self.is_unsaved();
                 if let Ok(mut project) = self.state.control_shared.project.lock() {
                     project.recent_projects = self.prefs.general.recent_projects.iter().map(crate::prefs::RecentProject::control_summary).collect();
                     project.path = self.state.project_path.clone();
-                    project.dirty = self.state.dirty;
+                    project.dirty = unsaved;
                     project.undo = self.state.undo_label();
                     project.redo = self.state.redo_label();
                     project.undo_depth = self.state.undo_depth();
@@ -152,7 +153,7 @@ impl KlippApp {
                     let (undo_scope, redo_scope) = self.state.undo_scopes();
                     (project.undo_scope, project.redo_scope) = (undo_scope.map(str::to_owned), redo_scope.map(str::to_owned));
                     (project.sequences, project.active_sequence) = self.state.sequence_summaries();
-                    if self.state.dirty && !was_dirty && refused.is_none() {
+                    if unsaved && !was_unsaved && refused.is_none() {
                         project.changed_by = Some("edits".into());
                     }
                 }

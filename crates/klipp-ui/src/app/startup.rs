@@ -124,6 +124,7 @@ impl KlippApp {
             },
             toolbar: ToolbarPanel { logo_texture: None },
             updates: Default::default(),
+            unsaved_settled_at: None,
             viewer: ViewerPanel::default(),
             title_renderer: title_renderer_ui,
             markers: MarkersPanel::default(),
