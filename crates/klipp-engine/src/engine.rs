@@ -5398,6 +5398,27 @@ impl PlaybackEngine {
         }
     }
 
+    /// Where the timeline is now, as export frames it (#2556): the start
+    /// of the sequence frame the clock is in, and the source time of that
+    /// frame through the clip's speed, as export renders a timeline frame.
+    /// The frame shown is the file's nearest to that time, and it changes
+    /// only when the timeline's frame does: a 30 fps file on a 23.976
+    /// timeline showed every one of its frames, at its own times. `None`
+    /// off a media clip, where the clock is used as it is.
+    fn due_frame(&self, clock: f64) -> Option<(f64, RationalTime)> {
+        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+        let clip = seq.tracks.get(self.current_track_index).and_then(|t| t.clips.get(self.current_clip_index))?;
+        clip.media_id()?;
+        let fps = seq.fps.as_f64();
+        let elapsed = self.ramp_clip_relative_secs().unwrap_or_else(|| (clock - self.clip_source_start) / self.clip_speed.max(0.001)).max(0.0);
+        let now = self.clip_timeline_start.to_secs_f64() + elapsed;
+        let rate = self.playhead.rate.max(1);
+        let ticks = ((rate as f64 / fps).round() as i64).max(1);
+        let frame = (now * fps + 1e-6).floor() as i64;
+        let at = RationalTime { value: frame * ticks, rate }.max(clip.timeline_in);
+        Some((klipp_compose::render::source_secs(clip, at, fps), at))
+    }
+
     #[allow(unused_assignments)]
     fn update_playback(&mut self) {
         let t_update = std::time::Instant::now();
@@ -5532,6 +5553,9 @@ impl PlaybackEngine {
         }
 
         // Pop frames from the queue, presenting the one closest to current time
+        // as the timeline frames it: due by the start of the clock's frame.
+        let due = self.due_frame(current_source_secs);
+        let due_secs = due.map_or(current_source_secs, |(secs, _)| secs);
         let mut display_frame = None;
         let mut q_len = 0usize;
 
@@ -5565,7 +5589,7 @@ impl PlaybackEngine {
                     }
                     Some(f) => {
                         let pts = f.pts_secs();
-                        if pts <= current_source_secs + frame_tolerance {
+                        if pts <= due_secs + frame_tolerance {
                             // Frame is due or overdue — take it
                             if self.frames_consumed == 0 {
                                 debug!(
@@ -5576,7 +5600,7 @@ impl PlaybackEngine {
                             let frame = queue.pop().unwrap();
                             // Check if the next frame is also due (we're behind — drop this one)
                             if let Some(next) = queue.front() {
-                                if !next.is_eof && next.pts_secs() <= current_source_secs + frame_tolerance {
+                                if !next.is_eof && next.pts_secs() <= due_secs + frame_tolerance {
                                     // Only count as a drop if we're behind by more than 1 frame
                                     // (normal drift of <1 frame interval is not a real drop)
                                     let gap = next.pts_secs() - pts;
@@ -5664,7 +5688,11 @@ impl PlaybackEngine {
                     (elapsed_secs / speed).max(0.0)
                 };
                 let elapsed_tc = RationalTime::from_secs_f64(elapsed_timeline_secs.max(0.0), self.fps.rate());
-                self.playhead = self.clip_timeline_start + elapsed_tc;
+                // On the timeline frame the clock is in, as when a frame is
+                // taken (#2556): a pause between two pictures parked between
+                // two frames, and showed the file's frame nearest that, not
+                // the one on screen.
+                self.playhead = due.map_or(self.clip_timeline_start + elapsed_tc, |(_, at)| at);
                 if held_at_end {
                     self.present_held_tail();
                     // The look-ahead below runs as frames are taken, and
@@ -5712,7 +5740,9 @@ impl PlaybackEngine {
                 timeline_elapsed_secs.max(0.0),
                 self.fps.rate(),
             );
-            self.playhead = clip.timeline_in + elapsed_tc;
+            // On the timeline frame the frame was taken for, so one
+            // picture is one timeline frame (#2556).
+            self.playhead = due.map_or(clip.timeline_in + elapsed_tc, |(_, at)| at);
 
             // Loop out-point detection: if loop enabled and playhead crossed out_point, loop back
             if self.loop_enabled {
