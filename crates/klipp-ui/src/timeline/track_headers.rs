@@ -486,15 +486,19 @@ pub fn show(
         );
         let mute_resp = ui.allocate_rect(mute_rect, egui::Sense::click());
         let mute_active = track.muted;
-        let mute_color = if mute_active { theme.accent } else { theme.text_dim };
-        ui.painter().rect_filled(
-            mute_rect,
-            3.0,
-            if mute_resp.hovered() { theme.bg_raised } else { egui::Color32::TRANSPARENT },
-        );
+        // A muted track shows it at a glance: the button filled red, as
+        // the other header draws it (#2672).
+        let (mute_bg, mute_color) = if mute_active {
+            (theme.marker_error, theme.text_primary)
+        } else if mute_resp.hovered() {
+            (theme.bg_raised, theme.text_dim)
+        } else {
+            (egui::Color32::TRANSPARENT, theme.text_dim)
+        };
+        ui.painter().rect_filled(mute_rect, 3.0, mute_bg);
         let mute_icon = if mute_active { Icon::SpeakerSlash } else { Icon::SpeakerHigh };
         mute_icon.image(12.0).tint(mute_color).paint_at(ui, mute_rect.shrink(2.0));
-        styled_tooltip(&mute_resp, theme, "Mute track", None);
+        styled_tooltip(&mute_resp, theme, if mute_active { "Unmute track" } else { "Mute track" }, None);
         if mute_resp.clicked() {
             toggle_mute = Some(track_idx);
         }

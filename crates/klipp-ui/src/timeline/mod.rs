@@ -1480,4 +1480,20 @@ mod menu_smoke_tests {
         let track = &seq.tracks[target];
         assert!(matches!(track.kind, TrackKind::Video) && track.clips.is_empty(), "the clip goes on the new track, not {}", track.name);
     }
+
+    /// A muted track's mute button is filled red in the header, so it
+    /// reads at a glance; unmuted, nothing red is drawn (#2672).
+    #[test]
+    fn a_muted_track_shows_it_in_its_header() {
+        let red = KlippTheme::default().marker_error;
+        let reds = |t: &Timeline| t.shapes.iter().filter(|s| matches!(&s.shape, egui::Shape::Rect(r) if r.fill == red && r.rect.width() < 24.0)).count();
+        let mut timeline = Timeline::new();
+        timeline.frame(Vec::new());
+        timeline.frame(Vec::new());
+        let before = reds(&timeline);
+        let a1 = timeline.state.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Audio)).expect("an audio track");
+        timeline.state.sequences[0].tracks[a1].muted = true;
+        timeline.frame(Vec::new());
+        assert_eq!(reds(&timeline), before + 1, "one red mute button");
+    }
 }

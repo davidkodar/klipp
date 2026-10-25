@@ -5,6 +5,11 @@ pub struct AudioTrackSettings {
     pub pan: f32,
     pub muted: bool,
     pub solo: bool,
+    /// Silenced while the other viewer has the sound: the timeline's
+    /// tracks while the source viewer plays, the source viewer's track
+    /// while the timeline does. Kept apart from `muted`, which is the
+    /// editor's, so handing the sound back never unmutes a track (#2672).
+    pub held: bool,
     pub peak_left: f32,
     pub peak_right: f32,
     /// RMS level (root mean square) for loudness display.
@@ -26,6 +31,7 @@ impl Default for AudioTrackSettings {
             pan: 0.0,
             muted: false,
             solo: false,
+            held: false,
             peak_left: 0.0,
             peak_right: 0.0,
             rms_left: 0.0,
@@ -286,7 +292,9 @@ impl AudioMixer {
     /// Returns interleaved f32 stereo output.
     pub fn mix(&mut self, track_buffers: &[(usize, &[f32])]) -> Vec<f32> {
         let frame_len = track_buffers.iter().map(|(_, b)| b.len()).max().unwrap_or(0);
-        let any_solo = self.tracks.iter().any(|t| t.solo);
+        // Solo picks among the tracks that have the sound: a timeline
+        // track soloed does not silence the source viewer's own.
+        let any_solo = self.tracks.iter().any(|t| t.solo && !t.held);
         let has_buses = !self.buses.is_empty();
 
         // If buses exist, create per-bus intermediate buffers
@@ -300,7 +308,7 @@ impl AudioMixer {
         let mut inserted: Vec<f32> = Vec::new();
         for &(track_idx, buf) in track_buffers.iter() {
             let Some(settings) = self.tracks.get(track_idx) else { continue };
-            let heard = !(settings.muted || (any_solo && !settings.solo));
+            let heard = !(settings.held || settings.muted || (any_solo && !settings.solo));
             // The track's own effects on its summed clips, before its
             // fader (#2560).
             let buf = match self.track_inserts.get_mut(track_idx).and_then(Option::as_mut) {
