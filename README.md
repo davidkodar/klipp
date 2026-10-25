@@ -7,13 +7,13 @@
 
 **A native video editor for Linux.**
 
-[Website](https://davidkodar.github.io/klipp/) · [Download 0.1.0-rc.2](https://github.com/davidkodar/klipp/releases/tag/v0.1.0-rc.2) · [Discussions](https://github.com/davidkodar/klipp/discussions)
+[Website](https://davidkodar.github.io/klipp/) · [Download 0.1.0-rc.3](https://github.com/davidkodar/klipp/releases/tag/v0.1.0-rc.3) · [Discussions](https://github.com/davidkodar/klipp/discussions)
 
 Edit on a magnetic timeline, grade in scene-linear colour, and automate workflows with local AI tools and an MCP-compatible assistant.
 
 **Pre-release · Vulkan GPU required · Arch package or source · GPL-3.0-only**
 
-Klipp is under active development. Expect rough edges and breaking changes; broad plugin compatibility, reliability hardening, and AMD/Intel GPU validation are ongoing. The latest release candidate, [0.1.0-rc.2](https://github.com/davidkodar/klipp/releases/tag/v0.1.0-rc.2), is out as an unsigned Arch package; there are no stability guarantees yet.
+Klipp is under active development. Expect rough edges and breaking changes; broad plugin compatibility, reliability hardening, and AMD/Intel GPU validation are ongoing. The latest release candidate, [0.1.0-rc.3](https://github.com/davidkodar/klipp/releases/tag/v0.1.0-rc.3), is out as an unsigned Arch package; there are no stability guarantees yet.
 
 [![Klipp Edit page with a harbour shot in the viewer, the media pool, and a timeline of titles, video, music, ambience and voice tracks](website/assets/edit.webp)](website/assets/edit.webp)
 
@@ -48,11 +48,11 @@ Klipp is written in Rust as a 42-crate workspace. Pictures are processed on the 
 
 The primary target is **x86_64 Arch Linux and Arch-based distributions with a working Vulkan driver**. A Vulkan 1.1 GPU is required; integrated GPUs are supported in principle, with broader hardware validation ongoing. Other distributions are less tested.
 
-To install the release candidate, download `klipp-0.1.0rc.2-1-x86_64.pkg.tar.zst` and `SHA256SUMS` from the [release page](https://github.com/davidkodar/klipp/releases/tag/v0.1.0-rc.2), then:
+To install the release candidate, download `klipp-0.1.0rc.3-1-x86_64.pkg.tar.zst` and `SHA256SUMS` from the [release page](https://github.com/davidkodar/klipp/releases/tag/v0.1.0-rc.3), then:
 
 ```bash
 sha256sum -c --ignore-missing SHA256SUMS
-sudo pacman -U klipp-0.1.0rc.2-1-x86_64.pkg.tar.zst
+sudo pacman -U klipp-0.1.0rc.3-1-x86_64.pkg.tar.zst
 ```
 
 To build the latest code from source instead:
