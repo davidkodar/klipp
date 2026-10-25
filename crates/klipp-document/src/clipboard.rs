@@ -170,11 +170,24 @@ pub fn carried(source: &Sequence, target: &Sequence, mut cb: ClipboardContent, i
 /// from the first, a linked pair linked again and to nothing else, what
 /// belongs to the original alone left behind.
 pub fn paste(seq: &Sequence, cb: &ClipboardContent, at: Timecode, mode: PasteMode) -> Pasted {
+    paste_with(seq, cb, at, mode, target_track)
+}
+
+/// `cb` pasted as [`paste`] does, but each clip onto its own track: the
+/// one it was dropped on (#2549), not the targeted one. A clip whose
+/// track is gone, of another kind or locked is skipped.
+pub fn paste_onto(seq: &Sequence, cb: &ClipboardContent, at: Timecode, mode: PasteMode) -> Pasted {
+    paste_with(seq, cb, at, mode, |seq, copied| {
+        seq.tracks.get(copied.track).is_some_and(|t| t.kind == copied.kind && !t.locked).then_some(copied.track)
+    })
+}
+
+fn paste_with(seq: &Sequence, cb: &ClipboardContent, at: Timecode, mode: PasteMode, target: impl Fn(&Sequence, &CopiedClip) -> Option<usize>) -> Pasted {
     let mut out = seq.clone();
     let mut touched = BTreeSet::new();
     let first = cb.clips.iter().map(|c| c.clip.timeline_in).min().unwrap_or(at);
     let new_ids: HashMap<ClipId, ClipId> = cb.clips.iter().map(|c| (c.clip.id, ClipId::new())).collect();
-    let targets: Vec<Option<usize>> = cb.clips.iter().map(|c| target_track(&out, c)).collect();
+    let targets: Vec<Option<usize>> = cb.clips.iter().map(|c| target(&out, c)).collect();
     if mode == PasteMode::Insert {
         // Room for the whole paste: a gap of its length inserted on the
         // first track it goes to cuts every unlocked track at the

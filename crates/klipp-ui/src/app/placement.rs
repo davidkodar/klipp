@@ -96,6 +96,43 @@ impl KlippApp {
                     }
     }
 
+    /// A pool item dropped on track `track_index` at `at` (#2549): put
+    /// in there, moving what follows along, or over what is there with
+    /// `overwrite`, its sound linked under it, as one undo step. The
+    /// framerate prompt has already been answered or skipped.
+    pub(super) fn place_media_on_track_at(&mut self, media_id: klipp_core::MediaId, track_index: usize, at: klipp_core::Timecode, overwrite: bool) {
+        let Some(item) = self.state.media_pool.get(&media_id).cloned() else {
+            self.state.toast.show("That clip is no longer in the media pool");
+            return;
+        };
+        if item.offline {
+            self.state.toast.show(format!("Cannot add '{}' — media is offline", item.filename));
+            return;
+        }
+        let has_video = !item.video_codec.is_empty();
+        self.adopt_first_clip_format(&item);
+        let start = klipp_core::Timecode { value: 0, rate: item.duration.rate };
+        let mut clip = klipp_timeline::Clip::media(media_id, start, item.duration, start, item.duration);
+        clip.source_rotation = item.source_rotation;
+        super::media::input_defaults_on(&mut clip, &item, self.state.project_default_input_format, self.state.project_default_input_lut.as_deref());
+        // Its sound, as an append brings it (see `append_linked_audio`).
+        let external = self.external_audio_of(media_id);
+        let audio = (has_video && self.state.append_brings_audio && (item.has_audio || external.is_some())).then_some(external);
+        let (mode, label) = if overwrite {
+            (crate::clip_clipboard::PasteMode::Overwrite, "Overwrite")
+        } else {
+            (crate::clip_clipboard::PasteMode::Insert, "Insert")
+        };
+        match media_drop_edits(self.state.sequence(), clip, track_index, audio, at, mode, label) {
+            Ok((edits, id)) => {
+                self.apply_edits_as_one(&edits, label);
+                self.state.selected_clip = Some(id);
+                self.state.selected_clips.clear();
+            }
+            Err(why) => self.state.toast.show(why),
+        }
+    }
+
     /// If placing `media_id` would put the first video clip on a sequence
     /// with a rate of its own and the clip is at another, opens the
     /// "Change Project Frame Rate?" modal and stashes `pending_cmd` for
@@ -546,5 +583,195 @@ impl KlippApp {
         for &i in to_remove.iter().rev() {
             track.clips.remove(i);
         }
+    }
+}
+
+/// The edits that put `clip`, a new clip starting at zero, on track
+/// `track_index` at `at` (#2549), as an insert or an overwrite, with its
+/// sound linked under it when `audio` is `Some` (the synced recording,
+/// or the file's own sound for `Some(None)`): an audio track made for it
+/// when there is none, all of it one undo step. The new clip's id, or
+/// why nothing can be placed.
+pub(super) fn media_drop_edits(
+    seq: &klipp_timeline::Sequence,
+    clip: klipp_timeline::Clip,
+    track_index: usize,
+    audio: Option<Option<super::linked_audio::ExternalAudio>>,
+    at: klipp_core::Timecode,
+    mode: crate::clip_clipboard::PasteMode,
+    label: &'static str,
+) -> Result<(Vec<EditCommand>, klipp_core::ClipId), &'static str> {
+    match seq.tracks.get(track_index) {
+        None => return Err("That track is gone"),
+        Some(t) if t.locked => return Err("That track is locked"),
+        Some(_) => {}
+    }
+    // The clip and its sound laid out on empty copies of the tracks, the
+    // sound going to the track it is patched to, then pasted onto the
+    // track it was dropped on.
+    let mut laid = seq.clone();
+    for track in &mut laid.tracks {
+        track.clips.clear();
+        track.transitions.clear();
+    }
+    let id = clip.id;
+    laid.tracks[track_index].clips.push(clip);
+    let mut before = seq.clone();
+    let mut edits = Vec::new();
+    if let Some(external) = audio {
+        if let Some(index) = attach_linked_audio_to_clip(&mut laid, id, external).and_then(|a| a.created_track_at) {
+            let mut track = laid.tracks[index].clone();
+            track.clips.clear();
+            before.tracks.insert(index, track.clone());
+            edits.push(EditCommand::AddTrack { index, track });
+        }
+    }
+    let cb = crate::clip_clipboard::copy(&laid, &[id]).ok_or("Nothing to place")?;
+    let pasted = crate::clip_clipboard::paste_onto(&before, &cb, at, mode);
+    if pasted.no_room {
+        return Err("Could not make room there: is a track locked?");
+    }
+    let placed = pasted
+        .ids
+        .iter()
+        .copied()
+        .find(|&c| pasted.sequence.tracks[track_index].find_clip(c).is_some())
+        .ok_or("That track cannot take this clip")?;
+    edits.extend(crate::clip_clipboard::track_edits(&before, &pasted.sequence, &pasted.touched, label));
+    Ok((edits, placed))
+}
+
+#[cfg(test)]
+mod media_drop_tests {
+    use super::super::linked_audio::attach_linked_audio_to_clip;
+    use super::media_drop_edits;
+    use crate::clip_clipboard::PasteMode;
+    use klipp_core::ClipId;
+    use klipp_document::apply::DocumentView;
+    use klipp_document::history::EditCommand;
+    use klipp_timeline::{Clip, Sequence, TrackKind};
+
+    fn t(secs: i64) -> klipp_core::Timecode {
+        klipp_core::Timecode { value: secs * 30, rate: 30 }
+    }
+
+    fn track_of(seq: &Sequence, kind: TrackKind) -> usize {
+        seq.tracks.iter().position(|tr| tr.kind == kind).unwrap()
+    }
+
+    /// Three 4 s clips on the video track, each with its sound linked
+    /// under it.
+    fn timeline() -> (Sequence, Vec<ClipId>) {
+        let mut seq = Sequence::new_default();
+        let vi = track_of(&seq, TrackKind::Video);
+        let media = klipp_core::MediaId::new();
+        let ids: Vec<ClipId> = (0..3).map(|_| seq.tracks[vi].append_clip(media, t(4))).collect();
+        for &id in &ids {
+            attach_linked_audio_to_clip(&mut seq, id, None).expect("linked");
+        }
+        (seq, ids)
+    }
+
+    fn dropped() -> Clip {
+        Clip::media(klipp_core::MediaId::new(), t(0), t(2), t(0), t(2))
+    }
+
+    fn run(seq: &Sequence, edits: &[EditCommand], forward: bool) -> Sequence {
+        let mut seqs = vec![seq.clone()];
+        let mut pool = klipp_media::MediaPool::default();
+        let mut fps = seq.fps;
+        let mut view = DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps };
+        if forward {
+            edits.iter().for_each(|e| { view.apply_forward(e); });
+        } else {
+            edits.iter().rev().for_each(|e| { view.apply_inverse(e); });
+        }
+        seqs.remove(0)
+    }
+
+    fn span(seq: &Sequence, id: ClipId) -> (klipp_core::Timecode, klipp_core::Timecode) {
+        let c = seq.all_clips().find(|c| c.id == id).expect("on the timeline");
+        (c.timeline_in, c.timeline_out)
+    }
+
+    /// #2549: a clip let go on the cut between the first and second
+    /// clip in insert mode goes in at that cut, with its sound under it,
+    /// and what follows moves along on both tracks. It used to go after
+    /// the last clip.
+    #[test]
+    fn a_clip_dropped_on_a_cut_in_insert_mode_goes_in_at_the_cut() {
+        let (seq, ids) = timeline();
+        let (vi, ai) = (track_of(&seq, TrackKind::Video), track_of(&seq, TrackKind::Audio));
+        let (edits, placed) = media_drop_edits(&seq, dropped(), vi, Some(None), t(4), PasteMode::Insert, "Insert").expect("placed");
+        let after = run(&seq, &edits, true);
+        assert_eq!(span(&after, placed), (t(4), t(6)), "at the cut it was let go on");
+        assert!(after.tracks[vi].find_clip(placed).is_some(), "on the track it was let go on");
+        assert_eq!(span(&after, ids[0]), (t(0), t(4)));
+        assert_eq!(span(&after, ids[1]), (t(6), t(10)), "the second clip moved along by the new one");
+        assert_eq!(span(&after, ids[2]), (t(10), t(14)));
+        let sound = after.tracks[vi].find_clip(placed).unwrap().linked_clip_id.expect("its sound linked");
+        assert!(after.tracks[ai].find_clip(sound).is_some(), "its sound on the audio track");
+        assert_eq!(span(&after, sound), (t(4), t(6)), "under it");
+        let second_sound = seq.all_clips().find(|c| c.id == ids[1]).unwrap().linked_clip_id.unwrap();
+        assert_eq!(span(&after, second_sound), (t(6), t(10)), "the sound moved with its picture");
+        // One undo gives the timeline back as it was.
+        let undone = run(&after, &edits, false);
+        assert!(undone.all_clips().all(|c| c.id != placed && c.id != sound));
+        for &id in &ids {
+            assert_eq!(span(&undone, id), span(&seq, id));
+        }
+    }
+
+    /// In overwrite mode it lays over what is there from the cut and
+    /// nothing moves.
+    #[test]
+    fn a_clip_dropped_on_a_cut_in_overwrite_mode_covers_what_follows() {
+        let (seq, ids) = timeline();
+        let vi = track_of(&seq, TrackKind::Video);
+        let (edits, placed) = media_drop_edits(&seq, dropped(), vi, Some(None), t(4), PasteMode::Overwrite, "Overwrite").expect("placed");
+        let after = run(&seq, &edits, true);
+        assert_eq!(span(&after, placed), (t(4), t(6)));
+        assert_eq!(span(&after, ids[0]), (t(0), t(4)));
+        assert_eq!(span(&after, ids[1]), (t(6), t(8)), "the second clip's head is covered");
+        assert_eq!(span(&after, ids[2]), (t(8), t(12)), "nothing moved");
+    }
+
+    /// It goes on the track it was let go on, even when another track of
+    /// its kind is the one targeted.
+    #[test]
+    fn a_clip_goes_on_the_track_it_was_dropped_on() {
+        let (mut seq, _) = timeline();
+        let v1 = track_of(&seq, TrackKind::Video);
+        seq.tracks[v1].targeted = true;
+        seq.add_video_track("Video 2".into());
+        let v2 = seq.tracks.iter().position(|tr| tr.kind == TrackKind::Video && tr.clips.is_empty()).unwrap();
+        let (edits, placed) = media_drop_edits(&seq, dropped(), v2, None, t(4), PasteMode::Overwrite, "Overwrite").expect("placed");
+        let after = run(&seq, &edits, true);
+        assert!(after.tracks[v2].find_clip(placed).is_some(), "on the track it was let go on, not the targeted one");
+    }
+
+    /// With no audio track, one is made for its sound, and the undo
+    /// takes it away again.
+    #[test]
+    fn a_missing_audio_track_is_made_in_the_same_step() {
+        let mut seq = Sequence::new_default();
+        seq.tracks.retain(|tr| tr.kind != TrackKind::Audio);
+        let vi = track_of(&seq, TrackKind::Video);
+        let (edits, placed) = media_drop_edits(&seq, dropped(), vi, Some(None), t(0), PasteMode::Insert, "Insert").expect("placed");
+        assert!(edits.iter().any(|e| matches!(e, EditCommand::AddTrack { .. })));
+        let after = run(&seq, &edits, true);
+        let sound = after.tracks[vi].find_clip(placed).unwrap().linked_clip_id.expect("its sound linked");
+        let ai = track_of(&after, TrackKind::Audio);
+        assert!(after.tracks[ai].find_clip(sound).is_some());
+        let undone = run(&after, &edits, false);
+        assert!(undone.tracks.iter().all(|tr| tr.kind != TrackKind::Audio), "the made track goes with the undo");
+    }
+
+    #[test]
+    fn a_locked_track_takes_nothing() {
+        let (mut seq, _) = timeline();
+        let vi = track_of(&seq, TrackKind::Video);
+        seq.tracks[vi].locked = true;
+        assert!(media_drop_edits(&seq, dropped(), vi, None, t(4), PasteMode::Insert, "Insert").is_err());
     }
 }
