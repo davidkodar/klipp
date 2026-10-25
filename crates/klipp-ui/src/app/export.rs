@@ -116,6 +116,9 @@ pub(super) struct ExportDialogState {
     /// 0=YouTube/Spotify (-14), 1=Podcast (-16), 2=EBU R128 (-23), 3=ATSC A/85 (-24), 4=Custom
     pub(super) loudness_preset: u8,
     pub(super) custom_lufs: f32,
+    /// The true-peak ceiling with a custom loudness target, dBTP: a
+    /// preset's own, kept rather than dropped to the default.
+    pub(super) custom_true_peak: f32,
     /// Encoder bit depth. 0 = codec default (8-bit), 10 = 10-bit encode.
     /// Only meaningful for H.264, H.265 and AV1. (#65, #560)
     pub(super) bit_depth: u8,
@@ -172,6 +175,7 @@ impl Default for ExportDialogState {
             normalize_loudness: false,
             loudness_preset: 0,
             custom_lufs: -14.0,
+            custom_true_peak: klipp_core::DEFAULT_TRUE_PEAK_DBTP,
             bit_depth: 0,
             banding: Default::default(),
             hdr_mode: klipp_core::HdrMode::Sdr,
@@ -401,7 +405,13 @@ pub(super) fn selected_clips_frame_range(
 /// The true-peak ceiling the chosen loudness spec asks for: -2 dBTP for
 /// ATSC A/85, and the renderer's -1 for the rest.
 pub(super) fn dialog_true_peak(dialog: &ExportDialogState) -> Option<f32> {
-    (dialog.normalize_loudness && dialog.loudness_preset == 3).then_some(-2.0)
+    match (dialog.normalize_loudness, dialog.loudness_preset) {
+        (true, 3) => Some(-2.0),
+        // A custom target keeps its own ceiling, the default unless a
+        // preset set another.
+        (true, 4) => (dialog.custom_true_peak != klipp_core::DEFAULT_TRUE_PEAK_DBTP).then_some(dialog.custom_true_peak),
+        _ => None,
+    }
 }
 
 /// The loudness and true-peak ceiling playback is heard at (#1565): the
@@ -522,7 +532,11 @@ pub(super) fn apply_preset_to_dialog(dialog: &mut ExportDialogState, settings: &
                 -16 => 1,
                 -23 => 2,
                 -24 => 3,
-                _ => { dialog.custom_lufs = lufs; 4 }
+                _ => {
+                    dialog.custom_lufs = lufs;
+                    dialog.custom_true_peak = settings.true_peak_dbtp.unwrap_or(klipp_core::DEFAULT_TRUE_PEAK_DBTP);
+                    4
+                }
             };
         }
         None => { dialog.normalize_loudness = false; }
@@ -1629,6 +1643,10 @@ impl KlippApp {
                                         let mut v = self.export_dialog.custom_lufs;
                                         if ui.add(egui::DragValue::new(&mut v).range(-30.0..=-5.0).speed(0.5).suffix(" LUFS")).changed() {
                                             self.export_dialog.custom_lufs = v;
+                                        }
+                                        let mut peak = self.export_dialog.custom_true_peak;
+                                        if ui.add(egui::DragValue::new(&mut peak).range(-6.0..=0.0).speed(0.1).prefix("peak ").suffix(" dBTP")).on_hover_text("The highest true peak the export lets through").changed() {
+                                            self.export_dialog.custom_true_peak = peak;
                                         }
                                     }
                                 }
@@ -3896,5 +3914,27 @@ impl super::KlippApp {
             }
         };
         *self.state.control_shared.import_outcome.lock().unwrap_or_else(|e| e.into_inner()) = Some(outcome);
+    }
+}
+
+/// A preset with a custom loudness target and a true-peak ceiling of
+/// its own (one imported, or written by hand) exports under that
+/// ceiling, not the default.
+#[cfg(test)]
+mod custom_ceiling_tests {
+    use super::*;
+
+    #[test]
+    fn a_custom_target_keeps_its_ceiling() {
+        let settings = ExportPresetSettings { target_lufs: Some(-27.0), true_peak_dbtp: Some(-2.0), ..klipp_core::builtin_presets()[0].settings.clone() };
+        let mut dialog = ExportDialogState::default();
+        apply_preset_to_dialog(&mut dialog, &settings);
+        assert_eq!(dialog_target_lufs(&dialog), Some(-27.0));
+        assert_eq!(dialog_true_peak(&dialog), Some(-2.0), "the preset's own ceiling");
+        // One with no ceiling of its own takes the default, as before.
+        let plain = ExportPresetSettings { true_peak_dbtp: None, ..settings };
+        let mut dialog = ExportDialogState::default();
+        apply_preset_to_dialog(&mut dialog, &plain);
+        assert_eq!(dialog_true_peak(&dialog), None);
     }
 }
