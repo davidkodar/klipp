@@ -961,18 +961,6 @@ pub fn same_file_as_probed(old: &MediaItem, fresh: &MediaItem) -> bool {
         && old.file_modified_at == fresh.file_modified_at
 }
 
-/// Carry what the user and the app know about `old` over to `fresh`, a
-/// re-probe of the same media item (a relink, or a file edited outside
-/// Klipp and reloaded). The probe supplies the file's facts; this keeps
-/// everything the file cannot tell us — rating, tags, notes, bin, colour
-/// label, log-format choice, in/out defaults, when it was added, what it
-/// is a subclip of — and, when the file itself is unchanged, the caches
-/// built from it. A changed or different file gets none of its old
-/// proxy, skim, waveform or conform: they were made from other pixels.
-///
-/// It used to replace the item wholesale, so relinking a clip cost its
-/// rating, tags and bin; and a proxy keyed by media id survived a relink
-/// to a different file.
 impl MediaItem {
     /// Whether the editor left a marker of this kind on the clip.
     pub fn has_marker(&self, kind: klipp_core::MediaMarkerKind) -> bool {
@@ -1006,30 +994,117 @@ pub fn describe_secs(secs: f64) -> String {
     }
 }
 
+/// Carry what the user and the app know about `old` over to `fresh`, a
+/// re-probe of the same media item (a relink, the open's re-read, or a
+/// file edited outside Klipp and reloaded). The probe supplies the file's
+/// facts; this keeps everything the file cannot tell us — rating, tags,
+/// notes, bin, colour label, log-format choice, in/out defaults, when it
+/// was added, what it is a subclip of — and, when the file itself is
+/// unchanged, what was made from it: the caches, the screen text and
+/// sound role analysis found, and a still's length. A changed or
+/// different file gets none of those: they were made from other pixels.
+///
+/// It used to replace the item wholesale, so relinking a clip cost its
+/// rating, tags and bin; and a proxy keyed by media id survived a relink
+/// to a different file. Leaving out the screen text and sound role had
+/// every open's re-read blank them, which marked the project unsaved
+/// (#2626). Every field is named below, so a new one cannot be left out
+/// without choosing which side it is on.
 pub fn merge_reprobed(old: &MediaItem, fresh: &mut MediaItem) {
-    fresh.rating = old.rating;
-    fresh.tags = old.tags.clone();
-    fresh.user_notes = old.user_notes.clone();
-    fresh.bin = old.bin.clone();
-    fresh.bin_id = old.bin_id;
-    fresh.color_label = old.color_label;
-    fresh.log_format = old.log_format;
-    fresh.log_format_user_set = old.log_format_user_set;
-    fresh.default_source_in = old.default_source_in;
-    fresh.default_source_out = old.default_source_out;
-    fresh.added_at = old.added_at;
-    fresh.parent_media_id = old.parent_media_id;
-    fresh.kind = old.kind.clone();
-    fresh.log = old.log.clone();
-    fresh.synced_audio = old.synced_audio.clone();
-    fresh.markers = old.markers.clone();
-    fresh.span = old.span;
-    if same_file_as_probed(old, fresh) {
-        fresh.proxy_path = old.proxy_path.clone();
-        fresh.proxy_ready = old.proxy_ready;
-        fresh.skim_file = old.skim_file.clone();
-        fresh.waveform_data = old.waveform_data.clone();
-        fresh.audio_cache = old.audio_cache.clone();
+    let same_file = same_file_as_probed(old, fresh);
+    let MediaItem {
+        // The file's facts, as the probe found them.
+        id: _,
+        path: _,
+        filename: _,
+        duration,
+        fps,
+        resolution: _,
+        video_codec: _,
+        audio_codec: _,
+        has_audio: _,
+        file_size_bytes: _,
+        sample_rate: _,
+        audio_channels: _,
+        offline: _,
+        is_still,
+        fingerprint: _,
+        file_modified_at: _,
+        media_created_at: _,
+        colour_space: _,
+        source_rotation: _,
+        camera_make: _,
+        camera_model: _,
+        encoder: _,
+        bit_depth: _,
+        video_bitrate_kbps: _,
+        audio_bitrate_kbps: _,
+        color_primaries: _,
+        color_transfer: _,
+        pixel_format: _,
+        detected_log_format: _,
+        shot: _,
+        metadata_read: _,
+        truncated_from_secs: _,
+        needs_reprobe: _,
+        // What the user and the app said about it.
+        rating,
+        tags,
+        user_notes,
+        bin,
+        bin_id,
+        color_label,
+        log_format,
+        log_format_user_set,
+        default_source_in,
+        default_source_out,
+        added_at,
+        parent_media_id,
+        kind,
+        log,
+        synced_audio,
+        markers,
+        span,
+        // Made from the file: kept while it is the same file.
+        proxy_path,
+        proxy_ready,
+        skim_file,
+        waveform_data,
+        audio_cache,
+        screen_text,
+        audio_role,
+    } = old;
+    fresh.rating = *rating;
+    fresh.tags = tags.clone();
+    fresh.user_notes = user_notes.clone();
+    fresh.bin = bin.clone();
+    fresh.bin_id = *bin_id;
+    fresh.color_label = *color_label;
+    fresh.log_format = *log_format;
+    fresh.log_format_user_set = *log_format_user_set;
+    fresh.default_source_in = *default_source_in;
+    fresh.default_source_out = *default_source_out;
+    fresh.added_at = *added_at;
+    fresh.parent_media_id = *parent_media_id;
+    fresh.kind = kind.clone();
+    fresh.log = log.clone();
+    fresh.synced_audio = synced_audio.clone();
+    fresh.markers = markers.clone();
+    fresh.span = *span;
+    if same_file {
+        fresh.proxy_path = proxy_path.clone();
+        fresh.proxy_ready = *proxy_ready;
+        fresh.skim_file = skim_file.clone();
+        fresh.waveform_data = waveform_data.clone();
+        fresh.audio_cache = audio_cache.clone();
+        fresh.screen_text = screen_text.clone();
+        fresh.audio_role = *audio_role;
+        // A still's length and rate are the editor's, not the file's:
+        // the probe gives the default ones.
+        if *is_still && fresh.is_still {
+            fresh.duration = *duration;
+            fresh.fps = *fps;
+        }
     }
     fresh.needs_reprobe = false;
 }

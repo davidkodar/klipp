@@ -118,7 +118,8 @@ impl KlippApp {
     /// "Untitled" in the projects root, and lists it in Recent (#1864).
     pub(super) fn write_untitled_on_first_edit(&mut self) {
         let root = self.projects_root();
-        let Some(path) = crate::project_paths::first_write(self.state.project_path.as_deref(), self.state.dirty, &root) else { return };
+        let unsaved = self.is_unsaved();
+        let Some(path) = crate::project_paths::first_write(self.state.project_path.as_deref(), unsaved, &root) else { return };
         if let Err(e) = std::fs::create_dir_all(&path) {
             tracing::error!("Could not write the untitled project to {path:?}: {e}");
             return;
@@ -225,7 +226,7 @@ impl KlippApp {
         let current = {
             let mut current = self.state.control_shared.project.lock().unwrap_or_else(|e|e.into_inner()).clone();
             // The published snapshot can lag edits queued before this command.
-            current.dirty = self.state.dirty;
+            current.dirty = self.is_unsaved();
             current.path = self.state.project_path.clone();
             current
         };
@@ -290,7 +291,7 @@ impl KlippApp {
         self.state.last_import_report = None;
         self.state.show_import_report = false;
         *self.state.control_shared.import_outcome.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        self.state.dirty = false;
+        self.mark_saved();
 
         // 3. Clear undo/redo history — entries reference clip IDs that no
         //    longer exist in the new project.
@@ -381,11 +382,11 @@ impl KlippApp {
             }
             project.recent_projects = self.prefs.general.recent_projects.iter().map(crate::prefs::RecentProject::control_summary).collect();
             project.path = self.state.project_path.clone();
-            project.dirty = self.state.dirty;
+            project.dirty = self.state.unsaved;
             project.global_lut = self.state.global_lut_path.clone();
             project.generation += 1;
             project.last_error = error;
-            if !self.state.dirty {
+            if !project.dirty {
                 project.changed_by = None;
             }
         }
@@ -617,21 +618,7 @@ impl KlippApp {
             self.note_project_event(ProjectEvent::Saved, Some("not saved: the project is open read-only or locked by someone else".into()));
             return false;
         }
-        let color = klipp_project::ColorSettings {
-            global_lut_path: self.state.global_lut_path.clone(),
-            global_lut_opacity: self.state.global_lut_opacity,
-            global_lut_enabled: self.state.global_lut_enabled,
-            track_header_width: self.state.track_header_width,
-            auto_generate_filmstrips: self.state.project_auto_filmstrips,
-            auto_generate_skim: self.state.project_auto_skim,
-            working_colorspace: self.state.project_working_colorspace,
-            grade_encoding: self.state.project_grade_encoding,
-            default_odt: self.state.project_default_odt,
-            default_input_format: self.state.project_default_input_format,
-            default_input_lut: self.state.project_default_input_lut.clone(),
-            viewing_lut: self.state.project_viewing_lut.clone(),
-            scopes_after_viewing_lut: self.state.project_scopes_after_viewing_lut,
-        };
+        let color = self.state.project_color_settings();
         // Stills made while there was no folder of our own to write to —
         // a project never saved, or one open read-only — come along, or
         // the project would point into the temp folder. On every save,
@@ -665,7 +652,8 @@ impl KlippApp {
                 if new_home {
                     self.persist_grade_stills();
                 }
-                self.state.dirty = false;
+                // What was just written is the saved project (#2626).
+                self.mark_saved();
                 self.state.reset_ops_since_save();
                 tracing::info!("Project saved to {:?}", path);
                 self.note_project_event(ProjectEvent::Saved, None);
@@ -946,7 +934,11 @@ impl KlippApp {
                 klipp_core::set_grade_encoding(color_settings.grade_encoding);
 
                 self.state.project_path = Some(path.to_path_buf());
-                self.state.dirty = false;
+                // The project as opened is the saved one (#2626): taken
+                // now, after what the open itself does and before any
+                // re-read or analysis arrives, so a file that changed on
+                // disk still shows as a change.
+                self.mark_saved();
                 // Fonts the titles name that are not installed (#1720).
                 let missing = self.state.missing_fonts(&crate::missing_fonts::installed);
                 self.state.missing_fonts_dialog = (!missing.is_empty()).then(|| crate::missing_fonts::MissingFontsDialog { fonts: missing, chosen: Default::default() });
@@ -1221,7 +1213,7 @@ impl KlippApp {
                 self.unsaved_save_waiting = false;
                 self.state.show_unsaved_dialog = false;
                 if discard {
-                    self.state.dirty = false;
+                    self.mark_saved();
                     // Clean up autosave backup since user chose not to save
                     // — only our own: read-only, it is the holder's
                     // crash recovery.

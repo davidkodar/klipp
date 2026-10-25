@@ -2793,7 +2793,7 @@ impl KlippApp {
         if let Ok(mut project) = self.state.control_shared.project.lock() {
             project.recent_projects = self.prefs.general.recent_projects.iter().map(crate::prefs::RecentProject::control_summary).collect();
             project.path = self.state.project_path.clone();
-            project.dirty = self.state.dirty;
+            project.dirty = self.state.unsaved;
             project.undo = self.state.undo_label();
             project.redo = self.state.redo_label();
             project.undo_depth = self.state.undo_depth();
@@ -3788,7 +3788,7 @@ impl super::KlippApp {
     /// person's own request with unsaved changes asks about them first; a
     /// socket's is refused, since nobody is there to answer.
     pub(super) fn open_from_another_editor(&mut self, path: &std::path::Path, request_id: uuid::Uuid) {
-        if self.state.dirty {
+        if self.is_unsaved() {
             if request_id.is_nil() {
                 self.state.show_unsaved_dialog = true;
                 self.state.unsaved_dialog_action = UnsavedAction::OpenFromAnotherEditor(path.to_path_buf());

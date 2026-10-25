@@ -225,7 +225,7 @@ fn left_fields(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme) {
         .and_then(|p| p.file_name())
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "Untitled".into());
-    let project_display = if state.dirty {
+    let project_display = if state.unsaved {
         format!("{project_name} •")
     } else {
         project_name

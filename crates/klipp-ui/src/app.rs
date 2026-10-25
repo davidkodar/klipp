@@ -25,6 +25,7 @@ mod export_banding;
 mod frame_glide;
 mod track_subject;
 mod project_io;
+mod unsaved;
 mod appearance;
 mod tips;
 mod perf;
@@ -312,6 +313,8 @@ pub struct KlippApp {
     state: AppState,
     toolbar: ToolbarPanel,
     updates: crate::updates::Updates,
+    /// When `dirty` was last settled into `unsaved` (#2626).
+    unsaved_settled_at: Option<std::time::Instant>,
     viewer: ViewerPanel,
     title_renderer: klipp_title::TitleRenderer,
     markers: MarkersPanel,

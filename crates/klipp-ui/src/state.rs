@@ -1473,7 +1473,16 @@ pub struct AppState {
     /// tooltip wording so users know whether they're seeing real
     /// 4× true-peak or sample-hold.
     pub tp_oversample: bool,
+    /// Something may have changed what a save writes: a hint any edit
+    /// raises, settled into `unsaved` by comparing digests (#2626). Not
+    /// the unsaved mark itself, which only `unsaved` is.
     pub dirty: bool,
+    /// The project differs from what was last loaded or saved, as of the
+    /// last time `dirty` was settled (#2626).
+    pub unsaved: bool,
+    /// The digest of the project as last loaded or saved
+    /// (`klipp_project::project_digest`); `None` before either.
+    pub saved_digest: Option<u64>,
     /// Per-sequence undo stack. Keyed by `SequenceId` (stable across
     /// reorder/delete) so an entry never points at a sequence that
     /// shifted underneath it. Use `active_history` /
@@ -4559,6 +4568,8 @@ impl Default for AppState {
             project_path: None,
             created_at: None,
             dirty: false,
+            unsaved: false,
+            saved_digest: None,
             command_histories: std::collections::HashMap::new(),
             project_history: CommandHistory::new(),
             history_clock: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),

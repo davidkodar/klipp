@@ -579,7 +579,10 @@ impl KlippApp {
                                 if let Some(orig) = original_path {
                                     self.state.project_path = Some(orig);
                                 }
-                                self.state.dirty = true; // Mark dirty so user saves explicitly
+                                // Unsaved until it is saved explicitly: what
+                                // is on disk is not what was restored.
+                                self.state.saved_digest = None;
+                                self.state.dirty = true;
                             }
                         }
                         if ui.button("Keep Saved Version").clicked() {

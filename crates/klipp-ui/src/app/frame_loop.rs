@@ -35,6 +35,7 @@ impl KlippApp {
         let idle = self.state.project_path.is_none();
         self.updates.show(ctx, &mut self.prefs.general, &mut self.prefs_dirty, idle);
         self.state.update_notice_open = self.updates.holds_keys();
+        self.tick_unsaved(ctx);
 
         // Rotate the deferred-drop texture ring. Advance the slot and
         // clear the one we've just moved into — it holds handles
@@ -595,7 +596,7 @@ impl KlippApp {
                         .map(|s| s.to_string_lossy().to_string())
                         .unwrap_or_else(|| "Untitled".into());
                     let read_only = if self.read_only_project.as_ref() == Some(p) { " (read-only)" } else { "" };
-                    if self.state.dirty {
+                    if self.state.unsaved {
                         format!("Klipp \u{2014} {name}{read_only} \u{2022}")
                     } else {
                         format!("Klipp \u{2014} {name}{read_only}")
@@ -780,7 +781,7 @@ impl KlippApp {
         // beside the project, where the editor who holds it would find
         // this session's edits offered as their own recovery.
         if (time_trigger || op_trigger)
-            && self.state.dirty
+            && self.is_unsaved()
             && self.state.project_path.is_some()
             && !crate::project_paths::is_untitled(self.state.project_path.as_deref())
             && self.read_only_project != self.state.project_path
@@ -1640,7 +1641,7 @@ impl KlippApp {
         // the app keeps running races eframe's wgpu state (shutdown
         // SIGSEGV). The dialog's Don't Save / Save buttons hard-exit
         // the process themselves, so the engine never needs this Quit.
-        if has_quit && self.state.dirty {
+        if has_quit && self.is_unsaved() {
             all_cmds.retain(|c| !matches!(c, AppCommand::Quit));
         }
 
@@ -1957,21 +1958,22 @@ impl KlippApp {
         // ignoring clicks.
         let window_close_requested = ctx.input(|i| i.viewport().close_requested());
         if window_close_requested {
+            let unsaved = self.is_unsaved();
             tracing::info!(
-                "viewport close_requested received (dirty={}, dialog_already_open={})",
-                self.state.dirty,
+                "viewport close_requested received (unsaved={}, dialog_already_open={})",
+                unsaved,
                 self.state.show_unsaved_dialog,
             );
             // A dirty project is asked about whether it has been saved
             // before or not. Gating on a path made a never-saved project —
             // the state every first session is in — close in silence with
             // everything in it.
-            if self.state.dirty && !self.state.show_unsaved_dialog {
+            if unsaved && !self.state.show_unsaved_dialog {
                 tracing::info!("→ raising unsaved-changes dialog, sending CancelClose");
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 self.state.show_unsaved_dialog = true;
                 self.state.unsaved_dialog_action = UnsavedAction::Quit;
-            } else if !self.state.dirty {
+            } else if !unsaved {
                 eprintln!("Klipp: clean close → exit(0)");
                 // Read-only, the auto-save beside the project is the
                 // holder's crash recovery, not ours to clear.
@@ -2001,7 +2003,7 @@ impl KlippApp {
         }
 
         if has_quit {
-            if self.state.dirty {
+            if self.is_unsaved() {
                 self.state.show_unsaved_dialog = true;
                 self.state.unsaved_dialog_action = UnsavedAction::Quit;
             } else {

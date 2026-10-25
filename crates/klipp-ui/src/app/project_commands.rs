@@ -251,7 +251,7 @@ impl KlippApp {
         }
         match cmd {
             AppCommand::NewProject => {
-                if self.state.dirty {
+                if self.is_unsaved() {
                     self.state.show_unsaved_dialog = true;
                     self.state.unsaved_dialog_action = UnsavedAction::OpenNewProjectDialog;
                     return true;
@@ -267,7 +267,7 @@ impl KlippApp {
                 if self.state.project_path.is_none() {
                     return true; // Already on launch screen
                 }
-                if self.state.dirty {
+                if self.is_unsaved() {
                     self.state.show_unsaved_dialog = true;
                     self.state.unsaved_dialog_action = UnsavedAction::CloseProject;
                     return true;
@@ -370,7 +370,7 @@ impl KlippApp {
             AppCommand::OpenProject { path } => {
                 // Whatever was picked or named, the project it is in (#1143).
                 let path = &crate::project_paths::project_dir_of(path);
-                if self.state.dirty {
+                if self.is_unsaved() {
                     self.state.show_unsaved_dialog = true;
                     self.state.unsaved_dialog_action =
                         UnsavedAction::OpenProject(path.clone());
@@ -572,7 +572,7 @@ impl KlippApp {
                 }
                 self.state.project_path = Some(PathBuf::from(crate::project_paths::UNTITLED));
                 self.untitled_staging = Some(staging);
-                self.state.dirty = false;
+                self.mark_saved();
                 self.state.reset_ops_since_save();
                 true
             }
