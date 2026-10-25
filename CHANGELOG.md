@@ -5,6 +5,59 @@ Each release lists what changed for people using Klipp. Versions follow
 
 ## Unreleased
 
+## 0.1.0-rc.3 — 2026-10-25
+
+### Added
+
+- Bins in the media pool: New Bin from the toolbar, the File menu, the command
+  palette or a right-click anywhere in the pool; Move to Bin and New Bin from
+  Selection for one clip or many; bins are listed first with headers that fold,
+  apart from the clips not in a bin.
+- Check for Updates shows its answer in the About window, and Install Update
+  downloads the new release package from GitHub, checks it against the
+  release's checksums, asks, and installs it with pacman.
+- Follow System Theme follows the desktop's dark or light preference and
+  accent colour on any desktop that publishes them, and switches live.
+- Tested build steps for Ubuntu 24.04 and Fedora; Klipp builds against
+  FFmpeg 6.1 too.
+
+### Changed
+
+- A track's sound effects run once on the track's mixed clips, before its
+  fader, the same in playback and export; a limiter there caps the track's
+  true peak. Projects with effects on a whole track may sound slightly
+  different.
+- Every menu lays its rows out one way: icons and checks in one slot, labels
+  aligned, shortcuts in their own column, no wrapped rows.
+- The update question and the new-version notice open in the middle of the
+  window.
+
+### Fixed
+
+- Opening a project no longer marks it as changed: unsaved changes now mean
+  what a save would write differs, and reopening keeps every analysis field.
+- Cutting words in the transcript cuts only the speaker's clips and the
+  picture linked to them, not every track.
+- Playback shows the timeline's frames when a clip has a faster frame rate,
+  as export does, instead of every frame of the file.
+- Exporting 1080p clips at 4K is many times faster: the GPU enlarges them,
+  with the same Lanczos result as before.
+- Bypass on a clip's Grade node turns its whole grade off and on, and the
+  paused picture follows at once.
+- Dragging a point on a hue curve moves only that region, and hue curves join
+  smoothly across red.
+- The Curve Editor's property buttons switch the curve shown.
+- A caption that would sit on a title's line moves below or above it.
+- Undo removes a track that the undone edit created.
+- A clip dropped from the media pool lands where it is let go, and a drop on
+  a bin header no longer adds it to the timeline.
+- "Match first clip" takes the clip's exact frame rate on every way of
+  placing it.
+- Typing on the welcome screen or in a dialog no longer triggers editing
+  shortcuts behind it.
+- An export preset with its own loudness target keeps its own true-peak
+  ceiling, which can now be edited beside the target.
+
 ## 0.1.0-rc.2 — 2026-10-24
 
 ### Added
