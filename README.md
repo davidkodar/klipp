@@ -7,7 +7,7 @@
 
 **A native video editor for Linux.**
 
-[Website](https://davidkodar.github.io/klipp/) · [Download 0.1.0-rc.2](https://github.com/davidkodar/klipp/releases/tag/v0.1.0-rc.2)
+[Website](https://davidkodar.github.io/klipp/) · [Download 0.1.0-rc.2](https://github.com/davidkodar/klipp/releases/tag/v0.1.0-rc.2) · [Discussions](https://github.com/davidkodar/klipp/discussions)
 
 Edit on a magnetic timeline, grade in scene-linear colour, and automate workflows with local AI tools and an MCP-compatible assistant.
 
@@ -96,7 +96,7 @@ Compatibility depends on the plugin and the host features it requires. These hos
 
 The documentation is an mdBook: run `mdbook serve docs --open` to read it locally.
 
-Issues and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). Open an issue before non-trivial work and sign off commits under your own name. `scripts/install-hooks.sh` installs a pre-push hook that checks sign-offs and runs clippy and the affected crates' tests on your machine; GPU tests need a working GPU to mean anything.
+Questions, help and ideas belong in [Discussions](https://github.com/davidkodar/klipp/discussions); issues are for bugs. Issues and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). Open an issue before non-trivial work and sign off commits under your own name. `scripts/install-hooks.sh` installs a pre-push hook that checks sign-offs and runs clippy and the affected crates' tests on your machine; GPU tests need a working GPU to mean anything.
 
 Report security concerns through [SECURITY.md](SECURITY.md).
 
