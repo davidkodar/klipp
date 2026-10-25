@@ -1216,9 +1216,11 @@ fn render_list_view(
                 cmds.push(AppCommand::SelectClip(None));
                 cmds.push(AppCommand::LoadSourceMedia { media_id: item.id });
             }
+            // A double-click opens the item in the source viewer and
+            // nothing more: putting it on the timeline is an Insert,
+            // Overwrite or Append the editor asks for (#2663).
             if resp.double_clicked() {
-                let on_new_tracks = ui.input(|i| i.modifiers.shift);
-                cmds.push(AppCommand::ImportMediaLinked { media_id: item.id, on_new_tracks });
+                cmds.push(AppCommand::LoadSourceMedia { media_id: item.id });
             }
             if resp.dragged() {
                 // The item, or the multi-selection it is part of, in
@@ -1460,9 +1462,11 @@ fn render_grid_view(
                 cmds.push(AppCommand::SelectClip(None));
                 cmds.push(AppCommand::LoadSourceMedia { media_id: item.id });
             }
+            // A double-click opens the item in the source viewer and
+            // nothing more: putting it on the timeline is an Insert,
+            // Overwrite or Append the editor asks for (#2663).
             if card_resp.double_clicked() {
-                let on_new_tracks = ui.input(|i| i.modifiers.shift);
-                cmds.push(AppCommand::ImportMediaLinked { media_id: item.id, on_new_tracks });
+                cmds.push(AppCommand::LoadSourceMedia { media_id: item.id });
             }
 
             // Drag disambiguation
@@ -2673,6 +2677,49 @@ mod pool_style_tests {
             let mut cmds = frame(vec![egui::Event::PointerMoved(load), primary(true)]).1;
             cmds.extend(frame(vec![primary(false)]).1);
             assert!(cmds.iter().any(|c| matches!(c, AppCommand::LoadSourceMedia { media_id } if *media_id == id)), "{view:?}: {cmds:?}");
+        }
+    }
+
+    /// A double-click on an item, card or row, opens it in the source
+    /// viewer and puts nothing on the timeline (#2663).
+    #[test]
+    fn a_double_click_only_opens_the_item_in_source() {
+        for view in [BrowserViewMode::Grid, BrowserViewMode::List] {
+            let mut state = AppState::default();
+            let id = state.media_pool.add(item("A001_C002.mov", "h264", "aac"));
+            let mut panel = crate::browser::BrowserPanel { browser_view_mode: view, ..Default::default() };
+            let ctx = egui::Context::default();
+            let theme = KlippTheme::default();
+            let mut time = 0.0;
+            let mut frame = |events: Vec<egui::Event>| {
+                let mut tab = crate::layout_state::BrowserTab::Media;
+                let (mut pinned, mut ratio) = (false, 0.5);
+                let mut cmds = Vec::new();
+                time += 0.05;
+                let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(700.0, 900.0))), time: Some(time), events, ..Default::default() }, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| cmds = panel.show(ui, &mut state, &theme, &mut tab, &mut pinned, &mut ratio));
+                });
+                let texts: Vec<(String, egui::Pos2)> = out.shapes.iter().filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
+                    _ => None,
+                }).collect();
+                (texts, cmds)
+            };
+            frame(Vec::new());
+            let (texts, _) = frame(Vec::new());
+            let at = texts.iter().find(|(t, _)| t == "A001_C002.mov").unwrap_or_else(|| panic!("{view:?}: {texts:?}")).1;
+            let primary = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+            let mut cmds = frame(vec![egui::Event::PointerMoved(at)]).1;
+            for _ in 0..2 {
+                cmds.extend(frame(vec![primary(true)]).1);
+                cmds.extend(frame(vec![primary(false)]).1);
+            }
+            cmds.extend(frame(Vec::new()).1);
+            assert!(cmds.iter().any(|c| matches!(c, AppCommand::LoadSourceMedia { media_id } if *media_id == id)), "{view:?}: {cmds:?}");
+            assert!(
+                !cmds.iter().any(|c| matches!(c, AppCommand::ImportMediaLinked { .. } | AppCommand::AppendClipToTrack { .. } | AppCommand::PlaceMedia { .. })),
+                "{view:?}: a double-click put it on the timeline: {cmds:?}"
+            );
         }
     }
 
