@@ -12,6 +12,58 @@ pub(crate) fn respond(
     let mut send = sender!(ctx, collect);
 
     match cmd {
+        ControlCommand::DeliverySpecs => {
+            use klipp_core::delivery_spec as spec;
+            let specs = spec::all_specs();
+            let lines: Vec<String> = specs.iter().map(|s| format!("{} ({}){}", s.name, s.id, if s.built_in { "" } else { ", yours" })).collect();
+            Ok(json!({
+                "text": format!("Delivery specs:\n{}", lines.join("\n")),
+                "specs": specs.iter().map(|s| json!({ "id": s.id, "name": s.name, "built_in": s.built_in, "sources": s.sources, "requirements": s.requirements, "export": s.export, "hdr": s.hdr })).collect::<Vec<_>>(),
+                "next": "check_delivery with a spec's id checks the timeline, or a finished file with file.",
+            }))
+        }
+        ControlCommand::CheckDelivery { spec, file } => {
+            use klipp_core::delivery_spec as ds;
+            let spec = ds::find_spec(&spec).ok_or_else(|| format!("no delivery spec {spec:?}; delivery_specs lists them"))?;
+            let (facts, what) = match &file {
+                Some(path) => (klipp_render::delivery_facts::file_facts(std::path::Path::new(path), true)?, path.clone()),
+                None => {
+                    if in_batch {
+                        return read_in_batch("check_delivery");
+                    }
+                    let (size, fps, captions) = {
+                        let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                        let captions = seq.tracks.iter().any(|t| t.kind == klipp_timeline::TrackKind::Subtitle && !t.clips.is_empty());
+                        (seq.resolution, seq.fps.as_f64(), captions)
+                    };
+                    // The mix is read only when the export would not set its
+                    // loudness.
+                    let mix = if spec.export.target_lufs.is_none() {
+                        let snapshot = {
+                            let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                            let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                            klipp_render::SequenceSnapshot::from_sequence(&seq, &pool, &klipp_core::ExportSettings::default(), None, false, klipp_core::WorkingColorspace::Rec709Linear)
+                                .map_err(|e| format!("the mix could not be read: {e}"))?
+                        };
+                        crate::grading::mix_delivery(&snapshot).ok()
+                    } else {
+                        None
+                    };
+                    (ds::export_facts(&spec.export, spec.hdr, size, fps, captions, mix), "the timeline, exported with the spec's settings".to_string())
+                }
+            };
+            let findings = ds::check(&spec, &facts);
+            let verdict = ds::verdict(&findings);
+            let word = |s: ds::Status| match s { ds::Status::Pass => "pass", ds::Status::Warn => "warn", ds::Status::Fail => "fail" };
+            let lines: Vec<String> = findings.iter().map(|f| format!("{:4}  {}: {} (wanted {}){}", word(f.status), f.what, f.found, f.wanted, if f.fix.is_empty() { String::new() } else { format!(" — {}", f.fix) })).collect();
+            Ok(json!({
+                "text": format!("{} against {}: {}\n{}", what, spec.name, word(verdict), lines.join("\n")),
+                "spec": spec.id,
+                "verdict": word(verdict),
+                "findings": findings,
+                "sources": spec.sources,
+            }))
+        }
         ControlCommand::Export { path, width, height, fps, crf, bit_depth, target_lufs, true_peak_dbtp, burn_captions, captions_608, hdr10plus, hdr, peak_nits, preset, codec, audio_codec, bitrate_kbps, encoder_speed } => {
             let out = std::path::PathBuf::from(&path);
             if !out.is_absolute() {

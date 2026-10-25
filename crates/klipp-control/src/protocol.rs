@@ -1591,6 +1591,20 @@ pub enum ControlCommand {
     },
     /// List the existing recent projects without searching the filesystem.
     RecentProjects,
+    /// The delivery specifications Klipp knows (#2650): the built-in
+    /// ones, with the pages their numbers come from, and the person's
+    /// own. A read.
+    DeliverySpecs,
+    /// Check against the delivery spec `spec` (an id or a name): a
+    /// finished `file` (read with ffprobe, its loudness measured), or,
+    /// with none, the timeline as an export with the spec's settings
+    /// would make it. Every requirement as pass, warn or fail, with what
+    /// to change. A read.
+    CheckDelivery {
+        spec: String,
+        #[serde(default)]
+        file: Option<String>,
+    },
     /// Return to the project page; refuse unsaved changes unless resolved.
     CloseProject {
         #[serde(default)]

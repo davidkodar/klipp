@@ -22,6 +22,14 @@ Every render job Klipp knows: status (queued, rendering, complete, failed, cance
 
 An 8-bit job also carries banding: pending until its sequence has been checked, which happens only while no render runs (so often just after the job ends), then bands or smooth. With bands, note suggests a 10-bit master (HEVC Main10 or ProRes) or the gradient's built-in grain; nothing is changed. A job is never held back for the check: read the next status, or klipp_check, for the answer.
 
+## klipp_delivery_specs
+
+The delivery specifications Klipp knows: the built-in ones (web platforms, vertical social video, EBU R 128 and ATSC A/85 broadcast loudness, a streaming master), each with the public pages its numbers come from, and the person's own. Each has an `id`, its `requirements` (container, codecs, frame sizes and rates, bit depth, colour, audio, loudness and true peak, captions) and the `export` settings choosing it sets in the app.
+
+## klipp_check_delivery
+
+Check against one delivery spec, `spec` (its id or its name): a finished `file` (an absolute path; read with ffprobe, its loudness measured by Klipp's meter over its sound as stereo), or, without one, the timeline as an export with the spec's settings would make it. Every requirement comes back as pass, warn or fail, with what was found, what is wanted and what to change; `verdict` is the worst. A platform's recommendation missed warns; a dialogue-gated loudness target is read over the whole mix, so it warns rather than fails.
+
 ## klipp_follow_job
 
 Wait for one render or analysis job to end, then say how it ended: completed with the file and its loudness, failed with why, or cancelled, and the way there (each 10% with the time). Waits up to max_wait_ms (10 minutes unless given, at most an hour); if the job is still running then, says so — call again. Your client may show progress meanwhile, but you see only this reply. For live progress you can tell the person as it happens, run `klipp-mcp follow <job_id>` as a background task instead: it prints a line per step and a last line when the job ends.
