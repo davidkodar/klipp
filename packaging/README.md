@@ -1,16 +1,19 @@
-# Install on Arch / Omarchy
+# Install on Arch-based distributions
 
 This is the supported source-install route for an up-to-date **x86_64 Arch or
-Omarchy** system. It builds a local `klipp-git` pacman package. There is no
-pre-built release to download yet. Other distributions are not validated by
-this recipe.
+Arch-based** system. It builds a local `klipp-git` pacman package. Release
+candidates are also published as a ready-built package on the
+[releases page](https://github.com/davidkodar/klipp/releases). Other
+distributions are not validated by this recipe.
 
 ## Downloadable releases
 
 Release packaging and in-app update checks are described in [RELEASING.md](RELEASING.md).
-A public download and signed package repository still need to be published.
-Until then, use the source installation below. Installing a standalone package
-does not automatically configure future system updates.
+Release candidates are published on the
+[releases page](https://github.com/davidkodar/klipp/releases) as an unsigned
+pacman package; the main README shows how to install one. There is no signed
+package repository yet, so installing a standalone package does not
+configure future system updates.
 
 ## Before starting
 
