@@ -615,17 +615,10 @@ pub(crate) fn decode_clip_audio(
                 2 => ffmpeg_next::ChannelLayout::STEREO,
                 6 => ffmpeg_next::ChannelLayout::_5POINT1,
                 8 => ffmpeg_next::ChannelLayout::_7POINT1,
-                _ => {
-                    // Fallback: use default layout for this channel count
-                    unsafe {
-                        let mut ch_layout: ffmpeg_next::ffi::AVChannelLayout = std::mem::zeroed();
-                        ffmpeg_next::ffi::av_channel_layout_default(
-                            &mut ch_layout,
-                            src_channels as i32,
-                        );
-                        ffmpeg_next::ChannelLayout::from(ch_layout)
-                    }
-                }
+                // Fallback: the default layout for this channel count.
+                // ffmpeg-next's layout is a bit mask before ffmpeg 7, so
+                // the constructor both forms have, not an AVChannelLayout.
+                _ => ffmpeg_next::ChannelLayout::default(src_channels as i32),
             }
         }
     };
