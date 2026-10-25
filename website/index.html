@@ -83,12 +83,12 @@
     <li>Find by Picture: describe a shot in words to find it (optional, runs locally)</li>
     <li>Video synced with separately recorded sound in the media pool</li>
     <li>Clips split across camera files joined as one take</li>
-    <li>Stills including HEIC, AVIF, JPEG XL, EXR and camera RAW previews</li>
+    <li>Stills, including HEIC, AVIF, JPEG XL and EXR where your FFmpeg reads them</li>
   </ul></details>
 
   <details><summary>Colour <span class="count">18</span></summary><ul>
     <li>Scene-linear grading in ACEScg, BT.2020 or Rec.709 linear</li>
-    <li>15 camera log curves, detected on import</li>
+    <li>15 camera log curves; most are detected on import from the camera</li>
     <li>A node graph per clip, with a picture on every node</li>
     <li>Colour wheels, contrast, exposure, saturation and tone controls</li>
     <li>RGB curves and seven hue, saturation and luminance curves</li>
@@ -111,7 +111,7 @@
     <li>73 transitions, each with a live preview</li>
     <li>Piece transitions: strips, panels, halves and shatter</li>
     <li>Smooth Cut, for jump cuts between takes</li>
-    <li>60 built-in GPU video effects and six one-click looks</li>
+    <li>57 built-in GPU video effects and six one-click looks</li>
     <li>Chroma key and luma key</li>
     <li>Stabilisation, rolling-shutter correction, temporal noise reduction and deflicker</li>
     <li>Particles, lens flare, light rays, glow, halation, VHS and old film</li>
@@ -177,16 +177,16 @@
     <li>Export presets for the web, social, masters and broadcast; save your own</li>
     <li>H.264, H.265, AV1, VP9, ProRes, DNxHD and animated GIF</li>
     <li>MP4, MKV, MOV and WebM, in 8-bit or 10-bit</li>
-    <li>HDR export in HLG or PQ, with HDR10+ metadata</li>
+    <li>HDR export in HLG or PQ, with HDR10+ metadata for H.265 PQ</li>
     <li>Output transforms for Rec.709, Rec.2020, PQ, DCI-P3 and sRGB</li>
-    <li>Hardware encoding (NVENC, AMF, VAAPI), with software fallback</li>
+    <li>Hardware encoding (NVENC, AMF, VAAPI) when your FFmpeg has it, with software fallback</li>
     <li>A render queue, and one file per marker range</li>
     <li>Loudness targets on export</li>
     <li>Audio-only export as MP3, WAV or M4A</li>
     <li>Chapters from markers, written into MP4, MKV and MOV</li>
     <li>A delivery check of picture and sound, and advice when 8-bit will band</li>
     <li>Review copies with burnt-in timecode; comments come back as markers</li>
-    <li>Edit exchange: OTIO, FCPXML, CMX3600 EDL, AAF and Kdenlive in and out; FCP7 XML and MLT in</li>
+    <li>Edit exchange: OTIO, FCPXML, CMX3600 EDL and Kdenlive in and out; FCP7 XML and MLT in; AAF with the OpenTimelineIO AAF adapter installed</li>
     <li>The edit comes across (clips, cuts, timing, markers where the format has them), with an import report</li>
     <li>Autosave, backups and recovery after a crash</li>
   </ul></details>
@@ -206,7 +206,7 @@
   <details><summary>Assistant and automation <span class="count">8</span></summary><ul>
     <li>An MCP server with 129 tools (optional; can be switched off)</li>
     <li>Your MCP client decides whether its model is local or in the cloud</li>
-    <li>65 edit operations, each one undo step</li>
+    <li>65 edit operations; a whole batch undoes in one step</li>
     <li>Footage analysis: shots, sound, motion, speech, framing, beats and on-screen text</li>
     <li>An Edit Plan window to approve, build or discard a proposed edit</li>
     <li>Draft review with a contact sheet and a quality check</li>
