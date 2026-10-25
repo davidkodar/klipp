@@ -13,14 +13,14 @@
 <a class="skip" href="#main">Skip to content</a>
 <header class="header wrap">
   <a class="brand" href="#" aria-label="Klipp home"><img src="assets/klipp-icon.svg" width="36" height="36" alt=""><img src="assets/klipp-wordmark.svg" height="26" alt="Klipp"></a>
-  <nav aria-label="Main navigation"><a href="#workflow">Explore</a><a href="#demo">Demo</a><a href="#start">Get started <span aria-hidden="true">↗</span></a></nav>
+  <nav aria-label="Main navigation"><a href="#workflow">Explore</a><a href="#demo">Demo</a><a href="#features">Features</a><a href="#start">Get started <span aria-hidden="true">↗</span></a></nav>
 </header>
 <main id="main">
   <section class="hero wrap">
     <p class="eyebrow"><span class="status-dot"></span> Built for Linux. In active development.</p>
     <h1>Find your cut.<br><span>Make it yours.</span></h1>
     <div class="hero-bottom"><p>A native video editor with a magnetic timeline, scene-linear colour, and local AI tools. From the first assembly to the final frame.</p><a class="button" href="#start">Start with Klipp <span aria-hidden="true">↗</span></a></div>
-    <figure class="hero-shot"><a href="assets/editing.webp" aria-label="Open the editing workspace screenshot at full size"><img src="assets/editing.webp" width="2400" height="1350" fetchpriority="high" alt="Klipp editing workspace: a mountain lake in the viewer, layered titles, four video shots and a music waveform on the timeline."></a><figcaption><span>QUIET EARTH / Editing workspace</span><span>Actual app capture · Open full size ↗</span></figcaption></figure>
+    <figure class="hero-shot"><a href="assets/edit.webp" aria-label="Open the Edit page screenshot at full size"><img src="assets/edit.webp" width="2400" height="1350" fetchpriority="high" alt="Klipp Edit page: a harbour shot with a lower-third title in the viewer, the media pool, the inspector, and a timeline with title, video, music, ambience, sound effect and voice tracks."></a><figcaption><span>SEASIDE DAY / Edit page</span><span>Actual app capture · Open full size ↗</span></figcaption></figure>
     <div class="specs"><span>Native Linux</span><span>Vulkan accelerated</span><span>Scene-linear colour</span><span>GPL-3.0-only</span></div>
   </section>
   <section id="workflow" class="section wrap">
@@ -29,14 +29,191 @@
   </section>
   <section class="colour section">
     <div class="wrap"><div class="section-heading"><p class="eyebrow">02 / The finish</p><h2>A feel for the image.<br>A measure of the colour.</h2></div>
-    <p class="section-intro">Work in a scene-linear ACEScg pipeline with camera-log decoding, node-based grades, colour wheels, curves, and GPU scopes. Finish for SDR or HDR.</p>
-    <figure class="feature-shot"><a href="assets/colour.webp" aria-label="Open the colour workspace screenshot at full size"><img src="assets/colour.webp" width="2400" height="1350" loading="lazy" alt="Klipp colour workspace with four colour wheels arranged in a two-by-two grid, a waveform scope, and the Quiet Earth timeline."></a><figcaption>Colour workspace / Wheels and waveform · Open full size ↗</figcaption></figure></div>
+    <p class="section-intro">Work in a scene-linear pipeline (ACEScg, BT.2020 or Rec.709 linear) with camera-log decoding, node-based grades, colour wheels, curves, and GPU scopes. Finish for SDR or HDR.</p>
+    <figure class="feature-shot"><a href="assets/colour.webp" aria-label="Open the Colour page screenshot at full size"><img src="assets/colour.webp" width="2400" height="1350" loading="lazy" alt="Klipp Colour page: a graded shot of a runner on a seafront, the clip's node graph with five nodes, four colour wheels, a vectorscope and a waveform."></a><figcaption>Colour page / Node graph, wheels and scopes · Open full size ↗</figcaption></figure></div>
   </section>
-  <section class="section wrap assistant"><div><p class="eyebrow">03 / A helping hand</p><h2>Your edit.<br>More ways to get there.</h2></div><div><p class="lead">Transcribe, analyse, and automate.</p><p>Klipp’s built-in speech, vision, and audio models run locally. Connect an MCP-compatible assistant to inspect footage, propose an edit plan, build a sequence, and check the result.</p><p class="muted">An external assistant may use a local or cloud model, depending on your client. Local inference and external assistants are separate choices.</p><a class="text-link" href="https://github.com/davidkodar/klipp/blob/main/docs/project-reference.md#the-ai-assistant">Read about the workflow ↗</a></div></section>
+  <section class="section wrap assistant"><div><p class="eyebrow">03 / A helping hand</p><h2>Your edit.<br>More ways to get there.</h2></div><div><p class="lead">Transcribe, analyse, and automate.</p><p>Klipp’s built-in speech, vision, and audio models run locally. Connect an MCP-compatible assistant to inspect footage, propose an edit plan, build a sequence, and check the result.</p><p class="muted">An external assistant may use a local or cloud model, depending on your client. Local inference and external assistants are separate choices.</p><a class="text-link" href="https://github.com/davidkodar/klipp/blob/main/docs/project-reference.md#the-ai-assistant">Read about the workflow ↗</a></div><figure class="feature-shot wide"><a href="assets/transcript.webp" aria-label="Open the transcript screenshot at full size"><img src="assets/transcript.webp" width="2400" height="1350" loading="lazy" alt="Klipp Edit page with the Transcript panel open under an interview clip: the spoken words, with the filler words um and uh marked."></a><figcaption>Edit by transcript / Filler words marked · Open full size ↗</figcaption></figure></section>
+  <section class="section wrap">
+    <div class="section-heading"><p class="eyebrow">04 / Titles</p><h2>Words that move.</h2></div>
+    <p class="section-intro">Start from 38 animated title templates, or build your own: complex scripts, variable fonts, 3D text, text on a path, and footage inside the letters with a track matte.</p>
+    <figure class="feature-shot"><a href="assets/titles.webp" aria-label="Open the titles screenshot at full size"><img src="assets/titles.webp" width="2400" height="1350" loading="lazy" alt="Klipp with the title library open beside the viewer, which shows the word SEA with breaking waves inside the letters."></a><figcaption>Title library / Footage inside the letters · Open full size ↗</figcaption></figure>
+  </section>
+  <section class="colour section">
+    <div class="wrap"><div class="section-heading"><p class="eyebrow">05 / Sound</p><h2>Hear it in the edit.</h2></div>
+    <p class="section-intro">Mix on a full mixer with loudness and true-peak meters. Clean up a voice with Voice Isolation on your own machine, duck the music under it, and deliver at your platform’s loudness.</p>
+    <figure class="feature-shot"><a href="assets/sound.webp" aria-label="Open the sound screenshot at full size"><img src="assets/sound.webp" width="2400" height="1350" loading="lazy" alt="Klipp audio layout during playback: the mixer with moving meters, the master loudness at minus 14 LUFS, and Voice Isolation on the selected voice clip."></a><figcaption>Audio mixer / Voice Isolation and loudness · Open full size ↗</figcaption></figure></div>
+  </section>
   <section id="demo" class="section wrap demo"><div class="section-heading"><p class="eyebrow">Made in Klipp</p><h2>Twenty things Klipp does.</h2></div><p class="section-intro">A three-minute tour of the real interface: editing, titles, colour, sound and delivery. Cut, graded, mixed, narrated and exported in Klipp. Play with sound for the narration.</p>
     <video controls playsinline preload="none" poster="assets/klipp-showcase-v3-1080p.webp" width="1920" height="1080" aria-label="Klipp showcase: a three-minute narrated tour of twenty features, with music"><source src="assets/klipp-showcase-v3-1080p.mp4" type="video/mp4">Your browser cannot play this video. <a href="assets/klipp-showcase-v3-1080p.mp4">Download the Klipp showcase</a>.</video>
     <p class="caption">Narrated in English, with music. Shown in Klipp 0.1.0-rc.2. <a href="credits.html">Footage, music and sound credits</a>.</p>
   </section>
+  <section id="features" class="section wrap all-features" aria-labelledby="all-features-title">
+  <div class="section-heading"><p class="eyebrow">In full</p><h2 id="all-features-title">All features.</h2></div><p class="section-intro">What Klipp 0.1.0-rc.2 does, by area. Open a group to see the list.</p>
+
+  <details><summary>Editing <span class="count">18</span></summary><ul>
+    <li>Magnetic multitrack timeline, with ripple on or off</li>
+    <li>Insert, overwrite, replace and fit-to-fill edits from in and out marks</li>
+    <li>Ripple, roll, slip and slide trims</li>
+    <li>Blade, split at the playhead, lift, extract and ripple delete</li>
+    <li>J and L cuts: trim the picture or the sound alone</li>
+    <li>Compound clips and storylines of connected clips</li>
+    <li>Several sequences per project, duplicated in one step</li>
+    <li>A selects timeline for pulling takes</li>
+    <li>Synced multicam by timecode, sound or both, cut with keys 1–9</li>
+    <li>Speed changes, reverse, freeze frames and speed ramps</li>
+    <li>Optical-flow slow motion</li>
+    <li>Keyframes with a curve editor, a dope sheet and a motion path in the viewer</li>
+    <li>Edit by transcript: delete words, filler words or long pauses</li>
+    <li>Markers with notes, colours and kinds, including chapters</li>
+    <li>A history window: click any step to go back</li>
+    <li>Skimming, a source viewer and match frame</li>
+    <li>New version at another aspect: vertical or square, reframed on the subject</li>
+    <li>Scene detection that splits a clip at its shot changes</li>
+  </ul></details>
+
+  <details><summary>Media and organising <span class="count">12</span></summary><ul>
+    <li>Import files or whole folders, or drag them in</li>
+    <li>Bins and rule-based smart bins</li>
+    <li>Ratings, favourites, rejects and keywords</li>
+    <li>Logging fields, list columns, sorting and filters</li>
+    <li>Camera metadata from EXIF and Sony and Canon XML sidecars</li>
+    <li>Metadata sheets in and out as CSV or ALE</li>
+    <li>Proxies, and playback from proxies</li>
+    <li>Relink media from a whole folder; offline files counted on open</li>
+    <li>Find by Picture: describe a shot in words to find it (optional, runs locally)</li>
+    <li>Video synced with separately recorded sound in the media pool</li>
+    <li>Clips split across camera files joined as one take</li>
+    <li>Stills, including HEIC, AVIF, JPEG XL and EXR where your FFmpeg reads them</li>
+  </ul></details>
+
+  <details><summary>Colour <span class="count">18</span></summary><ul>
+    <li>Scene-linear grading in ACEScg, BT.2020 or Rec.709 linear</li>
+    <li>15 camera log curves; most are detected on import from the camera</li>
+    <li>A node graph per clip, with a picture on every node</li>
+    <li>Colour wheels, contrast, exposure, saturation and tone controls</li>
+    <li>RGB curves and seven hue, saturation and luminance curves</li>
+    <li>HSL, RGB and 3D qualifiers, luma and difference keys</li>
+    <li>Colour warper</li>
+    <li>Circle, rectangle, gradient and Bezier masks, with tracked windows</li>
+    <li>HDR zones for grading HDR</li>
+    <li>3D LUTs (.cube, .3dl, .csp) and 304 bundled film and cinematic LUTs</li>
+    <li>ACES output transforms and a colour space transform effect</li>
+    <li>Viewer and calibration LUTs that change only the screen</li>
+    <li>GPU waveform, parade, vectorscope and histogram; CIE chromaticity and false colour</li>
+    <li>Colour Check: names what is off in the frame, and the control that fixes it</li>
+    <li>Match shots to a hero shot, or adopt a look from a reference</li>
+    <li>Auto white balance, an eyedropper, and skin balance from detected faces</li>
+    <li>A grade library shared across projects, with stills, wipe and before/after</li>
+    <li>Timeline and track grades, grade versions, and grades pasted onto many clips</li>
+  </ul></details>
+
+  <details><summary>Effects and transitions <span class="count">14</span></summary><ul>
+    <li>73 transitions, each with a live preview</li>
+    <li>Piece transitions: strips, panels, halves and shatter</li>
+    <li>Smooth Cut, for jump cuts between takes</li>
+    <li>57 built-in GPU video effects and six one-click looks</li>
+    <li>Chroma key and luma key</li>
+    <li>Stabilisation, rolling-shutter correction, temporal noise reduction and deflicker</li>
+    <li>Particles, lens flare, light rays, glow, halation, VHS and old film</li>
+    <li>Track mattes, and masks on any effect</li>
+    <li>13 blend modes</li>
+    <li>Remove Background, Isolate Object and Detect Objects (optional, run locally)</li>
+    <li>Subject tracking, and surface tracking with corner pin</li>
+    <li>Motion blur per sequence, with shutter and samples</li>
+    <li>Effect presets and favourites; most effect settings can be keyframed</li>
+    <li>OFX 1.5 and frei0r video plug-ins: subsets of each format; compatibility varies by plugin</li>
+  </ul></details>
+
+  <details><summary>Titles and graphics <span class="count">15</span></summary><ul>
+    <li>38 title templates in six categories, and templates of your own</li>
+    <li>OpenType shaping for complex scripts and right-to-left text</li>
+    <li>Vertical text and ruby</li>
+    <li>Variable fonts and font fallback</li>
+    <li>OpenType features: ligatures, small caps, figure styles, stylistic sets</li>
+    <li>Styled runs, with copy and paste of a style</li>
+    <li>Gradients, outlines, shadows, glow and neon</li>
+    <li>Backings for lower thirds: a box, or shadow and outline</li>
+    <li>Paragraphs, lists, tab stops and fit to a box</li>
+    <li>Text on a path</li>
+    <li>Animators by letter, word or line; staggered entrances and exits</li>
+    <li>Extruded 3D text with bevels and lighting</li>
+    <li>Rolling credits and crawls</li>
+    <li>Type in the viewer with the Text tool; image layers in titles</li>
+    <li>Find and replace across titles, and missing-font replacement</li>
+  </ul></details>
+
+  <details><summary>Captions and transcripts <span class="count">9</span></summary><ul>
+    <li>Speech transcription on your machine (optional; model downloads on request)</li>
+    <li>A transcript panel to set the language and correct words</li>
+    <li>Captions made from the transcript in one step</li>
+    <li>SRT, VTT, ASS/SSA, TTML (IMSC), SCC and EBU-STL, in and out</li>
+    <li>A subtitle editor, with a caption style per track</li>
+    <li>Caption tracks with a language and visibility</li>
+    <li>Caption translation on your machine, 14 language pairs (optional)</li>
+    <li>Burnt-in or soft subtitles on export</li>
+    <li>CEA-608 closed captions embedded in H.264 and H.265</li>
+  </ul></details>
+
+  <details><summary>Sound <span class="count">16</span></summary><ul>
+    <li>Multitrack mixer with loudness (LUFS) and true-peak meters</li>
+    <li>Clip volume, gain, pan and channel mapping</li>
+    <li>Audio crossfades</li>
+    <li>15 built-in audio effects: EQ, dynamics, restoration, reverb, delay, chorus, pitch</li>
+    <li>Noise reduction, de-click, de-ess and hum removal</li>
+    <li>Voice Isolation, on your machine (optional; model downloads on request)</li>
+    <li>Normalise to a loudness or a peak, with a true-peak ceiling</li>
+    <li>Track volume and pan automation, recorded live</li>
+    <li>Volume keyframes and auto duck</li>
+    <li>Sync separate sound by waveform or timecode</li>
+    <li>Fit music to a length, in whole bars</li>
+    <li>Audio roles, proposed by an on-device classifier</li>
+    <li>Sound Over Time: a whole file as frequency against time</li>
+    <li>Narration voices on your machine (optional; voices download on request)</li>
+    <li>Voice-over recording with punch-in, and audio scrubbing</li>
+    <li>LADSPA, LV2 and CLAP audio plug-ins: subsets of each format; compatibility varies by plugin</li>
+  </ul></details>
+
+  <details><summary>Delivery and interchange <span class="count">15</span></summary><ul>
+    <li>Export presets for the web, social, masters and broadcast; save your own</li>
+    <li>H.264, H.265, AV1, VP9, ProRes, DNxHD and animated GIF</li>
+    <li>MP4, MKV, MOV and WebM, in 8-bit or 10-bit</li>
+    <li>HDR export in HLG or PQ, with HDR10+ metadata for H.265 PQ</li>
+    <li>Output transforms for Rec.709, Rec.2020, PQ, DCI-P3 and sRGB</li>
+    <li>Hardware encoding (NVENC, AMF, VAAPI) when your FFmpeg has it, with software fallback</li>
+    <li>A render queue, and one file per marker range</li>
+    <li>Loudness targets on export</li>
+    <li>Audio-only export as MP3, WAV or M4A</li>
+    <li>Chapters from markers, written into MP4, MKV and MOV</li>
+    <li>A delivery check of picture and sound, and advice when 8-bit will band</li>
+    <li>Review copies with burnt-in timecode; comments come back as markers</li>
+    <li>Edit exchange: OTIO, FCPXML, CMX3600 EDL and Kdenlive in and out; FCP7 XML and MLT in; AAF with the OpenTimelineIO AAF adapter installed</li>
+    <li>The edit comes across (clips, cuts, timing, markers where the format has them), with an import report</li>
+    <li>Autosave, backups and recovery after a crash</li>
+  </ul></details>
+
+  <details><summary>Performance and platform <span class="count">9</span></summary><ul>
+    <li>A native Linux app, for Wayland and X11</li>
+    <li>A Vulkan-capable GPU is required</li>
+    <li>Compositing, grading and scopes on the GPU</li>
+    <li>Hardware video decoding (NVDEC, VAAPI)</li>
+    <li>Follows the Omarchy desktop theme; eight built-in themes, accent colour and UI scale</li>
+    <li>Every AI feature optional, each with its own switch</li>
+    <li>Models download on request and are checked by SHA-256</li>
+    <li>No account; update checks are off until you turn them on</li>
+    <li>A separate HDR reference output window</li>
+  </ul></details>
+
+  <details><summary>Assistant and automation <span class="count">8</span></summary><ul>
+    <li>An MCP server with 129 tools (optional; can be switched off)</li>
+    <li>Your MCP client decides whether its model is local or in the cloud</li>
+    <li>65 edit operations; a whole batch undoes in one step</li>
+    <li>Footage analysis: shots, sound, motion, speech, framing, beats and on-screen text</li>
+    <li>An Edit Plan window to approve, build or discard a proposed edit</li>
+    <li>Draft review with a contact sheet and a quality check</li>
+    <li>Screen recording, narration and sound effects placed on cuts</li>
+    <li>Hide emails, keys and passwords found on screen in a recording</li>
+  </ul></details>
+</section>
   <section id="start" class="section start"><div class="wrap start-grid"><div><p class="eyebrow">Start here</p><h2>A work in progress.<br>Ready to explore.</h2><p>Klipp is pre-release software. Expect rough edges and breaking changes. The latest release candidate, <a href="https://github.com/davidkodar/klipp/releases/tag/v0.1.0-rc.2">0.1.0-rc.2</a>, is out as an unsigned Arch package. There are no stability guarantees yet.</p></div><div class="install"><h3>Build on Arch / Omarchy</h3><p>x86_64 Linux · Vulkan 1.1 GPU required</p><pre><code>git clone https://github.com/davidkodar/klipp.git
 cd klipp/packaging
 makepkg -si
