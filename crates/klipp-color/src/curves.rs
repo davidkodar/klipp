@@ -80,6 +80,18 @@ pub fn build_curve_lut_f32(points: &[[f32; 2]]) -> [f32; 256] {
     for (i, lut_val) in lut.iter_mut().enumerate() {
         let t = i as f32 / 255.0;
 
+        // Beyond the outer points the curve holds their values, as the
+        // two-point line does; the end pieces' cubic run on past them
+        // bent every value there (#2554).
+        if t <= pts[0][0] {
+            *lut_val = pts[0][1].clamp(0.0, 1.0);
+            continue;
+        }
+        if t >= pts[n - 1][0] {
+            *lut_val = pts[n - 1][1].clamp(0.0, 1.0);
+            continue;
+        }
+
         // Find segment
         let mut seg = 0;
         for (j, pt) in pts[..n - 1].iter().enumerate() {
@@ -208,5 +220,23 @@ mod tests {
         assert!(is_identity(&[[0.0, 0.0], [1.0, 1.0]]));
         assert!(!is_identity(&[[0.0, 0.0], [0.5, 0.7], [1.0, 1.0]]));
         assert!(!is_identity(&[[0.0, 0.1], [1.0, 1.0]]));
+    }
+
+    /// #2554: a hue curve picked to three points round a hue, its middle
+    /// dragged up, changes only the hues between the outer two; beyond
+    /// them the curve holds the outer points' values, here neutral. The
+    /// end pieces' cubic used to run on past them, and every other hue
+    /// gained saturation.
+    #[test]
+    fn beyond_the_outer_points_the_curve_holds_their_values() {
+        let (lo, hue, hi) = (200.0 / 360.0 - 0.06, 200.0 / 360.0, 200.0 / 360.0 + 0.06);
+        let lut = build_curve_lut_f32(&[[lo, 0.5], [hue, 0.9], [hi, 0.5]]);
+        for (i, v) in lut.iter().enumerate() {
+            let t = i as f32 / 255.0;
+            if t < lo || t > hi {
+                assert!((v - 0.5).abs() < 1e-4, "at {:.0}° the curve is {v}, not the neutral 0.5", t * 360.0);
+            }
+        }
+        assert!(lut[(hue * 255.0).round() as usize] > 0.85, "the picked hue is raised");
     }
 }
