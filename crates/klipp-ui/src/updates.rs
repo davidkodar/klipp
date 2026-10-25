@@ -168,6 +168,8 @@ pub(crate) struct Updates {
     /// yet, and whether it is on screen.
     asked: bool,
     asking: bool,
+    /// A notice that keeps the keys was drawn this frame.
+    showing: bool,
     open: bool,
     check_on_open: bool,
     started: Instant,
@@ -181,6 +183,7 @@ impl Default for Updates {
         Self {
             asked: false,
             asking: false,
+            showing: false,
             open: false,
             check_on_open: false,
             started: Instant::now(),
@@ -226,37 +229,42 @@ impl Updates {
         });
     }
 
-    /// The question whether to check automatically: a notice in the
-    /// corner, not in the way. Closed unanswered, it is asked again at the
-    /// next start ([`ask_this_start`]).
+    /// The question whether to check automatically, as a dialog in the
+    /// middle of the window that keeps the keys while it is up. Closed
+    /// unanswered, it is asked again at the next start ([`ask_this_start`]).
     fn ask(&mut self, ctx: &egui::Context, prefs: &mut GeneralPrefs, dirty: &mut bool) {
-        egui::Area::new(egui::Id::new("update_checks_question"))
-            .anchor(egui::Align2::RIGHT_TOP, [-16.0, 48.0])
-            .show(ctx, |ui| {
-                egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    ui.set_max_width(340.0);
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("Check for new Klipp versions automatically?").strong());
-                        if ui.small_button("✕").on_hover_text("Ask me next time").clicked() {
-                            self.asking = false;
-                        }
-                    });
-                    ui.label("Klipp asks GitHub once a day; no project information is sent.");
-                    ui.horizontal(|ui| {
-                        if ui.button("Yes, check daily").clicked() {
-                            answer(prefs, true);
-                            self.asking = false;
-                            *dirty = true;
-                        }
-                        if ui.button("No thanks").clicked() {
-                            answer(prefs, false);
-                            self.asking = false;
-                            *dirty = true;
-                        }
-                    });
-                    ui.small("You can change this in Preferences.");
-                });
+        let mut open = true;
+        centred("Klipp Updates", "update_checks_question").open(&mut open).show(ctx, |ui| {
+            ui.set_min_width(420.0);
+            ui.label(egui::RichText::new("Check for new Klipp versions automatically?").strong());
+            ui.add_space(4.0);
+            ui.label("Klipp asks GitHub once a day; no project information is sent.");
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if ui.button("No thanks").clicked() {
+                    answer(prefs, false);
+                    self.asking = false;
+                    *dirty = true;
+                }
+                if ui.button("Yes, check daily").clicked() {
+                    answer(prefs, true);
+                    self.asking = false;
+                    *dirty = true;
+                }
             });
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new("You can change this in Preferences. Close this to be asked next time.").small().weak());
+        });
+        // Closed unanswered: asked at the next start.
+        if !open {
+            self.asking = false;
+        }
+    }
+
+    /// Whether a notice is up that keeps the keys: the question, or a new
+    /// version's notice, drawn this frame.
+    pub(crate) fn holds_keys(&self) -> bool {
+        self.showing
     }
 
     pub(crate) fn show(&mut self, ctx: &egui::Context, prefs: &mut GeneralPrefs, dirty: &mut bool) {
@@ -267,8 +275,10 @@ impl Updates {
                 *dirty = true;
             }
         }
+        self.showing = false;
         if self.asking && !prefs.update_checks_answered {
             self.ask(ctx, prefs, dirty);
+            self.showing = self.asking;
         }
         if std::mem::take(&mut self.check_on_open) {
             self.start(ctx, prefs, dirty);
@@ -311,21 +321,26 @@ impl Updates {
             {
                 let version = version.to_string();
                 if prefs.dismissed_update.as_deref() != Some(&version) && !self.open {
-                    egui::Area::new(egui::Id::new("update_notice"))
-                        .anchor(egui::Align2::RIGHT_TOP, [-16.0, 48.0])
-                        .show(ctx, |ui| {
-                            egui::Frame::popup(ui.style()).show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    if ui.button(format!("Klipp {version} available")).clicked() {
-                                        self.open = true;
-                                    }
-                                    if ui.small_button("Dismiss").clicked() {
-                                        prefs.dismissed_update = Some(version.clone());
-                                        *dirty = true;
-                                    }
-                                });
-                            });
+                    let mut gone = false;
+                    centred("New Klipp Version", "update_notice").show(ctx, |ui| {
+                        ui.set_min_width(420.0);
+                        ui.label(egui::RichText::new(format!("Klipp {version} available")).strong());
+                        ui.add_space(4.0);
+                        ui.label(format!("You have {}.", klipp_core::build_info::get().version));
+                        ui.add_space(12.0);
+                        ui.horizontal(|ui| {
+                            if ui.button("Dismiss").clicked() {
+                                prefs.dismissed_update = Some(version.clone());
+                                *dirty = true;
+                                gone = true;
+                            }
+                            if ui.button("Show details…").clicked() {
+                                self.open = true;
+                                gone = true;
+                            }
                         });
+                    });
+                    self.showing |= !gone;
                 }
             }
         }
@@ -389,6 +404,17 @@ impl Updates {
             });
         self.open = open;
     }
+}
+
+/// A window in the middle of the screen, in front, as Klipp's other
+/// dialogs are.
+fn centred(title: &str, id: &str) -> egui::Window<'static> {
+    egui::Window::new(title.to_owned())
+        .id(egui::Id::new(id))
+        .collapsible(false)
+        .resizable(false)
+        .order(egui::Order::Foreground)
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
 }
 
 fn now() -> u64 {
@@ -638,8 +664,8 @@ mod tests {
         assert!(ask_this_start(&mut off));
     }
 
-    /// The question shows at the first start, in the corner with its
-    /// wording, and goes once answered.
+    /// The question shows at the first start, with its wording, keeps
+    /// the keys while it is up, and goes once answered.
     #[test]
     fn the_question_shows_at_the_first_start_until_answered() {
         let mut prefs = GeneralPrefs::default();
@@ -648,9 +674,33 @@ mod tests {
         assert!(text.contains("Check for new Klipp versions automatically?"), "{text}");
         assert!(text.contains("Klipp asks GitHub once a day; no project information is sent."));
         assert!(text.contains("Yes, check daily") && text.contains("No thanks"));
+        assert!(updates.holds_keys(), "the keys stay with the question");
         assert_eq!(prefs.update_checks_asked, 1, "one start, however many frames");
         answer(&mut prefs, false);
         assert!(!ui_text(&mut updates, &mut prefs).contains("automatically?"));
+        assert!(!updates.holds_keys(), "and go back to the app once it is answered");
+    }
+
+    /// Both notices sit in the middle of the window, not in a corner.
+    #[test]
+    fn the_notices_are_centred() {
+        let rect_of = |updates: &mut Updates, prefs: &mut GeneralPrefs, id: &str| {
+            let ctx = egui::Context::default();
+            let input = || egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 900.0))), ..Default::default() };
+            for _ in 0..3 {
+                let _ = ctx.run(input(), |ctx| updates.show(ctx, prefs, &mut false));
+            }
+            ctx.memory(|m| m.area_rect(egui::Id::new(id))).expect("drawn")
+        };
+        let centre = egui::pos2(800.0, 450.0);
+        let mut prefs = GeneralPrefs::default();
+        let question = rect_of(&mut Updates::default(), &mut prefs, "update_checks_question");
+        assert!((question.center() - centre).length() < 2.0, "the question at {question:?}");
+        let mut prefs = GeneralPrefs { check_for_updates: true, update_checks_answered: true, preview_updates: Some(false), ..Default::default() };
+        let mut updates = available(Installation::Source);
+        let notice = rect_of(&mut updates, &mut prefs, "update_notice");
+        assert!((notice.center() - centre).length() < 2.0, "the notice at {notice:?}");
+        assert!(updates.holds_keys(), "the notice keeps the keys too");
     }
 
     #[test]

@@ -33,6 +33,7 @@ impl KlippApp {
             self.updates.open();
         }
         self.updates.show(ctx, &mut self.prefs.general, &mut self.prefs_dirty);
+        self.state.update_notice_open = self.updates.holds_keys();
 
         // Rotate the deferred-drop texture ring. Advance the slot and
         // clear the one we've just moved into — it holds handles

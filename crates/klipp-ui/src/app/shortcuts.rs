@@ -1499,5 +1499,8 @@ mod key_scope_tests {
         state.show_new_project_dialog = false;
         state.show_preferences = true;
         assert_eq!(key_scope(&state, false), KeyScope::Nothing);
+        state.show_preferences = false;
+        state.update_notice_open = true;
+        assert_eq!(key_scope(&state, false), KeyScope::Nothing, "the update question and notice too");
     }
 }
