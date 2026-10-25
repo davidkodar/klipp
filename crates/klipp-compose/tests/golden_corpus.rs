@@ -919,8 +919,7 @@ fn transition_cases() -> Vec<Case> {
     let f = Frames::default().with(&source, 40).with(&a, 0).with(&b, 160);
     let mut case = Case::new("transition/wipe out of a matted clip", sequence(vec![track("Matte", TrackKind::Video, vec![source]), t]), f);
     case.times = vec![1.75, 2.2];
-    // The GPU stack leaves a matte inside a transition to the CPU.
-    case.declines = Some(vec![Path::Stack, Path::Export]);
+    // The GPU stack mattes a transition's side before the sides mix (#2668).
     out.push(case);
     out
 }
