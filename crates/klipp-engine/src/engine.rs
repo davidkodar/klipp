@@ -833,6 +833,23 @@ fn sits_unmoved(clip: &klipp_timeline::Clip, seq: &klipp_timeline::Sequence, at:
 /// than played: a frame's slip in an edit, not a pause (#546).
 const GAP_AS_CUT_FRAMES: f64 = 1.5;
 
+/// The enabled title clips starting within `ahead` seconds of `now`
+/// (or just started), on a title track or among the shots of a video
+/// track (#2668): their resting render is made ahead of their cut.
+fn titles_starting(seq: &klipp_timeline::Sequence, now: f64, ahead: f64) -> Vec<(&klipp_timeline::Clip, &klipp_timeline::TitleData)> {
+    use klipp_timeline::TrackKind;
+    seq.tracks
+        .iter()
+        .filter(|t| matches!(t.kind, TrackKind::Text | TrackKind::Video))
+        .flat_map(|t| &t.clips)
+        .filter_map(|clip| {
+            let klipp_timeline::ClipKind::Title(td) = &clip.kind else { return None };
+            let start = clip.timeline_in.to_secs_f64();
+            (clip.enabled && start >= now - 0.1 && start <= now + ahead).then_some((clip, td))
+        })
+        .collect()
+}
+
 /// How the shot after a gap was taken over: from its preroll, as a cut
 /// is, or by a seek. For tests and the perf log.
 static GAP_HAND_OVERS_WARM: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -886,6 +903,35 @@ pub(crate) fn decodes_on(track: &klipp_timeline::Track, cur: &klipp_timeline::Cl
         gap <= frame_secs * HAND_ON_GAP_FRAMES && on.abs() < 0.5 * frame_secs
     } else {
         gap > -0.5 * frame_secs && on > -1e-3 && on <= DECODE_ON_CUT_SECS
+    }
+}
+
+#[cfg(test)]
+mod titles_starting_tests {
+    use super::titles_starting;
+    use klipp_core::RationalTime;
+    use klipp_timeline::{Clip, ClipKind, Sequence, TextBox, TitleData, Track, TrackKind};
+
+    fn title(from: f64, to: f64) -> Clip {
+        let tc = |s: f64| RationalTime::from_secs_f64(s, 60);
+        Clip { kind: ClipKind::Title(TitleData::single_text(TextBox { text: "Title".into(), ..Default::default() })), ..Clip::gap(tc(from), tc(to)) }
+    }
+
+    /// #2668: a title cut into a video track's shots is made ahead of its
+    /// cut as one on a title track is; a disabled one, one already well
+    /// under way or one further off than the look-ahead is not.
+    #[test]
+    fn titles_on_title_and_video_tracks_are_made_ahead() {
+        let mut seq = Sequence::new_default();
+        let mut text = Track::new("T1", TrackKind::Text);
+        text.clips = vec![title(2.0, 4.0)];
+        let mut video = Track::new("V1", TrackKind::Video);
+        let mut off = title(3.5, 5.0);
+        off.enabled = false;
+        video.clips = vec![title(0.0, 1.0), title(1.5, 2.0), off, title(9.0, 10.0)];
+        seq.tracks = vec![text, video];
+        let starts: Vec<f64> = titles_starting(&seq, 1.0, 2.0).iter().map(|(c, _)| c.timeline_in.to_secs_f64()).collect();
+        assert_eq!(starts, vec![2.0, 1.5]);
     }
 }
 
@@ -2102,44 +2148,37 @@ impl PlaybackEngine {
         {
             let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
             let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());
-            for track in seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Text) {
-                for clip in &track.clips {
-                    let klipp_timeline::ClipKind::Title(td) = &clip.kind else { continue };
-                    let start = clip.timeline_in.to_secs_f64();
-                    if !clip.enabled || start < now - 0.1 || start > now + AHEAD_SECS {
-                        continue;
-                    }
-                    // The frame size the title is placed at: the frame
-                    // the video under it is shown in, else the sequence's.
-                    // That frame is sized from the picture as decoded —
-                    // at most the playback resolution — not as the file
-                    // holds it: warmed at the file's size, a 4K portrait
-                    // clip's title was made for a frame it is never
-                    // shown in.
-                    let (w, h) = seq
-                        .tracks
-                        .iter()
-                        .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
-                        .find_map(|t| {
-                            let (_, c) = t.clip_at_timecode(clip.timeline_in)?;
-                            let item = pool.get(&c.media_id()?)?;
-                            // The item's size is already upright.
-                            let decoded = crate::video_decoder::playback_dimensions(
-                                item.resolution.width,
-                                item.resolution.height,
-                                0,
-                            );
-                            Some(view::viewer_canvas(decoded, (seq.resolution.width, seq.resolution.height)))
-                        })
-                        .unwrap_or((seq.resolution.width, seq.resolution.height));
-                    // Warmed for playback, so at Playback Quality's size.
-                    let (w, h) = view::reduced_for_quality((w, h), crate::video_decoder::playback_quality_divisor());
-                    if w == 0 || h == 0 {
-                        continue;
-                    }
-                    if self.titles_warmed.insert((clip.id, w, h)) {
-                        wants.push((td.clone(), w, h));
-                    }
+            for (clip, td) in titles_starting(&seq, now, AHEAD_SECS) {
+                // The frame size the title is placed at: the frame
+                // the video under it is shown in, else the sequence's.
+                // That frame is sized from the picture as decoded —
+                // at most the playback resolution — not as the file
+                // holds it: warmed at the file's size, a 4K portrait
+                // clip's title was made for a frame it is never
+                // shown in.
+                let (w, h) = seq
+                    .tracks
+                    .iter()
+                    .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+                    .find_map(|t| {
+                        let (_, c) = t.clip_at_timecode(clip.timeline_in)?;
+                        let item = pool.get(&c.media_id()?)?;
+                        // The item's size is already upright.
+                        let decoded = crate::video_decoder::playback_dimensions(
+                            item.resolution.width,
+                            item.resolution.height,
+                            0,
+                        );
+                        Some(view::viewer_canvas(decoded, (seq.resolution.width, seq.resolution.height)))
+                    })
+                    .unwrap_or((seq.resolution.width, seq.resolution.height));
+                // Warmed for playback, so at Playback Quality's size.
+                let (w, h) = view::reduced_for_quality((w, h), crate::video_decoder::playback_quality_divisor());
+                if w == 0 || h == 0 {
+                    continue;
+                }
+                if self.titles_warmed.insert((clip.id, w, h)) {
+                    wants.push((td.clone(), w, h));
                 }
             }
         }

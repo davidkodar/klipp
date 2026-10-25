@@ -2116,8 +2116,14 @@ impl Renderer {
                         if let Some(why) = blocker(side, src.media_fps(side)) {
                             return self.gpu_stack_declines(why);
                         }
-                        if side.consumed_as_matte || side.matte_source.is_some() || side.matte_stencil.is_some() || matches!(side.kind, ClipKind::AdjustmentLayer) {
-                            return self.gpu_stack_declines("matte or adjustment inside a transition");
+                        // A side seen through a matte is matted before the
+                        // sides mix (step 2); one that is a matte, a stencil
+                        // or an adjustment is not a picture to mix.
+                        if side.consumed_as_matte || side.matte_stencil.is_some() || matches!(side.kind, ClipKind::AdjustmentLayer) {
+                            return self.gpu_stack_declines("a matte, stencil or adjustment inside a transition");
+                        }
+                        if let Some(m) = &side.matte_source {
+                            sources.insert(m.source_clip_id);
                         }
                     }
                     items.push((track, Item::Transition { a, b, kind: *kind, progress: *progress, params: *params, shutter: *shutter, slots: [n_slots, n_slots + 1, n_slots + 2] }));
@@ -2195,7 +2201,7 @@ impl Renderer {
                         Err(why) => return self.gpu_stack_declines(why),
                     }
                 }
-                Item::Transition { a, b, kind, progress, params, shutter, slots } => {
+                Item::Transition { a, b, slots, .. } => {
                     for (side, slot) in [(a, slots[0]), (b, slots[1])] {
                         match self.place_layer(slot, side, time, fps, width, height, src, &transforms, &mut stats) {
                             Ok(Some(p)) => {
@@ -2211,28 +2217,8 @@ impl Renderer {
                             Err(why) => return self.gpu_stack_declines(why),
                         }
                     }
-                    let kind_id = klipp_core::spec_for_kind(*kind).kind_id as u32;
-                    let eased = if matches!(kind, klipp_core::TransitionKind::CrossDissolve) {
-                        klipp_transitions::apply_easing(*progress, params.param0)
-                    } else {
-                        *progress
-                    };
-                    let p = [params.param0, params.param1, params.param2, params.param3];
-                    let colour = self.authored_colour(params.color);
-                    let t = Instant::now();
-                    let done = if klipp_effects::pieces::is_posed_with(kind_id, p[3], subject_code(*kind, params)) {
-                        // Posed pieces (#985), blurred across the shutter,
-                        // cut round the subject when asked.
-                        let plan = self.piece_plan(a, b, *kind, eased, params, *shutter, time, fps, width, height, src, &transforms);
-                        self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_pieces(slots[0], slots[1], slots[2], &plan))
-                    } else {
-                        self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_transition(slots[0], slots[1], slots[2], kind_id, eased, p, colour))
-                    };
-                    if !done {
-                        return self.gpu_stack_declines("the transition pass failed");
-                    }
-                    stats.composite_ms += ms_since(t);
-                    placed.insert(slots[2], Placed { opacity: 1.0, rows: (0, height) });
+                    // Mixed once the mattes are in (step 2): a side's matte
+                    // source may be on a track above, placed after it.
                 }
             }
         }
@@ -2248,6 +2234,18 @@ impl Renderer {
             })
             .collect();
         for (i, (_, item)) in items.iter().enumerate() {
+            // A transition's side is seen through its own matte before the
+            // sides mix, as the CPU composite does (#718, #2668).
+            if let Item::Transition { a, b, slots, .. } = item {
+                for (side, slot) in [(a, slots[0]), (b, slots[1])] {
+                    let Some(m) = self.matte_binding(side, time) else { continue };
+                    let source = slot_of_clip.get(&m.source_clip_id).copied();
+                    if !self.stack_apply_matte(slot, source, matte_channel_index(m.channel), m.invert, m.feather_px, m.choke_px) {
+                        return self.gpu_stack_declines("a matte pass failed");
+                    }
+                }
+                continue;
+            }
             let Item::Clip { c, slot } = item else { continue };
             if matches!(c.kind, ClipKind::AdjustmentLayer) || c.consumed_as_matte || c.matte_stencil.is_some() || !placed.contains_key(slot) {
                 continue;
@@ -2274,6 +2272,33 @@ impl Renderer {
             }
         }
         stats.composite_ms += ms_since(t);
+
+        // ── 2b. Each transition's sides mixed into its own buffer ──
+        for (_, item) in &items {
+            let Item::Transition { a, b, kind, progress, params, shutter, slots } = item else { continue };
+            let kind_id = klipp_core::spec_for_kind(*kind).kind_id as u32;
+            let eased = if matches!(kind, klipp_core::TransitionKind::CrossDissolve) {
+                klipp_transitions::apply_easing(*progress, params.param0)
+            } else {
+                *progress
+            };
+            let p = [params.param0, params.param1, params.param2, params.param3];
+            let colour = self.authored_colour(params.color);
+            let t = Instant::now();
+            let done = if klipp_effects::pieces::is_posed_with(kind_id, p[3], subject_code(*kind, params)) {
+                // Posed pieces (#985), blurred across the shutter,
+                // cut round the subject when asked.
+                let plan = self.piece_plan(a, b, *kind, eased, params, *shutter, time, fps, width, height, src, &transforms);
+                self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_pieces(slots[0], slots[1], slots[2], &plan))
+            } else {
+                self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_transition(slots[0], slots[1], slots[2], kind_id, eased, p, colour))
+            };
+            if !done {
+                return self.gpu_stack_declines("the transition pass failed");
+            }
+            stats.composite_ms += ms_since(t);
+            placed.insert(slots[2], Placed { opacity: 1.0, rows: (0, height) });
+        }
 
         // ── 3. Bottom to top onto the accumulator ──
         for (track, item) in &items {

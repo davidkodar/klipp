@@ -722,6 +722,56 @@ fn a_transition_between_two_clips_matches() {
     assert_match("cross dissolve", &seq, &mut src);
 }
 
+/// #2668: a transition whose outgoing shot is seen through a title's
+/// alpha on the track above (text-shaped video) runs on the GPU stack, as
+/// the CPU composite draws it; it went to the CPU composite, 70-80 ms a
+/// frame at 1080p, for every frame of the transition.
+#[test]
+fn a_transition_with_a_matted_side_is_drawn_on_the_gpu() {
+    let mut seq = Sequence::new_default();
+    seq.resolution = klipp_core::Resolution { width: W, height: H };
+    let mut text = Track::new("Text", TrackKind::Text);
+    let td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "KLIPP".into(), font_size: 200.0, ..Default::default() });
+    let mut shape = clip(ClipKind::Title(td), 0.0, 2.0);
+    shape.consumed_as_matte = true;
+    let mut v = Track::new("V1", TrackKind::Video);
+    let mut a = clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 0.0, 2.0);
+    a.matte_source = Some(klipp_timeline::MatteBinding {
+        source_clip_id: shape.id,
+        channel: klipp_nodes::params::MatteChannel::Alpha,
+        invert: false,
+        feather_px: 2.0,
+        choke_px: 0.0,
+    });
+    let b = clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 2.0, 4.0);
+    let mut src = Flat::default();
+    src.0.insert(a.id, picture(0.0));
+    src.0.insert(b.id, picture(0.5));
+    v.transitions.push(klipp_timeline::Transition {
+        id: klipp_core::TransitionId::new(),
+        clip_a_id: a.id,
+        clip_b_id: b.id,
+        kind: klipp_core::TransitionKind::DipToWhite,
+        duration: tc(2.0),
+        alignment: Default::default(),
+        user_params: Default::default(),
+    });
+    text.clips = vec![shape];
+    v.clips = vec![a, b];
+    seq.tracks = vec![text, v];
+    for kind in [klipp_core::TransitionKind::DipToWhite, klipp_core::TransitionKind::CrossDissolve] {
+        seq.tracks[1].transitions[0].kind = kind;
+        let mut r = renderer();
+        let Some((gpu, _)) = r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()) else {
+            no_gpu(&format!("{kind:?}: the GPU stack declined: {:?}", r.last_decline()));
+            return;
+        };
+        let cpu = display(&r.cpu_render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()));
+        let d = worst(&cpu, &gpu);
+        assert!(d <= 1, "{kind:?}: GPU stack differs from the CPU renderer by {d} levels");
+    }
+}
+
 /// #985: the piece transitions, at their defaults, sliding and posed
 /// (panels tilting away, halves turning, the shatter falling), with the
 /// camera's shutter shut and open, are the same in the viewer (the GPU
