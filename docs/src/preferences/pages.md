@@ -60,7 +60,7 @@ Sign in to **Freesound**, so the Library's sound search can download originals.
 
 ## AI
 
-Turn speech transcription, subject detection and screen text (OCR) on or off, see each one's status, download speech and OCR models, transcribe on the CPU, and **Connect an assistant**: check that Klipp's MCP program is installed and connected, and copy the configuration an assistant needs. See [AI Tools](../ai-tools/overview.md) and [Assistant](../ai-tools/assistant.md).
+Turn speech transcription, subject detection and screen text (OCR) on or off, see each one's status, download speech and OCR models, transcribe on the CPU, and **Connect an assistant**: check that Klipp's MCP program is installed and connected, connect the assistants on this computer, and copy the configuration any other needs; **Set Up AI Assistants…** opens the same in a window. See [AI Tools](../ai-tools/overview.md) and [Assistant](../ai-tools/assistant.md).
 
 ## Advanced
 

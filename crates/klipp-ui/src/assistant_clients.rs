@@ -2,12 +2,23 @@
 //! `klipp-mcp` is, which assistants on this computer can register it,
 //! whether they have, and the commands that do it.
 //!
-//! An assistant owns its own list of MCP servers. Klipp never writes that
-//! list itself: Connect and Disconnect run the assistant's own command
-//! (`claude mcp add`, `codex mcp add`, and their `remove`), which change
-//! Klipp's entry and nothing else, and only when the person asks.
-//! Reading whether Klipp is registered reads the assistant's settings and
-//! changes nothing.
+//! An assistant owns its own list of MCP servers. Where it has a command
+//! for it, Connect and Disconnect run that (`claude mcp add`, `codex mcp
+//! add`, `gemini mcp add`, and their `remove`), which change Klipp's entry
+//! and nothing else. Where it has none (Zed, Cursor), Klipp's entry is
+//! set in the assistant's settings file (#2649): the file backed up
+//! first, edited as text at Klipp's entry alone (`jsonc_edit`), so the
+//! person's other settings, order and comments stay, and replaced whole
+//! in one move. Either only when the person asks. Reading whether Klipp
+//! is registered reads the assistant's settings and changes nothing.
+//!
+//! Each assistant here is configured where and how its own documentation
+//! says, for Linux:
+//! - Gemini CLI: `gemini mcp add -s user`, kept in `~/.gemini/settings.json`
+//!   (`mcpServers`), <https://github.com/google-gemini/gemini-cli/blob/main/docs/tools/mcp-server.md>;
+//! - Zed: `context_servers` in `~/.config/zed/settings.json`, a file with
+//!   comments, <https://zed.dev/docs/ai/mcp>;
+//! - Cursor: `mcpServers` in `~/.cursor/mcp.json`, <https://cursor.com/docs/context/mcp>.
 
 use std::path::{Path, PathBuf};
 
@@ -20,15 +31,21 @@ pub const SERVER_NAME: &str = "klipp";
 pub enum Client {
     ClaudeCode,
     Codex,
+    GeminiCli,
+    Zed,
+    Cursor,
 }
 
 impl Client {
-    pub const ALL: [Client; 2] = [Client::ClaudeCode, Client::Codex];
+    pub const ALL: [Client; 5] = [Client::ClaudeCode, Client::Codex, Client::GeminiCli, Client::Zed, Client::Cursor];
 
     pub fn name(self) -> &'static str {
         match self {
             Client::ClaudeCode => "Claude Code",
             Client::Codex => "Codex",
+            Client::GeminiCli => "Gemini CLI",
+            Client::Zed => "Zed",
+            Client::Cursor => "Cursor",
         }
     }
 
@@ -37,6 +54,57 @@ impl Client {
         match self {
             Client::ClaudeCode => "claude",
             Client::Codex => "codex",
+            Client::GeminiCli => "gemini",
+            Client::Zed => "zed",
+            Client::Cursor => "cursor",
+        }
+    }
+
+    /// Whether Klipp is set in the assistant's settings file rather than
+    /// by a command of the assistant's.
+    pub fn by_file(self) -> bool {
+        matches!(self, Client::Zed | Client::Cursor)
+    }
+
+    /// The settings file that keeps the assistant's servers, read for
+    /// whether Klipp is there and, for [`Client::by_file`], written.
+    pub fn settings_file(self) -> Option<PathBuf> {
+        match self {
+            Client::ClaudeCode => dirs::home_dir().map(|h| h.join(".claude.json")),
+            Client::Codex => dirs::home_dir().map(|h| h.join(".codex").join("config.toml")),
+            Client::GeminiCli => dirs::home_dir().map(|h| h.join(".gemini").join("settings.json")),
+            Client::Zed => dirs::config_dir().map(|c| c.join("zed").join("settings.json")),
+            Client::Cursor => dirs::home_dir().map(|h| h.join(".cursor").join("mcp.json")),
+        }
+    }
+
+    /// The object in the settings file that holds the servers, by name.
+    pub fn section(self) -> &'static str {
+        match self {
+            Client::Zed => "context_servers",
+            _ => "mcpServers",
+        }
+    }
+
+    /// Klipp's entry in the settings file, running `klipp_mcp`.
+    pub fn entry(self, klipp_mcp: &Path) -> serde_json::Value {
+        let command = klipp_mcp.to_string_lossy();
+        match self {
+            Client::Zed => serde_json::json!({ "command": command, "args": [], "env": {} }),
+            Client::Cursor => serde_json::json!({ "type": "stdio", "command": command, "args": [] }),
+            _ => serde_json::json!({ "command": command, "args": [] }),
+        }
+    }
+
+    /// Whether the assistant is on this computer: its program on `PATH`,
+    /// or, for an editor that may not put one there, its settings folder.
+    pub fn installed(self) -> bool {
+        let program = find_on_path(self.program()).is_some();
+        match self {
+            // Some distributions name Zed's program `zeditor`.
+            Client::Zed => program || find_on_path("zeditor").is_some() || self.settings_file().and_then(|f| f.parent().map(Path::is_dir)).unwrap_or(false),
+            Client::Cursor => program || self.settings_file().and_then(|f| f.parent().map(Path::is_dir)).unwrap_or(false),
+            _ => program,
         }
     }
 
@@ -47,6 +115,9 @@ impl Client {
         match self {
             Client::ClaudeCode => vec!["mcp".into(), "add".into(), "--scope".into(), "user".into(), SERVER_NAME.into(), "--".into(), path],
             Client::Codex => vec!["mcp".into(), "add".into(), SERVER_NAME.into(), "--".into(), path],
+            Client::GeminiCli => vec!["mcp".into(), "add".into(), "-s".into(), "user".into(), SERVER_NAME.into(), path],
+            // Set in their settings files, by no command.
+            Client::Zed | Client::Cursor => Vec::new(),
         }
     }
 
@@ -55,6 +126,8 @@ impl Client {
         match self {
             Client::ClaudeCode => vec!["mcp".into(), "remove".into(), "--scope".into(), "user".into(), SERVER_NAME.into()],
             Client::Codex => vec!["mcp".into(), "remove".into(), SERVER_NAME.into()],
+            Client::GeminiCli => vec!["mcp".into(), "remove".into(), "-s".into(), "user".into(), SERVER_NAME.into()],
+            Client::Zed | Client::Cursor => Vec::new(),
         }
     }
 
@@ -115,7 +188,7 @@ pub fn find_on_path(name: &str) -> Option<PathBuf> {
 /// Whether `client` has Klipp registered, read from its own settings
 /// without running it or changing anything.
 pub fn registration(client: Client) -> Registration {
-    if find_on_path(client.program()).is_none() {
+    if !client.installed() {
         return Registration::NotInstalled;
     }
     match client {
@@ -131,7 +204,56 @@ pub fn registration(client: Client) -> Registration {
             Ok(text) => codex_registration(&text),
             Err(e) => Registration::Unknown(e),
         },
+        Client::GeminiCli | Client::Zed | Client::Cursor => {
+            let Some(file) = client.settings_file() else { return Registration::Unknown("no home directory".into()) };
+            match std::fs::read_to_string(&file) {
+                Ok(text) => file_registration(&text, client.section()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Registration::NotConnected,
+                Err(e) => Registration::Unknown(e.to_string()),
+            }
+        }
     }
+}
+
+/// Klipp in a settings file that keeps its servers in `section`.
+pub fn file_registration(settings: &str, section: &str) -> Registration {
+    match crate::jsonc_edit::parse(settings) {
+        Ok(v) => match v.get(section).and_then(|s| s.get(SERVER_NAME)) {
+            Some(server) => Registration::Connected(server.get("command").and_then(|c| c.as_str()).unwrap_or("").to_string()),
+            None => Registration::NotConnected,
+        },
+        Err(e) => Registration::Unknown(e),
+    }
+}
+
+/// Write the settings file at `file` as `edit` makes it from its text:
+/// nothing when `edit` gives `None`; else a copy of the file as it was
+/// beside it first, then the new text written beside it and moved into
+/// place, so the file is never half written. A file that is a link is
+/// written where it points, the link left as it is.
+pub fn write_settings(file: &Path, edit: impl FnOnce(&str) -> Result<Option<String>, String>) -> Result<Option<PathBuf>, String> {
+    let real = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
+    let before = match std::fs::read_to_string(&real) {
+        Ok(text) => Some(text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(format!("could not read {}: {e}", real.display())),
+    };
+    let Some(after) = edit(before.as_deref().unwrap_or(""))? else { return Ok(None) };
+    let dir = real.parent().ok_or("the settings file has no folder")?;
+    std::fs::create_dir_all(dir).map_err(|e| format!("could not make {}: {e}", dir.display()))?;
+    let name = real.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "settings".into());
+    let backup = before.as_ref().map(|text| {
+        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let at = dir.join(format!("{name}.before-klipp-{secs}"));
+        std::fs::write(&at, text).map(|()| at).map_err(|e| format!("could not back up {}: {e}", real.display()))
+    }).transpose()?;
+    let tmp = dir.join(format!(".{name}.klipp-{}.tmp", std::process::id()));
+    std::fs::write(&tmp, after).map_err(|e| format!("could not write {}: {e}", tmp.display()))?;
+    if let Err(e) = std::fs::rename(&tmp, &real) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("could not replace {}: {e}", real.display()));
+    }
+    Ok(backup)
 }
 
 /// Klipp in Claude Code's settings (`~/.claude.json`): the user scope's
@@ -190,8 +312,14 @@ pub fn connect(client: Client, klipp_mcp: &Path) -> Result<(), String> {
     match registration(client) {
         Registration::NotInstalled => return Err(format!("{} is not installed on this computer", client.name())),
         Registration::Connected(cmd) if cmd == wanted => return Ok(()),
-        Registration::Connected(_) => disconnect(client)?,
+        // A settings file's entry is replaced where it is.
+        Registration::Connected(_) if !client.by_file() => disconnect(client)?,
         _ => {}
+    }
+    if client.by_file() {
+        let file = client.settings_file().ok_or("no home directory")?;
+        let entry = client.entry(klipp_mcp);
+        return write_settings(&file, |text| crate::jsonc_edit::set(text, client.section(), SERVER_NAME, &entry).map(Some)).map(|_| ());
     }
     let args = client.connect_args(klipp_mcp);
     run(client, &args.iter().map(String::as_str).collect::<Vec<_>>()).map(|_| ())
@@ -201,6 +329,10 @@ pub fn connect(client: Client, klipp_mcp: &Path) -> Result<(), String> {
 pub fn disconnect(client: Client) -> Result<(), String> {
     if matches!(registration(client), Registration::NotConnected) {
         return Ok(());
+    }
+    if client.by_file() {
+        let file = client.settings_file().ok_or("no home directory")?;
+        return write_settings(&file, |text| crate::jsonc_edit::remove(text, client.section(), SERVER_NAME)).map(|_| ());
     }
     let args = client.disconnect_args();
     run(client, &args.iter().map(String::as_str).collect::<Vec<_>>()).map(|_| ())
@@ -253,6 +385,20 @@ pub fn json_snippet(klipp_mcp: &Path) -> String {
 pub fn toml_snippet(klipp_mcp: &Path) -> String {
     let path = klipp_mcp.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
     format!("[mcp_servers.{SERVER_NAME}]\ncommand = \"{path}\"\n")
+}
+
+/// The same for an editor that keeps a `servers` list with each entry's
+/// transport named (VS Code's `mcp.json`).
+pub fn servers_snippet(klipp_mcp: &Path) -> String {
+    let v = serde_json::json!({ "servers": { SERVER_NAME: { "type": "stdio", "command": klipp_mcp.to_string_lossy(), "args": [] } } });
+    serde_json::to_string_pretty(&v).unwrap_or_default()
+}
+
+/// The same for an assistant that keeps YAML extensions (Goose's
+/// `config.yaml`).
+pub fn yaml_snippet(klipp_mcp: &Path) -> String {
+    let path = klipp_mcp.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
+    format!("extensions:\n  {SERVER_NAME}:\n    type: stdio\n    name: {SERVER_NAME}\n    enabled: true\n    cmd: \"{path}\"\n    args: []\n    timeout: 300\n")
 }
 
 /// A word quoted for a POSIX shell when it needs it.
@@ -342,5 +488,67 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&json_snippet(p)).unwrap();
         assert_eq!(v["mcpServers"]["klipp"]["command"], "/usr/bin/klipp-mcp");
         assert_eq!(toml_snippet(p), "[mcp_servers.klipp]\ncommand = \"/usr/bin/klipp-mcp\"\n");
+    }
+
+    /// #2649: Gemini CLI connects by its own command, for the user; Zed
+    /// and Cursor by their settings files, each entry in the shape its
+    /// documentation gives.
+    #[test]
+    fn each_assistant_is_set_its_own_way() {
+        let p = Path::new("/usr/bin/klipp-mcp");
+        assert_eq!(Client::GeminiCli.connect_args(p), ["mcp", "add", "-s", "user", "klipp", "/usr/bin/klipp-mcp"]);
+        assert_eq!(Client::GeminiCli.disconnect_args(), ["mcp", "remove", "-s", "user", "klipp"]);
+        assert!(Client::Zed.by_file() && Client::Cursor.by_file() && !Client::GeminiCli.by_file());
+        assert_eq!(Client::Zed.section(), "context_servers");
+        assert_eq!(Client::Zed.entry(p), serde_json::json!({"command": "/usr/bin/klipp-mcp", "args": [], "env": {}}));
+        assert_eq!(Client::Cursor.entry(p)["type"], "stdio");
+    }
+
+    /// Registration read from a settings file: Klipp's entry in the
+    /// assistant's section, comments allowed; the file left as it was.
+    #[test]
+    fn a_settings_files_registration_is_read() {
+        let zed = "{\n  // fonts\n  \"buffer_font_size\": 15,\n  \"context_servers\": {\n    \"klipp\": {\"command\": \"/usr/bin/klipp-mcp\", \"args\": []},\n  },\n}";
+        assert_eq!(file_registration(zed, "context_servers"), Registration::Connected("/usr/bin/klipp-mcp".into()));
+        assert_eq!(file_registration("{\"mcpServers\": {\"other\": {}}}", "mcpServers"), Registration::NotConnected);
+        assert!(matches!(file_registration("{ broken", "mcpServers"), Registration::Unknown(_)));
+    }
+
+    /// Writing a settings file: backed up first, Klipp's entry set and
+    /// the rest kept, a link written through; removing leaves the rest.
+    #[test]
+    fn a_settings_file_is_written_safely() {
+        let dir = std::env::temp_dir().join(format!("klipp-assistant-write-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("dotfiles")).unwrap();
+        let real = dir.join("dotfiles").join("mcp.json");
+        let before = "{\n  \"mcpServers\": {\n    \"other\": {\"command\": \"x\"}\n  }\n}\n";
+        std::fs::write(&real, before).unwrap();
+        let link = dir.join("mcp.json");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let entry = Client::Cursor.entry(Path::new("/usr/bin/klipp-mcp"));
+        let backup = write_settings(&link, |t| crate::jsonc_edit::set(t, "mcpServers", SERVER_NAME, &entry).map(Some)).unwrap().expect("a backup");
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), before, "the backup is the file as it was");
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "the link is still a link");
+        let after = std::fs::read_to_string(&real).unwrap();
+        assert_eq!(file_registration(&after, "mcpServers"), Registration::Connected("/usr/bin/klipp-mcp".into()));
+        assert!(after.contains("\"other\""), "{after}");
+        write_settings(&link, |t| crate::jsonc_edit::remove(t, "mcpServers", SERVER_NAME)).unwrap();
+        let removed = std::fs::read_to_string(&real).unwrap();
+        assert_eq!(file_registration(&removed, "mcpServers"), Registration::NotConnected);
+        assert!(removed.contains("\"other\""));
+        // Nothing to remove: nothing written, no backup.
+        assert_eq!(write_settings(&link, |t| crate::jsonc_edit::remove(t, "mcpServers", SERVER_NAME)).unwrap(), None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The settings for other assistants, in each shape, name the command.
+    #[test]
+    fn every_snippet_names_the_command() {
+        let p = Path::new("/usr/bin/klipp-mcp");
+        let v: serde_json::Value = serde_json::from_str(&servers_snippet(p)).unwrap();
+        assert_eq!(v["servers"]["klipp"]["command"], "/usr/bin/klipp-mcp");
+        assert_eq!(v["servers"]["klipp"]["type"], "stdio");
+        assert!(yaml_snippet(p).contains("cmd: \"/usr/bin/klipp-mcp\""), "{}", yaml_snippet(p));
     }
 }

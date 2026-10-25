@@ -30,6 +30,7 @@
 
 pub mod frame_glide;
 pub mod assets;
+pub mod assistants_seen;
 pub mod automation;
 pub mod build_info;
 pub mod color_grade;

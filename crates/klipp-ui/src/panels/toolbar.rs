@@ -1327,6 +1327,10 @@ impl ToolbarPanel {
                 }
                 ui.close_menu();
             }
+            if ui.button("Set Up AI Assistants\u{2026}").on_hover_text("Connect an AI assistant on this computer to Klipp").clicked() {
+                state.show_assistant_setup = true;
+                ui.close_menu();
+            }
             if ui.button("Keyboard Shortcuts").clicked() {
                 // Open preferences on the Keyboard tab
                 state.show_preferences = true;
@@ -1794,5 +1798,40 @@ mod menu_row_tests {
             problems.extend(crate::widgets::menu::row_problems(&open, &anchor).into_iter().map(|p| format!("{title}: {p}")));
         }
         assert!(problems.is_empty(), "{}", problems.join("\n"));
+    }
+}
+
+/// #2649: Help → Set Up AI Assistants… opens the window.
+#[cfg(test)]
+mod assistant_setup_menu_tests {
+    use super::*;
+
+    #[test]
+    fn the_help_menu_opens_the_assistant_setup() {
+        let ctx = egui::Context::default();
+        let mut panel = ToolbarPanel { logo_texture: None };
+        let mut state = AppState::default();
+        let mut time = 0.0;
+        let mut frame = |state: &mut AppState, events| {
+            time += 0.1;
+            let output = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1920.0, 1080.0))), time: Some(time), events, ..Default::default() }, |ctx| {
+                egui::TopBottomPanel::top("toolbar").exact_height(40.0).show(ctx, |ui| {
+                    panel.show(ui, state, &[], &KlippTheme::default(), &crate::keybindings::KeyBindings::default());
+                });
+            });
+            output.shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.pos + t.galley.size() / 2.0)), _ => None }).collect::<Vec<_>>()
+        };
+        let button = |at, pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        let mut texts = Vec::new();
+        for _ in 0..3 { texts = frame(&mut state, Vec::new()); }
+        let at = texts.iter().find(|(s, _)| s == "Help").expect("Help in the bar").1;
+        frame(&mut state, vec![egui::Event::PointerMoved(at), button(at, true)]);
+        frame(&mut state, vec![button(at, false)]);
+        for _ in 0..3 { texts = frame(&mut state, Vec::new()); }
+        let at = texts.iter().rev().find(|(s, _)| s == "Set Up AI Assistants\u{2026}").unwrap_or_else(|| panic!("in the Help menu: {texts:?}")).1;
+        frame(&mut state, vec![egui::Event::PointerMoved(at), button(at, true)]);
+        frame(&mut state, vec![button(at, false)]);
+        assert!(state.show_assistant_setup);
+        assert!(state.dialog_open(), "a dialog: the app behind it takes no shortcuts");
     }
 }

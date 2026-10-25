@@ -46,6 +46,8 @@ pub struct PreferencesPanel {
     /// filled and changed on worker threads, since an assistant's own
     /// command takes a second or two.
     assistant: std::sync::Arc<std::sync::Mutex<AssistantConnect>>,
+    /// The Connect an assistant section's button asked for the window.
+    open_assistant_setup: bool,
     /// Preferences → Accounts (#1894): a Freesound sign-in under way on a
     /// worker thread, and the code a person pastes when the redirect
     /// can't come back.
@@ -83,9 +85,10 @@ fn projects_only_text(projects: &[String]) -> String {
     format!("Connected only in {places}. Connect adds it for every project.")
 }
 
-/// What the Connect an assistant section shows (#625).
+/// What the Connect an assistant section shows (#625), and the Set Up AI
+/// Assistants window, which shows the same (#2649).
 #[derive(Default)]
-struct AssistantConnect {
+pub(crate) struct AssistantConnect {
     /// Looked for once the section first shows, and on Refresh.
     looked: bool,
     klipp_mcp: Option<std::path::PathBuf>,
@@ -96,6 +99,23 @@ struct AssistantConnect {
     check: Option<Result<String, String>>,
     /// The last Connect or Disconnect that failed, and why.
     error: Option<String>,
+    /// Each assistant's own test (#2649): Klipp's status asked through
+    /// the klipp-mcp the assistant has registered.
+    tests: Vec<(crate::assistant_clients::Client, Result<String, String>)>,
+    /// When each assistant last talked to Klipp, by the name it gave
+    /// (`klipp_core::assistants_seen`).
+    seen: std::collections::BTreeMap<String, u64>,
+}
+
+/// How long ago `secs` (Unix seconds) was, in a few words.
+fn ago(secs: u64, now: u64) -> String {
+    let d = now.saturating_sub(secs);
+    match d {
+        0..=59 => "just now".into(),
+        60..=3599 => format!("{} min ago", d / 60),
+        3600..=86_399 => format!("{} h ago", d / 3600),
+        _ => format!("{} days ago", d / 86_400),
+    }
 }
 
 struct ClearAllConfirm {
@@ -113,6 +133,7 @@ impl Default for PreferencesPanel {
             search_query: String::new(),
             clear_all_confirm: None,
             assistant: Default::default(),
+            open_assistant_setup: false,
             accounts: Default::default(),
             freesound_code: String::new(),
         }
@@ -2325,14 +2346,51 @@ impl PreferencesPanel {
     /// its own command with Connect and Disconnect, a read-only check that
     /// Klipp answers through it, and the settings for any other assistant.
     fn show_connect_assistant(&mut self, ui: &mut egui::Ui, prefs: &Preferences, theme: &KlippTheme) {
-        use crate::assistant_clients::{self as clients, Registration};
         Self::section_header(ui, "CONNECT AN ASSISTANT", theme);
+        ui.horizontal(|ui| {
+            ui.add_space(14.0);
+            if ui.button("Set Up AI Assistants\u{2026}").on_hover_text("The same, in a window of its own").clicked() {
+                self.open_assistant_setup = true;
+            }
+        });
+        Self::assistant_setup_body(ui, &self.assistant, prefs.ai.assistant, theme);
+    }
+
+    /// The Set Up AI Assistants window (#2649): open while `open` is.
+    pub fn show_assistant_setup_window(&mut self, ctx: &egui::Context, open: &mut bool, prefs: &Preferences, theme: &KlippTheme) {
+        if !*open {
+            return;
+        }
+        let shared = std::sync::Arc::clone(&self.assistant);
+        egui::Window::new("Set Up AI Assistants")
+            .collapsible(false)
+            .resizable(true)
+            .default_width(620.0)
+            .max_height(ctx.screen_rect().height() * 0.85)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .open(open)
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| Self::assistant_setup_body(ui, &shared, prefs.ai.assistant, theme));
+            });
+    }
+
+    /// Whether the section asked for the window, once.
+    pub fn take_open_assistant_setup(&mut self) -> bool {
+        std::mem::take(&mut self.open_assistant_setup)
+    }
+
+    /// What both show: the installed `klipp-mcp`, each assistant with its
+    /// state and Connect, Disconnect and Test, when assistants last talked
+    /// to Klipp, and the settings for any other. `ai_on` is the AI
+    /// assistant switch: off, nothing connects.
+    pub(crate) fn assistant_setup_body(ui: &mut egui::Ui, shared: &std::sync::Arc<std::sync::Mutex<AssistantConnect>>, ai_on: bool, theme: &KlippTheme) {
+        use crate::assistant_clients::{self as clients, Registration};
         ui.horizontal_wrapped(|ui| {
             ui.add_space(14.0);
             ui.label(egui::RichText::new("An AI assistant on this computer can work in Klipp with you: edit, grade, mix, title and export in the open project. It runs Klipp's klipp-mcp program, which only talks to the Klipp on this computer.").color(theme.text_secondary));
         });
         ui.add_space(4.0);
-        let shared = std::sync::Arc::clone(&self.assistant);
+        let shared = std::sync::Arc::clone(shared);
         let ctx = ui.ctx().clone();
         // Look, on a worker: which assistants there are and what they have.
         let refresh = {
@@ -2341,9 +2399,11 @@ impl PreferencesPanel {
             move || {
                 let found = clients::klipp_mcp_path();
                 let regs: Vec<_> = clients::Client::ALL.iter().map(|c| (*c, clients::registration(*c))).collect();
+                let seen = klipp_core::assistants_seen::read();
                 if let Ok(mut st) = shared.lock() {
                     st.klipp_mcp = found;
                     st.clients = regs;
+                    st.seen = seen;
                     st.busy = None;
                 }
                 ctx.request_repaint();
@@ -2364,9 +2424,11 @@ impl PreferencesPanel {
         let busy = st.busy.clone();
         let check = st.check.clone();
         let error = st.error.clone();
+        let tests = st.tests.clone();
+        let seen = st.seen.clone();
         drop(st);
 
-        if !prefs.ai.assistant {
+        if !ai_on {
             ui.horizontal_wrapped(|ui| {
                 ui.add_space(14.0);
                 ui.label(egui::RichText::new("The AI assistant is off (above), so no assistant can connect. Turn it on and restart Klipp first.").color(theme.marker_warning));
@@ -2413,6 +2475,9 @@ impl PreferencesPanel {
                 Registration::NotInstalled => ("Not installed on this computer".to_string(), false, false),
                 Registration::NotConnected => ("Not connected".to_string(), true, false),
                 Registration::Connected(cmd) if klipp_mcp.as_ref().is_some_and(|p| p.to_string_lossy() == cmd.as_str()) => ("Connected".to_string(), false, true),
+                // An update that moved klipp-mcp leaves the entry pointing
+                // at nothing (#2649): Update points it at this Klipp's.
+                Registration::Connected(cmd) if !std::path::Path::new(cmd).exists() => (format!("Needs updating: its klipp-mcp ({cmd}) is no longer there"), true, true),
                 Registration::Connected(cmd) => (format!("Connected to another klipp-mcp ({cmd})"), true, true),
                 Registration::Unknown(why) => (format!("Could not read its settings: {why}"), true, false),
                 // Only where a project registers it (#625): say which, and
@@ -2423,8 +2488,28 @@ impl PreferencesPanel {
                 }
             };
             let client = *client;
+            let tested = tests.iter().find(|(c, _)| *c == client).map(|(_, r)| r.clone());
+            let state = match &tested {
+                Some(Ok(_)) => format!("{state}. Test: Klipp answered."),
+                Some(Err(why)) => format!("{state}. Test: {why}"),
+                None => state,
+            };
             Self::setting_row_with_subtitle(ui, client.name(), &state, theme, |ui| {
                 let idle = busy.is_none() && klipp_mcp.is_some();
+                // Ask Klipp through the klipp-mcp this assistant runs.
+                if let Registration::Connected(cmd) = reg {
+                    if ui.add_enabled(busy.is_none(), egui::Button::new("Test")).on_hover_text(format!("Ask Klipp for its status through the klipp-mcp {} runs. Reads only.", client.name())).clicked() {
+                        let (shared, ctx, cmd) = (std::sync::Arc::clone(&shared), ctx.clone(), cmd.clone());
+                        std::thread::spawn(move || {
+                            let got = clients::check(std::path::Path::new(&cmd));
+                            if let Ok(mut st) = shared.lock() {
+                                st.tests.retain(|(c, _)| *c != client);
+                                st.tests.push((client, got));
+                            }
+                            ctx.request_repaint();
+                        });
+                    }
+                }
                 if can_disconnect && ui.add_enabled(idle, egui::Button::new("Disconnect")).on_hover_text(format!("Remove Klipp from {}'s servers. Nothing else of its settings changes.", client.name())).clicked() {
                     let (shared, refresh) = (std::sync::Arc::clone(&shared), refresh.clone());
                     if let Ok(mut st) = shared.lock() {
@@ -2439,7 +2524,8 @@ impl PreferencesPanel {
                     });
                 }
                 let label = if matches!(reg, Registration::Connected(_)) { "Update" } else { "Connect" };
-                if can_connect && ui.add_enabled(idle, egui::Button::new(label)).on_hover_text(format!("Add Klipp to {}'s servers with its own command. Nothing else of its settings changes.", client.name())).clicked() {
+                let how = if client.by_file() { "in its settings file, backed up first" } else { "with its own command" };
+                if can_connect && ui.add_enabled(idle && ai_on, egui::Button::new(label)).on_hover_text(format!("Add Klipp to {}'s servers {how}. Nothing else of its settings changes.", client.name())).clicked() {
                     if let Some(path) = klipp_mcp.clone() {
                         let (shared, refresh) = (std::sync::Arc::clone(&shared), refresh.clone());
                         if let Ok(mut st) = shared.lock() {
@@ -2469,6 +2555,19 @@ impl PreferencesPanel {
                 ui.label(egui::RichText::new(e).color(theme.marker_warning));
             });
         }
+        // When each assistant last talked to Klipp, by the name it gave.
+        ui.horizontal_wrapped(|ui| {
+            ui.add_space(14.0);
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+            let mut by_time: Vec<_> = seen.iter().collect();
+            by_time.sort_by_key(|(_, t)| std::cmp::Reverse(**t));
+            let text = if by_time.is_empty() {
+                "No assistant has talked to Klipp yet.".to_string()
+            } else {
+                format!("Last talked to Klipp: {}", by_time.iter().map(|(n, t)| format!("{n}, {}", ago(**t, now))).collect::<Vec<_>>().join("; "))
+            };
+            ui.label(egui::RichText::new(text).color(theme.text_secondary));
+        });
         ui.horizontal_wrapped(|ui| {
             ui.add_space(14.0);
             ui.label(egui::RichText::new("After connecting, start a new session in the assistant (or restart it) so it loads Klipp's tools. Then ask it \u{201c}Is Klipp connected?\u{201d} or \u{201c}What can I do in Klipp?\u{201d}").color(theme.text_secondary));
@@ -2487,6 +2586,8 @@ impl PreferencesPanel {
                     ui.label(egui::RichText::new("Any assistant that runs local MCP servers can use Klipp. Add this to its MCP settings:").color(theme.text_secondary));
                     for (what, text) in [
                         ("Most assistants (JSON, mcpServers)", clients::json_snippet(path)),
+                        ("Editors with a servers list (JSON, servers, e.g. VS Code's mcp.json)", clients::servers_snippet(path)),
+                        ("Assistants with YAML extensions (e.g. Goose's config.yaml)", clients::yaml_snippet(path)),
                         ("Codex (~/.codex/config.toml)", clients::toml_snippet(path)),
                         ("Claude Code, in a terminal", clients::Client::ClaudeCode.connect_command(path)),
                         ("Codex, in a terminal", clients::Client::Codex.connect_command(path)),
@@ -2494,7 +2595,7 @@ impl PreferencesPanel {
                         ui.add_space(4.0);
                         ui.horizontal(|ui| {
                             ui.label(egui::RichText::new(what).color(theme.text_primary));
-                            if ui.small_button("Copy").clicked() {
+                            if ui.small_button("Copy settings").clicked() {
                                 ui.ctx().copy_text(text.clone());
                             }
                         });
@@ -4752,6 +4853,42 @@ mod connect_assistant_tests {
         prefs.ai.assistant = false;
         let off = frame(&mut panel, &prefs);
         assert!(off.iter().any(|t| t.contains("The AI assistant is off")), "{off:?}");
+    }
+    /// #2649: the Set Up AI Assistants window shows the same, the new
+    /// assistants among them, the settings for other ones in each shape,
+    /// and the last-seen line; the section's button asks for it, and with
+    /// the assistant off it says so.
+    #[test]
+    fn the_setup_window_shows_every_assistant() {
+        let ctx = egui::Context::default();
+        let theme = KlippTheme::default();
+        let mut panel = PreferencesPanel::default();
+        let mut prefs = Preferences::default();
+        prefs.ai.assistant = true;
+        let frame = |panel: &mut PreferencesPanel, prefs: &Preferences, events: Vec<egui::Event>| {
+            let mut open = true;
+            let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 1600.0))), events, ..Default::default() }, |ctx| {
+                panel.show_assistant_setup_window(ctx, &mut open, prefs, &theme);
+            });
+            texts(&out)
+        };
+        frame(&mut panel, &prefs, Vec::new());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while panel.assistant.lock().unwrap().busy.is_some() {
+            assert!(std::time::Instant::now() < deadline, "the look for assistants never finished");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let shown = frame(&mut panel, &prefs, Vec::new());
+        for want in ["Set Up AI Assistants", "Klipp's MCP program", "Claude Code", "Codex", "Gemini CLI", "Zed", "Cursor", "talked to Klipp"] {
+            assert!(shown.iter().any(|t| t.contains(want)), "no {want:?} in {shown:?}");
+        }
+        prefs.ai.assistant = false;
+        let off = frame(&mut panel, &prefs, Vec::new());
+        assert!(off.iter().any(|t| t.contains("The AI assistant is off")), "{off:?}");
+        // The section's button asks for the window, once.
+        panel.open_assistant_setup = true;
+        assert!(panel.take_open_assistant_setup());
+        assert!(!panel.take_open_assistant_setup());
     }
 }
 
