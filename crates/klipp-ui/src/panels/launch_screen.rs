@@ -1,3 +1,4 @@
+use crate::widgets::menu::MenuRows;
 use crate::prefs::RecentProject;
 use crate::theme::KlippTheme;
 use klipp_core::AppCommand;
@@ -913,7 +914,7 @@ impl LaunchScreen {
                 if resp.clicked() {
                     cmds.push(AppCommand::OpenProject { path: rp.path.clone() });
                 }
-                resp.context_menu(|ui| {
+                resp.context_menu_rows(|ui| {
                     crate::widgets::menu::menu_body(ui, |ui| {
                         if crate::widgets::menu::menu_item(ui, "Open", "").clicked() {
                             cmds.push(AppCommand::OpenProject { path: rp.path.clone() });
@@ -1270,7 +1271,7 @@ impl LaunchScreen {
             ));
         }
         // Sort dropdown menu
-        sort_resp.context_menu(|ui| {
+        sort_resp.context_menu_rows(|ui| {
             crate::widgets::menu::menu_body(ui, |ui| {
                 for mode in GRID_SORTS {
                     if crate::widgets::menu::menu_choice(ui, mode.label(), "", self.sort_mode == mode).clicked() {
@@ -1645,7 +1646,7 @@ impl LaunchScreen {
                     if resp.clicked() {
                         cmds.push(AppCommand::OpenProject { path: rp.path.clone() });
                     }
-                    resp.context_menu(|ui| {
+                    resp.context_menu_rows(|ui| {
                         self.project_context_menu(ui, rp, cmds);
                     });
 
@@ -1898,7 +1899,7 @@ impl LaunchScreen {
         }
 
         // Right-click context menu
-        resp.context_menu(|ui| {
+        resp.context_menu_rows(|ui| {
             self.project_context_menu(ui, rp, cmds);
         });
     }

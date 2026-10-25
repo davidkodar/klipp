@@ -10,6 +10,7 @@
 //! Accepted findings are listed apart with their reasons, not counted;
 //! a review whose finding is gone is listed too, so a decision that no
 //! longer holds can be taken back.
+use crate::widgets::menu::SubmenuRows;
 
 use std::time::Instant;
 
@@ -346,7 +347,7 @@ impl DeliveryCheckPanel {
         let busy = self.busy();
         ui.horizontal(|ui| {
             ui.add_enabled_ui(!busy, |ui| {
-                ui.menu_button(egui::RichText::new("Decide").size(type_scale::CAPTION), |ui| {
+                ui.menu_rows(egui::RichText::new("Decide").size(type_scale::CAPTION), |ui| {
                     crate::widgets::menu::menu_body(ui, |ui| {
                         if ui.button("Accept on purpose…").clicked() {
                             self.draft = Some(Draft { id: id.to_string(), decision: "accepted", text: String::new() });

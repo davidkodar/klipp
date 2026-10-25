@@ -5908,77 +5908,65 @@ impl ViewerPanel {
         if ui.add(slider).changed() {
             cmds.push(AppCommand::SetMasterVolume(vol));
         }
-        let mute_label = if state.master_muted { "✓ Muted" } else { "  Mute master output" };
-        if ui.button(mute_label).clicked() {
-            cmds.push(AppCommand::SetMasterMute(!state.master_muted));
-        }
+        // The rows below in the menus' one row layout (#2632): toggles
+        // with their check in the slot, keys in a column.
+        crate::widgets::menu::menu_body(ui, |ui| {
+            use crate::widgets::menu::{menu_heading, menu_item, menu_toggle, menu_toggle_value};
+            if menu_toggle(ui, "Mute Master Output", "", state.master_muted).clicked() {
+                cmds.push(AppCommand::SetMasterMute(!state.master_muted));
+            }
 
-        ui.separator();
+            ui.separator();
 
-        // ── Overlays ──
-        section_label(ui, "OVERLAYS");
-        // Shortcuts read from the bindings, so a rebind shows here.
-        let with_key = |label: &str, action: &str| match kb.display_for(action) {
-            key if key.is_empty() => label.to_string(),
-            key => format!("{label} ({key})"),
-        };
-        ui.checkbox(&mut state.viewer_overlays.safe_areas, with_key("Safe areas", "toggle_safe_areas"));
-        ui.checkbox(&mut state.viewer_overlays.grid, with_key("Grid", "toggle_grid_overlay"));
-        ui.checkbox(&mut state.viewer_overlays.zebras, with_key("Zebras", "toggle_zebra"));
-        ui.checkbox(&mut state.viewer_overlays.false_color, with_key("False colour", "toggle_false_color"));
-        ui.checkbox(&mut state.viewer_overlays.focus_peaking, "Focus peaking (Ctrl+P)");
-        ui.checkbox(&mut state.viewer_overlays.checkerboard, "Checkerboard");
+            // ── Overlays ──
+            menu_heading(ui, "OVERLAYS");
+            // Shortcuts read from the bindings, so a rebind shows here.
+            let key = |action: &str| kb.display_for(action);
+            menu_toggle_value(ui, &mut state.viewer_overlays.safe_areas, "Safe Areas", &key("toggle_safe_areas"));
+            menu_toggle_value(ui, &mut state.viewer_overlays.grid, "Grid", &key("toggle_grid_overlay"));
+            menu_toggle_value(ui, &mut state.viewer_overlays.zebras, "Zebras", &key("toggle_zebra"));
+            menu_toggle_value(ui, &mut state.viewer_overlays.false_color, "False Colour", &key("toggle_false_color"));
+            menu_toggle_value(ui, &mut state.viewer_overlays.focus_peaking, "Focus Peaking", "Ctrl+P");
+            menu_toggle_value(ui, &mut state.viewer_overlays.checkerboard, "Checkerboard", "");
 
-        ui.separator();
+            ui.separator();
 
-        // ── Layout ──
-        section_label(ui, "LAYOUT");
-        let dual_label = if state.viewers_side_by_side() { "\u{2714} Dual viewers" } else { "  Dual viewers" };
-        if ui.button(dual_label).clicked() {
-            state.toggle_viewer_layout();
-        }
-        let scopes_label = if state.scopes_shown() { "\u{2714} Scopes (Alt+V)" } else { "  Scopes (Alt+V)" };
-        if ui.button(scopes_label).clicked() {
-            state.toggle_scopes();
-        }
+            // ── Layout ──
+            menu_heading(ui, "LAYOUT");
+            if menu_toggle(ui, "Dual Viewers", "", state.viewers_side_by_side()).clicked() {
+                state.toggle_viewer_layout();
+            }
+            if menu_toggle(ui, "Scopes", "Alt+V", state.scopes_shown()).clicked() {
+                state.toggle_scopes();
+            }
 
-        ui.separator();
+            ui.separator();
 
-        // ── Actions ──
-        section_label(ui, "ACTIONS");
-        match viewer_kind {
-            ViewerMode::Source => {
-                let enabled = state.source_media_id.is_some();
-                if ui
-                    .add_enabled(
-                        enabled,
-                        egui::Button::new("Match frame → timeline (Shift+F)"),
-                    )
-                    .clicked()
-                {
-                    cmds.push(AppCommand::MatchFrameSourceToProgram);
+            // ── Actions ──
+            menu_heading(ui, "ACTIONS");
+            match viewer_kind {
+                ViewerMode::Source => {
+                    let enabled = state.source_media_id.is_some();
+                    if ui.add_enabled_ui(enabled, |ui| menu_item(ui, "Match Frame \u{2192} Timeline", "Shift+F")).inner.clicked() {
+                        cmds.push(AppCommand::MatchFrameSourceToProgram);
+                    }
+                }
+                ViewerMode::Program => {
+                    if menu_item(ui, "Match Frame \u{2190} Source", "F").clicked() {
+                        cmds.push(AppCommand::MatchFrameProgramToSource);
+                    }
+                    if menu_item(ui, "Extract Frame to Bin", "Ctrl+Alt+B").clicked() {
+                        cmds.push(AppCommand::ExtractFrameToBin);
+                    }
+                    if menu_item(ui, "Extract Frame to File\u{2026}", "Ctrl+Alt+S").clicked() {
+                        cmds.push(AppCommand::FrameGrab);
+                    }
+                    if menu_toggle(ui, "Transform Controls", "", state.show_transform_controls).clicked() {
+                        state.show_transform_controls = !state.show_transform_controls;
+                    }
                 }
             }
-            ViewerMode::Program => {
-                if ui.button("Match frame ← source (F)").clicked() {
-                    cmds.push(AppCommand::MatchFrameProgramToSource);
-                }
-                if ui.button("Extract frame to bin (Ctrl+Alt+B)").clicked() {
-                    cmds.push(AppCommand::ExtractFrameToBin);
-                }
-                if ui.button("Extract frame to file… (Ctrl+Alt+S)").clicked() {
-                    cmds.push(AppCommand::FrameGrab);
-                }
-                let xform_label = if state.show_transform_controls {
-                    "✓ Transform controls"
-                } else {
-                    "  Transform controls"
-                };
-                if ui.button(xform_label).clicked() {
-                    state.show_transform_controls = !state.show_transform_controls;
-                }
-            }
-        }
+        });
     }
 
     pub fn show_source_viewer(

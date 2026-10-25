@@ -18,6 +18,7 @@
 //!   work will validate type/role).
 //! - Right-click on empty canvas → add-node menu at cursor; right-
 //!   click on a node → per-node menu (Bypass, Delete, Disconnect).
+use crate::widgets::menu::SubmenuRows;
 
 use crate::theme::KlippTheme;
 use crate::widgets::menu::{menu_frame, menu_item};
@@ -1036,7 +1037,7 @@ impl NodeGraphV2Panel {
             // Keep this widget directly in the wrapping row. A nested scope
             // measures against the remaining row width and can turn the menu
             // label into a tall, clipped column before the parent wraps it.
-            let menu_resp = if keeps_versions { toolbar_ui.menu_button(menu_label, |mb_ui| {
+            let menu_resp = if keeps_versions { toolbar_ui.menu_rows(menu_label, |mb_ui| {
                 // Existing versions — click to switch.
                 for (i, name) in grade_version_names.iter().enumerate() {
                     let marker = if Some(i) == active_grade_version { "●" } else { "○" };
@@ -4785,7 +4786,7 @@ impl NodeGraphV2Panel {
                         // Align and spread a selection (#1745), one undo
                         // step each, as a drag is.
                         if in_set && selected_set.len() >= 2 {
-                            ui.menu_button("Align \u{25B8}", |ui| {
+                            ui.menu_rows("Align \u{25B8}", |ui| {
                                 for (label, how, least) in [
                                     ("Left edges", Align::Left, 2), ("Centres across", Align::Centre, 2), ("Right edges", Align::Right, 2),
                                     ("Top edges", Align::Top, 2), ("Middles down", Align::Middle, 2), ("Bottom edges", Align::Bottom, 2),
@@ -4891,7 +4892,7 @@ impl NodeGraphV2Panel {
                         }
                     }
                     if can_receive && !available_labels.is_empty() {
-                        ui.menu_button("Wireless: receive from ▸", |ui| {
+                        ui.menu_rows("Wireless: receive from ▸", |ui| {
                             for port in 0..in_count {
                                 let cur = current_receives.get(port as usize)
                                     .and_then(|s| s.clone());

@@ -12,6 +12,7 @@
 //! Edits go out as document ops ([`klipp_document::ops::Op::Cut`]), the
 //! same vocabulary the assistant uses, so a cut made here and one an
 //! agent makes are the same edit.
+use crate::widgets::menu::{SubmenuRows, MenuRows};
 
 use klipp_core::AppCommand;
 use klipp_document::ops::HeardWord;
@@ -169,7 +170,7 @@ impl TranscriptPanel {
                             clicked = Some(i);
                         }
                         // Correcting a word whisper misheard (#531).
-                        r.context_menu(|ui| {
+                        r.context_menu_rows(|ui| {
                             if ui.button("Correct\u{2026}").clicked() {
                                 self.correcting = Some((i, word.text.clone()));
                                 ui.close_menu();
@@ -265,7 +266,7 @@ impl TranscriptPanel {
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new(name).size(11.0));
                         ui.label(egui::RichText::new(format!("{} \u{00B7} {}", klipp_analysis::transcript::model_label(model), language_name(language.as_deref()))).size(10.0).color(theme.text_dim));
-                        ui.menu_button("Re-transcribe", |ui| {
+                        ui.menu_rows("Re-transcribe", |ui| {
                             for m in &models {
                                 for (lang, label) in [(current.clone(), language_name(current.as_deref())), (None, "Detect".to_string())] {
                                     if ui.button(format!("{} in {label}", klipp_analysis::transcript::model_label(m))).clicked() {

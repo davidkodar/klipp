@@ -15,6 +15,7 @@
 //! - a reset writes the presentation's reset hint, or the default;
 //! - a choice's labels name its stored index and never rename it;
 //! - a value the row can't read as its kind is shown read-only and kept.
+use crate::widgets::menu::SubmenuRows;
 
 use super::custom;
 use crate::widgets::scrubby_param::{scrubby_param_row, KeyframeState};
@@ -454,7 +455,7 @@ fn behaviours_menu(ui: &mut egui::Ui, ctx: &mut RowCtx, desc: &ParamDesc) {
     let Some(show) = ctx.behaviours else { return };
     let param = klipp_core::ParamId::Node { addr: ctx.addr.clone(), key: ParamKey::new(desc.key) };
     let cmds = &mut *ctx.cmds;
-    ui.menu_button("⋯", |ui| show(ui, &param, cmds)).response.on_hover_text("Behaviours");
+    ui.menu_rows("⋯", |ui| show(ui, &param, cmds)).response.on_hover_text("Behaviours");
 }
 
 /// Whether the row edits a grade node's settings (its entry's fields sit

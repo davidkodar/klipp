@@ -1,3 +1,4 @@
+use crate::widgets::menu::MenuRows;
 use crate::icons::Icon;
 use crate::state::AppState;
 use crate::theme::KlippTheme;
@@ -222,7 +223,7 @@ fn slider_row(
         }
 
         // Right-click context menu for interpolation/ease
-        diamond_resp.context_menu(|ui| {
+        diamond_resp.context_menu_rows(|ui| {
             if at_playhead {
                 ui.label(egui::RichText::new("Interpolation").size(11.0).color(theme.text_dim));
                 if ui.selectable_label(ks.current_interpolation == Some(klipp_core::Interpolation::Linear), "Linear").clicked() {

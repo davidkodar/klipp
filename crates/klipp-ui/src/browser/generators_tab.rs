@@ -1,3 +1,4 @@
+use crate::widgets::menu::MenuRows;
 use crate::browser::generator_previews::GeneratorPreviews;
 use crate::browser::effects_tab::{EffectSort, EffectViewMode};
 use crate::drag_drop::DragPayload;
@@ -324,7 +325,7 @@ pub fn show(
                                 }
                                 let is_fav = favourites.iter().any(|k| k == tmpl.name);
                                 let mut toggle = crate::browser::library_card::favourite_star(ui, theme, &resp, true, is_fav, tmpl.name);
-                                resp.context_menu(|ui| toggle |= crate::browser::library_card::favourite_menu_item(ui, is_fav));
+                                resp.context_menu_rows(|ui| toggle |= crate::browser::library_card::favourite_menu_item(ui, is_fav));
                                 if toggle {
                                     crate::browser::library_card::toggle_favourite(favourites, tmpl.name);
                                 }
@@ -349,7 +350,7 @@ pub fn show(
                         }
                         let is_fav = favourites.iter().any(|k| k == tmpl.name);
                         let mut toggle = crate::browser::library_card::favourite_star(ui, theme, &resp, false, is_fav, tmpl.name);
-                        resp.context_menu(|ui| toggle |= crate::browser::library_card::favourite_menu_item(ui, is_fav));
+                        resp.context_menu_rows(|ui| toggle |= crate::browser::library_card::favourite_menu_item(ui, is_fav));
                         if toggle {
                             crate::browser::library_card::toggle_favourite(favourites, tmpl.name);
                         }

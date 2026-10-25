@@ -1,3 +1,4 @@
+use crate::widgets::menu::MenuRows;
 use crate::browser::effect_registry::EffectSource;
 use crate::drag_drop::DragPayload;
 use crate::icons::Icon;
@@ -518,7 +519,7 @@ pub fn show(
 
                             // Right-click menu on the card — same Add/Remove
                             // toggle entry as the star button for discoverability.
-                            resp.context_menu(|ui| {
+                            resp.context_menu_rows(|ui| {
                                 let label = if is_fav {
                                     "Remove from Favourites"
                                 } else {

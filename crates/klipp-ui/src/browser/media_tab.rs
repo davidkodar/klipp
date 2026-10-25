@@ -1,3 +1,4 @@
+use crate::widgets::menu::{SubmenuRows, MenuRows};
 use crate::widgets::menu::{menu_body, menu_choice, menu_item};
 use crate::icons::Icon;
 use crate::state::AppState;
@@ -340,7 +341,7 @@ pub fn show(
         if backdrop.clicked() {
             state.selected_media_ids.clear();
         }
-        backdrop.context_menu(|ui| menu_body(ui, |ui| pool_menu(ui, view_mode, sort_by, sort_ascending, &mut cmds)));
+        backdrop.context_menu_rows(|ui| menu_body(ui, |ui| pool_menu(ui, view_mode, sort_by, sort_ascending, &mut cmds)));
         if bins_seen.is_empty() {
             ui.add_space(40.0);
             ui.centered_and_justified(|ui| {
@@ -424,7 +425,7 @@ fn pool_menu(ui: &mut egui::Ui, view_mode: &mut BrowserViewMode, sort_by: &mut S
         ui.close_menu();
     }
     ui.separator();
-    ui.menu_button("Sort By", |ui| menu_body(ui, |ui| {
+    ui.menu_rows("Sort By", |ui| menu_body(ui, |ui| {
         for f in Field::SORTABLE {
             ui.selectable_value(sort_by, f, f.label());
         }
@@ -438,7 +439,7 @@ fn pool_menu(ui: &mut egui::Ui, view_mode: &mut BrowserViewMode, sort_by: &mut S
             }
         }
     }));
-    ui.menu_button("View", |ui| menu_body(ui, |ui| {
+    ui.menu_rows("View", |ui| menu_body(ui, |ui| {
         if ui.selectable_value(view_mode, BrowserViewMode::List, "List").clicked() {
             ui.close_menu();
         }
@@ -969,7 +970,7 @@ fn render_column_header(ui: &mut egui::Ui, theme: &KlippTheme, columns: &mut Vec
             *sort_ascending = true;
         }
     }
-    resp.context_menu(|ui| menu_body(ui, |ui| {
+    resp.context_menu_rows(|ui| menu_body(ui, |ui| {
         ui.label(egui::RichText::new("Columns").size(crate::theme::type_scale::CAPTION).color(theme.text_dim));
         for f in Field::COLUMNS {
             let mut on = columns.contains(&f);
@@ -1225,7 +1226,7 @@ fn render_list_view(
                 state.dragging_media_group = crate::drag_drop::drag_group(all_ordered_ids, &state.selected_media_ids, item.id);
                 state.dragging_media = Some(item.id);
             }
-            resp.context_menu(|ui| menu_body(ui, |ui| {
+            resp.context_menu_rows(|ui| menu_body(ui, |ui| {
                 if state.selected_media_ids.len() > 1 && state.selected_media_ids.contains(&item.id) {
                     show_multi_context_menu(ui, &state.selected_media_ids, sync_pair_of(state), state.multicam_default_sync, &bin_list, any_in_a_bin(state), cmds);
                 } else {
@@ -1543,7 +1544,7 @@ fn render_grid_view(
                 }
             }
 
-            card_resp.context_menu(|ui| menu_body(ui, |ui| {
+            card_resp.context_menu_rows(|ui| menu_body(ui, |ui| {
                 if state.selected_media_ids.len() > 1 && state.selected_media_ids.contains(&item.id) {
                     show_multi_context_menu(ui, &state.selected_media_ids, sync_pair_of(state), state.multicam_default_sync, &bin_list, any_in_a_bin(state), cmds);
                 } else {
@@ -1625,7 +1626,7 @@ fn bin_section(
     if resp.clicked() {
         ui.data_mut(|d| d.insert_temp(closed_id, !closed));
     }
-    resp.context_menu(|ui| menu_body(ui, |ui| {
+    resp.context_menu_rows(|ui| menu_body(ui, |ui| {
         if menu_item(ui, "New Bin", "").clicked() {
             cmds.push(AppCommand::NewBin { media_ids: Vec::new() });
             ui.close_menu();
@@ -2018,7 +2019,7 @@ fn show_context_menu(
         ui.close_menu();
     }
     ui.separator();
-    ui.menu_button("Set Rating", |ui| menu_body(ui, |ui| {
+    ui.menu_rows("Set Rating", |ui| menu_body(ui, |ui| {
         for r in 0..=5u8 {
             let label = if r == 0 {
                 "None".to_string()
@@ -2031,7 +2032,7 @@ fn show_context_menu(
             }
         }
     }));
-    ui.menu_button("Label colour", |ui| menu_body(ui, |ui| {
+    ui.menu_rows("Label colour", |ui| menu_body(ui, |ui| {
         for label in klipp_media::ColorLabel::ALL {
             let mut text = egui::RichText::new(label.label()).size(11.0);
             if let Some((r, g, b)) = label.rgb() {
@@ -2147,7 +2148,7 @@ use klipp_core::MulticamSync;
 /// Selection, for the items `ids`: `current` is the bin they are in, and
 /// Remove from Bin shows when any is in one.
 fn bin_menu_items(ui: &mut egui::Ui, bins: &[String], ids: &[MediaId], current: Option<&str>, in_a_bin: bool, cmds: &mut Vec<AppCommand>) {
-    ui.menu_button("Move to Bin", |ui| menu_body(ui, |ui| {
+    ui.menu_rows("Move to Bin", |ui| menu_body(ui, |ui| {
         for bin in bins {
             if ui.add_enabled_ui(current != Some(bin.as_str()), |ui| menu_item(ui, bin, "")).inner.clicked() {
                 cmds.push(AppCommand::MoveItemsToBin { media_ids: ids.to_vec(), bin: Some(bin.clone()) });
@@ -2211,7 +2212,7 @@ fn show_multi_context_menu(
         ui.close_menu();
         cmds.push(AppCommand::CreateSyncedMulticam { media_ids: ids(), method: default_sync });
     }
-    ui.menu_button("Create Synced Multicam By", |ui| menu_body(ui, |ui| {
+    ui.menu_rows("Create Synced Multicam By", |ui| menu_body(ui, |ui| {
         for (method, hint) in [
             (MulticamSync::TimecodeThenAudio, "Timecode where a clip has it, the sound for the rest. The usual choice."),
             (MulticamSync::Timecode, "Only the start timecode. For cameras jam-synced to one clock."),
@@ -2236,7 +2237,7 @@ fn show_multi_context_menu(
     }
     ui.separator();
     bin_menu_items(ui, bins, &selected_ids.iter().copied().collect::<Vec<_>>(), None, in_a_bin, cmds);
-    ui.menu_button("Set Rating", |ui| menu_body(ui, |ui| {
+    ui.menu_rows("Set Rating", |ui| menu_body(ui, |ui| {
         for r in 0..=5u8 {
             let label = if r == 0 {
                 "None".to_string()
@@ -2256,7 +2257,7 @@ fn show_multi_context_menu(
     // every selected media id. ColorLabel::ALL keeps the swatch
     // list canonical with the single-item path so an added/removed
     // colour propagates to both surfaces in one place.
-    ui.menu_button("Set Colour Label", |ui| menu_body(ui, |ui| {
+    ui.menu_rows("Set Colour Label", |ui| menu_body(ui, |ui| {
         for label in klipp_media::ColorLabel::ALL {
             let mut text = egui::RichText::new(label.label()).size(11.0);
             if let Some((r, g, b)) = label.rgb() {
@@ -2710,6 +2711,8 @@ mod bin_menu_tests {
         drawn: Vec<(String, egui::Rect)>,
         /// The last frame's filled rectangles.
         fills: Vec<egui::Rect>,
+        /// The last frame's shapes.
+        shapes: Vec<egui::epaint::ClippedShape>,
     }
 
     impl Pool {
@@ -2719,7 +2722,7 @@ mod bin_menu_tests {
                 state.media_pool.add(klipp_media::MediaItem::synthetic_for_test(format!("/footage/{name}").into(), None));
             }
             let panel = crate::browser::BrowserPanel { browser_view_mode: view, ..Default::default() };
-            Self { ctx: egui::Context::default(), state, panel, size: egui::vec2(700.0, 1600.0), drawn: Vec::new(), fills: Vec::new() }
+            Self { ctx: egui::Context::default(), state, panel, size: egui::vec2(700.0, 1600.0), drawn: Vec::new(), fills: Vec::new(), shapes: Vec::new() }
         }
 
         /// One frame with `events`: the text drawn, with where, and what
@@ -2733,6 +2736,7 @@ mod bin_menu_tests {
             let out = self.ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, self.size)), events, ..Default::default() }, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| cmds = panel.show(ui, state, &theme, &mut tab, &mut pinned, &mut ratio));
             });
+            self.shapes = out.shapes.clone();
             self.fills = out.shapes.iter().filter_map(|s| match &s.shape {
                 egui::Shape::Rect(r) if r.fill.a() > 0 => Some(r.rect),
                 _ => None,
@@ -3090,5 +3094,25 @@ mod bin_menu_tests {
         pool.frame(vec![egui::Event::PointerMoved(row)]);
         pool.frame(vec![egui::Event::PointerMoved(row)]);
         assert!(under(&pool) > resting, "a band under the hovered row");
+    }
+
+    /// #2632: the pool's menus, on no item, on a bin header and on a
+    /// clip, draw their rows in the one row layout.
+    #[test]
+    fn the_pools_menus_line_up() {
+        let mut problems = Vec::new();
+        for view in [BrowserViewMode::Grid, BrowserViewMode::List] {
+            let mut pool = Pool::new(view, &["a.mov", "b.mov"]);
+            in_bin(&mut pool, "b.mov", "Selects");
+            let below = pool.at("a.mov") + egui::vec2(0.0, 300.0);
+            for (at, anchor) in [(below, "New Bin"), (pool.at("Selects"), "Rename Bin"), (pool.at("a.mov"), "Load in Source")] {
+                pool.key(egui::Key::Escape, egui::Modifiers::NONE);
+                pool.right_click(at);
+                pool.texts();
+                pool.texts();
+                problems.extend(crate::widgets::menu::row_problems(&pool.shapes, anchor).into_iter().map(|p| format!("{view:?} {anchor}: {p}")));
+            }
+        }
+        assert!(problems.is_empty(), "{}", problems.join("\n"));
     }
 }

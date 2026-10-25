@@ -1,3 +1,4 @@
+use crate::widgets::menu::{menu_toggle, MenuRows, SubmenuRows};
 use crate::state::AppState;
 use crate::theme::KlippTheme;
 use crate::widgets::tooltip::styled_tooltip;
@@ -99,12 +100,11 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &
         if resp.clicked() {
             cmds.push(AppCommand::SetSnapMaster(!state.snap.master));
         }
-        resp.context_menu(|ui| {
+        resp.context_menu_rows(|ui| {
             use klipp_core::SnapTargetKind;
             let cfg = state.snap;
             ui.set_min_width(180.0);
-            let master_label = if cfg.master { "\u{2714} Snap (master)" } else { "    Snap (master)" };
-            if ui.button(master_label).clicked() {
+            if menu_toggle(ui, "Snap (master)", "", cfg.master).clicked() {
                 cmds.push(AppCommand::SetSnapMaster(!cfg.master));
                 ui.close_menu();
             }
@@ -118,8 +118,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &
                     (SnapTargetKind::Grid, "Snap to grid", cfg.grid),
                 ];
                 for &(target, label, enabled) in rows {
-                    let row_label = if enabled { format!("\u{2714} {label}") } else { format!("    {label}") };
-                    if ui.button(row_label).clicked() {
+                    if menu_toggle(ui, label, "", enabled).clicked() {
                         cmds.push(AppCommand::SetSnapTarget { target, enabled: !enabled });
                         ui.close_menu();
                     }
@@ -337,7 +336,7 @@ fn show_transition_menu(
     let targets = transition_targets(state, selected_ids);
     let enabled = !targets.is_empty();
     ui.add_enabled_ui(enabled, |ui| {
-        let response = ui.menu_button("Transition", |ui| {
+        let response = ui.menu_rows("Transition", |ui| {
             ui.set_min_width(190.0);
             let max_h = (ui.ctx().screen_rect().height() * 0.65).max(220.0);
             egui::ScrollArea::vertical().max_height(max_h).show(ui, |ui| {

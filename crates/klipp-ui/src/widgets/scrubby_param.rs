@@ -3,6 +3,7 @@
 //! The core feature: dragging the **label** left/right changes the value.
 //! This provides a compact, precise control without a traditional slider
 //! track.
+use crate::widgets::menu::{SubmenuRows, MenuRows};
 
 use crate::icons::Icon;
 
@@ -202,7 +203,7 @@ pub fn key_menu(ui: &mut egui::Ui, current: Option<klipp_core::Interpolation>) -
         }
         // The named curves (#2274), on the segment leaving the key.
         for (family, eases) in klipp_core::keyframe::Ease::PRESETS {
-            ui.menu_button(family, |ui| {
+            ui.menu_rows(family, |ui| {
                 for (ease, label) in eases.into_iter().zip(["In", "Out", "In-Out"]) {
                     if super::menu::menu_choice(ui, label, "", current == Some(Interpolation::Eased(ease))).clicked() {
                         pick = Some(KeyMenuPick::Interpolation(Interpolation::Eased(ease)));
@@ -277,7 +278,7 @@ pub fn key_strip(ui: &mut egui::Ui, ks: KeyframeState) -> KeyStrip {
         }
         out.toggled = diamond.clicked();
         if ks.has_keyframe_at_playhead {
-            diamond.context_menu(|ui| out.pick = key_menu(ui, ks.current_interpolation));
+            diamond.context_menu_rows(|ui| out.pick = key_menu(ui, ks.current_interpolation));
         }
         if ks.has_any_keyframes {
             out.prev = nav_arrow(ui, ks.prev_keyframe_time.is_some(), Icon::CaretLeft);
@@ -674,7 +675,7 @@ fn scrubby_row(
         // Right-click context menu on diamond for interpolation type
         if is_keyframeable && keyframe_state.as_ref().is_some_and(|ks| ks.has_keyframe_at_playhead) {
             let cur_interp = keyframe_state.as_ref().and_then(|ks| ks.current_interpolation);
-            diamond_btn_resp.clone().context_menu(|ui| match key_menu(ui, cur_interp) {
+            diamond_btn_resp.clone().context_menu_rows(|ui| match key_menu(ui, cur_interp) {
                 Some(KeyMenuPick::Interpolation(i)) => interp_changed = Some(i),
                 Some(KeyMenuPick::Ease(e)) => ease_preset = Some(e),
                 None => {}

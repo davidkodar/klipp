@@ -1,3 +1,4 @@
+use crate::widgets::menu::{SubmenuRows, MenuRows};
 use klipp_timeline::GradeAccess;
 use crate::icons::Icon;
 use crate::state::{AppState, KeyframeContextMenu, PlayheadFollow};
@@ -2552,7 +2553,7 @@ impl TimelinePanel {
                                 for (family, eases) in klipp_core::keyframe::Ease::PRESETS {
                                     let current_family = matches!(current_interp, Some(klipp_core::Interpolation::Eased(e)) if eases.contains(&e));
                                     let title = if current_family { egui::RichText::new(format!("  {family}")).strong() } else { egui::RichText::new(format!("  {family}")) };
-                                    ui.menu_button(title, |ui| {
+                                    ui.menu_rows(title, |ui| {
                                         for (ease, label) in eases.into_iter().zip(["In", "Out", "In-Out"]) {
                                             let want = klipp_core::Interpolation::Eased(ease);
                                             let text = if current_interp == Some(want) { egui::RichText::new(label).strong() } else { egui::RichText::new(label) };
@@ -3578,7 +3579,7 @@ impl TimelinePanel {
             cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: new_h });
         }
 
-        handle_resp.context_menu(|ui| {
+        handle_resp.context_menu_rows(|ui| {
             if ui.button("Small (32px)").clicked() {
                 cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: Some(32.0) });
                 ui.close_menu();
@@ -3685,7 +3686,7 @@ impl TimelinePanel {
             cmds.push(AppCommand::SetTrackAutomationLaneHeight { track_id, height: None });
         }
 
-        handle_resp.context_menu(|ui| {
+        handle_resp.context_menu_rows(|ui| {
             if ui.button("Compact (60px)").clicked() {
                 cmds.push(AppCommand::SetTrackAutomationLaneHeight { track_id, height: Some(60.0) });
                 ui.close_menu();
@@ -3931,7 +3932,7 @@ impl TimelinePanel {
                     ui.id().with("empty_track_area_ctx"),
                     egui::Sense::click(),
                 );
-                empty_resp.context_menu(|ui| {
+                empty_resp.context_menu_rows(|ui| {
                     ui.set_min_width(160.0);
                     ui.label(egui::RichText::new("Add Track").strong().size(11.0));
                     ui.separator();
@@ -4110,7 +4111,7 @@ impl TimelinePanel {
         let snap_cfg = state.snap;
         let cur_grid = state.grid_snap_interval;
 
-        response.context_menu(|ui| {
+        response.context_menu_rows(|ui| {
             use klipp_core::{GridInterval, SnapTargetKind};
             ui.set_min_width(200.0);
 
@@ -4120,7 +4121,7 @@ impl TimelinePanel {
                 cmds.push(AppCommand::SetSnapMaster(!snap_cfg.master));
                 ui.close_menu();
             }
-            ui.menu_button("Snap targets", |ui| {
+            ui.menu_rows("Snap targets", |ui| {
                 ui.add_enabled_ui(snap_cfg.master, |ui| {
                     let rows: &[(SnapTargetKind, &str, bool)] = &[
                         (SnapTargetKind::ClipEdge, "Clip edges", snap_cfg.clips),
@@ -4140,7 +4141,7 @@ impl TimelinePanel {
             });
 
             // ── Grid interval picker ──
-            ui.menu_button(format!("Grid: {}", cur_grid.label()), |ui| {
+            ui.menu_rows(format!("Grid: {}", cur_grid.label()), |ui| {
                 const PRESETS: &[GridInterval] = &[
                     GridInterval::Off,
                     GridInterval::Adaptive,
@@ -5647,11 +5648,11 @@ impl TimelinePanel {
             if hdr_resp.clicked() && ui.input(|i| i.modifiers.command) {
                 cmds.push(AppCommand::SelectClipsIn { track: Some(track_idx), range: klipp_core::SelectRange::All });
             }
-            hdr_resp.context_menu(|ui| {
+            hdr_resp.context_menu_rows(|ui| {
                 ui.set_min_width(180.0);
                 track_select_items(ui, track_idx, cmds);
                 ui.separator();
-                ui.menu_button("Add Track Above", |ui| {
+                ui.menu_rows("Add Track Above", |ui| {
                     for (label, kind) in [("Video Track", TrackKind::Video), ("Audio Track", TrackKind::Audio),
                         ("Text Track", TrackKind::Text), ("Subtitle Track", TrackKind::Subtitle)] {
                         if ui.button(label).clicked() {
@@ -5669,7 +5670,7 @@ impl TimelinePanel {
                         }
                     }
                 });
-                ui.menu_button("Add Track Below", |ui| {
+                ui.menu_rows("Add Track Below", |ui| {
                     for (label, kind) in [("Video Track", TrackKind::Video), ("Audio Track", TrackKind::Audio),
                         ("Text Track", TrackKind::Text), ("Subtitle Track", TrackKind::Subtitle)] {
                         if ui.button(label).clicked() {
@@ -8442,7 +8443,7 @@ impl TimelinePanel {
                 }
             }
         }
-        track_response.context_menu(|ui| {
+        track_response.context_menu_rows(|ui| {
             ui.set_min_width(160.0);
             if let (None, Some((ti, tid))) = (state.selected_clip, state.selected_transition.filter(|(t, _)| *t == track_idx)) {
                 transition_menu(ui, state, ti, tid, cmds);
@@ -8514,7 +8515,7 @@ impl TimelinePanel {
                 }
                 // Rhythmic edits in one step (#988), in a submenu of
                 // their own so the clip menu stays short.
-                ui.menu_button("Rhythm Edits", |ui| {
+                ui.menu_rows("Rhythm Edits", |ui| {
                     for (kind, label, tip) in [
                         (0u8, "Strobe\u{2026}", "Cut the clip (or its part between the In and Out) into short pieces and remove every other one, so the shot flickers"),
                         (1, "Set Length\u{2026}", "Make the selected clips all the same length, as for a rapid-fire montage"),
@@ -8529,7 +8530,7 @@ impl TimelinePanel {
                 });
                 // Several clips selected: line them up with this one (#925).
                 if state.selected_clips.len() > 1 && state.selected_clips.contains(&clip_id) {
-                    ui.menu_button("Sync Selected Clips", |ui| {
+                    ui.menu_rows("Sync Selected Clips", |ui| {
                         if ui.button("By Timecode").on_hover_text("The same moment of the shoot under each, from the files' start timecodes").clicked() {
                             cmds.push(AppCommand::SelectClip(Some(clip_id)));
                             cmds.push(AppCommand::SyncSelectedClips { by_markers: false });
@@ -8547,7 +8548,7 @@ impl TimelinePanel {
                     cmds.push(AppCommand::SelectSameSource);
                     ui.close_menu();
                 }
-                ui.menu_button("Clip Colour", |ui| {
+                ui.menu_rows("Clip Colour", |ui| {
                     for label in klipp_media::ColorLabel::ALL {
                         let swatch = label.rgb().map(|(r, g, b)| egui::Color32::from_rgb(r, g, b)).unwrap_or(ui.visuals().weak_text_color());
                         let text = egui::RichText::new(format!("\u{25CF} {}", label.label())).color(swatch);
@@ -8558,7 +8559,7 @@ impl TimelinePanel {
                     }
                 });
                 // Where the grade stands (#899): a colourist's flag.
-                ui.menu_button("Grade Flag", |ui| {
+                ui.menu_rows("Grade Flag", |ui| {
                     crate::widgets::menu::menu_body(ui, |ui| {
                         for flag in klipp_timeline::GradeFlag::ALL {
                             let [r, g, b] = flag.rgb();
@@ -8574,7 +8575,7 @@ impl TimelinePanel {
                 // Any keyed parameter of the clip on its band (#2307).
                 let keyed = state.sequence().all_clips().find(|c| c.id == clip_id).map(crate::panels::dope_sheet::rows).unwrap_or_default();
                 if !keyed.is_empty() {
-                    ui.menu_button("Show Keys on Clip", |ui| {
+                    ui.menu_rows("Show Keys on Clip", |ui| {
                         crate::widgets::menu::menu_body(ui, |ui| {
                             for row in &keyed {
                                 if ui.button(&row.label).clicked() {
@@ -8602,7 +8603,7 @@ impl TimelinePanel {
                 // right-clicked clip is selected first and lets the
                 // existing range-mode-2 dispatch path do the
                 // bounds calculation.
-                if ui.button("\u{2B07} Export This Clip\u{2026}").clicked() {
+                if crate::widgets::menu::menu_icon_item(ui, crate::icons::Icon::Export, "Export This Clip\u{2026}", "").clicked() {
                     cmds.push(AppCommand::SelectClip(Some(clip_id)));
                     cmds.push(AppCommand::OpenExportDialogForSelectedClips);
                     ui.close_menu();
@@ -8621,7 +8622,7 @@ impl TimelinePanel {
                     .and_then(|c| c.media_id());
                 let is_media_clip = cur_media_id.is_some();
                 ui.add_enabled_ui(is_media_clip, |ui| {
-                    ui.menu_button("\u{21BB} Replace From Bin", |ui| {
+                    ui.menu_rows_with_icon(crate::icons::Icon::ArrowClockwise, "Replace From Bin", |ui| {
                         let max_h = (ui.ctx().screen_rect().height() * 0.70).max(240.0);
                         egui::ScrollArea::vertical()
                             .id_salt(("replace_from_bin", clip_id.0))
@@ -8696,7 +8697,7 @@ impl TimelinePanel {
                             .small()
                             .color(egui::Color32::from_gray(170)),
                         );
-                        if ui.button("\u{2702} Detach from Project Asset").clicked() {
+                        if crate::widgets::menu::menu_icon_item(ui, crate::icons::Icon::Scissors, "Detach from Project Asset", "").clicked() {
                             cmds.push(AppCommand::DetachTitleAsset { clip_id });
                             ui.close_menu();
                         }
@@ -8708,7 +8709,7 @@ impl TimelinePanel {
                     {
                         // Alignment submenu
                         let current_align = &td.alignment();
-                        ui.menu_button(format!("\u{2630} Alignment: {}", match current_align {
+                        ui.menu_rows(format!("\u{2630} Alignment: {}", match current_align {
                             klipp_timeline::TextAlignment::Left => "Left",
                             klipp_timeline::TextAlignment::Center => "Center",
                             klipp_timeline::TextAlignment::Right => "Right",
@@ -8734,7 +8735,7 @@ impl TimelinePanel {
                         // Font style submenu
                         let is_bold = matches!(td.font_style(), klipp_timeline::FontStyle::Bold | klipp_timeline::FontStyle::BoldItalic);
                         let is_italic = matches!(td.font_style(), klipp_timeline::FontStyle::Italic | klipp_timeline::FontStyle::BoldItalic);
-                        ui.menu_button("A Font Style", |ui| {
+                        ui.menu_rows("A Font Style", |ui| {
                             if ui.selectable_label(!is_bold && !is_italic, "Regular").clicked() {
                                 cmds.push(AppCommand::UpdateTitleData {
                                     clip_id, text: td.text().clone(), font_size: td.font_size(),
@@ -8884,7 +8885,7 @@ impl TimelinePanel {
                         .is_some_and(|c| c.matte_source.is_some());
 
                     if let Some((cand_id, cand_kind)) = candidate_above {
-                        ui.menu_button("\u{2702} Use clip above as matte", |ui| {
+                        ui.menu_rows_with_icon(crate::icons::Icon::Scissors, "Use clip above as matte", |ui| {
                             // Auto = sensible default, picks based on
                             // the candidate's nature:
                             //   - Title → Alpha (text typically lives
@@ -8938,7 +8939,7 @@ impl TimelinePanel {
                             }
                         });
                     } else {
-                        let resp = ui.add_enabled(false, egui::Button::new("\u{2702} Use clip above as matte"));
+                        let resp = ui.add_enabled_ui(false, |ui| crate::widgets::menu::menu_icon_item(ui, crate::icons::Icon::Scissors, "Use clip above as matte", "")).inner;
                         resp.on_hover_text("No clip on a higher track at this time-range. Stack a clip above first, or pick a source via the Inspector → Compositing section.");
                     }
                     if already_has_matte
@@ -9029,7 +9030,7 @@ impl TimelinePanel {
                 // Motion presets submenu — VIDEO-ONLY: spatial
                 // transforms (Ken Burns, PiP) have no audio analogue.
                 if is_video_track {
-                    ui.menu_button("Motion Presets", |ui| {
+                    ui.menu_rows("Motion Presets", |ui| {
                         for (label, preset) in [
                             ("Ken Burns: Zoom In", "ken_burns_zoom_in"),
                             ("Ken Burns: Zoom Out", "ken_burns_zoom_out"),
@@ -9061,7 +9062,7 @@ impl TimelinePanel {
                     // Per-row gating: each entry's `can_apply`
                     // predicate decides enabled/disabled, and the
                     // disabled hint explains *why*.
-                    ui.menu_button("Cut Templates", |ui| {
+                    ui.menu_rows("Cut Templates", |ui| {
                         for row in crate::cut_templates::MENU_ROWS {
                             // Block-scope the immutable ctx borrow so
                             // it dies before `(row.dispatch)(state, …)`
@@ -9406,7 +9407,7 @@ impl TimelinePanel {
                                     }
                                 }
                             } else {
-                                ui.menu_button("Add Transition →", |ui| {
+                                ui.menu_rows("Add Transition →", |ui| {
                                     // Cap the submenu height at 70 %
                                     // of the screen so the 30+
                                     // transition kinds stay reachable
@@ -9454,7 +9455,7 @@ impl TimelinePanel {
                                     }
                                 }
                             } else {
-                                ui.menu_button("Add Transition ←", |ui| {
+                                ui.menu_rows("Add Transition ←", |ui| {
                                     let max_h = (ui.ctx().screen_rect().height() * 0.70).max(240.0);
                                     egui::ScrollArea::vertical()
                                         .id_salt("transition_submenu_left")
@@ -17045,7 +17046,7 @@ fn edit_point_menu(ui: &mut egui::Ui, state: &mut AppState, edit: EditPoint, cmd
         }
     }
     if !sound {
-        ui.menu_button("Add Transition", |ui| {
+        ui.menu_rows("Add Transition", |ui| {
             egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
                 for &(kind_id, label) in klipp_engine::transition::all_transition_kinds() {
                     if ui.button(label).clicked() {
@@ -17082,7 +17083,7 @@ fn transition_menu(ui: &mut egui::Ui, state: &AppState, track_index: usize, tran
     let Some(transition) = state.sequence().tracks.get(track_index).and_then(|t| t.transitions.iter().find(|tr| tr.id == transition_id)) else { return };
     let fps = state.sequence().fps.as_f64();
     let frames_now = (transition.duration.to_secs_f64() * fps).round() as u32;
-    ui.menu_button("Kind", |ui| {
+    ui.menu_rows("Kind", |ui| {
         egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
             for &(kind_id, label) in klipp_engine::transition::all_transition_kinds() {
                 if ui.button(label).clicked() {
@@ -17092,7 +17093,7 @@ fn transition_menu(ui: &mut egui::Ui, state: &AppState, track_index: usize, tran
             }
         });
     });
-    ui.menu_button(format!("Length ({frames_now} frames)"), |ui| {
+    ui.menu_rows(format!("Length ({frames_now} frames)"), |ui| {
         for secs in [0.25, 0.5, 1.0, 1.5, 2.0] {
             let frames = (secs * fps).round().max(1.0) as u32;
             if ui.selectable_label(frames == frames_now, format!("{secs} s ({frames} frames)")).clicked() {
@@ -17101,7 +17102,7 @@ fn transition_menu(ui: &mut egui::Ui, state: &AppState, track_index: usize, tran
             }
         }
     });
-    ui.menu_button("Alignment", |ui| {
+    ui.menu_rows("Alignment", |ui| {
         use klipp_core::TransitionAlignment as A;
         for (alignment, label) in [(A::Center, "Centred on the cut"), (A::StartAtCut, "Starting at the cut"), (A::EndAtCut, "Ending at the cut")] {
             if ui.selectable_label(transition.alignment == alignment, label).clicked() {
@@ -20000,7 +20001,7 @@ pub(crate) fn track_attribute_items(ui: &mut egui::Ui, state: &AppState, track_i
             Some(name) => format!("Paste Track Attributes from {name}"),
             None => "Paste Track Attributes".to_string(),
         };
-        ui.menu_button(label, |ui| {
+        ui.menu_rows(label, |ui| {
             let kind = state.sequence().tracks[track_idx].kind;
             let same_kind: Vec<_> = state.sequence().tracks.iter().filter(|t| t.kind == kind).map(|t| t.id).collect();
             for (what, levels, picture, sound) in [
@@ -20037,7 +20038,7 @@ fn track_effects_menu(ui: &mut egui::Ui, track: &klipp_timeline::Track, cmds: &m
         return;
     }
     let title = if fx.is_empty() { "Track Effects".to_string() } else { format!("Track Effects ({})", fx.video_effects().len() + fx.audio.len() + usize::from(fx.track_grade().is_some_and(|g| !g.is_identity()))) };
-    ui.menu_button(title, |ui| {
+    ui.menu_rows(title, |ui| {
         ui.set_min_width(220.0);
         if fx.is_empty() {
             ui.label(egui::RichText::new("On every clip of the track, after its own").weak());
@@ -20071,7 +20072,7 @@ fn track_effects_menu(ui: &mut egui::Ui, track: &klipp_timeline::Track, cmds: &m
         }
         ui.separator();
         if picture {
-            ui.menu_button("Add Picture Effect", |ui| {
+            ui.menu_rows("Add Picture Effect", |ui| {
                 for (kind, label) in TRACK_PICTURE_EFFECTS {
                     if ui.button(*label).clicked() {
                         cmds.push(AppCommand::AddTrackVideoEffect { track_id, kind: (*kind).to_string() });
@@ -20081,7 +20082,7 @@ fn track_effects_menu(ui: &mut egui::Ui, track: &klipp_timeline::Track, cmds: &m
             });
         }
         if sound {
-            ui.menu_button("Add Audio Effect", |ui| {
+            ui.menu_rows("Add Audio Effect", |ui| {
                 for (effect_type, label) in klipp_audio::dsp::available_effects() {
                     if ui.button(label).clicked() {
                         cmds.push(AppCommand::AddTrackAudioEffect { track_id, effect_type: effect_type.to_string() });

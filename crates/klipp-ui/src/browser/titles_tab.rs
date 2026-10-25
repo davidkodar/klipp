@@ -1,3 +1,4 @@
+use crate::widgets::menu::MenuRows;
 use crate::browser::effects_tab::{EffectSort, EffectViewMode};
 use crate::drag_drop::DragPayload;
 use crate::browser::library_card::LibraryList;
@@ -535,7 +536,7 @@ fn handle_title_interaction(
         *selected = Some(title.key());
     }
     let mut toggle_favourite = false;
-    resp.context_menu(|ui| {
+    resp.context_menu_rows(|ui| {
         toggle_favourite = crate::browser::library_card::favourite_menu_item(ui, is_fav);
         if let Entry::User(t) = title {
             if ui.button("Rename\u{2026}").clicked() {

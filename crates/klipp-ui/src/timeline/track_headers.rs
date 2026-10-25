@@ -1,3 +1,4 @@
+use crate::widgets::menu::{menu_toggle, MenuRows, SubmenuRows};
 use crate::icons::Icon;
 use crate::state::AppState;
 use crate::theme::KlippTheme;
@@ -556,14 +557,14 @@ pub fn show(
         let track_id = track.id;
         let track_kind = track.kind;
         let track_name = track.name.clone();
-        header_resp.context_menu(|ui| {
+        header_resp.context_menu_rows(|ui| {
             ui.set_min_width(180.0);
 
             crate::panels::timeline::track_select_items(ui, track_idx, &mut cmds);
             ui.separator();
 
             // Add track options
-            ui.menu_button("Add Track Above", |ui| {
+            ui.menu_rows("Add Track Above", |ui| {
                 for (label, kind) in [("Video Track", TrackKind::Video), ("Audio Track", TrackKind::Audio), ("Text Track", TrackKind::Text), ("Subtitle Track", TrackKind::Subtitle)] {
                     if ui.button(label).clicked() {
                         // One undo step (#907).
@@ -581,7 +582,7 @@ pub fn show(
                     }
                 }
             });
-            ui.menu_button("Add Track Below", |ui| {
+            ui.menu_rows("Add Track Below", |ui| {
                 for (label, kind) in [("Video Track", TrackKind::Video), ("Audio Track", TrackKind::Audio), ("Text Track", TrackKind::Text), ("Subtitle Track", TrackKind::Subtitle)] {
                     if ui.button(label).clicked() {
                         let before = crate::tracks_undo::before_labelled(state, "Add Track");
@@ -609,7 +610,7 @@ pub fn show(
             crate::panels::timeline::track_waveform_zoom_item(ui, state, track_idx, &mut cmds);
             // The track's colour, and moving it (#922).
             let own_label = state.sequence().tracks[track_idx].colour_label;
-            ui.menu_button("Track Colour", |ui| {
+            ui.menu_rows("Track Colour", |ui| {
                 for label in klipp_media::ColorLabel::ALL {
                     let swatch = label.rgb().map(|(r, g, b)| egui::Color32::from_rgb(r, g, b)).unwrap_or(ui.visuals().weak_text_color());
                     let text = egui::RichText::new(format!("\u{25CF} {}", label.label())).color(swatch);
@@ -620,9 +621,9 @@ pub fn show(
                 }
             });
             if track_kind == TrackKind::Audio {
-                let mut apart = state.sequence().tracks[track_idx].channel_waveforms;
-                if ui.checkbox(&mut apart, "Show Channels Separately").on_hover_text("Each clip's left channel above its right").clicked() {
-                    cmds.push(AppCommand::SetTrackChannelWaveforms { track_index: track_idx, on: apart });
+                let apart = state.sequence().tracks[track_idx].channel_waveforms;
+                if menu_toggle(ui, "Show Channels Separately", "", apart).on_hover_text("Each clip's left channel above its right").clicked() {
+                    cmds.push(AppCommand::SetTrackChannelWaveforms { track_index: track_idx, on: !apart });
                     ui.close_menu();
                 }
             }
@@ -685,7 +686,7 @@ pub fn show(
                         }
                     }
                     None => {
-                        ui.menu_button("Translate Captions", |ui| {
+                        ui.menu_rows("Translate Captions", |ui| {
                             for pair in tr::PAIRS {
                                 let (from, to) = (tr::language_name(pair.source), tr::language_name(pair.target));
                                 if ui.button(format!("{from} \u{2192} {to}")).on_hover_text("A new subtitle track under this one, each caption translated at its own time; the model downloads the first time").clicked() {
@@ -706,10 +707,9 @@ pub fn show(
                     Some(code) => format!("Language: {code}"),
                     None => "Language".to_string(),
                 };
-                ui.menu_button(label, |ui| {
+                ui.menu_rows(label, |ui| {
                     let mut pick = |ui: &mut egui::Ui, text: String, language: Option<String>| {
-                        let mark = if current == language { "\u{2714} " } else { "    " };
-                        if ui.button(format!("{mark}{text}")).clicked() {
+                        if menu_toggle(ui, &text, "", current == language).clicked() {
                             cmds.push(AppCommand::SetTrackLanguage { track_id, language });
                             ui.close_menu();
                         }
@@ -728,10 +728,9 @@ pub fn show(
             // (#2306), as the mixer strip's mode button sets it.
             if track_kind == TrackKind::Audio {
                 let current = state.sequence().tracks[track_idx].automation.mode;
-                ui.menu_button(format!("Automation: {}", current.label()), |ui| {
+                ui.menu_rows(format!("Automation: {}", current.label()), |ui| {
                     for mode in klipp_core::automation::AutomationMode::ALL {
-                        let mark = if mode == current { "\u{2714} " } else { "    " };
-                        if ui.button(format!("{mark}{}", mode.label())).clicked() {
+                        if menu_toggle(ui, mode.label(), "", mode == current).clicked() {
                             cmds.push(AppCommand::SetTrackAutomationMode { track_index: track_idx, mode });
                             ui.close_menu();
                         }
@@ -745,7 +744,7 @@ pub fn show(
 
             // Sync lock (#915): a ripple on another track moves this one too.
             let sync_on = state.sequence().tracks[track_idx].sync_lock;
-            if ui.button(if sync_on { "\u{2714} Sync Lock" } else { "    Sync Lock" })
+            if menu_toggle(ui, "Sync Lock", "", sync_on)
                 .on_hover_text("On: a ripple on another track moves this track's clips by the same amount, keeping them in sync")
                 .clicked()
             {
@@ -757,7 +756,7 @@ pub fn show(
                 let t = &state.sequence().tracks[track_idx];
                 (t.targeted, t.source_patch, t.kind)
             };
-            if ui.button(if targeted { "\u{2714} Target Track" } else { "    Target Track" })
+            if menu_toggle(ui, "Target Track", "", targeted)
                 .on_hover_text("On: edit-point navigation, paste, split at playhead and match frame act on this track")
                 .clicked()
             {
@@ -770,8 +769,7 @@ pub fn show(
                 _ => None,
             };
             if let Some(what) = what {
-                let label = if patched { format!("\u{2714} Source {what} Here") } else { format!("    Source {what} Here") };
-                if ui.button(label)
+                if menu_toggle(ui, &format!("Source {what} Here"), "", patched)
                     .on_hover_text(format!("On: insert, overwrite and append lay the source's {} on this track; off, on the first one", what.to_lowercase()))
                     .clicked()
                 {
@@ -873,7 +871,7 @@ pub fn show(
         }
 
         // Right-click context menu — preset heights
-        handle_resp.context_menu(|ui| {
+        handle_resp.context_menu_rows(|ui| {
             if ui.button("Small (32px)").clicked() {
                 cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: Some(32.0) });
                 ui.close_menu();
@@ -913,7 +911,7 @@ pub fn show(
     );
     if empty_rect.height() > 10.0 {
         let empty_resp = ui.interact(empty_rect, ui.id().with("empty_header_ctx"), egui::Sense::click());
-        empty_resp.context_menu(|ui| {
+        empty_resp.context_menu_rows(|ui| {
             ui.set_min_width(160.0);
             ui.label(egui::RichText::new("Add Track").strong().size(11.0));
             ui.separator();

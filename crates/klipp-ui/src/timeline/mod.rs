@@ -999,6 +999,32 @@ mod menu_smoke_tests {
         assert!(drawn.iter().any(|(t, p)| *t == last && p.y < timeline.height), "the last track's header on screen");
     }
 
+    /// #2632: the clip's menu and each track header's menu draw their
+    /// rows in the one row layout: labels in a column, keys and arrows
+    /// in another, nothing wrapped.
+    #[test]
+    fn the_clip_and_track_menus_line_up() {
+        let mut timeline = Timeline::new();
+        timeline.height = 1400.0;
+        let drawn = timeline.frame(Vec::new());
+        let at = drawn.into_iter().find(|(t, _)| t == "smoke.mov").expect("the clip is drawn").1;
+        timeline.right_click(at);
+        // A menu settles its width over the frames after it opens.
+        timeline.frame(Vec::new());
+        timeline.frame(Vec::new());
+        let mut problems: Vec<String> = crate::widgets::menu::row_problems(&timeline.shapes, "Rename Clip\u{2026}").into_iter().map(|p| format!("clip: {p}")).collect();
+        let escape = egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+        for kind in [TrackKind::Video, TrackKind::Audio] {
+            timeline.frame(vec![escape.clone()]);
+            let at = timeline.header(kind);
+            timeline.right_click(at);
+            timeline.frame(Vec::new());
+            timeline.frame(Vec::new());
+            problems.extend(crate::widgets::menu::row_problems(&timeline.shapes, "Rename Track").into_iter().map(|p| format!("{kind:?} header: {p}")));
+        }
+        assert!(problems.is_empty(), "{}", problems.join("\n"));
+    }
+
     #[test]
     fn a_clips_menu_has_its_items() {
         let mut timeline = Timeline::new();

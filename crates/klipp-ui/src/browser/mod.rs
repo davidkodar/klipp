@@ -1,3 +1,4 @@
+use crate::widgets::menu::{SubmenuRows, MenuRows};
 pub mod media_tab;
 pub mod effect_registry;
 pub mod effect_thumbnails;
@@ -2507,7 +2508,7 @@ impl BrowserPanel {
                 if btn.clicked() {
                     self.navigate_to_recents(state);
                 }
-                btn.context_menu(|ui| menu_body(ui, |ui| {
+                btn.context_menu_rows(|ui| menu_body(ui, |ui| {
                     if menu_item(ui, "Clear Recent Files", "").clicked() {
                         state.recent_files_snapshot.clear();
                         self.files_entries.clear();
@@ -2546,7 +2547,7 @@ impl BrowserPanel {
                 if btn.clicked() {
                     self.navigate_files_to(path.clone());
                 }
-                btn.context_menu(|ui| menu_body(ui, |ui| {
+                btn.context_menu_rows(|ui| menu_body(ui, |ui| {
                     if menu_item(ui, "Remove from Favorites", "").clicked() {
                         pending_unpin = Some(path.clone());
                         ui.close_menu();
@@ -3655,7 +3656,7 @@ impl BrowserPanel {
                 // Snapshot of "is this directory currently pinned" so the menu
                 // closure can read it without borrowing self.pinned_folders.
                 let menu_is_pinned = entry.is_dir && self.pinned_folders.iter().any(|p| p == &entry.path);
-                resp.context_menu(|ui| menu_body(ui, |ui| {
+                resp.context_menu_rows(|ui| menu_body(ui, |ui| {
                     // ── Import actions (only for media files) ──
                     if menu_count > 0 {
                         let label = if menu_count == 1 {
@@ -3668,7 +3669,7 @@ impl BrowserPanel {
                             ui.close_menu();
                         }
                         if !bins_snapshot.is_empty() {
-                            ui.menu_button("Add to Bin", |ui| menu_body(ui, |ui| {
+                            ui.menu_rows("Add to Bin", |ui| menu_body(ui, |ui| {
                                 for bin_name in &bins_snapshot {
                                     if menu_item(ui, bin_name, "").clicked() {
                                         import_request = Some((target_paths.clone(), Some(bin_name.clone())));
@@ -3735,7 +3736,7 @@ impl BrowserPanel {
                     // Available on any file (not directories). Mirrors
                     // the media pool "Set Rating" submenu pattern.
                     if !menu_is_dir {
-                        ui.menu_button("Set Rating", |ui| menu_body(ui, |ui| {
+                        ui.menu_rows("Set Rating", |ui| menu_body(ui, |ui| {
                             for r in (0..=5).rev() {
                                 let label = if r == 0 {
                                     "No Rating".to_string()
@@ -3820,7 +3821,7 @@ impl BrowserPanel {
                     egui::vec2(ui.available_width(), remaining_h),
                     egui::Sense::click(),
                 );
-                empty_resp.context_menu(|ui| menu_body(ui, |ui| {
+                empty_resp.context_menu_rows(|ui| menu_body(ui, |ui| {
                     if !is_recents_view
                         && menu_item(ui, "New Folder", "").clicked() {
                             pending_new_folder = true;
@@ -5131,7 +5132,7 @@ impl BrowserPanel {
                         preview_req = Some((t.id.clone(), t.preview_url.clone()));
                     }
                     ui.add_enabled_ui(!adding, |ui| {
-                        ui.menu_button(if adding { "…" } else { "Add ▾" }, |ui| menu_body(ui, |ui| {
+                        ui.menu_rows(if adding { "…" } else { "Add ▾" }, |ui| menu_body(ui, |ui| {
                             use klipp_core::events::ClipDrop;
                             if ui.button("Add to media pool").clicked() {
                                 add_req = Some((t.clone(), ClipDrop::PoolOnly));

@@ -5,6 +5,7 @@
 //! masked by wears a Matte badge; the right-click menu restacks,
 //! duplicates and deletes. Each change goes out as one command, one
 //! undo step.
+use crate::widgets::menu::MenuRows;
 
 use klipp_core::{AppCommand, ClipId};
 use klipp_timeline::{TitleData, TitleObject, TitleObjectContent, TitleObjectId};
@@ -186,7 +187,7 @@ fn row_ui(
     // Right-click: restack, duplicate, delete.
     let order: Vec<u32> = td.objects.iter().map(|o| o.id.0).collect();
     let pos = order.iter().position(|&id| id == obj.id.0).unwrap_or(0);
-    resp.context_menu(|ui| {
+    resp.context_menu_rows(|ui| {
         let (fwd, back) = (pos + 1 < order.len(), pos > 0);
         let mut restack = |ui: &mut egui::Ui, enabled: bool, label: &str, f: &dyn Fn(&mut Vec<u32>)| {
             if ui.add_enabled(enabled, egui::Button::new(label)).clicked() {

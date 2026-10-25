@@ -1,3 +1,4 @@
+use crate::widgets::menu::{menu_heading, menu_toggle, SubmenuRows};
 use crate::prefs::RecentProject;
 use crate::state::{AppState, Workspace};
 use crate::theme::KlippTheme;
@@ -178,7 +179,7 @@ impl ToolbarPanel {
     // ══════════════════════════════════════════════
 
     fn file_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState, recent: &[RecentProject], kb: &crate::keybindings::KeyBindings) {
-        ui.menu_button(egui::RichText::new("File").size(crate::theme::type_scale::CONTROL), |ui| {
+        ui.menu_rows(egui::RichText::new("File").size(crate::theme::type_scale::CONTROL), |ui| {
             if ui.add(egui::Button::new("New Project...").shortcut_text(kb.display_for("new_project"))).clicked() { cmds.push(AppCommand::NewProject); ui.close_menu(); }
             if ui.add(egui::Button::new("Open Project...").shortcut_text(kb.display_for("open_project"))).clicked() {
                 ui.close_menu();
@@ -197,7 +198,7 @@ impl ToolbarPanel {
                 });
             }
             if !recent.is_empty() {
-                ui.menu_button("Open Recent", |ui| {
+                ui.menu_rows("Open Recent", |ui| {
                     for rp in recent {
                         let label = rp.name.clone();
                         if ui.button(&label).clicked() { cmds.push(AppCommand::OpenProject { path: rp.path.clone() }); ui.close_menu(); }
@@ -268,7 +269,7 @@ impl ToolbarPanel {
             // Timeline-format imports (foreign NLE projects → a new Sequence).
             // Grouped under a submenu so adding formats (OTIO, FCPXML, EDL, AAF)
             // doesn't clutter the top level.
-            ui.menu_button("Import Timeline", |ui| {
+            ui.menu_rows("Import Timeline", |ui| {
                 if ui.button("Kdenlive Project...").clicked() {
                     ui.close_menu();
                     crate::file_dialog::spawn(move || {
@@ -359,7 +360,7 @@ impl ToolbarPanel {
                 });
             }
             // Timeline-format exports (current Sequence → interchange format).
-            ui.menu_button("Export Timeline", |ui| {
+            ui.menu_rows("Export Timeline", |ui| {
                 if ui.button("FCPXML...").clicked() {
                     ui.close_menu();
                     crate::file_dialog::spawn(move || {
@@ -434,7 +435,7 @@ impl ToolbarPanel {
                     });
                 }
             });
-            ui.menu_button("Export Metadata Sheet", |ui| {
+            ui.menu_rows("Export Metadata Sheet", |ui| {
                 if ui.button("CSV...").clicked() {
                     ui.close_menu();
                     crate::file_dialog::spawn(move || {
@@ -497,7 +498,7 @@ impl ToolbarPanel {
     }
 
     fn edit_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState, kb: &crate::keybindings::KeyBindings) {
-        ui.menu_button(egui::RichText::new("Edit").size(crate::theme::type_scale::CONTROL), |ui| {
+        ui.menu_rows(egui::RichText::new("Edit").size(crate::theme::type_scale::CONTROL), |ui| {
             if ui.add_enabled(state.next_undo().is_some(), egui::Button::new(state.undo_label().map(|d| format!("Undo {d}")).unwrap_or("Undo".into())).shortcut_text(kb.display_for("undo"))).clicked() { cmds.push(AppCommand::Undo); ui.close_menu(); }
             if ui.add_enabled(state.next_redo().is_some(), egui::Button::new(state.redo_label().map(|d| format!("Redo {d}")).unwrap_or("Redo".into())).shortcut_text(kb.display_for("redo"))).clicked() { cmds.push(AppCommand::Redo); ui.close_menu(); }
             if ui.button("History...").clicked() { state.show_history_panel = true; ui.close_menu(); }
@@ -561,7 +562,7 @@ impl ToolbarPanel {
             let any = state.selected_clip.is_some() || !state.selected_clips.is_empty();
             if ui.button("Invert Selection").on_hover_text("Every clip not selected now").clicked() { cmds.push(AppCommand::SelectInverse); ui.close_menu(); }
             if ui.add_enabled(any, egui::Button::new("Select Same Source")).on_hover_text("Every clip from the selected clips' media files").clicked() { cmds.push(AppCommand::SelectSameSource); ui.close_menu(); }
-            ui.menu_button("Select by Colour", |ui| {
+            ui.menu_rows("Select by Colour", |ui| {
                 for label in klipp_media::ColorLabel::ALL.into_iter().filter(|l| l.to_u8() != 0) {
                     let swatch = label.rgb().map(|(r, g, b)| egui::Color32::from_rgb(r, g, b)).unwrap_or(ui.visuals().weak_text_color());
                     if ui.button(egui::RichText::new(format!("\u{25CF} {}", label.label())).color(swatch)).clicked() {
@@ -591,7 +592,7 @@ impl ToolbarPanel {
     }
 
     fn clip_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState, kb: &crate::keybindings::KeyBindings) {
-        ui.menu_button(egui::RichText::new("Clip").size(crate::theme::type_scale::CONTROL), |ui| {
+        ui.menu_rows(egui::RichText::new("Clip").size(crate::theme::type_scale::CONTROL), |ui| {
             let has_clip = state.selected_clip.is_some();
             if ui.add_enabled(has_clip, egui::Button::new("Enable / Disable")).clicked() {
                 if let Some(cid) = state.selected_clip {
@@ -660,7 +661,7 @@ impl ToolbarPanel {
                 }
                 ui.close_menu();
             }
-            ui.menu_button("Motion Presets", |ui| {
+            ui.menu_rows("Motion Presets", |ui| {
                 for (label, preset) in [
                     ("Ken Burns: Zoom In", "ken_burns_zoom_in"),
                     ("Ken Burns: Zoom Out", "ken_burns_zoom_out"),
@@ -702,7 +703,7 @@ impl ToolbarPanel {
                     .and_then(|c| c.multicam_group)
                     .is_some();
                 if is_multicam {
-                    ui.menu_button("Switch Angle", |ui| {
+                    ui.menu_rows("Switch Angle", |ui| {
                         for angle in 1..=9_usize {
                             let label = format!("Angle {angle}");
                             if ui.add(egui::Button::new(&label).shortcut_text(kb.display_for(&format!("multicam_angle_{angle}")))).clicked() {
@@ -714,7 +715,7 @@ impl ToolbarPanel {
                     // Whose sound the group plays: the angles' sounds
                     // together are one moment heard several times.
                     if let Some((angles, current)) = state.sequence().multicam_at(None, state.playhead).map(|m| (m.angles, m.primary.multicam_sound)) {
-                        ui.menu_button("Multicam Sound", |ui| {
+                        ui.menu_rows("Multicam Sound", |ui| {
                             let choices = angles
                                 .iter()
                                 .map(|a| klipp_core::MulticamSound::Angle(*a))
@@ -775,7 +776,7 @@ impl ToolbarPanel {
     }
 
     fn timeline_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState, kb: &crate::keybindings::KeyBindings) {
-        ui.menu_button(egui::RichText::new("Timeline").size(crate::theme::type_scale::CONTROL), |ui| {
+        ui.menu_rows(egui::RichText::new("Timeline").size(crate::theme::type_scale::CONTROL), |ui| {
             if ui.button("Add Video Track").clicked() { cmds.push(AppCommand::AddVideoTrack); ui.close_menu(); }
             if ui.button("Add Audio Track").clicked() { cmds.push(AppCommand::AddAudioTrack); ui.close_menu(); }
             // The selected clip's track; without one there is nothing to
@@ -890,7 +891,7 @@ impl ToolbarPanel {
             }
             ui.separator();
             if ui.button("Add Adjustment Layer").clicked() { cmds.push(AppCommand::CreateAdjustmentLayer); ui.close_menu(); }
-            ui.menu_button("Add Generator", |ui| {
+            ui.menu_rows("Add Generator", |ui| {
                 if ui.button("Solid Colour").clicked() {
                     cmds.push(AppCommand::CreateGeneratorClip { track_index: None, data: klipp_core::GeneratorData::SolidColor { color: [128, 128, 128, 255] } });
                     ui.close_menu();
@@ -913,10 +914,8 @@ impl ToolbarPanel {
                 ui.close_menu();
             }
             ui.separator();
-            let snap_check = if state.snap.master { "\u{2714} " } else { "  " };
-            if ui.add(egui::Button::new(format!("{snap_check}Snapping")).shortcut_text(kb.display_for("toggle_snap"))).clicked() { cmds.push(AppCommand::SetSnapMaster(!state.snap.master)); ui.close_menu(); }
-            let linked_check = if state.linked_selection { "\u{2714} " } else { "  " };
-            if ui.button(format!("{linked_check}Linked Selection")).on_hover_text("Picture and sound trim and move together").clicked() { state.linked_selection = !state.linked_selection; ui.close_menu(); }
+            if menu_toggle(ui, "Snapping", &kb.display_for("toggle_snap"), state.snap.master).clicked() { cmds.push(AppCommand::SetSnapMaster(!state.snap.master)); ui.close_menu(); }
+            if menu_toggle(ui, "Linked Selection", "", state.linked_selection).on_hover_text("Picture and sound trim and move together").clicked() { state.linked_selection = !state.linked_selection; ui.close_menu(); }
             if ui.add(egui::Button::new("Fit to Window").shortcut_text(kb.display_for("fit_to_window"))).clicked() { cmds.push(AppCommand::FitTimelineToWindow); ui.close_menu(); }
             if ui.add_enabled(state.selected_clip.is_some() || !state.selected_clips.is_empty(), egui::Button::new("Zoom to Selection").shortcut_text(kb.display_for("zoom_to_selection"))).clicked() { cmds.push(AppCommand::ZoomToSelection); ui.close_menu(); }
             ui.separator();
@@ -928,7 +927,7 @@ impl ToolbarPanel {
     }
 
     fn mark_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState, kb: &crate::keybindings::KeyBindings) {
-        ui.menu_button(egui::RichText::new("Mark").size(crate::theme::type_scale::CONTROL), |ui| {
+        ui.menu_rows(egui::RichText::new("Mark").size(crate::theme::type_scale::CONTROL), |ui| {
             if ui.add(egui::Button::new("Set In Point").shortcut_text(kb.display_for("set_in_point"))).clicked() { cmds.push(AppCommand::SetSequenceInPoint(state.playhead)); ui.close_menu(); }
             if ui.add(egui::Button::new("Set Out Point").shortcut_text(kb.display_for("set_out_point"))).clicked() { cmds.push(AppCommand::SetSequenceOutPoint(state.playhead)); ui.close_menu(); }
             if ui.add(egui::Button::new("Clear In Point").shortcut_text(kb.display_for("clear_in_point"))).clicked() { cmds.push(AppCommand::ClearSequenceInPoint); ui.close_menu(); }
@@ -1008,7 +1007,7 @@ impl ToolbarPanel {
     }
 
     fn view_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState, kb: &crate::keybindings::KeyBindings) {
-        ui.menu_button(egui::RichText::new("View").size(crate::theme::type_scale::CONTROL), |ui| {
+        ui.menu_rows(egui::RichText::new("View").size(crate::theme::type_scale::CONTROL), |ui| {
             // Zoom targets the currently-focused viewer (state.viewer_mode).
             // Source and Program have independent zoom + pan so clicking on
             // one viewer and Ctrl-+/-ing zooms only that one.
@@ -1036,26 +1035,21 @@ impl ToolbarPanel {
             // only in Preferences.
             // Multicam mode (#1844): the angle grid in the Source
             // viewer's place, as the Angles button and its key switch it.
-            let mut multicam = state.multicam_mode;
-            if ui.checkbox(&mut multicam, "Multicam Angles").clicked() {
-                cmds.push(AppCommand::SetMulticamMode { on: multicam, open: None });
+            if menu_toggle(ui, "Multicam Angles", "", state.multicam_mode).clicked() {
+                cmds.push(AppCommand::SetMulticamMode { on: !state.multicam_mode, open: None });
             }
-            ui.menu_button("Interface Size", |ui| {
-                // Wide enough that the check mark stays on its entry's line.
-                ui.set_min_width(96.0);
+            ui.menu_rows("Interface Size", |ui| {
                 for (label, pct) in [("Auto", 0u32), ("100%", 100), ("125%", 125), ("150%", 150), ("175%", 175), ("200%", 200)] {
-                    let check = if state.ui_scale_percent == pct { "\u{2714} " } else { "  " };
-                    if ui.button(format!("{check}{label}")).clicked() {
+                    if menu_toggle(ui, label, "", state.ui_scale_percent == pct).clicked() {
                         state.ui_scale_request = Some(pct);
                         ui.close_menu();
                     }
                 }
             });
-            ui.menu_button("Viewer Zoom", |ui| {
+            ui.menu_rows("Viewer Zoom", |ui| {
                 let current_zoom = state.view_for(focused).zoom;
                 for (label, zoom) in [("Fit", 0.0f32), ("25%", 0.25), ("50%", 0.5), ("100%", 1.0), ("200%", 2.0)] {
-                    let check = if (current_zoom - zoom).abs() < 0.01 { "\u{2714} " } else { "  " };
-                    if ui.button(format!("{check}{label}")).clicked() {
+                    if menu_toggle(ui, label, "", (current_zoom - zoom).abs() < 0.01).clicked() {
                         let v = state.view_for_mut(focused);
                         v.zoom = zoom;
                         if zoom == 0.0 { v.pan = egui::Vec2::ZERO; }
@@ -1066,73 +1060,57 @@ impl ToolbarPanel {
             ui.separator();
             // Fullscreen is on F11, which a Mac keyboard does not
             // always have, so it needs somewhere to be clicked.
-            let full_check = if state.fullscreen_viewer { "\u{2714} " } else { "  " };
-            if ui.add(egui::Button::new(format!("{full_check}Fullscreen Viewer"))
-                .shortcut_text(kb.display_for("toggle_fullscreen"))).clicked() {
+            if menu_toggle(ui, "Fullscreen Viewer", &kb.display_for("toggle_fullscreen"), state.fullscreen_viewer).clicked() {
                 cmds.push(AppCommand::ToggleFullscreen);
                 ui.close_menu();
             }
             ui.separator();
-            let zebra_check = if state.viewer_overlays.zebras { "\u{2714} " } else { "  " };
-            if ui.add(egui::Button::new(format!("{zebra_check}Zebras")).shortcut_text(kb.display_for("toggle_zebra"))).clicked() {
+            if menu_toggle(ui, "Zebras", &kb.display_for("toggle_zebra"), state.viewer_overlays.zebras).clicked() {
                 state.viewer_overlays.zebras = !state.viewer_overlays.zebras;
                 ui.close_menu();
             }
-            let fc_check = if state.viewer_overlays.false_color { "\u{2714} " } else { "  " };
-            // Main button toggles false color on/off
-            ui.horizontal(|ui| {
-                if ui.add(egui::Button::new(format!("{fc_check}False Colour")).shortcut_text(kb.display_for("toggle_false_color"))).clicked() {
-                    state.viewer_overlays.false_color = !state.viewer_overlays.false_color;
-                    ui.close_menu();
-                }
-                // Submenu for the palette quick-switcher. egui auto-adds
-                // its own submenu arrow to menu_button labels, so we give
-                // this a descriptive word rather than another arrow glyph
-                // (which produced double-arrow visuals and, at smaller
-                // sizes, unrenderable placeholder squares).
-                ui.menu_button("Palette", |ui| {
-                    let built_ins = crate::prefs::FalseColorPalette::built_ins();
-                    for preset in &built_ins {
-                        let is_current = state.pending_false_color_palette.is_none()
-                            && state.false_color_lut == preset.build_lut();
-                        let check = if is_current { "\u{2714} " } else { "  " };
-                        if ui.button(format!("{check}{}", preset.name)).clicked() {
-                            state.pending_false_color_palette = Some(preset.clone());
-                            state.viewer_overlays.false_color = true;
-                            ui.close_menu();
-                        }
-                    }
-                    ui.separator();
-                    if ui.button("Edit palette\u{2026}").clicked() {
-                        state.show_preferences = true;
+            if menu_toggle(ui, "False Colour", &kb.display_for("toggle_false_color"), state.viewer_overlays.false_color).clicked() {
+                state.viewer_overlays.false_color = !state.viewer_overlays.false_color;
+                ui.close_menu();
+            }
+            // The palette quick-switcher, a row of its own under the
+            // toggle rather than a button beside it (#2632).
+            ui.menu_rows("False Colour Palette", |ui| {
+                let built_ins = crate::prefs::FalseColorPalette::built_ins();
+                for preset in &built_ins {
+                    let is_current = state.pending_false_color_palette.is_none()
+                        && state.false_color_lut == preset.build_lut();
+                    if menu_toggle(ui, &preset.name, "", is_current).clicked() {
+                        state.pending_false_color_palette = Some(preset.clone());
+                        state.viewer_overlays.false_color = true;
                         ui.close_menu();
                     }
-                });
+                }
+                ui.separator();
+                if ui.button("Edit palette\u{2026}").clicked() {
+                    state.show_preferences = true;
+                    ui.close_menu();
+                }
             });
-            let peak_check = if state.viewer_overlays.focus_peaking { "\u{2714} " } else { "  " };
-            if ui.add(egui::Button::new(format!("{peak_check}Focus Peaking"))).clicked() {
+            if menu_toggle(ui, "Focus Peaking", "", state.viewer_overlays.focus_peaking).clicked() {
                 state.viewer_overlays.focus_peaking = !state.viewer_overlays.focus_peaking;
                 ui.close_menu();
             }
             ui.separator();
-            let safe_check = if state.viewer_overlays.safe_areas { "\u{2714} " } else { "  " };
-            if ui.add(egui::Button::new(format!("{safe_check}Safe Areas")).shortcut_text(kb.display_for("toggle_safe_areas"))).clicked() {
+            if menu_toggle(ui, "Safe Areas", &kb.display_for("toggle_safe_areas"), state.viewer_overlays.safe_areas).clicked() {
                 state.viewer_overlays.safe_areas = !state.viewer_overlays.safe_areas;
                 ui.close_menu();
             }
-            let grid_check = if state.viewer_overlays.grid { "\u{2714} " } else { "  " };
-            if ui.add(egui::Button::new(format!("{grid_check}Grid Overlay")).shortcut_text(kb.display_for("toggle_grid_overlay"))).clicked() {
+            if menu_toggle(ui, "Grid Overlay", &kb.display_for("toggle_grid_overlay"), state.viewer_overlays.grid).clicked() {
                 state.viewer_overlays.grid = !state.viewer_overlays.grid;
                 ui.close_menu();
             }
-            let checker_check = if state.viewer_overlays.checkerboard { "\u{2714} " } else { "  " };
-            if ui.button(format!("{checker_check}Checkerboard")).clicked() {
+            if menu_toggle(ui, "Checkerboard", "", state.viewer_overlays.checkerboard).clicked() {
                 state.viewer_overlays.checkerboard = !state.viewer_overlays.checkerboard;
                 ui.close_menu();
             }
             ui.separator();
-            let scopes_check = if state.scopes_shown() { "\u{2714} " } else { "  " };
-            ui.menu_button(format!("{scopes_check}Scopes"), |ui| {
+            ui.menu_rows("Scopes", |ui| {
                 // Pick a scope: shows it (dock, overlay or floating window)
                 // and makes it the one the dock and overlay draw.
                 use crate::state::ScopeMode;
@@ -1157,11 +1135,9 @@ impl ToolbarPanel {
                     ui.close_menu();
                 }
                 ui.separator();
-                let overlay_check = if state.scope_overlay_mode { "\u{2714} " } else { "  " };
-                if ui.button(format!("{overlay_check}Overlay on Viewer")).clicked() { state.scope_overlay_mode = !state.scope_overlay_mode; ui.close_menu(); }
+                if menu_toggle(ui, "Overlay on Viewer", "", state.scope_overlay_mode).clicked() { state.scope_overlay_mode = !state.scope_overlay_mode; ui.close_menu(); }
             });
-            let color_check = if state.show_color_panel { "\u{2714} " } else { "  " };
-            if ui.add(egui::Button::new(format!("{color_check}Colour Panel")).shortcut_text(kb.display_for("toggle_color_panel"))).clicked() {
+            if menu_toggle(ui, "Colour Panel", &kb.display_for("toggle_color_panel"), state.show_color_panel).clicked() {
                 state.show_color_panel = !state.show_color_panel;
                 ui.close_menu();
             }
@@ -1175,26 +1151,23 @@ impl ToolbarPanel {
                 ui.close_menu();
             }
             ui.separator();
-            let skim_check = if state.skimming_enabled { "\u{2714} " } else { "  " };
-            if ui.add(egui::Button::new(format!("{skim_check}Skimming")).shortcut_text(kb.display_for("toggle_skimming"))).clicked() {
+            if menu_toggle(ui, "Skimming", &kb.display_for("toggle_skimming"), state.skimming_enabled).clicked() {
                 state.skimming_enabled = !state.skimming_enabled;
                 ui.close_menu();
             }
-            let dual_check = if state.viewers_side_by_side() { "\u{2714} " } else { "  " };
-            if ui.button(format!("{dual_check}Dual Viewers")).on_hover_text("Remembered per workspace").clicked() {
+            if menu_toggle(ui, "Dual Viewers", "", state.viewers_side_by_side()).on_hover_text("Remembered per workspace").clicked() {
                 state.toggle_viewer_layout();
                 ui.close_menu();
             }
             ui.separator();
-            let perf_check = if state.show_perf_overlay { "\u{2714} " } else { "  " };
-            if ui.button(format!("{perf_check}Performance Overlay").as_str()).clicked() {
+            if menu_toggle(ui, "Performance Overlay", "", state.show_perf_overlay).clicked() {
                 state.show_perf_overlay = !state.show_perf_overlay;
                 ui.close_menu();
             }
             let rec_label = if state.perf_recording_active {
-                "  Stop Performance Recording"
+                "Stop Performance Recording"
             } else {
-                "  Record Performance Session\u{2026}"
+                "Record Performance Session\u{2026}"
             };
             if ui.add(egui::Button::new(rec_label).shortcut_text(kb.display_for("toggle_perf_recording"))).clicked() {
                 state.pending_perf_recording_toggle = true;
@@ -1204,7 +1177,7 @@ impl ToolbarPanel {
                 let short = p.file_name()
                     .map(|s| s.to_string_lossy().into_owned())
                     .unwrap_or_else(|| p.to_string_lossy().into_owned());
-                if ui.button(format!("  Last Session: {short}").as_str()).clicked() {
+                if ui.button(format!("Last Session: {short}").as_str()).clicked() {
                     // Toast the full path so the user can copy it —
                     // revealing in the file manager would need an
                     // extra dependency we don't currently ship.
@@ -1216,26 +1189,25 @@ impl ToolbarPanel {
     }
 
     fn window_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState, kb: &crate::keybindings::KeyBindings) {
-        ui.menu_button(egui::RichText::new("Window").size(crate::theme::type_scale::CONTROL), |ui| {
+        ui.menu_rows(egui::RichText::new("Window").size(crate::theme::type_scale::CONTROL), |ui| {
             // Active-workspace mode flags (controls the composite
             // inspector layout — not the same as a full workspace
             // preset below; kept as-is for backwards compatibility).
-            ui.label(egui::RichText::new("ACTIVE MODE").size(10.0).color(egui::Color32::from_rgb(0x70, 0x70, 0x78)));
+            menu_heading(ui, "ACTIVE MODE");
             // The same three names the workspace tabs use. These read
             // "Default / Colour Grading / Audio Mixing" once, which made
             // the third one plainly wrong — clicking "Audio Mixing" put
             // you in Export — and the other two disagree with the tabs
             // for no reason a user can see.
             for (ws, label) in &[(Workspace::Edit, "Edit"), (Workspace::Color, "Colour"), (Workspace::Export, "Export")] {
-                let c = if state.active_workspace == *ws { "\u{2714} " } else { "  " };
-                if ui.button(format!("{c}{label}")).clicked() { state.active_workspace = *ws; ui.close_menu(); }
+                if menu_toggle(ui, label, "", state.active_workspace == *ws).clicked() { state.active_workspace = *ws; ui.close_menu(); }
             }
             ui.separator();
 
             // Built-in workspace layout presets (#39). Dispatched via
             // AppCommand so the apply path — write visibility + sizes +
             // layout.save() — stays in one place.
-            ui.label(egui::RichText::new("BUILT-IN LAYOUTS").size(10.0).color(egui::Color32::from_rgb(0x70, 0x70, 0x78)));
+            menu_heading(ui, "BUILT-IN LAYOUTS");
             for (i, layout) in crate::state::builtin_workspace_layouts().iter().enumerate() {
                 if ui.button(layout.display_name()).clicked() {
                     cmds.push(AppCommand::ApplyBuiltinWorkspaceLayout { index: i });
@@ -1246,7 +1218,7 @@ impl ToolbarPanel {
             // User-saved workspaces.
             if !state.custom_workspaces.is_empty() {
                 ui.separator();
-                ui.label(egui::RichText::new("SAVED").size(10.0).color(egui::Color32::from_rgb(0x70, 0x70, 0x78)));
+                menu_heading(ui, "SAVED");
                 for ws in state.custom_workspaces.clone().iter() {
                     if ui.button(&ws.name).clicked() {
                         cmds.push(AppCommand::ApplyCustomWorkspaceLayout { name: ws.name.clone() });
@@ -1261,31 +1233,30 @@ impl ToolbarPanel {
                 state.show_save_workspace_dialog = true;
                 ui.close_menu();
             }
-            if ui.button("\u{2699} Manage Workspaces\u{2026}").clicked() {
+            if ui.button("Manage Workspaces\u{2026}").clicked() {
                 state.show_workspace_manager = true;
                 ui.close_menu();
             }
             ui.separator();
             // Panels
-            ui.label(egui::RichText::new("PANELS").size(10.0).color(egui::Color32::from_rgb(0x70, 0x70, 0x78)));
-            let toggle_label = |active: bool, name: &str| if active { format!("\u{2714} {name}") } else { format!("  {name}") };
-            if ui.button(toggle_label(state.graph_dock_open, "Nodes")).clicked() { cmds.push(AppCommand::ToggleGraphDock); ui.close_menu(); }
-            if ui.add(egui::Button::new(toggle_label(state.show_inspector_panel, "Inspector")).shortcut_text(kb.display_for("toggle_inspector_panel"))).clicked() { cmds.push(AppCommand::ToggleInspectorPanel); ui.close_menu(); }
-            if ui.add(egui::Button::new(toggle_label(state.show_browser_panel, "Browser")).shortcut_text(kb.display_for("toggle_browser_panel"))).clicked() { cmds.push(AppCommand::ToggleBrowserPanel); ui.close_menu(); }
-            if ui.add(egui::Button::new(toggle_label(state.show_curve_editor, "Curve Editor")).shortcut_text(kb.display_for("toggle_keyframe_editor"))).clicked() { state.show_curve_editor = !state.show_curve_editor; ui.close_menu(); }
-            if ui.add(egui::Button::new(toggle_label(state.show_audio_mixer, "Audio Mixer")).shortcut_text(kb.display_for("toggle_audio_mixer"))).clicked() { state.show_audio_mixer = !state.show_audio_mixer; ui.close_menu(); }
-            if ui.button(toggle_label(state.show_history_panel, "History")).clicked() { state.show_history_panel = !state.show_history_panel; ui.close_menu(); }
-            if ui.button(toggle_label(state.show_markers_panel, "Markers")).clicked() { state.show_markers_panel = !state.show_markers_panel; ui.close_menu(); }
-            if ui.button(toggle_label(state.show_edit_list, "Edit List")).on_hover_text("Every clip, transition and marker in a table: sort it, filter it by name, click a row to go there.").clicked() { state.show_edit_list = !state.show_edit_list; ui.close_menu(); }
-            if ui.add(egui::Button::new(toggle_label(state.show_subtitle_editor, "Subtitle Editor")).shortcut_text(kb.display_for("toggle_subtitle_editor"))).clicked() { state.show_subtitle_editor = !state.show_subtitle_editor; ui.close_menu(); }
-            if ui.button(toggle_label(state.show_transcript_panel, "Transcript")).clicked() { state.show_transcript_panel = !state.show_transcript_panel; ui.close_menu(); }
-            if ui.add(egui::Button::new(toggle_label(state.show_project_notes, "Project Notes")).shortcut_text(kb.display_for("toggle_project_notes"))).clicked() { state.show_project_notes = !state.show_project_notes; ui.close_menu(); }
-            if ui.button(toggle_label(state.show_edit_plan, "Edit Plan")).on_hover_text("The paper edit an assistant proposed: read it, approve it, build it.").clicked() { state.show_edit_plan = !state.show_edit_plan; ui.close_menu(); }
-            if ui.button(toggle_label(state.show_colour_check, "Colour Check")).on_hover_text("The frame on screen read the way a colourist reads it: skin against its band, neutrals, exposure, noise, banding, gamut — each fault named with the knob to turn.").clicked() { state.show_colour_check = !state.show_colour_check; ui.close_menu(); }
-            if ui.button(toggle_label(state.show_delivery_check, "Delivery Check")).on_hover_text("The check before a piece goes out: the cut against the craft's rules and the brief, colour and loudness on request. Accept a finding on purpose with a reason, or mark it to fix.").clicked() { state.show_delivery_check = !state.show_delivery_check; ui.close_menu(); }
-            if ui.button(toggle_label(state.show_sound_over_time, "Sound Over Time")).on_hover_text("A whole file's sound as frequency against time: where a hum starts, when a hiss creeps in. The scrolling analyser shows what is playing; this shows the file.").clicked() { state.show_sound_over_time = !state.show_sound_over_time; ui.close_menu(); }
-            if ui.button(toggle_label(state.show_narrate, "Narrate")).on_hover_text("A scratch voice from text, made on this machine: choose a voice, a speed and the pauses, hear it, and place it on the Voice track.").clicked() { state.show_narrate = !state.show_narrate; ui.close_menu(); }
-            if ui.add(egui::Button::new(toggle_label(state.ai_tools_state.panel_visible, "AI Tools")).shortcut_text(kb.display_for("toggle_ai_tools_panel"))).clicked() { state.ai_tools_state.panel_visible = !state.ai_tools_state.panel_visible; ui.close_menu(); }
+            menu_heading(ui, "PANELS");
+            if menu_toggle(ui, "Nodes", "", state.graph_dock_open).clicked() { cmds.push(AppCommand::ToggleGraphDock); ui.close_menu(); }
+            if menu_toggle(ui, "Inspector", &kb.display_for("toggle_inspector_panel"), state.show_inspector_panel).clicked() { cmds.push(AppCommand::ToggleInspectorPanel); ui.close_menu(); }
+            if menu_toggle(ui, "Browser", &kb.display_for("toggle_browser_panel"), state.show_browser_panel).clicked() { cmds.push(AppCommand::ToggleBrowserPanel); ui.close_menu(); }
+            if menu_toggle(ui, "Curve Editor", &kb.display_for("toggle_keyframe_editor"), state.show_curve_editor).clicked() { state.show_curve_editor = !state.show_curve_editor; ui.close_menu(); }
+            if menu_toggle(ui, "Audio Mixer", &kb.display_for("toggle_audio_mixer"), state.show_audio_mixer).clicked() { state.show_audio_mixer = !state.show_audio_mixer; ui.close_menu(); }
+            if menu_toggle(ui, "History", "", state.show_history_panel).clicked() { state.show_history_panel = !state.show_history_panel; ui.close_menu(); }
+            if menu_toggle(ui, "Markers", "", state.show_markers_panel).clicked() { state.show_markers_panel = !state.show_markers_panel; ui.close_menu(); }
+            if menu_toggle(ui, "Edit List", "", state.show_edit_list).on_hover_text("Every clip, transition and marker in a table: sort it, filter it by name, click a row to go there.").clicked() { state.show_edit_list = !state.show_edit_list; ui.close_menu(); }
+            if menu_toggle(ui, "Subtitle Editor", &kb.display_for("toggle_subtitle_editor"), state.show_subtitle_editor).clicked() { state.show_subtitle_editor = !state.show_subtitle_editor; ui.close_menu(); }
+            if menu_toggle(ui, "Transcript", "", state.show_transcript_panel).clicked() { state.show_transcript_panel = !state.show_transcript_panel; ui.close_menu(); }
+            if menu_toggle(ui, "Project Notes", &kb.display_for("toggle_project_notes"), state.show_project_notes).clicked() { state.show_project_notes = !state.show_project_notes; ui.close_menu(); }
+            if menu_toggle(ui, "Edit Plan", "", state.show_edit_plan).on_hover_text("The paper edit an assistant proposed: read it, approve it, build it.").clicked() { state.show_edit_plan = !state.show_edit_plan; ui.close_menu(); }
+            if menu_toggle(ui, "Colour Check", "", state.show_colour_check).on_hover_text("The frame on screen read the way a colourist reads it: skin against its band, neutrals, exposure, noise, banding, gamut — each fault named with the knob to turn.").clicked() { state.show_colour_check = !state.show_colour_check; ui.close_menu(); }
+            if menu_toggle(ui, "Delivery Check", "", state.show_delivery_check).on_hover_text("The check before a piece goes out: the cut against the craft's rules and the brief, colour and loudness on request. Accept a finding on purpose with a reason, or mark it to fix.").clicked() { state.show_delivery_check = !state.show_delivery_check; ui.close_menu(); }
+            if menu_toggle(ui, "Sound Over Time", "", state.show_sound_over_time).on_hover_text("A whole file's sound as frequency against time: where a hum starts, when a hiss creeps in. The scrolling analyser shows what is playing; this shows the file.").clicked() { state.show_sound_over_time = !state.show_sound_over_time; ui.close_menu(); }
+            if menu_toggle(ui, "Narrate", "", state.show_narrate).on_hover_text("A scratch voice from text, made on this machine: choose a voice, a speed and the pauses, hear it, and place it on the Voice track.").clicked() { state.show_narrate = !state.show_narrate; ui.close_menu(); }
+            if menu_toggle(ui, "AI Tools", &kb.display_for("toggle_ai_tools_panel"), state.ai_tools_state.panel_visible).clicked() { state.ai_tools_state.panel_visible = !state.ai_tools_state.panel_visible; ui.close_menu(); }
             ui.separator();
             // Modal dialogs — distinct from panels because they
             // overlay the editor instead of docking.
@@ -1312,7 +1283,7 @@ impl ToolbarPanel {
     /// LV2 / VST3 plugin managers will join group 1; project-doctor /
     /// consolidate / asset-relink etc. will join group 2.
     fn tools_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState) {
-        ui.menu_button(egui::RichText::new("Tools").size(crate::theme::type_scale::CONTROL), |ui| {
+        ui.menu_rows(egui::RichText::new("Tools").size(crate::theme::type_scale::CONTROL), |ui| {
             if ui.button("Audio Plugins\u{2026}").clicked() {
                 state.show_audio_plugins_dialog = true;
                 state.audio_plugins_dialog.last_scanned_secs = None;
@@ -1344,7 +1315,7 @@ impl ToolbarPanel {
     }
 
     fn help_menu(ui: &mut egui::Ui, state: &mut AppState) {
-        ui.menu_button(egui::RichText::new("Help").size(crate::theme::type_scale::CONTROL), |ui| {
+        ui.menu_rows(egui::RichText::new("Help").size(crate::theme::type_scale::CONTROL), |ui| {
             if ui.add(egui::Button::new("Klipp Documentation")).clicked() {
                 // Open local mdbook docs if available, fall back to GitHub
                 let local_docs = std::path::Path::new("docs/book/index.html");
@@ -1781,5 +1752,47 @@ pub(crate) mod narrow_bar_tests {
         let SwitcherPlace::Menu(r) = switcher_place(bar, 700.0, 840.0, size) else { panic!("a drop-down") };
         assert!(r.left() >= 700.0 && r.right() <= 840.0, "{r:?}");
         assert_eq!(switcher_place(bar, 800.0, 840.0, size), SwitcherPlace::None);
+    }
+}
+
+/// #2632: every main menu draws its rows in one layout: labels in one
+/// column, shortcuts and arrows in another, nothing wrapped.
+#[cfg(test)]
+mod menu_row_tests {
+    use super::*;
+
+    #[test]
+    fn every_main_menu_lines_up() {
+        let ctx = egui::Context::default();
+        let mut panel = ToolbarPanel { logo_texture: None };
+        let mut state = AppState::default();
+        let mut time = 0.0;
+        let mut frame = |state: &mut AppState, events| {
+            time += 0.1;
+            let output = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1920.0, 1080.0))), time: Some(time), events, ..Default::default() }, |ctx| {
+                egui::TopBottomPanel::top("toolbar").exact_height(40.0).show(ctx, |ui| {
+                    panel.show(ui, state, &[], &KlippTheme::default(), &crate::keybindings::KeyBindings::default());
+                });
+            });
+            output.shapes
+        };
+        let texts = |shapes: &[egui::epaint::ClippedShape]| -> Vec<(String, egui::Pos2)> {
+            shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.pos + t.galley.size() / 2.0)), _ => None }).collect()
+        };
+        let button = |at, pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        let mut problems = Vec::new();
+        for title in ["File", "Edit", "Clip", "Timeline", "Mark", "View", "Window", "Tools", "Help"] {
+            let mut closed = Vec::new();
+            for _ in 0..3 { closed = frame(&mut state, vec![egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]); }
+            let before = texts(&closed);
+            let at = before.iter().find(|(s, _)| s == title).unwrap_or_else(|| panic!("{title} in the bar")).1;
+            frame(&mut state, vec![egui::Event::PointerMoved(at), button(at, true)]);
+            frame(&mut state, vec![button(at, false)]);
+            let mut open = Vec::new();
+            for _ in 0..3 { open = frame(&mut state, Vec::new()); }
+            let anchor = texts(&open).into_iter().map(|(t, _)| t).find(|t| !before.iter().any(|(b, _)| b == t)).unwrap_or_else(|| panic!("{title} opens"));
+            problems.extend(crate::widgets::menu::row_problems(&open, &anchor).into_iter().map(|p| format!("{title}: {p}")));
+        }
+        assert!(problems.is_empty(), "{}", problems.join("\n"));
     }
 }
