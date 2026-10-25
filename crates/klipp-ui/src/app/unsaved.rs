@@ -56,6 +56,8 @@ impl crate::state::AppState {
         self.saved_digest = self.project_digest_now();
         self.dirty = false;
         self.unsaved = false;
+        // And the tracks there are now are the recorded ones (#2633).
+        self.recorded_tracks = self.sequences.iter().map(|s| (s.id, s.tracks.iter().map(|t| t.id).collect())).collect();
     }
 
     /// Settle a raised hint now: unsaved exactly when the project differs

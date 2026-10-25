@@ -29,6 +29,7 @@ impl KlippApp {
         // latest (#1986); another sequence's stack is never reached.
         if let Some(entry) = self.state.take_undo() {
             self.apply_edit_inverse(&entry.command);
+            self.state.note_recorded_tracks();
             // And redraw the frame: paused, a sync alone shows the
             // change only when the engine happens to see it (a multicam
             // cut undone kept showing the angle cut to).
@@ -41,6 +42,7 @@ impl KlippApp {
     pub(super) fn apply_redo(&mut self) {
         if let Some(entry) = self.state.take_redo() {
             self.apply_edit_forward(&entry.command);
+            self.state.note_recorded_tracks();
             // And redraw the frame: paused, a sync alone shows the
             // change only when the engine happens to see it (a multicam
             // cut undone kept showing the angle cut to).

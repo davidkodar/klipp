@@ -26,6 +26,8 @@ mod frame_glide;
 mod track_subject;
 mod project_io;
 mod unsaved;
+#[cfg(test)]
+mod made_tracks_tests;
 mod appearance;
 mod tips;
 mod perf;
