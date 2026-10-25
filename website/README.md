@@ -1,10 +1,10 @@
 # Klipp homepage
 
-The homepage is ready to assemble for GitHub Pages. The repository is public; the site is not deployed yet, and no workflow deploys it.
+The source of Klipp’s homepage, live at <https://davidkodar.github.io/klipp/>. GitHub Pages serves it from the `gh-pages` branch; no workflow deploys it, so each update is assembled and pushed by hand (see Publishing below).
 
 ## Preview
 
-Install Python 3.11+ and GitHub CLI, then authenticate `gh` with an account that has write access to this repository (the media release is still a draft). From the repository root:
+Install Python 3.11+ and GitHub CLI, then authenticate `gh` with an account that has write access to this repository (the media release that holds the film is a draft, so it needs an authenticated download). From the repository root:
 
 ```bash
 python3 website/prepare.py --output /tmp/klipp-website-preview
@@ -25,13 +25,17 @@ Raw footage, the editable demo project and production notes stay outside Git. Pr
 
 ## Publishing
 
-The site is live at `https://davidkodar.github.io/klipp/`. It is served by GitHub Pages from the `gh-pages` branch, which holds only the assembled output, never the repository root. To publish an update, assemble into a new directory, then replace the branch's content with it:
+The site is served by GitHub Pages from the `gh-pages` branch, which holds only the assembled output, never the repository root. To publish an update, assemble into a new directory, then commit it on top of the branch:
 
 ```bash
 python3 website/prepare.py --output /tmp/klipp-website-<date>
-cd /tmp/klipp-website-<date> && touch .nojekyll
-git init -b gh-pages && git add -A && git commit -s -m "Publish the homepage from main <sha>"
-git push --force https://github.com/davidkodar/klipp.git gh-pages
+git worktree add ../klipp-pages origin/gh-pages
+cd ../klipp-pages
+git rm -rq . && cp -a /tmp/klipp-website-<date>/. .
+git add -A && git commit -s -m "Publish the homepage from main <sha>"
+git push --no-verify origin HEAD:gh-pages
 ```
+
+`--no-verify` skips the repository's pre-push hook, which only applies to `main`. Pages updates within a minute or two; browsers may keep a cached image with the same name for up to ten minutes, so give a changed image a new file name.
 
 No GitHub Actions workflow is involved.
