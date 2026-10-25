@@ -565,8 +565,11 @@ fn status_text(ui: &mut egui::Ui, theme: &KlippTheme, status: &Status<'_>) -> Op
             headline(ui, theme, "Checking for updates…", None);
             None
         }
-        Status::Latest { previews } => {
-            headline(ui, theme, &format!("You have the latest version ({version})"), None);
+        Status::Latest { previews, testing } => {
+            match testing {
+                Some(testing) => headline(ui, theme, &format!("You have the latest version (testing as {testing})"), None),
+                None => headline(ui, theme, &format!("You have the latest version ({version})"), None),
+            };
             if *previews {
                 detail(ui, theme, "Preview releases included");
             }
@@ -577,9 +580,12 @@ fn status_text(ui: &mut egui::Ui, theme: &KlippTheme, status: &Status<'_>) -> Op
             detail(ui, theme, message);
             again.then_some(AboutAction::CheckForUpdates)
         }
-        Status::Available { version: new, notes, install, error } => {
+        Status::Available { version: new, notes, install, error, testing } => {
             if headline(ui, theme, &format!("Klipp {new} is available"), Some("What’s new")) {
                 open(notes);
+            }
+            if let Some(testing) = testing {
+                detail(ui, theme, &format!("(testing as {testing})"));
             }
             let mut action = None;
             match install {
@@ -789,7 +795,7 @@ mod tests {
     }
 
     fn available(install: Install) -> Status<'static> {
-        Status::Available { version: "0.2.0".into(), notes: "https://example.invalid/notes".into(), install, error: None }
+        Status::Available { version: "0.2.0".into(), notes: "https://example.invalid/notes".into(), install, error: None, testing: None }
     }
 
     /// Each place the check can be in draws as a row in About: nothing
@@ -800,10 +806,10 @@ mod tests {
         let version = klipp_core::build_info::get().version;
         assert!(!drawn(&Status::Idle).contains("Checking"), "no row before a check");
         assert!(drawn(&Status::Checking).contains("Checking for updates…"));
-        let latest = drawn(&Status::Latest { previews: false });
+        let latest = drawn(&Status::Latest { previews: false, testing: None });
         assert!(latest.contains(&format!("You have the latest version ({version})")), "{latest}");
         assert!(!latest.contains("Preview"));
-        assert!(drawn(&Status::Latest { previews: true }).contains("Preview releases included"), "names the channel");
+        assert!(drawn(&Status::Latest { previews: true, testing: None }).contains("Preview releases included"), "names the channel");
 
         let updater = drawn(&available(Install::Updater));
         for want in ["Klipp 0.2.0 is available", "What’s new", "Install update…"] {
@@ -821,7 +827,11 @@ mod tests {
         let failed = drawn(&Status::Failed("The release service is rate limited."));
         assert!(failed.contains("Could not check for updates") && failed.contains("Try again"), "{failed}");
         assert!(failed.contains("The release service is rate limited."));
-        let error = Status::Available { version: "0.2.0".into(), notes: String::new(), install: Install::Updater, error: Some("Could not open the updater.") };
+        let error = Status::Available { version: "0.2.0".into(), notes: String::new(), install: Install::Updater, error: Some("Could not open the updater."), testing: None };
+        let tested = Status::Available { version: "0.2.0".into(), notes: String::new(), install: Install::Download, error: None, testing: Some("0.1.0-rc.1") };
+        assert!(drawn(&tested).contains("(testing as 0.1.0-rc.1)"), "names the version tested as");
+        assert!(drawn(&Status::Latest { previews: false, testing: Some("0.1.0-rc.1") }).contains("You have the latest version (testing as 0.1.0-rc.1)"));
+        assert!(drawn(&tested).contains(klipp_core::build_info::get().version), "the Version row keeps the real one");
         assert!(drawn(&error).contains("Could not open the updater."));
     }
 

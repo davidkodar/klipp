@@ -124,8 +124,9 @@ Installing a file does **not** automatically configure a repository.
   default-on setting is reset to off because a saved default does not establish
   consent; explicitly enabling the new setting is remembered.
 - A newer release produces a dismissible notice. Offline/private/rate-limit errors
-  are quiet in the background and explained in the update window.
-- About → Check for updates and Preferences → General/About offer manual checks.
+  are quiet in the background and explained in About.
+- About → Check for updates checks in place and shows the result there;
+  Preferences → General → Updates opens About to check.
   Preview releases are opt-in for discovery; enabling them does not change your
   pacman repositories or install a beta automatically.
 - Only `/usr/lib/klipp/klipp` owned by pacman's `klipp` package can offer the
@@ -139,6 +140,44 @@ Installing a file does **not** automatically configure a repository.
 - `klipp-git` users get source-update instructions: pull, then rebuild/install
   with makepkg. Unmanaged/development builds get rebuild instructions. Preview
   packages are manual downloads; the stable repository never ships them.
+
+## Testing the update check
+
+Two environment variables let the update check run against the real GitHub
+releases as if Klipp were an older version or installed another way. They are
+read once at start and logged at info level; without them nothing changes.
+
+- `KLIPP_UPDATE_TEST_VERSION=<semver>`: the check treats this as the installed
+  version. About's Version row still shows the real one; the status row says
+  "(testing as <version>)".
+- `KLIPP_UPDATE_TEST_INSTALL=package|repository|klipp-git|source`: replaces the
+  installation the check finds.
+  - `package`: the release package without its repository, so the release page
+    download is offered.
+  - `repository`: the release package with the `[klipp]` repository configured,
+    so Install update… shows, previews included. The `klipp-update` helper still
+    asks before doing anything, and refuses when the real installation isn't
+    the release package; About then says the updater ended without updating.
+  - `klipp-git`: the makepkg steps with Copy.
+  - `source`: the cargo rebuild steps with Copy.
+
+Values other than these are ignored with a warning. Run a build from the
+repository root, then use About → Check for updates:
+
+```bash
+# A newer release is available (the latest published release, rc.2 at the time of writing):
+KLIPP_UPDATE_TEST_VERSION=0.1.0-rc.1 KLIPP_UPDATE_TEST_INSTALL=package ./target/release/klipp-app
+KLIPP_UPDATE_TEST_VERSION=0.1.0-rc.1 KLIPP_UPDATE_TEST_INSTALL=repository ./target/release/klipp-app
+KLIPP_UPDATE_TEST_VERSION=0.1.0-rc.1 KLIPP_UPDATE_TEST_INSTALL=klipp-git ./target/release/klipp-app
+KLIPP_UPDATE_TEST_VERSION=0.1.0-rc.1 KLIPP_UPDATE_TEST_INSTALL=source ./target/release/klipp-app
+# Up to date: a version past every release.
+KLIPP_UPDATE_TEST_VERSION=99.0.0 ./target/release/klipp-app
+```
+
+Preview releases are included by default when the build itself is a preview
+(Preferences → General → Updates → Include preview releases). With it off, a
+test version older than the latest stable release is needed to see one. To see
+a failure, check with the network off.
 
 ## Tests
 

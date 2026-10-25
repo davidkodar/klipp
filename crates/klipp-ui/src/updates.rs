@@ -161,6 +161,73 @@ struct Check {
     installation: Installation,
     repository: bool,
     preview: bool,
+    /// The version checked as installed, when a test override set it.
+    testing: Option<String>,
+    /// A test override said the repository is configured: it is taken to
+    /// carry previews too, so the updater shows for one.
+    forced_repository: bool,
+}
+
+/// Overrides for trying the update check against the real releases: the
+/// version it checks as installed (`KLIPP_UPDATE_TEST_VERSION`) and the
+/// installation it finds (`KLIPP_UPDATE_TEST_INSTALL`). Read once, at
+/// start; without them nothing changes.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct TestOverrides {
+    version: Option<String>,
+    install: Option<(Installation, bool)>,
+}
+
+/// A test version: a semver, with or without a leading v.
+fn parse_test_version(value: &str) -> Option<String> {
+    let value = value.trim();
+    let value = value.strip_prefix('v').unwrap_or(value);
+    Version::parse(value).ok().map(|v| v.to_string())
+}
+
+/// A test installation, and whether the package repository counts as
+/// configured.
+fn parse_test_install(value: &str) -> Option<(Installation, bool)> {
+    match value.trim() {
+        "package" => Some((Installation::ArchRelease, false)),
+        "repository" => Some((Installation::ArchRelease, true)),
+        "klipp-git" => Some((Installation::ArchSource, false)),
+        "source" => Some((Installation::Source, false)),
+        _ => None,
+    }
+}
+
+fn parse_overrides(version: Option<&str>, install: Option<&str>) -> TestOverrides {
+    let version = version.and_then(|v| {
+        let parsed = parse_test_version(v);
+        if parsed.is_none() {
+            tracing::warn!("KLIPP_UPDATE_TEST_VERSION={v:?} is not a version; ignored");
+        }
+        parsed
+    });
+    let install = install.and_then(|i| {
+        let parsed = parse_test_install(i);
+        if parsed.is_none() {
+            tracing::warn!("KLIPP_UPDATE_TEST_INSTALL={i:?} is not package, repository, klipp-git or source; ignored");
+        }
+        parsed
+    });
+    TestOverrides { version, install }
+}
+
+fn test_overrides() -> &'static TestOverrides {
+    static OVERRIDES: std::sync::OnceLock<TestOverrides> = std::sync::OnceLock::new();
+    OVERRIDES.get_or_init(|| {
+        let var = |name| std::env::var(name).ok();
+        let overrides = parse_overrides(var("KLIPP_UPDATE_TEST_VERSION").as_deref(), var("KLIPP_UPDATE_TEST_INSTALL").as_deref());
+        if let Some(version) = &overrides.version {
+            tracing::info!("update check: testing as installed version {version} (KLIPP_UPDATE_TEST_VERSION)");
+        }
+        if let Some((installation, repository)) = &overrides.install {
+            tracing::info!("update check: testing as installation {installation:?}, repository {repository} (KLIPP_UPDATE_TEST_INSTALL)");
+        }
+        overrides
+    })
 }
 
 pub(crate) struct Updates {
@@ -181,10 +248,14 @@ pub(crate) struct Updates {
     stopped: Option<String>,
     /// The updater could not be opened.
     launch_error: Option<String>,
+    /// The updater running: what to say if it ends without updating.
+    launched: Option<mpsc::Receiver<String>>,
 }
 
 impl Default for Updates {
     fn default() -> Self {
+        // Read and logged at start, not at the first check.
+        test_overrides();
         Self {
             asked: false,
             asking: false,
@@ -196,6 +267,7 @@ impl Default for Updates {
             result: None,
             stopped: None,
             launch_error: None,
+            launched: None,
         }
     }
 }
@@ -214,19 +286,21 @@ impl Updates {
         let ctx = ctx.clone();
         let (tx, rx) = mpsc::channel();
         self.pending = Some(rx);
+        let overrides = test_overrides().clone();
         std::thread::spawn(move || {
-            let exe = std::env::current_exe().unwrap_or_default();
-            let (install, repository) = probe_installation(
-                &exe,
-                Path::new("/usr/bin/pacman"),
-                Path::new("/usr/bin/pacman-conf"),
-            );
-            let release = fetch(klipp_core::build_info::get().version, preview);
+            let (install, repository) = overrides.install.clone().unwrap_or_else(|| {
+                let exe = std::env::current_exe().unwrap_or_default();
+                probe_installation(&exe, Path::new("/usr/bin/pacman"), Path::new("/usr/bin/pacman-conf"))
+            });
+            let installed = overrides.version.as_deref().unwrap_or(klipp_core::build_info::get().version);
+            let release = fetch(installed, preview);
             let _ = tx.send(Check {
                 release,
                 installation: install,
                 repository,
                 preview,
+                testing: overrides.version,
+                forced_repository: overrides.install.is_some_and(|(_, repository)| repository),
             });
             ctx.request_repaint();
         });
@@ -305,15 +379,15 @@ impl Updates {
         let Some(check) = &self.result else { return Status::Idle };
         match &check.release {
             Err(message) => Status::Failed(message),
-            Ok(None) => Status::Latest { previews: check.preview },
+            Ok(None) => Status::Latest { previews: check.preview, testing: check.testing.as_deref() },
             Ok(Some(version)) => {
                 let install = match check.installation {
-                    Installation::ArchRelease if check.repository && version.pre.is_empty() => Install::Updater,
+                    Installation::ArchRelease if check.repository && (version.pre.is_empty() || check.forced_repository) => Install::Updater,
                     Installation::ArchRelease => Install::Download,
                     Installation::ArchSource => Install::Steps(ARCH_SOURCE_STEPS),
                     Installation::Source => Install::Steps(SOURCE_STEPS),
                 };
-                Status::Available { version: version.to_string(), notes: format!("{RELEASES}/tag/v{version}"), install, error: self.launch_error.as_deref() }
+                Status::Available { version: version.to_string(), notes: format!("{RELEASES}/tag/v{version}"), install, error: self.launch_error.as_deref(), testing: check.testing.as_deref() }
             }
         }
     }
@@ -325,8 +399,17 @@ impl Updates {
         // Fixed, package-owned helper; no downloaded command or URL is executed.
         match Command::new("/usr/bin/klipp-update").spawn() {
             Ok(mut child) => {
+                let (tx, rx) = mpsc::channel();
+                self.launched = Some(rx);
                 std::thread::spawn(move || {
-                    let _ = child.wait();
+                    // It refuses an installation that isn't the release
+                    // package, and pacman can fail: say so in About.
+                    if let Ok(status) = child.wait() {
+                        if !status.success() {
+                            let code = status.code().map_or_else(|| "stopped".to_owned(), |c| format!("exit {c}"));
+                            let _ = tx.send(format!("The updater ended without updating ({code}). It updates only the release package installed with pacman."));
+                        }
+                    }
                 });
             }
             Err(_) => self.launch_error = Some("Could not open the updater. Run sudo pacman -Syu klipp in a terminal.".into()),
@@ -353,6 +436,16 @@ impl Updates {
         }
         if std::mem::take(&mut self.check_requested) {
             self.start(ctx, prefs, dirty);
+        }
+        if let Some(rx) = &self.launched {
+            match rx.try_recv() {
+                Ok(message) => {
+                    self.launch_error = Some(message);
+                    self.launched = None;
+                }
+                Err(mpsc::TryRecvError::Disconnected) => self.launched = None,
+                Err(mpsc::TryRecvError::Empty) => ctx.request_repaint_after(Duration::from_millis(500)),
+            }
         }
         if let Some(rx) = &self.pending {
             match rx.try_recv() {
@@ -427,8 +520,9 @@ pub(crate) enum Status<'a> {
     Idle,
     Checking,
     /// Nothing newer on the channel; `previews` when it includes them.
-    Latest { previews: bool },
-    Available { version: String, notes: String, install: Install, error: Option<&'a str> },
+    /// `testing` is the version checked as installed, from a test override.
+    Latest { previews: bool, testing: Option<&'a str> },
+    Available { version: String, notes: String, install: Install, error: Option<&'a str>, testing: Option<&'a str> },
     Failed(&'a str),
 }
 
@@ -617,6 +711,8 @@ mod tests {
                 installation,
                 repository: true,
                 preview: false,
+                testing: None,
+                forced_repository: false,
             }),
             ..Default::default()
         }
@@ -662,6 +758,57 @@ mod tests {
         assert_eq!(install(&preview), Install::Download, "the repository carries no previews");
     }
 
+    /// The test overrides parse what RELEASING.md documents and ignore
+    /// anything else; without them there are none.
+    #[test]
+    fn test_overrides_parse() {
+        assert_eq!(parse_overrides(None, None), TestOverrides::default());
+        assert_eq!(parse_test_version("0.1.0-rc.1").as_deref(), Some("0.1.0-rc.1"));
+        assert_eq!(parse_test_version(" v0.1.0 ").as_deref(), Some("0.1.0"));
+        assert_eq!(parse_test_version("rc1"), None);
+        assert_eq!(parse_test_install("package"), Some((Installation::ArchRelease, false)));
+        assert_eq!(parse_test_install("repository"), Some((Installation::ArchRelease, true)));
+        assert_eq!(parse_test_install("klipp-git"), Some((Installation::ArchSource, false)));
+        assert_eq!(parse_test_install("source"), Some((Installation::Source, false)));
+        assert_eq!(parse_test_install("Package"), None);
+        let both = parse_overrides(Some("0.1.0-rc.1"), Some("repository"));
+        assert_eq!(both, TestOverrides { version: Some("0.1.0-rc.1".into()), install: Some((Installation::ArchRelease, true)) });
+        assert_eq!(parse_overrides(Some("nope"), Some("nope")), TestOverrides::default());
+    }
+
+    /// Each test installation gives About its action, for a preview as
+    /// the real releases are, and the row names the version tested as.
+    #[test]
+    fn each_test_install_maps_to_its_action() {
+        for (value, want) in [
+            ("package", Install::Download),
+            ("repository", Install::Updater),
+            ("klipp-git", Install::Steps(ARCH_SOURCE_STEPS)),
+            ("source", Install::Steps(SOURCE_STEPS)),
+        ] {
+            let overrides = parse_overrides(Some("0.1.0-rc.1"), Some(value));
+            let (installation, repository) = overrides.install.clone().unwrap();
+            let updates = Updates {
+                result: Some(Check {
+                    release: Ok(Some(Version::parse("0.1.0-rc.2").unwrap())),
+                    installation,
+                    repository,
+                    preview: true,
+                    testing: overrides.version.clone(),
+                    forced_repository: repository,
+                }),
+                ..Default::default()
+            };
+            match updates.status() {
+                Status::Available { install, testing, .. } => {
+                    assert_eq!(install, want, "{value}");
+                    assert_eq!(testing, Some("0.1.0-rc.1"));
+                }
+                other => panic!("{value}: {other:?}"),
+            }
+        }
+    }
+
     /// The status follows the check: idle, checking while it runs, then
     /// what it found or why it failed.
     #[test]
@@ -676,8 +823,8 @@ mod tests {
         frames(&mut updates, &mut prefs, true);
         assert!(matches!(updates.status(), Status::Failed(_)), "a check that stops is a failure");
         updates.stopped = None;
-        updates.result = Some(Check { release: Ok(None), installation: Installation::Source, repository: false, preview: false });
-        assert_eq!(updates.status(), Status::Latest { previews: false });
+        updates.result = Some(Check { release: Ok(None), installation: Installation::Source, repository: false, preview: false, testing: None, forced_repository: false });
+        assert_eq!(updates.status(), Status::Latest { previews: false, testing: None });
         updates.result.as_mut().unwrap().release = Err("Offline.".into());
         assert_eq!(updates.status(), Status::Failed("Offline."));
     }
