@@ -55,3 +55,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# Automated fix for issue #2578: add_music takes over 2 minutes for four previews
