@@ -16,6 +16,9 @@ Each release lists what changed for people using Klipp. Versions follow
 - Check for Updates shows its answer in the About window, and Install Update
   downloads the new release package from GitHub, checks it against the
   release's checksums, asks, and installs it with pacman.
+- Klipp asks once, on first use, whether to check for new versions
+  automatically; nothing is checked until you answer. A release-candidate
+  build is told about the next release candidate, not only stable releases.
 - Follow System Theme follows the desktop's dark or light preference and
   accent colour on any desktop that publishes them, and switches live.
 - Tested build steps for Ubuntu 24.04 and Fedora; Klipp builds against
@@ -27,7 +30,7 @@ Each release lists what changed for people using Klipp. Versions follow
   fader, the same in playback and export; a limiter there caps the track's
   true peak. Projects with effects on a whole track may sound slightly
   different.
-- Every menu lays its rows out one way: icons and checks in one slot, labels
+- The main menus and the right-click menus lay their rows out one way: icons and checks in one slot, labels
   aligned, shortcuts in their own column, no wrapped rows.
 - The update question and the new-version notice open in the middle of the
   window.
