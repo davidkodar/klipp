@@ -326,6 +326,7 @@ fn export_real_media_h264() {
                 exact_secs: None,
             }],
             automation: Default::default(),
+            effects: Vec::new(),
         }],
         global_lut_path: None,
         subtitle_tracks: vec![], chapters: vec![], working_colorspace: klipp_core::WorkingColorspace::Rec709Linear, grade_encoding: klipp_core::GradeEncoding::Bt1886,

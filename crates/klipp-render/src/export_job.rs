@@ -1128,6 +1128,9 @@ impl DeliveryChain {
         use klipp_audio::dsp::AudioEffect;
         let limiter = limit.then(|| {
             let mut l = klipp_audio::dsp::limiter::Limiter::new(sample_rate);
+            // Its margin under the ceiling is fitted to the true peak each
+            // trial measures, for a limiter that follows the samples.
+            l.follow_sample_peaks();
             let ceiling = ceiling_dbtp - margin_db;
             l.set_param("threshold", ceiling - LIMITER_KNEE_DB);
             l.set_param("ceiling", ceiling);

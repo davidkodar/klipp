@@ -126,7 +126,7 @@ fn description_for(entry: &EffectEntry) -> String {
         EffectSource::Audio(type_id) => match type_id.as_str() {
             "compressor" => "Dynamic range control".into(),
             "eq" => "6-band parametric equaliser".into(),
-            "limiter" => "Peak protection".into(),
+            "limiter" => "Peak protection. Caps the track before its fader".into(),
             "gate" => "Silence low-level noise".into(),
             "high_pass" => "Remove low-frequency rumble and wind".into(),
             "denoiser" => "Learn and reduce steady background noise".into(),

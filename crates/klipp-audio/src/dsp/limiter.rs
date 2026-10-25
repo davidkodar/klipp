@@ -22,6 +22,11 @@
 //!   maximiser without a separate gain plugin in front / behind.
 //! * **Attack** time in addition to release.
 //! * **Wet/dry mix** for parallel-style limiting.
+//! * **True peak** (#2560). The envelope follows the peaks between samples
+//!   too, as a 4× oversampled true-peak meter reads them, and the ceiling
+//!   is the last stage, after the output gain and the wet/dry mix: it
+//!   holds on what the limiter puts out. The output gain and the mix used
+//!   to come after it, and a peak between two samples passed it.
 //! * **Per-block peak meters** (input + output, L + R) for inspector
 //!   metering. Read with [`Limiter::input_peak_l`] etc. and reset with
 //!   [`Limiter::reset_peaks`] before processing each block.
@@ -38,6 +43,8 @@
 use super::{AudioEffect, AudioParamDescriptor, AudioProcessContext, ParamUnit};
 
 const MAX_LOOKAHEAD_MS: f32 = 20.0;
+/// How many frames the true peak is held for.
+const PEAK_HOLD: usize = 8;
 
 #[inline]
 fn db_to_linear(db: f32) -> f32 {
@@ -67,6 +74,17 @@ pub struct Limiter {
     lookahead_buf_r: Vec<f32>,
     lookahead_pos: usize,
     lookahead_samples: usize,
+    /// The input's true peak, as a 4× oversampled meter reads it: the
+    /// peaks between samples, which the envelope follows too.
+    true_peak: crate::TruePeakDetector,
+    /// Its last few readings: each gives only the points between samples
+    /// its frame completes, so the envelope follows their maximum and does
+    /// not release between a waveform's peaks.
+    recent_peaks: [f32; PEAK_HOLD],
+    recent_pos: usize,
+    /// Whether the envelope follows the true peak (the default) or the
+    /// samples alone: see [`Limiter::follow_sample_peaks`].
+    sample_peaks_only: bool,
     // Per-block peak meters (linear, post the corresponding gain stage).
     input_peak_l: f32,
     input_peak_r: f32,
@@ -99,6 +117,10 @@ impl Limiter {
             lookahead_buf_r: Vec::new(),
             lookahead_pos: 0,
             lookahead_samples: 0,
+            true_peak: crate::TruePeakDetector::new(sample_rate),
+            recent_peaks: [0.0; PEAK_HOLD],
+            recent_pos: 0,
+            sample_peaks_only: false,
             input_peak_l: 0.0,
             input_peak_r: 0.0,
             output_peak_l: 0.0,
@@ -139,6 +161,13 @@ impl Limiter {
             self.lookahead_pos = 0;
         }
         self.dirty = false;
+    }
+
+    /// Follow the samples' peaks alone, as before #2560: for the delivery
+    /// chain, which measures the true peak of each trial and fits its own
+    /// margin under the ceiling for the peaks between samples.
+    pub fn follow_sample_peaks(&mut self) {
+        self.sample_peaks_only = true;
     }
 
     /// Current gain reduction applied to the signal, expressed in dB
@@ -253,23 +282,32 @@ impl AudioEffect for Limiter {
 
             // Peak detector + envelope smoothing. Asymmetric: snap on
             // attack (gain falling), one-pole release (gain returning).
-            let peak = in_l.abs().max(in_r.abs());
-            let target = if peak > self.threshold_lin {
-                self.threshold_lin / peak
+            // The peak is the true one, the oversampled meter's, which
+            // comes a few samples after the input: the lookahead covers it.
+            let peak = if self.sample_peaks_only {
+                in_l.abs().max(in_r.abs())
             } else {
-                1.0
+                self.recent_peaks[self.recent_pos] = in_l.abs().max(in_r.abs()).max(self.true_peak.process(in_l, in_r));
+                self.recent_pos = (self.recent_pos + 1) % PEAK_HOLD;
+                self.recent_peaks.iter().copied().fold(0.0f32, f32::max)
             };
+            // Down to the threshold, and far enough that the true peak,
+            // after the output gain, stays under the ceiling: a clamp of
+            // the samples alone lets the peaks between them over it.
+            let to_threshold = if peak > self.threshold_lin { self.threshold_lin / peak } else { 1.0 };
+            let out_peak = peak * self.output_gain_lin;
+            let to_ceiling = if out_peak > self.ceiling_lin { self.ceiling_lin / out_peak } else { 1.0 };
+            let target = to_threshold.min(to_ceiling);
             self.gain_reduction = if target < self.gain_reduction {
                 target + self.attack_coeff * (self.gain_reduction - target)
             } else {
                 target + self.release_coeff * (self.gain_reduction - target)
             };
 
-            // Apply gain reduction → ceiling clamp → output gain.
-            let mut out_l = (delayed_l * self.gain_reduction).clamp(-self.ceiling_lin, self.ceiling_lin);
-            let mut out_r = (delayed_r * self.gain_reduction).clamp(-self.ceiling_lin, self.ceiling_lin);
-            out_l *= self.output_gain_lin;
-            out_r *= self.output_gain_lin;
+            // Apply gain reduction → output gain → wet/dry → ceiling: the
+            // ceiling last, so it holds on what goes out.
+            let mut out_l = delayed_l * self.gain_reduction * self.output_gain_lin;
+            let mut out_r = delayed_r * self.gain_reduction * self.output_gain_lin;
 
             // Wet/dry blend against the *original* input (pre input-gain)
             // so mix=0 is a true bypass.
@@ -278,6 +316,8 @@ impl AudioEffect for Limiter {
                 out_l = raw_l * dry + out_l * self.mix;
                 out_r = raw_r * dry + out_r * self.mix;
             }
+            out_l = out_l.clamp(-self.ceiling_lin, self.ceiling_lin);
+            out_r = out_r.clamp(-self.ceiling_lin, self.ceiling_lin);
 
             self.output_peak_l = self.output_peak_l.max(out_l.abs());
             self.output_peak_r = self.output_peak_r.max(out_r.abs());
@@ -308,6 +348,8 @@ impl AudioEffect for Limiter {
         self.lookahead_buf_l.fill(0.0);
         self.lookahead_buf_r.fill(0.0);
         self.lookahead_pos = 0;
+        self.true_peak = crate::TruePeakDetector::new(self.sample_rate as u32);
+        self.recent_peaks = [0.0; PEAK_HOLD];
         self.reset_peaks();
     }
 
@@ -450,9 +492,33 @@ mod tests {
         let mut block: Vec<f32> = (0..2 * 256).map(|i| (i as f32 / 256.0).sin()).collect();
         let original = block.clone();
         l.process(&mut block, &ctx(48_000, 2));
+        // The input untouched by the gains, the gain reduction or the mix:
+        // only the ceiling, which is last and holds on what goes out (#2560).
+        let ceiling = db_to_linear(-0.3);
         for (a, b) in block.iter().zip(original.iter()) {
-            assert!((a - b).abs() < 1e-4, "mix=0 not bypass: {a} vs {b}");
+            assert!((a - b.clamp(-ceiling, ceiling)).abs() < 1e-4, "mix=0 not bypass: {a} vs {b}");
         }
+    }
+
+    /// #2560: the ceiling holds on what goes out, after the output gain
+    /// and the mix, and on the peaks between samples: a tone near half
+    /// the rate, its samples well under the ceiling and its peaks between
+    /// them over it, comes out under it as a true-peak meter reads it.
+    #[test]
+    fn the_ceiling_holds_after_the_output_gain_and_between_samples() {
+        let mut l = Limiter::new(48_000);
+        l.set_param("threshold", -3.0);
+        l.set_param("ceiling", -2.0);
+        l.set_param("output_gain", 6.0);
+        l.recompute();
+        // A tone at a quarter of the rate, a quarter-cycle off the samples:
+        // each sample at 0.707 of the peak.
+        let mut block: Vec<f32> = (0..2 * 4800).map(|i| 0.95 * (std::f32::consts::FRAC_PI_2 * (i / 2) as f32 + std::f32::consts::FRAC_PI_4).sin()).collect();
+        l.process(&mut block, &ctx(48_000, 2));
+        let mut tp = crate::TruePeakDetector::new(48_000);
+        let peak = block.chunks(2).skip(480).map(|s| tp.process(s[0], s[1])).fold(0.0f32, f32::max);
+        let db = 20.0 * peak.log10();
+        assert!(db <= -2.0 + 0.2, "{db:.2} dBTP over a -2 dB ceiling");
     }
 
     /// reset() must clear the lookahead buffer and the gain-reduction

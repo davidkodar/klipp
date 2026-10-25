@@ -728,7 +728,8 @@ mod tests {
         assert_eq!(order, vec![own_node, group_node, track_node], "own grade, then the group's, then the track's");
         assert!(flat.tracks[0].clips[1].builtin_effects().is_empty() && flat.tracks[0].clips[1].baked_own.is_none(), "an adjustment layer takes nothing");
         let chain: Vec<&str> = flat.tracks[1].clips[0].audio_effects.iter().map(|e| e.effect_type.as_str()).collect();
-        assert_eq!(chain, vec!["eq", "compressor"], "the clip's chain, then the track's");
+        assert_eq!(chain, vec!["eq"], "the clip's own chain alone");
+        assert_eq!(flat.tracks[1].effects.audio.len(), 1, "the track's on the track, for its summed clips (#2560)");
 
         // Baking the render copy again changes nothing.
         let mut again = flat.clone();
@@ -745,10 +746,11 @@ mod tests {
         assert_eq!((test_clip::enabled(back), animation(back)), (test_clip::enabled(own), animation(own)), "and its flags and animation");
         assert!(!test_clip::effects(own).is_empty() && back.effect_id_list() == own.effect_id_list(), "and each effect's node id (#1376)");
 
-        // A clip added to the track later takes its effects too.
+        // A clip added to the sound track later takes nothing of the
+        // track's: the track runs its effects on its summed clips (#2560).
         seq.tracks[1].clips.push(Clip::media(MediaId::new(), t(24), t(48), t(0), t(24)));
         let flat = flatten_sequence(&seq, std::slice::from_ref(&seq));
-        assert_eq!(flat.tracks[1].clips[1].audio_effects.iter().map(|e| e.effect_type.as_str()).collect::<Vec<_>>(), vec!["compressor"]);
+        assert!(flat.tracks[1].clips[1].audio_effects.is_empty());
     }
 
     /// #1060: a clip's grade for a one-picture preview (the scopes) is

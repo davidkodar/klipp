@@ -36,6 +36,40 @@ struct TrackSettings {
     solo: bool,
     /// The track's automation (#2306), evaluated as playback evaluates it.
     automation: klipp_timeline::TrackAutomation,
+    /// The track's own effects, run on its summed clips (#2560).
+    inserts: Option<TrackInserts>,
+}
+
+/// A track's own effects as the export runs them (#2560): on the sum of the
+/// track's clips, before its fader, as the playback mixer does. The chain
+/// is fed frame after frame, so it keeps its state across frames; one that
+/// looks ahead is fed that far ahead, so what it puts out lines up with the
+/// picture. A frame that is not the next one starts it afresh.
+struct TrackInserts {
+    chain: klipp_audio::dsp::AudioEffectChain,
+    /// Its latency, in stereo frames.
+    latency: u64,
+    /// The first sample fed since it started, the next frame to feed, and
+    /// the next mix frame it expects.
+    started_at: u64,
+    next_feed: u64,
+    expected: Option<u64>,
+    /// What it has put out and not yet given, and the output index of the
+    /// first of it, counted from its start.
+    out: std::collections::VecDeque<f32>,
+    out_from: u64,
+}
+
+impl TrackInserts {
+    fn new(effects: &[klipp_core::AudioEffectInstance], sample_rate: u32) -> Option<Self> {
+        if effects.iter().all(|e| !e.enabled) {
+            return None;
+        }
+        let mut chain = klipp_audio::dsp::AudioEffectChain::from_instances(effects, sample_rate);
+        chain.prepare(2);
+        let latency = chain.total_latency_samples(sample_rate) as u64;
+        Some(Self { chain, latency, started_at: 0, next_feed: 0, expected: None, out: Default::default(), out_from: 0 })
+    }
 }
 
 /// Per-track state: the clips and the decoded sound of those playing.
@@ -73,6 +107,7 @@ impl AudioMixdown {
                 muted: track.muted,
                 solo: track.solo,
                 automation: track.automation.clone(),
+                inserts: TrackInserts::new(&track.effects, sample_rate),
             });
         }
 
@@ -133,8 +168,9 @@ impl AudioMixdown {
         let stereo_samples = (end - first) as usize * 2;
         let mut mixed = vec![0.0f32; stereo_samples];
 
+        let (sample_rate, fps_num, fps_den) = (self.sample_rate, self.fps_num, self.fps_den);
         for (track_idx, track_state) in self.track_decoders.iter_mut().enumerate() {
-            let settings = &self.track_settings[track_idx];
+            let settings = &mut self.track_settings[track_idx];
 
             // Mute/solo logic
             if settings.muted {
@@ -144,17 +180,38 @@ impl AudioMixdown {
                 continue;
             }
 
-            // Get samples for this frame from this track
-            let track_samples = get_track_samples(
-                track_state,
-                frame_num,
-                first,
-                end,
-                self.sample_rate,
-                self.fps_num,
-                self.fps_den,
-                self.fps_num as f64 / self.fps_den as f64,
-            );
+            // Get samples for this frame from this track: its clips summed,
+            // then its own effects on them, before its fader (#2560).
+            let fps = fps_num as f64 / fps_den as f64;
+            let track_samples = match settings.inserts.as_mut() {
+                None => get_track_samples(track_state, frame_num, first, end, sample_rate, fps_num, fps_den, fps),
+                Some(ins) => {
+                    if ins.expected != Some(frame_num) {
+                        ins.chain.reset();
+                        ins.out.clear();
+                        (ins.started_at, ins.next_feed, ins.out_from) = (first, frame_num, 0);
+                    }
+                    ins.expected = Some(frame_num + 1);
+                    // Output index k is input sample started_at + k - latency.
+                    let want_until = end - ins.started_at + ins.latency;
+                    while ins.out_from + (ins.out.len() / 2) as u64 <= want_until.saturating_sub(1) {
+                        let f = ins.next_feed;
+                        let (a, b) = (first_sample_of_frame(f, sample_rate, fps_num, fps_den), first_sample_of_frame(f + 1, sample_rate, fps_num, fps_den));
+                        let mut fed = get_track_samples(track_state, f, a, b, sample_rate, fps_num, fps_den, fps);
+                        ins.chain.process(&mut fed, &klipp_audio::dsp::AudioProcessContext { sample_rate, channels: 2, clip_time_secs: 0.0 });
+                        ins.out.extend(fed);
+                        ins.next_feed += 1;
+                    }
+                    let want_from = first - ins.started_at + ins.latency;
+                    let skip = ((want_from - ins.out_from) * 2) as usize;
+                    ins.out.drain(..skip.min(ins.out.len()));
+                    ins.out_from = want_from;
+                    let take = (((end - first) * 2) as usize).min(ins.out.len());
+                    let samples: Vec<f32> = ins.out.drain(..take).collect();
+                    ins.out_from += (take / 2) as u64;
+                    samples
+                }
+            };
 
             if track_samples.is_empty() {
                 continue;
@@ -790,7 +847,7 @@ mod tests {
         let mut automation = klipp_timeline::TrackAutomation::default();
         automation.lanes.insert(klipp_timeline::TrackParam::Volume, vec![key(0.0, 1.0), key(2.0, 0.1)]);
         automation.lanes.insert(klipp_timeline::TrackParam::Pan, vec![key(0.0, -0.5), key(2.0, 0.5)]);
-        let settings = TrackSettings { volume: 0.7, pan: 0.0, muted: false, solo: false, automation: automation.clone() };
+        let settings = TrackSettings { volume: 0.7, pan: 0.0, muted: false, solo: false, automation: automation.clone(), inserts: None };
         let law = klipp_core::PanLaw::default();
         for secs in [0.0, 0.4, 1.0, 1.7, 3.0] {
             let mut mixer = klipp_audio::AudioMixer::new(1);
@@ -812,7 +869,7 @@ mod tests {
                 muted: false,
                 solo: false,
                 clips: vec![],
-                automation: Default::default(),
+                automation: Default::default(), effects: Vec::new()
             })
             .collect();
 

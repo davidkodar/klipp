@@ -347,6 +347,10 @@ fn mix_loop(
     // window and leaves room for UI jitter. At 192 kHz that's ~1.5 MiB.
     let spectrum_max_samples = (sample_rate as usize) * 2 * 2;
     debug!("Mix thread started");
+    // The tracks' own effects run here, at the output's rate (#2560).
+    if let Ok(mut m) = mixer.lock() {
+        m.set_sample_rate(sample_rate);
+    }
 
     // Flush-to-zero + denormals-are-zero on the SSE control register. At very
     // low sample magnitudes (silent input running through an EQ, reverb tail

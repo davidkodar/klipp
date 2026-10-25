@@ -67,7 +67,7 @@ fn mixdown(clips: Vec<AudioClipSnapshot>) -> AudioMixdown {
         duration_frames: end + 24,
         export_range: None,
         video: Default::default(),
-        audio_tracks: vec![AudioTrackSnapshot { volume: 1.0, pan: 0.0, muted: false, solo: false, clips, automation: Default::default() }],
+        audio_tracks: vec![AudioTrackSnapshot { volume: 1.0, pan: 0.0, muted: false, solo: false, clips, automation: Default::default() , effects: Vec::new()}],
         pan_law: Default::default(),
         global_lut_path: None,
         subtitle_tracks: vec![],
