@@ -56,14 +56,18 @@ fn native(node: &Node) -> Option<klipp_nodes::Node> {
     })
 }
 
+/// A node of a grade, inside its group: anything but the group's own
+/// input, output and frame.
+fn is_grade_node(n: &Node) -> bool {
+    !matches!(n.type_id.as_str(), lt::GROUP_INPUT | lt::GROUP_OUTPUT | lt::GROUP_FRAME)
+}
+
 /// Whether `node` is on as the menu and canvas show it: a clip's grade
 /// group by the nodes inside it, which are what its Bypass switches
 /// (#2553); any other node by its own switch.
 fn shown_on(node: &Node) -> bool {
     match node.group.as_ref().filter(|_| node.type_id.as_str() == lt::GROUP) {
-        Some(body) if body.graph.nodes.iter().any(|n| n.type_id.as_str() == klipp_graph_format::types::LEGACY_NODE) => {
-            body.graph.nodes.iter().any(|n| n.type_id.as_str() == klipp_graph_format::types::LEGACY_NODE && n.enabled)
-        }
+        Some(body) if body.graph.nodes.iter().any(is_grade_node) => body.graph.nodes.iter().any(|n| is_grade_node(n) && n.enabled),
         _ => node.enabled,
     }
 }

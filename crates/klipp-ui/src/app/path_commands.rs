@@ -397,7 +397,9 @@ impl crate::state::AppState {
         let picture = self.sequence().all_clips().find(|c| c.id == clip_id)?.picture_v2().ok()?;
         let node = picture.picture.graph.nodes.iter().find(|n| n.id == *group && n.type_id.as_str() == lt::GROUP)?;
         let inside: Vec<(klipp_graph_format::NodeId, bool)> = node.group.as_ref()?.graph.nodes.iter()
-            .filter(|n| n.type_id.as_str() == klipp_graph_format::types::LEGACY_NODE)
+            // The grade's nodes: anything but the group's input, output
+            // and frame.
+            .filter(|n| !matches!(n.type_id.as_str(), lt::GROUP_INPUT | lt::GROUP_OUTPUT | lt::GROUP_FRAME))
             .map(|n| (n.id, n.enabled))
             .collect();
         let targets: Vec<klipp_graph_format::NodeId> = if enabled {
