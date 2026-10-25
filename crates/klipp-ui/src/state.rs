@@ -1499,6 +1499,11 @@ pub struct AppState {
     /// Use `push_history`, `take_undo` and `take_redo`, which choose
     /// between it and the active sequence's by when each step moved.
     pub project_history: CommandHistory,
+    /// The grade nodes a Bypass of each clip's grade group turned off,
+    /// so its Enable turns those back on and leaves a node that was off
+    /// before off (#2553). For this session only: after a reload, Enable
+    /// turns on every node in the grade.
+    pub grade_bypassed: std::collections::HashMap<klipp_core::ClipId, Vec<klipp_graph_format::NodeId>>,
     /// The clock every history stamps its steps from, so the project's
     /// and a sequence's compare.
     pub history_clock: std::sync::Arc<std::sync::atomic::AtomicU64>,
@@ -4577,6 +4582,7 @@ impl Default for AppState {
             recorded_tracks: Default::default(),
             command_histories: std::collections::HashMap::new(),
             project_history: CommandHistory::new(),
+            grade_bypassed: Default::default(),
             history_clock: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             history_ops_since_save: 0,
             tracks_undo_gesture: None,

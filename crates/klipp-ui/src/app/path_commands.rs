@@ -385,10 +385,59 @@ impl crate::state::AppState {
         }
     }
 
+    /// Bypass or enable a clip's whole grade, by its group node (#2553):
+    /// the nodes inside that are on go off, as one step, and Enable turns
+    /// back on those it turned off. The fields keep no switch for the
+    /// grade as a whole. `None` when `addr` isn't a clip's grade group;
+    /// else whether the picture changed.
+    fn grade_group_enabled(&mut self, addr: &NodePath, enabled: bool) -> Option<bool> {
+        use klipp_graph_format::lifted::types as lt;
+        let (Root::Clip { clip }, [group]) = (addr.root, addr.nodes.as_slice()) else { return None };
+        let clip_id = ClipId(clip);
+        let picture = self.sequence().all_clips().find(|c| c.id == clip_id)?.picture_v2().ok()?;
+        let node = picture.picture.graph.nodes.iter().find(|n| n.id == *group && n.type_id.as_str() == lt::GROUP)?;
+        let inside: Vec<(klipp_graph_format::NodeId, bool)> = node.group.as_ref()?.graph.nodes.iter()
+            .filter(|n| n.type_id.as_str() == klipp_graph_format::types::LEGACY_NODE)
+            .map(|n| (n.id, n.enabled))
+            .collect();
+        let targets: Vec<klipp_graph_format::NodeId> = if enabled {
+            let off: Vec<_> = inside.iter().filter(|(_, on)| !on).map(|(id, _)| *id).collect();
+            match self.grade_bypassed.get(&clip_id) {
+                Some(turned_off) => off.into_iter().filter(|id| turned_off.contains(id)).collect(),
+                None => off,
+            }
+        } else {
+            inside.iter().filter(|(_, on)| *on).map(|(id, _)| *id).collect()
+        };
+        if targets.is_empty() {
+            return Some(false);
+        }
+        let ops: Vec<GraphOp> = targets.iter().map(|id| GraphOp::SetEnabled { path: NodePath::new(addr.root, [*group, *id]), enabled }).collect();
+        match self.apply_path_ops(&ops, if enabled { "Enable Grade" } else { "Bypass Grade" }) {
+            Ok(()) => {
+                if enabled {
+                    self.grade_bypassed.remove(&clip_id);
+                } else {
+                    self.grade_bypassed.insert(clip_id, targets);
+                }
+                Some(true)
+            }
+            Err(why) => {
+                self.toast.show(why);
+                Some(false)
+            }
+        }
+    }
+
     /// Run a path-addressed command on the state: `None` when `cmd` isn't
     /// one, else whether a picture changed (the engine wants the
     /// sequence). A refusal is said in a toast and changes nothing.
     pub(crate) fn path_command(&mut self, cmd: &AppCommand) -> Option<bool> {
+        if let AppCommand::SetNodeEnabledAt { addr, enabled } = cmd {
+            if let Some(changed) = self.grade_group_enabled(addr, *enabled) {
+                return Some(changed);
+            }
+        }
         // A tick of a row whose drag an edit closed under it: the rest of
         // the gesture is one drag again.
         if let AppCommand::SetParamAt { addr, key, .. } = cmd {
@@ -1747,6 +1796,35 @@ mod tests {
     /// An edit by path changes only the clip and node it names; a path
     /// that skips a group isn't searched for, it's refused, and nothing
     /// changes (proofs 3 and 4).
+    /// #2553: Bypass on a clip's grade group turns off the nodes inside
+    /// that are on, in one step, and Enable turns those back on: a node
+    /// that was off before stays off. Neither is refused.
+    #[test]
+    fn the_grade_group_bypasses_and_enables_its_nodes() {
+        let (mut s, id) = state(&[]);
+        let v1 = s.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        let node = |enabled| klipp_nodes::Node { id: klipp_nodes::NodeId::new_v4(), kind: klipp_nodes::NodeKind::Corrector, label: "C".into(), enabled, params: Default::default(), keyframes: Default::default(), output_link: None, input_links: vec![] };
+        let (a, b, off) = (node(true), node(true), node(false));
+        s.sequences[0].tracks[v1].clips.iter_mut().find(|c| c.id == id).unwrap().edit_grade(|g| g.nodes.extend([a.clone(), b.clone(), off.clone()]));
+        let group = picture(&s, id).picture.graph.nodes.iter().find(|n| n.group.is_some()).unwrap().id;
+        let on = |s: &AppState, n: &klipp_nodes::Node| clip(s, id).grade().nodes.iter().find(|x| x.id == n.id).unwrap().enabled;
+        let steps = s.active_history().undo_count();
+        s.toast = Default::default();
+        assert_eq!(s.path_command(&AppCommand::SetNodeEnabledAt { addr: at(id, &[group]), enabled: false }), Some(true));
+        assert_eq!(s.toast.message_for_test(), None, "not refused");
+        assert!(!on(&s, &a) && !on(&s, &b) && !on(&s, &off), "bypassed, every node in the grade is off");
+        assert_eq!(s.active_history().undo_count(), steps + 1, "one step");
+        assert_eq!(s.path_command(&AppCommand::SetNodeEnabledAt { addr: at(id, &[group]), enabled: true }), Some(true));
+        assert!(on(&s, &a) && on(&s, &b), "enabled, the nodes it turned off are on again");
+        assert!(!on(&s, &off), "and the node that was off before stays off");
+        // With no record of what it turned off (a reload), Enable turns
+        // every node on.
+        assert_eq!(s.path_command(&AppCommand::SetNodeEnabledAt { addr: at(id, &[group]), enabled: false }), Some(true));
+        s.grade_bypassed.clear();
+        assert_eq!(s.path_command(&AppCommand::SetNodeEnabledAt { addr: at(id, &[group]), enabled: true }), Some(true));
+        assert!(on(&s, &a) && on(&s, &b) && on(&s, &off));
+    }
+
     #[test]
     fn an_edit_lands_only_in_the_addressed_root() {
         let (mut s, a) = state(&[E::GaussianBlur { radius: 3.0 }]);
