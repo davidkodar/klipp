@@ -172,17 +172,10 @@ impl KlippApp {
                         return true;
                     }
                     self.suppress_fps_prompt = false;
-                    if let Some(item) = self.state.media_pool.get(media_id) {
+                    if let Some(item) = self.state.media_pool.get(media_id).cloned() {
                         let duration = item.duration;
                         let is_audio_only = item.video_codec.is_empty();
-
-                        // Auto-set sequence resolution + FPS from first video clip (FCP behavior)
-                        if !is_audio_only && item.resolution.width > 0 && item.resolution.height > 0 {
-                            let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-                            if seq.adopt_first_clip(item.resolution, item.fps).is_some() {
-                                self.state.fps = seq.fps;
-                            }
-                        }
+                        self.adopt_first_clip_format(&item);
 
                         // Route: audio-only to the audio track the source is
                         // patched to, video to the video one (#915); with no
@@ -383,16 +376,7 @@ impl KlippApp {
                         let mut hist_audio: Option<(klipp_timeline::Clip, usize)> = None;
                         let mut hist_created_video_track_at: Option<usize> = None;
                         let mut hist_created_audio_track_at: Option<usize> = None;
-                        let mut hist_autoset: Option<((klipp_core::Resolution, klipp_core::Fps), (klipp_core::Resolution, klipp_core::Fps))> = None;
-
-                        // Auto-set sequence resolution + FPS from first video clip
-                        if !item.video_codec.is_empty() && item.resolution.width > 0 && item.resolution.height > 0 {
-                            let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-                            hist_autoset = seq.adopt_first_clip(item.resolution, item.fps);
-                            if hist_autoset.is_some() {
-                                self.state.fps = seq.fps;
-                            }
-                        }
+                        let hist_autoset = self.adopt_first_clip_format(&item);
                         // Check for browser range selection (trimmed source in/out)
                         let range = self.state.browser_range_selection.take()
                             .filter(|r| r.media_id == *media_id);

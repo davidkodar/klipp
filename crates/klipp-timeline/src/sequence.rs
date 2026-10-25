@@ -365,8 +365,7 @@ impl Sequence {
         fps: Fps,
     ) -> Option<((Resolution, Fps), (Resolution, Fps))> {
         let auto = self.first_clip_autoset;
-        let has_video = self.tracks.iter().filter(|t| t.kind == TrackKind::Video).any(|t| !t.clips.is_empty());
-        if has_video || !(auto.resolution || auto.fps) || resolution.width == 0 || resolution.height == 0 {
+        if self.has_video_clip() || !(auto.resolution || auto.fps) || resolution.width == 0 || resolution.height == 0 {
             return None;
         }
         let prev = (self.resolution, self.fps);
@@ -387,6 +386,20 @@ impl Sequence {
         let change = self.first_clip_format(resolution, fps)?;
         (self.resolution, self.fps) = change.1;
         Some(change)
+    }
+
+    /// The rate to ask about before a video clip of `fps` is placed: the
+    /// sequence's own, when this would be its first video clip, the
+    /// sequence keeps a rate of its own and `fps` is another. `None`
+    /// otherwise: a sequence that follows its first clip takes the rate
+    /// without asking, and once a video clip is down every later clip is
+    /// conformed to the rate there is (#2550).
+    pub fn first_clip_rate_question(&self, fps: Fps) -> Option<Fps> {
+        (!self.has_video_clip() && !self.first_clip_autoset.fps && fps != self.fps).then_some(self.fps)
+    }
+
+    fn has_video_clip(&self) -> bool {
+        self.tracks.iter().filter(|t| t.kind == TrackKind::Video).any(|t| !t.clips.is_empty())
     }
 
     /// Whether nothing is on the timeline: no enabled clip but gaps on any
@@ -3379,6 +3392,43 @@ mod tests {
         // A project saved before the setting existed follows the footage.
         let old: FirstClipAutoSet = serde_json::from_str("{}").unwrap();
         assert_eq!(old, FirstClipAutoSet::default());
+    }
+
+    /// #2550 (and #262 before it): a sequence that follows its first clip
+    /// takes a 23.976 clip's rate as the exact 24000/1001, never the 24/1
+    /// it was made with, and a second clip at that rate is not asked about.
+    #[test]
+    fn a_23976_first_clip_gives_the_exact_ntsc_rate() {
+        let ntsc = Fps::new(24000, 1001);
+        let mut seq = Sequence::new_default();
+        seq.fps = Fps::new(24, 1);
+        seq.first_clip_autoset = FirstClipAutoSet::default();
+        assert_eq!(seq.first_clip_rate_question(ntsc), None, "a sequence that follows its first clip asks nothing");
+        seq.adopt_first_clip(Resolution { width: 1920, height: 1080 }, ntsc);
+        assert_eq!((seq.fps.num, seq.fps.den), (24000, 1001));
+        assert_eq!(seq.fps.rate(), 24000);
+        let video = seq.tracks.iter().position(|t| t.kind == TrackKind::Video).expect("a video track");
+        let tc = |f: i64| Timecode::from_frames(f * 1001, 24000);
+        seq.tracks[video].clips.push(crate::Clip::media(MediaId::new(), tc(0), tc(24), tc(0), tc(24)));
+        assert_eq!(seq.first_clip_rate_question(ntsc), None);
+    }
+
+    /// #2550: the rate is asked about only for the first video clip of a
+    /// sequence with a rate of its own; with picture down, a clip at
+    /// another rate is placed without a question.
+    #[test]
+    fn only_a_first_clip_at_another_rate_is_asked_about() {
+        let (pal, ntsc) = (Fps::new(25, 1), Fps::new(24000, 1001));
+        let mut seq = Sequence::new_default();
+        seq.fps = pal;
+        seq.first_clip_autoset = FirstClipAutoSet { resolution: false, fps: false };
+        assert_eq!(seq.first_clip_rate_question(ntsc), Some(pal));
+        assert_eq!(seq.first_clip_rate_question(pal), None, "the same rate");
+
+        let video = seq.tracks.iter().position(|t| t.kind == TrackKind::Video).expect("a video track");
+        let tc = |f| Timecode::from_frames(f, 25);
+        seq.tracks[video].clips.push(crate::Clip::media(MediaId::new(), tc(0), tc(25), tc(0), tc(25)));
+        assert_eq!(seq.first_clip_rate_question(ntsc), None, "a timeline that holds clips");
     }
     use klipp_core::MediaId;
 

@@ -108,6 +108,7 @@ impl KlippApp {
             self.state.toast.show("Target track is locked");
             return;
         }
+        self.adopt_first_clip_format(&item);
         let (t_in, t_out, s_in, s_out) = self.placement_timecodes(&item, &p);
         let mut clip = klipp_timeline::Clip::media(mid, t_in, t_out, s_in, s_out);
         clip.speed = p.speed;
@@ -137,6 +138,7 @@ impl KlippApp {
             self.state.toast.show("Place on Top lays a picture; this source is sound only");
             return;
         }
+        self.adopt_first_clip_format(&item);
         let p = crate::source_edit::three_point(&self.source_marks(&item));
         let (t_in, t_out, s_in, s_out) = self.placement_timecodes(&item, &p);
         let seq_idx = self.state.active_sequence_idx;

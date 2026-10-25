@@ -10,15 +10,9 @@ impl KlippApp {
     /// on the magnetic or the free path as the track calls for. The
     /// framerate prompt has already been answered or skipped by the caller.
     pub(super) fn append_media_to_track(&mut self, media_id: &klipp_core::MediaId, track_index: &usize) {
-                    if let Some(item) = self.state.media_pool.get(media_id) {
+                    if let Some(item) = self.state.media_pool.get(media_id).cloned() {
                         let duration = item.duration;
-                        // Auto-set sequence resolution + FPS from first video clip
-                        if !item.video_codec.is_empty() && item.resolution.width > 0 && item.resolution.height > 0 {
-                            let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-                            if seq.adopt_first_clip(item.resolution, item.fps).is_some() {
-                                self.state.fps = seq.fps;
-                            }
-                        }
+                        self.adopt_first_clip_format(&item);
                         if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get(*track_index) {
                             if track.magnetic_role == klipp_timeline::TrackRole::Primary {
                                 // Magnetic path: append via MagneticEditor
@@ -102,18 +96,15 @@ impl KlippApp {
                     }
     }
 
-    /// If placing `media_id` onto the active sequence would introduce a
-    /// video clip whose fps differs from the sequence's, opens the
+    /// If placing `media_id` would put the first video clip on a sequence
+    /// with a rate of its own and the clip is at another, opens the
     /// "Change Project Frame Rate?" modal and stashes `pending_cmd` for
     /// re-dispatch when the user answers. Returns `true` when the caller
-    /// should abort the current handler (the append is deferred).
+    /// should abort the current handler (the placement is deferred).
     ///
-    /// Skipped when:
-    /// - the one-shot bypass is set (prompt was just answered),
-    /// - the media has no video track (audio-only),
-    /// - the sequence has no video clips yet (silent first-clip auto-set
-    ///   path in the append handler already handles this), or
-    /// - fps already matches.
+    /// Never asked once the sequence holds video, nor when it follows its
+    /// first clip (see [`klipp_timeline::Sequence::first_clip_rate_question`]),
+    /// nor right after the prompt was answered, nor for sound.
     pub(super) fn maybe_prompt_framerate_mismatch(
         &mut self,
         media_id: &klipp_core::MediaId,
@@ -122,34 +113,17 @@ impl KlippApp {
         if self.suppress_fps_prompt {
             return false;
         }
-        let (media_fps, is_video) = match self.state.media_pool.get(media_id) {
-            Some(item) => (
-                item.fps,
-                !item.video_codec.is_empty()
-                    && item.resolution.width > 0
-                    && item.resolution.height > 0,
-            ),
-            None => return false,
+        let Some(item) = self.state.media_pool.get(media_id) else {
+            return false;
         };
-        if !is_video {
+        if item.video_codec.is_empty() || item.resolution.width == 0 || item.resolution.height == 0 {
             return false;
         }
+        let media_fps = item.fps;
         let seq_idx = self.state.active_sequence_idx;
-        let Some(seq) = self.state.sequences.get(seq_idx) else {
+        let Some(sequence_fps) = self.state.sequences.get(seq_idx).and_then(|seq| seq.first_clip_rate_question(media_fps)) else {
             return false;
         };
-        let has_video_clips = seq
-            .tracks
-            .iter()
-            .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
-            .any(|t| !t.clips.is_empty());
-        if !has_video_clips {
-            return false;
-        }
-        let sequence_fps = seq.fps;
-        if media_fps == sequence_fps {
-            return false;
-        }
         self.framerate_mismatch_dialog = Some(
             crate::panels::framerate_mismatch_dialog::FrameRateMismatchDialog {
                 sequence_idx: seq_idx,
@@ -159,6 +133,26 @@ impl KlippApp {
             },
         );
         true
+    }
+
+    /// The active sequence takes `item`'s size and rate when it is the
+    /// first video clip and the sequence follows its first clip
+    /// ([`klipp_timeline::Sequence::adopt_first_clip`]): the settings
+    /// before and after, for the undo history. Every way a clip is placed
+    /// runs it before working out timecodes at the sequence's rate; a path
+    /// that left it out kept the 24/1 a new project starts at (#2550).
+    #[allow(clippy::type_complexity)]
+    pub(super) fn adopt_first_clip_format(
+        &mut self,
+        item: &klipp_media::MediaItem,
+    ) -> Option<((klipp_core::Resolution, klipp_core::Fps), (klipp_core::Resolution, klipp_core::Fps))> {
+        if item.video_codec.is_empty() {
+            return None;
+        }
+        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+        let change = seq.adopt_first_clip(item.resolution, item.fps)?;
+        self.state.fps = seq.fps;
+        Some(change)
     }
 
     /// Perform a Source-Viewer three-point edit (Insert or Overwrite) on the
@@ -314,15 +308,7 @@ impl KlippApp {
         let end = start + item.duration;
         let seq_idx = self.state.active_sequence_idx;
 
-        // FCP: the first video clip sets the sequence resolution + fps.
-        let mut autoset = None;
-        if has_video && item.resolution.width > 0 && item.resolution.height > 0 {
-            let seq = &mut self.state.sequences[seq_idx];
-            autoset = seq.adopt_first_clip(item.resolution, item.fps);
-            if autoset.is_some() {
-                self.state.fps = seq.fps;
-            }
-        }
+        let autoset = self.adopt_first_clip_format(&item);
 
         let mut hist_video = None;
         let mut hist_audio = None;
