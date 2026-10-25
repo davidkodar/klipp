@@ -664,6 +664,7 @@ impl KlippApp {
                                 ));
                                 return true;
                             }
+                            self.adopt_first_clip_format(&item);
                             // Three-point placement from the source's and the
                             // sequence's marks: a sequence Out alone backtimes (#919).
                             let (timeline_in, source_in, source_out) = self.source_placement(&item);
@@ -755,6 +756,7 @@ impl KlippApp {
                                 ));
                                 return true;
                             }
+                            self.adopt_first_clip_format(&item);
                             // Three-point placement from the source's and the
                             // sequence's marks: a sequence Out alone backtimes (#919).
                             let (timeline_in, source_in, source_out) = self.source_placement(&item);
