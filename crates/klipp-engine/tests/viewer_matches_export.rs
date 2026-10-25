@@ -1685,6 +1685,42 @@ fn footage_at_another_rate_shows_the_same_file_frame_as_the_export() {
     assert!(worst <= 3, "the viewer shows another frame of the file than the export: {worst} levels");
 }
 
+/// #2556: footage at a higher rate than the sequence's shows, playing and
+/// parked, the file's frame the export shows for each timeline frame. A
+/// 30 fps source in the 25 fps sequence, a new colour each frame of the
+/// file: playback showed every one of the file's frames as it came, at
+/// its own time, not the one export renders for the timeline's frame.
+#[test]
+fn faster_footage_plays_the_file_frame_the_export_shows() {
+    let _decoders = decoders_at_speed();
+    if !ffmpeg_ok() {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    }
+    let id = MediaId::new();
+    let files = HashMap::from([(id, rgb_source_at("thirty.mkv", (W, H), 30, "mod(N*7,200)+30", "90", "90"))]);
+    let mut seq = Sequence::new_default();
+    seq.fps = Fps::new(FPS as u32, 1);
+    seq.resolution = Resolution { width: W, height: H };
+    let mut v1 = Track::new("V1", TrackKind::Video);
+    v1.clips = vec![media_clip(id, 0, LEN, 0)];
+    seq.tracks = vec![v1];
+    let t = Timeline { seq, files, coded: HashMap::new() };
+    let out = exported(&t);
+    let viewer = Viewer::start(&t);
+    let mut worst = 0;
+    for n in [3, 5, 8, 13, 21] {
+        worst = worst.max(compare(&format!("30 fps, frame {n:3}"), &viewer.frame_at(n), &exported_frame(&out, n)));
+    }
+    viewer.cmd.send(AppCommand::SetPlayhead(tc(10))).unwrap();
+    let _ = viewer.frame_at(10);
+    viewer.play(10, Duration::from_millis(700));
+    let (v, n) = viewer.settled_frame_at();
+    worst = worst.max(compare(&format!("30 fps, played to {n:3}"), &v, &exported_frame(&out, n)));
+    eprintln!("faster footage, viewer vs export: worst {worst} levels");
+    assert!(worst <= 3, "the viewer shows another frame of the file than the export: {worst} levels");
+}
+
 /// A lossless 10-bit PQ clip (BT.2020, ST 2084) at the sequence's size:
 /// luma ramping across the frame from 1 to about 2000 nits, a bright
 /// square in the middle for a glow to spread from, neutral chroma. Two
