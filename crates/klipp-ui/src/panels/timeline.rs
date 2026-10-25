@@ -3859,15 +3859,16 @@ impl TimelinePanel {
                         let above_all = first_rect_top.is_some_and(|top| cursor_pos.y < top);
                         let below_all = last_rect_bottom.is_some_and(|bot| cursor_pos.y > bot);
 
-                        if above_all && !is_audio_only {
-                            // Create new video track at top
+                        // A new video track goes on top of the others (it is
+                        // the highest V number) wherever the drop was; the
+                        // clip goes on it, found by its id (#2662).
+                        let new_video_track = |state: &mut AppState| {
                             let name = state.sequence().next_track_name(TrackKind::Video);
-                            let track_idx = {
-                                state.sequence_mut().add_video_track(name);
-                                // New video track inserted before first audio track — find it
-                                // It's the topmost video track (index 0 after insertion)
-                                0
-                            };
+                            let id = state.sequence_mut().add_video_track(name);
+                            state.sequence().tracks.iter().position(|t| t.id == id).unwrap_or(0)
+                        };
+                        if above_all && !is_audio_only {
+                            let track_idx = new_video_track(state);
                             cmds.push(append_group(track_idx));
                             handled = true;
                             tracing::info!("Auto-created video track for media drop above timeline");
@@ -3880,13 +3881,7 @@ impl TimelinePanel {
                             handled = true;
                             tracing::info!("Auto-created audio track for media drop below timeline");
                         } else if below_all && !is_audio_only {
-                            // Video media below all tracks — create video track above audio
-                            let name = state.sequence().next_track_name(TrackKind::Video);
-                            state.sequence_mut().add_video_track(name);
-                            // add_video_track inserts before first audio track
-                            let track_idx = state.sequence().tracks.iter()
-                                .rposition(|t| t.kind == TrackKind::Video)
-                                .unwrap_or(0);
+                            let track_idx = new_video_track(state);
                             cmds.push(append_group(track_idx));
                             handled = true;
                             tracing::info!("Auto-created video track for media drop below timeline");

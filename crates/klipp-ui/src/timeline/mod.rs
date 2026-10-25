@@ -1455,4 +1455,29 @@ mod menu_smoke_tests {
         assert!(!sent.iter().any(|c| matches!(c, AppCommand::AppendClipToTrack { .. } | AppCommand::AppendMediaBatchToTrack { .. })), "{sent:?}");
         assert!(timeline.state.dragging_media.is_none(), "the drag is over");
     }
+
+    /// A video file released below the last track makes a new video
+    /// track and goes on it, not on the track that was there (#2662).
+    #[test]
+    fn a_video_released_below_the_tracks_goes_on_the_new_track() {
+        let mut timeline = Timeline::new();
+        let media = timeline.state.media_pool.all().next().expect("the clip").id;
+        let tracks = timeline.state.sequences[0].tracks.len();
+        timeline.state.auto_create_tracks = true;
+        // The tracks drawn once before the drag, as they are in the app.
+        timeline.frame(Vec::new());
+        timeline.state.dragging_media = Some(media);
+        let last = timeline.old.frame_cache.track_rects.last().expect("tracks drawn").2;
+        let below = egui::pos2(500.0, last.bottom() + 40.0);
+        timeline.frame(vec![egui::Event::PointerMoved(below), egui::Event::PointerButton { pos: below, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE }]);
+        let seq = &timeline.state.sequences[0];
+        assert_eq!(seq.tracks.len(), tracks + 1, "one track made");
+        let target = timeline.sent.iter().find_map(|c| match c {
+            AppCommand::AppendClipToTrack { track_index, .. } => Some(*track_index),
+            _ => None,
+        });
+        let target = target.unwrap_or_else(|| panic!("no append: {:?}", timeline.sent));
+        let track = &seq.tracks[target];
+        assert!(matches!(track.kind, TrackKind::Video) && track.clips.is_empty(), "the clip goes on the new track, not {}", track.name);
+    }
 }
