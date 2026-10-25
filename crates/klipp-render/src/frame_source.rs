@@ -743,7 +743,7 @@ fn download_linear(buf: &wgpu::Buffer, width: u32, height: u32) -> Vec<f32> {
 /// 133 MB allocation on one core, at 4K vertical, per frame. That was
 /// 34 ms of the export's 241 ms per frame — on a machine with 32 of
 /// them idle.
-fn rgba64_to_linear(rgba: &[u16], to_working: Option<[[f32; 3]; 3]>) -> Vec<f32> {
+pub(crate) fn rgba64_to_linear(rgba: &[u16], to_working: Option<[[f32; 3]; 3]>) -> Vec<f32> {
     use rayon::prelude::*;
     // The GPU bridge's table too: the two decodes are one.
     let table = klipp_effects::gpu::srgb16_decode_table();

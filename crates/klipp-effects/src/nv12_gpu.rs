@@ -252,15 +252,22 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let fp = resize_footprint(dx, dy);
         let nx = resize_samples(fp.y);
         let ny = resize_samples(fp.w);
-        if (nx > 1u || ny > 1u) {
-            var acc = vec3<f32>(0.0);
-            for (var j = 0u; j < ny; j = j + 1u) {
-                let py = resize_tap(fp.z, fp.w, j, ny, params.src_height);
-                for (var i = 0u; i < nx; i = i + 1u) {
-                    acc = acc + display_working_at(resize_tap(fp.x, fp.y, i, nx, params.src_width), py);
+        // Shrinking on a side averages; growing is Lanczos-3 (#2557).
+        let upscale = nx == 1u && ny == 1u && (fp.y < 0.999 || fp.w < 0.999);
+        if (nx > 1u || ny > 1u || upscale) {
+            var working: vec3<f32>;
+            if (upscale) {
+                working = resize_lanczos(fp);
+            } else {
+                var acc = vec3<f32>(0.0);
+                for (var j = 0u; j < ny; j = j + 1u) {
+                    let py = resize_tap(fp.z, fp.w, j, ny, params.src_height);
+                    for (var i = 0u; i < nx; i = i + 1u) {
+                        acc = acc + display_working_at(resize_tap(fp.x, fp.y, i, nx, params.src_width), py);
+                    }
                 }
+                working = acc / f32(nx * ny);
             }
-            let working = acc / f32(nx * ny);
             if params.write_linear != 0u {
                 linear[dy * params.dst_width + dx] = pack(vec4<f32>(working, 1.0));
                 return;
@@ -421,7 +428,51 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 /// grid of samples spread evenly over the footprint, in linear light: a
 /// box filter at integer ratios, close to an area filter otherwise. The
 /// grid is capped at 8 a side, so a thumbnail of a 4K frame stays cheap.
+///
+/// An upscale is Lanczos-3 (#2557), the kernel swscale's export path used,
+/// over 6 x 6 source pixels: a 1080p source in a 4K export was refused here
+/// for nearest's blockiness, and went down to the CPU to be scaled there,
+/// at 44 ms a frame. Unlike the downscale it filters the sRGB-encoded
+/// values, as swscale does, not linear light: on a test chart that matches
+/// swscale's export to a level (as 1:1 does), where in linear light hard
+/// edges came out up to 61 levels off it, and a Lanczos kernel's ringing
+/// round a hard edge looks worse in linear light besides.
 pub(crate) const RESIZE_WGSL: &str = "
+// Lanczos-3 at distance x: sinc(x) sinc(x / 3) inside three pixels.
+fn lanczos3(x: f32) -> f32 {
+    let ax = abs(x);
+    if (ax < 0.00001) { return 1.0; }
+    if (ax >= 3.0) { return 0.0; }
+    let px = 3.14159265358979 * ax;
+    return 3.0 * sin(px) * sin(px / 3.0) / (px * px);
+}
+
+// Output pixel `fp` (a footprint under one source pixel on some side, an
+// upscale) as linear working-space RGB: Lanczos-3 over the 6 x 6 source
+// pixels round its centre, normalised, on their sRGB-encoded values (see
+// `RESIZE_WGSL`'s doc), the ringing held to the encoded range.
+fn resize_lanczos(fp: vec4<f32>) -> vec3<f32> {
+    let cx = fp.x + fp.y * 0.5 - 0.5;
+    let cy = fp.z + fp.w * 0.5 - 0.5;
+    let ix = i32(floor(cx));
+    let iy = i32(floor(cy));
+    let max_x = i32(params.src_width) - 1;
+    let max_y = i32(params.src_height) - 1;
+    var acc = vec3<f32>(0.0);
+    var total = 0.0;
+    for (var j = -2; j <= 3; j = j + 1) {
+        let wy = lanczos3(cy - f32(iy + j));
+        let py = u32(clamp(iy + j, 0, max_y));
+        for (var i = -2; i <= 3; i = i + 1) {
+            let w = lanczos3(cx - f32(ix + i)) * wy;
+            acc = acc + linear_to_srgb_vec(max(display_working_at(u32(clamp(ix + i, 0, max_x)), py), vec3<f32>(0.0))) * w;
+            total = total + w;
+        }
+    }
+    let e = clamp(acc / total, vec3<f32>(0.0), vec3<f32>(1.0));
+    return select(pow((e + 0.055) / 1.055, vec3<f32>(2.4)), e / 12.92, e <= vec3<f32>(0.04045));
+}
+
 // The source footprint of output pixel (dx, dy): x0, width, y0, height,
 // in source pixels, through the rotation the nearest lookup uses.
 fn resize_footprint(dx: u32, dy: u32) -> vec4<f32> {

@@ -237,15 +237,22 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let fp = resize_footprint(dx, dy);
         let nx = resize_samples(fp.y);
         let ny = resize_samples(fp.w);
-        if (nx > 1u || ny > 1u) {
-            var acc = vec3<f32>(0.0);
-            for (var j = 0u; j < ny; j = j + 1u) {
-                let py = resize_tap(fp.z, fp.w, j, ny, params.src_height);
-                for (var i = 0u; i < nx; i = i + 1u) {
-                    acc = acc + display_working_at(resize_tap(fp.x, fp.y, i, nx, params.src_width), py);
+        // Shrinking on a side averages; growing is Lanczos-3 (#2557).
+        let upscale = nx == 1u && ny == 1u && (fp.y < 0.999 || fp.w < 0.999);
+        if (nx > 1u || ny > 1u || upscale) {
+            var working: vec3<f32>;
+            if (upscale) {
+                working = resize_lanczos(fp);
+            } else {
+                var acc = vec3<f32>(0.0);
+                for (var j = 0u; j < ny; j = j + 1u) {
+                    let py = resize_tap(fp.z, fp.w, j, ny, params.src_height);
+                    for (var i = 0u; i < nx; i = i + 1u) {
+                        acc = acc + display_working_at(resize_tap(fp.x, fp.y, i, nx, params.src_width), py);
+                    }
                 }
+                working = acc / f32(nx * ny);
             }
-            let working = acc / f32(nx * ny);
             if params.write_linear != 0u {
                 linear[dy * params.dst_width + dx] = pack(vec4<f32>(working, 1.0));
                 return;
