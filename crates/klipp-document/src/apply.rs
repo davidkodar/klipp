@@ -676,6 +676,9 @@ impl DocumentView<'_> {
                 self.media_pool.add(item.clone());
                 effects.sync_media_pool = true;
             }
+            EditCommand::CreateBin { bin } => {
+                self.media_pool.bins.retain(|b| b.id != bin.id);
+            }
             EditCommand::MoveMediaToBin { media_id, from_bin, from_bin_id, .. } => {
                 // Undo: restore to original bin (both legacy string and bin_id)
                 if let Some(item) = self.media_pool.get_mut(media_id) {
@@ -1399,6 +1402,11 @@ impl DocumentView<'_> {
                 // Redo delete: remove again
                 self.media_pool.remove(&item.id);
                 effects.sync_media_pool = true;
+            }
+            EditCommand::CreateBin { bin } => {
+                if !self.media_pool.bins.iter().any(|b| b.id == bin.id) {
+                    self.media_pool.bins.push(bin.clone());
+                }
             }
             EditCommand::MoveMediaToBin { media_id, to_bin, to_bin_id, .. } => {
                 // Redo: apply both legacy string and bin_id

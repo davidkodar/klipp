@@ -3843,8 +3843,12 @@ impl TimelinePanel {
                         AppCommand::AppendClipToTrack { media_id: drag_media_id, track_index }
                     }
                 };
+                // Only a release over the timeline: above its tracks means
+                // the space above them in this panel, not the media pool
+                // or anything else higher up the window (#2621).
+                let over_timeline = ui.input(|i| i.pointer.hover_pos()).filter(|p| ui.clip_rect().contains(*p));
                 if state.auto_create_tracks {
-                    if let Some(cursor_pos) = ui.input(|i| i.pointer.hover_pos()) {
+                    if let Some(cursor_pos) = over_timeline {
                         let is_audio_only = state.media_pool.get(&drag_media_id)
                             .map(|item| item.video_codec.is_empty())
                             .unwrap_or(false);

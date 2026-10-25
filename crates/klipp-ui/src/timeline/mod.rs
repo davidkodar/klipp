@@ -1398,4 +1398,35 @@ mod menu_smoke_tests {
         assert!(!drawn.iter().any(|t| t == "smoke.mov"), "and not its media's: {drawn:?}");
         assert!(drawn.iter().any(|t| t == "150%"), "its speed badge is drawn: {drawn:?}");
     }
+
+    /// #2621: a pool clip released over the media pool, above the
+    /// timeline in the window, is no drop on the timeline: no track is
+    /// made and nothing is added. Its height alone read as "above every
+    /// track".
+    #[test]
+    fn a_release_above_the_timeline_adds_nothing() {
+        let mut timeline = Timeline::new();
+        let media = timeline.state.media_pool.all().next().expect("the clip").id;
+        let tracks = timeline.state.sequences[0].tracks.len();
+        timeline.state.auto_create_tracks = true;
+        timeline.state.dragging_media = Some(media);
+        let (theme, kb) = (KlippTheme::default(), crate::keybindings::KeyBindings::default());
+        let over_pool = egui::pos2(400.0, 100.0);
+        let mut sent = Vec::new();
+        for events in [vec![egui::Event::PointerMoved(over_pool)], vec![egui::Event::PointerButton { pos: over_pool, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE }]] {
+            timeline.time += 0.5;
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 900.0))), time: Some(timeline.time), events, ..Default::default() };
+            let (state, panel, old) = (&mut timeline.state, &mut timeline.panel, &mut timeline.old);
+            let _ = timeline.ctx.run(input, |ctx| {
+                // The media pool above, the timeline below it.
+                egui::TopBottomPanel::top("pool").exact_height(300.0).show(ctx, |_| {});
+                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                    sent.extend(panel.show(ui, state, &theme, old, &kb, false));
+                });
+            });
+        }
+        assert_eq!(timeline.state.sequences[0].tracks.len(), tracks, "no track made");
+        assert!(!sent.iter().any(|c| matches!(c, AppCommand::AppendClipToTrack { .. } | AppCommand::AppendMediaBatchToTrack { .. })), "{sent:?}");
+        assert!(timeline.state.dragging_media.is_none(), "the drag is over");
+    }
 }

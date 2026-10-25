@@ -1,4 +1,4 @@
-use crate::widgets::menu::{menu_body, menu_item};
+use crate::widgets::menu::{menu_body, menu_choice, menu_item};
 use crate::icons::Icon;
 use crate::state::AppState;
 use crate::theme::KlippTheme;
@@ -428,6 +428,15 @@ fn pool_menu(ui: &mut egui::Ui, view_mode: &mut BrowserViewMode, sort_by: &mut S
         for f in Field::SORTABLE {
             ui.selectable_value(sort_by, f, f.label());
         }
+        ui.separator();
+        // The direction is a choice in here, not an icon row that sat
+        // indented among the menu's text (#2621).
+        for (ascending, label) in [(true, "Ascending"), (false, "Descending")] {
+            if menu_choice(ui, label, "", *sort_ascending == ascending).clicked() {
+                *sort_ascending = ascending;
+                ui.close_menu();
+            }
+        }
     }));
     ui.menu_button("View", |ui| menu_body(ui, |ui| {
         if ui.selectable_value(view_mode, BrowserViewMode::List, "List").clicked() {
@@ -437,15 +446,6 @@ fn pool_menu(ui: &mut egui::Ui, view_mode: &mut BrowserViewMode, sort_by: &mut S
             ui.close_menu();
         }
     }));
-    let (sort_icon, sort_text) = if *sort_ascending {
-        (Icon::SortAscending, "Ascending")
-    } else {
-        (Icon::SortDescending, "Descending")
-    };
-    if ui.add(egui::Button::image_and_text(sort_icon.image(12.0), sort_text)).clicked() {
-        *sort_ascending = !*sort_ascending;
-        ui.close_menu();
-    }
 }
 
 /// Whether any selected item is in a bin: Remove from Bin applies.
@@ -943,9 +943,11 @@ fn render_column_header(ui: &mut egui::Ui, theme: &KlippTheme, columns: &mut Vec
             Some((*col, at, col.column_width(), rect.min.y + line_h))
         }));
     for (col, x, w, top) in headings {
-        // The last column shown takes what is left of the panel.
-        let w = w.min(rect.right() - x);
-        if w < 12.0 {
+        // A column shows whole or not at all: one cut to the panel left
+        // a heading of a letter or two (#2621). The name line, the
+        // width of the panel, is shortened instead.
+        let w = if col == Field::Name { w.min(rect.right() - x) } else { w };
+        if x + w > rect.right() + 0.5 {
             break;
         }
         let cy = top + line_h / 2.0;
@@ -1159,9 +1161,9 @@ fn render_list_view(
             let meta_font = egui::FontId::monospace(crate::theme::type_scale::CAPTION);
             let mut cx = row_rect.min.x + LIST_TEXT_X;
             for (col, text) in columns.iter().zip(&item.columns) {
-                // As in the header: the last column takes what is left.
-                let w = col.column_width().min(row_rect.right() - cx);
-                if w < 12.0 {
+                // As in the header: a column shows whole or not at all.
+                let w = col.column_width();
+                if cx + w > row_rect.right() + 0.5 {
                     break;
                 }
                 if !text.is_empty() {
@@ -2706,6 +2708,8 @@ mod bin_menu_tests {
         size: egui::Vec2,
         /// The last frame's text, with where it was drawn.
         drawn: Vec<(String, egui::Rect)>,
+        /// The last frame's filled rectangles.
+        fills: Vec<egui::Rect>,
     }
 
     impl Pool {
@@ -2715,7 +2719,7 @@ mod bin_menu_tests {
                 state.media_pool.add(klipp_media::MediaItem::synthetic_for_test(format!("/footage/{name}").into(), None));
             }
             let panel = crate::browser::BrowserPanel { browser_view_mode: view, ..Default::default() };
-            Self { ctx: egui::Context::default(), state, panel, size: egui::vec2(700.0, 1600.0), drawn: Vec::new() }
+            Self { ctx: egui::Context::default(), state, panel, size: egui::vec2(700.0, 1600.0), drawn: Vec::new(), fills: Vec::new() }
         }
 
         /// One frame with `events`: the text drawn, with where, and what
@@ -2729,6 +2733,10 @@ mod bin_menu_tests {
             let out = self.ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, self.size)), events, ..Default::default() }, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| cmds = panel.show(ui, state, &theme, &mut tab, &mut pinned, &mut ratio));
             });
+            self.fills = out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Rect(r) if r.fill.a() > 0 => Some(r.rect),
+                _ => None,
+            }).collect();
             self.drawn = out.shapes.iter().filter_map(|s| match &s.shape {
                 egui::Shape::Text(t) => Some((t.galley.text().to_string(), egui::Rect::from_min_size(t.pos, t.galley.size()))),
                 _ => None,
@@ -2993,5 +3001,94 @@ mod bin_menu_tests {
         let top = pool.rect("New Bin").bottom();
         let past: Vec<_> = pool.drawn.iter().filter(|(_, r)| r.top() > top && r.right() > pool.size.x + 0.5).collect();
         assert!(past.is_empty(), "past the panel: {past:?}");
+        // At any width a heading is whole, never cut to a letter or two.
+        let labels: Vec<&str> = pool.panel.list_columns.iter().map(|c| c.label()).collect();
+        for width in [360.0, 420.0, 480.0, 560.0, 640.0, 760.0] {
+            pool.size = egui::vec2(width, 900.0);
+            pool.texts();
+            pool.texts();
+            let cut: Vec<_> = pool.drawn.iter().filter(|(t, r)| r.top() > top && t.ends_with('\u{2026}') && labels.iter().any(|l| l.starts_with(t.trim_end_matches('\u{2026}')))).collect();
+            assert!(cut.is_empty(), "at {width}: headings cut {cut:?}");
+        }
+    }
+
+    /// #2621: a clip dragged onto a bin header goes into the bin, and
+    /// the drop is the header's: the drag is over when the button comes
+    /// up. (The timeline's side is `a_release_above_the_timeline_adds_nothing`.)
+    #[test]
+    fn a_drop_on_a_bin_header_is_the_headers_alone() {
+        for view in [BrowserViewMode::List, BrowserViewMode::Grid] {
+            let mut pool = Pool::new(view, &["a.mov", "b.mov"]);
+            in_bin(&mut pool, "b.mov", "Selects");
+            let a = pool.state.media_pool.all().find(|m| m.filename == "a.mov").expect("a").id;
+            let (from, to) = (pool.at("a.mov"), pool.at("Selects"));
+            let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+            pool.frame(vec![egui::Event::PointerMoved(from), button(from, true)]);
+            let mut sent = Vec::new();
+            for k in 1..=8 {
+                let at = from + (to - from) * (k as f32 / 8.0);
+                sent.extend(pool.frame(vec![egui::Event::PointerMoved(at)]).1);
+            }
+            assert_eq!(pool.state.dragging_media, Some(a), "{view:?}: dragging");
+            sent.extend(pool.frame(vec![button(to, false)]).1);
+            sent.extend(pool.frame(Vec::new()).1);
+            assert!(sent.iter().any(|c| matches!(c, AppCommand::MoveItemsToBin { media_ids, bin: Some(b) } if *media_ids == [a] && b == "Selects")), "{view:?}: {sent:?}");
+            assert!(pool.state.dragging_media.is_none() && pool.state.dragging_media_group.is_empty(), "{view:?}: the drop is taken");
+        }
+    }
+
+    /// #2621: New Bin, with or without items, is one undo step, and
+    /// undoing it takes the bin away as well as the items back out.
+    #[test]
+    fn new_bin_undoes_in_one_step_bin_and_all() {
+        for with_items in [false, true] {
+            let mut state = AppState::default();
+            let a = state.media_pool.add(klipp_media::MediaItem::synthetic_for_test("/footage/a.mov".into(), None));
+            let ids = if with_items { vec![a] } else { Vec::new() };
+            state.new_bin("New Bin 2", &ids);
+            assert!(state.media_pool.bins.iter().any(|b| b.name == "New Bin 2"));
+            let step = state.project_history_mut().undo().expect("a step");
+            assert!(state.project_history_mut().undo().is_none(), "one step");
+            assert_eq!(step.command.label(), "New Bin");
+            let mut pool = state.media_pool.clone();
+            let (mut sequences, mut fps) = (state.sequences.clone(), state.fps);
+            klipp_document::apply::DocumentView { sequences: &mut sequences, active: 0, media_pool: &mut pool, fps: &mut fps }.apply_inverse(&step.command);
+            assert!(!pool.bins.iter().any(|b| b.name == "New Bin 2"), "undone, the bin is gone");
+            assert!(pool.get(&a).expect("a").bin.is_none());
+            klipp_document::apply::DocumentView { sequences: &mut sequences, active: 0, media_pool: &mut pool, fps: &mut fps }.apply_forward(&step.command);
+            assert!(pool.bins.iter().any(|b| b.name == "New Bin 2"), "redone, it is back");
+            assert_eq!(pool.get(&a).expect("a").bin.is_some(), with_items);
+        }
+    }
+
+    /// The sort direction is a choice in Sort By; the pool's menu has no
+    /// icon row of its own for it.
+    #[test]
+    fn the_sort_direction_is_in_sort_by() {
+        let mut pool = Pool::new(BrowserViewMode::Grid, &["a.mov"]);
+        let below = pool.at("a.mov") + egui::vec2(0.0, 300.0);
+        let menu = pool.right_click(below);
+        assert!(!menu.iter().any(|t| t == "Ascending" || t == "Descending"), "{menu:?}");
+        let sub = pool.at("Sort By");
+        pool.frame(vec![egui::Event::PointerMoved(sub)]);
+        pool.frame(vec![egui::Event::PointerMoved(sub)]);
+        let cmds_before = pool.state.selected_media_ids.len();
+        let _ = cmds_before;
+        pool.click("Descending");
+        assert!(!pool.panel.media_sort_ascending, "descending now");
+    }
+
+    /// A pool menu's row shows a band while hovered, as other menus do.
+    #[test]
+    fn a_hovered_menu_row_gets_a_band() {
+        let mut pool = Pool::new(BrowserViewMode::Grid, &["a.mov"]);
+        let below = pool.at("a.mov") + egui::vec2(0.0, 300.0);
+        pool.right_click(below);
+        let row = pool.at("Import Media\u{2026}");
+        let under = |pool: &Pool| pool.fills.iter().filter(|r| r.contains(row)).count();
+        let resting = under(&pool);
+        pool.frame(vec![egui::Event::PointerMoved(row)]);
+        pool.frame(vec![egui::Event::PointerMoved(row)]);
+        assert!(under(&pool) > resting, "a band under the hovered row");
     }
 }
