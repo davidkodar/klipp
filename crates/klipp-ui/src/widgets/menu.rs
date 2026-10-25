@@ -133,6 +133,25 @@ impl SubmenuRows for egui::Ui {
     }
 }
 
+/// Whether `label` ends with a shortcut typed into it: "Cut  Ctrl+X",
+/// "Insert (,)", "Disconnect (Shift+G)". A duration or a rate in
+/// brackets, "(1s)", "(2x)", is not one.
+#[cfg(test)]
+fn key_in_label(label: &str) -> bool {
+    let is_key = |k: &str| {
+        let k = k.trim();
+        let combo = ["Ctrl+", "Alt+", "Shift+", "Cmd+"].iter().any(|m| k.starts_with(m));
+        let named = ["Space", "Enter", "Esc", "Delete", "Tab", "Home", "End"].contains(&k) || (k.starts_with('F') && k.len() <= 3 && k[1..].chars().all(|c| c.is_ascii_digit()) && k.len() > 1);
+        combo || named || k.chars().count() == 1
+    };
+    if let Some(at) = label.rfind("  ") {
+        if is_key(&label[at..]) && label[at..].contains('+') {
+            return true;
+        }
+    }
+    label.strip_suffix(')').and_then(|l| l.rfind(" (").map(|at| &l[at + 2..])).is_some_and(is_key)
+}
+
 /// What breaks the one row layout in the open menu that draws `anchor`
 /// (#2632): a row whose text starts neither at the label column the
 /// menu's rows share nor ends at its shortcut column, a label that
@@ -150,9 +169,10 @@ pub(crate) fn row_problems(shapes: &[egui::epaint::ClippedShape], anchor: &str) 
     let Some(anchor_rect) = texts.iter().rev().find(|(_, t)| t.galley.text() == anchor).map(|(_, t)| egui::Rect::from_min_size(t.pos, t.galley.size())) else {
         return vec![format!("{anchor:?} is not drawn")];
     };
-    // The menu is the smallest box drawn round the anchor that is taller
-    // than a few rows: its popup frame. A hovered row's band is one row
-    // high; a panel's background is larger.
+    // The menu is the last box drawn round the anchor that is taller
+    // than a few rows: its popup frame, painted over the panels. A
+    // hovered row's band is one row high. The smallest such box was
+    // taken once, and that was the clip under a clip's menu.
     // A frame paints its shadow and box as one list of shapes.
     fn boxes(shape: &egui::Shape, out: &mut Vec<egui::Rect>) {
         match shape {
@@ -170,7 +190,7 @@ pub(crate) fn row_problems(shapes: &[egui::epaint::ClippedShape], anchor: &str) 
     let Some((first, menu)) = all
         .into_iter()
         .filter(|(_, r)| r.contains_rect(anchor_rect) && r.height() > 3.0 * anchor_rect.height())
-        .min_by(|(_, a), (_, b)| a.area().total_cmp(&b.area()))
+        .max_by_key(|(i, _)| *i)
     else {
         return vec![format!("no menu frame round {anchor:?}")];
     };
@@ -214,6 +234,24 @@ pub(crate) fn row_problems(shapes: &[egui::epaint::ClippedShape], anchor: &str) 
         if at_label && !text.starts_with(|c: char| c.is_alphanumeric()) {
             problems.push(format!("{text:?} draws a check, icon or indent in its label, not the slot"));
         }
+        if at_label && key_in_label(text) {
+            problems.push(format!("{text:?} has its shortcut in its label, not the key column"));
+        }
     }
     problems
+}
+
+#[cfg(test)]
+mod key_in_label_tests {
+    use super::key_in_label;
+
+    #[test]
+    fn a_shortcut_typed_into_a_label_is_found() {
+        for label in ["Cut  Ctrl+X", "Insert (,)", "Extract (')", "Disconnect (Shift+G)", "Connect to Primary (G)", "Ripple Trim Head to Playhead  Alt+[", "Fullscreen (F11)"] {
+            assert!(key_in_label(label), "{label}");
+        }
+        for label in ["Cut", "Insert Gap (1s)", "Double Speed (2x)", "Language (en)", "Match Frame \u{2192} Timeline", "Paste Attributes..."] {
+            assert!(!key_in_label(label), "{label}");
+        }
+    }
 }

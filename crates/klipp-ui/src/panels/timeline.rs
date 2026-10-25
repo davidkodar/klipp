@@ -4200,18 +4200,18 @@ impl TimelinePanel {
             // setting in/out from a casual right-click position would
             // be footgun-y (range edits are deliberate). I/O shortcuts
             // already use playhead — match that convention.
-            if ui.button("Set in point at playhead (I)").clicked() {
+            if ui.add(egui::Button::new("Set in point at playhead").shortcut_text("I")).clicked() {
                 cmds.push(AppCommand::SetSequenceInPoint(state.playhead));
                 ui.close_menu();
             }
-            if ui.button("Set out point at playhead (O)").clicked() {
+            if ui.add(egui::Button::new("Set out point at playhead").shortcut_text("O")).clicked() {
                 cmds.push(AppCommand::SetSequenceOutPoint(state.playhead));
                 ui.close_menu();
             }
 
             ui.separator();
 
-            if ui.button("Zoom to fit (Z)").clicked() {
+            if ui.add(egui::Button::new("Zoom to fit").shortcut_text("Z")).clicked() {
                 cmds.push(AppCommand::FitTimelineToWindow);
                 ui.close_menu();
             }
@@ -8690,13 +8690,7 @@ impl TimelinePanel {
                             .get(&asset_id)
                             .map(|a| a.display_name.clone())
                             .unwrap_or_else(|| "Project Asset".to_string());
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "\u{1F517} Linked to \u{201C}{asset_name}\u{201D}"
-                            ))
-                            .small()
-                            .color(egui::Color32::from_gray(170)),
-                        );
+                        crate::widgets::menu::menu_heading(ui, &format!("Linked to \u{201C}{asset_name}\u{201D}"));
                         if crate::widgets::menu::menu_icon_item(ui, crate::icons::Icon::Scissors, "Detach from Project Asset", "").clicked() {
                             cmds.push(AppCommand::DetachTitleAsset { clip_id });
                             ui.close_menu();
@@ -8784,15 +8778,15 @@ impl TimelinePanel {
                 }
                 // Cut, Copy and Paste beside Duplicate (#845): of the whole
                 // selection when this clip is part of it.
-                if ui.button("Cut  Ctrl+X").clicked() {
+                if ui.add(egui::Button::new("Cut").shortcut_text("Ctrl+X")).clicked() {
                     cmds.push(AppCommand::CutClip { clip_id });
                     ui.close_menu();
                 }
-                if ui.button("Copy  Ctrl+C").clicked() {
+                if ui.add(egui::Button::new("Copy").shortcut_text("Ctrl+C")).clicked() {
                     cmds.push(AppCommand::CopyClip { clip_id });
                     ui.close_menu();
                 }
-                if ui.add_enabled(state.clipboard.is_some(), egui::Button::new("Paste at Playhead  Ctrl+V")).clicked() {
+                if ui.add_enabled(state.clipboard.is_some(), egui::Button::new("Paste at Playhead").shortcut_text("Ctrl+V")).clicked() {
                     cmds.push(AppCommand::PasteClip);
                     ui.close_menu();
                 }
@@ -8800,7 +8794,7 @@ impl TimelinePanel {
                     cmds.push(AppCommand::PasteClipInsert);
                     ui.close_menu();
                 }
-                if ui.button("Duplicate Clip  Ctrl+D").clicked() {
+                if ui.add(egui::Button::new("Duplicate Clip").shortcut_text("Ctrl+D")).clicked() {
                     cmds.push(AppCommand::DuplicateClip { clip_id });
                     ui.close_menu();
                 }
@@ -8980,11 +8974,11 @@ impl TimelinePanel {
                     }
                 }
                 ui.separator();
-                if ui.button("Copy Attributes  Ctrl+Shift+C").clicked() {
+                if ui.add(egui::Button::new("Copy Attributes").shortcut_text("Ctrl+Shift+C")).clicked() {
                     cmds.push(AppCommand::CopyAttributes { clip_id });
                     ui.close_menu();
                 }
-                if ui.add_enabled(state.attributes_clipboard.is_some(), egui::Button::new("Paste Attributes...  Ctrl+Shift+V")).clicked() {
+                if ui.add_enabled(state.attributes_clipboard.is_some(), egui::Button::new("Paste Attributes...").shortcut_text("Ctrl+Shift+V")).clicked() {
                     state.show_paste_attributes_dialog = true;
                     ui.close_menu();
                 }
@@ -9347,30 +9341,30 @@ impl TimelinePanel {
                 // Three-point edit operations
                 let has_source = state.source_media_id.is_some();
                 let has_in_out = state.sequence().in_point.is_some() && state.sequence().out_point.is_some();
-                if ui.add_enabled(has_source, egui::Button::new("Insert (,)")).clicked() {
+                if ui.add_enabled(has_source, egui::Button::new("Insert").shortcut_text(",")).clicked() {
                     cmds.push(AppCommand::InsertEdit);
                     ui.close_menu();
                 }
-                if ui.add_enabled(has_source, egui::Button::new("Overwrite (.)")).clicked() {
+                if ui.add_enabled(has_source, egui::Button::new("Overwrite").shortcut_text(".")).clicked() {
                     cmds.push(AppCommand::OverwriteEdit);
                     ui.close_menu();
                 }
-                if ui.add_enabled(has_in_out, egui::Button::new("Lift (;)")).clicked() {
+                if ui.add_enabled(has_in_out, egui::Button::new("Lift").shortcut_text(";")).clicked() {
                     cmds.push(AppCommand::LiftEdit);
                     ui.close_menu();
                 }
-                if ui.add_enabled(has_in_out, egui::Button::new("Extract (')")).clicked() {
+                if ui.add_enabled(has_in_out, egui::Button::new("Extract").shortcut_text("'")).clicked() {
                     cmds.push(AppCommand::ExtractEdit);
                     ui.close_menu();
                 }
 
                 // Magnetic operations
                 ui.separator();
-                if ui.button("Ripple Trim Head to Playhead  Alt+[").clicked() {
+                if ui.add(egui::Button::new("Ripple Trim Head to Playhead").shortcut_text("Alt+[")).clicked() {
                     cmds.push(AppCommand::RippleTrimHead { clip_id });
                     ui.close_menu();
                 }
-                if ui.button("Ripple Trim Tail to Playhead  Alt+]").clicked() {
+                if ui.add(egui::Button::new("Ripple Trim Tail to Playhead").shortcut_text("Alt+]")).clicked() {
                     cmds.push(AppCommand::RippleTrimTail { clip_id });
                     ui.close_menu();
                 }
@@ -9517,11 +9511,11 @@ impl TimelinePanel {
                     if let Some(cd) = clip_data {
                         if cd.magnetic_anchor.is_some() {
                             ui.label("\u{26D3} Connected to Primary");
-                            if ui.button("Disconnect (Shift+G)").clicked() {
+                            if ui.add(egui::Button::new("Disconnect").shortcut_text("Shift+G")).clicked() {
                                 cmds.push(AppCommand::DisconnectFromPrimary { clip_id });
                                 ui.close_menu();
                             }
-                        } else if ui.button("Connect to Primary (G)").clicked() {
+                        } else if ui.add(egui::Button::new("Connect to Primary").shortcut_text("G")).clicked() {
                             // These four items only closed the menu (#911).
                             cmds.push(AppCommand::ConnectToPrimary { clip_id });
                             ui.close_menu();
@@ -9533,16 +9527,15 @@ impl TimelinePanel {
                     // The storyline key (shared with audio skim) acts on
                     // a selected clip on a connected track.
                     let storyline_key = kb.display_for("toggle_audio_skim");
-                    let with_key = |label: &str| if storyline_key.is_empty() { label.to_string() } else { format!("{label} ({storyline_key})") };
                     if let Some(role) = track_role {
                         if role == klipp_timeline::TrackRole::Connected {
-                            if ui.button(with_key("Promote to Storyline")).clicked() {
+                            if ui.add(egui::Button::new("Promote to Storyline").shortcut_text(&storyline_key)).clicked() {
                                 cmds.push(AppCommand::ToggleStoryline { clip_id });
                                 ui.close_menu();
                             }
                         } else if role == klipp_timeline::TrackRole::ConnectedStoryline {
-                            ui.label("\u{1F517} Connected Storyline");
-                            if ui.button(with_key("Break Apart Storyline")).clicked() {
+                            crate::widgets::menu::menu_heading(ui, "Connected Storyline");
+                            if ui.add(egui::Button::new("Break Apart Storyline").shortcut_text(&storyline_key)).clicked() {
                                 cmds.push(AppCommand::ToggleStoryline { clip_id });
                                 ui.close_menu();
                             }
