@@ -987,6 +987,10 @@ impl Preferences {
                 if crate::theme::omarchy::detect().is_some() {
                     tracing::info!("Omarchy detected: following the system theme by default");
                     prefs.appearance.follow_system_theme = true;
+                } else {
+                    // Elsewhere the desktop portal decides, once it has
+                    // answered (`sync_system_theme`).
+                    prefs.appearance.follow_system_theme_pending = true;
                 }
                 prefs
             }
@@ -1445,6 +1449,11 @@ pub struct AppearancePrefs {
     /// Omarchy (see `Preferences::load`), off otherwise.
     #[serde(default)]
     pub follow_system_theme: bool,
+    /// A fresh install with no full system palette, waiting for the
+    /// desktop portal's first answer: following turns on then if the
+    /// desktop prefers dark or light (#2625). Not saved.
+    #[serde(skip)]
+    pub follow_system_theme_pending: bool,
     /// Legacy: pre-registry theme mode enum. If present, the
     /// post-load migration in `Preferences::load` translates it to
     /// `theme_name` and clears this field. Kept Serialize so existing
@@ -1491,6 +1500,7 @@ impl Default for AppearancePrefs {
             ui_scale_percent: 0, // Auto
             theme_name: default_theme_name(),
             follow_system_theme: false,
+            follow_system_theme_pending: false,
             theme_mode: None,
             accent_color: default_accent_color(),
             playhead_color: default_playhead_color(),

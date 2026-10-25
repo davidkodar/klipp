@@ -93,6 +93,9 @@ pub struct ThemeRegistry {
     entries: BTreeMap<ThemeId, RegistryEntry>,
     /// See [`ThemeRegistry::omarchy_name`].
     omarchy_name: Option<String>,
+    /// The desktop portal's appearance settings: the fallback for
+    /// following the system theme (`theme/portal.rs`).
+    portal: super::portal::PortalStatus,
 }
 
 impl ThemeRegistry {
@@ -135,6 +138,71 @@ impl ThemeRegistry {
     /// "Tokyo Night". `None` when Omarchy was not detected.
     pub fn omarchy_name(&self) -> Option<&str> {
         self.omarchy_name.as_deref()
+    }
+
+    /// The built-in themes alone: no system palette and no user themes,
+    /// whatever this machine has.
+    #[cfg(test)]
+    pub(crate) fn builtins_only() -> Self {
+        let mut reg = Self::default();
+        reg.load_builtins();
+        reg
+    }
+
+    /// Take in the desktop portal's latest answer.
+    pub fn set_portal(&mut self, status: super::portal::PortalStatus) {
+        self.portal = status;
+    }
+
+    /// The desktop portal's latest answer.
+    pub fn portal(&self) -> super::portal::PortalStatus {
+        self.portal
+    }
+
+    /// The theme the desktop portal asks for: the built-in Dark or
+    /// Light, in the desktop's accent when it sets one. `None` when it
+    /// has no dark or light preference, or there is no portal.
+    pub fn portal_theme(&self) -> Option<KlippTheme> {
+        use super::portal::{ColorScheme, PortalStatus};
+        let PortalStatus::Found(appearance) = self.portal else { return None };
+        let (name, light) = match appearance.scheme {
+            ColorScheme::Dark => ("Dark", false),
+            ColorScheme::Light => ("Light", true),
+            ColorScheme::NoPreference => return None,
+        };
+        let mut theme = self.get(name)?.clone();
+        if let Some(accent) = appearance.accent {
+            theme.set_accent(accent, light);
+        }
+        Some(theme)
+    }
+
+    /// Whether following the system theme changes anything here: a full
+    /// palette, or a portal with a dark or light preference.
+    pub fn has_system_theme(&self) -> bool {
+        self.omarchy_name.is_some() || self.portal_theme().is_some()
+    }
+
+    /// What following the system theme follows, in a sentence for the
+    /// setting's subtitle.
+    pub fn system_theme_summary(&self) -> String {
+        use super::portal::{ColorScheme, PortalStatus};
+        if let Some(name) = &self.omarchy_name {
+            return format!("Omarchy: {name}. Switching the theme in Omarchy changes Klipp live.");
+        }
+        match self.portal {
+            PortalStatus::Looking => "Looking for your desktop\u{2019}s appearance settings\u{2026}".to_string(),
+            PortalStatus::Absent => "No desktop appearance settings found, so the theme below is used.".to_string(),
+            PortalStatus::Found(a) => {
+                let mode = match a.scheme {
+                    ColorScheme::Dark => "dark",
+                    ColorScheme::Light => "light",
+                    ColorScheme::NoPreference => return "Your desktop sets no dark or light preference, so the theme below is used.".to_string(),
+                };
+                let accent = a.accent.map(|c| format!(", {} accent", super::portal::colour_name(c))).unwrap_or_default();
+                format!("Following your desktop: {mode}{accent}. Changes there apply here live.")
+            }
+        }
     }
 
     fn load_builtins(&mut self) {
@@ -277,4 +345,81 @@ fn parse_theme_file(raw: &str) -> Result<ThemeFile, String> {
 /// config dir (very rare).
 fn user_themes_dir() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("klipp").join("themes"))
+}
+
+#[cfg(test)]
+mod portal_tests {
+    use super::super::portal::{Appearance, ColorScheme, PortalStatus};
+    use super::*;
+    use egui::Color32;
+
+    const BLUE: Color32 = Color32::from_rgb(53, 132, 228);
+
+    fn found(scheme: ColorScheme, accent: Option<Color32>) -> PortalStatus {
+        PortalStatus::Found(Appearance { scheme, accent })
+    }
+
+    fn following(picked: &str) -> crate::prefs::AppearancePrefs {
+        crate::prefs::AppearancePrefs { follow_system_theme: true, theme_name: picked.into(), ..Default::default() }
+    }
+
+    /// #2625: prefer dark gives the built-in Dark, prefer light the
+    /// built-in Light, each in the desktop's accent when it sets one.
+    #[test]
+    fn a_dark_or_light_preference_picks_that_theme_in_the_accent() {
+        let mut reg = ThemeRegistry::builtins_only();
+        let (dark, light) = (reg.get("Dark").expect("Dark").clone(), reg.get("Light").expect("Light").clone());
+        reg.set_portal(found(ColorScheme::Dark, Some(BLUE)));
+        let t = KlippTheme::from_prefs(&following("Solarized Dark"), &reg);
+        assert_eq!((t.bg_panel, t.accent), (dark.bg_panel, BLUE));
+        assert_eq!(t.text_on_accent, Color32::from_rgb(16, 16, 20), "dark text reads better on this mid blue: 5.4:1 against white's 3.9:1");
+        reg.set_portal(found(ColorScheme::Dark, Some(Color32::from_rgb(20, 40, 120))));
+        assert_eq!(KlippTheme::from_prefs(&following("Solarized Dark"), &reg).text_on_accent, Color32::WHITE, "and white on a deep one");
+        reg.set_portal(found(ColorScheme::Light, None));
+        let t = KlippTheme::from_prefs(&following("Solarized Dark"), &reg);
+        assert_eq!((t.bg_panel, t.accent), (light.bg_panel, light.accent), "no accent set: the theme's own");
+    }
+
+    /// No preference, no portal, an answer not in yet, or following
+    /// switched off: the theme the user picked.
+    #[test]
+    fn otherwise_the_picked_theme_stays() {
+        let mut reg = ThemeRegistry::builtins_only();
+        let picked = reg.get("Solarized Dark").expect("a built-in to pick").clone();
+        for status in [found(ColorScheme::NoPreference, Some(BLUE)), PortalStatus::Absent, PortalStatus::Looking] {
+            reg.set_portal(status);
+            assert_eq!(KlippTheme::from_prefs(&following("Solarized Dark"), &reg).bg_panel, picked.bg_panel, "{status:?}");
+            assert!(!reg.has_system_theme(), "{status:?}");
+        }
+        reg.set_portal(found(ColorScheme::Light, None));
+        let off = crate::prefs::AppearancePrefs { follow_system_theme: false, ..following("Solarized Dark") };
+        assert_eq!(KlippTheme::from_prefs(&off, &reg).bg_panel, picked.bg_panel, "not following");
+    }
+
+    /// A SettingChanged switches the theme while the app runs.
+    #[test]
+    fn a_live_change_switches_the_theme() {
+        let mut reg = ThemeRegistry::builtins_only();
+        let light = reg.get("Light").expect("Light").bg_panel;
+        let mut now = Appearance { scheme: ColorScheme::Dark, accent: None };
+        reg.set_portal(PortalStatus::Found(now));
+        assert_ne!(KlippTheme::from_prefs(&following("Dark"), &reg).bg_panel, light);
+        assert!(now.apply("org.freedesktop.appearance", "color-scheme", &zbus::zvariant::Value::U32(2)));
+        reg.set_portal(PortalStatus::Found(now));
+        assert_eq!(KlippTheme::from_prefs(&following("Dark"), &reg).bg_panel, light);
+    }
+
+    /// The setting's subtitle says what is followed, or that nothing is.
+    #[test]
+    fn the_subtitle_says_what_is_followed() {
+        let mut reg = ThemeRegistry::builtins_only();
+        reg.set_portal(found(ColorScheme::Dark, Some(BLUE)));
+        assert_eq!(reg.system_theme_summary(), "Following your desktop: dark, blue accent. Changes there apply here live.");
+        reg.set_portal(found(ColorScheme::Light, None));
+        assert_eq!(reg.system_theme_summary(), "Following your desktop: light. Changes there apply here live.");
+        reg.set_portal(found(ColorScheme::NoPreference, None));
+        assert!(reg.system_theme_summary().starts_with("Your desktop sets no dark or light preference"));
+        reg.set_portal(PortalStatus::Absent);
+        assert!(reg.system_theme_summary().starts_with("No desktop appearance settings found"));
+    }
 }

@@ -259,6 +259,7 @@ impl KlippApp {
             media_watcher: None,
             system_theme_watcher: None,
             system_theme_changed: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            desktop_appearance: crate::theme::portal::start(cc.egui_ctx.clone()),
             curve_editor: crate::panels::curve_editor::CurveEditorPanel::new(),
             scope_window_runtime: crate::widgets::scope_window::ScopeWindowRuntime::default(),
             scope_dock_runtime: crate::widgets::scope_window::ScopeWindowRuntime::default(),

@@ -2628,22 +2628,22 @@ impl PreferencesPanel {
         // ── THEME section ──
         Self::section_header(ui, "THEME", theme);
 
-        // Follow the desktop theme. Shown only where a system theme
-        // is available (Omarchy today); the preference is ignored
-        // elsewhere. While it is on, the picker below stays visible
-        // but inactive so the user sees what they get back.
-        let system_theme = theme_registry.omarchy_name().map(str::to_string);
-        if let Some(name) = &system_theme {
-            let subtitle = format!("Omarchy: {name}. Switching the theme in Omarchy changes Klipp live.");
-            Self::setting_row_with_subtitle(ui, "Follow system theme", &subtitle, theme, |ui| {
-                let mut val = prefs.appearance.follow_system_theme;
-                if ui.add(Switch::new(&mut val, theme)).changed() {
-                    prefs.appearance.follow_system_theme = val;
-                    *dirty = true;
-                }
-            });
-        }
-        let following = system_theme.is_some() && prefs.appearance.follow_system_theme;
+        // Follow the desktop theme: a full system palette where there
+        // is one, else the desktop portal's dark or light preference
+        // and accent (#2625). The subtitle says which, or that nothing
+        // was found. While it is on and something is followed, the
+        // picker below stays visible but inactive so the user sees
+        // what they get back.
+        let subtitle = theme_registry.system_theme_summary();
+        Self::setting_row_with_subtitle(ui, "Follow system theme", &subtitle, theme, |ui| {
+            let mut val = prefs.appearance.follow_system_theme;
+            if ui.add(Switch::new(&mut val, theme)).changed() {
+                prefs.appearance.follow_system_theme = val;
+                prefs.appearance.follow_system_theme_pending = false;
+                *dirty = true;
+            }
+        });
+        let following = theme_registry.has_system_theme() && prefs.appearance.follow_system_theme;
 
         // Theme picker — lists every entry in the theme registry
         // (built-ins + user TOMLs from ~/.config/klipp/themes/).
