@@ -156,9 +156,10 @@ fn a_rich_project_comes_back_whole_and_saves_again_the_same() {
 /// so it is a picture-truth clip.
 fn truth_clip(from: f64) -> Clip {
     use klipp_graph_format::path::{NodePath, Root};
-    let mut c = Clip::media(MediaId::new(), t(from), t(from + 2.0), t(0.0), t(2.0));
-    c.push_effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 4.0 });
-    let blur = c.picture_v2().unwrap().picture.graph.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_format::types::LEGACY_EFFECT).unwrap().id;
+    let mut c = klipp_timeline::test_clip::TestClip::of(Clip::media(MediaId::new(), t(from), t(from + 2.0), t(0.0), t(2.0)))
+        .effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 4.0 })
+        .build();
+    let blur = c.picture_effects().unwrap()[0].node;
     c.apply_picture_ops(&[klipp_graph_lift::ops::GraphOp::SetMix { path: NodePath::new(Root::Clip { clip: c.id.0 }, [blur]), mix: Some(0.5) }]).unwrap();
     assert!(c.is_picture_truth());
     c

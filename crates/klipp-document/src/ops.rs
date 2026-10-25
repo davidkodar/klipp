@@ -17447,8 +17447,9 @@ mod tests {
         use klipp_nodes::{Edge, Node, NodeGraph, NodeKind, NodeParams};
         let (mut seq, pool, _, a, _) = fixture();
         let clip = seq.tracks[0].clips.iter_mut().find(|c| c.id == a).unwrap();
-        clip.push_effect(E::GaussianBlur { radius: 3.0 });
-        clip.push_effect(E::Vignette { amount: 0.5, size: 0.5, softness: 0.5, roundness: 0.5 });
+        *clip = klipp_timeline::test_clip::TestClip::of(clip.clone())
+            .effects([E::GaussianBlur { radius: 3.0 }, E::Vignette { amount: 0.5, size: 0.5, softness: 0.5, roundness: 0.5 }])
+            .build();
         let mut g = NodeGraph::default();
         g.ensure_corrector();
         let source = g.nodes.iter().find(|n| n.kind == NodeKind::Source).unwrap().id;
@@ -17459,7 +17460,7 @@ mod tests {
         clip.set_grade(g);
         let p = clip.picture_v2().unwrap().picture.clone();
         let group = p.graph.nodes.iter().find(|n| n.type_id.as_str() == lt::GROUP).unwrap().id;
-        let blur = p.graph.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_format::types::LEGACY_EFFECT).unwrap().id;
+        let blur = clip.picture_effects().unwrap()[0].node;
         let at = |id| NodePath::new(Root::Clip { clip: a.0 }, [id]);
         clip.apply_picture_ops(&[
             GraphOp::PublishOutput { group: at(group), endpoint: klipp_graph_format::PortBinding { node: q, port: "out".into() }, key: "matte_selection".into(), label: "Selection".into() },
@@ -17468,7 +17469,7 @@ mod tests {
         ])
         .unwrap();
         assert!(clip.is_picture_truth());
-        let effects = clip.builtin_effects().to_vec();
+        let effects = klipp_timeline::test_clip::effects(clip);
         let without_blur = EditCommand::SetBuiltinEffects {
             clip_id: a,
             old_effects: effects.clone(),
@@ -17483,7 +17484,7 @@ mod tests {
         let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
         let why = picture_refusal_of(&mut view, &without_blur).expect("refused");
         assert!(why.contains("the effect list"), "{why}");
-        assert_eq!(clip_in(&seqs[0], a).builtin_effects().len(), 2, "the clip is as it was");
+        assert_eq!(klipp_timeline::test_clip::effects(&clip_in(&seqs[0], a)).len(), 2, "the clip is as it was");
 
         // A refusal left from before is not this edit's.
         klipp_timeline::take_picture_refusal();
@@ -17532,7 +17533,9 @@ mod tests {
         // An automatic move.
         let (mut seq, pool, _, a, _) = fixture();
         let c = seq.tracks[0].clips.iter_mut().find(|c| c.id == a).unwrap();
-        c.set_effect_list(vec![E::Transform { position_x: 40.0, position_y: 0.0, scale_x: 1.0, scale_y: 1.0, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None }], vec![true]);
+        *c = klipp_timeline::test_clip::TestClip::of(c.clone())
+            .effect(E::Transform { position_x: 40.0, position_y: 0.0, scale_x: 1.0, scale_y: 1.0, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None })
+            .build();
         let path = c.placement_path().unwrap();
         c.apply_picture_ops(&[GraphOp::SetParam { path, key: ParamKey::from("mode"), value: ParamValue::Enum(lt::PLACEMENT_AUTO) }]).unwrap();
         assert!(c.is_picture_truth());
@@ -17551,8 +17554,9 @@ mod tests {
         // half, and a vignette.
         let (mut seq, pool, _, a, _) = fixture();
         let clip = seq.tracks[0].clips.iter_mut().find(|c| c.id == a).unwrap();
-        clip.push_effect(E::GaussianBlur { radius: 3.0 });
-        clip.push_effect(E::Vignette { amount: 0.5, size: 0.5, softness: 0.5, roundness: 0.5 });
+        *clip = klipp_timeline::test_clip::TestClip::of(clip.clone())
+            .effects([E::GaussianBlur { radius: 3.0 }, E::Vignette { amount: 0.5, size: 0.5, softness: 0.5, roundness: 0.5 }])
+            .build();
         let mut g = NodeGraph::default();
         g.ensure_corrector();
         let source = g.nodes.iter().find(|n| n.kind == NodeKind::Source).unwrap().id;
@@ -17563,7 +17567,7 @@ mod tests {
         clip.set_grade(g);
         let p = clip.picture_v2().unwrap().picture.clone();
         let group = p.graph.nodes.iter().find(|n| n.type_id.as_str() == lt::GROUP).unwrap().id;
-        let blur = p.graph.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_format::types::LEGACY_EFFECT).unwrap().id;
+        let blur = clip.picture_effects().unwrap()[0].node;
         let at = |id| NodePath::new(Root::Clip { clip: a.0 }, [id]);
         clip.apply_picture_ops(&[
             GraphOp::PublishOutput { group: at(group), endpoint: klipp_graph_format::PortBinding { node: qid, port: "out".into() }, key: "matte_selection".into(), label: "Selection".into() },
@@ -17573,7 +17577,8 @@ mod tests {
         .unwrap();
         let clip = clip_in(&seq, a);
         let before = clip.picture_v2().unwrap().picture.clone();
-        let (fx, ids) = (clip.builtin_effects().to_vec(), clip.effect_id_list());
+        let fx = klipp_timeline::test_clip::effects(&clip);
+        let ids: Vec<klipp_timeline::EffectId> = (0..fx.len()).map(|i| klipp_timeline::test_clip::effect_id(&clip, i)).collect();
         // Each list put on in place of the clip's own, and back.
         let list = |new: Vec<E>, enabled: Vec<bool>, new_ids: Vec<klipp_timeline::EffectId>| EditCommand::SetBuiltinEffects {
             clip_id: a,
