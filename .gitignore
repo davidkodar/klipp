@@ -1,35 +1,57 @@
+# Build output.
 target/
-klipp-debug.log
-klipp-debug.log.1
-icon-src/
+__pycache__/
 
-# Local-only planning / tracker docs (no private files in git).
-CODE_AUDIT.html
-CODE_AUDIT.md
-FEATURES.html
-kdenlive_audit.md
-klipp_audit.md
-klipp_vs_kdenlive_gap.md
-PHILOSOPHY.md
-PHASE_*_PLAN.md
+# Logs written while Klipp runs.
+*.log
+*.log.[0-9]*
 
-# Editor / harness local state.
+# Render output in progress, written next to the project.
+*.partial
+.partial
+
+# Credentials and keys.
+.env
+.env.*
+*.pem
+*.key
+
+# Model weights, downloaded on request.
+*.pt
+*.onnx
+*.safetensors
+*.gguf
+ggml-*.bin
+
+# Projects, media and screenshots made while working, in the root.
+*.klipp
+*.klipp.bak
+*.klipp.autosave
+/*.mp4
+/*.mov
+/*.mkv
+/*.wav
+/*.flac
+/*.png
+/*.jpg
+/screenshots/
+
+# Editor, assistant and session state.
 .claude/
+.codex/
 .worktrees/
+*.jsonl
+
+# Packaging: makepkg's work folders and built packages.
+/packaging/src/
 /packaging/pkg/
 /packaging/*.pkg.tar.zst
 
-# Model weights (large binary blobs).
-*.pt
-
-# In-progress render output written next to the project
-*.partial
-.partial
 # Laid out by scripts/vulkan-sdk.sh: headers fetched or linked, not ours to keep.
 /vendor/vulkan-sdk
 
-# Python regression-test bytecode.
-__pycache__/
+# Icon sources; the exported icons are in assets/.
+icon-src/
 
 # Finished homepage videos are release attachments, not Git source assets.
 /website/assets/*.mp4
