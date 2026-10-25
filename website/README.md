@@ -19,7 +19,7 @@ The preparation step runs locally and does not use GitHub Actions. The assembled
 
 The finished video is attached to the unpublished **Website media** release (`website-media-2026-10-05`) in this repository. It is not a tracked source file. `demo.json` pins the attachment ID, name, byte count and checksum. The release also carries `CREDITS.md`.
 
-The demo preserves Klipp’s 1920×1080 H.264 CRF 18 export, with MP4 fast-start metadata and a lossless full-HD poster. Keep `preload="none"` so visiting the page does not automatically download the film. Do not force the video into a fixed small file size: compare every shot against the viewer, especially foliage and the closing hillside, before replacing it. For an update, use a new versioned release/asset and update the manifest and page links together.
+The film is the Klipp showcase, exported from Klipp as a 4K master. GitHub refuses files over 100 MB, so the web copy is encoded again from that master at 1920×1080, 60 fps: two-pass x264 `veryslow`, about 3.65 Mbit/s, the AAC track copied, MP4 fast-start metadata, with a full-HD WebP poster from the title shot. Before replacing it, score the copy against the master scaled to 1080p (VMAF and SSIM) and keep it only if it scores at least as well as Klipp’s own 1080p export; look at the UI text in the screen recordings too. Keep `preload="none"` so visiting the page does not automatically download the film. For an update, use a new versioned release/asset and update the manifest and page links together.
 
 Raw footage, the editable demo project and production notes stay outside Git. Preserve the attribution in `credits.html` whenever the film is distributed.
 
