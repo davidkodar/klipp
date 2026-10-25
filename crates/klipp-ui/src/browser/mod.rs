@@ -4984,7 +4984,8 @@ impl BrowserPanel {
                     let where_to = match self.audio_add_drop {
                         klipp_core::events::ClipDrop::AtPlayhead => " at the playhead",
                         klipp_core::events::ClipDrop::EndOfTimeline
-                        | klipp_core::events::ClipDrop::AppendToTrack { .. } => " to the timeline",
+                        | klipp_core::events::ClipDrop::AppendToTrack { .. }
+                        | klipp_core::events::ClipDrop::OnTrackAt { .. } => " to the timeline",
                         klipp_core::events::ClipDrop::PoolOnly => "",
                     };
                     state.toast.show(format!("Added \u{201c}{}\u{201d}{}", title, where_to));

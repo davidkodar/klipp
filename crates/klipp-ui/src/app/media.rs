@@ -126,6 +126,20 @@ impl KlippApp {
                                 track_index: *track_index,
                             }]);
                         }
+                        klipp_core::events::ClipDrop::OnTrackAt { track_index, at, overwrite } => {
+                            // A title asset has no drop position of its own.
+                            if matches!(self.state.media_pool.get(media_id).map(|i| &i.kind), Some(klipp_media::MediaItemKind::SyntheticTitle)) {
+                                self.append_title_asset_to_timeline(*media_id, *track_index);
+                                return true;
+                            }
+                            // Asked again with the same drop once the
+                            // frame-rate question is answered.
+                            if self.maybe_prompt_framerate_mismatch(media_id, cmd.clone()) {
+                                return true;
+                            }
+                            self.suppress_fps_prompt = false;
+                            self.place_media_on_track_at(*media_id, *track_index, *at, *overwrite);
+                        }
                     }
                     true
                 }
@@ -1746,19 +1760,11 @@ impl KlippApp {
     /// defaults (#466) fill in where the file says nothing, and its input
     /// LUT heads the new clip's grade.
     pub(super) fn apply_input_defaults(&mut self, clip_id: klipp_core::ClipId, media_id: klipp_core::MediaId) {
-        let Some(media) = self.state.media_pool.get(&media_id) else { return };
-        // The project's input defaults (#466): its format where the file
-        // says none, and its input LUT at the head of the grade.
-        let effective = crate::panels::colour_management::new_clip_input_format(media, self.state.project_default_input_format);
-        let lut = self.state.project_default_input_lut.clone().filter(|_| !media.video_codec.is_empty() || media.is_still);
-        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+        let state = &mut self.state;
+        let Some(media) = state.media_pool.get(&media_id) else { return };
+        let seq = &mut state.sequences[state.active_sequence_idx];
         if let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) {
-            if effective != klipp_core::LogFormat::Srgb {
-                clip.set_input_log_format(effective);
-            }
-            if let Some(lut) = lut {
-                crate::panels::colour_management::add_input_lut(clip, &lut);
-            }
+            input_defaults_on(clip, media, state.project_default_input_format, state.project_default_input_lut.as_deref());
         }
     }
 
@@ -2098,6 +2104,19 @@ mod external_tools_tests {
             &prefs.video_editor
         };
         assert_eq!(app, "kdenlive");
+    }
+}
+
+/// The project's input defaults (#466) on a new clip of `media`: its
+/// format where the file says none, and its input LUT at the head of
+/// the grade.
+pub(super) fn input_defaults_on(clip: &mut klipp_timeline::Clip, media: &klipp_media::MediaItem, default_format: Option<klipp_core::LogFormat>, default_lut: Option<&std::path::Path>) {
+    let effective = crate::panels::colour_management::new_clip_input_format(media, default_format);
+    if effective != klipp_core::LogFormat::Srgb {
+        clip.set_input_log_format(effective);
+    }
+    if let Some(lut) = default_lut.filter(|_| !media.video_codec.is_empty() || media.is_still) {
+        crate::panels::colour_management::add_input_lut(clip, lut);
     }
 }
 

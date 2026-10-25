@@ -1630,7 +1630,7 @@ impl TimelinePanel {
                 state, &mut cmds, track_idx, true, kb,
             );
 
-            self.handle_media_dnd_over_track(ui, state, track_idx, track_kind, &track_name, track_rect, &painter, &mut cmds);
+            self.handle_media_dnd_over_track(ui, state, track_idx, track_kind, &track_name, track_rect, content_rect, &painter, &mut cmds);
             Self::handle_selects_drop_over_track(ui, state, track_rect, content_rect, &painter, &mut cmds);
             self.handle_file_browser_dnd_over_track(ui, state, track_idx, track_kind, track_rect, &painter, &mut cmds);
 
@@ -3045,6 +3045,7 @@ impl TimelinePanel {
         track_kind: TrackKind,
         track_name: &str,
         track_rect: egui::Rect,
+        content_rect: egui::Rect,
         painter: &egui::Painter,
         cmds: &mut Vec<AppCommand>,
     ) {
@@ -3072,15 +3073,21 @@ impl TimelinePanel {
                             0.0,
                             egui::Stroke::new(2.0_f32, tt.marker_info),
                         );
+                        // One item goes in where it is let go, snapped to
+                        // a cut near the pointer (#2549); the line shows
+                        // where.
+                        let secs = ((pos.x - content_rect.left() + state.timeline_scroll_x) / state.timeline_zoom.max(1e-6)) as f64;
+                        let at = Self::media_drop_time(state, secs, state.timeline_zoom, ui.input(|i| i.modifiers.shift));
+                        if group.len() == 1 {
+                            let x = content_rect.left() + at.to_secs_f64() as f32 * state.timeline_zoom - state.timeline_scroll_x;
+                            painter.vline(x, track_rect.y_range(), egui::Stroke::new(2.0_f32, tt.marker_info));
+                        }
                         if !any_down {
                             state.dragging_media = None;
                             state.dragging_media_group.clear();
-                            tracing::info!("Media drop: {} item(s) ({:?}) -> track {} ({})", group.len(), drag_media_id, track_idx, track_name);
+                            tracing::info!("Media drop: {} item(s) ({:?}) -> track {} ({}) at {:.3}s", group.len(), drag_media_id, track_idx, track_name, at.to_secs_f64());
                             if group.len() == 1 {
-                                cmds.push(AppCommand::AppendClipToTrack {
-                                    media_id: drag_media_id,
-                                    track_index: track_idx,
-                                });
+                                cmds.push(media_drop_command(drag_media_id, track_idx, at, state.edit_mode));
                             } else {
                                 cmds.push(AppCommand::AppendMediaBatchToTrack {
                                     media_ids: group,
@@ -11068,6 +11075,40 @@ impl TimelinePanel {
     /// Returns the snapped time, its seconds value, and the
     /// `SnapTargetKind` of the matched target.
     #[allow(clippy::too_many_arguments)]
+    /// Every point an edge snaps to: each clip's ends, the playhead, the
+    /// start, and the In and Out when set.
+    fn snap_targets_of(state: &AppState, rate: u32) -> Vec<(f64, RationalTime, Option<ClipId>, klipp_core::SnapTargetKind)> {
+        let mut targets = Vec::new();
+        for track in &state.sequence().tracks {
+            for clip in &track.clips {
+                targets.push((clip.timeline_in.to_secs_f64(), clip.timeline_in, Some(clip.id), klipp_core::SnapTargetKind::ClipEdge));
+                targets.push((clip.timeline_out.to_secs_f64(), clip.timeline_out, Some(clip.id), klipp_core::SnapTargetKind::ClipEdge));
+            }
+        }
+        targets.push((state.playhead.to_secs_f64(), state.playhead, None, klipp_core::SnapTargetKind::Playhead));
+        targets.push((0.0, RationalTime { value: 0, rate }, None, klipp_core::SnapTargetKind::SequenceStart));
+        if let Some(inp) = state.sequence().in_point {
+            targets.push((inp.to_secs_f64(), inp, None, klipp_core::SnapTargetKind::InPoint));
+        }
+        if let Some(outp) = state.sequence().out_point {
+            targets.push((outp.to_secs_f64(), outp, None, klipp_core::SnapTargetKind::OutPoint));
+        }
+        targets
+    }
+
+    /// Where a pool item let go `secs` into the timeline goes (#2549): on
+    /// the cut, playhead, start or mark within the snap distance, else on
+    /// the frame under the pointer. Shift held lets go without snapping.
+    fn media_drop_time(state: &AppState, secs: f64, zoom: f32, shift: bool) -> Timecode {
+        let rate = state.sequence().fps.rate();
+        let raw = RationalTime::from_secs_f64(secs.max(0.0), rate);
+        let snap_enabled = state.snap.master && !shift;
+        let threshold = snap_threshold_px() as f64 / zoom.max(1e-6) as f64;
+        let grid = crate::timeline::grid_snap::resolve_grid_interval_secs(state.grid_snap_interval, rate, zoom);
+        Self::find_snap_target(snap_enabled, threshold, &Self::snap_targets_of(state, rate), raw, ClipId::new(), grid, rate, Some(&state.snap))
+            .map_or(raw, |(at, _, _)| at)
+    }
+
     fn find_snap_target(
         snap_enabled: bool,
         snap_threshold_secs: f64,
@@ -12194,25 +12235,7 @@ impl TimelinePanel {
         // Collect all snap points: (time_secs, RationalTime, owner_clip, kind)
         // The kind is plumbed through find_snap_target so commit 3 can render
         // a target-aware on-snap legend ("Clip edge" / "Playhead" / "Marker" …).
-        let snap_targets: Vec<(f64, RationalTime, Option<ClipId>, klipp_core::SnapTargetKind)> = {
-            let mut targets = Vec::new();
-            for track in &state.sequence().tracks {
-                for clip in &track.clips {
-                    targets.push((clip.timeline_in.to_secs_f64(), clip.timeline_in, Some(clip.id), klipp_core::SnapTargetKind::ClipEdge));
-                    targets.push((clip.timeline_out.to_secs_f64(), clip.timeline_out, Some(clip.id), klipp_core::SnapTargetKind::ClipEdge));
-                }
-            }
-            targets.push((state.playhead.to_secs_f64(), state.playhead, None, klipp_core::SnapTargetKind::Playhead));
-            targets.push((0.0, RationalTime { value: 0, rate: fps.rate() }, None, klipp_core::SnapTargetKind::SequenceStart));
-            // Snap to in/out markers if set
-            if let Some(inp) = state.sequence().in_point {
-                targets.push((inp.to_secs_f64(), inp, None, klipp_core::SnapTargetKind::InPoint));
-            }
-            if let Some(outp) = state.sequence().out_point {
-                targets.push((outp.to_secs_f64(), outp, None, klipp_core::SnapTargetKind::OutPoint));
-            }
-            targets
-        };
+        let snap_targets = Self::snap_targets_of(state, fps.rate());
         // Resolve user's grid-snap interval to a concrete seconds value
         // at current zoom + sequence fps. Returns None for GridInterval::Off
         // (the back-compat default) so the find_snap_target post-pass
@@ -17174,6 +17197,20 @@ fn marker_tooltip_text(marker: &klipp_timeline::Marker, duration_secs: Option<f6
     lines.join("\n")
 }
 
+/// What a pool item let go on track `track_idx` at `at` asks for
+/// (#2549): placed there, inserted or laid over what is there as the
+/// timeline's edit mode says.
+fn media_drop_command(media_id: klipp_core::MediaId, track_idx: usize, at: Timecode, mode: klipp_timeline::magnetic::EditMode) -> AppCommand {
+    AppCommand::PlaceMedia {
+        media_id,
+        drop: klipp_core::events::ClipDrop::OnTrackAt {
+            track_index: track_idx,
+            at,
+            overwrite: mode == klipp_timeline::magnetic::EditMode::Overwrite,
+        },
+    }
+}
+
 /// What a drop of files from the Files browser onto track `track_idx`
 /// asks for. The clip can only be placed once its media has loaded,
 /// and loading is asynchronous: appending in the same batch as the load
@@ -17188,6 +17225,57 @@ fn files_drop_commands(paths: Vec<std::path::PathBuf>, track_idx: usize) -> Vec<
             drop: klipp_core::events::ClipDrop::AppendToTrack { track_index: track_idx },
         })
         .collect()
+}
+
+#[cfg(test)]
+mod media_drop_tests {
+    use super::*;
+    use klipp_timeline::magnetic::EditMode;
+
+    /// A state whose video track has clips cut at 4 s and 8 s.
+    fn cut_state() -> (AppState, Timecode) {
+        let mut state = AppState::default();
+        let rate = state.sequence().fps.rate();
+        let vi = state.sequence().tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        let four = RationalTime::from_secs_f64(4.0, rate);
+        let media = klipp_core::MediaId::new();
+        for _ in 0..3 {
+            state.sequences[0].tracks[vi].append_clip(media, four);
+        }
+        state.snap.master = true;
+        (state, four)
+    }
+
+    /// #2549: a pool item let go a little past the cut between the first
+    /// and second clip goes at the cut, inserted in insert mode and laid
+    /// over in overwrite mode. It used to be appended after the last clip.
+    #[test]
+    fn a_pool_drop_near_a_cut_goes_at_the_cut() {
+        let (state, cut) = cut_state();
+        // 3 px past the cut at 100 px a second, inside the snap distance.
+        let at = TimelinePanel::media_drop_time(&state, 4.03, 100.0, false);
+        assert_eq!(at, cut, "snapped to the cut");
+        let media = klipp_core::MediaId::new();
+        assert!(matches!(
+            media_drop_command(media, 0, at, EditMode::Insert),
+            AppCommand::PlaceMedia { media_id, drop: klipp_core::events::ClipDrop::OnTrackAt { track_index: 0, at: a, overwrite: false } } if media_id == media && a == cut
+        ));
+        assert!(matches!(
+            media_drop_command(media, 0, at, EditMode::Overwrite),
+            AppCommand::PlaceMedia { drop: klipp_core::events::ClipDrop::OnTrackAt { overwrite: true, .. }, .. }
+        ));
+    }
+
+    /// Away from any cut, or with Shift held, it goes where it is let go.
+    #[test]
+    fn a_pool_drop_away_from_a_cut_goes_where_it_is_let_go() {
+        let (state, cut) = cut_state();
+        let rate = state.sequence().fps.rate();
+        let at = TimelinePanel::media_drop_time(&state, 5.5, 100.0, false);
+        assert_eq!(at, RationalTime::from_secs_f64(5.5, rate));
+        let unsnapped = TimelinePanel::media_drop_time(&state, 4.03, 100.0, true);
+        assert_ne!(unsnapped, cut, "Shift lets go without snapping");
+    }
 }
 
 #[cfg(test)]

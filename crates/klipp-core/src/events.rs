@@ -994,6 +994,10 @@ pub enum ClipDrop {
     /// Append at the end of one track: a file dropped from the Files
     /// browser onto that track's row.
     AppendToTrack { track_index: usize },
+    /// Into one track at `at`: a pool item dropped on that track's row
+    /// (#2549). Inserted there, moving what follows along, or laid over
+    /// what is there with `overwrite`.
+    OnTrackAt { track_index: usize, at: Timecode, overwrite: bool },
 }
 
 
