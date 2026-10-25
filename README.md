@@ -15,9 +15,9 @@ Edit on a magnetic timeline, grade in scene-linear colour, and automate workflow
 
 Klipp is under active development. Expect rough edges and breaking changes; broad plugin compatibility, reliability hardening, and AMD/Intel GPU validation are ongoing. The latest release candidate, [0.1.0-rc.2](https://github.com/davidkodar/klipp/releases/tag/v0.1.0-rc.2), is out as an unsigned Arch package; there are no stability guarantees yet.
 
-[![Klipp editing workspace with titles, video clips and a music waveform](website/assets/editing.webp)](website/assets/editing.webp)
+[![Klipp Edit page with a harbour shot in the viewer, the media pool, and a timeline of titles, video, music, ambience and voice tracks](website/assets/edit.webp)](website/assets/edit.webp)
 
-[Colour workspace](website/assets/colour.webp) · [Preview the demo](website/README.md#preview) · [Media credits](website/CREDITS.md)
+[Colour page](website/assets/colour.webp) · [Titles](website/assets/titles.webp) · [Sound](website/assets/sound.webp) · [Edit by transcript](website/assets/transcript.webp) · [Showcase film](https://davidkodar.github.io/klipp/#demo) · [Media credits](website/CREDITS.md)
 
 *Klipp* is Swedish for “cut”.
 
