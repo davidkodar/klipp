@@ -4,7 +4,7 @@
 //! All operations return a `MagneticResult` containing an `EditCommand`
 //! that can be pushed to the undo stack.
 
-use crate::magnetic_commands::MagneticEditCommand;
+use crate::magnetic_commands::{InsertSplit, MagneticEditCommand};
 use crate::sequence::{AnchorAlignment, Clip, MagneticAnchor, Sequence, TrackRole};
 use klipp_core::{ClipId, RationalTime};
 
@@ -107,6 +107,36 @@ const SNAP_THRESHOLD_FRAMES: i64 = 8;
 
 pub struct MagneticEditor;
 
+/// Undo an insert's split: take out the two pieces and put the clip
+/// back whole where it was.
+fn unsplit(sequence: &mut Sequence, track_index: usize, split: &Option<InsertSplit>) {
+    let Some(s) = split else { return };
+    let track = &mut sequence.tracks[track_index];
+    track.remove_clip(s.left.id);
+    track.remove_clip(s.right.id);
+    let pos = s.position.min(track.clips.len());
+    track.clips.insert(pos, s.original.clone());
+}
+
+/// Redo an insert: cut the clip it landed inside into the recorded
+/// pieces with the new clip between them, or put the new clip in at its
+/// time.
+fn insert_or_split(sequence: &mut Sequence, track_index: usize, clip: &Clip, split: &Option<InsertSplit>) {
+    let track = &mut sequence.tracks[track_index];
+    if let Some(s) = split {
+        track.remove_clip(s.original.id);
+        let pos = s.position.min(track.clips.len());
+        track.clips.splice(pos..pos, [s.left.clone(), clip.clone(), s.right.clone()]);
+        return;
+    }
+    let pos = track
+        .clips
+        .iter()
+        .position(|c| c.timeline_in >= clip.timeline_in)
+        .unwrap_or(track.clips.len());
+    track.clips.insert(pos, clip.clone());
+}
+
 /// Repack all clip positions on the primary track so they are gapless,
 /// starting from frame 0. Returns RippleRecords for any clips that moved.
 fn repack_primary(sequence: &mut Sequence) -> Vec<RippleRecord> {
@@ -191,6 +221,7 @@ impl MagneticEditor {
             c.timeline_in < at_time && c.timeline_out > at_time
         });
 
+        let mut split = None;
         if let Some(split_idx) = split_clip_idx {
             // Split the clip at at_time
             let original = sequence.tracks[primary_idx].clips[split_idx].clone();
@@ -212,9 +243,10 @@ impl MagneticEditor {
 
             // Remove original, insert left + new_clip + right
             sequence.tracks[primary_idx].clips.remove(split_idx);
-            sequence.tracks[primary_idx].clips.insert(split_idx, right);
+            sequence.tracks[primary_idx].clips.insert(split_idx, right.clone());
             sequence.tracks[primary_idx].clips.insert(split_idx, new_clip.clone());
-            sequence.tracks[primary_idx].clips.insert(split_idx, left);
+            sequence.tracks[primary_idx].clips.insert(split_idx, left.clone());
+            split = Some(InsertSplit { original, left, right, position: split_idx });
         } else {
             sequence.tracks[primary_idx].clips.insert(insert_pos, new_clip.clone());
         }
@@ -234,6 +266,7 @@ impl MagneticEditor {
                 track_index: primary_idx,
                 rippled_clips,
                 cascaded_clips,
+                split,
             },
         }
     }
@@ -710,6 +743,7 @@ impl MagneticEditor {
             track_index: primary_idx,
             rippled_clips,
             cascaded_clips,
+            split: None,
         };
 
         MagneticResult {
@@ -735,13 +769,14 @@ impl MagneticEditor {
         let result = Self::insert_primary(sequence, gap.clone(), at_time, grid_interval_secs, snap_config);
 
         // Re-wrap the command as InsertGap
-        let (rippled_clips, cascaded_clips, track_index) = match result.command {
+        let (rippled_clips, cascaded_clips, track_index, split) = match result.command {
             MagneticEditCommand::InsertPrimary {
                 rippled_clips,
                 cascaded_clips,
                 track_index,
+                split,
                 ..
-            } => (rippled_clips, cascaded_clips, track_index),
+            } => (rippled_clips, cascaded_clips, track_index, split),
             _ => unreachable!(),
         };
 
@@ -751,6 +786,7 @@ impl MagneticEditor {
                 track_index,
                 rippled_clips,
                 cascaded_clips,
+                split,
             },
         }
     }
@@ -1485,6 +1521,7 @@ impl MagneticEditor {
                 track_index,
                 rippled_clips,
                 cascaded_clips,
+                split,
             } => {
                 // Undo cascades first
                 for cr in cascaded_clips.iter().rev() {
@@ -1496,8 +1533,7 @@ impl MagneticEditor {
                 for rr in rippled_clips.iter().rev() {
                     sequence.set_clip_position(rr.clip_id, rr.old_in, rr.old_out);
                 }
-                // If the insert caused a split, we need to re-merge the split clips
-                // For simplicity, repack after restoration
+                unsplit(sequence, *track_index, split);
                 repack_primary(sequence);
             }
             MagneticEditCommand::OverwritePrimary {
@@ -1632,6 +1668,7 @@ impl MagneticEditor {
                 track_index,
                 rippled_clips,
                 cascaded_clips,
+                split,
             } => {
                 // Same as undo InsertPrimary
                 for cr in cascaded_clips.iter().rev() {
@@ -1641,6 +1678,7 @@ impl MagneticEditor {
                 for rr in rippled_clips.iter().rev() {
                     sequence.set_clip_position(rr.clip_id, rr.old_in, rr.old_out);
                 }
+                unsplit(sequence, *track_index, split);
                 repack_primary(sequence);
             }
             MagneticEditCommand::Blade {
@@ -1765,17 +1803,9 @@ impl MagneticEditor {
                 track_index,
                 rippled_clips,
                 cascaded_clips,
+                split,
             } => {
-                // Find insert position
-                let track = &sequence.tracks[*track_index];
-                let pos = track
-                    .clips
-                    .iter()
-                    .position(|c| c.timeline_in >= inserted_clip.timeline_in)
-                    .unwrap_or(track.clips.len());
-                sequence.tracks[*track_index]
-                    .clips
-                    .insert(pos, inserted_clip.clone());
+                insert_or_split(sequence, *track_index, inserted_clip, split);
                 // Apply ripples
                 for rr in rippled_clips {
                     sequence.set_clip_position(rr.clip_id, rr.new_in, rr.new_out);
@@ -1921,16 +1951,9 @@ impl MagneticEditor {
                 track_index,
                 rippled_clips,
                 cascaded_clips,
+                split,
             } => {
-                let track = &sequence.tracks[*track_index];
-                let pos = track
-                    .clips
-                    .iter()
-                    .position(|c| c.timeline_in >= gap_clip.timeline_in)
-                    .unwrap_or(track.clips.len());
-                sequence.tracks[*track_index]
-                    .clips
-                    .insert(pos, gap_clip.clone());
+                insert_or_split(sequence, *track_index, gap_clip, split);
                 for rr in rippled_clips {
                     sequence.set_clip_position(rr.clip_id, rr.new_in, rr.new_out);
                 }
@@ -3052,6 +3075,31 @@ mod tests {
         let c2 = seq.tracks[0].clips.iter().find(|c| c.id == orig_clip2_id).unwrap();
         assert_eq!(c2.timeline_in, orig_clip2_in);
         assert_eq!(c2.timeline_out, orig_clip2_out);
+    }
+
+    /// An insert inside a clip splits it; undo must leave the clip whole
+    /// again, not its two pieces, and redo must split it the same way.
+    #[test]
+    fn undo_of_a_splitting_insert_puts_the_clip_back_whole() {
+        let bounds = |seq: &Sequence| seq.tracks[0].clips.iter().map(|c| (c.id, c.timeline_in, c.timeline_out, c.source_in, c.source_out)).collect::<Vec<_>>();
+        for gap in [false, true] {
+            let mut seq = make_sequence(&[(0, 96)]);
+            let before = bounds(&seq);
+            let result = if gap {
+                MagneticEditor::insert_gap(&mut seq, tc(24), tc(48), None, None)
+            } else {
+                MagneticEditor::insert_primary(&mut seq, media_clip(0, 24), tc(48), None, None)
+            };
+            assert_eq!(seq.tracks[0].clips.len(), 3);
+            let after = bounds(&seq);
+
+            MagneticEditor::apply_inverse(&mut seq, &result.command);
+            assert_eq!(bounds(&seq), before, "gap {gap}: undo");
+            MagneticEditor::apply_forward(&mut seq, &result.command);
+            assert_eq!(bounds(&seq), after, "gap {gap}: redo");
+            MagneticEditor::apply_inverse(&mut seq, &result.command);
+            assert_eq!(bounds(&seq), before, "gap {gap}: undo after redo");
+        }
     }
 
     #[test]

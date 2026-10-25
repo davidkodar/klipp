@@ -4,6 +4,18 @@ use crate::magnetic::{CascadeRecord, RippleRecord};
 use crate::sequence::{Clip, MagneticAnchor, TrackRole};
 use klipp_core::{ClipId, RationalTime};
 
+/// A primary clip an insert landed inside: the clip as it was, the two
+/// pieces it was cut into (under their own ids) and its index on the
+/// track. Undo puts the clip back whole; redo cuts it into the same
+/// pieces, so later steps that name them still find them.
+#[derive(Debug, Clone)]
+pub struct InsertSplit {
+    pub original: Clip,
+    pub left: Clip,
+    pub right: Clip,
+    pub position: usize,
+}
+
 /// All undoable magnetic edit commands.
 /// Each variant stores enough information to fully reverse the operation.
 #[derive(Debug, Clone)]
@@ -14,6 +26,8 @@ pub enum MagneticEditCommand {
         track_index: usize,
         rippled_clips: Vec<RippleRecord>,
         cascaded_clips: Vec<CascadeRecord>,
+        /// The clip the insert landed inside, if it did, and its pieces.
+        split: Option<InsertSplit>,
     },
     OverwritePrimary {
         inserted_clip: Clip,
@@ -80,6 +94,7 @@ pub enum MagneticEditCommand {
         track_index: usize,
         rippled_clips: Vec<RippleRecord>,
         cascaded_clips: Vec<CascadeRecord>,
+        split: Option<InsertSplit>,
     },
     Blade {
         original_clip: Clip,
