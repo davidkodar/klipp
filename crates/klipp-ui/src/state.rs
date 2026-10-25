@@ -1812,6 +1812,9 @@ pub struct AppState {
 
     // Phase 4: About
     pub show_about_dialog: bool,
+    /// The update question or a new version's notice is up, in the middle
+    /// of the window, and keeps the keys.
+    pub update_notice_open: bool,
 
     // Phase 4: Timecode input
     pub editing_timecode: bool,
@@ -4490,6 +4493,7 @@ impl AppState {
             || self.show_new_project_dialog
             || self.show_relink_dialog
             || self.show_about_dialog
+            || self.update_notice_open
             || self.show_autosave_recovery
             || self.show_render_queue
             || self.show_ai_models_dialog
@@ -4672,6 +4676,7 @@ impl Default for AppState {
             show_relink_dialog: false,
             offline_media_ids: Vec::new(),
             show_about_dialog: false,
+            update_notice_open: false,
             editing_timecode: false,
             timecode_input: String::new(),
             fullscreen_overlay_visible: false,
