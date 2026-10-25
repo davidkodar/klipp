@@ -6998,7 +6998,8 @@ fn build_huesat_lut_data(
         if points.is_empty() {
             continue;
         }
-        let lut_f32 = klipp_color::curves::build_curve_lut_f32(points);
+        // The first three run over hue, a circle: they join across red.
+        let lut_f32 = if c < 3 { klipp_color::curves::build_periodic_curve_lut_f32(points) } else { klipp_color::curves::build_curve_lut_f32(points) };
         for (i, &val) in lut_f32.iter().enumerate() {
             lut[c * 256 + i] = val;
         }
