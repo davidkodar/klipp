@@ -1573,6 +1573,31 @@ fn an_export_keeps_the_briefs_loudness_unless_told_otherwise() {
     assert_eq!((s.target_lufs, r["export"]["loudness_from"].as_str()), (Some(-23.0), Some("the call")), "{r}");
 }
 
+/// #2667: the reply says the range an export covers: the In and Out
+/// points when both are set, else the whole timeline.
+#[test]
+fn an_export_says_it_covers_the_in_out_range() {
+    let mut h = harness();
+    let media = h.media_pool.write().unwrap().add(klipp_media::MediaItem::synthetic_for_test("/tmp/export-range-fixture.mov".into(), None));
+    for c in h.sequence.write().unwrap().tracks.iter_mut().flat_map(|t| t.clips.iter_mut()) {
+        c.kind = klipp_timeline::ClipKind::Media { media_id: media };
+    }
+    let export = |h: &mut Harness, path: &str| {
+        let r = h.ok(json!({ "method": "export", "path": path }));
+        assert!(matches!(h.cmd_rx.recv_timeout(std::time::Duration::from_secs(5)), Ok(klipp_core::AppCommand::ExportSequence { .. })));
+        r
+    };
+    let r = export(&mut h, "/tmp/klipp-range-whole.mp4");
+    assert_eq!(r["export"]["range"], "the whole timeline", "{r}");
+    {
+        let mut seq = h.sequence.write().unwrap();
+        seq.in_point = Some(klipp_core::RationalTime::from_secs_f64(20.0, 25));
+        seq.out_point = Some(klipp_core::RationalTime::from_secs_f64(30.0, 25));
+    }
+    let r = export(&mut h, "/tmp/klipp-range-in-out.mp4");
+    assert_eq!((r["export"]["range"]["in"].as_f64(), r["export"]["range"]["out"].as_f64()), (Some(20.0), Some(30.0)), "{r}");
+}
+
 /// #2477: an export chooses its output transfer, under the dialog's
 /// rules: HDR at 10 bits in hevc, h264 or ProRes, a mastering peak for PQ
 /// only, and the reply says what it delivers.
