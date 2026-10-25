@@ -46,7 +46,7 @@ Klipp is written in Rust as a 42-crate workspace. Pictures are processed on the 
 
 ## Try Klipp
 
-The primary target is **x86_64 Arch Linux / Omarchy with a working Vulkan driver**. A Vulkan 1.1 GPU is required; integrated GPUs are supported in principle, with broader hardware validation ongoing. Other distributions are less tested.
+The primary target is **x86_64 Arch Linux and Arch-based distributions with a working Vulkan driver**. A Vulkan 1.1 GPU is required; integrated GPUs are supported in principle, with broader hardware validation ongoing. Other distributions are less tested.
 
 To install the release candidate, download `klipp-0.1.0rc.2-1-x86_64.pkg.tar.zst` and `SHA256SUMS` from the [release page](https://github.com/davidkodar/klipp/releases/tag/v0.1.0-rc.2), then:
 
@@ -67,7 +67,7 @@ klipp
 
 Run `makepkg` as your normal user. If prompted for an ONNX Runtime provider, choose `onnxruntime-cpu` for the standard setup; NVIDIA/CUDA acceleration is optional. The first build needs substantial time and disk space. AI models download on demand.
 
-See the [installation guide](packaging/README.md) for driver checks, updates, removal, and troubleshooting. For development and other distributions, see [Building](docs/project-reference.md#building).
+See the [installation guide](packaging/README.md) for driver checks, updates, removal, and troubleshooting. Ubuntu, Fedora and other distributions have no package yet; build from source with [Building](docs/project-reference.md#building). They are less tested.
 
 ## Local AI and external assistants
 
