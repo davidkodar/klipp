@@ -4478,8 +4478,13 @@ impl AppState {
     /// Returns true when any modal dialog, window, or popup menu is open.
     /// Used to block background interactions like skimming, timeline hover, etc.
     pub fn has_modal_open(&self) -> bool {
-        self.modal_or_popup_open
-            || self.show_preferences
+        self.modal_or_popup_open || self.dialog_open()
+    }
+
+    /// Whether a dialog that keeps the keys is open: its own fields and
+    /// buttons take them, and no shortcut reaches the app behind it (#2551).
+    pub fn dialog_open(&self) -> bool {
+        self.show_preferences
             || self.show_unsaved_dialog
             || self.show_export_dialog
             || self.show_new_project_dialog

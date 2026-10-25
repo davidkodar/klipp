@@ -37,7 +37,7 @@ pub fn browser_search_field(
     placeholder: &str,
     state: &mut AppState,
 ) {
-    egui::Frame::none()
+    let framed = egui::Frame::none()
         .fill(theme.bg_raised)
         .stroke(egui::Stroke::new(1.0_f32, theme.border))
         .rounding(4.0)
@@ -72,7 +72,16 @@ pub fn browser_search_field(
                     egui::Stroke::new(1.0_f32, theme.accent),
                 );
             }
+            (resp.id, resp.rect)
         });
+    // The frame around the text is the field too: a click on its padding
+    // (most of a narrow field's height) used to focus nothing, and the
+    // typing that followed ran single-key shortcuts (#2551).
+    let (text_id, text_rect) = framed.inner;
+    let on_padding = ui.input(|i| i.pointer.primary_clicked() && i.pointer.interact_pos().is_some_and(|p| !text_rect.contains(p)));
+    if on_padding && ui.rect_contains_pointer(framed.response.rect) {
+        ui.memory_mut(|m| m.request_focus(text_id));
+    }
 }
 
 /// One pending file-browser selection action, captured during the row loop
@@ -6799,5 +6808,42 @@ mod files_row_style_tests {
             cmds.extend(frame(vec![primary(false)]).1);
             assert!(cmds.iter().any(|c| matches!(c, AppCommand::OpenVisualSearch)), "Files pinned: {files_pinned}: {cmds:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod search_field_tests {
+    use super::browser_search_field;
+
+    /// #2551: in a narrow panel a click just inside the field's frame,
+    /// beside the text, focused nothing, and the typing that followed ran
+    /// shortcuts. It focuses the field, and the typing goes into it.
+    #[test]
+    fn a_click_on_the_fields_padding_types_into_it() {
+        let ctx = egui::Context::default();
+        let theme = crate::theme::KlippTheme::default();
+        let mut state = crate::state::AppState::default();
+        let mut query = String::new();
+        let mut frame_rect = egui::Rect::NOTHING;
+        let mut run = |events: Vec<egui::Event>, query: &mut String, frame_rect: &mut egui::Rect| {
+            let input = egui::RawInput { events, screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0))), ..Default::default() };
+            let _ = ctx.run(input, |ctx| {
+                egui::SidePanel::left("library").exact_width(120.0).resizable(false).show(ctx, |ui| {
+                    *frame_rect = ui.vertical(|ui| browser_search_field(ui, &theme, query, "Search", &mut state)).response.rect;
+                });
+            });
+        };
+        run(vec![], &mut query, &mut frame_rect);
+        run(vec![], &mut query, &mut frame_rect);
+        // Just inside the frame's left edge: in its padding, beside the
+        // text and farther from it than egui's own reach for a click.
+        let at = egui::pos2(frame_rect.left() + 2.0, frame_rect.center().y);
+        let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        run(vec![egui::Event::PointerMoved(at), button(true)], &mut query, &mut frame_rect);
+        run(vec![button(false)], &mut query, &mut frame_rect);
+        run(vec![], &mut query, &mut frame_rect);
+        assert!(ctx.wants_keyboard_input(), "the field has the keys");
+        run(vec![egui::Event::Text("v".into())], &mut query, &mut frame_rect);
+        assert_eq!(query, "v");
     }
 }
