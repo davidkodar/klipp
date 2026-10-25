@@ -1,3 +1,4 @@
+use crate::widgets::menu::{SubmenuRows, MenuRows};
 use crate::state::AppState;
 use crate::theme::KlippTheme;
 use klipp_core::AppCommand;
@@ -134,7 +135,7 @@ pub fn show(
         }
 
         // Right-click context menu
-        resp.context_menu(|ui| {
+        resp.context_menu_rows(|ui| {
             if ui.button("Rename...").clicked() {
                 state.renaming_sequence_idx = Some(i);
                 state.rename_sequence_buf = name.clone();
@@ -149,7 +150,7 @@ pub fn show(
             }
             // A copy at another aspect, each picture following its subject
             // (#2211).
-            ui.menu_button("New Version at Aspect", |ui| {
+            ui.menu_rows("New Version at Aspect", |ui| {
                 use crate::app::aspect_version::{aspect_size, has_aspect, ASPECTS};
                 let frame = state.sequences[i].resolution;
                 for (label, a, b) in ASPECTS.into_iter().filter(|(_, a, b)| !has_aspect(frame, (*a, *b))) {

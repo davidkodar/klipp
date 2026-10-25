@@ -1,6 +1,7 @@
 //! The Colour workspace's bottom: its toggle bar, its tools, the scopes and
 //! their settings, and the node strip (#826).
 
+use crate::widgets::menu::SubmenuRows;
 use klipp_timeline::GradeAccess;
 use super::*;
 
@@ -139,7 +140,7 @@ impl KlippApp {
                     self.state.show_node_strip = !self.state.show_node_strip;
                     ui.ctx().request_repaint();
                 }
-                ui.menu_button("▾", |ui| {
+                ui.menu_rows("▾", |ui| {
                     use crate::layout_state::NodeGraphPlacement;
                     for (placement, label) in [(NodeGraphPlacement::Below, "Below viewer"), (NodeGraphPlacement::Right, "Right of viewer")] {
                         if ui.selectable_label(self.layout.node_graph_placement == placement, label).clicked() {

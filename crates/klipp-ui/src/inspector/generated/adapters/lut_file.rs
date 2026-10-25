@@ -2,6 +2,7 @@
 //! Clear, as the grade's LUT node offers them, written as the effect's
 //! `path` parameter: a look from the bundled library by its name there
 //! (`bundled:<name>`), so the project opens on any machine.
+use crate::widgets::menu::SubmenuRows;
 
 use crate::inspector::generated::custom::CustomEditor;
 use crate::inspector::generated::RowCtx;
@@ -41,10 +42,10 @@ impl CustomEditor for LutFileEditor {
                 );
             }
             if let Some(dir) = klipp_core::assets::bundled_luts_dir() {
-                ui.menu_button("Bundled", |ui| {
+                ui.menu_rows("Bundled", |ui| {
                     egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
                         for (category, files) in crate::panels::node_inspector::bundled_luts(dir) {
-                            ui.menu_button(category, |ui| {
+                            ui.menu_rows(category, |ui| {
                                 for file in files {
                                     let name = file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
                                     let file = portable(&file);

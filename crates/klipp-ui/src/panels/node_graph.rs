@@ -1,3 +1,4 @@
+use crate::widgets::menu::MenuRows;
 use crate::theme::KlippTheme;
 use klipp_core::{AppCommand, ClipId};
 use klipp_nodes::{NodeGraph, NodeId, NodeKind};
@@ -145,7 +146,7 @@ impl NodeGraphPanel {
                     if resp.clicked() {
                         *selected_node = Some(node.id);
                     }
-                    resp.context_menu(|ui| {
+                    resp.context_menu_rows(|ui| {
                         if node.kind != NodeKind::Source && node.kind != NodeKind::Output {
                             let toggle = if node.enabled { "Bypass" } else { "Enable" };
                             if ui.button(toggle).clicked() {

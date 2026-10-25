@@ -1,3 +1,4 @@
+use crate::widgets::menu::SubmenuRows;
 use super::title_curve::{self, TitleCurveParam};
 use crate::state::{AppState, CameraKeyMenu, CameraKeyRef, DraggingCameraKey, KeyframeParamKind, SelectedKeyframe, KeyframeContextMenu};
 use crate::theme::KlippTheme;
@@ -149,14 +150,14 @@ fn start_track_menu(ui: &mut egui::Ui, state: &AppState, clip_id: klipp_core::Cl
     use crate::widgets::menu::{menu_body, menu_item};
     let clip = state.sequences[state.active_sequence_idx].all_clips().find(|c| c.id == clip_id)?;
     let mut picked = None;
-    ui.menu_button(egui::RichText::new("+ Track").size(10.0), |ui| {
+    ui.menu_rows(egui::RichText::new("+ Track").size(10.0), |ui| {
         menu_body(ui, |ui| {
             let nodes = startable_tracks(clip);
             if nodes.is_empty() {
                 ui.label(egui::RichText::new("Every parameter has keys").size(10.0));
             }
             for (name, params) in nodes {
-                ui.menu_button(name, |ui| {
+                ui.menu_rows(name, |ui| {
                     menu_body(ui, |ui| {
                         for (label, param, value) in params {
                             if menu_item(ui, &label, "").clicked() {
@@ -901,7 +902,7 @@ impl CurveEditorPanel {
                 };
                 let addable: Vec<(String, CurveParam)> = candidates.into_iter().filter(|(_, c)| !self.curves.iter().any(|s| s.param == *c)).collect();
                 if !addable.is_empty() {
-                    ui.menu_button(egui::RichText::new("Show with").size(10.0), |ui| {
+                    ui.menu_rows(egui::RichText::new("Show with").size(10.0), |ui| {
                         for (label, curve) in addable {
                             if ui.button(label).clicked() {
                                 self.show_with(curve);
@@ -1657,7 +1658,7 @@ impl CurveEditorPanel {
             .collect();
         let masked = matches!(kind, KeyframeParamKind::Mask(_));
         ui.add_enabled_ui(!menus.is_empty(), |ui| {
-            ui.menu_button(egui::RichText::new("Curve \u{25BE}").size(10.0), |ui| {
+            ui.menu_rows(egui::RichText::new("Curve \u{25BE}").size(10.0), |ui| {
                 use klipp_core::Interpolation as I;
                 let current = one.as_ref().map(|k| k.interpolation);
                 let mut pick = None;
@@ -1668,7 +1669,7 @@ impl CurveEditorPanel {
                 }
                 if !masked {
                     for (family, eases) in klipp_core::keyframe::Ease::PRESETS {
-                        ui.menu_button(family, |ui| {
+                        ui.menu_rows(family, |ui| {
                             for (ease, label) in eases.into_iter().zip(["In", "Out", "In-Out"]) {
                                 if ui.selectable_label(current == Some(I::Eased(ease)), label).clicked() {
                                     pick = Some(I::Eased(ease));
@@ -1687,7 +1688,7 @@ impl CurveEditorPanel {
                 }
             });
             if !masked {
-                ui.menu_button(egui::RichText::new("Handles \u{25BE}").size(10.0), |ui| {
+                ui.menu_rows(egui::RichText::new("Handles \u{25BE}").size(10.0), |ui| {
                     let current = one.as_ref().map(|k| k.handles);
                     for (handles, label) in klipp_core::Handles::ALL {
                         if ui.selectable_label(current == Some(handles), label).clicked() {
@@ -1782,7 +1783,7 @@ impl CurveEditorPanel {
         // The selected keys stretched or squeezed in time, about the first
         // of them or the playhead.
         ui.add_enabled_ui(selected.len() >= 2, |ui| {
-            ui.menu_button(egui::RichText::new("Scale\u{2026}").size(10.0), |ui| {
+            ui.menu_rows(egui::RichText::new("Scale\u{2026}").size(10.0), |ui| {
                 ui.horizontal(|ui| {
                     ui.label("Time");
                     ui.add(egui::DragValue::new(&mut self.scale_pct).range(5.0..=1000.0).suffix(" %").speed(1.0));

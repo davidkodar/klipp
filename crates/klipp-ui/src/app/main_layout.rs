@@ -1,6 +1,7 @@
 //! The window's layout each frame: the launch screen, the full-screen viewer,
 //! the main layout's panels and rails and their resizers, and which panels a
 //! workspace shows (#826).
+use crate::widgets::menu::MenuRows;
 
 use klipp_timeline::GradeAccess;
 use super::*;
@@ -1078,7 +1079,7 @@ impl KlippApp {
                                         all_cmds.push(AppCommand::SwitchGradeVersion { clip_id, version_index: i });
                                     }
                                     let current_name = clip.grade_versions()[i].name.clone();
-                                    resp.context_menu(|ui| {
+                                    resp.context_menu_rows(|ui| {
                                         // The version's name, typed (#902): Rename used
                                         // to write a fixed "Version N".
                                         let id = ui.id().with(("grade_version_name", clip_id.0, i));
@@ -1176,7 +1177,7 @@ impl KlippApp {
                                 };
                                 let resp = resp.on_hover_text(hover);
                                 let has_grade = still.grade.is_some();
-                                resp.context_menu(|ui| {
+                                resp.context_menu_rows(|ui| {
                                     let why = if has_grade { "Select the clips to grade" } else { "This still was grabbed before stills kept their grade" };
                                     let can = has_grade && !grade_targets.is_empty();
                                     let (apply_label, apply_hover, add_label, add_hover) = if grading_timeline {

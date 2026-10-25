@@ -1,3 +1,4 @@
+use crate::widgets::menu::SubmenuRows;
 use crate::state::{
     PaneConfig, PaneScopeSettings, ScopeOptions, ScopeLayout, ScopeScale,
     ScopeType, ScopeWindowState, VectorscopeScaleStyle, WaveformChannel, WaveformPaintMode,
@@ -1443,7 +1444,7 @@ fn draw_dot_menu(
 
                 // The level units of every waveform, parade and histogram
                 // pane at once; a pane's own settings can still differ.
-                ui.menu_button("Waveform Scale Style", |ui| {
+                ui.menu_rows("Waveform Scale Style", |ui| {
                     let scales = [
                         (ScopeScale::TenBit, "0 \u{2013} 1023 (10-bit)"),
                         (ScopeScale::Ire, "0 \u{2013} 100 IRE"),
@@ -1468,7 +1469,7 @@ fn draw_dot_menu(
                 });
 
                 // Vectorscope Scale Style submenu
-                ui.menu_button("Vectorscope Scale Style", |ui| {
+                ui.menu_rows("Vectorscope Scale Style", |ui| {
                     for val in [VectorscopeScaleStyle::SeventyFive, VectorscopeScaleStyle::Hundred] {
                         let prefix = if state.vectorscope_scale == val { "\u{2022} " } else { "   " };
                         if ui.button(format!("{prefix}{}", val.label())).clicked() {
@@ -1496,7 +1497,7 @@ fn draw_dot_menu(
                 ui.separator();
 
                 // Ratio submenu
-                ui.menu_button("Ratio", |ui| {
+                ui.menu_rows("Ratio", |ui| {
                     for (label, _) in [("Equal (1:1)", 0), ("Wide (2:1)", 1), ("Tall (1:2)", 2)] {
                         if ui.button(label).clicked() {
                             ui.close_menu();
@@ -1505,7 +1506,7 @@ fn draw_dot_menu(
                 });
 
                 // Quality submenu
-                ui.menu_button("Quality", |ui| {
+                ui.menu_rows("Quality", |ui| {
                     let qualities = [
                         (klipp_core::ScopeQuality::Low, "Draft (every 4px)"),
                         (klipp_core::ScopeQuality::Medium, "Standard (every 2px)"),

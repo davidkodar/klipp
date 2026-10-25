@@ -1,3 +1,4 @@
+use crate::widgets::menu::MenuRows;
 use crate::browser::effect_registry::{EffectEntry, EffectSource};
 use crate::browser::effects_tab::{EffectCategory, EffectSort};
 use crate::drag_drop::DragPayload;
@@ -593,7 +594,7 @@ pub fn show(
 
                     // Right-click: favourite toggle (matches video FX
                     // tab's affordance).
-                    click_resp.context_menu(|ui| {
+                    click_resp.context_menu_rows(|ui| {
                         let is_fav = favorite_effects.iter().any(|n| n == &entry.name);
                         let label = if is_fav {
                             "Remove from Favorites"

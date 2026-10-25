@@ -1,3 +1,4 @@
+use crate::widgets::menu::{SubmenuRows, MenuRows};
 use crate::inspector::keyframe_selection::FrameSelection;
 use crate::icons::Icon;
 use crate::presets::{self, ToolPreset, ToolScope};
@@ -674,7 +675,7 @@ impl NodeInspectorPanel {
 
         ui.horizontal(|ui| {
             ui.add_space(8.0);
-            ui.menu_button(egui::RichText::new("+ Add Mask").size(11.0), |ui| {
+            ui.menu_rows(egui::RichText::new("+ Add Mask").size(11.0), |ui| {
                 if ui.button("Circle").clicked() {
                     masks.masks.push(klipp_core::Mask {
                         shape: klipp_core::MaskShape::Circle {
@@ -791,7 +792,7 @@ impl NodeInspectorPanel {
                     // Its copy and its place in the stack, from its menu (#74).
                     let header = ui.add(egui::Label::new(egui::RichText::new(format!("{title} \u{00B7} {shape_label}"))
                         .size(11.0).color(theme.text_accent)).sense(egui::Sense::click()));
-                    header.context_menu(|ui| crate::widgets::menu::menu_body(ui, |ui| {
+                    header.context_menu_rows(|ui| crate::widgets::menu::menu_body(ui, |ui| {
                         if crate::widgets::menu::menu_item(ui, "Duplicate", "").clicked() {
                             duplicate_this = true;
                             ui.close_menu();
@@ -1049,7 +1050,7 @@ impl NodeInspectorPanel {
                         }
                     }
                     if info.has_keyframes {
-                        diamond_resp.context_menu(|ui| {
+                        diamond_resp.context_menu_rows(|ui| {
                             if ui.button("Clear all keyframes").clicked() {
                                 cmds.push(AppCommand::ClearMaskKeyframes {
                                     clip_id, node_id, mask_index: mask_idx,
@@ -1586,7 +1587,7 @@ impl NodeInspectorPanel {
             } else {
                 ui.horizontal(|ui| {
                     ui.add_space(12.0);
-                    ui.menu_button(egui::RichText::new("+ Add Mask").size(11.0), |ui| {
+                    ui.menu_rows(egui::RichText::new("+ Add Mask").size(11.0), |ui| {
                         if ui.button("Circle").clicked() {
                             cmds.push(AppCommand::AddMaskShape {
                                 clip_id,
@@ -3847,7 +3848,7 @@ impl NodeInspectorPanel {
                     }
                     if !presets.is_empty() {
                         ui.separator();
-                        ui.menu_button("Delete...", |ui| {
+                        ui.menu_rows("Delete...", |ui| {
                             let mut to_delete = None;
                             for preset in presets.iter() {
                                 if ui.button(&preset.name).clicked() {
@@ -4064,10 +4065,10 @@ pub(crate) fn lut_picker(ui: &mut egui::Ui, params: &NodeParams, node_id: NodeId
             );
         }
         if let Some(dir) = klipp_core::assets::bundled_luts_dir() {
-            ui.menu_button("Bundled", |ui| {
+            ui.menu_rows("Bundled", |ui| {
                 egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
                     for (category, files) in bundled_luts(dir) {
-                        ui.menu_button(category, |ui| {
+                        ui.menu_rows(category, |ui| {
                             for path in files {
                                 let name = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
                                 if ui.selectable_label(params.lut_path.as_ref() == Some(&path), name).clicked() {
@@ -4193,7 +4194,7 @@ fn bypass_keys(ui: &mut egui::Ui, keys: &[klipp_core::Keyframe], effective_on: b
         }
     }
     if !keys.is_empty() {
-        diamond_resp.context_menu(|ui| {
+        diamond_resp.context_menu_rows(|ui| {
             if let Some(key) = selected {
                 let step = key.interpolation == klipp_core::Interpolation::Step;
                 if ui.button(format!("{}Step (Hold)", if step { "  * " } else { "    " })).clicked() {

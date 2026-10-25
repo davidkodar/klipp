@@ -1,3 +1,4 @@
+use crate::widgets::menu::SubmenuRows;
 use crate::icons::Icon;
 use crate::state::{AppState, PanelKind};
 use klipp_core::{AppCommand, MarkerColor, MarkerId, MarkerKind, RationalTime};
@@ -103,7 +104,7 @@ impl MarkersPanel {
                     ui.with_layout(
                         egui::Layout::right_to_left(egui::Align::Center),
                         |ui| {
-                            ui.menu_button("Review", |ui| {
+                            ui.menu_rows("Review", |ui| {
                                 if ui.button("Export Review Copy\u{2026}").on_hover_text("Render the sequence with its timecode and review round burned in, and a comment file beside it").clicked() {
                                     let name = format!("{}-review.mp4", state.sequence().name.replace(['/', '\\'], "-"));
                                     crate::file_dialog::spawn(move || {

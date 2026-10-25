@@ -8,6 +8,7 @@
 //! producer in the graph), the Placement row's resolved cut, and its
 //! parameters. A grade group or any node the stack can't edit opens the
 //! graph at it instead.
+use crate::widgets::menu::SubmenuRows;
 
 use crate::inspector::generated::adapters::effect_card;
 use crate::inspector::generated::{effect_value, Entry, NodeRows, RowCtx};
@@ -284,7 +285,7 @@ pub fn add_effects_command(state: &AppState, clip: &Clip, effects: &[klipp_effec
 fn add_menu(ui: &mut egui::Ui, clip: &Clip, view: &StackView, cmds: &mut Vec<AppCommand>) {
     let Some(after) = add_after(view) else { return };
     ui.add_space(6.0);
-    ui.menu_button("+ Add effect", |ui| {
+    ui.menu_rows("+ Add effect", |ui| {
         let mut types: Vec<_> = effect_types().collect();
         types.sort_by_key(|t| t.desc.name);
         egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {

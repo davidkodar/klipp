@@ -1,6 +1,7 @@
 //! Colour: the grade's node graph and its nodes, grade groups and the timeline
 //! grade, sampling the picture (balance, qualifier, hue curves), tracked
 //! windows, grade stills and LUT versions (#826).
+use crate::widgets::menu::SubmenuRows;
 
 use klipp_timeline::GradeAccess;
 use super::*;
@@ -141,7 +142,7 @@ impl KlippApp {
             (Some(g), None) => egui::RichText::new(format!("{} \u{25BE}", g.name)),
             (None, _) => egui::RichText::new("Group \u{25BE}"),
         };
-        ui.menu_button(menu_label, |ui| {
+        ui.menu_rows(menu_label, |ui| {
             if let Some(g) = &shown {
                 for (stage, tip) in [
                     (GradeStage::Pre, "Before each member's own grade, on the footage as decoded: a camera's or a scene's shared balance."),
@@ -3778,7 +3779,7 @@ pub(super) fn grade_track_menu(ui: &mut egui::Ui, state: &mut crate::state::AppS
         None => egui::RichText::new("Track"),
     };
     let mut pick = None;
-    ui.menu_button(label, |ui| {
+    ui.menu_rows(label, |ui| {
         for (id, name, graded) in &tracks {
             let text = if *graded { format!("{name} \u{25CF}") } else { name.clone() };
             if ui.selectable_label(state.grade_track == Some(*id), text).on_hover_text("Grade this track: after each of its clips' own grades").clicked() {
