@@ -152,13 +152,10 @@ fn key_in_label(label: &str) -> bool {
     label.strip_suffix(')').and_then(|l| l.rfind(" (").map(|at| &l[at + 2..])).is_some_and(is_key)
 }
 
-/// What breaks the one row layout in the open menu that draws `anchor`
-/// (#2632): a row whose text starts neither at the label column the
-/// menu's rows share nor ends at its shortcut column, a label that
-/// fakes the slot with a leading check or spaces, and text that wraps.
-/// `shapes` is a frame's output with the menu open.
+/// The text of the open menu holding the row `anchor`: each with where it
+/// is drawn and how many lines it takes.
 #[cfg(test)]
-pub(crate) fn row_problems(shapes: &[egui::epaint::ClippedShape], anchor: &str) -> Vec<String> {
+fn menu_texts(shapes: &[egui::epaint::ClippedShape], anchor: &str) -> Result<Vec<(String, egui::Rect, usize)>, String> {
     let texts: Vec<(egui::Rect, &egui::epaint::TextShape)> = shapes
         .iter()
         .filter_map(|s| match &s.shape {
@@ -167,7 +164,7 @@ pub(crate) fn row_problems(shapes: &[egui::epaint::ClippedShape], anchor: &str) 
         })
         .collect();
     let Some(anchor_rect) = texts.iter().rev().find(|(_, t)| t.galley.text() == anchor).map(|(_, t)| egui::Rect::from_min_size(t.pos, t.galley.size())) else {
-        return vec![format!("{anchor:?} is not drawn")];
+        return Err(format!("{anchor:?} is not drawn"));
     };
     // The menu is the last box drawn round the anchor that is taller
     // than a few rows: its popup frame, painted over the panels. A
@@ -192,7 +189,7 @@ pub(crate) fn row_problems(shapes: &[egui::epaint::ClippedShape], anchor: &str) 
         .filter(|(_, r)| r.contains_rect(anchor_rect) && r.height() > 3.0 * anchor_rect.height())
         .max_by_key(|(i, _)| *i)
     else {
-        return vec![format!("no menu frame round {anchor:?}")];
+        return Err(format!("no menu frame round {anchor:?}"));
     };
     // The menu's own text: painted after its frame, so not what lies
     // under it in a panel.
@@ -204,19 +201,47 @@ pub(crate) fn row_problems(shapes: &[egui::epaint::ClippedShape], anchor: &str) 
         })
         .filter(|(_, r, _)| menu.contains(r.center()))
         .collect();
-    // The column most rows share, on each side.
-    let mode = |xs: Vec<f32>| {
-        let mut best = (0, 0.0);
-        for x in &xs {
-            let n = xs.iter().filter(|y| (*y - x).abs() < 0.75).count();
-            if n > best.0 {
-                best = (n, *x);
-            }
+    Ok(rows)
+}
+
+/// The column most of `xs` share.
+#[cfg(test)]
+fn column(xs: Vec<f32>) -> f32 {
+    let mut best = (0, 0.0);
+    for x in &xs {
+        let n = xs.iter().filter(|y| (*y - x).abs() < 0.75).count();
+        if n > best.0 {
+            best = (n, *x);
         }
-        best.1
+    }
+    best.1
+}
+
+/// The labels of the open menu holding the row `anchor`, top to bottom:
+/// its rows, not their keys or headings (#2674).
+#[cfg(test)]
+pub(crate) fn row_labels(shapes: &[egui::epaint::ClippedShape], anchor: &str) -> Vec<String> {
+    let Ok(rows) = menu_texts(shapes, anchor) else { return Vec::new() };
+    let label_x = column(rows.iter().map(|(_, r, _)| r.left()).collect());
+    let mut labels: Vec<(f32, String)> = rows.into_iter().filter(|(_, r, _)| (r.left() - label_x).abs() < 0.75).map(|(t, r, _)| (r.top(), t)).collect();
+    labels.sort_by(|a, b| a.0.total_cmp(&b.0));
+    labels.into_iter().map(|(_, t)| t).collect()
+}
+
+/// What breaks the one row layout in the open menu that draws `anchor`
+/// (#2632): a row whose text starts neither at the label column the
+/// menu's rows share nor ends at its shortcut column, a label that
+/// fakes the slot with a leading check or spaces, and text that wraps.
+/// `shapes` is a frame's output with the menu open.
+#[cfg(test)]
+pub(crate) fn row_problems(shapes: &[egui::epaint::ClippedShape], anchor: &str) -> Vec<String> {
+    let rows = match menu_texts(shapes, anchor) {
+        Ok(rows) => rows,
+        Err(why) => return vec![why],
     };
-    let label_x = mode(rows.iter().map(|(_, r, _)| r.left()).collect());
-    let key_x = mode(rows.iter().filter(|(_, r, _)| (r.left() - label_x).abs() >= 0.75).map(|(_, r, _)| r.right()).collect());
+    // The column most rows share, on each side.
+    let label_x = column(rows.iter().map(|(_, r, _)| r.left()).collect());
+    let key_x = column(rows.iter().filter(|(_, r, _)| (r.left() - label_x).abs() >= 0.75).map(|(_, r, _)| r.right()).collect());
     let mut problems = Vec::new();
     for (text, rect, lines) in &rows {
         // A row's icon or check, in the slot before the label column.

@@ -741,6 +741,20 @@ pub fn show(
             crate::panels::timeline::track_attribute_items(ui, state, track_idx, &mut cmds);
             ui.separator();
 
+            // Locking the track and its height, here rather than in each
+            // clip's menu (#2674).
+            let (locked, custom_height) = {
+                let t = &state.sequence().tracks[track_idx];
+                (t.locked, t.custom_height.is_some())
+            };
+            if menu_toggle(ui, "Lock Track", "", locked).clicked() {
+                cmds.push(AppCommand::SetTrackLocked { track_id, locked: !locked });
+                ui.close_menu();
+            }
+            if custom_height && ui.button("Reset Track Height").clicked() {
+                cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: None });
+                ui.close_menu();
+            }
             // Sync lock (#915): a ripple on another track moves this one too.
             let sync_on = state.sequence().tracks[track_idx].sync_lock;
             if menu_toggle(ui, "Sync Lock", "", sync_on)

@@ -8449,795 +8449,643 @@ impl TimelinePanel {
                 return;
             }
             if let Some(clip_id) = state.selected_clip {
-                // The clip's host track kind drives video-only /
-                // audio-only filtering below. Pro-NLE convention:
-                // strict filter, never gray-out — grayed items just
-                // clutter without aiding discovery. Linked-pair items
-                // (Reveal Linked …) deliberately appear in BOTH
-                // menus so they remain reachable from either side.
+                // The clip's menu (#2674): everyday actions at the top,
+                // the rest in a submenu a task, and only what applies to
+                // this clip now: an item that can't is left out, not
+                // greyed, and a submenu with nothing in it is too. Paste
+                // stays, greyed with nothing to paste, so it is always in
+                // the same place. Linked-pair items (Reveal Linked …)
+                // appear on both sides of a pair.
+                let Some(clip) = state.sequence().all_clips().find(|c| c.id == clip_id).cloned() else { return };
                 let track_kind = state.sequence().tracks.get(track_idx).map(|t| t.kind);
                 let is_video_track = track_kind == Some(TrackKind::Video);
-
-                // ── Name and colour (#920) ──
-                // Of the whole selection when this clip is part of it.
+                let is_audio_track = track_kind == Some(TrackKind::Audio);
+                // Of the whole selection when this clip is part of it (#920).
                 let targets: Vec<klipp_core::ClipId> = if state.selected_clips.len() > 1 && state.selected_clips.contains(&clip_id) {
                     state.selected_clips.clone()
                 } else {
                     vec![clip_id]
                 };
-                let (own_name, own_colour, own_flag) = state.sequence().find_clip(clip_id)
-                    .map(|(ti, ci)| {
-                        let c = &state.sequence().tracks[ti].clips[ci];
-                        (c.name.clone().unwrap_or_default(), c.colour_label, c.grade_flag)
-                    })
-                    .unwrap_or_default();
+                let multi_selected = state.selected_clips.len() > 1 && state.selected_clips.contains(&clip_id);
+                let media_id = clip.media_id();
+                let media = media_id.and_then(|m| state.media_pool.get(&m));
+                let has_sound = media.is_some_and(|m| m.has_audio);
+                let file_there = matches!(clip.kind, klipp_timeline::ClipKind::Media { .. }) && media.is_some_and(|m| m.path.exists());
+                let stereo = clip.channel_config == klipp_timeline::ChannelConfig::Default && media.is_some_and(|m| m.audio_channels == Some(2));
+                let title_data = clip.title_data().cloned();
+                let is_compound = matches!(clip.kind, klipp_timeline::ClipKind::Sequence { .. });
+                let edit_key = |action: &str| kb.display_for(action);
+
+                // ── Cut, copy, paste, duplicate, delete (#845) ──
+                if ui.add(egui::Button::new("Cut").shortcut_text(edit_key("cut_clip"))).clicked() {
+                    cmds.push(AppCommand::CutClip { clip_id });
+                    ui.close_menu();
+                }
+                if ui.add(egui::Button::new("Copy").shortcut_text(edit_key("copy_clip"))).clicked() {
+                    cmds.push(AppCommand::CopyClip { clip_id });
+                    ui.close_menu();
+                }
+                if ui.add_enabled(state.clipboard.is_some(), egui::Button::new("Paste at Playhead").shortcut_text(edit_key("paste_clip"))).clicked() {
+                    cmds.push(AppCommand::PasteClip);
+                    ui.close_menu();
+                }
+                if ui.add(egui::Button::new("Duplicate Clip").shortcut_text(edit_key("duplicate_clip"))).clicked() {
+                    cmds.push(AppCommand::DuplicateClip { clip_id });
+                    ui.close_menu();
+                }
+                if ui.add(egui::Button::new("Delete Clip").shortcut_text(edit_key("delete_clip"))).clicked() {
+                    cmds.push(AppCommand::RemoveClip { clip_id });
+                    ui.close_menu();
+                }
+                ui.separator();
+
+                // ── The clip itself ──
                 if ui.button("Rename Clip\u{2026}").clicked() {
-                    self.renaming_clip = Some(ClipRename { clip_ids: targets.clone(), track_idx, buf: own_name, focused: false });
-                    ui.close_menu();
-                }
-                // Speed, a subclip of what the clip uses, and its source's
-                // other clips (#925).
-                if ui.button("Speed\u{2026}").on_hover_text("The clip's speed, and reverse").clicked() {
-                    cmds.push(AppCommand::SelectClip(Some(clip_id)));
-                    cmds.push(AppCommand::OpenSpeedDialog { clip_id });
-                    ui.close_menu();
-                }
-                if ui.button("Make Subclip").on_hover_text("A subclip in the media pool over what this clip uses of its file").clicked() {
-                    cmds.push(AppCommand::SubclipFromClip { clip_id });
-                    ui.close_menu();
-                }
-                // A title, effect or sound laid over one shot, made to start
-                // and end with it (#2236), and kept so: it follows the shot's
-                // trims, rolls and moves.
-                let matched = state.sequence().all_clips().find(|c| c.id == clip_id).and_then(|c| c.matched_to).is_some();
-                let mut asked: Option<(&str, bool)> = None;
-                if matched {
-                    if ui.button("Stop Keeping Matched").on_hover_text("Let this clip be trimmed and moved on its own again").clicked() {
-                        asked = Some(("Stop Keeping Matched", false));
-                    }
-                } else if klipp_document::matched::clip_below(state.sequence(), clip_id).is_some() {
-                    if crate::edit_helpers::match_clip_below(state.sequence(), clip_id).is_some() && ui.button("Match Clip Below").on_hover_text("Start and end exactly with the clip under this one").clicked() {
-                        asked = Some(("Match Clip Below", false));
-                    }
-                    if ui.button("Keep Matched to Clip Below").on_hover_text("Start and end with the clip under this one, and follow it when it is trimmed or moved").clicked() {
-                        asked = Some(("Keep Matched", true));
-                    }
-                }
-                if let Some((label, keep)) = asked {
-                    let ops = vec![klipp_document::ops::Op::Match { clip_id: klipp_document::ops::ClipRef::Id(clip_id), keep }];
-                    state.pending_doc_ops.push(crate::state::DocOpsRequest { label: label.into(), ops, independent: false });
-                    ui.close_menu();
-                }
-                // Rhythmic edits in one step (#988), in a submenu of
-                // their own so the clip menu stays short.
-                ui.menu_rows("Rhythm Edits", |ui| {
-                    for (kind, label, tip) in [
-                        (0u8, "Strobe\u{2026}", "Cut the clip (or its part between the In and Out) into short pieces and remove every other one, so the shot flickers"),
-                        (1, "Set Length\u{2026}", "Make the selected clips all the same length, as for a rapid-fire montage"),
-                        (2, "Copy Over Every Edit\u{2026}", "Lay a copy of this clip over every cut below it, as for a flash on every cut"),
-                    ] {
-                        if ui.button(label).on_hover_text(tip).clicked() {
-                            cmds.push(AppCommand::SelectClip(Some(clip_id)));
-                            cmds.push(AppCommand::OpenEditHelper { kind, clip_id });
-                            ui.close_menu();
-                        }
-                    }
-                });
-                // Several clips selected: line them up with this one (#925).
-                if state.selected_clips.len() > 1 && state.selected_clips.contains(&clip_id) {
-                    ui.menu_rows("Sync Selected Clips", |ui| {
-                        if ui.button("By Timecode").on_hover_text("The same moment of the shoot under each, from the files' start timecodes").clicked() {
-                            cmds.push(AppCommand::SelectClip(Some(clip_id)));
-                            cmds.push(AppCommand::SyncSelectedClips { by_markers: false });
-                            ui.close_menu();
-                        }
-                        if ui.button("By Markers").on_hover_text("Each clip's first clip marker where this clip's is").clicked() {
-                            cmds.push(AppCommand::SelectClip(Some(clip_id)));
-                            cmds.push(AppCommand::SyncSelectedClips { by_markers: true });
-                            ui.close_menu();
-                        }
-                    });
-                }
-                if ui.button("Select Same Source").clicked() {
-                    cmds.push(AppCommand::SelectClip(Some(clip_id)));
-                    cmds.push(AppCommand::SelectSameSource);
+                    self.renaming_clip = Some(ClipRename { clip_ids: targets.clone(), track_idx, buf: clip.name.clone().unwrap_or_default(), focused: false });
                     ui.close_menu();
                 }
                 ui.menu_rows("Clip Colour", |ui| {
                     for label in klipp_media::ColorLabel::ALL {
                         let swatch = label.rgb().map(|(r, g, b)| egui::Color32::from_rgb(r, g, b)).unwrap_or(ui.visuals().weak_text_color());
                         let text = egui::RichText::new(format!("\u{25CF} {}", label.label())).color(swatch);
-                        if ui.selectable_label(own_colour == label.to_u8(), text).clicked() {
+                        if ui.selectable_label(clip.colour_label == label.to_u8(), text).clicked() {
                             cmds.push(AppCommand::SetClipColourLabels { clip_ids: targets.clone(), label: label.to_u8() });
                             ui.close_menu();
                         }
                     }
                 });
-                // Where the grade stands (#899): a colourist's flag.
-                ui.menu_rows("Grade Flag", |ui| {
-                    crate::widgets::menu::menu_body(ui, |ui| {
-                        for flag in klipp_timeline::GradeFlag::ALL {
-                            let [r, g, b] = flag.rgb();
-                            let text = if flag.is_none() { flag.label().to_string() } else { format!("\u{2691} {}", flag.label()) };
-                            let row = ui.add(egui::Button::new(egui::RichText::new(text).color(if flag.is_none() { ui.visuals().text_color() } else { egui::Color32::from_rgb(r, g, b) })).selected(own_flag == flag));
-                            if row.clicked() {
-                                cmds.push(AppCommand::SetClipGradeFlags { clip_ids: targets.clone(), flag });
-                                ui.close_menu();
-                            }
-                        }
+                if ui.button("Speed\u{2026}").on_hover_text("The clip's speed, and reverse").clicked() {
+                    cmds.push(AppCommand::SelectClip(Some(clip_id)));
+                    cmds.push(AppCommand::OpenSpeedDialog { clip_id });
+                    ui.close_menu();
+                }
+                let enable_label = if clip.enabled { "Disable Clip" } else { "Enable Clip" };
+                if ui.button(enable_label).clicked() {
+                    cmds.push(AppCommand::SetClipEnabled { clip_id, enabled: !clip.enabled });
+                    ui.close_menu();
+                }
+                if let Some(mid) = media_id {
+                    if ui.add(egui::Button::new("Match Frame").shortcut_text(edit_key("match_frame_program_to_source"))).clicked() {
+                        cmds.push(AppCommand::MatchFrameProgramToSource);
+                        ui.close_menu();
+                    }
+                    if ui.button("Reveal in Media Pool").clicked() {
+                        cmds.push(AppCommand::RevealMediaInBrowser { media_id: mid });
+                        ui.close_menu();
+                    }
+                }
+                ui.separator();
+
+                // ── Edit ──
+                let has_source = state.source_media_id.is_some();
+                let has_in_out = state.sequence().in_point.is_some() && state.sequence().out_point.is_some();
+                let can_freeze = is_video_track
+                    && matches!(clip.kind, klipp_timeline::ClipKind::Media { .. })
+                    && state.playhead > clip.timeline_in
+                    && state.playhead < clip.timeline_out;
+                let scene_markers = if file_there && is_video_track && !state.scene_detect_in_progress.contains(&clip_id) { clip.clip_markers.len() } else { 0 };
+                let on_primary = state.sequence().tracks.get(track_idx).is_some_and(|t| t.magnetic_role == klipp_timeline::TrackRole::Primary);
+                // Collision resolution (connected/storyline tracks only).
+                let collision = if on_primary { None } else {
+                    state.sequence().tracks.get(track_idx).and_then(|track| {
+                        track.clips.iter().find(|other| {
+                            other.id != clip_id
+                                && !other.kind.is_gap()
+                                && clip.timeline_in < other.timeline_out
+                                && clip.timeline_out > other.timeline_in
+                        }).map(|other| other.id)
                     })
-                });
-                // Any keyed parameter of the clip on its band (#2307).
-                let keyed = state.sequence().all_clips().find(|c| c.id == clip_id).map(crate::panels::dope_sheet::rows).unwrap_or_default();
-                if !keyed.is_empty() {
-                    ui.menu_rows("Show Keys on Clip", |ui| {
-                        crate::widgets::menu::menu_body(ui, |ui| {
+                };
+                let track_has_gaps = state.sequence().tracks.get(track_idx).is_some_and(|t| !crate::selection::gaps(t).is_empty());
+                // Copy and paste of a clip's attributes, and the keyed
+                // parameters to show on it (#2307): in Colour for a
+                // picture, in Audio for a sound, else in Edit.
+                let keyed = crate::panels::dope_sheet::rows(&clip);
+                let attribute_items = |ui: &mut egui::Ui, state: &mut AppState, cmds: &mut Vec<AppCommand>| {
+                    if ui.add(egui::Button::new("Copy Attributes").shortcut_text(edit_key("copy_attributes"))).clicked() {
+                        cmds.push(AppCommand::CopyAttributes { clip_id });
+                        ui.close_menu();
+                    }
+                    if state.attributes_clipboard.is_some() && ui.add(egui::Button::new("Paste Attributes\u{2026}").shortcut_text(edit_key("paste_attributes"))).clicked() {
+                        state.show_paste_attributes_dialog = true;
+                        ui.close_menu();
+                    }
+                    if !keyed.is_empty() {
+                        ui.menu_rows("Show Keys on Clip", |ui| {
                             for row in &keyed {
                                 if ui.button(&row.label).clicked() {
                                     crate::timeline::param_lane::pick(state, clip_id, &row.kind);
                                     ui.close_menu();
                                 }
                             }
-                        })
-                    });
-                }
-                // Wipe the graded clip against this one (#899).
-                let viewed = crate::graded_thumbs::viewed_clip(state.sequence(), state.selected_clip, state.playhead);
-                if state.show_color_panel
-                    && viewed.is_some_and(|v| v != clip_id)
-                    && ui.button("Wipe Against This Clip").on_hover_text("Split the viewer: this clip graded on the left, the frame shown on the right").clicked()
-                {
-                    cmds.push(AppCommand::WipeAgainstClip { target: Some(klipp_core::WipeClip::Clip(clip_id)) });
-                    ui.close_menu();
-                }
-                ui.separator();
-
-                // ── Export this clip ──
-                // Open the export dialog with the range pre-set to
-                // "Selected clips" mode. The handler ensures the
-                // right-clicked clip is selected first and lets the
-                // existing range-mode-2 dispatch path do the
-                // bounds calculation.
-                if crate::widgets::menu::menu_icon_item(ui, crate::icons::Icon::Export, "Export This Clip\u{2026}", "").clicked() {
-                    cmds.push(AppCommand::SelectClip(Some(clip_id)));
-                    cmds.push(AppCommand::OpenExportDialogForSelectedClips);
-                    ui.close_menu();
-                }
-
-                // ── Replace From Bin ──
-                // Submenu lists every media-pool item except the
-                // clip's current backing media. Filename labels;
-                // scrollable per the long-menu pattern. Picking an
-                // entry dispatches ReplaceClipMedia which preserves
-                // trim + effects + transitions and auto-clamps the
-                // tail when the new media is shorter.
-                let cur_media_id = state.sequence().tracks.iter()
-                    .flat_map(|t| t.clips.iter())
-                    .find(|c| c.id == clip_id)
-                    .and_then(|c| c.media_id());
-                let is_media_clip = cur_media_id.is_some();
-                ui.add_enabled_ui(is_media_clip, |ui| {
-                    ui.menu_rows_with_icon(crate::icons::Icon::ArrowClockwise, "Replace From Bin", |ui| {
-                        let max_h = (ui.ctx().screen_rect().height() * 0.70).max(240.0);
-                        egui::ScrollArea::vertical()
-                            .id_salt(("replace_from_bin", clip_id.0))
-                            .max_height(max_h)
-                            .show(ui, |ui| {
-                                // Snapshot media-pool entries up front
-                                // so we don't borrow the pool while
-                                // pushing AppCommands inside the loop.
-                                let entries: Vec<(klipp_core::MediaId, String)> = state
-                                    .media_pool
-                                    .all()
-                                    .filter(|m| Some(m.id) != cur_media_id)
-                                    .map(|m| (m.id, m.filename.clone()))
-                                    .collect();
-                                if entries.is_empty() {
-                                    ui.label(egui::RichText::new("(no other media in bin)")
-                                        .small().italics());
-                                }
-                                for (mid, name) in entries {
-                                    if ui.button(name).clicked() {
-                                        cmds.push(AppCommand::ReplaceClipMedia {
-                                            clip_id,
-                                            new_media_id: mid,
-                                        });
-                                        ui.close_menu();
-                                    }
-                                }
-                            });
-                    });
-                });
-                ui.separator();
-
-                // ── Title/Text clip actions ──
-                let title_data_cloned: Option<klipp_timeline::TitleData> = state.sequence().tracks.iter()
-                    .flat_map(|t| t.clips.iter())
-                    .find(|c| c.id == clip_id)
-                    .and_then(|c| c.title_data())
-                    .cloned();
-                if let Some(ref td) = title_data_cloned {
-                    if ui.button("\u{270F} Edit Text").clicked() {
-                        state.viewer_text_edit = true;
-                        state.viewer_text_edit_clip = Some(clip_id);
-                        state.viewer_text_edit_request_focus = true;
-                        state.viewer_char_positions.clear();
-                        state.viewer_text_cursor = 0;
-                        state.viewer_text_select_anchor = None;
-                        state.viewer_text_edit_buffer = td.text().clone();
-                        cmds.push(AppCommand::SelectClip(Some(clip_id)));
-                        ui.close_menu();
+                        });
                     }
+                };
 
-                    // Project Asset promote/detach. The two are
-                    // mutually exclusive — if the clip is already
-                    // linked we only show "Detach", otherwise "Save
-                    // as Project Asset". Keeping the same menu spot
-                    // means the asset workflow is right next to the
-                    // primary "Edit Text" affordance, which is the
-                    // mockup's intent.
-                    let linked_asset_id = state.sequence().tracks.iter()
-                        .flat_map(|t| t.clips.iter())
-                        .find(|c| c.id == clip_id)
-                        .and_then(|c| c.linked_title_asset_id);
-                    if let Some(asset_id) = linked_asset_id {
-                        let asset_name = state.title_assets
-                            .get(&asset_id)
-                            .map(|a| a.display_name.clone())
-                            .unwrap_or_else(|| "Project Asset".to_string());
-                        crate::widgets::menu::menu_heading(ui, &format!("Linked to \u{201C}{asset_name}\u{201D}"));
-                        if crate::widgets::menu::menu_icon_item(ui, crate::icons::Icon::Scissors, "Detach from Project Asset", "").clicked() {
-                            cmds.push(AppCommand::DetachTitleAsset { clip_id });
+                ui.menu_rows("Edit", |ui| {
+                    // Three-point edits, with a source and a range to use.
+                    if has_source {
+                        if ui.add(egui::Button::new("Insert").shortcut_text(",")).clicked() {
+                            cmds.push(AppCommand::InsertEdit);
                             ui.close_menu();
                         }
-                    } else if ui.button("\u{2B50} Save as Project Asset").clicked() {
-                        cmds.push(AppCommand::CreateTitleAsset { source_clip_id: clip_id });
-                        ui.close_menu();
+                        if ui.add(egui::Button::new("Overwrite").shortcut_text(".")).clicked() {
+                            cmds.push(AppCommand::OverwriteEdit);
+                            ui.close_menu();
+                        }
                     }
-                    ui.separator();
+                    if has_in_out {
+                        if ui.add(egui::Button::new("Lift").shortcut_text(";")).clicked() {
+                            cmds.push(AppCommand::LiftEdit);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Extract").shortcut_text("'")).clicked() {
+                            cmds.push(AppCommand::ExtractEdit);
+                            ui.close_menu();
+                        }
+                    }
+                    if state.clipboard.is_some()
+                        && ui.add(egui::Button::new("Paste Insert at Playhead").shortcut_text(edit_key("paste_insert")))
+                            .on_hover_text("Cut every unlocked track at the playhead and move what follows along by the paste's length")
+                            .clicked()
                     {
-                        // Alignment submenu
-                        let current_align = &td.alignment();
-                        ui.menu_rows(format!("\u{2630} Alignment: {}", match current_align {
-                            klipp_timeline::TextAlignment::Left => "Left",
-                            klipp_timeline::TextAlignment::Center => "Center",
-                            klipp_timeline::TextAlignment::Right => "Right",
-                            klipp_timeline::TextAlignment::Justify => "Justify",
-                        }), |ui| {
-                            if ui.selectable_label(*current_align == klipp_timeline::TextAlignment::Left, "Left").clicked() {
-                                cmds.push(AppCommand::SetTitleAlignment { clip_id, alignment: 0 });
-                                ui.close_menu();
-                            }
-                            if ui.selectable_label(*current_align == klipp_timeline::TextAlignment::Center, "Center").clicked() {
-                                cmds.push(AppCommand::SetTitleAlignment { clip_id, alignment: 1 });
-                                ui.close_menu();
-                            }
-                            if ui.selectable_label(*current_align == klipp_timeline::TextAlignment::Right, "Right").clicked() {
-                                cmds.push(AppCommand::SetTitleAlignment { clip_id, alignment: 2 });
-                                ui.close_menu();
-                            }
-                            if ui.selectable_label(*current_align == klipp_timeline::TextAlignment::Justify, "Justify").clicked() {
-                                cmds.push(AppCommand::SetTitleAlignment { clip_id, alignment: 3 });
-                                ui.close_menu();
-                            }
-                        });
-                        // Font style submenu
-                        let is_bold = matches!(td.font_style(), klipp_timeline::FontStyle::Bold | klipp_timeline::FontStyle::BoldItalic);
-                        let is_italic = matches!(td.font_style(), klipp_timeline::FontStyle::Italic | klipp_timeline::FontStyle::BoldItalic);
-                        ui.menu_rows("A Font Style", |ui| {
-                            if ui.selectable_label(!is_bold && !is_italic, "Regular").clicked() {
-                                cmds.push(AppCommand::UpdateTitleData {
-                                    clip_id, text: td.text().clone(), font_size: td.font_size(),
-                                    font_name: td.font_name().clone(), font_style: 0, color: td.color(),
-                                });
-                                ui.close_menu();
-                            }
-                            if ui.selectable_label(is_bold && !is_italic, "Bold").clicked() {
-                                cmds.push(AppCommand::UpdateTitleData {
-                                    clip_id, text: td.text().clone(), font_size: td.font_size(),
-                                    font_name: td.font_name().clone(), font_style: 1, color: td.color(),
-                                });
-                                ui.close_menu();
-                            }
-                            if ui.selectable_label(!is_bold && is_italic, "Italic").clicked() {
-                                cmds.push(AppCommand::UpdateTitleData {
-                                    clip_id, text: td.text().clone(), font_size: td.font_size(),
-                                    font_name: td.font_name().clone(), font_style: 2, color: td.color(),
-                                });
-                                ui.close_menu();
-                            }
-                            if ui.selectable_label(is_bold && is_italic, "Bold Italic").clicked() {
-                                cmds.push(AppCommand::UpdateTitleData {
-                                    clip_id, text: td.text().clone(), font_size: td.font_size(),
-                                    font_name: td.font_name().clone(), font_style: 3, color: td.color(),
-                                });
-                                ui.close_menu();
-                            }
-                        });
-                        // Reset styles (clear all style runs)
-                        if !td.style_runs().is_empty()
-                            && ui.button("\u{21BA} Reset Text Styles").clicked() {
-                                cmds.push(AppCommand::ApplyTitleStyle {
-                                    clip_id, range_start: 0, range_end: td.text().len(),
-                                    property: "clear_all".into(), value: String::new(),
-                                });
-                                ui.close_menu();
-                            }
-                    } // end alignment/style block
+                        cmds.push(AppCommand::PasteClipInsert);
+                        ui.close_menu();
+                    }
                     ui.separator();
-                } // end title_data_cloned
-
-                if ui.button("Remove Clip").clicked() {
-                    cmds.push(AppCommand::RemoveClip { clip_id });
-                    ui.close_menu();
-                }
-                // Cut, Copy and Paste beside Duplicate (#845): of the whole
-                // selection when this clip is part of it.
-                if ui.add(egui::Button::new("Cut").shortcut_text("Ctrl+X")).clicked() {
-                    cmds.push(AppCommand::CutClip { clip_id });
-                    ui.close_menu();
-                }
-                if ui.add(egui::Button::new("Copy").shortcut_text("Ctrl+C")).clicked() {
-                    cmds.push(AppCommand::CopyClip { clip_id });
-                    ui.close_menu();
-                }
-                if ui.add_enabled(state.clipboard.is_some(), egui::Button::new("Paste at Playhead").shortcut_text("Ctrl+V")).clicked() {
-                    cmds.push(AppCommand::PasteClip);
-                    ui.close_menu();
-                }
-                if ui.add_enabled(state.clipboard.is_some(), egui::Button::new("Paste Insert at Playhead")).on_hover_text("Cut every unlocked track at the playhead and move what follows along by the paste's length").clicked() {
-                    cmds.push(AppCommand::PasteClipInsert);
-                    ui.close_menu();
-                }
-                if ui.add(egui::Button::new("Duplicate Clip").shortcut_text("Ctrl+D")).clicked() {
-                    cmds.push(AppCommand::DuplicateClip { clip_id });
-                    ui.close_menu();
-                }
-                // Audio sync (#61): set reference / align. Shown regardless
-                // of track kind because the linked-audio partner of a video
-                // clip can back the correlation too; the worker falls back
-                // gracefully when the clip lacks an audio cache.
-                {
-                    let is_ref = state.audio_reference_clip_id == Some(clip_id);
-                    let ref_label = if is_ref {
-                        "\u{25CF} Audio Reference (click to re-set)".to_string()
-                    } else {
-                        "Set as Audio Reference".to_string()
-                    };
-                    if ui.button(ref_label).clicked() {
-                        cmds.push(AppCommand::SetAudioReference { clip_id });
+                    if ui.add(egui::Button::new("Ripple Trim Head to Playhead").shortcut_text("Alt+[")).clicked() {
+                        cmds.push(AppCommand::RippleTrimHead { clip_id });
                         ui.close_menu();
                     }
-                    let align_enabled = state.audio_reference_clip_id.is_some()
-                        && state.audio_reference_clip_id != Some(clip_id);
-                    let align_resp = ui.add_enabled(
-                        align_enabled,
-                        egui::Button::new("Align to Audio Reference"),
-                    );
-                    if !align_enabled {
-                        align_resp.clone().on_disabled_hover_text(
-                            if state.audio_reference_clip_id.is_none() {
-                                "Set an audio reference clip first"
-                            } else {
-                                "This clip is the reference"
-                            },
-                        );
-                    }
-                    if align_resp.clicked() {
-                        cmds.push(AppCommand::AlignToAudioReference { clip_id });
+                    if ui.add(egui::Button::new("Ripple Trim Tail to Playhead").shortcut_text("Alt+]")).clicked() {
+                        cmds.push(AppCommand::RippleTrimTail { clip_id });
                         ui.close_menu();
                     }
-                }
-                // Normalize (#1843): this clip and the rest of the selection
-                // to a loudness or peak target, by their gain.
-                let has_sound = state.sequence().all_clips()
-                    .find(|c| c.id == clip_id)
-                    .and_then(|c| c.media_id())
-                    .and_then(|m| state.media_pool.get(&m))
-                    .is_some_and(|m| m.has_audio);
-                if has_sound && ui.button("Normalize\u{2026}").on_hover_text("Bring the clip, or the selection, to a loudness or peak target by its gain").clicked() {
-                    cmds.push(AppCommand::OpenNormalizeDialog { clip_id: Some(clip_id) });
-                    ui.close_menu();
-                }
-                // Fit to length (#2210): music cut or repeated by whole bars.
-                if has_sound && ui.button("Fit Music to Length\u{2026}").on_hover_text("Cut or repeat whole bars so the track lasts as long as the picture, a marked range or a length").clicked() {
-                    cmds.push(AppCommand::OpenMusicFitDialog { clip_id });
-                    ui.close_menu();
-                }
-                // Colour match (#CG-CLIP2CLIP-MATCH). Parallel to the
-                // audio-reference pattern: one clip is the reference,
-                // others can match against it. Match result lands on a
-                // ColorMatch node (created on demand via
-                // ensure_color_match) and writes four scalar grade
-                // adjustments — the reference frame itself is NOT
-                // persisted; only the distilled match lives with the
-                // project.
-                //
-                // VIDEO-ONLY: grade nodes are pixel-domain operations,
-                // meaningless for audio clips. (Linked video+audio
-                // pairs still show this on the video side; users
-                // reach it via the linked partner.)
-                if is_video_track {
-                    ui.separator();
-
-                    // ── Track Matte (Phase 3) ───────────────────────────
-                    // Headline gesture: bind the clip on the track above
-                    // (or any other clip via the inspector picker) as
-                    // this clip's alpha/luma mask. Auto picks the
-                    // sensible channel based on the candidate's kind.
-                    let candidate_above = find_matte_candidate_above(
-                        state, track_idx, clip_id,
-                    );
-                    let already_has_matte = state.sequence().tracks.iter()
-                        .flat_map(|t| t.clips.iter())
-                        .find(|c| c.id == clip_id)
-                        .is_some_and(|c| c.matte_source.is_some());
-
-                    if let Some((cand_id, cand_kind)) = candidate_above {
-                        ui.menu_rows_with_icon(crate::icons::Icon::Scissors, "Use clip above as matte", |ui| {
-                            // Auto = sensible default, picks based on
-                            // the candidate's nature:
-                            //   - Title → Alpha (text typically lives
-                            //     on a transparent background).
-                            //   - Generator → Luma (shape / gradient
-                            //     generators are usually opaque-with-
-                            //     brightness; alpha would always be 1).
-                            //   - Media / other → Luma (most footage
-                            //     has no alpha; users can switch in
-                            //     the inspector).
-                            let auto_channel: u8 = match cand_kind {
-                                klipp_timeline::ClipKind::Title(_) => 0,  // Alpha
-                                _ => 1,                                  // Luminance
-                            };
-                            let auto_label = match cand_kind {
-                                klipp_timeline::ClipKind::Title(_) => "Auto (Alpha)",
-                                _ => "Auto (Luma)",
-                            };
-                            if ui.button(auto_label).clicked() {
-                                cmds.push(AppCommand::SetClipMatte {
-                                    clip_id,
-                                    source_clip_id: cand_id,
-                                    channel: auto_channel,
-                                    invert: false,
-                                    feather_px: 0.0,
-                                    choke_px: 0.0,
-                                });
-                                ui.close_menu();
-                            }
-                            ui.separator();
-                            if ui.button("Alpha").clicked() {
-                                cmds.push(AppCommand::SetClipMatte {
-                                    clip_id, source_clip_id: cand_id,
-                                    channel: 0, invert: false, feather_px: 0.0, choke_px: 0.0,
-                                });
-                                ui.close_menu();
-                            }
-                            if ui.button("Luma").clicked() {
-                                cmds.push(AppCommand::SetClipMatte {
-                                    clip_id, source_clip_id: cand_id,
-                                    channel: 1, invert: false, feather_px: 0.0, choke_px: 0.0,
-                                });
-                                ui.close_menu();
-                            }
-                            if ui.button("Inverted Luma").clicked() {
-                                cmds.push(AppCommand::SetClipMatte {
-                                    clip_id, source_clip_id: cand_id,
-                                    channel: 1, invert: true, feather_px: 0.0, choke_px: 0.0,
-                                });
-                                ui.close_menu();
-                            }
-                        });
-                    } else {
-                        let resp = ui.add_enabled_ui(false, |ui| crate::widgets::menu::menu_icon_item(ui, crate::icons::Icon::Scissors, "Use clip above as matte", "")).inner;
-                        resp.on_hover_text("No clip on a higher track at this time-range. Stack a clip above first, or pick a source via the Inspector → Compositing section.");
-                    }
-                    if already_has_matte
-                        && ui.button("Clear matte").clicked() {
-                            cmds.push(AppCommand::ClearClipMatte { clip_id });
-                            ui.close_menu();
-                        }
-                    ui.separator();
-
-                    let is_ref = state.color_match_reference_clip == Some(clip_id);
-                    let ref_label = if is_ref {
-                        "\u{25CF} Colour Reference (click to re-set)".to_string()
-                    } else {
-                        "Use as Colour Reference".to_string()
-                    };
-                    if ui.button(ref_label).clicked() {
-                        cmds.push(AppCommand::UseClipAsColorMatchReference { clip_id });
+                    if ui.button("Insert Gap (1s)").clicked() {
+                        cmds.push(AppCommand::InsertGapAtPlayhead);
                         ui.close_menu();
                     }
-                    let has_ref = state.color_match_reference.is_some();
-                    let match_enabled = has_ref && !is_ref;
-                    let match_resp = ui.add_enabled(
-                        match_enabled,
-                        egui::Button::new("Match Colour to Reference"),
-                    );
-                    if !match_enabled {
-                        match_resp.clone().on_disabled_hover_text(
-                            if !has_ref {
-                                "Mark a reference clip first (right-click → Use as Colour Reference)"
-                            } else {
-                                "This clip is the reference"
-                            },
-                        );
-                    }
-                    if match_resp.clicked() {
-                        cmds.push(AppCommand::MatchClipToColorReference { clip_id });
+                    if track_has_gaps && ui.button("Close All Gaps on Track").clicked() {
+                        cmds.push(AppCommand::CloseAllGaps { track_index: track_idx });
                         ui.close_menu();
                     }
-                }
-                ui.separator();
-                if ui.add(egui::Button::new("Copy Attributes").shortcut_text("Ctrl+Shift+C")).clicked() {
-                    cmds.push(AppCommand::CopyAttributes { clip_id });
-                    ui.close_menu();
-                }
-                if ui.add_enabled(state.attributes_clipboard.is_some(), egui::Button::new("Paste Attributes...").shortcut_text("Ctrl+Shift+V")).clicked() {
-                    state.show_paste_attributes_dialog = true;
-                    ui.close_menu();
-                }
-                // Compound clip operations
-                let is_compound = state.sequence().tracks.iter()
-                    .flat_map(|t| t.clips.iter())
-                    .find(|c| c.id == clip_id)
-                    .is_some_and(|c| matches!(c.kind, klipp_timeline::ClipKind::Sequence { .. }));
-                if is_compound {
-                    if ui.button("Open Compound Clip").clicked() {
-                        cmds.push(AppCommand::OpenCompoundClip { clip_id });
-                        ui.close_menu();
-                    }
-                    if ui
-                        .button("Decompose Compound Clip")
-                        .on_hover_text(
-                            "Replaces the compound clip with the inner clips \
-                             at their original positions, then deletes the \
-                             inner sequence. Inverse of \"Create Compound Clip\".",
-                        )
-                        .clicked()
-                    {
-                        cmds.push(AppCommand::DecomposeCompoundClip { clip_id });
-                        ui.close_menu();
-                    }
-                }
-                let has_multi_for_compound = state.selected_clips.len() >= 2
-                    || (state.selected_clip.is_some() && !state.selected_clips.is_empty());
-                if ui.add_enabled(has_multi_for_compound, egui::Button::new("Create Compound Clip...")).clicked() {
-                    cmds.push(AppCommand::CreateCompoundClip { name: "Compound Clip".into() });
-                    ui.close_menu();
-                }
-                // Multicam is video-track-only in Klipp's current
-                // model — the handler scans video tracks at the
-                // playhead and bundles 2+ video clips into a
-                // multicam group; audio is not part of the bundle.
-                // Showing this on an audio clip would be misleading
-                // (the right-clicked clip isn't even examined).
-                if is_video_track && ui.button("Create Multicam Clip").clicked() {
-                    cmds.push(AppCommand::CreateMulticamClip);
-                    ui.close_menu();
-                }
-                // Motion presets submenu — VIDEO-ONLY: spatial
-                // transforms (Ken Burns, PiP) have no audio analogue.
-                if is_video_track {
-                    ui.menu_rows("Motion Presets", |ui| {
-                        for (label, preset) in [
-                            ("Ken Burns: Zoom In", "ken_burns_zoom_in"),
-                            ("Ken Burns: Zoom Out", "ken_burns_zoom_out"),
-                            ("Ken Burns: Pan Left", "ken_burns_pan_left"),
-                        ] {
-                            if ui.button(label).clicked() {
-                                cmds.push(AppCommand::ApplyMotionPreset { clip_id, preset: preset.into() });
-                                ui.close_menu();
-                            }
-                        }
-                        ui.separator();
-                        for (label, preset) in [
-                            ("PiP: Top Left", "pip_top_left"),
-                            ("PiP: Top Right", "pip_top_right"),
-                            ("PiP: Bottom Left", "pip_bottom_left"),
-                            ("PiP: Bottom Right", "pip_bottom_right"),
-                        ] {
-                            if ui.button(label).clicked() {
-                                cmds.push(AppCommand::ApplyMotionPreset { clip_id, preset: preset.into() });
-                                ui.close_menu();
-                            }
-                        }
-                    });
-                    // Cut Templates submenu — multi-step recipes
-                    // (matte / transform_link / hyperzoom / keyframes
-                    // composed into one click). Same MENU_ROWS table
-                    // + template_context helper as the command
-                    // palette so the two surfaces can't drift.
-                    // Per-row gating: each entry's `can_apply`
-                    // predicate decides enabled/disabled, and the
-                    // disabled hint explains *why*.
-                    ui.menu_rows("Cut Templates", |ui| {
-                        for row in crate::cut_templates::MENU_ROWS {
-                            // Block-scope the immutable ctx borrow so
-                            // it dies before `(row.dispatch)(state, …)`
-                            // takes a mutable one. Cheap to rebuild —
-                            // ctx is four field reads.
-                            let enabled = {
-                                let template_ctx = crate::cut_templates::template_context(state);
-                                crate::cut_templates::can_apply(&row.kind, &template_ctx)
-                            };
-                            let resp = ui.add_enabled(enabled, egui::Button::new(row.label));
-                            if !enabled {
-                                resp.clone().on_disabled_hover_text(row.disabled_hint);
-                            }
-                            if resp.clicked() {
-                                (row.dispatch)(state, cmds);
-                                ui.close_menu();
-                            }
-                        }
-                    });
-                }
-                ui.separator();
-                if is_video_track && ui.button("Add Title Over Clip").clicked() {
-                    cmds.push(AppCommand::AddTitleAtPlayhead { over_clip: Some(clip_id) });
-                    ui.close_menu();
-                }
-                let is_title_clip = state.sequence().tracks.iter()
-                    .flat_map(|t| t.clips.iter())
-                    .any(|c| c.id == clip_id && matches!(c.kind, klipp_timeline::ClipKind::Title(_)));
-                if is_title_clip && ui.button("Save as Title Template\u{2026}").clicked() {
-                    cmds.push(AppCommand::SaveTitleTemplate { clip_id });
-                    ui.close_menu();
-                }
-                // Fades of the default length and curve (Preferences >
-                // Audio), on a clip that carries sound.
-                let sounding = state.sequence().tracks.iter()
-                    .flat_map(|t| t.clips.iter().map(move |c| (t, c)))
-                    .find(|(_, c)| c.id == clip_id)
-                    .filter(|(t, c)| t.kind == klipp_timeline::TrackKind::Audio || c.linked_clip_id.is_some())
-                    .map(|(_, c)| c.clone());
-                if let Some(clip) = sounding {
-                    for (label, fade_in) in [("Add Fade In", true), ("Add Fade Out", false)] {
-                        if ui.button(label).on_hover_text(format!("{:.2} s, set in Preferences > Audio", state.default_fade_secs)).clicked() {
-                            cmds.extend(default_fade_command(state, &clip, fade_in));
+                    // Join Through Edit (#683): close a cut that is not one,
+                    // such as a split, or a scene cut found on a flash.
+                    for (next, label) in [(false, "Join with Previous"), (true, "Join with Next")] {
+                        if state.can_join_through_edit(clip_id, next) && ui.button(label).on_hover_text("Make this clip and that piece of the same shot one clip again, its sound with it").clicked() {
+                            cmds.push(AppCommand::JoinThroughEdit { clip_id, next });
                             ui.close_menu();
                         }
                     }
-                }
-                // Enable/Disable clip
-                let clip_enabled = state.sequence().tracks.iter()
-                    .flat_map(|t| t.clips.iter())
-                    .find(|c| c.id == clip_id)
-                    .is_none_or(|c| c.enabled);
-                let enable_label = if clip_enabled { "Disable Clip" } else { "Enable Clip" };
-                if ui.button(enable_label).clicked() {
-                    cmds.push(AppCommand::SetClipEnabled { clip_id, enabled: !clip_enabled });
-                    ui.close_menu();
-                }
-
-                // Freeze Frame Here — capture the current viewer frame and
-                // insert a 2s freeze as a generator clip at the playhead.
-                // Only offered when the clip under the mouse is ClipKind::Media
-                // and the playhead sits inside that clip (so blading makes sense).
-                //
-                // VIDEO-ONLY: "freeze" is the visual frame. An audio
-                // freeze is conceptually different (loop / sustain)
-                // and not what this command does.
-                let can_freeze = is_video_track && state.sequence().tracks.iter()
-                    .flat_map(|t| t.clips.iter())
-                    .find(|c| c.id == clip_id)
-                    .is_some_and(|c| {
-                        matches!(c.kind, klipp_timeline::ClipKind::Media { .. })
-                            && state.playhead > c.timeline_in
-                            && state.playhead < c.timeline_out
-                    });
-                if can_freeze
-                    && ui.button("Freeze Frame Here").clicked() {
-                        cmds.push(AppCommand::InsertFreezeFrame { duration_secs: 2.0 });
-                        ui.close_menu();
-                    }
-
-                // Scene detection: only valid on Media clips whose source file
-                // exists. Suppressed for title/compound/sequence clips and for
-                // offline media.
-                //
-                // VIDEO-ONLY: histogram-diff scene detector — no
-                // audio equivalent here (audio "scene"/silence
-                // detection would be a separate command).
-                let scene_detect_target = if !is_video_track { None } else { state.sequence().tracks.iter()
-                    .flat_map(|t| t.clips.iter())
-                    .find(|c| c.id == clip_id)
-                    .and_then(|c| {
-                        if !matches!(c.kind, klipp_timeline::ClipKind::Media { .. }) {
-                            return None;
-                        }
-                        let mid = c.media_id()?;
-                        let item = state.media_pool.get(&mid)?;
-                        if item.path.exists() { Some(()) } else { None }
-                    }) };
-                if scene_detect_target.is_some() {
-                    if state.scene_detect_in_progress.contains(&clip_id) {
-                        let pct = (state.scene_detect_progress
-                            .get(&clip_id).copied().unwrap_or(0.0) * 100.0) as u32;
-                        ui.label(format!("Detecting scenes\u{2026} {}%", pct));
-                        if ui.small_button("Cancel").clicked() {
-                            cmds.push(AppCommand::CancelSceneDetect { clip_id });
-                            ui.close_menu();
-                        }
-                    } else if ui.button("Detect Scenes\u{2026}").clicked() {
-                        cmds.push(AppCommand::DetectScenes { clip_id });
-                        ui.close_menu();
-                    }
-                    // A matte that follows the subject through the clip,
-                    // gating its grade (#239).
-                    if let Some(t) = state.tracking_subjects.get(&clip_id) {
-                        let pct = klipp_analysis::service::subject_matte_status(t.media).and_then(|s| s.progress).unwrap_or(0.0) * 100.0;
-                        ui.label(format!("Tracking subject\u{2026} {pct:.0}%"));
-                        if ui.small_button("Stop Tracking").clicked() {
-                            cmds.push(AppCommand::CancelTrackSubject { clip_id });
-                            ui.close_menu();
-                        }
-                    } else {
-                        if ui.button("Track Subject").on_hover_text("A matte that follows the person through the clip, gating its grade. Made in the background.").clicked() {
-                            cmds.push(AppCommand::TrackSubject { clip_id, model: "subject".into(), into: Some(klipp_core::SubjectMatteUse::Grade) });
-                            ui.close_menu();
-                        }
-                        // Or the clip cut out round them, over the tracks
-                        // below (#73).
-                        if ui.button("Cut Out Subject").on_hover_text("The clip cut out round the person, frame by frame: the tracks below show everywhere else. Made in the background.").clicked() {
-                            cmds.push(AppCommand::TrackSubject { clip_id, model: "subject".into(), into: Some(klipp_core::SubjectMatteUse::CutOut) });
-                            ui.close_menu();
-                        }
-                    }
-                    // Offer the razor-split once markers exist. One atomic
-                    // undo step restores the original clip.
-                    let marker_count = state.sequence().tracks.iter()
-                        .flat_map(|t| t.clips.iter())
-                        .find(|c| c.id == clip_id)
-                        .map(|c| c.clip_markers.len())
-                        .unwrap_or(0);
-                    if marker_count > 0 && !state.scene_detect_in_progress.contains(&clip_id) {
-                        let label = format!(
-                            "Split at Scene Markers ({} cut{})",
-                            marker_count,
-                            if marker_count == 1 { "" } else { "s" }
-                        );
+                    // Offer the razor-split once scene markers exist. One
+                    // atomic undo step restores the original clip.
+                    if scene_markers > 0 {
+                        let label = format!("Split at Scene Markers ({} cut{})", scene_markers, if scene_markers == 1 { "" } else { "s" });
                         if ui.button(label).clicked() {
                             cmds.push(AppCommand::SplitAtSceneMarkers { clip_id });
                             ui.close_menu();
                         }
                     }
-                }
-
-                let can_restore = state.sequence().all_clips().find(|c|c.id==clip_id).is_some_and(|c| c.grade().cut_out_matte().is_some());
-                if can_restore && ui.button("Restore Background").clicked() {
-                    cmds.push(AppCommand::RestoreBackground { clip_id });
-                    ui.close_menu();
-                }
-
-                // Join Through Edit (#683): close a cut that is not one,
-                // such as a split, or a scene cut found on a flash.
-                for (next, label) in [(false, "Join with Previous"), (true, "Join with Next")] {
-                    if state.can_join_through_edit(clip_id, next) && ui.button(label).on_hover_text("Make this clip and that piece of the same shot one clip again, its sound with it").clicked() {
-                        cmds.push(AppCommand::JoinThroughEdit { clip_id, next });
+                    if let Some(colliding_id) = collision {
+                        // Named for what it does: "Push to Resolve" read as
+                        // the name of another editor rather than "resolve
+                        // the overlap".
+                        if ui.button("Move Overlapping Clip After This One").on_hover_text("This clip overlaps another on the track: move that one so it starts where this one ends").clicked() {
+                            let result = klipp_timeline::magnetic::MagneticEditor::resolve_collision_push(state.sequence_mut(), clip_id, colliding_id);
+                            state.active_history_mut().push(crate::history::HistoryEntry {
+                                command: crate::history::EditCommand::Magnetic(result.command),
+                            });
+                            state.dirty = true;
+                            cmds.push(AppCommand::SequenceUpdated);
+                            ui.close_menu();
+                        }
+                    }
+                    ui.separator();
+                    // Freeze Frame Here: a 2 s freeze of the viewer's frame
+                    // at the playhead, inside a picture clip.
+                    if can_freeze && ui.button("Freeze Frame Here").clicked() {
+                        cmds.push(AppCommand::InsertFreezeFrame { duration_secs: 2.0 });
                         ui.close_menu();
                     }
+                    // A subclip of what the clip uses (#925).
+                    if media_id.is_some() && ui.button("Make Subclip").on_hover_text("A subclip in the media pool over what this clip uses of its file").clicked() {
+                        cmds.push(AppCommand::SubclipFromClip { clip_id });
+                        ui.close_menu();
+                    }
+                    // Every media-pool item but the clip's own; picking one
+                    // keeps the trim, effects and transitions.
+                    if let Some(cur_media_id) = media_id {
+                        ui.menu_rows_with_icon(crate::icons::Icon::ArrowClockwise, "Replace From Bin", |ui| {
+                            let max_h = (ui.ctx().screen_rect().height() * 0.70).max(240.0);
+                            egui::ScrollArea::vertical()
+                                .id_salt(("replace_from_bin", clip_id.0))
+                                .max_height(max_h)
+                                .show(ui, |ui| {
+                                    let entries: Vec<(klipp_core::MediaId, String)> = state
+                                        .media_pool
+                                        .all()
+                                        .filter(|m| m.id != cur_media_id)
+                                        .map(|m| (m.id, m.filename.clone()))
+                                        .collect();
+                                    if entries.is_empty() {
+                                        ui.label(egui::RichText::new("(no other media in bin)").small().italics());
+                                    }
+                                    for (mid, name) in entries {
+                                        if ui.button(name).clicked() {
+                                            cmds.push(AppCommand::ReplaceClipMedia { clip_id, new_media_id: mid });
+                                            ui.close_menu();
+                                        }
+                                    }
+                                });
+                        });
+                    }
+                    if !is_video_track && !(has_sound || is_audio_track) {
+                        ui.separator();
+                        attribute_items(ui, state, cmds);
+                    }
+                    // Rhythmic edits in one step (#988).
+                    ui.menu_rows("Rhythm Edits", |ui| {
+                        for (kind, label, tip) in [
+                            (0u8, "Strobe\u{2026}", "Cut the clip (or its part between the In and Out) into short pieces and remove every other one, so the shot flickers"),
+                            (1, "Set Length\u{2026}", "Make the selected clips all the same length, as for a rapid-fire montage"),
+                            (2, "Copy Over Every Edit\u{2026}", "Lay a copy of this clip over every cut below it, as for a flash on every cut"),
+                        ] {
+                            if ui.button(label).on_hover_text(tip).clicked() {
+                                cmds.push(AppCommand::SelectClip(Some(clip_id)));
+                                cmds.push(AppCommand::OpenEditHelper { kind, clip_id });
+                                ui.close_menu();
+                            }
+                        }
+                    });
+                });
+
+                // ── Transitions ──
+                // At this clip's two cuts, and fades of the default length
+                // and curve (Preferences > Audio) on a clip with sound.
+                let cuts: Vec<(bool, klipp_core::ClipId, Option<klipp_core::TransitionId>)> = state.sequence().tracks.get(track_idx).map(|track| {
+                    let Some(pos) = track.clips.iter().position(|c| c.id == clip_id) else { return Vec::new() };
+                    let mut cuts = Vec::new();
+                    if let Some(next) = track.clips.get(pos + 1) {
+                        cuts.push((true, next.id, track.transitions.iter().find(|t| t.clip_a_id == clip_id && t.clip_b_id == next.id).map(|t| t.id)));
+                    }
+                    if let Some(prev) = pos.checked_sub(1).and_then(|p| track.clips.get(p)) {
+                        cuts.push((false, prev.id, track.transitions.iter().find(|t| t.clip_a_id == prev.id && t.clip_b_id == clip_id).map(|t| t.id)));
+                    }
+                    cuts
+                }).unwrap_or_default();
+                let sounding = is_audio_track || clip.linked_clip_id.is_some();
+                if !cuts.is_empty() || sounding {
+                    ui.menu_rows("Transitions", |ui| {
+                        for (after, other, existing) in &cuts {
+                            let arrow = if *after { "\u{2192}" } else { "\u{2190}" };
+                            let (a, b) = if *after { (clip_id, *other) } else { (*other, clip_id) };
+                            match existing {
+                                Some(tid) => {
+                                    if ui.button(format!("Remove Transition {arrow}")).clicked() {
+                                        cmds.push(AppCommand::RemoveTransition { track_index: track_idx, transition_id: *tid });
+                                        ui.close_menu();
+                                    }
+                                }
+                                None => {
+                                    ui.menu_rows(format!("Add Transition {arrow}"), |ui| {
+                                        // Capped so the 30-odd kinds stay
+                                        // reachable on a small screen.
+                                        let max_h = (ui.ctx().screen_rect().height() * 0.70).max(240.0);
+                                        egui::ScrollArea::vertical()
+                                            .id_salt(("transition_submenu", *after))
+                                            .max_height(max_h)
+                                            .show(ui, |ui| {
+                                                for &(kind_id, label) in klipp_engine::transition::all_transition_kinds() {
+                                                    if ui.button(label).clicked() {
+                                                        cmds.push(AppCommand::AddTransition {
+                                                            track_index: track_idx,
+                                                            clip_a_id: a,
+                                                            clip_b_id: b,
+                                                            kind_id,
+                                                            duration_frames: state.default_transition_frames,
+                                                        });
+                                                        ui.close_menu();
+                                                    }
+                                                }
+                                            });
+                                    });
+                                }
+                            }
+                        }
+                        if sounding {
+                            for (label, fade_in) in [("Add Fade In", true), ("Add Fade Out", false)] {
+                                if ui.button(label).on_hover_text(format!("{:.2} s, set in Preferences > Audio", state.default_fade_secs)).clicked() {
+                                    cmds.extend(default_fade_command(state, &clip, fade_in));
+                                    ui.close_menu();
+                                }
+                            }
+                        }
+                    });
                 }
 
-                // Link/Unlink + Reveal Linked partner. The Reveal
-                // entry intentionally appears in BOTH the audio-side
-                // and video-side menus so a linked pair stays
-                // navigable from either clip — this is the small
-                // "linked" section that survives the kind split (pro
-                // NLEs do this too: "Reveal in Source Monitor" /
-                // "Find Linked Clip" stay cross-kind).
-                let clip_info = state.sequence().tracks.iter()
-                    .flat_map(|t| t.clips.iter())
-                    .find(|c| c.id == clip_id);
-                if let Some(clip) = clip_info {
-                    if let Some(partner_id) = clip.linked_clip_id {
-                        // Look up partner's track kind to pick the
-                        // right label — "Reveal Linked Audio" on a
-                        // video clip's menu, "Reveal Linked Video"
-                        // on an audio clip's menu.
-                        let partner_kind = state.sequence().tracks.iter()
-                            .find(|t| t.clips.iter().any(|c| c.id == partner_id))
-                            .map(|t| t.kind);
+                // ── Audio ──
+                // Never on a title or other picture without sound.
+                let attach_audio = is_video_track && clip.linked_clip_id.is_none() && has_sound
+                    && !state.sequence().all_clips().any(|c| c.id != clip_id && c.linked_clip_id.is_none() && c.timeline_in == clip.timeline_in);
+                let mut chosen: Vec<klipp_core::ClipId> = state.selected_clips.clone();
+                chosen.extend(state.selected_clip);
+                if !chosen.contains(&clip_id) {
+                    chosen.push(clip_id);
+                }
+                let auto_align = crate::auto_align::pair_from_selection(state.sequence(), &chosen).ok();
+                if has_sound || is_audio_track {
+                    ui.menu_rows("Audio", |ui| {
+                        // Normalize (#1843) and fit to length (#2210).
+                        if has_sound && ui.button("Normalize\u{2026}").on_hover_text("Bring the clip, or the selection, to a loudness or peak target by its gain").clicked() {
+                            cmds.push(AppCommand::OpenNormalizeDialog { clip_id: Some(clip_id) });
+                            ui.close_menu();
+                        }
+                        if has_sound && ui.button("Fit Music to Length\u{2026}").on_hover_text("Cut or repeat whole bars so the track lasts as long as the picture, a marked range or a length").clicked() {
+                            cmds.push(AppCommand::OpenMusicFitDialog { clip_id });
+                            ui.close_menu();
+                        }
+                        // A picture whose sound was taken off, or never
+                        // brought: laid back down, linked (#912).
+                        if attach_audio && ui.button("Attach Its Audio").on_hover_text("Lay the clip's own sound on an audio track, linked to it").clicked() {
+                            cmds.push(AppCommand::AttachLinkedAudio { clip_id });
+                            ui.close_menu();
+                        }
+                        // A stereo clip on an audio track into its two
+                        // channels (#922).
+                        if is_audio_track && stereo && ui.button("Split to Mono").on_hover_text("The left channel stays here; the right goes on the audio track below").clicked() {
+                            cmds.push(AppCommand::SplitToMono { clip_id });
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        // Audio sync (#61): set the reference, align to it.
+                        let is_ref = state.audio_reference_clip_id == Some(clip_id);
+                        let ref_label = if is_ref { "\u{25CF} Audio Reference (click to re-set)" } else { "Set as Audio Reference" };
+                        if ui.button(ref_label).clicked() {
+                            cmds.push(AppCommand::SetAudioReference { clip_id });
+                            ui.close_menu();
+                        }
+                        if state.audio_reference_clip_id.is_some() && !is_ref && ui.button("Align to Audio Reference").clicked() {
+                            cmds.push(AppCommand::AlignToAudioReference { clip_id });
+                            ui.close_menu();
+                        }
+                        // The camera clip and a separate recording among the
+                        // selection, the recording lined up (#615).
+                        if let Some(pair) = &auto_align {
+                            if ui.button("Auto Align Audio\u{2026}").on_hover_text("Line the separate recording up with the camera's sound").clicked() {
+                                cmds.push(AppCommand::OpenAutoAlignAudio { reference: pair.reference, recording: pair.recording });
+                                ui.close_menu();
+                            }
+                        }
+                        if !is_video_track {
+                            ui.separator();
+                            attribute_items(ui, state, cmds);
+                        }
+                    });
+                }
+
+                // ── Colour ──
+                // Grade nodes work on pixels: a picture clip's only.
+                if is_video_track {
+                    let viewed = crate::graded_thumbs::viewed_clip(state.sequence(), state.selected_clip, state.playhead);
+                    ui.menu_rows("Colour", |ui| {
+                        // Where the grade stands (#899): a colourist's flag.
+                        ui.menu_rows("Grade Flag", |ui| {
+                            for flag in klipp_timeline::GradeFlag::ALL {
+                                let [r, g, b] = flag.rgb();
+                                let text = if flag.is_none() { flag.label().to_string() } else { format!("\u{2691} {}", flag.label()) };
+                                let row = ui.add(egui::Button::new(egui::RichText::new(text).color(if flag.is_none() { ui.visuals().text_color() } else { egui::Color32::from_rgb(r, g, b) })).selected(clip.grade_flag == flag));
+                                if row.clicked() {
+                                    cmds.push(AppCommand::SetClipGradeFlags { clip_ids: targets.clone(), flag });
+                                    ui.close_menu();
+                                }
+                            }
+                        });
+                        // Colour match: one clip is the reference, others
+                        // match against it (#CG-CLIP2CLIP-MATCH).
+                        let is_ref = state.color_match_reference_clip == Some(clip_id);
+                        let ref_label = if is_ref { "\u{25CF} Colour Reference (click to re-set)" } else { "Use as Colour Reference" };
+                        if ui.button(ref_label).clicked() {
+                            cmds.push(AppCommand::UseClipAsColorMatchReference { clip_id });
+                            ui.close_menu();
+                        }
+                        if state.color_match_reference.is_some() && !is_ref && ui.button("Match Colour to Reference").clicked() {
+                            cmds.push(AppCommand::MatchClipToColorReference { clip_id });
+                            ui.close_menu();
+                        }
+                        // Wipe the graded clip against this one (#899).
+                        if state.show_color_panel
+                            && viewed.is_some_and(|v| v != clip_id)
+                            && ui.button("Wipe Against This Clip").on_hover_text("Split the viewer: this clip graded on the left, the frame shown on the right").clicked()
+                        {
+                            cmds.push(AppCommand::WipeAgainstClip { target: Some(klipp_core::WipeClip::Clip(clip_id)) });
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        attribute_items(ui, state, cmds);
+                    });
+                }
+
+                // ── Text ──
+                if let Some(td) = &title_data {
+                    ui.menu_rows("Text", |ui| {
+                        if ui.button("Edit Text").clicked() {
+                            state.viewer_text_edit = true;
+                            state.viewer_text_edit_clip = Some(clip_id);
+                            state.viewer_text_edit_request_focus = true;
+                            state.viewer_char_positions.clear();
+                            state.viewer_text_cursor = 0;
+                            state.viewer_text_select_anchor = None;
+                            state.viewer_text_edit_buffer = td.text().clone();
+                            cmds.push(AppCommand::SelectClip(Some(clip_id)));
+                            ui.close_menu();
+                        }
+                        let current_align = td.alignment();
+                        let align_name = |a: klipp_timeline::TextAlignment| match a {
+                            klipp_timeline::TextAlignment::Left => "Left",
+                            klipp_timeline::TextAlignment::Center => "Center",
+                            klipp_timeline::TextAlignment::Right => "Right",
+                            klipp_timeline::TextAlignment::Justify => "Justify",
+                        };
+                        ui.menu_rows(format!("Alignment: {}", align_name(current_align)), |ui| {
+                            for (i, a) in [klipp_timeline::TextAlignment::Left, klipp_timeline::TextAlignment::Center, klipp_timeline::TextAlignment::Right, klipp_timeline::TextAlignment::Justify].into_iter().enumerate() {
+                                if ui.selectable_label(current_align == a, align_name(a)).clicked() {
+                                    cmds.push(AppCommand::SetTitleAlignment { clip_id, alignment: i as u8 });
+                                    ui.close_menu();
+                                }
+                            }
+                        });
+                        let is_bold = matches!(td.font_style(), klipp_timeline::FontStyle::Bold | klipp_timeline::FontStyle::BoldItalic);
+                        let is_italic = matches!(td.font_style(), klipp_timeline::FontStyle::Italic | klipp_timeline::FontStyle::BoldItalic);
+                        ui.menu_rows("Font Style", |ui| {
+                            for (style, on, label) in [(0u8, !is_bold && !is_italic, "Regular"), (1, is_bold && !is_italic, "Bold"), (2, !is_bold && is_italic, "Italic"), (3, is_bold && is_italic, "Bold Italic")] {
+                                if ui.selectable_label(on, label).clicked() {
+                                    cmds.push(AppCommand::UpdateTitleData {
+                                        clip_id, text: td.text().clone(), font_size: td.font_size(),
+                                        font_name: td.font_name().clone(), font_style: style, color: td.color(),
+                                    });
+                                    ui.close_menu();
+                                }
+                            }
+                        });
+                        // Clear every style run.
+                        if !td.style_runs().is_empty() && ui.button("Reset Text Styles").clicked() {
+                            cmds.push(AppCommand::ApplyTitleStyle {
+                                clip_id, range_start: 0, range_end: td.text().len(),
+                                property: "clear_all".into(), value: String::new(),
+                            });
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if ui.button("Save as Title Template\u{2026}").clicked() {
+                            cmds.push(AppCommand::SaveTitleTemplate { clip_id });
+                            ui.close_menu();
+                        }
+                        // Promote to a project asset, or detach from one.
+                        if let Some(asset_id) = clip.linked_title_asset_id {
+                            let asset_name = state.title_assets.get(&asset_id).map(|a| a.display_name.clone()).unwrap_or_else(|| "Project Asset".to_string());
+                            crate::widgets::menu::menu_heading(ui, &format!("Linked to \u{201C}{asset_name}\u{201D}"));
+                            if ui.button("Detach from Project Asset").clicked() {
+                                cmds.push(AppCommand::DetachTitleAsset { clip_id });
+                                ui.close_menu();
+                            }
+                        } else if ui.button("Save as Project Asset").clicked() {
+                            cmds.push(AppCommand::CreateTitleAsset { source_clip_id: clip_id });
+                            ui.close_menu();
+                        }
+                    });
+                }
+
+                // ── Effects ──
+                // Spatial and picture work: a picture clip's only.
+                if is_video_track {
+                    let candidate_above = find_matte_candidate_above(state, track_idx, clip_id).map(|(id, kind)| (id, matches!(kind, klipp_timeline::ClipKind::Title(_))));
+                    let tracking = state.tracking_subjects.get(&clip_id).map(|t| klipp_analysis::service::subject_matte_status(t.media).and_then(|s| s.progress).unwrap_or(0.0) * 100.0);
+                    let detecting = state.scene_detect_in_progress.contains(&clip_id).then(|| state.scene_detect_progress.get(&clip_id).copied().unwrap_or(0.0) * 100.0);
+                    let can_restore = clip.grade().cut_out_matte().is_some();
+                    ui.menu_rows("Effects", |ui| {
+                        ui.menu_rows("Motion Presets", |ui| {
+                            for (label, preset) in [
+                                ("Ken Burns: Zoom In", "ken_burns_zoom_in"),
+                                ("Ken Burns: Zoom Out", "ken_burns_zoom_out"),
+                                ("Ken Burns: Pan Left", "ken_burns_pan_left"),
+                            ] {
+                                if ui.button(label).clicked() {
+                                    cmds.push(AppCommand::ApplyMotionPreset { clip_id, preset: preset.into() });
+                                    ui.close_menu();
+                                }
+                            }
+                            ui.separator();
+                            for (label, preset) in [
+                                ("PiP: Top Left", "pip_top_left"),
+                                ("PiP: Top Right", "pip_top_right"),
+                                ("PiP: Bottom Left", "pip_bottom_left"),
+                                ("PiP: Bottom Right", "pip_bottom_right"),
+                            ] {
+                                if ui.button(label).clicked() {
+                                    cmds.push(AppCommand::ApplyMotionPreset { clip_id, preset: preset.into() });
+                                    ui.close_menu();
+                                }
+                            }
+                        });
+                        // Multi-step recipes, from the same table as the
+                        // command palette; only those that apply here.
+                        let templates: Vec<_> = {
+                            let template_ctx = crate::cut_templates::template_context(state);
+                            crate::cut_templates::MENU_ROWS.iter().filter(|row| crate::cut_templates::can_apply(&row.kind, &template_ctx)).collect()
+                        };
+                        if !templates.is_empty() {
+                            ui.menu_rows("Cut Templates", |ui| {
+                                for row in templates {
+                                    if ui.button(row.label).clicked() {
+                                        (row.dispatch)(state, cmds);
+                                        ui.close_menu();
+                                    }
+                                }
+                            });
+                        }
+                        if ui.button("Add Title Over Clip").clicked() {
+                            cmds.push(AppCommand::AddTitleAtPlayhead { over_clip: Some(clip_id) });
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        // Track matte: the clip on the track above as this
+                        // clip's mask; Auto picks the channel by its kind.
+                        if let Some((cand_id, cand_is_title)) = candidate_above {
+                            ui.menu_rows("Use Clip Above as Matte", |ui| {
+                                let auto_channel: u8 = if cand_is_title { 0 } else { 1 };
+                                let auto_label = if cand_is_title { "Auto (Alpha)" } else { "Auto (Luma)" };
+                                for (label, channel, invert) in [(auto_label, auto_channel, false), ("Alpha", 0, false), ("Luma", 1, false), ("Inverted Luma", 1, true)] {
+                                    if ui.button(label).clicked() {
+                                        cmds.push(AppCommand::SetClipMatte { clip_id, source_clip_id: cand_id, channel, invert, feather_px: 0.0, choke_px: 0.0 });
+                                        ui.close_menu();
+                                    }
+                                    if label == auto_label {
+                                        ui.separator();
+                                    }
+                                }
+                            });
+                        }
+                        if clip.matte_source.is_some() && ui.button("Clear Matte").clicked() {
+                            cmds.push(AppCommand::ClearClipMatte { clip_id });
+                            ui.close_menu();
+                        }
+                        // A matte that follows the subject through the
+                        // clip (#239), or the clip cut out round them (#73).
+                        if file_there {
+                            if let Some(pct) = tracking {
+                                ui.label(format!("Tracking subject\u{2026} {pct:.0}%"));
+                                if ui.small_button("Stop Tracking").clicked() {
+                                    cmds.push(AppCommand::CancelTrackSubject { clip_id });
+                                    ui.close_menu();
+                                }
+                            } else {
+                                if ui.button("Track Subject").on_hover_text("A matte that follows the person through the clip, gating its grade. Made in the background.").clicked() {
+                                    cmds.push(AppCommand::TrackSubject { clip_id, model: "subject".into(), into: Some(klipp_core::SubjectMatteUse::Grade) });
+                                    ui.close_menu();
+                                }
+                                if ui.button("Cut Out Subject").on_hover_text("The clip cut out round the person, frame by frame: the tracks below show everywhere else. Made in the background.").clicked() {
+                                    cmds.push(AppCommand::TrackSubject { clip_id, model: "subject".into(), into: Some(klipp_core::SubjectMatteUse::CutOut) });
+                                    ui.close_menu();
+                                }
+                            }
+                        }
+                        if can_restore && ui.button("Restore Background").clicked() {
+                            cmds.push(AppCommand::RestoreBackground { clip_id });
+                            ui.close_menu();
+                        }
+                        // Scene detection, on a picture whose file is there.
+                        if file_there {
+                            if let Some(pct) = detecting {
+                                ui.label(format!("Detecting scenes\u{2026} {:.0}%", pct));
+                                if ui.small_button("Cancel").clicked() {
+                                    cmds.push(AppCommand::CancelSceneDetect { clip_id });
+                                    ui.close_menu();
+                                }
+                            } else if ui.button("Detect Scenes\u{2026}").clicked() {
+                                cmds.push(AppCommand::DetectScenes { clip_id });
+                                ui.close_menu();
+                            }
+                        }
+                    });
+                }
+
+                // ── Link & Group ──
+                let partner = clip.linked_clip_id.map(|partner_id| {
+                    let kind = state.sequence().tracks.iter().find(|t| t.clips.iter().any(|c| c.id == partner_id)).map(|t| t.kind);
+                    (partner_id, kind)
+                });
+                let link_candidate = if partner.is_some() { None } else {
+                    state.sequence().all_clips().find(|c| c.id != clip_id && c.linked_clip_id.is_none() && c.timeline_in == clip.timeline_in).map(|c| c.id)
+                };
+                let has_multi = state.selected_clips.len() >= 2
+                    || (state.selected_clips.len() == 1 && state.selected_clip.is_some_and(|id| !state.selected_clips.contains(&id)));
+                let has_multi_for_compound = !state.selected_clips.is_empty();
+                let track_role = state.sequence().tracks.get(track_idx).map(|t| t.magnetic_role.clone());
+                let below = klipp_document::matched::clip_below(state.sequence(), clip_id).is_some();
+                let match_below = below && crate::edit_helpers::match_clip_below(state.sequence(), clip_id).is_some();
+                ui.menu_rows("Link & Group", |ui| {
+                    // A linked pair navigable from either side.
+                    if let Some((partner_id, partner_kind)) = partner {
                         let reveal_label = match partner_kind {
                             Some(TrackKind::Audio) => "Reveal Linked Audio",
                             Some(TrackKind::Video) => "Reveal Linked Video",
@@ -9253,353 +9101,136 @@ impl TimelinePanel {
                             cmds.push(AppCommand::UnlinkClip { clip_id });
                             ui.close_menu();
                         }
-                    } else {
-                        // Find a candidate clip on another track at the same position
-                        let candidate = state.sequence().tracks.iter().flat_map(|t| t.clips.iter())
-                            .find(|c| {
-                                c.id != clip_id
-                                    && c.linked_clip_id.is_none()
-                                    && c.timeline_in == clip.timeline_in
-                            });
-                        if let Some(partner) = candidate {
-                            let partner_id = partner.id;
-                            if ui.button("Link to Matching Clip").clicked() {
-                                cmds.push(AppCommand::LinkClips { clip_a: clip_id, clip_b: partner_id });
-                                ui.close_menu();
-                            }
-                        } else if track_kind == Some(TrackKind::Video)
-                            && clip.media_id().and_then(|m| state.media_pool.get(&m)).is_some_and(|m| m.has_audio)
-                        {
-                            // A picture whose sound was taken off, or never
-                            // brought: lay it back down, linked (#912). The
-                            // command had no way in from the app.
-                            if ui.button("Attach Its Audio").on_hover_text("Lay the clip's own sound on an audio track, linked to it").clicked() {
-                                cmds.push(AppCommand::AttachLinkedAudio { clip_id });
-                                ui.close_menu();
-                            }
+                    } else if let Some(partner_id) = link_candidate {
+                        if ui.button("Link to Matching Clip").clicked() {
+                            cmds.push(AppCommand::LinkClips { clip_a: clip_id, clip_b: partner_id });
+                            ui.close_menu();
                         }
                     }
-                }
-
-                // A stereo clip on an audio track into its two channels (#922).
-                let stereo = state.sequence().find_clip(clip_id)
-                    .map(|(ti, ci)| &state.sequence().tracks[ti].clips[ci])
-                    .is_some_and(|clip| {
-                        clip.channel_config == klipp_timeline::ChannelConfig::Default
-                            && clip.media_id().and_then(|m| state.media_pool.get(&m)).is_some_and(|m| m.audio_channels == Some(2))
-                    });
-                if track_kind == Some(TrackKind::Audio)
-                    && stereo
-                    && ui.button("Split to Mono").on_hover_text("The left channel stays here; the right goes on the audio track below").clicked()
-                {
-                    cmds.push(AppCommand::SplitToMono { clip_id });
-                    ui.close_menu();
-                }
-
-                // Auto Align Audio (#615): the camera clip and a separate
-                // recording among the selection, the recording lined up.
-                let mut chosen: Vec<klipp_core::ClipId> = state.selected_clips.clone();
-                chosen.extend(state.selected_clip);
-                if !chosen.contains(&clip_id) {
-                    chosen.push(clip_id);
-                }
-                if let Ok(pair) = crate::auto_align::pair_from_selection(state.sequence(), &chosen) {
-                    if ui.button("Auto Align Audio\u{2026}").on_hover_text("Line the separate recording up with the camera's sound").clicked() {
-                        cmds.push(AppCommand::OpenAutoAlignAudio { reference: pair.reference, recording: pair.recording });
+                    if has_multi && ui.add(egui::Button::new("Group").shortcut_text(edit_key("group_clips"))).clicked() {
+                        let mut ids = state.selected_clips.clone();
+                        if let Some(primary) = state.selected_clip {
+                            if !ids.contains(&primary) {
+                                ids.push(primary);
+                            }
+                        }
+                        cmds.push(AppCommand::GroupClips { clip_ids: ids });
                         ui.close_menu();
                     }
-                }
-
-                // Reveal source in media browser + open in external app —
-                // both are media-scoped actions, so they share the same
-                // `media_id()` gate. Keeps parity with the bin context
-                // menu's "Open in External App" entry (F-72 → F-155).
-                if let Some(clip) = clip_info {
-                    if let Some(mid) = clip.media_id() {
-                        if ui.button("Reveal Source in Browser").clicked() {
-                            cmds.push(AppCommand::RevealMediaInBrowser { media_id: mid });
-                            ui.close_menu();
-                        }
-                        if ui.button("Open in External App").clicked() {
-                            cmds.push(AppCommand::OpenInExternalApp { media_id: mid });
-                            ui.close_menu();
-                        }
-                        if ui.add(egui::Button::new("Match Frame").shortcut_text("F")).clicked() {
-                            cmds.push(AppCommand::MatchFrameProgramToSource);
+                    if let Some(gid) = clip.group_id {
+                        if ui.add(egui::Button::new("Ungroup").shortcut_text(edit_key("ungroup_clips"))).clicked() {
+                            cmds.push(AppCommand::UngroupClips { group_id: gid });
                             ui.close_menu();
                         }
                     }
-                }
-
-                ui.separator();
-
-                // Three-point edit operations
-                let has_source = state.source_media_id.is_some();
-                let has_in_out = state.sequence().in_point.is_some() && state.sequence().out_point.is_some();
-                if ui.add_enabled(has_source, egui::Button::new("Insert").shortcut_text(",")).clicked() {
-                    cmds.push(AppCommand::InsertEdit);
-                    ui.close_menu();
-                }
-                if ui.add_enabled(has_source, egui::Button::new("Overwrite").shortcut_text(".")).clicked() {
-                    cmds.push(AppCommand::OverwriteEdit);
-                    ui.close_menu();
-                }
-                if ui.add_enabled(has_in_out, egui::Button::new("Lift").shortcut_text(";")).clicked() {
-                    cmds.push(AppCommand::LiftEdit);
-                    ui.close_menu();
-                }
-                if ui.add_enabled(has_in_out, egui::Button::new("Extract").shortcut_text("'")).clicked() {
-                    cmds.push(AppCommand::ExtractEdit);
-                    ui.close_menu();
-                }
-
-                // Magnetic operations
-                ui.separator();
-                if ui.add(egui::Button::new("Ripple Trim Head to Playhead").shortcut_text("Alt+[")).clicked() {
-                    cmds.push(AppCommand::RippleTrimHead { clip_id });
-                    ui.close_menu();
-                }
-                if ui.add(egui::Button::new("Ripple Trim Tail to Playhead").shortcut_text("Alt+]")).clicked() {
-                    cmds.push(AppCommand::RippleTrimTail { clip_id });
-                    ui.close_menu();
-                }
-                if ui.button("Insert Gap (1s)").clicked() {
-                    cmds.push(AppCommand::InsertGapAtPlayhead);
-                    ui.close_menu();
-                }
-
-                // Transitions
-                ui.separator();
-                // Find adjacent clip pairs involving the selected clip
-                if let Some(track) = state.sequence().tracks.get(track_idx) {
-                    let clip_pos = track.clips.iter().position(|c| c.id == clip_id);
-                    if let Some(pos) = clip_pos {
-                        // Check if there's a clip after this one (transition at the cut point)
-                        if pos + 1 < track.clips.len() {
-                            let next_clip = &track.clips[pos + 1];
-                            let has_transition = track.transitions.iter().any(|t| {
-                                t.clip_a_id == clip_id && t.clip_b_id == next_clip.id
-                            });
-                            let next_id = next_clip.id;
-                            if has_transition {
-                                // Show existing transition with option to change/remove
-                                let tid = track.transitions.iter()
-                                    .find(|t| t.clip_a_id == clip_id && t.clip_b_id == next_id)
-                                    .map(|t| t.id);
-                                if let Some(tid) = tid {
-                                    if ui.button("Remove Transition →").clicked() {
-                                        cmds.push(AppCommand::RemoveTransition {
-                                            track_index: track_idx,
-                                            transition_id: tid,
-                                        });
-                                        ui.close_menu();
-                                    }
-                                }
-                            } else {
-                                ui.menu_rows("Add Transition →", |ui| {
-                                    // Cap the submenu height at 70 %
-                                    // of the screen so the 30+
-                                    // transition kinds stay reachable
-                                    // on small viewports. ScrollArea
-                                    // handles wheel scroll for free.
-                                    let max_h = (ui.ctx().screen_rect().height() * 0.70).max(240.0);
-                                    egui::ScrollArea::vertical()
-                                        .id_salt("transition_submenu_right")
-                                        .max_height(max_h)
-                                        .show(ui, |ui| {
-                                            for &(kind_id, label) in klipp_engine::transition::all_transition_kinds() {
-                                                if ui.button(label).clicked() {
-                                                    cmds.push(AppCommand::AddTransition {
-                                                        track_index: track_idx,
-                                                        clip_a_id: clip_id,
-                                                        clip_b_id: next_id,
-                                                        kind_id,
-                                                        duration_frames: state.default_transition_frames,
-                                                    });
-                                                    ui.close_menu();
-                                                }
-                                            }
-                                        });
-                                });
-                            }
-                        }
-                        // Check if there's a clip before this one
-                        if pos > 0 {
-                            let prev_clip = &track.clips[pos - 1];
-                            let has_transition = track.transitions.iter().any(|t| {
-                                t.clip_a_id == prev_clip.id && t.clip_b_id == clip_id
-                            });
-                            let prev_id = prev_clip.id;
-                            if has_transition {
-                                let tid = track.transitions.iter()
-                                    .find(|t| t.clip_a_id == prev_id && t.clip_b_id == clip_id)
-                                    .map(|t| t.id);
-                                if let Some(tid) = tid {
-                                    if ui.button("Remove Transition ←").clicked() {
-                                        cmds.push(AppCommand::RemoveTransition {
-                                            track_index: track_idx,
-                                            transition_id: tid,
-                                        });
-                                        ui.close_menu();
-                                    }
-                                }
-                            } else {
-                                ui.menu_rows("Add Transition ←", |ui| {
-                                    let max_h = (ui.ctx().screen_rect().height() * 0.70).max(240.0);
-                                    egui::ScrollArea::vertical()
-                                        .id_salt("transition_submenu_left")
-                                        .max_height(max_h)
-                                        .show(ui, |ui| {
-                                            for &(kind_id, label) in klipp_engine::transition::all_transition_kinds() {
-                                                if ui.button(label).clicked() {
-                                                    cmds.push(AppCommand::AddTransition {
-                                                        track_index: track_idx,
-                                                        clip_a_id: prev_id,
-                                                        clip_b_id: clip_id,
-                                                        kind_id,
-                                                        duration_frames: state.default_transition_frames,
-                                                    });
-                                                    ui.close_menu();
-                                                }
-                                            }
-                                        });
-                                });
-                            }
-                        }
-                    }
-                }
-
-                ui.separator();
-
-                // Group / Ungroup
-                let has_multi = state.selected_clips.len() >= 2
-                    || (state.selected_clips.len() == 1 && state.selected_clip.is_some_and(|id| !state.selected_clips.contains(&id)));
-                if ui.add_enabled(has_multi, egui::Button::new("Group").shortcut_text("Ctrl+G")).clicked() {
-                    let mut ids = state.selected_clips.clone();
-                    if let Some(primary) = state.selected_clip {
-                        if !ids.contains(&primary) {
-                            ids.push(primary);
-                        }
-                    }
-                    cmds.push(AppCommand::GroupClips { clip_ids: ids });
-                    ui.close_menu();
-                }
-                let clip_group = state.sequence().tracks.iter()
-                    .flat_map(|t| t.clips.iter())
-                    .find(|c| Some(c.id) == state.selected_clip)
-                    .and_then(|c| c.group_id);
-                if ui.add_enabled(clip_group.is_some(), egui::Button::new("Ungroup").shortcut_text("Ctrl+Shift+G")).clicked() {
-                    if let Some(gid) = clip_group {
-                        cmds.push(AppCommand::UngroupClips { group_id: gid });
-                    }
-                    ui.close_menu();
-                }
-
-                // Magnetic connect/disconnect
-                ui.separator();
-                let is_on_primary = state.sequence().tracks.get(track_idx)
-                    .is_some_and(|t| t.magnetic_role == klipp_timeline::TrackRole::Primary);
-                if !is_on_primary {
-                    let clip_data = state.sequence().tracks.iter()
-                        .flat_map(|t| t.clips.iter())
-                        .find(|c| c.id == clip_id);
-                    if let Some(cd) = clip_data {
-                        if cd.magnetic_anchor.is_some() {
-                            ui.label("\u{26D3} Connected to Primary");
-                            if ui.add(egui::Button::new("Disconnect").shortcut_text("Shift+G")).clicked() {
+                    // Magnetic connection and storylines, off the primary.
+                    if !on_primary {
+                        if clip.magnetic_anchor.is_some() {
+                            if ui.add(egui::Button::new("Disconnect from Primary").shortcut_text("Shift+G")).clicked() {
                                 cmds.push(AppCommand::DisconnectFromPrimary { clip_id });
                                 ui.close_menu();
                             }
                         } else if ui.add(egui::Button::new("Connect to Primary").shortcut_text("G")).clicked() {
-                            // These four items only closed the menu (#911).
                             cmds.push(AppCommand::ConnectToPrimary { clip_id });
                             ui.close_menu();
                         }
-                    }
-                    // Storyline promotion
-                    let track_role = state.sequence().tracks.get(track_idx)
-                        .map(|t| t.magnetic_role.clone());
-                    // The storyline key (shared with audio skim) acts on
-                    // a selected clip on a connected track.
-                    let storyline_key = kb.display_for("toggle_audio_skim");
-                    if let Some(role) = track_role {
-                        if role == klipp_timeline::TrackRole::Connected {
-                            if ui.add(egui::Button::new("Promote to Storyline").shortcut_text(&storyline_key)).clicked() {
-                                cmds.push(AppCommand::ToggleStoryline { clip_id });
-                                ui.close_menu();
-                            }
-                        } else if role == klipp_timeline::TrackRole::ConnectedStoryline {
-                            crate::widgets::menu::menu_heading(ui, "Connected Storyline");
-                            if ui.add(egui::Button::new("Break Apart Storyline").shortcut_text(&storyline_key)).clicked() {
+                        // The storyline key (shared with audio skim) acts
+                        // on a selected clip on a connected track.
+                        let storyline_key = kb.display_for("toggle_audio_skim");
+                        let storyline = match track_role {
+                            Some(klipp_timeline::TrackRole::Connected) => Some("Promote to Storyline"),
+                            Some(klipp_timeline::TrackRole::ConnectedStoryline) => Some("Break Apart Storyline"),
+                            _ => None,
+                        };
+                        if let Some(label) = storyline {
+                            if ui.add(egui::Button::new(label).shortcut_text(&storyline_key)).clicked() {
                                 cmds.push(AppCommand::ToggleStoryline { clip_id });
                                 ui.close_menu();
                             }
                         }
                     }
-                }
-
-                // Collision resolution (connected/storyline tracks only)
-                if !is_on_primary {
-                    let collision = state.sequence().tracks.get(track_idx).and_then(|track| {
-                        let clip = track.clips.iter().find(|c| c.id == clip_id)?;
-                        // Find overlapping clip on same track
-                        track.clips.iter().find(|other| {
-                            other.id != clip_id
-                                && !other.kind.is_gap()
-                                && clip.timeline_in < other.timeline_out
-                                && clip.timeline_out > other.timeline_in
-                        }).map(|other| other.id)
-                    });
-                    if let Some(colliding_id) = collision {
+                    if partner.is_some() || link_candidate.is_some() || has_multi || clip.group_id.is_some() || !on_primary {
                         ui.separator();
-                        // Named for what it does: "Push to Resolve" read as
-                        // the name of another editor rather than "resolve
-                        // the overlap".
-                        if ui.button("Move Overlapping Clip After This One").on_hover_text("This clip overlaps another on the track: move that one so it starts where this one ends").clicked() {
-                            let result = klipp_timeline::magnetic::MagneticEditor::resolve_collision_push(
-                                state.sequence_mut(), clip_id, colliding_id);
-                            state.active_history_mut().push(crate::history::HistoryEntry {
-                                command: crate::history::EditCommand::Magnetic(result.command),
-                            });
-                            state.dirty = true;
-                            cmds.push(AppCommand::SequenceUpdated);
+                    }
+                    if is_compound {
+                        if ui.button("Open Compound Clip").clicked() {
+                            cmds.push(AppCommand::OpenCompoundClip { clip_id });
+                            ui.close_menu();
+                        }
+                        if ui.button("Decompose Compound Clip").on_hover_text("Replaces the compound clip with the inner clips at their original positions, then deletes the inner sequence. Inverse of \"Create Compound Clip\".").clicked() {
+                            cmds.push(AppCommand::DecomposeCompoundClip { clip_id });
                             ui.close_menu();
                         }
                     }
-                }
-
-                // Lock Track
-                ui.separator();
-                let track_locked = state.sequence().tracks.get(track_idx).is_some_and(|t| t.locked);
-                let lock_label = if track_locked { "Unlock Track" } else { "Lock Track" };
-                if ui.button(lock_label).clicked() {
-                    let track_id = state.sequence().tracks[track_idx].id;
-                    cmds.push(AppCommand::SetTrackLocked { track_id, locked: !track_locked });
-                    ui.close_menu();
-                }
-
-                // Track height
-                let has_custom_h = state.sequence().tracks.get(track_idx)
-                    .is_some_and(|t| t.custom_height.is_some());
-                if has_custom_h
-                    && ui.button("Reset Track Height").clicked() {
-                        let track_id = state.sequence().tracks[track_idx].id;
-                        cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: None });
+                    if has_multi_for_compound && ui.button("Create Compound Clip\u{2026}").clicked() {
+                        cmds.push(AppCommand::CreateCompoundClip { name: "Compound Clip".into() });
                         ui.close_menu();
                     }
-
-                ui.separator();
-                // Properties… opens the multi-tab Clip Properties dialog
-                // (#47) on the selected clip's source media.
-                let media_for_clip = state.sequence().tracks.iter()
-                    .flat_map(|t| t.clips.iter())
-                    .find(|c| c.id == clip_id)
-                    .and_then(|c| c.media_id());
-                if ui.add_enabled(media_for_clip.is_some(), egui::Button::new("Properties\u{2026}")).clicked() {
-                    if let Some(mid) = media_for_clip {
-                        cmds.push(AppCommand::OpenClipProperties { media_id: mid });
+                    // Multicam bundles the video clips at the playhead.
+                    if is_video_track && ui.button("Create Multicam Clip").clicked() {
+                        cmds.push(AppCommand::CreateMulticamClip);
+                        ui.close_menu();
                     }
+                    // A title, effect or sound laid over one shot, made to
+                    // start and end with it, and kept so (#2236).
+                    let mut asked: Option<(&str, bool)> = None;
+                    if clip.matched_to.is_some() {
+                        if ui.button("Stop Keeping Matched").on_hover_text("Let this clip be trimmed and moved on its own again").clicked() {
+                            asked = Some(("Stop Keeping Matched", false));
+                        }
+                    } else if below {
+                        if match_below && ui.button("Match Clip Below").on_hover_text("Start and end exactly with the clip under this one").clicked() {
+                            asked = Some(("Match Clip Below", false));
+                        }
+                        if ui.button("Keep Matched to Clip Below").on_hover_text("Start and end with the clip under this one, and follow it when it is trimmed or moved").clicked() {
+                            asked = Some(("Keep Matched", true));
+                        }
+                    }
+                    if let Some((label, keep)) = asked {
+                        let ops = vec![klipp_document::ops::Op::Match { clip_id: klipp_document::ops::ClipRef::Id(clip_id), keep }];
+                        state.pending_doc_ops.push(crate::state::DocOpsRequest { label: label.into(), ops, independent: false });
+                        ui.close_menu();
+                    }
+                    // Several clips selected: line them up with this one (#925).
+                    if multi_selected {
+                        ui.menu_rows("Sync Selected Clips", |ui| {
+                            if ui.button("By Timecode").on_hover_text("The same moment of the shoot under each, from the files' start timecodes").clicked() {
+                                cmds.push(AppCommand::SelectClip(Some(clip_id)));
+                                cmds.push(AppCommand::SyncSelectedClips { by_markers: false });
+                                ui.close_menu();
+                            }
+                            if ui.button("By Markers").on_hover_text("Each clip's first clip marker where this clip's is").clicked() {
+                                cmds.push(AppCommand::SelectClip(Some(clip_id)));
+                                cmds.push(AppCommand::SyncSelectedClips { by_markers: true });
+                                ui.close_menu();
+                            }
+                        });
+                    }
+                    if ui.button("Select Same Source").clicked() {
+                        cmds.push(AppCommand::SelectClip(Some(clip_id)));
+                        cmds.push(AppCommand::SelectSameSource);
+                        ui.close_menu();
+                    }
+                });
+                ui.separator();
+
+                // ── Out of the timeline ──
+                // The export dialog with its range on the selected clips.
+                if crate::widgets::menu::menu_icon_item(ui, crate::icons::Icon::Export, "Export This Clip\u{2026}", "").clicked() {
+                    cmds.push(AppCommand::SelectClip(Some(clip_id)));
+                    cmds.push(AppCommand::OpenExportDialogForSelectedClips);
                     ui.close_menu();
+                }
+                if let Some(mid) = media_id {
+                    if ui.button("Open in External App").clicked() {
+                        cmds.push(AppCommand::OpenInExternalApp { media_id: mid });
+                        ui.close_menu();
+                    }
+                    // The Clip Properties dialog (#47) on its source media.
+                    if ui.button("Properties\u{2026}").clicked() {
+                        cmds.push(AppCommand::OpenClipProperties { media_id: mid });
+                        ui.close_menu();
+                    }
                 }
             } else {
                 // No clip selected — offer gap operations on empty track space
