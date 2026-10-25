@@ -420,6 +420,10 @@ pub struct CurveEditorPanel {
     /// The newest parameter focus handled, the panel's own or followed
     /// (#2296): a focus is followed once, and the panel's own not again.
     focus_seen: f64,
+    /// What `sync_param_from_state` last mirrored: the clip (none for the
+    /// sequence's camera) and the parameter. It follows a change there,
+    /// and leaves a curve picked here alone (#2559).
+    mirrored: Option<(Option<klipp_core::ClipId>, CurveParam)>,
     sheet: super::dope_sheet::Sheet,
     /// The last frame's graph, for a test to find a key on screen: its
     /// rect and the value range it maps.
@@ -452,6 +456,7 @@ impl Default for CurveEditorPanel {
             value_entry: String::new(),
             dope: false,
             focus_seen: f64::NEG_INFINITY,
+            mirrored: None,
             sheet: Default::default(),
             #[cfg(test)]
             last_view: None,
@@ -1152,38 +1157,37 @@ impl CurveEditorPanel {
 
     /// Sync the curve param from the rubber band params in state — or,
     /// with no clip selected, from the camera key selected on the lane.
+    /// Called every frame, it follows a change there, a lane picked on
+    /// the timeline or another clip selected, and leaves a curve picked
+    /// in the editor's own buttons alone: set each frame, it took every
+    /// pick straight back (#2559).
     pub fn sync_param_from_state(&mut self, state: &AppState) {
-        if state.selected_clip.is_none() {
-            if let Some(key) = state.selected_camera_key {
-                if *self.param() != CurveParam::Camera(key.param) {
-                    self.set_param(CurveParam::Camera(key.param));
-                    self.drag = None;
+        let wanted = match state.selected_clip {
+            None => state.selected_camera_key.map(|key| CurveParam::Camera(key.param)),
+            Some(clip_id) => {
+                let seq = &state.sequences[state.active_sequence_idx];
+                match seq.find_clip(clip_id).map(|(ti, _)| seq.tracks[ti].kind) {
+                    Some(TrackKind::Video) => Some(CurveParam::Video(state.video_rubber_band_param)),
+                    // Curve editor only mirrors clip-level rubber band
+                    // params (Volume/Pan/Gain). When the rubber band is
+                    // currently showing an effect param, the curve editor
+                    // already supports CurveParam::AudioEffect and that
+                    // path gets selected by the user via its own picker
+                    // — no auto-mirror needed here.
+                    Some(TrackKind::Audio) => state.rubber_band_param.as_clip_param().map(CurveParam::Audio),
+                    _ => None,
                 }
             }
+        };
+        let Some(param) = wanted else { return };
+        let mirror = Some((state.selected_clip, param.clone()));
+        if self.mirrored == mirror {
             return;
         }
-        if let Some(clip_id) = state.selected_clip {
-            let seq = &state.sequences[state.active_sequence_idx];
-            if let Some((ti, _ci)) = seq.find_clip(clip_id) {
-                let kind = seq.tracks[ti].kind;
-                match kind {
-                    TrackKind::Video => {
-                        self.set_param(CurveParam::Video(state.video_rubber_band_param));
-                    }
-                    TrackKind::Audio => {
-                        // Curve editor only mirrors clip-level rubber band
-                        // params (Volume/Pan/Gain). When the rubber band is
-                        // currently showing an effect param, the curve editor
-                        // already supports CurveParam::AudioEffect and that
-                        // path gets selected by the user via its own picker
-                        // — no auto-mirror needed here.
-                        if let Some(p) = state.rubber_band_param.as_clip_param() {
-                            self.set_param(CurveParam::Audio(p));
-                        }
-                    }
-                    _ => {}
-                }
-            }
+        self.mirrored = mirror;
+        if *self.param() != param {
+            self.set_param(param);
+            self.drag = None;
         }
     }
 
@@ -2771,5 +2775,53 @@ mod curve_param_tests {
         assert_eq!(speed_drag_to(&keys, 1, true, -0.5, 4.0), Some((0.5, 2.0)), "out stays forward");
         assert_eq!(speed_drag_to(&keys, 1, false, 5.0, 4.0), Some((-1.0, -4.0)), "in, no further than the key before");
         assert_eq!(speed_drag_to(&keys, 0, false, -0.5, 4.0), None, "no key before the first");
+    }
+
+    /// #2559: with a clip's position and scale keyed (Ken Burns), the
+    /// property buttons switch the curve shown: Scale shows Scale, then
+    /// Position X shows Position X.
+    #[test]
+    fn the_property_buttons_switch_the_curve() {
+        let mut state = AppState::default();
+        let v1 = state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/kb.mov".into(), None);
+        item.duration = klipp_core::RationalTime { value: 24 * 10, rate: 24 };
+        let media = state.media_pool.add(item);
+        let (zero, ten) = (klipp_core::RationalTime { value: 0, rate: 24 }, klipp_core::RationalTime { value: 24 * 10, rate: 24 });
+        let clip = klipp_timeline::Clip::media(media, zero, ten, zero, ten);
+        let id = clip.id;
+        state.sequences[0].tracks[v1].clips.push(clip);
+        state.selected_clip = Some(id);
+        assert!(state.path_command(&AppCommand::ApplyKenBurns { clip_id: id, start_scale: 1.0, end_scale: 1.3, start_pos_x: 0.0, start_pos_y: 0.0, end_pos_x: 40.0, end_pos_y: 20.0 }).is_some());
+        let mut panel = CurveEditorPanel::new();
+        let ctx = egui::Context::default();
+        let mut clock = 0.0;
+        let mut frame = |panel: &mut CurveEditorPanel, state: &mut AppState, events: Vec<egui::Event>| {
+            clock += 0.05;
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 500.0))), time: Some(clock), events, ..Default::default() };
+            let out = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    // As the app draws it.
+                    panel.follow_focus(state);
+                    panel.sync_param_from_state(state);
+                    panel.show(ui, state, &KlippTheme::default());
+                });
+            });
+            out.shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)), _ => None }).collect::<Vec<_>>()
+        };
+        frame(&mut panel, &mut state, Vec::new());
+        for (label, want) in [("Scale", VideoParam::Scale), ("Position X", VideoParam::PositionX)] {
+            let drawn = frame(&mut panel, &mut state, Vec::new());
+            let at = drawn.iter().find(|(t, _)| t == label).unwrap_or_else(|| panic!("{label} button: {drawn:?}")).1;
+            let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+            frame(&mut panel, &mut state, vec![egui::Event::PointerMoved(at), button(true)]);
+            frame(&mut panel, &mut state, vec![button(false)]);
+            frame(&mut panel, &mut state, Vec::new());
+            assert_eq!(*panel.param(), CurveParam::Video(want), "after clicking {label}");
+        }
+        // A lane picked on the timeline still brings its curve.
+        state.video_rubber_band_param = VideoParam::Rotation;
+        frame(&mut panel, &mut state, Vec::new());
+        assert_eq!(*panel.param(), CurveParam::Video(VideoParam::Rotation), "the timeline's lane followed");
     }
 }
