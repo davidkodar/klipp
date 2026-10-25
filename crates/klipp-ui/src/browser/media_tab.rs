@@ -337,6 +337,9 @@ pub fn show(
         // Only the space below the last item had it, and a full pool has
         // none (#2621).
         let backdrop = ui.interact(ui.clip_rect(), ui.id().with("media_pool_backdrop"), egui::Sense::click());
+        if backdrop.clicked() {
+            state.selected_media_ids.clear();
+        }
         backdrop.context_menu(|ui| menu_body(ui, |ui| pool_menu(ui, view_mode, sort_by, sort_ascending, &mut cmds)));
         if bins_seen.is_empty() {
             ui.add_space(40.0);
@@ -443,6 +446,11 @@ fn pool_menu(ui: &mut egui::Ui, view_mode: &mut BrowserViewMode, sort_by: &mut S
         *sort_ascending = !*sort_ascending;
         ui.close_menu();
     }
+}
+
+/// Whether any selected item is in a bin: Remove from Bin applies.
+fn any_in_a_bin(state: &AppState) -> bool {
+    state.selected_media_ids.iter().any(|id| state.media_pool.get(id).is_some_and(|m| m.bin.is_some()))
 }
 
 /// Every bin's name, by name: the pool's bins and any an item names.
@@ -919,27 +927,37 @@ fn paint_title_asset_badge(painter: &egui::Painter, thumb_rect: egui::Rect, them
 /// click sorts by that column, a second click flips the order, and a
 /// right-click chooses which columns the list shows.
 fn render_column_header(ui: &mut egui::Ui, theme: &KlippTheme, columns: &mut Vec<Field>, sort_by: &mut SortBy, sort_ascending: &mut bool) {
-    let header_h = crate::theme::control::COMPACT;
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), header_h), egui::Sense::click());
+    // Two lines, as a row has them: the name, then the columns under it.
+    let line_h = crate::theme::control::COMPACT;
+    let width = (ui.clip_rect().right() - ui.cursor().min.x).max(1.0);
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, line_h * 2.0), egui::Sense::click());
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, theme.bg_panel_alt);
     let font = egui::FontId::proportional(crate::theme::type_scale::CAPTION);
-    let cy = rect.center().y;
     let pointer = ui.input(|i| i.pointer.interact_pos());
-    let mut x = rect.min.x + LIST_TEXT_X;
     let mut clicked_col: Option<Field> = None;
-    for col in columns.iter() {
-        let w = col.column_width();
-        let col_rect = egui::Rect::from_min_size(egui::pos2(x, rect.min.y), egui::vec2(w, header_h));
+    let headings = std::iter::once((Field::Name, rect.min.x + LIST_TEXT_X, rect.right() - rect.min.x - LIST_TEXT_X, rect.min.y))
+        .chain(columns.iter().scan(rect.min.x + LIST_TEXT_X, |x, col| {
+            let at = *x;
+            *x += col.column_width();
+            Some((*col, at, col.column_width(), rect.min.y + line_h))
+        }));
+    for (col, x, w, top) in headings {
+        // The last column shown takes what is left of the panel.
+        let w = w.min(rect.right() - x);
+        if w < 12.0 {
+            break;
+        }
+        let cy = top + line_h / 2.0;
+        let col_rect = egui::Rect::from_min_size(egui::pos2(x, top), egui::vec2(w, line_h));
         let under = pointer.is_some_and(|p| col_rect.contains(p));
-        let sorted = *sort_by == *col;
+        let sorted = *sort_by == col;
         let colour = if sorted { theme.accent } else if under && resp.hovered() { theme.text_primary } else { theme.text_secondary };
         let title = if sorted { format!("{} {}", col.label(), if *sort_ascending { "\u{25B4}" } else { "\u{25BE}" }) } else { col.label().to_string() };
         painter.text(egui::pos2(x + 2.0, cy), egui::Align2::LEFT_CENTER, truncate_to_width(&title, font.clone(), w - 6.0, ui), font.clone(), colour);
         if resp.clicked() && under {
-            clicked_col = Some(*col);
+            clicked_col = Some(col);
         }
-        x += w;
     }
     if let Some(col) = clicked_col {
         if *sort_by == col {
@@ -1141,7 +1159,11 @@ fn render_list_view(
             let meta_font = egui::FontId::monospace(crate::theme::type_scale::CAPTION);
             let mut cx = row_rect.min.x + LIST_TEXT_X;
             for (col, text) in columns.iter().zip(&item.columns) {
-                let w = col.column_width();
+                // As in the header: the last column takes what is left.
+                let w = col.column_width().min(row_rect.right() - cx);
+                if w < 12.0 {
+                    break;
+                }
                 if !text.is_empty() {
                     let colour = if *col == Field::Rating { theme.text_secondary } else { theme.text_dim };
                     row_painter.text(
@@ -1203,7 +1225,7 @@ fn render_list_view(
             }
             resp.context_menu(|ui| menu_body(ui, |ui| {
                 if state.selected_media_ids.len() > 1 && state.selected_media_ids.contains(&item.id) {
-                    show_multi_context_menu(ui, &state.selected_media_ids, sync_pair_of(state), state.multicam_default_sync, &bin_list, cmds);
+                    show_multi_context_menu(ui, &state.selected_media_ids, sync_pair_of(state), state.multicam_default_sync, &bin_list, any_in_a_bin(state), cmds);
                 } else {
                     show_context_menu(ui, item.id, &item.path, item.offline, &item.filename, item.has_zone, item.parent_media_id.is_some(), item.synced_audio, &item.span_parts, &bin_list, item.bin.as_deref(), cmds);
                 }
@@ -1521,7 +1543,7 @@ fn render_grid_view(
 
             card_resp.context_menu(|ui| menu_body(ui, |ui| {
                 if state.selected_media_ids.len() > 1 && state.selected_media_ids.contains(&item.id) {
-                    show_multi_context_menu(ui, &state.selected_media_ids, sync_pair_of(state), state.multicam_default_sync, &bin_list, cmds);
+                    show_multi_context_menu(ui, &state.selected_media_ids, sync_pair_of(state), state.multicam_default_sync, &bin_list, any_in_a_bin(state), cmds);
                 } else {
                     show_context_menu(ui, item.id, &item.path, item.offline, &item.filename, item.has_zone, item.parent_media_id.is_some(), item.synced_audio, &item.span_parts, &bin_list, item.bin.as_deref(), cmds);
                 }
@@ -1656,11 +1678,22 @@ fn bin_header(
             ui.horizontal(|ui| {
                 ui.add_space(10.0);
                 ui.add(Icon::Folder.image(12.0).tint(theme.text_dim));
+                let id = ui.id().with(("bin_name_field", old_name.as_str()));
+                let opening = !ui.memory(|m| m.has_focus(id));
                 let text_resp = ui.add(
                     egui::TextEdit::singleline(edit_text)
+                        .id(id)
                         .desired_width(140.0)
                         .font(egui::FontId::proportional(crate::theme::type_scale::CONTROL)),
                 );
+                // The whole name selected as the field opens, so typing
+                // replaces it (#2621).
+                if opening {
+                    let mut field = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
+                    let all = egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(edit_text.chars().count()));
+                    field.cursor.set_char_range(Some(all));
+                    field.store(ui.ctx(), id);
+                }
                 // Commit on lost focus (Enter, click away, Escape)
                 if text_resp.lost_focus() {
                     let new_name = edit_text.trim().to_string();
@@ -2143,12 +2176,13 @@ fn show_multi_context_menu(
     sync_pair: Option<(MediaId, MediaId)>,
     default_sync: MulticamSync,
     bins: &[String],
+    in_a_bin: bool,
     cmds: &mut Vec<AppCommand>,
 ) {
     let count = selected_ids.len();
     ui.label(egui::RichText::new(format!("{count} items selected")).strong());
     ui.separator();
-    if menu_item(ui, "Rename\u{2026}", "").clicked() {
+    if menu_item(ui, "Batch Rename\u{2026}", "").on_hover_text("Rename these items by one pattern.").clicked() {
         ui.close_menu();
         cmds.push(AppCommand::OpenBatchRenameDialog {
             media_ids: selected_ids.iter().copied().collect(),
@@ -2199,7 +2233,7 @@ fn show_multi_context_menu(
         }
     }
     ui.separator();
-    bin_menu_items(ui, bins, &selected_ids.iter().copied().collect::<Vec<_>>(), None, true, cmds);
+    bin_menu_items(ui, bins, &selected_ids.iter().copied().collect::<Vec<_>>(), None, in_a_bin, cmds);
     ui.menu_button("Set Rating", |ui| menu_body(ui, |ui| {
         for r in 0..=5u8 {
             let label = if r == 0 {
@@ -2555,7 +2589,7 @@ mod default_multicam_sync_tests {
             let mut cmds = Vec::new();
             let mut at = None;
             let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 800.0))), events, ..Default::default() }, |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| show_multi_context_menu(ui, &ids, None, default_sync, &[], &mut cmds));
+                egui::CentralPanel::default().show(ctx, |ui| show_multi_context_menu(ui, &ids, None, default_sync, &[], false, &mut cmds));
             });
             for s in &out.shapes {
                 if let egui::Shape::Text(t) = &s.shape {
@@ -2670,6 +2704,8 @@ mod bin_menu_tests {
         panel: crate::browser::BrowserPanel,
         /// The window's size.
         size: egui::Vec2,
+        /// The last frame's text, with where it was drawn.
+        drawn: Vec<(String, egui::Rect)>,
     }
 
     impl Pool {
@@ -2679,7 +2715,7 @@ mod bin_menu_tests {
                 state.media_pool.add(klipp_media::MediaItem::synthetic_for_test(format!("/footage/{name}").into(), None));
             }
             let panel = crate::browser::BrowserPanel { browser_view_mode: view, ..Default::default() };
-            Self { ctx: egui::Context::default(), state, panel, size: egui::vec2(700.0, 1600.0) }
+            Self { ctx: egui::Context::default(), state, panel, size: egui::vec2(700.0, 1600.0), drawn: Vec::new() }
         }
 
         /// One frame with `events`: the text drawn, with where, and what
@@ -2693,11 +2729,11 @@ mod bin_menu_tests {
             let out = self.ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, self.size)), events, ..Default::default() }, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| cmds = panel.show(ui, state, &theme, &mut tab, &mut pinned, &mut ratio));
             });
-            let texts = out.shapes.iter().filter_map(|s| match &s.shape {
-                egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
+            self.drawn = out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_string(), egui::Rect::from_min_size(t.pos, t.galley.size()))),
                 _ => None,
             }).collect();
-            (texts, cmds)
+            (self.drawn.iter().map(|(t, r)| (t.clone(), r.center())).collect(), cmds)
         }
 
         fn texts(&mut self) -> Vec<(String, egui::Pos2)> {
@@ -2717,6 +2753,16 @@ mod bin_menu_tests {
             self.frame(vec![egui::Event::PointerMoved(at), button(true)]);
             self.frame(vec![button(false)]);
             self.texts().into_iter().map(|(t, _)| t).collect()
+        }
+
+        /// Where the last frame drew `text`, the topmost when twice.
+        fn rect(&self, text: &str) -> egui::Rect {
+            self.drawn.iter().rfind(|(t, _)| t == text).unwrap_or_else(|| panic!("{text:?} drawn: {:?}", self.drawn)).1
+        }
+
+        fn key(&mut self, key: egui::Key, modifiers: egui::Modifiers) {
+            self.frame(vec![egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }]);
+            self.frame(vec![egui::Event::Key { key, physical_key: None, pressed: false, repeat: false, modifiers }]);
         }
 
         /// Click `text` where it is drawn: what the pool asked for.
@@ -2859,5 +2905,93 @@ mod bin_menu_tests {
         let (mut sequences, mut fps) = (state.sequences.clone(), state.fps);
         klipp_document::apply::DocumentView { sequences: &mut sequences, active: 0, media_pool: &mut pool, fps: &mut fps }.apply_inverse(&step.command);
         assert!(ids.iter().all(|id| pool.get(id).expect("item").bin.is_none()), "undone, both are out");
+    }
+
+    /// Renaming a bin, as New Bin starts it: the name is selected and
+    /// has the keys, so what is typed replaces it.
+    #[test]
+    fn typing_a_new_bins_name_replaces_it() {
+        let mut pool = Pool::new(BrowserViewMode::List, &["a.mov"]);
+        in_bin(&mut pool, "a.mov", "New Bin");
+        pool.panel.renaming_bin = Some(("New Bin".into(), "New Bin".into()));
+        pool.texts();
+        pool.texts();
+        assert!(pool.ctx.wants_keyboard_input(), "the name has the keys at once");
+        pool.frame(vec![egui::Event::Text("Interviews".into())]);
+        assert_eq!(pool.panel.renaming_bin.as_ref().map(|(_, t)| t.as_str()), Some("Interviews"));
+    }
+
+    /// After Ctrl+A, a click where no item is clears the selection.
+    #[test]
+    fn a_click_on_no_item_clears_the_selection() {
+        let mut pool = Pool::new(BrowserViewMode::Grid, &["a.mov", "b.mov"]);
+        pool.texts();
+        pool.key(egui::Key::A, egui::Modifiers::COMMAND);
+        assert_eq!(pool.state.selected_media_ids.len(), 2);
+        let below = pool.at("b.mov") + egui::vec2(0.0, 300.0);
+        let button = |pressed| egui::Event::PointerButton { pos: below, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        pool.frame(vec![egui::Event::PointerMoved(below), button(true)]);
+        pool.frame(vec![button(false)]);
+        assert!(pool.state.selected_media_ids.is_empty());
+    }
+
+    /// A selection's Move to Bin offers Remove from Bin only when one of
+    /// them is in a bin, and its rename is the batch rename.
+    #[test]
+    fn a_selections_menu_offers_only_what_applies() {
+        for in_one in [false, true] {
+            let mut pool = Pool::new(BrowserViewMode::List, &["a.mov", "b.mov"]);
+            pool.state.media_pool.find_or_create_bin("Selects");
+            if in_one {
+                in_bin(&mut pool, "b.mov", "Selects");
+            }
+            pool.state.selected_media_ids = pool.state.media_pool.all().map(|m| m.id).collect();
+            let at = pool.at("a.mov");
+            let menu = pool.right_click(at);
+            assert!(menu.iter().any(|t| t == "Batch Rename\u{2026}") && !menu.iter().any(|t| t == "Rename\u{2026}"), "{menu:?}");
+            let sub = pool.at("Move to Bin");
+            pool.frame(vec![egui::Event::PointerMoved(sub)]);
+            pool.frame(vec![egui::Event::PointerMoved(sub)]);
+            let menu: Vec<String> = pool.texts().into_iter().map(|(t, _)| t).collect();
+            assert_eq!(menu.iter().any(|t| t == "Remove from Bin"), in_one, "{menu:?}");
+        }
+    }
+
+    /// In the pool's menu a row with a submenu starts where a plain row
+    /// does.
+    #[test]
+    fn submenu_rows_line_up_with_plain_rows() {
+        let mut pool = Pool::new(BrowserViewMode::Grid, &["a.mov"]);
+        let below = pool.at("a.mov") + egui::vec2(0.0, 300.0);
+        pool.right_click(below);
+        let (plain, sub) = (pool.rect("Import Media\u{2026}").left(), pool.rect("Sort By").left());
+        assert!((plain - sub).abs() < 0.5, "Import Media at {plain}, Sort By at {sub}");
+    }
+
+    /// The pool's filter row and its buttons are inset from the panel's
+    /// edge as its items are.
+    #[test]
+    fn the_pools_toolbar_rows_are_inset() {
+        let mut pool = Pool::new(BrowserViewMode::Grid, &["a.mov"]);
+        pool.texts();
+        pool.texts();
+        for text in ["All media", "New Bin"] {
+            assert!(pool.rect(text).left() >= 8.0 + 8.0, "{text} at {}", pool.rect(text).left());
+        }
+    }
+
+    /// The list's header names the Name line, and a heading at the right
+    /// edge fits the panel rather than being cut.
+    #[test]
+    fn the_lists_header_has_name_and_fits() {
+        let mut pool = Pool::new(BrowserViewMode::List, &["a.mov"]);
+        pool.size = egui::vec2(480.0, 900.0);
+        pool.texts();
+        pool.texts();
+        assert!(pool.drawn.iter().any(|(t, _)| t.starts_with("Name")), "{:?}", pool.drawn);
+        // The list, below the pool's toolbar.
+        let top = pool.rect("New Bin").bottom();
+        let past: Vec<_> = pool.drawn.iter().filter(|(_, r)| r.top() > top && r.right() > pool.size.x + 0.5).collect();
+        assert!(past.is_empty(), "past the panel: {past:?}");
     }
 }

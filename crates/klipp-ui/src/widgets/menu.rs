@@ -10,7 +10,9 @@ pub fn menu_frame<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) ->
 /// A menu's rows inside a popup egui already framed (a `context_menu`'s).
 pub fn menu_body<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     let style = ui.style_mut();
-    style.spacing.button_padding = egui::vec2(10.0, 4.0);
+    // No inset on the left: a plain row (an unframed button) has none,
+    // and a submenu's row must start where it does.
+    style.spacing.button_padding = egui::vec2(0.0, 4.0);
     style.spacing.item_spacing.y = 1.0;
     style.visuals.button_frame = false;
     style.wrap_mode = Some(egui::TextWrapMode::Extend);
