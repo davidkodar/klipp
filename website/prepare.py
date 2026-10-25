@@ -31,7 +31,7 @@ def main():
         assets.mkdir(parents=True)
         for name in ("index.html", "style.css", "credits.html"):
             shutil.copyfile(source / name, stage / name)
-        for name in ("editing.webp", "colour.webp", "klipp-icon.svg", "klipp-wordmark.svg", "klipp-showcase-v3-1080p.webp"):
+        for name in ("edit.webp", "colour.webp", "transcript.webp", "titles.webp", "sound.webp", "klipp-icon.svg", "klipp-wordmark.svg", "klipp-showcase-v3-1080p.webp"):
             shutil.copyfile(source / "assets" / name, assets / name)
         video = assets / media["asset"]
         # Address the pinned asset directly; no draft-release listing is needed.
