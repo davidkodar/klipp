@@ -597,7 +597,7 @@ impl RenderDecoder {
     /// `None` whenever this is not the right route, and the caller falls
     /// back to downloading and converting with swscale: no converter (no
     /// usable GPU, or software decode), a frame that does not download as
-    /// NV12 or P010, an upscale (see below), or a scene-referred source — camera
+    /// NV12 or P010, or a scene-referred source — camera
     /// log and PQ/HLG have their own tested path through
     /// `scene_referred_frame` and packed codes, and this shader's code
     /// output is not wired up here.
@@ -663,23 +663,15 @@ impl RenderDecoder {
 
         let (src_w, src_h) = ((*sw_frame).width as u32, (*sw_frame).height as u32);
 
-        // At 1:1 and when shrinking. A straight conversion and a 90/180/270
-        // rotation are permutations, exact one source pixel per output
-        // pixel; a downscale averages each output pixel's footprint in
-        // linear light (#744), as the viewer's decode now does too. That
-        // used to be refused, so every 4K phone shot on a 1080 timeline
-        // went down to the CPU, through swscale and back up: 22 ms of a
-        // 41 ms frame. An upscale keeps swscale's Lanczos, where averaging
-        // has nothing to average and nearest would be blocky.
-        let (want_w, want_h) = if self.source_rotation == 90 || self.source_rotation == 270 {
-            (self.target_height, self.target_width)
-        } else {
-            (self.target_width, self.target_height)
-        };
-        if src_w < want_w || src_h < want_h {
-            av_frame_free(&mut (sw_frame as *mut _));
-            return None;
-        }
+        // At any size. A straight conversion and a 90/180/270 rotation are
+        // permutations, exact one source pixel per output pixel; a
+        // downscale averages each output pixel's footprint in linear light
+        // (#744), as the viewer's decode now does too; an upscale is
+        // Lanczos-3 (#2557), the kernel swscale used here, on the encoded
+        // values as it filtered them, so a 4K export keeps its look.
+        // Each used to be refused, and went down to the CPU through
+        // swscale and back up: a 1080p source in a 4K export took 44 ms a
+        // frame there, against a millisecond on the GPU.
 
         let (y_stride, uv_stride) =
             ((*sw_frame).linesize[0] as u32, (*sw_frame).linesize[1] as u32);
@@ -1435,5 +1427,153 @@ mod tests {
                 ms / frames.max(1) as f64,
             );
         }
+    }
+}
+
+/// #2557: a source smaller than the export decodes on the GPU, upscaled
+/// there with the Lanczos-3 swscale used, instead of going down to the CPU
+/// to be scaled at 44 ms a frame for a 1080p source in a 4K export.
+#[cfg(test)]
+mod upscale_tests {
+    use super::{DecodedPixels, GpuConverters, RenderDecoder};
+
+    /// Six seconds of a 1080p test chart held still and in grey, H.264:
+    /// any frame two decoders land on is the same picture, and with no
+    /// colour their only difference is the resize, not how each rebuilds
+    /// the half-size chroma (which differ on saturated edges at 1:1 too).
+    /// `None` without ffmpeg.
+    fn chart() -> Option<std::path::PathBuf> {
+        let out = std::env::temp_dir().join("klipp-upscale-grey-chart-1080p.mp4");
+        if out.exists() {
+            return Some(out);
+        }
+        let part = out.with_extension("part.mp4");
+        let ok = std::process::Command::new("ffmpeg")
+            .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=1920x1080:r=25:d=6", "-vf", "loop=loop=149:size=1:start=0,hue=s=0", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-g", "25"])
+            .arg(&part)
+            .status()
+            .is_ok_and(|s| s.success());
+        ok.then(|| std::fs::rename(&part, &out).ok()).flatten().map(|_| out)
+    }
+
+    /// The same chart in 10-bit HEVC, decoded as P010; `None` without an
+    /// ffmpeg with x265.
+    fn chart_10bit() -> Option<std::path::PathBuf> {
+        let out = std::env::temp_dir().join("klipp-upscale-grey-chart-1080p-10bit.mp4");
+        if out.exists() {
+            return Some(out);
+        }
+        let part = out.with_extension("part.mp4");
+        let ok = std::process::Command::new("ffmpeg")
+            .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=1920x1080:r=25:d=6", "-vf", "loop=loop=149:size=1:start=0,hue=s=0,format=yuv420p10le"])
+            .args(["-c:v", "libx265", "-preset", "ultrafast", "-x265-params", "keyint=25:log-level=error"])
+            .arg(&part)
+            .status()
+            .is_ok_and(|s| s.success());
+        ok.then(|| std::fs::rename(&part, &out).ok()).flatten().map(|_| out)
+    }
+
+    /// The milliseconds a frame takes over `n` frames at `w` x `h`, and
+    /// whether every one stayed on the GPU.
+    fn timed(path: &std::path::Path, w: u32, h: u32, gpu: &mut GpuConverters, n: usize) -> (f64, bool) {
+        let mut d = RenderDecoder::open(path, 0.0, f64::INFINITY, w, h, 25.0, 0).unwrap();
+        let _ = d.next_frame_with_pts(gpu).unwrap();
+        let (t, mut on_gpu) = (std::time::Instant::now(), true);
+        for _ in 0..n {
+            let (_, px) = d.next_frame_with_pts(gpu).unwrap().expect("a frame");
+            on_gpu &= matches!(px, DecodedPixels::GpuLinear(_));
+        }
+        (t.elapsed().as_secs_f64() * 1000.0 / n as f64, on_gpu)
+    }
+
+    /// The working-space linear RGBA of a frame on the GPU, read back.
+    fn read_back(gpu: &GpuConverters, buf: &wgpu::Buffer, pixels: usize) -> Vec<f32> {
+        let conv = gpu.nv12.as_ref().expect("a converter");
+        let (device, queue) = (conv.device(), conv.queue());
+        let size = (pixels * 16) as u64;
+        let staging = device.create_buffer(&wgpu::BufferDescriptor { label: Some("upscale_test_read"), size, usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let mut enc = device.create_command_encoder(&Default::default());
+        enc.copy_buffer_to_buffer(buf, 0, &staging, 0, size);
+        queue.submit([enc.finish()]);
+        let (tx, rx) = std::sync::mpsc::channel();
+        staging.slice(..).map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
+        device.poll(wgpu::Maintain::Wait);
+        rx.recv().unwrap().unwrap();
+        let out = bytemuck_floats(&staging.slice(..).get_mapped_range());
+        staging.unmap();
+        out
+    }
+
+    fn bytemuck_floats(bytes: &[u8]) -> Vec<f32> {
+        bytes.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect()
+    }
+
+    /// Linear light to an 8-bit sRGB level, where the difference is read.
+    fn srgb8(v: f32) -> f32 {
+        let v = v.clamp(0.0, 1.0);
+        255.0 * if v <= 0.0031308 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 }
+    }
+
+    /// The same frame decoded on the GPU and through swscale, at `w` x
+    /// `h`, as the compositor gets each: the largest and the mean
+    /// difference, in 8-bit sRGB levels.
+    fn against_swscale(path: &std::path::Path, w: u32, h: u32, gpu: &mut GpuConverters) -> (f32, f32) {
+        let frame = |gpu: &mut GpuConverters| {
+            let mut d = RenderDecoder::open(path, 1.0, f64::INFINITY, w, h, 25.0, 0).unwrap();
+            d.next_frame_with_pts(gpu).unwrap().expect("a frame").1
+        };
+        let DecodedPixels::GpuLinear(buf) = frame(gpu) else { panic!("not on the GPU at {w}x{h}") };
+        let on_gpu = read_back(gpu, &buf, (w * h) as usize);
+        let DecodedPixels::Rgba64(rgba) = frame(&mut GpuConverters::default()) else { panic!("not on the CPU") };
+        let scaled = crate::frame_source::rgba64_to_linear(&rgba, None);
+        let (mut worst, mut sum) = (0.0f32, 0.0f64);
+        for (a, b) in on_gpu.iter().zip(&scaled).enumerate().filter(|(i, _)| i % 4 != 3).map(|(_, p)| p) {
+            let d = (srgb8(*a) - srgb8(*b)).abs();
+            worst = worst.max(d);
+            sum += d as f64;
+        }
+        let mut ds: Vec<f32> = on_gpu.iter().zip(&scaled).enumerate().filter(|(i, _)| i % 4 != 3).map(|(_, (a, b))| (srgb8(*a) - srgb8(*b)).abs()).collect();
+        ds.sort_by(f32::total_cmp);
+        let pct = |p: f64| ds[((ds.len() - 1) as f64 * p) as usize];
+        eprintln!("{w}x{h} against swscale: p99 {:.1}, p99.9 {:.1} levels", pct(0.99), pct(0.999));
+        (worst, (sum / (w * h * 3) as f64) as f32)
+    }
+
+    #[test]
+    fn a_1080p_source_in_a_4k_export_stays_on_the_gpu() {
+        let Some(path) = chart() else { return eprintln!("skipping: no ffmpeg") };
+        let mut gpu = GpuConverters::shared();
+        if gpu.nv12.is_none() || RenderDecoder::open(&path, 0.0, 1.0, 64, 36, 25.0, 0).unwrap().hw_accel_name() == "Software" {
+            return eprintln!("skipping: no hardware decode and GPU converter here");
+        }
+        let (hd, hd_gpu) = timed(&path, 1920, 1080, &mut gpu, 60);
+        let (uhd, uhd_gpu) = timed(&path, 3840, 2160, &mut gpu, 60);
+        eprintln!("decode: {hd:.1} ms a frame at 1080p, {uhd:.1} ms at 4K");
+        assert!(hd_gpu && uhd_gpu, "a frame went down to the CPU");
+        // The same order: it was 44 ms against 1.8.
+        assert!(uhd < hd * 6.0 + 4.0, "4K takes {uhd:.1} ms a frame against {hd:.1} at 1080p");
+        // Ten bits (P010) take the same road.
+        if let Some(ten) = chart_10bit() {
+            let (hd, hd_gpu) = timed(&ten, 1920, 1080, &mut gpu, 30);
+            let (uhd, uhd_gpu) = timed(&ten, 3840, 2160, &mut gpu, 30);
+            eprintln!("10-bit decode: {hd:.1} ms a frame at 1080p, {uhd:.1} ms at 4K");
+            assert!(hd_gpu && uhd_gpu, "a 10-bit frame went down to the CPU");
+            assert!(uhd < hd * 6.0 + 4.0, "10-bit 4K takes {uhd:.1} ms a frame against {hd:.1} at 1080p");
+        }
+    }
+
+    #[test]
+    fn the_gpu_upscale_matches_swscales_lanczos() {
+        let Some(path) = chart() else { return eprintln!("skipping: no ffmpeg") };
+        let mut gpu = GpuConverters::shared();
+        if gpu.nv12.is_none() || RenderDecoder::open(&path, 0.0, 1.0, 64, 36, 25.0, 0).unwrap().hw_accel_name() == "Software" {
+            return eprintln!("skipping: no hardware decode and GPU converter here");
+        }
+        let (base_max, base_mean) = against_swscale(&path, 1920, 1080, &mut gpu);
+        let (max, mean) = against_swscale(&path, 3840, 2160, &mut gpu);
+        eprintln!("GPU against swscale, levels: at 1:1 max {base_max:.1} mean {base_mean:.3}; 2x upscale max {max:.1} mean {mean:.3}");
+        // Swscale's export, to a level, as at 1:1: a 4K export keeps its look.
+        assert!(mean <= base_mean + 0.1, "the upscale adds {:.3} levels on average to what 1:1 differs by", mean - base_mean);
+        assert!(max <= base_max + 1.0, "the upscale is {max:.1} levels off at worst, against {base_max:.1} at 1:1");
     }
 }
