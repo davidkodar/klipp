@@ -49,12 +49,22 @@ impl KlippApp {
                                 // pair is still one undo.
                                 let audio = appended_id.and_then(|id| self.append_linked_audio(*media_id, id));
                                 match audio {
-                                    Some(a) => self.state.push_history(EditCommand::SourceLinkedInsert {
-                                        video_command: result.command,
+                                    Some(a) => {
+                                        // The clip as it now is, linked: the
+                                        // append recorded it before its sound
+                                        // was put under it, so a redo put it
+                                        // back unlinked (#2633).
+                                        let mut video_command = result.command;
+                                        if let klipp_timeline::magnetic_commands::MagneticEditCommand::AppendPrimary { ref mut appended_clip, .. } = video_command {
+                                            appended_clip.linked_clip_id = Some(a.clip.id);
+                                        }
+                                        self.state.push_history(EditCommand::SourceLinkedInsert {
+                                        video_command,
                                         audio_track_index: a.track_index,
                                         audio_clips_before: a.clips_before,
                                         audio_clips_after: a.clips_after,
-                                    }),
+                                    });
+                                    }
                                     None => self.state.push_history(EditCommand::Magnetic(result.command)),
                                 }
                                 self.sync_sequence_to_engine();

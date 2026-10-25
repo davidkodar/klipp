@@ -1483,6 +1483,10 @@ pub struct AppState {
     /// The digest of the project as last loaded or saved
     /// (`klipp_project::project_digest`); `None` before either.
     pub saved_digest: Option<u64>,
+    /// Each sequence's tracks as of its last undo step, undo or redo, or
+    /// the last load or save (#2633): a track not among them when a step
+    /// is recorded was made for it.
+    pub recorded_tracks: std::collections::HashMap<klipp_core::SequenceId, Vec<klipp_core::TrackId>>,
     /// Per-sequence undo stack. Keyed by `SequenceId` (stable across
     /// reorder/delete) so an entry never points at a sequence that
     /// shifted underneath it. Use `active_history` /
@@ -4570,6 +4574,7 @@ impl Default for AppState {
             dirty: false,
             unsaved: false,
             saved_digest: None,
+            recorded_tracks: Default::default(),
             command_histories: std::collections::HashMap::new(),
             project_history: CommandHistory::new(),
             history_clock: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -5674,6 +5679,7 @@ impl AppState {
     /// `state.active_history_mut().push(HistoryEntry { sequence_idx, command })`
     /// idiom — callers no longer pass a sequence index.
     pub fn push_history(&mut self, command: EditCommand) {
+        let command = self.with_made_tracks(command);
         let command = self.with_matched_follow(command);
         // The project's steps go to its own history, reachable from any
         // sequence (#1986); inside a batch already open they are one more
@@ -5692,6 +5698,65 @@ impl AppState {
         }
         self.prune_stale_redo();
         self.history_ops_since_save = self.history_ops_since_save.saturating_add(1);
+        self.note_recorded_tracks();
+    }
+
+    /// The active sequence's tracks as recorded, taken now if it has none
+    /// yet (a sequence made or opened since): at the start of a frame,
+    /// before anything in it makes a track.
+    pub(crate) fn seed_recorded_tracks(&mut self) {
+        let seq = self.sequence();
+        if !self.recorded_tracks.contains_key(&seq.id) {
+            let (id, tracks) = (seq.id, seq.tracks.iter().map(|t| t.id).collect());
+            self.recorded_tracks.insert(id, tracks);
+        }
+    }
+
+    /// The active sequence's tracks as they now are are the recorded ones
+    /// (#2633): after a step, an undo or a redo.
+    pub(crate) fn note_recorded_tracks(&mut self) {
+        let seq = self.sequence();
+        let (id, tracks) = (seq.id, seq.tracks.iter().map(|t| t.id).collect());
+        self.recorded_tracks.insert(id, tracks);
+    }
+
+    /// `command`, already applied, with the tracks made for it in the same
+    /// step (#2633). An append, an insert, a paste or a drop that needed a
+    /// track made one and recorded only its clips, so undo took the clips
+    /// away and left the new track, empty, and the project unsaved. A
+    /// track made since the last step that `command` undone on a copy
+    /// still leaves, empty, is put in as an added track before it: undo
+    /// takes it away after the clips, redo puts it back first. A step that
+    /// takes its own track away (an import's linked track) is left as it is.
+    fn with_made_tracks(&self, command: EditCommand) -> EditCommand {
+        if command.scope() != crate::history::Scope::Sequence {
+            return command;
+        }
+        let seq = self.sequence();
+        let Some(known) = self.recorded_tracks.get(&seq.id) else { return command };
+        if seq.tracks.iter().all(|t| known.contains(&t.id)) {
+            return command;
+        }
+        let mut before = vec![seq.clone()];
+        let (mut pool, mut fps) = (klipp_media::MediaPool::new(), self.fps);
+        klipp_document::apply::DocumentView { sequences: &mut before, active: 0, media_pool: &mut pool, fps: &mut fps }.apply_inverse(&command);
+        // In the order they sit before the step: added in that order, each
+        // goes back where it was.
+        let made: Vec<EditCommand> = before[0]
+            .tracks
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| !known.contains(&t.id) && t.clips.is_empty() && seq.tracks.iter().any(|now| now.id == t.id))
+            .map(|(index, track)| EditCommand::AddTrack { index, track: track.clone() })
+            .collect();
+        if made.is_empty() {
+            return command;
+        }
+        let (label, edit) = match command {
+            EditCommand::Named { label, edit } => (label, *edit),
+            other => (other.label().to_string(), other),
+        };
+        EditCommand::Named { label, edit: Box::new(EditCommand::Batch(made.into_iter().chain(std::iter::once(edit)).collect())) }
     }
     /// `command`, already applied, with what it means for the clips kept
     /// matched to a shot (#2236): their follow, applied now and recorded in
