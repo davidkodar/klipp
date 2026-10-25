@@ -590,7 +590,7 @@ fn status_text(ui: &mut egui::Ui, theme: &KlippTheme, status: &Status<'_>) -> Op
             let mut action = None;
             match install {
                 Install::Updater => {
-                    detail(ui, theme, "Save your work and finish any exports first. Pacman updates the system along with Klipp; reopen Klipp after.");
+                    detail(ui, theme, "Save your work and finish any exports first. A terminal opens to confirm with pacman; reopen Klipp after.");
                     ui.add_space(10.0);
                     let button = egui::Button::new(egui::RichText::new("Install update…").size(12.5).color(TILE).strong())
                         .fill(AMBER)

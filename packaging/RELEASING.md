@@ -130,16 +130,29 @@ Installing a file does **not** automatically configure a repository.
   Preview releases are opt-in for discovery; enabling them does not change your
   pacman repositories or install a beta automatically.
 - Only `/usr/lib/klipp/klipp` owned by pacman's `klipp` package can offer the
-  package updater, and only with a configured `[klipp]` repository. The fixed,
-  package-owned helper opens a terminal, asks the user to save/finish work and
-  confirm, then runs `sudo pacman -Syu klipp`. Pacman shows the transaction and
-  verifies signatures. Passwords stay in the terminal. The app does not overwrite
-  its own executable or claim the update succeeded before pacman completes.
+  package updater (Install update…). The fixed, package-owned helper
+  `/usr/bin/klipp-update` opens a terminal and asks the user to save/finish work.
+  - With a configured `[klipp]` repository carrying the release, it asks to
+    confirm, then runs `sudo pacman -Syu klipp`.
+  - Otherwise, when the newer release has its package and `SHA256SUMS` attached
+    (previews included when the preview channel is on), About runs
+    `klipp-update VERSION`. It downloads both from the project's GitHub release
+    over HTTPS into a private temporary directory, following a redirect only to
+    GitHub's release asset hosts. It checks the package's SHA-256 against
+    `SHA256SUMS` and its name and version with `pacman -Qp`, shows the version,
+    file, size and checksum, asks "Install with pacman? [y/N]", and only on yes
+    runs `sudo pacman -U` on the file. Nothing downloaded is executed. Any
+    failure, or no, removes the temporary files and exits non-zero, which About
+    reports.
+
+  Pacman shows the transaction and verifies signatures as configured. Passwords
+  stay in the terminal. The app does not overwrite its own executable or claim
+  the update succeeded before pacman completes.
 - Restart Klipp after a successful installation. Never force-close a project to
   update. The running process keeps reporting its original embedded version.
 - `klipp-git` users get source-update instructions: pull, then rebuild/install
-  with makepkg. Unmanaged/development builds get rebuild instructions. Preview
-  packages are manual downloads; the stable repository never ships them.
+  with makepkg. Unmanaged/development builds get rebuild instructions. The
+  stable repository never ships previews; they install through the download.
 
 ## Testing the update check
 
@@ -152,12 +165,14 @@ read once at start and logged at info level; without them nothing changes.
   "(testing as <version>)".
 - `KLIPP_UPDATE_TEST_INSTALL=package|repository|klipp-git|source`: replaces the
   installation the check finds.
-  - `package`: the release package without its repository, so the release page
-    download is offered.
+  - `package`: the release package without a repository. Install update… shows
+    when the newer release has its package attached, and downloads it.
   - `repository`: the release package with the `[klipp]` repository configured,
-    so Install update… shows, previews included. The `klipp-update` helper still
-    asks before doing anything, and refuses when the real installation isn't
-    the release package; About then says the updater ended without updating.
+    so Install update… updates from it, previews included.
+
+  The `klipp-update` helper still asks before doing anything, and refuses when
+  the real installation isn't the release package; About then says the updater
+  ended without updating.
   - `klipp-git`: the makepkg steps with Copy.
   - `source`: the cargo rebuild steps with Copy.
 
@@ -178,6 +193,12 @@ Preview releases are included by default when the build itself is a preview
 (Preferences → General → Updates → Include preview releases). With it off, a
 test version older than the latest stable release is needed to see one. To see
 a failure, check with the network off.
+
+`KLIPP_UPDATE_TEST_BASE_URL` points `klipp-update VERSION` at a local fixture
+release instead of GitHub, for testing the helper itself. It accepts only a
+loopback `http://` address (`http://127.0.0.1:8000`), serving
+`v<VERSION>/klipp-<pkgver>-1-x86_64.pkg.tar.zst` and `v<VERSION>/SHA256SUMS`.
+Nothing in Klipp sets it.
 
 ## Tests
 
