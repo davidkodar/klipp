@@ -1521,7 +1521,9 @@ pub enum Op {
     /// A track's own audio chain (#846): `effect` (an audio effect's type,
     /// "eq", "compressor", "limiter", "denoiser"…, or an installed LV2 or
     /// CLAP plug-in's id, "lv2:…" or "clap:…", #2485) added at the end of
-    /// the chain the track runs after every clip's own, with `params` by
+    /// the chain the track runs on the sum of its clips, after each clip's
+    /// own effects, gain and fades and before the track's fader (its
+    /// volume and pan, #2560), with `params` by
     /// name (a plug-in's by its name or key, inside its range; the rest at
     /// their defaults); `bypass` switches the track's effect of that type
     /// off (true) or on (false) without taking it off; `remove` takes it

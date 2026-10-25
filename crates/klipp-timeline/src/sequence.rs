@@ -450,7 +450,7 @@ impl Sequence {
     /// Whether a render copy of this sequence differs from it: a grade
     /// group that grades, or a track with effects of its own.
     pub fn bakes_for_render(&self) -> bool {
-        self.grade_groups.iter().any(GradeGroup::grades) || self.tracks.iter().any(|t| !t.effects.is_empty())
+        self.grade_groups.iter().any(GradeGroup::grades) || self.tracks.iter().any(|t| t.effects.touches_picture())
     }
 
     /// This sequence as it renders: its grade groups' grades wrapped
@@ -472,7 +472,8 @@ impl Sequence {
     /// Each track's effects onto every clip of it (#846), for a render
     /// copy: a picture's effects followed by its track's, its grade
     /// (inside its group's, when that is baked first) followed by its
-    /// track's grade, a sound's chain followed by its track's. The clips
+    /// track's grade. A track's sound effects stay on the track, for the
+    /// mixer to run on its summed clips (#2560). The clips
     /// keep what was their own (see [`Clip::own_effects`]), and a clip
     /// that already carries its track's is left, so baking twice is
     /// baking once. Gaps and adjustment layers take nothing: neither is a
@@ -509,8 +510,10 @@ impl Sequence {
                         append_track_grade(&mut clip.view_mut().node_graph.0, track.id, grade);
                     }
                 }
+                // A track's sound effects are not the clips': they run on
+                // the track's summed clips, before its fader, in the mixer
+                // and the export alike (#2560).
                 clip.baked_own = Some(BakedOwn { effects: own, audio: clip.audio_effects.len() });
-                clip.audio_effects.extend(fx.audio.iter().cloned());
             }
         }
     }

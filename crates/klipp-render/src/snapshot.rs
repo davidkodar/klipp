@@ -143,6 +143,9 @@ pub struct AudioTrackSnapshot {
     /// The track's own automation (#2306): its volume and pan over the
     /// sequence, evaluated as playback evaluates it.
     pub automation: klipp_timeline::TrackAutomation,
+    /// The track's own effects (#2560), run on its summed clips before
+    /// its fader, as the playback mixer runs them.
+    pub effects: Vec<klipp_core::AudioEffectInstance>,
 }
 
 #[derive(Clone)]
@@ -776,6 +779,7 @@ fn snapshot_audio_track(
         solo: track.solo,
         clips,
         automation: track.automation.clone(),
+        effects: track.effects.audio.clone(),
     })
 }
 
@@ -820,7 +824,7 @@ fn snapshot_video_track_sound(track: &Track, seq: &Sequence, media_pool: &MediaP
     if clips.is_empty() {
         return None;
     }
-    Some(AudioTrackSnapshot { volume: track.volume, pan: track.pan, muted: track.muted, solo: track.solo, clips, automation: track.automation.clone() })
+    Some(AudioTrackSnapshot { volume: track.volume, pan: track.pan, muted: track.muted, solo: track.solo, clips, automation: track.automation.clone(), effects: track.effects.audio.clone() })
 }
 
 /// Flatten a compound clip's inner sequence audio tracks into the parent audio clip list.
@@ -1302,7 +1306,9 @@ mod tests {
 
         let snap = SequenceSnapshot::from_sequence(&seq, &pool, &make_settings(), None, false, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
         let chain: Vec<&str> = snap.audio_tracks[0].clips[0].audio_effects.iter().map(|e| e.effect_type.as_str()).collect();
-        assert_eq!(chain, vec!["eq", "limiter"], "the clip's chain, then its track's");
+        assert_eq!(chain, vec!["eq"], "the clip's own chain");
+        let track: Vec<&str> = snap.audio_tracks[0].effects.iter().map(|e| e.effect_type.as_str()).collect();
+        assert_eq!(track, vec!["limiter"], "the track's, on the track, for its summed clips (#2560)");
         let exported = klipp_timeline::test_clip::effects(&snap.video.sequence.tracks[0].clips[0]);
         assert!(matches!(exported.as_slice(), [E::Opacity { .. }, E::Vignette { .. }]), "{exported:?}");
         let viewer = klipp_timeline::flatten::flatten_sequence(&seq, std::slice::from_ref(&seq));

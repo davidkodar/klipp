@@ -62,6 +62,17 @@ impl AudioBus {
     }
 }
 
+/// A track's own effects (#2560): one chain run on the sum of the track's
+/// clips, before its fader, so a track compressor or limiter acts on what
+/// the track carries, once, as a mixer's inserts do. They were put on each
+/// clip, ahead of its gain and fades and of the other clips on the track.
+pub struct TrackInserts {
+    /// Each effect's type and whether it is on: what a change of needs
+    /// the chain made again rather than its settings changed in place.
+    shape: Vec<(String, bool)>,
+    chain: crate::dsp::AudioEffectChain,
+}
+
 /// Mixes multiple audio tracks into a single stereo output.
 /// Supports optional submix buses: tracks can route to a bus, and buses route to master.
 pub struct AudioMixer {
@@ -82,6 +93,14 @@ pub struct AudioMixer {
     /// path runs. Sized lazily — a track without latency
     /// compensation never allocates a ring buffer.
     pub track_delay_lines: Vec<Option<crate::pdc::TrackDelayLine>>,
+    /// Each track's own effects, run on its summed clips before its fader.
+    pub track_inserts: Vec<Option<TrackInserts>>,
+    /// The latency of each track's sources and of its inserts, in stereo
+    /// frames: their sum is the track's in `track_latency_samples`.
+    source_latency: Vec<u32>,
+    insert_latency: Vec<u32>,
+    /// The rate the inserts run at.
+    pub sample_rate: u32,
 }
 
 impl AudioMixer {
@@ -93,6 +112,45 @@ impl AudioMixer {
             pan_law: klipp_core::PanLaw::default(),
             track_latency_samples: vec![0; track_count],
             track_delay_lines: (0..track_count).map(|_| None).collect(),
+            track_inserts: (0..track_count).map(|_| None).collect(),
+            source_latency: vec![0; track_count],
+            insert_latency: vec![0; track_count],
+            sample_rate: 48_000,
+        }
+    }
+
+    /// The rate the inserts run at; chains made at another are made again
+    /// at their next [`Self::set_track_inserts`].
+    pub fn set_sample_rate(&mut self, sample_rate: u32) {
+        if sample_rate != self.sample_rate {
+            self.sample_rate = sample_rate;
+            self.track_inserts.iter_mut().for_each(|i| *i = None);
+        }
+    }
+
+    /// Track `track_idx`'s own effects as `instances` say: the chain made
+    /// when there is none or its effects or which are on changed, its
+    /// settings changed in place otherwise, so a slider moved while
+    /// playing is heard with no gap. Its latency is compensated with the
+    /// sources'.
+    pub fn set_track_inserts(&mut self, track_idx: usize, instances: &[klipp_core::AudioEffectInstance], max_block_samples: usize) {
+        self.ensure_tracks(track_idx + 1);
+        let shape: Vec<(String, bool)> = instances.iter().map(|i| (i.effect_type.clone(), i.enabled)).collect();
+        let slot = &mut self.track_inserts[track_idx];
+        if instances.is_empty() {
+            *slot = None;
+        } else if let Some(inserts) = slot.as_mut().filter(|i| i.shape == shape) {
+            inserts.chain.apply_settings(instances);
+        } else {
+            let mut chain = crate::dsp::AudioEffectChain::from_instances(instances, self.sample_rate);
+            chain.prepare(2);
+            *slot = Some(TrackInserts { shape, chain });
+        }
+        let latency = self.track_inserts[track_idx].as_ref().map_or(0, |i| i.chain.total_latency_samples(self.sample_rate));
+        if latency != self.insert_latency[track_idx] {
+            self.insert_latency[track_idx] = latency;
+            let source = self.source_latency[track_idx];
+            self.set_track_latency_samples(track_idx, source, max_block_samples);
         }
     }
 
@@ -130,7 +188,10 @@ impl AudioMixer {
             self.track_latency_samples.push(0);
             self.track_delay_lines.push(None);
         }
-        self.track_latency_samples[track_idx] = latency_samples;
+        self.ensure_tracks(track_idx + 1);
+        // The sources' latency, with the track's inserts' after it.
+        self.source_latency[track_idx] = latency_samples;
+        self.track_latency_samples[track_idx] = latency_samples + self.insert_latency[track_idx];
 
         // Recompute every track's required delay, resize lines
         // accordingly. A track with 0 required delay has its line
@@ -211,6 +272,13 @@ impl AudioMixer {
         while self.track_delay_lines.len() < count {
             self.track_delay_lines.push(None);
         }
+        while self.track_inserts.len() < count {
+            self.track_inserts.push(None);
+        }
+        while self.source_latency.len() < count {
+            self.source_latency.push(0);
+            self.insert_latency.push(0);
+        }
     }
 
     /// Mix one callback worth of samples from all tracks.
@@ -229,12 +297,26 @@ impl AudioMixer {
         };
         let mut master_buf = vec![0.0f32; frame_len];
 
+        let mut inserted: Vec<f32> = Vec::new();
         for &(track_idx, buf) in track_buffers.iter() {
+            let Some(settings) = self.tracks.get(track_idx) else { continue };
+            let heard = !(settings.muted || (any_solo && !settings.solo));
+            // The track's own effects on its summed clips, before its
+            // fader (#2560).
+            let buf = match self.track_inserts.get_mut(track_idx).and_then(Option::as_mut) {
+                Some(inserts) if heard => {
+                    inserted.clear();
+                    inserted.extend_from_slice(buf);
+                    inserts.chain.process(&mut inserted, &crate::dsp::AudioProcessContext { sample_rate: self.sample_rate, channels: 2, clip_time_secs: 0.0 });
+                    inserted.as_slice()
+                }
+                _ => buf,
+            };
             let settings = match self.tracks.get_mut(track_idx) {
                 Some(s) => s,
                 None => continue,
             };
-            if settings.muted || (any_solo && !settings.solo) {
+            if !heard {
                 settings.peak_left = 0.0;
                 settings.peak_right = 0.0;
                 continue;
@@ -339,6 +421,35 @@ impl AudioMixer {
 
 #[cfg(test)]
 mod tests {
+    /// #2560: a track's own effects run on what its clips sum to, before its
+    /// fader: the track's output is the chain's on the sum, times the
+    /// fader. A setting changed keeps the chain; an effect turned off makes
+    /// it again without.
+    #[test]
+    fn a_tracks_inserts_run_on_its_sum_before_its_fader() {
+        let insts = |gain: f32, on: bool| vec![klipp_core::AudioEffectInstance { effect_type: "compressor".into(), enabled: on, wet_dry: 1.0, params: vec![("threshold".into(), -24.0), ("ratio".into(), 4.0), ("makeup".into(), gain)] }];
+        let buf: Vec<f32> = (0..2048).map(|i| 0.8 * ((i / 2) as f32 * 0.05).sin()).collect();
+        let mut mixer = AudioMixer::new(1);
+        mixer.set_sample_rate(48_000);
+        mixer.set_track_inserts(0, &insts(0.0, true), 4096);
+        mixer.tracks[0].volume = 0.5;
+        mixer.tracks[0].ramp_from = Some((0.5, 0.0));
+        let out = mixer.mix(&[(0, &buf)]);
+        let mut chain = crate::dsp::AudioEffectChain::from_instances(&insts(0.0, true), 48_000);
+        chain.prepare(2);
+        let mut want = buf.clone();
+        chain.process(&mut want, &crate::dsp::AudioProcessContext { sample_rate: 48_000, channels: 2, clip_time_secs: 0.0 });
+        let (l, r) = AudioMixer::pan_gains_for(0.0, mixer.pan_law);
+        for (i, (o, w)) in out.iter().zip(&want).enumerate() {
+            let g = if i % 2 == 0 { l } else { r };
+            assert!((o - (w * 0.5 * g).clamp(-1.0, 1.0)).abs() < 1e-6, "sample {i}: {o} vs {}", w * 0.5 * g);
+        }
+        mixer.set_track_inserts(0, &insts(3.0, true), 4096);
+        assert!(mixer.track_inserts[0].is_some(), "changed in place");
+        mixer.set_track_inserts(0, &[], 4096);
+        assert!(mixer.track_inserts[0].is_none(), "none left");
+    }
+
     use super::*;
     use klipp_core::PanLaw;
 

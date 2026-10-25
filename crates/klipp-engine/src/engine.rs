@@ -4485,6 +4485,13 @@ impl PlaybackEngine {
         let heard_tc = self.audio_heard_at();
         let heard_at = heard_tc.to_secs_f64();
         self.sync_track_automation(&seq, heard_at);
+        // Each track's own effects, on its summed clips before its fader
+        // (#2560): the mix thread runs them, as the export does.
+        if let Ok(mut m) = self.mixer.lock() {
+            for (i, track) in seq.tracks.iter().enumerate().filter(|(_, t)| t.kind == klipp_timeline::TrackKind::Audio) {
+                m.set_track_inserts(i, &track.effects.audio, 8192);
+            }
+        }
 
         for active in &self.audio_sources {
             if seq.tracks.get(key_track(active.track_index)).is_some() {
