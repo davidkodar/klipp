@@ -158,7 +158,8 @@ pub(crate) fn timeline_text(
             };
             let _ = write!(line, "  grade {grade}");
             // A push or pull on the picture, a still's especially (#2492).
-            if let (Some(a), Some(b)) = (c.transform_scale_keyframes().first(), c.transform_scale_keyframes().last()) {
+            let scale = klipp_timeline::frame_glide::lane(c, "scale");
+            if let (Some(a), Some(b)) = (scale.first(), scale.last()) {
                 if (a.value - b.value).abs() > 1e-3 {
                     let _ = write!(line, "  zoom {:.2} to {:.2}", a.value, b.value);
                 } else if (a.value - 1.0).abs() > 1e-3 {

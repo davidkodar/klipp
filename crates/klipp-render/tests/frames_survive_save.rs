@@ -50,17 +50,16 @@ fn title(text: &str, from: f64, to: f64) -> Clip {
 fn sequence() -> Sequence {
     let (cam_a, cam_b) = (MediaId::new(), MediaId::new());
     let group = GroupId::new();
-    let mut primary = Clip::media(cam_a, t(0.0), t(6.0), t(2.0), t(8.0));
+    let mut primary = klipp_timeline::test_clip::TestClip::of(Clip::media(cam_a, t(0.0), t(6.0), t(2.0), t(8.0))).lane("opacity", 0.0, 1.0).lane("opacity", 6.0, 0.4).build();
     (primary.multicam_group, primary.multicam_angle, primary.multicam_cuts) = (Some(group), 0, vec![(2.0, 1), (4.0, 0)]);
     let mut angle = Clip::media(cam_b, t(0.0), t(6.0), t(1.0), t(7.0));
     (angle.multicam_group, angle.multicam_angle) = (Some(group), 1);
-    primary.edit_opacity_keyframes(|k| *k = vec![serde_json::from_value(json!({ "time_secs": 0.0, "value": 1.0, "interpolation": "Linear" })).unwrap(), serde_json::from_value(json!({ "time_secs": 6.0, "value": 0.4, "interpolation": "Linear" })).unwrap()]);
 
     // A picture-truth clip: its blur mixed at a half, which only its
     // picture can hold.
     let mut truth = Clip::media(cam_b, t(6.0), t(10.0), t(0.0), t(4.0));
-    truth.push_effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 6.0 });
-    let blur = truth.picture_v2().unwrap().picture.graph.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_format::types::LEGACY_EFFECT).unwrap().id;
+    truth = klipp_timeline::test_clip::TestClip::of(truth).effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 6.0 }).build();
+    let blur = truth.picture_effects().unwrap()[0].node;
     truth.apply_picture_ops(&[GraphOp::SetMix { path: NodePath::new(Root::Clip { clip: truth.id.0 }, [blur]), mix: Some(0.5) }]).unwrap();
     assert!(truth.is_picture_truth());
 
