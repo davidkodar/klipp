@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 mod color_serde;
 pub mod omarchy;
+pub mod portal;
 mod registry;
 
 pub use color_serde::HexColor;
@@ -234,6 +235,21 @@ impl Default for KlippTheme {
 }
 
 impl KlippTheme {
+    /// Colour the theme in `accent`, the tones made from it the way the
+    /// system palette makes them: a dimmer accent, the translucent glow
+    /// and fill, and text on it in whichever of black and white reads.
+    pub fn set_accent(&mut self, accent: Color32, light: bool) {
+        use omarchy::{mix, rel_luminance, veil};
+        let (glow, subtle) = if light { (0.24, 0.22) } else { (0.18, 0.22) };
+        self.accent = accent;
+        self.accent_dim = mix(accent, self.bg_panel, 0.4);
+        self.accent_glow = veil(accent, glow);
+        self.accent_subtle = veil(accent, subtle);
+        // Contrast against white is (1.05) / (L + 0.05), against black
+        // (L + 0.05) / 0.05; they are equal at L = 0.179.
+        self.text_on_accent = if rel_luminance(accent) > 0.179 { Color32::from_rgb(16, 16, 20) } else { Color32::WHITE };
+    }
+
     /// Build a theme by name from `registry`, then layer the user's
     /// accent + role colour overrides on top. Falls back to the Dark
     /// built-in if the named theme is missing (e.g. user deleted the
@@ -263,6 +279,12 @@ impl KlippTheme {
                 if !prefs.roles_are_default() {
                     t.apply_role_prefs(prefs);
                 }
+                return t;
+            }
+            // Elsewhere the desktop portal's dark or light preference
+            // and accent; with no preference, the picked theme below.
+            if let Some(mut t) = registry.portal_theme() {
+                t.apply_role_prefs(prefs);
                 return t;
             }
         }

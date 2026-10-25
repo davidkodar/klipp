@@ -605,6 +605,9 @@ pub struct KlippApp {
     system_theme_watcher: Option<notify::RecommendedWatcher>,
     /// Set by the watcher thread, cleared by `sync_system_theme`.
     system_theme_changed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The desktop portal's appearance settings, read and followed on a
+    /// thread of their own (`theme/portal.rs`).
+    desktop_appearance: crate::theme::portal::PortalWatch,
     // Curve editor panel (spline editor for keyframe animation)
     curve_editor: crate::panels::curve_editor::CurveEditorPanel,
     // Floating scope window runtime (textures, UI state)

@@ -270,14 +270,14 @@ pub fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
 
 /// A translucent overlay of `c` at `alpha`, in the premultiplied form
 /// the Klipp tokens store (`#rrggbbaa` with channels scaled by alpha).
-fn veil(c: Color32, alpha: f32) -> Color32 {
+pub(crate) fn veil(c: Color32, alpha: f32) -> Color32 {
     let a = (alpha.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
     let ch = |x: u8| ((x as f32) * (a as f32) / 255.0 + 0.5) as u8;
     Color32::from_rgba_premultiplied(ch(c.r()), ch(c.g()), ch(c.b()), a)
 }
 
 /// Relative luminance in 0..1, for the text-on-accent contrast pick.
-fn rel_luminance(c: Color32) -> f32 {
+pub(crate) fn rel_luminance(c: Color32) -> f32 {
     let lin = |v: u8| {
         let v = v as f32 / 255.0;
         if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }

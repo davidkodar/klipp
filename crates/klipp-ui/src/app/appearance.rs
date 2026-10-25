@@ -34,10 +34,24 @@ impl KlippApp {
     }
 
     /// Keep the system-theme watcher in step with the preference and
-    /// apply a changed Omarchy palette. Runs once per frame; cheap
-    /// unless the flag is set.
+    /// apply a changed Omarchy palette or desktop portal setting. Runs
+    /// once per frame; cheap unless a flag is set.
     pub(super) fn sync_system_theme(&mut self, ctx: &egui::Context) {
         use std::sync::atomic::Ordering;
+
+        if self.desktop_appearance.take_changed() {
+            let status = self.desktop_appearance.status();
+            self.theme_registry.set_portal(status);
+            if adopt_portal_answer(&mut self.prefs.appearance, &self.theme_registry) {
+                let _ = self.prefs.save();
+            }
+            // The portal is the fallback: it applies only where there is
+            // no full palette.
+            if self.prefs.appearance.follow_system_theme && self.theme_registry.omarchy_name().is_none() {
+                self.theme = KlippTheme::from_prefs(&self.prefs.appearance, &self.theme_registry);
+                self.theme.apply_to_egui(ctx);
+            }
+        }
 
         let follow = self.prefs.appearance.follow_system_theme
             && self.theme_registry.omarchy_name().is_some();
@@ -80,5 +94,53 @@ impl KlippApp {
                 ctx.request_repaint_after(std::time::Duration::from_millis(50));
             }
         }
+    }
+}
+
+/// A fresh install's first portal answer: follow the system theme when
+/// the desktop prefers dark or light (#2625). Whether the preference
+/// changed, to be saved.
+fn adopt_portal_answer(appearance: &mut crate::prefs::AppearancePrefs, registry: &crate::theme::ThemeRegistry) -> bool {
+    if !appearance.follow_system_theme_pending || registry.portal() == crate::theme::portal::PortalStatus::Looking {
+        return false;
+    }
+    appearance.follow_system_theme_pending = false;
+    if appearance.follow_system_theme || !registry.has_system_theme() {
+        return false;
+    }
+    tracing::info!("Desktop prefers dark or light: following the system theme by default");
+    appearance.follow_system_theme = true;
+    true
+}
+
+#[cfg(test)]
+mod portal_default_tests {
+    use super::adopt_portal_answer;
+    use crate::theme::portal::{Appearance, ColorScheme, PortalStatus};
+    use crate::theme::ThemeRegistry;
+
+    /// #2625: a fresh install follows the system theme once the portal
+    /// says dark or light; with no preference, or no portal, it keeps
+    /// its own theme. An install that was not fresh is left alone.
+    #[test]
+    fn a_fresh_install_follows_when_the_desktop_has_a_preference() {
+        let fresh = || crate::prefs::AppearancePrefs { follow_system_theme_pending: true, ..Default::default() };
+        let mut reg = ThemeRegistry::builtins_only();
+        let mut prefs = fresh();
+        assert!(!adopt_portal_answer(&mut prefs, &reg), "no answer yet");
+        assert!(prefs.follow_system_theme_pending, "still waiting");
+        reg.set_portal(PortalStatus::Found(Appearance { scheme: ColorScheme::Dark, accent: None }));
+        assert!(adopt_portal_answer(&mut prefs, &reg));
+        assert!(prefs.follow_system_theme && !prefs.follow_system_theme_pending);
+        for status in [PortalStatus::Found(Appearance::default()), PortalStatus::Absent] {
+            reg.set_portal(status);
+            let mut prefs = fresh();
+            assert!(!adopt_portal_answer(&mut prefs, &reg), "{status:?}");
+            assert!(!prefs.follow_system_theme && !prefs.follow_system_theme_pending, "{status:?}");
+        }
+        reg.set_portal(PortalStatus::Found(Appearance { scheme: ColorScheme::Light, accent: None }));
+        let mut kept = crate::prefs::AppearancePrefs::default();
+        assert!(!adopt_portal_answer(&mut kept, &reg));
+        assert!(!kept.follow_system_theme, "not a fresh install");
     }
 }

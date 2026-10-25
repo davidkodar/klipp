@@ -3586,6 +3586,7 @@ dependencies = [
  "uuid",
  "walkdir",
  "wgpu",
+ "zbus",
 ]
 
 [[package]]
