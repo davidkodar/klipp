@@ -87,16 +87,25 @@ Video effects: OFX 1.5 and frei0r filters. Audio effects: LADSPA, LV2 and CLAP. 
 sudo pacman -S --needed base-devel git rust ffmpeg clang lld cmake pkgconf \
     vulkan-icd-loader vulkan-headers shaderc lilv onnxruntime-cpu espeak-ng
 
-# Ubuntu / Debian
-sudo apt install rustup ffmpeg libavcodec-dev libavformat-dev libavutil-dev \
-    libavfilter-dev libswscale-dev libswresample-dev libavdevice-dev \
-    libclang-dev lld cmake pkg-config libvulkan-dev glslc libasound2-dev \
-    liblilv-dev espeak-ng
+# Ubuntu 24.04 / Debian
+sudo apt install build-essential git rustup clang libclang-dev lld cmake pkg-config \
+    ffmpeg libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev \
+    libswscale-dev libswresample-dev libavdevice-dev \
+    libvulkan-dev glslc libasound2-dev liblilv-dev espeak-ng
+rustup default stable
+
+# Fedora
+sudo dnf install gcc gcc-c++ git rustup clang clang-devel lld cmake pkg-config \
+    ffmpeg-free-devel vulkan-loader-devel vulkan-headers glslc \
+    alsa-lib-devel lilv-devel espeak-ng
+rustup-init -y && . ~/.cargo/env
 ```
 
 Omarchy is Arch-based, so the `pacman` line covers it directly. On Omarchy or Arch you can skip the manual step entirely and use the [`packaging/`](../packaging/) recipe, which installs the dependencies.
 
-The Vulkan headers and `glslc` are build-time only: the speech model runs on the GPU through Vulkan (NVIDIA, AMD or Intel) and its shaders are compiled into the binary. At runtime Klipp needs the GPU driver, the ffmpeg libraries, `libonnxruntime.so` (loaded when a vision model runs), `lilv` for LV2 plug-ins, and `espeak-ng` for the Kokoro voices. The Ubuntu / Debian line is less tested than the Arch one.
+The Vulkan headers and `glslc` are build-time only: the speech model runs on the GPU through Vulkan (NVIDIA, AMD or Intel) and its shaders are compiled into the binary. At runtime Klipp needs the GPU driver, the ffmpeg libraries, `libonnxruntime.so` (loaded when a vision model runs), `lilv` for LV2 plug-ins, and `espeak-ng` for the Kokoro voices. Arch-based distributions are the main target. These Ubuntu and Fedora lists are tested as a build: `./scripts/vulkan-sdk.sh` and `cargo build --release -p klipp-app` in clean Ubuntu 24.04 and Fedora 44 containers. Running Klipp there (GPU, playback, export) is not tested yet.
+
+Fedora's own `ffmpeg-free` leaves out patent-encumbered codecs, so some camera and phone files will not open with it. The full ffmpeg comes from [RPM Fusion](https://rpmfusion.org/Configuration): enable its free repository, then `sudo dnf swap ffmpeg-free ffmpeg --allowerasing` and `sudo dnf install ffmpeg-devel`; Klipp builds against either.
 
 Two assistant tools shell out to a program if you want them: `narrate` needs `piper-tts`, and `record` needs `gpu-screen-recorder` or `wf-recorder`. Both are optional and everything else works without them.
 

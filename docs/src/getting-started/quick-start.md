@@ -5,9 +5,11 @@ This guide walks you through creating your first project in Klipp, from launch t
 ## 1. Launch Klipp
 
 ```bash
-klipp            # installed Arch/Omarchy package
+klipp            # installed package (Arch-based distributions)
 # For developers in the source checkout: cargo r or cargo rr
 ```
+
+On Ubuntu, Fedora and other distributions there is no package yet: build from source as [Installation](installation.md) describes.
 
 Klipp opens with a welcome screen: your recent and pinned projects, everything in your projects folder, and a row of templates to start from.
 

@@ -160,17 +160,20 @@ mechanical version of that check.
 
 ## Build prerequisites
 
-Klipp targets Linux (tested on CachyOS / Arch / Debian derivatives).
+Klipp targets Linux. Arch-based distributions are the main target; a
+source build is tested on Ubuntu 24.04 and Fedora 44 (the full package
+lists for each are under [Building](docs/project-reference.md#building)).
 You need:
 
 * **Rust** — pinned by `rust-toolchain.toml`. `rustup show` will
   install the right version.
 * **ffmpeg development headers** — `ffmpeg-next` links against system
-  ffmpeg. On Arch: `pacman -S ffmpeg`. On Debian: `apt install
-  ffmpeg libavcodec-dev libavformat-dev libavutil-dev libswscale-dev
-  libswresample-dev`.
-* **lld** — the workspace is configured to link with `lld` via
-  `.cargo/config.toml`. `pacman -S lld` or `apt install lld`.
+  ffmpeg (builds are tested against 6.1, 8.1 and 9). On Arch: `pacman -S ffmpeg`. On Ubuntu: the
+  `libav*-dev` packages. On Fedora: `ffmpeg-free-devel`, or `ffmpeg-devel`
+  from RPM Fusion for the full codec set.
+* **clang and lld** — `.cargo/config.toml` links through `clang` with
+  `lld`, and the ffmpeg bindings need `libclang`. `pacman -S clang lld`,
+  `apt install clang libclang-dev lld` or `dnf install clang clang-devel lld`.
 * **Vulkan** — wgpu needs a working Vulkan ICD at runtime. Nvidia
   users: note that CachyOS puts `nvidia_icd.json` under
   `/usr/share/vulkan/icd.d/` rather than `/etc/vulkan/icd.d/`, so the

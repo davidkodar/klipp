@@ -2,15 +2,16 @@
 
 Release candidates are published as an unsigned Arch package on the [releases page](https://github.com/davidkodar/klipp/releases); install one with `sudo pacman -U` after checking it against `SHA256SUMS`. Otherwise Klipp is built from source using the Rust toolchain.
 
-## Arch / Omarchy: recommended route
+## Arch-based distributions: recommended route
 
-Use the [Arch/Omarchy package guide](../../../packaging/README.md). It covers
+Use the [package guide for Arch-based distributions](../../../packaging/README.md). It covers
 repository access, `base-devel`, driver checks, dependency installation,
 first-run verification, updates, and removal. Run `makepkg -si` as a normal user
 from `packaging/`; it performs Vulkan SDK setup automatically.
 
-The instructions below are for developers building directly with Cargo.
-Ubuntu/Debian and Fedora commands are not covered by the Arch package checks.
+The instructions below are for building directly with Cargo. Ubuntu, Fedora
+and other distributions have no package yet: install the system dependencies
+for yours below, then build from source.
 
 ## Prerequisites
 
@@ -45,10 +46,11 @@ sudo pacman -S cuda
 ### Ubuntu / Debian
 
 ```bash
-sudo apt install rustup ffmpeg libavcodec-dev libavformat-dev libavutil-dev \
-    libavfilter-dev libswscale-dev libswresample-dev libavdevice-dev \
-    libclang-dev lld cmake pkg-config libvulkan-dev glslc \
-    libasound2-dev libpipewire-0.3-dev liblilv-dev
+sudo apt install build-essential git rustup clang libclang-dev lld cmake pkg-config \
+    ffmpeg libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev \
+    libswscale-dev libswresample-dev libavdevice-dev \
+    libvulkan-dev glslc libasound2-dev liblilv-dev espeak-ng
+rustup default stable
 
 # Runtime CUDA libraries for AI inference
 sudo apt install libcudnn9-cuda-12
@@ -60,12 +62,18 @@ sudo apt install nvidia-cuda-toolkit
 ### Fedora
 
 ```bash
-sudo dnf install ffmpeg-free-devel clang-devel lld cmake pkg-config \
-    vulkan-loader-devel vulkan-headers glslc alsa-lib-devel pipewire-devel lilv-devel
+sudo dnf install gcc gcc-c++ git rustup clang clang-devel lld cmake pkg-config \
+    ffmpeg-free-devel vulkan-loader-devel vulkan-headers glslc \
+    alsa-lib-devel lilv-devel espeak-ng
+rustup-init -y && . ~/.cargo/env
 
 # Runtime CUDA libraries
 sudo dnf install libcudnn9
 ```
+
+Fedora's own `ffmpeg-free` leaves out patent-encumbered codecs, so some camera and phone files will not open with it. The full ffmpeg comes from [RPM Fusion](https://rpmfusion.org/Configuration): enable its free repository, then `sudo dnf swap ffmpeg-free ffmpeg --allowerasing` and `sudo dnf install ffmpeg-devel`; Klipp builds against either.
+
+These Ubuntu and Fedora lists are tested as a build: `./scripts/vulkan-sdk.sh` and `cargo build --release -p klipp-app` in clean Ubuntu 24.04 and Fedora 44 containers. Running Klipp there (GPU, playback, export) is not tested yet.
 
 ## Building
 
