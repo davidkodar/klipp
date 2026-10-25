@@ -4,6 +4,12 @@ pub fn build_curve_lut(points: &[[f32; 2]]) -> [u8; 256] {
     build_curve_lut_f32(points).map(|v| (v * 255.0) as u8)
 }
 
+/// [`build_periodic_curve_lut_f32`] quantised to 8 bits, for drawing a
+/// hue curve in the editor.
+pub fn build_periodic_curve_lut(points: &[[f32; 2]]) -> [u8; 256] {
+    build_periodic_curve_lut_f32(points).map(|v| (v * 255.0) as u8)
+}
+
 /// Build a 256-entry float lookup table from a set of control points
 /// using monotone cubic Hermite interpolation (Fritsch-Carlson method).
 /// Points are [x, y] pairs in 0..1 range; the output is clamped there.
@@ -38,7 +44,55 @@ pub fn build_curve_lut_f32(points: &[[f32; 2]]) -> [f32; 256] {
         return lut;
     }
 
-    // Compute slopes (secants between adjacent points)
+    let m = tangents(&pts);
+    for (i, lut_val) in lut.iter_mut().enumerate() {
+        let t = i as f32 / 255.0;
+        // Beyond the outer points the curve holds their values, as the
+        // two-point line does; the end pieces' cubic run on past them
+        // bent every value there (#2554).
+        let y = if t <= pts[0][0] {
+            pts[0][1]
+        } else if t >= pts[n - 1][0] {
+            pts[n - 1][1]
+        } else {
+            hermite(&pts, &m, t)
+        };
+        *lut_val = y.clamp(0.0, 1.0);
+    }
+    lut
+}
+
+/// [`build_curve_lut_f32`] for a curve over hue, whose axis is a circle:
+/// 0 and 1 are the same hue. Beyond the outer points the curve runs on
+/// round the circle, from the last point through 360°/0° to the first,
+/// with the slopes taken across the join, so there is no step at red
+/// (#2554). Every hue curve's table, the grade's and the editor's, is
+/// built here.
+pub fn build_periodic_curve_lut_f32(points: &[[f32; 2]]) -> [f32; 256] {
+    if points.len() < 2 {
+        return build_curve_lut_f32(points);
+    }
+    let mut pts: Vec<[f32; 2]> = points.to_vec();
+    pts.sort_by(|a, b| a[0].partial_cmp(&b[0]).unwrap_or(std::cmp::Ordering::Equal));
+    let n = pts.len();
+    // Two points a turn earlier and two a turn later: the curve between
+    // the last point and the first crosses the join, and each point's
+    // slope has its neighbours on both sides.
+    let mut ext: Vec<[f32; 2]> = vec![[pts[n - 2][0] - 1.0, pts[n - 2][1]], [pts[n - 1][0] - 1.0, pts[n - 1][1]]];
+    ext.extend_from_slice(&pts);
+    ext.extend([[pts[0][0] + 1.0, pts[0][1]], [pts[1][0] + 1.0, pts[1][1]]]);
+    let m = tangents(&ext);
+    let mut lut = [0.0f32; 256];
+    for (i, lut_val) in lut.iter_mut().enumerate() {
+        *lut_val = hermite(&ext, &m, i as f32 / 255.0).clamp(0.0, 1.0);
+    }
+    lut
+}
+
+/// The monotone (Fritsch-Carlson) slopes at `pts`, sorted by x.
+fn tangents(pts: &[[f32; 2]]) -> Vec<f32> {
+    let n = pts.len();
+    // Secants between adjacent points.
     let mut delta = vec![0.0f32; n - 1];
     for i in 0..n - 1 {
         let dx = pts[i + 1][0] - pts[i][0];
@@ -46,8 +100,6 @@ pub fn build_curve_lut_f32(points: &[[f32; 2]]) -> [f32; 256] {
             delta[i] = (pts[i + 1][1] - pts[i][1]) / dx;
         }
     }
-
-    // Initialize tangents
     let mut m = vec![0.0f32; n];
     m[0] = delta[0];
     m[n - 1] = delta[n - 2];
@@ -58,7 +110,6 @@ pub fn build_curve_lut_f32(points: &[[f32; 2]]) -> [f32; 256] {
             m[i] = (delta[i - 1] + delta[i]) / 2.0;
         }
     }
-
     // Fritsch-Carlson monotonicity correction
     for i in 0..n - 1 {
         if delta[i].abs() < f32::EPSILON {
@@ -75,45 +126,27 @@ pub fn build_curve_lut_f32(points: &[[f32; 2]]) -> [f32; 256] {
             }
         }
     }
+    m
+}
 
-    // Evaluate spline at each of 256 values
-    for (i, lut_val) in lut.iter_mut().enumerate() {
-        let t = i as f32 / 255.0;
-
-        // Find segment
-        let mut seg = 0;
-        for (j, pt) in pts[..n - 1].iter().enumerate() {
-            if t >= pt[0] {
-                seg = j;
-            }
-        }
-        if seg >= n - 1 {
-            seg = n - 2;
-        }
-
-        let x0 = pts[seg][0];
-        let x1 = pts[seg + 1][0];
-        let y0 = pts[seg][1];
-        let y1 = pts[seg + 1][1];
-        let dx = x1 - x0;
-
-        let y = if dx.abs() < f32::EPSILON {
-            y0
-        } else {
-            let s = (t - x0) / dx;
-            let s2 = s * s;
-            let s3 = s2 * s;
-            let h00 = 2.0 * s3 - 3.0 * s2 + 1.0;
-            let h10 = s3 - 2.0 * s2 + s;
-            let h01 = -2.0 * s3 + 3.0 * s2;
-            let h11 = s3 - s2;
-            h00 * y0 + h10 * dx * m[seg] + h01 * y1 + h11 * dx * m[seg + 1]
-        };
-
-        *lut_val = y.clamp(0.0, 1.0);
+/// The cubic Hermite curve through `pts` with slopes `m`, at `t`, on the
+/// piece that holds it (the first or last piece outside them).
+fn hermite(pts: &[[f32; 2]], m: &[f32], t: f32) -> f32 {
+    let n = pts.len();
+    let seg = pts[..n - 1].iter().rposition(|pt| t >= pt[0]).unwrap_or(0);
+    let (x0, x1, y0, y1) = (pts[seg][0], pts[seg + 1][0], pts[seg][1], pts[seg + 1][1]);
+    let dx = x1 - x0;
+    if dx.abs() < f32::EPSILON {
+        return y0;
     }
-
-    lut
+    let s = (t - x0) / dx;
+    let s2 = s * s;
+    let s3 = s2 * s;
+    let h00 = 2.0 * s3 - 3.0 * s2 + 1.0;
+    let h10 = s3 - 2.0 * s2 + s;
+    let h01 = -2.0 * s3 + 3.0 * s2;
+    let h11 = s3 - s2;
+    h00 * y0 + h10 * dx * m[seg] + h01 * y1 + h11 * dx * m[seg + 1]
 }
 
 fn lerp_points(pts: &[[f32; 2]], t: f32) -> f32 {
@@ -208,5 +241,47 @@ mod tests {
         assert!(is_identity(&[[0.0, 0.0], [1.0, 1.0]]));
         assert!(!is_identity(&[[0.0, 0.0], [0.5, 0.7], [1.0, 1.0]]));
         assert!(!is_identity(&[[0.0, 0.1], [1.0, 1.0]]));
+    }
+
+    /// #2554: a hue curve picked to three points round a hue, its middle
+    /// dragged up, changes only the hues between the outer two; beyond
+    /// them the curve holds the outer points' values, here neutral. The
+    /// end pieces' cubic used to run on past them, and every other hue
+    /// gained saturation.
+    #[test]
+    fn beyond_the_outer_points_the_curve_holds_their_values() {
+        let (lo, hue, hi) = (200.0 / 360.0 - 0.06, 200.0 / 360.0, 200.0 / 360.0 + 0.06);
+        let lut = build_curve_lut_f32(&[[lo, 0.5], [hue, 0.9], [hi, 0.5]]);
+        for (i, v) in lut.iter().enumerate() {
+            let t = i as f32 / 255.0;
+            if t < lo || t > hi {
+                assert!((v - 0.5).abs() < 1e-4, "at {:.0}° the curve is {v}, not the neutral 0.5", t * 360.0);
+            }
+        }
+        assert!(lut[(hue * 255.0).round() as usize] > 0.85, "the picked hue is raised");
+    }
+
+    /// A hue curve runs round the circle: points at 10° and 350° meet
+    /// at red without a step, and 0° and 360° read the same.
+    #[test]
+    fn a_hue_curve_joins_across_red() {
+        let lut = build_periodic_curve_lut_f32(&[[10.0 / 360.0, 0.7], [350.0 / 360.0, 0.3]]);
+        assert!((lut[0] - lut[255]).abs() < 0.01, "0° {} and 360° {} are the same hue", lut[0], lut[255]);
+        assert!(lut[0] > 0.3 && lut[0] < 0.7, "between the two points: {}", lut[0]);
+        let biggest = lut.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0f32, f32::max);
+        // 0.7 to 0.3 across the 20° join is steep, about 0.03 a step and
+        // more at its middle, but nowhere the 0.4 jump at red that holding
+        // the ends would make.
+        assert!(biggest < 0.06, "no step anywhere: the biggest is {biggest}");
+        // The picked range's outer points still hold the rest, round the
+        // circle too.
+        let (lo, hue, hi) = (200.0 / 360.0 - 0.06, 200.0 / 360.0, 200.0 / 360.0 + 0.06);
+        let lut = build_periodic_curve_lut_f32(&[[lo, 0.5], [hue, 0.9], [hi, 0.5]]);
+        for (i, v) in lut.iter().enumerate() {
+            let t = i as f32 / 255.0;
+            if t < lo || t > hi {
+                assert!((v - 0.5).abs() < 1e-4, "at {:.0}° the hue curve is {v}", t * 360.0);
+            }
+        }
     }
 }

@@ -276,7 +276,9 @@ pub fn curves_editor_in(
     let draw_pts: &Vec<[f32; 2]> = if drawing_identity { &identity_pts } else { points };
 
     // Build spline LUT for drawing
-    let lut = klipp_color::curves::build_curve_lut(draw_pts);
+    // Drawn from the table the grade reads: a hue curve's runs round
+    // the circle.
+    let lut = if axis == CurveAxis::Hue { klipp_color::curves::build_periodic_curve_lut(draw_pts) } else { klipp_color::curves::build_curve_lut(draw_pts) };
     let curve_color = channel_color(channel);
 
     // Draw filled areas on BOTH sides of the curve vs the identity diagonal.
