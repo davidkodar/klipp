@@ -82,6 +82,21 @@ When the sequence has subtitle tracks, you can burn the subtitles into the pictu
 
 Before exporting, **Window → Delivery Check** runs the delivery check over the cut: the craft's rules, the sequence's brief, and on request the colour of every shot and the mix's loudness. Each finding names what to fix; one you accept is kept with your reason, as one undo step.
 
+## Delivery Specs
+
+A **delivery spec** is what a platform or a broadcaster asks a finished piece to be: container, codec, frame size and rate, bit depth, colour (SDR or HDR), audio, loudness and true peak, captions. In the **Delivery Spec** section of the export settings, pick one and the export is set from it.
+
+The built-in specs take their numbers from each platform's or standards body's public specification, named with the spec: YouTube (SDR and HDR), Vimeo, Instagram Reels and TikTok (vertical), EBU R 128 and ATSC A/85 broadcast loudness, and a streaming master. Where a platform only recommends a setting, missing it is a warning, not a failure.
+
+- **Check the Export** checks the export as the settings would make it, against the spec.
+- **Check a File…** checks a finished file: it is read with `ffprobe`, and its loudness and true peak are measured with Klipp's own meter (a multichannel mix is measured as its stereo downmix).
+
+Each requirement is listed as passing, a warning or failing, with what was found, what is wanted and what to change. A loudness target the spec measures on dialogue only (ATSC A/85, the streaming master) is read over the whole mix, so it is a guide and warns rather than fails.
+
+**Save as My Spec…** keeps the spec's requirements with your export settings under a name of your own. Your specs are in `delivery-specs.json` in Klipp's settings folder (`~/.config/klipp/`), where their requirements can be edited.
+
+An assistant can list the specs and check the timeline or a file against one too.
+
 ## Render Queue
 
 Both **Export** and **Add to Queue** put the render in the render queue. **Export** also closes the settings and opens the queue, and asks before overwriting an existing file. The queue runs two jobs at once by default. Change this with **Parallel render jobs** (1 to 8) in the export preferences.

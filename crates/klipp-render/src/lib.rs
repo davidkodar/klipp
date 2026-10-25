@@ -45,6 +45,7 @@
 //!   that case.
 
 pub mod clip_decoder;
+pub mod delivery_facts;
 pub mod error;
 pub mod snapshot;
 mod sws_colour;

@@ -1350,6 +1350,8 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
         }),
         "klipp_open_project" => project_switch_command("open_project",args)?,
         "klipp_recent_projects" => json!({"method":"recent_projects"}),
+        "klipp_delivery_specs" => json!({"method":"delivery_specs"}),
+        "klipp_check_delivery" => json!({"method":"check_delivery", "spec": arg_str(args, "spec")?, "file": args.get("file").cloned().unwrap_or(Value::Null)}),
         "klipp_close_project" => project_switch_command("close_project",args)?,
         "klipp_frame_stats" => json!({ "method": "frame_stats", "secs": args.get("secs").and_then(|v| v.as_f64()).ok_or("missing required argument: secs")?, "timeout_ms": args.get("timeout_ms").and_then(|v| v.as_u64()) }),
         "klipp_scope" => {
@@ -2562,6 +2564,8 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
         tool("klipp_open_project",
              "Open a project by path or recent name; protect unsaved changes. Guide: klipp_guide topic open_project.",
              json!({ "path": { "type": "string" }, "name": { "type": "string" }, "save": { "type": "boolean" }, "discard_changes": { "type": "boolean" } }), vec![]),
+        tool("klipp_delivery_specs", "List the delivery specs (platforms, broadcast loudness, a streaming master) with their sources. Details: klipp_guide topic delivery_specs.", json!({}), vec![]),
+        tool("klipp_check_delivery", "Check the timeline, or a finished file, against a delivery spec: each requirement pass, warn or fail with what to change. Details: klipp_guide topic check_delivery.", json!({ "spec": { "type": "string" }, "file": { "type": "string" } }), vec!["spec"]),
         tool("klipp_recent_projects", "List existing recent projects, most recent first. Names and paths are local project data. Guide: klipp_guide topic recent_projects.", json!({}), vec![]),
         tool("klipp_close_project", "Close to the project page; refuses unsaved changes unless save or discard_changes. Guide: klipp_guide topic close_project.", json!({"save":{"type":"boolean"},"discard_changes":{"type":"boolean"}}), vec![]),
         tool("klipp_frame_stats",
@@ -3083,6 +3087,8 @@ mod wait_tests {
         let close=tool_to_command("klipp_close_project",&json!({"discard_changes":true})).unwrap();
         assert_eq!(close,json!({"method":"close_project","save":false,"discard_changes":true}));
         assert_eq!(tool_to_command("klipp_recent_projects",&json!({})).unwrap(),json!({"method":"recent_projects"}));
+        assert_eq!(tool_to_command("klipp_delivery_specs",&json!({})).unwrap(),json!({"method":"delivery_specs"}));
+        assert_eq!(tool_to_command("klipp_check_delivery",&json!({"spec":"delivery-ebu-r128","file":"/x/a.mov"})).unwrap(),json!({"method":"check_delivery","spec":"delivery-ebu-r128","file":"/x/a.mov"}));
         assert!(!project_changed_under("klipp_close_project",1,2));
         assert!(WRITE_TOOLS.contains(&"klipp_close_project"));
         for bad in [json!({"save":"true"}),json!({"save":true,"discard_changes":true})] {

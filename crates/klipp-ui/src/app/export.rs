@@ -116,6 +116,10 @@ pub(super) struct ExportDialogState {
     /// 0=YouTube/Spotify (-14), 1=Podcast (-16), 2=EBU R128 (-23), 3=ATSC A/85 (-24), 4=Custom
     pub(super) loudness_preset: u8,
     pub(super) custom_lufs: f32,
+    /// The true-peak ceiling with a custom loudness target, dBTP: a
+    /// preset's or a delivery spec's, kept rather than dropped to the
+    /// default (#2650).
+    pub(super) custom_true_peak: f32,
     /// Encoder bit depth. 0 = codec default (8-bit), 10 = 10-bit encode.
     /// Only meaningful for H.264, H.265 and AV1. (#65, #560)
     pub(super) bit_depth: u8,
@@ -123,6 +127,15 @@ pub(super) struct ExportDialogState {
     pub(super) banding: super::export_banding::BandingProbe,
     /// HDR transfer. Only surfaced in UI when bit_depth == 10 on H.264, H.265 or AV1. (#65)
     pub(super) hdr_mode: klipp_core::HdrMode,
+    /// The delivery spec picked (#2650), by id, and the last check
+    /// against it: what was checked, and each requirement.
+    pub(super) delivery_spec: Option<String>,
+    pub(super) delivery_result: Option<(String, Vec<klipp_core::delivery_spec::Finding>)>,
+    /// A finished file's check, run on a worker: its answer when done.
+    pub(super) delivery_file_check: std::sync::Arc<std::sync::Mutex<Option<Result<(String, Vec<klipp_core::delivery_spec::Finding>), String>>>>,
+    pub(super) delivery_busy: bool,
+    /// The name being typed for a spec of the person's own, while it is.
+    pub(super) delivery_save_name: Option<String>,
     /// Display-boundary tone-map operator picked by the user.
     /// Default Hable matches prior behaviour.
     pub(super) tone_map_op: klipp_core::ToneMapOp,
@@ -172,9 +185,15 @@ impl Default for ExportDialogState {
             normalize_loudness: false,
             loudness_preset: 0,
             custom_lufs: -14.0,
+            custom_true_peak: klipp_core::DEFAULT_TRUE_PEAK_DBTP,
             bit_depth: 0,
             banding: Default::default(),
             hdr_mode: klipp_core::HdrMode::Sdr,
+            delivery_spec: None,
+            delivery_result: None,
+            delivery_file_check: Default::default(),
+            delivery_busy: false,
+            delivery_save_name: None,
             tone_map_op: klipp_core::ToneMapOp::Hable,
             odt: klipp_core::OdtChoice::MatchViewer,
             odt_followed: None,
@@ -401,7 +420,13 @@ pub(super) fn selected_clips_frame_range(
 /// The true-peak ceiling the chosen loudness spec asks for: -2 dBTP for
 /// ATSC A/85, and the renderer's -1 for the rest.
 pub(super) fn dialog_true_peak(dialog: &ExportDialogState) -> Option<f32> {
-    (dialog.normalize_loudness && dialog.loudness_preset == 3).then_some(-2.0)
+    match (dialog.normalize_loudness, dialog.loudness_preset) {
+        (true, 3) => Some(-2.0),
+        // A custom target keeps its own ceiling, the default unless a
+        // preset or a spec set another.
+        (true, 4) => (dialog.custom_true_peak != klipp_core::DEFAULT_TRUE_PEAK_DBTP).then_some(dialog.custom_true_peak),
+        _ => None,
+    }
 }
 
 /// The loudness and true-peak ceiling playback is heard at (#1565): the
@@ -481,6 +506,52 @@ pub(super) fn preset_label(preset: &ExportPreset) -> String {
     format!("{mark}{}{depth}", preset.name)
 }
 
+/// The dialog's settings as a preset holds them, with the frame size and
+/// rate it sets: what a delivery check reads of an export (#2650).
+pub(super) fn dialog_settings(d: &ExportDialogState) -> ExportPresetSettings {
+    let r = |width, height| Some(klipp_core::Resolution { width, height });
+    ExportPresetSettings {
+        format: d.format,
+        video_codec: d.video_codec,
+        resolution: match d.resolution_override {
+            1 => r(1280, 720),
+            2 => r(1920, 1080),
+            3 => r(3840, 2160),
+            4 => r(d.custom_width, d.custom_height),
+            _ => None,
+        },
+        fps: match d.fps_override {
+            1 => Some(klipp_core::Fps::new(24, 1)),
+            2 => Some(klipp_core::Fps::new(25, 1)),
+            3 => Some(klipp_core::Fps::new(30000, 1001)),
+            4 => Some(klipp_core::Fps::new(30, 1)),
+            5 => Some(klipp_core::Fps::new(60, 1)),
+            _ => None,
+        },
+        crf: d.crf,
+        preset: d.preset,
+        audio_codec: d.audio_codec,
+        audio_bitrate_kbps: Some(d.audio_bitrate),
+        video_bitrate_kbps: if d.rate_control != klipp_core::RateControl::Crf { Some(d.video_bitrate_kbps) } else { None },
+        rate_control: d.rate_control,
+        target_lufs: dialog_target_lufs(d),
+        true_peak_dbtp: dialog_true_peak(d),
+        bit_depth: d.bit_depth,
+    }
+}
+
+/// A delivery spec's export on the dialog (#2650): its settings, then its
+/// colour, HDR at the ten bits it needs (the preset's own depth is taken
+/// only in SDR).
+pub(super) fn apply_spec_to_dialog(dialog: &mut ExportDialogState, spec: &klipp_core::delivery_spec::DeliverySpec) {
+    dialog.hdr_mode = klipp_core::HdrMode::Sdr;
+    apply_preset_to_dialog(dialog, &spec.export);
+    dialog.hdr_mode = spec.hdr;
+    if spec.hdr != klipp_core::HdrMode::Sdr {
+        dialog.bit_depth = spec.export.bit_depth.max(10);
+    }
+}
+
 pub(super) fn apply_preset_to_dialog(dialog: &mut ExportDialogState, settings: &ExportPresetSettings) {
     dialog.format = settings.format;
     // A preset saved before the container rules may hold a pair FFmpeg
@@ -522,7 +593,11 @@ pub(super) fn apply_preset_to_dialog(dialog: &mut ExportDialogState, settings: &
                 -16 => 1,
                 -23 => 2,
                 -24 => 3,
-                _ => { dialog.custom_lufs = lufs; 4 }
+                _ => {
+                    dialog.custom_lufs = lufs;
+                    dialog.custom_true_peak = settings.true_peak_dbtp.unwrap_or(klipp_core::DEFAULT_TRUE_PEAK_DBTP);
+                    4
+                }
             };
         }
         None => { dialog.normalize_loudness = false; }
@@ -1275,6 +1350,9 @@ impl KlippApp {
 
                 });
         }); });
+        section_card(ui, "DELIVERY SPEC", None, &theme, |ui| { indent(ui, &mut |ui| {
+            self.delivery_spec_contents(ui, &theme);
+        }); });
         section_card(ui, "VIDEO", None, &theme, |ui| { indent(ui, &mut |ui| {
                 grid("export_grid_video").show(ui, |ui| {
                         // #65: bit-depth + HDR controls. H.264, H.265 and
@@ -1629,6 +1707,10 @@ impl KlippApp {
                                         let mut v = self.export_dialog.custom_lufs;
                                         if ui.add(egui::DragValue::new(&mut v).range(-30.0..=-5.0).speed(0.5).suffix(" LUFS")).changed() {
                                             self.export_dialog.custom_lufs = v;
+                                        }
+                                        let mut peak = self.export_dialog.custom_true_peak;
+                                        if ui.add(egui::DragValue::new(&mut peak).range(-6.0..=0.0).speed(0.1).prefix("peak ").suffix(" dBTP")).on_hover_text("The highest true peak the export lets through").changed() {
+                                            self.export_dialog.custom_true_peak = peak;
                                         }
                                     }
                                 }
@@ -2229,6 +2311,134 @@ impl KlippApp {
         }
 
         cmds
+    }
+}
+
+impl KlippApp {
+    /// The Export page's delivery spec (#2650): pick one and its settings
+    /// are set; check the export, as these settings would make it, or a
+    /// finished file against it, each requirement as pass, warn or fail.
+    fn delivery_spec_contents(&mut self, ui: &mut egui::Ui, theme: &crate::theme::KlippTheme) {
+        use klipp_core::delivery_spec::{self as ds, Status};
+        // A file's check, back from its worker.
+        if let Some(done) = self.export_dialog.delivery_file_check.lock().ok().and_then(|mut d| d.take()) {
+            self.export_dialog.delivery_busy = false;
+            match done {
+                Ok(result) => self.export_dialog.delivery_result = Some(result),
+                Err(why) => self.state.toast.show(format!("Check against spec: {why}")),
+            }
+        }
+        let specs = ds::all_specs();
+        let picked = self.export_dialog.delivery_spec.as_ref().and_then(|id| specs.iter().find(|s| &s.id == id)).cloned();
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Spec:");
+            egui::ComboBox::from_id_salt("export_delivery_spec")
+                .selected_text(picked.as_ref().map_or("None", |s| s.name.as_str()))
+                .width(0.0)
+                .wrap_mode(egui::TextWrapMode::Extend)
+                .show_ui(ui, |ui| {
+                    if ui.selectable_label(picked.is_none(), "None").clicked() {
+                        self.export_dialog.delivery_spec = None;
+                        self.export_dialog.delivery_result = None;
+                    }
+                    for spec in &specs {
+                        let on = picked.as_ref().is_some_and(|p| p.id == spec.id);
+                        if ui.selectable_label(on, &spec.name).on_hover_text(spec.sources.join("\n")).clicked() {
+                            self.export_dialog.delivery_spec = Some(spec.id.clone());
+                            self.export_dialog.selected_preset_id = None;
+                            apply_spec_to_dialog(&mut self.export_dialog, spec);
+                            self.export_dialog.delivery_result = None;
+                        }
+                    }
+                });
+        });
+        let Some(spec) = picked else { return };
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("Check the Export").on_hover_text("These settings, with the sequence's picture and sound, against the spec").clicked() {
+                let seq = self.state.sequence();
+                let captions = seq.tracks.iter().any(|t| t.kind == klipp_timeline::TrackKind::Subtitle && !t.clips.is_empty());
+                let facts = ds::export_facts(&dialog_settings(&self.export_dialog), self.export_dialog.hdr_mode, seq.resolution, seq.fps.as_f64(), captions, None);
+                self.export_dialog.delivery_result = Some(("This export".into(), ds::check(&spec, &facts)));
+            }
+            if ui.add_enabled(!self.export_dialog.delivery_busy, egui::Button::new("Check a File\u{2026}")).on_hover_text("A finished file against the spec: read with ffprobe, its loudness measured").clicked() {
+                let picker = egui::Id::new("delivery-check-file");
+                crate::file_dialog::pick_path(picker, || rfd::FileDialog::new().set_title("Check a file against the spec").pick_file());
+            }
+            if let Some(crate::file_dialog::Picked::Path(path)) = crate::file_dialog::take_path(egui::Id::new("delivery-check-file")) {
+                self.export_dialog.delivery_busy = true;
+                let (out, ctx, spec) = (std::sync::Arc::clone(&self.export_dialog.delivery_file_check), ui.ctx().clone(), spec.clone());
+                std::thread::spawn(move || {
+                    let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                    let result = klipp_render::delivery_facts::file_facts(&path, true).map(|facts| (name, ds::check(&spec, &facts)));
+                    if let Ok(mut slot) = out.lock() {
+                        *slot = Some(result);
+                    }
+                    ctx.request_repaint();
+                });
+            }
+            if self.export_dialog.delivery_busy {
+                ui.spinner();
+            }
+            if ui.button("Save as My Spec\u{2026}").on_hover_text("This spec's requirements with these export settings, under a name of your own. Its requirements can be edited in delivery-specs.json in Klipp's settings folder.").clicked() {
+                self.export_dialog.delivery_save_name = Some(format!("{} (mine)", spec.name));
+            }
+        });
+        if let Some(name) = self.export_dialog.delivery_save_name.as_mut() {
+            let mut save = false;
+            let mut cancel = false;
+            ui.horizontal(|ui| {
+                ui.label("Name:");
+                ui.text_edit_singleline(name);
+                save = ui.add_enabled(!name.trim().is_empty(), egui::Button::new("Save")).clicked();
+                cancel = ui.button("Cancel").clicked();
+            });
+            if save {
+                let mine = ds::DeliverySpec {
+                    id: format!("delivery-mine-{}", uuid::Uuid::new_v4()),
+                    name: name.trim().to_string(),
+                    built_in: false,
+                    sources: spec.sources.clone(),
+                    export: dialog_settings(&self.export_dialog),
+                    hdr: self.export_dialog.hdr_mode,
+                    requirements: spec.requirements.clone(),
+                };
+                let mut all = ds::load_user_specs();
+                let id = mine.id.clone();
+                all.push(mine);
+                match ds::save_user_specs(&all) {
+                    Ok(()) => {
+                        self.export_dialog.delivery_spec = Some(id);
+                        self.state.toast.show("Saved as your own delivery spec");
+                    }
+                    Err(why) => self.state.toast.show(format!("Could not save the spec: {why}")),
+                }
+            }
+            if save || cancel {
+                self.export_dialog.delivery_save_name = None;
+            }
+        }
+        if let Some((what, findings)) = &self.export_dialog.delivery_result {
+            let (word, colour) = match ds::verdict(findings) {
+                Status::Pass => ("meets", theme.marker_success),
+                Status::Warn => ("meets, with warnings,", theme.marker_warning),
+                Status::Fail => ("does not meet", theme.marker_error),
+            };
+            ui.label(egui::RichText::new(format!("{what} {word} {}", spec.name)).strong().color(colour));
+            for f in findings {
+                let (mark, colour) = match f.status {
+                    Status::Pass => ("\u{2713}", theme.marker_success),
+                    Status::Warn => ("!", theme.marker_warning),
+                    Status::Fail => ("\u{2717}", theme.marker_error),
+                };
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(egui::RichText::new(mark).strong().color(colour));
+                    ui.label(format!("{}: {} (wanted {})", f.what, f.found, f.wanted));
+                    if !f.fix.is_empty() {
+                        ui.label(egui::RichText::new(&f.fix).color(theme.text_secondary));
+                    }
+                });
+            }
+        }
     }
 }
 
@@ -3896,5 +4106,29 @@ impl super::KlippApp {
             }
         };
         *self.state.control_shared.import_outcome.lock().unwrap_or_else(|e| e.into_inner()) = Some(outcome);
+    }
+}
+
+/// #2650: picking a delivery spec sets the export from it, and that
+/// export, checked against the spec, meets it where its settings can.
+#[cfg(test)]
+mod delivery_spec_tests {
+    use super::*;
+    use klipp_core::delivery_spec::{builtin_specs, check, export_facts, Status};
+
+    #[test]
+    fn every_specs_own_settings_meet_it() {
+        for spec in builtin_specs() {
+            let mut dialog = ExportDialogState::default();
+            apply_spec_to_dialog(&mut dialog, &spec);
+            let settings = dialog_settings(&dialog);
+            assert_eq!((settings.format, settings.video_codec), (spec.export.format, spec.export.video_codec), "{}", spec.name);
+            assert_eq!(settings.target_lufs, spec.export.target_lufs, "{}", spec.name);
+            // A 1080p 25 fps sequence with captions, at the spec's frame
+            // size where the spec sets one.
+            let facts = export_facts(&settings, dialog.hdr_mode, klipp_core::Resolution { width: 1920, height: 1080 }, 25.0, true, None);
+            let failed: Vec<_> = check(&spec, &facts).into_iter().filter(|f| f.status == Status::Fail && !matches!(f.what.as_str(), "Frame shape")).collect();
+            assert!(failed.is_empty(), "{}: its own settings fail {failed:#?}", spec.name);
+        }
     }
 }

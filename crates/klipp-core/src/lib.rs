@@ -33,6 +33,7 @@ pub mod assets;
 pub mod automation;
 pub mod build_info;
 pub mod color_grade;
+pub mod delivery_spec;
 pub mod color_ids;
 pub mod colorspace;
 pub mod config;

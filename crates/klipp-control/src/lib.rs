@@ -857,6 +857,8 @@ fn handle(
             | ControlCommand::OpenProject { .. }
             | ControlCommand::CloseProject { .. }
             | ControlCommand::RecentProjects
+            | ControlCommand::DeliverySpecs
+            | ControlCommand::CheckDelivery { .. }
             | ControlCommand::FrameStats { .. }
             | ControlCommand::TimelineSheet { .. }
             | ControlCommand::FrameAt { .. }
