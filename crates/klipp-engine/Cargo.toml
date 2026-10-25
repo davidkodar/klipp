@@ -103,6 +103,10 @@ name = "aces_gpu_matches_cpu"
 path = "tests/aces_gpu_matches_cpu.rs"
 
 [[test]]
+name = "a_node_bypassed_while_paused_is_shown"
+path = "tests/a_node_bypassed_while_paused_is_shown.rs"
+
+[[test]]
 name = "an_edit_under_the_playhead_is_shown"
 path = "tests/an_edit_under_the_playhead_is_shown.rs"
 

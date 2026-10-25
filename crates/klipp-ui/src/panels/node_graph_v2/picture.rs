@@ -56,6 +56,18 @@ fn native(node: &Node) -> Option<klipp_nodes::Node> {
     })
 }
 
+/// Whether `node` is on as the menu and canvas show it: a clip's grade
+/// group by the nodes inside it, which are what its Bypass switches
+/// (#2553); any other node by its own switch.
+fn shown_on(node: &Node) -> bool {
+    match node.group.as_ref().filter(|_| node.type_id.as_str() == lt::GROUP) {
+        Some(body) if body.graph.nodes.iter().any(|n| n.type_id.as_str() == klipp_graph_format::types::LEGACY_NODE) => {
+            body.graph.nodes.iter().any(|n| n.type_id.as_str() == klipp_graph_format::types::LEGACY_NODE && n.enabled)
+        }
+        _ => node.enabled,
+    }
+}
+
 fn description(node: &Node, native: Option<&klipp_nodes::Node>) -> Option<&'static NodeTypeDesc> {
     if let Some(n) = native {
         return klipp_nodes::registry::node_type(n.kind).map(|t| &t.desc);
@@ -312,8 +324,8 @@ impl CanvasNode for PictureNode<'_> {
     fn id(&self) -> NodeId { self.node.id }
     fn kind(&self) -> Self::Kind<'_> { self }
     fn label(&self) -> &str { &self.label }
-    fn enabled(&self) -> bool { self.node.enabled }
-    fn effective_enabled(&self, time: f64) -> bool { self.native.as_ref().map_or(self.node.enabled, |n| klipp_nodes::effective_enabled(n, time)) }
+    fn enabled(&self) -> bool { shown_on(self.node) }
+    fn effective_enabled(&self, time: f64) -> bool { self.native.as_ref().map_or(shown_on(self.node), |n| klipp_nodes::effective_enabled(n, time)) }
     fn input_count(&self) -> u8 { self.inputs.len() as u8 }
     fn modified(&self) -> bool { self.native.as_ref().map_or(!self.node.params.is_empty(), |n| !n.params.is_default()) }
     fn animated(&self) -> bool { !self.node.anim.is_empty() || self.native.as_ref().is_some_and(|n| !n.keyframes.is_empty()) }
@@ -412,7 +424,7 @@ impl<'a> CanvasGraph for PictureCanvas<'a> {
             }
             AppCommand::RenameNode { node_id, label, .. } => single(GraphOp::SetNodeMeta { path: self.path(node_id), label: Some(label), position: None }, "Rename node"),
             AppCommand::RemoveNode { node_id, .. } => Some(AppCommand::RemoveNodeAt { addr: self.path(node_id) }),
-            AppCommand::ToggleNodeEnabled { node_id, .. } => Some(AppCommand::SetNodeEnabledAt { addr: self.path(node_id), enabled: !self.graph.nodes.iter().find(|n| n.id == node_id)?.enabled }),
+            AppCommand::ToggleNodeEnabled { node_id, .. } => Some(AppCommand::SetNodeEnabledAt { addr: self.path(node_id), enabled: !shown_on(self.graph.nodes.iter().find(|n| n.id == node_id)?) }),
             AppCommand::ConnectNodes { from, from_port, to, to_port, .. } => single(GraphOp::Connect { from: self.path(from), from_port: self.port(from, from_port, true)?, to: self.path(to), to_port: self.port(to, to_port, false)? }, "Connect nodes"),
             AppCommand::DisconnectEdge { to, to_port, .. } => single(GraphOp::Disconnect { to: self.path(to), port: self.port(to, to_port, false)? }, "Disconnect nodes"),
             AppCommand::DescendIntoCompound { node_id, .. } => {
