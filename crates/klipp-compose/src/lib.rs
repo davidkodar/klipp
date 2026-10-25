@@ -6,6 +6,7 @@
 //! once or twice, log footage graded scene-linear or not. This crate is
 //! where those rules live, once; both sides call it.
 
+pub mod captions;
 pub mod colour_effects;
 pub mod eval;
 pub mod fault;

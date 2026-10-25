@@ -1338,6 +1338,9 @@ impl Renderer {
         opts: RenderOptions,
         inspect: Inspect,
     ) -> (Vec<f32>, Inspection) {
+        // Captions off the lines a title is on, while both are shown (#2567).
+        let moved = crate::captions::captions_clear_of_titles(seq, time, width, height);
+        let seq = moved.as_ref().unwrap_or(seq);
         let _residency = residency::frame("composition", time.to_secs_f64());
         residency::record("composition.cpu", "CPU composition/reference/inspection route requested", Work::Fallback);
         let t0 = Instant::now();
@@ -1495,6 +1498,9 @@ impl Renderer {
         opts: RenderOptions,
         target: klipp_effects::gpu::Yuv420Target,
     ) -> Option<(Vec<u8>, Option<klipp_effects::gpu::GpuFrameLight>)> {
+        // Captions off the lines a title is on, while both are shown (#2567).
+        let moved = crate::captions::captions_clear_of_titles(seq, time, width, height);
+        let seq = moved.as_ref().unwrap_or(seq);
         let _residency = residency::frame("export", time.to_secs_f64());
         self.gpu_export_declined_after_work = false;
         self.frame_decline = None;
@@ -1589,6 +1595,9 @@ impl Renderer {
         src: &mut dyn FrameSource,
         opts: RenderOptions,
     ) -> Option<Vec<f32>> {
+        // Captions off the lines a title is on, while both are shown (#2567).
+        let moved = crate::captions::captions_clear_of_titles(seq, time, width, height);
+        let seq = moved.as_ref().unwrap_or(seq);
         let _residency = residency::frame("export", time.to_secs_f64());
         self.gpu_export_declined_after_work = false;
         self.frame_decline = None;
@@ -1916,6 +1925,9 @@ impl Renderer {
         opts: RenderOptions,
         out: DisplayDelivery<'_>,
     ) -> Option<(Option<Vec<u8>>, RenderStats)> {
+        // Captions off the lines a title is on, while both are shown (#2567).
+        let moved = crate::captions::captions_clear_of_titles(seq, time, width, height);
+        let seq = moved.as_ref().unwrap_or(seq);
         let _residency = residency::frame("display", time.to_secs_f64());
         self.frame_decline = None;
         // This frame's declines, the stack's own as the timeline's (M4

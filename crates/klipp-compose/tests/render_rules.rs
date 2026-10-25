@@ -2310,3 +2310,31 @@ fn a_moving_cards_blur_trail_composites_at_its_coverage() {
     }
     assert!(trail >= 6, "the card is smeared: {trail} pixels part red");
 }
+
+/// #2567: a caption on a lower third's line is drawn below it while both
+/// are shown: the frame is the one with the caption moved there, not
+/// the two side by side on one line.
+#[test]
+fn a_caption_on_a_lower_thirds_line_is_drawn_below_it() {
+    let lower_third = (klipp_timeline::title_library::TITLES.iter().find(|t| t.name == "Name Bar").expect("the Name Bar").create_data)();
+    let mut caption = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "and that is where it started".into(), font_size: 40.0, ..Default::default() });
+    for o in &mut caption.objects {
+        o.transform.center.x = 0.6;
+        o.transform.center.y = 0.84;
+    }
+    let mut seq = Sequence::new_default();
+    let mut text = Track::new("Text 1", TrackKind::Text);
+    text.clips = vec![clip(ClipKind::Title(lower_third), 0.0, 5.0)];
+    let mut subs = Track::new("S1", TrackKind::Subtitle);
+    subs.clips = vec![clip(ClipKind::Title(caption), 0.0, 5.0)];
+    let mut video = Track::new("V1", TrackKind::Video);
+    video.clips = vec![solid([40, 40, 40], 0.0, 10.0)];
+    seq.tracks = vec![text, video, subs];
+    let moved = klipp_compose::captions::captions_clear_of_titles(&seq, tc(2.0), 320, 180).expect("the caption shares the lower third's line");
+    let mut src = Flat(HashMap::new());
+    let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+    r.set_gpu_enabled(false);
+    let shown = r.render(&seq, tc(2.0), 320, 180, &mut src, RenderOptions::default());
+    let below = r.render(&moved, tc(2.0), 320, 180, &mut src, RenderOptions::default());
+    assert!(shown == below, "the frame shows the caption below the lower third");
+}
