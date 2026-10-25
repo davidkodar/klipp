@@ -1,25 +1,161 @@
 #!/bin/bash
 # Run as the desktop user. Pacman handles dependency resolution, signatures,
 # its transaction lock and the final confirmation in a visible terminal.
+#
+#   klipp-update            update from the configured [klipp] repository
+#   klipp-update VERSION    download that release's package from GitHub,
+#                           verify it, and install it with pacman -U
+#
+# Nothing downloaded is executed: the package is checked against the
+# release's SHA256SUMS and its own metadata, then handed to pacman.
 set -euo pipefail
+
+RELEASES=https://github.com/davidkodar/klipp/releases/download
+# GitHub serves release assets by redirecting to one of these.
+ASSET_HOSTS='^https://(objects|release-assets)\.githubusercontent\.com/'
+
+# A SemVer release version, as tagged: 0.1.0 or 0.1.0-rc.3.
+valid_version() {
+    [[ $1 =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$ ]]
+}
+
+# Where to download from. KLIPP_UPDATE_TEST_BASE_URL is for testing the
+# updater against a local fixture release only: it must be a loopback
+# address, and the shipped default never sets it.
+base_url() {
+    local test=${KLIPP_UPDATE_TEST_BASE_URL:-}
+    if [[ -z $test ]]; then
+        echo "$RELEASES"
+    elif [[ $test =~ ^http://(127\.0\.0\.1|localhost)(:[0-9]+)?(/.*)?$ ]]; then
+        echo "TEST: downloading from $test, not GitHub." >&2
+        echo "${test%/}"
+    else
+        echo "KLIPP_UPDATE_TEST_BASE_URL must be a loopback http:// address." >&2
+        return 1
+    fi
+}
+
+# Download $1 to $2 over HTTPS. A redirect is followed once, and only to
+# GitHub's release asset hosts.
+fetch() {
+    local url=$1 out=$2 protocol='=https' result code location
+    if [[ -n ${KLIPP_UPDATE_TEST_BASE_URL:-} ]]; then
+        protocol='=http'
+    fi
+    result=$(curl --proto "$protocol" --tlsv1.2 --fail --silent --show-error \
+        --connect-timeout 20 --max-time 900 --output "$out" \
+        --write-out '%{http_code} %{redirect_url}' "$url") || return 1
+    code=${result%% *}
+    location=${result#* }
+    if [[ $code == 3* ]]; then
+        if [[ ! $location =~ $ASSET_HOSTS ]]; then
+            echo "Refusing a redirect away from GitHub's release downloads: $location" >&2
+            return 1
+        fi
+        code=$(curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
+            --connect-timeout 20 --max-time 900 --output "$out" \
+            --write-out '%{http_code}' "$location") || return 1
+    fi
+    if [[ $code != 200 ]]; then
+        echo "Unexpected response $code for $url" >&2
+        return 1
+    fi
+}
+
+# Download release $1 into directory $2, verify it and install it.
+# Returns non-zero on any failure or a no, with the reason printed.
+install_release() {
+    local version=$1 dir=$2 base pkgver file want got found size answer
+    base=$(base_url) || return 1
+    # Arch versions can't hold a hyphen: 0.1.0-rc.3 is packaged as 0.1.0rc.3.
+    pkgver=${version//-/}
+    file="klipp-${pkgver}-1-x86_64.pkg.tar.zst"
+    echo "Downloading Klipp $version…"
+    if ! fetch "$base/v$version/SHA256SUMS" "$dir/SHA256SUMS" \
+        || ! fetch "$base/v$version/$file" "$dir/$file"; then
+        echo "Could not download Klipp $version. Check your connection and try again." >&2
+        return 1
+    fi
+    want=$(awk -v f="$file" '$2 == f || $2 == "*" f { print $1; exit }' "$dir/SHA256SUMS")
+    if [[ ! $want =~ ^[0-9a-f]{64}$ ]]; then
+        echo "The release's SHA256SUMS has no checksum for $file." >&2
+        return 1
+    fi
+    got=$(sha256sum -- "$dir/$file" | cut -d' ' -f1)
+    if [[ $got != "$want" ]]; then
+        echo "Checksum mismatch for $file: expected $want, got $got. Nothing was installed." >&2
+        return 1
+    fi
+    if ! found=$(pacman -Qp -- "$dir/$file" 2>/dev/null); then
+        echo "$file is not a valid package. Nothing was installed." >&2
+        return 1
+    fi
+    if [[ $found != "klipp ${pkgver}-1" ]]; then
+        echo "$file holds \"$found\", not klipp ${pkgver}-1. Nothing was installed." >&2
+        return 1
+    fi
+    size=$(du -h -- "$dir/$file" | cut -f1)
+    echo
+    echo "  Version:  $version"
+    echo "  File:     $file"
+    echo "  Size:     $size"
+    echo "  SHA-256:  $got (matches SHA256SUMS)"
+    echo
+    # Printed, not read -p, so the question shows whatever the input is.
+    printf 'Install with pacman? [y/N] '
+    read -r answer || answer=
+    if [[ $answer != y && $answer != Y ]]; then
+        echo 'Not installed.'
+        return 1
+    fi
+    if ! sudo pacman -U -- "$dir/$file"; then
+        echo 'Pacman did not install the update. See its output above.' >&2
+        return 1
+    fi
+}
+
+finish() {
+    local status=$1
+    if (( status == 0 )); then
+        echo 'Update completed. Close and reopen Klipp to use the installed version.'
+    else
+        echo "Update failed or was cancelled (exit $status)."
+    fi
+    read -r -p 'Press Enter to close this window.' _ || true
+    exit "$status"
+}
+
 if [[ ${1:-} == --terminal ]]; then
     echo 'Klipp update: save your project and finish any exports before continuing.'
+    if [[ -n ${2:-} ]]; then
+        valid_version "$2" || { echo "Not a release version: $2" >&2; finish 2; }
+        # A private directory, removed however this ends.
+        dir=$(mktemp -d -t klipp-update.XXXXXXXX)
+        trap 'rm -rf -- "$dir"' EXIT
+        status=0
+        install_release "$2" "$dir" || status=$?
+        finish "$status"
+    fi
     echo 'This performs a full Arch system update, including Klipp.'
     read -r -p 'Continue? [y/N] ' answer
     [[ $answer == y || $answer == Y ]] || exit 0
     status=0
     sudo pacman -Syu klipp || status=$?
-    if (( status == 0 )); then
-        echo 'Update completed. Close and reopen Klipp to use the installed version.'
-    else
-        echo "Update failed or was cancelled (exit $status). See the pacman output above."
+    if (( status != 0 )); then
+        echo 'See the pacman output above.'
     fi
-    read -r -p 'Press Enter to close this window.' _ || true
-    exit "$status"
+    finish "$status"
 fi
 if [[ $(pacman -Qqo /usr/lib/klipp/klipp) != klipp ]]; then
     echo 'This installation is not managed by the Klipp release package.' >&2
     exit 1
+fi
+if [[ -n ${1:-} ]]; then
+    if ! valid_version "$1"; then
+        echo "Not a release version: $1" >&2
+        exit 2
+    fi
+    exec xdg-terminal-exec /usr/bin/klipp-update --terminal "$1"
 fi
 pacman-conf --repo klipp Server >/dev/null
 exec xdg-terminal-exec /usr/bin/klipp-update --terminal
