@@ -279,9 +279,23 @@ pub(crate) fn respond(
                 }
                 settings.hdr10plus = on;
             }
+            // The range it covers: the In and Out points when both are set,
+            // as the Export page's range does (#2667).
+            let range = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                match (seq.in_point, seq.out_point) {
+                    (Some(a), Some(b)) => json!({
+                        "in": (a.to_secs_f64() * 1000.0).round() / 1000.0,
+                        "out": (b.to_secs_f64() * 1000.0).round() / 1000.0,
+                        "from": "the In and Out points; clear them to export the whole timeline",
+                    }),
+                    _ => json!("the whole timeline"),
+                }
+            };
             // Said, because it cannot be seen from the reply otherwise and
             // decides whether a sidecar file is needed.
             let said = json!({
+                "range": range,
                 "captions_burnt_in": settings.burn_in_subtitles,
                 // Titles are part of the picture; a title track left out
                 // of a delivery is hidden (#2426).

@@ -67,6 +67,14 @@ pub(super) struct ExportFoot {
     pub(super) show_summary: bool,
 }
 
+/// The range an export takes when none was picked in the form: the In
+/// and Out points when both are set, else the whole timeline (#2667).
+pub(super) fn follow_marks(dialog: &mut ExportDialogState, seq: &klipp_timeline::Sequence) {
+    if !dialog.range_picked {
+        dialog.range_mode = u8::from(seq.in_point.is_some() && seq.out_point.is_some());
+    }
+}
+
 pub(super) struct ExportDialogState {
     pub(super) output_path: String,
     pub(super) format: ExportFormat,
@@ -85,6 +93,11 @@ pub(super) struct ExportDialogState {
     /// - 2 = Selected clips
     /// - 3 = Between markers (one file per range)
     pub(super) range_mode: u8,
+    /// The range was picked in the form. Until then it follows the
+    /// sequence's marks: the In/Out range when both are set, else the
+    /// whole timeline ([`follow_marks`]). Cleared when an export is
+    /// queued and when the dialog opens.
+    pub(super) range_picked: bool,
     /// In multi-marker mode, include the segment from sequence start
     /// to the first marker as its own export.
     pub(super) include_pre_marker_segment: bool,
@@ -167,6 +180,7 @@ impl Default for ExportDialogState {
             confirm_overwrite: false,
             overwrite_without_asking: false,
             range_mode: 0,
+            range_picked: false,
             include_pre_marker_segment: true,
             include_post_marker_segment: true,
             selected_preset_id: None,
@@ -775,6 +789,7 @@ impl KlippApp {
             }
             AppCommand::ShowExportDialog => {
                 self.state.show_export_dialog = true;
+                self.export_dialog.range_picked = false;
                 self.prepare_export_defaults();
                 // Restore last-used preset
                 if self.export_dialog.selected_preset_id.is_none() {
@@ -794,6 +809,9 @@ impl KlippApp {
             // written over (see `export_step`). The Force commands are
             // the answers to those two questions.
             AppCommand::ExportSequence { settings } => {
+                // A socket's export, or the form's with no range picked,
+                // takes the marks' range.
+                follow_marks(&mut self.export_dialog, &self.state.sequences[self.state.active_sequence_idx]);
                 self.export_or_ask(settings, Confirmed::Nothing);
                 true
             }
@@ -889,6 +907,7 @@ impl KlippApp {
                 }
                 self.state.show_export_dialog = true;
                 self.export_dialog.range_mode = 2;
+                self.export_dialog.range_picked = true;
                 self.prepare_export_defaults();
                 true
             }
@@ -1033,6 +1052,8 @@ impl KlippApp {
     /// clips, or one job per marker segment. The three ways an export is
     /// confirmed each had a copy of this.
     pub(super) fn queue_export(&mut self, settings: &klipp_core::ExportSettings) {
+        // The next export follows the marks again unless a range is picked.
+        self.export_dialog.range_picked = false;
         if self.export_dialog.range_mode == 3 {
             self.enqueue_marker_segments(settings);
             self.state.show_render_queue = true;
@@ -1781,7 +1802,9 @@ impl KlippApp {
         }); });
 
         // Export range — radio selection: Full / Marked range / Selected clips
+        follow_marks(&mut self.export_dialog, &self.state.sequences[self.state.active_sequence_idx]);
         section_card(ui, "RANGE", None, &theme, |ui| { indent(ui, &mut |ui| {
+                let before = self.export_dialog.range_mode;
                 ui.radio_value(&mut self.export_dialog.range_mode, 0, "Full timeline");
                 let has_range = self.state.sequences[self.state.active_sequence_idx].in_point.is_some()
                     && self.state.sequences[self.state.active_sequence_idx].out_point.is_some();
@@ -1821,6 +1844,9 @@ impl KlippApp {
                                 .color(self.theme.text_dim),
                         );
                     });
+                }
+                if self.export_dialog.range_mode != before {
+                    self.export_dialog.range_picked = true;
                 }
                 if self.export_dialog.range_mode == 3 {
                     ui.indent("marker_options", |ui| {
@@ -4152,5 +4178,57 @@ mod custom_ceiling_tests {
         let mut dialog = ExportDialogState::default();
         apply_preset_to_dialog(&mut dialog, &plain);
         assert_eq!(dialog_true_peak(&dialog), None);
+    }
+}
+
+#[cfg(test)]
+mod export_range_tests {
+    use super::{follow_marks, ExportDialogState};
+
+    fn sixty_seconds(pool: &mut klipp_media::MediaPool) -> klipp_timeline::Sequence {
+        let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let media = pool.add(klipp_media::MediaItem::synthetic_for_test("/tmp/export-range-fixture.mov".into(), None));
+        let mut seq = klipp_timeline::Sequence::new_default();
+        seq.tracks[0].clips = vec![klipp_timeline::Clip::media(media, tc(0.0), tc(60.0), tc(0.0), tc(60.0))];
+        seq
+    }
+
+    /// #2667: with In and Out set, an export that picked no range (the
+    /// socket's, or the form's left alone) covers In to Out; without
+    /// them, the whole timeline.
+    #[test]
+    fn an_export_takes_the_in_out_range_unless_another_is_picked() {
+        let mut pool = klipp_media::MediaPool::new();
+        let mut seq = sixty_seconds(&mut pool);
+        let mut dialog = ExportDialogState::default();
+        follow_marks(&mut dialog, &seq);
+        assert_eq!(dialog.range_mode, 0, "no marks: the whole timeline");
+        seq.in_point = Some(klipp_core::RationalTime::from_secs_f64(20.0, 25));
+        follow_marks(&mut dialog, &seq);
+        assert_eq!(dialog.range_mode, 0, "an In alone is no range");
+        seq.out_point = Some(klipp_core::RationalTime::from_secs_f64(30.0, 25));
+        follow_marks(&mut dialog, &seq);
+        assert_eq!(dialog.range_mode, 1, "In and Out: their range");
+
+        // Picked in the form, the choice stands.
+        dialog.range_mode = 0;
+        dialog.range_picked = true;
+        follow_marks(&mut dialog, &seq);
+        assert_eq!(dialog.range_mode, 0);
+
+        // The In/Out range renders 20-30 s: ten seconds, not sixty.
+        let snapshot = klipp_export::RenderSnapshot::from_sequence_with_all(
+            &seq,
+            std::slice::from_ref(&seq),
+            &pool,
+            &klipp_core::ExportSettings::default(),
+            None,
+            true,
+            klipp_core::WorkingColorspace::default(),
+        )
+        .unwrap();
+        let s = &snapshot.sequence_snapshot;
+        let secs = |frames: u64| (frames as f64 / s.fps).round();
+        assert_eq!((secs(s.start_frame()), secs(s.frames_to_export())), (20.0, 10.0));
     }
 }

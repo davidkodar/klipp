@@ -972,9 +972,11 @@ pub enum ControlCommand {
 
     // ── Delivery ──────────────────────────────────────────────────
     /// Render the active sequence to `path` with the app's default export
-    /// settings, the container from the path's extension. Refused when a
-    /// clip's media is offline or the path is one of the project's media
-    /// files. Asynchronous: poll `export_status` for the job.
+    /// settings, the container from the path's extension. With In and Out
+    /// points set it covers their range, else the whole timeline; the
+    /// reply's `export.range` says which. Refused when a clip's media is
+    /// offline or the path is one of the project's media files.
+    /// Asynchronous: poll `export_status` for the job.
     Export {
         path: String,
         #[serde(default)]
