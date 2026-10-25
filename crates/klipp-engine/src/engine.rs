@@ -3381,17 +3381,21 @@ impl PlaybackEngine {
                 let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
                 self.sync_track_automation(&seq, self.audio_heard_at().to_secs_f64());
             }
+            // The switch goes into the sequence the mix reads it from, as
+            // the app sets it (solo is one track at a time), so a
+            // sequence update that comes before the app's next sync does
+            // not put the old one back (#2672).
             AppCommand::SetTrackMute { track_index, muted } => {
-                if let Ok(mut m) = self.mixer.lock() {
-                    m.ensure_tracks(track_index + 1);
-                    m.tracks[track_index].muted = muted;
+                if let Some(track) = self.sequence.write().unwrap_or_else(|e| e.into_inner()).tracks.get_mut(track_index) {
+                    track.muted = muted;
                 }
+                self.sync_track_switches();
             }
             AppCommand::SetTrackSolo { track_index, solo } => {
-                if let Ok(mut m) = self.mixer.lock() {
-                    m.ensure_tracks(track_index + 1);
-                    m.tracks[track_index].solo = solo;
+                for (i, track) in self.sequence.write().unwrap_or_else(|e| e.into_inner()).tracks.iter_mut().enumerate() {
+                    track.solo = solo && i == track_index;
                 }
+                self.sync_track_switches();
             }
             AppCommand::SetTrackPan { track_index, pan } => {
                 if let Ok(mut m) = self.mixer.lock() {
@@ -3797,6 +3801,7 @@ impl PlaybackEngine {
                 self.sync_fps_to_sequence();
                 // Sync per-clip volume/pan to active audio sources
                 self.sync_clip_volumes();
+                self.sync_track_switches();
                 // Restart audio sources only when audio-relevant state changed.
                 // Title color/opacity/position edits fire SequenceUpdated but don't
                 // affect audio — skipping the teardown+rebuild prevents a storm that
@@ -4471,6 +4476,20 @@ impl PlaybackEngine {
             }
         }
         *was = now;
+    }
+
+    /// Each track's mute and solo as the sequence has them, onto its
+    /// mixer lane: a project opened, a sequence switched to or an undo
+    /// brings its own, which otherwise reached the mix only by a click
+    /// on the button (#2672).
+    fn sync_track_switches(&self) {
+        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+        let Ok(mut m) = self.mixer.lock() else { return };
+        m.ensure_tracks(seq.tracks.len());
+        for (lane, track) in m.tracks.iter_mut().zip(&seq.tracks) {
+            lane.muted = track.muted;
+            lane.solo = track.solo;
+        }
     }
 
     fn sync_clip_volumes(&self) {
@@ -10859,7 +10878,7 @@ impl PlaybackEngine {
         // who owned audio last.
         if let Ok(mut m) = self.mixer.lock() {
             m.ensure_tracks(self.source_mixer_track_index + 1);
-            m.tracks[self.source_mixer_track_index].muted = true;
+            m.tracks[self.source_mixer_track_index].held = true;
         }
         self.source_path = None;
         // A source stopped mid-play — another clip picked while one was
@@ -11061,7 +11080,7 @@ impl PlaybackEngine {
                 // of unmuting on the actual handoff.
                 if let Ok(mut m) = self.mixer.lock() {
                     m.ensure_tracks(track + 1);
-                    m.tracks[track].muted = true;
+                    m.tracks[track].held = true;
                 }
                 self.source_audio_source = Some(AudioSource::Decoder(adec));
             }
@@ -11072,18 +11091,19 @@ impl PlaybackEngine {
     }
 
     /// Toggle which viewer owns the audio mixer.
-    /// `source_owns = true`: mute every timeline track, unmute the
-    /// source viewer track. `source_owns = false`: inverse.
-    /// The mute is on the mixer (cpal-callback-safe atomics), so the
+    /// `source_owns = true`: hold every timeline track silent, release
+    /// the source viewer track. `source_owns = false`: inverse. The
+    /// tracks' own mute and solo are left as the editor set them.
+    /// The hold is on the mixer (cpal-callback-safe atomics), so the
     /// switch is instant and glitch-free.
     fn set_source_audio_owner(&mut self, source_owns: bool) {
         let Ok(mut m) = self.mixer.lock() else { return };
         let n = m.tracks.len();
         for (i, t) in m.tracks.iter_mut().enumerate() {
             if i == self.source_mixer_track_index {
-                t.muted = !source_owns;
+                t.held = !source_owns;
             } else if i < n {
-                t.muted = source_owns;
+                t.held = source_owns;
             }
         }
     }
@@ -14657,5 +14677,95 @@ mod track_automation_override_tests {
         engine.automation_override.lock().unwrap().clear();
         engine.sync_track_automation(&seq, 1.0);
         assert_eq!(volumes()[..2], [1.0, 0.5], "let go: the keys, and the value as set");
+    }
+}
+
+#[cfg(test)]
+mod track_switch_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    fn engine(seq: klipp_timeline::Sequence) -> (PlaybackEngine, Arc<klipp_timeline::SharedSequence>) {
+        let sequence = Arc::new(klipp_timeline::SharedSequence::new(seq));
+        let (_cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
+        let (ev_tx, _ev_rx) = crossbeam_channel::unbounded();
+        let fb = || Arc::new(Mutex::new(crate::texture::FrameBuffer::new(16, 16)));
+        let engine = PlaybackEngine::new(
+            cmd_rx, ev_tx, fb(), fb(),
+            Arc::clone(&sequence), Arc::new(RwLock::new(klipp_media::MediaPool::new())), Box::new(|| {}),
+            Arc::new(Mutex::new(None)), Arc::new(Mutex::new(crate::perf::PerfRing::default())),
+        );
+        (engine, sequence)
+    }
+
+    fn two_tracks() -> klipp_timeline::Sequence {
+        let mut seq = klipp_timeline::Sequence::new_default();
+        seq.tracks = vec![
+            klipp_timeline::Track::new("A1", klipp_timeline::TrackKind::Audio),
+            klipp_timeline::Track::new("A2", klipp_timeline::TrackKind::Audio),
+        ];
+        seq
+    }
+
+    /// The mix of a loud A1 and a quiet A2, as the mix thread calls it.
+    fn mix(engine: &PlaybackEngine) -> Vec<f32> {
+        let (a1, a2) = (vec![0.5_f32; 256], vec![0.1_f32; 256]);
+        let mut m = engine.mixer.lock().unwrap();
+        // Each track has its lane by the time it plays.
+        m.ensure_tracks(2);
+        m.mix(&[(0, &a1), (1, &a2)])
+    }
+
+    fn peak(buf: &[f32]) -> f32 {
+        buf.iter().fold(0.0, |m, s| m.max(s.abs()))
+    }
+
+    /// #2672: a muted track stays silent once the timeline takes the
+    /// sound back from the source viewer, as every Play does.
+    #[test]
+    fn a_muted_track_stays_muted_through_the_viewer_handoff() {
+        let (mut engine, _seq) = engine(two_tracks());
+        let both = peak(&mix(&engine));
+        engine.handle_command(AppCommand::SetTrackMute { track_index: 0, muted: true });
+        let muted = peak(&mix(&engine));
+        assert!(muted < both * 0.5, "muted A1 still heard: {muted} of {both}");
+        engine.set_source_audio_owner(true);
+        assert_eq!(peak(&mix(&engine)), 0.0, "the source viewer has the sound");
+        engine.set_source_audio_owner(false);
+        assert_eq!(peak(&mix(&engine)), muted, "handing the sound back unmuted A1");
+        engine.handle_command(AppCommand::SetTrackMute { track_index: 0, muted: false });
+        assert_eq!(peak(&mix(&engine)), both);
+    }
+
+    /// Solo is one track at a time, in the mix as in the app: soloing A2
+    /// after A1 hears A2 alone.
+    #[test]
+    fn a_second_solo_replaces_the_first() {
+        let (mut engine, seq) = engine(two_tracks());
+        engine.handle_command(AppCommand::SetTrackSolo { track_index: 1, solo: true });
+        let a2 = peak(&mix(&engine));
+        engine.handle_command(AppCommand::SetTrackSolo { track_index: 0, solo: true });
+        engine.handle_command(AppCommand::SetTrackSolo { track_index: 1, solo: true });
+        assert_eq!(peak(&mix(&engine)), a2);
+        assert!(!seq.read().unwrap().tracks[0].solo);
+        engine.set_source_audio_owner(true);
+        engine.set_source_audio_owner(false);
+        assert_eq!(peak(&mix(&engine)), a2, "the solo survives the handoff");
+    }
+
+    /// A mute the sequence carries, from a project opened or an undo,
+    /// is heard as one, and a sequence update keeps a mute set since.
+    #[test]
+    fn the_sequences_mute_reaches_the_mix() {
+        let both = peak(&mix(&engine(two_tracks()).0));
+        let mut muted_a1 = two_tracks();
+        muted_a1.tracks[0].muted = true;
+        let (mut engine, _seq) = engine(muted_a1);
+        engine.handle_command(AppCommand::SequenceUpdated);
+        let heard = peak(&mix(&engine));
+        assert!(heard < both * 0.5, "A1 muted in the sequence still heard: {heard} of {both}");
+        engine.handle_command(AppCommand::SetTrackMute { track_index: 1, muted: true });
+        engine.handle_command(AppCommand::SequenceUpdated);
+        assert_eq!(peak(&mix(&engine)), 0.0, "a later update put A2's old switch back");
     }
 }
