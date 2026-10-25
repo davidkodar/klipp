@@ -1210,9 +1210,7 @@ impl KlippApp {
                 }
                 AppCommand::NewBin { media_ids } => {
                     let name = self.state.media_pool.unused_bin_name();
-                    self.state.media_pool.find_or_create_bin(&name);
-                    self.state.move_media_to_bin(media_ids, Some(&name));
-                    self.state.dirty = true;
+                    self.state.new_bin(&name, media_ids);
                     // Shown, all of the pool, the name ready to type over.
                     self.state.show_browser_panel = true;
                     self.layout.active_browser_tab = crate::layout_state::BrowserTab::Media;
@@ -2181,6 +2179,23 @@ mod retarget_drop_tests {
 }
 
 impl crate::state::AppState {
+    /// Make the bin `name` with the items `ids` moved into it (none for
+    /// an empty bin): one undo step, which takes the bin away too.
+    pub(crate) fn new_bin(&mut self, name: &str, ids: &[klipp_core::MediaId]) {
+        let id = self.media_pool.find_or_create_bin(name);
+        let Some(bin) = self.media_pool.bins.iter().find(|b| b.id == id).cloned() else { return };
+        let batch = !self.project_history_mut().is_batching();
+        if batch {
+            self.project_history_mut().begin_batch();
+        }
+        self.push_history(crate::history::EditCommand::CreateBin { bin });
+        self.move_media_to_bin(ids, Some(name));
+        if batch {
+            self.project_history_mut().end_batch_as("New Bin");
+        }
+        self.dirty = true;
+    }
+
     /// Move the media items `ids` into the bin named `bin`, made if there
     /// is none, or out of their bins with `None`: one undo step, however
     /// many move.

@@ -10,11 +10,18 @@ pub fn menu_frame<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) ->
 /// A menu's rows inside a popup egui already framed (a `context_menu`'s).
 pub fn menu_body<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     let style = ui.style_mut();
-    // No inset on the left: a plain row (an unframed button) has none,
-    // and a submenu's row must start where it does.
-    style.spacing.button_padding = egui::vec2(0.0, 4.0);
+    style.spacing.button_padding = egui::vec2(10.0, 4.0);
     style.spacing.item_spacing.y = 1.0;
-    style.visuals.button_frame = false;
+    // Framed rows with nothing drawn at rest, egui's own menu look: a
+    // hovered row gets its band, and a plain row is inset like a
+    // submenu's. Unframed, a row had neither: no band, and no padding
+    // where a submenu row kept its ten points (#2621).
+    style.visuals.button_frame = true;
+    let w = &mut style.visuals.widgets;
+    w.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
+    w.inactive.bg_stroke = egui::Stroke::NONE;
+    w.hovered.bg_stroke = egui::Stroke::NONE;
+    w.active.bg_stroke = egui::Stroke::NONE;
     style.wrap_mode = Some(egui::TextWrapMode::Extend);
     ui.set_min_width(200.0);
     ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), add).inner

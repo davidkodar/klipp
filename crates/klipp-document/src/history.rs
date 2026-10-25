@@ -458,6 +458,11 @@ pub enum EditCommand {
         item: klipp_media::MediaItem,
         clip_count: usize,
     },
+    /// A bin made in the media pool: undo takes it away, redo puts it
+    /// back.
+    CreateBin {
+        bin: klipp_media::Bin,
+    },
     MoveMediaToBin {
         media_id: MediaId,
         from_bin: Option<String>,
@@ -861,6 +866,7 @@ impl EditCommand {
         match self {
             EditCommand::SetProjectColour { .. }
             | EditCommand::SetMediaLogFormat { .. }
+            | EditCommand::CreateBin { .. }
             | EditCommand::MoveMediaToBin { .. }
             | EditCommand::SetMediaTags { .. }
             | EditCommand::SetMediaRating { .. }
@@ -932,6 +938,7 @@ impl EditCommand {
             EditCommand::SourceLinkedInsert { video_command, .. } => video_command.label(),
             EditCommand::AddMediaToPool { .. } => "Import Media",
             EditCommand::RemoveMediaFromPool { .. } => "Remove Media",
+            EditCommand::CreateBin { .. } => "New Bin",
             EditCommand::MoveMediaToBin { .. } => "Move to Bin",
             EditCommand::SetMediaTags { .. } => "Set Tags",
             EditCommand::SetMediaRating { .. } => "Set Rating",
