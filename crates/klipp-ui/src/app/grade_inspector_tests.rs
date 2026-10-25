@@ -2059,3 +2059,34 @@ fn a_wire_that_would_loop_says_why() {
     assert!(sent.iter().any(|c| matches!(c, AppCommand::ConnectNodes { from, to, .. } if *from == ids[0] && *to == ids[2])), "{sent:?}");
 }
 
+
+/// The RGB curve graph keeps a margin from the inspector's right edge, so
+/// the scroll bar that sits there does not cut it off (#2669). The graph
+/// is what is drawn clipped to its own canvas: the one tall clip narrower
+/// than the panel.
+#[test]
+fn the_rgb_curve_graph_stays_inside_the_inspector() {
+    let mut run = without_corrector(false);
+    for _ in 0..2 {
+        let c = clip(&run.state, run.clip).clone();
+        let mut panel = run.panel.take().unwrap_or_default();
+        panel.generated = crate::inspector::grade_view::snapshot_for(&c, &[], false, &mut run.state.pending_corrector);
+        let mut graph = c.grade().clone();
+        let theme = crate::theme::KlippTheme::default();
+        let frame = FrameSelection { time_secs: run.time, tolerance: 0.02, clip_start: c.timeline_in };
+        run.clock += 0.05;
+        let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(WIDTH, 2400.0))), time: Some(run.clock), ..Default::default() };
+        let mut edge = 0.0;
+        let out = run.ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                edge = ui.max_rect().right();
+                let (mut sel, mut tab) = (None, crate::state::ColorTab::Curves);
+                panel.show_simple(ui, &mut graph, c.id, &mut sel, &mut tab, &theme, frame);
+            });
+        });
+        panel.generated = None;
+        run.panel = Some(panel);
+        let canvas = out.shapes.iter().map(|s| s.clip_rect).find(|r| r.height() > 200.0 && r.width() < WIDTH - 20.0).expect("the curve canvas");
+        assert!(canvas.right() <= edge - 8.0, "the graph runs to {} of the panel's {edge}", canvas.right());
+    }
+}
