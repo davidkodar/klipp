@@ -1,5 +1,6 @@
 //! The About Klipp dialog. A hero with the identity on top, a few lines of
-//! facts below, then the ways onward (updates, source, issues).
+//! facts below, then the ways onward (updates, source, issues). An update
+//! check runs in place: its result is a row under the buttons.
 //!
 //! The mark and the wordmark are drawn as shapes, from the same geometry
 //! as `assets/branding/klipp-refined/build.py`, so they can move: when the
@@ -9,6 +10,7 @@
 use egui::{pos2, vec2, Color32, Pos2, Rect, Stroke};
 
 use crate::theme::KlippTheme;
+use crate::updates::{Install, Status};
 
 /// What the person asked for in the dialog this frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,6 +18,8 @@ pub enum AboutAction {
     None,
     Close,
     CheckForUpdates,
+    /// Open the package's updater for the version the check found.
+    Install,
 }
 
 const SOURCE: &str = "https://github.com/davidkodar/klipp";
@@ -38,8 +42,9 @@ const SHEEN_AT: f64 = 0.75;
 const SHEEN_EVERY: f64 = 7.0;
 const SHEEN_FOR: f64 = 1.5;
 
-/// Draw the dialog. Call it each frame while it is open.
-pub fn show(ctx: &egui::Context, theme: &KlippTheme) -> AboutAction {
+/// Draw the dialog, with the update check where `status` says it is.
+/// Call it each frame while it is open.
+pub(crate) fn show(ctx: &egui::Context, theme: &KlippTheme, status: &Status<'_>) -> AboutAction {
     let mut action = AboutAction::None;
     if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
         action = AboutAction::Close;
@@ -62,7 +67,7 @@ pub fn show(ctx: &egui::Context, theme: &KlippTheme) -> AboutAction {
             if hero(ui, theme, t) {
                 action = AboutAction::Close;
             }
-            if let Some(a) = body(ui, theme) {
+            if let Some(a) = body(ui, theme, status) {
                 action = a;
             }
         });
@@ -385,7 +390,7 @@ fn close_button(ui: &mut egui::Ui, hero: Rect, theme: &KlippTheme) -> bool {
 const LABEL_W: f32 = 68.0;
 
 /// The facts and the ways onward.
-fn body(ui: &mut egui::Ui, theme: &KlippTheme) -> Option<AboutAction> {
+fn body(ui: &mut egui::Ui, theme: &KlippTheme, status: &Status<'_>) -> Option<AboutAction> {
     let mut action = None;
     let build = klipp_core::build_info::get();
     egui::Frame::none().inner_margin(egui::Margin { left: 32.0, right: 32.0, top: 22.0, bottom: 24.0 }).show(ui, |ui| {
@@ -448,6 +453,9 @@ fn body(ui: &mut egui::Ui, theme: &KlippTheme) -> Option<AboutAction> {
                 open(ISSUES);
             }
         });
+        if let Some(a) = status_row(ui, theme, status) {
+            action = Some(a);
+        }
 
         ui.add_space(20.0);
         let line = ui.cursor().min.y;
@@ -460,6 +468,179 @@ fn body(ui: &mut egui::Ui, theme: &KlippTheme) -> Option<AboutAction> {
         );
     });
     action
+}
+
+/// How long "Copied" shows in place of Copy.
+const COPIED_FOR: f64 = 1.6;
+
+/// The update check's row: a card under the buttons with a mark, what
+/// the check found and what to do next. Nothing before a check.
+fn status_row(ui: &mut egui::Ui, theme: &KlippTheme, status: &Status<'_>) -> Option<AboutAction> {
+    if *status == Status::Idle {
+        return None;
+    }
+    let mut action = None;
+    ui.add_space(14.0);
+    egui::Frame::none()
+        .fill(theme.bg_deep)
+        .stroke(Stroke::new(1.0_f32, theme.border))
+        .rounding(8.0)
+        .inner_margin(egui::Margin { left: 12.0, right: 14.0, top: 11.0, bottom: 11.0 })
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing = vec2(10.0, 0.0);
+            ui.horizontal_top(|ui| {
+                mark(ui, theme, status);
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(8.0, 0.0);
+                    action = status_text(ui, theme, status);
+                });
+            });
+        });
+    action
+}
+
+/// The mark at the row's left: a spinner while checking, a tick, a warm
+/// dot for a new version, or a ring with a bang for a failure.
+fn mark(ui: &mut egui::Ui, theme: &KlippTheme, status: &Status<'_>) {
+    let size = vec2(16.0, 20.0);
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let painter = ui.painter();
+    let c = pos2(rect.center().x, rect.top() + 10.0);
+    match status {
+        Status::Checking => {
+            // A faint ring with an amber arc going round it: the same
+            // length at every turn, where egui's spinner shrinks to a dot.
+            let r = 6.5;
+            painter.circle_stroke(c, r, Stroke::new(1.8_f32, AMBER.gamma_multiply(0.22)));
+            let start = ui.input(|i| i.time) as f32 * std::f32::consts::TAU * 0.9;
+            let arc = (0..=16).map(|i| start + i as f32 / 16.0 * std::f32::consts::FRAC_PI_2 * 1.2).map(|a| pos2(c.x + r * a.cos(), c.y + r * a.sin())).collect();
+            painter.add(egui::Shape::line(arc, Stroke::new(1.8_f32, AMBER)));
+            ui.ctx().request_repaint();
+        }
+        Status::Latest { .. } => {
+            painter.circle_filled(c, 8.0, theme.marker_success);
+            let ink = theme.bg_deep;
+            painter.add(egui::Shape::line(vec![pos2(c.x - 3.6, c.y + 0.2), pos2(c.x - 1.0, c.y + 2.8), pos2(c.x + 3.8, c.y - 2.6)], Stroke::new(1.8_f32, ink)));
+        }
+        Status::Available { .. } => {
+            painter.circle_filled(c, 8.0, AMBER.gamma_multiply(0.22));
+            painter.circle_filled(c, 4.0, AMBER);
+        }
+        Status::Failed(_) => {
+            painter.circle_stroke(c, 7.2, Stroke::new(1.5_f32, theme.marker_error));
+            painter.line_segment([pos2(c.x, c.y - 3.6), pos2(c.x, c.y + 0.8)], Stroke::new(1.6_f32, theme.marker_error));
+            painter.circle_filled(pos2(c.x, c.y + 3.4), 0.95, theme.marker_error);
+        }
+        Status::Idle => {}
+    }
+}
+
+/// The row's headline, with a link at its right when there is one.
+fn headline(ui: &mut egui::Ui, theme: &KlippTheme, text: &str, link: Option<&str>) -> bool {
+    let mut clicked = false;
+    ui.allocate_ui_with_layout(vec2(ui.available_width(), 20.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        ui.add(egui::Label::new(egui::RichText::new(text).size(13.0).color(theme.text_primary).strong()).selectable(false));
+        if let Some(link) = link {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                clicked = quiet_link(ui, theme, link).clicked();
+            });
+        }
+    });
+    clicked
+}
+
+/// A line of detail under the headline.
+fn detail(ui: &mut egui::Ui, theme: &KlippTheme, text: &str) {
+    ui.add_space(3.0);
+    ui.add(egui::Label::new(egui::RichText::new(text).size(12.0).color(theme.text_secondary)).wrap());
+}
+
+/// What the check found, and the one thing to do next.
+fn status_text(ui: &mut egui::Ui, theme: &KlippTheme, status: &Status<'_>) -> Option<AboutAction> {
+    let version = klipp_core::build_info::get().version;
+    match status {
+        Status::Idle => None,
+        Status::Checking => {
+            headline(ui, theme, "Checking for updates…", None);
+            None
+        }
+        Status::Latest { previews } => {
+            headline(ui, theme, &format!("You have the latest version ({version})"), None);
+            if *previews {
+                detail(ui, theme, "Preview releases included");
+            }
+            None
+        }
+        Status::Failed(message) => {
+            let again = headline(ui, theme, "Could not check for updates", Some("Try again"));
+            detail(ui, theme, message);
+            again.then_some(AboutAction::CheckForUpdates)
+        }
+        Status::Available { version: new, notes, install, error } => {
+            if headline(ui, theme, &format!("Klipp {new} is available"), Some("What’s new")) {
+                open(notes);
+            }
+            let mut action = None;
+            match install {
+                Install::Updater => {
+                    detail(ui, theme, "Save your work and finish any exports first. Pacman updates the system along with Klipp; reopen Klipp after.");
+                    ui.add_space(10.0);
+                    let button = egui::Button::new(egui::RichText::new("Install update…").size(12.5).color(TILE).strong())
+                        .fill(AMBER)
+                        .stroke(Stroke::NONE)
+                        .rounding(6.0)
+                        .min_size(vec2(0.0, 28.0));
+                    if ui.add(button).clicked() {
+                        action = Some(AboutAction::Install);
+                    }
+                }
+                Install::Download => {
+                    detail(ui, theme, "Download the package from the release page. Preview releases are installed by hand.");
+                }
+                Install::Steps(steps) => {
+                    detail(ui, theme, steps.what);
+                    ui.add_space(8.0);
+                    commands(ui, theme, &steps.line());
+                }
+            }
+            if let Some(error) = error {
+                ui.add_space(6.0);
+                ui.add(egui::Label::new(egui::RichText::new(*error).size(12.0).color(theme.marker_error)).wrap());
+            }
+            action
+        }
+    }
+}
+
+/// Commands to paste, in a well with Copy at its right.
+fn commands(ui: &mut egui::Ui, theme: &KlippTheme, line: &str) {
+    let id = ui.id().with("about_copied");
+    let now = ui.input(|i| i.time);
+    let copied = ui.data(|d| d.get_temp::<f64>(id)).is_some_and(|at| now - at < COPIED_FOR);
+    egui::Frame::none()
+        .fill(theme.bg_panel)
+        .stroke(Stroke::new(1.0_f32, theme.border))
+        .rounding(6.0)
+        .inner_margin(egui::Margin::symmetric(10.0, 7.0))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                let copy_w = 44.0;
+                ui.allocate_ui_with_layout(vec2(ui.available_width() - copy_w, 18.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.add(egui::Label::new(egui::RichText::new(line).monospace().size(11.5).color(theme.text_primary)).wrap());
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if copied {
+                        ui.add(egui::Label::new(egui::RichText::new("Copied").size(12.5).color(theme.text_secondary)).selectable(false));
+                        ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(COPIED_FOR));
+                    } else if quiet_link(ui, theme, "Copy").on_hover_text("Copy the commands").clicked() {
+                        ui.ctx().copy_text(line.to_owned());
+                        ui.data_mut(|d| d.insert_temp(id, now));
+                    }
+                });
+            });
+        });
 }
 
 /// A frameless text button that reads as a link.
@@ -477,6 +658,43 @@ fn quiet_link(ui: &mut egui::Ui, _theme: &KlippTheme, text: &str) -> egui::Respo
 
 fn open(url: &str) {
     let _ = crate::ui_util::open_external(url);
+}
+
+/// Drive a dialog in a test: the text it drew, and clicks on it.
+#[cfg(test)]
+pub(crate) mod probe {
+    /// Each text drawn, with where it was drawn.
+    pub(crate) fn texts(out: &egui::FullOutput) -> Vec<(String, egui::Rect)> {
+        fn walk(shape: &egui::Shape, out: &mut Vec<(String, egui::Rect)>) {
+            match shape {
+                egui::Shape::Text(t) => out.push((t.galley.text().to_owned(), t.galley.rect.translate(t.pos.to_vec2()))),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                _ => {}
+            }
+        }
+        let mut found = Vec::new();
+        out.shapes.iter().for_each(|s| walk(&s.shape, &mut found));
+        found
+    }
+
+    /// Frames of `draw` until settled, then a click on the last text drawn
+    /// that starts with `label`. The click's frame.
+    pub(crate) fn click(ctx: &egui::Context, label: &str, mut draw: impl FnMut(&egui::Context)) -> egui::FullOutput {
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 900.0));
+        let frame = |events: Vec<egui::Event>, draw: &mut dyn FnMut(&egui::Context)| {
+            let input = egui::RawInput { screen_rect: Some(screen), events, ..Default::default() };
+            ctx.run(input, |ctx| draw(ctx))
+        };
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            seen = texts(&frame(Vec::new(), &mut draw));
+        }
+        let at = seen.iter().rev().find(|(t, _)| t.starts_with(label)).unwrap_or_else(|| panic!("{label} not drawn: {seen:?}")).1.center();
+        let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        frame(vec![egui::Event::PointerMoved(at)], &mut draw);
+        frame(vec![button(true)], &mut draw);
+        frame(vec![button(false)], &mut draw)
+    }
 }
 
 #[cfg(test)]
@@ -516,7 +734,7 @@ mod tests {
             for frame in 0..3 {
                 let input = egui::RawInput { time: Some(frame as f64 * 0.4), ..Default::default() };
                 let _ = ctx.run(input, |ctx| {
-                    assert_eq!(show(ctx, &theme), AboutAction::None);
+                    assert_eq!(show(ctx, &theme, &Status::Idle), AboutAction::None);
                 });
             }
         }
@@ -542,7 +760,7 @@ mod tests {
             let mut texts = Vec::new();
             for frame in 0..3 {
                 let input = egui::RawInput { time: Some(frame as f64 * 0.4), ..Default::default() };
-                let out = ctx.run(input, |ctx| { let _ = show(ctx, &theme); });
+                let out = ctx.run(input, |ctx| { let _ = show(ctx, &theme, &Status::Idle); });
                 texts = out.shapes.iter().filter_map(|s| match &s.shape {
                     egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.galley.job.sections.first().map(|s| s.format.color).unwrap_or(t.fallback_color))),
                     _ => None,
@@ -557,5 +775,83 @@ mod tests {
                 assert!(r >= 4.5, "dark {dark}: {want} at {r:.2}:1");
             }
         }
+    }
+
+    fn drawn(status: &Status<'_>) -> String {
+        let ctx = egui::Context::default();
+        let theme = KlippTheme::default();
+        let mut text = Vec::new();
+        for frame in 0..3 {
+            let input = egui::RawInput { time: Some(frame as f64 * 0.4), ..Default::default() };
+            text = probe::texts(&ctx.run(input, |ctx| { let _ = show(ctx, &theme, status); }));
+        }
+        text.into_iter().map(|(t, _)| t).collect::<Vec<_>>().join("\n")
+    }
+
+    fn available(install: Install) -> Status<'static> {
+        Status::Available { version: "0.2.0".into(), notes: "https://example.invalid/notes".into(), install, error: None }
+    }
+
+    /// Each place the check can be in draws as a row in About: nothing
+    /// before a check, then checking, up to date, a newer version with the
+    /// action for each kind of installation, and a failure.
+    #[test]
+    fn each_update_status_draws_in_about() {
+        let version = klipp_core::build_info::get().version;
+        assert!(!drawn(&Status::Idle).contains("Checking"), "no row before a check");
+        assert!(drawn(&Status::Checking).contains("Checking for updates…"));
+        let latest = drawn(&Status::Latest { previews: false });
+        assert!(latest.contains(&format!("You have the latest version ({version})")), "{latest}");
+        assert!(!latest.contains("Preview"));
+        assert!(drawn(&Status::Latest { previews: true }).contains("Preview releases included"), "names the channel");
+
+        let updater = drawn(&available(Install::Updater));
+        for want in ["Klipp 0.2.0 is available", "What’s new", "Install update…"] {
+            assert!(updater.contains(want), "{want} in {updater}");
+        }
+        assert!(!drawn(&available(Install::Download)).contains("Install update…"), "no updater without the repository");
+        assert!(drawn(&available(Install::Download)).contains("release page"));
+        for steps in [crate::updates::ARCH_SOURCE_STEPS, crate::updates::SOURCE_STEPS] {
+            let text = drawn(&available(Install::Steps(steps)));
+            assert!(text.contains(&steps.line()) && text.contains("Copy"), "{text}");
+            assert!(!text.contains("Install update…"), "{text}");
+        }
+        assert!(drawn(&available(Install::Steps(crate::updates::ARCH_SOURCE_STEPS))).contains("makepkg -si"));
+
+        let failed = drawn(&Status::Failed("The release service is rate limited."));
+        assert!(failed.contains("Could not check for updates") && failed.contains("Try again"), "{failed}");
+        assert!(failed.contains("The release service is rate limited."));
+        let error = Status::Available { version: "0.2.0".into(), notes: String::new(), install: Install::Updater, error: Some("Could not open the updater.") };
+        assert!(drawn(&error).contains("Could not open the updater."));
+    }
+
+    /// The buttons ask for what they say: a check, again after a failure,
+    /// and the updater.
+    #[test]
+    fn the_update_buttons_ask_for_their_action() {
+        let theme = KlippTheme::default();
+        for (status, label, want) in [
+            (Status::Idle, "Check for updates…", AboutAction::CheckForUpdates),
+            (Status::Failed("Offline."), "Try again", AboutAction::CheckForUpdates),
+            (available(Install::Updater), "Install update…", AboutAction::Install),
+        ] {
+            let ctx = egui::Context::default();
+            let mut asked = Vec::new();
+            probe::click(&ctx, label, |ctx| asked.push(show(ctx, &theme, &status)));
+            assert!(asked.contains(&want), "{label}: {asked:?}");
+        }
+    }
+
+    /// Copy puts the commands on the clipboard and says so.
+    #[test]
+    fn copy_copies_the_steps() {
+        let theme = KlippTheme::default();
+        let steps = crate::updates::SOURCE_STEPS;
+        let status = available(Install::Steps(steps));
+        let ctx = egui::Context::default();
+        let out = probe::click(&ctx, "Copy", |ctx| { let _ = show(ctx, &theme, &status); });
+        assert_eq!(out.platform_output.copied_text, steps.line());
+        let out = ctx.run(egui::RawInput::default(), |ctx| { let _ = show(ctx, &theme, &status); });
+        assert!(probe::texts(&out).iter().any(|(t, _)| t == "Copied"), "says so");
     }
 }

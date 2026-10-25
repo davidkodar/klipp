@@ -29,6 +29,7 @@ enum PrefsTab {
 }
 
 pub struct PreferencesPanel {
+    /// "Check for updates…" was clicked: About opens and checks.
     pub(crate) show_updates: bool,
     active_tab: PrefsTab,
     /// Action currently being remapped (waiting for key press). (action_name, combo_index)
@@ -5112,6 +5113,23 @@ mod layout_tests {
         let timeline = at("Timeline");
         click(&ctx, &mut panel, &mut prefs, &mut dirty, timeline);
         assert_eq!(panel.active_tab, PrefsTab::Timeline);
+    }
+
+    /// The Updates section's "Check for updates…" asks for the check in
+    /// About; the section keeps the settings.
+    #[test]
+    fn check_for_updates_asks_for_about() {
+        let ctx = egui::Context::default();
+        let mut panel = PreferencesPanel::default();
+        let mut prefs = Preferences::default();
+        let mut dirty = false;
+        draw(&ctx, &mut panel, &mut prefs, &mut dirty, Vec::new());
+        let d = draw(&ctx, &mut panel, &mut prefs, &mut dirty, Vec::new());
+        let at = |l: &str| d.texts.iter().find(|(s, _)| s == l).unwrap_or_else(|| panic!("no {l}")).1;
+        assert!(d.texts.iter().any(|(s, _)| s == "Check automatically"));
+        let button = at("Check for updates…");
+        click(&ctx, &mut panel, &mut prefs, &mut dirty, button);
+        assert!(panel.show_updates);
     }
 
     /// Across its pages the dialog still shows every setting and section

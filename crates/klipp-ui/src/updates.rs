@@ -140,7 +140,7 @@ fn fetch(current: &str, preview: bool) -> Result<Option<Version>, String> {
             ureq::Error::Status(403 | 429, _) => {
                 "The release service is rate limited. Please try again later.".to_owned()
             }
-            _ => "Could not check for updates. Check your connection and try again.".to_owned(),
+            _ => "GitHub could not be reached. Check your connection.".to_owned(),
         })?;
     let mut bytes = Vec::new();
     response
@@ -173,11 +173,13 @@ pub(crate) struct Updates {
     /// The new version's notice put off until the next start: closed, or
     /// its details opened.
     later: bool,
-    open: bool,
-    check_on_open: bool,
+    check_requested: bool,
     started: Instant,
     pending: Option<mpsc::Receiver<Check>>,
     result: Option<Check>,
+    /// The check's thread ended without a result.
+    stopped: Option<String>,
+    /// The updater could not be opened.
     launch_error: Option<String>,
 }
 
@@ -188,22 +190,17 @@ impl Default for Updates {
             asking: false,
             showing: false,
             later: false,
-            open: false,
-            check_on_open: false,
+            check_requested: false,
             started: Instant::now(),
             pending: None,
             result: None,
+            stopped: None,
             launch_error: None,
         }
     }
 }
 
 impl Updates {
-    pub(crate) fn open(&mut self) {
-        self.open = true;
-        self.check_on_open = true;
-    }
-
     fn start(&mut self, ctx: &egui::Context, prefs: &mut GeneralPrefs, dirty: &mut bool) {
         if self.pending.is_some() {
             return;
@@ -211,6 +208,8 @@ impl Updates {
         prefs.last_update_check = now();
         *dirty = true;
         self.result = None;
+        self.stopped = None;
+        self.launch_error = None;
         let preview = include_previews(prefs);
         let ctx = ctx.clone();
         let (tx, rx) = mpsc::channel();
@@ -271,11 +270,22 @@ impl Updates {
         self.later = true;
     }
 
-    /// The updates window opened from the new version's notice. Closing it
-    /// puts the notice off too, rather than bringing it straight back.
-    fn show_details(&mut self) {
-        self.open = true;
+    /// About opened from the new version's notice, on its result. The
+    /// notice is put off too, rather than coming straight back after.
+    fn show_details(&mut self, about: &mut bool) {
+        *about = true;
         self.put_off();
+    }
+
+    /// Check now, from About.
+    pub(crate) fn check_now(&mut self) {
+        self.check_requested = true;
+    }
+
+    /// Check from elsewhere (Preferences): About opens, and checks.
+    pub(crate) fn check_in_about(&mut self, about: &mut bool) {
+        *about = true;
+        self.check_now();
     }
 
     /// Whether a notice is up that keeps the keys: the question, or a new
@@ -284,11 +294,51 @@ impl Updates {
         self.showing
     }
 
-    /// The question, the new version's notice and the updates window.
-    /// `idle` says nothing is being edited (no project is open): only then
-    /// does a new version's notice come up, so a check that ends mid-edit
-    /// waits for it rather than taking the keys.
-    pub(crate) fn show(&mut self, ctx: &egui::Context, prefs: &mut GeneralPrefs, dirty: &mut bool, idle: bool) {
+    /// Where the check is, for About's status row.
+    pub(crate) fn status(&self) -> Status<'_> {
+        if self.pending.is_some() {
+            return Status::Checking;
+        }
+        if let Some(message) = &self.stopped {
+            return Status::Failed(message);
+        }
+        let Some(check) = &self.result else { return Status::Idle };
+        match &check.release {
+            Err(message) => Status::Failed(message),
+            Ok(None) => Status::Latest { previews: check.preview },
+            Ok(Some(version)) => {
+                let install = match check.installation {
+                    Installation::ArchRelease if check.repository && version.pre.is_empty() => Install::Updater,
+                    Installation::ArchRelease => Install::Download,
+                    Installation::ArchSource => Install::Steps(ARCH_SOURCE_STEPS),
+                    Installation::Source => Install::Steps(SOURCE_STEPS),
+                };
+                Status::Available { version: version.to_string(), notes: format!("{RELEASES}/tag/v{version}"), install, error: self.launch_error.as_deref() }
+            }
+        }
+    }
+
+    /// Open the package's updater: a terminal with pacman's own
+    /// confirmation. Only offered for [`Install::Updater`].
+    pub(crate) fn install(&mut self) {
+        self.launch_error = None;
+        // Fixed, package-owned helper; no downloaded command or URL is executed.
+        match Command::new("/usr/bin/klipp-update").spawn() {
+            Ok(mut child) => {
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+            }
+            Err(_) => self.launch_error = Some("Could not open the updater. Run sudo pacman -Syu klipp in a terminal.".into()),
+        }
+    }
+
+    /// The question and the new version's notice, and the check itself.
+    /// A new version's notice comes up only when no project is open, so a
+    /// check that ends mid-edit waits rather than taking the keys, and not
+    /// over About, which shows the result itself. `about` is whether About
+    /// is open; the notice's "Show details…" opens it.
+    pub(crate) fn show(&mut self, ctx: &egui::Context, prefs: &mut GeneralPrefs, dirty: &mut bool, project_open: bool, about: &mut bool) {
         if !std::mem::replace(&mut self.asked, true) {
             let before = (prefs.update_checks_answered, prefs.update_checks_asked);
             self.asking = ask_this_start(prefs);
@@ -301,7 +351,7 @@ impl Updates {
             self.ask(ctx, prefs, dirty);
             self.showing = self.asking;
         }
-        if std::mem::take(&mut self.check_on_open) {
+        if std::mem::take(&mut self.check_requested) {
             self.start(ctx, prefs, dirty);
         }
         if let Some(rx) = &self.pending {
@@ -312,8 +362,7 @@ impl Updates {
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
                     self.pending = None;
-                    self.launch_error =
-                        Some("The update check stopped unexpectedly. Please try again.".into());
+                    self.stopped = Some("The update check stopped unexpectedly.".into());
                 }
                 Err(mpsc::TryRecvError::Empty) => {}
             }
@@ -333,103 +382,83 @@ impl Updates {
         {
             self.start(ctx, prefs, dirty);
         }
-        if prefs.check_for_updates {
-            ctx.request_repaint_after(Duration::from_secs(30));
-            if let Some(Check {
-                release: Ok(Some(version)),
-                ..
-            }) = &self.result
-            {
-                let version = version.to_string();
-                if idle && !self.later && !self.open && prefs.dismissed_update.as_deref() != Some(&version) {
-                    let (mut gone, mut open) = (false, true);
-                    centred("New Klipp Version", "update_notice").open(&mut open).show(ctx, |ui| {
-                        ui.set_min_width(420.0);
-                        ui.label(egui::RichText::new(format!("Klipp {version} available")).strong());
-                        ui.add_space(4.0);
-                        ui.label(format!("You have {}.", klipp_core::build_info::get().version));
-                        ui.add_space(12.0);
-                        ui.horizontal(|ui| {
-                            if ui.button("Dismiss").clicked() {
-                                prefs.dismissed_update = Some(version.clone());
-                                *dirty = true;
-                                gone = true;
-                            }
-                            if ui.button("Show details…").clicked() {
-                                self.show_details();
-                                gone = true;
-                            }
-                        });
-                        ui.add_space(8.0);
-                        ui.label(egui::RichText::new("Close this to be reminded at the next start.").small().weak());
-                    });
-                    if !open {
-                        self.put_off();
-                        gone = true;
-                    }
-                    self.showing |= !gone;
-                }
-            }
-        }
-        if !self.open {
+        if !prefs.check_for_updates {
             return;
         }
-        let mut open = true;
-        egui::Window::new("Klipp updates").open(&mut open).collapsible(false).resizable(false)
-            .default_width(420.0).show(ctx, |ui| {
-                ui.label(format!("Installed version: {}", klipp_core::build_info::get().version));
-                if ui.checkbox(&mut prefs.check_for_updates, "Check automatically once a day").changed() {
-                    prefs.update_checks_answered = true;
+        ctx.request_repaint_after(Duration::from_secs(30));
+        let Some(Check { release: Ok(Some(version)), .. }) = &self.result else { return };
+        let version = version.to_string();
+        if project_open || *about || self.later || prefs.dismissed_update.as_deref() == Some(&version) {
+            return;
+        }
+        let (mut gone, mut open) = (false, true);
+        centred("New Klipp Version", "update_notice").open(&mut open).show(ctx, |ui| {
+            ui.set_min_width(420.0);
+            ui.label(egui::RichText::new(format!("Klipp {version} available")).strong());
+            ui.add_space(4.0);
+            ui.label(format!("You have {}.", klipp_core::build_info::get().version));
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if ui.button("Dismiss").clicked() {
+                    prefs.dismissed_update = Some(version.clone());
                     *dirty = true;
+                    gone = true;
                 }
-                if preview_switch(prefs, ui, |ui, on| ui.checkbox(on, "Include preview releases")) {
-                    *dirty = true; self.result = None;
+                if ui.button("Show details…").clicked() {
+                    self.show_details(about);
+                    gone = true;
                 }
-                if prefs.preview_updates.is_none() && previews_by_default(klipp_core::build_info::get().version) {
-                    ui.small("On by default because this is a preview build.");
-                }
-                ui.small("Checks GitHub for releases. No project information is sent.");
-                if ui.add_enabled(self.pending.is_none(), egui::Button::new("Check now")).clicked() {
-                    self.launch_error = None;
-                    self.start(ctx, prefs, dirty);
-                }
-                if self.pending.is_some() { ui.horizontal(|ui| { ui.spinner(); ui.label("Checking…"); }); }
-                if let Some(check) = &self.result {
-                    match &check.release {
-                        Ok(Some(version)) => {
-                            ui.label(format!("Version {version} is available."));
-                            ui.hyperlink_to("Release notes and downloads", format!("{RELEASES}/tag/v{version}"));
-                            match check.installation {
-                                Installation::ArchRelease if check.repository && version.pre.is_empty() => {
-                                    ui.label("Save your work and finish any exports first. Pacman will review and update the system as well as Klipp.");
-                                    if ui.button("Open system updater…").clicked() {
-                                        // Fixed, package-owned helper; no downloaded command or URL is executed.
-                                        match Command::new("/usr/bin/klipp-update").spawn() {
-                                            Ok(mut child) => { std::thread::spawn(move || { let _ = child.wait(); }); }
-                                            Err(_) => self.launch_error = Some("Could not open the updater. Run sudo pacman -Syu klipp in a terminal.".into()),
-                                        }
-                                    }
-                                    ui.small("After a successful update, close and reopen Klipp. Repository availability may lag the release announcement.");
-                                }
-                                Installation::ArchRelease => {
-                                    ui.label("Use the release download, or configure the Klipp package repository. Preview releases require a manual installation.");
-                                }
-                                Installation::ArchSource => {
-                                    ui.label("Installed from source (klipp-git). In your checkout, pull the changes, then run makepkg -si in packaging/. Git pull alone does not update the installed app.");
-                                }
-                                Installation::Source => {
-                                    ui.label("Development or unmanaged build. Update your source checkout and rebuild, or install a release package.");
-                                }
-                            }
-                        }
-                        Ok(None) => { ui.label("No newer published release was found for this channel."); }
-                        Err(message) => { ui.label(message); }
-                    }
-                }
-                if let Some(error) = &self.launch_error { ui.label(error); }
-                ui.hyperlink_to("All releases", RELEASES);
             });
-        self.open = open;
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new("Close this to be reminded at the next start.").small().weak());
+        });
+        if !open {
+            self.put_off();
+            gone = true;
+        }
+        self.showing |= !gone;
+    }
+}
+
+/// Where the update check is, as About shows it.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Status<'a> {
+    /// Not checked since Klipp started.
+    Idle,
+    Checking,
+    /// Nothing newer on the channel; `previews` when it includes them.
+    Latest { previews: bool },
+    Available { version: String, notes: String, install: Install, error: Option<&'a str> },
+    Failed(&'a str),
+}
+
+/// How a newer version is put in, for the way this Klipp was installed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Install {
+    /// The release package, with its repository: the package's updater.
+    Updater,
+    /// The release package without its repository, or a preview, which
+    /// the repository doesn't carry: the release page's download.
+    Download,
+    /// Built from source: the steps to update it, to copy.
+    Steps(Steps),
+}
+
+/// The steps that update a build from source, run in its checkout.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Steps {
+    pub(crate) what: &'static str,
+    pub(crate) commands: &'static [&'static str],
+}
+
+/// klipp-git: a pull alone doesn't update the installed app.
+pub(crate) const ARCH_SOURCE_STEPS: Steps = Steps { what: "Installed from source (klipp-git). In your checkout:", commands: &["git pull", "cd packaging && makepkg -si"] };
+pub(crate) const SOURCE_STEPS: Steps = Steps { what: "Built from source. In your checkout:", commands: &["git pull", "cargo build --release -p klipp-app"] };
+
+impl Steps {
+    /// The steps as one line to paste in a terminal.
+    pub(crate) fn line(&self) -> String {
+        self.commands.join(" && ")
     }
 }
 
@@ -571,7 +600,7 @@ mod tests {
         let mut text = String::new();
         for _ in 0..3 {
             let output = ctx.run(egui::RawInput::default(), |ctx| {
-                updates.show(ctx, prefs, &mut false, true)
+                updates.show(ctx, prefs, &mut false, false, &mut false)
             });
             text.clear();
             for shape in output.shapes {
@@ -610,17 +639,58 @@ mod tests {
         assert!(!ui_text(&mut updates, &mut prefs).contains("available"));
     }
 
+    /// The package's updater is offered only to the release package with
+    /// its repository, for a stable release; builds from source get their
+    /// steps.
     #[test]
     fn package_action_is_not_shown_to_source_users() {
-        let mut prefs = GeneralPrefs { preview_updates: Some(false), ..Default::default() };
+        let install = |updates: &Updates| match updates.status() {
+            Status::Available { install, .. } => install,
+            other => panic!("{other:?}"),
+        };
         let mut updates = available(Installation::ArchRelease);
-        updates.open = true;
-        assert!(ui_text(&mut updates, &mut prefs).contains("Open system updater"));
+        assert_eq!(install(&updates), Install::Updater);
+        updates.result.as_mut().unwrap().repository = false;
+        assert_eq!(install(&updates), Install::Download);
         updates.result.as_mut().unwrap().installation = Installation::ArchSource;
-        let text = ui_text(&mut updates, &mut prefs);
-        assert!(!text.contains("Open system updater"));
-        assert!(text.contains("makepkg -si"));
+        assert_eq!(install(&updates), Install::Steps(ARCH_SOURCE_STEPS));
+        assert!(ARCH_SOURCE_STEPS.line().contains("makepkg -si"));
+        updates.result.as_mut().unwrap().installation = Installation::Source;
+        assert_eq!(install(&updates), Install::Steps(SOURCE_STEPS));
+        let mut preview = available(Installation::ArchRelease);
+        preview.result.as_mut().unwrap().release = Ok(Some(Version::parse("0.20.0-rc.1").unwrap()));
+        assert_eq!(install(&preview), Install::Download, "the repository carries no previews");
     }
+
+    /// The status follows the check: idle, checking while it runs, then
+    /// what it found or why it failed.
+    #[test]
+    fn the_status_follows_the_check() {
+        let mut updates = Updates::default();
+        assert_eq!(updates.status(), Status::Idle);
+        let (tx, rx) = mpsc::channel::<Check>();
+        updates.pending = Some(rx);
+        assert_eq!(updates.status(), Status::Checking);
+        drop(tx);
+        let mut prefs = checking();
+        frames(&mut updates, &mut prefs, true);
+        assert!(matches!(updates.status(), Status::Failed(_)), "a check that stops is a failure");
+        updates.stopped = None;
+        updates.result = Some(Check { release: Ok(None), installation: Installation::Source, repository: false, preview: false });
+        assert_eq!(updates.status(), Status::Latest { previews: false });
+        updates.result.as_mut().unwrap().release = Err("Offline.".into());
+        assert_eq!(updates.status(), Status::Failed("Offline."));
+    }
+
+    /// Preferences' "Check for updates…" opens About and checks there.
+    #[test]
+    fn preferences_check_opens_about() {
+        let mut updates = Updates::default();
+        let mut about = false;
+        updates.check_in_about(&mut about);
+        assert!(about && updates.check_requested);
+    }
+
     #[test]
     fn no_background_work_without_opt_in_even_after_startup_delay() {
         let mut prefs = GeneralPrefs::default();
@@ -716,7 +786,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut text = String::new();
         for _ in 0..3 {
-            let output = ctx.run(egui::RawInput::default(), |ctx| updates.show(ctx, prefs, &mut false, idle));
+            let output = ctx.run(egui::RawInput::default(), |ctx| updates.show(ctx, prefs, &mut false, !idle, &mut false));
             text = output.shapes.iter().filter_map(|s| match &s.shape { egui::epaint::Shape::Text(t) => Some(t.galley.job.text.clone()), _ => None }).collect::<Vec<_>>().join("\n");
         }
         text
@@ -734,8 +804,9 @@ mod tests {
         assert!(updates.holds_keys());
     }
 
-    /// Closed, or its details opened and closed, the notice stays away
-    /// until the next start; it isn't dismissed for good.
+    /// Closed, or its details opened in About, the notice stays away
+    /// until the next start; it isn't dismissed for good. No separate
+    /// updates window comes up.
     #[test]
     fn the_new_version_closed_or_opened_comes_back_only_at_the_next_start() {
         let mut prefs = checking();
@@ -745,13 +816,45 @@ mod tests {
         assert!(!closed.holds_keys());
 
         let mut details = available(Installation::Source);
-        details.show_details();
-        assert!(frames(&mut details, &mut prefs, true).contains("Installed version"), "the details window");
-        details.open = false;
-        assert!(!frames(&mut details, &mut prefs, true).contains("available"), "not straight back once the details close");
+        let mut about = false;
+        let ctx = egui::Context::default();
+        crate::panels::about::probe::click(&ctx, "Show details…", |ctx| details.show(ctx, &mut prefs, &mut false, false, &mut about));
+        assert!(about, "Show details… opens About");
+        let after = ctx.run(egui::RawInput::default(), |ctx| details.show(ctx, &mut prefs, &mut false, false, &mut about));
+        let after: Vec<_> = crate::panels::about::probe::texts(&after).into_iter().map(|(t, _)| t).collect();
+        assert!(!after.iter().any(|t| t.contains("available") || t.contains("Installed version")), "and nothing else: {after:?}");
+        assert!(matches!(details.status(), Status::Available { .. }), "About shows the result");
+        assert!(!frames(&mut details, &mut prefs, true).contains("available"), "not straight back once About closes");
         assert_eq!(prefs.dismissed_update, None, "neither dismisses it");
         let mut next_start = available(Installation::Source);
         assert!(frames(&mut next_start, &mut prefs, true).contains("0.20.0 available"), "back at the next start");
+    }
+
+    /// With About open the notice waits: About shows the result itself.
+    #[test]
+    fn the_notice_is_not_drawn_over_about() {
+        let mut prefs = checking();
+        let mut updates = available(Installation::Source);
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            let out = ctx.run(egui::RawInput::default(), |ctx| updates.show(ctx, &mut prefs, &mut false, false, &mut true));
+            assert!(crate::panels::about::probe::texts(&out).is_empty());
+        }
+        assert!(!updates.holds_keys());
+    }
+
+    /// The separate updates window is gone, whatever the check found.
+    #[test]
+    fn there_is_no_updates_window() {
+        let source = include_str!("updates.rs");
+        let window = ["Window::new(\"Klipp ", "updates\")"].concat();
+        assert!(!source.contains(&window));
+        let mut prefs = checking();
+        for installation in [Installation::ArchRelease, Installation::ArchSource, Installation::Source] {
+            let mut updates = available(installation);
+            updates.put_off();
+            assert_eq!(frames(&mut updates, &mut prefs, true), "", "nothing drawn outside About");
+        }
     }
 
     /// Both notices sit in the middle of the window, not in a corner.
@@ -761,7 +864,7 @@ mod tests {
             let ctx = egui::Context::default();
             let input = || egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 900.0))), ..Default::default() };
             for _ in 0..3 {
-                let _ = ctx.run(input(), |ctx| updates.show(ctx, prefs, &mut false, true));
+                let _ = ctx.run(input(), |ctx| updates.show(ctx, prefs, &mut false, false, &mut false));
             }
             ctx.memory(|m| m.area_rect(egui::Id::new(id))).expect("drawn")
         };

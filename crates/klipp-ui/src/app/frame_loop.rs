@@ -30,10 +30,10 @@ impl KlippApp {
         }
         if std::mem::take(&mut self.preferences_panel.show_updates) {
             self.state.show_preferences = false;
-            self.updates.open();
+            self.updates.check_in_about(&mut self.state.show_about_dialog);
         }
-        let idle = self.state.project_path.is_none();
-        self.updates.show(ctx, &mut self.prefs.general, &mut self.prefs_dirty, idle);
+        let project_open = self.state.project_path.is_some();
+        self.updates.show(ctx, &mut self.prefs.general, &mut self.prefs_dirty, project_open, &mut self.state.show_about_dialog);
         self.state.update_notice_open = self.updates.holds_keys();
         self.tick_unsaved(ctx);
         self.state.seed_recorded_tracks();
@@ -1510,12 +1510,10 @@ impl KlippApp {
 
         // About dialog
         if self.state.show_about_dialog {
-            match crate::panels::about::show(ctx, &self.theme) {
+            match crate::panels::about::show(ctx, &self.theme, &self.updates.status()) {
                 crate::panels::about::AboutAction::Close => self.state.show_about_dialog = false,
-                crate::panels::about::AboutAction::CheckForUpdates => {
-                    self.state.show_about_dialog = false;
-                    self.updates.open();
-                }
+                crate::panels::about::AboutAction::CheckForUpdates => self.updates.check_now(),
+                crate::panels::about::AboutAction::Install => self.updates.install(),
                 crate::panels::about::AboutAction::None => {}
             }
         }
