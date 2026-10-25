@@ -60,6 +60,7 @@ pub mod source_edit;
 pub mod trim_view;
 pub mod ai_tools;
 pub mod assistant_clients;
+pub mod jsonc_edit;
 pub mod cache_manager;
 pub mod cli;
 mod clip_edits;

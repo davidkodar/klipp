@@ -6,11 +6,16 @@ An AI assistant can work in Klipp with you: read the open project and edit it, g
 
 Klipp listens on a local control socket. **Klipp's MCP program** (`klipp-mcp`, installed next to Klipp) speaks the Model Context Protocol to an assistant and passes its requests to that socket. Nothing is reachable from outside the computer; the assistant program you connect decides where your conversation with it goes.
 
-**Preferences → AI → Connect an assistant**:
+**Help → Set Up AI Assistants…** (also in the command palette, and in **Preferences → AI → Connect an assistant**):
 
 1. Checks that Klipp's MCP program is installed next to Klipp.
-2. **Connect** writes the configuration for a supported assistant; for any other, copy the configuration shown (the common `mcpServers` JSON form) into it.
-3. **Check** confirms the assistant can reach Klipp.
+2. Lists the assistants on this computer that Klipp can connect — Claude Code, Codex, Gemini CLI, Zed and Cursor — with each one's state: not installed, not connected, connected, connected only in some projects, or needing an update after Klipp moved.
+3. **Connect** adds Klipp to the assistant: with its own command where it has one, otherwise in its settings file, which is backed up first (a copy named `….before-klipp-…` beside it). Only Klipp's entry changes; the assistant's other servers, settings and comments stay. **Disconnect** takes Klipp's entry out again.
+4. **Test** asks Klipp for its status through the program that assistant runs, so you know it can reach Klipp.
+5. **Last talked to Klipp** shows when each assistant last started a session with Klipp.
+6. **Copy settings** gives the entry for any other assistant that runs local MCP servers, in the common forms (`mcpServers` JSON, a `servers` list, YAML extensions, Codex's TOML).
+
+Nothing connects unless you click, and with the AI assistant switched off in Preferences nothing can.
 
 ## What to Ask
 

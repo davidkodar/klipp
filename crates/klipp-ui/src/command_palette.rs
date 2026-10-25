@@ -696,6 +696,12 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
         enabled: true,
     });
     e.push(PaletteEntry {
+        label: Cow::Borrowed("Set Up AI Assistants…"),
+        shortcut: Cow::Borrowed(""),
+        action: PaletteAction::SetState(|s| s.show_assistant_setup = true),
+        enabled: true,
+    });
+    e.push(PaletteEntry {
         label: Cow::Borrowed("Manage AI Models…"),
         shortcut: Cow::Borrowed(""),
         action: PaletteAction::Cmd(AppCommand::OpenAiModelsDialog),

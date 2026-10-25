@@ -1103,6 +1103,15 @@ impl KlippApp {
         // consent flow when the user picks Download.
         crate::panels::ai_models::show_ai_models_dialog(ctx, &mut self.state, &self.theme);
 
+        // Set Up AI Assistants (#2649): from the Help menu, the palette,
+        // or the button in Preferences, which shares its state.
+        if self.preferences_panel.take_open_assistant_setup() {
+            self.state.show_assistant_setup = true;
+        }
+        let mut open = self.state.show_assistant_setup;
+        self.preferences_panel.show_assistant_setup_window(ctx, &mut open, &self.prefs, &self.theme);
+        self.state.show_assistant_setup = open;
+
         // Audio Plugins management modal — LADSPA discovery, search
         // paths, Rescan. Pushes commands onto a local Vec so they go
         // through the standard `send_commands` dispatch (giving

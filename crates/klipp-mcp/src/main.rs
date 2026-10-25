@@ -182,6 +182,11 @@ fn response_for(req: &Value, stdout: &Mutex<std::io::Stdout>, structured: &Atomi
     let id = req.get("id").cloned().unwrap_or(Value::Null);
     match method {
             "initialize" => {
+                // Which assistant this is, and when, for the assistant
+                // setup's "last talked to Klipp" (#2649).
+                if let Some(name) = req.pointer("/params/clientInfo/name").and_then(Value::as_str) {
+                    klipp_core::assistants_seen::record(name);
+                }
                 let version = negotiated_version(req.get("params").and_then(|p| p.get("protocolVersion")).and_then(Value::as_str));
                 structured.store(version == STRUCTURED_PROTOCOL_VERSION, Ordering::Release);
                 json!({

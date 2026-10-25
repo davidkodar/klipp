@@ -1632,6 +1632,8 @@ pub struct AppState {
 
     /// Whether the AI Models management dialog is visible.
     pub show_ai_models_dialog: bool,
+    /// The Set Up AI Assistants window (#2649).
+    pub show_assistant_setup: bool,
 
     /// Whether the Audio Plugins management dialog is visible.
     pub show_audio_plugins_dialog: bool,
@@ -4515,6 +4517,7 @@ impl AppState {
             || self.show_autosave_recovery
             || self.show_render_queue
             || self.show_ai_models_dialog
+            || self.show_assistant_setup
             || self.show_audio_plugins_dialog
             || self.show_system_probe
             || self.show_project_doctor
@@ -4630,6 +4633,7 @@ impl Default for AppState {
             show_preset_manager: false,
             preset_manager_selected: None,
             show_ai_models_dialog: false,
+            show_assistant_setup: false,
             show_audio_plugins_dialog: false,
             audio_plugins_dialog: crate::panels::audio_plugins::AudioPluginsDialogState::default(),
             show_system_probe: false,
