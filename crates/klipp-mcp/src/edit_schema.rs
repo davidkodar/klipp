@@ -31,7 +31,7 @@ pub(super) fn validate_ops(args: &Value) -> Result<(), String> {
             continue;
         }
         let (required, allowed): (&[&str], &[&str]) = match kind {
-            "cut" => (&["from", "to"], &["op", "from", "to"]),
+            "cut" => (&["from", "to"], &["op", "from", "to", "tracks_of"]),
             "split" => (&["clip_id", "at"], &["op", "clip_id", "at"]),
             "trim" => (
                 &["clip_id", "edge", "to"],

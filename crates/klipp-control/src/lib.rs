@@ -952,7 +952,7 @@ mod tests {
     #[test]
     fn an_apply_without_a_label_is_named_after_its_ops() {
         use klipp_document::ops::{Anchor, ClipRef, Op};
-        let cut = Op::Cut { from: Anchor::Secs(1.0), to: Anchor::Secs(2.0) };
+        let cut = Op::Cut { from: Anchor::Secs(1.0), to: Anchor::Secs(2.0), tracks_of: Vec::new() };
         let split = Op::Split { clip_id: ClipRef::At { track: 0, secs: 0.5 }, at: Anchor::Secs(1.0) };
         assert_eq!(apply_label(std::slice::from_ref(&cut)), "Cut");
         assert_eq!(apply_label(&[cut, split.clone(), split]), "Cut and 2 more");

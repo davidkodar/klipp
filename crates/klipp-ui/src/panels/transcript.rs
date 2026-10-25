@@ -5,8 +5,9 @@
 //! gathered into paragraphs at pauses and cuts. The word being said at
 //! the playhead is marked, and followed while playing. Clicking a word
 //! seeks to it; shift-click selects a run of words, and deleting them
-//! cuts that stretch out of every unlocked track and closes up, as one
-//! undo step. The sweeps offer every filler and every long pause as cuts
+//! cuts that stretch out of the tracks they are heard on (and the tracks
+//! linked to them) and closes up, as one undo step: music and pictures
+//! on other tracks play on (#2568). The sweeps offer every filler and every long pause as cuts
 //! to review and apply together.
 //!
 //! Edits go out as document ops ([`klipp_document::ops::Op::Cut`]), the
@@ -328,7 +329,8 @@ impl TranscriptPanel {
         let Some((a, b)) = self.selection.map(|(a, b)| (a.min(b), a.max(b))) else { return };
         let range = transcript::cut_for_words(&self.words, a, b);
         let label = if a == b { format!("Cut \u{201C}{}\u{201D}", self.words[a].text) } else { format!("Cut {} words", b - a + 1) };
-        state.pending_doc_ops.push(DocOpsRequest { label, ops: transcript::cut_ops(vec![range]), independent: false });
+        let clips = transcript::clips_of(&self.words, a, b);
+        state.pending_doc_ops.push(DocOpsRequest { label, ops: transcript::cut_ops(vec![(range, clips)]), independent: false });
         self.selection = None;
     }
 }

@@ -257,9 +257,18 @@ impl Sweep {
         before - self.cuts.len()
     }
 
-    /// The ranges ticked for cutting.
-    pub fn ticked(&self) -> Vec<(f64, f64)> {
-        self.cuts.iter().filter(|c| c.ticked).map(|c| c.range).collect()
+    /// The ranges ticked for cutting, each with the clip it is heard in.
+    pub fn ticked(&self) -> Vec<CutRange> {
+        self.cuts
+            .iter()
+            .filter(|c| c.ticked)
+            .map(|c| {
+                let clip = match &c.at {
+                    ProposalAt::Word(key) | ProposalAt::Pause(key, _) => key.clip_id,
+                };
+                (c.range, vec![clip])
+            })
+            .collect()
     }
 }
 
@@ -270,22 +279,46 @@ pub fn format_secs(s: f64) -> String {
     format!("{:02}:{:05.2}", m as u64, s - m * 60.0)
 }
 
-/// The cuts for `ranges` as `Op::Cut`s, latest first: each is resolved
-/// on the timeline the ones before it left, and cutting from the end
-/// leaves the earlier times where they were.
-pub fn cut_ops(mut ranges: Vec<(f64, f64)>) -> Vec<klipp_document::ops::Op> {
-    use klipp_document::ops::{Anchor, Op};
-    ranges.retain(|(a, b)| b > a);
-    ranges.sort_by(|a, b| b.0.total_cmp(&a.0));
-    // Overlapping ranges (fillers either side of one pause) merge.
-    let mut merged: Vec<(f64, f64)> = Vec::new();
-    for (a, b) in ranges {
-        match merged.last_mut() {
-            Some(last) if b >= last.0 => last.0 = last.0.min(a),
-            _ => merged.push((a, b)),
+/// A stretch of the timeline to cut, and the clips heard there it is
+/// cut from: their tracks and the tracks linked to them, not every
+/// track (#2568).
+pub type CutRange = ((f64, f64), Vec<klipp_core::ClipId>);
+
+/// The clips the words `first` to `last` are heard from, each once.
+pub fn clips_of(words: &[HeardWord], first: usize, last: usize) -> Vec<klipp_core::ClipId> {
+    let mut clips: Vec<klipp_core::ClipId> = Vec::new();
+    for w in &words[first..=last] {
+        if !clips.contains(&w.clip_id) {
+            clips.push(w.clip_id);
         }
     }
-    merged.into_iter().map(|(a, b)| Op::Cut { from: Anchor::Secs(a), to: Anchor::Secs(b) }).collect()
+    clips
+}
+
+/// The cuts for `ranges` as `Op::Cut`s, latest first: each is resolved
+/// on the timeline the ones before it left, and cutting from the end
+/// leaves the earlier times where they were. Each is kept to the tracks
+/// of its clips, so music and a picture over the voice play on.
+pub fn cut_ops(mut ranges: Vec<CutRange>) -> Vec<klipp_document::ops::Op> {
+    use klipp_document::ops::{Anchor, ClipRef, Op};
+    ranges.retain(|((a, b), _)| b > a);
+    ranges.sort_by(|a, b| b.0 .0.total_cmp(&a.0 .0));
+    // Overlapping ranges (fillers either side of one pause) merge, with
+    // the clips of both.
+    let mut merged: Vec<CutRange> = Vec::new();
+    for ((a, b), clips) in ranges {
+        match merged.last_mut() {
+            Some(((last_a, _), last_clips)) if b >= *last_a => {
+                *last_a = last_a.min(a);
+                last_clips.extend(clips.into_iter().filter(|c| !last_clips.contains(c)).collect::<Vec<_>>());
+            }
+            _ => merged.push(((a, b), clips)),
+        }
+    }
+    merged
+        .into_iter()
+        .map(|((a, b), clips)| Op::Cut { from: Anchor::Secs(a), to: Anchor::Secs(b), tracks_of: clips.into_iter().map(ClipRef::Id).collect() })
+        .collect()
 }
 
 #[cfg(test)]
@@ -413,14 +446,15 @@ mod tests {
     #[test]
     fn cuts_go_latest_first_and_overlapping_ones_merge() {
         use klipp_document::ops::{Anchor, Op};
-        let ops = cut_ops(vec![(1.0, 2.0), (5.0, 6.0), (1.8, 2.5)]);
-        let spans: Vec<(f64, f64)> = ops
+        let (voice, other) = (klipp_core::ClipId::new(), klipp_core::ClipId::new());
+        let ops = cut_ops(vec![((1.0, 2.0), vec![voice]), ((5.0, 6.0), vec![voice]), ((1.8, 2.5), vec![other])]);
+        let spans: Vec<((f64, f64), usize)> = ops
             .iter()
             .map(|op| match op {
-                Op::Cut { from: Anchor::Secs(a), to: Anchor::Secs(b) } => (*a, *b),
+                Op::Cut { from: Anchor::Secs(a), to: Anchor::Secs(b), tracks_of } => ((*a, *b), tracks_of.len()),
                 other => panic!("{other:?}"),
             })
             .collect();
-        assert_eq!(spans, vec![(5.0, 6.0), (1.0, 2.5)]);
+        assert_eq!(spans, vec![((5.0, 6.0), 1), ((1.0, 2.5), 2)], "merged, with the clips of both");
     }
 }
