@@ -1657,6 +1657,8 @@ fn a_focused_grade_canvas_keeps_its_keys_from_the_timeline() {
     let (mut state, clip_id, node) = graded(NodeKind::Saturation).unwrap();
     state.selected_clip = Some(clip_id);
     state.playback = klipp_engine::PlaybackState::Paused;
+    // A project is open: with none, only the welcome screen's keys run.
+    state.project_path = Some(crate::project_paths::UNTITLED.into());
 
     // Which shortcuts run, by the focus.
     for (panel, editing, scope) in [

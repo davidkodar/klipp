@@ -503,9 +503,11 @@ impl TransportBar {
             return cmds;
         }
 
-        // Skip transport shortcuts when any text field has focus or a
-        // modal overlay is open (Quick Look, preferences, dialogs).
-        if state.editing_timecode
+        // Skip transport shortcuts when any text field has focus, a
+        // modal overlay is open (Quick Look, preferences, dialogs) or no
+        // project is (the welcome screen, #2551).
+        if state.project_path.is_none()
+            || state.editing_timecode
             || ctx.wants_keyboard_input()
             || state.has_modal_open()
         {
@@ -730,6 +732,7 @@ mod jkl_step_tests {
         let v1 = state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
         let (zero, end) = (RationalTime { value: 0, rate: 24 }, RationalTime { value: 240, rate: 24 });
         state.sequences[0].tracks[v1].clips.push(klipp_timeline::Clip::media(klipp_core::MediaId::new(), zero, end, zero, end));
+        state.project_path = Some(crate::project_paths::UNTITLED.into());
         state.playback = PlaybackState::Playing;
         state.playback_speed = speed;
         state.jkl_speed_step = step;

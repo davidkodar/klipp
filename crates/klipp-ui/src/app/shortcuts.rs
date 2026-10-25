@@ -12,9 +12,18 @@ impl KlippApp {
         // title text editor, timecode entry, rename fields, etc.).
         // Ctrl+ shortcuts still work (standard convention: Ctrl combos always fire).
         let text_editing = ctx.wants_keyboard_input() || self.state.editing_timecode || self.state.viewer_text_edit;
+        let scope = key_scope(&self.state, text_editing);
+        match scope {
+            KeyScope::Nothing => return cmds,
+            KeyScope::AppOnly => {
+                self.shortcuts_app(ctx, &mut cmds);
+                return cmds;
+            }
+            _ => {}
+        }
         self.shortcuts_ctrl_global(ctx, &mut cmds);
-        match key_scope(&self.state, text_editing) {
-            KeyScope::CtrlOnly => return cmds,
+        match scope {
+            KeyScope::CtrlOnly | KeyScope::Nothing | KeyScope::AppOnly => return cmds,
             KeyScope::GradeCanvas => {
                 let kb = self.key_bindings.clone();
                 ctx.input(|i| grade_node_keys(&mut self.state, &kb, i, &mut cmds));
@@ -85,22 +94,40 @@ impl KlippApp {
         });
     }
 
-    fn shortcuts_ctrl_global(&mut self, ctx: &egui::Context, cmds: &mut Vec<AppCommand>) {
+    /// The keys that need no project: new, open, preferences and quit,
+    /// all the welcome screen takes (#2551).
+    fn shortcuts_app(&mut self, ctx: &egui::Context, cmds: &mut Vec<AppCommand>) {
         let kb = self.key_bindings.clone();
         ctx.input(|i| {
-            // Ctrl+S — Save
-            if kb.is_action_pressed("save_project", i) {
-                cmds.push(AppCommand::SaveProject);
-            }
-            // Ctrl+N / Ctrl+Q / Ctrl+Shift+M / Ctrl+Shift+T. The menus
-            // have advertised all four for a long time with nothing
-            // behind them, because `shortcut_text` only draws a label.
+            // Ctrl+N / Ctrl+Q. The menus advertised them for a long time
+            // with nothing behind them, because `shortcut_text` only
+            // draws a label.
             if kb.is_action_pressed("new_project", i) {
                 cmds.push(AppCommand::NewProject);
             }
             if kb.is_action_pressed("quit", i) {
                 cmds.push(AppCommand::Quit);
             }
+            // Ctrl+O — Open Project
+            if kb.is_action_pressed("open_project", i) {
+                crate::file_dialog::spawn(crate::project_paths::pick_project_commands);
+            }
+            // Ctrl+, — Preferences
+            if kb.is_action_pressed("preferences", i) {
+                self.state.show_preferences = true;
+            }
+        });
+    }
+
+    fn shortcuts_ctrl_global(&mut self, ctx: &egui::Context, cmds: &mut Vec<AppCommand>) {
+        self.shortcuts_app(ctx, cmds);
+        let kb = self.key_bindings.clone();
+        ctx.input(|i| {
+            // Ctrl+S — Save
+            if kb.is_action_pressed("save_project", i) {
+                cmds.push(AppCommand::SaveProject);
+            }
+            // Ctrl+Shift+M / Ctrl+Shift+T
             if kb.is_action_pressed("toggle_audio_mixer", i) {
                 self.state.show_audio_mixer = !self.state.show_audio_mixer;
             }
@@ -119,10 +146,6 @@ impl KlippApp {
                         .unwrap_or_default()
                 });
             }
-            // Ctrl+O — Open Project
-            if kb.is_action_pressed("open_project", i) {
-                crate::file_dialog::spawn(crate::project_paths::pick_project_commands);
-            }
             // Ctrl+I — Import Media
             if kb.is_action_pressed("import_media", i) {
                 crate::file_dialog::spawn(crate::command_palette::import_media_commands);
@@ -131,10 +154,6 @@ impl KlippApp {
             if kb.is_action_pressed("export", i) {
                 self.state.show_export_dialog = true;
                 self.prepare_export_defaults();
-            }
-            // Ctrl+, — Preferences
-            if kb.is_action_pressed("preferences", i) {
-                self.state.show_preferences = true;
             }
             // Ctrl+K — Command palette
             if kb.is_action_pressed("command_palette", i) {
@@ -1341,6 +1360,11 @@ pub(super) enum KeyScope {
     /// The Ctrl combinations and the grade's keys: the grade canvas has
     /// the keys.
     GradeCanvas,
+    /// New, open, preferences and quit: no project is open, and the
+    /// welcome screen shows (#2551).
+    AppOnly,
+    /// None: a dialog has the keys (#2551).
+    Nothing,
 }
 
 /// The shortcuts that run under `state`'s focus (#1742). A node canvas
@@ -1350,6 +1374,8 @@ pub(super) enum KeyScope {
 /// keys, on the level it shows.
 pub(super) fn key_scope(state: &crate::state::AppState, text_editing: bool) -> KeyScope {
     match state.active_panel {
+        _ if state.dialog_open() => KeyScope::Nothing,
+        _ if state.project_path.is_none() => KeyScope::AppOnly,
         _ if text_editing => KeyScope::CtrlOnly,
         Some(crate::state::PanelKind::NodeGraph) => KeyScope::GradeCanvas,
         Some(crate::state::PanelKind::PictureGraph) => KeyScope::CtrlOnly,
@@ -1438,4 +1464,40 @@ pub(crate) fn key_ease_shortcut(state: &crate::state::AppState, preset: Option<c
     let label = if targets.len() > 1 { format!("{what} ({} keys)", targets.len()) } else { what.to_string() };
     cmds.push(AppCommand::EndHistoryBatchAs { label });
     cmds
+}
+
+#[cfg(test)]
+mod key_scope_tests {
+    use super::{key_scope, KeyScope};
+    use crate::state::{AppState, PanelKind};
+
+    /// #2551: with no project open the welcome screen shows, and only
+    /// new, open, preferences and quit run; the untitled project behind
+    /// it took edits and filled its undo history.
+    #[test]
+    fn the_welcome_screen_takes_only_the_app_keys() {
+        let mut state = AppState { project_path: None, active_panel: Some(PanelKind::Timeline), ..Default::default() };
+        assert_eq!(key_scope(&state, false), KeyScope::AppOnly);
+        state.project_path = Some(crate::project_paths::UNTITLED.into());
+        assert_eq!(key_scope(&state, false), KeyScope::All);
+    }
+
+    /// #2551: a dialog keeps its keys, typed into a field or not; a
+    /// shortcut behind the New Project dialog opened the scopes.
+    #[test]
+    fn a_dialog_keeps_its_keys() {
+        let mut state = AppState {
+            project_path: Some(crate::project_paths::UNTITLED.into()),
+            active_panel: Some(PanelKind::Timeline),
+            show_new_project_dialog: true,
+            ..Default::default()
+        };
+        assert_eq!(key_scope(&state, false), KeyScope::Nothing);
+        assert_eq!(key_scope(&state, true), KeyScope::Nothing);
+        state.project_path = None;
+        assert_eq!(key_scope(&state, false), KeyScope::Nothing, "the welcome screen's New Project dialog too");
+        state.show_new_project_dialog = false;
+        state.show_preferences = true;
+        assert_eq!(key_scope(&state, false), KeyScope::Nothing);
+    }
 }
