@@ -806,6 +806,29 @@ mod menu_smoke_tests {
             self.frame(Vec::new()).into_iter().map(|(t, _)| t).collect()
         }
 
+        /// With a menu open, hover each submenu of `path` in turn (#2674):
+        /// the text drawn once the last is open.
+        fn open_submenus(&mut self, path: &[&str]) -> Vec<(String, egui::Pos2)> {
+            let mut drawn = self.frame(Vec::new());
+            for name in path {
+                let at = drawn.iter().find(|(t, _)| t == name).unwrap_or_else(|| panic!("no {name} submenu: {drawn:?}")).1;
+                self.frame(vec![egui::Event::PointerMoved(at)]);
+                drawn = self.frame(vec![egui::Event::PointerMoved(at)]);
+            }
+            drawn
+        }
+
+        /// A click on `at`: what the app was asked to do.
+        fn click(&mut self, at: egui::Pos2) -> Vec<AppCommand> {
+            let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+            self.frame(vec![egui::Event::PointerMoved(at)]);
+            self.frame(vec![egui::Event::PointerMoved(at), button(true)]);
+            let mut sent = std::mem::take(&mut self.sent);
+            self.frame(vec![button(false)]);
+            sent.extend(std::mem::take(&mut self.sent));
+            sent
+        }
+
         /// Where the track header of the first track of `kind` shows its name.
         fn header(&mut self, kind: TrackKind) -> egui::Pos2 {
             let name = self.state.sequences[0].tracks.iter().find(|t| t.kind == kind).expect("a track of that kind").name.clone();
@@ -1032,8 +1055,76 @@ mod menu_smoke_tests {
         let drawn = timeline.frame(Vec::new());
         let at = drawn.into_iter().find(|(t, _)| t == "smoke.mov").expect("the clip is drawn").1;
         let menu = timeline.right_click(at);
-        let lacking = missing(&menu, &["Rename Clip", "Clip Colour", "Grade Flag", "Rhythm Edits", "Speed", "Make Subclip", "Select Same Source", "Cut", "Copy", "Paste at Playhead", "Paste Insert at Playhead", "Duplicate Clip"]);
+        let top = [
+            "Cut", "Copy", "Paste at Playhead", "Duplicate Clip", "Delete Clip",
+            "Rename Clip", "Clip Colour", "Speed", "Disable Clip", "Match Frame", "Reveal in Media Pool",
+            "Edit", "Colour", "Effects", "Link & Group",
+            "Export This Clip", "Open in External App", "Properties",
+        ];
+        let lacking = missing(&menu, &top);
         assert!(lacking.is_empty(), "the clip's menu lacks {lacking:?}; it shows {menu:?}");
+        // What can't apply is left out, and the track's items are the
+        // track header's (#2674).
+        for absent in ["Insert", "Overwrite", "Lift", "Group", "Ungroup", "Align to Audio Reference", "Match Colour to Reference", "Create Compound Clip", "Paste Attributes", "Lock Track", "Reset Track Height", "Text"] {
+            assert!(!menu.iter().any(|t| t == absent || t.starts_with(&format!("{absent}\u{2026}"))), "{absent} is shown: {menu:?}");
+        }
+        for (path, items) in [
+            (&["Edit"][..], &["Ripple Trim Head to Playhead", "Insert Gap (1s)", "Make Subclip", "Replace From Bin", "Rhythm Edits"][..]),
+            (&["Colour"], &["Grade Flag", "Use as Colour Reference", "Copy Attributes"]),
+            (&["Effects"], &["Motion Presets", "Add Title Over Clip"]),
+            (&["Link & Group"], &["Select Same Source", "Create Multicam Clip"]),
+        ] {
+            let drawn = timeline.open_submenus(path);
+            let shown: Vec<String> = drawn.into_iter().map(|(t, _)| t).collect();
+            let lacking = missing(&shown, items);
+            assert!(lacking.is_empty(), "{path:?} lacks {lacking:?}: {shown:?}");
+        }
+    }
+
+    /// #2674: a video clip's menu is short at the top level; a title's has
+    /// Text and no Audio; Paste stays, greyed, with nothing to paste.
+    #[test]
+    fn the_clip_menu_is_short_and_fits_the_clip() {
+        let mut timeline = Timeline::new();
+        timeline.height = 1400.0;
+        let drawn = timeline.frame(Vec::new());
+        let at = drawn.into_iter().find(|(t, _)| t == "smoke.mov").expect("the clip is drawn").1;
+        timeline.right_click(at);
+        timeline.frame(Vec::new());
+        let rows = crate::widgets::menu::row_labels(&timeline.shapes, "Rename Clip\u{2026}");
+        assert!(rows.len() <= 20, "{} top-level rows: {rows:?}", rows.len());
+        assert!(rows.iter().any(|r| r == "Paste at Playhead"), "Paste stays with nothing to paste: {rows:?}");
+        let escape = egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+        timeline.frame(vec![escape]);
+
+        let mut text = klipp_timeline::Track::new("Text 1", TrackKind::Text);
+        let (zero, two) = (RationalTime { value: 0, rate: 24 }, RationalTime { value: 48, rate: 24 });
+        let td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Hello".into(), ..Default::default() });
+        text.clips.push(Clip { kind: klipp_timeline::ClipKind::Title(td), name: Some("A title".into()), ..Clip::gap(zero, two) });
+        timeline.state.sequences[0].tracks.insert(0, text);
+        let drawn = timeline.frame(Vec::new());
+        let at = drawn.into_iter().find(|(t, _)| t == "A title").expect("the title is drawn").1;
+        let menu = timeline.right_click(at);
+        assert!(menu.iter().any(|t| t == "Text") && !menu.iter().any(|t| t == "Audio"), "a title has Text and no Audio: {menu:?}");
+        let shown: Vec<String> = timeline.open_submenus(&["Text"]).into_iter().map(|(t, _)| t).collect();
+        let lacking = missing(&shown, &["Edit Text", "Alignment", "Font Style", "Save as Title Template", "Save as Project Asset"]);
+        assert!(lacking.is_empty(), "Text lacks {lacking:?}: {shown:?}");
+    }
+
+    /// #2674: Lock Track and Reset Track Height are the track header's.
+    #[test]
+    fn locking_a_track_is_in_its_headers_menu() {
+        let mut timeline = Timeline::new();
+        let v1 = timeline.state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        let track_id = timeline.state.sequences[0].tracks[v1].id;
+        timeline.state.sequences[0].tracks[v1].custom_height = Some(90.0);
+        let at = timeline.header(TrackKind::Video);
+        timeline.right_click(at);
+        let drawn = timeline.frame(Vec::new());
+        assert!(drawn.iter().any(|(t, _)| t == "Reset Track Height"), "{drawn:?}");
+        let item = drawn.iter().find(|(t, _)| t == "Lock Track").unwrap_or_else(|| panic!("Lock Track in the header's menu: {drawn:?}")).1;
+        let sent = timeline.click(item);
+        assert!(sent.iter().any(|c| matches!(c, AppCommand::SetTrackLocked { track_id: t, locked: true } if *t == track_id)), "{sent:?}");
     }
 
     /// #239: a video clip whose file is there offers Track Subject, and
@@ -1054,7 +1145,7 @@ mod menu_smoke_tests {
         let drawn = timeline.frame(Vec::new());
         let at = drawn.into_iter().find(|(t, _)| t == "smoke.mov").expect("the clip is drawn").1;
         timeline.right_click(at);
-        let drawn = timeline.frame(Vec::new());
+        let drawn = timeline.open_submenus(&["Effects"]);
         let item = drawn.iter().find(|(t, _)| t == "Track Subject").unwrap_or_else(|| panic!("Track Subject in the menu: {drawn:?}")).1;
         let button = |pressed| egui::Event::PointerButton { pos: item, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
         timeline.frame(vec![egui::Event::PointerMoved(item), button(true)]);
@@ -1083,7 +1174,7 @@ mod menu_smoke_tests {
         let drawn = timeline.frame(Vec::new());
         let at = drawn.into_iter().find(|(t, _)| t == "smoke.mov").expect("the clip is drawn").1;
         timeline.right_click(at);
-        let drawn = timeline.frame(Vec::new());
+        let drawn = timeline.open_submenus(&["Effects"]);
         let item = drawn.iter().find(|(t, _)| t == "Cut Out Subject").unwrap_or_else(|| panic!("Cut Out Subject in the menu: {drawn:?}")).1;
         let button = |pressed| egui::Event::PointerButton { pos: item, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
         timeline.frame(vec![egui::Event::PointerMoved(item), button(true)]);
@@ -1114,7 +1205,7 @@ mod menu_smoke_tests {
         let drawn = timeline.frame(Vec::new());
         let at = drawn.into_iter().find(|(t, _)| t == "smoke.mov").expect("the clip is drawn").1;
         timeline.right_click(at);
-        let drawn = timeline.frame(Vec::new());
+        let drawn = timeline.open_submenus(&["Effects"]);
         let item = drawn.iter().find(|(t, _)| t == "Restore Background").expect("restore in the menu").1;
         let button = |pressed| egui::Event::PointerButton { pos: item, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
         timeline.frame(vec![egui::Event::PointerMoved(item), button(true)]);
@@ -1167,7 +1258,7 @@ mod menu_smoke_tests {
             // The audio clip's name is drawn on its track, below the video's.
             let at = drawn.iter().filter(|(t, _)| t == "smoke.mov").map(|(_, p)| *p).max_by(|a, b| a.y.total_cmp(&b.y)).expect("the audio clip is drawn");
             timeline.right_click(at);
-            let item = timeline.frame(Vec::new()).into_iter().find(|(t, _)| t == "Add Fade In").expect("Add Fade In in the menu").1;
+            let item = timeline.open_submenus(&["Transitions"]).into_iter().find(|(t, _)| t == "Add Fade In").expect("Add Fade In in the menu").1;
             let button = |pressed| egui::Event::PointerButton { pos: item, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
             timeline.frame(vec![egui::Event::PointerMoved(item), button(true)]);
             let mut sent = std::mem::take(&mut timeline.sent);
@@ -1193,7 +1284,12 @@ mod menu_smoke_tests {
             let drawn = timeline.frame(Vec::new());
             let at = drawn.into_iter().find(|(t, _)| t == "smoke.mov").expect("the clip is drawn").1;
             let menu = timeline.right_click(at);
-            let item = timeline.frame(Vec::new()).into_iter().find(|(t, _)| t == "Normalize\u{2026}").map(|(_, p)| p);
+            // No Audio submenu on a clip with no sound.
+            let item = if menu.iter().any(|t| t == "Audio") {
+                timeline.open_submenus(&["Audio"]).into_iter().find(|(t, _)| t == "Normalize\u{2026}").map(|(_, p)| p)
+            } else {
+                None
+            };
             let Some(item) = item else {
                 assert!(!has_audio, "a clip with sound offers Normalize: {menu:?}");
                 continue;
@@ -1218,7 +1314,7 @@ mod menu_smoke_tests {
         let clip_id = timeline.state.sequences[0].all_clips().next().unwrap().id;
         let at = timeline.frame(Vec::new()).into_iter().find(|(t, _)| t == "smoke.mov").expect("the clip is drawn").1;
         let menu = timeline.right_click(at);
-        let item = timeline.frame(Vec::new()).into_iter().find(|(t, _)| t == "Fit Music to Length\u{2026}").map(|(_, p)| p).unwrap_or_else(|| panic!("offered: {menu:?}"));
+        let item = timeline.open_submenus(&["Audio"]).into_iter().find(|(t, _)| t == "Fit Music to Length\u{2026}").map(|(_, p)| p).unwrap_or_else(|| panic!("offered: {menu:?}"));
         let button = |pressed| egui::Event::PointerButton { pos: item, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
         timeline.frame(vec![egui::Event::PointerMoved(item), button(true)]);
         let mut sent = std::mem::take(&mut timeline.sent);
@@ -1238,10 +1334,7 @@ mod menu_smoke_tests {
         let drawn = timeline.frame(Vec::new());
         let at = drawn.into_iter().find(|(t, _)| t == "smoke.mov").expect("the clip is drawn on the strip").1;
         timeline.right_click(at);
-        let drawn = timeline.frame(Vec::new());
-        let item = drawn.iter().find(|(t, _)| t == "Grade Flag").unwrap_or_else(|| panic!("a Grade Flag item: {drawn:?}")).1;
-        timeline.frame(vec![egui::Event::PointerMoved(item)]);
-        let drawn = timeline.frame(vec![egui::Event::PointerMoved(item)]);
+        let drawn = timeline.open_submenus(&["Colour", "Grade Flag"]);
         let flag = drawn.iter().find(|(t, _)| t.ends_with("Needs Work")).unwrap_or_else(|| panic!("a Needs Work flag: {drawn:?}")).1;
         let button = |pressed| egui::Event::PointerButton { pos: flag, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
         timeline.frame(vec![egui::Event::PointerMoved(flag)]);
@@ -1282,7 +1375,7 @@ mod menu_smoke_tests {
         // The viewer shows the first, at the playhead; the right-click
         // selects the second.
         let menu = timeline.right_click(at);
-        let drawn = timeline.frame(Vec::new());
+        let drawn = timeline.open_submenus(&["Colour"]);
         let item = drawn.iter().find(|(t, _)| t == "Wipe Against This Clip").unwrap_or_else(|| panic!("no wipe item: {menu:?}")).1;
         let button = |pressed| egui::Event::PointerButton { pos: item, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
         timeline.frame(vec![egui::Event::PointerMoved(item)]);

@@ -27,7 +27,7 @@ impl KlippApp {
             return;
         }
         self.state.toast.show(
-            "Tip: right-click any clip → \"Use clip above as matte\" to mask one clip with another",
+            "Tip: right-click any clip → Effects → Use Clip Above as Matte to mask one clip with another",
         );
         self.prefs.general.dismissed_tips.insert(TRACK_MATTE_TIP_KEY.to_string());
         // Best-effort save — losing the dismissed flag on a write
