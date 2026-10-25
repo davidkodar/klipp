@@ -750,6 +750,8 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::ImportImageSequence { .. }
         | AppCommand::DeleteBin { .. }
         | AppCommand::MoveItemToBin { .. }
+        | AppCommand::MoveItemsToBin { .. }
+        | AppCommand::NewBin { .. }
         | AppCommand::RenameBin { .. }
         | AppCommand::RenameMediaItem { .. }
         | AppCommand::BatchRenameMediaItems { .. }

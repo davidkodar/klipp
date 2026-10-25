@@ -148,6 +148,10 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
         action: PaletteAction::SetState(|s| s.show_colour_management = true), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Import Media…"), shortcut: Cow::Borrowed("Ctrl+I"),
         action: PaletteAction::OpenDialog(DialogKind::ImportMedia), enabled: true });
+    e.push(PaletteEntry { label: Cow::Borrowed("New Bin"), shortcut: Cow::Borrowed(""),
+        action: PaletteAction::Cmd(AppCommand::NewBin { media_ids: Vec::new() }), enabled: true });
+    e.push(PaletteEntry { label: Cow::Borrowed("New Bin from Selection"), shortcut: Cow::Borrowed(""),
+        action: PaletteAction::Cmd(AppCommand::NewBin { media_ids: state.selected_media_ids.iter().copied().collect() }), enabled: !state.selected_media_ids.is_empty() });
     e.push(PaletteEntry { label: Cow::Borrowed("Import Subtitles…"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::OpenDialog(DialogKind::ImportSubtitles), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Import FCPXML…"), shortcut: Cow::Borrowed(""),

@@ -232,6 +232,17 @@ impl ToolbarPanel {
                 ui.close_menu();
                 crate::file_dialog::spawn(crate::command_palette::import_media_commands);
             }
+            ui.separator();
+            if ui.button("New Bin").clicked() {
+                cmds.push(AppCommand::NewBin { media_ids: Vec::new() });
+                ui.close_menu();
+            }
+            let selected: Vec<klipp_core::MediaId> = state.selected_media_ids.iter().copied().collect();
+            if ui.add_enabled(!selected.is_empty(), egui::Button::new("New Bin from Selection")).on_disabled_hover_text("Select clips in the media pool first.").clicked() {
+                cmds.push(AppCommand::NewBin { media_ids: selected });
+                ui.close_menu();
+            }
+            ui.separator();
             if ui.button("Import Subtitles...").clicked() {
                 ui.close_menu();
                 crate::file_dialog::spawn(move || {

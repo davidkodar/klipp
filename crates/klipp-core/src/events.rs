@@ -3252,6 +3252,13 @@ pub enum AppCommand {
     },
     DeleteBin { name: String },
     MoveItemToBin { media_id: MediaId, bin: Option<String> },
+    /// Move these items into `bin`, or out of their bins with `None`, as
+    /// one undo step.
+    MoveItemsToBin { media_ids: Vec<MediaId>, bin: Option<String> },
+    /// Make a bin with a name no other bin has, move these items into it
+    /// (none for an empty bin) and show it in the media pool, its name
+    /// ready to type over.
+    NewBin { media_ids: Vec<MediaId> },
     RenameBin { old_name: String, new_name: String },
     /// Rename a single MediaItem — updates `MediaItem.filename` only. The
     /// source file on disk (`MediaItem.path`) is never touched.
