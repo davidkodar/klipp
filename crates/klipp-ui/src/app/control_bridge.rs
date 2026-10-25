@@ -197,7 +197,7 @@ impl KlippApp {
             let said = |r: &Refusal| {
                 let hint = if r.hint.is_empty() { String::new() } else { format!(" \u{2014} {}", r.hint) };
                 match ops.get(r.step) {
-                    Some(Op::Cut { from: Anchor::Secs(a), to: Anchor::Secs(b) }) => format!("{a:.2}-{b:.2} s: {}{hint}", r.why),
+                    Some(Op::Cut { from: Anchor::Secs(a), to: Anchor::Secs(b), .. }) => format!("{a:.2}-{b:.2} s: {}{hint}", r.why),
                     Some(Op::Captions { replace: false, .. }) if r.code == Some(RefusalCode::CaptionsOverlap) => "Captions already exist in that range; tick Replace to overwrite them".to_string(),
                     Some(Op::Captions { replace: true, .. }) if r.code == Some(RefusalCode::CaptionsOverlap) => format!("{}; widen the range to take those in, or choose another track", r.why),
                     _ => format!("{}{hint}", r.why),
