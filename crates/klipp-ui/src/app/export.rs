@@ -4132,3 +4132,25 @@ mod delivery_spec_tests {
         }
     }
 }
+
+/// A preset with a custom loudness target and a true-peak ceiling of
+/// its own (one imported, or written by hand) exports under that
+/// ceiling, not the default.
+#[cfg(test)]
+mod custom_ceiling_tests {
+    use super::*;
+
+    #[test]
+    fn a_custom_target_keeps_its_ceiling() {
+        let settings = ExportPresetSettings { target_lufs: Some(-27.0), true_peak_dbtp: Some(-2.0), ..klipp_core::builtin_presets()[0].settings.clone() };
+        let mut dialog = ExportDialogState::default();
+        apply_preset_to_dialog(&mut dialog, &settings);
+        assert_eq!(dialog_target_lufs(&dialog), Some(-27.0));
+        assert_eq!(dialog_true_peak(&dialog), Some(-2.0), "the preset's own ceiling");
+        // One with no ceiling of its own takes the default, as before.
+        let plain = ExportPresetSettings { true_peak_dbtp: None, ..settings };
+        let mut dialog = ExportDialogState::default();
+        apply_preset_to_dialog(&mut dialog, &plain);
+        assert_eq!(dialog_true_peak(&dialog), None);
+    }
+}

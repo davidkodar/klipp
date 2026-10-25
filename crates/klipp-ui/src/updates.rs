@@ -19,6 +19,30 @@ struct Release {
     tag_name: String,
     draft: bool,
     prerelease: bool,
+    #[serde(default)]
+    assets: Vec<Asset>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct Asset {
+    name: String,
+}
+
+/// The release package's file name for `version`, as the release
+/// publishes it: Arch versions can't hold a hyphen, so 0.1.0-rc.3 is
+/// packaged as 0.1.0rc.3. `klipp-update` builds the same name.
+fn package_file(version: &Version) -> String {
+    format!("klipp-{}-1-x86_64.pkg.tar.zst", version.to_string().replace('-', ""))
+}
+
+/// Whether the release of `version` carries its package and the sums
+/// `klipp-update` checks it against.
+fn has_package(releases: &[Release], version: &Version) -> bool {
+    let tag = format!("v{version}");
+    let file = package_file(version);
+    releases.iter().filter(|r| r.tag_name == tag).any(|r| {
+        r.assets.iter().any(|a| a.name == file) && r.assets.iter().any(|a| a.name == "SHA256SUMS")
+    })
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -124,7 +148,9 @@ fn newest(releases: &[Release], current: &str, preview: bool) -> Result<Option<V
         .max_by(Version::cmp_precedence))
 }
 
-fn fetch(current: &str, preview: bool) -> Result<Option<Version>, String> {
+/// The newest release past `current` on the channel, and whether it
+/// carries a package to install.
+fn fetch(current: &str, preview: bool) -> Result<Option<(Version, bool)>, String> {
     let agent = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(20))
         .build();
@@ -153,7 +179,10 @@ fn fetch(current: &str, preview: bool) -> Result<Option<Version>, String> {
     }
     let releases: Vec<Release> = serde_json::from_slice(&bytes)
         .map_err(|_| "The release service returned an invalid response.")?;
-    newest(&releases, current, preview)
+    Ok(newest(&releases, current, preview)?.map(|v| {
+        let package = has_package(&releases, &v);
+        (v, package)
+    }))
 }
 
 struct Check {
@@ -166,6 +195,17 @@ struct Check {
     /// A test override said the repository is configured: it is taken to
     /// carry previews too, so the updater shows for one.
     forced_repository: bool,
+    /// The newer release carries its package, which `klipp-update` can
+    /// download and install without a repository.
+    package: bool,
+}
+
+impl Check {
+    /// Whether the package repository carries the newer release, so the
+    /// updater updates from it rather than downloading the package.
+    fn in_repository(&self, version: &Version) -> bool {
+        self.repository && (version.pre.is_empty() || self.forced_repository)
+    }
 }
 
 /// Overrides for trying the update check against the real releases: the
@@ -293,9 +333,11 @@ impl Updates {
                 probe_installation(&exe, Path::new("/usr/bin/pacman"), Path::new("/usr/bin/pacman-conf"))
             });
             let installed = overrides.version.as_deref().unwrap_or(klipp_core::build_info::get().version);
-            let release = fetch(installed, preview);
+            let found = fetch(installed, preview);
+            let package = matches!(found, Ok(Some((_, true))));
             let _ = tx.send(Check {
-                release,
+                release: found.map(|f| f.map(|(v, _)| v)),
+                package,
                 installation: install,
                 repository,
                 preview,
@@ -382,7 +424,7 @@ impl Updates {
             Ok(None) => Status::Latest { previews: check.preview, testing: check.testing.as_deref() },
             Ok(Some(version)) => {
                 let install = match check.installation {
-                    Installation::ArchRelease if check.repository && (version.pre.is_empty() || check.forced_repository) => Install::Updater,
+                    Installation::ArchRelease if check.in_repository(version) || check.package => Install::Updater,
                     Installation::ArchRelease => Install::Download,
                     Installation::ArchSource => Install::Steps(ARCH_SOURCE_STEPS),
                     Installation::Source => Install::Steps(SOURCE_STEPS),
@@ -393,11 +435,14 @@ impl Updates {
     }
 
     /// Open the package's updater: a terminal with pacman's own
-    /// confirmation. Only offered for [`Install::Updater`].
+    /// confirmation. Only offered for [`Install::Updater`]: from the
+    /// repository when it carries the release, else given the version, whose
+    /// package it downloads and verifies.
     pub(crate) fn install(&mut self) {
         self.launch_error = None;
+        let Some(args) = self.updater_args() else { return };
         // Fixed, package-owned helper; no downloaded command or URL is executed.
-        match Command::new("/usr/bin/klipp-update").spawn() {
+        match Command::new("/usr/bin/klipp-update").args(args).spawn() {
             Ok(mut child) => {
                 let (tx, rx) = mpsc::channel();
                 self.launched = Some(rx);
@@ -414,6 +459,14 @@ impl Updates {
             }
             Err(_) => self.launch_error = Some("Could not open the updater. Run sudo pacman -Syu klipp in a terminal.".into()),
         }
+    }
+
+    /// The updater's arguments for the version found: none to update from
+    /// the repository, the version to download its package.
+    fn updater_args(&self) -> Option<Vec<String>> {
+        let check = self.result.as_ref()?;
+        let Ok(Some(version)) = &check.release else { return None };
+        Some(if check.in_repository(version) { Vec::new() } else { vec![version.to_string()] })
     }
 
     /// The question and the new version's notice, and the check itself.
@@ -654,6 +707,7 @@ mod tests {
             tag_name: "v1.0.0+new".into(),
             draft: false,
             prerelease: false,
+            assets: Vec::new(),
         }];
         assert!(newest(&r, "1.0.0+old", false).unwrap().is_none());
         assert!(newest(&r, "invalid", false).is_err());
@@ -713,6 +767,7 @@ mod tests {
                 preview: false,
                 testing: None,
                 forced_repository: false,
+                package: false,
             }),
             ..Default::default()
         }
@@ -780,11 +835,12 @@ mod tests {
     /// the real releases are, and the row names the version tested as.
     #[test]
     fn each_test_install_maps_to_its_action() {
-        for (value, want) in [
-            ("package", Install::Download),
-            ("repository", Install::Updater),
-            ("klipp-git", Install::Steps(ARCH_SOURCE_STEPS)),
-            ("source", Install::Steps(SOURCE_STEPS)),
+        for (value, package, want) in [
+            ("package", true, Install::Updater),
+            ("package", false, Install::Download),
+            ("repository", false, Install::Updater),
+            ("klipp-git", true, Install::Steps(ARCH_SOURCE_STEPS)),
+            ("source", true, Install::Steps(SOURCE_STEPS)),
         ] {
             let overrides = parse_overrides(Some("0.1.0-rc.1"), Some(value));
             let (installation, repository) = overrides.install.clone().unwrap();
@@ -796,6 +852,7 @@ mod tests {
                     preview: true,
                     testing: overrides.version.clone(),
                     forced_repository: repository,
+                    package,
                 }),
                 ..Default::default()
             };
@@ -807,6 +864,39 @@ mod tests {
                 other => panic!("{value}: {other:?}"),
             }
         }
+    }
+
+    /// A release offers its package when it carries the file pacman's
+    /// version spelling gives and the sums; the updater is given the version
+    /// unless the repository carries it.
+    #[test]
+    fn a_package_install_downloads_the_release_package() {
+        let rc = Version::parse("0.1.0-rc.2").unwrap();
+        assert_eq!(package_file(&rc), "klipp-0.1.0rc.2-1-x86_64.pkg.tar.zst");
+        assert_eq!(package_file(&Version::parse("0.2.0").unwrap()), "klipp-0.2.0-1-x86_64.pkg.tar.zst");
+        let releases: Vec<Release> = serde_json::from_str(
+            r#"[{"tag_name":"v0.1.0-rc.2","draft":false,"prerelease":true,"assets":[
+                    {"name":"klipp-0.1.0-rc.2-source.tar.gz"},{"name":"klipp-0.1.0rc.2-1-x86_64.pkg.tar.zst"},{"name":"SHA256SUMS"}]},
+                {"tag_name":"v0.1.0-rc.3","draft":false,"prerelease":true,"assets":[{"name":"SHA256SUMS"}]},
+                {"tag_name":"v0.1.0-rc.4","draft":false,"prerelease":true}]"#,
+        )
+        .unwrap();
+        assert!(has_package(&releases, &rc));
+        assert!(!has_package(&releases, &Version::parse("0.1.0-rc.3").unwrap()), "sums but no package");
+        assert!(!has_package(&releases, &Version::parse("0.1.0-rc.4").unwrap()), "no assets");
+
+        let mut updates = available(Installation::ArchRelease);
+        let check = updates.result.as_mut().unwrap();
+        check.release = Ok(Some(rc.clone()));
+        check.package = true;
+        assert_eq!(updates.updater_args(), Some(vec!["0.1.0-rc.2".to_owned()]), "a preview isn't in the repository");
+        updates.result.as_mut().unwrap().repository = false;
+        assert!(matches!(updates.status(), Status::Available { install: Install::Updater, .. }));
+        assert_eq!(updates.updater_args(), Some(vec!["0.1.0-rc.2".to_owned()]));
+        let mut stable = available(Installation::ArchRelease);
+        assert_eq!(stable.updater_args(), Some(Vec::new()), "a stable release comes from the repository");
+        stable.result.as_mut().unwrap().repository = false;
+        assert_eq!(stable.status(), Status::Available { version: "0.20.0".into(), notes: format!("{RELEASES}/tag/v0.20.0"), install: Install::Download, error: None, testing: None }, "no package, no repository");
     }
 
     /// The status follows the check: idle, checking while it runs, then
@@ -823,7 +913,7 @@ mod tests {
         frames(&mut updates, &mut prefs, true);
         assert!(matches!(updates.status(), Status::Failed(_)), "a check that stops is a failure");
         updates.stopped = None;
-        updates.result = Some(Check { release: Ok(None), installation: Installation::Source, repository: false, preview: false, testing: None, forced_repository: false });
+        updates.result = Some(Check { release: Ok(None), installation: Installation::Source, repository: false, preview: false, testing: None, forced_repository: false, package: false });
         assert_eq!(updates.status(), Status::Latest { previews: false, testing: None });
         updates.result.as_mut().unwrap().release = Err("Offline.".into());
         assert_eq!(updates.status(), Status::Failed("Offline."));
