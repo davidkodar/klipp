@@ -1613,8 +1613,11 @@ impl BrowserPanel {
                         // Smart bin + rating + colour-label filters.
                         // AND-combined across categories, OR-combined
                         // within the colour-label bitmask.
-                        self.render_media_filter_toolbar(ui, theme, state);
-                        media_pool_buttons(ui, &mut cmds);
+                        // Inset like the pool's items below them.
+                        egui::Frame::none().inner_margin(egui::Margin::symmetric(8.0, 0.0)).show(ui, |ui| {
+                            self.render_media_filter_toolbar(ui, theme, state);
+                            media_pool_buttons(ui, &mut cmds);
+                        });
                         let tab_cmds = media_tab::show(
                             ui,
                             state,
@@ -1653,8 +1656,11 @@ impl BrowserPanel {
                     // non-split path too — otherwise the filters are only
                     // visible when Files is pinned, which is poor
                     // discoverability.
-                    self.render_media_filter_toolbar(ui, theme, state);
-                    media_pool_buttons(ui, &mut cmds);
+                    // Inset like the pool's items below them.
+                    egui::Frame::none().inner_margin(egui::Margin::symmetric(8.0, 0.0)).show(ui, |ui| {
+                        self.render_media_filter_toolbar(ui, theme, state);
+                        media_pool_buttons(ui, &mut cmds);
+                    });
                     let tab_cmds = media_tab::show(
                         ui,
                         state,
