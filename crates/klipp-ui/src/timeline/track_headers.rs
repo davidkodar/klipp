@@ -653,8 +653,7 @@ pub fn show(
                     // The storyline key acts on a selected clip on this
                     // track; it shares its binding with audio skim.
                     let key = kb.display_for("toggle_audio_skim");
-                    let label = if key.is_empty() { "Create Storyline".to_string() } else { format!("Create Storyline ({key})") };
-                    if ui.button(label).clicked() {
+                    if ui.add(egui::Button::new("Create Storyline").shortcut_text(&key)).clicked() {
                         deferred_action = Some(TrackAction::PromoteToStoryline(track_idx));
                         ui.close_menu();
                     }
