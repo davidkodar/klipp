@@ -4444,3 +4444,43 @@ fn a_surface_click_replies_with_what_it_found_or_why_not() {
     let why = refused["error"].as_str().unwrap();
     assert!(why.contains("does not move as one flat surface") && why.contains("four corners"), "{why}");
 }
+
+/// `open_project` (#2789): a project with an auto-save newer than its last
+/// save, a lock written into it after, isn't opened without a choice:
+/// the reply offers the auto-save with its time. Opened again with
+/// recovery, the choice reaches the app, and the reply says whether the
+/// work was recovered. A choice that isn't one is refused.
+#[test]
+fn opening_a_project_with_a_newer_autosave_offers_it() {
+    let mut h = harness();
+    let dir = std::env::temp_dir().join(format!("klipp-open-recovery-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let project = dir.join("Film.klipp");
+    let save = |folder: &std::path::Path, at: &str| {
+        std::fs::create_dir_all(folder).unwrap();
+        std::fs::write(folder.join("project.json"), format!(r#"{{"saved_at":"{at}","generation":"{at}","sequences":[]}}"#)).unwrap();
+    };
+    save(&project, "2026-10-26T22:30:00Z");
+    save(&klipp_project::recovery::autosave_path_for(&project), "2026-10-26T22:35:59Z");
+    std::fs::write(project.join("project.lock"), "pid 1").unwrap();
+    let path = project.to_string_lossy().to_string();
+
+    let offered = h.ok(json!({"method": "open_project", "path": path, "discard_changes": true}));
+    assert_eq!(offered["opened"], json!(false), "{offered}");
+    assert_eq!(offered["newer_autosave"]["autosaved_at"], json!("2026-10-26T22:35:59Z"), "{offered}");
+    assert!(offered["next"].as_str().unwrap().contains("restore") && offered["next"].as_str().unwrap().contains("keep"), "{offered}");
+    let opens = |h: &Harness| h.sent.lock().unwrap().iter().filter_map(|c| match c {
+        klipp_core::AppCommand::OpenProjectNow { recovery, .. } => Some(*recovery),
+        _ => None,
+    }).collect::<Vec<_>>();
+    assert!(opens(&h).is_empty(), "nothing opened without a choice");
+
+    let restored = h.ok(json!({"method": "open_project", "path": path, "discard_changes": true, "recovery": "restore"}));
+    assert_eq!((restored["opened"].clone(), restored["recovered"].clone()), (json!(true), json!(true)), "{restored}");
+    let kept = h.ok(json!({"method": "open_project", "path": path, "discard_changes": true, "recovery": "keep"}));
+    assert_eq!(kept["recovered"], json!(false), "{kept}");
+    assert_eq!(opens(&h), [Some(true), Some(false)]);
+    let refused = h.call(json!({"method": "open_project", "path": path, "recovery": "maybe"}));
+    assert!(refused["error"].as_str().unwrap_or_default().contains("restore or keep"), "{refused}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

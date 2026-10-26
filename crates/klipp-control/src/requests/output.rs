@@ -602,12 +602,31 @@ pub(crate) fn respond(
             Ok(json!({"closed":true,"operation_id":result["operation_id"],"revision":result["revision"]}))
         }
 
-        ControlCommand::OpenProject { path, name, save, discard_changes } => {
+        ControlCommand::OpenProject { path, name, save, discard_changes, recovery } => {
             if in_batch { return Err("open_project is not part of a batch; send it on its own".into()); }
+            let recovery = match recovery.as_deref() {
+                None => None,
+                Some("restore") => Some(true),
+                Some("keep") => Some(false),
+                Some(other) => return Err(format!("recovery \"{other}\" is not one: restore or keep")),
+            };
             let before = project_status(ctx)?;
             let p = crate::project_access::resolve(&before, path.as_deref(), name.as_deref())?;
             before.replacement_save_path(before.identity, save, discard_changes)?;
-            let result = crate::project_access::switch(ctx, AppCommand::OpenProjectNow { path: p.clone(), save, discard_changes, expected_identity: before.identity })?;
+            // Unsaved work from a crash (#2789): said before anything opens,
+            // for the caller to choose.
+            let found = klipp_project::recovery::newer_autosave(&p);
+            if let (Some(found), None) = (&found, recovery) {
+                let when = found.autosaved_at.as_deref().unwrap_or("an unknown time");
+                return Ok(json!({
+                    "opened": false,
+                    "path": p.to_string_lossy(),
+                    "newer_autosave": { "autosaved_at": found.autosaved_at, "saved_at": found.saved_at },
+                    "text": format!("Not opened: this project has an auto-save from {when}, newer than its last save ({}), holding unsaved work, usually from a crash.", found.saved_at.as_deref().unwrap_or("never saved")),
+                    "next": "Open it again with recovery \"restore\" to open the auto-save's work (unsaved until saved), or \"keep\" to open the saved version and set the auto-save aside.",
+                }));
+            }
+            let result = crate::project_access::switch(ctx, AppCommand::OpenProjectNow { path: p.clone(), save, discard_changes, expected_identity: before.identity, recovery })?;
             if result["applied"] != true { return Ok(result); }
             let offline = super::media::offline_media(ctx);
             let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
@@ -616,6 +635,7 @@ pub(crate) fn respond(
                 "offline_media": offline,
                 "next": offline.as_ref().map(|o| o["text"].clone()),
                 "opened": true,
+                "recovered": found.is_some() && recovery == Some(true),
                 "operation_id": result["operation_id"],
                 "path": p.to_string_lossy(),
                 "sequence": seq.name,

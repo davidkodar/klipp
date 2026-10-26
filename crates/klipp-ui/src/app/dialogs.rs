@@ -571,26 +571,17 @@ impl KlippApp {
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         if ui.button("Restore Auto-Save").clicked() {
-                            if let Some(autosave_path) = self.state.autosave_recovery_path.take() {
-                                let original_path = self.state.autosave_original_path.take();
-                                self.state.show_autosave_recovery = false;
-                                self.do_open_project_inner(&autosave_path);
-                                // Set project path to the original, not the autosave
-                                if let Some(orig) = original_path {
-                                    self.state.project_path = Some(orig);
-                                }
-                                // Unsaved until it is saved explicitly: what
-                                // is on disk is not what was restored.
-                                self.state.saved_digest = None;
-                                self.state.dirty = true;
+                            self.state.autosave_recovery_path = None;
+                            self.state.show_autosave_recovery = false;
+                            if let Some(original_path) = self.state.autosave_original_path.take() {
+                                self.restore_autosave(&original_path);
                             }
                         }
                         if ui.button("Keep Saved Version").clicked() {
+                            self.state.autosave_recovery_path = None;
+                            self.state.show_autosave_recovery = false;
                             if let Some(original_path) = self.state.autosave_original_path.take() {
-                                self.state.autosave_recovery_path = None;
-                                self.state.show_autosave_recovery = false;
-                                retire_autosave(&original_path);
-                                self.do_open_project_inner(&original_path);
+                                self.keep_saved_version(&original_path);
                             }
                         }
                     });

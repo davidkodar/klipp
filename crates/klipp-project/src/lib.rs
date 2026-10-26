@@ -37,6 +37,7 @@
 //! during consolidation).
 
 pub mod lock;
+pub mod recovery;
 pub mod metadata_sheet;
 pub mod consolidate;
 pub mod consolidate_trim;

@@ -1614,6 +1614,11 @@ pub enum ControlCommand {
         save: bool,
         #[serde(default)]
         discard_changes: bool,
+        /// What to do with an auto-save newer than the project's last save
+        /// (#2789): "restore" it or "keep" the saved version. Left out when
+        /// there is one, nothing opens and the reply says so.
+        #[serde(default)]
+        recovery: Option<String>,
     },
     /// List the existing recent projects without searching the filesystem.
     RecentProjects,

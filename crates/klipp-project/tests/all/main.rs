@@ -14,6 +14,8 @@ mod auto_move_save;
 mod rich_round_trip;
 #[path = "../autosave_restore_paths.rs"]
 mod autosave_restore_paths;
+#[path = "../crash_recovery_open.rs"]
+mod crash_recovery_open;
 #[path = "../brief_round_trip.rs"]
 mod brief_round_trip;
 #[path = "../awaiting_refit_round_trip.rs"]
