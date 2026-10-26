@@ -12,9 +12,9 @@
 set -euo pipefail
 
 RELEASES=https://github.com/davidkodar/klipp/releases/download
-# The project's release key: minisign's public key line. Empty until the
-# key is made; with none, nothing is installed this way.
-RELEASE_KEY=''
+# The project's release key: minisign's public key line (key id
+# 54950EE2C08EE0E8). With none, nothing is installed this way.
+RELEASE_KEY='RWTo4I7A4g6VVGz6+mMUh6yQBtX+bdtyftItQmb1Kxf/rtUrNeGAXBvM'
 
 # GitHub serves release assets by redirecting to one of these.
 ASSET_HOSTS='^https://(objects|release-assets)\.githubusercontent\.com/'

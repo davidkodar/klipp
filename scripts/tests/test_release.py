@@ -118,7 +118,8 @@ class SignTests(unittest.TestCase):
         updater = self.root / "klipp-update"
         updater.write_text(f"#!/bin/bash\nRELEASE_KEY='{self.public}'\n")
         self.assertEqual(self.shipped(updater), self.public)
-        self.assertEqual(self.shipped(ROOT / "packaging/klipp-update"), "", "a placeholder until the key is made")
+        shipped = self.shipped(ROOT / "packaging/klipp-update")
+        self.assertRegex(shipped, r"^RW[A-Za-z0-9+/]{54}$", "the updater ships a minisign Ed25519 public key")
 
 
 class QuietHandler(http.server.SimpleHTTPRequestHandler):
@@ -238,13 +239,13 @@ class PackageUpdateTests(unittest.TestCase):
         self.assertIn("not for Klipp 0.1.0-rc.9", result.stderr)
 
     def test_a_test_key_counts_only_on_the_loopback_test_path(self):
-        # The shipped script has no release key yet: without the test path
-        # nothing verifies, and the test key is not read.
-        del self.env["KLIPP_UPDATE_TEST_BASE_URL"]
+        # Off the loopback address the test key is never read, and nothing
+        # is downloaded from the address given.
+        self.env["KLIPP_UPDATE_TEST_BASE_URL"] = "http://example.invalid/releases"
         result, calls = self.run_update()
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(calls, [])
-        self.assertIn("no release key", result.stderr)
+        self.assertIn("must be a loopback", result.stderr)
         self.assertNotIn("test's key", result.stderr)
 
     def test_a_wrong_checksum_is_refused(self):

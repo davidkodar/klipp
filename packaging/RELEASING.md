@@ -85,8 +85,9 @@ minisign -G -p klipp-release.pub -s ~/.minisign/klipp-release.key
 Keep the secret key and its passphrase out of every repository and backup that
 others can read, and keep an offline backup. Put the public key line (the second
 line of `klipp-release.pub`) in `RELEASE_KEY` in `packaging/klipp-update`, through
-a reviewed PR, before signing a release with it. Until then `RELEASE_KEY` is
-empty and the updater installs nothing from a download. Changing the key means a
+a reviewed PR, before signing a release with it. With an empty `RELEASE_KEY` the
+updater installs nothing from a download. The current key's id is
+`54950EE2C08EE0E8`. Changing the key means a
 release whose updater carries the new one, installed by the old route.
 
 ## Maintainer: signed Arch repository
