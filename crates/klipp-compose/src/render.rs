@@ -2429,9 +2429,10 @@ impl Renderer {
         self.note_switched_off(c);
         self.note_subject_mattes(c, src);
         let (mut fx, opacity) = clip_effects(c, time, fps, transforms.get(&c.id).copied(), self.pins.get(&c.id).copied());
-        let split = fx.iter().rev().find_map(|e| e.split_blend(height));
         self.authored_colours(&mut fx);
         self.at_render_scale(&mut fx);
+        // Read at the render's size: a gap is in its pixels.
+        let split = fx.iter().rev().find_map(|e| e.split_blend(height));
         self.title_light(c, &mut fx);
         // A clip the camera's shutter blurs this frame (one that really
         // moves while it is open, #1922): its effects before the move run
@@ -3583,7 +3584,7 @@ impl Renderer {
                     .map(|(pixels, _)| Layer { pixels, opacity: 1.0, blend: BlendMode::Normal, split: None }),
                 TrackItem::Clip(c) => self
                     .render_clip(c, time, fps, width, height, src, &transforms)
-                    .map(|(pixels, opacity)| Layer { pixels, opacity: opacity * track.opacity, blend: c.blend_mode, split: reflection_split(c, time, fps, height) }),
+                    .map(|(pixels, opacity)| Layer { pixels, opacity: opacity * track.opacity, blend: c.blend_mode, split: reflection_split(c, time, fps, height, self.px_scale) }),
                 TrackItem::Transition { a, b, .. } if a.matte_source.is_some() || b.matte_source.is_some() => {
                     matted_transitions.push(i);
                     None
@@ -3645,7 +3646,7 @@ impl Renderer {
                     // scene drawn inside this clip has a loop of its own.
                     let outer = self.below.replace(Arc::new(acc.clone().unwrap_or_else(canvas)));
                     let layer = match item {
-                        TrackItem::Clip(c) => self.render_clip(c, time, fps, width, height, src, &transforms).map(|(pixels, opacity)| Layer { pixels, opacity: opacity * track.opacity, blend: c.blend_mode, split: reflection_split(c, time, fps, height) }),
+                        TrackItem::Clip(c) => self.render_clip(c, time, fps, width, height, src, &transforms).map(|(pixels, opacity)| Layer { pixels, opacity: opacity * track.opacity, blend: c.blend_mode, split: reflection_split(c, time, fps, height, self.px_scale) }),
                         TrackItem::Transition { a, b, kind, progress, params, shutter } => self
                             .render_transition(a, b, *kind, *progress, params, *shutter, time, fps, width, height, src, &transforms, None)
                             .map(|pixels| Layer { pixels, opacity: track.opacity, blend: BlendMode::Normal, split: None }),
@@ -7481,12 +7482,12 @@ struct Placed {
 
 /// A clip's reflection's split at `time` (#2707), when it has one: the
 /// row of a frame `height` tall from which its layer blends by the
-/// reflection's mode.
-fn reflection_split(c: &Clip, time: Timecode, fps: f64, height: u32) -> Option<(u32, BlendMode)> {
+/// reflection's mode, its gap taken to the render's size by `px_scale`.
+fn reflection_split(c: &Clip, time: Timecode, fps: f64, height: u32, px_scale: f32) -> Option<(u32, BlendMode)> {
     if !c.enabled_effects().any(|e| matches!(e, BuiltinEffect::Reflection { .. })) {
         return None;
     }
-    clip_effects(c, time, fps, None, None).0.iter().rev().find_map(|e| e.split_blend(height))
+    clip_effects(c, time, fps, None, None).0.into_iter().rev().find_map(|e| e.at_render_scale(px_scale).split_blend(height))
 }
 
 /// A layer's effects, and a title's lead-in ones, held for its finish.

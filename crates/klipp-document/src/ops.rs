@@ -6564,8 +6564,6 @@ pub fn named_picture_effect(kind: &str, amount: Option<f32>) -> Result<(klipp_ef
         "invert" => E::Invert { mix: a },
         "mirror" => E::Mirror { horizontal: 1, vertical: 0 },
         "lens_distortion" | "barrel" => E::LensDistortion { distortion: a * 0.5, scale: 1.0 },
-        // Pixels moved by a drifting noise field (#2702): the default
-        // amount moves them about 12 canvas pixels, the full amount 24.
         // The layer mirrored about a waterline (#2707), on a surface:
         // calm water by default; the amount its strength, the surface's
         // own at the default. `params` sets the waterline and the rest.
@@ -6579,6 +6577,8 @@ pub fn named_picture_effect(kind: &str, amount: Option<f32>) -> Result<(klipp_ef
                 _ => unreachable!("every surface named here is a reflection"),
             }
         }
+        // Pixels moved by a drifting noise field (#2702): the default
+        // amount moves them about 12 canvas pixels, the full amount 24.
         "displace" | "ripple" | "heat_haze" => E::Displace { amount: a * 24.0, size: 80.0, speed: 1.0, direction: 0, seed: 1, time: 0.0 },
         "emboss" => E::Emboss { angle: 0.0, strength: a, mix: a },
         "edge_detect" | "edges" => E::EdgeDetect { strength: a, mix: a },

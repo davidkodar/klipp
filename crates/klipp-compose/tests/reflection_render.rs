@@ -170,3 +170,40 @@ fn it_reflects_a_media_clip_a_generator_and_a_title() {
         assert!(mean_diff(&cpu, &gpu) < 3e-3, "{name}: CPU and GPU agree: {}", mean_diff(&cpu, &gpu));
     }
 }
+
+/// At half the sequence's size (a reduced preview), the split row takes
+/// the gap at the render's size, as the reflection does: a gap of 16
+/// canvas pixels is 8 rendered, and the rows from the water down blend
+/// by the reflection's mode on both routes.
+#[test]
+fn the_split_takes_the_gap_at_the_renders_size() {
+    let fx = BuiltinEffect::Reflection {
+        waterline: 0.25, gap: 16.0, ripple_amount: 0.0, ripple_size: 60.0, ripple_speed: 0.0, breakup: 0.0, smear: 0.0, fade: 0.0, opacity: 1.0, darken: 0.0, contact: 0.0,
+        blend: klipp_effects::reflection::SCREEN, tint: [0, 0, 0], tint_amount: 0.0, submerge: false, ripple_from: 0, seed: 0, time: 0.0,
+    };
+    let top = klipp_timeline::test_clip::TestClip::of(media()).effects([fx]).build();
+    let below = media();
+    let mut seq = Sequence::new_default();
+    // The sequence twice the render's size.
+    seq.resolution = klipp_core::Resolution { width: W * 2, height: H * 2 };
+    seq.tracks = [("V2", &top), ("V1", &below)]
+        .map(|(name, clip)| {
+            let mut t = Track::new(name, TrackKind::Video);
+            t.clips = vec![clip.clone()];
+            t
+        })
+        .into();
+    let mut src = Grey::default();
+    src.0.insert(top.id, 0.18);
+    src.0.insert(below.id, 0.6);
+    // The water: a quarter down (5) and 8 rendered rows lower.
+    let water = (H as f32 * 0.25 + 8.0) as u32;
+    for gpu in [false, true] {
+        let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+        r.set_gpu_enabled(gpu);
+        let img = r.render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default());
+        let red = |y: u32| img[((y * W + W / 2) * 4) as usize];
+        assert!((red(water - 1) - red(2)).abs() < 3e-3, "gpu {gpu}: above the water, the clip as it is: {} vs {}", red(water - 1), red(2));
+        assert!(red(water) > red(2) + 0.05, "gpu {gpu}: from the water down, screened: {} vs {}", red(water), red(2));
+    }
+}
