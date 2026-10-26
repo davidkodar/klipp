@@ -42,6 +42,25 @@ const HEADER_H: f32 = 20.0;
 /// The panel height that shows every strip whole without scrolling.
 pub(crate) const MIXER_MIN_H: f32 = HEADER_H + STRIP_MIN_H + SCROLLBAR_ROOM;
 
+/// Whether a track can be heard, and so has a strip: an audio track, or
+/// a video track with a clip that plays its own sound there. A video
+/// clip whose linked partner sits on an audio track is heard from that
+/// track instead, as the engine plays it.
+pub(crate) fn is_heard(seq: &klipp_timeline::Sequence, track: &klipp_timeline::Track, pool: &klipp_media::MediaPool) -> bool {
+    use klipp_timeline::TrackKind;
+    match track.kind {
+        TrackKind::Audio => true,
+        TrackKind::Video => track.clips.iter().any(|clip| {
+            let has_sound = clip.media_id().and_then(|id| pool.get(&id)).is_some_and(|item| item.has_audio);
+            let partner_on_audio = clip.linked_clip_id.is_some_and(|lid| {
+                seq.tracks.iter().any(|t| t.kind == TrackKind::Audio && t.clips.iter().any(|c| c.id == lid))
+            });
+            has_sound && !partner_on_audio
+        }),
+        TrackKind::Text | TrackKind::Subtitle => false,
+    }
+}
+
 /// A strip's fader track, fitted to the strip's height.
 fn fader_height(strip_h: f32, fixed_h: f32) -> f32 {
     (strip_h - fixed_h).clamp(FADER_MIN_H, FADER_MAX_H)
@@ -917,13 +936,12 @@ pub fn show(
     let seq = &mut state.sequences[state.active_sequence_idx];
     let track_count = seq.tracks.len();
 
-    // Collect track data with track IDs and kinds
+    // Collect track data with track IDs and kinds; a track that cannot
+    // be heard gets no strip (#2696).
     let mut track_data: Vec<(String, klipp_core::TrackId, klipp_timeline::TrackKind, f32, f32, bool, bool, bool)> = seq.tracks.iter()
         .map(|t| {
-            // Video tracks with linked audio clips should show meters
-            let has_audio = t.kind == klipp_timeline::TrackKind::Audio
-                || t.clips.iter().any(|c| c.linked_clip_id.is_some());
-            (t.name.clone(), t.id, t.kind, t.volume, t.pan, t.muted, t.solo, has_audio)
+            let heard = is_heard(seq, t, &state.media_pool);
+            (t.name.clone(), t.id, t.kind, t.volume, t.pan, t.muted, t.solo, heard)
         })
         .collect();
     let mut master_vol = state.master_volume;
@@ -967,7 +985,10 @@ pub fn show(
                                 ui.add_space(6.0);
 
                                 for i in 0..track_count {
-                                    let (ref name, track_id, ref _kind, ref mut vol, ref mut pan, ref mut muted, ref mut solo, _has_audio) = track_data[i];
+                                    let (ref name, track_id, ref _kind, ref mut vol, ref mut pan, ref mut muted, ref mut solo, heard) = track_data[i];
+                                    if !heard {
+                                        continue;
+                                    }
                                     let (pl, pr) = peak_levels[i];
                                     let mut strip_touches = Vec::new();
                                     let mut strip_lives = Vec::new();
@@ -1226,13 +1247,14 @@ mod tests {
         for panel_h in [220.0, MIXER_MIN_H] {
             let ctx = egui::Context::default();
             let mut state = AppState::default();
-            let tracks = state.sequences[state.active_sequence_idx].tracks.len();
-            assert!(tracks > 0, "the default sequence has tracks");
+            let seq = &state.sequences[state.active_sequence_idx];
+            let tracks = seq.tracks.iter().filter(|t| is_heard(seq, t, &state.media_pool)).count();
+            assert!(tracks > 0, "the default sequence has a track to hear");
             mixer_frame(&ctx, &mut state, panel_h, None);
             let (shapes, _) = mixer_frame(&ctx, &mut state, panel_h, None);
             let mutes = shown_whole(&shapes, "M");
-            assert_eq!(mutes.len(), tracks, "{panel_h} px: every track's mute is seen");
-            assert_eq!(shown_whole(&shapes, "S").len(), tracks, "{panel_h} px: every track's solo is seen");
+            assert_eq!(mutes.len(), tracks, "{panel_h} px: every heard track's mute is seen");
+            assert_eq!(shown_whole(&shapes, "S").len(), tracks, "{panel_h} px: every heard track's solo is seen");
             assert_eq!(shown_whole(&shapes, "RST").len(), 1, "{panel_h} px: the master's reset is seen");
 
             let at = mutes[0].center();
@@ -1240,6 +1262,49 @@ mod tests {
             let (_, cmds) = mixer_frame(&ctx, &mut state, panel_h, Some((at, false)));
             assert!(cmds.iter().any(|c| matches!(c, AppCommand::SetTrackMute { muted: true, .. })), "{panel_h} px: the mute is clicked: {cmds:?}");
         }
+    }
+
+    /// #2696: only tracks that can be heard get a strip. A text track
+    /// gets none, nor does a video track whose clip is heard from its
+    /// linked partner on an audio track; a video track whose clip plays
+    /// its own sound keeps its strip, and its strip still works the
+    /// track it stands for.
+    #[test]
+    fn only_tracks_that_can_be_heard_get_a_strip() {
+        use klipp_timeline::{Clip, Track, TrackKind};
+        let tc = |secs: f64| klipp_core::Timecode::from_secs_f64(secs, 24);
+        let mut state = AppState::default();
+        let media = klipp_core::MediaId::new();
+        let mut item = klipp_media::MediaItem::new_synthetic_title(media, "shot".into(), tc(4.0), klipp_core::Fps::new(24, 1));
+        item.has_audio = true;
+        state.media_pool.add(item);
+        let clip = || Clip::media(media, tc(0.0), tc(4.0), tc(0.0), tc(4.0));
+
+        let mut own_sound = Track::new("V1", TrackKind::Video);
+        own_sound.clips.push(clip());
+        let mut partner = Track::new("A1", TrackKind::Audio);
+        partner.clips.push(clip());
+        let mut linked = Track::new("V2", TrackKind::Video);
+        linked.clips.push(Clip { linked_clip_id: Some(partner.clips[0].id), ..clip() });
+        let text = Track::new("T1", TrackKind::Text);
+        let seq = &mut state.sequences[state.active_sequence_idx];
+        seq.tracks = vec![text, linked, own_sound, partner];
+
+        let seq = &state.sequences[state.active_sequence_idx];
+        let heard: Vec<bool> = seq.tracks.iter().map(|t| is_heard(seq, t, &state.media_pool)).collect();
+        assert_eq!(heard, [false, false, true, true]);
+
+        let ctx = egui::Context::default();
+        mixer_frame(&ctx, &mut state, 260.0, None);
+        let (shapes, _) = mixer_frame(&ctx, &mut state, 260.0, None);
+        let mut mutes = shown_whole(&shapes, "M");
+        assert_eq!(mutes.len(), 2, "a strip for V1 and A1 only");
+        assert_eq!(shown_whole(&shapes, "S").len(), 2);
+        mutes.sort_by(|a, b| a.min.x.total_cmp(&b.min.x));
+        let at = mutes[0].center();
+        mixer_frame(&ctx, &mut state, 260.0, Some((at, true)));
+        let (_, cmds) = mixer_frame(&ctx, &mut state, 260.0, Some((at, false)));
+        assert!(cmds.iter().any(|c| matches!(c, AppCommand::SetTrackMute { track_index: 2, muted: true })), "the first strip mutes V1, track 2: {cmds:?}");
     }
 
     #[test]
