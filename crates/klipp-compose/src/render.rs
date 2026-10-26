@@ -2205,6 +2205,11 @@ impl Renderer {
                     for (side, slot) in [(a, slots[0]), (b, slots[1])] {
                         match self.place_layer(slot, side, time, fps, width, height, src, &transforms, &mut stats) {
                             Ok(Some(p)) => {
+                                // A transition's side is mixed before
+                                // anything is laid: it is finished now.
+                                if let Err(why) = self.finish_placed(side, slot, p.held.as_deref(), time, fps, width, height, &transforms, &mut stats) {
+                                    return self.gpu_stack_declines(why);
+                                }
                                 if p.opacity < 0.999 && !self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_scale_alpha(slot, p.opacity)) {
                                     return self.gpu_stack_declines("a transition side could not be faded");
                                 }
@@ -2297,7 +2302,7 @@ impl Renderer {
                 return self.gpu_stack_declines("the transition pass failed");
             }
             stats.composite_ms += ms_since(t);
-            placed.insert(slots[2], Placed { opacity: 1.0, rows: (0, height) });
+            placed.insert(slots[2], Placed { opacity: 1.0, rows: (0, height), held: None });
         }
 
         // ── 3. Bottom to top onto the accumulator ──
@@ -2321,6 +2326,9 @@ impl Renderer {
                     let opacity = p.opacity * track.opacity;
                     if opacity <= 0.001 {
                         continue;
+                    }
+                    if let Err(why) = self.finish_placed(c, *slot, p.held.as_deref(), time, fps, width, height, &transforms, &mut stats) {
+                        return self.gpu_stack_declines(why);
                     }
                     let (y0, y1) = p.rows;
                     let mode = c.blend_mode as u32;
@@ -2770,7 +2778,16 @@ impl Renderer {
             }
             rows = (0, height);
         }
-        if !effects_done && has_active_effects(&fx) {
+        // A metal title that reflects the shot behind it (#2706) is
+        // finished when the layers below are laid: its effects wait for
+        // that, so a glow or a reflection takes the shot it shows.
+        let reflects_shot = matches!(c.kind, ClipKind::Title(_)) && shutter.is_none()
+            && self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_has_title_metal_shot(slot));
+        let mut held = None;
+        if !effects_done && has_active_effects(&fx) && reflects_shot {
+            held = Some(Box::new(HeldEffects { fx: fx.clone(), lead: lead.clone() }));
+            rows = (0, height);
+        } else if !effects_done && has_active_effects(&fx) {
             // A layer placed without a grade run (a title, a generator):
             // its effects as a plan of their own over its slot (step 11d).
             let t = Instant::now();
@@ -2799,7 +2816,25 @@ impl Renderer {
                 stats.effects_ms += ms_since(t);
             }
         }
-        Ok(Some(Placed { opacity, rows }))
+        Ok(Some(Placed { opacity, rows, held }))
+    }
+
+    /// A placed layer's last steps before it is laid: a metal title's
+    /// reflection of what is below it, then the effects that waited for
+    /// it (#2706).
+    #[allow(clippy::too_many_arguments)]
+    fn finish_placed(&mut self, c: &Clip, slot: usize, held: Option<&HeldEffects>, time: Timecode, fps: f64, width: u32, height: u32, transforms: &HashMap<ClipId, ResolvedTransform>, stats: &mut RenderStats) -> Result<(), &'static str> {
+        if !self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_title_metal_shot(slot)) {
+            return Err("a metal title's reflection failed");
+        }
+        if let Some(h) = held {
+            let t = Instant::now();
+            if !self.effects_on_layer(c, &h.fx, &h.lead, slot, time, fps, width, height, transforms, PlanPart::Whole, stats) {
+                return Err("a layer's effects could not run as a plan");
+            }
+            stats.effects_ms += ms_since(t);
+        }
+        Ok(())
     }
 
     fn place_title_source(&mut self, td: &klipp_timeline::TitleData, slot: usize, width: u32, height: u32, clip_time: f64, total: f32) -> Option<((u32,u32),Vec<BuiltinEffect>)> {
@@ -6810,7 +6845,7 @@ fn title_gradient_fill(g:&klipp_timeline::TextGradient)->klipp_effects::gpu::Tit
 fn title_fill(source:&klipp_title::GlyphSource,scale:f32)->Option<klipp_effects::gpu::TitleFill> {
     use klipp_effects::gpu::TitleFill;
     if let Some(m)=&source.material {
-        return Some(TitleFill::Metal(title_metal(m,source.font_px)));
+        return Some(TitleFill::Metal(title_metal(m,source.font_px,scale)));
     }
     if let Some(pattern)=&source.pattern {
         use klipp_timeline::TextPattern;
@@ -6831,7 +6866,7 @@ fn title_fill(source:&klipp_title::GlyphSource,scale:f32)->Option<klipp_effects:
 /// A title's metal (#2706) as the GPU draws it: lights to directions,
 /// colours to linear light, the bevel to frame pixels of a text
 /// `font_px` tall.
-fn title_metal(m:&klipp_core::title_material::TitleMaterial,font_px:f32)->klipp_effects::gpu::TitleMetal {
+fn title_metal(m:&klipp_core::title_material::TitleMaterial,font_px:f32,scale:f32)->klipp_effects::gpu::TitleMetal {
     let linear=|c:[u8;3]|c.map(|v|{let x=v as f32/255.0;if x<=0.04045 {x/12.92} else {((x+0.055)/1.055).powf(2.4)}});
     let light=|l:&klipp_core::title_material::MetalLight|(l.direction(),l.strength,linear(l.color));
     let off=([0.0,0.0,-1.0],0.0,[0.0;3]);
@@ -6841,6 +6876,7 @@ fn title_metal(m:&klipp_core::title_material::TitleMaterial,font_px:f32)->klipp_
         bevel_px:(m.bevel*font_px).max(1.0),depth:m.depth,
         key:light(&m.key_light),rim:m.rim_light.as_ref().map_or(off,light),
         studio:m.environment.studio,sky:m.environment.sky,sky_tint:linear(m.environment.sky_tint),
+        shot:m.environment.shot,shot_blur_px:m.environment.shot_blur*1080.0*scale,contour:m.contour,
         seed:(m.preset as u32) as f32*7.31+1.0,glint_cell:(font_px*0.55).max(12.0),
     }
 }
@@ -7410,6 +7446,14 @@ pub fn over_u8_straight(dst: &mut [u8], src: &[u8], width: u32) {
 struct Placed {
     opacity: f32,
     rows: (u32, u32),
+    /// Effects held until the layer is finished (`finish_placed`).
+    held: Option<Box<HeldEffects>>,
+}
+
+/// A layer's effects, and a title's lead-in ones, held for its finish.
+struct HeldEffects {
+    fx: Vec<BuiltinEffect>,
+    lead: Vec<BuiltinEffect>,
 }
 
 /// A matte channel as the GPU matte pass numbers it.
