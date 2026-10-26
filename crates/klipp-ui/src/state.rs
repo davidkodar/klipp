@@ -230,6 +230,17 @@ pub struct SurfaceTool {
     pub drag: Option<(usize, egui::Pos2, [[f32; 2]; 4])>,
 }
 
+/// A reflection's waterline being dragged in the viewer (#2707).
+#[derive(Debug, Clone, Copy)]
+pub struct ViewerWaterlineDrag {
+    pub clip_id: klipp_core::ClipId,
+    pub effect_index: usize,
+    pub drag_start_pos: egui::Pos2,
+    /// Whether the pointer has moved far enough for this to be a drag;
+    /// the undo gesture opens only once it has.
+    pub started: bool,
+}
+
 /// A corner-pin handle being dragged in the viewer: which corner, and
 /// the four as they were when the drag last wrote them.
 #[derive(Debug, Clone, Copy)]
@@ -3075,6 +3086,8 @@ pub struct AppState {
     pub motion_path_drag: Option<crate::panels::motion_path::MotionPathDrag>,
     /// A corner-pin handle drag in the viewer.
     pub viewer_corner_pin_drag: Option<ViewerCornerPinDrag>,
+    /// A reflection's waterline dragged in the viewer (#2707).
+    pub viewer_waterline_drag: Option<ViewerWaterlineDrag>,
     pub surface_tool: Option<SurfaceTool>,
     /// Whether on-screen transform handles are shown when a clip is selected
     pub show_transform_controls: bool,
@@ -5163,6 +5176,7 @@ impl Default for AppState {
             viewer_transform_drag: None,
             motion_path_drag: None,
             viewer_corner_pin_drag: None,
+            viewer_waterline_drag: None,
             surface_tool: None,
             show_transform_controls: true,
             selected_title_object: None,

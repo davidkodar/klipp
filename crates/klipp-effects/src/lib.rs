@@ -41,6 +41,7 @@ pub mod cpu_grade;
 pub mod deflicker;
 pub mod dither;
 pub mod displace;
+pub mod reflection;
 pub mod generator_grain;
 pub mod flicker;
 pub mod node_analysis;
@@ -89,7 +90,7 @@ use serde::{Deserialize, Serialize};
 
 /// Per-clip composite blend mode. Lives here (not in klipp-core)
 /// because the algebra in `composite::blend_*` is the primary
-/// consumer; klipp-core re-exports the type as `klipp_core::BlendMode`
+/// consumer; klipp-core re-exports the type as `BlendMode`
 /// for back-compat with existing call-site paths.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BlendMode {
@@ -628,6 +629,62 @@ pub enum BuiltinEffect {
         speed: f32,
         /// 0 both ways, 1 across only, 2 up and down only.
         direction: u32,
+        seed: u32,
+        #[serde(default)]
+        time: f32,
+    },
+    /// Reflection (#2707): the layer mirrored about a waterline, as on
+    /// water, a glossy floor, a wet street or glass, rippling, breaking up,
+    /// smeared and fading with distance. See [`reflection`]. It draws
+    /// below the layer, so it runs on the placed layer and `waterline` is
+    /// a row of the frame. **The compositor sets `time`**, the clip's time
+    /// in seconds, and blends the rows below the line by `blend`
+    /// ([`BuiltinEffect::split_blend`]).
+    Reflection {
+        /// The line it is mirrored about, a fraction of the frame's
+        /// height from the top (default 0.6): where the layer's base is.
+        waterline: f32,
+        /// How far below that line the water is, canvas pixels: 0 rests
+        /// the layer on the water; more floats it above, its reflection
+        /// starting as much lower and the contact band gone.
+        #[serde(default)]
+        gap: f32,
+        /// How far the ripple moves it sideways at most, canvas pixels.
+        ripple_amount: f32,
+        /// How wide the ripple's bands are, canvas pixels.
+        ripple_size: f32,
+        /// How fast the ripple moves, bands per second.
+        ripple_speed: f32,
+        /// How much it breaks into strips and gaps further from the line,
+        /// 0 to 1.
+        breakup: f32,
+        /// How much it smears down further from the line, 0 to 1.
+        smear: f32,
+        /// How quickly it fades with distance, 0 (not at all) to 1.
+        fade: f32,
+        /// How strong it is at the line, 0 to 1.
+        opacity: f32,
+        /// How much darker than the layer it is, 0 to 1: water reflects
+        /// little light.
+        #[serde(default)]
+        darken: f32,
+        /// How dark the thin band where the layer meets the line is, 0
+        /// to 1: its shadow on the water.
+        #[serde(default)]
+        contact: f32,
+        /// How the reflected rows mix with the picture below: 0 normal,
+        /// 1 screen, 2 soft light, 3 overlay.
+        blend: u32,
+        /// The surface's colour it is tinted toward, sRGB.
+        tint: [u8; 3],
+        /// How far toward the tint, 0 to 1.
+        tint_amount: f32,
+        /// Whether the layer's own pixels below the line are hidden, as
+        /// letters dipping into water.
+        submerge: bool,
+        /// Where the ripple comes from: 0 its noise, the only source so
+        /// far.
+        ripple_from: u32,
         seed: u32,
         #[serde(default)]
         time: f32,
@@ -1275,6 +1332,11 @@ impl BuiltinEffect {
                 px(amount);
                 px(size);
             }
+            BuiltinEffect::Reflection { ripple_amount, ripple_size, gap, .. } => {
+                px(gap);
+                px(ripple_amount);
+                px(ripple_size);
+            }
             BuiltinEffect::ChromaticAberration { red_shift, blue_shift, .. } => {
                 px(red_shift);
                 px(blue_shift);
@@ -1296,7 +1358,54 @@ impl BuiltinEffect {
 /// transform leaves around a placed layer. Those run after the
 /// transform that made the margin; see [`crate::layer`].
 pub fn draws_outside_the_picture(effect: &BuiltinEffect) -> bool {
-    matches!(effect, BuiltinEffect::DropShadow { .. } | BuiltinEffect::OuterGlow { .. } | BuiltinEffect::FillBars { .. })
+    matches!(effect, BuiltinEffect::DropShadow { .. } | BuiltinEffect::OuterGlow { .. } | BuiltinEffect::FillBars { .. } | BuiltinEffect::Reflection { .. })
+}
+
+impl BuiltinEffect {
+    /// A reflection's (#2707) row of the frame `height` tall from which
+    /// the layer is blended by another mode, and that mode: the rows
+    /// below its waterline mix with the picture below as water does.
+    /// `None` for every other effect, and a reflection of nothing.
+    pub fn split_blend(&self, height: u32) -> Option<(u32, BlendMode)> {
+        let BuiltinEffect::Reflection { waterline, gap, blend, .. } = self else { return None };
+        if is_identity_effect(self) {
+            return None;
+        }
+        let mode = match *blend {
+            reflection::SCREEN => BlendMode::Screen,
+            reflection::SOFT_LIGHT => BlendMode::SoftLight,
+            reflection::OVERLAY => BlendMode::Overlay,
+            _ => BlendMode::Normal,
+        };
+        let row = (waterline.clamp(0.0, 1.0) * height as f32 + gap.max(0.0)).round() as u32;
+        Some((row.min(height), mode))
+    }
+
+    /// A reflection's numbers for its computation on a layer `width` ×
+    /// `height` (#2707).
+    pub fn reflection_params(&self, width: u32, height: u32) -> Option<reflection::Params> {
+        let BuiltinEffect::Reflection { waterline, gap, ripple_amount, ripple_size, ripple_speed, breakup, smear, fade, opacity, darken, contact, tint, tint_amount, submerge, seed, time, .. } = self else { return None };
+        Some(reflection::Params {
+            width,
+            height,
+            waterline: waterline.clamp(0.0, 1.0) * height as f32,
+            ripple_amount: *ripple_amount,
+            ripple_size: *ripple_size,
+            ripple_speed: *ripple_speed,
+            breakup: *breakup,
+            smear: *smear,
+            fade: *fade,
+            opacity: *opacity,
+            tint: tint.map(reflection::linear),
+            tint_amount: *tint_amount,
+            submerge: u32::from(*submerge),
+            seed: *seed,
+            time: *time,
+            darken: *darken,
+            contact: *contact,
+            gap: *gap,
+        })
+    }
 }
 
 /// Returns true when the effect is at its default / identity values
@@ -1346,6 +1455,8 @@ pub fn is_identity_effect(effect: &BuiltinEffect) -> bool {
         // A flicker of nothing, or one whose every jump holds (#989).
         BuiltinEffect::Flicker { amount, hold, .. } => amount.abs() < f32::EPSILON || *hold >= 1.0,
         BuiltinEffect::Displace { amount, .. } => amount.abs() < f32::EPSILON,
+        // A reflection nobody sees, which hides nothing either.
+        BuiltinEffect::Reflection { opacity, submerge, .. } => *opacity <= 0.0 && !*submerge,
         // No particles, or none to see (#1141).
         BuiltinEffect::Particles { amount, opacity, size, .. } => *amount < 1.0 || *opacity <= 0.0 || *size <= 0.0,
         BuiltinEffect::Merge { opacity, .. } => *opacity <= 0.0,

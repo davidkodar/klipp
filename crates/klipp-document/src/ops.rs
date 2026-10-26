@@ -6566,6 +6566,19 @@ pub fn named_picture_effect(kind: &str, amount: Option<f32>) -> Result<(klipp_ef
         "lens_distortion" | "barrel" => E::LensDistortion { distortion: a * 0.5, scale: 1.0 },
         // Pixels moved by a drifting noise field (#2702): the default
         // amount moves them about 12 canvas pixels, the full amount 24.
+        // The layer mirrored about a waterline (#2707), on a surface:
+        // calm water by default; the amount its strength, the surface's
+        // own at the default. `params` sets the waterline and the rest.
+        "reflection" | "water_reflection" | "calm_water" | "rippled_water" | "glossy_floor" | "wet_street" | "glass" => {
+            let kind = kind.to_lowercase();
+            let surface = match kind.as_str() { "reflection" | "water_reflection" => "calm_water", other => other };
+            match klipp_effects::reflection::surface(surface, 0.6) {
+                Some(E::Reflection { waterline, gap, ripple_amount, ripple_size, ripple_speed, breakup, smear, fade, opacity, darken, contact, blend, tint, tint_amount, submerge, ripple_from, seed, time }) => {
+                    E::Reflection { waterline, gap, ripple_amount, ripple_size, ripple_speed, breakup, smear, fade, opacity: (opacity * a * 2.0).min(1.0), darken, contact, blend, tint, tint_amount, submerge, ripple_from, seed, time }
+                }
+                _ => unreachable!("every surface named here is a reflection"),
+            }
+        }
         "displace" | "ripple" | "heat_haze" => E::Displace { amount: a * 24.0, size: 80.0, speed: 1.0, direction: 0, seed: 1, time: 0.0 },
         "emboss" => E::Emboss { angle: 0.0, strength: a, mix: a },
         "edge_detect" | "edges" => E::EdgeDetect { strength: a, mix: a },
@@ -6590,7 +6603,7 @@ pub fn named_picture_effect(kind: &str, amount: Option<f32>) -> Result<(klipp_ef
                 other => other,
             }
         }
-        other => return Err((format!("\"{other}\" is not an effect"), "use e.g. vignette, grain, glow, bloom, chroma_key, luma_key, corners, shadow, outer_glow, fill_bars, diffusion, halation, light_rays, lens_flare, anamorphic, blur, radial_blur, directional_blur, sharpen, chromatic_aberration, tilt_shift, mosaic, posterize, invert, mirror, lens_distortion, displace, edge_detect, denoise, vhs, old_film, flicker, exposure_flicker, binocular, dust, snow, rain, sparks or embers".into())),
+        other => return Err((format!("\"{other}\" is not an effect"), "use e.g. vignette, grain, glow, bloom, chroma_key, luma_key, corners, shadow, outer_glow, fill_bars, diffusion, halation, light_rays, lens_flare, anamorphic, blur, radial_blur, directional_blur, sharpen, chromatic_aberration, tilt_shift, mosaic, posterize, invert, mirror, lens_distortion, displace, reflection (water_reflection, calm_water, rippled_water, glossy_floor, wet_street, glass), edge_detect, denoise, vhs, old_film, flicker, exposure_flicker, binocular, dust, snow, rain, sparks or embers".into())),
     };
     Ok((fx, a))
 }
@@ -18943,6 +18956,22 @@ mod effect_params_tests {
         // Every described effect takes them, not only the newest (#2744).
         assert!(matches!(effect("old_film", r#"{"scratches": 0, "sepia": 1}"#).unwrap(), E::OldFilm { scratches, sepia, .. } if scratches == 0.0 && sepia == 1.0));
         assert_eq!(effect("vignette", "{}").unwrap(), named_picture_effect("vignette", None).unwrap().0);
+    }
+
+    /// A reflection by its surface, set by name over MCP: the line, the
+    /// water's colour, how it mixes, whether the letters dip in (#2707).
+    #[test]
+    fn a_reflection_is_named_by_its_surface_and_set_by_its_params() {
+        let calm = named_picture_effect("water_reflection", None).unwrap().0;
+        assert_eq!(calm, klipp_effects::reflection::surface("calm_water", 0.6).unwrap());
+        assert_eq!(named_picture_effect("Reflection", None).unwrap().0, calm, "any case");
+        for (name, _, _) in klipp_effects::reflection::SURFACES {
+            assert!(matches!(named_picture_effect(name, None).unwrap().0, E::Reflection { .. }), "{name}");
+        }
+        let fx = effect("rippled_water", r##"{"waterline": 0.62, "tint": "#1d3b4f", "blend": "soft_light", "submerge": false, "fade": 0.9}"##).unwrap();
+        assert!(matches!(fx, E::Reflection { waterline, tint: [0x1d, 0x3b, 0x4f], blend: 2, submerge: false, fade, .. } if waterline == 0.62 && fade == 0.9), "{fx:?}");
+        let (_, fix) = effect("calm_water", r#"{"blend": "multiply"}"#).unwrap_err();
+        assert!(fix.contains("blend (normal, screen, soft_light, overlay)"), "{fix}");
     }
 
     #[test]

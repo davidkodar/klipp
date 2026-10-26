@@ -1065,6 +1065,9 @@ struct Layer {
     /// Clip opacity × track opacity.
     opacity: f32,
     blend: BlendMode,
+    /// A reflection's row and mode (#2707): the rows from it down blend
+    /// by that mode instead.
+    split: Option<(u32, BlendMode)>,
 }
 
 /// What a track contributes at the frame's time.
@@ -2302,7 +2305,7 @@ impl Renderer {
                 return self.gpu_stack_declines("the transition pass failed");
             }
             stats.composite_ms += ms_since(t);
-            placed.insert(slots[2], Placed { opacity: 1.0, rows: (0, height), held: None });
+            placed.insert(slots[2], Placed { opacity: 1.0, rows: (0, height), held: None, split: None });
         }
 
         // ── 3. Bottom to top onto the accumulator ──
@@ -2332,8 +2335,15 @@ impl Renderer {
                     }
                     let (y0, y1) = p.rows;
                     let mode = c.blend_mode as u32;
-                    if !self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_blend_rows(*slot, opacity, mode, y0, y1)) {
-                        return self.gpu_stack_declines("the blend pass failed");
+                    // A reflection's rows blend by its own mode (#2707).
+                    let bands = match p.split {
+                        Some((row, below)) => [(y0, row.clamp(y0, y1), mode), (row.clamp(y0, y1), y1, below as u32)],
+                        None => [(y0, y1, mode), (y1, y1, mode)],
+                    };
+                    for (b0, b1, mode) in bands.into_iter().filter(|(b0, b1, _)| b1 > b0) {
+                        if !self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_blend_rows(*slot, opacity, mode, b0, b1)) {
+                            return self.gpu_stack_declines("the blend pass failed");
+                        }
                     }
                 }
                 Item::Transition { slots, .. } => {
@@ -2419,6 +2429,7 @@ impl Renderer {
         self.note_switched_off(c);
         self.note_subject_mattes(c, src);
         let (mut fx, opacity) = clip_effects(c, time, fps, transforms.get(&c.id).copied(), self.pins.get(&c.id).copied());
+        let split = fx.iter().rev().find_map(|e| e.split_blend(height));
         self.authored_colours(&mut fx);
         self.at_render_scale(&mut fx);
         self.title_light(c, &mut fx);
@@ -2816,7 +2827,7 @@ impl Renderer {
                 stats.effects_ms += ms_since(t);
             }
         }
-        Ok(Some(Placed { opacity, rows, held }))
+        Ok(Some(Placed { opacity, rows, held, split }))
     }
 
     /// A placed layer's last steps before it is laid: a metal title's
@@ -3569,17 +3580,17 @@ impl Renderer {
                 // or a track's opacity is not the footage's colour.
                 TrackItem::Clip(c) if only => self
                     .render_clip(c, time, fps, width, height, src, &transforms)
-                    .map(|(pixels, _)| Layer { pixels, opacity: 1.0, blend: BlendMode::Normal }),
+                    .map(|(pixels, _)| Layer { pixels, opacity: 1.0, blend: BlendMode::Normal, split: None }),
                 TrackItem::Clip(c) => self
                     .render_clip(c, time, fps, width, height, src, &transforms)
-                    .map(|(pixels, opacity)| Layer { pixels, opacity: opacity * track.opacity, blend: c.blend_mode }),
+                    .map(|(pixels, opacity)| Layer { pixels, opacity: opacity * track.opacity, blend: c.blend_mode, split: reflection_split(c, time, fps, height) }),
                 TrackItem::Transition { a, b, .. } if a.matte_source.is_some() || b.matte_source.is_some() => {
                     matted_transitions.push(i);
                     None
                 }
                 TrackItem::Transition { a, b, kind, progress, params, shutter } => {
                     self.render_transition(a, b, *kind, *progress, params, *shutter, time, fps, width, height, src, &transforms, None)
-                        .map(|pixels| Layer { pixels, opacity: track.opacity, blend: BlendMode::Normal })
+                        .map(|pixels| Layer { pixels, opacity: track.opacity, blend: BlendMode::Normal, split: None })
                 }
             };
             if let (TrackItem::Clip(c), Some(l)) = (item, &layer) {
@@ -3593,7 +3604,7 @@ impl Renderer {
             if let (_, track, TrackItem::Transition { a, b, kind, progress, params, shutter }) = &stack[i] {
                 layers[i] = self
                     .render_transition(a, b, *kind, *progress, params, *shutter, time, fps, width, height, src, &transforms, Some(&rendered))
-                    .map(|pixels| Layer { pixels, opacity: track.opacity, blend: BlendMode::Normal });
+                    .map(|pixels| Layer { pixels, opacity: track.opacity, blend: BlendMode::Normal, split: None });
             }
         }
 
@@ -3634,10 +3645,10 @@ impl Renderer {
                     // scene drawn inside this clip has a loop of its own.
                     let outer = self.below.replace(Arc::new(acc.clone().unwrap_or_else(canvas)));
                     let layer = match item {
-                        TrackItem::Clip(c) => self.render_clip(c, time, fps, width, height, src, &transforms).map(|(pixels, opacity)| Layer { pixels, opacity: opacity * track.opacity, blend: c.blend_mode }),
+                        TrackItem::Clip(c) => self.render_clip(c, time, fps, width, height, src, &transforms).map(|(pixels, opacity)| Layer { pixels, opacity: opacity * track.opacity, blend: c.blend_mode, split: reflection_split(c, time, fps, height) }),
                         TrackItem::Transition { a, b, kind, progress, params, shutter } => self
                             .render_transition(a, b, *kind, *progress, params, *shutter, time, fps, width, height, src, &transforms, None)
-                            .map(|pixels| Layer { pixels, opacity: track.opacity, blend: BlendMode::Normal }),
+                            .map(|pixels| Layer { pixels, opacity: track.opacity, blend: BlendMode::Normal, split: None }),
                     };
                     self.below = outer;
                     layer
@@ -3677,10 +3688,20 @@ impl Renderer {
                 }
             }
             match &mut acc {
-                None if layer.blend == BlendMode::Normal && layer.opacity >= 1.0 => acc = Some(layer.pixels),
+                None if layer.blend == BlendMode::Normal && layer.opacity >= 1.0 && layer.split.is_none() => acc = Some(layer.pixels),
                 _ => {
                     let a = acc.get_or_insert_with(canvas);
-                    klipp_effects::composite::blend_layer_linear(a, &layer.pixels, layer.opacity, layer.blend);
+                    match layer.split {
+                        // A reflection's rows mix with the picture below by
+                        // its own mode (#2707).
+                        Some((row, mode)) => {
+                            let at = (row.min(height) * width * 4) as usize;
+                            let (above, below) = a.split_at_mut(at);
+                            klipp_effects::composite::blend_layer_linear(above, &layer.pixels[..at], layer.opacity, layer.blend);
+                            klipp_effects::composite::blend_layer_linear(below, &layer.pixels[at..], layer.opacity, mode);
+                        }
+                        None => klipp_effects::composite::blend_layer_linear(a, &layer.pixels, layer.opacity, layer.blend),
+                    }
                 }
             }
             composite_ms += ms_since(t);
@@ -6608,6 +6629,8 @@ pub(crate) fn frame_inputs(
         BuiltinEffect::Flicker { time, .. } => *time = t as f32,
         // A displacement moves by the clip's time (#2702).
         BuiltinEffect::Displace { time, .. } => *time = t as f32,
+        // A reflection ripples by the clip's time (#2707).
+        BuiltinEffect::Reflection { time, .. } => *time = t as f32,
         // Particles move by the clip's time (#1141).
         BuiltinEffect::Particles { time, .. } => *time = t as f32,
         BuiltinEffect::Deflicker { gain, .. } => {
@@ -7451,6 +7474,19 @@ struct Placed {
     rows: (u32, u32),
     /// Effects held until the layer is finished (`finish_placed`).
     held: Option<Box<HeldEffects>>,
+    /// A reflection's row and mode (#2707): the rows from it down blend
+    /// by that mode instead.
+    split: Option<(u32, BlendMode)>,
+}
+
+/// A clip's reflection's split at `time` (#2707), when it has one: the
+/// row of a frame `height` tall from which its layer blends by the
+/// reflection's mode.
+fn reflection_split(c: &Clip, time: Timecode, fps: f64, height: u32) -> Option<(u32, BlendMode)> {
+    if !c.enabled_effects().any(|e| matches!(e, BuiltinEffect::Reflection { .. })) {
+        return None;
+    }
+    clip_effects(c, time, fps, None, None).0.iter().rev().find_map(|e| e.split_blend(height))
 }
 
 /// A layer's effects, and a title's lead-in ones, held for its finish.

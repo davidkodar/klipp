@@ -105,6 +105,14 @@ fn visible(tag: &str, v: &mut serde_json::Value) {
             v["amount"] = serde_json::json!(0.8);
         }
         "median_filter" => v["radius"] = serde_json::json!(2),
+        // A ripple, a gap and bands this small frame still shows below
+        // its line (#2707): most of their ranges reach past it.
+        "reflection" => {
+            v["waterline"] = serde_json::json!(0.4);
+            v["gap"] = serde_json::json!(6.0);
+            v["ripple_amount"] = serde_json::json!(5.0);
+            v["ripple_size"] = serde_json::json!(20.0);
+        }
         // A move the frame still shows: most of its range sends the
         // picture out of it.
         "picture_transform" => {

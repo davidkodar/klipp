@@ -16,6 +16,7 @@ const FILL_BARS: &str = "klipp.fx.fill_bars";
 const MIRROR: &str = "klipp.fx.mirror";
 const LENS: &str = "klipp.fx.lens_distortion";
 const DISPLACE: &str = "klipp.fx.displace";
+const REFLECTION: &str = "klipp.fx.reflection";
 const LETTERBOX: &str = "klipp.fx.letterbox";
 const PIN: &str = "klipp.fx.corner_pin";
 const PICTURE_XF: &str = "klipp.fx.picture_transform";
@@ -57,6 +58,25 @@ pub(super) static PARAMS: &[ParamEntry] = &[
     at(DISPLACE, "direction", P::shown_as(Widget::Combo).labels(&["Both", "Across", "Up and Down"])),
     at(DISPLACE, "seed", P::scrub(1.0, 0).soft_whole((0, 10_000))),
     at(DISPLACE, "time", P::hidden()),
+    // One drag (the viewer's waterline) and two sliders first (#2707).
+    at(REFLECTION, "waterline", P::scrub(0.002, 3).order(0)),
+    at(REFLECTION, "ripple_amount", P::scrub(0.2, 1).order(1)),
+    at(REFLECTION, "fade", P::scrub(0.005, 2).order(2)),
+    at(REFLECTION, "ripple_size", P::scrub(1.0, 0).order(3)),
+    at(REFLECTION, "ripple_speed", P::scrub(0.02, 2).order(4)),
+    at(REFLECTION, "breakup", P::scrub(0.005, 2).order(5)),
+    at(REFLECTION, "smear", P::scrub(0.005, 2).order(6)),
+    at(REFLECTION, "opacity", P::scrub(0.005, 2).order(7)),
+    at(REFLECTION, "darken", P::scrub(0.005, 2).order(7)),
+    at(REFLECTION, "contact", P::scrub(0.005, 2).order(7)),
+    at(REFLECTION, "gap", P::scrub(0.5, 1).order(7)),
+    at(REFLECTION, "blend", P::shown_as(Widget::Combo).labels(&["Normal", "Screen", "Soft Light", "Overlay"]).order(8)),
+    at(REFLECTION, "tint", P::shown_as(Widget::ColourRgb).order(9)),
+    at(REFLECTION, "tint_amount", P::scrub(0.005, 2).order(10)),
+    at(REFLECTION, "submerge", P::shown_as(Widget::Toggle).order(11)),
+    at(REFLECTION, "ripple_from", P::hidden()),
+    at(REFLECTION, "seed", P::scrub(1.0, 0).soft_whole((0, 10_000)).order(12)),
+    at(REFLECTION, "time", P::hidden()),
     at(LETTERBOX, "aspect_ratio", P::scrub(0.01, 2).label("Aspect Ratio").suffix(Suffix::Text(":1"))),
     // A choice of two colours, not a 0-to-1 slider (IC5).
     at(LETTERBOX, "bar_color", P::shown_as(Widget::Combo).label("Bar Colour").labels(&["Black", "White"])),

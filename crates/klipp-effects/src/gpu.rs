@@ -253,6 +253,7 @@ pub struct GpuEffectsPipeline {
     mirror_pipeline: wgpu::ComputePipeline,
     lens_distortion_pipeline: wgpu::ComputePipeline,
     displace_pipeline: wgpu::ComputePipeline,
+    reflection_pipeline: wgpu::ComputePipeline,
     dilate_pipeline: wgpu::ComputePipeline,
     erode_pipeline: wgpu::ComputePipeline,
     denoise_pipeline: wgpu::ComputePipeline,
@@ -1125,6 +1126,7 @@ impl GpuEffectsPipeline {
         let mirror_pipeline = create_pipeline(&device, &pipeline_layout, "mirror", SHADER_MIRROR);
         let lens_distortion_pipeline = create_pipeline(&device, &pipeline_layout, "lens_distortion", SHADER_LENS_DISTORTION);
         let displace_pipeline = create_pipeline(&device, &pipeline_layout, "displace", SHADER_DISPLACE);
+        let reflection_pipeline = create_pipeline(&device, &pipeline_layout, "reflection", SHADER_REFLECTION);
         let dilate_pipeline = create_pipeline(&device, &pipeline_layout, "dilate", SHADER_DILATE);
         let erode_pipeline = create_pipeline(&device, &pipeline_layout, "erode", SHADER_ERODE);
         let denoise_pipeline = create_pipeline(&device, &pipeline_layout, "denoise", SHADER_DENOISE);
@@ -1754,6 +1756,7 @@ impl GpuEffectsPipeline {
             mirror_pipeline,
             lens_distortion_pipeline,
             displace_pipeline,
+            reflection_pipeline,
             dilate_pipeline,
             erode_pipeline,
             denoise_pipeline,
@@ -17321,6 +17324,8 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
 
 const SHADER_DISPLACE: &str = concat!(shader_pixel_storage_wgsl!(), crate::displace::noise_wgsl!(), crate::displace::shader_wgsl!());
 
+const SHADER_REFLECTION: &str = concat!(shader_pixel_storage_wgsl!(), crate::displace::noise_wgsl!(), crate::reflection::shader_wgsl!());
+
 const SHADER_LENS_DISTORTION: &str = concat!(
     shader_pixel_storage_wgsl!(),
     "
@@ -19837,6 +19842,7 @@ pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
         ("SHADER_MIRROR", SHADER_MIRROR),
         ("SHADER_LENS_DISTORTION", SHADER_LENS_DISTORTION),
         ("SHADER_DISPLACE", SHADER_DISPLACE),
+        ("SHADER_REFLECTION", SHADER_REFLECTION),
         ("SHADER_DILATE", SHADER_DILATE),
         ("SHADER_ERODE", SHADER_ERODE),
         ("SHADER_DENOISE", SHADER_DENOISE),

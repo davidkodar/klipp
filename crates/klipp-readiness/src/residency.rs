@@ -71,6 +71,7 @@ pub fn effect(effect: &E) -> Capability {
         | E::Mirror { .. }
         | E::LensDistortion { .. }
         | E::Displace { .. }
+        | E::Reflection { .. }
         | E::Dilate { .. }
         | E::Erode { .. }
         | E::Denoise { .. }

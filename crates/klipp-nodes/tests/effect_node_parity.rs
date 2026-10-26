@@ -130,7 +130,7 @@ fn every_effect_node_matches_the_legacy_chain_on_the_cpu() {
     let (cases, exempt) = cases();
     assert_eq!(cases.len() / 2 + exempt, effect_types().count(), "covered + exempt is every type");
     // The luma key among them (#1638).
-    assert_eq!(effect_types().count(), 67, "the registry's size the spec counts");
+    assert_eq!(effect_types().count(), 68, "the registry's size the spec counts");
     let mut unchanged = Vec::new();
     for (tag, effect) in &cases {
         let mut ex = GraphExecutor::new_cpu_only();

@@ -37,6 +37,7 @@ fn geometry() -> Vec<E> {
         E::Mirror { horizontal: 1, vertical: 0 },
         E::LensDistortion { distortion: 0.15, scale: 1.05 },
         E::Displace { amount: 6.0, size: 24.0, speed: 1.0, direction: 0, seed: 3, time: 0.4 },
+        E::Reflection { waterline: 0.55, gap: 0.0, ripple_amount: 3.0, ripple_size: 12.0, ripple_speed: 1.0, breakup: 0.5, smear: 0.3, fade: 0.4, opacity: 0.8, darken: 0.0, contact: 0.0, blend: 0, tint: [20, 40, 60], tint_amount: 0.2, submerge: true, ripple_from: 0, seed: 3, time: 0.4 },
         E::Letterbox { aspect_ratio: 2.39, bar_color: 0x102030, opacity: 0.9 },
     ]
 }
@@ -149,6 +150,7 @@ fn a_run_of_recorded_effects_is_one_submit() {
         E::Mirror { horizontal: 0, vertical: 0 },
         E::LensDistortion { distortion: 0.0, scale: 1.0 },
         E::Displace { amount: 0.0, size: 80.0, speed: 1.0, direction: 0, seed: 0, time: 1.0 },
+        E::Reflection { waterline: 0.5, gap: 0.0, ripple_amount: 3.0, ripple_size: 12.0, ripple_speed: 1.0, breakup: 0.5, smear: 0.3, fade: 0.4, opacity: 0.0, darken: 0.0, contact: 0.0, blend: 1, tint: [0, 0, 0], tint_amount: 0.0, submerge: false, ripple_from: 0, seed: 0, time: 0.0 },
         E::GaussianBlur { radius: 0.2 },
         E::TiltShift { center: 0.5, width: 0.2, softness: 0.3, radius: 0.0 },
         E::FocusBlur { radius: 2.0, vertical: false, band: 1.0 },

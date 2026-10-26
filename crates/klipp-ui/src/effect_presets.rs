@@ -368,6 +368,10 @@ impl PresetManager {
             klipp_effects::BuiltinEffect::Displace { amount: 4.0, size: 30.0, speed: 2.0, direction: 0, seed: 0, time: 0.0 });
         self.bi("klipp.fx.displace", "Water Wobble", "Slow sideways sway, as seen through water",
             klipp_effects::BuiltinEffect::Displace { amount: 14.0, size: 160.0, speed: 0.6, direction: 1, seed: 0, time: 0.0 });
+        // A reflection on each surface (#2707).
+        for (name, label, description) in klipp_effects::reflection::SURFACES {
+            self.bi("klipp.fx.reflection", label, description, klipp_effects::reflection::surface(name, 0.6).expect("a surface"));
+        }
 
         // ── Denoise ───────────────────────────────────────────
         self.bi("klipp.fx.denoise", "Light", "Subtle noise reduction for well-lit scenes",
@@ -586,6 +590,7 @@ pub fn builtin_effect_key(effect: &klipp_effects::BuiltinEffect) -> &'static str
         klipp_effects::BuiltinEffect::Mirror { .. } => "mirror",
         klipp_effects::BuiltinEffect::LensDistortion { .. } => "lens_distortion",
         klipp_effects::BuiltinEffect::Displace { .. } => "displace",
+        klipp_effects::BuiltinEffect::Reflection { .. } => "reflection",
         klipp_effects::BuiltinEffect::Dilate { .. } => "dilate",
         klipp_effects::BuiltinEffect::Erode { .. } => "erode",
         klipp_effects::BuiltinEffect::Denoise { .. } => "denoise",
@@ -651,7 +656,7 @@ mod tests {
     fn every_built_in_preset_is_keyed_by_its_type_id() {
         let m = manager(std::path::Path::new("/nonexistent/klipp-presets"));
         let builtins: Vec<_> = m.presets.iter().filter(|p| p.is_builtin).collect();
-        assert_eq!(builtins.len(), 144);
+        assert_eq!(builtins.len(), 149);
         for p in &builtins {
             let id = p.builtin.as_ref().and_then(preset_type_id);
             assert_eq!(Some(p.effect_key.as_str()), id, "{}", p.name);

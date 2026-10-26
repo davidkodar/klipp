@@ -167,6 +167,20 @@ impl BuiltinEffect {
                 real(f, "size", size);
                 real(f, "speed", speed);
             }
+            E::Reflection { waterline, gap, ripple_amount, ripple_size, ripple_speed, breakup, smear, fade, opacity, darken, contact, tint_amount, .. } => {
+                real(f, "darken", darken);
+                real(f, "contact", contact);
+                real(f, "waterline", waterline);
+                real(f, "gap", gap);
+                real(f, "ripple_amount", ripple_amount);
+                real(f, "ripple_size", ripple_size);
+                real(f, "ripple_speed", ripple_speed);
+                real(f, "breakup", breakup);
+                real(f, "smear", smear);
+                real(f, "fade", fade);
+                real(f, "opacity", opacity);
+                real(f, "tint_amount", tint_amount);
+            }
             E::Denoise { spatial_sigma, color_sigma, iterations } => {
                 real(f, "spatial_sigma", spatial_sigma);
                 real(f, "color_sigma", color_sigma);

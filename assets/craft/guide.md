@@ -339,7 +339,9 @@ exist until the plan runs.
   (`motion_blur`), `sharpen`, `chromatic_aberration` (`rgb_split`,
   `fringe`), `tilt_shift`, `mosaic` (`pixelate`), `posterize`, `invert`,
   `mirror`, `lens_distortion` (`barrel`), `displace` (`ripple`,
-  `heat_haze`: each pixel moved by a drifting noise field), `emboss`, `edge_detect`
+  `heat_haze`: each pixel moved by a drifting noise field), `reflection`
+  (`water_reflection`, and its surfaces `calm_water`, `rippled_water`,
+  `glossy_floor`, `wet_street`, `glass`: see below), `emboss`, `edge_detect`
   (`edges`), `denoise`, `vhs`, `old_film`, `flicker` (random jumps of
   the opacity; `exposure_flicker` of the light), `binocular`
   (`binocular_vignette`: two eyepieces, a fringe at their rims) and the
@@ -356,6 +358,27 @@ exist until the plan runs.
   sideways (`amount` and `size` in canvas pixels; `direction` `both`,
   `across` or `up_down`; `seed` another pattern). A wrong name is
   refused with the settings the effect has.
+  A `reflection` mirrors a layer (a title, a logo, a picture) about a
+  waterline below it, as on water: put it on the layer, over the shot
+  of the water. `kind` picks the surface (`calm_water` is the default
+  of `reflection`: a slow sideways wobble that breaks into horizontal
+  bands further down); `amount` its strength. Its `params`:
+  `waterline` (the line, a fraction of the frame's height from the top,
+  0.6 by default; put it where the letters' base is), `gap` (canvas
+  pixels from that base down to the water: 0 rests the layer on it,
+  more floats it above, the reflection starting as much lower),
+  `ripple_amount` and `ripple_size` (canvas pixels), `ripple_speed`,
+  `breakup` (strips and gaps further down, 0 to 1), `smear` (streaks
+  down, 0 to 1), `fade` (how quickly it fades with distance, 0 to 1),
+  `opacity`, `darken` (how much darker than the layer, 0 to 1: water
+  reflects little, so 0.45 on water), `contact` (the thin dark band
+  where the layer meets the water, its shadow, 0 to 1), `blend` (`normal`, the water's
+  default, `screen`, `soft_light` or `overlay`: how it mixes with the
+  picture under it),
+  `tint` (`#rrggbb`, the water's colour) with `tint_amount`, `submerge`
+  (true hides the layer's own pixels below the line, letters dipping
+  into the water) and `seed`. For example `{op: effect, clip_id: TITLE,
+  kind: calm_water, params: {waterline: 0.62, tint: "#1d3b4f"}}`.
   A key is `chroma_key` (`green_screen`, `blue_screen`) on one clip, the
   app's Chroma Key: `color` `#rrggbb` (green, or blue for `blue_screen`),
   `tolerance` (0.2), `softness` (0.1) and `spill` (0.6), each 0 to 1; a
