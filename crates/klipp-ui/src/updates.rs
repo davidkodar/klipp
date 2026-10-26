@@ -35,13 +35,14 @@ fn package_file(version: &Version) -> String {
     format!("klipp-{}-1-x86_64.pkg.tar.zst", version.to_string().replace('-', ""))
 }
 
-/// Whether the release of `version` carries its package and the sums
-/// `klipp-update` checks it against.
+/// Whether the release of `version` carries its package, the sums
+/// `klipp-update` checks it against and their signature (#2684): without
+/// all three the updater refuses it, so it isn't offered.
 fn has_package(releases: &[Release], version: &Version) -> bool {
     let tag = format!("v{version}");
     let file = package_file(version);
     releases.iter().filter(|r| r.tag_name == tag).any(|r| {
-        r.assets.iter().any(|a| a.name == file) && r.assets.iter().any(|a| a.name == "SHA256SUMS")
+        [file.as_str(), "SHA256SUMS", "SHA256SUMS.minisig"].iter().all(|want| r.assets.iter().any(|a| a.name == *want))
     })
 }
 
@@ -867,8 +868,8 @@ mod tests {
     }
 
     /// A release offers its package when it carries the file pacman's
-    /// version spelling gives and the sums; the updater is given the version
-    /// unless the repository carries it.
+    /// version spelling gives, the sums and their signature; the updater is
+    /// given the version unless the repository carries it.
     #[test]
     fn a_package_install_downloads_the_release_package() {
         let rc = Version::parse("0.1.0-rc.2").unwrap();
@@ -876,14 +877,17 @@ mod tests {
         assert_eq!(package_file(&Version::parse("0.2.0").unwrap()), "klipp-0.2.0-1-x86_64.pkg.tar.zst");
         let releases: Vec<Release> = serde_json::from_str(
             r#"[{"tag_name":"v0.1.0-rc.2","draft":false,"prerelease":true,"assets":[
-                    {"name":"klipp-0.1.0-rc.2-source.tar.gz"},{"name":"klipp-0.1.0rc.2-1-x86_64.pkg.tar.zst"},{"name":"SHA256SUMS"}]},
-                {"tag_name":"v0.1.0-rc.3","draft":false,"prerelease":true,"assets":[{"name":"SHA256SUMS"}]},
-                {"tag_name":"v0.1.0-rc.4","draft":false,"prerelease":true}]"#,
+                    {"name":"klipp-0.1.0-rc.2-source.tar.gz"},{"name":"klipp-0.1.0rc.2-1-x86_64.pkg.tar.zst"},{"name":"SHA256SUMS"},{"name":"SHA256SUMS.minisig"}]},
+                {"tag_name":"v0.1.0-rc.3","draft":false,"prerelease":true,"assets":[{"name":"SHA256SUMS"},{"name":"SHA256SUMS.minisig"}]},
+                {"tag_name":"v0.1.0-rc.4","draft":false,"prerelease":true},
+                {"tag_name":"v0.1.0-rc.5","draft":false,"prerelease":true,"assets":[
+                    {"name":"klipp-0.1.0rc.5-1-x86_64.pkg.tar.zst"},{"name":"SHA256SUMS"}]}]"#,
         )
         .unwrap();
         assert!(has_package(&releases, &rc));
         assert!(!has_package(&releases, &Version::parse("0.1.0-rc.3").unwrap()), "sums but no package");
         assert!(!has_package(&releases, &Version::parse("0.1.0-rc.4").unwrap()), "no assets");
+        assert!(!has_package(&releases, &Version::parse("0.1.0-rc.5").unwrap()), "unsigned: the updater would refuse it");
 
         let mut updates = available(Installation::ArchRelease);
         let check = updates.result.as_mut().unwrap();

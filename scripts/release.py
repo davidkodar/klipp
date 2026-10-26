@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Build a tagged Arch release, or stage a signed pacman repository. Never uploads."""
+"""Build a tagged Arch release, sign its checksums, or stage a signed pacman
+repository. Never uploads."""
 import argparse
 import hashlib
 import json
@@ -76,6 +77,41 @@ def build(args):
     (destination / "release.json").write_text(json.dumps({"version": version, "tag": args.tag, "commit": sha,
         "cpu": "x86-64", "platform": "Arch Linux x86_64", "prerelease": "-" in version}, indent=2) + "\n")
     print(f"Built {args.tag} at {sha}. Test the package before signing or publishing: {destination}")
+    print(f"Then sign its checksums: python3 scripts/release.py sign {destination} --key PATH")
+
+
+def release_key(updater=ROOT / "packaging/klipp-update"):
+    """The release public key klipp-update checks downloads with: its
+    RELEASE_KEY line, empty until the key is made."""
+    found = re.search(r"^RELEASE_KEY='([^']*)'$", updater.read_text(), re.M)
+    return found.group(1) if found else ""
+
+
+def sign(args):
+    """Sign a built release's SHA256SUMS with minisign, which covers every
+    asset it lists, and check the signature the way klipp-update will."""
+    destination = args.release.resolve()
+    sums = destination / "SHA256SUMS"
+    version = json.loads((destination / "release.json").read_text())["version"]
+    key = args.key or os.environ.get("KLIPP_MINISIGN_KEY")
+    if not key:
+        raise ValueError("Give the release's minisign secret key with --key or KLIPP_MINISIGN_KEY.")
+    public = release_key()
+    if not public:
+        raise ValueError("packaging/klipp-update has no RELEASE_KEY: put the release's public key there first.")
+    signature = destination / "SHA256SUMS.minisig"
+    # minisign asks for the key's passphrase itself; nothing here keeps it.
+    # The trusted comment names the version, which klipp-update checks.
+    run("minisign", "-S", "-s", str(Path(key).expanduser()), "-m", str(sums), "-x", str(signature), "-t", f"klipp {version}")
+    try:
+        verified = output("minisign", "-V", "-P", public, "-m", str(sums), "-x", str(signature))
+    except subprocess.CalledProcessError:
+        signature.unlink(missing_ok=True)
+        raise ValueError("The signature doesn't verify with the RELEASE_KEY in packaging/klipp-update; signed with another key?")
+    if f"Trusted comment: klipp {version}" not in verified.splitlines():
+        signature.unlink(missing_ok=True)
+        raise ValueError(f"The signature's trusted comment is not \"klipp {version}\".")
+    print(f"Signed {sums} for Klipp {version}: attach {signature.name} with the other assets.")
 
 
 def repository(args):
@@ -113,6 +149,10 @@ def main():
     b.add_argument("tag")
     b.add_argument("--output", type=Path, required=True)
     b.set_defaults(func=build)
+    s = commands.add_parser("sign")
+    s.add_argument("release", type=Path, help="the build's output directory")
+    s.add_argument("--key", help="the minisign secret key (or KLIPP_MINISIGN_KEY)")
+    s.set_defaults(func=sign)
     r = commands.add_parser("repository")
     r.add_argument("package", type=Path)
     r.add_argument("--key", required=True)

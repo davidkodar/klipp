@@ -1,10 +1,12 @@
 """Release validation and updater execution, isolated from installed software."""
+import argparse
 import functools
 import hashlib
 import http.server
 import importlib.util
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -57,14 +59,79 @@ class ReleaseTests(unittest.TestCase):
         self.assertNotIn("Update completed", result.stdout)
 
 
+MINISIGN = shutil.which("minisign")
+
+
+def minisign_key(directory, name):
+    """A throwaway minisign key pair with no passphrase, made for the test:
+    the secret key's path and the public key line."""
+    secret, public = directory / f"{name}.key", directory / f"{name}.pub"
+    subprocess.run([MINISIGN, "-G", "-W", "-s", str(secret), "-p", str(public)], check=True, capture_output=True)
+    return secret, public.read_text().splitlines()[-1]
+
+
+def minisign_sign(secret, path, comment):
+    subprocess.run([MINISIGN, "-S", "-s", str(secret), "-m", str(path), "-t", comment], check=True, capture_output=True)
+
+
+@unittest.skipUnless(MINISIGN, "minisign is not installed")
+class SignTests(unittest.TestCase):
+    """release.py sign: the release's SHA256SUMS signed, for its version, by
+    the key klipp-update checks with."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.out = self.root / "release"
+        self.out.mkdir()
+        (self.out / "SHA256SUMS").write_text("ab" * 32 + "  klipp-0.1.0-1-x86_64.pkg.tar.zst\n")
+        (self.out / "release.json").write_text('{"version": "0.1.0"}')
+        self.secret, self.public = minisign_key(self.root, "release")
+        self.shipped = release.release_key
+
+    def tearDown(self):
+        release.release_key = self.shipped
+        self.temp.cleanup()
+
+    def sign(self, public):
+        release.release_key = lambda: public
+        release.sign(argparse.Namespace(release=self.out, key=str(self.secret)))
+
+    def test_the_sums_are_signed_for_their_version(self):
+        self.sign(self.public)
+        verified = subprocess.run([MINISIGN, "-V", "-P", self.public, "-m", str(self.out / "SHA256SUMS")],
+                                  check=True, capture_output=True, text=True).stdout
+        self.assertIn("Trusted comment: klipp 0.1.0", verified.splitlines())
+
+    def test_a_key_the_updater_does_not_check_with_is_refused(self):
+        _, other = minisign_key(self.root, "other")
+        with self.assertRaisesRegex(ValueError, "RELEASE_KEY"):
+            self.sign(other)
+        self.assertFalse((self.out / "SHA256SUMS.minisig").exists(), "no signature left to upload")
+
+    def test_no_release_key_signs_nothing(self):
+        with self.assertRaisesRegex(ValueError, "no RELEASE_KEY"):
+            self.sign("")
+        self.assertFalse((self.out / "SHA256SUMS.minisig").exists())
+
+    def test_the_release_key_is_read_from_the_updater(self):
+        updater = self.root / "klipp-update"
+        updater.write_text(f"#!/bin/bash\nRELEASE_KEY='{self.public}'\n")
+        self.assertEqual(self.shipped(updater), self.public)
+        self.assertEqual(self.shipped(ROOT / "packaging/klipp-update"), "", "a placeholder until the key is made")
+
+
 class QuietHandler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
 
+@unittest.skipUnless(MINISIGN, "minisign is not installed")
 class PackageUpdateTests(unittest.TestCase):
     """klipp-update VERSION against a local fixture release, with pacman and
-    sudo stubbed: what it downloads, checks and hands to pacman."""
+    sudo stubbed: what it downloads, checks and hands to pacman. The release
+    is signed with a key made for the test, swapped in through the loopback
+    test path."""
 
     VERSION = "0.1.0-rc.9"
     FILE = "klipp-0.1.0rc.9-1-x86_64.pkg.tar.zst"
@@ -76,6 +143,7 @@ class PackageUpdateTests(unittest.TestCase):
         self.release.mkdir(parents=True)
         self.package = b"not really a package, pacman is stubbed"
         (self.release / self.FILE).write_bytes(self.package)
+        self.secret, self.public = minisign_key(self.root, "release")
         self.sums(hashlib.sha256(self.package).hexdigest())
         handler = functools.partial(QuietHandler, directory=str(self.root / "site"))
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
@@ -89,15 +157,20 @@ class PackageUpdateTests(unittest.TestCase):
             (bin_dir / stub).chmod(0o755)
         self.env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}", CALLS=str(self.root / "calls"),
                         RESULT="0", PACKAGE="klipp 0.1.0rc.9-1", TMPDIR=str(self.root),
-                        KLIPP_UPDATE_TEST_BASE_URL=f"http://127.0.0.1:{self.server.server_port}")
+                        KLIPP_UPDATE_TEST_BASE_URL=f"http://127.0.0.1:{self.server.server_port}",
+                        KLIPP_UPDATE_TEST_PUBLIC_KEY=self.public)
 
     def tearDown(self):
         self.server.shutdown()
         self.server.server_close()
         self.temp.cleanup()
 
-    def sums(self, digest):
-        (self.release / "SHA256SUMS").write_text(f"{digest}  {self.FILE}\nabc  klipp-0.1.0-rc.9-source.tar.gz\n")
+    def sums(self, digest, signed_by=None, comment=None):
+        """The release's sums for a package of `digest`, signed by the test's
+        key or `signed_by`, its trusted comment naming the version."""
+        sums = self.release / "SHA256SUMS"
+        sums.write_text(f"{digest}  {self.FILE}\nabc  klipp-0.1.0-rc.9-source.tar.gz\n")
+        minisign_sign(signed_by or self.secret, sums, comment or f"klipp {self.VERSION}")
 
     def run_update(self, answer="y\n\n", version=None):
         result = subprocess.run(["bash", str(ROOT / "packaging/klipp-update"), "--terminal", version or self.VERSION],
@@ -126,6 +199,54 @@ class PackageUpdateTests(unittest.TestCase):
         self.assertIn("Not installed", result.stdout)
         self.assert_nothing_left()
 
+    def test_the_signature_is_checked_and_shown(self):
+        result, _ = self.run_update()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Signed:   SHA256SUMS by Klipp's release key", result.stdout)
+
+    def test_tampered_sums_are_refused(self):
+        sums = self.release / "SHA256SUMS"
+        sums.write_text(sums.read_text() + "0" * 64 + "  extra\n")
+        result, calls = self.run_update()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(calls, [])
+        self.assertIn("not signed by Klipp's release key", result.stderr)
+        self.assertNotIn("Install with pacman", result.stdout)
+        self.assert_nothing_left()
+
+    def test_a_missing_signature_is_refused(self):
+        (self.release / "SHA256SUMS.minisig").unlink()
+        result, calls = self.run_update()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(calls, [])
+        self.assertIn("has no signature", result.stderr)
+        self.assert_nothing_left()
+
+    def test_a_signature_by_another_key_is_refused(self):
+        other, _ = minisign_key(self.root, "other")
+        self.sums(hashlib.sha256(self.package).hexdigest(), signed_by=other)
+        result, calls = self.run_update()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(calls, [])
+        self.assertIn("not signed by Klipp's release key", result.stderr)
+
+    def test_a_signature_for_another_version_is_refused(self):
+        self.sums(hashlib.sha256(self.package).hexdigest(), comment="klipp 0.1.0-rc.8")
+        result, calls = self.run_update()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(calls, [])
+        self.assertIn("not for Klipp 0.1.0-rc.9", result.stderr)
+
+    def test_a_test_key_counts_only_on_the_loopback_test_path(self):
+        # The shipped script has no release key yet: without the test path
+        # nothing verifies, and the test key is not read.
+        del self.env["KLIPP_UPDATE_TEST_BASE_URL"]
+        result, calls = self.run_update()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(calls, [])
+        self.assertIn("no release key", result.stderr)
+        self.assertNotIn("test's key", result.stderr)
+
     def test_a_wrong_checksum_is_refused(self):
         self.sums("0" * 64)
         result, calls = self.run_update()
@@ -136,7 +257,9 @@ class PackageUpdateTests(unittest.TestCase):
         self.assert_nothing_left()
 
     def test_a_missing_checksum_is_refused(self):
+        # Signed, so it is the missing line that stops it.
         (self.release / "SHA256SUMS").write_text("abc  something-else\n")
+        minisign_sign(self.secret, self.release / "SHA256SUMS", f"klipp {self.VERSION}")
         result, calls = self.run_update()
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(calls, [])
@@ -179,6 +302,8 @@ class PackageUpdateTests(unittest.TestCase):
 
     def test_the_shipped_url_is_github_over_https(self):
         script = (ROOT / "packaging/klipp-update").read_text()
+        # The test key is read only inside the loopback test path.
+        self.assertEqual(script.count("KLIPP_UPDATE_TEST_PUBLIC_KEY"), 3, "named in the comment, the test and the echo only")
         self.assertIn("RELEASES=https://github.com/davidkodar/klipp/releases/download\n", script)
         self.assertIn("--proto '=https'", script)
 

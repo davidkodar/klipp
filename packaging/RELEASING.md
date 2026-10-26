@@ -40,7 +40,20 @@ script does not replace that gate and does not publish or create tags.
 4. Install the candidate on test systems. Verify launch, import, audio/video
    playback, save/reopen and export. Test AMD and NVIDIA hardware before claiming
    both are validated; a portable CPU build alone does not establish GPU support.
-5. Create a **draft** GitHub Release from the existing tag, attach the package,
+5. Sign the checksums with the release key (see "The release key" below), on
+   the machine that holds it:
+
+   ```bash
+   python3 scripts/release.py sign target/releases/0.20.0-rc.1 --key ~/.minisign/klipp-release.key
+   ```
+
+   The key's path can also come from `KLIPP_MINISIGN_KEY`. minisign asks for the
+   key's passphrase; nothing keeps it. This writes `SHA256SUMS.minisig`, whose
+   trusted comment is `klipp VERSION`. Signing `SHA256SUMS` covers every asset it
+   lists. The script then verifies the signature with the `RELEASE_KEY` in
+   `packaging/klipp-update`, as the updater will, and refuses (removing the
+   signature) when it does not match, or when no key is set there yet.
+6. Create a **draft** GitHub Release from the existing tag, attach the package,
    source archive, checksums and signatures, and write notes including supported
    systems and known limitations. Mark prereleases as such. Do not upload a
    machine-optimized developer build as a release asset.
@@ -50,14 +63,31 @@ script does not replace that gate and does not publish or create tags.
      --title 'Klipp 0.20.0-rc.1' --notes-file release-notes.md \
      target/releases/0.20.0-rc.1/*.pkg.tar.zst \
      target/releases/0.20.0-rc.1/*-source.tar.gz \
-     target/releases/0.20.0-rc.1/SHA256SUMS
+     target/releases/0.20.0-rc.1/SHA256SUMS \
+     target/releases/0.20.0-rc.1/SHA256SUMS.minisig
    ```
 
-   These are examples, not a command to release that particular version. Sign
-   downloadable packages with `gpg --local-user FULL_FINGERPRINT --detach-sign
-   PACKAGE` and attach `PACKAGE.sig` too. Publish only after validation; for stable
+   These are examples, not a command to release that particular version. A
+   release without `SHA256SUMS.minisig` cannot be installed by the in-app updater,
+   and About does not offer it. Publish only after validation; for stable
    versions, publish the repository package before the release announcement.
    Keep old release assets and their matching source archives available.
+
+## The release key
+
+Release checksums are signed with minisign, by a key that is Klipp's alone.
+Make it once, with a passphrase, on a machine you control:
+
+```bash
+minisign -G -p klipp-release.pub -s ~/.minisign/klipp-release.key
+```
+
+Keep the secret key and its passphrase out of every repository and backup that
+others can read, and keep an offline backup. Put the public key line (the second
+line of `klipp-release.pub`) in `RELEASE_KEY` in `packaging/klipp-update`, through
+a reviewed PR, before signing a release with it. Until then `RELEASE_KEY` is
+empty and the updater installs nothing from a download. Changing the key means a
+release whose updater carries the new one, installed by the old route.
 
 ## Maintainer: signed Arch repository
 
@@ -134,14 +164,19 @@ Installing a file does **not** automatically configure a repository.
   `/usr/bin/klipp-update` opens a terminal and asks the user to save/finish work.
   - With a configured `[klipp]` repository carrying the release, it asks to
     confirm, then runs `sudo pacman -Syu klipp`.
-  - Otherwise, when the newer release has its package and `SHA256SUMS` attached
+  - Otherwise, when the newer release has its package, `SHA256SUMS` and
+    `SHA256SUMS.minisig` attached
     (previews included when the preview channel is on), About runs
-    `klipp-update VERSION`. It downloads both from the project's GitHub release
+    `klipp-update VERSION`. It downloads them from the project's GitHub release
     over HTTPS into a private temporary directory, following a redirect only to
-    GitHub's release asset hosts. It checks the package's SHA-256 against
-    `SHA256SUMS` and its name and version with `pacman -Qp`, shows the version,
-    file, size and checksum, asks "Install with pacman? [y/N]", and only on yes
-    runs `sudo pacman -U` on the file. Nothing downloaded is executed. Any
+    GitHub's release asset hosts. It verifies `SHA256SUMS` with
+    `SHA256SUMS.minisig` and the release key built into the script (`minisign
+    -V`), and that the signature's trusted comment is `klipp VERSION`; a missing
+    signature, one by another key, or changed sums stop it. It then checks the
+    package's SHA-256 against `SHA256SUMS` and its name and version with
+    `pacman -Qp`, shows the version, file, size, checksum and signature, asks
+    "Install with pacman? [y/N]", and only on yes runs `sudo pacman -U` on the
+    file. Nothing downloaded is executed. Any
     failure, or no, removes the temporary files and exits non-zero, which About
     reports.
 
@@ -197,8 +232,11 @@ a failure, check with the network off.
 `KLIPP_UPDATE_TEST_BASE_URL` points `klipp-update VERSION` at a local fixture
 release instead of GitHub, for testing the helper itself. It accepts only a
 loopback `http://` address (`http://127.0.0.1:8000`), serving
-`v<VERSION>/klipp-<pkgver>-1-x86_64.pkg.tar.zst` and `v<VERSION>/SHA256SUMS`.
-Nothing in Klipp sets it.
+`v<VERSION>/klipp-<pkgver>-1-x86_64.pkg.tar.zst`, `v<VERSION>/SHA256SUMS` and
+`v<VERSION>/SHA256SUMS.minisig`. Nothing in Klipp sets it. With it, and only
+with it, `KLIPP_UPDATE_TEST_PUBLIC_KEY` replaces the release key, so a fixture
+can be signed by a key made for the test (`minisign -G -W`); without the test
+address that variable is not read.
 
 ## Tests
 

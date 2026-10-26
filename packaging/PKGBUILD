@@ -80,7 +80,7 @@ if [[ -n ${KLIPP_RELEASE_VERSION:-} ]]; then
   pkgname=klipp
   pkgver=${KLIPP_RELEASE_VERSION//-/}
   conflicts=('klipp-git')
-  depends+=('xdg-terminal-exec' 'sudo')
+  depends+=('xdg-terminal-exec' 'sudo' 'minisign')
   unset -f pkgver
 else
   pkgver=$(pkgver)
