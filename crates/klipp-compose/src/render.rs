@@ -3153,12 +3153,16 @@ impl Renderer {
                 let to_working = klipp_color::primaries::working_space_conversion_matrix(WorkingColorspace::Rec709Linear, self.working)
                     .unwrap_or([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
                 let solid = self.titles.prepare_text3d(td, width, height, clip_time as f32, Some(total));
+                // A metal solid (#2706): its text's material, resolved as a
+                // flat face's is.
+                let scale = klipp_title::frame_scale(width, height);
+                let metal = td.primary_text().and_then(|t| t.material.map(|m| title_metal(&m.clamped(), t.font_size * scale, scale)));
                 let solid_roi = solid.as_ref().and_then(|solid| {
                     let p = self.executor.gpu_pipeline_or_init()?;
                     if !self.gpu_text3d.as_ref().is_some_and(|g| g.same_device(p)) {
                         self.gpu_text3d = Some(crate::title3d_gpu::GpuText3d::new(p));
                     }
-                    self.gpu_text3d.as_mut()?.render(p, slot, solid.geometry.id, &solid.scene(), width, height, to_working)
+                    self.gpu_text3d.as_mut()?.render(p, slot, solid.geometry.id, &solid.scene(), width, height, to_working, metal.as_ref())
                 });
                 let placed = if let (Some(solid), Some(mut roi)) = (solid, solid_roi) {
                     let passes = crate::synth::title_style_passes(&solid.fx, klipp_title::frame_scale(width, height), clip_time);
@@ -6890,7 +6894,7 @@ fn title_fill(source:&klipp_title::GlyphSource,scale:f32)->Option<klipp_effects:
 /// A title's metal (#2706) as the GPU draws it: lights to directions,
 /// colours to linear light, the bevel to frame pixels of a text
 /// `font_px` tall.
-fn title_metal(m:&klipp_core::title_material::TitleMaterial,font_px:f32,scale:f32)->klipp_effects::gpu::TitleMetal {
+pub(crate) fn title_metal(m:&klipp_core::title_material::TitleMaterial,font_px:f32,scale:f32)->klipp_effects::gpu::TitleMetal {
     let linear=|c:[u8;3]|c.map(|v|{let x=v as f32/255.0;if x<=0.04045 {x/12.92} else {((x+0.055)/1.055).powf(2.4)}});
     let light=|l:&klipp_core::title_material::MetalLight|(l.direction(),l.strength,linear(l.color));
     let off=([0.0,0.0,-1.0],0.0,[0.0;3]);

@@ -70,7 +70,9 @@ impl TitleRenderer {
             return None;
         }
         let fx = o.fx();
-        if !tb.has_keyframes() && !fx.motion.is_active() && !fx.animators.iter().any(|a| a.enabled)
+        // A still solid is a cached raster, unless it is metal (#2706),
+        // which only the GPU draws.
+        if !tb.has_keyframes() && !fx.motion.is_active() && !fx.animators.iter().any(|a| a.enabled) && tb.material.is_none()
         {
             return None;
         }
@@ -122,6 +124,7 @@ impl TitleRenderer {
             font_weight: tb.font_weight,
             font_axes: tb.font_axes.clone(),
             three_d: tb.three_d.clone(),
+            material: tb.material,
             ..Default::default()
         };
         if *tb != allowed {
