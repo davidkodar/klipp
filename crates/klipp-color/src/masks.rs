@@ -93,6 +93,17 @@ fn shape_sdf(nx: f32, ny: f32, shape: &MaskShape, outline: Option<&[(f32, f32)]>
             let t = (dx * gx + dy * gy) / (glen * glen);
             t - 0.5
         }
+        // In gradient widths from the ring midway between the radii, as
+        // a linear gradient is from its midpoint (#2704): -0.5 at
+        // `inner`, 0.5 at `outer`; a ring of no width is a hard circle.
+        MaskShape::RadialGradient { center_x, center_y, inner, outer } => {
+            let dx = nx - center_x;
+            let dy = (ny - center_y) * aspect;
+            let r = (dx * dx + dy * dy).sqrt();
+            let span = outer - inner;
+            let mid = (inner + outer) * 0.5;
+            if span.abs() < 0.0001 { r - mid } else { (r - mid) / span }
+        }
         MaskShape::Bezier { .. } => {
             // The path's outline, flattened by the caller (#74).
             let points = outline.unwrap_or(&[]);
@@ -419,6 +430,26 @@ mod tests {
         // (original height/2 = 0.1, now becomes half-width)
         let d_out = sdf(0.8, 0.5, &shape);
         assert!(d_out > 0.0, "point along short axis of 90deg rotated rect should be outside: got {d_out}");
+    }
+
+    // ── RadialGradient: whole inside the inner ring, gone past the outer,
+    // falling in between (#2704) ───────────────────────────────────────
+    #[test]
+    fn radial_gradient_fades_from_its_inner_ring_to_its_outer() {
+        let shape = MaskShape::RadialGradient { center_x: 0.5, center_y: 0.5, inner: 0.1, outer: 0.3 };
+        let at = |r: f32| klipp_core::soft_edge(sdf_aspect(0.5 + r, 0.5, &shape, 1.0), 0.5, 0.5);
+        assert_eq!(at(0.0), 1.0);
+        assert_eq!(at(0.1), 1.0);
+        assert!((at(0.2) - 0.5).abs() < 1e-4, "midway is half: {}", at(0.2));
+        assert!(at(0.15) > at(0.2) && at(0.2) > at(0.25), "falls outward");
+        assert_eq!(at(0.3), 0.0);
+        assert_eq!(at(0.45), 0.0);
+        // Measured in widths both ways: as far down is as faded.
+        let down = klipp_core::soft_edge(sdf_aspect(0.5, 0.5 + 0.15 / 0.5, &shape, 0.5), 0.5, 0.5);
+        assert!((down - at(0.15)).abs() < 1e-4);
+        // A ring of no width is a hard circle at its radius.
+        let ring = MaskShape::RadialGradient { center_x: 0.5, center_y: 0.5, inner: 0.2, outer: 0.2 };
+        assert!(sdf_aspect(0.69, 0.5, &ring, 1.0) < 0.0 && sdf_aspect(0.71, 0.5, &ring, 1.0) > 0.0);
     }
 
     // ── 5. LinearGradient: start inside, past end outside ────────────────

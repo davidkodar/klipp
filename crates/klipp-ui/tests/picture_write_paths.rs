@@ -30,9 +30,10 @@ const KNOWN: &[(&str, &str, usize)] = &[
     // that it undoes exactly on a picture-truth clip (#2459).
     ("klipp-document/src/ops.rs", "SetBuiltinEffects", 5),
     // The document ops' grade builders (grade, look, qualify, zones, track
-    // and stage grades) and their tests, and the test that a grade change
-    // undoes exactly on a picture-truth clip (#2459).
-    ("klipp-document/src/ops.rs", "SetNodeGraph", 23),
+    // and stage grades, the opacity gradient #2704) and their tests, and
+    // the test that a grade change undoes exactly on a picture-truth clip
+    // (#2459).
+    ("klipp-document/src/ops.rs", "SetNodeGraph", 25),
     // A drag left open, closed on the state alone (M3 step 2). The list
     // handlers and their drags go through the picture (M4 step 12c-5).
     ("klipp-ui/src/app/effects.rs", "EditBuiltinEffect", 2),

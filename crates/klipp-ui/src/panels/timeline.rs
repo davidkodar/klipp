@@ -9053,6 +9053,31 @@ impl TimelinePanel {
                                 }
                             }
                         }
+                        // The clip faded into the tracks below across the
+                        // frame (#2704); its handles then in the viewer.
+                        let faded = clip.grade().opacity_gradient().is_some();
+                        ui.menu_rows("Opacity Gradient", |ui| {
+                            let ramp = |shape| klipp_core::Mask { feather: 0.5, feather_inner: 0.5, ..klipp_core::Mask::new(shape) };
+                            for (label, shape) in [
+                                ("Fade Out Downward", klipp_core::MaskShape::LinearGradient { start_x: 0.5, start_y: 0.4, end_x: 0.5, end_y: 0.9 }),
+                                ("Fade Out Upward", klipp_core::MaskShape::LinearGradient { start_x: 0.5, start_y: 0.6, end_x: 0.5, end_y: 0.1 }),
+                                ("Fade Out to the Right", klipp_core::MaskShape::LinearGradient { start_x: 0.4, start_y: 0.5, end_x: 0.9, end_y: 0.5 }),
+                                ("Fade Out to the Left", klipp_core::MaskShape::LinearGradient { start_x: 0.6, start_y: 0.5, end_x: 0.1, end_y: 0.5 }),
+                                ("Radial", klipp_core::MaskShape::RadialGradient { center_x: 0.5, center_y: 0.5, inner: 0.15, outer: 0.45 }),
+                            ] {
+                                if ui.button(label).clicked() {
+                                    cmds.push(AppCommand::SetOpacityGradient { clip_id, mask: Some(Box::new(ramp(shape))) });
+                                    ui.close_menu();
+                                }
+                            }
+                            if faded {
+                                ui.separator();
+                                if ui.button("Remove Opacity Gradient").clicked() {
+                                    cmds.push(AppCommand::SetOpacityGradient { clip_id, mask: None });
+                                    ui.close_menu();
+                                }
+                            }
+                        });
                         if can_restore && ui.button("Restore Background").clicked() {
                             cmds.push(AppCommand::RestoreBackground { clip_id });
                             ui.close_menu();

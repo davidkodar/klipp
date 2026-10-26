@@ -119,6 +119,7 @@ pub(super) fn window_quad(shape: &klipp_core::MaskShape, aspect: f32) -> [(f32, 
             let half = ((end_x - start_x).hypot((end_y - start_y) * aspect) * 0.5).max(0.05);
             bbox(mx - half, my - half / aspect, mx + half, my + half / aspect)
         }
+        MaskShape::RadialGradient { center_x, center_y, outer, .. } => bbox(center_x - outer, center_y - outer / aspect, center_x + outer, center_y + outer / aspect),
         MaskShape::Bezier { points } => {
             // Round its curves too, not only its points (#74).
             let outline = klipp_core::mask_path::flatten(points, 1e-3, aspect);

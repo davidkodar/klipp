@@ -105,6 +105,42 @@ fn a_matte_into_the_grades_output_keys_the_clip_over_the_track_below() {
     }
 }
 
+/// A clip whose Output's alpha is one gradient over its whole length, as
+/// `opacity_mask` makes it (#2704).
+fn faded(shape: MaskShape) -> Clip {
+    let mut c = graded(true);
+    let mut g = c.grade().clone();
+    let mask = g.nodes.iter_mut().find(|n| n.kind == NodeKind::Mask).expect("the matte");
+    mask.params.masks = Some(MaskStack { masks: vec![Mask { feather: 0.5, feather_inner: 0.5, ..Mask::new(shape) }] });
+    c.set_grade(g);
+    c
+}
+
+/// A gradient into the alpha fades the clip into the track below across
+/// the frame, on the CPU and the GPU alike (#2704).
+#[test]
+fn a_gradient_into_the_alpha_fades_the_clip_across_the_frame() {
+    let [[clip, _], _] = render(Some(&graded(false)));
+    let [[below, _], _] = render(None);
+    let mix = |a: f32| -> [f32; 4] { std::array::from_fn(|c| clip[c] * a + below[c] * (1.0 - a)) };
+    let near = |got: [f32; 4], want: [f32; 4]| (0..3).all(|c| (got[c] - want[c]).abs() <= 0.01);
+    // Left to right: the corner, at the start, is the clip; the centre,
+    // midway, about half each.
+    // Its end past the right edge so the centre column (16 of 0..31) is
+    // exactly midway.
+    let linear = MaskShape::LinearGradient { start_x: 0.0, start_y: 0.5, end_x: 32.0 / 31.0, end_y: 0.5 };
+    for (path, [centre, corner]) in ["CPU", "GPU"].into_iter().zip(render(Some(&faded(linear)))) {
+        assert!(near(corner, clip), "{path}: at the start, the clip: {corner:?} vs {clip:?}");
+        assert!(near(centre, mix(0.5)), "{path}: midway, half and half: {centre:?} vs {:?}", mix(0.5));
+    }
+    // Round: the clip inside the inner ring, the track below past the outer.
+    let radial = MaskShape::RadialGradient { center_x: 0.5, center_y: 0.5, inner: 0.1, outer: 0.3 };
+    for (path, [centre, corner]) in ["CPU", "GPU"].into_iter().zip(render(Some(&faded(radial)))) {
+        assert!(near(centre, clip), "{path}: inside, the clip: {centre:?} vs {clip:?}");
+        assert!(near(corner, below), "{path}: outside, the track below: {corner:?} vs {below:?}");
+    }
+}
+
 /// A cut-out clip shrunk by a Transform is cut where its picture lands, on
 /// the GPU stack as on the CPU route: the alpha is taken where the grade
 /// ends, before the clip's effects (its placement among them) are spliced

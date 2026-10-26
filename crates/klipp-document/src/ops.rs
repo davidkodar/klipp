@@ -1123,6 +1123,26 @@ pub enum Op {
         #[serde(default)]
         params: std::collections::BTreeMap<String, serde_json::Value>,
     },
+    /// Fade a clip's opacity across the frame (#2704): whole at one
+    /// line or ring, gone at another. `shape` is `{"linear": {"start":
+    /// [x, y], "end": [x, y]}}`, whole at `start` and gone at `end`, or
+    /// `{"radial": {"center": [x, y], "inner": r, "outer": r}}`, whole
+    /// inside `inner` and gone past `outer` (frame fractions; radii in
+    /// frame widths). `feather` 0 to 1 is how much of the way between
+    /// them it fades over (1, the default, all of it; 0 a hard edge
+    /// midway); `invert` gone at the start, whole at the end. A second
+    /// one replaces the first; `clear` takes it off.
+    OpacityMask {
+        clip_id: ClipRef,
+        #[serde(default)]
+        shape: Option<GradientShape>,
+        #[serde(default)]
+        feather: Option<f32>,
+        #[serde(default)]
+        invert: bool,
+        #[serde(default)]
+        clear: bool,
+    },
     /// Hide a patch of the picture — an email, a key, a face — for a
     /// stretch of a clip: a cropped copy of the same footage goes on a
     /// video track above (one is made on top if none has room), covering
@@ -1985,6 +2005,14 @@ fn one_piece() -> u32 {
     1
 }
 
+/// An `opacity_mask`'s gradient (#2704).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum GradientShape {
+    Linear { start: [f32; 2], end: [f32; 2] },
+    Radial { center: [f32; 2], inner: f32, outer: f32 },
+}
+
 /// Serialized operation tags accepted by `Op`. Keep this in sync with the
 /// variants; the test below catches additions and renames.
 pub const OP_NAMES: &[&str] = &[
@@ -1993,7 +2021,7 @@ pub const OP_NAMES: &[&str] = &[
     "slip", "slide", "pin", "role", "match", "matte", "format", "stabilize", "reframe", "zoom", "pan", "follow", "refit", "highlight",
     "ramp", "grade_group", "remove_grade_group", "look", "qualify", "zones", "retime", "replace", "track_audio", "clip_audio", "clean_audio",
     "transition", "style", "title", "compose", "camera", "crop", "generator", "depth", "label", "motion_blur",
-    "strobe", "set_length", "over_edits", "template", "edit_from_selects",
+    "strobe", "set_length", "over_edits", "template", "edit_from_selects", "opacity_mask",
 ];
 
 pub use klipp_timeline::ShadowSpec;
@@ -3312,6 +3340,11 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             }
             (None, None) => Err(refuse(i, "no clip given", "give clip_id, or on: \"timeline\" or {\"group\": name}")),
         },
+        Op::OpacityMask { clip_id, shape, feather, invert, clear } => {
+            let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            require_picture(seq, pool, i, ti, clip, "fade")?;
+            opacity_mask(i, clip.id, clip.grade(), &clip_name(seq, pool, clip), shape.as_ref(), *feather, *invert, *clear)
+        }
         Op::Stabilize { clip_id, smoothing } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             stabilize(seq, pool, i, ti, clip, *smoothing)
@@ -8440,6 +8473,63 @@ fn grade_group(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, name: &str,
     }
     let edit = if edits.len() == 1 { edits.pop().expect("one") } else { EditCommand::Batch(edits) };
     Ok((what, edit, touched))
+}
+
+/// `opacity_mask` on a clip's grade (#2704): a Mask node with the one
+/// gradient, from the Source into the Output's alpha, which the picture's
+/// alpha is multiplied by on every path. Another matte already there is
+/// left alone and named.
+#[allow(clippy::too_many_arguments)]
+fn opacity_mask(i: usize, id: ClipId, current: &klipp_nodes::NodeGraph, name: &str, shape: Option<&GradientShape>, feather: Option<f32>, invert: bool, clear: bool) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    use klipp_nodes::opacity_gradient::OpacityGradientError as E;
+    let set = |mask: Option<klipp_core::Mask>| {
+        let mut graph = current.clone();
+        graph.set_opacity_gradient(mask).map(|()| graph).map_err(|e| match e {
+            E::AlphaTaken(label) => refuse(i, format!("{name}'s alpha is already {label}"), "take that matte off in the clip's node view first"),
+            E::NoneToClear => refuse(i, format!("{name} has no opacity gradient"), "leave clear out to add one"),
+        })
+    };
+    let (what, graph) = if clear {
+        (format!("clear the opacity gradient on {name}"), set(None)?)
+    } else {
+        (format!("opacity gradient on {name}"), opacity_gradient(i, shape, feather, invert).and_then(|mask| set(Some(mask)))?)
+    };
+    Ok((what, EditCommand::SetNodeGraph { clip_id: id, old_graph: current.clone(), new_graph: graph }, vec![id]))
+}
+
+/// An `opacity_mask`'s gradient as the mask it is, checked.
+fn opacity_gradient(i: usize, shape: Option<&GradientShape>, feather: Option<f32>, invert: bool) -> Result<klipp_core::Mask, Refusal> {
+    let Some(shape) = shape else {
+        return Err(refuse(i, "no shape given", "give shape {\"linear\": {\"start\": [x, y], \"end\": [x, y]}} or {\"radial\": {\"center\": [x, y], \"inner\": r, \"outer\": r}}, or clear: true"));
+    };
+    let unit = |v: f32| v.is_finite() && (0.0..=1.0).contains(&v);
+    let feather = feather.unwrap_or(1.0);
+    if !unit(feather) {
+        return Err(refuse(i, format!("feather {feather} is out of range"), "give feather between 0 (a hard edge) and 1 (fading all the way)"));
+    }
+    let shape = match *shape {
+        GradientShape::Linear { start, end } => {
+            if !start.into_iter().chain(end).all(unit) {
+                return Err(refuse(i, "a linear gradient's start and end are outside the frame", "give start and end as [x, y], each 0 to 1"));
+            }
+            if (end[0] - start[0]).abs() + (end[1] - start[1]).abs() < 1e-3 {
+                return Err(refuse(i, "a linear gradient's start and end are the same point", "give two points apart"));
+            }
+            klipp_core::MaskShape::LinearGradient { start_x: start[0], start_y: start[1], end_x: end[0], end_y: end[1] }
+        }
+        GradientShape::Radial { center, inner, outer } => {
+            if !center.into_iter().all(unit) {
+                return Err(refuse(i, "a radial gradient's center is outside the frame", "give center as [x, y], each 0 to 1"));
+            }
+            if !(inner.is_finite() && outer.is_finite() && 0.0 <= inner && inner < outer && outer <= 2.0) {
+                return Err(refuse(i, format!("radii {inner} to {outer} do not make a ring"), "give inner smaller than outer, from 0 to 2 frame widths"));
+            }
+            klipp_core::MaskShape::RadialGradient { center_x: center[0], center_y: center[1], inner, outer }
+        }
+    };
+    // Its feathers in the gradient's own lengths: half each way from the
+    // midline is the whole way between the ends.
+    Ok(klipp_core::Mask { shape, feather: feather * 0.5, feather_inner: feather * 0.5, invert, ..klipp_core::Mask::default() })
 }
 
 fn apply_look(i: usize, target: GradeTarget, lut_path: &str, name: Option<&str>, opacity: Option<f32>, remove: bool) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
@@ -15603,6 +15693,50 @@ mod tests {
         let EditCommand::EditAudioChain { new_state, .. } = &plan.steps[0].edit else { panic!() };
         assert_eq!(new_state.audio_effects.last().unwrap().effect_type, "compressor");
         assert!(why(serde_json::json!({ "op": "clip_audio", "clip_id": a.0.to_string(), "effect": "compressor", "remove": true })).contains("has no compressor"), "nothing to take off yet");
+    }
+
+    #[test]
+    fn opacity_mask_wires_one_gradient_into_the_clips_alpha() {
+        let (seq, pool, _, a, _) = fixture();
+        let op = |v: serde_json::Value| -> Op { serde_json::from_value(v).unwrap() };
+        let graph_of = |plan: &Plan| {
+            let EditCommand::SetNodeGraph { new_graph, .. } = &plan.steps[0].edit else { panic!("a graph edit") };
+            new_graph.clone()
+        };
+        let id = a.0.to_string();
+        let linear = op(serde_json::json!({ "op": "opacity_mask", "clip_id": id, "shape": { "linear": { "start": [0.0, 0.2], "end": [0.0, 0.8] } } }));
+        let g = graph_of(&resolve(&seq, &pool, &[linear]).unwrap());
+        let node = g.nodes.iter().find(|n| n.label == klipp_nodes::opacity_gradient::OPACITY_GRADIENT).expect("the gradient's node");
+        assert_eq!(g.input_of(g.output_node_id, 1), Some(node.id), "into the Output's alpha");
+        let source = g.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Source).unwrap().id;
+        assert_eq!(g.input_of(node.id, 0), Some(source), "reading the source");
+        let mask = &node.params.masks.as_ref().unwrap().masks[0];
+        assert_eq!(mask.shape, klipp_core::MaskShape::LinearGradient { start_x: 0.0, start_y: 0.2, end_x: 0.0, end_y: 0.8 });
+        assert_eq!((mask.feather, mask.feather_inner), (0.5, 0.5), "fading all the way");
+
+        // A second replaces it, the same node; clear takes it off.
+        let mut seq2 = seq.clone();
+        seq2.all_clips_mut().find(|c| c.id == a).unwrap().set_grade(g.clone());
+        let radial = op(serde_json::json!({ "op": "opacity_mask", "clip_id": id, "shape": { "radial": { "center": [0.5, 0.5], "inner": 0.1, "outer": 0.4 } }, "feather": 0.5, "invert": true }));
+        let g2 = graph_of(&resolve(&seq2, &pool, &[radial]).unwrap());
+        assert_eq!(g2.nodes.len(), g.nodes.len());
+        let mask = &g2.nodes.iter().find(|n| n.label == klipp_nodes::opacity_gradient::OPACITY_GRADIENT).unwrap().params.masks.as_ref().unwrap().masks[0];
+        assert!(mask.invert && mask.feather == 0.25);
+        assert!(matches!(mask.shape, klipp_core::MaskShape::RadialGradient { inner, outer, .. } if inner == 0.1 && outer == 0.4));
+        let cleared = graph_of(&resolve(&seq2, &pool, &[op(serde_json::json!({ "op": "opacity_mask", "clip_id": id, "clear": true }))]).unwrap());
+        assert!(cleared.input_of(cleared.output_node_id, 1).is_none() && !cleared.nodes.iter().any(|n| n.label == klipp_nodes::opacity_gradient::OPACITY_GRADIENT));
+
+        // Refusals: nothing to clear, no shape, a ring inside out, another
+        // matte already the alpha.
+        let why = |seq: &Sequence, v: serde_json::Value| resolve(seq, &pool, &[op(v)]).unwrap_err().why;
+        assert!(why(&seq, serde_json::json!({ "op": "opacity_mask", "clip_id": id, "clear": true })).contains("no opacity gradient"));
+        assert!(why(&seq, serde_json::json!({ "op": "opacity_mask", "clip_id": id })).contains("no shape"));
+        assert!(why(&seq, serde_json::json!({ "op": "opacity_mask", "clip_id": id, "shape": { "radial": { "center": [0.5, 0.5], "inner": 0.4, "outer": 0.1 } } })).contains("ring"));
+        let mut keyed = g.clone();
+        keyed.nodes.iter_mut().find(|n| n.label == klipp_nodes::opacity_gradient::OPACITY_GRADIENT).unwrap().label = "Subject".into();
+        let mut seq3 = seq.clone();
+        seq3.all_clips_mut().find(|c| c.id == a).unwrap().set_grade(keyed);
+        assert!(why(&seq3, serde_json::json!({ "op": "opacity_mask", "clip_id": id, "shape": { "linear": { "start": [0, 0], "end": [1, 1] } } })).contains("already Subject"));
     }
 
     #[test]

@@ -34,6 +34,7 @@
 //!   work".
 
 pub mod graph;
+pub mod opacity_gradient;
 mod restore_background;
 pub mod kinds;
 pub mod params;

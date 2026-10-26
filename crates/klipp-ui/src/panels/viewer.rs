@@ -3771,6 +3771,88 @@ impl ViewerPanel {
                         }
                     }
                 }
+                klipp_core::MaskShape::RadialGradient { center_x, center_y, inner, outer } => {
+                    let center = to_screen(*center_x, *center_y);
+
+                    // Whole inside the inner ring, gone past the outer (#2704).
+                    for radius in [*inner, *outer] {
+                        let ring: Vec<(f32, f32)> = (0..64).map(|i| {
+                            let (sin, cos) = (i as f32 * std::f32::consts::TAU / 64.0).sin_cos();
+                            (center_x + radius * cos, center_y + radius * reach * sin)
+                        }).collect();
+                        outline(&ring);
+                    }
+
+                    // Center handle
+                    let center_handle = egui::Rect::from_center_size(center, egui::vec2(handle_radius * 2.0, handle_radius * 2.0));
+                    ui.painter().circle_filled(center, handle_radius, handle_color);
+
+                    // Right edge handle: the outer radius
+                    let right = to_screen(center_x + outer, *center_y);
+                    let right_handle = egui::Rect::from_center_size(right, egui::vec2(handle_radius * 2.0, handle_radius * 2.0));
+                    ui.painter().circle_filled(right, handle_radius, handle_color);
+
+                    // Bottom edge handle: the inner radius
+                    let bottom = to_screen(*center_x, center_y + inner * reach);
+                    let bottom_handle = egui::Rect::from_center_size(bottom, egui::vec2(handle_radius * 2.0, handle_radius * 2.0));
+                    ui.painter().circle_filled(bottom, handle_radius, handle_color);
+
+                    // Interaction — start drags
+                    if state.viewer_mask_drag.is_none() {
+                        for (handle_rect, handle_kind) in [
+                            (right_handle, MaskHandle::EdgeRight),
+                            (bottom_handle, MaskHandle::EdgeBottom),
+                            (center_handle, MaskHandle::Center),
+                        ] {
+                            let resp = ui.allocate_rect(handle_rect.expand(4.0), egui::Sense::click_and_drag());
+                            if resp.clicked() {
+                                state.selected_node_id = Some(node_id);
+                                cmds.push(AppCommand::FocusMaskInspector);
+                            }
+                            if resp.drag_started() {
+                                if let Some(pos) = resp.interact_pointer_pos() {
+                                    state.selected_node_id = Some(node_id);
+                                    cmds.push(AppCommand::FocusMaskInspector);
+                                    cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
+                                    // If this mask is keyframed (i.e. a
+                                    // tracker is driving its centre),
+                                    // dragging the outline can't have
+                                    // any visible effect — the
+                                    // keyframes win in evaluated_at.
+                                    // Treat the drag as "I want to
+                                    // start over from this position":
+                                    // tear the tracker down + clear
+                                    // the centre keyframes so the
+                                    // static drag we're about to do
+                                    // becomes the new starting point.
+                                    // User clicks 🎯 Track again
+                                    // afterwards to redo analysis.
+                                    if !raw_mask.keyframes.is_empty() {
+                                        cmds.push(AppCommand::RemoveMaskTracking {
+                                            clip_id, node_id, mask_index: mask_idx,
+                                        });
+                                    }
+                                    state.viewer_mask_drag = Some(ViewerMaskDrag {
+                                        clip_id,
+                                        node_id,
+                                        mask_index: mask_idx,
+                                        handle: handle_kind,
+                                        initial_shape: untracked_shape.clone(),
+                                        drag_start_pos: pos,
+                                    });
+                                }
+                            }
+                            if resp.hovered() || resp.dragged() {
+                                ui.ctx().set_cursor_icon(match handle_kind {
+                                    MaskHandle::Center => egui::CursorIcon::Move,
+                                    MaskHandle::EdgeRight => egui::CursorIcon::ResizeHorizontal,
+                                    MaskHandle::EdgeBottom => egui::CursorIcon::ResizeVertical,
+                                    MaskHandle::BezierPoint(_) => egui::CursorIcon::Move,
+                                });
+                            }
+                        }
+                    }
+                }
                 klipp_core::MaskShape::Rectangle { center_x, center_y, width, height, rotation } => {
                     let center = to_screen(*center_x, *center_y);
 
@@ -4025,6 +4107,25 @@ impl ViewerPanel {
                         // measured across.
                         let new_r = ((current_pos.y - (image_rect.min.y + center_y * ih)) / iw).abs().max(0.01);
                         klipp_core::MaskShape::Circle { center_x: *center_x, center_y: *center_y, radius: new_r }
+                    }
+                    (klipp_core::MaskShape::RadialGradient { center_x, center_y, inner, outer }, MaskHandle::Center) => {
+                        klipp_core::MaskShape::RadialGradient {
+                            center_x: (center_x + dx_norm).clamp(0.0, 1.0),
+                            center_y: (center_y + dy_norm).clamp(0.0, 1.0),
+                            inner: *inner,
+                            outer: *outer,
+                        }
+                    }
+                    // The outer ring, never inside the inner.
+                    (klipp_core::MaskShape::RadialGradient { center_x, center_y, inner, .. }, MaskHandle::EdgeRight) => {
+                        let r = ((current_pos.x - (image_rect.min.x + center_x * iw)) / iw).abs().max(*inner).max(0.01);
+                        klipp_core::MaskShape::RadialGradient { center_x: *center_x, center_y: *center_y, inner: *inner, outer: r }
+                    }
+                    // The inner ring, measured across as sizes are, never
+                    // past the outer.
+                    (klipp_core::MaskShape::RadialGradient { center_x, center_y, outer, .. }, MaskHandle::EdgeBottom) => {
+                        let r = ((current_pos.y - (image_rect.min.y + center_y * ih)) / iw).abs().min(*outer);
+                        klipp_core::MaskShape::RadialGradient { center_x: *center_x, center_y: *center_y, inner: r, outer: *outer }
                     }
                     (klipp_core::MaskShape::Rectangle { center_x, center_y, width, height, rotation }, MaskHandle::Center) => {
                         klipp_core::MaskShape::Rectangle {

@@ -3260,7 +3260,7 @@ pub(super) fn write_node_settings(graph: &mut klipp_nodes::NodeGraph, cmd: &AppC
         AppCommand::AddMaskShape { shape, .. } => {
             let (mask_node_id, _cutout_id) = graph.ensure_mask_cutout();
             if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == mask_node_id) {
-                node.params.masks.get_or_insert_with(Default::default).masks.push(klipp_core::Mask { shape: shape.clone(), ..Default::default() });
+                node.params.masks.get_or_insert_with(Default::default).masks.push(klipp_core::Mask::new(shape.clone()));
             }
             return true;
         }

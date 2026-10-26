@@ -823,10 +823,11 @@ mod node_types_tests {
         assert_eq!(all["publication"]["available"], true);
         assert_eq!(invert["mixable"], false);
         assert_eq!(invert["inputs"], serde_json::json!([{ "key": "in", "type": "Image", "optional": false }]));
-        // 37 effects (the 3D LUT and the colour-space transform among
-        // them, #1746; the flicker and the binocular vignette, #989) and
-        // the 8 gateable grade corrections (M3 step 17a).
-        assert_eq!(types.iter().filter(|t| t["mixable"] == true).count(), 45);
+        // 38 effects (the 3D LUT and the colour-space transform among
+        // them, #1746; the flicker and the binocular vignette, #989; the
+        // displace, #2702) and the 8 gateable grade corrections (M3 step
+        // 17a).
+        assert_eq!(types.iter().filter(|t| t["mixable"] == true).count(), 46);
         assert_eq!(find("lut_3d")["mixable"], true);
         assert_eq!(find("colour_space_transform")["mixable"], true);
         assert_eq!(find("flicker")["mixable"], true);
