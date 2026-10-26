@@ -992,16 +992,23 @@ pub fn show(
                                     let (pl, pr) = peak_levels[i];
                                     let mut strip_touches = Vec::new();
                                     let mut strip_lives = Vec::new();
-                                    fader_strip(
-                                        ui, theme, strip_h, i, name, track_id,
-                                        vol, pan, muted, solo,
-                                        pl, pr,
-                                        &mut editing_name,
-                                        &strip_automation[i],
-                                        &mut strip_touches,
-                                        &mut strip_lives,
-                                        &mut cmds,
-                                    );
+                                    // A strip of its own: the controls it
+                                    // allocates last would otherwise leave
+                                    // the row's cursor inside it, and the
+                                    // next strip drawn over its right side
+                                    // (#2699).
+                                    ui.allocate_ui_with_layout(egui::vec2(STRIP_W, strip_h), egui::Layout::top_down(egui::Align::Min), |ui| {
+                                        fader_strip(
+                                            ui, theme, strip_h, i, name, track_id,
+                                            vol, pan, muted, solo,
+                                            pl, pr,
+                                            &mut editing_name,
+                                            &strip_automation[i],
+                                            &mut strip_touches,
+                                            &mut strip_lives,
+                                            &mut cmds,
+                                        );
+                                    });
                                     touches.extend(strip_touches.into_iter().map(|(param, down)| (i, param, down)));
                                     lives.extend(strip_lives.into_iter().map(|(param, v)| (i, track_id, param, v)));
                                     // Gap between strips
@@ -1305,6 +1312,37 @@ mod tests {
         mixer_frame(&ctx, &mut state, 260.0, Some((at, true)));
         let (_, cmds) = mixer_frame(&ctx, &mut state, 260.0, Some((at, false)));
         assert!(cmds.iter().any(|c| matches!(c, AppCommand::SetTrackMute { track_index: 2, muted: true })), "the first strip mutes V1, track 2: {cmds:?}");
+    }
+
+    /// #2699: strips sit side by side without covering each other, so
+    /// each one's automation mode is seen whole on its own strip.
+    #[test]
+    fn each_strip_shows_its_whole_automation_mode() {
+        use klipp_core::automation::AutomationMode;
+        let mut state = AppState::default();
+        let seq = &mut state.sequences[state.active_sequence_idx];
+        seq.tracks.push(klipp_timeline::Track::new("A2", klipp_timeline::TrackKind::Audio));
+        seq.tracks.push(klipp_timeline::Track::new("A3", klipp_timeline::TrackKind::Audio));
+        for t in seq.tracks.iter_mut() {
+            t.automation.mode = AutomationMode::Read;
+        }
+        let ctx = egui::Context::default();
+        mixer_frame(&ctx, &mut state, 260.0, None);
+        let (shapes, _) = mixer_frame(&ctx, &mut state, 260.0, None);
+        // The track strips' backgrounds, in the order drawn.
+        let strips: Vec<egui::Rect> = shapes.iter().filter_map(|s| match &s.shape {
+            egui::Shape::Rect(r) if r.rect.width() == STRIP_W && r.fill == KlippTheme::default().bg_panel => Some(r.rect),
+            _ => None,
+        }).collect();
+        assert_eq!(strips.len(), 3, "{strips:?}");
+        for pair in strips.windows(2) {
+            assert!(pair[0].max.x <= pair[1].min.x, "strips overlap: {pair:?}");
+        }
+        let labels = shown_whole(&shapes, "Read");
+        assert_eq!(labels.len(), 3);
+        for (label, strip) in labels.iter().zip(&strips) {
+            assert!(strip.contains_rect(*label), "{label:?} in {strip:?}");
+        }
     }
 
     #[test]

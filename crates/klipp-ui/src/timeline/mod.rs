@@ -1590,6 +1590,37 @@ mod menu_smoke_tests {
         assert_eq!(reds(&timeline), before + 1, "one red mute button");
     }
 
+    /// #2698: a text or subtitle track's header has no mute or solo, and
+    /// a click where they would be mutes nothing; video and audio
+    /// headers keep both.
+    #[test]
+    fn only_tracks_that_make_sound_have_mute_and_solo() {
+        let mut timeline = Timeline::new();
+        timeline.state.sequences[0].tracks.insert(0, klipp_timeline::Track::new("Captions", TrackKind::Subtitle));
+        timeline.state.sequences[0].tracks.insert(0, klipp_timeline::Track::new("Titles", TrackKind::Text));
+        timeline.frame(Vec::new());
+        let texts = timeline.frame(Vec::new());
+        let solos: Vec<egui::Pos2> = texts.iter().filter(|(t, _)| t == "S").map(|(_, at)| *at).collect();
+        let row_of = |name: &str| texts.iter().find(|(t, _)| t == name).map(|(_, at)| at.y).unwrap_or_else(|| panic!("{name}'s header: {texts:?}"));
+        let has_solo = |name: &str| {
+            let y = row_of(name);
+            solos.iter().any(|s| (s.y - y).abs() < 12.0)
+        };
+        let names: Vec<(String, TrackKind)> = timeline.state.sequences[0].tracks.iter().map(|t| (t.name.clone(), t.kind)).collect();
+        for (name, kind) in &names {
+            let sounds = matches!(kind, TrackKind::Video | TrackKind::Audio);
+            assert_eq!(has_solo(name), sounds, "{name} ({kind:?}): solo shown {}", has_solo(name));
+        }
+        // Where a video header has its mute, one button left of its solo.
+        let video = &names.iter().find(|(_, k)| *k == TrackKind::Video).expect("a video track").0;
+        let video_solo = *solos.iter().find(|s| (s.y - row_of(video)).abs() < 12.0).expect("the video track's solo");
+        let at = egui::pos2(video_solo.x - 20.0, row_of("Titles"));
+        let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        timeline.frame(vec![egui::Event::PointerMoved(at), button(true)]);
+        timeline.frame(vec![button(false)]);
+        assert!(!timeline.sent.iter().any(|c| matches!(c, AppCommand::SetTrackMute { .. } | AppCommand::SetTrackSolo { .. })), "{:?}", timeline.sent);
+    }
+
     /// Two short title clips side by side: each one's label is drawn
     /// only over its own clip, so the first never runs into the second
     /// (#2666).
