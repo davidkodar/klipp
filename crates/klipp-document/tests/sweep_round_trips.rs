@@ -17,7 +17,7 @@ use sweep_common::*;
 
 /// Items known to fail, and the issue that holds each; 0: found by the
 /// sweep, not filed yet.
-const KNOWN: &[(&str, u32)] = &[("undo 21 generator", 0), ("redo 14 title", 0), ("a copied project finds media outside it", 2790)];
+const KNOWN: &[(&str, u32)] = &[("undo 21 generator", 0), ("redo 14 title", 0)];
 
 /// The sequence as it is stored, to compare by.
 fn state(seq: &Sequence) -> Value {

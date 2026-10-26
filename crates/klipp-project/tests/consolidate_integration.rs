@@ -64,6 +64,7 @@ fn make_media_item(path: PathBuf) -> MediaItem {
         parent_media_id: None,
         added_at: 0,
         fingerprint: None,
+        cache_key: None,
         file_modified_at: None,
         media_created_at: None,
         color_label: klipp_media::ColorLabel::default(),

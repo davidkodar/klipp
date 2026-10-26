@@ -773,6 +773,17 @@ pub struct MediaItemJson {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<klipp_media::MediaItemKind>,
     pub path: String,
+    /// The file's absolute path when it is outside the project folder, to
+    /// fall back on when the relative `path` no longer reaches it: the
+    /// project folder copied or moved elsewhere (#2790).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub absolute_path: Option<String>,
+    /// The file's content fingerprint and disk-cache key where it was last
+    /// found, so a relink to the same content keeps its analysis (#2790).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_key: Option<String>,
     pub filename: String,
     pub duration_frames: i64,
     #[serde(default = "default_rate")]

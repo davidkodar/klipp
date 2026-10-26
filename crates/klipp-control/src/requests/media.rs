@@ -4,8 +4,9 @@
 use crate::*;
 
 /// The pool's offline files, for the replies that say how a project
-/// stands (#2480): how many, how many the timeline uses, the first few
-/// names, and what finds them. `None` when every file is there.
+/// stands (#2480): how many, how many the project's sequences use (the
+/// open one and the others, #2790), the first few names, and what finds
+/// them. `None` when every file is there.
 pub(crate) fn offline_media(ctx: &ControlContext) -> Option<serde_json::Value> {
     // Taken and let go before the sequence is read: the rest of the
     // socket reads the sequence first, and holding both the other way
@@ -19,18 +20,48 @@ pub(crate) fn offline_media(ctx: &ControlContext) -> Option<serde_json::Value> {
     }
     let used = {
         let seq = ctx.sequence.read().ok()?;
-        let on_timeline: std::collections::HashSet<klipp_core::MediaId> = seq.tracks.iter().flat_map(|t| &t.clips).filter_map(|c| c.media_id()).collect();
-        offline.iter().filter(|(id, _)| on_timeline.contains(id)).count()
+        let others = ctx.others.read().ok()?;
+        let ids: Vec<klipp_core::MediaId> = offline.iter().map(|(id, _)| *id).collect();
+        offline_in_use(&ids, std::iter::once(&*seq).chain(others.iter().map(|s| &*s.sequence)))
     };
     let mut names: Vec<&str> = offline.iter().map(|(_, name)| name.as_str()).collect();
     names.sort_unstable();
     let shown = names.iter().take(5).copied().collect::<Vec<_>>().join(", ");
     let more = if names.len() > 5 { format!(" and {} more", names.len() - 5) } else { String::new() };
     let text = format!(
-        "{} media file(s) are offline (moved or missing), {used} of them on the timeline: {shown}{more}. relink_media with folder finds them there by content, name, reel, timecode and length.",
+        "{} media file(s) are offline (moved or missing), {used} of them used in the project's sequences: {shown}{more}. relink_media with folder finds them there by content, name, reel, timecode and length.",
         offline.len()
     );
     Some(json!({ "count": offline.len(), "on_timeline": used, "files": names, "text": text }))
+}
+
+/// How many of the `offline` files the `sequences` use, each counted once
+/// (#2790): the open one and the others, as a relink brings them back to
+/// every one.
+fn offline_in_use<'a>(offline: &[klipp_core::MediaId], sequences: impl Iterator<Item = &'a klipp_timeline::Sequence>) -> usize {
+    let in_use: std::collections::HashSet<klipp_core::MediaId> = sequences.flat_map(|s| s.tracks.iter().flat_map(|t| &t.clips)).filter_map(|c| c.media_id()).collect();
+    offline.iter().filter(|id| in_use.contains(id)).count()
+}
+
+#[cfg(test)]
+mod offline_tests {
+    use super::*;
+
+    /// #2790: a file offline that only another sequence uses is counted;
+    /// one no sequence uses is not, nor one used twice counted twice.
+    #[test]
+    fn offline_files_are_counted_over_every_sequence() {
+        let tc = |s: f64| klipp_core::Timecode::from_secs_f64(s, 25);
+        let (a, b, c) = (klipp_core::MediaId::new(), klipp_core::MediaId::new(), klipp_core::MediaId::new());
+        let with = |media: &[klipp_core::MediaId]| {
+            let mut seq = klipp_timeline::Sequence::new_default();
+            seq.tracks[0].clips = media.iter().enumerate().map(|(i, m)| klipp_timeline::Clip::media(*m, tc(i as f64), tc(i as f64 + 1.0), tc(0.0), tc(1.0))).collect();
+            seq
+        };
+        let (open, other) = (with(&[a]), with(&[b, a]));
+        assert_eq!(offline_in_use(&[a, b, c], [&open].into_iter()), 1, "the open sequence alone");
+        assert_eq!(offline_in_use(&[a, b, c], [&open, &other].into_iter()), 2, "every sequence, each file once");
+    }
 }
 
 pub(crate) fn respond(

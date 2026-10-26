@@ -54,7 +54,7 @@ fn restoring_an_autosave_then_saving_keeps_media_online() {
     assert_eq!(item.path, media);
     assert!(!item.offline, "media must resolve after the auto-save is gone");
     let manifest = std::fs::read_to_string(project.join("media").join("manifest.json")).unwrap();
-    assert!(!manifest.contains("_autosave"), "stored path must not go through the auto-save folder: {manifest}");
+    assert!(!manifest.contains("X_autosave.klipp"), "stored path must not go through the auto-save folder: {manifest}");
     let _ = std::fs::remove_dir_all(&root);
 }
 

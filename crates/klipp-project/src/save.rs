@@ -832,12 +832,19 @@ pub fn media_items_save_alike(a: &MediaItem, b: &MediaItem) -> bool {
 }
 
 fn media_item_to_json(item: &MediaItem, project_dir: &Path) -> MediaItemJson {
+    let relative = to_project_relative(project_dir, &item.path);
+    let file = item.kind == klipp_media::MediaItemKind::File;
+    // Outside the project folder, the absolute path too (#2790).
+    let outside = file && item.path.is_absolute() && relative.components().next().is_some_and(|c| matches!(c, std::path::Component::ParentDir | std::path::Component::RootDir));
     MediaItemJson {
         id: item.id.to_string(),
-        kind: (item.kind != klipp_media::MediaItemKind::File).then(|| item.kind.clone()),
-        path: to_project_relative(project_dir, &item.path)
-            .to_string_lossy()
-            .to_string(),
+        kind: (!file).then(|| item.kind.clone()),
+        path: relative.to_string_lossy().to_string(),
+        // Normalised: a path read from an auto-save folder can still go
+        // through it and its `..`.
+        absolute_path: outside.then(|| crate::path_util::resolve_media_path(project_dir, &relative).to_string_lossy().into_owned()),
+        fingerprint: if file { item.fingerprint } else { None },
+        cache_key: if file { klipp_media::disk_cache::compute_cache_key(&item.path).or_else(|| item.cache_key.clone()) } else { None },
         filename: item.filename.clone(),
         duration_frames: item.duration.value,
         duration_rate: item.duration.rate,

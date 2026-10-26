@@ -70,6 +70,8 @@ mod looks_each_saved;
 mod manifest_order;
 #[path = "../media_kind_round_trip.rs"]
 mod media_kind_round_trip;
+#[path = "../media_outside_the_folder.rs"]
+mod media_outside_the_folder;
 #[path = "../media_source_round_trip.rs"]
 mod media_source_round_trip;
 #[path = "../media_state_round_trip.rs"]

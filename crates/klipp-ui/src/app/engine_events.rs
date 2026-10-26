@@ -189,6 +189,7 @@ impl KlippApp {
                             .map(|d| d.as_secs())
                             .unwrap_or(0),
                         fingerprint: compute_media_fingerprint(&path),
+                        cache_key: klipp_media::disk_cache::compute_cache_key(&path),
                         file_modified_at,
                         media_created_at,
                         color_label: Default::default(),
