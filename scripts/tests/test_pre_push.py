@@ -13,7 +13,10 @@ import unittest
 
 class ScratchGateTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[2] / "target")
+        # Under target/, which a fresh checkout does not have yet.
+        target = Path(__file__).resolve().parents[2] / "target"
+        target.mkdir(exist_ok=True)
+        self.temp = tempfile.TemporaryDirectory(dir=target)
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.bin = self.root / "bin"
@@ -321,7 +324,12 @@ class ScratchGateTests(unittest.TestCase):
         self.assertEqual(self.queued_pids(), [])
 
     def test_a_killed_waiter_leaves_no_entry_in_the_queue(self):
-        self.hold_the_gate_lock()
+        # A pid known to be gone: a process started and waited for. A
+        # fixed one may be a live process on the machine running this.
+        ended = subprocess.Popen(["true"])
+        ended.wait()
+        gone = ended.pid
+        self.hold_the_gate_lock(f"{gone} fix/other /elsewhere 0\n")
         waiter = self.start_gate("waiter")
         self.until(lambda: "in the queue" in waiter.said(), "the gate to report its position")
         self.assertEqual(self.queued_pids(), [str(waiter.pid)])
@@ -330,7 +338,7 @@ class ScratchGateTests(unittest.TestCase):
         # The holder record names a pid that is gone, and is reported as a
         # record rather than as a fact about who holds the lock.
         self.assertIn("1st in the queue, waiting for a gate outside the queue: "
-                      "4242 fix/other /elsewhere", waiter.said())
+                      f"{gone} fix/other /elsewhere", waiter.said())
         self.assertIn("that pid is gone, so the record may be stale", waiter.said())
         self.assertEqual(self.queued_pids(), [])
         self.assertFalse((self.root / "cargo-calls").exists())
@@ -401,7 +409,10 @@ class RealGitGate(unittest.TestCase):
     real git, a fake cargo."""
 
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[2] / "target")
+        # Under target/, which a fresh checkout does not have yet.
+        target = Path(__file__).resolve().parents[2] / "target"
+        target.mkdir(exist_ok=True)
+        self.temp = tempfile.TemporaryDirectory(dir=target)
         self.addCleanup(self.temp.cleanup)
         top = Path(self.temp.name)
         self.bin = top / "bin"
