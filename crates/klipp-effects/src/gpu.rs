@@ -240,6 +240,7 @@ pub struct GpuEffectsPipeline {
     emboss_pipeline: wgpu::ComputePipeline,
     mirror_pipeline: wgpu::ComputePipeline,
     lens_distortion_pipeline: wgpu::ComputePipeline,
+    displace_pipeline: wgpu::ComputePipeline,
     dilate_pipeline: wgpu::ComputePipeline,
     erode_pipeline: wgpu::ComputePipeline,
     denoise_pipeline: wgpu::ComputePipeline,
@@ -1105,6 +1106,7 @@ impl GpuEffectsPipeline {
         let emboss_pipeline = create_pipeline(&device, &pipeline_layout, "emboss", SHADER_EMBOSS);
         let mirror_pipeline = create_pipeline(&device, &pipeline_layout, "mirror", SHADER_MIRROR);
         let lens_distortion_pipeline = create_pipeline(&device, &pipeline_layout, "lens_distortion", SHADER_LENS_DISTORTION);
+        let displace_pipeline = create_pipeline(&device, &pipeline_layout, "displace", SHADER_DISPLACE);
         let dilate_pipeline = create_pipeline(&device, &pipeline_layout, "dilate", SHADER_DILATE);
         let erode_pipeline = create_pipeline(&device, &pipeline_layout, "erode", SHADER_ERODE);
         let denoise_pipeline = create_pipeline(&device, &pipeline_layout, "denoise", SHADER_DENOISE);
@@ -1732,6 +1734,7 @@ impl GpuEffectsPipeline {
             emboss_pipeline,
             mirror_pipeline,
             lens_distortion_pipeline,
+            displace_pipeline,
             dilate_pipeline,
             erode_pipeline,
             denoise_pipeline,
@@ -9476,6 +9479,21 @@ struct LensDistortionParams {
 }
 // 4 fields x 4 bytes = 16 bytes
 
+/// [`crate::displace`]'s pass (#2702).
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub(crate) struct DisplaceParams {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) amount: f32,
+    pub(crate) size: f32,
+    pub(crate) speed: f32,
+    pub(crate) direction: u32,
+    pub(crate) seed: u32,
+    pub(crate) time: f32,
+}
+// 8 fields x 4 bytes = 32 bytes
+
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct DilateErodeParams {
@@ -17113,6 +17131,8 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
 }
 ";
 
+const SHADER_DISPLACE: &str = concat!(shader_pixel_storage_wgsl!(), crate::displace::noise_wgsl!(), crate::displace::shader_wgsl!());
+
 const SHADER_LENS_DISTORTION: &str = concat!(
     shader_pixel_storage_wgsl!(),
     "
@@ -19627,6 +19647,7 @@ pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
         ("SHADER_EMBOSS", SHADER_EMBOSS),
         ("SHADER_MIRROR", SHADER_MIRROR),
         ("SHADER_LENS_DISTORTION", SHADER_LENS_DISTORTION),
+        ("SHADER_DISPLACE", SHADER_DISPLACE),
         ("SHADER_DILATE", SHADER_DILATE),
         ("SHADER_ERODE", SHADER_ERODE),
         ("SHADER_DENOISE", SHADER_DENOISE),

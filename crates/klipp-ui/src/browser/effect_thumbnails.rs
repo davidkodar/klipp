@@ -576,6 +576,9 @@ fn builtin_preview_params(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
         klipp_effects::BuiltinEffect::LensDistortion { .. } => {
             klipp_effects::BuiltinEffect::LensDistortion { distortion: -0.5, scale: 1.0 }
         }
+        klipp_effects::BuiltinEffect::Displace { .. } => {
+            klipp_effects::BuiltinEffect::Displace { amount: 6.0, size: 24.0, speed: 1.0, direction: 0, seed: 0, time: 0.0 }
+        }
         klipp_effects::BuiltinEffect::Dilate { .. } => {
             klipp_effects::BuiltinEffect::Dilate { radius: 3 }
         }

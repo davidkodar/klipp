@@ -123,7 +123,7 @@ fn covered() -> Vec<&'static klipp_effects::registry::EffectType> {
 
 /// Types made after the old inspector was recorded (#1746, #989, #1638): their rows
 /// are the tables' alone, with no old row to match.
-const AFTER_THE_RECORDING: &[&str] = &["klipp.fx.lut_3d", "klipp.fx.colour_space_transform", "klipp.fx.picture_transform", "klipp.fx.flicker", "klipp.fx.binocular_vignette", "klipp.fx.merge", "klipp.fx.generator", "klipp.fx.luma_key", "klipp.fx.particles", "klipp.fx.media_source", "klipp.fx.clip_below", "klipp.fx.grade_compound"];
+const AFTER_THE_RECORDING: &[&str] = &["klipp.fx.lut_3d", "klipp.fx.colour_space_transform", "klipp.fx.picture_transform", "klipp.fx.flicker", "klipp.fx.binocular_vignette", "klipp.fx.merge", "klipp.fx.generator", "klipp.fx.luma_key", "klipp.fx.particles", "klipp.fx.media_source", "klipp.fx.clip_below", "klipp.fx.grade_compound", "klipp.fx.displace"];
 
 #[test]
 fn a_covered_type_names_every_param() {
@@ -266,6 +266,8 @@ const HIDDEN: &[(&str, &str)] = &[
     ("klipp.fx.flicker", "time"),
     // The clip's time, set each frame (#1141).
     ("klipp.fx.particles", "time"),
+    // The clip's time, set each frame (#2702).
+    ("klipp.fx.displace", "time"),
     // Set by a title's roll from its focus band, in the Title tab.
     ("klipp.fx.focus_blur", "radius"),
     ("klipp.fx.focus_blur", "vertical"),
@@ -344,6 +346,7 @@ const CHOICE_LABELS: &[(&str, &str, &[&str])] = &[
     ("klipp.fx.speed_ramp", "blend_mode", &["Nearest", "Linear", "Optical Flow"]),
     ("klipp.fx.radial_blur", "mode", &["Zoom", "Spin"]),
     ("klipp.fx.flicker", "target", &["Opacity", "Exposure", "Gamma"]),
+    ("klipp.fx.displace", "direction", &["Both", "Across", "Up and Down"]),
     ("klipp.fx.particles", "style", &["Dust", "Snow", "Rain", "Sparks", "Embers"]),
     ("klipp.fx.merge", "blend_mode", &["Normal", "Add", "Multiply", "Screen", "Overlay", "Soft Light", "Hard Light", "Difference", "Exclusion", "Colour Dodge", "Colour Burn", "Darken", "Lighten"]),
 ];

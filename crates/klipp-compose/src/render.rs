@@ -6571,6 +6571,8 @@ pub(crate) fn frame_inputs(
         }
         // A flicker jumps by the clip's time (#989).
         BuiltinEffect::Flicker { time, .. } => *time = t as f32,
+        // A displacement moves by the clip's time (#2702).
+        BuiltinEffect::Displace { time, .. } => *time = t as f32,
         // Particles move by the clip's time (#1141).
         BuiltinEffect::Particles { time, .. } => *time = t as f32,
         BuiltinEffect::Deflicker { gain, .. } => {

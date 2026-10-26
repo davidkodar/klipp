@@ -338,7 +338,8 @@ exist until the plan runs.
   `blur`, `radial_blur` (`zoom_blur`), `spin_blur`, `directional_blur`
   (`motion_blur`), `sharpen`, `chromatic_aberration` (`rgb_split`,
   `fringe`), `tilt_shift`, `mosaic` (`pixelate`), `posterize`, `invert`,
-  `mirror`, `lens_distortion` (`barrel`), `emboss`, `edge_detect`
+  `mirror`, `lens_distortion` (`barrel`), `displace` (`ripple`,
+  `heat_haze`: each pixel moved by a drifting noise field), `emboss`, `edge_detect`
   (`edges`), `denoise`, `vhs`, `old_film`, `flicker` (random jumps of
   the opacity; `exposure_flicker` of the light), `binocular`
   (`binocular_vignette`: two eyepieces, a fringe at their rims) and the
@@ -348,6 +349,13 @@ exist until the plan runs.
   (`drop_shadow`) places a shadow behind it, and `outer_glow` lights its
   silhouette; compose the picture smaller than the frame to see these.
   For example, `{op: effect, clip_id: ID, kind: corners, amount: 0.4}`.
+  `params` sets an effect's own settings by name over what `kind` and
+  `amount` give, each inside its range, a choice by name:
+  `{op: effect, clip_id: ID, kind: displace, params: {amount: 8, size:
+  160, speed: 0.5, direction: across}}` sways the picture slowly
+  sideways (`amount` and `size` in canvas pixels; `direction` `both`,
+  `across` or `up_down`; `seed` another pattern). A wrong name is
+  refused with the settings the effect has.
   A key is `chroma_key` (`green_screen`, `blue_screen`) on one clip, the
   app's Chroma Key: `color` `#rrggbb` (green, or blue for `blue_screen`),
   `tolerance` (0.2), `softness` (0.1) and `spill` (0.6), each 0 to 1; a

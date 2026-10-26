@@ -17,6 +17,7 @@ use super::{
     Alpha, Category, ColourDomain, EffectType, NodeTypeDesc, ParamDesc, ParamKind, Scaling,
     Spatial, Temporal, Unit, IMAGE_IN, IMAGE_OUT,
 };
+use super::mixable;
 use crate::BuiltinEffect;
 
 const fn geometry(
@@ -223,6 +224,34 @@ pub(super) static TYPES: &[EffectType] = &[
         sample: || BuiltinEffect::LensDistortion {
             distortion: 0.0,
             scale: 1.0,
+        },
+    },
+    // Each pixel moved by a noise field (#2702): heat haze, water, a
+    // wobble. Its time is the compositor's (the clip's time each frame),
+    // as Flicker's is; its seed the user's.
+    EffectType {
+        desc: mixable(geometry(
+            "klipp.fx.displace",
+            "Displace",
+            &[
+                ParamDesc::float("amount", "Amount", 12.0, (0.0, 200.0), Unit::CanvasPx),
+                ParamDesc::float("size", "Size", 80.0, (4.0, 800.0), Unit::CanvasPx),
+                ParamDesc::float("speed", "Speed", 1.0, (0.0, 10.0), Unit::Ratio),
+                choice("direction", "Direction", 0.0, &["both", "across", "up_down"]),
+                ParamDesc { kind: ParamKind::Whole, ..ParamDesc::float("seed", "Seed", 0.0, (0.0, 10_000.0), Unit::Count).fixed() },
+                ParamDesc { soft: None, ..ParamDesc::float("time", "Time", 0.0, (0.0, 1.0), Unit::Seconds).fixed() },
+            ],
+            Spatial::Geometric,
+            false,
+        )),
+        tag: "displace",
+        sample: || BuiltinEffect::Displace {
+            amount: 12.0,
+            size: 80.0,
+            speed: 1.0,
+            direction: 0,
+            seed: 0,
+            time: 0.0,
         },
     },
     EffectType {

@@ -1115,6 +1115,13 @@ pub enum Op {
         /// A luma key keeping `low` to `high` and keying out the rest.
         #[serde(default)]
         invert: Option<bool>,
+        /// The effect's own settings by name, set over what `kind` and
+        /// `amount` give (#2702): `{"size": 120, "direction": "across"}`.
+        /// A number within the setting's range, a choice by name, a
+        /// colour as `#rrggbb`; a wrong name is refused with the ones
+        /// there are.
+        #[serde(default)]
+        params: std::collections::BTreeMap<String, serde_json::Value>,
     },
     /// Hide a patch of the picture — an email, a key, a face — for a
     /// stretch of a clip: a cropped copy of the same footage goes on a
@@ -3286,9 +3293,9 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let (ti, ci, clip) = resolve_clip(seq, fps, clip_id, i)?;
             transition(seq, pool, fps, i, ti, ci, clip, kind, *secs, pieces.as_ref(), transcripts)
         }
-        Op::Effect { clip_id, on, kind, amount, color, tolerance, softness, spill, low, high, invert } => match (on, clip_id) {
+        Op::Effect { clip_id, on, kind, amount, color, tolerance, softness, spill, low, high, invert, params } => match (on, clip_id) {
             (Some(_), _) if is_key(kind) => Err(refuse(i, format!("{kind} keys one clip, not every one of a group"), "give clip_id for each clip to key")),
-            (Some(on), _) => effect_on_many(seq, pool, fps, i, clip_id.as_ref(), on, kind, *amount),
+            (Some(on), _) => effect_on_many(seq, pool, fps, i, clip_id.as_ref(), on, kind, *amount, params),
             (None, Some(clip_id)) if is_luma_key(kind) => {
                 let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
                 let fx = named_luma_key(*low, *high, *softness, *invert).map_err(|(why, fix)| refuse(i, why, fix))?;
@@ -3301,7 +3308,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             }
             (None, Some(clip_id)) => {
                 let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
-                picture_effect(seq, pool, i, ti, clip, kind, *amount)
+                picture_effect(seq, pool, i, ti, clip, kind, *amount, params)
             }
             (None, None) => Err(refuse(i, "no clip given", "give clip_id, or on: \"timeline\" or {\"group\": name}")),
         },
@@ -6421,6 +6428,9 @@ pub fn named_picture_effect(kind: &str, amount: Option<f32>) -> Result<(klipp_ef
         "invert" => E::Invert { mix: a },
         "mirror" => E::Mirror { horizontal: 1, vertical: 0 },
         "lens_distortion" | "barrel" => E::LensDistortion { distortion: a * 0.5, scale: 1.0 },
+        // Pixels moved by a drifting noise field (#2702): the default
+        // amount moves them about 12 canvas pixels, the full amount 24.
+        "displace" | "ripple" | "heat_haze" => E::Displace { amount: a * 24.0, size: 80.0, speed: 1.0, direction: 0, seed: 1, time: 0.0 },
         "emboss" => E::Emboss { angle: 0.0, strength: a, mix: a },
         "edge_detect" | "edges" => E::EdgeDetect { strength: a, mix: a },
         "denoise" => E::Denoise { spatial_sigma: a * 4.0, color_sigma: a * 0.1, iterations: 1 },
@@ -6444,9 +6454,90 @@ pub fn named_picture_effect(kind: &str, amount: Option<f32>) -> Result<(klipp_ef
                 other => other,
             }
         }
-        other => return Err((format!("\"{other}\" is not an effect"), "use e.g. vignette, grain, glow, bloom, chroma_key, luma_key, corners, shadow, outer_glow, fill_bars, diffusion, halation, light_rays, lens_flare, anamorphic, blur, radial_blur, directional_blur, sharpen, chromatic_aberration, tilt_shift, mosaic, posterize, invert, mirror, lens_distortion, edge_detect, denoise, vhs, old_film, flicker, exposure_flicker, binocular, dust, snow, rain, sparks or embers".into())),
+        other => return Err((format!("\"{other}\" is not an effect"), "use e.g. vignette, grain, glow, bloom, chroma_key, luma_key, corners, shadow, outer_glow, fill_bars, diffusion, halation, light_rays, lens_flare, anamorphic, blur, radial_blur, directional_blur, sharpen, chromatic_aberration, tilt_shift, mosaic, posterize, invert, mirror, lens_distortion, displace, edge_detect, denoise, vhs, old_film, flicker, exposure_flicker, binocular, dust, snow, rain, sparks or embers".into())),
     };
     Ok((fx, a))
+}
+
+/// `effect` with its `params` set (#2702): each one by the registry's
+/// description of the effect (its name, kind and range), so every
+/// described effect takes them without code of its own.
+pub fn with_params(fx: klipp_effects::BuiltinEffect, params: &std::collections::BTreeMap<String, serde_json::Value>) -> Result<klipp_effects::BuiltinEffect, (String, String)> {
+    use klipp_effects::registry::ParamKind;
+    use serde_json::Value;
+    if params.is_empty() {
+        return Ok(fx);
+    }
+    let mut entry = serde_json::to_value(&fx).map_err(|e| (format!("the effect could not be read: {e}"), "report this".to_string()))?;
+    let tag = entry.get("type").and_then(Value::as_str).unwrap_or_default().to_string();
+    let Some(ty) = klipp_effects::registry::effect_type(&tag) else {
+        return Err((format!("{tag} has no settings to give"), "leave params out".into()));
+    };
+    // What a setting takes, for a refusal.
+    let takes = |d: &klipp_effects::registry::ParamDesc| match d.kind {
+        ParamKind::Choice(names) => format!("{} ({})", d.key, names.join(", ")),
+        ParamKind::Bool => format!("{} (true or false)", d.key),
+        ParamKind::Colour => format!("{} (#rrggbb)", d.key),
+        _ => match d.range.or(d.soft) {
+            Some((lo, hi)) => format!("{} ({lo} to {hi})", d.key),
+            None => d.key.to_string(),
+        },
+    };
+    let settable = || ty.desc.params.iter().filter(|d| d.kind != ParamKind::Other).map(takes).collect::<Vec<_>>().join(", ");
+    for (key, value) in params {
+        let Some(d) = ty.desc.params.iter().find(|d| d.key == key.as_str() && d.kind != ParamKind::Other) else {
+            return Err((format!("{tag} has no setting \"{key}\""), format!("give one of {}", settable())));
+        };
+        let wrong = || (format!("{key} {value} is not a value {tag} takes"), format!("give {}", takes(d)));
+        let number = |v: &Value| -> Result<f64, (String, String)> {
+            let n = v.as_f64().filter(|n| n.is_finite()).ok_or_else(wrong)?;
+            // The range the effect accepts, else the one its slider offers.
+            match d.range.or(d.soft) {
+                Some((lo, hi)) if n < lo as f64 - 1e-6 || n > hi as f64 + 1e-6 => Err(wrong()),
+                _ => Ok(n),
+            }
+        };
+        let old = entry.get(d.field).cloned().unwrap_or(Value::Null);
+        let new = match d.kind {
+            ParamKind::Float => Value::from(number(value)?),
+            ParamKind::Whole => {
+                let n = number(value)?;
+                if n < 0.0 || n.fract() != 0.0 {
+                    return Err(wrong());
+                }
+                Value::from(n as u64)
+            }
+            ParamKind::Bool => Value::Bool(value.as_bool().ok_or_else(wrong)?),
+            ParamKind::Choice(names) => {
+                let wanted = |n: &str| n.to_lowercase().replace([' ', '-'], "_");
+                let at = match value {
+                    Value::String(name) => names.iter().position(|n| wanted(n) == wanted(name)).ok_or_else(wrong)?,
+                    v => {
+                        let n = v.as_u64().ok_or_else(wrong)? as usize;
+                        if n >= names.len() {
+                            return Err(wrong());
+                        }
+                        n
+                    }
+                };
+                // Saved by its name where the effect saves a name, else by
+                // its place in the list.
+                if old.is_string() { Value::from(wanted(names[at])) } else { Value::from(at as u64) }
+            }
+            ParamKind::Colour => {
+                let hex = value.as_str().and_then(|h| h.strip_prefix('#')).filter(|h| h.len() == 6).ok_or_else(wrong)?;
+                let byte = |k: usize| u8::from_str_radix(&hex[k..k + 2], 16).map_err(|_| wrong());
+                serde_json::json!([byte(0)?, byte(2)?, byte(4)?])
+            }
+            ParamKind::Other => unreachable!("filtered out above"),
+        };
+        match (d.index, entry.get_mut(d.field)) {
+            (Some(k), Some(Value::Array(items))) if k < items.len() => items[k] = new,
+            (None, Some(slot)) => *slot = new,
+            _ => return Err((format!("{tag}'s {key} could not be set"), "set it in the clip's node view".into())),
+        }
+    }
+    serde_json::from_value(entry).map_err(|e| (format!("{tag} does not take those settings: {e}"), format!("give {}", settable())))
 }
 
 /// Whether `kind` names a key rather than a finishing effect (#1170,
@@ -6520,7 +6611,8 @@ fn key_effect(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip
     Ok((what, edit, vec![clip.id]))
 }
 
-fn picture_effect(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, kind: &str, amount: Option<f32>) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+#[allow(clippy::too_many_arguments)]
+fn picture_effect(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, kind: &str, amount: Option<f32>, params: &std::collections::BTreeMap<String, serde_json::Value>) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     // A generator's and a title's picture take effects as a shot's does:
     // the renderer runs them on the layer they draw (#2703).
     let title = matches!(clip.kind, ClipKind::Title(_));
@@ -6537,6 +6629,7 @@ fn picture_effect(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &
     if title && klipp_effects::registry::needs_other_times(&fx) {
         return Err(refuse(i, format!("{kind} reads a clip's other frames, which a title does not have"), "add it to a media clip"));
     }
+    let fx = with_params(fx, params).map_err(|(why, fix)| refuse(i, why, fix))?;
     use klipp_effects::BuiltinEffect as E;
     // The same kind of effect replaces the one that is there.
     let kind_of = std::mem::discriminant(&fx);
@@ -6864,7 +6957,7 @@ fn clip_audio(seq: &Sequence, pool: &MediaPool, i: usize, given: &Clip, edit: Au
 }
 
 #[allow(clippy::too_many_arguments)]
-fn effect_on_many(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id: Option<&ClipRef>, on: &GradeOn, kind: &str, amount: Option<f32>) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+fn effect_on_many(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id: Option<&ClipRef>, on: &GradeOn, kind: &str, amount: Option<f32>, params: &std::collections::BTreeMap<String, serde_json::Value>) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     if clip_id.is_some() {
         return Err(refuse(i, "both a clip and on given", "give clip_id for one clip, or on for many"));
     }
@@ -6877,7 +6970,7 @@ fn effect_on_many(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id:
         GradeOn::Named(n) => return Err(refuse(i, format!("\"{n}\" is not somewhere to add an effect"), "give on: \"timeline\", {\"group\": name} or {\"track\": n}, or a clip_id alone")),
         GradeOn::Track { track, from, to, itself: true } => {
             let (ti, target) = track_grade_target(seq, fps, i, track, from.as_ref(), to.as_ref(), None)?;
-            let (fx, a) = named_picture_effect(kind, amount).map_err(|(why, fix)| refuse(i, why, fix))?;
+            let (fx, a) = named_picture_effect(kind, amount).and_then(|(fx, a)| Ok((with_params(fx, params)?, a))).map_err(|(why, fix)| refuse(i, why, fix))?;
             let t = &seq.tracks[ti];
             let old = t.settings();
             let mut new = old.clone();
@@ -6903,7 +6996,7 @@ fn effect_on_many(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id:
             // A track's titles too (#2703): one track is asked for, unlike
             // the timeline, whose picture is its shots.
             let (members, skipped) = on.members(seq, |t: &klipp_timeline::Track, c: &Clip| is_picture(t, c) || matches!(c.kind, ClipKind::Title(_)));
-            return on_each(i, &on, "pictures", members, skipped, |ti, clip| picture_effect(seq, pool, i, ti, clip, kind, amount));
+            return on_each(i, &on, "pictures", members, skipped, |ti, clip| picture_effect(seq, pool, i, ti, clip, kind, amount, params));
         }
         GradeOn::Group { group, .. } => {
             let g = find_grade_group(seq, i, group)?;
@@ -6920,7 +7013,7 @@ fn effect_on_many(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id:
     let mut touched = Vec::with_capacity(members.len());
     let mut what = String::new();
     for (ti, clip) in &members {
-        let (one, edit, ids) = picture_effect(seq, pool, i, *ti, clip, kind, amount)?;
+        let (one, edit, ids) = picture_effect(seq, pool, i, *ti, clip, kind, amount, params)?;
         if what.is_empty() {
             what = one;
         }
@@ -13383,7 +13476,7 @@ mod tests {
     fn an_effect_on_the_timeline_or_a_group_goes_on_each_picture() {
         use klipp_effects::BuiltinEffect as E;
         let (mut seq, pool, _, a, b) = fixture();
-        let effect = |on: GradeOn, amount: f32| Op::Effect { clip_id: None, on: Some(on), kind: "vignette".into(), amount: Some(amount), color: None, tolerance: None, softness: None, spill: None, low: None, high: None, invert: None };
+        let effect = |on: GradeOn, amount: f32| Op::Effect { clip_id: None, on: Some(on), kind: "vignette".into(), amount: Some(amount), color: None, tolerance: None, softness: None, spill: None, low: None, high: None, invert: None, params: Default::default() };
         let vignetted = |plan: &Plan| -> Vec<ClipId> {
             let EditCommand::Batch(edits) = &plan.steps[0].edit else { panic!("{:?}", plan.steps[0].edit) };
             edits.iter().map(|e| match e {
@@ -13413,10 +13506,10 @@ mod tests {
         let plan = resolve(&seq, &pool, &[effect(GradeOn::Group { group: "Night".into(), stage: None }, 0.1)]).unwrap();
         assert_eq!(vignetted(&plan), vec![b]);
 
-        let both = Op::Effect { clip_id: Some(ClipRef::Id(a)), on: Some(GradeOn::Named("timeline".into())), kind: "grain".into(), amount: None, color: None, tolerance: None, softness: None, spill: None, low: None, high: None, invert: None };
+        let both = Op::Effect { clip_id: Some(ClipRef::Id(a)), on: Some(GradeOn::Named("timeline".into())), kind: "grain".into(), amount: None, color: None, tolerance: None, softness: None, spill: None, low: None, high: None, invert: None, params: Default::default() };
         assert!(resolve(&seq, &pool, &[both]).unwrap_err().why.contains("both"));
         assert!(resolve(&seq, &pool, &[effect(GradeOn::Group { group: "Day".into(), stage: None }, 0.3)]).is_err());
-        assert!(resolve(&seq, &pool, &[Op::Effect { clip_id: None, on: None, kind: "grain".into(), amount: None, color: None, tolerance: None, softness: None, spill: None, low: None, high: None, invert: None }]).unwrap_err().why.contains("no clip"));
+        assert!(resolve(&seq, &pool, &[Op::Effect { clip_id: None, on: None, kind: "grain".into(), amount: None, color: None, tolerance: None, softness: None, spill: None, low: None, high: None, invert: None, params: Default::default() }]).unwrap_err().why.contains("no clip"));
     }
 
     /// #2703: a title takes a picture effect as a shot does: by its id,
@@ -13432,7 +13525,7 @@ mod tests {
         let mut text = Track::new("T1", TrackKind::Text);
         text.clips.push(title);
         seq.tracks.insert(0, text);
-        let effect = |clip_id: Option<ClipId>, on: Option<GradeOn>, kind: &str| Op::Effect { clip_id: clip_id.map(ClipRef::Id), on, kind: kind.into(), amount: Some(0.5), color: None, tolerance: None, softness: None, spill: None, low: None, high: None, invert: None };
+        let effect = |clip_id: Option<ClipId>, on: Option<GradeOn>, kind: &str| Op::Effect { clip_id: clip_id.map(ClipRef::Id), on, kind: kind.into(), amount: Some(0.5), color: None, tolerance: None, softness: None, spill: None, low: None, high: None, invert: None, params: Default::default() };
 
         for (kind, is) in [("blur", (|e: &E| matches!(e, E::GaussianBlur { .. })) as fn(&E) -> bool), ("directional_blur", |e| matches!(e, E::DirectionalBlur { .. })), ("glow", |e| matches!(e, E::Glow { .. }))] {
             let plan = resolve(&seq, &pool, &[effect(Some(tid), None, kind)]).unwrap_or_else(|r| panic!("{kind}: {}", r.why));
@@ -15518,16 +15611,16 @@ mod tests {
         use klipp_effects::BuiltinEffect as E;
 
         // An effect appends a builtin effect; the same kind replaces it.
-        let plan = resolve(&seq, &pool, &[Op::Effect { clip_id: Some(ClipRef::Id(a)), on: None, kind: "vignette".into(), amount: Some(0.6), color: None, tolerance: None, softness: None, spill: None, low: None, high: None, invert: None }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::Effect { clip_id: Some(ClipRef::Id(a)), on: None, kind: "vignette".into(), amount: Some(0.6), color: None, tolerance: None, softness: None, spill: None, low: None, high: None, invert: None, params: Default::default() }]).unwrap();
         assert!(plan.steps[0].what.starts_with("vignette 0.60"), "{}", plan.steps[0].what);
         let new_effects = &effects_after(&plan.steps[0].edit).expect("effects edit").1;
         assert!(matches!(new_effects.last(), Some(E::Vignette { .. })));
 
         // The layer treatment reaches the same op by name.
-        let plan = resolve(&seq, &pool, &[Op::Effect { clip_id: Some(ClipRef::Id(a)), on: None, kind: "shadow".into(), amount: Some(0.5), color: None, tolerance: None, softness: None, spill: None, low: None, high: None, invert: None }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::Effect { clip_id: Some(ClipRef::Id(a)), on: None, kind: "shadow".into(), amount: Some(0.5), color: None, tolerance: None, softness: None, spill: None, low: None, high: None, invert: None, params: Default::default() }]).unwrap();
         let new_effects = &effects_after(&plan.steps[0].edit).expect("effects edit").1;
         assert!(matches!(new_effects.last(), Some(E::DropShadow { color, .. }) if *color == [0, 0, 0]));
-        let plan = resolve(&seq, &pool, &[Op::Effect { clip_id: Some(ClipRef::Id(a)), on: None, kind: "corners".into(), amount: Some(0.2), color: None, tolerance: None, softness: None, spill: None, low: None, high: None, invert: None }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::Effect { clip_id: Some(ClipRef::Id(a)), on: None, kind: "corners".into(), amount: Some(0.2), color: None, tolerance: None, softness: None, spill: None, low: None, high: None, invert: None, params: Default::default() }]).unwrap();
         let new_effects = &effects_after(&plan.steps[0].edit).expect("effects edit").1;
         assert!(matches!(new_effects.last(), Some(E::RoundedCorners { .. })));
 
@@ -15633,7 +15726,7 @@ mod tests {
 
         // Refusals and the JSON shape.
         let bad = |op: Op| resolve(&seq, &pool, &[op]).unwrap_err();
-        assert!(bad(Op::Effect { clip_id: Some(ClipRef::Id(a)), on: None, kind: "sparkle".into(), amount: None, color: None, tolerance: None, softness: None, spill: None, low: None, high: None, invert: None }).why.contains("not an effect"));
+        assert!(bad(Op::Effect { clip_id: Some(ClipRef::Id(a)), on: None, kind: "sparkle".into(), amount: None, color: None, tolerance: None, softness: None, spill: None, low: None, high: None, invert: None, params: Default::default() }).why.contains("not an effect"));
         assert!(bad(Op::CleanAudio { clip_id: ClipRef::Id(a), voice: false, reduction_db: None, wind: false, hiss: false, hum: false, deess: false }).why.contains("nothing to clean"));
         let _: Vec<Op> = serde_json::from_str(r#"[{"op":"effect","clip_id":{"track":0,"secs":1.0},"kind":"glow"},{"op":"retime","clip_id":{"track":0,"secs":1.0},"speed":0.5},{"op":"clean_audio","clip_id":{"track":0,"secs":1.0},"wind":true},{"op":"clean_audio","clip_id":{"track":0,"secs":1.0},"voice":true,"reduction_db":12}]"#).unwrap();
         let _ = media;
@@ -18428,5 +18521,42 @@ mod multiplier_said_tests {
         let low = multiplier_said("saturation", "0.12", 0.12);
         assert!(low.starts_with("saturation \u{00D7}0.12 (88% less); note:") && low.contains("give 1.12"), "{low}");
         assert_eq!(multiplier_said("exposure", "0.5", 0.5), "exposure 0.5");
+    }
+}
+
+#[cfg(test)]
+mod effect_params_tests {
+    use super::{named_picture_effect, with_params};
+    use klipp_effects::BuiltinEffect as E;
+
+    fn params(json: &str) -> std::collections::BTreeMap<String, serde_json::Value> {
+        serde_json::from_str(json).unwrap()
+    }
+
+    fn effect(kind: &str, json: &str) -> Result<E, (String, String)> {
+        with_params(named_picture_effect(kind, None).unwrap().0, &params(json))
+    }
+
+    #[test]
+    fn params_set_an_effects_own_settings_by_name() {
+        let fx = effect("displace", r#"{"size": 120, "direction": "across", "seed": 7}"#).unwrap();
+        assert!(matches!(fx, E::Displace { size, direction: 1, seed: 7, .. } if size == 120.0), "{fx:?}");
+        // A choice also by its place in the list.
+        assert!(matches!(effect("displace", r#"{"direction": 2}"#).unwrap(), E::Displace { direction: 2, .. }));
+        // Every described effect takes them, not only the newest (#2744).
+        assert!(matches!(effect("old_film", r#"{"scratches": 0, "sepia": 1}"#).unwrap(), E::OldFilm { scratches, sepia, .. } if scratches == 0.0 && sepia == 1.0));
+        assert_eq!(effect("vignette", "{}").unwrap(), named_picture_effect("vignette", None).unwrap().0);
+    }
+
+    #[test]
+    fn a_wrong_param_is_refused_with_the_ones_there_are() {
+        let (why, fix) = effect("displace", r#"{"wobble": 1}"#).unwrap_err();
+        assert!(why.contains("wobble"), "{why}");
+        assert!(fix.contains("size (4 to 800)") && fix.contains("direction (both, across, up_down)"), "{fix}");
+        let (why, fix) = effect("displace", r#"{"size": 5000}"#).unwrap_err();
+        assert!(why.contains("size 5000") && fix.contains("4 to 800"), "{why} / {fix}");
+        assert!(effect("displace", r#"{"direction": "sideways"}"#).is_err());
+        assert!(effect("displace", r#"{"seed": 1.5}"#).is_err());
+        assert!(effect("displace", r#"{"amount": "lots"}"#).is_err());
     }
 }

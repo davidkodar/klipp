@@ -407,6 +407,7 @@ fn effect_cases() -> Vec<Case> {
         ("Emboss", Emboss { angle: 45.0, strength: 1.0, mix: 0.7 }),
         ("Mirror", Mirror { horizontal: 1, vertical: 0 }),
         ("LensDistortion", LensDistortion { distortion: 0.3, scale: 1.0 }),
+        ("Displace", Displace { amount: 6.0, size: 24.0, speed: 1.0, direction: 0, seed: 3, time: 0.4 }),
         ("Dilate", Dilate { radius: 2 }),
         ("Erode", Erode { radius: 2 }),
         ("Denoise", Denoise { spatial_sigma: 2.0, color_sigma: 0.1, iterations: 1 }),
@@ -1466,7 +1467,8 @@ fn every_path_draws_the_corpus_alike() {
 //     KLIPP_RECORD_GOLDENS="<why>" cargo test -p klipp-compose --test all golden_corpus::every_path_draws_its_recorded_frames
 //
 // A rule change records only the cases it moves, every other frame held
-// to its stored one: add `KLIPP_RECORD_GOLDEN_CASE="<case>|<case>"`.
+// to its stored one: add `KLIPP_RECORD_GOLDEN_CASE="<case>|<case>"`. A new
+// case is added the same way.
 //
 // A re-recording is reviewed like code: its commit says why each frame may
 // change.
@@ -1590,7 +1592,10 @@ fn every_path_draws_its_recorded_frames() {
             let mut selected = frames.clone();
             let mut count = 0;
             for (key, drawn) in &mut selected {
-                let previous = old.remove(key).expect("a case-only recording cannot add frames");
+                // A new case (a new effect) is added by naming it.
+                let previous = old.remove(key);
+                assert!(previous.is_some() || cases.contains(&key.0.as_str()), "a case-only recording adds frames only of the cases it names");
+                let previous = previous.flatten();
                 if cases.contains(&key.0.as_str()) {
                     count += 1;
                     match (&previous, drawn.as_ref()) {

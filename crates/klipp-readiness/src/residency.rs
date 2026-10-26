@@ -70,6 +70,7 @@ pub fn effect(effect: &E) -> Capability {
         | E::Emboss { .. }
         | E::Mirror { .. }
         | E::LensDistortion { .. }
+        | E::Displace { .. }
         | E::Dilate { .. }
         | E::Erode { .. }
         | E::Denoise { .. }

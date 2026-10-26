@@ -162,6 +162,11 @@ impl BuiltinEffect {
                 real(f, "distortion", distortion);
                 real(f, "scale", scale);
             }
+            E::Displace { amount, size, speed, .. } => {
+                real(f, "amount", amount);
+                real(f, "size", size);
+                real(f, "speed", speed);
+            }
             E::Denoise { spatial_sigma, color_sigma, iterations } => {
                 real(f, "spatial_sigma", spatial_sigma);
                 real(f, "color_sigma", color_sigma);

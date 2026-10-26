@@ -36,6 +36,7 @@ fn geometry() -> Vec<E> {
         },
         E::Mirror { horizontal: 1, vertical: 0 },
         E::LensDistortion { distortion: 0.15, scale: 1.05 },
+        E::Displace { amount: 6.0, size: 24.0, speed: 1.0, direction: 0, seed: 3, time: 0.4 },
         E::Letterbox { aspect_ratio: 2.39, bar_color: 0x102030, opacity: 0.9 },
     ]
 }
@@ -147,6 +148,7 @@ fn a_run_of_recorded_effects_is_one_submit() {
         E::Crop { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0 },
         E::Mirror { horizontal: 0, vertical: 0 },
         E::LensDistortion { distortion: 0.0, scale: 1.0 },
+        E::Displace { amount: 0.0, size: 80.0, speed: 1.0, direction: 0, seed: 0, time: 1.0 },
         E::GaussianBlur { radius: 0.2 },
         E::TiltShift { center: 0.5, width: 0.2, softness: 0.3, radius: 0.0 },
         E::FocusBlur { radius: 2.0, vertical: false, band: 1.0 },
