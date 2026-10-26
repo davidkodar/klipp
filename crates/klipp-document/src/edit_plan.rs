@@ -437,7 +437,7 @@ pub fn to_ops(plan: &EditPlan, seq: &Sequence, pool: &MediaPool, brief: Option<&
                     rotation_deg: Some(p.rotation_deg),
                     opacity: p.opacity.unwrap_or(1.0),
                     ..Default::default()
-                }],
+                }], flip_x: None, flip_y: None
             });
         }
         // The delivery's size is the brief's, not the first file's: the
@@ -600,7 +600,7 @@ fn scene_layers(plan: &EditPlan, start: f64, brief: Option<&Brief>, ops: &mut Ve
                     let from_file = source_in_secs.unwrap_or(0.0);
                     ops.push(Op::Place { media_id: *media_id, track: TrackRef::Index(track), at: Anchor::Secs(begin), source_in: Some(from_file), source_out: Some(from_file + held), insert: false, with_audio: false, sync_source_secs: None });
                     if let Some(poses) = card_poses(placement.as_ref(), enter.as_ref(), exit.as_ref()) {
-                        ops.push(Op::Compose { clip_id: ClipRef::At { track, secs: begin + held / 2.0 }, poses });
+                        ops.push(Op::Compose { clip_id: ClipRef::At { track, secs: begin + held / 2.0 }, poses, flip_x: None, flip_y: None });
                     }
                 }
                 PlanLayer::Connector { from: a, to: b, color, stroke_width, reveal_secs, .. } => {

@@ -346,6 +346,21 @@ fn a_vertical_scale_apart_from_the_width_is_kept() {
     assert_eq!(crate::names::aspect(Some(2.0), Some(0.5)), Some(0.25));
 }
 
+/// A negative scale is a flip (#2705): the placement keeps the flip and
+/// the size, and the aspect between the sizes.
+#[test]
+fn a_negative_scale_is_kept_as_a_flip() {
+    let tf = |x: f64, y: f64| json!({"type": "transform", "position_x": 0.0, "position_y": 0.0, "scale_x": x, "scale_y": y, "rotation": 0.0,
+                    "anchor_x": 0.5, "anchor_y": 0.5, "rotation_x": 0.0, "rotation_y": 0.0, "perspective": 0.0});
+    let (p, _) = lift(clip(json!({"builtin_effects": [tf(-0.5, 1.0)]})), ClipKind::Media);
+    let pl = &p.placement;
+    assert_eq!((pl.flip_x, pl.flip_y, pl.scale, pl.aspect), (true, false, Some(0.5), Some(2.0)));
+    assert_eq!(pl.scales(), (-0.5, 1.0), "drawn as it was given");
+    let (p, _) = lift(clip(json!({"builtin_effects": [tf(0.8, -0.8)]})), ClipKind::Media);
+    assert_eq!((p.placement.flip_x, p.placement.flip_y, p.placement.aspect), (false, true, None));
+    assert_eq!(p.placement.scales(), (0.8, -0.8));
+}
+
 /// Odd edges an old grade graph keeps get today's reading, each with its
 /// note, and the result is a valid lifted graph.
 #[test]

@@ -230,18 +230,21 @@ pub fn evaluate_clip_own_transform(
     // authored effect (#1207).
     let picture = clip.is_picture_truth().then(|| clip.picture_v2().ok()).flatten();
     // The scale and the aspect its height keeps under it (#1406).
-    let tdef = picture.as_ref().map(|p| {
+    // A flip is the sign each axis takes after its lanes (#2705): the
+    // lanes key the size.
+    let (tdef, (flip_x, flip_y)) = picture.as_ref().map(|p| {
         let p = &p.picture.placement;
-        (p.pos_x.unwrap_or(0.0), p.pos_y.unwrap_or(0.0), p.scale.unwrap_or(1.0), p.aspect.unwrap_or(1.0),
-            p.rotation.unwrap_or(0.0), p.anchor_x.unwrap_or(0.5), p.anchor_y.unwrap_or(0.5))
+        ((p.pos_x.unwrap_or(0.0), p.pos_y.unwrap_or(0.0), p.scale.unwrap_or(1.0), p.aspect.unwrap_or(1.0),
+            p.rotation.unwrap_or(0.0), p.anchor_x.unwrap_or(0.5), p.anchor_y.unwrap_or(0.5)), (p.sign_x(), p.sign_y()))
     }).unwrap_or_else(|| enabled_transform(clip).into_iter()
         .find_map(|e| match e {
             klipp_effects::BuiltinEffect::Transform {
                 position_x, position_y, scale_x, scale_y, rotation, anchor_x, anchor_y, ..
-            } => Some((*position_x, *position_y, *scale_x, klipp_graph_lift::names::aspect(Some(*scale_x), Some(*scale_y)).unwrap_or(1.0), *rotation, *anchor_x, *anchor_y)),
+            } => Some(((*position_x, *position_y, scale_x.abs(), klipp_graph_lift::names::aspect(Some(scale_x.abs()), Some(scale_y.abs())).unwrap_or(1.0), *rotation, *anchor_x, *anchor_y),
+                (if *scale_x < 0.0 { -1.0 } else { 1.0 }, if *scale_y < 0.0 { -1.0 } else { 1.0 }))),
             _ => None,
         })
-        .unwrap_or((0.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.5)));
+        .unwrap_or(((0.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.5), (1.0, 1.0))));
     // Each lane where the clip's placement edits land: a picture-truth
     // clip's in its picture, any other clip's in its fields.
     let lane = |param: klipp_core::ParamId, view: &[klipp_core::Keyframe], default: f32| match clip.truth_lane(&param) {
@@ -258,7 +261,7 @@ pub fn evaluate_clip_own_transform(
     let follows = sc * tdef.3;
     let own = clip.truth_lane(&klipp_core::ParamId::ScaleY).map_or_else(|| !clip.transform_scale_y_keyframes().is_empty(), |(keys, _)| !keys.is_empty());
     let sy = if own { lane(klipp_core::ParamId::ScaleY, clip.transform_scale_y_keyframes(), follows) } else { follows };
-    (px, py, sc, sy, ro, tdef.5, tdef.6)
+    (px, py, sc * flip_x, sy * flip_y, ro, tdef.5, tdef.6)
 }
 
 /// Placement and its focal anchor come from the first enabled Transform.

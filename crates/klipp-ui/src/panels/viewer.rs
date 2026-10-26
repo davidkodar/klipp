@@ -4810,8 +4810,10 @@ impl ViewerPanel {
         // When anchor is (0.5, 0.5) this is zero (center pivot).
         // When anchor is (0.0, 0.0) the pivot is at the top-left, so the box
         // center is shifted right and down by half_w/half_h.
-        let anchor_offset_x = (anchor_x - 0.5) * frame_w * transform.scale_x * scale_to_screen_x;
-        let anchor_offset_y = (anchor_y - 0.5) * frame_h * transform.scale_y * scale_to_screen_y;
+        // A flipped picture lies on the other side of its anchor (#2705).
+        let (flip_x, flip_y) = clip.picture_v2().map(|p| (p.picture.placement.sign_x(), p.picture.placement.sign_y())).unwrap_or((1.0, 1.0));
+        let anchor_offset_x = (anchor_x - 0.5) * frame_w * transform.scale_x * scale_to_screen_x * flip_x;
+        let anchor_offset_y = (anchor_y - 0.5) * frame_h * transform.scale_y * scale_to_screen_y * flip_y;
 
         // The bounding box center, offset so the anchor maps to pos_screen
         let box_center_x = pos_screen.x - anchor_offset_x;

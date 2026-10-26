@@ -772,6 +772,64 @@ fn a_transition_with_a_matted_side_is_drawn_on_the_gpu() {
     }
 }
 
+/// #2705: a clip flipped about its anchor (a negative scale in its
+/// Transform) draws the same on the GPU stack as on the CPU, and is the
+/// unflipped picture mirrored.
+#[test]
+fn a_flipped_clip_is_mirrored_on_both_paths() {
+    let placed = |sx: f32, sy: f32| {
+        let mut seq = Sequence::new_default();
+        seq.resolution = klipp_core::Resolution { width: W, height: H };
+        let mut v = Track::new("V1", TrackKind::Video);
+        let c = TestClip::of(clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 0.0, 4.0))
+            .effects([klipp_effects::BuiltinEffect::Transform {
+                position_x: 0.0, position_y: 0.0, scale_x: sx, scale_y: sy, rotation: 0.0,
+                anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None,
+            }])
+            .build();
+        let mut src = Flat::default();
+        src.0.insert(c.id, picture(0.0));
+        v.clips = vec![c];
+        seq.tracks = vec![v];
+        (seq, src)
+    };
+    // The transform maps in pixel corners: a flip about the frame's middle
+    // takes column x to W - x, so the first row and column have no twin.
+    let mirrored = |img: &[u8], x_axis: bool, y_axis: bool| {
+        let (w, h) = (W as usize, H as usize);
+        let mut out = vec![0u8; img.len()];
+        for y in 1..h {
+            for x in 1..w {
+                let (sx, sy) = (if x_axis { w - x } else { x }, if y_axis { h - y } else { y });
+                out[(y * w + x) * 4..][..4].copy_from_slice(&img[(sy * w + sx) * 4..][..4]);
+            }
+        }
+        out
+    };
+    let inner = |img: &[u8]| {
+        let (w, h) = (W as usize, H as usize);
+        let mut v = img.to_vec();
+        for y in 0..h {
+            for x in 0..w {
+                if x == 0 || y == 0 {
+                    v[(y * w + x) * 4..][..4].fill(0);
+                }
+            }
+        }
+        v
+    };
+    let (seq, mut src) = placed(0.6, 0.6);
+    let plain = display(&renderer().cpu_render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()));
+    for (name, sx, sy, x_axis, y_axis) in [("flip x", -0.6, 0.6, true, false), ("flip y", 0.6, -0.6, false, true), ("flip both", -0.6, -0.6, true, true)] {
+        let (seq, mut src) = placed(sx, sy);
+        assert_match(name, &seq, &mut src);
+        let cpu = display(&renderer().cpu_render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()));
+        assert!(worst(&cpu, &plain) > 50, "{name}: not flipped at all");
+        let d = worst(&inner(&cpu), &mirrored(&plain, x_axis, y_axis));
+        assert!(d <= 1, "{name}: not the picture mirrored, {d} levels off");
+    }
+}
+
 /// #985: the piece transitions, at their defaults, sliding and posed
 /// (panels tilting away, halves turning, the shatter falling), with the
 /// camera's shutter shut and open, are the same in the viewer (the GPU

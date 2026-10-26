@@ -79,6 +79,8 @@ fn current(clip: &Clip) -> Vec<(&'static str, f32)> {
         ("tilt_x", p.tilt_x.unwrap_or(0.0)),
         ("tilt_y", p.tilt_y.unwrap_or(0.0)),
         ("perspective", p.perspective.unwrap_or(0.0)),
+        ("flip_x", if p.flip_x { 1.0 } else { 0.0 }),
+        ("flip_y", if p.flip_y { 1.0 } else { 0.0 }),
         ("opacity", lifted.picture.opacity),
     ]
     .to_vec()
