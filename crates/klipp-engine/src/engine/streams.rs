@@ -278,10 +278,12 @@ pub(crate) struct Want {
     pub reversed: bool,
 }
 
-/// A reversed clip's reader, with the rotation its frames are turned by.
-struct Reversed {
-    reader: BackwardFrameReader<Vec<f32>>,
-    rotation: i32,
+/// A reversed clip's source: its own forward decoder, read a window at
+/// a time (#2798), or, where that decoder can't be opened, the CPU reader
+/// of #617 with the rotation its frames are turned by.
+enum Reversed {
+    Gop(super::reverse_gop::ReverseGop),
+    Cpu { reader: BackwardFrameReader<Vec<f32>>, rotation: i32 },
 }
 
 /// A decoder following one clip's source time.
@@ -527,18 +529,34 @@ impl ClipStreams {
             let r = match self.reversed.entry(w.clip) {
                 std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
                 std::collections::hash_map::Entry::Vacant(e) => {
-                    let Some((path, rotation, _)) = resolve(w) else { continue };
-                    let log_format = crate::video_decoder::log_format_for_path(&path);
-                    let Some(reader) = BackwardFrameReader::open_linear(&path, log_format, crate::video_decoder::working_colorspace()) else {
-                        warn!("clip streams: cannot open {path:?} to read it backward");
-                        continue;
-                    };
-                    e.insert(Reversed { reader, rotation })
+                    let Some((path, rotation, cost)) = resolve(w) else { continue };
+                    // The decoder forward playback uses, its frames on the
+                    // GPU where there is one, held a window at a time.
+                    let lease = crate::decode_budget::admit(cost.rate, crate::decode_budget::Priority::Overflow);
+                    match VideoDecoder::open_with_queue(&path, rotation, lease, MIN_QUEUE_FRAMES * 2) {
+                        Ok(decoder) => {
+                            let free = if crate::video_decoder::hardware_decode_enabled() { (self.free_vram)() } else { Some((self.free_memory)()) };
+                            let capacity = super::reverse_gop::ReverseGop::capacity_for(cost.frame_bytes, free);
+                            e.insert(Reversed::Gop(super::reverse_gop::ReverseGop::new(decoder, capacity, 0.0)))
+                        }
+                        Err(err) => {
+                            warn!("clip streams: no decoder for {path:?} ({err}); reading it backward on the CPU");
+                            let log_format = crate::video_decoder::log_format_for_path(&path);
+                            let Some(reader) = BackwardFrameReader::open_linear(&path, log_format, crate::video_decoder::working_colorspace()) else {
+                                warn!("clip streams: cannot open {path:?} to read it backward");
+                                continue;
+                            };
+                            e.insert(Reversed::Cpu { reader, rotation })
+                        }
+                    }
                 }
             };
             // Its frames for the time wanted start decoding now, off this
             // thread: a clip about to come up is ready when it does.
-            r.reader.prepare(w.source_secs);
+            match r {
+                Reversed::Gop(g) => g.want(w.source_secs, w.ahead),
+                Reversed::Cpu { reader, .. } => reader.prepare(w.source_secs),
+            }
         }
         for w in wants.iter().filter(|w| !w.reversed) {
             let target = w.source_secs.max(0.0);
@@ -792,6 +810,11 @@ impl ClipStreams {
     /// Take whatever frames arrived, without changing any target.
     pub fn pump(&mut self, frame_secs: f64) {
         self.land_opened();
+        for r in self.reversed.values_mut() {
+            if let Reversed::Gop(g) = r {
+                g.pump();
+            }
+        }
         for s in self.streams.values_mut() {
             let half = s.dec().half_source_frame(1.0 / frame_secs.max(1e-6));
             s.pump(half);
@@ -806,10 +829,17 @@ impl ClipStreams {
     /// `height` and upright (#617). Read when asked: its reader decodes a
     /// window back from the time and answers the next frames from it.
     pub fn reversed_frame(&mut self, clip: &klipp_timeline::Clip, source_secs: f64, width: u32, height: u32) -> Option<klipp_compose::SourceFrame> {
-        let r = self.reversed.get_mut(&clip.id)?;
-        let (pixels, w, h, pts) = r.reader.decode_upright(source_secs, (width, height), r.rotation)?;
-        Some(klipp_compose::SourceFrame { pixels: SourcePixels::Linear(Arc::new(pixels)), width: w, height: h, pts: Some(pts) })
+        match self.reversed.get_mut(&clip.id)? {
+            // The same frame, its GPU picture shared, for as long as it is
+            // shown (#2798).
+            Reversed::Gop(g) => g.frame(source_secs).map(|f| klipp_compose::SourceFrame { pixels: f.source_pixels(), width: f.width, height: f.height, pts: f.pts }),
+            Reversed::Cpu { reader, rotation } => {
+                let (pixels, w, h, pts) = reader.decode_upright(source_secs, (width, height), *rotation)?;
+                Some(klipp_compose::SourceFrame { pixels: SourcePixels::Linear(Arc::new(pixels)), width: w, height: h, pts: Some(pts) })
+            }
+        }
     }
+
 
     pub fn frame(&self, clip: ClipId) -> Option<&HeldFrame> {
         self.streams.get(&clip)?.held.as_ref()
@@ -832,7 +862,12 @@ impl ClipStreams {
     pub fn ready(&self, frame_secs: f64) -> bool {
         // Only what is on screen: a stream opened for a clip coming up is
         // nothing a frame shows yet.
-        self.opening.values().all(|(_, ahead)| *ahead) && self.streams.values().filter(|s| !s.ahead).all(|s| s.ready(s.dec().half_source_frame(1.0 / frame_secs.max(1e-6))))
+        self.opening.values().all(|(_, ahead)| *ahead)
+            && self.streams.values().filter(|s| !s.ahead).all(|s| s.ready(s.dec().half_source_frame(1.0 / frame_secs.max(1e-6))))
+            && self.reversed.values().all(|r| match r {
+                Reversed::Gop(g) => g.ready(),
+                Reversed::Cpu { .. } => true,
+            })
     }
 
     /// Take over the primary decoder at a cut, when the clip it was

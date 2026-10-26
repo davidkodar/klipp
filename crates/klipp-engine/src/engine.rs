@@ -14,6 +14,7 @@ use klipp_compose::eval::{resolve_clip_transform, ResolvedTransform};
 mod delivery;
 mod render_job;
 mod seek_lead;
+mod reverse_gop;
 mod streams;
 mod view;
 
@@ -1057,6 +1058,16 @@ pub fn streams_opened_on_screen() -> u64 {
     STREAMS_OPENED_ON_SCREEN.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Different frames reversed clips' sources have handed out since the
+/// process began (#2798): a frame shown again, as at a slow reversed
+/// speed, isn't counted, nor are frames from the CPU reader.
+pub(crate) static REVERSED_FRAMES_GIVEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// See [`REVERSED_FRAMES_GIVEN`].
+pub fn reversed_frames_given() -> u64 {
+    REVERSED_FRAMES_GIVEN.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Clip streams opened, on screen or ahead, since the process began.
 pub fn streams_opened() -> u64 {
     STREAMS_OPENED.load(std::sync::atomic::Ordering::Relaxed)
@@ -1486,6 +1497,10 @@ pub struct PlaybackEngine {
     dropped_frames: u64,
     // Video decoders
     v1_decoder: Option<VideoDecoder>,
+    /// The window of frames stepped back through while paused (#2798),
+    /// for the clip it was opened on: decoded forward once, on the GPU
+    /// where there is one, each step back a frame from it.
+    step_back: Option<(klipp_core::ClipId, reverse_gop::ReverseGop)>,
     /// Decoders for every other media clip a frame needs: overlays, a
     /// transition's other side, multicam angles. See `engine::streams`.
     streams: streams::ClipStreams,
@@ -2573,6 +2588,7 @@ impl PlaybackEngine {
             last_frame_time: std::time::Instant::now(),
             dropped_frames: 0,
             v1_decoder: None,
+            step_back: None,
             streams: streams::ClipStreams::new(),
             seek_leads: seek_lead::SeekLeads::default(),
             neighbour_hold: Default::default(),
@@ -4048,6 +4064,8 @@ impl PlaybackEngine {
     }
 
     fn handle_play(&mut self) {
+        // Playing on: the frames held for stepping back are let go.
+        self.step_back = None;
         // Sync fps from the active sequence so synthetic clips play at the correct rate.
         // Without this, a generator-only timeline plays at the engine's default 24fps
         // because self.fps is only updated by load_file() and generators never trigger it.
@@ -7757,6 +7775,52 @@ impl PlaybackEngine {
         (self.repaint_cb)();
     }
 
+    /// Show the frame at `target` (a step back while paused) from a window
+    /// of the clip's frames decoded forward and held (#2798): the first
+    /// step decodes the window ending there, the next ones are frames
+    /// already held, and the window before is decoded as the steps near
+    /// its start. `false` when the frame isn't there within a second or
+    /// the clip under the playhead isn't one to read so; the step is then
+    /// taken the old way.
+    fn step_back_through_window(&mut self, target: RationalTime) -> bool {
+        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+        let clip = seq.tracks.get(self.current_track_index).and_then(|t| t.clips.get(self.current_clip_index)).cloned();
+        let fps = seq.fps.as_f64();
+        drop(seq);
+        let Some(clip) = clip.filter(|c| !c.is_reversed() && c.timeline_in <= target && target < c.timeline_out) else { return false };
+        let Some(media) = clip.media_id() else { return false };
+        let source = clip.source_secs_at((target - clip.timeline_in).to_secs_f64(), fps);
+        if self.step_back.as_ref().is_none_or(|(id, _)| *id != clip.id) {
+            let Some(path) = self.path_for_media(media) else { return false };
+            let rotation = self.effective_decode_rotation(media, &path, clip.source_rotation);
+            let lease = crate::decode_budget::admit(0.0, crate::decode_budget::Priority::Fixed);
+            let Ok(decoder) = VideoDecoder::open_with_queue(&path, rotation, lease, 8) else { return false };
+            let bytes = self.media_pool.read().unwrap_or_else(|e| e.into_inner()).get(&media).map_or(0.0, |m| m.resolution.width as f64 * m.resolution.height as f64 * 4.0);
+            let capacity = reverse_gop::ReverseGop::capacity_for(bytes, crate::decode_budget::free_vram());
+            self.step_back = Some((clip.id, reverse_gop::ReverseGop::new(decoder, capacity, 0.0)));
+        }
+        let Some((_, window)) = self.step_back.as_mut() else { return false };
+        window.want(source, false);
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        let frame = loop {
+            if window.ready() {
+                break window.frame(source);
+            }
+            if std::time::Instant::now() >= deadline {
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+            window.pump();
+        };
+        let Some(frame) = frame else { return false };
+        self.playhead = target;
+        self.present_frame(Some(frame));
+        self.report_playhead();
+        let _ = self.event_tx.send(AppEvent::FrameReady);
+        (self.repaint_cb)();
+        true
+    }
+
     /// Step forward or backward by one frame without a full seek.
     fn step_frame(&mut self, direction: i64) {
         // The step's frame is the playhead's now; a seek that runs below
@@ -7887,6 +7951,8 @@ impl PlaybackEngine {
             if let Some(dec) = &self.v1_decoder {
                 dec.pause();
             }
+        } else if self.step_back_through_window(target_tc) {
+            // Backward, from the window of frames held for it (#2798).
         } else {
             // Backward: cache miss. Seek to target AND prefill cache with nearby frames.
             // Strategy: seek to (target - 30) and decode forward to fill cache,

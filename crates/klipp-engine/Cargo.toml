@@ -79,6 +79,10 @@ name = "a_strobe_plays_through"
 path = "tests/a_strobe_plays_through.rs"
 
 [[test]]
+name = "reversed_plays_on_the_gpu"
+path = "tests/reversed_plays_on_the_gpu.rs"
+
+[[test]]
 name = "a_cut_from_a_still_is_opened_ahead"
 path = "tests/a_cut_from_a_still_is_opened_ahead.rs"
 
