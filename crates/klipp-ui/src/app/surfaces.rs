@@ -304,4 +304,186 @@ impl KlippApp {
             let _ = event_tx.send(klipp_core::AppEvent::SurfaceTracked { clip_id, surface, name, corners, reference_secs: reference as f64 / media_fps, keys, source_size, media_fps, held_secs, direction, interactive, track_area: track, exclude });
         });
     }
+
+    /// Correct `surface` on the frame at `at_secs` (#2754): the key there
+    /// becomes the corners given, set by hand, and the track either side
+    /// is solved again from it, on a thread, as far as the anchors next to
+    /// it, so the rest of the track stays as it was.
+    pub(super) fn correct_surface(&mut self, clip_id: klipp_core::ClipId, surface: uuid::Uuid, corners: [[f32; 2]; 4], at_secs: Option<f64>) {
+        if !klipp_timeline::surface::quad_is_usable(&corners) {
+            self.state.toast.show("The surface's corners need to enclose an area");
+            return;
+        }
+        if self.state.tracking_in_progress.contains(&clip_id) {
+            self.state.toast.show("This clip is already being tracked");
+            return;
+        }
+        let at = at_secs.unwrap_or(self.state.playhead_smooth_secs);
+        let seq = self.state.sequence();
+        let frame = [seq.resolution.width, seq.resolution.height];
+        let fps = seq.fps.as_f64();
+        let Some(clip) = seq.all_clips().find(|c| c.id == clip_id).cloned() else { return };
+        let Some(existing) = clip.surfaces.iter().find(|s| s.id == surface).cloned() else {
+            self.state.toast.show("A correction goes on a surface the clip already has: track it first");
+            return;
+        };
+        let Some(item) = clip.media_id().and_then(|m| self.state.media_pool.get(&m)).cloned() else { return };
+        let Some((shown, placed)) = self.clip_picture_at(&clip, at) else { return };
+        let on_source = klipp_timeline::surface::frame_quad_in_source(&corners, shown, frame, Some(placed));
+        if !klipp_timeline::surface::quad_is_usable(&on_source) {
+            self.state.toast.show("The surface's corners need to be on the clip's picture");
+            return;
+        }
+        let media_fps = item.fps.as_f64().max(1.0);
+        let frame_count = (item.duration.to_secs_f64() * media_fps).round() as usize;
+        let clip_time = (at - clip.timeline_in.to_secs_f64()).clamp(0.0, (clip.timeline_out - clip.timeline_in).to_secs_f64());
+        let first = (clip.source_in.to_secs_f64() * media_fps).floor() as usize;
+        let last = ((clip.source_out.to_secs_f64() * media_fps).ceil() as usize).min(frame_count.saturating_sub(1)).max(first);
+        let k = ((clip.source_secs_at(clip_time, fps) * media_fps).round() as usize).clamp(first, last);
+        let source_secs = k as f64 / media_fps;
+        // The surface as it will be: the correction set, its anchors.
+        let mut corrected = existing.clone();
+        if !corrected.set_correction(source_secs, &on_source) {
+            self.state.toast.show("The corners can't be reached from the surface's own: set them round the same surface");
+            return;
+        }
+        let Some(correction) = corrected.keys.iter().find(|key| key.state == klipp_timeline::TrackState::Manual && (key.source_secs - source_secs).abs() < 0.5 / media_fps).map(|key| key.map) else { return };
+        let (before, after) = corrected.anchors_around(source_secs);
+        let to_frame = |a: (f64, klipp_timeline::surface::Map)| (((a.0 * media_fps).round() as usize).clamp(first, last), a.1);
+        let (before, after) = (before.map(to_frame), after.map(to_frame));
+        let (w, h) = (item.resolution.width.max(1) as f64, item.resolution.height.max(1) as f64);
+        let shown_w = if item.source_rotation.rem_euclid(180) == 90 { h } else { w };
+        let scale = (SURFACE_TRACK_SIDE as f64 / shown_w).min(1.0);
+        let pixels = ((w * scale) * (h * scale)) as usize;
+        let area = existing.track_area.unwrap_or(existing.corners);
+        let exclude = existing.exclude.clone();
+        let path = item.path.clone();
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.state.surface_track_cancel.insert(clip_id, cancel.clone());
+        self.state.surface_tool = None;
+        self.state.tracking_in_progress.insert(clip_id);
+        self.state.tracking_progress.insert(clip_id, 0.0);
+        self.state.toast.show(format!("Correcting \u{201c}{}\u{201d}\u{2026}", existing.name));
+        let event_tx = self.proxy_event_tx.clone();
+        std::thread::spawn(move || {
+            use klipp_effects::homography::Homography;
+            use klipp_effects::planar::{Anchor, State};
+            let fail = |error: String| {
+                let _ = event_tx.send(klipp_core::AppEvent::SurfaceTrackFailed { clip_id, surface, error });
+            };
+            // The frames read: from the anchor before to the one after, or
+            // as many round the correction as fit in memory; an anchor past
+            // them is left, and the track beyond the frames read kept.
+            let most = (SURFACE_TRACK_BYTES / pixels.max(1)).clamp(50, 3600);
+            let lo = before.map_or(first, |b| b.0).max(k.saturating_sub(most / 2));
+            let hi = after.map_or(last, |a| a.0).min(lo + most - 1).max(k);
+            let lo = lo.min(k);
+            let (before, after) = (before.filter(|b| b.0 >= lo), after.filter(|a| a.0 <= hi));
+            let loading = 0.5;
+            let going = || !cancel.load(std::sync::atomic::Ordering::Relaxed);
+            let frames = match grey_frames_sized(&path, media_fps, lo, hi, SURFACE_TRACK_SIDE, false, &|p| {
+                going() && event_tx.send(klipp_core::AppEvent::TrackingProgress { clip_id, progress: p * loading }).is_ok()
+            }) {
+                Ok(f) => f,
+                Err(e) => return fail(e),
+            };
+            let Some((gw, gh)) = frames.first().map(|f| (f.width as f64, f.height as f64)) else {
+                return fail("the clip's frames could not be read".into());
+            };
+            let hi = lo + frames.len() - 1;
+            let mut decode = |f: usize| -> Option<klipp_effects::window_track::GrayFrame> { f.checked_sub(lo).and_then(|i| frames.get(i)).cloned() };
+            let to_px = Homography { h: [[gw, 0.0, 0.0], [0.0, gh, 0.0], [0.0, 0.0, 1.0]] };
+            let to_frac = Homography { h: [[1.0 / gw, 0.0, 0.0], [0.0, 1.0 / gh, 0.0], [0.0, 0.0, 1.0]] };
+            let px = |m: &klipp_timeline::surface::Map| to_px.multiply(&Homography { h: [[m[0], m[1], m[2]], [m[3], m[4], m[5]], [m[6], m[7], m[8]]] }).multiply(&to_frac);
+            let anchor = |a: (usize, klipp_timeline::surface::Map)| Anchor { frame: a.0, h: px(&a.1) };
+            let here = Anchor { frame: k, h: px(&correction) };
+            let quad = area.map(|c| (c[0] as f64 * gw, c[1] as f64 * gh));
+            let exclude_px: Vec<Vec<(f64, f64)>> = exclude.iter().map(|e| e.iter().map(|c| (c[0] as f64 * gw, c[1] as f64 * gh)).collect()).collect();
+            let opts = klipp_effects::planar::Options::default();
+            let report = |p: f32| going() && event_tx.send(klipp_core::AppEvent::TrackingProgress { clip_id, progress: loading + p * (1.0 - loading) }).is_ok();
+            let mut gpu = klipp_effects::gpu::planar::PlanarGpu::new();
+            let mut solve = |start: Option<Anchor>, end: Option<Anchor>, span: (usize, usize), progress: &dyn Fn(f32) -> bool| match gpu.as_mut() {
+                Some(g) => g.solve_between(quad, &exclude_px, start, end, span, &mut decode, &opts, progress),
+                None => klipp_effects::planar::solve_between(quad, &exclude_px, start, end, span, &mut decode, &opts, progress),
+            };
+            let earlier = solve(before.map(anchor), Some(here), (lo, k), &|p| report(p * 0.5));
+            let later = solve(Some(here), after.map(anchor), (k, hi), &|p| report(0.5 + p * 0.5));
+            if !going() {
+                return fail("cancelled".into());
+            }
+            let key = |t: &klipp_effects::planar::Tracked| {
+                let m = to_frac.multiply(&t.h).multiply(&to_px).h;
+                let state = match t.state {
+                    State::Good => 0,
+                    State::Low => 1,
+                    State::Lost => 2,
+                };
+                (t.frame as f64 / media_fps, [m[0][0], m[0][1], m[0][2], m[1][0], m[1][1], m[1][2], m[2][0], m[2][1], m[2][2]], t.confidence, state)
+            };
+            // Each span's bounds: its anchor, or the edge of the frames
+            // read (open where that is the clip's end).
+            let secs = |f: usize| f as f64 / media_fps;
+            let edge_before = before.map(|b| secs(b.0)).or((lo > first).then(|| secs(lo) - 0.5 / media_fps));
+            let edge_after = after.map(|a| secs(a.0)).or((hi < last).then(|| secs(hi) + 0.5 / media_fps));
+            let spans = vec![
+                (edge_before, Some(source_secs), earlier.iter().map(key).collect()),
+                (Some(source_secs), edge_after, later.iter().map(key).collect()),
+            ];
+            let _ = event_tx.send(klipp_core::AppEvent::SurfaceCorrected { clip_id, surface, source_secs, corners: on_source, spans });
+        });
+    }
+
+    /// A correction solved onto its clip as one undo step (#2754): the key
+    /// set by hand and the spans either side re-solved; says what was
+    /// re-solved and where it is still uncertain or lost.
+    #[allow(clippy::type_complexity)]
+    pub(super) fn apply_surface_correction(&mut self, clip_id: klipp_core::ClipId, surface: uuid::Uuid, source_secs: f64, corners: [[f32; 2]; 4], spans: Vec<(Option<f64>, Option<f64>, Vec<(f64, [f64; 9], f32, u8)>)>) {
+        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let fps = seq.fps.as_f64();
+        let Some(old) = seq.all_clips().find(|c| c.id == clip_id).cloned() else {
+            self.state.toast.show("The corrected clip is gone; the correction was dropped");
+            return;
+        };
+        let mut new = old.clone();
+        let Some(s) = new.surfaces.iter_mut().find(|s| s.id == surface) else {
+            self.state.toast.show("The corrected surface is gone; the correction was dropped");
+            return;
+        };
+        if !s.set_correction(source_secs, &corners) {
+            return;
+        }
+        let (mut from, mut to) = (source_secs, source_secs);
+        for (after, before, keys) in spans {
+            let keys: Vec<klipp_timeline::SurfaceKey> = keys.into_iter().map(surface_key_of).collect();
+            if let (Some(a), Some(b)) = (keys.first(), keys.last()) {
+                from = from.min(a.source_secs);
+                to = to.max(b.source_secs);
+            }
+            s.replace_between(after, before, keys);
+        }
+        let name = s.name.clone();
+        let weak: Vec<(f64, f64, klipp_timeline::TrackState)> = s.weak_spans().into_iter().filter(|w| w.1 >= from && w.0 <= to).collect();
+        let edit = EditCommand::ReplaceClip { description: "Correct Surface", old: Box::new(old.clone()), new: Box::new(new) };
+        self.apply_edits_as_one(std::slice::from_ref(&edit), "Correct Surface");
+        let on_timeline = |src: f64| old.timeline_in.to_secs_f64() + old.elapsed_for_source_secs(src, fps);
+        let mut note = String::new();
+        for (state, said) in [(klipp_timeline::TrackState::Low, "uncertain"), (klipp_timeline::TrackState::Lost, "lost")] {
+            let these: Vec<String> = weak.iter().filter(|w| w.2 == state).map(|w| format!("{:.2}–{:.2} s", on_timeline(w.0), on_timeline(w.1))).collect();
+            if !these.is_empty() {
+                note.push_str(&format!("; still {said} {}", these.join(", ")));
+            }
+        }
+        self.state.toast.show(format!("Corrected \u{201c}{name}\u{201d} at {:.2} s, the track solved again from {:.2} to {:.2} s{note}", on_timeline(source_secs), on_timeline(from), on_timeline(to)));
+    }
+}
+
+/// A key as a tracking job sends it, `(file seconds, map, confidence,
+/// state)` with the state 0 good, 1 uncertain, 2 lost.
+pub(super) fn surface_key_of((source_secs, map, confidence, state): (f64, [f64; 9], f32, u8)) -> klipp_timeline::SurfaceKey {
+    let state = match state {
+        0 => klipp_timeline::TrackState::Good,
+        1 => klipp_timeline::TrackState::Low,
+        _ => klipp_timeline::TrackState::Lost,
+    };
+    klipp_timeline::SurfaceKey { source_secs, map, confidence: Some(confidence), state }
 }

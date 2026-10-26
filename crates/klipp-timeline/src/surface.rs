@@ -20,6 +20,9 @@ pub type Quad = [[f32; 2]; 4];
 /// (#2754).
 pub type Map = [f64; 9];
 
+/// The map that leaves every point where it is.
+pub const IDENTITY: Map = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+
 /// How a frame of a track was followed (#2754).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -29,8 +32,13 @@ pub enum TrackState {
     Good,
     /// Followed, but the surface was hard to see or the fit uncertain.
     Low,
-    /// Not followed: the key holds the last good map.
+    /// Not followed: the key holds the last good map, or, between two
+    /// frames known either side (re-solved round a correction), a straight
+    /// bridge from one to the other.
     Lost,
+    /// Set by hand (#2754): a correction, held as given, that the track
+    /// either side is solved from.
+    Manual,
 }
 
 impl TrackState {
@@ -218,6 +226,54 @@ impl Surface {
         map_between(&self.corners, &self.corners_shown_at(source_secs))
     }
 
+    /// The frames the track is held to (#2754), earliest first: the
+    /// reference frame, where the map is the identity, and each
+    /// correction set by hand, with its map.
+    pub fn anchors(&self) -> Vec<(f64, Map)> {
+        let near = self.near();
+        let mut out: Vec<(f64, Map)> = self.keys.iter().filter(|k| k.state == TrackState::Manual).map(|k| (k.source_secs, k.map)).collect();
+        if !out.iter().any(|a| (a.0 - self.reference_secs).abs() <= near) {
+            out.push((self.reference_secs, IDENTITY));
+        }
+        out.sort_by(|a, b| a.0.total_cmp(&b.0));
+        out
+    }
+
+    /// The anchors either side of `source_secs`, not counting one there:
+    /// what a correction there re-solves the track between.
+    pub fn anchors_around(&self, source_secs: f64) -> (Option<(f64, Map)>, Option<(f64, Map)>) {
+        let near = self.near();
+        let all = self.anchors();
+        (all.iter().rev().find(|a| a.0 < source_secs - near).copied(), all.iter().find(|a| a.0 > source_secs + near).copied())
+    }
+
+    /// The surface set by hand at `corners` on the frame at `source_secs`
+    /// (#2754), replacing the key there; `false` where the corners make no
+    /// map from the reference corners.
+    pub fn set_correction(&mut self, source_secs: f64, corners: &Quad) -> bool {
+        let Some(key) = SurfaceKey::at_corners(source_secs, &self.corners, corners) else { return false };
+        let near = self.near();
+        self.keys.retain(|k| (k.source_secs - source_secs).abs() > near);
+        self.keys.push(SurfaceKey { confidence: Some(1.0), state: TrackState::Manual, ..key });
+        self.keys.sort_by(|a, b| a.source_secs.total_cmp(&b.source_secs));
+        true
+    }
+
+    /// The keys strictly between `after` and `before` (either open-ended
+    /// when `None`) replaced by `keys`: the track re-solved there.
+    pub fn replace_between(&mut self, after: Option<f64>, before: Option<f64>, keys: Vec<SurfaceKey>) {
+        let near = self.near();
+        let inside = |t: f64| after.is_none_or(|a| t > a + near) && before.is_none_or(|b| t < b - near);
+        self.keys.retain(|k| !inside(k.source_secs));
+        self.keys.extend(keys.into_iter().filter(|k| inside(k.source_secs)));
+        self.keys.sort_by(|a, b| a.source_secs.total_cmp(&b.source_secs));
+    }
+
+    /// Half a file frame: keys this close are on the same frame.
+    fn near(&self) -> f64 {
+        if self.media_fps > 0.0 { 0.5 / self.media_fps } else { 1e-6 }
+    }
+
     /// The file time the track covers, first to last key.
     pub fn tracked_secs(&self) -> Option<(f64, f64)> {
         Some((self.keys.first()?.source_secs, self.keys.last()?.source_secs))
@@ -230,7 +286,7 @@ impl Surface {
         let mut out: Vec<(f64, f64, TrackState)> = Vec::new();
         let mut prev_weak = false;
         for k in &self.keys {
-            if k.state == TrackState::Good {
+            if matches!(k.state, TrackState::Good | TrackState::Manual) {
                 prev_weak = false;
                 continue;
             }
@@ -599,5 +655,34 @@ mod tests {
         assert!(quad_is_usable(&square(0.1)));
         assert!(!quad_is_usable(&[[0.1, 0.1]; 4]));
         assert!(!quad_is_usable(&[[f32::NAN, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]));
+    }
+
+    /// A correction (#2754) is an anchor with the reference frame: set on
+    /// a frame it replaces the key there, the anchors either side of a
+    /// frame are found, and a re-solve replaces only the keys between
+    /// them. A correction's frame isn't a weak span.
+    #[test]
+    fn a_correction_is_an_anchor_and_a_re_solve_stays_between_anchors() {
+        let mut s = Surface { id: uuid::Uuid::nil(), name: "S".into(), corners: square(0.0), reference_secs: 1.0, keys: Vec::new(), source_size: [100, 100], media_fps: 10.0, track_area: None, exclude: Vec::new() };
+        s.keys = (0..30).map(|k| SurfaceKey::at_corners(k as f64 / 10.0, &s.corners, &square(0.0)).unwrap()).collect();
+        assert_eq!(s.anchors(), vec![(1.0, IDENTITY)]);
+        assert!(s.set_correction(2.0, &square(0.3)));
+        assert_eq!(s.keys.len(), 30, "the key on that frame replaced");
+        let k = s.keys.iter().find(|k| (k.source_secs - 2.0).abs() < 1e-9).unwrap();
+        assert_eq!(k.state, TrackState::Manual);
+        assert!(near(k.corners(&s.corners), square(0.3)));
+        assert_eq!(s.anchors().iter().map(|a| a.0).collect::<Vec<_>>(), vec![1.0, 2.0]);
+        assert_eq!(s.anchors_around(1.5).0.map(|a| a.0), Some(1.0));
+        assert_eq!(s.anchors_around(1.5).1.map(|a| a.0), Some(2.0));
+        assert_eq!(s.anchors_around(2.0), (Some((1.0, IDENTITY)), None), "not the frame itself");
+        // Re-solved between the anchors: only the keys there change.
+        let new: Vec<SurfaceKey> = (5..=25).map(|k| SurfaceKey::at_corners(k as f64 / 10.0, &s.corners, &square(0.5)).unwrap()).collect();
+        s.replace_between(Some(1.0), Some(2.0), new);
+        let at = |t: f64| s.keys.iter().find(|k| (k.source_secs - t).abs() < 1e-9).map(|k| k.corners(&s.corners));
+        assert!(near(at(1.5).unwrap(), square(0.5)), "between, re-solved");
+        assert!(near(at(0.5).unwrap(), square(0.0)) && near(at(2.5).unwrap(), square(0.0)), "outside, kept");
+        assert!(near(at(2.0).unwrap(), square(0.3)) && near(at(1.0).unwrap(), square(0.0)), "the anchors kept");
+        assert_eq!(s.keys.len(), 30);
+        assert!(s.weak_spans().is_empty(), "{:?}", s.weak_spans());
     }
 }

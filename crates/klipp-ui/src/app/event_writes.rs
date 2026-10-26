@@ -28,6 +28,7 @@ pub(crate) fn event_writes(event: &AppEvent) -> bool {
         | AppEvent::SceneDetectComplete { .. }
         | AppEvent::TrackingComplete { .. }
         | AppEvent::SurfaceTracked { .. }
+        | AppEvent::SurfaceCorrected { .. }
         | AppEvent::SurfaceSnapped { .. }
         | AppEvent::MediaSyncComplete { .. }
         | AppEvent::MulticamSyncReady { .. }

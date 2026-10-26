@@ -30,7 +30,8 @@ pub enum State {
     Good,
     /// Followed, but the surface is hard to see or the fit uncertain.
     Low,
-    /// Not followed: its map is the last good one, held.
+    /// Not followed: its map is the last good one, held, or a straight
+    /// bridge between known frames either side ([`blend`]).
     Lost,
 }
 
@@ -779,6 +780,153 @@ pub(crate) fn track_on<B: Backend>(
     out
 }
 
+/// A frame where the surface is known (#2754): the reference frame, or a
+/// correction set by hand. `h` maps the reference's pixels to its own.
+#[derive(Debug, Clone, Copy)]
+pub struct Anchor {
+    pub frame: usize,
+    pub h: Homography,
+}
+
+/// The surface re-solved between two anchors (#2754): followed forward
+/// from `start` and backward from `end`, each run held to its own anchor,
+/// and the two blended frame by frame, each weighted by its confidence and
+/// by how near its anchor is. With one anchor missing, the run from the
+/// other goes to the end of `span` (the first and last frames there are).
+/// `quad` and `exclude` are the area followed and the parts left out, in
+/// the reference's pixels; each run takes them to its anchor. The maps
+/// returned are from the reference's pixels, for the frames strictly
+/// between the anchors, in order.
+#[allow(clippy::too_many_arguments)]
+pub fn solve_between(
+    quad: [(f64, f64); 4],
+    exclude: &[Vec<(f64, f64)>],
+    start: Option<Anchor>,
+    end: Option<Anchor>,
+    span: (usize, usize),
+    frame: &mut dyn FnMut(usize) -> Option<GrayFrame>,
+    opts: &Options,
+    progress: &dyn Fn(f32) -> bool,
+) -> Vec<Tracked> {
+    solve_between_on(&mut Cpu, quad, exclude, start, end, span, frame, opts, progress)
+}
+
+/// [`solve_between`] on `backend`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn solve_between_on<B: Backend>(
+    backend: &mut B,
+    quad: [(f64, f64); 4],
+    exclude: &[Vec<(f64, f64)>],
+    start: Option<Anchor>,
+    end: Option<Anchor>,
+    span: (usize, usize),
+    frame: &mut dyn FnMut(usize) -> Option<GrayFrame>,
+    opts: &Options,
+    progress: &dyn Fn(f32) -> bool,
+) -> Vec<Tracked> {
+    let lo = start.map_or(span.0, |a| a.frame + 1);
+    let hi = end.map_or(span.1, |a| a.frame.saturating_sub(1));
+    if lo > hi {
+        return Vec::new();
+    }
+    let ways = usize::from(start.is_some()) + usize::from(end.is_some());
+    // One run from an anchor over `frames`: maps from the reference.
+    let mut run = |a: Anchor, frames: Vec<usize>, part: usize| -> Vec<Tracked> {
+        let Some(at) = frame(a.frame) else { return Vec::new() };
+        let moved = quad.map(|p| a.h.transform(p.0, p.1));
+        let away: Vec<Vec<(f64, f64)>> = exclude.iter().map(|e| e.iter().map(|p| a.h.transform(p.0, p.1)).collect()).collect();
+        let share = |p: f32| progress((part as f32 + p) / ways as f32);
+        let mut t = track_on(backend, &at, moved, &away, &frames, frame, opts, &share);
+        for x in &mut t {
+            x.h = x.h.multiply(&a.h);
+        }
+        t
+    };
+    let ahead = start.map(|a| run(a, (lo..=hi).collect(), 0)).unwrap_or_default();
+    let behind = end.map(|b| run(b, (lo..=hi).rev().collect(), usize::from(start.is_some()))).unwrap_or_default();
+    blend(&quad, start, end, &ahead, &behind)
+}
+
+/// The runs from two anchors as one: `ahead` from `a` (frames in the
+/// order followed) and `behind` from `b` (likewise, so latest first).
+///
+/// Between two anchors, a run counts only until it first loses the
+/// surface: found again after that, it is no longer held to its anchor,
+/// and a plain or long surface can be found again in the wrong place with
+/// confidence (a stripe matches itself shifted along its length). The
+/// other run covers those frames from its own anchor. With one anchor, its
+/// run is taken whole, found again or not, less a lost tail.
+///
+/// A frame both runs reach is the two mixed, each weighted by its
+/// confidence and by how near its anchor is; one only one reaches, or one
+/// run lost, is that run's. Frames neither reaches between two known ones
+/// (an anchor or a frame followed) are bridged straight from one to the
+/// other and stay lost: something passed in front from both sides.
+pub fn blend(quad: &[(f64, f64); 4], a: Option<Anchor>, b: Option<Anchor>, ahead: &[Tracked], behind: &[Tracked]) -> Vec<Tracked> {
+    let held = |run: &[Tracked], other: bool| -> Vec<Tracked> {
+        let mut run: Vec<Tracked> = if other { run.iter().take_while(|t| t.state != State::Lost).copied().collect() } else { run.to_vec() };
+        while run.last().is_some_and(|t| t.state == State::Lost) {
+            run.pop();
+        }
+        run
+    };
+    let (ahead, behind) = (held(ahead, b.is_some()), held(behind, a.is_some()));
+    let mut frames: Vec<usize> = ahead.iter().chain(&behind).map(|t| t.frame).collect();
+    frames.sort_unstable();
+    frames.dedup();
+    let find = |run: &[Tracked], f: usize| run.iter().find(|t| t.frame == f).copied();
+    let (fa, fb) = (a.map(|a| a.frame), b.map(|b| b.frame));
+    let mut out: Vec<Tracked> = frames
+        .into_iter()
+        .filter_map(|f| {
+            let (x, y) = match (find(&ahead, f), find(&behind, f)) {
+                (Some(x), Some(y)) => (x, y),
+                (Some(x), None) | (None, Some(x)) => return Some(x),
+                (None, None) => return None,
+            };
+            match (x.state == State::Lost, y.state == State::Lost) {
+                (true, false) => return Some(y),
+                (false, true) => return Some(x),
+                _ => {}
+            }
+            // Nearness: the far anchor's share falls to nothing at the near one.
+            let (da, db) = (fa.map_or(1.0, |a| f.abs_diff(a) as f64), fb.map_or(1.0, |b| f.abs_diff(b) as f64));
+            let (wx, wy) = (x.confidence.max(1e-3) as f64 * db, y.confidence.max(1e-3) as f64 * da);
+            let k = wy / (wx + wy);
+            if x.state == State::Lost {
+                // Both lost: the nearer hold.
+                return Some(if k > 0.5 { y } else { x });
+            }
+            let h = between(quad, &x.h, &y.h, k);
+            let confidence = (x.confidence as f64 * (1.0 - k) + y.confidence as f64 * k) as f32;
+            let round_trip_px = (x.round_trip_px as f64 * (1.0 - k) + y.round_trip_px as f64 * k) as f32;
+            Some(Tracked { frame: f, h, confidence, state: state_of(confidence), round_trip_px })
+        })
+        .collect();
+    // The gaps: between each pair of known frames, anchors included.
+    let mut known: Vec<(usize, Homography)> = out.iter().map(|t| (t.frame, t.h)).chain(a.map(|a| (a.frame, a.h))).chain(b.map(|b| (b.frame, b.h))).collect();
+    known.sort_by_key(|k| k.0);
+    for w in known.windows(2) {
+        let ((f0, h0), (f1, h1)) = (w[0], w[1]);
+        for f in f0 + 1..f1 {
+            let k = (f - f0) as f64 / (f1 - f0) as f64;
+            out.push(Tracked { frame: f, h: between(quad, &h0, &h1, k), confidence: 0.0, state: State::Lost, round_trip_px: f32::INFINITY });
+        }
+    }
+    out.sort_by_key(|t| t.frame);
+    out
+}
+
+/// The map whose corners of `quad` are `k` of the way from where `x`
+/// takes them to where `y` does.
+fn between(quad: &[(f64, f64); 4], x: &Homography, y: &Homography, k: f64) -> Homography {
+    let to: [(f64, f64); 4] = std::array::from_fn(|i| {
+        let (p, q) = (x.transform(quad[i].0, quad[i].1), y.transform(quad[i].0, quad[i].1));
+        (p.0 + (q.0 - p.0) * k, p.1 + (q.1 - p.1) * k)
+    });
+    Homography::from_4_points(quad, &to).unwrap_or(if k > 0.5 { *y } else { *x })
+}
+
 /// The spans of `tracked` (in order) that were not followed with
 /// confidence: `(first, last, state)` for each run of Low or Lost frames.
 pub fn weak_spans(tracked: &[Tracked]) -> Vec<(usize, usize, State)> {
@@ -979,5 +1127,123 @@ mod tests {
             assert!(corner_error(&quad, &t.h, &shift(k)) < 0.8, "frame {k}");
         }
         assert_eq!(weak_spans(&got).iter().filter(|s| s.2 == State::Lost).map(|s| (s.0, s.1)).collect::<Vec<_>>(), vec![(6, 11)]);
+    }
+
+    /// [`solve_between`] over `frame`, every frame it gives in the span.
+    fn solve(quad: [(f64, f64); 4], start: Option<Anchor>, end: Option<Anchor>, span: (usize, usize), frame: &dyn Fn(usize) -> GrayFrame) -> Vec<Tracked> {
+        solve_between(quad, &[], start, end, span, &mut |k| Some(frame(k)), &Options::default(), &|_| true)
+            .into_iter()
+            .inspect(|t| assert!(t.frame >= span.0 && t.frame <= span.1, "frame {} is in the span", t.frame))
+            .collect()
+    }
+
+    /// Between two anchors where the surface truly is, each frame is
+    /// found from both and is where the surface is, confident.
+    #[test]
+    fn between_two_anchors_each_frame_is_where_the_surface_is() {
+        let (w, h) = (320, 220);
+        let quad = [(100.0, 60.0), (220.0, 70.0), (215.0, 160.0), (95.0, 150.0)];
+        let course = [(0.9, -0.4), (0.5, 0.6), (0.7, -0.2), (1.1, 0.5)];
+        let map = |k: usize| course_map(&quad, &course, k);
+        let got = solve(quad, Some(Anchor { frame: 0, h: map(0) }), Some(Anchor { frame: 20, h: map(20) }), (0, 20), &|k| seen(w, h, &map(k), &texture));
+        assert_eq!(got.iter().map(|t| t.frame).collect::<Vec<_>>(), (1..20).collect::<Vec<_>>());
+        for t in &got {
+            assert!(corner_error(&quad, &t.h, &map(t.frame)) < 0.6, "frame {}", t.frame);
+            assert_eq!(t.state, State::Good, "frame {}", t.frame);
+        }
+    }
+
+    /// A correction pulls the frames near it onto the surface: from a
+    /// start anchor four pixels off and a correct one at the end, the
+    /// frames near the end are within a pixel, and the error falls the
+    /// nearer they are.
+    #[test]
+    fn a_correction_pulls_the_frames_near_it_into_place() {
+        let (w, h) = (320, 220);
+        let quad = [(100.0, 60.0), (220.0, 60.0), (220.0, 160.0), (100.0, 160.0)];
+        let shift = |k: usize| Homography { h: [[1.0, 0.0, 0.6 * k as f64], [0.0, 1.0, 0.3 * k as f64], [0.0, 0.0, 1.0]] };
+        let off = Homography { h: [[1.0, 0.0, 4.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] };
+        let got = solve(quad, Some(Anchor { frame: 0, h: off }), Some(Anchor { frame: 24, h: shift(24) }), (0, 24), &|k| seen(w, h, &shift(k), &texture));
+        assert_eq!(got.len(), 23);
+        let err = |k: usize| corner_error(&quad, &got.iter().find(|t| t.frame == k).unwrap().h, &shift(k));
+        assert!(err(23) < 1.0, "next to the correction: {:.3} px", err(23));
+        assert!(err(2) > err(12) && err(12) > err(22), "{:.2} {:.2} {:.2}", err(2), err(12), err(22));
+    }
+
+    /// With no anchor after it, a correction's run goes on to the end of
+    /// the span, as a track from it would.
+    #[test]
+    fn with_one_anchor_the_run_goes_to_the_end() {
+        let (w, h) = (300, 200);
+        let quad = [(90.0, 60.0), (200.0, 60.0), (200.0, 140.0), (90.0, 140.0)];
+        let shift = |k: usize| Homography { h: [[1.0, 0.0, 0.5 * k as f64], [0.0, 1.0, -0.2 * k as f64], [0.0, 0.0, 1.0]] };
+        let forward = solve(quad, Some(Anchor { frame: 5, h: shift(5) }), None, (0, 15), &|k| seen(w, h, &shift(k), &texture));
+        assert_eq!(forward.iter().map(|t| t.frame).collect::<Vec<_>>(), (6..=15).collect::<Vec<_>>());
+        let backward = solve(quad, None, Some(Anchor { frame: 5, h: shift(5) }), (0, 15), &|k| seen(w, h, &shift(k), &texture));
+        assert_eq!(backward.iter().map(|t| t.frame).collect::<Vec<_>>(), (0..5).collect::<Vec<_>>());
+        for t in forward.iter().chain(&backward) {
+            assert!(corner_error(&quad, &t.h, &shift(t.frame)) < 0.8, "frame {}", t.frame);
+        }
+    }
+
+    /// Frames where the surface is gone stay lost from both sides,
+    /// bridged straight across from the frames either side; the frames
+    /// round them are each found from the anchor that reaches them.
+    #[test]
+    fn a_gap_between_anchors_stays_lost_and_the_rest_is_found() {
+        let (w, h) = (300, 200);
+        let quad = [(90.0, 60.0), (200.0, 60.0), (200.0, 140.0), (90.0, 140.0)];
+        let flat = GrayFrame { data: vec![128; w * h], width: w, height: h };
+        let shift = |k: usize| Homography { h: [[1.0, 0.0, 0.6 * k as f64], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] };
+        let frame = |k: usize| if (9..13).contains(&k) { flat.clone() } else { seen(w, h, &shift(k), &texture) };
+        let got = solve(quad, Some(Anchor { frame: 0, h: shift(0) }), Some(Anchor { frame: 22, h: shift(22) }), (0, 22), &frame);
+        for t in &got {
+            if (9..13).contains(&t.frame) {
+                assert_eq!(t.state, State::Lost, "frame {} has no surface", t.frame);
+                // The course is straight, so the bridge is on it.
+                assert!(corner_error(&quad, &t.h, &shift(t.frame)) < 0.8, "frame {} bridged", t.frame);
+            } else {
+                assert_ne!(t.state, State::Lost, "frame {}", t.frame);
+                assert!(corner_error(&quad, &t.h, &shift(t.frame)) < 0.8, "frame {}", t.frame);
+            }
+        }
+        assert_eq!(got.iter().map(|t| t.frame).collect::<Vec<_>>(), (1..22).collect::<Vec<_>>(), "every frame between the anchors");
+    }
+
+    /// The blend: a frame one run lost is the other's; a frame both have
+    /// is nearer the run whose anchor is nearer.
+    #[test]
+    fn the_blend_leans_to_the_nearer_anchor_and_skips_a_lost_run() {
+        let quad = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)];
+        let at = |f: usize, dx: f64, state: State| Tracked { frame: f, h: Homography { h: [[1.0, 0.0, dx], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] }, confidence: if state == State::Lost { 0.0 } else { 1.0 }, state, round_trip_px: 0.0 };
+        let ahead = [at(1, 0.0, State::Good), at(2, 0.0, State::Lost)];
+        let behind = [at(2, 4.0, State::Good), at(1, 4.0, State::Good)];
+        let anchor = |frame: usize, dx: f64| Anchor { frame, h: Homography { h: [[1.0, 0.0, dx], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] } };
+        let got = blend(&quad, Some(anchor(0, 0.0)), Some(anchor(4, 4.0)), &ahead, &behind);
+        // Frame 1: a quarter of the way, so three quarters the start's.
+        assert!((got[0].h.transform(0.0, 0.0).0 - 1.0).abs() < 1e-6, "{:?}", got[0].h);
+        assert_eq!(got[1].h.transform(0.0, 0.0).0, 4.0, "the lost run is skipped");
+    }
+
+    /// Between two anchors a run found again after a loss is not used: a
+    /// long surface can be found again shifted along itself, confident.
+    /// The frames after the loss are the other run's.
+    #[test]
+    fn a_run_found_again_after_a_loss_yields_to_the_other_anchor() {
+        let quad = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)];
+        let shift = |dx: f64| Homography { h: [[1.0, 0.0, dx], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] };
+        let at = |f: usize, dx: f64, state: State| Tracked { frame: f, h: shift(dx), confidence: if state == State::Lost { 0.0 } else { 0.95 }, state, round_trip_px: 0.0 };
+        // Forward from 0: good to 2, lost at 3, "found" at 4 and 5 forty
+        // pixels off. Backward from 6: good all the way, on the course.
+        let ahead = [at(1, 1.0, State::Good), at(2, 2.0, State::Good), at(3, 2.0, State::Lost), at(4, 44.0, State::Good), at(5, 45.0, State::Good)];
+        let behind = [at(5, 5.0, State::Good), at(4, 4.0, State::Good), at(3, 3.0, State::Good), at(2, 2.0, State::Good), at(1, 1.0, State::Good)];
+        let got = blend(&quad, Some(Anchor { frame: 0, h: shift(0.0) }), Some(Anchor { frame: 6, h: shift(6.0) }), &ahead, &behind);
+        for t in &got {
+            assert!((t.h.transform(0.0, 0.0).0 - t.frame as f64).abs() < 1e-6, "frame {}: {:?}", t.frame, t.h);
+        }
+        // With no anchor after, the forward run is all there is: taken
+        // whole, found again or not.
+        let alone = blend(&quad, Some(Anchor { frame: 0, h: shift(0.0) }), None, &ahead, &[]);
+        assert_eq!(alone.iter().find(|t| t.frame == 4).unwrap().h.transform(0.0, 0.0).0, 44.0);
     }
 }

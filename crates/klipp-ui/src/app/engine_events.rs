@@ -489,6 +489,7 @@ impl KlippApp {
                 | AppEvent::TrackingComplete { .. }
                 | AppEvent::TrackingFailed { .. }
                 | AppEvent::SurfaceTracked { .. }
+                | AppEvent::SurfaceCorrected { .. }
                 | AppEvent::SurfaceTrackFailed { .. }
                 | AppEvent::SurfaceSnapped { .. }
                 | AppEvent::SceneDetectProgress { .. }

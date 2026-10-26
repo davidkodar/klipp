@@ -507,7 +507,8 @@ pub(crate) fn sound_json(seq: &klipp_timeline::Sequence, c: &klipp_timeline::Cli
 /// readout: each surface's id and name, the timeline stretch the track
 /// covers, which is where a pin follows it, and the stretches followed
 /// uncertainly (`low`) or not at all (`lost`, the last good place held)
-/// with the mean confidence (#2754).
+/// with the mean confidence and the times of corrections set by hand
+/// (#2754).
 pub(crate) fn surfaces_json(c: &klipp_timeline::Clip, fps: f64, v: &mut serde_json::Value) {
     let on_timeline = |src: f64| ((c.timeline_in.to_secs_f64() + c.elapsed_for_source_secs(src, fps)) * 1000.0).round() / 1000.0;
     if !c.surfaces.is_empty() {
@@ -526,6 +527,10 @@ pub(crate) fn surfaces_json(c: &klipp_timeline::Clip, fps: f64, v: &mut serde_js
                 if !these.is_empty() {
                     j[key] = json!(these);
                 }
+            }
+            let corrections: Vec<f64> = s.keys.iter().filter(|k| k.state == klipp_timeline::TrackState::Manual).map(|k| on_timeline(k.source_secs)).collect();
+            if !corrections.is_empty() {
+                j["corrections"] = json!(corrections);
             }
             let rated: Vec<f32> = s.keys.iter().filter_map(|k| k.confidence).collect();
             if !rated.is_empty() {

@@ -415,6 +415,18 @@ pub enum ControlCommand {
         #[serde(default)]
         direction: Option<String>,
     },
+    /// Correct a tracked surface on one frame (#2754): `corners` are where
+    /// it is at `at_secs` (fractions of the frame, as `track_surface`
+    /// takes them). That frame is held as given and the track either side
+    /// is solved again from it as far as the next corrections, keeping
+    /// the rest.
+    SurfaceKey {
+        clip_id: String,
+        surface: String,
+        corners: [[f32; 2]; 4],
+        #[serde(default)]
+        at_secs: Option<f64>,
+    },
 
     // ── Colour / grade ─────────────────────────────────────────────
     /// The clip's node graph, as the serialised `NodeGraph`.
