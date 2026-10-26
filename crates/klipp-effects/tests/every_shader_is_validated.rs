@@ -13,6 +13,7 @@ const VALIDATED: &[(&str, &str)] = &[
     ("klipp-effects/src/gpu/layer.rs", "gpu::shader_validation_tests::every_shader_compiles (shader_sources)"),
     ("klipp-effects/src/gpu/thumbs.rs", "gpu::shader_validation_tests::every_shader_compiles (shader_sources)"),
     ("klipp-effects/src/gpu/flow.rs", "gpu::shader_validation_tests::every_shader_compiles (flow::sources)"),
+    ("klipp-effects/src/gpu/planar.rs", "gpu::shader_validation_tests::every_shader_compiles (planar_wgsl::sources)"),
     ("klipp-effects/src/nv12_gpu.rs", "gpu::shader_validation_tests::every_shader_compiles (shader_sources)"),
     ("klipp-effects/src/p010_gpu.rs", "gpu::shader_validation_tests::every_shader_compiles (shader_sources)"),
     ("klipp-effects/src/gpu_scopes.rs", "gpu_scopes::tests::every_scope_shader_validates"),

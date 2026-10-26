@@ -10552,6 +10552,8 @@ fn eval_record(rec: MaskRecord, px: f32, py: f32, aspect: f32) -> f32 {
 // produced visibly darker-than-half output.
 mod layer;
 mod flow;
+pub mod planar;
+mod planar_wgsl;
 pub use flow::FlowKey;
 mod mask_mix;
 
@@ -19922,7 +19924,9 @@ mod shader_validation_tests {
     fn every_shader_compiles() {
         // The registered shaders, and the flow's, assembled per pipeline.
         let flow = super::flow::sources();
-        let shaders = super::shader_sources().into_iter().chain(flow.iter().map(|(n, s)| (*n, s.as_str())));
+        // The planar tracker's too (#2754).
+        let planar = super::planar_wgsl::sources();
+        let shaders = super::shader_sources().into_iter().chain(flow.iter().map(|(n, s)| (*n, s.as_str()))).chain(planar.iter().map(|(n, s)| (*n, s.as_str())));
         let mut failures = Vec::new();
         for (name, src) in shaders {
             let module = match naga::front::wgsl::parse_str(src) {
