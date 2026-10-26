@@ -9053,6 +9053,33 @@ impl TimelinePanel {
                                 }
                             }
                         }
+                        // Pinned to a surface tracked in a clip under it in
+                        // time (#2751): a title stays a title, edited as
+                        // before, and follows the surface.
+                        let hosts: Vec<(ClipId, uuid::Uuid, String)> = state.sequence().tracks.iter().flat_map(|t| t.clips.iter())
+                            .filter(|h| h.id != clip_id && h.timeline_in < clip.timeline_out && clip.timeline_in < h.timeline_out)
+                            .flat_map(|h| h.surfaces.iter().filter(|s| !s.keys.is_empty()).map(move |s| (h.id, s.id, s.name.clone())))
+                            .collect();
+                        if !hosts.is_empty() {
+                            ui.menu_rows("Pin to Surface", |ui| {
+                                for (host, surface, name) in &hosts {
+                                    if ui.button(name).on_hover_text("On the surface, following it through the shot").clicked() {
+                                        let op = klipp_document::ops::Op::Pin {
+                                            clip_id: klipp_document::ops::ClipRef::Id(*host),
+                                            media_id: None,
+                                            layer: Some(klipp_document::ops::ClipRef::Id(clip_id)),
+                                            surface: Some(surface.to_string()),
+                                            from: None,
+                                            to: None,
+                                            fit: None,
+                                            inset: None,
+                                        };
+                                        state.pending_doc_ops.push(crate::state::DocOpsRequest { label: format!("Pin to {name}"), ops: vec![op], independent: false });
+                                        ui.close_menu();
+                                    }
+                                }
+                            });
+                        }
                         // The clip faded into the tracks below across the
                         // frame (#2704); its handles then in the viewer.
                         let faded = clip.grade().opacity_gradient().is_some();

@@ -1217,6 +1217,39 @@ mod menu_smoke_tests {
 
     /// #2704: the clip menu's Effects ▸ Opacity Gradient fades the clip
     /// across the frame, and offers to take it off once it has one.
+    /// #2751: a clip over a clip with a tracked surface offers Pin to
+    /// Surface, the surface by name, and choosing it pins the clip there.
+    #[test]
+    fn the_clip_menu_pins_a_clip_to_a_tracked_surface_under_it() {
+        let mut timeline = Timeline::new();
+        let tracks = &mut timeline.state.sequences[0].tracks;
+        let v1 = tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).unwrap();
+        let layer = tracks[v1].clips[0].id;
+        // The host, on a video track of its own below, a surface tracked in it.
+        let (zero, long) = (RationalTime { value: 0, rate: 24 }, RationalTime { value: 24 * 600, rate: 24 });
+        let mut host = Clip::media(MediaId::new(), zero, long, zero, long);
+        let corners = [[0.3, 0.3], [0.6, 0.3], [0.6, 0.6], [0.3, 0.6]];
+        let surface = uuid::Uuid::new_v4();
+        host.surfaces.push(klipp_timeline::Surface { id: surface, name: "Wall".into(), corners, reference_secs: 0.0, keys: vec![klipp_timeline::SurfaceKey::at_corners(0.0, &corners, &corners).unwrap()], source_size: [1920, 1080], media_fps: 24.0, track_area: None, exclude: Vec::new() });
+        let host_id = host.id;
+        let mut below = klipp_timeline::Track::new("V2", TrackKind::Video);
+        below.clips.push(host);
+        tracks.insert(v1 + 1, below);
+        let drawn = timeline.frame(Vec::new());
+        let at = drawn.into_iter().find(|(t, _)| t == "smoke.mov").expect("the clip is drawn").1;
+        timeline.right_click(at);
+        let drawn = timeline.open_submenus(&["Effects", "Pin to Surface"]);
+        let item = drawn.iter().find(|(t, _)| t == "Wall").unwrap_or_else(|| panic!("the surface in the menu: {drawn:?}")).1;
+        let button = |pressed| egui::Event::PointerButton { pos: item, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        timeline.frame(vec![egui::Event::PointerMoved(item), button(true)]);
+        timeline.frame(vec![button(false)]);
+        let ops: Vec<_> = timeline.state.pending_doc_ops.iter().flat_map(|r| r.ops.iter()).collect();
+        assert!(
+            ops.iter().any(|op| matches!(op, klipp_document::ops::Op::Pin { clip_id: klipp_document::ops::ClipRef::Id(h), layer: Some(klipp_document::ops::ClipRef::Id(l)), surface: Some(s), media_id: None, .. } if *h == host_id && *l == layer && *s == surface.to_string())),
+            "{ops:?}"
+        );
+    }
+
     #[test]
     fn the_clip_menu_fades_a_clips_opacity_across_the_frame() {
         use klipp_timeline::GradeAccess;
