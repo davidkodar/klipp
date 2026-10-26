@@ -70,7 +70,7 @@ impl FrameSource for Backdrop {
 }
 
 /// The mean of each channel over `at`, the spread of its brightness,
-/// and its darkest and brightest.
+/// its darkest, and its brightest by its brightest channel.
 fn stats(px: &[u8], at: &[usize]) -> ([f32; 3], f32, f32, f32) {
     let luma: Vec<f32> = at.iter().map(|&i| 0.2126 * px[i * 4] as f32 + 0.7152 * px[i * 4 + 1] as f32 + 0.0722 * px[i * 4 + 2] as f32).collect();
     let n = at.len() as f32;
@@ -79,8 +79,11 @@ fn stats(px: &[u8], at: &[usize]) -> ([f32; 3], f32, f32, f32) {
     let spread = (luma.iter().map(|l| (l - m).powi(2)).sum::<f32>() / n).sqrt();
     let mut sorted = luma.clone();
     sorted.sort_by(f32::total_cmp);
+    // A highlight by its brightest channel: an orange metal's is red.
+    let mut peak: Vec<f32> = at.iter().map(|&i| px[i * 4..i * 4 + 3].iter().copied().max().unwrap_or(0) as f32).collect();
+    peak.sort_by(f32::total_cmp);
     // The 2nd and 98th percentiles: a stray pixel is not a highlight.
-    (mean, spread, sorted[(n * 0.02) as usize], sorted[(n * 0.98) as usize])
+    (mean, spread, sorted[(n * 0.02) as usize], peak[(n * 0.98) as usize])
 }
 
 /// The title "Klipp" in `material` over the backdrop, as display bytes.
@@ -121,8 +124,10 @@ fn every_metal_reads_as_its_metal_at_its_defaults() {
     let (gold_drawn, plain_drawn) = (drawn(&night), drawn(&plain));
     assert!(gold_drawn.abs_diff(plain_drawn) * 10 < plain_drawn, "the metal keeps the letters' shape: {gold_drawn} drawn vs {plain_drawn}");
 
+    // Each metal as it looks over a bright sky and sea, which it reflects;
+    // the night above held its letters' shape.
     for preset in MetalPreset::ALL {
-        let px = render(Some(TitleMaterial { glints: 0.0, ..TitleMaterial::preset(preset) }), false, None).expect("the stack drew the title");
+        let px = render(Some(TitleMaterial { glints: 0.0, ..TitleMaterial::preset(preset) }), true, None).expect("the stack drew the title");
         let (mean, spread, lo, hi) = stats(&px, &letters);
         let warm = matches!(preset, MetalPreset::Gold | MetalPreset::Copper | MetalPreset::Bronze);
         if warm {
@@ -135,7 +140,9 @@ fn every_metal_reads_as_its_metal_at_its_defaults() {
         }
         // Metal, not paint: what it reflects runs from shade to highlight.
         assert!(spread > 25.0, "{preset:?} reflects, not a flat fill: spread {spread:.1}");
-        assert!(hi > 200.0 && lo < 140.0, "{preset:?} has highlights and shade: {lo:.0}..{hi:.0}");
+        // Steel and bronze are the dark metals: bright, not white, at their top.
+        let top = if matches!(preset, MetalPreset::Steel | MetalPreset::Bronze) { 160.0 } else { 200.0 };
+        assert!(hi > top && lo < 140.0, "{preset:?} has highlights and shade: {lo:.0}..{hi:.0}");
     }
     // A rougher surface blurs what it reflects.
     let mirror = render(Some(TitleMaterial { roughness: 0.02, glints: 0.0, ..TitleMaterial::preset(MetalPreset::Chrome) }), false, None).unwrap();
@@ -186,9 +193,8 @@ fn gold_over_a_picture_before_and_after() {
     };
     let px: Vec<f32> = img.pixels().flat_map(|p| [lin(p[0]), lin(p[1]), lin(p[2]), 1.0]).collect();
     let still = Arc::new(px);
-    let draw = |material: Option<TitleMaterial>| {
-        let gold = TitleMaterial::default().fallback_color();
-        let tb = klipp_timeline::TextBox { text: "Klipp".into(), font_size: 320.0, color: gold, material, ..Default::default() };
+    let draw = |material: TitleMaterial| {
+        let tb = klipp_timeline::TextBox { text: "Klipp".into(), font_size: 320.0, material: Some(material), ..Default::default() };
         let td = klipp_timeline::TitleData::single_text(tb);
         let mut text = Track::new("T1", TrackKind::Text);
         text.clips = vec![Clip { kind: ClipKind::Title(td), ..Clip::gap(tc(0.0), tc(4.0)) }];
@@ -201,14 +207,42 @@ fn gold_over_a_picture_before_and_after() {
         r.set_gpu_enabled(true);
         r.render_display_u8_on_gpu(&seq, tc(1.0), w, h, &mut Still(Arc::clone(&still)), RenderOptions::default()).expect("the stack drew the title").0
     };
-    let (before, after) = (draw(None), draw(Some(TitleMaterial::default())));
-    let mut both = vec![0u8; (w * 2 * h * 4) as usize];
+    // A studio and a sky alone, as the first metal was; the defaults; the
+    // shot alone over a little studio.
+    let gold = TitleMaterial::default();
+    let env = |studio, sky, shot| klipp_core::title_material::MetalEnvironment { studio, sky, shot, ..gold.environment };
+    let frames = [
+        draw(TitleMaterial { environment: env(0.55, 0.5, 0.0), ..gold }),
+        draw(gold),
+        draw(TitleMaterial { environment: env(0.2, 0.0, 1.0), ..gold }),
+    ];
+    let row = w as usize * 4;
+    let mut all = vec![0u8; row * frames.len() * h as usize];
     for y in 0..h as usize {
-        let row = w as usize * 4;
-        both[y * row * 2..y * row * 2 + row].copy_from_slice(&before[y * row..(y + 1) * row]);
-        both[y * row * 2 + row..(y + 1) * row * 2].copy_from_slice(&after[y * row..(y + 1) * row]);
+        for (k, f) in frames.iter().enumerate() {
+            let at = y * row * frames.len() + k * row;
+            all[at..at + row].copy_from_slice(&f[y * row..(y + 1) * row]);
+        }
     }
-    image::save_buffer(&out, &both, w * 2, h, image::ExtendedColorType::Rgba8).unwrap();
+    image::save_buffer(&out, &all, w * frames.len() as u32, h, image::ExtendedColorType::Rgba8).unwrap();
+}
+
+/// #2706: at its defaults the metal plainly shows the picture behind it:
+/// over a bright sky above a sea, gold differs from the same gold lit by
+/// a studio and a sky alone by a visible margin across its letters.
+#[test]
+fn at_its_defaults_the_metal_shows_the_shot() {
+    let Some(plain) = render(None, true, None) else {
+        assert!(!required(), "required, but the GPU stack declined the title");
+        eprintln!("UNVERIFIED: no GPU stack");
+        return;
+    };
+    let letters: Vec<usize> = (0..(W * H) as usize).filter(|&i| plain[i * 4] > 200 && plain[i * 4 + 2] > 200 && plain[i * 4 + 1] > 200).collect();
+    let gold = TitleMaterial { glints: 0.0, ..TitleMaterial::default() };
+    let with = render(Some(gold), true, None).expect("drawn");
+    let without = render(Some(TitleMaterial { environment: klipp_core::title_material::MetalEnvironment { shot: 0.0, studio: 0.55, sky: 0.5, ..gold.environment }, ..gold }), true, None).expect("drawn");
+    let differs = letters.iter().map(|&i| (0..3).map(|c| with[i * 4 + c].abs_diff(without[i * 4 + c]) as f32).sum::<f32>() / 3.0).sum::<f32>() / letters.len() as f32;
+    assert!(differs > 12.0, "the shot changes the gold by {differs:.1} levels on average, too little to see");
 }
 
 /// One colour, everywhere.

@@ -89,6 +89,8 @@ impl MetalLight {
 /// colour shifted by `sky_tint` (sRGB; white leaves it as it is), and
 /// the shot behind the title, blurred by `shot_blur` (a fraction of the
 /// frame's height), so the metal takes the scene's colours and light.
+/// The three are shares of what it sees: past a sum of 1 they are
+/// scaled to it, so more of one is less of the others.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MetalEnvironment {
@@ -101,7 +103,7 @@ pub struct MetalEnvironment {
 
 impl Default for MetalEnvironment {
     fn default() -> Self {
-        Self { studio: 0.65, sky: 0.35, sky_tint: [255, 255, 255], shot: 0.5, shot_blur: 0.04 }
+        Self { studio: 0.45, sky: 0.1, sky_tint: [255, 255, 255], shot: 1.0, shot_blur: 0.012 }
     }
 }
 
@@ -166,21 +168,23 @@ impl TitleMaterial {
             key_light: key,
             rim_light: Some(rim),
         };
+        // The shot behind leads what each metal reflects, so it sits in
+        // the scene; the studio and sky add form to it.
         let env = |studio, sky, shot| MetalEnvironment { studio, sky, shot, ..MetalEnvironment::default() };
         match preset {
-            MetalPreset::Gold => Self { environment: env(0.55, 0.5, 0.5), ..base },
+            MetalPreset::Gold => Self { environment: env(0.45, 0.1, 1.0), ..base },
             // Warm white and bright, its bands soft.
-            MetalPreset::Silver => Self { tint: [0.97, 0.95, 0.90], roughness: 0.28, contour: 0.35, environment: env(0.4, 0.7, 0.5), ..base },
+            MetalPreset::Silver => Self { tint: [0.97, 0.95, 0.90], roughness: 0.28, contour: 0.35, environment: env(0.25, 0.3, 0.9), ..base },
             // Darker and bluish grey, a little rough.
-            MetalPreset::Steel => Self { tint: [0.40, 0.43, 0.48], roughness: 0.34, glints: 0.1, edge: 0.7, contour: 0.4, ..base },
+            MetalPreset::Steel => Self { tint: [0.40, 0.43, 0.48], roughness: 0.34, glints: 0.1, edge: 0.7, contour: 0.4, environment: env(0.35, 0.2, 0.8), ..base },
             // Orange-red brown: its edge kept low, so grazing light does
             // not wash it pink.
-            MetalPreset::Copper => Self { tint: [0.93, 0.47, 0.27], roughness: 0.18, edge: 0.35, key_light: MetalLight { color: [255, 228, 200], ..key }, ..base },
-            MetalPreset::RoseGold => Self { tint: [0.98, 0.72, 0.64], roughness: 0.12, edge: 0.5, ..base },
-            MetalPreset::Bronze => Self { tint: [0.62, 0.40, 0.20], roughness: 0.28, glints: 0.1, edge: 0.45, ..base },
-            // A mirror: hard bands from a studio, near-black between them.
-            MetalPreset::Chrome => Self { tint: [0.62, 0.63, 0.64], roughness: 0.02, edge: 0.9, glints: 0.35, contour: 0.45, environment: env(1.3, 0.0, 0.3), ..base },
-            MetalPreset::BrushedMetal => Self { tint: [0.52, 0.53, 0.56], roughness: 0.3, anisotropy: 0.8, glints: 0.0, contour: 0.45, ..base },
+            MetalPreset::Copper => Self { tint: [0.93, 0.47, 0.27], roughness: 0.18, edge: 0.35, key_light: MetalLight { color: [255, 228, 200], ..key }, environment: env(0.3, 0.25, 0.8), ..base },
+            MetalPreset::RoseGold => Self { tint: [0.98, 0.72, 0.64], roughness: 0.12, edge: 0.5, environment: env(0.3, 0.25, 0.8), ..base },
+            MetalPreset::Bronze => Self { tint: [0.62, 0.40, 0.20], roughness: 0.28, glints: 0.1, edge: 0.45, environment: env(0.35, 0.25, 0.8), ..base },
+            // A mirror: hard bands, near-black between them.
+            MetalPreset::Chrome => Self { tint: [0.62, 0.63, 0.64], roughness: 0.02, edge: 0.9, glints: 0.35, contour: 0.45, environment: env(1.2, 0.0, 0.8), ..base },
+            MetalPreset::BrushedMetal => Self { tint: [0.52, 0.53, 0.56], roughness: 0.3, anisotropy: 0.8, glints: 0.0, contour: 0.45, environment: env(0.35, 0.2, 0.7), ..base },
         }
     }
 

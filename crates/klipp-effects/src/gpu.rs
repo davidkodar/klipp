@@ -16248,7 +16248,10 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
         let at = (p.roi_y + i / p.roi_w) * p.width + p.roi_x + i % p.roi_w;
         var px = unpack(output[at]);
         if px.w <= 0.0 { return; }
-        px = vec4<f32>(px.xyz + fres * seen.xyz * p.tint_shot.w * rec.w, px.w);
+        // Rolled off as the face is, so a bright shot does not clip it.
+        // The shot as it is shown: a sun over white is white, not brighter.
+        let lit = px.xyz + fres * min(seen.xyz, vec3<f32>(1.0)) * p.tint_shot.w * rec.w;
+        px = vec4<f32>(select(lit, 0.75 + 0.25 * (vec3<f32>(1.0) - exp(-(lit - 0.75) / 0.25)), lit > vec3<f32>(0.75)), px.w);
         output[at] = pack(px);
         return;
     }
