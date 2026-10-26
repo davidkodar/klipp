@@ -247,8 +247,15 @@ impl KlippApp {
             let backward: Vec<usize> = if direction <= 0 { (first..reference).rev().collect() } else { Vec::new() };
             let share = (forward.len() as f32 / (forward.len() + backward.len()).max(1) as f32).max(0.01);
             let report = |p: f32| going() && event_tx.send(klipp_core::AppEvent::TrackingProgress { clip_id, progress: loading + p * (1.0 - loading) }).is_ok();
-            let ahead = klipp_effects::planar::track(&reference_frame, quad_px, &forward, &mut |f| decode(f), &opts, &|p| report(p * share));
-            let behind = klipp_effects::planar::track(&reference_frame, quad_px, &backward, &mut |f| decode(f), &opts, &|p| report(share + p * (1.0 - share)));
+            // On the GPU when there is one (its own passes on the shared
+            // device), else the CPU, which follows the same.
+            let mut gpu = klipp_effects::gpu::planar::PlanarGpu::new();
+            let mut run = |frames: &[usize], progress: &dyn Fn(f32) -> bool| match gpu.as_mut() {
+                Some(g) => g.track(&reference_frame, quad_px, frames, &mut |f| decode(f), &opts, progress),
+                None => klipp_effects::planar::track(&reference_frame, quad_px, frames, &mut |f| decode(f), &opts, progress),
+            };
+            let ahead = run(&forward, &|p| report(p * share));
+            let behind = run(&backward, &|p| report(share + p * (1.0 - share)));
             // Frames lost at the end of a run, never found again, are where
             // the track ends: not kept, so the track reads as lost there.
             let trimmed = |mut t: Vec<klipp_effects::planar::Tracked>| {

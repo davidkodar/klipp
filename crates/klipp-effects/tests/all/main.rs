@@ -18,6 +18,8 @@ mod contrast_pivot_parity;
 mod corner_pin;
 #[path = "../cpu_gpu_effect_parity.rs"]
 mod cpu_gpu_effect_parity;
+#[path = "../planar_gpu_parity.rs"]
+mod planar_gpu_parity;
 #[path = "../cpu_gpu_transition_parity.rs"]
 mod cpu_gpu_transition_parity;
 #[path = "../crop_feather.rs"]

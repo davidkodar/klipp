@@ -141,7 +141,7 @@ struct Level {
 }
 
 /// A frame as the aligner reads it, finest level first.
-struct Pyramid {
+pub(crate) struct Pyramid {
     levels: Vec<Level>,
 }
 
@@ -163,32 +163,32 @@ impl Pyramid {
 /// The region's own coordinates: its centre at 0, its half-size 1, the
 /// same at every level, so the fit is well conditioned.
 #[derive(Debug, Clone, Copy)]
-struct Frame {
-    cx: f64,
-    cy: f64,
-    s: f64,
+pub(crate) struct Frame {
+    pub(crate) cx: f64,
+    pub(crate) cy: f64,
+    pub(crate) s: f64,
 }
 
 impl Frame {
-    fn of(quad: &[(f64, f64); 4]) -> Self {
+    pub(crate) fn of(quad: &[(f64, f64); 4]) -> Self {
         let (cx, cy) = (quad.iter().map(|p| p.0).sum::<f64>() / 4.0, quad.iter().map(|p| p.1).sum::<f64>() / 4.0);
         let s = quad.iter().map(|p| (p.0 - cx).hypot(p.1 - cy)).fold(0.0, f64::max).max(1.0);
         Self { cx, cy, s }
     }
 
     /// From the region's coordinates to the frame's pixels.
-    fn px(self) -> Homography {
+    pub(crate) fn px(self) -> Homography {
         Homography { h: [[self.s, 0.0, self.cx], [0.0, self.s, self.cy], [0.0, 0.0, 1.0]] }
     }
 }
 
 /// The scale from the finest level's pixels to level `l`'s.
-fn to_level(l: usize) -> Homography {
+pub(crate) fn to_level(l: usize) -> Homography {
     let k = 1.0 / (1u32 << l) as f64;
     Homography { h: [[k, 0.0, 0.0], [0.0, k, 0.0], [0.0, 0.0, 1.0]] }
 }
 
-fn from_level(l: usize) -> Homography {
+pub(crate) fn from_level(l: usize) -> Homography {
     let k = (1u32 << l) as f64;
     Homography { h: [[k, 0.0, 0.0], [0.0, k, 0.0], [0.0, 0.0, 1.0]] }
 }
@@ -205,7 +205,7 @@ struct Point {
 }
 
 /// The region of a frame, ready to align others to, level by level.
-struct Template {
+pub(crate) struct Template {
     frame: Frame,
     levels: Vec<Vec<Point>>,
 }
@@ -227,34 +227,61 @@ fn inside(q: &[(f64, f64); 4], p: (f64, f64)) -> bool {
     true
 }
 
-impl Template {
-    fn new(pyr: &Pyramid, quad: &[(f64, f64); 4], opts: &Options) -> Self {
-        let frame = Frame::of(quad);
-        let grown: [(f64, f64); 4] = std::array::from_fn(|i| (frame.cx + (quad[i].0 - frame.cx) * (1.0 + opts.margin), frame.cy + (quad[i].1 - frame.cy) * (1.0 + opts.margin)));
-        let levels = pyr
-            .levels
-            .iter()
-            .enumerate()
-            .map(|(l, level)| {
-                let k = 1.0 / (1u32 << l) as f64;
-                let q: [(f64, f64); 4] = grown.map(|p| (p.0 * k, p.1 * k));
-                let (x0, x1) = (q.iter().map(|p| p.0).fold(f64::MAX, f64::min).floor().max(1.0) as i32, q.iter().map(|p| p.0).fold(f64::MIN, f64::max).ceil() as i32);
-                let (y0, y1) = (q.iter().map(|p| p.1).fold(f64::MAX, f64::min).floor().max(1.0) as i32, q.iter().map(|p| p.1).fold(f64::MIN, f64::max).ceil() as i32);
-                let (x1, y1) = (x1.min(level.chans[0].w as i32 - 2), y1.min(level.chans[0].h as i32 - 2));
-                let mut cells: Vec<(i32, i32)> = Vec::new();
-                for y in y0..=y1 {
-                    for x in x0..=x1 {
-                        if inside(&q, (x as f64, y as f64)) {
-                            cells.push((x, y));
-                        }
+/// The pixels of each level a template of `quad` reads, on levels of
+/// `sizes` (finest first): the region grown by the margin, at most
+/// [`Options::max_points`] of its pixels evenly taken, a pixel's border
+/// left out. With the region's own coordinates.
+pub(crate) fn cells(sizes: &[(usize, usize)], quad: &[(f64, f64); 4], opts: &Options) -> (Frame, Vec<Vec<(i32, i32)>>) {
+    let frame = Frame::of(quad);
+    let grown: [(f64, f64); 4] = std::array::from_fn(|i| (frame.cx + (quad[i].0 - frame.cx) * (1.0 + opts.margin), frame.cy + (quad[i].1 - frame.cy) * (1.0 + opts.margin)));
+    let levels = sizes
+        .iter()
+        .enumerate()
+        .map(|(l, &(w, h))| {
+            let k = 1.0 / (1u32 << l) as f64;
+            let q: [(f64, f64); 4] = grown.map(|p| (p.0 * k, p.1 * k));
+            let (x0, x1) = (q.iter().map(|p| p.0).fold(f64::MAX, f64::min).floor().max(1.0) as i32, q.iter().map(|p| p.0).fold(f64::MIN, f64::max).ceil() as i32);
+            let (y0, y1) = (q.iter().map(|p| p.1).fold(f64::MAX, f64::min).floor().max(1.0) as i32, q.iter().map(|p| p.1).fold(f64::MIN, f64::max).ceil() as i32);
+            let (x1, y1) = (x1.min(w as i32 - 2), y1.min(h as i32 - 2));
+            let mut cells: Vec<(i32, i32)> = Vec::new();
+            for y in y0..=y1 {
+                for x in x0..=x1 {
+                    if inside(&q, (x as f64, y as f64)) {
+                        cells.push((x, y));
                     }
                 }
-                let stride = cells.len().div_ceil(opts.max_points.max(1)).max(1);
+            }
+            let stride = cells.len().div_ceil(opts.max_points.max(1)).max(1);
+            cells.into_iter().step_by(stride).collect()
+        })
+        .collect();
+    (frame, levels)
+}
+
+/// The sizes of a frame `w` × `h`'s pyramid of `levels`, finest first.
+pub(crate) fn level_sizes(w: usize, h: usize, levels: usize) -> Vec<(usize, usize)> {
+    let mut out = vec![(w, h)];
+    while out.len() < levels {
+        let (pw, ph) = *out.last().expect("one");
+        out.push((pw.div_ceil(2), ph.div_ceil(2)));
+    }
+    out
+}
+
+impl Template {
+    fn new(pyr: &Pyramid, quad: &[(f64, f64); 4], opts: &Options) -> Self {
+        let sizes: Vec<(usize, usize)> = pyr.levels.iter().map(|l| (l.chans[0].w, l.chans[0].h)).collect();
+        let (frame, cells) = cells(&sizes, quad, opts);
+        let levels = cells
+            .into_iter()
+            .zip(&pyr.levels)
+            .enumerate()
+            .map(|(l, (cells, level))| {
+                let k = 1.0 / (1u32 << l) as f64;
                 // Pixels of the level per unit of the region's coordinates.
                 let per_u = frame.s * k;
                 cells
                     .into_iter()
-                    .step_by(stride)
                     .map(|(x, y)| {
                         let u = ((x as f64 / k - frame.cx) / frame.s, (y as f64 / k - frame.cy) / frame.s);
                         let (a, b) = u;
@@ -281,13 +308,13 @@ impl Template {
 
 /// What an alignment ends with.
 #[derive(Debug, Clone, Copy)]
-struct Fit {
+pub(crate) struct Fit {
     /// The map from the region's coordinates to the frame's finest
     /// pixels.
-    g: Homography,
+    pub(crate) g: Homography,
     /// The smallest over the largest eigenvalue of the last step's
     /// weighted Hessian: near 0, the region has nothing to hold the map.
-    conditioning: f64,
+    pub(crate) conditioning: f64,
 }
 
 /// The eight-parameter step as a map.
@@ -558,6 +585,50 @@ fn depth(side: f64, opts: &Options) -> usize {
     levels
 }
 
+/// What the track runs on: the CPU here, or the GPU's twin
+/// (`crate::gpu::planar`). A pyramid of a frame, a template of a region of
+/// one, an alignment of a template to a pyramid, and how alike they are.
+pub(crate) trait Backend {
+    type Pyr;
+    type Tpl;
+    fn pyramid(&mut self, frame: &GrayFrame, levels: usize) -> Self::Pyr;
+    fn template(&mut self, pyr: &Self::Pyr, quad: &[(f64, f64); 4], opts: &Options) -> Self::Tpl;
+    /// The template's region coordinates.
+    fn region(&self, tpl: &Self::Tpl) -> Frame;
+    #[allow(clippy::too_many_arguments)]
+    fn align(&mut self, tpl: &Self::Tpl, pyr: &Self::Pyr, g: Homography, top: usize, bottom: usize, search: i32, iterations: usize) -> Option<Fit>;
+    fn zncc(&mut self, tpl: &Self::Tpl, pyr: &Self::Pyr, g: &Homography, l: usize) -> f64;
+}
+
+/// Channel `c` of level `l` of a CPU pyramid, for the GPU's tests.
+#[cfg(test)]
+pub(crate) fn cpu_channel(pyr: &Pyramid, l: usize, c: usize) -> Vec<f32> {
+    pyr.levels[l].chans[c].px.clone()
+}
+
+/// The track on the CPU: the reference the GPU's twin is held to.
+pub(crate) struct Cpu;
+
+impl Backend for Cpu {
+    type Pyr = Pyramid;
+    type Tpl = Template;
+    fn pyramid(&mut self, frame: &GrayFrame, levels: usize) -> Pyramid {
+        Pyramid::new(frame, levels)
+    }
+    fn template(&mut self, pyr: &Pyramid, quad: &[(f64, f64); 4], opts: &Options) -> Template {
+        Template::new(pyr, quad, opts)
+    }
+    fn region(&self, tpl: &Template) -> Frame {
+        tpl.frame
+    }
+    fn align(&mut self, tpl: &Template, pyr: &Pyramid, g: Homography, top: usize, bottom: usize, search: i32, iterations: usize) -> Option<Fit> {
+        align(tpl, pyr, g, top, bottom, search, iterations)
+    }
+    fn zncc(&mut self, tpl: &Template, pyr: &Pyramid, g: &Homography, l: usize) -> f64 {
+        zncc(tpl, pyr, g, l)
+    }
+}
+
 /// Follow the surface `quad` of `reference` through `frames`, each read
 /// by `next`, one after another: for each, the map from the reference's
 /// pixels to that frame's, with its confidence and state. A lost frame
@@ -572,16 +643,30 @@ pub fn track(
     opts: &Options,
     progress: &dyn Fn(f32) -> bool,
 ) -> Vec<Tracked> {
+    track_on(&mut Cpu, reference, quad, frames, next, opts, progress)
+}
+
+/// [`track`] on `backend`.
+pub(crate) fn track_on<B: Backend>(
+    backend: &mut B,
+    reference: &GrayFrame,
+    quad: [(f64, f64); 4],
+    frames: &[usize],
+    next: &mut dyn FnMut(usize) -> Option<GrayFrame>,
+    opts: &Options,
+    progress: &dyn Fn(f32) -> bool,
+) -> Vec<Tracked> {
     let side = Frame::of(&quad).s * 2.0;
     let levels = depth(side, opts);
-    let anchor_pyr = Pyramid::new(reference, levels);
-    let anchor = Template::new(&anchor_pyr, &quad, opts);
-    let to_anchor = anchor.frame.px().inverse().expect("a region of some size");
+    let anchor_pyr = backend.pyramid(reference, levels);
+    let anchor = backend.template(&anchor_pyr, &quad, opts);
+    let anchor_frame = backend.region(&anchor);
+    let to_anchor = anchor_frame.px().inverse().expect("a region of some size");
     let mut out = Vec::new();
     // The frame before: its pyramid, its region as a template, and the
     // map from the reference to it.
     let mut prev_pyr = anchor_pyr;
-    let mut prev = Template::new(&prev_pyr, &quad, opts);
+    let mut prev = backend.template(&prev_pyr, &quad, opts);
     let mut last = Homography::identity();
     // The move from the frame before the last to the last, the guess for
     // the next.
@@ -595,19 +680,19 @@ pub fn track(
             break;
         }
         let Some(cur) = next(f) else { break };
-        let cur_pyr = Pyramid::new(&cur, levels);
+        let cur_pyr = backend.pyramid(&cur, levels);
         let lost = failing >= opts.lost_after;
         let fitted = if lost {
             // Looking for the surface again: the reference, from where it
             // was last, searched widely.
-            align(&anchor, &cur_pyr, last.multiply(&anchor.frame.px()), top, 0, opts.search * 3, opts.iterations).map(|a| (a.g.multiply(&to_anchor), a.conditioning, None))
+            backend.align(&anchor, &cur_pyr, last.multiply(&anchor_frame.px()), top, 0, opts.search * 3, opts.iterations).map(|a| (a.g.multiply(&to_anchor), a.conditioning, None))
         } else {
             // From the frame before, then refined against the reference.
-            let prev_to_px = prev.frame.px();
-            align(&prev, &cur_pyr, motion.multiply(&prev_to_px), top, 0, opts.search, opts.iterations).and_then(|step| {
+            let prev_to_px = backend.region(&prev).px();
+            backend.align(&prev, &cur_pyr, motion.multiply(&prev_to_px), top, 0, opts.search, opts.iterations).and_then(|step| {
                 let moved = step.g.multiply(&prev_to_px.inverse()?);
                 let guess = moved.multiply(&last);
-                let refined = align(&anchor, &cur_pyr, guess.multiply(&anchor.frame.px()), 1, 0, 0, opts.iterations)?;
+                let refined = backend.align(&anchor, &cur_pyr, guess.multiply(&anchor_frame.px()), 1, 0, 0, opts.iterations)?;
                 Some((refined.g.multiply(&to_anchor), refined.conditioning.min(step.conditioning), Some(moved)))
             })
         };
@@ -622,15 +707,15 @@ pub fn track(
             }
             continue;
         };
-        let alike = zncc(&anchor, &cur_pyr, &h.multiply(&anchor.frame.px()), 1);
+        let alike = backend.zncc(&anchor, &cur_pyr, &h.multiply(&anchor_frame.px()), 1);
         // Back to the frame before from this one: where the corners land
         // against where they were.
         let here = map_quad(&h);
-        let cur_tpl = Template::new(&cur_pyr, &here, opts);
+        let cur_tpl = backend.template(&cur_pyr, &here, opts);
         let round_trip = match moved.and_then(|m| m.inverse()) {
             Some(back_guess) => {
-                let cur_to_px = cur_tpl.frame.px();
-                match align(&cur_tpl, &prev_pyr, back_guess.multiply(&cur_to_px), top, 0, 0, opts.iterations).and_then(|b| Some(b.g.multiply(&cur_to_px.inverse()?))) {
+                let cur_to_px = backend.region(&cur_tpl).px();
+                match backend.align(&cur_tpl, &prev_pyr, back_guess.multiply(&cur_to_px), top, 0, 0, opts.iterations).and_then(|b| Some(b.g.multiply(&cur_to_px.inverse()?))) {
                     Some(back) => {
                         let before = map_quad(&last);
                         here.iter().zip(&before).map(|(c, b)| { let (x, y) = back.transform(c.0, c.1); (x - b.0).hypot(y - b.1) }).sum::<f64>() / 4.0
