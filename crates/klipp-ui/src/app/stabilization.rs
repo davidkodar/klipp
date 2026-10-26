@@ -477,8 +477,8 @@ impl KlippApp {
                 self.open_surface_tool(*clip_id, *surface);
                 true
             }
-            AppCommand::SnapSurface { clip_id, click, at_secs, then_track, name } => {
-                self.start_surface_snap(*clip_id, *click, *at_secs, *then_track, name.clone());
+            AppCommand::SnapSurface { clip_id, click, at_secs, then_track, name, request_id } => {
+                self.start_surface_snap(*clip_id, *click, *at_secs, *then_track, name.clone(), *request_id);
                 true
             }
             AppCommand::RemoveSurface { clip_id, surface } => {

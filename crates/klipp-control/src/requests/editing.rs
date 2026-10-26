@@ -462,16 +462,30 @@ pub(crate) fn respond(
                     None => None,
                 }
             };
+            let request_id = uuid::Uuid::new_v4();
             let mut v = match (corners, click) {
                 (Some(corners), _) => send(AppCommand::TrackSurface { clip_id: id, corners, at_secs, name, surface, direction, interactive: false, track: track_corners, exclude })?,
-                (None, Some(click)) => send(AppCommand::SnapSurface { clip_id: id, click, at_secs, then_track: true, name })?,
+                (None, Some(click)) => send(AppCommand::SnapSurface { clip_id: id, click, at_secs, then_track: true, name, request_id: Some(request_id) })?,
                 (None, None) => unreachable!("refused above"),
             };
-            v["text"] = json!(if click.is_some() {
-                "Finding the surface's edges round the click, then tracking it, in the background: it shows under the clip's surfaces in klipp_list_clips when done. If nothing shows, there was no surface with an edge all round there: look at the frame and give its corners."
-            } else {
-                "Tracking the surface in the background; it shows under the clip's surfaces in klipp_list_clips when done, one undo step, with where the track was lost if it was. Then pin a picture to it with the pin op."
-            });
+            if click.is_none() {
+                v["text"] = json!("Tracking the surface in the background; it shows under the clip's surfaces in klipp_list_clips when done, one undo step, with where the track was lost if it was. Then pin a picture to it with the pin op.");
+                return Ok(v);
+            }
+            // The click's outcome comes back in a second or two: the
+            // corners found (and tracked from), or why none were.
+            match wait_for_surface_snap(ctx, request_id) {
+                Some(outcome) => {
+                    if let Some(why) = outcome["error"].as_str() {
+                        return Err(format!("no surface found round the click: {why}. Give its four corners instead, measured with klipp_frame_at; for a plain surface put them on its edges"));
+                    }
+                    v["corners"] = outcome["corners"].clone();
+                    v["text"] = json!("Found the surface round the click (corners, fractions of the frame) and checked that it moves as one plane over the next frames; tracking it in the background. It shows under the clip's surfaces in klipp_list_clips when done, one undo step. Check the corners with klipp_frame_at: a surface's outer edge is found, a screen's bezel included.");
+                }
+                None => {
+                    v["text"] = json!("Finding the surface's edges round the click, then tracking it, in the background: it shows under the clip's surfaces in klipp_list_clips when done. If nothing shows, give its corners.");
+                }
+            }
             Ok(v)
         }
 
@@ -911,4 +925,22 @@ mod template_name_tests {
         assert_eq!(dependency_json(&klipp_project::template::Dependency::LinkedMedia { path: "/a.mov".into(), present: false }), json!({ "media": "/a.mov", "copied": false, "missing": true }));
         let _ = std::fs::remove_dir_all(dir);
     }
+}
+
+/// How long a click's outcome is waited for before the reply goes without it.
+const SURFACE_SNAP_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The outcome of the surface click `request_id` (#2754), once the app
+/// has it; `None` when it doesn't come within [`SURFACE_SNAP_WAIT`].
+fn wait_for_surface_snap(ctx: &ControlContext, request_id: uuid::Uuid) -> Option<serde_json::Value> {
+    let until = std::time::Instant::now() + SURFACE_SNAP_WAIT;
+    let id = json!(request_id.to_string());
+    while std::time::Instant::now() < until {
+        let outcome = ctx.shared.surface_snap.lock().ok()?.clone();
+        if let Some(o) = outcome.filter(|o| o["request_id"] == id) {
+            return Some(o);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    None
 }

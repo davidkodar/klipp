@@ -283,6 +283,12 @@ fn refine(img: &Image, quad: [[f32; 2]; 4], reach: f32, strong: f32) -> Option<[
         }
         let samples = 24;
         let steps = (reach * 2.0) as i32;
+        // Inward no farther than part way to the opposite side: a thin
+        // surface (a canopy seen edge on) has its other edge within reach.
+        let (c, d) = (quad[(i + 2) % 4], quad[(i + 3) % 4]);
+        let (ex, ey) = (d[0] - c[0], d[1] - c[1]);
+        let across = ((mid[0] - c[0]) * ey - (mid[1] - c[1]) * ex).abs() / ex.hypot(ey).max(1e-6);
+        let inward = steps.min((across * 0.4 * 2.0) as i32).max(1);
         // For each point down the middle of the side: the crests across it,
         // as (sample, offset outward, point).
         let mut crests: Vec<(usize, f32, [f32; 2])> = Vec::new();
@@ -291,11 +297,11 @@ fn refine(img: &Image, quad: [[f32; 2]; 4], reach: f32, strong: f32) -> Option<[
             let base = [a[0] + dx * t, a[1] + dy * t];
             let at = |off: f32| [base[0] + normal[0] * off, base[1] + normal[1] * off];
             let g = |off: f32| { let p = at(off); img.across(p[0], p[1], normal) };
-            let peak = (-steps..=steps).map(|s| g(s as f32 * 0.5)).fold(0.0f32, f32::max);
+            let peak = (-inward..=steps).map(|s| g(s as f32 * 0.5)).fold(0.0f32, f32::max);
             // Texture beside a real edge is passed over; a bezel's fainter
             // outer edge beside its bright screen is not.
             let enough = strong.max(peak * 0.3);
-            for s in -steps + 1..steps {
+            for s in -inward + 1..steps {
                 let off = s as f32 * 0.5;
                 let here = g(off);
                 if here >= enough && here >= g(off - 0.5) && here > g(off + 0.5) {
@@ -323,7 +329,9 @@ fn refine(img: &Image, quad: [[f32; 2]; 4], reach: f32, strong: f32) -> Option<[
                 }
                 let (lx, ly) = (q.2[0] - p.2[0], q.2[1] - p.2[1]);
                 let ll = lx.hypot(ly);
-                if ll < 1.0 {
+                // Along the side, within about 15°: two crests of a short
+                // side can line up any way.
+                if ll < 1.0 || (lx * dy - ly * dx).abs() > 0.26 * ll * len {
                     continue;
                 }
                 let on = inliers(p.2, [-ly / ll, lx / ll], 1.0);
@@ -348,7 +356,7 @@ fn refine(img: &Image, quad: [[f32; 2]; 4], reach: f32, strong: f32) -> Option<[
                 }
             }
         }
-        let line = line.unwrap_or((a, [dx / len, dy / len]));
+        let line = line.filter(|(_, d)| (d[0] * dy - d[1] * dx).abs() <= 0.26 * len).unwrap_or((a, [dx / len, dy / len]));
         lines.push(line);
     }
     let mut corners = [[0.0f32; 2]; 4];
@@ -483,9 +491,15 @@ fn ordered(q: [[f32; 2]; 4]) -> [[f32; 2]; 4] {
     let c = [q.iter().map(|p| p[0]).sum::<f32>() / 4.0, q.iter().map(|p| p[1]).sum::<f32>() / 4.0];
     let mut v = q.to_vec();
     v.sort_by(|a, b| (a[1] - c[1]).atan2(a[0] - c[0]).total_cmp(&(b[1] - c[1]).atan2(b[0] - c[0])));
-    // Angles from -pi: the first is left of centre going up, so start at
-    // the corner nearest the top left.
-    let start = (0..4).min_by(|&i, &j| (v[i][0] + v[i][1]).total_cmp(&(v[j][0] + v[j][1]))).unwrap_or(0);
+    // Clockwise on screen: start at the left end of the top side, the
+    // side running most nearly left to right. The corner nearest the top
+    // left would do for a screen, but not for a long thin surface seen
+    // edge on, whose short end can put a lower corner further left.
+    let across = |i: usize| {
+        let (a, b) = (v[i], v[(i + 1) % 4]);
+        (b[0] - a[0]) / (b[0] - a[0]).hypot(b[1] - a[1]).max(1e-6)
+    };
+    let start = (0..4).max_by(|&i, &j| across(i).total_cmp(&across(j))).unwrap_or(0);
     [v[start], v[(start + 1) % 4], v[(start + 2) % 4], v[(start + 3) % 4]]
 }
 
@@ -600,7 +614,71 @@ fn sharpen(rgba: &[u8], width: usize, height: usize, quad: [[f32; 2]; 4], reach:
 /// picture) in the `width` by `height` RGBA picture, as fractions of it;
 /// `None` when nothing four-sided with an edge all round is found there.
 pub fn snap_quad(rgba: &[u8], width: usize, height: usize, click: (f32, f32)) -> Option<Quad> {
-    let img = Image::new(rgba, width, height)?;
+    candidates(rgba, width, height, click).into_iter().next()
+}
+
+/// Why no surface was found round a click (#2754).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Miss {
+    /// Nothing four-sided round the click has a straight edge along most
+    /// of every side.
+    NoClosedRegion,
+    /// Something did, but in the frames after it doesn't move as one flat
+    /// surface: a gap between things, a shadow, part of something bent.
+    NotOnePlane,
+}
+
+impl Miss {
+    /// What to tell the person who clicked.
+    pub fn reason(self) -> &'static str {
+        match self {
+            Miss::NoClosedRegion => "no closed region with straight edges round the click",
+            Miss::NotOnePlane => "the region found round the click does not move as one flat surface in the frames after it",
+        }
+    }
+}
+
+/// The candidates [`find`] checks against the frames after: at most this
+/// many, the largest first.
+const CHECKED: usize = 4;
+
+/// The flat surface round `click` in the RGBA picture (#2754): of the
+/// quads with an edge all round it, largest first, the first that the
+/// planar tracker follows through `after` (the frames that follow, grey,
+/// the picture's size) as one plane, confidently, each frame. With no
+/// frames after, the largest quad. Corners as fractions of the picture.
+pub fn find(rgba: &[u8], width: usize, height: usize, click: (f32, f32), after: &[crate::window_track::GrayFrame]) -> Result<Quad, Miss> {
+    let found = candidates(rgba, width, height, click);
+    if found.is_empty() {
+        return Err(Miss::NoClosedRegion);
+    }
+    if after.is_empty() {
+        return Ok(found[0]);
+    }
+    let reference = crate::window_track::GrayFrame {
+        data: rgba.chunks_exact(4).map(|p| ((p[0] as u32 * 54 + p[1] as u32 * 183 + p[2] as u32 * 19) >> 8) as u8).collect(),
+        width,
+        height,
+    };
+    let frames: Vec<usize> = (0..after.len()).collect();
+    let opts = crate::planar::Options { reacquire_for: 0, ..Default::default() };
+    found
+        .into_iter()
+        .take(CHECKED)
+        .find(|q| {
+            let px = q.map(|c| (c[0] as f64 * width as f64, c[1] as f64 * height as f64));
+            let run = crate::planar::track(&reference, px, &[], &frames, &mut |i| after.get(i).cloned(), &opts, &|_| true);
+            let mean = run.iter().map(|t| t.confidence).sum::<f32>() / run.len().max(1) as f32;
+            run.len() == after.len() && run.iter().all(|t| t.state != crate::planar::State::Lost) && mean >= 0.6
+        })
+        .ok_or(Miss::NotOnePlane)
+}
+
+/// Every quad round `click` with an edge along most of every side, in the
+/// picture's fractions, the largest first (the surface's outer edge, a
+/// screen's bezel included), at most [`CHECKED`].
+fn candidates(rgba: &[u8], width: usize, height: usize, click: (f32, f32)) -> Vec<Quad> {
+    let Some(img) = Image::new(rgba, width, height) else { return Vec::new() };
     let seed = (((click.0 * img.w as f32) as usize).clamp(1, img.w - 2), ((click.1 * img.h as f32) as usize).clamp(1, img.h - 2));
     // The clicked colour, from a small patch about the click.
     let mut colour = [0.0f32; 3];
@@ -663,9 +741,14 @@ pub fn snap_quad(rgba: &[u8], width: usize, height: usize, click: (f32, f32)) ->
         }
     }
 
-    let mut best: Option<(f32, [[f32; 2]; 4])> = None;
+    let mut good: Vec<(f32, [[f32; 2]; 4])> = Vec::new();
     for rough in kept {
-        let Some(corners) = refine(&img, rough, reach, strong) else { continue };
+        // Refined onto the edges only where that holds the edges better: a
+        // sliver (a canopy seen edge on) can lose its short ends to it.
+        let corners = match refine(&img, rough, reach, strong) {
+            Some(r) if least_support(&img, &r, strong * 0.5) >= least_support(&img, &rough, strong * 0.5) => r,
+            _ => rough,
+        };
         let size = area(&corners);
         if !convex(&corners) || !contains(&corners, click_px) || size < total * 0.004 || size > total * 0.9 {
             continue;
@@ -673,22 +756,33 @@ pub fn snap_quad(rgba: &[u8], width: usize, height: usize, click: (f32, f32)) ->
         if corners.iter().any(|c| c[0] < -2.0 || c[1] < -2.0 || c[0] > img.w as f32 + 1.0 || c[1] > img.h as f32 + 1.0) {
             continue;
         }
-        if least_support(&img, &corners, strong) < 0.7 {
+        // Closure: an edge along most of every side. Measured against half
+        // the picture's strong edges, as the rough quads are: a surface's
+        // own edge can be fainter than the brightest in the picture (sun
+        // on water), and what only looks closed is turned away by the
+        // frames after ([`find`]).
+        if least_support(&img, &corners, strong * 0.5) < 0.7 {
             continue;
         }
-        if best.is_none_or(|(s, _)| size > s) {
-            best = Some((size, corners));
+        // Refined onto the same edges, two rough quads are one.
+        if !good.iter().any(|(_, k)| ordered(*k).iter().zip(ordered(corners).iter()).all(|(a, b)| (a[0] - b[0]).hypot(a[1] - b[1]) < 2.0)) {
+            good.push((size, corners));
         }
     }
-    let (_, corners) = best?;
+    good.sort_by(|a, b| b.0.total_cmp(&a.0));
     // In the full picture's pixels (a search pixel's centre is half a
     // pixel in), then each side onto its edge there, to a fraction of a
     // pixel: the search's blur and scale leave the edge wide.
     let (sx, sy) = (width as f32 / img.w as f32, height as f32 / img.h as f32);
-    let rough = ordered(corners).map(|p| [(p[0] + 0.5) * sx - 0.5, (p[1] + 0.5) * sy - 0.5]);
-    let fine = sharpen(rgba, width, height, rough, sx.max(sy) * 2.0 + 2.0).unwrap_or(rough);
-    let q = fine.map(|p| [(p[0] + 0.5) / width as f32, (p[1] + 0.5) / height as f32]);
-    q.iter().flatten().all(|v| (-0.05..=1.05).contains(v)).then_some(q)
+    good.into_iter()
+        .take(CHECKED)
+        .filter_map(|(_, corners)| {
+            let rough = ordered(corners).map(|p| [(p[0] + 0.5) * sx - 0.5, (p[1] + 0.5) * sy - 0.5]);
+            let fine = sharpen(rgba, width, height, rough, sx.max(sy) * 2.0 + 2.0).unwrap_or(rough);
+            let q = fine.map(|p| [(p[0] + 0.5) / width as f32, (p[1] + 0.5) / height as f32]);
+            q.iter().flatten().all(|v| (-0.05..=1.05).contains(v)).then_some(q)
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -780,5 +874,74 @@ mod tests {
     fn corners_come_in_order() {
         let q = ordered([[1.0, 1.0], [0.0, 0.0], [0.0, 1.0], [1.0, 0.0]]);
         assert_eq!(q, [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
+    }
+
+    fn grey(rgba: &[u8]) -> crate::window_track::GrayFrame {
+        crate::window_track::GrayFrame { data: rgba.chunks_exact(4).map(|p| ((p[0] as u32 * 54 + p[1] as u32 * 183 + p[2] as u32 * 19) >> 8) as u8).collect(), width: W, height: H }
+    }
+
+    /// A screen that moves with the camera over the frames after the
+    /// click is found, its corners as the picture alone gives them.
+    #[test]
+    fn a_surface_that_moves_as_one_plane_is_found() {
+        let img = scene(PHONE, true);
+        let moved = |k: f32| PHONE.map(|p| [p[0] + 1.5 * k, p[1] + 0.6 * k + 0.02 * k * (p[0] - 300.0) / 10.0]);
+        let after: Vec<_> = (1..=8).map(|k| grey(&scene(moved(k as f32), true))).collect();
+        let c = q_centre(&PHONE);
+        let q = find(&img, W, H, (c[0] / W as f32 + 0.01, c[1] / H as f32), &after).expect("a screen moving as one plane");
+        assert!(worst_px(q, PHONE) < 1.5, "{q:?}");
+        assert_eq!(find(&img, W, H, (c[0] / W as f32 + 0.01, c[1] / H as f32), &[]), Ok(q), "with no frames after, the picture alone");
+    }
+
+    /// Something four-sided in one frame that isn't there in the frames
+    /// after (a reflection, a flash) is not taken for a surface; nothing
+    /// four-sided at all is said apart from it.
+    #[test]
+    fn a_quad_that_does_not_move_as_a_plane_is_refused_and_says_why() {
+        let img = scene(PHONE, false);
+        let gone = grey(&scene([[-10.0, -10.0], [-5.0, -10.0], [-5.0, -5.0], [-10.0, -5.0]], false));
+        let after = vec![gone; 8];
+        let c = q_centre(&PHONE);
+        assert_eq!(find(&img, W, H, (c[0] / W as f32, c[1] / H as f32), &after), Err(Miss::NotOnePlane));
+        let plain = scene([[-10.0, -10.0], [-5.0, -10.0], [-5.0, -5.0], [-10.0, -5.0]], false);
+        assert_eq!(find(&plain, W, H, (0.5, 0.5), &[]), Err(Miss::NoClosedRegion));
+        assert!(Miss::NotOnePlane.reason().contains("one flat surface"));
+    }
+
+    /// A thin plain surface seen nearly edge on (a canopy), in a picture
+    /// whose brightest edges (sun glints on water) are far stronger than
+    /// its own: found, though its sides lie within the refining reach of
+    /// each other. Its thick end is exact; its thinnest end, a few pixels
+    /// at the search size, blurs into what is round it and comes out short
+    /// of the tip, a start to drag the last corners from.
+    #[test]
+    fn a_thin_surface_among_bright_glints_is_found() {
+        const SLIVER: [[f32; 2]; 4] = [[150.0, 170.0], [450.0, 192.0], [440.0, 210.0], [150.0, 178.0]];
+        let mut px = vec![0u8; W * H * 4];
+        let mut seed = 777u32;
+        let mut rand = || {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            (seed >> 24) as u8
+        };
+        let inside = |x: f32, y: f32| (0..4).all(|i| cross(SLIVER[i], SLIVER[(i + 1) % 4], [x, y]) >= 0.0);
+        for y in 0..H {
+            for x in 0..W {
+                let n = rand() / 8;
+                // Water, with a glint every so often.
+                let mut rgb = [40 + n, 70 + n, 90 + n];
+                if (x * 7 + y * 13) % 97 == 0 && y > 230 {
+                    rgb = [255, 255, 250];
+                }
+                if inside(x as f32 + 0.5, y as f32 + 0.5) {
+                    rgb = [40, 150, 210];
+                }
+                let i = (y * W + x) * 4;
+                px[i..i + 4].copy_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
+            }
+        }
+        let q = snap_quad(&px, W, H, (300.0 / W as f32, 185.0 / H as f32)).expect("the sliver is a surface");
+        let off = |k: usize| (q[k][0] * W as f32 - SLIVER[k][0]).hypot(q[k][1] * H as f32 - SLIVER[k][1]);
+        assert!(off(1) < 3.0 && off(2) < 3.0, "the thick end: {q:?}");
+        assert!(off(0) < 30.0 && off(3) < 30.0, "the thin end, short of the tip: {q:?}");
     }
 }

@@ -3815,7 +3815,10 @@ pub enum AppCommand {
     /// `at_secs` (the playhead when `None`), in the background (#684). The
     /// viewer's surface tool takes them; with `then_track` they are
     /// tracked from at once, which is how the assistant's click works.
-    SnapSurface { clip_id: ClipId, click: [f32; 2], at_secs: Option<f64>, then_track: bool, name: Option<String> },
+    /// A quad found is checked against the frames after it: it must move
+    /// as one plane (#2754). `request_id` names the request whose outcome
+    /// the control socket waits for in [`ControlShared::surface_snap`].
+    SnapSurface { clip_id: ClipId, click: [f32; 2], at_secs: Option<f64>, then_track: bool, name: Option<String>, request_id: Option<uuid::Uuid> },
     /// Take a tracked surface off a clip, one undo step; what is pinned to
     /// it stays where it was on the reference frame.
     RemoveSurface { clip_id: ClipId, surface: uuid::Uuid },
@@ -4734,8 +4737,9 @@ pub enum AppEvent {
     /// its bounds (file seconds; `None` open to that end of the track).
     SurfaceCorrected { clip_id: ClipId, surface: uuid::Uuid, source_secs: f64, corners: [[f32; 2]; 4], spans: Vec<(Option<f64>, Option<f64>, Vec<(f64, [f64; 9], f32, u8)>)> },
     /// The corners a [`AppCommand::SnapSurface`] found, as fractions of the
-    /// clip's own picture, or `None` where nothing had an edge all round.
-    SurfaceSnapped { clip_id: ClipId, at_secs: f64, corners: Option<[[f32; 2]; 4]>, then_track: bool, name: Option<String> },
+    /// clip's own picture, or `None` where none was found; `why` then
+    /// says what was wrong (#2754).
+    SurfaceSnapped { clip_id: ClipId, at_secs: f64, corners: Option<[[f32; 2]; 4]>, then_track: bool, name: Option<String>, why: Option<String>, request_id: Option<uuid::Uuid> },
 
     // Audio sync (#61)
     /// Background cross-correlation finished. `offset_samples` at 48 kHz —
@@ -5221,6 +5225,9 @@ mod codec_hint_tests {
 pub struct ControlShared {
     /// Last interchange import outcome, with its request id and report/error.
     pub import_outcome: std::sync::Mutex<Option<serde_json::Value>>,
+    /// The last surface click's outcome (#2754): its request id, and the
+    /// corners found or why none were.
+    pub surface_snap: std::sync::Mutex<Option<serde_json::Value>>,
     pub revision: std::sync::atomic::AtomicU64,
     pub exports: std::sync::Mutex<Vec<ExportStatus>>,
     /// The open project as the UI last saw it.
