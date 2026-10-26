@@ -210,3 +210,91 @@ fn gold_over_a_picture_before_and_after() {
     }
     image::save_buffer(&out, &both, w * 2, h, image::ExtendedColorType::Rgba8).unwrap();
 }
+
+/// One colour, everywhere.
+struct Flat([f32; 3]);
+
+impl FrameSource for Flat {
+    fn frame(&mut self, _: &Clip, _: f64, width: u32, height: u32) -> Option<SourceFrame> {
+        let px: Vec<f32> = (0..width * height).flat_map(|_| [self.0[0], self.0[1], self.0[2], 1.0]).collect();
+        Some(SourceFrame { pixels: SourcePixels::Linear(Arc::new(px)), width, height, pts: None })
+    }
+}
+
+/// The title over one colour, with `fx` on it: the bytes, and how many
+/// layers ran effects.
+fn over_flat(material: TitleMaterial, colour: [f32; 3], fx: Vec<klipp_effects::BuiltinEffect>) -> Option<(Vec<u8>, u32)> {
+    let tb = klipp_timeline::TextBox { text: "Klipp".into(), font_size: 900.0, material: Some(material), ..Default::default() };
+    let td = klipp_timeline::TitleData::single_text(tb);
+    let mut text = Track::new("T1", TrackKind::Text);
+    text.clips = vec![klipp_timeline::test_clip::TestClip::of(Clip { kind: ClipKind::Title(td), ..Clip::gap(tc(0.0), tc(4.0)) }).effects(fx).build()];
+    let mut v1 = Track::new("V1", TrackKind::Video);
+    v1.clips = vec![Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(4.0), tc(0.0), tc(4.0))];
+    let mut seq = Sequence::new_default();
+    seq.resolution = klipp_core::Resolution { width: W, height: H };
+    seq.tracks = vec![text, v1];
+    let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+    r.set_gpu_enabled(true);
+    let (bytes, stats) = r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut Flat(colour), RenderOptions::default())?;
+    Some((bytes, stats.effects_on_layers))
+}
+
+/// #2706: a metal reflecting only the shot behind it takes that shot's
+/// colour; its effects run after the reflection, so a glow is still
+/// drawn round it; with no shot in the mix the picture behind changes
+/// nothing on the metal.
+#[test]
+fn a_metal_reflects_the_shot_behind_it() {
+    let Some(plain) = render(None, false, None) else {
+        assert!(!required(), "required, but the GPU stack declined the title");
+        eprintln!("UNVERIFIED: no GPU stack");
+        return;
+    };
+    let letters: Vec<usize> = (0..(W * H) as usize).filter(|&i| plain[i * 4] > 200).collect();
+    let only = |shot: f32| TitleMaterial {
+        environment: klipp_core::title_material::MetalEnvironment { studio: 0.0, sky: 0.0, shot, ..Default::default() },
+        glints: 0.0,
+        ..TitleMaterial::preset(MetalPreset::Silver)
+    };
+    let (red, _) = over_flat(only(1.0), [0.8, 0.05, 0.02], Vec::new()).expect("drawn");
+    let (blue, _) = over_flat(only(1.0), [0.02, 0.1, 0.8], Vec::new()).expect("drawn");
+    let (r, b) = (stats(&red, &letters).0, stats(&blue, &letters).0);
+    assert!(r[0] > r[2] + 40.0 && b[2] > b[0] + 40.0, "silver over red is red, over blue blue: {r:?} {b:?}");
+    // No shot in the mix: what is behind does not show on the metal.
+    let none = TitleMaterial { environment: klipp_core::title_material::MetalEnvironment { shot: 0.0, ..Default::default() }, glints: 0.0, ..TitleMaterial::preset(MetalPreset::Silver) };
+    let (a, _) = over_flat(none, [0.8, 0.05, 0.02], Vec::new()).expect("drawn");
+    let (c, _) = over_flat(none, [0.02, 0.1, 0.8], Vec::new()).expect("drawn");
+    let (ma, mc) = (stats(&a, &letters).0, stats(&c, &letters).0);
+    // Within a few levels: the letters' soft edges show what is behind.
+    assert!(ma.iter().zip(&mc).all(|(x, y)| (x - y).abs() < 6.0), "{ma:?} vs {mc:?}");
+    // A glow held for the reflection still runs, and lights round the letters.
+    let glow = vec![klipp_effects::BuiltinEffect::Glow { radius: 20.0, intensity: 1.0 }];
+    let (lit, ran) = over_flat(only(1.0), [0.01, 0.01, 0.01], glow).expect("drawn");
+    let (dark, _) = over_flat(only(1.0), [0.01, 0.01, 0.01], Vec::new()).expect("drawn");
+    assert_eq!(ran, 1, "the held effects ran");
+    let around = |px: &[u8]| (0..(W * H) as usize).filter(|i| !letters.contains(i)).map(|i| u64::from(px[i * 4])).sum::<u64>();
+    assert!(around(&lit) > around(&dark) + 2_000, "the glow lights round the letters");
+}
+
+/// The neutral metals are three different metals at their defaults:
+/// steel darker than silver, chrome a mirror with near-black darks;
+/// copper is orange,
+/// not pink, beside rose gold.
+#[test]
+fn the_metals_are_told_apart() {
+    let Some(plain) = render(None, false, None) else { return };
+    let letters: Vec<usize> = (0..(W * H) as usize).filter(|&i| plain[i * 4] > 200).collect();
+    let of = |p: MetalPreset| {
+        let px = render(Some(TitleMaterial { glints: 0.0, ..TitleMaterial::preset(p) }), false, None).expect("drawn");
+        stats(&px, &letters)
+    };
+    let luma = |m: [f32; 3]| 0.2126 * m[0] + 0.7152 * m[1] + 0.0722 * m[2];
+    let (silver, steel, chrome) = (of(MetalPreset::Silver), of(MetalPreset::Steel), of(MetalPreset::Chrome));
+    assert!(luma(silver.0) > luma(steel.0) + 15.0, "steel is darker than silver: {:?} {:?}", silver.0, steel.0);
+    assert!(steel.0[2] > steel.0[0], "steel is bluish: {:?}", steel.0);
+    // A mirror: near-black between bright bands, where silver's shade is soft.
+    assert!(chrome.2 + 15.0 < silver.2 && chrome.3 > 200.0, "chrome's darks are darker than silver's, its highs as bright: chrome {:.0}..{:.0}, silver {:.0}..{:.0}", chrome.2, chrome.3, silver.2, silver.3);
+    let (copper, rose) = (of(MetalPreset::Copper).0, of(MetalPreset::RoseGold).0);
+    // Orange keeps green well above blue; pink has them close.
+    assert!(copper[1] - copper[2] > rose[1] - rose[2] + 10.0, "copper is orange, rose gold pink: {copper:?} {rose:?}");
+}

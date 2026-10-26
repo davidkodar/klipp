@@ -383,6 +383,12 @@ pub struct GpuEffectsPipeline {
     alpha_dilate_pipeline: wgpu::ComputePipeline,
     title_style_pipeline: wgpu::ComputePipeline,
     title_style_scratch: Option<title_styles::StyleScratch>,
+    /// Metal titles that reflect the shot behind them, by stack slot,
+    /// waiting for the layers below to be laid (#2706); emptied as a
+    /// frame's stack begins.
+    title_metal_shots: std::collections::HashMap<usize, title_styles::MetalShot>,
+    title_metal_shot_pipeline: wgpu::ComputePipeline,
+    title_metal_shot_scratch: Option<(wgpu::Buffer, u64)>,
     title_post_scratch: Option<wgpu::Buffer>,
     title_scene_bounds: Option<wgpu::Buffer>,
     title_outlines: Vec<(u64,wgpu::Buffer)>,
@@ -1379,6 +1385,7 @@ impl GpuEffectsPipeline {
         let alpha_blur_v_pipeline = create_pipeline(&device, &pipeline_layout, "alpha_blur_v", SHADER_ALPHA_BLUR_V);
         let alpha_dilate_pipeline = create_pipeline(&device, &pipeline_layout, "alpha_dilate", SHADER_ALPHA_DILATE);
         let title_style_pipeline = create_pipeline(&device, &pipeline_layout, "title_styles", include_str!("gpu/title_styles.wgsl"));
+        let title_metal_shot_pipeline = create_pipeline(&device, &pipeline_layout, "title_metal_shot", SHADER_TITLE_METAL_SHOT);
 
         // LUT buffer, sized from the same constant the uploads are.
         //
@@ -1814,6 +1821,9 @@ impl GpuEffectsPipeline {
             alpha_dilate_pipeline,
             title_style_pipeline,
             title_style_scratch: None,
+            title_metal_shots: std::collections::HashMap::new(),
+            title_metal_shot_pipeline,
+            title_metal_shot_scratch: None,
             title_post_scratch: None,
             title_scene_bounds: None,
             title_outlines: Vec::new(),
@@ -5608,6 +5618,7 @@ impl GpuEffectsPipeline {
         // Whatever the last frame left goes to the queue; this frame's
         // passes record into one encoder from here.
         self.stack_end();
+        self.title_metal_shots.clear();
         self.batching.set(true);
         self.stack_params_slot.set(0);
         if self.is_device_lost() || width == 0 || height == 0 {
@@ -6526,6 +6537,54 @@ impl GpuEffectsPipeline {
 
     /// The accumulator exists and is a canvas if nothing has been laid
     /// on it yet.
+    /// Whether the title in `slot` is a metal that reflects the shot
+    /// behind it, drawn by [`Self::stack_title_metal_shot`] when the
+    /// layers below are laid (#2706).
+    pub fn stack_has_title_metal_shot(&self, slot: usize) -> bool {
+        self.title_metal_shots.contains_key(&slot)
+    }
+
+    /// The shot laid so far, small and blurred, reflected in the metal
+    /// title in `slot` (#2706): its record of where each pixel looks and
+    /// its fresnel term, mixed by the metal's tint and its shot strength.
+    /// Run just before the slot is blended; `true` with nothing to draw.
+    pub fn stack_title_metal_shot(&mut self, slot: usize) -> bool {
+        let Some(shot) = self.title_metal_shots.remove(&slot) else { return true };
+        if !self.stack_ensure_acc() || slot >= self.stack_layers.len() {
+            return false;
+        }
+        let (fw, fh) = self.stack_dims;
+        let scale = title_styles::METAL_SHOT_SCALE;
+        let (sw, sh) = (fw.div_ceil(scale), fh.div_ceil(scale));
+        let small = u64::from(sw) * u64::from(sh);
+        let [rx, ry, rw, rh] = shot.roi;
+        let base = u64::from(rw) * u64::from(rh);
+        if self.title_metal_shot_scratch.as_ref().is_none_or(|(_, n)| *n < small) {
+            let b = self.device.create_buffer(&wgpu::BufferDescriptor { label: Some("title metal shot blur"), size: small * 16, usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false });
+            self.title_metal_shot_scratch = Some((b, small));
+        }
+        let radius = (shot.blur_px / scale as f32).round().max(1.0) as u32;
+        let params = |op: u32| MetalShotParams {
+            width: fw, height: fh, op, scale, roi_x: rx, roi_y: ry, roi_w: rw, roi_h: rh,
+            small_w: sw, small_h: sh, base: base as u32, radius,
+            tint_shot: [shot.tint[0], shot.tint[1], shot.tint[2], shot.shot],
+        };
+        let acc = self.stack_acc.clone().unwrap();
+        let scratch = &self.title_metal_shot_scratch.as_ref().unwrap().0;
+        let small_groups = (small as u32).div_ceil(WORKGROUP_SIZE);
+        let pass = |this: &Self, op: u32, read: &wgpu::Buffer, rw: &wgpu::Buffer, groups: u32| {
+            this.write_params(&params(op));
+            this.stack_pass(&this.title_metal_shot_pipeline, read, rw, groups, "title metal shot");
+        };
+        pass(self, 0, &acc, &shot.buffer, small_groups);
+        for _ in 0..2 {
+            pass(self, 1, &shot.buffer, scratch, small_groups);
+            pass(self, 2, scratch, &shot.buffer, small_groups);
+        }
+        pass(self, 3, &shot.buffer, &self.stack_layers[slot], (base as u32).div_ceil(WORKGROUP_SIZE));
+        true
+    }
+
     fn stack_ensure_acc(&mut self) -> bool {
         let Some(acc) = self.stack_acc.clone() else { return false };
         if !self.stack_acc_touched {
@@ -16124,6 +16183,110 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
 "
 );
 
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct MetalShotParams {
+    width: u32,
+    height: u32,
+    op: u32,
+    scale: u32,
+    roi_x: u32,
+    roi_y: u32,
+    roi_w: u32,
+    roi_h: u32,
+    small_w: u32,
+    small_h: u32,
+    base: u32,
+    radius: u32,
+    tint_shot: [f32; 4],
+}
+
+// A metal title's reflection of the shot behind it (#2706). One buffer
+// holds the title's record (for each pixel of its box: where it looks,
+// its fresnel term and its contour) then, from `base`, the shot laid so
+// far at an eighth of the frame each way, premultiplied: op 0 makes that
+// copy from the accumulator, ops 1 and 2 blur it across and down through
+// the scratch, op 3 adds what each metal pixel sees to the layer. The
+// record goes through `unpack` too: the title styles' op 63 lays it in
+// the buffer as pixels are laid.
+const SHADER_TITLE_METAL_SHOT: &str = concat!(
+    "
+struct Params {
+    width: u32, height: u32, op: u32, scale: u32,
+    roi_x: u32, roi_y: u32, roi_w: u32, roi_h: u32,
+    small_w: u32, small_h: u32, base: u32, radius: u32,
+    tint_shot: vec4<f32>,
+}
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> p: Params;
+",
+    shader_linear_helpers_wgsl!(),
+    "
+
+fn small_at(x: i32, y: i32) -> vec4<f32> {
+    let cx = clamp(x, 0, i32(p.small_w) - 1);
+    let cy = clamp(y, 0, i32(p.small_h) - 1);
+    return unpack(input[p.base + u32(cy) * p.small_w + u32(cx)]);
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
+    let i = gid.x;
+    if p.op == 3u {
+        if i >= p.roi_w * p.roi_h { return; }
+        let rec = unpack(input[i]);
+        if rec.w <= 0.0 { return; }
+        let u = rec.x / f32(p.scale) - 0.5;
+        let v = rec.y / f32(p.scale) - 0.5;
+        let x0 = i32(floor(u)); let y0 = i32(floor(v));
+        let fx = u - floor(u); let fy = v - floor(v);
+        let seen = mix(mix(small_at(x0, y0), small_at(x0 + 1, y0), fx), mix(small_at(x0, y0 + 1), small_at(x0 + 1, y0 + 1), fx), fy);
+        let tint = p.tint_shot.xyz;
+        let fres = tint + (vec3<f32>(1.0) - tint) * rec.z;
+        let at = (p.roi_y + i / p.roi_w) * p.width + p.roi_x + i % p.roi_w;
+        var px = unpack(output[at]);
+        if px.w <= 0.0 { return; }
+        px = vec4<f32>(px.xyz + fres * seen.xyz * p.tint_shot.w * rec.w, px.w);
+        output[at] = pack(px);
+        return;
+    }
+    if i >= p.small_w * p.small_h { return; }
+    let sx = i % p.small_w; let sy = i / p.small_w;
+    if p.op == 0u {
+        var sum = vec4<f32>(0.0);
+        var n = 0.0;
+        for (var dy = 0u; dy < p.scale; dy++) {
+            let y = sy * p.scale + dy;
+            if y >= p.height { break; }
+            for (var dx = 0u; dx < p.scale; dx++) {
+                let x = sx * p.scale + dx;
+                if x >= p.width { break; }
+                let c = unpack(input[y * p.width + x]);
+                sum += vec4<f32>(c.xyz * c.w, c.w);
+                n += 1.0;
+            }
+        }
+        output[p.base + i] = pack(sum / max(n, 1.0));
+    } else if p.op == 1u {
+        var sum = vec4<f32>(0.0);
+        let r = i32(p.radius);
+        for (var d = -r; d <= r; d++) { sum += small_at(i32(sx) + d, i32(sy)); }
+        output[i] = pack(sum / f32(2 * r + 1));
+    } else if p.op == 2u {
+        var sum = vec4<f32>(0.0);
+        let r = i32(p.radius);
+        for (var d = -r; d <= r; d++) {
+            let cy = clamp(i32(sy) + d, 0, i32(p.small_h) - 1);
+            sum += unpack(input[u32(cy) * p.small_w + sx]);
+        }
+        output[p.base + i] = pack(sum / f32(2 * r + 1));
+    }
+}
+"
+);
+
 // Glow blend — Screen blend between original and blurred layer.
 // Screen formula 1 − (1−a)(1−b) is algebraically identical in any
 // linear [0, 1] space; running it in linear makes the "lighten"
@@ -19649,6 +19812,7 @@ pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
         ("SHADER_BLOOM_THRESHOLD", SHADER_BLOOM_THRESHOLD),
         ("SHADER_BLOOM_BLEND", SHADER_BLOOM_BLEND),
         ("SHADER_GLOW_BLEND", SHADER_GLOW_BLEND),
+        ("SHADER_TITLE_METAL_SHOT", SHADER_TITLE_METAL_SHOT),
         ("SHADER_LIGHT_RAYS", SHADER_LIGHT_RAYS),
         ("SHADER_VIGNETTE", SHADER_VIGNETTE),
         ("SHADER_LENS_FLARE", SHADER_LENS_FLARE),

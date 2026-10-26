@@ -89,11 +89,33 @@ pub struct TitleMetal {
     pub studio: f32,
     pub sky: f32,
     pub sky_tint: [f32; 3],
+    /// How much of the shot behind it the metal reflects, blurred by how
+    /// many frame pixels; drawn when the layers are laid
+    /// ([`GpuEffectsPipeline::stack_title_metal_shot`]).
+    pub shot: f32,
+    pub shot_blur_px: f32,
+    /// The dark line round the letters' outer edge (0..1).
+    pub contour: f32,
     /// Which points glint, and the size of the cells they are picked in
     /// (frame pixels).
     pub seed: f32,
     pub glint_cell: f32,
 }
+
+/// A metal face that reflects the shot behind it (#2706), waiting for the
+/// layers below it to be laid: its buffer holds, for each pixel of its
+/// box, where it looks, its fresnel term and contour, then the shot
+/// below, small and blurred.
+pub(super) struct MetalShot {
+    pub(super) buffer: wgpu::Buffer,
+    pub(super) roi: [u32; 4],
+    pub(super) tint: [f32; 3],
+    pub(super) shot: f32,
+    pub(super) blur_px: f32,
+}
+
+/// The shot's copy is an eighth of the frame each way: it is blurred.
+pub(super) const METAL_SHOT_SCALE: u32 = 8;
 
 /// A glyph's pixel-space pose after source scaling.
 pub struct TitleGlyphPose {
@@ -1644,6 +1666,21 @@ impl GpuEffectsPipeline {
         {
             self.title_style_scratch = Some(StyleScratch::new(&self.device, count));
         }
+        // A metal that reflects the shot keeps its buffer for the pass
+        // that draws it when the layers are laid.
+        self.title_metal_shots.remove(&slot);
+        if let Some(TitleFill::Metal(m)) = &fill {
+            if m.shot > 0.0 {
+                let small = u64::from(fw.div_ceil(METAL_SHOT_SCALE)) * u64::from(fh.div_ceil(METAL_SHOT_SCALE));
+                let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("title metal shot"),
+                    size: (count + small) * 16,
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                self.title_metal_shots.insert(slot, MetalShot { buffer, roi, tint: m.tint, shot: m.shot, blur_px: m.shot_blur_px });
+            }
+        }
         let s = self.title_style_scratch.as_ref().unwrap();
         let layer = &self.stack_layers[slot];
         let face_layer = &self.stack_layers[face_slot.unwrap_or(slot)];
@@ -1699,7 +1736,7 @@ impl GpuEffectsPipeline {
             let (color, intensity) = match *style {
                 TitleStyle::Face => {
                     if let Some(TitleFill::Metal(metal)) = &fill {
-                        if !self.title_metal_face(s, base, metal, bounds, fill_alpha) {
+                        if !self.title_metal_face(s, base, metal, bounds, fill_alpha, self.title_metal_shots.get(&slot)) {
                             return false;
                         }
                     } else if let Some(fill) = &fill {
@@ -1889,8 +1926,8 @@ impl GpuEffectsPipeline {
     /// A metal face over the styles behind it (#2706): the face's
     /// coverage blurred by the bevel into a height, packed with the
     /// coverage, and shaded from that height's slope.
-    fn title_metal_face(&self, s: &StyleScratch, base: StyleParams, m: &TitleMetal, bounds: [f32; 4], alpha: f32) -> bool {
-        let fields = [m.roughness, m.edge, m.highlights, m.glints, m.anisotropy, m.anisotropy_radians, m.bevel_px, m.depth, m.key.1, m.rim.1, m.studio, m.sky, m.seed, m.glint_cell];
+    fn title_metal_face(&self, s: &StyleScratch, base: StyleParams, m: &TitleMetal, bounds: [f32; 4], alpha: f32, shot: Option<&MetalShot>) -> bool {
+        let fields = [m.roughness, m.edge, m.highlights, m.glints, m.anisotropy, m.anisotropy_radians, m.bevel_px, m.depth, m.key.1, m.rim.1, m.studio, m.sky, m.shot, m.shot_blur_px, m.contour, m.seed, m.glint_cell];
         if fields.iter().chain(&m.tint).chain(&m.key.0).chain(&m.key.2).chain(&m.rim.0).chain(&m.rim.2).chain(&m.sky_tint).any(|v| !v.is_finite()) || m.bevel_px < 0.0 || m.bevel_px > 32767.0 {
             return false;
         }
@@ -1918,7 +1955,8 @@ impl GpuEffectsPipeline {
         stops[2] = stop([m.studio, m.sky, m.anisotropy_radians, (fw.max(fh) as f32) * 1.2]);
         stops[3] = stop([m.sky_tint[0], m.sky_tint[1], m.sky_tint[2], m.seed]);
         stops[4] = stop([centre[0], centre[1], m.glint_cell.max(8.0), 0.0]);
-        stops[5] = stop([bounds[0], bounds[1], 0.0, 0.0]);
+        stops[5] = stop([bounds[0], bounds[1], fh as f32 * 0.5, 0.0]);
+        stops[6] = stop([m.contour, 0.0, 0.0, 0.0]);
         self.write_params(&FillParams {
             base: StyleParams {
                 op: 62,
@@ -1933,6 +1971,14 @@ impl GpuEffectsPipeline {
             stops,
         });
         self.stack_pass(&self.title_style_pipeline, &s.work, &s.composite, (count as u32).div_ceil(WORKGROUP_SIZE), "title metal face");
+        // Where it sees the shot, kept for the shot's pass.
+        if let Some(shot) = shot {
+            self.write_params(&FillParams {
+                base: StyleParams { op: 63, color: [m.tint[0], m.tint[1], m.tint[2], alpha], matrix: [[m.roughness, m.edge, slope, m.highlights], [0.0; 4], [0.0; 4]], ..base },
+                stops,
+            });
+            self.stack_pass(&self.title_style_pipeline, &s.work, &shot.buffer, (count as u32).div_ceil(WORKGROUP_SIZE), "title metal shot record");
+        }
         true
     }
 

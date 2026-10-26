@@ -16,13 +16,14 @@ pub enum MetalPreset {
     Silver,
     Steel,
     Copper,
+    RoseGold,
     Bronze,
     Chrome,
     BrushedMetal,
 }
 
 impl MetalPreset {
-    pub const ALL: [MetalPreset; 7] = [Self::Gold, Self::Silver, Self::Steel, Self::Copper, Self::Bronze, Self::Chrome, Self::BrushedMetal];
+    pub const ALL: [MetalPreset; 8] = [Self::Gold, Self::Silver, Self::Steel, Self::Copper, Self::RoseGold, Self::Bronze, Self::Chrome, Self::BrushedMetal];
 
     /// The name the ops and the app give it.
     pub fn name(self) -> &'static str {
@@ -31,6 +32,7 @@ impl MetalPreset {
             Self::Silver => "silver",
             Self::Steel => "steel",
             Self::Copper => "copper",
+            Self::RoseGold => "rose_gold",
             Self::Bronze => "bronze",
             Self::Chrome => "chrome",
             Self::BrushedMetal => "brushed_metal",
@@ -44,6 +46,7 @@ impl MetalPreset {
             Self::Silver => "Silver",
             Self::Steel => "Steel",
             Self::Copper => "Copper",
+            Self::RoseGold => "Rose gold",
             Self::Bronze => "Bronze",
             Self::Chrome => "Chrome",
             Self::BrushedMetal => "Brushed metal",
@@ -82,18 +85,23 @@ impl MetalLight {
 }
 
 /// What the metal reflects, as a mix: a studio of soft boxes over a dark
-/// floor, and a sky from a neutral-to-warm horizon to a pale zenith, its
-/// colour shifted by `sky_tint` (sRGB; white leaves it as it is).
+/// floor, a sky from a neutral-to-warm horizon to a pale zenith, its
+/// colour shifted by `sky_tint` (sRGB; white leaves it as it is), and
+/// the shot behind the title, blurred by `shot_blur` (a fraction of the
+/// frame's height), so the metal takes the scene's colours and light.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct MetalEnvironment {
     pub studio: f32,
     pub sky: f32,
     pub sky_tint: [u8; 3],
+    pub shot: f32,
+    pub shot_blur: f32,
 }
 
 impl Default for MetalEnvironment {
     fn default() -> Self {
-        Self { studio: 0.65, sky: 0.35, sky_tint: [255, 255, 255] }
+        Self { studio: 0.65, sky: 0.35, sky_tint: [255, 255, 255], shot: 0.5, shot_blur: 0.04 }
     }
 }
 
@@ -122,6 +130,9 @@ pub struct TitleMaterial {
     /// steep it is (0..1): flat text gets its shape from it.
     pub bevel: f32,
     pub depth: f32,
+    /// 0..1: a dark line round the letters' outer edge, which keeps a
+    /// light metal's shape on a bright picture.
+    pub contour: f32,
     pub environment: MetalEnvironment,
     pub key_light: MetalLight,
     pub rim_light: Option<MetalLight>,
@@ -150,18 +161,26 @@ impl TitleMaterial {
             glints: 0.25,
             bevel: 0.06,
             depth: 0.7,
+            contour: 0.25,
             environment: MetalEnvironment::default(),
             key_light: key,
             rim_light: Some(rim),
         };
+        let env = |studio, sky, shot| MetalEnvironment { studio, sky, shot, ..MetalEnvironment::default() };
         match preset {
-            MetalPreset::Gold => Self { environment: MetalEnvironment { studio: 0.55, sky: 0.5, ..MetalEnvironment::default() }, ..base },
-            MetalPreset::Silver => Self { tint: [0.972, 0.960, 0.915], roughness: 0.1, ..base },
-            MetalPreset::Steel => Self { tint: [0.48, 0.50, 0.53], roughness: 0.3, glints: 0.1, edge: 0.7, ..base },
-            MetalPreset::Copper => Self { tint: [0.955, 0.638, 0.538], roughness: 0.15, ..base },
-            MetalPreset::Bronze => Self { tint: [0.62, 0.40, 0.20], roughness: 0.28, glints: 0.1, ..base },
-            MetalPreset::Chrome => Self { tint: [0.65, 0.66, 0.66], roughness: 0.02, edge: 0.8, glints: 0.35, environment: MetalEnvironment { studio: 0.8, sky: 0.2, ..MetalEnvironment::default() }, ..base },
-            MetalPreset::BrushedMetal => Self { tint: [0.70, 0.71, 0.73], roughness: 0.3, anisotropy: 0.8, glints: 0.0, ..base },
+            MetalPreset::Gold => Self { environment: env(0.55, 0.5, 0.5), ..base },
+            // Warm white and bright, its bands soft.
+            MetalPreset::Silver => Self { tint: [0.97, 0.95, 0.90], roughness: 0.28, contour: 0.35, environment: env(0.4, 0.7, 0.5), ..base },
+            // Darker and bluish grey, a little rough.
+            MetalPreset::Steel => Self { tint: [0.40, 0.43, 0.48], roughness: 0.34, glints: 0.1, edge: 0.7, contour: 0.4, ..base },
+            // Orange-red brown: its edge kept low, so grazing light does
+            // not wash it pink.
+            MetalPreset::Copper => Self { tint: [0.93, 0.47, 0.27], roughness: 0.18, edge: 0.35, key_light: MetalLight { color: [255, 228, 200], ..key }, ..base },
+            MetalPreset::RoseGold => Self { tint: [0.98, 0.72, 0.64], roughness: 0.12, edge: 0.5, ..base },
+            MetalPreset::Bronze => Self { tint: [0.62, 0.40, 0.20], roughness: 0.28, glints: 0.1, edge: 0.45, ..base },
+            // A mirror: hard bands from a studio, near-black between them.
+            MetalPreset::Chrome => Self { tint: [0.62, 0.63, 0.64], roughness: 0.02, edge: 0.9, glints: 0.35, contour: 0.45, environment: env(1.3, 0.0, 0.3), ..base },
+            MetalPreset::BrushedMetal => Self { tint: [0.52, 0.53, 0.56], roughness: 0.3, anisotropy: 0.8, glints: 0.0, contour: 0.45, ..base },
         }
     }
 
@@ -184,10 +203,13 @@ impl TitleMaterial {
         self.edge = unit(self.edge);
         self.glints = unit(self.glints);
         self.depth = unit(self.depth);
+        self.contour = unit(self.contour);
         self.highlights = if self.highlights.is_finite() { self.highlights.clamp(0.0, 2.0) } else { 1.0 };
         self.bevel = if self.bevel.is_finite() { self.bevel.clamp(0.0, 0.3) } else { 0.06 };
         self.environment.studio = if self.environment.studio.is_finite() { self.environment.studio.clamp(0.0, 2.0) } else { 0.0 };
         self.environment.sky = if self.environment.sky.is_finite() { self.environment.sky.clamp(0.0, 2.0) } else { 0.0 };
+        self.environment.shot = if self.environment.shot.is_finite() { self.environment.shot.clamp(0.0, 2.0) } else { 0.0 };
+        self.environment.shot_blur = if self.environment.shot_blur.is_finite() { self.environment.shot_blur.clamp(0.0, 0.2) } else { 0.04 };
         fn light(l: MetalLight) -> MetalLight {
             MetalLight { strength: if l.strength.is_finite() { l.strength.clamp(0.0, 4.0) } else { 0.0 }, ..l }
         }

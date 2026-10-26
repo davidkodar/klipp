@@ -598,11 +598,13 @@ exist until the plan runs.
   value: 40}]}}`.
   `material` makes flat text metal, polished as the metal is with
   nothing else set: a name (gold, silver, steel or iron, copper,
-  bronze, chrome, brushed_metal), `"none"` to paint it again, or
+  rose_gold, bronze, chrome, brushed_metal), `"none"` to paint it again, or
   `{preset?, tint? (#rrggbb), roughness? (0 mirror, 1 satin), edge?
   (fresnel), highlights? (0 to 2), glints?, bevel? (a fraction of the
-  size, up to 0.3), depth?, anisotropy? and anisotropy_angle? (brushed
-  streaks), environment? {studio?, sky? (0 to 2), sky_tint?},
+  size, up to 0.3), depth?, contour? (a dark line round the letters'
+  edge), anisotropy? and anisotropy_angle? (brushed streaks),
+  environment? {studio?, sky?, shot? (0 to 2), sky_tint?, shot_blur?
+  (a fraction of the frame's height, up to 0.2)},
   key_light? {azimuth, elevation, strength (0 to 4), color},
   rim_light? (the same, or "none")}`, amounts 0 to 1 unless said. The
   fields lay over the named preset, or over the text's metal as it is.
@@ -610,8 +612,9 @@ exist until the plan runs.
   the left, -90 above) and elevation degrees towards the viewer: put
   the key light where the shot's light comes from (a low sun on the
   right: `{azimuth: -10, elevation: 15, color: "#ffd8a0"}`). The metal
-  reflects a studio and a sky mixed by their strengths, through a
-  bevel cut into the letters; the layer's effects run over it, so a
+  reflects a studio, a sky and the shot behind the title (blurred),
+  mixed by their strengths, through a bevel cut into the letters: more
+  shot sets it in the scene, more studio makes it a product shot; the layer's effects run over it, so a
   glow glows gold. Without a GPU the text shows its colour. A 3D text
   is not made metal.
 - `set_text {clip_id, text}`: the words of a title or a caption; its

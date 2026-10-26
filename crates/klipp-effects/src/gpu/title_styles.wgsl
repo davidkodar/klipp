@@ -268,7 +268,8 @@ fn image_sample(u0: f32, v0: f32) -> vec4<f32> {
 // anisotropy's angle and the camera's distance in pixels, [3] the sky's
 // tint and a seed, [4] the text's centre and the glints' cell size,
 // [5] the text's top left, which the glints' cells hang from, so they
-// stay on the letters as the title moves.
+// stay on the letters as the title moves, and how far a reflection
+// reaches across the frame; [6] the contour.
 fn metal_word(x: i32, y: i32) -> u32 {
     let cx=clamp(x,0,i32(p.width)-1); let cy=clamp(y,0,i32(p.height)-1);
     return input[u32(cy)*p.width+u32(cx)];
@@ -294,9 +295,11 @@ fn metal_environment(r: vec3<f32>, rough: f32) -> vec3<f32> {
     let up=-r.y;
     let w=0.015+rough*0.45;
     // Studio.
-    // A floor that is dark but not black, lit by a bounce below the
-    // horizon, so a metal's shade keeps its colour.
-    var studio=vec3<f32>(mix(0.07,0.12,smoothstep(-w,w,up)));
+    // A floor dark but not black, lit by a bounce below the horizon, so
+    // a metal's shade keeps its colour; a mirror sees it near black, a
+    // rougher metal the light around it averaged in.
+    let floor=mix(0.012,0.07,smoothstep(0.0,0.2,rough));
+    var studio=vec3<f32>(mix(floor,floor+0.05,smoothstep(-w,w,up)));
     studio+=vec3<f32>(0.35)*exp(-pow((up+0.3)/(0.12+rough*0.3),2.0));
     studio+=vec3<f32>(1.9)*exp(-pow((up-0.04)/(0.035+rough*0.35),2.0));
     studio+=vec3<f32>(2.4)*smoothstep(0.5-w,0.5+w,up);
@@ -307,7 +310,7 @@ fn metal_environment(r: vec3<f32>, rough: f32) -> vec3<f32> {
     let zenith=vec3<f32>(0.80,0.84,0.92)*1.1;
     let ground=vec3<f32>(0.30,0.24,0.17)*0.5;
     let above=mix(horizon,zenith,smoothstep(0.0,0.7,up));
-    let below=mix(ground*1.4,ground*0.25,smoothstep(0.0,0.5,-up));
+    let below=mix(ground*1.4,ground*0.25,smoothstep(0.0,0.5,-up))*mix(0.35,1.0,smoothstep(0.0,0.2,rough));
     let tint=vec3<f32>(metal_stop(3u,0u),metal_stop(3u,1u),metal_stop(3u,2u));
     let sky=mix(below,above,smoothstep(-w,w,up))*tint;
     return studio*metal_stop(2u,0u)+sky*metal_stop(2u,1u);
@@ -318,6 +321,26 @@ fn metal_light(n: vec3<f32>, v: vec3<f32>, l: vec3<f32>, rough: f32) -> f32 {
     let s=clamp(2.0/(a*a*a*a)-2.0,4.0,4000.0);
     let h=normalize(l+v);
     return (s+8.0)/(8.0*3.14159265)*pow(max(dot(n,h),0.0),s)*max(dot(n,l),0.0)*0.12;
+}
+fn metal_contour(x: i32, y: i32) -> f32 {
+    return mix(1.0-metal_stop(6u,0u)*0.7,1.0,smoothstep(0.5,0.8,metal_height(x,y)));
+}
+// Where the shot behind is seen from a metal pixel (#2706): its
+// reflection carried across the frame from the text's centre (a flat
+// face sees a small mirrored patch behind it, a bevel turned up sees what
+// is above), its fresnel term and its contour, for the shot's pass when
+// the layers are laid. A pixel off the face is left at zero.
+fn metal_shot_record(x: u32, y: u32, i: u32) {
+    let cov=f32(input[i]>>16u);
+    if cov<=0.0 { store_rgba(i,vec4<f32>(0.0)); return; }
+    let fx=f32(x+p.x0)+0.5; let fy=f32(y+p.y0)+0.5;
+    let n=metal_normal(i32(x),i32(y));
+    let centre=vec2<f32>(metal_stop(4u,0u),metal_stop(4u,1u));
+    let v=normalize(vec3<f32>(centre.x-fx,centre.y-fy,-metal_stop(2u,3u)));
+    let r=reflect(-v,n);
+    let at=centre+r.xy/max(-r.z,0.2)*metal_stop(5u,2u);
+    let fres=pow(1.0-clamp(dot(n,v),0.0,1.0),5.0)*p.row0.y;
+    store_rgba(i,vec4<f32>(at.x,at.y,fres,metal_contour(i32(x),i32(y))));
 }
 fn metal_shoulder(x: f32) -> f32 {
     if x<0.75 { return max(x,0.0); }
@@ -349,6 +372,8 @@ fn metal_face(x: u32, y: u32, i: u32) {
         let rim_l=vec3<f32>(metal_stop(0u,0u),metal_stop(0u,1u),metal_stop(0u,2u));
         let rim=metal_light(n,v,rim_l,rough+aniso*0.2)*metal_stop(0u,3u)*p.row0.w;
         lin+=rim*vec3<f32>(metal_stop(1u,0u),metal_stop(1u,1u),metal_stop(1u,2u))*fres;
+        // A dark line round the outer edge keeps a light metal's shape.
+        lin*=metal_contour(i32(x),i32(y));
         let rgb=vec3<f32>(metal_shoulder(lin.x),metal_shoulder(lin.y),metal_shoulder(lin.z));
         let a=floor(cov*floor(clamp(p.color.a,0.0,1.0)*255.0+0.5)/255.0)/255.0;
         out=over(vec4<f32>(encoded(rgb.x),encoded(rgb.y),encoded(rgb.z),a),out);
@@ -987,6 +1012,8 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
         output[i]=min(output[i],65535u)|(min(input[i],255u)<<16u);
     } else if p.op==62u { // A metal face over behind styles (#2706).
         metal_face(x,y,i);
+    } else if p.op==63u { // Where a metal face sees the shot behind it.
+        metal_shot_record(x,y,i);
     } else if p.op==1u { // Extract coverage directly from the unchanged stack face.
         output[i]=select(u32(round(clamp(load_rgba((y+p.y0)*p.frame_width+x+p.x0).a,0.0,1.0)*255.0)),0u,i32(x+p.x0)>=p.offset_x);
     } else if p.op==2u || p.op==8u { // Offset (optionally inverted) coverage.

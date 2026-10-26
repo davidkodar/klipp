@@ -314,7 +314,7 @@ fn wrong_metal_values_are_refused() {
     let (mut d, id) = titled("Wrong metal");
     let before = d.title().1.clone();
     for (material, says) in [
-        (json!("tin"), "gold, silver, steel, copper, bronze, chrome, brushed_metal"),
+        (json!("tin"), "gold, silver, steel, copper, rose_gold, bronze, chrome, brushed_metal"),
         (json!({"roughness":2}), "roughness from 0 to 1"),
         (json!({"bevel":0.5}), "bevel from 0 to 0.3"),
         (json!({"key_light":{"strength":9}}), "key_light strength from 0 to 4"),

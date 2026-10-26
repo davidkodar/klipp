@@ -174,6 +174,7 @@ const SHADERS: &[(&str, Cover)] = &[
     ("SHADER_HDR_ZONES", Test("klipp-effects/tests/hdr_zones_gpu_parity.rs", "the_standalone_pass_draws_the_cpu_zones")),
     ("SHADER_GRAIN", Test("klipp-nodes/tests/grain_denoise_parity.rs", "colour_grain_matches_the_shader")),
     ("TITLE_STYLES", Test("klipp-effects/tests/resident_title_styles.rs", "resident_styles_match_authored_title_composition_without_downloads")),
+    ("SHADER_TITLE_METAL_SHOT", Exempt("GPU only by design (#2706): a metal title's reflection of the shot behind it has no CPU twin, a frame drawn without a GPU shows the title's colour; what it draws is held in klipp-compose's title_metal_gpu (a_metal_reflects_the_shot_behind_it)")),
     ("SHADER_ALPHA_BLUR_H", GLOW),
     ("SHADER_ALPHA_BLUR_V", GLOW),
     ("SHADER_ALPHA_DILATE", GLOW),

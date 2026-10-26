@@ -350,6 +350,9 @@ pub struct MaterialFields {
     pub bevel: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub depth: Option<f32>,
+    /// A dark line round the letters' outer edge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contour: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment: Option<EnvironmentSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -359,8 +362,9 @@ pub struct MaterialFields {
     pub rim_light: Option<RimSpec>,
 }
 
-/// What the metal reflects, as strengths 0..2: a studio and a sky, the
-/// sky tinted.
+/// What the metal reflects, as strengths 0..2: a studio, a sky (tinted)
+/// and the shot behind the title, blurred by `shot_blur` (a fraction of
+/// the frame's height, up to 0.2).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EnvironmentSpec {
@@ -368,6 +372,10 @@ pub struct EnvironmentSpec {
     pub studio: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sky: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shot: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shot_blur: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sky_tint: Option<String>,
 }
@@ -10381,9 +10389,12 @@ impl MaterialAsk {
         set(&mut m.glints, f.glints);
         set(&mut m.bevel, f.bevel);
         set(&mut m.depth, f.depth);
+        set(&mut m.contour, f.contour);
         if let Some(e) = &f.environment {
             set(&mut m.environment.studio, e.studio);
             set(&mut m.environment.sky, e.sky);
+            set(&mut m.environment.shot, e.shot);
+            set(&mut m.environment.shot_blur, e.shot_blur);
         }
         if let Some(t) = self.sky_tint {
             m.environment.sky_tint = t;
@@ -10435,9 +10446,12 @@ fn material_ask(spec: &MaterialSpec, i: usize) -> Result<Option<MaterialAsk>, Re
     range("glints", f.glints, 0.0, 1.0)?;
     range("bevel", f.bevel, 0.0, 0.3)?;
     range("depth", f.depth, 0.0, 1.0)?;
+    range("contour", f.contour, 0.0, 1.0)?;
     if let Some(e) = &f.environment {
         range("environment studio", e.studio, 0.0, 2.0)?;
         range("environment sky", e.sky, 0.0, 2.0)?;
+        range("environment shot", e.shot, 0.0, 2.0)?;
+        range("environment shot_blur", e.shot_blur, 0.0, 0.2)?;
     }
     let lights = [("key_light", f.key_light.as_ref()), ("rim_light", match &f.rim_light { Some(RimSpec::On(l)) => Some(l.as_ref()), _ => None })];
     for (name, l) in lights {
