@@ -158,6 +158,9 @@ pub struct AudioClipSnapshot {
     pub audio_effects: Vec<klipp_core::AudioEffectInstance>,
     /// Per-audio-effect keyframes: maps "{effect_index}:{param_name}" to keyframe track.
     pub audio_effect_keyframes: HashMap<String, Vec<Keyframe>>,
+    /// The part of the file the clip plays, as its clip has it: what a
+    /// Normalize in its chain is measured over (#2778).
+    pub source_range: (f64, f64),
     /// What the clip does to its sound: playback applies this per clip,
     /// and the render applies the same.
     pub shape: AudioClipShape,
@@ -764,6 +767,7 @@ fn snapshot_audio_track(
                         path: media.path.clone(),
                         audio_effects: clip.audio_effects.clone(),
                         audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
+                        source_range: (clip.source_in.to_secs_f64(), clip.source_out.to_secs_f64()),
                         shape,
                         varispeed,
                     });
@@ -817,6 +821,7 @@ fn snapshot_video_track_sound(track: &Track, seq: &Sequence, media_pool: &MediaP
             path: media.path.clone(),
             audio_effects: clip.audio_effects.clone(),
             audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
+            source_range: (clip.source_in.to_secs_f64(), clip.source_out.to_secs_f64()),
             shape,
             varispeed,
         });
@@ -864,6 +869,7 @@ fn flatten_compound_audio_clips(
             path: media.path.clone(),
             audio_effects: clip.audio_effects.clone(),
             audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
+            source_range: (clip.source_in.to_secs_f64(), clip.source_out.to_secs_f64()),
             shape: AudioClipShape::of(&clip, clip.duration().to_secs_f64()),
             varispeed,
         });

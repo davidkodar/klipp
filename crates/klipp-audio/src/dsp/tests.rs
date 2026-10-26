@@ -191,7 +191,8 @@ fn noise_reduction_modifies_audio() {
 fn normalize_modifies_audio() {
     let mut fx = create_effect("normalize", SR).unwrap();
     fx.set_param("target_lufs", -6.0);
-    fx.set_param("mode", 0.0); // peak mode
+    // Clip mode, its clip measured quiet (#2778).
+    fx.set_param("measured_lufs", -30.0);
 
     // Use a quiet signal — normalize should boost it
     let mut buf = sine_stereo(440.0, 0.2, SR);
@@ -691,36 +692,30 @@ fn consecutive_process_calls_maintain_state() {
 fn normalize_lufs_mode_boosts_quiet_signal() {
     let mut fx = create_effect("normalize", SR).unwrap();
     fx.set_param("target_lufs", -14.0);
-    fx.set_param("mode", 1.0); // LUFS mode
+    fx.set_param("mode", 1.0); // Clip mode
+    // Measured 10 LU under the target: 10 dB up, exactly (#2778).
+    fx.set_param("measured_lufs", -24.0);
 
-    // Feed enough audio for the LUFS meter to produce readings (need >400ms)
-    // Use a quiet signal that should be boosted
     let mut buf = sine_stereo(440.0, 1.0, SR);
     for s in buf.iter_mut() { *s *= 0.05; } // very quiet
     let original_rms = rms(&buf);
     let ctx = make_ctx(SR);
     fx.process(&mut buf, &ctx);
 
-    assert!(rms(&buf) > original_rms,
-        "LUFS normalize should boost quiet signal: before={:.4} after={:.4}",
-        original_rms, rms(&buf));
+    let gain_db = 20.0 * (rms(&buf) / original_rms).log10();
+    assert!((gain_db - 10.0).abs() < 0.01, "a clip measured 10 LU under its target goes up {gain_db:.2} dB");
 }
 
 #[test]
-fn normalize_peak_mode_still_works() {
+fn normalize_unmeasured_is_unity() {
+    // Clip mode before its clip is measured: no gain at all (#2778).
     let mut fx = create_effect("normalize", SR).unwrap();
     fx.set_param("target_lufs", -6.0);
-    fx.set_param("mode", 0.0); // peak mode
-
     let mut buf = sine_stereo(440.0, 0.5, SR);
     for s in buf.iter_mut() { *s *= 0.1; }
-    let original_rms = rms(&buf);
-    let ctx = make_ctx(SR);
-    fx.process(&mut buf, &ctx);
-
-    assert!(rms(&buf) > original_rms * 1.1,
-        "peak normalize should boost quiet signal: before={:.4} after={:.4}",
-        original_rms, rms(&buf));
+    let before = buf.clone();
+    fx.process(&mut buf, &make_ctx(SR));
+    assert_eq!(buf, before);
 }
 
 #[test]

@@ -1,5 +1,7 @@
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod measured;
 
 pub mod biquad;
 pub mod chorus;

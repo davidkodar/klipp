@@ -4740,6 +4740,10 @@ pub enum AppEvent {
     /// `AppCommand::LearnDenoiserProfile`); `params` are ready to store.
     DenoiserProfileLearned { clip_id: ClipId, effect_index: usize, params: Vec<(String, f32)>, source_secs: f64 },
     DenoiserProfileFailed { error: String },
+    /// A Normalize's input measured in the background (#2778): the
+    /// clip's integrated loudness into the effect at `effect_index`
+    /// (`None`: silent), for the `key` it was measured for.
+    NormalizeMeasured { clip_id: ClipId, effect_index: usize, key: u64, lufs: Option<f32> },
 }
 
 /// Target for generating keyframes from tracked point data.

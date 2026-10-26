@@ -1,20 +1,29 @@
 use super::{AudioEffect, AudioParamDescriptor, AudioProcessContext, ParamUnit};
 use crate::lufs::LufsMeter;
 
-const MAX_CHANNELS: usize = 2;
-
-/// Real-time auto-gain normalizer.
+/// Normalize (#2778), two ways by Mode.
 ///
-/// Uses a BS.1770-4 LUFS meter for loudness analysis (when in LUFS mode)
-/// or peak tracking (when in peak mode), and slowly adjusts gain toward
-/// the target loudness level.
+/// **Clip** (mode 1, the default): the whole clip at Target LUFS
+/// integrated, by one gain held over it, so its dynamics stay as they
+/// are. The gain comes from the clip's integrated loudness through the
+/// chain up to this effect, measured once over its source range: the app
+/// measures it in the background and export before it renders, and they
+/// write it here as `measured_lufs`, with the `measured_key` it was
+/// measured for ([`normalize_key`]). Until then the gain is unity.
+///
+/// **Ride** (mode 0): a leveler, riding the short-term (3 s) loudness
+/// toward Target as the clip plays, slowly, for material whose level
+/// wanders. A different tool, kept here as the effect's second mode.
 pub struct Normalize {
     sample_rate: f32,
     target_lufs: f32,
     mode: f32,
-    /// Current applied gain (linear).
+    /// The clip's integrated loudness into this effect, when measured.
+    measured_lufs: f32,
+    /// What it was measured for, as two exact halves of a 48-bit key.
+    measured_key: [f32; 2],
+    /// The leveler's gain now (linear).
     current_gain: f32,
-    /// BS.1770-4 compliant meter for LUFS-mode analysis.
     lufs_meter: LufsMeter,
 }
 
@@ -25,12 +34,26 @@ impl Normalize {
             sample_rate: sr,
             target_lufs: -14.0,
             mode: 1.0,
+            measured_lufs: f32::NAN,
+            measured_key: [f32::NAN; 2],
             current_gain: 1.0,
-            // Normalize is a DSP effect that runs offline-ish — always
-            // request the more accurate 4× true-peak detection here.
-            lufs_meter: LufsMeter::new(sr, true),
+            lufs_meter: LufsMeter::new(sr, false),
         }
     }
+
+    /// The gain Clip mode holds (linear): unity until measured.
+    pub fn clip_gain(target_lufs: f32, measured_lufs: f32) -> f32 {
+        if !measured_lufs.is_finite() || measured_lufs < -70.0 {
+            return 1.0;
+        }
+        10.0_f32.powf((target_lufs - measured_lufs) / 20.0).clamp(0.01, 40.0)
+    }
+}
+
+/// A clip's normalize measurement key as the two exact `f32` halves its
+/// params hold: 24 bits each of `key`'s low 48.
+pub fn normalize_key(key: u64) -> [f32; 2] {
+    [(key & 0xFF_FFFF) as f32, ((key >> 24) & 0xFF_FFFF) as f32]
 }
 
 static PARAM_DESCS: &[AudioParamDescriptor] = &[
@@ -47,6 +70,9 @@ impl AudioEffect for Normalize {
         match name {
             "target_lufs" => Some(self.target_lufs),
             "mode" => Some(self.mode),
+            "measured_lufs" => Some(self.measured_lufs),
+            "measured_key_lo" => Some(self.measured_key[0]),
+            "measured_key_hi" => Some(self.measured_key[1]),
             _ => None,
         }
     }
@@ -55,6 +81,9 @@ impl AudioEffect for Normalize {
         match name {
             "target_lufs" => self.target_lufs = value.clamp(-24.0, 0.0),
             "mode" => self.mode = if value > 0.5 { 1.0 } else { 0.0 },
+            "measured_lufs" => self.measured_lufs = value,
+            "measured_key_lo" => self.measured_key[0] = value,
+            "measured_key_hi" => self.measured_key[1] = value,
             _ => {}
         }
     }
@@ -65,52 +94,26 @@ impl AudioEffect for Normalize {
         let num_frames = buffer.len() / channels;
         if num_frames == 0 { return; }
 
-        let is_lufs_mode = self.mode > 0.5;
-
-        // Attack/release coefficients for gain smoothing
-        let attack_coeff = (-1.0 / (0.1 * self.sample_rate)).exp(); // 100ms
-        let release_coeff = (-1.0 / (1.0 * self.sample_rate)).exp(); // 1000ms
-
-        if is_lufs_mode {
-            // BS.1770-4 LUFS mode: feed buffer through K-weighted meter
-            // then derive gain from momentary loudness vs target
-            self.lufs_meter.process(buffer);
-            let measured_lufs = self.lufs_meter.momentary_lufs;
-
-            if measured_lufs.is_finite() && measured_lufs > -70.0 {
-                // desired gain in dB = target - measured, then convert to linear
-                let gain_db = self.target_lufs - measured_lufs;
-                let desired_gain = 10.0_f32.powf(gain_db / 20.0).clamp(0.01, 40.0);
-                let coeff = if desired_gain < self.current_gain {
-                    attack_coeff
-                } else {
-                    release_coeff
-                };
-                self.current_gain = coeff * self.current_gain + (1.0 - coeff) * desired_gain;
-            }
+        let gain = if self.mode > 0.5 {
+            Self::clip_gain(self.target_lufs, self.measured_lufs)
         } else {
-            // Peak normalize mode: track peak and scale
-            for frame in 0..num_frames {
-                let mut peak = 0.0_f32;
-                for ch in 0..channels.min(MAX_CHANNELS) {
-                    peak = peak.max(buffer[frame * channels + ch].abs());
-                }
-                if peak > 1e-8 {
-                    let target_linear = 10.0_f32.powf(self.target_lufs / 20.0);
-                    let desired_gain = (target_linear / peak).clamp(0.01, 40.0);
-                    let coeff = if desired_gain < self.current_gain {
-                        attack_coeff
-                    } else {
-                        release_coeff
-                    };
-                    self.current_gain = coeff * self.current_gain + (1.0 - coeff) * desired_gain;
-                }
+            // Ride: toward the short-term loudness's gain, per block by
+            // its whole length, down in about 2 s and up in about 4 s, so
+            // a word does not pump it.
+            self.lufs_meter.process(buffer);
+            let measured = self.lufs_meter.short_term_lufs;
+            if measured.is_finite() && measured > -70.0 {
+                let desired = 10.0_f32.powf((self.target_lufs - measured) / 20.0).clamp(0.01, 40.0);
+                let secs = if desired < self.current_gain { 2.0 } else { 4.0 };
+                let k = (-(num_frames as f32) / (secs * self.sample_rate)).exp();
+                self.current_gain = k * self.current_gain + (1.0 - k) * desired;
             }
-        }
-
-        // Apply gain to all samples
-        for s in buffer.iter_mut() {
-            *s *= self.current_gain;
+            self.current_gain
+        };
+        if (gain - 1.0).abs() > f32::EPSILON {
+            for s in buffer.iter_mut() {
+                *s *= gain;
+            }
         }
     }
 
@@ -120,10 +123,16 @@ impl AudioEffect for Normalize {
     }
 
     fn serialize_params(&self) -> Vec<(String, f32)> {
-        vec![
+        let mut out = vec![
             ("target_lufs".into(), self.target_lufs),
             ("mode".into(), self.mode),
-        ]
+        ];
+        if self.measured_lufs.is_finite() {
+            out.push(("measured_lufs".into(), self.measured_lufs));
+            out.push(("measured_key_lo".into(), self.measured_key[0]));
+            out.push(("measured_key_hi".into(), self.measured_key[1]));
+        }
+        out
     }
 
     fn deserialize_params(&mut self, params: &[(String, f32)]) {

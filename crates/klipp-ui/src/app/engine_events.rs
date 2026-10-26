@@ -502,7 +502,8 @@ impl KlippApp {
                 | AppEvent::MediaSyncFailed { .. }
                 | AppEvent::MulticamSyncReady { .. }
                 | AppEvent::DenoiserProfileLearned { .. }
-                | AppEvent::DenoiserProfileFailed { .. } => {}
+                | AppEvent::DenoiserProfileFailed { .. }
+                | AppEvent::NormalizeMeasured { .. } => {}
             }
         }
 

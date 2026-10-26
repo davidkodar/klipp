@@ -491,6 +491,7 @@ impl KlippApp {
         }
         self.drain_audio_conforms();
         self.drain_proxy_events();
+        self.measure_stale_normalizes();
         // If a skim decode just finished and there's a queued request,
         // dispatch it immediately. After `drain_proxy_events`, because that
         // is where `BrowserSkimFrameReady` clears `skim_decode_in_flight`:

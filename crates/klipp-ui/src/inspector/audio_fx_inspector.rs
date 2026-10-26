@@ -829,6 +829,11 @@ pub fn show_content(
                     if inst.effect_type == "voice_isolation" {
                         show_voice_isolation_controls(ui, theme, clip_id, idx, inst, cmds);
                     }
+                    if inst.effect_type == "normalize" {
+                        if let Some(note) = normalize_note(inst) {
+                            ui.label(egui::RichText::new(note).size(crate::theme::type_scale::CAPTION).color(theme.text_dim));
+                        }
+                    }
 
                     ui.add_space(4.0);
 
@@ -1419,6 +1424,26 @@ fn show_denoiser_controls(
             });
         }
     });
+}
+
+
+/// What a Normalize says under its controls (#2778): in Clip mode, that
+/// it is measuring the clip (unity until then), or what it measured and
+/// the gain it holds; in Ride mode, nothing.
+pub(crate) fn normalize_note(inst: &klipp_core::AudioEffectInstance) -> Option<String> {
+    let get = |n: &str| inst.params.iter().find(|(k, _)| k == n).map(|(_, v)| *v);
+    if get("mode").unwrap_or(1.0) <= 0.5 {
+        return None;
+    }
+    let target = get("target_lufs").unwrap_or(-14.0);
+    Some(match get("measured_lufs").filter(|v| v.is_finite()) {
+        None => "Measuring the clip's loudness\u{2026} (no gain until then)".to_string(),
+        Some(m) if m <= -70.0 => "The clip is silent: no gain".to_string(),
+        Some(m) => {
+            let gain = 20.0 * klipp_audio::dsp::normalize::Normalize::clip_gain(target, m).log10();
+            format!("Clip measured at {m:.1} LUFS: {gain:+.1} dB held over it")
+        }
+    })
 }
 
 #[cfg(test)]

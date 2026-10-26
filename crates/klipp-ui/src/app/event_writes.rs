@@ -32,7 +32,8 @@ pub(crate) fn event_writes(event: &AppEvent) -> bool {
         | AppEvent::MediaSyncComplete { .. }
         | AppEvent::MulticamSyncReady { .. }
         | AppEvent::AudioSyncComplete { .. }
-        | AppEvent::DenoiserProfileLearned { .. } => true,
+        | AppEvent::DenoiserProfileLearned { .. }
+        | AppEvent::NormalizeMeasured { .. } => true,
         // What the viewer, the meters and the panels show, a job's progress,
         // start or failure, and the engine's own echoes, which write nothing.
         AppEvent::PlaybackStarted

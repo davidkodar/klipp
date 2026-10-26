@@ -181,6 +181,7 @@ impl KlippApp {
                 })
             },
             proxy_event_tx,
+            normalize_measuring: Default::default(),
             proxy_event_rx,
             export_dialog: ExportDialogState::default(),
             prefs,

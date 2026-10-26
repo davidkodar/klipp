@@ -321,6 +321,7 @@ fn export_real_media_h264() {
                 path: media_path.clone(),
                 audio_effects: vec![],
                 audio_effect_keyframes: std::collections::HashMap::new(),
+                source_range: (0.0, 0.0),
                 shape: Default::default(),
                 varispeed: None,
                 exact_secs: None,
