@@ -3134,7 +3134,7 @@ impl Renderer {
                     }
                     rows = source.backing.map_or((source.roi[1], source.roi[1] + source.roi[3]), |(rect, _)| (source.roi[1].min(rect[1]), (source.roi[1] + source.roi[3]).max(rect[1] + rect[3])));
                     let passes=crate::synth::title_style_passes(&source.fx,klipp_title::frame_scale(width,height),clip_time);
-                    let rich_slot=if source.pattern.is_none() && source.gradient.is_none() && (!source.face_draws.is_empty() || !source.face_stripes.is_empty()) {
+                    let rich_slot=if source.pattern.is_none() && source.gradient.is_none() && source.material.is_none() && (!source.face_draws.is_empty() || !source.face_stripes.is_empty()) {
                         Some(self.executor.gpu_pipeline_or_init()?.stack_title_object_slot(2)?)
                     }else{None};
                     // Shadows, glows, outlines and inner shadows read colour
@@ -6809,6 +6809,9 @@ fn title_gradient_fill(g:&klipp_timeline::TextGradient)->klipp_effects::gpu::Tit
 
 fn title_fill(source:&klipp_title::GlyphSource,scale:f32)->Option<klipp_effects::gpu::TitleFill> {
     use klipp_effects::gpu::TitleFill;
+    if let Some(m)=&source.material {
+        return Some(TitleFill::Metal(title_metal(m,source.font_px)));
+    }
     if let Some(pattern)=&source.pattern {
         use klipp_timeline::TextPattern;
         let (colors,mode,spacing)=match *pattern {
@@ -6823,6 +6826,23 @@ fn title_fill(source:&klipp_title::GlyphSource,scale:f32)->Option<klipp_effects:
         klipp_core::fill_gradient::GradientKind::Linear{angle_deg}=>{let(s,c)=angle_deg.to_radians().sin_cos();[s,c,0.0,0.0]},
         klipp_core::fill_gradient::GradientKind::Radial{centre,radius}=>[centre[0],centre[1],radius.max(1e-6),1.0],
     },stops:g.stops().into_iter().map(|s|(s.position,s.color)).collect()}})
+}
+
+/// A title's metal (#2706) as the GPU draws it: lights to directions,
+/// colours to linear light, the bevel to frame pixels of a text
+/// `font_px` tall.
+fn title_metal(m:&klipp_core::title_material::TitleMaterial,font_px:f32)->klipp_effects::gpu::TitleMetal {
+    let linear=|c:[u8;3]|c.map(|v|{let x=v as f32/255.0;if x<=0.04045 {x/12.92} else {((x+0.055)/1.055).powf(2.4)}});
+    let light=|l:&klipp_core::title_material::MetalLight|(l.direction(),l.strength,linear(l.color));
+    let off=([0.0,0.0,-1.0],0.0,[0.0;3]);
+    klipp_effects::gpu::TitleMetal {
+        tint:m.tint,roughness:m.roughness,edge:m.edge,highlights:m.highlights,glints:m.glints,
+        anisotropy:m.anisotropy,anisotropy_radians:m.anisotropy_angle.to_radians(),
+        bevel_px:(m.bevel*font_px).max(1.0),depth:m.depth,
+        key:light(&m.key_light),rim:m.rim_light.as_ref().map_or(off,light),
+        studio:m.environment.studio,sky:m.environment.sky,sky_tint:linear(m.environment.sky_tint),
+        seed:(m.preset as u32) as f32*7.31+1.0,glint_cell:(font_px*0.55).max(12.0),
+    }
 }
 
 // These loops alter glyph content/placement before title post-processing.

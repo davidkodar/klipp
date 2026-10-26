@@ -3019,6 +3019,9 @@ pub enum AppCommand {
     /// The targeted text layer's 3D settings (#1512), whole; `None` takes
     /// 3D off it altogether.
     SetTitleText3d { clip_id: ClipId, three_d: Option<crate::text3d::Text3d> },
+    /// The targeted text layer's metal face (#2706), whole; `None` takes
+    /// it off. Its colour becomes what a frame without a GPU shows.
+    SetTitleMaterial { clip_id: ClipId, material: Option<crate::title_material::TitleMaterial> },
     /// Set the targeted title layer's edge fade: how it fades out
     /// towards the frame's edges, by where it is on screen (#592).
     SetTitleEdgeFade { clip_id: ClipId, edge_fade: crate::title_motion::EdgeFade },

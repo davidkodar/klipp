@@ -2532,7 +2532,8 @@ impl KlippApp {
                 // Flatten a named preset into the selected TextBox.
                 // Preset ids match the inspector's PRESET_REGISTRY:
                 //   1 = Neon, 2 = Classic, 3 = Bold Shadow,
-                //   4 = Outlined, 5 = VHS.
+                //   4 = Outlined, 5 = VHS, 6 = Gold, 7 = Silver,
+                //   8 = Chrome.
                 // Preset 0 ("None") is a no-op so the dropdown's
                 // default sentinel doesn't accidentally clobber the
                 // current style.
@@ -3358,6 +3359,30 @@ impl KlippApp {
                 self.state.dirty = true;
                 true
             }
+            AppCommand::SetTitleMaterial { clip_id, material } => {
+                let old = self.snapshot_title(*clip_id);
+                let target_oid = self.title_text_target_id(*clip_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(tb) = target_textbox_mut(td, target_oid) {
+                                if let Some(m) = material {
+                                    tb.color = m.fallback_color();
+                                    tb.gradient = None;
+                                    tb.pattern_fill = None;
+                                }
+                                tb.material = material.map(|m| m.clamped());
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Metal", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
             AppCommand::SetTitleAnimators { clip_id, animators } => {
                 let old = self.snapshot_title(*clip_id);
                 let target_oid = self.title_layer_target_id(*clip_id);
@@ -3679,7 +3704,13 @@ pub(super) fn target_textbox_mut(
 /// preset" recorded on the data, so the inspector dropdown is a
 /// quick-style picker rather than a slot.
 pub(crate) fn apply_title_preset(tb: &mut klipp_timeline::TextBox, fx: &mut klipp_timeline::LayerFx, preset_id: u8) {
+    use klipp_core::title_material::{MetalPreset, TitleMaterial};
     use klipp_timeline::{InnerShadow, TextGlow, TextOutline, TitleShadow};
+    // A look is painted, or it is a metal (#2706): picking one takes the
+    // other off.
+    if (1..=5).contains(&preset_id) {
+        tb.material = None;
+    }
     match preset_id {
         // 0 = "None" sentinel — no-op so the dropdown's default
         // doesn't accidentally clobber the current style.
@@ -3780,6 +3811,19 @@ pub(crate) fn apply_title_preset(tb: &mut klipp_timeline::TextBox, fx: &mut klip
             }];
             tb.chromatic_aberration_px = 6.0;
             tb.glitch_intensity = 0.35;
+        }
+        // 6-8 = Gold, Silver, Chrome: a metal face (#2706), polished as
+        // its preset makes it. The colour is what a frame without a GPU
+        // shows; glows and outlines stay, the fill's gradient and
+        // pattern go.
+        6..=8 => {
+            let preset = [MetalPreset::Gold, MetalPreset::Silver, MetalPreset::Chrome][usize::from(preset_id - 6)];
+            let metal = TitleMaterial::preset(preset);
+            tb.color = metal.fallback_color();
+            tb.material = Some(metal);
+            tb.gradient = None;
+            tb.pattern_fill = None;
+            tb.three_d = None;
         }
         _ => {}
     }

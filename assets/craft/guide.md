@@ -466,7 +466,7 @@ exist until the plan runs.
   `dip_to_white` mark a break. A stylised kind (`zoom`, `whip`,
   `glitch`, `film_burn`) is a style choice the brief has to ask for.
   Both clips need footage beyond the cut to overlap.
-- `style {clip_id | track, from?, to?, size?, color?, font?, bold?, align?, x?, y?, backing?, backing_color?, outline?, outline_color?, shadow?, glow?, glow_color?, gradient?, glitch?, chromatic?, animate?, animate_secs?, stagger?, enter?, exit?, loop?, roll_shape?, edge_fade?, weight?, axes?, features?, last_line?, valign?, underline?, runs?, animators?, keys?, on_path?, blend?, mask?, three_d?}`:
+- `style {clip_id | track, from?, to?, size?, color?, font?, bold?, align?, x?, y?, backing?, backing_color?, outline?, outline_color?, shadow?, glow?, glow_color?, gradient?, glitch?, chromatic?, animate?, animate_secs?, stagger?, enter?, exit?, loop?, roll_shape?, edge_fade?, weight?, axes?, features?, last_line?, valign?, underline?, runs?, animators?, keys?, on_path?, blend?, mask?, three_d?, material?}`:
   the look and place of one title, or of every title on a track
   (`"subtitle"` for all the captions), between `from` and `to` when
   given (anchors, as `{"secs": 44.0}`). `size` is pixels of a 1080-line frame, `color` is `#rrggbb`,
@@ -504,7 +504,7 @@ exist until the plan runs.
   tall picture in a wide frame), `in_picture: true` keeps it in from the
   picture's own edge instead of on the bar. A title's `backing` panel
   (style, title) sits behind every line of it.
-- `title {text, at, secs?, style?, track?, x?, y?, size?, color?, font?, bold?, align?, backing?, backing_color?, full_frame?, outline?, outline_color?, glow?, glow_color?, gradient?, animate?, animate_secs?, stagger?, loop?, glitch?, chromatic?, enter?, exit?, over_faces?, shadow?, weight?, axes?, features?, last_line?, valign?, underline?, runs?, animators?, keys?, on_path?, blend?, mask?, three_d?}`:
+- `title {text, at, secs?, style?, track?, x?, y?, size?, color?, font?, bold?, align?, backing?, backing_color?, full_frame?, outline?, outline_color?, glow?, glow_color?, gradient?, animate?, animate_secs?, stagger?, loop?, glitch?, chromatic?, enter?, exit?, over_faces?, shadow?, weight?, axes?, features?, last_line?, valign?, underline?, runs?, animators?, keys?, on_path?, blend?, mask?, three_d?, material?}`:
   a title from scratch: a heading, a callout or a hero card, on a text
   track (one is made on top if left out). `style` names a look, one of
   the brief's type styles or `heading`, `callout` or `card`, and its
@@ -582,6 +582,24 @@ exist until the plan runs.
   go round the solid. A word turning in y over two seconds:
   `{look: "bevelled", keys: {turn: [{at: 0, value: -40}, {at: 2,
   value: 40}]}}`.
+  `material` makes flat text metal, polished as the metal is with
+  nothing else set: a name (gold, silver, steel or iron, copper,
+  bronze, chrome, brushed_metal), `"none"` to paint it again, or
+  `{preset?, tint? (#rrggbb), roughness? (0 mirror, 1 satin), edge?
+  (fresnel), highlights? (0 to 2), glints?, bevel? (a fraction of the
+  size, up to 0.3), depth?, anisotropy? and anisotropy_angle? (brushed
+  streaks), environment? {studio?, sky? (0 to 2), sky_tint?},
+  key_light? {azimuth, elevation, strength (0 to 4), color},
+  rim_light? (the same, or "none")}`, amounts 0 to 1 unless said. The
+  fields lay over the named preset, or over the text's metal as it is.
+  Lights come from azimuth degrees around (0 the right, 90 below, 180
+  the left, -90 above) and elevation degrees towards the viewer: put
+  the key light where the shot's light comes from (a low sun on the
+  right: `{azimuth: -10, elevation: 15, color: "#ffd8a0"}`). The metal
+  reflects a studio and a sky mixed by their strengths, through a
+  bevel cut into the letters; the layer's effects run over it, so a
+  glow glows gold. Without a GPU the text shows its colour. A 3D text
+  is not made metal.
 - `set_text {clip_id, text}`: the words of a title or a caption; its
   look, place and timing stay. For the cue the transcript misheard and
   the name it cannot spell: read the captions once they are made

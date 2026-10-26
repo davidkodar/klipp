@@ -257,6 +257,136 @@ fn image_sample(u0: f32, v0: f32) -> vec4<f32> {
     if out.a>0.0 {out=vec4<f32>(out.rgb/out.a,out.a);}
     return out;
 }
+// ── Metal face (#2706) ──
+// Op 62 reads one word a pixel: the face's bevel height (its coverage
+// x256, blurred) in the low 16 bits, its coverage (0..255) above them.
+// Material in the parameters: `color` the tint (linear reflectance) and
+// the face's alpha; row0 roughness, edge, slope, highlights; row1 the key
+// light's direction and strength; row2 its colour (linear) and the
+// glints; stops, as f32 bits: [0] the rim light's direction and
+// strength, [1] its colour and the anisotropy, [2] studio, sky, the
+// anisotropy's angle and the camera's distance in pixels, [3] the sky's
+// tint and a seed, [4] the text's centre and the glints' cell size,
+// [5] the text's top left, which the glints' cells hang from, so they
+// stay on the letters as the title moves.
+fn metal_word(x: i32, y: i32) -> u32 {
+    let cx=clamp(x,0,i32(p.width)-1); let cy=clamp(y,0,i32(p.height)-1);
+    return input[u32(cy)*p.width+u32(cx)];
+}
+fn metal_height(x: i32, y: i32) -> f32 { return f32(metal_word(x,y)&0xffffu)/65280.0; }
+fn metal_stop(i: u32, j: u32) -> f32 { return bitcast<f32>(p.stops[i][j]); }
+// The surface's normal (towards the viewer: -z), from the height's slope.
+fn metal_normal(x: i32, y: i32) -> vec3<f32> {
+    let k=p.row0.z;
+    let hx=(metal_height(x+1,y)-metal_height(x-1,y))*0.5;
+    let hy=(metal_height(x,y+1)-metal_height(x,y-1))*0.5;
+    return normalize(vec3<f32>(-k*hx,-k*hy,-1.0));
+}
+fn metal_hash(q: vec2<f32>, seed: f32) -> vec3<f32> {
+    var v=fract(vec3<f32>(q.x,q.y,q.x+q.y+seed)*vec3<f32>(0.1031,0.1030,0.0973)+seed*0.017);
+    v+=dot(v,v.yzx+33.33);
+    return fract((v.xxy+v.yzz)*v.zyx);
+}
+// What the metal sees in direction `r` (frame axes, y down), as softly
+// as `rough` blurs it: a studio's soft boxes over a dark floor, and a
+// sky warm at its horizon and pale above.
+fn metal_environment(r: vec3<f32>, rough: f32) -> vec3<f32> {
+    let up=-r.y;
+    let w=0.015+rough*0.45;
+    // Studio.
+    // A floor that is dark but not black, lit by a bounce below the
+    // horizon, so a metal's shade keeps its colour.
+    var studio=vec3<f32>(mix(0.07,0.12,smoothstep(-w,w,up)));
+    studio+=vec3<f32>(0.35)*exp(-pow((up+0.3)/(0.12+rough*0.3),2.0));
+    studio+=vec3<f32>(1.9)*exp(-pow((up-0.04)/(0.035+rough*0.35),2.0));
+    studio+=vec3<f32>(2.4)*smoothstep(0.5-w,0.5+w,up);
+    studio+=vec3<f32>(1.1)*smoothstep(0.55-w,0.55+w,r.x)*smoothstep(-0.6,0.2,up);
+    studio+=vec3<f32>(0.5)*smoothstep(0.6-w,0.6+w,-r.x)*smoothstep(-0.4,0.3,up);
+    // Sky.
+    let horizon=vec3<f32>(1.0,0.84,0.62)*1.6;
+    let zenith=vec3<f32>(0.80,0.84,0.92)*1.1;
+    let ground=vec3<f32>(0.30,0.24,0.17)*0.5;
+    let above=mix(horizon,zenith,smoothstep(0.0,0.7,up));
+    let below=mix(ground*1.4,ground*0.25,smoothstep(0.0,0.5,-up));
+    let tint=vec3<f32>(metal_stop(3u,0u),metal_stop(3u,1u),metal_stop(3u,2u));
+    let sky=mix(below,above,smoothstep(-w,w,up))*tint;
+    return studio*metal_stop(2u,0u)+sky*metal_stop(2u,1u);
+}
+// A light's highlight: Blinn-Phong, its lobe as tight as the roughness.
+fn metal_light(n: vec3<f32>, v: vec3<f32>, l: vec3<f32>, rough: f32) -> f32 {
+    let a=max(rough,0.035);
+    let s=clamp(2.0/(a*a*a*a)-2.0,4.0,4000.0);
+    let h=normalize(l+v);
+    return (s+8.0)/(8.0*3.14159265)*pow(max(dot(n,h),0.0),s)*max(dot(n,l),0.0)*0.12;
+}
+fn metal_shoulder(x: f32) -> f32 {
+    if x<0.75 { return max(x,0.0); }
+    return 0.75+0.25*(1.0-exp(-(x-0.75)/0.25));
+}
+fn metal_face(x: u32, y: u32, i: u32) {
+    let word=input[i];
+    let cov=f32(word>>16u);
+    let fx=f32(x+p.x0)+0.5; let fy=f32(y+p.y0)+0.5;
+    let rough=p.row0.x; let aniso=metal_stop(1u,3u);
+    var out=load_dst(i);
+    if cov>0.0 {
+        let n=metal_normal(i32(x),i32(y));
+        let centre=vec2<f32>(metal_stop(4u,0u),metal_stop(4u,1u));
+        let v=normalize(vec3<f32>(centre.x-fx,centre.y-fy,-metal_stop(2u,3u)));
+        let r=reflect(-v,n);
+        // Brushed: fine streaks along the angle, and the reflection
+        // drawn out along them.
+        let ang=metal_stop(2u,2u);
+        let across=dot(vec2<f32>(fx,fy),vec2<f32>(-sin(ang),cos(ang)));
+        let streak=metal_hash(vec2<f32>(floor(across*0.8),0.0),metal_stop(3u,3u)).x*0.6+metal_hash(vec2<f32>(floor(across*0.2),7.0),metal_stop(3u,3u)).x*0.4;
+        let env=metal_environment(r,rough+aniso*0.25)*(1.0+aniso*0.8*(streak-0.5));
+        let f0=p.color.rgb;
+        let cos_t=clamp(dot(n,v),0.0,1.0);
+        let fres=f0+(vec3<f32>(1.0)-f0)*pow(1.0-cos_t,5.0)*p.row0.y;
+        var lin=env*fres;
+        let key=metal_light(n,v,p.row1.xyz,rough+aniso*0.2)*p.row1.w*p.row0.w;
+        lin+=key*p.row2.rgb*fres;
+        let rim_l=vec3<f32>(metal_stop(0u,0u),metal_stop(0u,1u),metal_stop(0u,2u));
+        let rim=metal_light(n,v,rim_l,rough+aniso*0.2)*metal_stop(0u,3u)*p.row0.w;
+        lin+=rim*vec3<f32>(metal_stop(1u,0u),metal_stop(1u,1u),metal_stop(1u,2u))*fres;
+        let rgb=vec3<f32>(metal_shoulder(lin.x),metal_shoulder(lin.y),metal_shoulder(lin.z));
+        let a=floor(cov*floor(clamp(p.color.a,0.0,1.0)*255.0+0.5)/255.0)/255.0;
+        out=over(vec4<f32>(encoded(rgb.x),encoded(rgb.y),encoded(rgb.z),a),out);
+    }
+    // Glints: a star on a few of the bevel's brightest points, one chance
+    // a cell, drawn past the letters' edges too.
+    let glints=p.row2.w;
+    if glints>0.0 {
+        let cell=metal_stop(4u,2u);
+        let origin=vec2<f32>(metal_stop(5u,0u),metal_stop(5u,1u));
+        let here=floor((vec2<f32>(fx,fy)-origin)/cell);
+        var star=0.0;
+        for (var dy=-1; dy<=1; dy++) {
+            for (var dx=-1; dx<=1; dx++) {
+                let c=here+vec2<f32>(f32(dx),f32(dy));
+                let h=metal_hash(c,metal_stop(3u,3u));
+                if h.z>glints*0.6 { continue; }
+                let q=origin+(c+vec2<f32>(0.2)+h.xy*0.6)*cell;
+                let qx=i32(floor(q.x))-i32(p.x0); let qy=i32(floor(q.y))-i32(p.y0);
+                if qx<1 || qy<1 || qx>=i32(p.width)-1 || qy>=i32(p.height)-1 { continue; }
+                if (metal_word(qx,qy)>>16u)<250u { continue; }
+                let nq=metal_normal(qx,qy);
+                // On the bevel, turned to the key light.
+                if nq.z>-0.97 && dot(nq,p.row1.xyz)>0.55 {
+                    let d=vec2<f32>(fx,fy)-q;
+                    let len=cell*0.5*(0.5+glints);
+                    let arm=exp(-abs(d.y)/0.7)*max(0.0,1.0-abs(d.x)/len)+exp(-abs(d.x)/0.7)*max(0.0,1.0-abs(d.y)/len);
+                    let diag=(exp(-abs(d.x-d.y)/0.7)+exp(-abs(d.x+d.y)/0.7))*max(0.0,1.0-length(d)/(len*0.45))*0.5;
+                    let core=exp(-dot(d,d)/(2.0+cell*0.02));
+                    star=max(star,(arm*0.8+diag+core)*(0.6+0.4*h.y));
+                }
+            }
+        }
+        star=clamp(star*glints*1.6,0.0,1.0);
+        if star>0.0 { out=over(vec4<f32>(1.0,0.985,0.95,star),out); }
+    }
+    store_rgba(i,out);
+}
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
     let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
@@ -851,6 +981,12 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
         let g=authored_at(sx,y);
         let b=authored_at(sx+p.offset_x,y);
         store_rgba(i,vec4<f32>(r.r,g.g,b.b,max(r.a,max(g.a,b.a))));
+    } else if p.op==60u { // Coverage x256, for a bevel height blurred without banding.
+        output[i]=input[i]*256u;
+    } else if p.op==61u { // The bevel height (low 16 bits) and the coverage above it.
+        output[i]=min(output[i],65535u)|(min(input[i],255u)<<16u);
+    } else if p.op==62u { // A metal face over behind styles (#2706).
+        metal_face(x,y,i);
     } else if p.op==1u { // Extract coverage directly from the unchanged stack face.
         output[i]=select(u32(round(clamp(load_rgba((y+p.y0)*p.frame_width+x+p.x0).a,0.0,1.0)*255.0)),0u,i32(x+p.x0)>=p.offset_x);
     } else if p.op==2u || p.op==8u { // Offset (optionally inverted) coverage.

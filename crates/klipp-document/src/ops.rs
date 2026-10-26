@@ -278,6 +278,10 @@ pub struct Typeset {
     /// The text in 3D (#1512): a look and settings, or `"none"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub three_d: Option<ThreeDSpec>,
+    /// A metal face (#2706): a preset by name ("gold"), its fields over
+    /// a preset, or `"none"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub material: Option<MaterialSpec>,
 }
 /// "A name or an object" specs read so that an object's own error (an
 /// unknown field, a value of the wrong kind) is the reply's, not "did
@@ -300,6 +304,97 @@ name_or_fields!(ThreeDSpec, Off, On, ThreeD);
 name_or_fields!(BevelSpec, Off, On, BevelOn);
 name_or_fields!(MaskSpec, Off, Layer, MaskLayer);
 name_or_fields!(OnPathSpec, Off, Path, PathSpec);
+name_or_fields!(MaterialSpec, Named, On, MaterialFields);
+name_or_fields!(RimSpec, Off, On, MetalLightSpec);
+
+/// A metal face (#2706) as an op gives it: a preset's name (gold,
+/// silver, steel or iron, copper, bronze, chrome, brushed_metal) or
+/// `"none"`, or fields over a preset (`preset` named) or over the text's
+/// metal as it is.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum MaterialSpec {
+    Named(String),
+    On(Box<MaterialFields>),
+}
+
+/// The fields of a [`MaterialSpec`]: amounts 0..1 unless said, colours
+/// #rrggbb.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MaterialFields {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<String>,
+    /// The metal's colour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tint: Option<String>,
+    /// 0 a mirror, 1 satin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roughness: Option<f32>,
+    /// Brushed streaks, along `anisotropy_angle` degrees.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anisotropy: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anisotropy_angle: Option<f32>,
+    /// The fresnel edge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edge: Option<f32>,
+    /// The lights' highlights, 0..2.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub highlights: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glints: Option<f32>,
+    /// The bevel's width as a fraction of the text's size (0..0.3), and
+    /// its steepness.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bevel: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depth: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<EnvironmentSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_light: Option<MetalLightSpec>,
+    /// A second light from behind the edges, or `"none"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rim_light: Option<RimSpec>,
+}
+
+/// What the metal reflects, as strengths 0..2: a studio and a sky, the
+/// sky tinted.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnvironmentSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub studio: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sky: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sky_tint: Option<String>,
+}
+
+/// A light on the metal: azimuth degrees around (0 from the right, 90
+/// from below, 180 from the left, -90 from above), elevation degrees
+/// towards the viewer, strength 0..4, colour.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MetalLightSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub azimuth: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elevation: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strength: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+}
+
+/// A rim light: its fields, or `"none"`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum RimSpec {
+    Off(String),
+    On(Box<MetalLightSpec>),
+}
 
 /// A text in 3D (#1512) as an op gives it: a `look` by name with any
 /// field over it, the fields over the text's 3D settings as they are,
@@ -10151,6 +10246,143 @@ struct Typesetting {
     mask: Option<Option<klipp_timeline::LayerMask>>,
     /// 3D asked for, laid over each text's own when applied.
     three_d: Option<ThreeDAsk>,
+    /// A metal asked for (#2706): `Some(None)` off, else what to make of
+    /// each text's own.
+    material: Option<Option<MaterialAsk>>,
+}
+
+/// A [`MaterialSpec`] checked: a preset to start from (else the text's
+/// own metal, or gold), and the fields laid over it.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct MaterialAsk {
+    preset: Option<klipp_core::title_material::MetalPreset>,
+    fields: MaterialFields,
+    tint: Option<[f32; 3]>,
+    sky_tint: Option<[u8; 3]>,
+    key_color: Option<[u8; 3]>,
+    /// `Some(None)` takes the rim light off.
+    rim: Option<Option<MetalLightSpec>>,
+    rim_color: Option<[u8; 3]>,
+}
+
+impl MaterialAsk {
+    /// The metal `on` becomes.
+    fn apply(&self, on: Option<&klipp_core::title_material::TitleMaterial>) -> klipp_core::title_material::TitleMaterial {
+        use klipp_core::title_material::{MetalLight, TitleMaterial};
+        let mut m = match (self.preset, on) {
+            (Some(p), _) => TitleMaterial::preset(p),
+            (None, Some(m)) => *m,
+            (None, None) => TitleMaterial::default(),
+        };
+        let f = &self.fields;
+        let set = |to: &mut f32, v: Option<f32>| {
+            if let Some(v) = v {
+                *to = v;
+            }
+        };
+        if let Some(t) = self.tint {
+            m.tint = t;
+        }
+        set(&mut m.roughness, f.roughness);
+        set(&mut m.anisotropy, f.anisotropy);
+        set(&mut m.anisotropy_angle, f.anisotropy_angle);
+        set(&mut m.edge, f.edge);
+        set(&mut m.highlights, f.highlights);
+        set(&mut m.glints, f.glints);
+        set(&mut m.bevel, f.bevel);
+        set(&mut m.depth, f.depth);
+        if let Some(e) = &f.environment {
+            set(&mut m.environment.studio, e.studio);
+            set(&mut m.environment.sky, e.sky);
+        }
+        if let Some(t) = self.sky_tint {
+            m.environment.sky_tint = t;
+        }
+        let light = |l: &mut MetalLight, spec: &MetalLightSpec, color: Option<[u8; 3]>| {
+            set(&mut l.azimuth, spec.azimuth);
+            set(&mut l.elevation, spec.elevation);
+            set(&mut l.strength, spec.strength);
+            if let Some(c) = color {
+                l.color = c;
+            }
+        };
+        if let Some(k) = &f.key_light {
+            light(&mut m.key_light, k, self.key_color);
+        }
+        match &self.rim {
+            Some(None) => m.rim_light = None,
+            Some(Some(spec)) => {
+                let mut l = m.rim_light.unwrap_or(TitleMaterial::preset(m.preset).rim_light.unwrap_or(m.key_light));
+                light(&mut l, spec, self.rim_color);
+                m.rim_light = Some(l);
+            }
+            None => {}
+        }
+        m.clamped()
+    }
+}
+
+/// A [`MaterialSpec`] checked, each amount in its range and each colour
+/// a colour: `None` takes the metal off.
+fn material_ask(spec: &MaterialSpec, i: usize) -> Result<Option<MaterialAsk>, Refusal> {
+    use klipp_core::title_material::MetalPreset;
+    let presets = || MetalPreset::ALL.map(|p| p.name()).join(", ");
+    let preset = |name: &str| MetalPreset::from_name(name).ok_or_else(|| refuse(i, format!("\"{name}\" is not a metal"), format!("use {}, or \"none\"", presets())));
+    let f = match spec {
+        MaterialSpec::Named(n) if n.trim().eq_ignore_ascii_case("none") => return Ok(None),
+        MaterialSpec::Named(n) => return Ok(Some(MaterialAsk { preset: Some(preset(n)?), ..Default::default() })),
+        MaterialSpec::On(f) => f.as_ref(),
+    };
+    let range = |name: &str, v: Option<f32>, lo: f32, hi: f32| match v {
+        Some(v) if !v.is_finite() || v < lo || v > hi => Err(refuse(i, format!("material {name} {v} is out of range"), format!("give {name} from {lo} to {hi}"))),
+        _ => Ok(()),
+    };
+    range("roughness", f.roughness, 0.0, 1.0)?;
+    range("anisotropy", f.anisotropy, 0.0, 1.0)?;
+    range("anisotropy_angle", f.anisotropy_angle, -360.0, 360.0)?;
+    range("edge", f.edge, 0.0, 1.0)?;
+    range("highlights", f.highlights, 0.0, 2.0)?;
+    range("glints", f.glints, 0.0, 1.0)?;
+    range("bevel", f.bevel, 0.0, 0.3)?;
+    range("depth", f.depth, 0.0, 1.0)?;
+    if let Some(e) = &f.environment {
+        range("environment studio", e.studio, 0.0, 2.0)?;
+        range("environment sky", e.sky, 0.0, 2.0)?;
+    }
+    let lights = [("key_light", f.key_light.as_ref()), ("rim_light", match &f.rim_light { Some(RimSpec::On(l)) => Some(l.as_ref()), _ => None })];
+    for (name, l) in lights {
+        if let Some(l) = l {
+            range(&format!("{name} azimuth"), l.azimuth, -360.0, 360.0)?;
+            range(&format!("{name} elevation"), l.elevation, -89.0, 89.0)?;
+            range(&format!("{name} strength"), l.strength, 0.0, 4.0)?;
+        }
+    }
+    let colour = |name: &str, c: Option<&String>| -> Result<Option<[u8; 3]>, Refusal> {
+        c.map(|c| parse_color(c).map(|[r, g, b, _]| [r, g, b]).ok_or_else(|| refuse(i, format!("material {name} \"{c}\" is not a colour"), "give it as #rrggbb"))).transpose()
+    };
+    let rim = match &f.rim_light {
+        None => None,
+        Some(RimSpec::Off(n)) if n.trim().eq_ignore_ascii_case("none") => Some(None),
+        Some(RimSpec::Off(n)) => return Err(refuse(i, format!("rim_light \"{n}\" is not a light"), "give {azimuth?, elevation?, strength?, color?}, or \"none\"")),
+        Some(RimSpec::On(l)) => Some(Some(l.as_ref().clone())),
+    };
+    let rim_color = match &f.rim_light {
+        Some(RimSpec::On(l)) => colour("rim_light color", l.color.as_ref())?,
+        _ => None,
+    };
+    let linear = |c: [u8; 3]| c.map(|v| {
+        let x = f32::from(v) / 255.0;
+        if x <= 0.04045 { x / 12.92 } else { ((x + 0.055) / 1.055).powf(2.4) }
+    });
+    Ok(Some(MaterialAsk {
+        preset: f.preset.as_deref().map(preset).transpose()?,
+        tint: colour("tint", f.tint.as_ref())?.map(linear),
+        sky_tint: colour("environment sky_tint", f.environment.as_ref().and_then(|e| e.sky_tint.as_ref()))?,
+        key_color: colour("key_light color", f.key_light.as_ref().and_then(|l| l.color.as_ref()))?,
+        rim,
+        rim_color,
+        fields: f.clone(),
+    }))
 }
 /// A [`ThreeDSpec`] checked: `Off`, or what to lay over the text's 3D
 /// settings (`apply`), keys included; times are checked against each
@@ -10679,6 +10911,20 @@ fn set_motion_extras(tb: &mut klipp_timeline::TextBox, fx: &mut Option<klipp_tim
             }
         };
     }
+    if let Some(ask) = &t.material {
+        match ask {
+            None => tb.material = None,
+            Some(_) if tb.three_d.is_some() => {
+                return Err("a metal is drawn on flat text; this text is in 3D (three_d: \"none\" makes it flat)".into());
+            }
+            Some(ask) => {
+                let m = ask.apply(tb.material.as_ref());
+                // What a frame drawn without a GPU shows.
+                tb.color = m.fallback_color();
+                tb.material = Some(m);
+            }
+        }
+    }
     if let Some(path) = &t.on_path {
         if let Some(klipp_timeline::TextPath::Layer { layer, contour, offset_keyframes, .. }) = path {
             late(offset_keyframes, "path offset")?;
@@ -10915,6 +11161,7 @@ fn typesetting(t: &Typeset, i: usize) -> Result<Typesetting, Refusal> {
         blend: t.blend.as_deref().map(|b| blend_mode(b, i)).transpose()?,
         mask: t.mask.as_ref().map(|m| layer_mask(m, i)).transpose()?,
         three_d: t.three_d.as_ref().map(|d| three_d_ask(d, i)).transpose()?,
+        material: t.material.as_ref().map(|m| material_ask(m, i)).transpose()?,
     })
 }
 
@@ -11564,6 +11811,8 @@ fn style_looks(ts: &klipp_timeline::TypeStyle) -> Vec<(&'static str, Look)> {
     let motion = MotionAsk { enter: ts.enter.clone(), exit: ts.exit.clone(), animate: ts.animate.clone(), animate_secs: ts.animate_secs, stagger: ts.stagger.clone() };
     add("motion", Look { motion: (motion != MotionAsk::default()).then_some(motion), ..Default::default() });
     add("loop", Look { loop_effect: ts.loop_effect.clone(), ..Default::default() });
+    let material = ts.material.as_deref().and_then(|n| material_ask(&MaterialSpec::Named(n.into()), 0).ok());
+    add("material", Look { typeset: Typesetting { material, ..Default::default() }, ..Default::default() });
     out
 }
 

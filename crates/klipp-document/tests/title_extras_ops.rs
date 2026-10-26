@@ -277,3 +277,56 @@ fn wrong_3d_values_are_refused() {
         assert!(why.contains("unknown field") && !why.contains("any variant"), "{field}: {why}");
     }
 }
+
+/// #2706: a style op makes a text metal by a preset's name, lays fields
+/// over it, and takes it off; the colour a frame without a GPU shows is
+/// the metal's; a new title can be gold from the start.
+#[test]
+fn a_style_op_makes_a_text_metal() {
+    use klipp_core::title_material::{MetalPreset, TitleMaterial};
+    let (mut d, id) = titled("Klipp");
+    d.run(json!([{"op":"style","clip_id":id,"material":"gold"}])).unwrap();
+    let text = d.title().1.primary_text().unwrap().clone();
+    assert_eq!(text.material, Some(TitleMaterial::preset(MetalPreset::Gold)));
+    assert_eq!(text.color, TitleMaterial::preset(MetalPreset::Gold).fallback_color());
+    // Fields over the text's metal; a light from the low sun on the right.
+    d.run(json!([{"op":"style","clip_id":id,"material":{"roughness":0.4,"key_light":{"azimuth":-10,"elevation":15,"strength":1.5,"color":"#ffd8a0"},"rim_light":"none","environment":{"studio":0.2,"sky":1.0,"sky_tint":"#fff0e0"}}}])).unwrap();
+    let m = d.title().1.primary_text().unwrap().material.unwrap();
+    assert_eq!((m.preset, m.roughness, m.key_light.azimuth, m.key_light.elevation, m.key_light.strength, m.key_light.color), (MetalPreset::Gold, 0.4, -10.0, 15.0, 1.5, [255, 216, 160]));
+    assert_eq!((m.rim_light, m.environment.studio, m.environment.sky, m.environment.sky_tint), (None, 0.2, 1.0, [255, 240, 224]));
+    // A preset named starts from that metal.
+    d.run(json!([{"op":"style","clip_id":id,"material":{"preset":"iron","glints":0}}])).unwrap();
+    let m = d.title().1.primary_text().unwrap().material.unwrap();
+    assert_eq!((m.preset, m.glints, m.roughness), (MetalPreset::Steel, 0.0, TitleMaterial::preset(MetalPreset::Steel).roughness));
+    d.run(json!([{"op":"style","clip_id":id,"material":"none"}])).unwrap();
+    assert_eq!(d.title().1.primary_text().unwrap().material, None);
+    let mut fresh = Doc::new();
+    fresh.run(json!([{"op":"title","text":"Klipp","at":{"secs":0},"secs":2,"material":{"preset":"chrome","tint":"#e0e8ff"}}])).unwrap();
+    let m = fresh.title().1.primary_text().unwrap().material.unwrap();
+    assert_eq!(m.preset, MetalPreset::Chrome);
+    assert!(m.tint[2] > m.tint[0], "a blue-white tint: {:?}", m.tint);
+}
+
+/// Wrong metal values are refused with the choices or the range, nothing
+/// changed; a 3D text is not made metal yet.
+#[test]
+fn wrong_metal_values_are_refused() {
+    let (mut d, id) = titled("Wrong metal");
+    let before = d.title().1.clone();
+    for (material, says) in [
+        (json!("tin"), "gold, silver, steel, copper, bronze, chrome, brushed_metal"),
+        (json!({"roughness":2}), "roughness from 0 to 1"),
+        (json!({"bevel":0.5}), "bevel from 0 to 0.3"),
+        (json!({"key_light":{"strength":9}}), "key_light strength from 0 to 4"),
+        (json!({"tint":"gold"}), "#rrggbb"),
+        (json!({"rim_light":"soft"}), "\"none\""),
+        (json!({"shine":1}), "unknown field"),
+    ] {
+        let why = d.run(json!([{"op":"style","clip_id":id,"material":material}])).unwrap_err();
+        assert!(why.contains(says), "{material}: {why}");
+    }
+    assert_eq!(d.title().1, &before);
+    d.run(json!([{"op":"style","clip_id":id,"three_d":{"look":"block"}}])).unwrap();
+    let why = d.run(json!([{"op":"style","clip_id":id,"material":"gold"}])).unwrap_err();
+    assert!(why.contains("flat text"), "{why}");
+}
