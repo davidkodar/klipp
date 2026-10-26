@@ -44,6 +44,9 @@ The first release.
 - The Audio Mixer shows only tracks that can be heard: no strips for text
   and subtitle tracks, or for a video track whose sound plays from an audio
   track.
+- Mixer strips no longer overlap, so each one's level meters and automation
+  mode show whole.
+- Text and subtitle track headers no longer show mute and solo.
 
 ## 0.1.0-rc.3 — 2026-10-25
 
