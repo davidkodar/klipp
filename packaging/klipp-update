@@ -6,11 +6,16 @@
 #   klipp-update VERSION    download that release's package from GitHub,
 #                           verify it, and install it with pacman -U
 #
-# Nothing downloaded is executed: the package is checked against the
-# release's SHA256SUMS and its own metadata, then handed to pacman.
+# Nothing downloaded is executed: the release's SHA256SUMS is checked
+# against its minisign signature by the release key below, the package
+# against those sums and its own metadata, then it is handed to pacman.
 set -euo pipefail
 
 RELEASES=https://github.com/davidkodar/klipp/releases/download
+# The project's release key: minisign's public key line. Empty until the
+# key is made; with none, nothing is installed this way.
+RELEASE_KEY=''
+
 # GitHub serves release assets by redirecting to one of these.
 ASSET_HOSTS='^https://(objects|release-assets)\.githubusercontent\.com/'
 
@@ -22,11 +27,27 @@ valid_version() {
 # Where to download from. KLIPP_UPDATE_TEST_BASE_URL is for testing the
 # updater against a local fixture release only: it must be a loopback
 # address, and the shipped default never sets it.
+test_base() {
+    [[ ${KLIPP_UPDATE_TEST_BASE_URL:-} =~ ^http://(127\.0\.0\.1|localhost)(:[0-9]+)?(/.*)?$ ]]
+}
+
+# The key a release's sums must be signed by: the release key, or, for a
+# fixture release on the loopback test address only, the test's own key
+# (KLIPP_UPDATE_TEST_PUBLIC_KEY). Nothing else can replace it.
+release_key() {
+    if test_base && [[ -n ${KLIPP_UPDATE_TEST_PUBLIC_KEY:-} ]]; then
+        echo "TEST: verifying with the test's key, not the release key." >&2
+        echo "$KLIPP_UPDATE_TEST_PUBLIC_KEY"
+    else
+        echo "$RELEASE_KEY"
+    fi
+}
+
 base_url() {
     local test=${KLIPP_UPDATE_TEST_BASE_URL:-}
     if [[ -z $test ]]; then
         echo "$RELEASES"
-    elif [[ $test =~ ^http://(127\.0\.0\.1|localhost)(:[0-9]+)?(/.*)?$ ]]; then
+    elif test_base; then
         echo "TEST: downloading from $test, not GitHub." >&2
         echo "${test%/}"
     else
@@ -65,14 +86,40 @@ fetch() {
 # Download release $1 into directory $2, verify it and install it.
 # Returns non-zero on any failure or a no, with the reason printed.
 install_release() {
-    local version=$1 dir=$2 base pkgver file want got found size answer
+    local version=$1 dir=$2 base key verified pkgver file want got found size answer
     base=$(base_url) || return 1
+    key=$(release_key)
+    if [[ -z $key ]]; then
+        echo "This klipp-update has no release key to check a download with. Nothing was installed." >&2
+        return 1
+    fi
+    if ! command -v minisign >/dev/null; then
+        echo "minisign is needed to check the release's signature. Install it with: sudo pacman -S minisign" >&2
+        return 1
+    fi
     # Arch versions can't hold a hyphen: 0.1.0-rc.3 is packaged as 0.1.0rc.3.
     pkgver=${version//-/}
     file="klipp-${pkgver}-1-x86_64.pkg.tar.zst"
     echo "Downloading Klipp $version…"
-    if ! fetch "$base/v$version/SHA256SUMS" "$dir/SHA256SUMS" \
-        || ! fetch "$base/v$version/$file" "$dir/$file"; then
+    if ! fetch "$base/v$version/SHA256SUMS" "$dir/SHA256SUMS"; then
+        echo "Could not download Klipp $version. Check your connection and try again." >&2
+        return 1
+    fi
+    if ! fetch "$base/v$version/SHA256SUMS.minisig" "$dir/SHA256SUMS.minisig"; then
+        echo "Klipp $version has no signature (SHA256SUMS.minisig) to check it by. Nothing was installed." >&2
+        return 1
+    fi
+    # Signed by the release key, and for this version: the signature's
+    # trusted comment names it, so another release's sums can't stand in.
+    if ! verified=$(minisign -V -P "$key" -m "$dir/SHA256SUMS" -x "$dir/SHA256SUMS.minisig" 2>&1); then
+        echo "The release's SHA256SUMS is not signed by Klipp's release key. Nothing was installed." >&2
+        return 1
+    fi
+    if ! grep -qxF "Trusted comment: klipp $version" <<<"$verified"; then
+        echo "The release's signature is not for Klipp $version. Nothing was installed." >&2
+        return 1
+    fi
+    if ! fetch "$base/v$version/$file" "$dir/$file"; then
         echo "Could not download Klipp $version. Check your connection and try again." >&2
         return 1
     fi
@@ -100,6 +147,7 @@ install_release() {
     echo "  File:     $file"
     echo "  Size:     $size"
     echo "  SHA-256:  $got (matches SHA256SUMS)"
+    echo "  Signed:   SHA256SUMS by Klipp's release key"
     echo
     # Printed, not read -p, so the question shows whatever the input is.
     printf 'Install with pacman? [y/N] '
