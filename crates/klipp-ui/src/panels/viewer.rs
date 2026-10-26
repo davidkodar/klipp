@@ -5349,7 +5349,7 @@ impl ViewerPanel {
                 // surface's edges round it.
                 if click && (which == 4 || which == 5) && tool.edit == SurfaceEdit::Corners {
                     let (nx, ny) = viewer_screen_to_norm(image_rect, from);
-                    cmds.push(AppCommand::SnapSurface { clip_id: tool.clip_id, click: [nx, ny], at_secs: None, then_track: false, name: tool.name.clone() });
+                    cmds.push(AppCommand::SnapSurface { clip_id: tool.clip_id, click: [nx, ny], at_secs: None, then_track: false, name: tool.name.clone(), request_id: None });
                 }
                 // A rectangle drawn is left out; a click on one puts it back.
                 if released && which == 6 {

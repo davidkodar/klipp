@@ -95,8 +95,11 @@ impl KlippApp {
 
     /// Find a surface's corners round a click in the clip's picture (#684),
     /// on a thread: the frame is read as the tracker reads it, so the
-    /// corners found are on the frame a track would start from.
-    pub(super) fn start_surface_snap(&mut self, clip_id: klipp_core::ClipId, click: [f32; 2], at_secs: Option<f64>, then_track: bool, name: Option<String>) {
+    /// corners found are on the frame a track would start from. A quad
+    /// found is followed through the frames after it, as many as the clip
+    /// plays up to [`SNAP_CHECK_FRAMES`], and kept only when it moves as
+    /// one plane (#2754).
+    pub(super) fn start_surface_snap(&mut self, clip_id: klipp_core::ClipId, click: [f32; 2], at_secs: Option<f64>, then_track: bool, name: Option<String>, request_id: Option<uuid::Uuid>) {
         let at = at_secs.unwrap_or(self.state.playhead_smooth_secs);
         let seq = self.state.sequence();
         let frame = [seq.resolution.width, seq.resolution.height];
@@ -117,32 +120,64 @@ impl KlippApp {
         // The start of the file frame shown, as the tracker counts frames.
         let source_secs = (clip.source_secs_at(elapsed, fps) * media_fps).round() / media_fps;
         let path = item.path.clone();
+        // The frames after it the clip plays, to check the quad against.
+        let after = (((clip.source_out.to_secs_f64() - source_secs) * media_fps).floor().max(0.0) as usize).min(SNAP_CHECK_FRAMES);
         let event_tx = self.proxy_event_tx.clone();
         self.state.surface_snaps_pending += 1;
         std::thread::spawn(move || {
-            let picture = klipp_engine::SequentialFrameDecoder::open(&path, SURFACE_TRACK_SIDE)
-                .and_then(|mut d| {
-                    d.seek_to(source_secs)?;
-                    d.next_frame()
-                })
-                .ok()
-                .flatten();
-            let corners = picture.and_then(|(rgba, w, h)| klipp_effects::surface_snap::snap_quad(&rgba, w as usize, h as usize, (point[0], point[1])));
-            let _ = event_tx.send(klipp_core::AppEvent::SurfaceSnapped { clip_id, at_secs: at, corners, then_track, name });
+            let read = || -> Result<Option<(Vec<u8>, usize, usize, Vec<klipp_effects::window_track::GrayFrame>)>, String> {
+                let mut d = klipp_engine::SequentialFrameDecoder::open(&path, SURFACE_TRACK_SIDE)?;
+                d.seek_to(source_secs)?;
+                let Some((rgba, w, h)) = d.next_frame()? else { return Ok(None) };
+                let mut next = Vec::with_capacity(after);
+                while next.len() < after {
+                    let Some((f, fw, fh)) = d.next_frame()? else { break };
+                    next.push(klipp_effects::window_track::GrayFrame { data: f.chunks_exact(4).map(|p| ((p[0] as u32 * 54 + p[1] as u32 * 183 + p[2] as u32 * 19) >> 8) as u8).collect(), width: fw as usize, height: fh as usize });
+                }
+                Ok(Some((rgba, w as usize, h as usize, next)))
+            };
+            let (corners, why) = match read() {
+                Ok(Some((rgba, w, h, next))) => match klipp_effects::surface_snap::find(&rgba, w, h, (point[0], point[1]), &next) {
+                    Ok(q) => (Some(q), None),
+                    Err(miss) => (None, Some(miss.reason().to_string())),
+                },
+                Ok(None) => (None, Some("the frame there could not be read".to_string())),
+                Err(e) => (None, Some(format!("the frame there could not be read: {e}"))),
+            };
+            let _ = event_tx.send(klipp_core::AppEvent::SurfaceSnapped { clip_id, at_secs: at, corners, then_track, name, why, request_id });
         });
     }
 
     /// Snapped corners into the surface tool, or tracked from at once for
     /// the assistant; or, found nothing, said so.
-    pub(super) fn apply_surface_snap(&mut self, clip_id: klipp_core::ClipId, at: f64, corners: Option<[[f32; 2]; 4]>, then_track: bool, name: Option<String>) {
-        let Some(clip) = self.state.sequence().all_clips().find(|c| c.id == clip_id).cloned() else { return };
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn apply_surface_snap(&mut self, clip_id: klipp_core::ClipId, at: f64, corners: Option<[[f32; 2]; 4]>, then_track: bool, name: Option<String>, why: Option<String>, request_id: Option<uuid::Uuid>) {
+        // What the control socket waits for: the corners, or why not.
+        let tell = |this: &Self, outcome: serde_json::Value| {
+            if let Some(id) = request_id {
+                let mut o = outcome;
+                o["request_id"] = serde_json::json!(id.to_string());
+                *this.state.control_shared.surface_snap.lock().unwrap_or_else(|e| e.into_inner()) = Some(o);
+            }
+        };
+        let Some(clip) = self.state.sequence().all_clips().find(|c| c.id == clip_id).cloned() else {
+            tell(self, serde_json::json!({ "error": "the clip is gone" }));
+            return;
+        };
         let Some(on_source) = corners else {
-            self.state.toast.show("No surface with an edge all round there: drag the corners onto it instead");
+            let why = why.unwrap_or_else(|| klipp_effects::surface_snap::Miss::NoClosedRegion.reason().to_string());
+            tell(self, serde_json::json!({ "error": why }));
+            let mut said = why.clone();
+            if let Some(first) = said.get_mut(0..1) {
+                first.make_ascii_uppercase();
+            }
+            self.state.toast.show(format!("{said}: drag the corners onto the surface instead"));
             return;
         };
         let Some((shown, placed)) = self.clip_picture_at(&clip, at) else { return };
         let frame = [self.state.sequence().resolution.width, self.state.sequence().resolution.height];
         let on_frame = klipp_timeline::surface::source_quad_in_frame(&on_source, shown, frame, Some(placed));
+        tell(self, serde_json::json!({ "corners": on_frame, "at_secs": at }));
         if then_track {
             self.send_commands(vec![AppCommand::TrackSurface { clip_id, corners: on_frame, at_secs: Some(at), name, surface: None, direction: 0, interactive: false, track: None, exclude: None }]);
             return;

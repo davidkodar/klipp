@@ -4395,3 +4395,52 @@ fn surface_key_corrects_a_tracked_surface_and_list_clips_shows_corrections() {
     assert_eq!(shown["corrections"].as_array().map(|a| a.len()), Some(1), "{shown}");
     assert!(shown.get("low").is_none() && shown.get("lost").is_none(), "a correction is not a weak span: {shown}");
 }
+
+/// `track_surface` with a click (#2754) waits for what the click found:
+/// the corners, in the reply, or why nothing was, as the refusal, with
+/// the hint to give corners.
+#[test]
+fn a_surface_click_replies_with_what_it_found_or_why_not() {
+    let mut h = harness();
+    let media = h.media_pool.write().unwrap().add(klipp_media::MediaItem::synthetic_for_test("/tmp/surface-click-fixture.mov".into(), None));
+    for c in h.sequence.write().unwrap().tracks.iter_mut().flat_map(|t| t.clips.iter_mut()) {
+        c.kind = klipp_timeline::ClipKind::Media { media_id: media };
+    }
+    let clip = h.ids.clip_a.clone();
+    // The app's side: when the click arrives, its outcome.
+    let answer = |h: &Harness, outcome: serde_json::Value| {
+        let (sent, shared) = (h.sent.clone(), h.shared.clone());
+        let seen = sent.lock().unwrap().len();
+        std::thread::spawn(move || {
+            for _ in 0..500 {
+                let id = sent.lock().unwrap().iter().skip(seen).find_map(|c| match c {
+                    klipp_core::AppCommand::SnapSurface { request_id, then_track, .. } => {
+                        assert!(*then_track, "the assistant's click tracks what it finds");
+                        *request_id
+                    }
+                    _ => None,
+                });
+                if let Some(id) = id {
+                    let mut o = outcome;
+                    o["request_id"] = json!(id.to_string());
+                    *shared.surface_snap.lock().unwrap() = Some(o);
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!("no click sent");
+        })
+    };
+    let found = [[0.3, 0.3], [0.6, 0.31], [0.61, 0.6], [0.29, 0.58]];
+    let app = answer(&h, json!({ "corners": found, "at_secs": 0.5 }));
+    let reply = h.ok(json!({"method": "track_surface", "clip_id": clip, "click": [0.45, 0.45]}));
+    app.join().unwrap();
+    assert_eq!(reply["corners"], json!(found), "{reply}");
+    assert!(reply["text"].as_str().unwrap().contains("moves as one plane"), "{reply}");
+    let app = answer(&h, json!({ "error": "the region found round the click does not move as one flat surface in the frames after it" }));
+    let refused = h.call(json!({"method": "track_surface", "clip_id": clip, "click": [0.45, 0.45]}));
+    app.join().unwrap();
+    assert_eq!(refused["ok"], json!(false), "{refused}");
+    let why = refused["error"].as_str().unwrap();
+    assert!(why.contains("does not move as one flat surface") && why.contains("four corners"), "{why}");
+}

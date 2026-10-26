@@ -84,6 +84,11 @@ pub(super) const SURFACE_TRACK_SIDE: u32 = 1280;
 
 pub(super) const SURFACE_TRACK_BYTES: usize = 1_250_000_000;
 
+/// Frames after a click a surface found there is followed through, to
+/// tell a flat surface from something that only looks four-sided in one
+/// frame (#2754).
+pub(super) const SNAP_CHECK_FRAMES: usize = 8;
+
 /// The frames `first..=last` of the file at `path` (`fps` frames a
 /// second), grey, for the window tracker (#238): read once, in order,
 /// from a seek to the first, at half of a decode no more than 960 on its
