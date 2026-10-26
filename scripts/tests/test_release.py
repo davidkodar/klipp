@@ -6,6 +6,7 @@ import http.server
 import importlib.util
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -51,6 +52,28 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertEqual(calls, ["pacman", "-Syu", "klipp"])
         self.assertIn("Close and reopen", result.stdout)
+
+    def test_the_test_key_counts_only_on_the_loopback_test_address(self):
+        """release_key() itself, run from the shipped script without the
+        network: the shipped key unless the test address is a loopback one,
+        and only then the test's key."""
+        script = (ROOT / "packaging/klipp-update").read_text()
+        functions = "\n".join(
+            block.group(0) for block in re.finditer(r"^RELEASE_KEY=[^\n]*$|^(?:test_base|release_key)\(\) \{\n.*?^\}$", script, re.M | re.S)
+        )
+        shipped = release.release_key()
+
+        def key_for(base):
+            env = {"PATH": os.environ["PATH"], "KLIPP_UPDATE_TEST_PUBLIC_KEY": "RWQtestkey"}
+            if base is not None:
+                env["KLIPP_UPDATE_TEST_BASE_URL"] = base
+            return subprocess.run(["bash", "-c", functions + "\nrelease_key"], env=env,
+                                  capture_output=True, text=True, check=True).stdout.strip()
+
+        for base in (None, "", "http://example.invalid/releases", "https://127.0.0.1:8000", "http://127.0.0.1.example.com"):
+            self.assertEqual(key_for(base), shipped, f"base {base!r}")
+        for base in ("http://127.0.0.1:8000", "http://localhost:8000/x"):
+            self.assertEqual(key_for(base), "RWQtestkey", f"base {base!r}")
 
     def test_failure_does_not_claim_update_succeeded(self):
         result, _ = self.updater("y\n\n", 1)
