@@ -5826,6 +5826,44 @@ impl ViewerPanel {
                 Self::draw_viewer_overflow_menu_content(ui, state, theme, viewer_kind, kb, cmds);
             },
         );
+
+        // A right-click on the picture opens the same menu at the pointer
+        // (#2675). Read from the input, not a widget over the picture, so
+        // the viewer's own clicks and drags stay where they are; a
+        // right-click the AI tools' prompts take, or one over anything
+        // drawn above the viewer, is left alone.
+        let at_pointer = popup_id.with("at_pointer");
+        let prompts_take_it = state.ai_tools_state.panel_visible
+            && state.ai_tools_state.active_task.is_some()
+            && state.eyedropper_mode == crate::state::EyedropperMode::None;
+        let right_click = ui
+            .input(|i| if i.pointer.secondary_released() { i.pointer.interact_pos() } else { None })
+            .filter(|p| video_rect.contains(*p) && !trigger_rect.contains(*p))
+            .filter(|p| ui.ctx().layer_id_at(*p) == Some(ui.layer_id()));
+        let opened_now = right_click.is_some() && !prompts_take_it;
+        if let (Some(p), true) = (right_click, opened_now) {
+            ui.memory_mut(|m| {
+                m.data.insert_temp(at_pointer, p);
+                m.open_popup(at_pointer);
+            });
+        }
+        if ui.memory(|m| m.is_popup_open(at_pointer)) {
+            let at = ui.memory(|m| m.data.get_temp::<egui::Pos2>(at_pointer)).unwrap_or(video_rect.center());
+            let menu = egui::Area::new(at_pointer)
+                .order(egui::Order::Foreground)
+                .fixed_pos(at)
+                .constrain(true)
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::menu(ui.style()).show(ui, |ui| {
+                        ui.set_min_width(220.0);
+                        Self::draw_viewer_overflow_menu_content(ui, state, theme, viewer_kind, kb, cmds);
+                    });
+                });
+            let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
+            if !opened_now && (escape || menu.response.clicked_elsewhere()) {
+                ui.memory_mut(|m| m.close_popup());
+            }
+        }
     }
 
     fn draw_viewer_overflow_menu_content(
