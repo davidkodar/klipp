@@ -139,11 +139,11 @@ impl PresetManager {
 
         // ── Glow ───────────────────────────────────────────────
         self.bi("klipp.fx.glow", "Soft Touch", "Barely visible softening",
-            klipp_effects::BuiltinEffect::Glow { radius: 20.0, intensity: 0.2 });
+            klipp_effects::BuiltinEffect::Glow { radius: 20.0, intensity: 0.2, threshold: 0.0 });
         self.bi("klipp.fx.glow", "Romantic", "Soft warm glow",
-            klipp_effects::BuiltinEffect::Glow { radius: 35.0, intensity: 0.45 });
+            klipp_effects::BuiltinEffect::Glow { radius: 35.0, intensity: 0.45, threshold: 0.0 });
         self.bi("klipp.fx.glow", "Ethereal", "Strong diffuse glow",
-            klipp_effects::BuiltinEffect::Glow { radius: 50.0, intensity: 0.7 });
+            klipp_effects::BuiltinEffect::Glow { radius: 50.0, intensity: 0.7, threshold: 0.0 });
 
         // ── Light Rays ─────────────────────────────────────────
         self.bi("klipp.fx.light_rays", "Morning Sun", "Soft rays from upper right",

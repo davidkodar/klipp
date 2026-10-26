@@ -63,9 +63,10 @@ impl BuiltinEffect {
                 real(f, "radius", radius);
                 real(f, "intensity", intensity);
             }
-            E::Glow { radius, intensity } => {
+            E::Glow { radius, intensity, threshold } => {
                 real(f, "radius", radius);
                 real(f, "intensity", intensity);
+                real(f, "threshold", threshold);
             }
             E::LightRays { center_x, center_y, threshold, decay, intensity, .. } => {
                 real(f, "center_x", center_x);

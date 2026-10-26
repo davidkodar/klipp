@@ -80,7 +80,7 @@ fn light() -> Vec<E> {
         E::LightRays { center_x: 0.5, center_y: 0.2, threshold: 0.5, samples: 8, decay: 0.9, intensity: 0.4 },
         E::Vignette { amount: 0.4, size: 0.6, softness: 0.4, roundness: 0.5 },
         E::Bloom { threshold: 0.5, radius: 3.0, intensity: 0.5 },
-        E::Glow { radius: 2.5, intensity: 0.4 },
+        E::Glow { radius: 2.5, intensity: 0.4, threshold: 0.0 },
         E::Diffusion { amount: 0.4, radius: 2.0, threshold: 0.4, desaturation: 0.2 },
         E::LightWrap { width: 3.0, intensity: 0.5, softness: 0.6 },
         E::FilmHalation { threshold: 0.5, radius: 2.0, intensity: 0.4, hue: 0.3 },

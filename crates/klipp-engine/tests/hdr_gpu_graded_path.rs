@@ -278,7 +278,7 @@ fn a_masked_effect_on_an_hdr_clip_takes_the_graded_path() {
         ..Default::default()
     });
     let glow = node(NodeKind::Effect, NodeParams {
-        effects: vec![BuiltinEffect::Glow { radius: 4.0, intensity: 0.8 }],
+        effects: vec![BuiltinEffect::Glow { radius: 4.0, intensity: 0.8, threshold: 0.0 }],
         effect_blend: Some(EffectBlend { mix: 1.0, channel: MaskChannel::Luminance }),
         ..Default::default()
     });

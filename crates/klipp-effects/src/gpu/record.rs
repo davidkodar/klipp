@@ -896,7 +896,7 @@ impl GpuEffectsPipeline {
                 self.record_light_layer(rec, src, dst, scratch, light, width, height);
                 Recorded::Done
             }
-            BuiltinEffect::Glow { radius, intensity } => {
+            BuiltinEffect::Glow { radius, intensity, threshold } => {
                 // The whole picture blurred and screened over itself, its
                 // light spreading past the edges of a layer with clear
                 // parts, a title's (#2703).
@@ -904,7 +904,7 @@ impl GpuEffectsPipeline {
                 if !has_room(rec, effect) {
                     return Some(Recorded::OutOfSlots);
                 }
-                let seed = rec.slots.claim(q, &BloomThresholdParams { premultiply: 1, ..self.bloom_threshold(width, height, 0.0) });
+                let seed = rec.slots.claim(q, &BloomThresholdParams { premultiply: 1, ..self.bloom_threshold(width, height, *threshold) });
                 let blend = rec.slots.claim(q, &BloomBlendParams { lift_alpha: 1, ..self.bloom_blend(width, height, *intensity, 0.0) });
                 let light = LightLayer { seed, radius: *radius, blend: &self.glow_blend_pipeline, blend_slot: blend };
                 self.record_light_layer(rec, src, dst, scratch, light, width, height);

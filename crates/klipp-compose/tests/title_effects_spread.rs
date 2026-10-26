@@ -99,6 +99,6 @@ fn a_titles_effects_reach_past_its_glyphs() {
     assert!(along.0 + 8 <= text.0 || along.2 >= text.2 + 8, "a level smear reaches out sideways: {along:?} vs {text:?}");
     assert!(along.1 + 2 >= text.1 && along.3 <= text.3 + 2, "and not up or down: {along:?} vs {text:?}");
 
-    let glow = render(vec![E::Glow { radius: 20.0, intensity: 1.0 }]).expect("the stack drew the plain title");
+    let glow = render(vec![E::Glow { radius: 20.0, intensity: 1.0, threshold: 0.0 }]).expect("the stack drew the plain title");
     assert!(outside(&glow, text) > outside(&plain, text) + 2_000, "a glow lights the dark around the text: {} vs {}", outside(&glow, text), outside(&plain, text));
 }

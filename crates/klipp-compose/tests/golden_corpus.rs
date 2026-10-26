@@ -385,7 +385,7 @@ fn effect_cases() -> Vec<Case> {
         ("Transform", transform(0.8, 10.0, -5.0)),
         ("ChromaKey", ChromaKey { key_color: [13, 230, 26], tolerance: 0.3, soft_edge: 0.1, spill_method: SpillMethod::None, spill_strength: 0.0 }),
         ("Bloom", Bloom { threshold: 0.7, radius: 6.0, intensity: 0.8 }),
-        ("Glow", Glow { radius: 6.0, intensity: 0.6 }),
+        ("Glow", Glow { radius: 6.0, intensity: 0.6, threshold: 0.0 }),
         ("LightRays", LightRays { center_x: 0.5, center_y: 0.3, threshold: 0.6, samples: 32, decay: 0.95, intensity: 0.5 }),
         ("Vignette", Vignette { amount: 0.6, size: 0.5, softness: 0.5, roundness: 0.5 }),
         ("Diffusion", Diffusion { amount: 0.5, radius: 5.0, threshold: 0.4, desaturation: 0.2 }),
@@ -547,7 +547,7 @@ fn temporal_cases() -> Vec<Case> {
     ] {
         let mut c = media(0.0, 4.0);
         c.set_grade(exposure(0.3));
-        c = TestClip::of(c).effects(vec![BuiltinEffect::Glow { radius: 4.0, intensity: 0.5 }]).build();
+        c = TestClip::of(c).effects(vec![BuiltinEffect::Glow { radius: 4.0, intensity: 0.5, threshold: 0.0 }]).build();
         let f = Frames::default().scene(&c, transfer);
         // A scene-referred clip with an effect: the export's single-clip
         // path hands it to the stack, which places it, its display step in
@@ -764,7 +764,7 @@ fn grade_cases() -> Vec<Case> {
     for ws in [WorkingColorspace::AcesCG, WorkingColorspace::Bt2020Linear] {
         let mut c = media(0.0, 4.0);
         c.set_grade(exposure(0.5));
-        c = TestClip::of(c).effects(vec![BuiltinEffect::Glow { radius: 4.0, intensity: 0.5 }, BuiltinEffect::ColorFade { color: [200, 40, 20, 255], duration_secs: 1.0, mode: ColorFadeMode::In, progress: 0.5 }]).build();
+        c = TestClip::of(c).effects(vec![BuiltinEffect::Glow { radius: 4.0, intensity: 0.5, threshold: 0.0 }, BuiltinEffect::ColorFade { color: [200, 40, 20, 255], duration_secs: 1.0, mode: ColorFadeMode::In, progress: 0.5 }]).build();
         let f = Frames::default().with(&c, 0);
         let mut case = Case::new(format!("grade/working space {ws:?}"), sequence(vec![track("V1", TrackKind::Video, vec![c])]), f);
         case.working = ws;

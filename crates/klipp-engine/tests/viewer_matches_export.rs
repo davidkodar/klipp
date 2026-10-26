@@ -1347,7 +1347,7 @@ fn a_grade_compound_exports_as_the_viewer_shows_it() {
     n.params.exposure = Some(0.6);
     n.params.saturation = Some(0.3);
     for c in t.seq.tracks.iter_mut().find(|t| t.name == "V1").unwrap().clips.iter_mut() {
-        add_after_display(c, &[BuiltinEffect::Glow { radius: 12.0, intensity: 0.4 }]);
+        add_after_display(c, &[BuiltinEffect::Glow { radius: 12.0, intensity: 0.4, threshold: 0.0 }]);
         let graph = c.picture_v2().unwrap().picture.graph.clone();
         let glow = graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("glow")).unwrap().id;
         let compound = klipp_graph_lift::grade_compound::compound_of(&grade, klipp_graph_format::NodeId::new_v4()).unwrap();
@@ -1795,7 +1795,7 @@ fn a_graded_hdr_clip_with_effects_exports_as_the_viewer_shows_it() {
         Timeline { seq, files: HashMap::from([(p, file.clone())]), coded: HashMap::new() }
     };
     let t = make(vec![
-        BuiltinEffect::Glow { radius: 12.0, intensity: 0.8 },
+        BuiltinEffect::Glow { radius: 12.0, intensity: 0.8, threshold: 0.0 },
         BuiltinEffect::Vignette { amount: -0.8, size: 0.5, softness: 0.4, roundness: 0.7 },
     ]);
     let out = exported(&t);

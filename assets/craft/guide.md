@@ -335,6 +335,13 @@ exist until the plan runs.
   (`drop_shadow`) places a shadow behind it, and `outer_glow` lights its
   silhouette; compose the picture smaller than the frame to see these.
   For example, `{op: effect, clip_id: ID, kind: corners, amount: 0.4}`.
+  `glow` lights round a picture's highlights (a title glows whole);
+  `invert` is the full negative unless an amount blends it back;
+  `edge_detect` draws the edges on black; `lens_distortion` bends the
+  picture and scales it so its edges stay whole; `binocular` is black
+  outside the two eyepieces. Place the light of `lens_flare` with
+  `params` `position_x`, `position_y`, and of `light_rays` with
+  `center_x`, `center_y` (frame fractions from the top left).
   `params` sets an effect's own settings by name over what `kind` and
   `amount` give, each inside its range, a choice by name:
   `{op: effect, clip_id: ID, kind: displace, params: {amount: 8, size:

@@ -53,7 +53,7 @@ fn cases() -> Vec<(&'static str, BuiltinEffect, Highlights)> {
             key_color: [13, 230, 26], tolerance: 0.3, soft_edge: 0.1, spill_method: SpillMethod::None, spill_strength: 0.0,
         }, Keeps),
         ("Bloom", Bloom { threshold: 0.7, radius: 6.0, intensity: 0.8 }, Keeps),
-        ("Glow", Glow { radius: 6.0, intensity: 0.6 }, Keeps),
+        ("Glow", Glow { radius: 6.0, intensity: 0.6, threshold: 0.0 }, Keeps),
         ("LightRays", LightRays { center_x: 0.5, center_y: 0.3, threshold: 0.6, samples: 32, decay: 0.95, intensity: 0.5 }, Keeps),
         ("Vignette", Vignette { amount: 0.6, size: 0.5, softness: 0.5, roundness: 0.5 }, Keeps),
         ("Diffusion", Diffusion { amount: 0.5, radius: 5.0, threshold: 0.4, desaturation: 0.2 }, Keeps),

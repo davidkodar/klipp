@@ -105,12 +105,13 @@ pub(super) static TYPES: &[EffectType] = &[
             &[
                 ParamDesc::float("radius", "Radius", 30.0, (0.0, 100.0), Unit::CanvasPx),
                 ParamDesc::float("intensity", "Intensity", 0.4, (0.0, 2.0), Unit::Ratio),
+                ParamDesc::float("threshold", "Threshold", 0.0, (0.0, 1.0), Unit::Ratio),
             ],
             Spatial::Neighbourhood,
             false,
         )),
         tag: "glow",
-        sample: || BuiltinEffect::Glow { radius: 30.0, intensity: 0.4 },
+        sample: || BuiltinEffect::Glow { radius: 30.0, intensity: 0.4, threshold: 0.0 },
     },
     EffectType {
         desc: mixable(light(
