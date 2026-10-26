@@ -702,11 +702,11 @@ fn build_info_tooltip_rows(item: &klipp_media::MediaItem) -> Vec<(&'static str, 
     if item.default_source_in.is_some() || item.default_source_out.is_some() {
         let in_str = item
             .default_source_in
-            .map(|t| t.to_timecode_string())
+            .map(|t| klipp_core::TimecodeDisplay::plain(item.fps).position(t))
             .unwrap_or_else(|| "\u{2014}".to_string());
         let out_str = item
             .default_source_out
-            .map(|t| t.to_timecode_string())
+            .map(|t| klipp_core::TimecodeDisplay::plain(item.fps).position(t))
             .unwrap_or_else(|| "\u{2014}".to_string());
         rows.push(("In \u{00B7} Out", format!("{in_str}  \u{00B7}  {out_str}")));
     }

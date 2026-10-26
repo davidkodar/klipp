@@ -79,7 +79,7 @@ pub fn show_no_selection(
     section_card(ui, "SEQUENCE", None, theme, |ui| {
         text_row(ui, theme, "Resolution", format!("{} \u{00D7} {}", seq.resolution.width, seq.resolution.height));
         text_row(ui, theme, "Frame rate", fps_text(seq.fps.num as f64 / seq.fps.den.max(1) as f64));
-        mono_row(ui, theme, "Duration", state.sequence_duration().to_timecode_string());
+        mono_row(ui, theme, "Duration", seq.timecode_display().duration(state.sequence_duration()));
         let count = |kind| seq.tracks.iter().filter(|t| t.kind == kind).count();
         text_row(ui, theme, "Video tracks", format!("{}", count(klipp_timeline::TrackKind::Video)));
         text_row(ui, theme, "Audio tracks", format!("{}", count(klipp_timeline::TrackKind::Audio)));
@@ -202,7 +202,8 @@ pub fn show_bin_media(
     let mut used_secs = 0.0_f64;
     for (idx, track) in seq.tracks.iter().enumerate() {
         for clip in track.clips.iter().filter(|c| c.media_id() == Some(media.id)) {
-            usages.push((track_name(seq, idx), format!("{} \u{2013} {}", clip.timeline_in.to_timecode_string(), clip.timeline_out.to_timecode_string())));
+            let tc = seq.timecode_display();
+            usages.push((track_name(seq, idx), format!("{} \u{2013} {}", tc.position(clip.timeline_in), tc.position(clip.timeline_out))));
             used_secs += clip.duration().to_secs_f64();
         }
     }
@@ -212,7 +213,7 @@ pub fn show_bin_media(
             colour_row(ui, theme, "Used in", "Not used", theme.text_secondary);
         } else {
             text_row(ui, theme, "Used in", format!("{count} place{}", if count == 1 { "" } else { "s" }));
-            mono_row(ui, theme, "Total used", klipp_core::Timecode::from_secs_f64(used_secs, seq.fps.num).to_timecode_string());
+            mono_row(ui, theme, "Total used", seq.timecode_display().duration_secs(used_secs));
             for (track, range) in usages {
                 mono_row(ui, theme, &track, range);
             }
@@ -260,9 +261,10 @@ pub fn show_clip(
             });
             ui.add_space(4.0);
         }
-        mono_row(ui, theme, "In", clip.timeline_in.to_timecode_string());
-        mono_row(ui, theme, "Out", clip.timeline_out.to_timecode_string());
-        mono_row(ui, theme, "Duration", clip.duration().to_timecode_string());
+        let tc = state.timecode_display();
+        mono_row(ui, theme, "In", tc.position(clip.timeline_in));
+        mono_row(ui, theme, "Out", tc.position(clip.timeline_out));
+        mono_row(ui, theme, "Duration", tc.duration(clip.duration()));
         text_row(ui, theme, "Track", track_name(state.sequence(), track_idx));
         text_row(ui, theme, "Speed", format!("{:.0}%", clip.speed * 100.0));
         ui.add_space(4.0);
@@ -304,7 +306,7 @@ fn media_section(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme, media:
                 None => colour_row(ui, theme, "Audio", "Format unknown", dim),
             }
         }
-        mono_row(ui, theme, "Duration", media.duration.to_timecode_string());
+        mono_row(ui, theme, "Duration", klipp_core::TimecodeDisplay::plain(media.fps).duration(media.duration));
         text_row(ui, theme, "File size", format_size(media.file_size_bytes));
 
         // The colour class the file was read as, then the transfer and
@@ -462,7 +464,8 @@ fn markers_section(ui: &mut egui::Ui, theme: &KlippTheme, media: &klipp_media::M
     }
     let pad = super::rows::ROW_PAD;
     let dim = theme.text_secondary;
-    let rate = media.fps.rate();
+    // On the media's own clock, in frames at its rate (#2665).
+    let media_tc = klipp_core::TimecodeDisplay::plain(media.fps);
     section_card(ui, "MARKERS", Some(format!("{}", media.markers.len())), theme, |ui| {
         ui.add_space(4.0);
         let mut remove: Option<usize> = None;
@@ -476,9 +479,9 @@ fn markers_section(ui: &mut egui::Ui, theme: &KlippTheme, media: &klipp_media::M
                     klipp_core::MediaMarkerKind::Analysis => ("\u{25C6}", egui::Color32::from_rgb(170, 180, 200)),
                 };
                 ui.label(egui::RichText::new(glyph).size(12.0).color(colour));
-                let when = klipp_core::Timecode::from_secs_f64(m.secs, rate).to_timecode_string();
+                let when = media_tc.position_secs(m.secs);
                 let span = if m.is_range() {
-                    format!("{when} \u{2013} {}", klipp_core::Timecode::from_secs_f64(m.end_secs(), rate).to_timecode_string())
+                    format!("{when} \u{2013} {}", media_tc.position_secs(m.end_secs()))
                 } else {
                     when
                 };

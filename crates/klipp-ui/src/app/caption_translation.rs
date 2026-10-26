@@ -113,8 +113,8 @@ impl KlippApp {
         match ct::translated_track(seq, index, &translations, &cut, &pending.language, &pending.code) {
             Ok(out) => {
                 self.apply_edits_as_one(std::slice::from_ref(&out.edit), "Translate Captions");
-                let rate = self.state.sequence().fps.rate();
-                let flagged: Vec<String> = out.flagged.iter().map(|f| format!("{} {}", klipp_core::Timecode::from_secs_f64(f.at_secs, rate).to_timecode_string(), f.why)).collect();
+                let tc = self.state.timecode_display();
+                let flagged: Vec<String> = out.flagged.iter().map(|f| format!("{} {}", tc.position_secs(f.at_secs), f.why)).collect();
                 let made = format!("{} captions in {} on track {}, hidden so the two languages don't overlap (set_track visible shows it); {} to check{}", translations.len(), pending.language, out.track_index, flagged.len(), if flagged.is_empty() { String::new() } else { format!(": {}", flagged.join("; ")) });
                 tr::jobs::finish(&pending.job_id, Ok(made));
                 if flagged.is_empty() {

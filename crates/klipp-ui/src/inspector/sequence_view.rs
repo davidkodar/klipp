@@ -18,13 +18,14 @@ pub fn show(ui: &mut Ui, theme: &KlippTheme, state: &AppState, cmds: &mut Vec<Ap
 
     crate::widgets::inspector_group::section_card(ui, "RANGE", None, theme, |ui| {
         let fallback_out = state.sequence_duration();
-        point_row(ui, theme, "In", seq.in_point.map(|t| t.to_timecode_string()), cmds, AppCommand::ClearSequenceInPoint);
-        point_row(ui, theme, "Out", seq.out_point.map(|t| t.to_timecode_string()), cmds, AppCommand::ClearSequenceOutPoint);
+        let tc = seq.timecode_display();
+        point_row(ui, theme, "In", seq.in_point.map(|t| tc.position(t)), cmds, AppCommand::ClearSequenceInPoint);
+        point_row(ui, theme, "Out", seq.out_point.map(|t| tc.position(t)), cmds, AppCommand::ClearSequenceOutPoint);
         let end = seq.out_point.unwrap_or(fallback_out);
         // From the In point, or the start, to the Out point or the end.
         let length = seq.in_point.map_or(end, |start| if start < end { end - start } else { end - start.max(end) });
         row(ui, theme, "Length", |ui| {
-            ui.label(RichText::new(length.to_timecode_string()).monospace().size(12.5).color(theme.text_primary));
+            ui.label(RichText::new(tc.duration(length)).monospace().size(12.5).color(theme.text_primary));
         });
         ui.add_space(4.0);
     });
@@ -88,7 +89,7 @@ pub(crate) fn format_line(state: &AppState) -> String {
     let g = gcd(w, h).max(1);
     let fps = seq.fps.num as f64 / seq.fps.den.max(1) as f64;
     let fps = if (fps - fps.round()).abs() < 0.01 { format!("{} fps", fps.round() as u32) } else { format!("{fps:.3} fps") };
-    format!("{w} \u{00D7} {h} \u{00B7} {fps} \u{00B7} {}:{} \u{00B7} {}", w / g, h / g, state.sequence_duration().to_timecode_string())
+    format!("{w} \u{00D7} {h} \u{00B7} {fps} \u{00B7} {}:{} \u{00B7} {}", w / g, h / g, seq.timecode_display().duration(state.sequence_duration()))
 }
 
 /// The space the sequence is graded in.

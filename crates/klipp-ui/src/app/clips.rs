@@ -1581,7 +1581,7 @@ impl KlippApp {
                         // illegal on Windows paths, so swap them for hyphens).
                         let default_name = format!(
                             "frame_{}.png",
-                            self.state.playhead.to_timecode_string().replace(':', "-")
+                            self.state.timecode_display().position(self.state.playhead).replace([':', ';'], "-")
                         );
                         crate::file_dialog::spawn(move || {
                             if let Some(path) = rfd::FileDialog::new()
@@ -1625,7 +1625,7 @@ impl KlippApp {
 
                     // Timecode-based filename + nanos suffix for uniqueness
                     // when extracting the same frame more than once.
-                    let tc_str = self.state.playhead.to_timecode_string().replace(':', "-");
+                    let tc_str = self.state.timecode_display().position(self.state.playhead).replace([':', ';'], "-");
                     let nanos = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|d| d.subsec_nanos())

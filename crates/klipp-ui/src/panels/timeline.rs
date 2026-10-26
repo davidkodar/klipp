@@ -5737,7 +5737,7 @@ impl TimelinePanel {
                 if let Some(media) = clip.media_id().and_then(|mid| state.media_pool.get(&mid)) {
                     left_text += &format!("{sep}{}", media.filename);
                 }
-                let dur = clip.duration().to_timecode_string();
+                let dur = state.timecode_display().duration(clip.duration());
                 left_text += &format!("{sep}{dur}");
             }
         }
@@ -15110,12 +15110,13 @@ impl TimelinePanel {
         // Format the timecode
         let tc_str = tc.position(edge_time);
 
-        // Format delta as +/-frames
-        let delta_frames = delta.value;
+        // Format delta as +/-frames, at the sequence's rate: the raw
+        // value is ticks at an NTSC rate (#2665).
+        let delta_frames = (delta.to_secs_f64() * tc.fps.as_f64()).round() as i64;
         let delta_sign = if delta_frames >= 0 { "+" } else { "" };
         // Convert delta to seconds:frames for readability
-        let abs_frames = delta_frames.unsigned_abs() as i64;
-        let rate = delta.rate.max(1) as i64;
+        let abs_frames = delta_frames.abs();
+        let rate = (tc.fps.as_f64().round() as i64).max(1);
         let d_secs = abs_frames / rate;
         let d_ff = abs_frames % rate;
         let delta_str = if d_secs > 0 {
@@ -15125,7 +15126,7 @@ impl TimelinePanel {
         };
 
         // Format duration
-        let dur_str = duration.to_timecode_string();
+        let dur_str = tc.duration(duration);
 
         // Build overlay text lines
         let line1 = format!("{label}: {tc_str}");
@@ -15609,7 +15610,6 @@ impl TimelinePanel {
         let scroll = state.timeline_scroll_x;
         let width = ruler_rect.width();
         let fps = state.fps.as_f64() as f32;
-        let rate = state.fps.rate();
 
         // Determine tick interval based on zoom level
         // At low zoom: major ticks every 10s or 5s; at high zoom: every second or per-frame
@@ -15651,9 +15651,9 @@ impl TimelinePanel {
 
                     // Format label based on zoom level
                     let label = if major_interval < 1.0 {
-                        // Show HH:MM:SS:FF at frame-level zoom
-                        let tc = RationalTime::from_secs_f64(t as f64, rate);
-                        tc.to_timecode_string()
+                        // Show HH:MM:SS:FF at frame-level zoom, in frames
+                        // at the sequence's rate (#2665).
+                        state.timecode_display().position_secs(t as f64)
                     } else {
                         let total_secs = t.round() as i64;
                         let hh = total_secs / 3600;

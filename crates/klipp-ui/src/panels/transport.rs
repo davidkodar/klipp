@@ -322,7 +322,7 @@ impl TransportBar {
             }
 
             let duration = state.sequence_duration();
-            let duration_str = duration.to_timecode_string();
+            let duration_str = state.timecode_display().duration(duration);
             ui.label(
                 egui::RichText::new(format!(" / {}", duration_str))
                     .monospace()
