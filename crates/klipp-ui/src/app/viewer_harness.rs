@@ -20,6 +20,8 @@ pub(super) struct Viewer {
     pub(super) sent: Vec<AppCommand>,
     /// The keys held through the frames that follow.
     pub(super) modifiers: egui::Modifiers,
+    /// The texts the last frame drew.
+    pub(super) texts: Vec<String>,
 }
 
 impl Viewer {
@@ -27,7 +29,7 @@ impl Viewer {
         // Paused on an empty timeline: the viewer shows a frame to
         // draw on.
         let state = AppState { playback: klipp_engine::PlaybackState::Paused, active_tool: Tool::Text, ..Default::default() };
-        let mut v = Self { ctx: egui::Context::default(), panel: ViewerPanel::default(), state, theme: KlippTheme::default(), clock: 0.0, sent: Vec::new(), modifiers: egui::Modifiers::NONE };
+        let mut v = Self { ctx: egui::Context::default(), panel: ViewerPanel::default(), state, theme: KlippTheme::default(), clock: 0.0, sent: Vec::new(), modifiers: egui::Modifiers::NONE, texts: Vec::new() };
         v.frame(Vec::new());
         v
     }
@@ -43,9 +45,13 @@ impl Viewer {
         };
         let mut cmds = Vec::new();
         let (panel, state, theme) = (&mut self.panel, &mut self.state, &self.theme);
-        let _ = self.ctx.run(input, |ctx| {
+        let out = self.ctx.run(input, |ctx| {
             egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| cmds = panel.show(ui, state, theme, &crate::keybindings::KeyBindings::default()));
         });
+        self.texts = out.shapes.iter().filter_map(|s| match &s.shape {
+            egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+            _ => None,
+        }).collect();
         for cmd in cmds {
             self.apply(&cmd);
             self.sent.push(cmd);
@@ -164,3 +170,33 @@ mod multicam_mode_program_tests {
     }
 }
 
+mod viewer_menu_tests {
+    use super::*;
+
+    /// A right-click on the picture opens the viewer's menu at the
+    /// pointer, the one behind its corner button, and a click elsewhere
+    /// closes it; while the AI tools' prompts take right-clicks on the
+    /// picture, the right-click stays theirs (#2675).
+    #[test]
+    fn a_right_click_on_the_picture_opens_the_viewer_menu() {
+        let mut v = Viewer::new();
+        v.state.active_tool = Tool::Select;
+        let at = v.image_rect().center();
+        let right = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Secondary, pressed, modifiers: egui::Modifiers::NONE };
+        let menu = |v: &Viewer| v.texts.iter().any(|t| t == "OVERLAYS");
+        v.frame(vec![egui::Event::PointerMoved(at), right(true)]);
+        v.frame(vec![right(false)]);
+        v.frame(Vec::new());
+        assert!(menu(&v), "no menu after a right-click: {:?}", v.texts);
+        let elsewhere = v.image_rect().left_bottom() + egui::vec2(20.0, -20.0);
+        v.click(elsewhere);
+        assert!(!menu(&v), "the menu stayed open after a click elsewhere");
+
+        v.state.ai_tools_state.panel_visible = true;
+        v.state.ai_tools_state.active_task = Some(crate::ai_tools::AiTask::IsolateObject);
+        v.frame(vec![egui::Event::PointerMoved(at), right(true)]);
+        v.frame(vec![right(false)]);
+        v.frame(Vec::new());
+        assert!(!menu(&v), "the prompts' right-click opened the menu");
+    }
+}
