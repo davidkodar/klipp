@@ -287,18 +287,21 @@ fn moves(p: &klipp_graph_format::lifted::PlacementProps) -> bool {
         || off(p.tilt_y, 0.0)
         || off(p.perspective, 0.0)
         || p.focal_ref.is_some()
+        || p.flip_x
+        || p.flip_y
 }
 
 /// The Transform entry that holds `p`, a placement's values, fixed in the
 /// list: what making a placement fixed, or moving it, puts there, so its
 /// move stays (#1394).
 fn transform_of(p: &klipp_graph_format::lifted::PlacementProps) -> BuiltinEffect {
-    let scale = p.scale.unwrap_or(1.0);
+    // A flip is a negative scale in a Transform (#2705).
+    let (scale_x, scale_y) = p.scales();
     BuiltinEffect::Transform {
         position_x: p.pos_x.unwrap_or(0.0),
         position_y: p.pos_y.unwrap_or(0.0),
-        scale_x: scale,
-        scale_y: scale * p.aspect.unwrap_or(1.0),
+        scale_x,
+        scale_y,
         rotation: p.rotation.unwrap_or(0.0),
         anchor_x: p.anchor_x.unwrap_or(0.5),
         anchor_y: p.anchor_y.unwrap_or(0.5),
@@ -1111,6 +1114,9 @@ impl Clip {
                 });
                 return Ok(());
             }
+            if !klipp_graph_lift::clip_properties::PLACEMENT.contains(&key.as_str()) {
+                return Err(format!("{key} is not a placement value"));
+            }
             let id = match self.placement_entry(key.as_str()) {
                 Some(i) => self.effect_id_at(i).ok_or("the transform entry is gone")?,
                 None => self.push_effect(IDENTITY_TRANSFORM),
@@ -1118,21 +1124,29 @@ impl Clip {
             let name = key.as_str().to_owned();
             self.edit_effect(id, |e| {
                 if let BuiltinEffect::Transform { position_x, position_y, scale_x, scale_y, rotation, anchor_x, anchor_y, rotation_x, rotation_y, perspective, .. } = e {
+                    // A flip is a scale's sign (#2705): a size keeps it, a
+                    // flip sets it.
+                    let sign = |s: f32| if s < 0.0 { -1.0 } else { 1.0 };
+                    let (fx, fy) = (sign(*scale_x), sign(*scale_y));
                     match name.as_str() {
                         "pos_x" => *position_x = v,
                         "pos_y" => *position_y = v,
                         // The width; the height keeps the aspect under it.
                         "scale" => {
-                            let aspect = klipp_graph_lift::names::aspect(Some(*scale_x), Some(*scale_y)).unwrap_or(1.0);
-                            (*scale_x, *scale_y) = (v, v * aspect);
+                            let aspect = klipp_graph_lift::names::aspect(Some(scale_x.abs()), Some(scale_y.abs())).unwrap_or(1.0);
+                            (*scale_x, *scale_y) = (v * fx, v * aspect * fy);
                         }
-                        "scale_y" => *scale_y = v,
+                        "scale_y" => *scale_y = v * fy,
+                        "flip_x" => *scale_x = scale_x.abs() * if v >= 0.5 { -1.0 } else { 1.0 },
+                        "flip_y" => *scale_y = scale_y.abs() * if v >= 0.5 { -1.0 } else { 1.0 },
                         "rotation" => *rotation = v,
                         "anchor_x" => *anchor_x = v,
                         "anchor_y" => *anchor_y = v,
                         "tilt_x" => *rotation_x = v,
                         "tilt_y" => *rotation_y = v,
-                        _ => *perspective = v,
+                        "perspective" => *perspective = v,
+                        // Checked against the placement's keys above.
+                        _ => {}
                     }
                 }
             });

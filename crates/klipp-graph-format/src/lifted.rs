@@ -216,11 +216,35 @@ pub struct PlacementProps {
     pub perspective: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub focal_ref: Option<Value>,
+    /// Mirrored left to right, about its anchor (#2705). Stored only when
+    /// set, so a reader before it refuses a picture that flips.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub flip_x: bool,
+    /// Mirrored top to bottom, about its anchor (#2705).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub flip_y: bool,
 }
 
 impl PlacementProps {
     pub fn is_empty(&self) -> bool {
         *self == Self::default()
+    }
+
+    /// The width's and the height's scale as a Transform draws them: the
+    /// scale, the height at its aspect, each negative where it flips.
+    pub fn scales(&self) -> (f32, f32) {
+        let scale = self.scale.unwrap_or(1.0);
+        (scale * self.sign_x(), scale * self.aspect.unwrap_or(1.0) * self.sign_y())
+    }
+
+    /// -1 where the clip flips left to right, else 1.
+    pub fn sign_x(&self) -> f32 {
+        if self.flip_x { -1.0 } else { 1.0 }
+    }
+
+    /// -1 where the clip flips top to bottom, else 1.
+    pub fn sign_y(&self) -> f32 {
+        if self.flip_y { -1.0 } else { 1.0 }
     }
 }
 

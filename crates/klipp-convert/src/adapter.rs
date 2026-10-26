@@ -260,21 +260,22 @@ fn animate(out: &mut Map<String, Value>, modifiers: &mut Map<String, Value>, fie
 }
 
 fn has_values(p: &PlacementProps) -> bool {
-    [p.pos_x, p.pos_y, p.scale, p.aspect, p.rotation, p.anchor_x, p.anchor_y].iter().any(Option::is_some)
+    [p.pos_x, p.pos_y, p.scale, p.aspect, p.rotation, p.anchor_x, p.anchor_y].iter().any(Option::is_some) || p.flip_x || p.flip_y
 }
 
 /// A Transform effect holding the placement, each value it lacks at the
 /// identity.
 fn transform(p: &PlacementProps, with_tilt: bool) -> Value {
-    let scale = p.scale.unwrap_or(1.0);
+    // The height keeps the clip's aspect under the width (#1406); a flip
+    // is a negative scale (#2705).
+    let (scale_x, scale_y) = p.scales();
     let tilt = |v: Option<f32>| if with_tilt { v.unwrap_or(0.0) } else { 0.0 };
     json!({
         "type": "transform",
         "position_x": p.pos_x.unwrap_or(0.0),
         "position_y": p.pos_y.unwrap_or(0.0),
-        "scale_x": scale,
-        // The height keeps the clip's aspect under the width (#1406).
-        "scale_y": scale * p.aspect.unwrap_or(1.0),
+        "scale_x": scale_x,
+        "scale_y": scale_y,
         "rotation": p.rotation.unwrap_or(0.0),
         "anchor_x": p.anchor_x.unwrap_or(0.5),
         "anchor_y": p.anchor_y.unwrap_or(0.5),

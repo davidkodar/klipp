@@ -2164,6 +2164,26 @@ mod tests {
         assert_eq!((p.scale, p.aspect), (Some(0.8), None));
     }
 
+    /// #2705: a flip set by path is the clip's placement, drawn as a
+    /// negative scale in its Transform, and set off again by path.
+    #[test]
+    fn a_flip_by_path_mirrors_the_clip() {
+        let c = fixture(&[E::Transform { position_x: 0.0, position_y: 0.0, scale_x: 0.8, scale_y: 0.4, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None }]);
+        let id = c.id;
+        let mut s = with(&[c]);
+        let addr = clip(&s, id).placement_path().expect("a placement");
+        let flip = |key: &str, on: bool| AppCommand::SetParamAt { addr: addr.clone(), key: key.into(), value: klipp_graph_format::ParamValue::Float(if on { 1.0 } else { 0.0 }) };
+        run(&mut s, flip("flip_x", true));
+        let c = clip(&s, id).clone();
+        let p = c.picture_v2().unwrap().picture.placement.clone();
+        assert_eq!((p.flip_x, p.flip_y, p.scale), (true, false, Some(0.8)));
+        assert!(matches!(test_clip::effects(&c)[0], E::Transform { scale_x, scale_y, .. } if (scale_x, scale_y) == (-0.8, 0.4)), "{:?}", test_clip::effects(&c));
+        run(&mut s, flip("flip_y", true));
+        run(&mut s, flip("flip_x", false));
+        let p = clip(&s, id).picture_v2().unwrap().picture.placement.clone();
+        assert_eq!((p.flip_x, p.flip_y), (false, true));
+    }
+
     /// The card's Scale Y keys go to the clip's height lane by path, apart
     /// from the width's (#1471): the renderer draws the height from them,
     /// one undo takes a key back, and with none left the height follows

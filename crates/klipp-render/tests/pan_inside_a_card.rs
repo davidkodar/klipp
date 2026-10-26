@@ -77,7 +77,7 @@ fn a_pan_on_an_inset_keeps_the_card_and_pushes_in_inside_it() {
     seq.tracks = vec![track];
     let mut seqs = vec![seq];
     let inset = ComposePose { x: Some(0.5), y: Some(0.46), width: Some(0.91), height: Some(0.91), ..Default::default() };
-    apply(&mut seqs, &mut pool, Op::Compose { clip_id: ClipRef::Id(id), poses: vec![inset] });
+    apply(&mut seqs, &mut pool, Op::Compose { clip_id: ClipRef::Id(id), poses: vec![inset], flip_x: None, flip_y: None });
     let (card, white_before) = measure(&seqs[0], 1.0);
     assert!(card.0 > 2 && card.2 < W - 3 && card.1 > 0 && card.3 < H - 3, "an inset with margins: {card:?}");
 

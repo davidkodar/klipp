@@ -5,8 +5,9 @@
 //!
 //! The keys are the lift's own names (`placement` in `lift.rs`): `pos_x`,
 //! `pos_y`, `scale`, `scale_y`, `rotation`, `anchor_x`, `anchor_y`,
-//! `tilt_x`, `tilt_y`, `perspective`, and `opacity`. All but the anchor
-//! and the perspective are animated.
+//! `tilt_x`, `tilt_y`, `perspective`, `flip_x`, `flip_y` (on at 1, off at
+//! 0), and `opacity`. All but the anchor, the perspective and the flips
+//! are animated.
 
 use klipp_graph_format::lifted::{types as lt, ClipPicture};
 use klipp_graph_format::op::GraphOp;
@@ -14,7 +15,7 @@ use klipp_graph_format::{Animation, ParamKey, ParamValue};
 use serde_json::Value;
 
 /// The placement's keys.
-pub const PLACEMENT: [&str; 10] = ["pos_x", "pos_y", "scale", "scale_y", "rotation", "anchor_x", "anchor_y", "tilt_x", "tilt_y", "perspective"];
+pub const PLACEMENT: [&str; 12] = ["pos_x", "pos_y", "scale", "scale_y", "rotation", "anchor_x", "anchor_y", "tilt_x", "tilt_y", "perspective", "flip_x", "flip_y"];
 
 /// The opacity's key.
 pub const OPACITY: &str = "opacity";
@@ -81,6 +82,9 @@ pub fn apply(picture: &mut ClipPicture, op: &GraphOp) -> Result<(), String> {
             "tilt_x" => p.tilt_x = Some(v),
             "tilt_y" => p.tilt_y = Some(v),
             "perspective" => p.perspective = Some(v),
+            // A flip is on or off (#2705).
+            "flip_x" => p.flip_x = v >= 0.5,
+            "flip_y" => p.flip_y = v >= 0.5,
             // Clamped as the renderer clamps a static opacity; under keys
             // it is stored as given.
             _ => picture.opacity = if picture.opacity_anim.is_some() { v } else { v.clamp(0.0, 1.0) },

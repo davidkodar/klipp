@@ -423,6 +423,21 @@ fn show_clip_video(
                 if tilt_x != 0.0 || tilt_y != 0.0 || !lane(clip, "tilt_x").is_empty() || !lane(clip, "tilt_y").is_empty() {
                     r_pe_out = Some(param_row(ui, theme, "Perspective", &mut persp, 0.1..=3.0, 1.0, 0.01, 2, "", None));
                 }
+                // Mirrored about the anchor (#2705): a property of the
+                // clip's placement, on or off.
+                if let Some(addr) = clip.placement_path() {
+                    let (fx, fy) = clip.picture_v2().map(|p| (p.picture.placement.flip_x, p.picture.placement.flip_y)).unwrap_or_default();
+                    row(ui, theme, "Flip", |ui| {
+                        for (key, on, label, tip) in [
+                            ("flip_x", fx, "\u{2194} Horizontal", "Mirror the clip left to right"),
+                            ("flip_y", fy, "\u{2195} Vertical", "Mirror the clip top to bottom"),
+                        ] {
+                            if ui.selectable_label(on, label).on_hover_text(tip).clicked() {
+                                cmds.push(AppCommand::SetParamAt { addr: addr.clone(), key: key.into(), value: klipp_graph_format::ParamValue::Float(if on { 0.0 } else { 1.0 }) });
+                            }
+                        }
+                    });
+                }
 
                 // Source rotation (auto-detected from media metadata, user-overridable)
                 if clip.source_rotation != 0 || clip.media_id().is_some() {

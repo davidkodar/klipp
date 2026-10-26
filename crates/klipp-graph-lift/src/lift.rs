@@ -768,10 +768,15 @@ fn placement(record: &ClipRecordV2, transforms: &[&Node]) -> (PlacementProps, BT
         let v = payload(first);
         p.pos_x = num(v, "position_x");
         p.pos_y = num(v, "position_y");
-        p.scale = num(v, "scale_x");
+        // A negative scale is a flip (#2705): kept as one, the scale as
+        // its size.
+        let (sx, sy) = (num(v, "scale_x"), num(v, "scale_y"));
+        p.flip_x = sx.is_some_and(|s| s < 0.0);
+        p.flip_y = sy.is_some_and(|s| s < 0.0);
+        p.scale = sx.map(f32::abs);
         // Its height against its width, where they differ (#1406): none
         // for a width of 0, which draws nothing whatever the height.
-        p.aspect = aspect(p.scale, num(v, "scale_y"));
+        p.aspect = aspect(p.scale, sy.map(f32::abs));
         p.rotation = num(v, "rotation");
         p.anchor_x = num(v, "anchor_x");
         p.anchor_y = num(v, "anchor_y");
