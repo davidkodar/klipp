@@ -9,9 +9,10 @@ distributions are not validated by this recipe.
 ## Downloadable releases
 
 Release packaging and in-app update checks are described in [RELEASING.md](RELEASING.md).
-Release candidates are published on the
-[releases page](https://github.com/davidkodar/klipp/releases) as an unsigned
-pacman package; the main README shows how to install one. There is no signed
+Releases are published on the
+[releases page](https://github.com/davidkodar/klipp/releases) as a pacman
+package with checksums signed by the project's minisign key; the main README
+shows how to check and install one. There is no signed
 package repository yet, so installing a standalone package does not
 configure future system updates.
 
