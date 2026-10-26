@@ -1589,4 +1589,40 @@ mod menu_smoke_tests {
         timeline.frame(Vec::new());
         assert_eq!(reds(&timeline), before + 1, "one red mute button");
     }
+
+    /// Two short title clips side by side: each one's label is drawn
+    /// only over its own clip, so the first never runs into the second
+    /// (#2666).
+    #[test]
+    fn title_labels_stay_on_their_own_clips() {
+        use klipp_timeline::{ClipKind, TextBox, TitleData};
+        let mut timeline = Timeline::new();
+        let zoom = timeline.state.timeline_zoom;
+        let at = |secs: f64| RationalTime::from_secs_f64(secs, 24);
+        // About 200 px each, too short for the long text: the wider a
+        // clip, the more its truncation's guess at a W's width falls
+        // short.
+        let len = 200.0 / zoom as f64;
+        let mut text = klipp_timeline::Track::new("Text 1", TrackKind::Text);
+        for (i, words) in ["WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW first", "MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM second"].into_iter().enumerate() {
+            let td = TitleData::single_text(TextBox { text: words.into(), ..Default::default() });
+            let (from, to) = (at(i as f64 * len), at((i + 1) as f64 * len));
+            text.clips.push(Clip { kind: ClipKind::Title(td), source_in: at(0.0), source_out: to - from, ..Clip::gap(from, to) });
+        }
+        timeline.state.sequences[0].tracks.insert(0, text);
+        timeline.frame(Vec::new());
+        timeline.frame(Vec::new());
+        // Each label's text as painted: where it starts, and where it is
+        // seen to end (its own end, or its clip's).
+        let mut labels: Vec<(f32, f32)> = timeline.shapes.iter().filter_map(|s| match &s.shape {
+            egui::Shape::Text(t) if t.galley.text().starts_with("WW") || t.galley.text().starts_with("MM") => {
+                Some((t.pos.x, (t.pos.x + t.galley.size().x).min(s.clip_rect.right())))
+            }
+            _ => None,
+        }).collect();
+        labels.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let first = labels.first().expect("the first label").1;
+        let second = labels.iter().map(|l| l.0).fold(f32::MIN, f32::max);
+        assert!(first <= second - 1.0, "the first label is seen to {first}, the second starts at {second}: {labels:?}");
+    }
 }
