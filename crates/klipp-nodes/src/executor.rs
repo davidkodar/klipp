@@ -828,6 +828,13 @@ fn matte_fingerprint(
                 end_x.to_bits().hash(&mut h);
                 end_y.to_bits().hash(&mut h);
             }
+            klipp_core::MaskShape::RadialGradient { center_x, center_y, inner, outer } => {
+                4u8.hash(&mut h);
+                center_x.to_bits().hash(&mut h);
+                center_y.to_bits().hash(&mut h);
+                inner.to_bits().hash(&mut h);
+                outer.to_bits().hash(&mut h);
+            }
             klipp_core::MaskShape::Bezier { points } => {
                 3u8.hash(&mut h);
                 points.len().hash(&mut h);
@@ -7077,6 +7084,8 @@ fn mask_to_gpu_def(mask: &klipp_core::Mask, width: u32, height: u32) -> Option<k
             Some(GpuMaskDef::rectangle(*center_x, *center_y, *width, *height, *rotation, mask.feather, mask.invert, mask.opacity)),
         MaskShape::LinearGradient { start_x, start_y, end_x, end_y } =>
             Some(GpuMaskDef::linear_gradient(*start_x, *start_y, *end_x, *end_y, mask.feather, mask.invert, mask.opacity)),
+        MaskShape::RadialGradient { center_x, center_y, inner, outer } =>
+            Some(GpuMaskDef::radial_gradient(*center_x, *center_y, *inner, *outer, mask.feather, mask.invert, mask.opacity)),
         MaskShape::Bezier { points } =>
             Some(GpuMaskDef::bezier(klipp_core::mask_path::outline(points, width, height).to_vec(), mask.feather, mask.invert, mask.opacity)),
     };
@@ -7207,7 +7216,8 @@ fn apply_tracker_overrides_to_masks(
                 *center_x = tx;
                 *center_y = ty;
             }
-            klipp_core::MaskShape::Rectangle { center_x, center_y, .. } => {
+            klipp_core::MaskShape::Rectangle { center_x, center_y, .. }
+            | klipp_core::MaskShape::RadialGradient { center_x, center_y, .. } => {
                 *center_x = tx;
                 *center_y = ty;
             }

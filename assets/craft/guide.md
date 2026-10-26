@@ -372,6 +372,20 @@ exist until the plan runs.
   sequence) with the picture itself, enlarged and blurred, so the frame
   is full and the whole picture still shows; more `amount` is softer
   and darker. Put it on every such clip when asked to fill the bars.
+- `opacity_mask {clip_id, shape, feather?, invert?, clear?}`: fade a
+  clip's opacity across the frame, whole at one line or ring and gone at
+  another, so the track below shows through: a sky fading out, a picture
+  melting into the next layer, a soft round spotlight. `shape` is
+  `{linear: {start: [x, y], end: [x, y]}}` (whole at `start`, gone at
+  `end`) or `{radial: {center: [x, y], inner: r, outer: r}}` (whole
+  inside `inner`, gone past `outer`, radii in frame widths). Points are
+  frame fractions from the top left. `feather` 1 (the default) fades
+  all the way between them, 0 is a hard edge midway; `invert` swaps
+  which side shows. A second replaces the first; `clear: true` takes it
+  off. For example `{op: opacity_mask, clip_id: ID, shape: {linear:
+  {start: [0.5, 0.4], end: [0.5, 0.9]}}}` fades a clip out toward the
+  bottom. A clip whose alpha is already another matte (a cut-out) is
+  refused.
 - `stabilize {clip_id, smoothing?}`: steady a shaky clip; it crops the
   edges a little to hide the movement.
 - `retime {clip_id, speed | fit, ripple?}`: change a clip's speed, its linked

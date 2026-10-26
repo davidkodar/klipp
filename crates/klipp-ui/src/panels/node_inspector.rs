@@ -708,6 +708,13 @@ impl NodeInspectorPanel {
                     masks_changed = true;
                     ui.close_menu();
                 }
+                if ui.button("Radial Gradient").clicked() {
+                    masks.masks.push(klipp_core::Mask::new(klipp_core::MaskShape::RadialGradient {
+                        center_x: 0.5, center_y: 0.5, inner: 0.1, outer: 0.4,
+                    }));
+                    masks_changed = true;
+                    ui.close_menu();
+                }
                 if ui.button("Bezier").clicked() {
                     masks.masks.push(klipp_core::Mask {
                         shape: klipp_core::MaskShape::polygon(vec![
@@ -739,6 +746,7 @@ impl NodeInspectorPanel {
                 klipp_core::MaskShape::Circle { .. } => "Circle",
                 klipp_core::MaskShape::Rectangle { .. } => "Rectangle",
                 klipp_core::MaskShape::LinearGradient { .. } => "Linear Gradient",
+                klipp_core::MaskShape::RadialGradient { .. } => "Radial Gradient",
                 klipp_core::MaskShape::Bezier { .. } => "Bezier",
             };
             let mask_enabled = masks.masks[mask_idx].enabled;
@@ -1114,6 +1122,13 @@ impl NodeInspectorPanel {
                                         "start_y" => *start_y = val,
                                         "end_x" => *end_x = val,
                                         "end_y" => *end_y = val,
+                                        _ => {}
+                                    },
+                                    klipp_core::MaskShape::RadialGradient { center_x, center_y, inner, outer } => match info.name {
+                                        "center_x" => *center_x = val,
+                                        "center_y" => *center_y = val,
+                                        "inner" => *inner = val.min(*outer),
+                                        "outer" => *outer = val.max(*inner),
                                         _ => {}
                                     },
                                     _ => {}
@@ -1613,6 +1628,15 @@ impl NodeInspectorPanel {
                                 shape: klipp_core::MaskShape::LinearGradient {
                                     start_x: 0.2, start_y: 0.5,
                                     end_x: 0.8, end_y: 0.5,
+                                },
+                            });
+                            ui.close_menu();
+                        }
+                        if ui.button("Radial Gradient").clicked() {
+                            cmds.push(AppCommand::AddMaskShape {
+                                clip_id,
+                                shape: klipp_core::MaskShape::RadialGradient {
+                                    center_x: 0.5, center_y: 0.5, inner: 0.1, outer: 0.4,
                                 },
                             });
                             ui.close_menu();

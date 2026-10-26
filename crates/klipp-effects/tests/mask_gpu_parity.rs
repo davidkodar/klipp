@@ -53,6 +53,10 @@ fn mask_to_gpu_def(mask: &Mask, width: u32, height: u32) -> Option<GpuMaskDef> {
                 mask.feather, mask.invert, mask.opacity,
             ))
         }
+        MaskShape::RadialGradient { center_x, center_y, inner, outer } => Some(GpuMaskDef::radial_gradient(
+            *center_x, *center_y, *inner, *outer,
+            mask.feather, mask.invert, mask.opacity,
+        )),
         // Its outline, flattened for this size, as the executor sends it
         // (#74).
         MaskShape::Bezier { points } => Some(GpuMaskDef::bezier(
@@ -105,6 +109,20 @@ fn curve_fixtures() -> Vec<ParityCase> {
     let mask = |shape: MaskShape| Mask { shape, feather: 0.0, ..Mask::default() };
     let rect = MaskShape::Rectangle { center_x: 0.5, center_y: 0.5, width: 0.6, height: 0.5, rotation: 0.0 };
     vec![
+        // A round gradient fading over its whole ring (#2704), off
+        // centre on a wide frame, and the same inverted.
+        ParityCase {
+            name: "radial_gradient",
+            width: 96, height: 64,
+            masks: MaskStack { masks: vec![Mask::new(MaskShape::RadialGradient { center_x: 0.4, center_y: 0.6, inner: 0.1, outer: 0.35 })] },
+            expects_gpu_gap: false,
+        },
+        ParityCase {
+            name: "radial_gradient_inverted",
+            width: 96, height: 64,
+            masks: MaskStack { masks: vec![Mask { invert: true, ..Mask::new(MaskShape::RadialGradient { center_x: 0.5, center_y: 0.5, inner: 0.0, outer: 0.5 }) }] },
+            expects_gpu_gap: false,
+        },
         ParityCase {
             name: "bezier_curved_circle",
             width: 96, height: 64,

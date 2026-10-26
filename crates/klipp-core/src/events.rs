@@ -2246,6 +2246,9 @@ pub enum AppCommand {
     TrackSubject { clip_id: ClipId, model: String, into: Option<SubjectMatteUse> },
     /// Restore the whole picture after a subject/image matte cut-out.
     RestoreBackground { clip_id: ClipId },
+    /// Fade the clip's opacity across the frame by `mask`, a gradient
+    /// (#2704); `None` takes it off.
+    SetOpacityGradient { clip_id: ClipId, mask: Option<Box<crate::Mask>> },
     /// Stop tracking the subject through `clip_id`: the frames made so far
     /// are kept (#239).
     CancelTrackSubject { clip_id: ClipId },

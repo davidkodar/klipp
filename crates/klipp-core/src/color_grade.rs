@@ -523,6 +523,14 @@ pub enum MaskShape {
         end_x: f32,
         end_y: f32,
     },
+    /// A round gradient (#2704): whole inside `inner` of the centre, gone
+    /// past `outer`, the two radii in frame widths as a circle's is.
+    RadialGradient {
+        center_x: f32,
+        center_y: f32,
+        inner: f32,
+        outer: f32,
+    },
     /// Freeform path mask (#74): points in frame fractions, each with
     /// curve handles, the path closed (the last point joins the first).
     /// A point without handles is a corner; a path of corners is a
@@ -627,7 +635,9 @@ impl MaskShape {
     /// midpoint, a free shape's centroid.
     pub fn pivot(&self) -> (f32, f32) {
         match self {
-            MaskShape::Circle { center_x, center_y, .. } | MaskShape::Rectangle { center_x, center_y, .. } => (*center_x, *center_y),
+            MaskShape::Circle { center_x, center_y, .. }
+            | MaskShape::Rectangle { center_x, center_y, .. }
+            | MaskShape::RadialGradient { center_x, center_y, .. } => (*center_x, *center_y),
             MaskShape::LinearGradient { start_x, start_y, end_x, end_y } => ((start_x + end_x) * 0.5, (start_y + end_y) * 0.5),
             MaskShape::Bezier { points } if !points.is_empty() => {
                 let n = points.len() as f32;
@@ -668,6 +678,12 @@ impl MaskShape {
                 let (ex, ey) = point(*end_x, *end_y);
                 MaskShape::LinearGradient { start_x: sx, start_y: sy, end_x: ex, end_y: ey }
             }
+            MaskShape::RadialGradient { center_x, center_y, inner, outer } => MaskShape::RadialGradient {
+                center_x: center_x + m.dx,
+                center_y: center_y + m.dy,
+                inner: inner * m.scale,
+                outer: outer * m.scale,
+            },
             // Each point moves; its handles turn and scale with it, as
             // offsets.
             MaskShape::Bezier { points } => MaskShape::Bezier {
@@ -843,6 +859,12 @@ pub struct MaskKeyframes {
     /// LinearGradient end_y
     #[serde(default)]
     pub end_y: Vec<Keyframe>,
+    /// RadialGradient inner (#2704)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inner: Vec<Keyframe>,
+    /// RadialGradient outer (#2704)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outer: Vec<Keyframe>,
     /// The window's tracked motion (#238), written by the window tracker:
     /// how far its pivot (see [`MaskShape::pivot`]) has moved, in frame
     /// fractions, and how much it has grown and turned, about that pivot,
@@ -889,6 +911,8 @@ impl MaskKeyframes {
             && self.start_y.is_empty()
             && self.end_x.is_empty()
             && self.end_y.is_empty()
+            && self.inner.is_empty()
+            && self.outer.is_empty()
             && self.path.is_empty()
             && !self.is_tracked()
     }
@@ -923,6 +947,8 @@ impl MaskKeyframes {
             "start_y" => Some(&mut self.start_y),
             "end_x" => Some(&mut self.end_x),
             "end_y" => Some(&mut self.end_y),
+            "inner" => Some(&mut self.inner),
+            "outer" => Some(&mut self.outer),
             "track_x" => Some(&mut self.track_x),
             "track_y" => Some(&mut self.track_y),
             "track_scale" => Some(&mut self.track_scale),
@@ -946,6 +972,8 @@ impl MaskKeyframes {
             "start_y" => Some(&self.start_y),
             "end_x" => Some(&self.end_x),
             "end_y" => Some(&self.end_y),
+            "inner" => Some(&self.inner),
+            "outer" => Some(&self.outer),
             "track_x" => Some(&self.track_x),
             "track_y" => Some(&self.track_y),
             "track_scale" => Some(&self.track_scale),
@@ -960,6 +988,7 @@ impl MaskKeyframes {
             MaskShape::Circle { .. } => &["center_x", "center_y", "radius", "feather", "opacity"],
             MaskShape::Rectangle { .. } => &["center_x", "center_y", "width", "height", "rotation", "feather", "opacity"],
             MaskShape::LinearGradient { .. } => &["start_x", "start_y", "end_x", "end_y", "feather", "opacity"],
+            MaskShape::RadialGradient { .. } => &["center_x", "center_y", "inner", "outer", "feather", "opacity"],
             MaskShape::Bezier { .. } => &["feather", "opacity"],
         }
     }
@@ -1012,6 +1041,14 @@ impl Default for Mask {
 }
 
 impl Mask {
+    /// A mask of `shape` as it is added: a radial gradient fading over
+    /// its whole ring, inner to outer (#2704); any other shape as
+    /// [`Mask::default`] has it.
+    pub fn new(shape: MaskShape) -> Self {
+        let ring = matches!(shape, MaskShape::RadialGradient { .. });
+        Mask { shape, feather: if ring { 0.5 } else { Mask::default().feather }, feather_inner: if ring { 0.5 } else { 0.0 }, ..Mask::default() }
+    }
+
     /// Evaluate keyframes at the given time and return a copy of this mask
     /// with animated parameters overridden.
     pub fn evaluated_at(&self, time_secs: f64) -> Mask {
@@ -1075,6 +1112,15 @@ impl Mask {
                     keyframe::evaluate(&self.keyframes.end_y, time_secs, *end_y)
                 } else { *end_y };
                 result.shape = MaskShape::LinearGradient { start_x: sx, start_y: sy, end_x: ex, end_y: ey };
+            }
+            MaskShape::RadialGradient { center_x, center_y, inner, outer } => {
+                let at = |track: &Vec<Keyframe>, v: f32| if track.is_empty() { v } else { keyframe::evaluate(track, time_secs, v) };
+                result.shape = MaskShape::RadialGradient {
+                    center_x: at(&self.keyframes.center_x, *center_x),
+                    center_y: at(&self.keyframes.center_y, *center_y),
+                    inner: at(&self.keyframes.inner, *inner),
+                    outer: at(&self.keyframes.outer, *outer),
+                };
             }
             // Its shape keys (#74).
             MaskShape::Bezier { .. } => {
@@ -1343,6 +1389,13 @@ impl Mask {
                     "start_y" => Some(*start_y),
                     "end_x" => Some(*end_x),
                     "end_y" => Some(*end_y),
+                    _ => None,
+                },
+                MaskShape::RadialGradient { center_x, center_y, inner, outer } => match param {
+                    "center_x" => Some(*center_x),
+                    "center_y" => Some(*center_y),
+                    "inner" => Some(*inner),
+                    "outer" => Some(*outer),
                     _ => None,
                 },
                 MaskShape::Bezier { .. } => None,

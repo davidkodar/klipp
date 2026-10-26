@@ -29,6 +29,29 @@ pub(super) fn restore_clip_background(state: &mut AppState, clip_id: klipp_core:
     Ok(())
 }
 
+/// The clip's opacity faded across the frame by `mask`, or that taken off
+/// (#2704), as one undo step.
+pub(super) fn set_clip_opacity_gradient(state: &mut AppState, clip_id: klipp_core::ClipId, mask: Option<klipp_core::Mask>) -> Result<(), String> {
+    use klipp_nodes::opacity_gradient::OpacityGradientError as E;
+    let clip = state.sequence().all_clips().find(|c| c.id == clip_id).ok_or("clip not found")?;
+    let old_graph = clip.grade().clone();
+    let mut new_graph = old_graph.clone();
+    let label = if mask.is_some() { "Opacity Gradient" } else { "Remove Opacity Gradient" };
+    new_graph.set_opacity_gradient(mask).map_err(|e| match e {
+        E::AlphaTaken(name) => format!("The clip's opacity is already set by {name}"),
+        E::NoneToClear => "The clip has no opacity gradient".to_string(),
+    })?;
+    let graph = new_graph.clone();
+    if !matches!(super::colour::edit_clip_graph(state, clip_id, &[], false, move |g| { *g = graph; }), Some(Ok(()))) {
+        return Err("The clip's grade could not be edited".into());
+    }
+    // Its handles in the viewer, ready to drag.
+    state.selected_node_id = new_graph.opacity_gradient();
+    state.push_history(crate::history::EditCommand::Named { label: label.into(), edit: Box::new(crate::history::EditCommand::SetNodeGraph { clip_id, old_graph, new_graph }) });
+    state.dirty = true;
+    Ok(())
+}
+
 /// How often a running pass is looked at for new frames to show.
 const LOOK_EVERY: std::time::Duration = std::time::Duration::from_millis(500);
 
@@ -45,6 +68,13 @@ impl KlippApp {
             }
             AppCommand::RestoreBackground { clip_id } => {
                 match restore_clip_background(&mut self.state, *clip_id) {
+                    Ok(()) => { *needs_refresh = true; self.refresh_track_cards(); }
+                    Err(why) => self.state.toast.show(why),
+                }
+                true
+            }
+            AppCommand::SetOpacityGradient { clip_id, mask } => {
+                match set_clip_opacity_gradient(&mut self.state, *clip_id, mask.as_deref().cloned()) {
                     Ok(()) => { *needs_refresh = true; self.refresh_track_cards(); }
                     Err(why) => self.state.toast.show(why),
                 }

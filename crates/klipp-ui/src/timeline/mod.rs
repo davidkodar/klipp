@@ -1215,6 +1215,39 @@ mod menu_smoke_tests {
         assert!(sent.iter().any(|c| matches!(c, AppCommand::RestoreBackground { clip_id } if *clip_id == id)), "{sent:?}");
     }
 
+    /// #2704: the clip menu's Effects ▸ Opacity Gradient fades the clip
+    /// across the frame, and offers to take it off once it has one.
+    #[test]
+    fn the_clip_menu_fades_a_clips_opacity_across_the_frame() {
+        use klipp_timeline::GradeAccess;
+        for faded in [false, true] {
+            let mut timeline = Timeline::new();
+            let v1 = timeline.state.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).unwrap();
+            let clip = &mut timeline.state.sequences[0].tracks[v1].clips[0];
+            let id = clip.id;
+            if faded {
+                let mut graph = clip.grade().clone();
+                graph.set_opacity_gradient(Some(klipp_core::Mask::new(klipp_core::MaskShape::RadialGradient { center_x: 0.5, center_y: 0.5, inner: 0.1, outer: 0.4 }))).unwrap();
+                clip.set_grade(graph);
+            }
+            let drawn = timeline.frame(Vec::new());
+            let at = drawn.into_iter().find(|(t, _)| t == "smoke.mov").expect("the clip is drawn").1;
+            timeline.right_click(at);
+            let drawn = timeline.open_submenus(&["Effects", "Opacity Gradient"]);
+            assert_eq!(drawn.iter().any(|(t, _)| t == "Remove Opacity Gradient"), faded, "{drawn:?}");
+            let item = drawn.iter().find(|(t, _)| t == "Fade Out Downward").unwrap_or_else(|| panic!("in the menu: {drawn:?}")).1;
+            let button = |pressed| egui::Event::PointerButton { pos: item, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+            timeline.frame(vec![egui::Event::PointerMoved(item), button(true)]);
+            let mut sent = std::mem::take(&mut timeline.sent);
+            timeline.frame(vec![button(false)]);
+            sent.extend(std::mem::take(&mut timeline.sent));
+            assert!(
+                sent.iter().any(|c| matches!(c, AppCommand::SetOpacityGradient { clip_id, mask: Some(m) } if *clip_id == id && matches!(m.shape, klipp_core::MaskShape::LinearGradient { .. }))),
+                "{sent:?}"
+            );
+        }
+    }
+
     /// #1844: double-clicking a multicam clip on the timeline turns
     /// multicam mode on with that clip opened; double-clicking a clip that
     /// is not one does not.

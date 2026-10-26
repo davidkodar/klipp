@@ -3,7 +3,7 @@
 use klipp_graph_format::Node;
 use serde_json::Value;
 
-pub(crate) const FORMAT: &str = r#"JSON: {"masks":[{"shape":{"Rectangle":{"center_x":0.5,"center_y":0.5,"width":0.5,"height":0.5,"rotation":0}},"feather":0,"opacity":1,"invert":false,"enabled":true}]}. Other shapes: {"Circle":{"center_x":0.5,"center_y":0.5,"radius":0.2}}, {"LinearGradient":{"start_x":0,"start_y":0,"end_x":1,"end_y":1}}, {"Bezier":{"points":[[0,0],[1,0],[0.5,1]]}}. A Bezier point is a corner [x,y], or curved {"x":0.5,"y":0.5,"in":[-0.1,0],"out":[0.1,0],"smooth":true} with its handles as offsets from it. Optional per mask: "feather_inner" (0..1, the soft edge inside the line), "combine" ("Add", "Subtract" or "Intersect": how it joins the masks before it), "name" (up to 64 characters), "locked" (true keeps it from viewer edits). A Bezier may be keyed over time: "keyframes":{"path":[{"time_secs":0,"points":[...]},{"time_secs":2,"points":[...],"ease":"Ease"}]}, times rising, every key with as many points as the shape, ease "Linear" (default), "Ease" or "Hold". At most 16 masks, 3..256 Bezier points each, 256 keys. Coordinates, sizes, feather and opacity: 0..1; handle offsets: -1..1; rotation: -180..180. Finite numbers only; unknown fields, and keyframes other than a Bezier's path, refused. {"masks":[]} clears shapes."#;
+pub(crate) const FORMAT: &str = r#"JSON: {"masks":[{"shape":{"Rectangle":{"center_x":0.5,"center_y":0.5,"width":0.5,"height":0.5,"rotation":0}},"feather":0,"opacity":1,"invert":false,"enabled":true}]}. Other shapes: {"Circle":{"center_x":0.5,"center_y":0.5,"radius":0.2}}, {"LinearGradient":{"start_x":0,"start_y":0,"end_x":1,"end_y":1}}, {"RadialGradient":{"center_x":0.5,"center_y":0.5,"inner":0.1,"outer":0.4}}, {"Bezier":{"points":[[0,0],[1,0],[0.5,1]]}}. A Bezier point is a corner [x,y], or curved {"x":0.5,"y":0.5,"in":[-0.1,0],"out":[0.1,0],"smooth":true} with its handles as offsets from it. Optional per mask: "feather_inner" (0..1, the soft edge inside the line), "combine" ("Add", "Subtract" or "Intersect": how it joins the masks before it), "name" (up to 64 characters), "locked" (true keeps it from viewer edits). A gradient ramps across its feathers: "feather":0.5 with "feather_inner":0.5 fades it over its whole length, start to end or inner ring to outer. A Bezier may be keyed over time: "keyframes":{"path":[{"time_secs":0,"points":[...]},{"time_secs":2,"points":[...],"ease":"Ease"}]}, times rising, every key with as many points as the shape, ease "Linear" (default), "Ease" or "Hold". At most 16 masks, 3..256 Bezier points each, 256 keys. Coordinates, sizes, feather and opacity: 0..1; handle offsets: -1..1; rotation: -180..180. Finite numbers only; unknown fields, and keyframes other than a Bezier's path, refused. {"masks":[]} clears shapes."#;
 
 fn fields<'a>(value: &'a Value, allowed: &[&str], at: &str) -> Result<&'a serde_json::Map<String, Value>, String> {
     let object = value.as_object().ok_or_else(|| format!("{at} must be an object"))?;
@@ -53,6 +53,7 @@ pub(crate) fn validate(value: &Value) -> Result<klipp_core::MaskStack, String> {
             "Circle" => &["center_x", "center_y", "radius"],
             "Rectangle" => &["center_x", "center_y", "width", "height", "rotation"],
             "LinearGradient" => &["start_x", "start_y", "end_x", "end_y"],
+            "RadialGradient" => &["center_x", "center_y", "inner", "outer"],
             "Bezier" => &["points"],
             _ => return Err(format!("{at}.shape: unknown kind {kind}")),
         };
@@ -69,7 +70,7 @@ pub(crate) fn validate(value: &Value) -> Result<klipp_core::MaskStack, String> {
             }
         }
         if let Some(k) = m.get("keyframes") {
-            let tracks = fields(k, &["center_x", "center_y", "radius", "width", "height", "rotation", "feather", "opacity", "start_x", "start_y", "end_x", "end_y", "track_x", "track_y", "track_scale", "track_rotation", "track_perspective", "path"], &format!("{at}.keyframes"))?;
+            let tracks = fields(k, &["center_x", "center_y", "radius", "width", "height", "rotation", "feather", "opacity", "start_x", "start_y", "end_x", "end_y", "inner", "outer", "track_x", "track_y", "track_scale", "track_rotation", "track_perspective", "path"], &format!("{at}.keyframes"))?;
             for (key, value) in tracks {
                 if key == "path" {
                     path_keys(value, point_count, &format!("{at}.keyframes.path"))?;

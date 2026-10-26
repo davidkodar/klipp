@@ -82,12 +82,13 @@ fn linear_f32_rgba_to_u8(linear: &[f32]) -> Vec<u8> {
 /// point-count cap, just whatever the GPU storage-buffer size limit
 /// allows (hundreds of thousands of points in practice).
 pub struct GpuMaskDef {
-    /// 0=circle, 1=rectangle, 2=linear_gradient, 3=bezier
+    /// 0=circle, 1=rectangle, 2=linear_gradient, 3=bezier,
+    /// 4=radial_gradient
     pub shape_type: u32,
     pub cx: f32,
     pub cy: f32,
-    pub p1: f32,  // circle: radius, rect: width, grad: end_x
-    pub p2: f32,  // rect: height, grad: end_y
+    pub p1: f32,  // circle: radius, rect: width, grad: end_x, radial: inner
+    pub p2: f32,  // rect: height, grad: end_y, radial: outer
     pub p3: f32,  // rect: rotation (degrees)
     pub feather: f32,
     /// bit 0 = invert, bit 1 = `warp` applies, bits 2-3 = how it joins
@@ -127,6 +128,17 @@ impl GpuMaskDef {
     pub fn linear_gradient(sx: f32, sy: f32, ex: f32, ey: f32, feather: f32, invert: bool, opacity: f32) -> Self {
         Self {
             shape_type: 2, cx: sx, cy: sy, p1: ex, p2: ey, p3: 0.0, feather,
+            flags: Self::make_flags(invert, opacity),
+            bezier_points: Vec::new(),
+            warp: [0.0; 9],
+            feather_inner: 0.0,
+        }
+    }
+    /// A round gradient (#2704): whole inside `inner` of the centre,
+    /// gone past `outer`, as [`klipp_core::MaskShape::RadialGradient`].
+    pub fn radial_gradient(cx: f32, cy: f32, inner: f32, outer: f32, feather: f32, invert: bool, opacity: f32) -> Self {
+        Self {
+            shape_type: 4, cx, cy, p1: inner, p2: outer, p3: 0.0, feather,
             flags: Self::make_flags(invert, opacity),
             bezier_points: Vec::new(),
             warp: [0.0; 9],
@@ -9112,7 +9124,7 @@ struct GpuMaskParams {
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct MaskRecord {
-    shape_type: u32,     // 0=circle, 1=rect, 2=gradient, 3=bezier
+    shape_type: u32,     // 0=circle, 1=rect, 2=gradient, 3=bezier, 4=radial gradient
     flags: u32,          // bit 0 invert, bit 1 warp, bits 2-3 combine, bits 8-15 opacity (0-255)
     bezier_offset: u32,  // index into points buffer (bezier only)
     bezier_count: u32,   // number of points (bezier only)
@@ -10448,6 +10460,16 @@ fn eval_record(rec: MaskRecord, px: f32, py: f32, aspect: f32) -> f32 {
         case 3u: {
             // bezier polygon
             dist = bezier_sdf(nx, ny, aspect, rec.bezier_offset, rec.bezier_count);
+        }
+        case 4u: {
+            // radial gradient: in gradient widths from the ring midway
+            // between inner (p1) and outer (p2)
+            let dx = nx - rec.cx;
+            let dy = (ny - rec.cy) * aspect;
+            let r = sqrt(dx * dx + dy * dy);
+            let span = rec.p2 - rec.p1;
+            let mid = (rec.p1 + rec.p2) * 0.5;
+            if abs(span) < 0.0001 { dist = r - mid; } else { dist = (r - mid) / span; }
         }
         default: { dist = 1.0; }
     }
