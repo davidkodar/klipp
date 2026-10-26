@@ -4343,3 +4343,55 @@ fn track_surface_carries_the_area_and_the_parts_left_out() {
     }
     assert_eq!(h.sent.lock().unwrap().iter().filter(|c| matches!(c, klipp_core::AppCommand::TrackSurface { .. })).count(), 3, "a refusal sends nothing");
 }
+
+/// `surface_key` (#2754) sends a correction for a tracked surface named
+/// by its name or id, and refuses a surface the clip doesn't have, one
+/// not tracked yet, corners that enclose nothing and a time off the clip,
+/// sending nothing; `list_clips` shows a surface's corrections.
+#[test]
+fn surface_key_corrects_a_tracked_surface_and_list_clips_shows_corrections() {
+    let mut h = harness();
+    let media = h.media_pool.write().unwrap().add(klipp_media::MediaItem::synthetic_for_test("/tmp/surface-key-fixture.mov".into(), None));
+    let square = |x: f32| [[x, 0.2], [x + 0.2, 0.2], [x + 0.2, 0.4], [x, 0.4]];
+    let mut sign = klipp_timeline::Surface { id: uuid::Uuid::new_v4(), name: "Sign".into(), corners: square(0.2), reference_secs: 0.0, keys: Vec::new(), source_size: [1920, 1080], media_fps: 25.0, track_area: None, exclude: Vec::new() };
+    sign.keys = (0..25).map(|k| klipp_timeline::SurfaceKey::at_corners(k as f64 / 25.0, &sign.corners, &square(0.2)).unwrap()).collect();
+    assert!(sign.set_correction(0.4, &square(0.3)));
+    let untracked = klipp_timeline::Surface { id: uuid::Uuid::new_v4(), name: "Door".into(), keys: Vec::new(), ..sign.clone() };
+    let (a, b) = {
+        let mut seq = h.sequence.write().unwrap();
+        for c in seq.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()) {
+            c.kind = klipp_timeline::ClipKind::Media { media_id: media };
+            c.surfaces = vec![sign.clone(), untracked.clone()];
+        }
+        let c = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id.to_string() == h.ids.clip_a).unwrap();
+        (c.timeline_in.to_secs_f64(), c.timeline_out.to_secs_f64())
+    };
+    let clip = h.ids.clip_a.clone();
+    let corners = json!(square(0.25));
+    h.ok(json!({"method": "surface_key", "clip_id": clip, "surface": "Sign", "corners": corners}));
+    h.ok(json!({"method": "surface_key", "clip_id": clip, "surface": sign.id.to_string(), "corners": corners, "at_secs": (a + b) / 2.0}));
+    let sent: Vec<(uuid::Uuid, Option<f64>)> = h.sent.lock().unwrap().iter().filter_map(|c| match c {
+        klipp_core::AppCommand::CorrectSurface { surface, at_secs, corners, .. } => {
+            assert_eq!(*corners, square(0.25));
+            Some((*surface, *at_secs))
+        }
+        _ => None,
+    }).collect();
+    assert_eq!(sent, [(sign.id, None), (sign.id, Some((a + b) / 2.0))]);
+    for (bad, why) in [
+        (json!({"method": "surface_key", "clip_id": clip, "surface": "Window", "corners": corners}), "no surface"),
+        (json!({"method": "surface_key", "clip_id": clip, "surface": "Door", "corners": corners}), "isn't tracked yet"),
+        (json!({"method": "surface_key", "clip_id": clip, "surface": "Sign", "corners": [[0.2, 0.2], [0.2, 0.2], [0.2, 0.2], [0.2, 0.2]]}), "enclose an area"),
+        (json!({"method": "surface_key", "clip_id": clip, "surface": "Sign", "corners": corners, "at_secs": b + 10.0}), "outside the clip"),
+    ] {
+        let reply = h.call(bad.clone());
+        assert_eq!(reply["ok"], json!(false), "{bad}");
+        assert!(reply["error"].as_str().unwrap_or_default().contains(why), "{bad}: {}", reply["error"]);
+    }
+    assert_eq!(h.sent.lock().unwrap().iter().filter(|c| matches!(c, klipp_core::AppCommand::CorrectSurface { .. })).count(), 2, "a refusal sends nothing");
+    let clips = h.ok(json!({ "method": "list_clips" }));
+    let surfaces: Vec<&serde_json::Value> = clips["tracks"].as_array().unwrap().iter().flat_map(|t| t["clips"].as_array().unwrap()).flat_map(|c| c["surfaces"].as_array().unwrap()).collect();
+    let shown = surfaces.iter().find(|s| s["name"] == "Sign").unwrap();
+    assert_eq!(shown["corrections"].as_array().map(|a| a.len()), Some(1), "{shown}");
+    assert!(shown.get("low").is_none() && shown.get("lost").is_none(), "a correction is not a weak span: {shown}");
+}

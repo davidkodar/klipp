@@ -5228,7 +5228,9 @@ impl ViewerPanel {
     /// a click on a corner changes nothing and records nothing (#408).
     /// The surface tool (#684 phase 2): four corners to drag onto a flat
     /// surface in the picture (or the whole quad, grabbed inside it), and
-    /// Track, or Continue where a track was lost. Area to follow drags a
+    /// Track, or Continue where a track was lost; on a surface tracked
+    /// already, Correct here holds it on this frame and solves the track
+    /// either side again (#2754). Area to follow drags a
     /// larger quad of the same plane, followed instead (#2754), and Leave
     /// out draws rectangles over parts that are not of it. Esc cancels it,
     /// in the shortcuts, before the clip would be deselected.
@@ -5250,6 +5252,7 @@ impl ViewerPanel {
         // Laid out first so a press on it is not taken as grabbing the quad.
         let mut bar_rect = egui::Rect::NOTHING;
         let mut run = false;
+        let mut correct = false;
         let mut cancel = false;
         egui::Area::new(egui::Id::new("surface_tool_bar"))
             .fixed_pos(image_rect.left_top() + egui::vec2(8.0, 8.0))
@@ -5262,7 +5265,7 @@ impl ViewerPanel {
                             (SurfaceEdit::Area, ..) => "Drag the area to follow over more of the same flat plane",
                             (SurfaceEdit::LeaveOut, ..) => "Draw over parts that move on their own; click one to put it back",
                             (_, 0, false) => "Click the surface to find its corners, or drag them onto it",
-                            (_, 0, true) => "Put the corners right, then track again",
+                            (_, 0, true) => "Put the corners right, then correct this frame or track again",
                             _ => "Put the corners on the surface here, then continue",
                         };
                         ui.label(what);
@@ -5279,7 +5282,13 @@ impl ViewerPanel {
                             tool.exclude.clear();
                         }
                         ui.separator();
-                        let go = if tool.direction == 0 { "Track" } else { "Continue" };
+                        if tool.surface.is_some() && tool.direction == 0 && tool.edit == SurfaceEdit::Corners && ui.button("Correct here")
+                            .on_hover_text("Hold the surface here as set, and solve the track again either side as far as the next corrections, keeping the rest")
+                            .clicked()
+                        {
+                            correct = true;
+                        }
+                        let go = if tool.direction == 0 { if tool.surface.is_some() { "Track again" } else { "Track" } } else { "Continue" };
                         if ui.button(go).on_hover_text("Follow it through the clip from this frame").clicked() {
                             run = true;
                         }
@@ -5291,6 +5300,11 @@ impl ViewerPanel {
                 bar_rect = r.response.rect;
             });
         if cancel {
+            state.surface_tool = None;
+            return;
+        }
+        if let (true, Some(surface)) = (correct, tool.surface) {
+            cmds.push(AppCommand::CorrectSurface { clip_id: tool.clip_id, surface, corners: tool.corners, at_secs: None });
             state.surface_tool = None;
             return;
         }

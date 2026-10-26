@@ -139,6 +139,12 @@ impl PlanarGpu {
         planar::track_on(self, reference, quad, exclude, frames, next, opts, progress)
     }
 
+    /// [`planar::solve_between`] on the GPU.
+    #[allow(clippy::too_many_arguments)]
+    pub fn solve_between(&mut self, quad: [(f64, f64); 4], exclude: &[Vec<(f64, f64)>], start: Option<planar::Anchor>, end: Option<planar::Anchor>, span: (usize, usize), frame: &mut dyn FnMut(usize) -> Option<GrayFrame>, opts: &Options, progress: &dyn Fn(f32) -> bool) -> Vec<Tracked> {
+        planar::solve_between_on(self, quad, exclude, start, end, span, frame, opts, progress)
+    }
+
     fn storage(&self, label: &str, bytes: u64) -> wgpu::Buffer {
         self.device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size: bytes.max(16), usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false })
     }

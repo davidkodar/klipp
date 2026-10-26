@@ -475,6 +475,34 @@ pub(crate) fn respond(
             Ok(v)
         }
 
+        ControlCommand::SurfaceKey { clip_id, surface, corners, at_secs } => {
+            if in_batch {
+                return Err("surface_key solves the track again in the background; send it on its own".into());
+            }
+            if !klipp_timeline::surface::quad_is_usable(&corners) || corners.iter().flatten().any(|v| !(-1.0..=2.0).contains(v)) {
+                return Err("the corners must enclose an area, as fractions of the frame: top left, top right, bottom right, bottom left".into());
+            }
+            let id = existing_clip_id(ctx, &clip_id)?;
+            let surface = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let clip = seq.tracks.iter().find_map(|t| t.find_clip(id)).ok_or_else(|| format!("no clip with id {clip_id}"))?;
+                if let Some(at) = at_secs {
+                    let (a, b) = (clip.timeline_in.to_secs_f64(), clip.timeline_out.to_secs_f64());
+                    if !(a..b).contains(&at) {
+                        return Err(format!("at_secs {at:.2} is outside the clip ({a:.2}-{b:.2} s): correct it on a frame of the clip"));
+                    }
+                }
+                let s = klipp_document::ops::find_surface(clip, Some(&surface)).ok_or_else(|| format!("the clip has no surface \"{surface}\": track it with track_surface first"))?;
+                if s.keys.is_empty() {
+                    return Err(format!("the surface \"{}\" isn't tracked yet: track it with track_surface first", s.name));
+                }
+                s.id
+            };
+            let mut v = send(AppCommand::CorrectSurface { clip_id: id, surface, corners, at_secs })?;
+            v["text"] = json!("Correcting the surface in the background: the frame is held as given and the track either side solved again, one undo step. Its time shows under the surface's corrections in klipp_list_clips when done, with what is still low or lost.");
+            Ok(v)
+        }
+
         ControlCommand::SelectClip { clip_id: c } => {
             let id = match c {
                 Some(s) => Some(existing_clip_id(ctx, &s)?),

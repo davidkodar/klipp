@@ -809,6 +809,7 @@ fn handle(
             | ControlCommand::SetAppendAudio { .. }
             | ControlCommand::DetectSceneCuts { .. }
             | ControlCommand::TrackSurface { .. }
+            | ControlCommand::SurfaceKey { .. }
             | ControlCommand::SelectClip { .. }
             | ControlCommand::Plan { .. }
             | ControlCommand::Apply { .. }

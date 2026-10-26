@@ -86,6 +86,6 @@ mod routing_tests {
             assert!(routed_all.is_disjoint(&routed), "{name} shares a variant");
             routed_all.extend(routed);
         }
-        assert_eq!(routed_all.len(), 131);
+        assert_eq!(routed_all.len(), 132);
     }
 }

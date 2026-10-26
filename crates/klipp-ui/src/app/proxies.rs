@@ -476,24 +476,18 @@ impl KlippApp {
                         name,
                         corners,
                         reference_secs,
-                        keys: keys
-                            .into_iter()
-                            .map(|(source_secs, map, confidence, state)| klipp_timeline::SurfaceKey {
-                                source_secs,
-                                map,
-                                confidence: Some(confidence),
-                                state: match state {
-                                    0 => klipp_timeline::TrackState::Good,
-                                    1 => klipp_timeline::TrackState::Low,
-                                    _ => klipp_timeline::TrackState::Lost,
-                                },
-                            })
-                            .collect(),
+                        keys: keys.into_iter().map(super::surfaces::surface_key_of).collect(),
                         source_size,
                         media_fps,
                         track_area,
                         exclude,
                     }, held_secs, direction, interactive);
+                }
+                AppEvent::SurfaceCorrected { clip_id, surface, source_secs, corners, spans } => {
+                    self.state.tracking_in_progress.remove(&clip_id);
+                    self.state.tracking_progress.remove(&clip_id);
+                    self.state.surface_track_cancel.remove(&clip_id);
+                    self.apply_surface_correction(clip_id, surface, source_secs, corners, spans);
                 }
                 AppEvent::SurfaceSnapped { clip_id, at_secs, corners, then_track, name } => {
                     self.state.surface_snaps_pending = self.state.surface_snaps_pending.saturating_sub(1);

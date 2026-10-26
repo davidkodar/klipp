@@ -469,6 +469,10 @@ impl KlippApp {
                 self.start_surface_track(SurfaceTrackJob { clip_id, surface: id, name, path, media_fps, frames: (first, last), reference, corners: on_source, track: track_on_source, exclude: exclude_on_source, pixels, direction: *direction, interactive: *interactive, cancel });
                 true
             }
+            AppCommand::CorrectSurface { clip_id, surface, corners, at_secs } => {
+                self.correct_surface(*clip_id, *surface, *corners, *at_secs);
+                true
+            }
             AppCommand::OpenSurfaceTool { clip_id, surface } => {
                 self.open_surface_tool(*clip_id, *surface);
                 true

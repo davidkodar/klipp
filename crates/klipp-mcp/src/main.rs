@@ -638,6 +638,19 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             }
             v
         }
+        "klipp_surface_key" => {
+            let mut v = json!({
+                "method": "surface_key",
+                "clip_id": arg_str(args, "clip_id")?,
+                "surface": arg_str(args, "surface")?,
+            });
+            for key in ["corners", "at_secs"] {
+                if let Some(x) = args.get(key).filter(|x| !x.is_null()) {
+                    v[key] = x.clone();
+                }
+            }
+            v
+        }
         "klipp_select_clip" => json!({
             "method": "select_clip",
             "clip_id": args.get("clip_id").and_then(|v| v.as_str()),
@@ -2091,6 +2104,17 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                  "exclude": { "type": "array", "description": "Polygons [[x,y],...] to leave out; [] clears" },
              }),
              vec!["clip_id"]),
+        tool("klipp_surface_key",
+             "Correct a tracked surface on one frame: hold it at these corners there and solve the track either side again, keeping the rest. Details: klipp_guide topic surface_key.",
+             json!({
+                 "clip_id": { "type": "string" },
+                 "surface": { "type": "string", "description": "Id or name of the tracked surface" },
+                 "corners": { "type": "array", "minItems": 4, "maxItems": 4,
+                              "items": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "type": "number" } },
+                              "description": "Where it is on that frame, as track_surface's corners" },
+                 "at_secs": { "type": "number", "description": "Timeline second; else the playhead" },
+             }),
+             vec!["clip_id", "surface", "corners"]),
         tool("klipp_select_clip",
              "Select a clip (or pass no id to clear the selection). The inspector and \
               colour page follow the selection.",

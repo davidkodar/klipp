@@ -3798,6 +3798,14 @@ pub enum AppCommand {
     /// (#2754), both as the corners are given. Left out on a surface the
     /// clip has, the surface's own are carried to this frame.
     TrackSurface { clip_id: ClipId, corners: [[f32; 2]; 4], at_secs: Option<f64>, name: Option<String>, surface: Option<uuid::Uuid>, direction: i8, interactive: bool, track: Option<[[f32; 2]; 4]>, exclude: Option<Vec<Vec<[f32; 2]>>> },
+    /// Correct a tracked surface on one frame (#2754): `corners` (as
+    /// [`AppCommand::TrackSurface`] takes them) are where `surface` is at
+    /// timeline second `at_secs` (the playhead when `None`). The key
+    /// there becomes a correction set by hand, and the track either side
+    /// is solved again from it, as far as the anchors next to it (the
+    /// reference frame or another correction): forward and backward and
+    /// blended, so the rest of the track is kept.
+    CorrectSurface { clip_id: ClipId, surface: uuid::Uuid, corners: [[f32; 2]; 4], at_secs: Option<f64> },
     /// The viewer's surface tool on a clip (#684 phase 2): four corners to
     /// set on the surface, then Track. With `surface`, they start where
     /// that surface is at the playhead, to correct and track it again.
@@ -4719,6 +4727,12 @@ pub enum AppEvent {
     /// out, on the reference frame as `corners` are.
     SurfaceTracked { clip_id: ClipId, surface: uuid::Uuid, name: String, corners: [[f32; 2]; 4], reference_secs: f64, keys: Vec<(f64, [f64; 9], f32, u8)>, source_size: [u32; 2], media_fps: f64, held_secs: (f64, f64), direction: i8, interactive: bool, track_area: Option<[[f32; 2]; 4]>, exclude: Vec<Vec<[f32; 2]>> },
     SurfaceTrackFailed { clip_id: ClipId, surface: uuid::Uuid, error: String },
+    /// A [`AppCommand::CorrectSurface`] solved (#2754): the correction at
+    /// file second `source_secs`, `corners` there as fractions of the
+    /// picture, and each span re-solved, its keys as
+    /// [`AppEvent::SurfaceTracked`]'s, replacing those strictly between
+    /// its bounds (file seconds; `None` open to that end of the track).
+    SurfaceCorrected { clip_id: ClipId, surface: uuid::Uuid, source_secs: f64, corners: [[f32; 2]; 4], spans: Vec<(Option<f64>, Option<f64>, Vec<(f64, [f64; 9], f32, u8)>)> },
     /// The corners a [`AppCommand::SnapSurface`] found, as fractions of the
     /// clip's own picture, or `None` where nothing had an edge all round.
     SurfaceSnapped { clip_id: ClipId, at_secs: f64, corners: Option<[[f32; 2]; 4]>, then_track: bool, name: Option<String> },

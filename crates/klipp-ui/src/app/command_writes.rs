@@ -256,6 +256,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::DetectScenes { .. }
         | AppCommand::CancelSceneDetect { .. }
         | AppCommand::TrackSurface { .. }
+        | AppCommand::CorrectSurface { .. }
         | AppCommand::OpenSurfaceTool { .. }
         | AppCommand::SnapSurface { .. }
         | AppCommand::AnalyzeTrackPoint { .. }
