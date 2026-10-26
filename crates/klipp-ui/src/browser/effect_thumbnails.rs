@@ -501,7 +501,7 @@ fn builtin_preview_params(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
             klipp_effects::BuiltinEffect::Bloom { threshold: 0.5, radius: 25.0, intensity: 1.0 }
         }
         klipp_effects::BuiltinEffect::Glow { .. } => {
-            klipp_effects::BuiltinEffect::Glow { radius: 35.0, intensity: 0.8 }
+            klipp_effects::BuiltinEffect::Glow { radius: 35.0, intensity: 0.8, threshold: 0.0 }
         }
         klipp_effects::BuiltinEffect::LightRays { .. } => {
             klipp_effects::BuiltinEffect::LightRays {

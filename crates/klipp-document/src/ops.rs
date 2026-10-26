@@ -6598,12 +6598,17 @@ fn require_picture(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: 
     Ok(())
 }
 
+/// Where a picture's glow starts (linear luma): its highlights (#2763).
+const GLOW_THRESHOLD: f32 = 0.6;
+
 /// A picture effect by the name the ops and the app give it, at
 /// `amount` (0 to 1; a tasteful default when left out): the effect, and
 /// the amount it was made at. The one list behind `effect` on clips and
 /// the app's track effects (#846).
 pub fn named_picture_effect(kind: &str, amount: Option<f32>) -> Result<(klipp_effects::BuiltinEffect, f32), (String, String)> {
-    let a = amount.unwrap_or(match kind.to_lowercase().as_str() { "sharpen" => 0.4, "glow" | "grain" => 0.4, _ => 0.5 });
+    // Invert at full by default: a part mix of a picture and its negative
+    // is a grey wash (#2763), so the amount is only for a blend asked for.
+    let a = amount.unwrap_or(match kind.to_lowercase().as_str() { "sharpen" => 0.4, "glow" | "grain" => 0.4, "invert" => 1.0, _ => 0.5 });
     if !a.is_finite() || !(0.0..=1.0).contains(&a) {
         return Err((format!("amount {a} is out of range"), "give amount between 0 and 1".into()));
     }
@@ -6611,7 +6616,9 @@ pub fn named_picture_effect(kind: &str, amount: Option<f32>) -> Result<(klipp_ef
     let fx = match kind.to_lowercase().as_str() {
         "vignette" => E::Vignette { amount: -a * 0.8, size: 0.8, softness: 0.5, roundness: 0.7 },
         "grain" | "film_grain" => E::FilmGrain { amount: a * 0.5, size: 1.0, color: 0, shadows: 0.3, seed: 1 },
-        "glow" => E::Glow { radius: 30.0, intensity: a },
+        // Round a picture's highlights, not over all of it (#2763); a
+        // title glows whole (`picture_effect`).
+        "glow" => E::Glow { radius: 30.0, intensity: a, threshold: GLOW_THRESHOLD },
         // The three that treat a clip as a layer rather than as the
         // frame: they only show once the picture is smaller than the
         // frame, which is what `compose` is for.
@@ -6628,7 +6635,9 @@ pub fn named_picture_effect(kind: &str, amount: Option<f32>) -> Result<(klipp_ef
         "diffusion" | "pro_mist" => E::Diffusion { amount: a, radius: 20.0, threshold: 0.6, desaturation: 0.1 },
         "halation" | "film_halation" => E::FilmHalation { threshold: 0.75, radius: a * 30.0 + 10.0, intensity: a, hue: 0.05 },
         "light_rays" | "god_rays" => E::LightRays { center_x: 0.5, center_y: 0.35, threshold: 0.7, samples: 48, decay: 0.95, intensity: a },
-        "lens_flare" => E::LensFlare { position_x: 0.7, position_y: 0.3, brightness: a, flare_size: 1.0, ghost_count: 4, ghost_intensity: a * 0.5, chromatic_aberration: 0.3 },
+        // Its core a seventh of the frame, as the app's default: at the
+        // frame's whole size it veiled the picture white (#2763).
+        "lens_flare" => E::LensFlare { position_x: 0.7, position_y: 0.3, brightness: a, flare_size: 0.15, ghost_count: 4, ghost_intensity: a * 0.5, chromatic_aberration: 0.3 },
         // Length is in canvas pixels (0 to 200, 80 by default): the default
         // amount gives a streak about that long (#1189).
         "anamorphic" | "anamorphic_streak" | "streak" => E::AnamorphicStreak { threshold: 0.75, length: a * 200.0, intensity: a, tint: 0.6 },
@@ -6637,8 +6646,10 @@ pub fn named_picture_effect(kind: &str, amount: Option<f32>) -> Result<(klipp_ef
         // The blur's amount runs 0 to 50 (10 by default): squared, the
         // default amount gives about the default blur and the full amount
         // the most (#1189).
-        "radial_blur" | "zoom_blur" => E::RadialBlur { center_x: 0.5, center_y: 0.5, amount: a * a * 50.0, samples: 24, mode: 0 },
-        "spin_blur" => E::RadialBlur { center_x: 0.5, center_y: 0.5, amount: a * a * 50.0, samples: 24, mode: 1 },
+        // On a cube: the full amount still the top of the range, but 0.6
+        // about 11 rather than 18, where the picture was gone (#2763).
+        "radial_blur" | "zoom_blur" => E::RadialBlur { center_x: 0.5, center_y: 0.5, amount: a * a * a * 50.0, samples: 24, mode: 0 },
+        "spin_blur" => E::RadialBlur { center_x: 0.5, center_y: 0.5, amount: a * a * a * 50.0, samples: 24, mode: 1 },
         "directional_blur" | "motion_blur" => E::DirectionalBlur { angle: 0.0, distance: a * 40.0, samples: 24 },
         "sharpen" => E::Sharpen { amount: a },
         "chromatic_aberration" | "rgb_split" | "fringe" => E::ChromaticAberration { red_shift: a * 8.0, blue_shift: -a * 8.0, center_x: 0.5, center_y: 0.5 },
@@ -6647,7 +6658,9 @@ pub fn named_picture_effect(kind: &str, amount: Option<f32>) -> Result<(klipp_ef
         "posterize" => E::Posterize { levels: (32.0 - a * 28.0).max(2.0) },
         "invert" => E::Invert { mix: a },
         "mirror" => E::Mirror { horizontal: 1, vertical: 0 },
-        "lens_distortion" | "barrel" => E::LensDistortion { distortion: a * 0.5, scale: 1.0 },
+        // Scaled up so the corners still read inside the picture: past its
+        // edge the bend smeared the edge pixels into streaks (#2763).
+        "lens_distortion" | "barrel" => E::LensDistortion { distortion: a * 0.5, scale: 1.0 + 2.0 * a * 0.5 },
         // The layer mirrored about a waterline (#2707), on a surface:
         // calm water by default; the amount its strength, the surface's
         // own at the default. `params` sets the waterline and the rest.
@@ -6664,8 +6677,12 @@ pub fn named_picture_effect(kind: &str, amount: Option<f32>) -> Result<(klipp_ef
         // Pixels moved by a drifting noise field (#2702): the default
         // amount moves them about 12 canvas pixels, the full amount 24.
         "displace" | "ripple" | "heat_haze" => E::Displace { amount: a * 24.0, size: 80.0, speed: 1.0, direction: 0, seed: 1, time: 0.0 },
-        "emboss" => E::Emboss { angle: 0.0, strength: a, mix: a },
-        "edge_detect" | "edges" => E::EdgeDetect { strength: a, mix: a },
+        // A relief that shows, over most of the picture: at the amount as
+        // both it was a grey haze (#2763).
+        "emboss" => E::Emboss { angle: 0.0, strength: 1.0 + a * 3.0, mix: 0.5 + a * 0.5 },
+        // The edges drawn on black, the amount their strength: mixed into
+        // the picture by the amount, flat areas were a grey wash (#2763).
+        "edge_detect" | "edges" => E::EdgeDetect { strength: a * 2.0, mix: 1.0 },
         "denoise" => E::Denoise { spatial_sigma: a * 4.0, color_sigma: a * 0.1, iterations: 1 },
         "vhs" => E::Vhs { tracking: a * 0.5, bleed: a, noise: a * 0.5, scanlines: a, seed: 1 },
         "old_film" => E::OldFilm { flicker: a * 0.5, scratches: a, dust: a, weave: a * 0.5, sepia: a * 0.5, seed: 1 },
@@ -6675,7 +6692,9 @@ pub fn named_picture_effect(kind: &str, amount: Option<f32>) -> Result<(klipp_ef
         "exposure_flicker" => E::Flicker { amount: a * 0.5, speed: 8.0, smoothness: 0.3, hold: 0.3, seed: 1, target: 1, time: 0.0 },
         // Two eyepieces, the outside darker the more, a fringe at their
         // rims (#989).
-        "binocular" | "binocular_vignette" => E::BinocularVignette { amount: -(0.5 + a * 0.5), spacing: 0.4, width: 0.85, height: 0.85, softness: 0.15, fringe: a * 6.0 },
+        // Black outside the eyepieces from the default amount up, as
+        // through binoculars; less only below it (#2763).
+        "binocular" | "binocular_vignette" => E::BinocularVignette { amount: -(0.5 + a).min(1.0), spacing: 0.4, width: 0.85, height: 0.85, softness: 0.15, fringe: a * 6.0 },
         // Particles over the picture (#1141): each kind's own look, more
         // of them, and stronger, with the amount.
         "dust" | "snow" | "rain" | "sparks" | "embers" | "particles" => {
@@ -6856,7 +6875,12 @@ fn picture_effect(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &
     } else {
         require_picture(seq, pool, i, ti, clip, "add the effect to")?;
     }
-    let (fx, a) = named_picture_effect(kind, amount).map_err(|(why, fix)| refuse(i, why, fix))?;
+    let (mut fx, a) = named_picture_effect(kind, amount).map_err(|(why, fix)| refuse(i, why, fix))?;
+    // A title's drawn text glows whole, as it did: its letters are what
+    // there is, not highlights in a picture.
+    if let (true, klipp_effects::BuiltinEffect::Glow { threshold, .. }) = (title, &mut fx) {
+        *threshold = 0.0;
+    }
     // A title has one drawing per frame and no source frames around it,
     // which an effect that reads other times needs.
     if title && klipp_effects::registry::needs_other_times(&fx) {

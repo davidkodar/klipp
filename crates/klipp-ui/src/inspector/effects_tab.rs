@@ -390,7 +390,7 @@ fn builtin_effect_default(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
             threshold: 0.7, radius: 20.0, intensity: 0.5,
         },
         BuiltinEffect::Glow { .. } => BuiltinEffect::Glow {
-            radius: 30.0, intensity: 0.4,
+            radius: 30.0, intensity: 0.4, threshold: 0.6,
         },
         BuiltinEffect::LightRays { .. } => BuiltinEffect::LightRays {
             center_x: 0.5, center_y: 0.3, threshold: 0.6, samples: 64, decay: 0.3, intensity: 0.5,

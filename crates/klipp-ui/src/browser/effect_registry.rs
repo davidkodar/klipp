@@ -220,8 +220,9 @@ impl EffectRegistry {
             EffectEntry {
                 name: "Glow".into(),
                 category: EffectCategory::Light,
+                // Round the highlights, as the `effect` op glows a picture (#2763).
                 source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Glow {
-                    radius: 30.0, intensity: 0.4,
+                    radius: 30.0, intensity: 0.4, threshold: 0.6,
                 }),
                 source_label: "Built-in",
                 description: String::new(),
@@ -580,7 +581,7 @@ impl EffectRegistry {
                 category: EffectCategory::Looks,
                 source: EffectSource::Look(vec![
                     klipp_effects::BuiltinEffect::Diffusion { amount: 0.35, radius: 40.0, threshold: 0.55, desaturation: 0.2 },
-                    klipp_effects::BuiltinEffect::Glow { radius: 30.0, intensity: 0.25 },
+                    klipp_effects::BuiltinEffect::Glow { radius: 30.0, intensity: 0.25, threshold: 0.0 },
                     klipp_effects::BuiltinEffect::Vignette { amount: -0.25, size: 0.8, softness: 0.7, roundness: 0.7 },
                 ]),
                 source_label: "Look",

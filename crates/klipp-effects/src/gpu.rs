@@ -16145,7 +16145,14 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
     if idx >= params.width * params.height { return; }
     let px = unpack(input[idx]);
     if params.premultiply == 1u {
-        output[idx] = pack(vec4<f32>(px.xyz * px.w, px.w));
+        // A glow's light: the picture seen through its alpha, and above a
+        // threshold its highlights alone, eased in (#2763).
+        var weight = 1.0;
+        if params.threshold > 0.0 {
+            let l = dot(vec3<f32>(params.luma_yr, params.luma_yg, params.luma_yb), px.xyz);
+            weight = select(0.0, clamp((l - params.threshold) / (1.0 - params.threshold + 1e-6), 0.0, 1.0), l > params.threshold);
+        }
+        output[idx] = pack(vec4<f32>(px.xyz * px.w * weight, px.w));
         return;
     }
     let luma = dot(vec3<f32>(params.luma_yr, params.luma_yg, params.luma_yb), px.xyz);

@@ -412,6 +412,11 @@ pub enum BuiltinEffect {
         radius: f32,
         /// Glow intensity (0.0–2.0, default 0.4)
         intensity: f32,
+        /// The brightness (linear luma) the glow starts from, eased in
+        /// above it: 0 glows the whole picture, as a title's glow does,
+        /// more only its highlights (#2763).
+        #[serde(default)]
+        threshold: f32,
     },
     /// God rays: volumetric light rays emanating from a point.
     LightRays {

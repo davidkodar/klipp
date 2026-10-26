@@ -302,7 +302,7 @@ fn a_metal_reflects_the_shot_behind_it() {
     // Within a few levels: the letters' soft edges show what is behind.
     assert!(ma.iter().zip(&mc).all(|(x, y)| (x - y).abs() < 6.0), "{ma:?} vs {mc:?}");
     // A glow held for the reflection still runs, and lights round the letters.
-    let glow = vec![klipp_effects::BuiltinEffect::Glow { radius: 20.0, intensity: 1.0 }];
+    let glow = vec![klipp_effects::BuiltinEffect::Glow { radius: 20.0, intensity: 1.0, threshold: 0.0 }];
     let (lit, ran) = over_flat(only(1.0), [0.01, 0.01, 0.01], glow).expect("drawn");
     let (dark, _) = over_flat(only(1.0), [0.01, 0.01, 0.01], Vec::new()).expect("drawn");
     assert_eq!(ran, 1, "the held effects ran");

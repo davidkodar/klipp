@@ -555,7 +555,7 @@ fn a_scene_referred_clip_runs_its_display_step_and_effects_as_a_plan() {
     let _goldens = scope("effects_follow_grade.a_scene_referred_clip_runs_its_display_step_and_effects_as_a_plan");
     const BAR: f32 = 1.0 / 25_500.0;
     let mut fx = colour_family();
-    fx.push(E::Glow { radius: 6.0, intensity: 0.5 });
+    fx.push(E::Glow { radius: 6.0, intensity: 0.5, threshold: 0.0 });
     let seq = graded(fx);
     for (name, transfer) in transfers() {
         for peak in [None, Some(1000.0)] {
@@ -855,7 +855,7 @@ fn an_inspected_clip_shows_the_picture_the_render_draws() {
 #[test]
 fn an_inspected_scene_referred_clip_keeps_its_display_step() {
     let mut fx = colour_family();
-    fx.push(E::Glow { radius: 6.0, intensity: 0.5 });
+    fx.push(E::Glow { radius: 6.0, intensity: 0.5, threshold: 0.0 });
     let seq = graded(fx);
     let clip = &seq.tracks[0].clips[0];
     let nodes: std::collections::HashSet<_> = clip.grade().nodes.iter().map(|n| klipp_compose::inspect::grade_node(clip.id, n.id)).collect();
@@ -899,7 +899,7 @@ fn an_inspected_scene_referred_clip_keeps_its_display_step() {
 #[test]
 fn a_soloed_scene_referred_clip_keeps_its_display_step() {
     let mut fx = colour_family();
-    fx.push(E::Glow { radius: 6.0, intensity: 0.5 });
+    fx.push(E::Glow { radius: 6.0, intensity: 0.5, threshold: 0.0 });
     let seq = graded(fx);
     let clip = &seq.tracks[0].clips[0];
     let exposure = clip.grade().nodes.iter().find(|n| n.kind == NodeKind::Exposure).expect("the graded clip's Exposure").id;

@@ -207,7 +207,7 @@ fn main() {
 
     let cases: Vec<(&str, Vec<BuiltinEffect>)> = vec![
         ("00-chart", vec![]),
-        ("01-glow", vec![BuiltinEffect::Glow { radius: 12.0, intensity: 0.7 }]),
+        ("01-glow", vec![BuiltinEffect::Glow { radius: 12.0, intensity: 0.7, threshold: 0.0 }]),
         ("02-diffusion", vec![BuiltinEffect::Diffusion { amount: 0.6, radius: 12.0, threshold: 0.4, desaturation: 0.2 }]),
         ("03-film-halation", vec![BuiltinEffect::FilmHalation { threshold: 0.6, radius: 12.0, intensity: 0.6, hue: 0.05 }]),
         ("04-bloom", vec![BuiltinEffect::Bloom { threshold: 0.8, radius: 12.0, intensity: 0.6 }]),

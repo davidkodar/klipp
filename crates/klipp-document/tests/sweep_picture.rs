@@ -23,9 +23,9 @@ const KINDS: &[&str] = &[
 /// The ones drawn round a layer smaller than the frame.
 const LAYER: &[&str] = &["corners", "shadow", "outer_glow", "fill_bars", "reflection"];
 
-/// The ones that make a new picture of it, for which a large change is
-/// the point.
-const REPLACES: &[&str] = &["invert", "mirror", "emboss", "edge_detect"];
+/// The ones that make a new picture of it, or black out most of it, for
+/// which a large change is the point.
+const REPLACES: &[&str] = &["invert", "mirror", "emboss", "edge_detect", "binocular"];
 
 /// Visible: a mean change as shown of at least this (about 2.5 levels),
 /// or at least this share of the pixels changed (a local effect).

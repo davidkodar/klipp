@@ -190,8 +190,17 @@ fn screen(base: &[f32], layer: &[f32], intensity: f32, desat: f32, yw: [f32; 3])
 /// its light seen where the picture is clear, so it spreads past a
 /// layer's edges (#2703); the GPU's glow blend with `lift_alpha`. An
 /// opaque pixel is the plain screen.
-fn glow(p: &[f32], w: u32, h: u32, radius: f32, intensity: f32) -> Vec<f32> {
-    let seen: Vec<f32> = p.chunks_exact(4).flat_map(|c| [c[0] * c[3], c[1] * c[3], c[2] * c[3], c[3]]).collect();
+fn glow(p: &[f32], w: u32, h: u32, radius: f32, intensity: f32, threshold: f32, yw: [f32; 3]) -> Vec<f32> {
+    // Above a threshold, only the highlights give light, eased in over
+    // the range above it (#2763): the bloom's weight.
+    let weight = |c: &[f32]| {
+        let l = luma([c[0], c[1], c[2], c[3]], yw);
+        if threshold <= 0.0 { 1.0 } else if l > threshold { ((l - threshold) / (1.0 - threshold + 1e-6)).clamp(0.0, 1.0) } else { 0.0 }
+    };
+    let seen: Vec<f32> = p.chunks_exact(4).flat_map(|c| {
+        let f = weight(c);
+        [c[0] * c[3] * f, c[1] * c[3] * f, c[2] * c[3] * f, c[3]]
+    }).collect();
     let light = gaussian(&seen, w, h, radius, false);
     let mut out = p.to_vec();
     out.par_chunks_exact_mut(4).zip(light.par_chunks_exact(4)).for_each(|(o, l)| {
@@ -416,7 +425,7 @@ pub(crate) fn apply(
             });
             out
         }
-        Glow { radius, intensity } => glow(&p, w, h, radius, intensity),
+        Glow { radius, intensity, threshold } => glow(&p, w, h, radius, intensity, threshold, yw),
         LightRays { center_x, center_y, threshold, samples, decay, intensity } => {
             let samples = samples.clamp(4, 128);
             let (cx, cy) = (center_x * wf, center_y * hf);

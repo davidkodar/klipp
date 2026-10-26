@@ -34,7 +34,7 @@ fn every_effect() -> Vec<E> {
         E::ChromaKey { key_color: [0, 255, 0], tolerance: 0.3, soft_edge: 0.1, spill_method: SpillMethod::None, spill_strength: 0.5 },
         E::LumaKey { low: 0.0, high: 0.1, soft: 0.05, invert: false },
         E::Bloom { threshold: 0.7, radius: 6.0, intensity: 0.8 },
-        E::Glow { radius: 6.0, intensity: 0.5 },
+        E::Glow { radius: 6.0, intensity: 0.5, threshold: 0.0 },
         E::LightRays { center_x: 0.5, center_y: 0.5, threshold: 0.6, samples: 16, decay: 0.9, intensity: 0.5 },
         E::Vignette { amount: 0.5, size: 0.5, softness: 0.5, roundness: 0.5 },
         E::Diffusion { amount: 0.5, radius: 4.0, threshold: 0.5, desaturation: 0.2 },

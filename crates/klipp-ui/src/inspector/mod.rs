@@ -9149,7 +9149,7 @@ mod fits_its_column_tests {
             texts = out.shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Text(t) => Some(t.galley.text().to_string()), _ => None }).collect();
         }
         assert!(texts.iter().any(|t| t == "+ Add effect"), "the title's EFFECTS tab: {texts:?}");
-        let cmds = crate::inspector::stack_view::add_effects_command(&state, &title, &[klipp_effects::BuiltinEffect::Glow { radius: 20.0, intensity: 0.5 }]).expect("a title takes an effect");
+        let cmds = crate::inspector::stack_view::add_effects_command(&state, &title, &[klipp_effects::BuiltinEffect::Glow { radius: 20.0, intensity: 0.5, threshold: 0.0 }]).expect("a title takes an effect");
         assert!(!cmds.is_empty());
     }
 
