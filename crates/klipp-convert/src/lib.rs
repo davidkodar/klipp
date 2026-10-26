@@ -13,6 +13,7 @@ pub mod running;
 pub mod scan;
 pub mod step3;
 pub mod step4;
+pub mod step5;
 pub mod verify;
 /// The pure conversion, in its own crate so the app can use it.
 pub use klipp_graph_lift::{canon, delift, ids, lift, old_fields, ops, paths, revision, revision3, splice, to_v1, to_v2, unlift, v1};

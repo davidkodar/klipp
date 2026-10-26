@@ -41,6 +41,7 @@ pub mod cpu_grade;
 pub mod deflicker;
 pub mod dither;
 pub mod displace;
+pub mod planar;
 pub mod reflection;
 pub mod generator_grain;
 pub mod flicker;

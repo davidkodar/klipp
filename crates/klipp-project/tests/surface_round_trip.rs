@@ -25,7 +25,7 @@ fn a_surface_and_its_pin_read_back() {
         name: "Phone".into(),
         corners: quad,
         reference_secs: 2.5,
-        keys: vec![SurfaceKey { source_secs: 2.5, corners: quad }, SurfaceKey { source_secs: 2.54, corners: [[0.31, 0.3], [0.61, 0.32], [0.63, 0.6], [0.29, 0.58]] }],
+        keys: vec![SurfaceKey::at_corners(2.5, &quad, &quad).unwrap(), SurfaceKey { confidence: Some(0.4), state: klipp_timeline::TrackState::Low, ..SurfaceKey::at_corners(2.54, &quad, &[[0.31, 0.3], [0.61, 0.32], [0.63, 0.6], [0.29, 0.58]]).unwrap() }],
         source_size: [1080, 1920],
         media_fps: 25.0,
     };

@@ -504,8 +504,10 @@ pub(crate) fn sound_json(seq: &klipp_timeline::Sequence, c: &klipp_timeline::Cli
 }
 
 /// A clip's tracked surfaces and what it is pinned to (#684), on its
-/// readout: each surface's id and name, and the timeline stretch the
-/// track covers, which is where a pin follows it.
+/// readout: each surface's id and name, the timeline stretch the track
+/// covers, which is where a pin follows it, and the stretches followed
+/// uncertainly (`low`) or not at all (`lost`, the last good place held)
+/// with the mean confidence (#2754).
 pub(crate) fn surfaces_json(c: &klipp_timeline::Clip, fps: f64, v: &mut serde_json::Value) {
     let on_timeline = |src: f64| ((c.timeline_in.to_secs_f64() + c.elapsed_for_source_secs(src, fps)) * 1000.0).round() / 1000.0;
     if !c.surfaces.is_empty() {
@@ -514,6 +516,20 @@ pub(crate) fn surfaces_json(c: &klipp_timeline::Clip, fps: f64, v: &mut serde_js
             if let Some((a, b)) = s.tracked_secs() {
                 let (a, b) = (on_timeline(a), on_timeline(b));
                 j["tracked_secs"] = json!([a.min(b), a.max(b)]);
+            }
+            let spans = s.weak_spans();
+            for (key, state) in [("low", klipp_timeline::TrackState::Low), ("lost", klipp_timeline::TrackState::Lost)] {
+                let these: Vec<[f64; 2]> = spans.iter().filter(|sp| sp.2 == state).map(|sp| {
+                    let (a, b) = (on_timeline(sp.0), on_timeline(sp.1));
+                    [a.min(b), a.max(b)]
+                }).collect();
+                if !these.is_empty() {
+                    j[key] = json!(these);
+                }
+            }
+            let rated: Vec<f32> = s.keys.iter().filter_map(|k| k.confidence).collect();
+            if !rated.is_empty() {
+                j["confidence"] = json!((rated.iter().sum::<f32>() / rated.len() as f32 * 100.0).round() / 100.0);
             }
             j
         }).collect::<Vec<_>>());

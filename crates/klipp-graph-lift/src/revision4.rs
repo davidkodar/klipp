@@ -71,6 +71,8 @@ pub struct Declared {
 
 /// The revision this step reads.
 pub const FROM: u64 = 3;
+/// The revision it converts to (revision 5 came after, #2754).
+pub const TO: u64 = 4;
 
 /// The fields of a Speed Ramp entry revision 4 drops (#1409): none of
 /// them drew.
@@ -136,7 +138,7 @@ pub fn convert(project: &str, catalog: &dyn klipp_graph_format::PortCatalog) -> 
 
     let stored = |seq: &str, clip: &str| truth.get(&(seq.to_owned(), clip.to_owned())).cloned();
     let (mut v4, notes) = revision2::project_with(&v1, &stored)?;
-    v4.as_object_mut().ok_or("not a project")?.insert("format_revision".into(), Value::from(revision2::PROJECT_REVISION));
+    v4.as_object_mut().ok_or("not a project")?.insert("format_revision".into(), Value::from(TO));
     // Each effect keeps the node id revision 3 stored for it (M3 proposal
     // 6): the v1 form has none, so the lift gave each its slot's again.
     keep_ids(&mut v4, &before)?;
@@ -145,7 +147,7 @@ pub fn convert(project: &str, catalog: &dyn klipp_graph_format::PortCatalog) -> 
     // The proof: unlifted and written again, the same document.
     let again = revision2::project_with(&unlift::project(&v4)?, &stored)?.0;
     let mut again = again;
-    again.as_object_mut().ok_or("not a project")?.insert("format_revision".into(), Value::from(revision2::PROJECT_REVISION));
+    again.as_object_mut().ok_or("not a project")?.insert("format_revision".into(), Value::from(TO));
     keep_ids(&mut again, &pictures(&v4)?)?;
     if canon::sorted(again) != canon::sorted(v4.clone()) {
         return Err("the revision-4 project, unlifted and written again, is another document".into());

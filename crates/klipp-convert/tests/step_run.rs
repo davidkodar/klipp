@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use klipp_convert::run::Settings;
 use klipp_convert::step3::{self, Decision, Hooks, Point, RunError};
-use klipp_convert::step4;
+use klipp_convert::{step4, step5};
 use klipp_convert::{revision2, revision3};
 use klipp_core::{MediaId, RationalTime};
 use klipp_effects::BuiltinEffect as E;
@@ -140,8 +140,9 @@ fn truth(parent: &Path, name: &str) -> PathBuf {
     seq.tracks[0].clips.push(c);
     klipp_project::save_project(&dir, &[seq], &klipp_media::MediaPool::new()).unwrap();
     let path = dir.join("project.json");
-    let text = std::fs::read_to_string(&path).unwrap().replacen("\"format_revision\": 4", "\"format_revision\": 3", 1);
-    std::fs::write(&path, text).unwrap();
+    let mut v = read(&path);
+    v["format_revision"] = json!(3);
+    std::fs::write(&path, serde_json::to_string_pretty(&v).unwrap()).unwrap();
     dir
 }
 
@@ -153,6 +154,11 @@ fn current(parent: &Path, name: &str) -> PathBuf {
     c.push_effect(E::GaussianBlur { radius: 2.0 });
     seq.tracks[0].clips.push(c);
     klipp_project::save_project(&dir, &[seq], &klipp_media::MediaPool::new()).unwrap();
+    // As revision 4 saved it: the same, but for the surfaces it has none of.
+    let path = dir.join("project.json");
+    let mut v = read(&path);
+    v["format_revision"] = json!(4);
+    std::fs::write(&path, serde_json::to_string_pretty(&v).unwrap()).unwrap();
     dir
 }
 
@@ -160,8 +166,39 @@ fn settings(r: &Path, projects: Vec<PathBuf>, excluded: Vec<PathBuf>, date: &str
     Settings { projects, excluded: excluded.into_iter().collect::<BTreeSet<_>>(), config_dir: None, backup_root: r.join("backup/pre-v4"), date: date.into() }
 }
 
+/// A project step 4 wrote, stepped on to revision 5 (#2754) in place:
+/// what today's loader reads.
+fn to_five(dir: &Path) {
+    let path = dir.join("project.json");
+    let text = std::fs::read_to_string(&path).unwrap();
+    if read(&path)["format_revision"] == json!(4) {
+        std::fs::write(&path, klipp_graph_lift::revision5::project_text(&text).unwrap()).unwrap();
+    }
+}
+
+/// The run's reload: the project as written, stepped to today's revision
+/// on a copy beside it, which the strict loader reads.
 fn reload(dir: &Path) -> Result<(), String> {
-    klipp_project::load_project_strict(dir).map(|_| ())
+    let copy = dir.with_extension("reload");
+    let _ = std::fs::remove_dir_all(&copy);
+    copy_dir(dir, &copy);
+    to_five(&copy);
+    let loaded = klipp_project::load_project_strict(&copy).map(|_| ());
+    let _ = std::fs::remove_dir_all(&copy);
+    loaded
+}
+
+fn copy_dir(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for e in std::fs::read_dir(from).unwrap() {
+        let e = e.unwrap();
+        let target = to.join(e.file_name());
+        if e.file_type().unwrap().is_dir() {
+            copy_dir(&e.path(), &target);
+        } else {
+            std::fs::copy(e.path(), target).unwrap();
+        }
+    }
 }
 
 fn ok() -> Result<(), String> {
@@ -239,7 +276,11 @@ fn a_run_steps_revision_3_projects_to_4_and_nothing_else() {
     // The truth clip's ids are the ones it was saved with.
     let ids = |dir: &Path| read(&dir.join("project.json"))["sequences"][0]["tracks"][0]["clips"][0]["graph_v2"]["graph"]["nodes"].clone();
     assert!(ids(&b).to_string().contains(&uuid::Uuid::from_u128(0xa2).to_string()));
-    let (loaded, ..) = klipp_project::load_project(&b).unwrap();
+    // Read by today's loader on a copy stepped on to revision 5.
+    let five = b.with_extension("five");
+    copy_dir(&b, &five);
+    to_five(&five);
+    let (loaded, ..) = klipp_project::load_project(&five).unwrap();
     let clip = loaded[0].all_clips().next().unwrap();
     assert!(clip.is_picture_truth());
     assert!(effects(&picture(clip)).contains(&uuid::Uuid::from_u128(0xa2)), "the added effect is reached by its own id after the conversion");
@@ -422,6 +463,40 @@ fn preflight_stops_on_what_it_cannot_settle() {
     let a = plain(&r, "Fine");
     let unmatched = step4::preflight(&settings(&r, vec![a], vec![r.join("Gone.klipp")], "d")).stops;
     assert!(unmatched[0].contains("names no project"), "{unmatched:?}");
+    let _ = std::fs::remove_dir_all(&r);
+}
+
+/// Step 5 (#2754): a revision-4 project with a tracked surface is stepped
+/// to 5 by the same run, each key's corners as the map to them, and it
+/// loads with the surface where it was.
+#[test]
+fn a_run_steps_a_tracked_surface_to_revision_5() {
+    let r = root("five");
+    let a = current(&r, "Tracked");
+    let corners = json!([[0.3, 0.3], [0.6, 0.32], [0.62, 0.6], [0.28, 0.58]]);
+    let moved = json!([[0.31, 0.29], [0.62, 0.33], [0.6, 0.61], [0.27, 0.57]]);
+    let mut v = read(&a.join("project.json"));
+    v["sequences"][0]["tracks"][0]["clips"][0]["surfaces"] = json!([{
+        "id": uuid::Uuid::new_v4(), "name": "Screen", "corners": corners, "reference_secs": 0.5,
+        "keys": [{ "source_secs": 0.5, "corners": corners }, { "source_secs": 0.54, "corners": moved }],
+        "source_size": [1920, 1080], "media_fps": 25.0
+    }]);
+    std::fs::write(a.join("project.json"), serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    let s = settings(&r, vec![a.clone()], vec![], "2026-10-26");
+    let m = step5::preflight(&s);
+    assert!(m.stops.is_empty(), "{:?}", m.stops);
+    assert_eq!(m.candidates.iter().map(|c| c.decision).collect::<Vec<_>>(), [Decision::Convert]);
+    assert!(m.candidates[0].reason.contains("1 surfaces, 2 keys"), "{}", m.candidates[0].reason);
+    let report = step5::run(&s, &m.hash(), &ok, &hooks(NO_CRASH, NO_FAIL)).unwrap();
+    assert_eq!(report.converted, vec![a.clone()]);
+    let (loaded, ..) = klipp_project::load_project_strict(&a).unwrap();
+    let surface = &loaded[0].all_clips().next().unwrap().surfaces[0];
+    let at = surface.corners_shown_at(0.54);
+    let want: Vec<[f32; 2]> = serde_json::from_value(moved).unwrap();
+    for (got, want) in at.iter().zip(&want) {
+        assert!((got[0] - want[0]).abs() < 1e-5 && (got[1] - want[1]).abs() < 1e-5, "{at:?}");
+    }
+    assert_eq!(surface.keys[1].confidence, None, "the old tracker gave no confidence");
     let _ = std::fs::remove_dir_all(&r);
 }
 
@@ -705,6 +780,7 @@ fn the_strict_loader_refuses_a_stored_picture_that_disagrees() {
     let a = plain(&r, "A");
     let s = settings(&r, vec![a.clone()], vec![], "2026-10-07");
     step4::run(&s, &approved(&s), &ok, &hooks(NO_CRASH, NO_FAIL)).unwrap();
+    to_five(&a);
     assert!(klipp_project::load_project_strict(&a).is_ok());
     spoil_stored_picture(&a);
     let e = klipp_project::load_project_strict(&a).map(|_| ()).unwrap_err();

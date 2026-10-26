@@ -19,7 +19,7 @@ impl KlippApp {
         };
         let mut new = old.clone();
         match new.surfaces.iter_mut().find(|s| s.id == surface.id) {
-            Some(s) if direction != 0 => s.merge_keys(surface.keys.clone()),
+            Some(s) if direction != 0 => s.merge_keys(surface.keys.clone(), &surface.corners),
             Some(s) => *s = surface.clone(),
             None => new.surfaces.push(surface.clone()),
         }
@@ -51,6 +51,14 @@ impl KlippApp {
         }
         if !held.is_empty() {
             note.push_str(&format!("; not tracked {}, past the frames held at once: track again from a frame there", held.join(" and ")));
+        }
+        // Stretches followed uncertainly or lost then found again (#2754).
+        let weak = surface.weak_spans();
+        for (state, said) in [(klipp_timeline::TrackState::Low, "uncertain"), (klipp_timeline::TrackState::Lost, "lost")] {
+            let these: Vec<String> = weak.iter().filter(|s| s.2 == state).map(|s| format!("{:.2}–{:.2} s", on_timeline(s.0), on_timeline(s.1))).collect();
+            if !these.is_empty() {
+                note.push_str(&format!("; {said} {}", these.join(", ")));
+            }
         }
         let total = new.surfaces.iter().find(|s| s.id == surface.id).map_or(0, |s| s.keys.len());
         // Stop and fix: on the frame after the last one followed, the
@@ -199,7 +207,7 @@ impl KlippApp {
         self.state.tracking_progress.insert(clip_id, 0.0);
         let event_tx = self.proxy_event_tx.clone();
         std::thread::spawn(move || {
-            use klipp_effects::window_track::{track_window_perspective, GrayFrame, TrackOptions};
+            use klipp_effects::window_track::GrayFrame;
             let fail = |error: String| {
                 let _ = event_tx.send(klipp_core::AppEvent::SurfaceTrackFailed { clip_id, surface, error });
             };
@@ -232,32 +240,45 @@ impl KlippApp {
             let last = first + frames.len().saturating_sub(1);
             let (gw, gh) = (reference_frame.width as f64, reference_frame.height as f64);
             let quad_px = corners.map(|c| (c[0] as f64 * gw, c[1] as f64 * gh));
-            // At this size a frame's move is larger in pixels than the
-            // window tracker's halved frames see it: search a little wider
-            // (16 px here is 24 at 1080p) on patches a little larger. The
-            // cost grows with both squared, so not as wide as the halving.
-            let opts = TrackOptions { search_radius: 16, patch_half: 6, ..TrackOptions::default() };
+            // The whole surface aligned frame to frame (#2754), its own
+            // outline included, each frame with its confidence.
+            let opts = klipp_effects::planar::Options::default();
             let forward: Vec<usize> = if direction >= 0 { (reference + 1..=last).collect() } else { Vec::new() };
             let backward: Vec<usize> = if direction <= 0 { (first..reference).rev().collect() } else { Vec::new() };
             let share = (forward.len() as f32 / (forward.len() + backward.len()).max(1) as f32).max(0.01);
             let report = |p: f32| going() && event_tx.send(klipp_core::AppEvent::TrackingProgress { clip_id, progress: loading + p * (1.0 - loading) }).is_ok();
-            let ahead = track_window_perspective(&reference_frame, quad_px, &forward, &mut |f| decode(f), &opts, &|p| report(p * share));
-            let behind = track_window_perspective(&reference_frame, quad_px, &backward, &mut |f| decode(f), &opts, &|p| report(share + p * (1.0 - share)));
-            if ahead.is_empty() && behind.is_empty() && !(forward.is_empty() && backward.is_empty()) {
-                return fail("nothing on the surface to follow: set the corners round something with detail".into());
+            let ahead = klipp_effects::planar::track(&reference_frame, quad_px, &forward, &mut |f| decode(f), &opts, &|p| report(p * share));
+            let behind = klipp_effects::planar::track(&reference_frame, quad_px, &backward, &mut |f| decode(f), &opts, &|p| report(share + p * (1.0 - share)));
+            // Frames lost at the end of a run, never found again, are where
+            // the track ends: not kept, so the track reads as lost there.
+            let trimmed = |mut t: Vec<klipp_effects::planar::Tracked>| {
+                while t.last().is_some_and(|t| t.state == klipp_effects::planar::State::Lost) {
+                    t.pop();
+                }
+                t
+            };
+            let (ahead, behind) = (trimmed(ahead), trimmed(behind));
+            let followed = |t: &[klipp_effects::planar::Tracked]| !t.is_empty();
+            if !followed(&ahead) && !followed(&behind) && !(forward.is_empty() && backward.is_empty()) {
+                return fail("the surface could not be followed from the frame its corners were set on: set them round the whole flat surface, its edges included".into());
             }
-            let still = klipp_effects::homography::Homography::identity();
+            // The maps between fractions of the picture, not its pixels.
+            let to_px = klipp_effects::homography::Homography { h: [[gw, 0.0, 0.0], [0.0, gh, 0.0], [0.0, 0.0, 1.0]] };
+            let to_frac = klipp_effects::homography::Homography { h: [[1.0 / gw, 0.0, 0.0], [0.0, 1.0 / gh, 0.0], [0.0, 0.0, 1.0]] };
+            let still = klipp_effects::planar::Tracked { frame: reference, h: klipp_effects::homography::Homography::identity(), confidence: 1.0, state: klipp_effects::planar::State::Good, round_trip_px: 0.0 };
             let keys = behind
                 .into_iter()
                 .rev()
-                .chain(std::iter::once((reference, still)))
+                .chain(std::iter::once(still))
                 .chain(ahead)
-                .map(|(f, h)| {
-                    let quad = quad_px.map(|c| {
-                        let (x, y) = h.transform(c.0, c.1);
-                        [(x / gw) as f32, (y / gh) as f32]
-                    });
-                    (f as f64 / media_fps, quad)
+                .map(|t| {
+                    let m = to_frac.multiply(&t.h).multiply(&to_px).h;
+                    let state = match t.state {
+                        klipp_effects::planar::State::Good => 0,
+                        klipp_effects::planar::State::Low => 1,
+                        klipp_effects::planar::State::Lost => 2,
+                    };
+                    (t.frame as f64 / media_fps, [m[0][0], m[0][1], m[0][2], m[1][0], m[1][1], m[1][2], m[2][0], m[2][1], m[2][2]], t.confidence, state)
                 })
                 .collect();
             let held_secs = (first as f64 / media_fps, last as f64 / media_fps);

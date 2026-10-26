@@ -43,18 +43,16 @@ fn the_current_format_opens() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Revision 4 is picture revision 4 (M4 step F): a save writes it, and it
-/// opens again.
+/// Revision 5 (#2754): a save writes it, and it opens again.
 #[test]
-fn a_save_writes_revision_4() {
-    // 4: a grade compound is a group, an uneven scale keeps its aspect,
-    // every enabled Opacity multiplies, a Speed Ramp drops the fields that
-    // never drew, and frei0r and OFX plug-ins are their own nodes; a
-    // revision-3 reader would misread each (3 kept effect ids as stored).
-    assert_eq!(FORMAT_REVISION, 4, "raising the revision is a deliberate change: update this test with the reason");
-    let dir = saved("revision_four");
+fn a_save_writes_revision_5() {
+    // 5: a tracked surface's keys are maps from its reference corners
+    // with the tracker's confidence; a revision-4 reader would find no
+    // track (4 was picture revision 4, M4 step F).
+    assert_eq!(FORMAT_REVISION, 5, "raising the revision is a deliberate change: update this test with the reason");
+    let dir = saved("revision_five");
     let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("project.json")).unwrap()).unwrap();
-    assert_eq!(v["format_revision"], 4);
+    assert_eq!(v["format_revision"], 5);
     load_project(&dir).expect("and it opens");
     let _ = std::fs::remove_dir_all(&dir);
 }

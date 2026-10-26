@@ -35,7 +35,7 @@ fn err(e: impl std::fmt::Display) -> String {
 pub const STEP: crate::step3::Step = crate::step3::Step {
     name: "revision 4",
     from: FROM,
-    to: crate::revision2::PROJECT_REVISION,
+    to: klipp_graph_lift::revision4::TO,
     journal: "run4.json",
     side: crate::revision2::REVISION,
     check,
@@ -65,7 +65,7 @@ fn convert_text(text: &str) -> Result<String, String> {
 pub fn verify(original: &str, written: &str) -> Result<(), String> {
     let again: Value = serde_json::from_str(&convert(original)?.text).map_err(err)?;
     let back: Value = serde_json::from_str(written).map_err(|e| format!("the written file doesn't read back: {e}"))?;
-    if back.get("format_revision").and_then(Value::as_u64) != Some(crate::revision2::PROJECT_REVISION) {
+    if back.get("format_revision").and_then(Value::as_u64) != Some(klipp_graph_lift::revision4::TO) {
         return Err(format!("written at revision {:?}", back.get("format_revision")));
     }
     if canon::sorted(back) != canon::sorted(again) {

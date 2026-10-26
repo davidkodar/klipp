@@ -41,6 +41,11 @@ pub fn backup_root_v4(home: &Path) -> PathBuf {
     home.join(".local/share/klipp/pre-v4")
 }
 
+/// Where step 5's run (#2754) keeps its backups.
+pub fn backup_root_v5(home: &Path) -> PathBuf {
+    home.join(".local/share/klipp/pre-v5")
+}
+
 /// Folder names whose contents are never a project to convert in place.
 const SKIPPED_DIRS: &[&str] = &["target", "node_modules", ".cache", ".klipp-cache"];
 
@@ -82,6 +87,7 @@ fn skipped(dir: &Path, home: &Path) -> bool {
         || dir == backup_root(home)
         || dir == backup_root_v3(home)
         || dir == backup_root_v4(home)
+        || dir == backup_root_v5(home)
         // A dry run's output: its copies are converted projects' twins.
         || dir.join(crate::step3::DRY_RUN_MARK).exists()
 }

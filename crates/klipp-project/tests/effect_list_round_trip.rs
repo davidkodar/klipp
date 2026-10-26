@@ -25,7 +25,7 @@ fn a_clips_effects_and_flags_survive_a_revision_2_save() {
     let dir = std::env::temp_dir().join(format!("klipp-effect-list-rt-{}", uuid::Uuid::new_v4()));
     save_project(&dir, &[seq], &MediaPool::new()).unwrap();
     let project: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("project.json")).unwrap()).unwrap();
-    assert_eq!(project["format_revision"], 4, "the app writes revision 4");
+    assert_eq!(project["format_revision"], klipp_project::FORMAT_REVISION, "the app writes today's revision");
     let (loaded, ..) = load_project(&dir).unwrap();
     assert_eq!(loaded[0].all_clips().map(enabled).collect::<Vec<_>>(), before);
     // The stored flags, made explicit: absent and empty become all enabled,

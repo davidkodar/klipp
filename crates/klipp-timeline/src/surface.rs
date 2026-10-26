@@ -16,12 +16,87 @@ use serde::{Deserialize, Serialize};
 /// fractions of the frame.
 pub type Quad = [[f32; 2]; 4];
 
-/// Where the surface is in one file frame.
+/// A plane projective map between fractions of the frame, row by row
+/// (#2754).
+pub type Map = [f64; 9];
+
+/// How a frame of a track was followed (#2754).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrackState {
+    /// Followed.
+    #[default]
+    Good,
+    /// Followed, but the surface was hard to see or the fit uncertain.
+    Low,
+    /// Not followed: the key holds the last good map.
+    Lost,
+}
+
+impl TrackState {
+    fn is_good(&self) -> bool {
+        *self == TrackState::Good
+    }
+}
+
+/// Where the surface is in one file frame: the map from its reference
+/// corners to their place in this frame (#2754), so a layer can sit
+/// anywhere on the plane, not only on those corners.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct SurfaceKey {
     /// File time, seconds: the start of the frame.
     pub source_secs: f64,
-    pub corners: Quad,
+    pub map: Map,
+    /// How sure the tracker was of this frame, 0 to 1. `None` for a key
+    /// whose tracker did not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f32>,
+    #[serde(default, skip_serializing_if = "TrackState::is_good")]
+    pub state: TrackState,
+}
+
+fn homography(m: &Map) -> klipp_effects::homography::Homography {
+    klipp_effects::homography::Homography { h: [[m[0], m[1], m[2]], [m[3], m[4], m[5]], [m[6], m[7], m[8]]] }
+}
+
+fn map_of(h: &klipp_effects::homography::Homography) -> Map {
+    let h = &h.h;
+    [h[0][0], h[0][1], h[0][2], h[1][0], h[1][1], h[1][2], h[2][0], h[2][1], h[2][2]]
+}
+
+/// The map taking `from`'s corners to `to`'s, `None` where either is
+/// degenerate.
+pub fn map_between(from: &Quad, to: &Quad) -> Option<Map> {
+    let pt = |q: &Quad| -> [(f64, f64); 4] { q.map(|c| (c[0] as f64, c[1] as f64)) };
+    klipp_effects::homography::Homography::from_4_points(&pt(from), &pt(to)).map(|h| map_of(&h))
+}
+
+/// `m` after `n`: the point `n` takes somewhere, then `m` from there.
+pub fn compose(m: &Map, n: &Map) -> Map {
+    map_of(&homography(m).multiply(&homography(n)))
+}
+
+/// `q` taken through `m`.
+pub fn mapped(m: &Map, q: &Quad) -> Quad {
+    let h = homography(m);
+    q.map(|c| {
+        let (x, y) = h.transform(c[0] as f64, c[1] as f64);
+        [x as f32, y as f32]
+    })
+}
+
+impl SurfaceKey {
+    /// The key whose surface is at `corners` in its frame, from reference
+    /// corners `reference`; `None` where either quad is degenerate.
+    pub fn at_corners(source_secs: f64, reference: &Quad, corners: &Quad) -> Option<Self> {
+        Some(Self { source_secs, map: map_between(reference, corners)?, confidence: None, state: TrackState::Good })
+    }
+
+    /// The surface's corners in this key's frame, from its reference
+    /// corners.
+    pub fn corners(&self, reference: &Quad) -> Quad {
+        mapped(&self.map, reference)
+    }
 }
 
 /// A surface tracked in a clip.
@@ -55,17 +130,17 @@ impl Surface {
         let keys = &self.keys;
         let (Some(first), Some(last)) = (keys.first(), keys.last()) else { return self.corners };
         if source_secs <= first.source_secs {
-            return first.corners;
+            return first.corners(&self.corners);
         }
         if source_secs >= last.source_secs {
-            return last.corners;
+            return last.corners(&self.corners);
         }
         let after = keys.partition_point(|k| k.source_secs <= source_secs);
-        let (a, b) = (&keys[after - 1], &keys[after]);
-        let span = b.source_secs - a.source_secs;
-        let f = if span > 0.0 { ((source_secs - a.source_secs) / span) as f32 } else { 0.0 };
-        let mut out = a.corners;
-        for (o, (p, q)) in out.iter_mut().zip(a.corners.iter().zip(b.corners.iter())) {
+        let (a, b) = (keys[after - 1].corners(&self.corners), keys[after].corners(&self.corners));
+        let span = keys[after].source_secs - keys[after - 1].source_secs;
+        let f = if span > 0.0 { ((source_secs - keys[after - 1].source_secs) / span) as f32 } else { 0.0 };
+        let mut out = a;
+        for (o, (p, q)) in out.iter_mut().zip(a.iter().zip(b.iter())) {
             o[0] = p[0] + (q[0] - p[0]) * f;
             o[1] = p[1] + (q[1] - p[1]) * f;
         }
@@ -85,7 +160,7 @@ impl Surface {
         let near = 0.25 / self.media_fps;
         let at = self.keys.partition_point(|k| k.source_secs < shown - near);
         match self.keys.get(at) {
-            Some(k) if (k.source_secs - shown).abs() <= near => k.corners,
+            Some(k) if (k.source_secs - shown).abs() <= near => k.corners(&self.corners),
             _ => self.corners_at(shown),
         }
     }
@@ -93,9 +168,12 @@ impl Surface {
     /// The track with `newer` laid over it: keys from `newer` across the
     /// file time it covers, the earlier keys kept either side of it, so a
     /// track continued from where it was lost (#684 phase 2) keeps what
-    /// was good.
-    pub fn merge_keys(&mut self, newer: Vec<SurfaceKey>) {
+    /// was good. `newer`'s maps start from `from`, its own reference
+    /// corners, and are taken to start from this surface's.
+    pub fn merge_keys(&mut self, newer: Vec<SurfaceKey>, from: &Quad) {
         let (Some(first), Some(last)) = (newer.first().map(|k| k.source_secs), newer.last().map(|k| k.source_secs)) else { return };
+        let rebase = map_between(&self.corners, from);
+        let newer = newer.into_iter().map(|k| SurfaceKey { map: rebase.map_or(k.map, |r| compose(&k.map, &r)), ..k });
         let near = if self.media_fps > 0.0 { 0.5 / self.media_fps } else { 1e-6 };
         let mut keys: Vec<SurfaceKey> = self.keys.iter().copied().filter(|k| k.source_secs < first - near || k.source_secs > last + near).collect();
         keys.extend(newer);
@@ -119,6 +197,26 @@ impl Surface {
     /// The file time the track covers, first to last key.
     pub fn tracked_secs(&self) -> Option<(f64, f64)> {
         Some((self.keys.first()?.source_secs, self.keys.last()?.source_secs))
+    }
+
+    /// The stretches of the track not followed with confidence (#2754):
+    /// for each run of keys in the same weak state, its first and last
+    /// file time and that state.
+    pub fn weak_spans(&self) -> Vec<(f64, f64, TrackState)> {
+        let mut out: Vec<(f64, f64, TrackState)> = Vec::new();
+        let mut prev_weak = false;
+        for k in &self.keys {
+            if k.state == TrackState::Good {
+                prev_weak = false;
+                continue;
+            }
+            match out.last_mut() {
+                Some(span) if prev_weak && span.2 == k.state => span.1 = k.source_secs,
+                _ => out.push((k.source_secs, k.source_secs, k.state)),
+            }
+            prev_weak = true;
+        }
+        out
     }
 }
 
@@ -316,6 +414,39 @@ mod tests {
         [[x, 0.0], [x + 0.1, 0.0], [x + 0.1, 0.1], [x, 0.1]]
     }
 
+    fn near(a: Quad, b: Quad) -> bool {
+        a.iter().zip(&b).all(|(p, q)| (p[0] - q[0]).abs() < 1e-5 && (p[1] - q[1]).abs() < 1e-5)
+    }
+
+    /// A track continued from corners set on another frame (#2754): its
+    /// maps start from those corners, and merged they are taken to start
+    /// from the surface's own, so the corners land where that run found
+    /// them.
+    #[test]
+    fn a_continued_track_from_other_corners_lands_where_it_was_found() {
+        let reference = [[0.1, 0.1], [0.4, 0.1], [0.4, 0.3], [0.1, 0.3]];
+        let mut s = Surface { id: uuid::Uuid::nil(), name: "S".into(), corners: reference, reference_secs: 0.0, keys: vec![SurfaceKey::at_corners(0.0, &reference, &reference).unwrap()], source_size: [0, 0], media_fps: 25.0 };
+        // The run's own corners, set on frame 10, and where it found them on frame 11.
+        let theirs = [[0.5, 0.5], [0.8, 0.52], [0.79, 0.7], [0.51, 0.71]];
+        let found = [[0.52, 0.5], [0.82, 0.53], [0.8, 0.71], [0.53, 0.72]];
+        s.merge_keys(vec![SurfaceKey::at_corners(0.4, &theirs, &theirs).unwrap(), SurfaceKey::at_corners(0.44, &theirs, &found).unwrap()], &theirs);
+        assert!(near(s.corners_shown_at(0.4), theirs));
+        assert!(near(s.corners_shown_at(0.44), found));
+    }
+
+    /// The stretches followed uncertainly or lost, each run once.
+    #[test]
+    fn the_weak_stretches_are_the_runs_of_low_and_lost_keys() {
+        let q = square(0.1);
+        let k = |f: i32, state: TrackState| SurfaceKey { state, ..SurfaceKey::at_corners(f as f64, &q, &q).unwrap() };
+        let s = Surface {
+            id: uuid::Uuid::nil(), name: "S".into(), corners: q, reference_secs: 0.0,
+            keys: vec![k(0, TrackState::Good), k(1, TrackState::Low), k(2, TrackState::Low), k(3, TrackState::Lost), k(4, TrackState::Lost), k(5, TrackState::Good), k(6, TrackState::Low)],
+            source_size: [0, 0], media_fps: 1.0,
+        };
+        assert_eq!(s.weak_spans(), vec![(1.0, 2.0, TrackState::Low), (3.0, 4.0, TrackState::Lost), (6.0, 6.0, TrackState::Low)]);
+    }
+
     #[test]
     fn corners_interpolate_between_keys_and_hold_outside() {
         let s = Surface {
@@ -323,12 +454,12 @@ mod tests {
             name: "Screen".into(),
             corners: square(0.5),
             reference_secs: 1.0,
-            keys: vec![SurfaceKey { source_secs: 1.0, corners: square(0.2) }, SurfaceKey { source_secs: 2.0, corners: square(0.4) }],
+            keys: vec![SurfaceKey::at_corners(1.0, &square(0.5), &square(0.2)).unwrap(), SurfaceKey::at_corners(2.0, &square(0.5), &square(0.4)).unwrap()],
             source_size: [0, 0],
             media_fps: 0.0,
         };
-        assert_eq!(s.corners_at(0.0), square(0.2));
-        assert_eq!(s.corners_at(3.0), square(0.4));
+        assert!(near(s.corners_at(0.0), square(0.2)));
+        assert!(near(s.corners_at(3.0), square(0.4)));
         assert!((s.corners_at(1.5)[0][0] - 0.3).abs() < 1e-6);
         assert_eq!(s.tracked_secs(), Some((1.0, 2.0)));
         let untracked = Surface { keys: Vec::new(), ..s };
@@ -339,13 +470,13 @@ mod tests {
     /// frame's corners, not a blend towards the next.
     #[test]
     fn the_shown_frame_holds_its_key() {
-        let keys = (0..4).map(|f| SurfaceKey { source_secs: f as f64 / 30.0, corners: square(0.1 * f as f32) }).collect();
+        let keys = (0..4).map(|f| SurfaceKey::at_corners(f as f64 / 30.0, &square(0.0), &square(0.1 * f as f32)).unwrap()).collect();
         let s = Surface { id: uuid::Uuid::nil(), name: "S".into(), corners: square(0.0), reference_secs: 0.0, keys, source_size: [0, 0], media_fps: 30.0 };
         // 0.04 s is 1.2 frames in: frame 1 is shown.
-        assert_eq!(s.corners_shown_at(0.04), square(0.1));
+        assert!(near(s.corners_shown_at(0.04), square(0.1)));
         // 0.05 s is 1.5 frames in: frame 2 starts within half a frame.
-        assert_eq!(s.corners_shown_at(0.05), square(0.2));
-        assert_eq!(s.corners_shown_at(10.0), square(0.3), "held after the track");
+        assert!(near(s.corners_shown_at(0.05), square(0.2)));
+        assert!(near(s.corners_shown_at(10.0), square(0.3)), "held after the track");
     }
 
     /// A portrait picture in a wide frame sits in the middle third: its
@@ -396,12 +527,12 @@ mod tests {
     /// that stretch and keeps the rest.
     #[test]
     fn a_continued_track_keeps_what_was_good() {
-        let key = |f: i32, x: f32| SurfaceKey { source_secs: f as f64 / 25.0, corners: square(x) };
+        let key = |f: i32, x: f32| SurfaceKey::at_corners(f as f64 / 25.0, &square(0.0), &square(x)).unwrap();
         let mut s = Surface { id: uuid::Uuid::nil(), name: "S".into(), corners: square(0.0), reference_secs: 0.0, keys: (0..10).map(|f| key(f, 0.0)).collect(), source_size: [0, 0], media_fps: 25.0 };
-        s.merge_keys((8..20).map(|f| key(f, 0.5)).collect());
+        s.merge_keys((8..20).map(|f| key(f, 0.5)).collect(), &square(0.0));
         assert_eq!(s.keys.len(), 20);
-        assert_eq!(s.keys[7].corners, square(0.0), "before the new stretch, kept");
-        assert_eq!(s.keys[8].corners, square(0.5), "over it, the new keys");
+        assert!(near(s.keys[7].corners(&s.corners), square(0.0)), "before the new stretch, kept");
+        assert!(near(s.keys[8].corners(&s.corners), square(0.5)), "over it, the new keys");
         assert!(s.keys.windows(2).all(|w| w[0].source_secs < w[1].source_secs));
     }
 

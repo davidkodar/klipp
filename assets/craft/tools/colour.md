@@ -68,7 +68,7 @@ Skin onto the skin band, by measurement: the faces in the clip's frame (the fram
 
 ## klipp_track_surface
 
-Track a planar surface in perspective for the pin op. Supply click or corners (see fields), measured with klipp_frame_at at at_secs. Runs asynchronously as one undo step; klipp_list_clips reports the surface id and tracked range. Tracking stops on occlusion, blur or leaving frame; inspect nearby frames. Resume by correcting corners on a later frame, specifying the same surface and direction forward/backward. The new range replaces overlapping tracking and preserves the rest.
+Track a planar surface in perspective for the pin op. Supply click or corners (see fields), measured with klipp_frame_at at at_secs. The whole surface is followed, its outline included, so a plain surface (a single-colour canopy, a wall) tracks: put the corners on its edges. Runs asynchronously as one undo step; klipp_list_clips reports the surface id, the tracked range, its mean confidence (0-1) and the stretches followed uncertainly (`low`) or lost (`lost`: the last good place is held there). After a loss the surface is searched for and picked up again when it shows. Check frames in low and lost stretches with klipp_frame_at; resume or correct by giving corners on a later frame with the same surface and direction forward/backward. The new range replaces overlapping tracking and preserves the rest.
 
 ## klipp_get_grade
 
