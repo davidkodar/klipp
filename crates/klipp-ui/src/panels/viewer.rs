@@ -953,7 +953,10 @@ impl ViewerPanel {
             .and_then(|(_, clip)| clip.media_id().and_then(|mid| state.media_pool.get(&mid)))
             .map(|m| (m.resolution.width, m.resolution.height, m.proxy_ready));
 
-        let has_content = state.playback != PlaybackState::Idle || current_media_info.is_some();
+        // Anything pictured at the playhead: a project just opened is
+        // Idle, and its first shot may be a title, a still or a compound
+        // clip, not media (#2664).
+        let has_content = state.playback != PlaybackState::Idle || pictured_at(state.sequence(), state.playhead);
 
         if !has_content {
             self.draw_empty_state(ui, viewer_rect, theme);
@@ -6926,6 +6929,46 @@ fn update_selection_from_anchor(state: &mut AppState) {
             state.viewer_text_selection = None;
             state.viewer_text_selection_locked = None;
         }
+    }
+}
+
+/// Whether a clip that draws a picture is at `time`: on a picture track,
+/// not a gap. The program viewer shows its frame then, playing or not.
+fn pictured_at(seq: &klipp_timeline::Sequence, time: klipp_core::RationalTime) -> bool {
+    seq.tracks
+        .iter()
+        .filter(|t| !matches!(t.kind, klipp_timeline::TrackKind::Audio))
+        .any(|t| t.clip_at_timecode(time).is_some_and(|(_, c)| !c.kind.is_gap()))
+}
+
+#[cfg(test)]
+mod pictured_tests {
+    use super::pictured_at;
+    use klipp_core::RationalTime;
+    use klipp_timeline::{Clip, ClipKind, Sequence, TextBox, TitleData, Track, TrackKind};
+
+    /// #2664: a project opened onto a title, a generator or a media shot
+    /// has a picture to show at 0:00, though nothing has played; sound
+    /// alone, or nothing, has none.
+    #[test]
+    fn an_opened_project_has_a_picture_at_its_start() {
+        let tc = |s: f64| RationalTime::from_secs_f64(s, 24);
+        let title = Clip { kind: ClipKind::Title(TitleData::single_text(TextBox { text: "Hi".into(), ..Default::default() })), ..Clip::gap(tc(0.0), tc(2.0)) };
+        let generator = Clip { kind: ClipKind::Generator(klipp_core::GeneratorData::SolidColor { color: [200, 40, 40, 255] }), ..Clip::gap(tc(0.0), tc(2.0)) };
+        let media = Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0));
+        for (kind, clip) in [(TrackKind::Text, title), (TrackKind::Video, generator), (TrackKind::Video, media.clone())] {
+            let mut seq = Sequence::new_default();
+            let mut t = Track::new("T", kind);
+            t.clips = vec![clip];
+            seq.tracks = vec![t];
+            assert!(pictured_at(&seq, tc(0.0)), "{kind:?}");
+            assert!(!pictured_at(&seq, tc(3.0)), "{kind:?}: past its end");
+        }
+        let mut seq = Sequence::new_default();
+        let mut a = Track::new("A1", TrackKind::Audio);
+        a.clips = vec![media];
+        seq.tracks = vec![a];
+        assert!(!pictured_at(&seq, tc(0.0)), "sound alone");
     }
 }
 

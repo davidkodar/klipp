@@ -217,3 +217,7 @@ path = "tests/a_strobe_keeps_its_vram.rs"
 [[test]]
 name = "a_cut_in_one_file_decodes_on"
 path = "tests/a_cut_in_one_file_decodes_on.rs"
+
+[[test]]
+name = "opening_a_project_shows_its_frame"
+path = "tests/opening_a_project_shows_its_frame.rs"
