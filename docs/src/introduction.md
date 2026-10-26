@@ -6,7 +6,7 @@ Klipp is an in-progress non-linear video editor for Linux, written in Rust with 
 
 🚧 **Early development.**
 
-Many subsystems are still changing. There is no stability commitment, no release schedule, and no support. Release candidates are published as an unsigned Arch package; otherwise Klipp is built from source. You should expect to hit rough edges, breakage, and incomplete features.
+Many subsystems are still changing. There is no stability commitment, no release schedule, and no support. Releases are published as a signed Arch package; otherwise Klipp is built from source. You should expect to hit rough edges, breakage, and incomplete features.
 
 ## What's Wired Up
 

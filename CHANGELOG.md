@@ -5,6 +5,49 @@ Each release lists what changed for people using Klipp. Versions follow
 
 ## Unreleased
 
+## 0.1.0 — 2026-10-26
+
+The first release.
+
+### Added
+
+- Releases are signed. Install Update checks that the release's checksums
+  carry Klipp's release signature before it downloads the package, and
+  installs nothing otherwise; the package now depends on `minisign`.
+- Check an export, or a finished file, against a delivery spec.
+- Set up AI assistants from one window, for more of them.
+
+### Changed
+
+- The timeline clip's right-click menu is much shorter: tasks are grouped
+  into submenus.
+- A right-click on the viewer's picture opens the viewer's menu.
+
+### Fixed
+
+- Muting a track silences it while the timeline plays, and solo plays only
+  the soloed tracks; a muted track's button shows it clearly.
+- Export renders only the In/Out range when In and Out are set.
+- Undo after an Insert that split a clip leaves no extra piece behind.
+- A clip dropped below the last track lands on the track made for it.
+- A double-click on a media pool item opens it in the source viewer and no
+  longer adds it to the timeline.
+- Playback no longer stalls at a cut into a title whose transition has a
+  matte.
+- A project opened with a title, still, generator or compound clip at the
+  playhead shows its picture at once.
+- Timecodes show frames, not internal ticks, at 23.976, 29.97 and 59.94 fps.
+- Overlapping title clips keep their labels apart on the timeline.
+- The RGB Curves graph fits inside the inspector.
+- The Audio Mixer's strips fit the panel, so every track's mute and solo can
+  be reached, and dragging the mixer's top edge sets its height.
+- The Audio Mixer shows only tracks that can be heard: no strips for text
+  and subtitle tracks, or for a video track whose sound plays from an audio
+  track.
+- Mixer strips no longer overlap, so each one's level meters and automation
+  mode show whole.
+- Text and subtitle track headers no longer show mute and solo.
+
 ## 0.1.0-rc.3 — 2026-10-25
 
 ### Added
