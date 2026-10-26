@@ -51,5 +51,8 @@ klipp-ml = { workspace = true }
 # it a Kokoro voice is refused and the Piper voices work as before.
 klipp-ml-ort = { workspace = true, optional = true }
 
+[dev-dependencies]
+klipp-testing = { workspace = true }
+
 [lints]
 workspace = true

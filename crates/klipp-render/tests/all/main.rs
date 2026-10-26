@@ -62,6 +62,8 @@ mod normalize_effect_export;
 mod effect_tails_export;
 #[path = "../odd_size_export.rs"]
 mod odd_size_export;
+#[path = "../sweep_export.rs"]
+mod sweep_export;
 #[path = "../pixel_check_fractional.rs"]
 mod pixel_check_fractional;
 #[path = "../precomposition_sound.rs"]
