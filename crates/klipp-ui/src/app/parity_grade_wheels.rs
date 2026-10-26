@@ -618,7 +618,7 @@ fn a_zones_preset_picked_from_start_from_sets_every_zone_in_one_step() {
     let item = drawn.iter().find(|(t, _)| t == "Lift shadows").map(|(_, p)| *p).expect("the preset listed");
     g.click_at(item);
     assert!(g.unapplied.is_empty(), "{:?}", g.unapplied);
-    assert_eq!(zones(&g), klipp_core::HdrZonesSettings::preset("Lift shadows").unwrap());
+    assert_eq!(zones(&g), klipp_core::HdrZonesSettings::preset("Lift shadows", false).unwrap());
     assert_eq!(g.state.active_history().undo_count(), 1, "one step");
     g.step(false).unwrap();
     assert_eq!(g.picture(), before, "undone whole");

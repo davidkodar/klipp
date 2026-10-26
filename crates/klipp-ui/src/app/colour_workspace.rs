@@ -404,6 +404,7 @@ impl KlippApp {
                 let seq_idx = self.state.active_sequence_idx;
                 let mask_tolerance = crate::inspector::keyframe_selection::frame_tolerance(&self.state.sequences[seq_idx]);
                 self.node_inspector_panel.printer_point = self.prefs.color.printer_point;
+                self.node_inspector_panel.scene_referred = self.state.sequences[seq_idx].tracks.iter().find_map(|t| t.find_clip(clip_id)).is_some_and(|c| self.state.media_pool.scene_referred(c.media_id()));
                 self.node_inspector_panel.input_colour_space =
                     crate::inspector::color_and_luts::clip_input_colour_space(&self.state, clip_id);
                 let stand_in = GradeStandIn::of(&self.state.sequences[seq_idx], clip_id);
