@@ -76,6 +76,12 @@ pub fn compose(m: &Map, n: &Map) -> Map {
     map_of(&homography(m).multiply(&homography(n)))
 }
 
+/// The point `p` taken through `m`.
+pub fn mapped_point(m: &Map, p: [f32; 2]) -> [f32; 2] {
+    let (x, y) = homography(m).transform(p[0] as f64, p[1] as f64);
+    [x as f32, y as f32]
+}
+
 /// `q` taken through `m`.
 pub fn mapped(m: &Map, q: &Quad) -> Quad {
     let h = homography(m);
@@ -121,6 +127,17 @@ pub struct Surface {
     /// that frame's key, not a blend towards the next (#712 review).
     #[serde(default)]
     pub media_fps: f64,
+    /// The area followed, on the reference frame, when it isn't the
+    /// corners (#2754): a larger part of the same plane with more on it,
+    /// the boat's side for its canopy, the whole wall for a sign on it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub track_area: Option<Quad>,
+    /// Parts of the area left out of the track, on the reference frame
+    /// (#2754): polygons that move with the surface, where something on
+    /// it is not of it (a screen playing in the wall, a window's
+    /// reflection).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude: Vec<Vec<[f32; 2]>>,
 }
 
 impl Surface {
@@ -192,6 +209,13 @@ impl Surface {
         let across = (len(c[0], c[1]) + len(c[3], c[2])) * 0.5;
         let down = (len(c[0], c[3]) + len(c[1], c[2])) * 0.5;
         (across > 0.0 && down > 0.0).then(|| across / down)
+    }
+
+    /// The plane's map from the reference frame to the frame shown at
+    /// `source_secs`, read from its corners there: what takes the track
+    /// area and the exclusions to that frame (#2754).
+    pub fn map_shown_at(&self, source_secs: f64) -> Option<Map> {
+        map_between(&self.corners, &self.corners_shown_at(source_secs))
     }
 
     /// The file time the track covers, first to last key.
@@ -296,9 +320,16 @@ fn fitted(size: [u32; 2], frame: [u32; 2]) -> [f64; 4] {
 /// fractions of the `frame` it plays in: fitted as the renderer fits the
 /// picture, then moved by the clip's placement.
 pub fn source_quad_in_frame(q: &Quad, source: [u32; 2], frame: [u32; 2], placement: Option<Placement>) -> Quad {
+    let p = source_points_in_frame(q, source, frame, placement);
+    [p[0], p[1], p[2], p[3]]
+}
+
+/// [`source_quad_in_frame`] for any number of points: an exclusion's
+/// outline (#2754).
+pub fn source_points_in_frame(q: &[[f32; 2]], source: [u32; 2], frame: [u32; 2], placement: Option<Placement>) -> Vec<[f32; 2]> {
     let [x0, y0, dw, dh] = fitted(source, frame);
     let (fw, fh) = (frame[0].max(1) as f64, frame[1].max(1) as f64);
-    q.map(|c| {
+    q.iter().map(|c| {
         let (mut x, mut y) = (x0 + c[0] as f64 * dw, y0 + c[1] as f64 * dh);
         if let Some((px, py, sx, sy, rot, ax, ay)) = placement {
             // As the transform maps forward: about the anchor, scaled,
@@ -310,16 +341,23 @@ pub fn source_quad_in_frame(q: &Quad, source: [u32; 2], frame: [u32; 2], placeme
             y = ay + py as f64 + dx * sin + dy * cos;
         }
         [(x / fw) as f32, (y / fh) as f32]
-    })
+    }).collect()
 }
 
 /// The inverse of [`source_quad_in_frame`]: a quad in fractions of the
 /// frame, as it is drawn on the viewer, as fractions of the clip's own
 /// picture, through which the tracker follows it.
 pub fn frame_quad_in_source(q: &Quad, source: [u32; 2], frame: [u32; 2], placement: Option<Placement>) -> Quad {
+    let p = frame_points_in_source(q, source, frame, placement);
+    [p[0], p[1], p[2], p[3]]
+}
+
+/// [`frame_quad_in_source`] for any number of points: an exclusion's
+/// outline (#2754).
+pub fn frame_points_in_source(q: &[[f32; 2]], source: [u32; 2], frame: [u32; 2], placement: Option<Placement>) -> Vec<[f32; 2]> {
     let [x0, y0, dw, dh] = fitted(source, frame);
     let (fw, fh) = (frame[0].max(1) as f64, frame[1].max(1) as f64);
-    q.map(|c| {
+    q.iter().map(|c| {
         let (mut x, mut y) = (c[0] as f64 * fw, c[1] as f64 * fh);
         if let Some((px, py, sx, sy, rot, ax, ay)) = placement {
             let (ax, ay) = (ax as f64 * fw, ay as f64 * fh);
@@ -331,7 +369,7 @@ pub fn frame_quad_in_source(q: &Quad, source: [u32; 2], frame: [u32; 2], placeme
             y = ay + ry / sy;
         }
         [((x - x0) / dw) as f32, ((y - y0) / dh) as f32]
-    })
+    }).collect()
 }
 
 /// Where on a surface's quad (in the frame) a picture goes: all of it for
@@ -425,7 +463,7 @@ mod tests {
     #[test]
     fn a_continued_track_from_other_corners_lands_where_it_was_found() {
         let reference = [[0.1, 0.1], [0.4, 0.1], [0.4, 0.3], [0.1, 0.3]];
-        let mut s = Surface { id: uuid::Uuid::nil(), name: "S".into(), corners: reference, reference_secs: 0.0, keys: vec![SurfaceKey::at_corners(0.0, &reference, &reference).unwrap()], source_size: [0, 0], media_fps: 25.0 };
+        let mut s = Surface { id: uuid::Uuid::nil(), name: "S".into(), corners: reference, reference_secs: 0.0, keys: vec![SurfaceKey::at_corners(0.0, &reference, &reference).unwrap()], source_size: [0, 0], media_fps: 25.0, track_area: None, exclude: Vec::new() };
         // The run's own corners, set on frame 10, and where it found them on frame 11.
         let theirs = [[0.5, 0.5], [0.8, 0.52], [0.79, 0.7], [0.51, 0.71]];
         let found = [[0.52, 0.5], [0.82, 0.53], [0.8, 0.71], [0.53, 0.72]];
@@ -442,7 +480,7 @@ mod tests {
         let s = Surface {
             id: uuid::Uuid::nil(), name: "S".into(), corners: q, reference_secs: 0.0,
             keys: vec![k(0, TrackState::Good), k(1, TrackState::Low), k(2, TrackState::Low), k(3, TrackState::Lost), k(4, TrackState::Lost), k(5, TrackState::Good), k(6, TrackState::Low)],
-            source_size: [0, 0], media_fps: 1.0,
+            source_size: [0, 0], media_fps: 1.0, track_area: None, exclude: Vec::new(),
         };
         assert_eq!(s.weak_spans(), vec![(1.0, 2.0, TrackState::Low), (3.0, 4.0, TrackState::Lost), (6.0, 6.0, TrackState::Low)]);
     }
@@ -457,6 +495,8 @@ mod tests {
             keys: vec![SurfaceKey::at_corners(1.0, &square(0.5), &square(0.2)).unwrap(), SurfaceKey::at_corners(2.0, &square(0.5), &square(0.4)).unwrap()],
             source_size: [0, 0],
             media_fps: 0.0,
+        track_area: None,
+        exclude: Vec::new(),
         };
         assert!(near(s.corners_at(0.0), square(0.2)));
         assert!(near(s.corners_at(3.0), square(0.4)));
@@ -471,7 +511,7 @@ mod tests {
     #[test]
     fn the_shown_frame_holds_its_key() {
         let keys = (0..4).map(|f| SurfaceKey::at_corners(f as f64 / 30.0, &square(0.0), &square(0.1 * f as f32)).unwrap()).collect();
-        let s = Surface { id: uuid::Uuid::nil(), name: "S".into(), corners: square(0.0), reference_secs: 0.0, keys, source_size: [0, 0], media_fps: 30.0 };
+        let s = Surface { id: uuid::Uuid::nil(), name: "S".into(), corners: square(0.0), reference_secs: 0.0, keys, source_size: [0, 0], media_fps: 30.0, track_area: None, exclude: Vec::new() };
         // 0.04 s is 1.2 frames in: frame 1 is shown.
         assert!(near(s.corners_shown_at(0.04), square(0.1)));
         // 0.05 s is 1.5 frames in: frame 2 starts within half a frame.
@@ -528,7 +568,7 @@ mod tests {
     #[test]
     fn a_continued_track_keeps_what_was_good() {
         let key = |f: i32, x: f32| SurfaceKey::at_corners(f as f64 / 25.0, &square(0.0), &square(x)).unwrap();
-        let mut s = Surface { id: uuid::Uuid::nil(), name: "S".into(), corners: square(0.0), reference_secs: 0.0, keys: (0..10).map(|f| key(f, 0.0)).collect(), source_size: [0, 0], media_fps: 25.0 };
+        let mut s = Surface { id: uuid::Uuid::nil(), name: "S".into(), corners: square(0.0), reference_secs: 0.0, keys: (0..10).map(|f| key(f, 0.0)).collect(), source_size: [0, 0], media_fps: 25.0, track_area: None, exclude: Vec::new() };
         s.merge_keys((8..20).map(|f| key(f, 0.5)).collect(), &square(0.0));
         assert_eq!(s.keys.len(), 20);
         assert!(near(s.keys[7].corners(&s.corners), square(0.0)), "before the new stretch, kept");
@@ -550,7 +590,7 @@ mod tests {
         assert_eq!(pin_target(&quad, Some(2.0), Some([500, 500]), PinFit::Stretch, 0.0), Some(quad));
         let inset = pin_target(&quad, Some(2.0), None, PinFit::Stretch, 0.05).unwrap();
         assert!((inset[0][0] - 0.14).abs() < 1e-5 && (inset[0][1] - 0.12).abs() < 1e-5, "{inset:?}");
-        let s = Surface { id: uuid::Uuid::nil(), name: "S".into(), corners: [[0.0, 0.0], [0.5, 0.0], [0.5, 0.5], [0.0, 0.5]], reference_secs: 0.0, keys: Vec::new(), source_size: [1920, 1080], media_fps: 0.0 };
+        let s = Surface { id: uuid::Uuid::nil(), name: "S".into(), corners: [[0.0, 0.0], [0.5, 0.0], [0.5, 0.5], [0.0, 0.5]], reference_secs: 0.0, keys: Vec::new(), source_size: [1920, 1080], media_fps: 0.0, track_area: None, exclude: Vec::new() };
         assert!((s.aspect().unwrap() - 16.0 / 9.0).abs() < 1e-4);
     }
 

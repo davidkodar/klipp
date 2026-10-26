@@ -42,6 +42,8 @@ fn scene() -> (Sequence, Clip) {
         keys: vec![SurfaceKey::at_corners(10.0, &quad(0.1), &quad(0.1)).unwrap(), SurfaceKey::at_corners(14.0, &quad(0.1), &quad(0.5)).unwrap()],
         source_size: frame,
         media_fps: 0.0,
+        track_area: None,
+        exclude: Vec::new(),
     });
     let mut pin = Clip::media(MediaId::new(), tc(0.0), tc(4.0), tc(0.0), tc(4.0));
     let [tl, tr, br, bl] = quad(0.1);

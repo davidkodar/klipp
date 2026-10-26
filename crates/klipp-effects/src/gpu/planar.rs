@@ -134,8 +134,9 @@ impl PlanarGpu {
 
     /// Follow the surface `quad` of `reference` through `frames`, as
     /// [`crate::planar::track`] does, on the device.
-    pub fn track(&mut self, reference: &GrayFrame, quad: [(f64, f64); 4], frames: &[usize], next: &mut dyn FnMut(usize) -> Option<GrayFrame>, opts: &Options, progress: &dyn Fn(f32) -> bool) -> Vec<Tracked> {
-        planar::track_on(self, reference, quad, frames, next, opts, progress)
+    #[allow(clippy::too_many_arguments)]
+    pub fn track(&mut self, reference: &GrayFrame, quad: [(f64, f64); 4], exclude: &[Vec<(f64, f64)>], frames: &[usize], next: &mut dyn FnMut(usize) -> Option<GrayFrame>, opts: &Options, progress: &dyn Fn(f32) -> bool) -> Vec<Tracked> {
+        planar::track_on(self, reference, quad, exclude, frames, next, opts, progress)
     }
 
     fn storage(&self, label: &str, bytes: u64) -> wgpu::Buffer {
@@ -235,9 +236,9 @@ impl Backend for PlanarGpu {
         GpuPyramid { levels: out }
     }
 
-    fn template(&mut self, pyr: &GpuPyramid, quad: &[(f64, f64); 4], opts: &Options) -> GpuTemplate {
+    fn template(&mut self, pyr: &GpuPyramid, quad: &[(f64, f64); 4], exclude: &[Vec<(f64, f64)>], opts: &Options) -> GpuTemplate {
         let sizes: Vec<(usize, usize)> = pyr.levels.iter().map(|l| (l.w as usize, l.h as usize)).collect();
-        let (frame, cells) = planar::cells(&sizes, quad, opts);
+        let (frame, cells) = planar::cells(&sizes, quad, exclude, opts);
         let mut enc = self.encoder();
         let levels = cells
             .iter()
@@ -453,8 +454,8 @@ mod tests {
         }
         let quad = [(40.0, 30.0), (120.0, 30.0), (120.0, 70.0), (40.0, 70.0)];
         let opts = Options::default();
-        let tc = planar::Cpu.template(&cpu, &quad, &opts);
-        let tg = g.template(&gpu, &quad, &opts);
+        let tc = planar::Cpu.template(&cpu, &quad, &[], &opts);
+        let tg = g.template(&gpu, &quad, &[], &opts);
         let moved = frame(w, h, 2.0);
         let (pc, pg) = (planar::Cpu.pyramid(&moved, 3), g.pyramid(&moved, 3));
         let start = planar::Cpu.region(&tc).px();

@@ -50,8 +50,8 @@ fn gpu() -> Option<PlanarGpu> {
 /// Both trackers over the same frames.
 fn both(gpu: &mut PlanarGpu, reference: &GrayFrame, quad: [(f64, f64); 4], n: usize, frame: &dyn Fn(usize) -> GrayFrame) -> (Vec<Tracked>, Vec<Tracked>) {
     let frames: Vec<usize> = (1..=n).collect();
-    let cpu = track(reference, quad, &frames, &mut |k| Some(frame(k)), &Options::default(), &|_| true);
-    let on_gpu = gpu.track(reference, quad, &frames, &mut |k| Some(frame(k)), &Options::default(), &|_| true);
+    let cpu = track(reference, quad, &[], &frames, &mut |k| Some(frame(k)), &Options::default(), &|_| true);
+    let on_gpu = gpu.track(reference, quad, &[], &frames, &mut |k| Some(frame(k)), &Options::default(), &|_| true);
     (cpu, on_gpu)
 }
 

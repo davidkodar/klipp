@@ -392,7 +392,7 @@ impl KlippApp {
                 self.state.tracking_mode = !self.state.tracking_mode;
                 true
             }
-            AppCommand::TrackSurface { clip_id, corners, at_secs, name, surface, direction, interactive } => {
+            AppCommand::TrackSurface { clip_id, corners, at_secs, name, surface, direction, interactive, track, exclude } => {
                 let clip_id = *clip_id;
                 if !klipp_timeline::surface::quad_is_usable(corners) {
                     self.state.toast.show("The surface's corners need to enclose an area");
@@ -439,6 +439,21 @@ impl KlippApp {
                     self.state.toast.show("The surface's corners need to be on the clip's picture");
                     return true;
                 }
+                // The area followed and the parts left out, into the clip's
+                // own picture; or the surface's own, carried to this frame.
+                let carried = existing.and_then(|s| s.map_shown_at(clip.source_secs_at(clip_time, fps)).map(|m| (s, m)));
+                let track_on_source = match track {
+                    Some(t) => Some(klipp_timeline::surface::frame_quad_in_source(t, shown, frame, Some(placed))),
+                    None => carried.and_then(|(s, m)| s.track_area.map(|a| klipp_timeline::surface::mapped(&m, &a))),
+                };
+                if track_on_source.is_some_and(|t| !klipp_timeline::surface::quad_is_usable(&t)) {
+                    self.state.toast.show("The area to follow needs to enclose an area on the clip's picture");
+                    return true;
+                }
+                let exclude_on_source: Vec<Vec<[f32; 2]>> = match exclude {
+                    Some(given) => given.iter().map(|e| klipp_timeline::surface::frame_points_in_source(e, shown, frame, Some(placed))).collect(),
+                    None => carried.map(|(s, m)| s.exclude.iter().map(|e| e.iter().map(|p| klipp_timeline::surface::mapped_point(&m, *p)).collect()).collect()).unwrap_or_default(),
+                };
                 // The decoder bounds the picture's width as shown, which for
                 // a turned phone shot is the file's height.
                 let shown_w = if turned { h } else { w };
@@ -451,7 +466,7 @@ impl KlippApp {
                     0 => format!("Tracking the surface \u{201c}{name}\u{201d}\u{2026}"),
                     _ => format!("Continuing the track of \u{201c}{name}\u{201d}\u{2026}"),
                 });
-                self.start_surface_track(SurfaceTrackJob { clip_id, surface: id, name, path, media_fps, frames: (first, last), reference, corners: on_source, pixels, direction: *direction, interactive: *interactive, cancel });
+                self.start_surface_track(SurfaceTrackJob { clip_id, surface: id, name, path, media_fps, frames: (first, last), reference, corners: on_source, track: track_on_source, exclude: exclude_on_source, pixels, direction: *direction, interactive: *interactive, cancel });
                 true
             }
             AppCommand::OpenSurfaceTool { clip_id, surface } => {

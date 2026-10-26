@@ -161,6 +161,19 @@ pub(crate) fn title_view_of(state: &AppState, clip: &klipp_timeline::Clip, image
         .map(|placement| TitleView { image_rect, placement, frame: (res.width as f32, res.height as f32) })
 }
 
+/// Whether `p` is inside the outline `poly` on screen (even-odd, so any
+/// simple polygon, convex or not).
+fn in_screen_polygon(poly: &[egui::Pos2], p: egui::Pos2) -> bool {
+    let mut inside = false;
+    for i in 0..poly.len() {
+        let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
+        if (a.y > p.y) != (b.y > p.y) && p.x < a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x) {
+            inside = !inside;
+        }
+    }
+    inside
+}
+
 /// Inverse of [`viewer_norm_to_screen`]. Returns the clip-space
 /// `(nx, ny)` for a screen-space pointer position. Result is **not**
 /// clamped — callers that want `[0, 1]` (e.g. focal-point storage)
@@ -5215,23 +5228,26 @@ impl ViewerPanel {
     /// a click on a corner changes nothing and records nothing (#408).
     /// The surface tool (#684 phase 2): four corners to drag onto a flat
     /// surface in the picture (or the whole quad, grabbed inside it), and
-    /// Track, or Continue where a track was lost. Esc cancels it, in the
-    /// shortcuts, before the clip would be deselected.
+    /// Track, or Continue where a track was lost. Area to follow drags a
+    /// larger quad of the same plane, followed instead (#2754), and Leave
+    /// out draws rectangles over parts that are not of it. Esc cancels it,
+    /// in the shortcuts, before the clip would be deselected.
     fn draw_surface_tool(&self, ui: &mut egui::Ui, state: &mut AppState, image_rect: egui::Rect, cmds: &mut Vec<AppCommand>) {
+        use crate::state::SurfaceEdit;
         let Some(mut tool) = state.surface_tool.clone() else { return };
         let painter = ui.painter().with_clip_rect(ui.clip_rect());
-        let screen: [egui::Pos2; 4] = std::array::from_fn(|i| viewer_norm_to_screen(image_rect, tool.corners[i][0], tool.corners[i][1]));
+        let to_screen = |q: &[[f32; 2]]| -> Vec<egui::Pos2> { q.iter().map(|c| viewer_norm_to_screen(image_rect, c[0], c[1])).collect() };
+        // The quad a drag changes: the corners, or the area followed (the
+        // corners until it is given one of its own).
+        let held_quad = |t: &crate::state::SurfaceTool| if t.edit == SurfaceEdit::Area { t.track.unwrap_or(t.corners) } else { t.corners };
+        let screen = to_screen(&held_quad(&tool));
         let (pointer, pressed, down, released) = ui.input(|i| (i.pointer.interact_pos(), i.pointer.primary_pressed(), i.pointer.primary_down(), i.pointer.primary_released()));
-        let hit = |p: egui::Pos2| screen.iter().position(|s| (p - *s).length() <= 12.0);
-        let inside = |p: egui::Pos2| {
-            // Inside the quad: on the same side of all four edges.
-            let side = |a: egui::Pos2, b: egui::Pos2| (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
-            let sides: Vec<f32> = (0..4).map(|i| side(screen[i], screen[(i + 1) % 4])).collect();
-            sides.iter().all(|v| *v >= 0.0) || sides.iter().all(|v| *v <= 0.0)
-        };
+        let edit = tool.edit;
+        let hit = |p: egui::Pos2| (edit != SurfaceEdit::LeaveOut).then(|| screen.iter().position(|s| (p - *s).length() <= 12.0)).flatten();
+        let inside = |p: egui::Pos2| edit != SurfaceEdit::LeaveOut && in_screen_polygon(&screen, p);
 
-        // The bar: what to do, and the two ways out. Laid out first so a
-        // press on it is not taken as grabbing the quad.
+        // The bar: what to do, what a drag changes, and the two ways out.
+        // Laid out first so a press on it is not taken as grabbing the quad.
         let mut bar_rect = egui::Rect::NOTHING;
         let mut run = false;
         let mut cancel = false;
@@ -5242,12 +5258,27 @@ impl ViewerPanel {
                 let frame = egui::Frame::popup(ui.style());
                 let r = frame.show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        let what = match (tool.direction, tool.surface.is_some()) {
-                            (0, false) => "Click the surface to find its corners, or drag them onto it",
-                            (0, true) => "Put the corners right, then track again",
+                        let what = match (tool.edit, tool.direction, tool.surface.is_some()) {
+                            (SurfaceEdit::Area, ..) => "Drag the area to follow over more of the same flat plane",
+                            (SurfaceEdit::LeaveOut, ..) => "Draw over parts that move on their own; click one to put it back",
+                            (_, 0, false) => "Click the surface to find its corners, or drag them onto it",
+                            (_, 0, true) => "Put the corners right, then track again",
                             _ => "Put the corners on the surface here, then continue",
                         };
                         ui.label(what);
+                        ui.separator();
+                        ui.selectable_value(&mut tool.edit, SurfaceEdit::Corners, "Corners").on_hover_text("The four corners things are pinned to");
+                        ui.selectable_value(&mut tool.edit, SurfaceEdit::Area, "Area to follow")
+                            .on_hover_text("A larger part of the same plane with more on it, followed instead of the corners: the wall round a sign");
+                        ui.selectable_value(&mut tool.edit, SurfaceEdit::LeaveOut, "Leave out")
+                            .on_hover_text("Parts of the area that are not of the plane: a screen playing in a wall, a reflection");
+                        if tool.edit == SurfaceEdit::Area && tool.track.is_some() && ui.button("Same as corners").clicked() {
+                            tool.track = None;
+                        }
+                        if tool.edit == SurfaceEdit::LeaveOut && !tool.exclude.is_empty() && ui.button("Clear").clicked() {
+                            tool.exclude.clear();
+                        }
+                        ui.separator();
                         let go = if tool.direction == 0 { "Track" } else { "Continue" };
                         if ui.button(go).on_hover_text("Follow it through the clip from this frame").clicked() {
                             run = true;
@@ -5272,44 +5303,83 @@ impl ViewerPanel {
                 surface: tool.surface,
                 direction: tool.direction,
                 interactive: true,
+                // A surface tracked again keeps the area it is shown with
+                // here; set back to its corners, it follows them.
+                track: tool.track.or(tool.surface.map(|_| tool.corners)),
+                exclude: Some(tool.exclude.clone()),
             });
             state.surface_tool = None;
             return;
         }
 
-        // Grab a corner, or the whole quad from inside it; drag; let go.
+        // Grab a corner, or the whole quad from inside it; drag; let go. In
+        // Leave out, a drag draws a rectangle.
         if let Some(p) = pointer.filter(|p| !bar_rect.contains(*p)) {
             if pressed && image_rect.expand(16.0).contains(p) {
-                if let Some(c) = hit(p) {
-                    tool.drag = Some((c, p, tool.corners));
+                if tool.edit == SurfaceEdit::LeaveOut {
+                    if image_rect.contains(p) {
+                        tool.drag = Some((6, p, tool.corners));
+                    }
+                } else if let Some(c) = hit(p) {
+                    tool.drag = Some((c, p, held_quad(&tool)));
                 } else if inside(p) {
-                    tool.drag = Some((4, p, tool.corners));
+                    tool.drag = Some((4, p, held_quad(&tool)));
                 } else if image_rect.contains(p) {
                     // Off the quad: a click, to find the surface there.
                     tool.drag = Some((5, p, tool.corners));
                 }
             }
-            // A press let go where it was, not on a corner: find the
-            // surface's edges round it.
             if let Some((which, from, _)) = tool.drag {
-                if released && which >= 4 && (p - from).length() < 3.0 {
+                let click = released && (p - from).length() < 3.0;
+                // A press let go where it was, not on a corner: find the
+                // surface's edges round it.
+                if click && (which == 4 || which == 5) && tool.edit == SurfaceEdit::Corners {
                     let (nx, ny) = viewer_screen_to_norm(image_rect, from);
                     cmds.push(AppCommand::SnapSurface { clip_id: tool.clip_id, click: [nx, ny], at_secs: None, then_track: false, name: tool.name.clone() });
+                }
+                // A rectangle drawn is left out; a click on one puts it back.
+                if released && which == 6 {
+                    if click {
+                        if let Some(i) = tool.exclude.iter().rposition(|e| in_screen_polygon(&to_screen(e), p)) {
+                            tool.exclude.remove(i);
+                        }
+                    } else {
+                        let (a, b) = (viewer_screen_to_norm(image_rect, from), viewer_screen_to_norm(image_rect, p));
+                        let (x0, x1, y0, y1) = (a.0.min(b.0), a.0.max(b.0), a.1.min(b.1), a.1.max(b.1));
+                        tool.exclude.push(vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]]);
+                    }
                 }
             }
             if let Some((which, from, start)) = tool.drag.filter(|d| d.0 < 5) {
                 if down {
                     let (nx, ny) = viewer_screen_to_norm(image_rect, p);
                     let (fx, fy) = viewer_screen_to_norm(image_rect, from);
+                    let mut q = start;
                     if which < 4 {
-                        tool.corners[which] = [nx.clamp(-0.5, 1.5), ny.clamp(-0.5, 1.5)];
+                        q[which] = [nx.clamp(-0.5, 1.5), ny.clamp(-0.5, 1.5)];
                     } else {
-                        tool.corners = start.map(|c| [c[0] + nx - fx, c[1] + ny - fy]);
+                        q = start.map(|c| [c[0] + nx - fx, c[1] + ny - fy]);
+                    }
+                    match tool.edit {
+                        SurfaceEdit::Area => tool.track = Some(q),
+                        _ => tool.corners = q,
                     }
                 }
             }
             let hover = hit(p).is_some() || tool.drag.is_some_and(|d| d.0 < 4);
-            ui.ctx().set_cursor_icon(if tool.drag.is_some() { egui::CursorIcon::Grabbing } else if hover || inside(p) { egui::CursorIcon::Grab } else { egui::CursorIcon::Crosshair });
+            let icon = if tool.drag.is_some_and(|d| d.0 < 5) {
+                egui::CursorIcon::Grabbing
+            } else if hover || inside(p) {
+                egui::CursorIcon::Grab
+            } else {
+                egui::CursorIcon::Crosshair
+            };
+            ui.ctx().set_cursor_icon(icon);
+            // The rectangle being drawn.
+            if let Some((6, from, _)) = tool.drag.filter(|_| down) {
+                let r = egui::Rect::from_two_pos(from, p);
+                painter.rect(r, 0.0, egui::Color32::from_rgba_unmultiplied(255, 90, 90, 40), egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(255, 110, 110)));
+            }
         }
         if !down {
             tool.drag = None;
@@ -5318,14 +5388,39 @@ impl ViewerPanel {
         // also scrub or pan.
         let _ = ui.allocate_rect(image_rect, egui::Sense::click_and_drag());
 
+        // The parts left out, the area followed, then the corners on top;
+        // what a drag changes is drawn strong, the rest faint.
+        let leave_out = egui::Color32::from_rgb(255, 110, 110);
+        for e in &tool.exclude {
+            let pts = to_screen(e);
+            let strong = tool.edit == SurfaceEdit::LeaveOut;
+            painter.add(egui::Shape::convex_polygon(pts.clone(), egui::Color32::from_rgba_unmultiplied(255, 90, 90, if strong { 48 } else { 24 }), egui::Stroke::NONE));
+            painter.add(egui::Shape::closed_line(pts, egui::Stroke::new(if strong { 1.5_f32 } else { 1.0 }, leave_out)));
+        }
+        let area = egui::Color32::from_rgb(255, 190, 70);
+        if let Some(t) = tool.track {
+            let pts = to_screen(&t);
+            painter.add(egui::Shape::dashed_line(&[pts.clone(), vec![pts[0]]].concat(), egui::Stroke::new(1.5_f32, area), 6.0, 4.0));
+            if tool.edit == SurfaceEdit::Area {
+                for (i, p) in pts.iter().enumerate() {
+                    let held = tool.drag.is_some_and(|d| d.0 == i);
+                    painter.circle_filled(*p, if held { 7.0 } else { 5.5 }, egui::Color32::WHITE);
+                    painter.circle_stroke(*p, if held { 7.0 } else { 5.5 }, egui::Stroke::new(1.5_f32, area));
+                }
+            }
+        }
         let accent = egui::Color32::from_rgb(90, 200, 255);
-        let screen: [egui::Pos2; 4] = std::array::from_fn(|i| viewer_norm_to_screen(image_rect, tool.corners[i][0], tool.corners[i][1]));
-        painter.add(egui::Shape::convex_polygon(screen.to_vec(), egui::Color32::from_rgba_unmultiplied(90, 200, 255, 28), egui::Stroke::NONE));
-        painter.add(egui::Shape::closed_line(screen.to_vec(), egui::Stroke::new(1.5_f32, accent)));
-        for (i, p) in screen.iter().enumerate() {
-            let held = tool.drag.is_some_and(|d| d.0 == i);
-            painter.circle_filled(*p, if held { 7.0 } else { 5.5 }, egui::Color32::WHITE);
-            painter.circle_stroke(*p, if held { 7.0 } else { 5.5 }, egui::Stroke::new(1.5_f32, accent));
+        let corners = to_screen(&tool.corners);
+        let pinning = tool.edit == SurfaceEdit::Corners || (tool.edit == SurfaceEdit::Area && tool.track.is_none());
+        painter.add(egui::Shape::convex_polygon(corners.clone(), egui::Color32::from_rgba_unmultiplied(90, 200, 255, 28), egui::Stroke::NONE));
+        painter.add(egui::Shape::closed_line(corners.clone(), egui::Stroke::new(1.5_f32, if tool.edit == SurfaceEdit::Area && tool.track.is_none() { area } else { accent })));
+        if pinning {
+            for (i, p) in corners.iter().enumerate() {
+                let held = tool.drag.is_some_and(|d| d.0 == i);
+                let ring = if tool.edit == SurfaceEdit::Area { area } else { accent };
+                painter.circle_filled(*p, if held { 7.0 } else { 5.5 }, egui::Color32::WHITE);
+                painter.circle_stroke(*p, if held { 7.0 } else { 5.5 }, egui::Stroke::new(1.5_f32, ring));
+            }
         }
         state.surface_tool = Some(tool);
     }

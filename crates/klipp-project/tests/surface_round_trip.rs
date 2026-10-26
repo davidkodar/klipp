@@ -28,6 +28,9 @@ fn a_surface_and_its_pin_read_back() {
         keys: vec![SurfaceKey::at_corners(2.5, &quad, &quad).unwrap(), SurfaceKey { confidence: Some(0.4), state: klipp_timeline::TrackState::Low, ..SurfaceKey::at_corners(2.54, &quad, &[[0.31, 0.3], [0.61, 0.32], [0.63, 0.6], [0.29, 0.58]]).unwrap() }],
         source_size: [1080, 1920],
         media_fps: 25.0,
+        // A larger area followed, with a part of it left out (#2754).
+        track_area: Some([[0.2, 0.2], [0.7, 0.22], [0.72, 0.7], [0.18, 0.68]]),
+        exclude: vec![vec![[0.4, 0.4], [0.5, 0.4], [0.45, 0.5]]],
     };
     let mut host = Clip::sequence(scene.id, tc(0.0), tc(4.0));
     host.surfaces.push(surface.clone());

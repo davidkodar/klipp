@@ -33,6 +33,27 @@ pub(crate) fn surface_on_frame(seq: &klipp_timeline::Sequence, clip: &klipp_time
     klipp_timeline::surface::source_quad_in_frame(&q, surface.source_size, [seq.resolution.width, seq.resolution.height], Some(placed))
 }
 
+/// A surface's stored track area and exclusions where the frame shows
+/// them at `at` (#2754), carried there by the plane's motion from the
+/// reference frame, as [`surface_on_frame`] places its corners.
+pub(crate) fn surface_area_on_frame(seq: &klipp_timeline::Sequence, clip: &klipp_timeline::Clip, surface: &klipp_timeline::Surface, at: f64, source_secs: Option<f64>) -> (Option<[[f32; 2]; 4]>, Vec<Vec<[f32; 2]>>) {
+    let fps = seq.fps.as_f64();
+    let elapsed = (at - clip.timeline_in.to_secs_f64()).max(0.0);
+    let Some(m) = surface.map_shown_at(source_secs.unwrap_or_else(|| clip.source_secs_at(elapsed, fps))) else { return (None, Vec::new()) };
+    let when = clip.timeline_in + klipp_core::Timecode::from_secs_f64(elapsed, clip.timeline_in.rate.max(1));
+    let placed = klipp_compose::eval::evaluate_clip_own_transform(clip, elapsed, &klipp_compose::eval::eval_context(clip, when, fps));
+    let frame = [seq.resolution.width, seq.resolution.height];
+    let on_frame = |points: &[[f32; 2]]| {
+        let moved: Vec<[f32; 2]> = points.iter().map(|p| klipp_timeline::surface::mapped_point(&m, *p)).collect();
+        klipp_timeline::surface::source_points_in_frame(&moved, surface.source_size, frame, Some(placed))
+    };
+    let track = surface.track_area.map(|a| {
+        let p = on_frame(&a);
+        [p[0], p[1], p[2], p[3]]
+    });
+    (track, surface.exclude.iter().map(|e| on_frame(e)).collect())
+}
+
 /// A surface to follow through a clip's file (#684): the file, its
 /// rate, the frames the clip uses, the frame the corners were set on, and
 /// the corners there in frame fractions.
@@ -45,6 +66,10 @@ pub(super) struct SurfaceTrackJob {
     pub(super) frames: (usize, usize),
     pub(super) reference: usize,
     pub(super) corners: [[f32; 2]; 4],
+    /// The area followed when it isn't the corners, and the parts of it
+    /// left out, as the corners are (#2754).
+    pub(super) track: Option<[[f32; 2]; 4]>,
+    pub(super) exclude: Vec<Vec<[f32; 2]>>,
     /// Pixels in one frame as it is read for tracking.
     pub(super) pixels: usize,
     /// 1 or -1: only later or only earlier frames, merged; 0 both ways.
@@ -269,5 +294,46 @@ mod window_track_tests {
         assert!((q[0].0 - 0.4).abs() < 1e-6 && (q[0].1 - (0.5 - 0.1 / aspect)).abs() < 1e-6 && (q[2].0 - 0.6).abs() < 1e-6);
         let q = window_quad(&klipp_core::MaskShape::Rectangle { center_x: 0.5, center_y: 0.5, width: 0.2, height: 0.1, rotation: 0.0 }, aspect);
         assert!((q[1].0 - 0.6).abs() < 1e-6 && (q[2].1 - (0.5 + 0.05 / aspect)).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod surface_area_tests {
+    use super::{surface_area_on_frame, surface_on_frame};
+
+    /// #2754: a surface's track area and the parts left out open in the
+    /// surface tool where the frame shows them, carried by the plane's
+    /// motion as its corners are: a plane moved a tenth of the frame right
+    /// by the key at one second moves the area and each outline with it.
+    #[test]
+    fn the_area_followed_and_the_parts_left_out_move_with_the_plane() {
+        let seq = klipp_timeline::Sequence::new_default();
+        let (w, h) = (seq.resolution.width, seq.resolution.height);
+        let rate = seq.fps.as_f64().round() as u32;
+        let tc = |s: f64| klipp_core::Timecode::from_secs_f64(s, rate);
+        let clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0));
+        let corners = [[0.4, 0.4], [0.6, 0.4], [0.6, 0.6], [0.4, 0.6]];
+        let shifted = corners.map(|c| [c[0] + 0.1, c[1]]);
+        let surface = klipp_timeline::Surface {
+            id: uuid::Uuid::new_v4(),
+            name: "Sign".into(),
+            corners,
+            reference_secs: 0.0,
+            keys: vec![klipp_timeline::SurfaceKey { source_secs: 1.0, map: klipp_timeline::surface::map_between(&corners, &shifted).unwrap(), confidence: Some(1.0), state: Default::default() }],
+            source_size: [w, h],
+            media_fps: 30.0,
+            track_area: Some([[0.2, 0.2], [0.8, 0.2], [0.8, 0.8], [0.2, 0.8]]),
+            exclude: vec![vec![[0.45, 0.45], [0.55, 0.45], [0.5, 0.55]]],
+        };
+        let near = |a: &[[f32; 2]], b: &[[f32; 2]]| a.len() == b.len() && a.iter().zip(b).all(|(p, q)| (p[0] - q[0]).abs() < 1e-3 && (p[1] - q[1]).abs() < 1e-3);
+        let on = surface_on_frame(&seq, &clip, &surface, 1.0, None);
+        assert!(near(&on, &shifted), "the corners moved: {on:?}");
+        let (area, parts) = surface_area_on_frame(&seq, &clip, &surface, 1.0, None);
+        assert!(near(&area.unwrap(), &[[0.3, 0.2], [0.9, 0.2], [0.9, 0.8], [0.3, 0.8]]), "{area:?}");
+        assert_eq!(parts.len(), 1);
+        assert!(near(&parts[0], &[[0.55, 0.45], [0.65, 0.45], [0.6, 0.55]]), "{parts:?}");
+        // A surface without an area of its own opens without one.
+        let plain = klipp_timeline::Surface { track_area: None, exclude: Vec::new(), ..surface };
+        assert_eq!(surface_area_on_frame(&seq, &clip, &plain, 1.0, None), (None, Vec::new()));
     }
 }
