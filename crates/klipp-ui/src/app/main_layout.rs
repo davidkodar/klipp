@@ -125,6 +125,7 @@ impl KlippApp {
                         source_viewer_rect,
                         viewer_rect,
                         h_resizer_rect,
+                        audio_mixer_resizer_rect,
                         curve_editor_rect,
                         audio_mixer_rect,
                         timeline_rect,
@@ -336,6 +337,8 @@ impl KlippApp {
                         left_resizer_rect,
                         right_resizer_rect,
                         h_resizer_rect,
+                        audio_mixer_resizer_rect,
+                        audio_mixer_rect,
                         timeline_min_h,
                         max_timeline_h,
                     );
@@ -353,6 +356,8 @@ impl KlippApp {
         left_resizer_rect: egui::Rect,
         right_resizer_rect: egui::Rect,
         h_resizer_rect: egui::Rect,
+        audio_mixer_resizer_rect: egui::Rect,
+        audio_mixer_rect: egui::Rect,
         timeline_min_h: f32,
         max_timeline_h: f32,
     ) {
@@ -367,7 +372,22 @@ impl KlippApp {
             let now = !self.state.show_inspector_panel;
             self.set_inspector_visible(now);
         }
-        let h_delta = resizer::horizontal_resizer(ui, h_resizer_rect, &theme);
+        let top_delta = resizer::horizontal_resizer(ui, h_resizer_rect, &theme);
+        // A shown Audio Mixer's top edge sets its height (#2693). When
+        // that edge is the divider under the viewers, the timeline's own
+        // top edge, under the mixer, sets the timeline's.
+        let (mixer_delta, h_delta) = if !audio_mixer_resizer_rect.is_positive() {
+            (0.0, top_delta)
+        } else if audio_mixer_resizer_rect.min.distance(h_resizer_rect.min) < 0.5 {
+            let under_mixer = egui::Rect::from_min_size(audio_mixer_rect.left_bottom(), egui::vec2(audio_mixer_rect.width(), theme::RESIZER_THICKNESS));
+            (top_delta, resizer::horizontal_resizer(ui, under_mixer, &theme))
+        } else {
+            (resizer::horizontal_resizer(ui, audio_mixer_resizer_rect, &theme), top_delta)
+        };
+        if mixer_delta != 0.0 {
+            self.layout.audio_mixer_height = (audio_mixer_rect.height() - mixer_delta)
+                .clamp(crate::panels::audio_mixer::MIXER_MIN_H, theme::AUDIO_MIXER_MAX_H);
+        }
 
         // Dragging a panel well under its minimum collapses it rather
         // than sticking at the clamp. Without this the divider simply
@@ -400,7 +420,7 @@ impl KlippApp {
                     .clamp(timeline_min_h, max_timeline_h);
             }
         }
-        let resizer_active = left_delta != 0.0 || right_delta != 0.0 || h_delta != 0.0;
+        let resizer_active = left_delta != 0.0 || right_delta != 0.0 || h_delta != 0.0 || mixer_delta != 0.0;
         if resizer_active {
             self.layout_dirty = true;
         }
