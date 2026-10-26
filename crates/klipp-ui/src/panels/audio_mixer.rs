@@ -10,8 +10,10 @@ use klipp_core::AppCommand;
 const STRIP_W: f32 = 100.0;
 /// Width of the master section (fader + peak bars + LUFS meter + gap).
 const MASTER_W: f32 = 176.0;
-/// Height of the vertical fader track.
-const FADER_TRACK_H: f32 = 130.0;
+/// The shortest a fader track gets before the mixer scrolls instead.
+const FADER_MIN_H: f32 = 60.0;
+/// The tallest a fader track grows in a tall panel.
+const FADER_MAX_H: f32 = 300.0;
 /// Width of a single peak-meter bar (L or R).
 const PEAK_BAR_W: f32 = 6.0;
 /// Width of the LUFS meter bar.
@@ -22,13 +24,28 @@ const METER_GAP: f32 = 5.0;
 const STRIP_PAD: f32 = 6.0;
 /// Gap between bottom of meter bars and text readouts.
 const READOUT_GAP: f32 = 8.0;
-/// Minimum strip height.
-const STRIP_MIN_H: f32 = 280.0;
-/// Bottom padding inside each strip (used in STRIP_MIN_H budget).
-#[allow(dead_code)]
+/// Bottom padding inside each strip.
 const STRIP_BOTTOM_PAD: f32 = 14.0;
-/// Minimum mixer panel height.
-const MIXER_MIN_H: f32 = 280.0;
+/// A track strip's height less its fader: mode, name, pan, readout,
+/// mute and solo.
+const STRIP_FIXED_H: f32 = 52.0 + READOUT_GAP + 16.0 + 16.0 + STRIP_BOTTOM_PAD;
+/// The master strip's height less its fader: label, meter scale,
+/// four readout rows and the reset button.
+const MASTER_FIXED_H: f32 = 40.0 + READOUT_GAP + 43.0 + 14.0 + STRIP_BOTTOM_PAD;
+/// The shortest strip: below it the panel scrolls rather than hide a
+/// strip's mute and solo (#2693).
+pub(crate) const STRIP_MIN_H: f32 = FADER_MIN_H + MASTER_FIXED_H;
+/// Room under the strips for the horizontal scroll bar.
+const SCROLLBAR_ROOM: f32 = 8.0;
+/// The mixer header's height.
+const HEADER_H: f32 = 20.0;
+/// The panel height that shows every strip whole without scrolling.
+pub(crate) const MIXER_MIN_H: f32 = HEADER_H + STRIP_MIN_H + SCROLLBAR_ROOM;
+
+/// A strip's fader track, fitted to the strip's height.
+fn fader_height(strip_h: f32, fixed_h: f32) -> f32 {
+    (strip_h - fixed_h).clamp(FADER_MIN_H, FADER_MAX_H)
+}
 
 // ═══════════════════════════════════════════════════════════════════
 // Helpers
@@ -299,6 +316,7 @@ fn set_control(
 fn fader_strip(
     ui: &mut egui::Ui,
     theme: &KlippTheme,
+    strip_h: f32,
     track_index: usize,
     name: &str,
     track_id: klipp_core::TrackId,
@@ -318,8 +336,7 @@ fn fader_strip(
     // What the controls show: as moved, or the keys' values when played.
     let shown_pan = automation.shown_pan.unwrap_or(*pan);
     let shown_volume = automation.shown_volume.unwrap_or(*volume);
-    let strip_rect = ui.available_rect_before_wrap();
-    let strip_h = strip_rect.height().max(STRIP_MIN_H);
+    let fader_h = fader_height(strip_h, STRIP_FIXED_H);
     let (rect, _) = ui.allocate_exact_size(
         egui::vec2(STRIP_W, strip_h),
         egui::Sense::hover(),
@@ -465,7 +482,7 @@ fn fader_strip(
 
     // -- Vertical volume fader --
     let fader_top = y;
-    let fader_bottom = fader_top + FADER_TRACK_H;
+    let fader_bottom = fader_top + fader_h;
 
     painter.rect_filled(
         egui::Rect::from_min_max(egui::pos2(fader_cx - 1.5, fader_top), egui::pos2(fader_cx + 1.5, fader_bottom)),
@@ -475,7 +492,7 @@ fn fader_strip(
     // dB scale marks
     for &(vol_val, label) in &[(2.0_f32, "+6"), (1.0, "0"), (0.5, "-6"), (0.25, "-12"), (0.0, "-inf")] {
         let t = vol_val / 2.0;
-        let mark_y = fader_bottom - t * FADER_TRACK_H;
+        let mark_y = fader_bottom - t * fader_h;
         painter.line_segment(
             [egui::pos2(fader_cx - 6.0, mark_y), egui::pos2(fader_cx - 2.0, mark_y)],
             egui::Stroke::new(1.0_f32, theme.border_light),
@@ -487,7 +504,7 @@ fn fader_strip(
     }
 
     // Unity mark
-    let unity_y = fader_bottom - 0.5 * FADER_TRACK_H;
+    let unity_y = fader_bottom - 0.5 * fader_h;
     painter.line_segment(
         [egui::pos2(fader_cx - 8.0, unity_y), egui::pos2(fader_cx + 8.0, unity_y)],
         egui::Stroke::new(1.0_f32, theme.accent_dim),
@@ -495,7 +512,7 @@ fn fader_strip(
 
     // Fill + thumb
     let vol_t = (shown_volume / 2.0).clamp(0.0, 1.0);
-    let thumb_y = fader_bottom - vol_t * FADER_TRACK_H;
+    let thumb_y = fader_bottom - vol_t * fader_h;
     let fill_color = if *muted { theme.text_dim } else if shown_volume > 1.0 {
         theme.marker_error
     } else { theme.accent };
@@ -529,12 +546,12 @@ fn fader_strip(
     }
     let mut moved_volume = None;
     if fader_resp.dragged() {
-        let step = -fader_resp.drag_delta().y / FADER_TRACK_H * 2.0;
+        let step = -fader_resp.drag_delta().y / fader_h * 2.0;
         moved_volume = Some((shown_volume + step).clamp(0.0, 2.0));
     }
     if fader_resp.clicked() {
         if let Some(pos) = fader_resp.interact_pointer_pos() {
-            let t = 1.0 - ((pos.y - fader_top) / FADER_TRACK_H).clamp(0.0, 1.0);
+            let t = 1.0 - ((pos.y - fader_top) / fader_h).clamp(0.0, 1.0);
             moved_volume = Some(t * 2.0);
         }
     }
@@ -553,7 +570,7 @@ fn fader_strip(
     let tick_x = meter_x - 2.0;
     for &db_val in &[0.0_f32, -6.0, -12.0, -24.0, -48.0] {
         let tick_t = db_to_t(db_val);
-        let tick_y = fader_bottom - tick_t * FADER_TRACK_H;
+        let tick_y = fader_bottom - tick_t * fader_h;
         painter.line_segment(
             [egui::pos2(tick_x - 2.0, tick_y), egui::pos2(tick_x, tick_y)],
             egui::Stroke::new(1.0_f32, theme.border),
@@ -612,6 +629,7 @@ fn fader_strip(
 fn master_strip(
     ui: &mut egui::Ui,
     theme: &KlippTheme,
+    strip_h: f32,
     master_volume: &mut f32,
     master_peak_l: f32,
     master_peak_r: f32,
@@ -625,8 +643,7 @@ fn master_strip(
     clip_indicator: bool,
     cmds: &mut Vec<AppCommand>,
 ) {
-    let strip_rect = ui.available_rect_before_wrap();
-    let strip_h = strip_rect.height().max(STRIP_MIN_H);
+    let fader_h = fader_height(strip_h, MASTER_FIXED_H);
     let (rect, _) = ui.allocate_exact_size(
         egui::vec2(MASTER_W, strip_h),
         egui::Sense::hover(),
@@ -679,13 +696,13 @@ fn master_strip(
 
     // LUFS scale labels
     let fader_top = y + 10.0;
-    let fader_bottom = fader_top + FADER_TRACK_H;
+    let fader_bottom = fader_top + fader_h;
     for &(lufs_val, label) in &[
         (0.0_f32, "0"), (-6.0, "-6"), (-12.0, "-12"), (-18.0, "-18"),
         (-24.0, "-24"), (-36.0, "-36"), (-48.0, "-48"),
     ] {
         let tick_t = lufs_to_t(lufs_val);
-        let tick_y = fader_bottom - tick_t * FADER_TRACK_H;
+        let tick_y = fader_bottom - tick_t * fader_h;
         painter.text(
             egui::pos2(lufs_label_x, tick_y), egui::Align2::LEFT_CENTER,
             label, egui::FontId::monospace(6.0), theme.text_dim,
@@ -697,14 +714,14 @@ fn master_strip(
         egui::Rect::from_min_max(egui::pos2(fader_cx - 1.5, fader_top), egui::pos2(fader_cx + 1.5, fader_bottom)),
         1.0, theme.bg_raised,
     );
-    let unity_y = fader_bottom - 0.5 * FADER_TRACK_H;
+    let unity_y = fader_bottom - 0.5 * fader_h;
     painter.line_segment(
         [egui::pos2(fader_cx - 8.0, unity_y), egui::pos2(fader_cx + 8.0, unity_y)],
         egui::Stroke::new(1.0_f32, theme.accent_dim),
     );
 
     let vol_t = (*master_volume / 2.0).clamp(0.0, 1.0);
-    let thumb_y = fader_bottom - vol_t * FADER_TRACK_H;
+    let thumb_y = fader_bottom - vol_t * fader_h;
     let fill_color = if *master_volume > 1.0 {
         theme.marker_error
     } else { theme.accent };
@@ -728,13 +745,13 @@ fn master_strip(
     );
     let fader_resp = ui.allocate_rect(fader_hit, egui::Sense::click_and_drag());
     if fader_resp.dragged() {
-        let step = -fader_resp.drag_delta().y / FADER_TRACK_H * 2.0;
+        let step = -fader_resp.drag_delta().y / fader_h * 2.0;
         *master_volume = (*master_volume + step).clamp(0.0, 2.0);
         cmds.push(AppCommand::SetMasterVolume(*master_volume));
     }
     if fader_resp.clicked() {
         if let Some(pos) = fader_resp.interact_pointer_pos() {
-            let t = 1.0 - ((pos.y - fader_top) / FADER_TRACK_H).clamp(0.0, 1.0);
+            let t = 1.0 - ((pos.y - fader_top) / fader_h).clamp(0.0, 1.0);
             *master_volume = t * 2.0;
             cmds.push(AppCommand::SetMasterVolume(*master_volume));
         }
@@ -848,15 +865,13 @@ pub fn show(
     theme: &KlippTheme,
 ) -> Vec<AppCommand> {
     let mut cmds = Vec::new();
-    ui.set_min_height(MIXER_MIN_H);
     let full_rect = ui.max_rect();
 
     // Background + header
     ui.painter().rect_filled(full_rect, 0.0, theme.bg_deep);
     ui.painter().hline(full_rect.x_range(), full_rect.min.y, egui::Stroke::new(1.0_f32, theme.border));
 
-    let header_h = 20.0;
-    let header_rect = egui::Rect::from_min_size(full_rect.min, egui::vec2(full_rect.width(), header_h));
+    let header_rect = egui::Rect::from_min_size(full_rect.min, egui::vec2(full_rect.width(), HEADER_H));
     ui.painter().rect_filled(header_rect, 0.0, theme.bg_panel);
     ui.painter().text(
         egui::pos2(header_rect.min.x + 10.0, header_rect.center().y),
@@ -929,58 +944,70 @@ pub fn show(
         // Layout: scrollable tracks on left, fixed master on right
         let master_total_w = MASTER_W + 12.0; // master width + gap
         let tracks_max_w = (content_rect.width() - master_total_w).max(60.0);
+        // Every strip fills the panel's height, its fader taking what the
+        // controls leave; a panel too short for that scrolls up and down
+        // so no strip's mute and solo are cut off (#2693).
+        let strip_h = (content_rect.height() - SCROLLBAR_ROOM).max(STRIP_MIN_H);
 
-        ui.horizontal(|ui| {
-            // ── Scrollable track strips ──
-            egui::ScrollArea::horizontal()
-                .id_salt("mixer_tracks_scroll")
-                .max_width(tracks_max_w)
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.add_space(6.0);
+        egui::ScrollArea::vertical()
+            .id_salt("mixer_strips_vscroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                // The strips' own height, which may be more than the
+                // panel shows: the scroll area above takes up the rest.
+                let row = egui::vec2(ui.available_width(), strip_h + SCROLLBAR_ROOM);
+                ui.allocate_ui_with_layout(row, egui::Layout::left_to_right(egui::Align::Min), |ui| {
+                    // ── Scrollable track strips ──
+                    egui::ScrollArea::horizontal()
+                        .id_salt("mixer_tracks_scroll")
+                        .max_width(tracks_max_w)
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.add_space(6.0);
 
-                        for i in 0..track_count {
-                            let (ref name, track_id, ref _kind, ref mut vol, ref mut pan, ref mut muted, ref mut solo, _has_audio) = track_data[i];
-                            let (pl, pr) = peak_levels[i];
-                            let mut strip_touches = Vec::new();
-                            let mut strip_lives = Vec::new();
-                            fader_strip(
-                                ui, theme, i, name, track_id,
-                                vol, pan, muted, solo,
-                                pl, pr,
-                                &mut editing_name,
-                                &strip_automation[i],
-                                &mut strip_touches,
-                                &mut strip_lives,
-                                &mut cmds,
-                            );
-                            touches.extend(strip_touches.into_iter().map(|(param, down)| (i, param, down)));
-                            lives.extend(strip_lives.into_iter().map(|(param, v)| (i, track_id, param, v)));
-                            // Gap between strips
-                            ui.add_space(4.0);
-                        }
-                    });
+                                for i in 0..track_count {
+                                    let (ref name, track_id, ref _kind, ref mut vol, ref mut pan, ref mut muted, ref mut solo, _has_audio) = track_data[i];
+                                    let (pl, pr) = peak_levels[i];
+                                    let mut strip_touches = Vec::new();
+                                    let mut strip_lives = Vec::new();
+                                    fader_strip(
+                                        ui, theme, strip_h, i, name, track_id,
+                                        vol, pan, muted, solo,
+                                        pl, pr,
+                                        &mut editing_name,
+                                        &strip_automation[i],
+                                        &mut strip_touches,
+                                        &mut strip_lives,
+                                        &mut cmds,
+                                    );
+                                    touches.extend(strip_touches.into_iter().map(|(param, down)| (i, param, down)));
+                                    lives.extend(strip_lives.into_iter().map(|(param, v)| (i, track_id, param, v)));
+                                    // Gap between strips
+                                    ui.add_space(4.0);
+                                }
+                            });
+                        });
+
+                    // ── Gap + fixed master strip ──
+                    ui.add_space(12.0);
+
+                    master_strip(
+                        ui, theme, strip_h, &mut master_vol,
+                        state.master_peak_left,
+                        state.master_peak_right,
+                        state.lufs_momentary_smooth,
+                        state.lufs_short_term_smooth,
+                        state.lufs_integrated,
+                        state.lufs_lra,
+                        state.lufs_true_peak_dbfs,
+                        state.lufs_target,
+                        state.tp_oversample,
+                        state.clip_indicator,
+                        &mut cmds,
+                    );
                 });
-
-            // ── Gap + fixed master strip ──
-            ui.add_space(12.0);
-
-            master_strip(
-                ui, theme, &mut master_vol,
-                state.master_peak_left,
-                state.master_peak_right,
-                state.lufs_momentary_smooth,
-                state.lufs_short_term_smooth,
-                state.lufs_integrated,
-                state.lufs_lra,
-                state.lufs_true_peak_dbfs,
-                state.lufs_target,
-                state.tp_oversample,
-                state.clip_indicator,
-                &mut cmds,
-            );
-        });
+            });
     });
 
     state.mixer_editing_name = editing_name;
@@ -1154,6 +1181,67 @@ mod tests {
         }
     }
 
+    /// One frame of the mixer in a panel `panel_h` tall, as the main
+    /// layout hosts it, with the pointer pressed or released at `click`.
+    /// The shapes drawn and the commands sent.
+    fn mixer_frame(ctx: &egui::Context, state: &mut AppState, panel_h: f32, click: Option<(egui::Pos2, bool)>) -> (Vec<egui::epaint::ClippedShape>, Vec<AppCommand>) {
+        let mut input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0))),
+            ..Default::default()
+        };
+        if let Some((pos, pressed)) = click {
+            input.events.push(egui::Event::PointerMoved(pos));
+            input.events.push(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() });
+        }
+        let theme = KlippTheme::default();
+        let mut cmds = Vec::new();
+        let out = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                let rect = egui::Rect::from_min_size(egui::pos2(0.0, 300.0), egui::vec2(1200.0, panel_h));
+                crate::ui_util::allocate_clipped_ui(ui, rect, |ui| {
+                    ui.set_min_size(rect.size());
+                    cmds = show(ui, state, &theme);
+                });
+            });
+        });
+        (out.shapes, cmds)
+    }
+
+    /// A text drawn whole, inside what its clip lets be seen.
+    fn shown_whole(shapes: &[egui::epaint::ClippedShape], text: &str) -> Vec<egui::Rect> {
+        shapes.iter().filter_map(|s| match &s.shape {
+            egui::Shape::Text(t) if t.galley.text() == text => {
+                let r = egui::Rect::from_min_size(t.pos, t.galley.size());
+                s.clip_rect.contains_rect(r).then_some(r)
+            }
+            _ => None,
+        }).collect()
+    }
+
+    /// #2693: at the panel's old fixed height and at its new minimum,
+    /// every strip shows its mute and solo, the master its reset, and a
+    /// click on a mute mutes that track.
+    #[test]
+    fn every_strip_control_shows_and_works_at_the_panels_height() {
+        for panel_h in [220.0, MIXER_MIN_H] {
+            let ctx = egui::Context::default();
+            let mut state = AppState::default();
+            let tracks = state.sequences[state.active_sequence_idx].tracks.len();
+            assert!(tracks > 0, "the default sequence has tracks");
+            mixer_frame(&ctx, &mut state, panel_h, None);
+            let (shapes, _) = mixer_frame(&ctx, &mut state, panel_h, None);
+            let mutes = shown_whole(&shapes, "M");
+            assert_eq!(mutes.len(), tracks, "{panel_h} px: every track's mute is seen");
+            assert_eq!(shown_whole(&shapes, "S").len(), tracks, "{panel_h} px: every track's solo is seen");
+            assert_eq!(shown_whole(&shapes, "RST").len(), 1, "{panel_h} px: the master's reset is seen");
+
+            let at = mutes[0].center();
+            mixer_frame(&ctx, &mut state, panel_h, Some((at, true)));
+            let (_, cmds) = mixer_frame(&ctx, &mut state, panel_h, Some((at, false)));
+            assert!(cmds.iter().any(|c| matches!(c, AppCommand::SetTrackMute { muted: true, .. })), "{panel_h} px: the mute is clicked: {cmds:?}");
+        }
+    }
+
     #[test]
     fn mixer_layout_constants_valid() {
         // Master strip must be narrower than any reasonable panel width
@@ -1161,9 +1249,11 @@ mod tests {
         // Track strip must be narrower than master
         assert!(STRIP_W > 0.0 && STRIP_W < MASTER_W);
         // Fader track must fit in the minimum strip height with room for controls
-        assert!(FADER_TRACK_H < STRIP_MIN_H - 80.0, "Fader needs room for name, pan, buttons");
+        assert!(FADER_MIN_H + STRIP_FIXED_H <= STRIP_MIN_H, "Fader needs room for name, pan, buttons");
+        assert!(FADER_MIN_H + MASTER_FIXED_H <= STRIP_MIN_H, "Master fader needs room for its readouts");
         // Minimum panel height must be at least as tall as strip min height
-        assert!(MIXER_MIN_H >= STRIP_MIN_H - 20.0);
+        assert!(MIXER_MIN_H >= STRIP_MIN_H + HEADER_H);
+        assert!(fader_height(STRIP_MIN_H, MASTER_FIXED_H) >= FADER_MIN_H);
         // Peak bar width must be positive and reasonable
         assert!(PEAK_BAR_W > 0.0 && PEAK_BAR_W < 20.0);
         // LUFS bar must be wider than peak bars

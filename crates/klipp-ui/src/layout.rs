@@ -26,6 +26,10 @@ pub(crate) struct LayoutRects {
     /// kept under that name to minimise downstream churn.
     pub viewer_rect: egui::Rect,
     pub h_resizer_rect: egui::Rect,
+    /// The Audio Mixer's top edge, which sets its height. The same rect
+    /// as `h_resizer_rect` when nothing sits between it and the viewers;
+    /// nothing when the mixer is hidden.
+    pub audio_mixer_resizer_rect: egui::Rect,
     pub curve_editor_rect: egui::Rect,
     pub audio_mixer_rect: egui::Rect,
     pub timeline_rect: egui::Rect,
@@ -194,8 +198,12 @@ pub(crate) fn compute_layout(
         egui::vec2(center_w, timeline_h),
     );
 
-    // Audio mixer (between viewer and timeline when visible)
-    let audio_mixer_h: f32 = if state.show_audio_mixer { 220.0 } else { 0.0 };
+    // Audio mixer (between viewer and timeline when visible), as tall as
+    // dragged but never past half the room above the timeline.
+    let audio_mixer_h: f32 = if state.show_audio_mixer {
+        let room = (timeline_rect.min.y - main_top) * 0.5;
+        layout.audio_mixer_height.clamp(crate::panels::audio_mixer::MIXER_MIN_H, theme::AUDIO_MIXER_MAX_H).min(room.max(0.0))
+    } else { 0.0 };
     let audio_mixer_rect = egui::Rect::from_min_size(
         egui::pos2(center_left, timeline_rect.min.y - audio_mixer_h - if audio_mixer_h > 0.0 { theme::RESIZER_THICKNESS } else { 0.0 }),
         egui::vec2(center_w, audio_mixer_h),
@@ -303,6 +311,11 @@ pub(crate) fn compute_layout(
         source_viewer_rect,
         viewer_rect,
         h_resizer_rect,
+        audio_mixer_resizer_rect: if audio_mixer_h > 0.0 {
+            egui::Rect::from_min_size(audio_mixer_rect.min - egui::vec2(0.0, theme::RESIZER_THICKNESS), egui::vec2(center_w, theme::RESIZER_THICKNESS))
+        } else {
+            egui::Rect::NOTHING
+        },
         curve_editor_rect,
         audio_mixer_rect,
         timeline_rect,
@@ -436,6 +449,24 @@ mod tests {
         let state = AppState::default();
         let r = compute_layout(test_full_rect(), &layout, &state);
         assert!((r.timeline_rect.height() - 260.0).abs() < 1.0);
+    }
+
+    /// #2693: the Audio Mixer is as tall as its top edge was dragged,
+    /// never shorter than its strips need, and that edge is the divider
+    /// under the viewers when nothing sits between them.
+    #[test]
+    fn the_audio_mixer_takes_its_dragged_height() {
+        let state = AppState { show_audio_mixer: true, ..AppState::default() };
+        let full = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1920.0, 1080.0));
+        for (stored, shown) in [(280.0, 280.0), (10.0, crate::panels::audio_mixer::MIXER_MIN_H)] {
+            let layout = LayoutState { audio_mixer_height: stored, ..LayoutState::default() };
+            let r = compute_layout(full, &layout, &state);
+            assert!((r.audio_mixer_rect.height() - shown).abs() < 0.5, "stored {stored}: {}", r.audio_mixer_rect.height());
+            assert_eq!(r.audio_mixer_resizer_rect, r.h_resizer_rect);
+            assert!(r.audio_mixer_rect.max.y < r.timeline_rect.min.y);
+        }
+        let hidden = compute_layout(full, &LayoutState::default(), &AppState::default());
+        assert!(!hidden.audio_mixer_resizer_rect.is_positive());
     }
 
     #[test]

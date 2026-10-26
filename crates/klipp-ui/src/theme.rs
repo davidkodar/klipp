@@ -613,6 +613,10 @@ pub const INSPECTOR_DEFAULT_W: f32 = 360.0;
 pub const INSPECTOR_MIN_W: f32 = 260.0;
 pub const INSPECTOR_MAX_W: f32 = 800.0;
 pub const RESIZER_THICKNESS: f32 = 5.0;
+/// The Audio Mixer's height until its top edge is dragged.
+pub const AUDIO_MIXER_DEFAULT_H: f32 = 260.0;
+/// The tallest the Audio Mixer is dragged to.
+pub const AUDIO_MIXER_MAX_H: f32 = 600.0;
 /// Width of the rail a collapsed side panel leaves behind.
 ///
 /// A collapsed panel is not a gone panel: it keeps a strip carrying its

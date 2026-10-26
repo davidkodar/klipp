@@ -80,6 +80,9 @@ pub struct LayoutState {
     pub snap: SnapConfig,
     #[serde(default = "default_color_panel_height")]
     pub color_panel_height: f32,
+    /// The Audio Mixer's height, set by dragging its top edge.
+    #[serde(default = "default_audio_mixer_height")]
+    pub audio_mixer_height: f32,
 
     // ── Color workspace layout ──
     /// Fraction of center height allocated to viewer (vs node graph below). 0.0-1.0.
@@ -120,6 +123,7 @@ fn default_files_split_ratio() -> f32 { 0.5 }
 fn default_true() -> bool { true }
 fn default_color_timeline_h() -> f32 { 112.0 }
 fn default_color_panel_height() -> f32 { 200.0 }
+fn default_audio_mixer_height() -> f32 { crate::theme::AUDIO_MIXER_DEFAULT_H }
 fn default_color_viewer_ratio() -> f32 { 0.66 }
 fn default_color_inspector_width() -> f32 { 300.0 }
 
@@ -145,6 +149,7 @@ impl Default for LayoutState {
             color_timeline_height: default_color_timeline_h(),
             snap: SnapConfig::default(),
             color_panel_height: default_color_panel_height(),
+            audio_mixer_height: default_audio_mixer_height(),
             color_viewer_height_ratio: default_color_viewer_ratio(),
             color_inspector_width: default_color_inspector_width(),
             node_graph_placement: NodeGraphPlacement::Below,
