@@ -1661,6 +1661,8 @@ impl TitleRenderer {
                 source.bounds=[text_min_x+offset_x,text_min_y+offset_y,text_max_x+offset_x,text_max_y+offset_y];
                 source.gradient=tb.gradient.clone().filter(|g|g.enabled);
                 source.pattern=tb.pattern_fill.filter(|_|tb.pattern_fill_enabled);
+                source.material=tb.material.map(|m|m.clamped());
+                source.font_px=tb.font_size*scale;
                 if let TitleBackground::Color{color,padding}=title.background {
                     let pad=padding*scale;
                     let x0=((text_min_x+offset_x-pad) as i32).max(0) as u32;
@@ -2172,6 +2174,8 @@ impl TitleRenderer {
                 source.bounds=[text_min_x,text_min_y,text_max_x,text_max_y];
                 source.gradient=tb.gradient.clone().filter(|g|g.enabled);
                 source.pattern=tb.pattern_fill.filter(|_|tb.pattern_fill_enabled);
+                source.material=tb.material.map(|m|m.clamped());
+                source.font_px=tb.font_size*scale;
                 if tb.outline_write_on<1.0 {source.outline_cutoff=(text_min_x+(text_max_x-text_min_x)*tb.outline_write_on.clamp(0.0,1.0)).floor() as i32;}
                 if let TitleBackground::Color{color,padding}=title.background {
                     let pad=padding*scale;

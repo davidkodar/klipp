@@ -48,6 +48,10 @@ pub struct GlyphSource {
     pub fx: LayerFx,
     pub gradient: Option<klipp_timeline::TextGradient>,
     pub pattern: Option<klipp_timeline::TextPattern>,
+    /// A metal face (#2706), and the text's size in frame pixels, which
+    /// its bevel is a fraction of.
+    pub material: Option<klipp_core::title_material::TitleMaterial>,
+    pub font_px: f32,
     pub bounds: [f32; 4],
     pub texture: Option<TextureDraw>,
     pub prepared: usize,
@@ -206,6 +210,8 @@ impl GlyphCache {
             backing: None,
             gradient: None,
             pattern: None,
+            material: None,
+            font_px: 0.0,
             bounds: [0.0; 4],
             texture: None,
         })
@@ -410,6 +416,8 @@ impl GlyphCache {
             backing: None,
             gradient: None,
             pattern: None,
+            material: None,
+            font_px: 0.0,
             bounds: [0.0; 4],
             texture: None,
         })
@@ -604,6 +612,8 @@ impl TitleRenderer {
                     backing: None,
                     gradient: None,
                     pattern: None,
+                    material: None,
+                    font_px: 0.0,
                     bounds: [0.0; 4],
                     texture: None,
                 }

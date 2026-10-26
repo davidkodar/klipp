@@ -22,7 +22,7 @@ use tracing::{debug, error, info};
 mod readbacks;
 mod alpha_masks;
 mod title_styles;
-pub use title_styles::{TitleStyle,TitleFace,TitleFill,TitleTexture,TitleGlyphPose,TitlePath};
+pub use title_styles::{TitleStyle,TitleFace,TitleFill,TitleMetal,TitleTexture,TitleGlyphPose,TitlePath};
 pub use readbacks::{readback_stats, thread_readback_stats, ReadbackStats};
 mod params;
 mod slots;

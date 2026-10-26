@@ -887,6 +887,10 @@ pub struct TextBox {
     /// Drawn in place of `extrusion` when both are set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub three_d: Option<crate::Text3d>,
+    /// A metal face (#2706): gold, chrome… reflecting an environment
+    /// through a bevel. `color` is what a frame drawn without a GPU shows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub material: Option<klipp_core::title_material::TitleMaterial>,
     /// Text follows a geometric path (arc / circle / wave).
     #[serde(default)]
     pub text_path: Option<TextPath>,
@@ -1460,6 +1464,7 @@ impl Default for TextBox {
             write_on: 1.0,
             extrusion: None,
             three_d: None,
+            material: None,
             text_path: None,
             char_animation: None,
             texture_fill: None,

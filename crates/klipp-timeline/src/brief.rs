@@ -167,6 +167,10 @@ pub struct TypeStyle {
     /// A drop shadow behind the words.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shadow: Option<ShadowSpec>,
+    /// A metal face by its preset's name (#2706): gold, silver, steel,
+    /// copper, bronze, chrome or brushed_metal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub material: Option<String>,
 }
 
 /// A drop shadow behind a title's text, what keeps bright words

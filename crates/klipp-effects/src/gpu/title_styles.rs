@@ -62,6 +62,37 @@ pub enum TitleFill {
         mode: u32,
         spacing: f32,
     },
+    /// A metal face (#2706), its material resolved to the numbers the
+    /// shader takes.
+    Metal(TitleMetal),
+}
+
+/// A metal face's material as the GPU draws it (#2706): the caller
+/// resolves a title's material to directions, linear colours and pixel
+/// sizes. Directions point towards the light, in the frame's axes (x
+/// right, y down, z into the frame).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TitleMetal {
+    /// Reflectance facing the viewer, linear RGB.
+    pub tint: [f32; 3],
+    pub roughness: f32,
+    pub edge: f32,
+    pub highlights: f32,
+    pub glints: f32,
+    pub anisotropy: f32,
+    pub anisotropy_radians: f32,
+    /// The bevel's width in frame pixels, and how steep it is (0..1).
+    pub bevel_px: f32,
+    pub depth: f32,
+    pub key: ([f32; 3], f32, [f32; 3]),
+    pub rim: ([f32; 3], f32, [f32; 3]),
+    pub studio: f32,
+    pub sky: f32,
+    pub sky_tint: [f32; 3],
+    /// Which points glint, and the size of the cells they are picked in
+    /// (frame pixels).
+    pub seed: f32,
+    pub glint_cell: f32,
 }
 
 /// A glyph's pixel-space pose after source scaling.
@@ -1667,7 +1698,11 @@ impl GpuEffectsPipeline {
         for style in styles {
             let (color, intensity) = match *style {
                 TitleStyle::Face => {
-                    if let Some(fill) = &fill {
+                    if let Some(TitleFill::Metal(metal)) = &fill {
+                        if !self.title_metal_face(s, base, metal, bounds, fill_alpha) {
+                            return false;
+                        }
+                    } else if let Some(fill) = &fill {
                         let mut params = FillParams {
                             base: StyleParams {
                                 op: 22,
@@ -1702,6 +1737,7 @@ impl GpuEffectsPipeline {
                                         u32::from_le_bytes(stop.1);
                                 }
                             }
+                            TitleFill::Metal { .. } => unreachable!("drawn above"),
                             TitleFill::Pattern {
                                 colors,
                                 mode,
@@ -1850,6 +1886,56 @@ impl GpuEffectsPipeline {
         );
         true
     }
+    /// A metal face over the styles behind it (#2706): the face's
+    /// coverage blurred by the bevel into a height, packed with the
+    /// coverage, and shaded from that height's slope.
+    fn title_metal_face(&self, s: &StyleScratch, base: StyleParams, m: &TitleMetal, bounds: [f32; 4], alpha: f32) -> bool {
+        let fields = [m.roughness, m.edge, m.highlights, m.glints, m.anisotropy, m.anisotropy_radians, m.bevel_px, m.depth, m.key.1, m.rim.1, m.studio, m.sky, m.seed, m.glint_cell];
+        if fields.iter().chain(&m.tint).chain(&m.key.0).chain(&m.key.2).chain(&m.rim.0).chain(&m.rim.2).chain(&m.sky_tint).any(|v| !v.is_finite()) || m.bevel_px < 0.0 || m.bevel_px > 32767.0 {
+            return false;
+        }
+        let (w, h) = (base.width, base.height);
+        let count = u64::from(w) * u64::from(h);
+        let step = |op: u32, src: &wgpu::Buffer, dst: &wgpu::Buffer| {
+            self.write_params(&StyleParams { op, ..base });
+            self.stack_pass(&self.title_style_pipeline, src, dst, (count as u32).div_ceil(WORKGROUP_SIZE), "title metal height");
+        };
+        step(60, &s.mask, &s.work);
+        if !self.record_alpha_blur(&s.work, &s.work, &s.blur, w, h, m.bevel_px.max(1.0)) {
+            return false;
+        }
+        step(61, &s.mask, &s.work);
+        // A box blurred three times rises over about 2.5 radii: the
+        // slope that turns its steepest point by `depth` x 60 degrees.
+        let slope = m.depth.clamp(0.0, 1.0) * 1.73 * 2.5 * m.bevel_px.max(1.0);
+        let f = |v: f32| v.to_bits();
+        let stop = |a: [f32; 4]| a.map(f);
+        let (fw, fh) = self.stack_dims;
+        let centre = [(bounds[0] + bounds[2]) * 0.5, (bounds[1] + bounds[3]) * 0.5];
+        let mut stops = [[0u32; 4]; 8];
+        stops[0] = stop([m.rim.0[0], m.rim.0[1], m.rim.0[2], m.rim.1]);
+        stops[1] = stop([m.rim.2[0], m.rim.2[1], m.rim.2[2], m.anisotropy]);
+        stops[2] = stop([m.studio, m.sky, m.anisotropy_radians, (fw.max(fh) as f32) * 1.2]);
+        stops[3] = stop([m.sky_tint[0], m.sky_tint[1], m.sky_tint[2], m.seed]);
+        stops[4] = stop([centre[0], centre[1], m.glint_cell.max(8.0), 0.0]);
+        stops[5] = stop([bounds[0], bounds[1], 0.0, 0.0]);
+        self.write_params(&FillParams {
+            base: StyleParams {
+                op: 62,
+                color: [m.tint[0], m.tint[1], m.tint[2], alpha],
+                matrix: [
+                    [m.roughness, m.edge, slope, m.highlights],
+                    [m.key.0[0], m.key.0[1], m.key.0[2], m.key.1],
+                    [m.key.2[0], m.key.2[1], m.key.2[2], m.glints],
+                ],
+                ..base
+            },
+            stops,
+        });
+        self.stack_pass(&self.title_style_pipeline, &s.work, &s.composite, (count as u32).div_ceil(WORKGROUP_SIZE), "title metal face");
+        true
+    }
+
     /// Resident finishing scratch only; excludes shared stack and source caches.
     pub fn title_style_scratch_bytes(&self) -> u64 {
         self.title_style_scratch

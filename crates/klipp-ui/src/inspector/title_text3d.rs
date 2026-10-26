@@ -37,7 +37,7 @@ pub fn puck_light(p: egui::Vec2, r: f32) -> (f32, f32) {
 }
 
 /// The puck: where the light comes from; dragged, the new direction.
-fn light_puck(ui: &mut egui::Ui, theme: &KlippTheme, azimuth: f32, elevation: f32) -> Option<(f32, f32)> {
+pub(crate) fn light_puck(ui: &mut egui::Ui, theme: &KlippTheme, azimuth: f32, elevation: f32) -> Option<(f32, f32)> {
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(72.0, 72.0), egui::Sense::click_and_drag());
     let (c, r) = (rect.center(), 30.0);
     let painter = ui.painter_at(rect);

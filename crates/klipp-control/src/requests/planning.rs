@@ -251,6 +251,12 @@ pub(crate) fn respond(
                 if let Some(shadow) = &style.shadow {
                     klipp_document::ops::type_style_shadow(shadow).map_err(|e| format!("type style {:?}: {e}", style.name))?;
                 }
+                if let Some(metal) = &style.material {
+                    if klipp_core::title_material::MetalPreset::from_name(metal).is_none() {
+                        let names = klipp_core::title_material::MetalPreset::ALL.map(|p| p.name()).join(", ");
+                        return Err(format!("type style {:?}: \"{metal}\" is not a metal; use {names}", style.name));
+                    }
+                }
             }
             if let Some(t) = brief.target_secs {
                 if !t.is_finite() || t <= 0.0 {
