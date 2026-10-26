@@ -57,6 +57,8 @@ sha256sum -c --ignore-missing SHA256SUMS
 sudo pacman -U klipp-0.1.0-1-x86_64.pkg.tar.zst
 ```
 
+The `minisign` line must end with `Trusted comment: klipp 0.1.0`.
+
 Later versions install from Klipp itself: Help → About Klipp → Check for updates downloads the new package and installs it only when its signature checks out.
 
 To build the latest code from source instead:
