@@ -167,11 +167,13 @@ fn to_revision_2(copy: &Path) -> Result<(), String> {
     let mut raw: Value = serde_json::from_str(&text).map_err(|e| format!("parsing: {e}"))?;
     match raw.get("format_revision").and_then(Value::as_u64).unwrap_or(0) {
         r if r >= u64::from(klipp_project::FORMAT_REVISION) => return Ok(()),
-        // Revision 2 takes the step to 3, then revision 3 the step to 4
-        // (M4 step F), as the converter's runs step a real project.
-        r @ (2 | 3) => {
+        // Revision 2 takes the step to 3, revision 3 the step to 4 (M4
+        // step F), and revision 4 the step to 5 (#2754), as the converter's
+        // runs step a real project.
+        r @ (2..=4) => {
             let at3 = if r == 2 { klipp_graph_lift::revision3::project(&raw).map_err(|e| format!("converting to 3: {e}"))? } else { raw };
-            let converted = klipp_graph_lift::revision4::project(&at3, &klipp_timeline::RegistryCatalog).map_err(|e| format!("converting to 4: {e}"))?;
+            let at4 = if r <= 3 { klipp_graph_lift::revision4::project(&at3, &klipp_timeline::RegistryCatalog).map_err(|e| format!("converting to 4: {e}"))? } else { at3 };
+            let converted = klipp_graph_lift::revision5::project(&at4).map_err(|e| format!("converting to 5: {e}"))?;
             return write_owned(&path, &serde_json::to_string_pretty(&converted).map_err(|e| e.to_string())?);
         }
         _ => {}
