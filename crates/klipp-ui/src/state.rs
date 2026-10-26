@@ -234,7 +234,8 @@ pub struct SurfaceTool {
 #[derive(Debug, Clone, Copy)]
 pub struct ViewerWaterlineDrag {
     pub clip_id: klipp_core::ClipId,
-    pub effect_index: usize,
+    /// The reflection's node in the clip's picture.
+    pub node: uuid::Uuid,
     pub drag_start_pos: egui::Pos2,
     /// Whether the pointer has moved far enough for this to be a drag;
     /// the undo gesture opens only once it has.

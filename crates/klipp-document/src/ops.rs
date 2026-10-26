@@ -13722,7 +13722,7 @@ mod tests {
         let corners = [[0.3, 0.3], [0.6, 0.3], [0.6, 0.6], [0.3, 0.6]];
         let id = ClipId::new().0;
         let frame = [seq.resolution.width, seq.resolution.height];
-        seq.tracks[0].clips[0].surfaces.push(klipp_timeline::Surface { id, name: "Phone".into(), corners, reference_secs: 2.0, keys: vec![klipp_timeline::SurfaceKey { source_secs: 2.0, corners }], source_size: frame, media_fps: 25.0 });
+        seq.tracks[0].clips[0].surfaces.push(klipp_timeline::Surface { id, name: "Phone".into(), corners, reference_secs: 2.0, keys: vec![klipp_timeline::SurfaceKey::at_corners(2.0, &corners, &corners).unwrap()], source_size: frame, media_fps: 25.0 });
         let plan = resolve(&seq, &pool, &[pin_op(Some("phone"))]).unwrap();
         let step = &plan.steps[0];
         assert!(step.what.contains("surface \"Phone\"") && step.what.contains("following it") && step.what.contains("a new video track on top"), "{}", step.what);

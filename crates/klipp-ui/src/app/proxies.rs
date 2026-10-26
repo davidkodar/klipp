@@ -476,7 +476,19 @@ impl KlippApp {
                         name,
                         corners,
                         reference_secs,
-                        keys: keys.into_iter().map(|(source_secs, corners)| klipp_timeline::SurfaceKey { source_secs, corners }).collect(),
+                        keys: keys
+                            .into_iter()
+                            .map(|(source_secs, map, confidence, state)| klipp_timeline::SurfaceKey {
+                                source_secs,
+                                map,
+                                confidence: Some(confidence),
+                                state: match state {
+                                    0 => klipp_timeline::TrackState::Good,
+                                    1 => klipp_timeline::TrackState::Low,
+                                    _ => klipp_timeline::TrackState::Lost,
+                                },
+                            })
+                            .collect(),
                         source_size,
                         media_fps,
                     }, held_secs, direction, interactive);

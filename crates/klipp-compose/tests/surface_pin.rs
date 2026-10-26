@@ -39,7 +39,7 @@ fn scene() -> (Sequence, Clip) {
         name: "Screen".into(),
         corners: quad(0.1),
         reference_secs: 10.0,
-        keys: vec![SurfaceKey { source_secs: 10.0, corners: quad(0.1) }, SurfaceKey { source_secs: 14.0, corners: quad(0.5) }],
+        keys: vec![SurfaceKey::at_corners(10.0, &quad(0.1), &quad(0.1)).unwrap(), SurfaceKey::at_corners(14.0, &quad(0.1), &quad(0.5)).unwrap()],
         source_size: frame,
         media_fps: 0.0,
     });
@@ -97,7 +97,7 @@ fn at_mixed_rates_the_pin_holds_with_the_picture() {
     let (mut seq, pin) = scene();
     let s = &mut seq.tracks[0].clips[0].surfaces[0];
     s.media_fps = 30.0;
-    s.keys = (0..=120).map(|f| SurfaceKey { source_secs: 10.0 + f as f64 / 30.0, corners: quad(0.1 + 0.002 * f as f32) }).collect();
+    s.keys = (0..=120).map(|f| SurfaceKey::at_corners(10.0 + f as f64 / 30.0, &quad(0.1), &quad(0.1 + 0.002 * f as f32)).unwrap()).collect();
     // Sequence frame 5 is file second 10.2083: 6.25 file frames in, so file frame 6 shows.
     let at = surface_pin_corners(&pin, &seq, tc(5.0 / 24.0), FPS, &none).unwrap();
     assert!(close(at, quad(0.1 + 0.002 * 6.0)), "{at:?}");
@@ -114,7 +114,7 @@ fn corners_follow_the_hosts_fit_and_placement() {
     {
         let s = &mut seq.tracks[0].clips[0].surfaces[0];
         s.source_size = [1080, 1920];
-        s.keys = vec![SurfaceKey { source_secs: 10.0, corners: full }];
+        s.keys = vec![SurfaceKey::at_corners(10.0, &quad(0.1), &full).unwrap()];
     }
     let at = surface_pin_corners(&pin, &seq, tc(1.0), FPS, &none).unwrap();
     let shown_w = (1080.0 * h / 1920.0).round();
@@ -154,7 +154,7 @@ fn a_fitted_pin_keeps_its_shape_inside_the_surface() {
     let full = [[0.1, 0.2], [0.9, 0.2], [0.9, 0.6], [0.1, 0.6]];
     let s = &mut seq.tracks[0].clips[0].surfaces[0];
     s.corners = full;
-    s.keys = vec![SurfaceKey { source_secs: 10.0, corners: full }];
+    s.keys = vec![SurfaceKey::at_corners(10.0, &full, &full).unwrap()];
     let stretched = surface_pin_corners(&pin, &seq, tc(1.0), FPS, &none).unwrap();
     assert!(close(stretched, full));
     let p = pin.surface_pin.as_mut().unwrap();

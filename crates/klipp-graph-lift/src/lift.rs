@@ -71,7 +71,7 @@ const GATEABLE: [&str; 8] = ["Corrector", "ColorBalance", "Exposure", "Contrast"
 /// The effects that draw outside the picture, in the margin a transform
 /// leaves (`klipp_effects::draws_outside_the_picture`). Kept in step with
 /// it by a test.
-pub const DRAWS_OUTSIDE: [&str; 3] = ["drop_shadow", "outer_glow", "fill_bars"];
+pub const DRAWS_OUTSIDE: [&str; 4] = ["drop_shadow", "outer_glow", "fill_bars", "reflection"];
 
 /// Where an `Auto` placement takes effect in a clip's chain as it renders:
 /// the enabled effects with the track's spliced after the clip's own, and

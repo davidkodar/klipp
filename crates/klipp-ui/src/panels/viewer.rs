@@ -5636,13 +5636,19 @@ impl ViewerPanel {
     ) {
         let Some(clip_id) = state.selected_clip else { return };
         let Some(clip) = state.sequence().tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == clip_id) else { return };
-        let Some(effect_index) = clip.builtin_effects().iter().position(|e| matches!(e, klipp_effects::BuiltinEffect::Reflection { .. })) else { return };
-        let klipp_effects::BuiltinEffect::Reflection { waterline, .. } = clip.builtin_effects()[effect_index].clone() else { return };
+        // The reflection as the clip's picture holds it: its node, edited
+        // by path.
+        let Ok(effects) = clip.picture_effects() else { return };
+        let Some((node, waterline)) = effects.iter().find_map(|e| match e.effect {
+            klipp_effects::BuiltinEffect::Reflection { waterline, .. } => Some((e.node, waterline)),
+            _ => None,
+        }) else {
+            return;
+        };
         let clip_time = (state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64()).max(0.0);
-        let addr = clip.effect_node_at(false, effect_index).map(|n| klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: clip_id.0 }, [n]));
-        let keys = addr.as_ref().and_then(|a| clip.node_key_state(a, &"waterline".into())).map(|s| s.keys).unwrap_or_default();
+        let addr = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: clip_id.0 }, [node]);
+        let keys = clip.node_key_state(&addr, &"waterline".into()).map(|s| s.keys).unwrap_or_default();
         let shown = if keys.is_empty() { waterline } else { klipp_core::keyframe::evaluate(&keys, clip_time, waterline) };
-        let old_effect = clip.builtin_effects()[effect_index].clone();
 
         let y = viewer_norm_to_screen(image_rect, 0.0, shown).y;
         let (x0, x1) = (image_rect.left(), image_rect.right());
@@ -5659,32 +5665,25 @@ impl ViewerPanel {
         painter.rect_stroke(handle, 0.0, egui::Stroke::new(1.0_f32, egui::Color32::BLACK));
         painter.text(egui::pos2(x0 + 6.0, y - 4.0), egui::Align2::LEFT_BOTTOM, "Waterline", egui::FontId::proportional(11.0), egui::Color32::WHITE);
 
-        let drag_key = format!("{:?}:builtin:{}", clip_id, effect_index);
-        let whole = klipp_graph_format::ParamKey::from("waterline");
+        let key = klipp_graph_format::ParamKey::from("waterline");
         let down = ui.input(|i| i.pointer.primary_down());
         let released = ui.input(|i| i.pointer.primary_released());
         let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
         if let Some(mut drag) = state.viewer_waterline_drag.take() {
-            if drag.clip_id != clip_id || drag.effect_index != effect_index {
+            if drag.clip_id != clip_id || drag.node != node {
+                // The clip or the effect changed under the drag: take the
+                // gesture back rather than leave it open.
                 if drag.started {
-                    cmds.push(AppCommand::AbandonEffectDrag { clip_id: drag.clip_id, effect_index: drag.effect_index, added: false });
+                    let was = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: drag.clip_id.0 }, [drag.node]);
+                    cmds.push(AppCommand::AbandonParamEditAt { addr: was, key: key.clone() });
                 }
                 return;
             }
             let step = if escape { GizmoStep::Abandon } else { gizmo_step(drag.started, drag.drag_start_pos, pointer_pos, down, released) };
             if matches!(step, GizmoStep::Start | GizmoStep::End) && !drag.started {
-                match &addr {
-                    Some(a) => cmds.push(AppCommand::BeginParamEditAt { addr: a.clone(), key: whole.clone() }),
-                    None => cmds.push(AppCommand::BeginEffectDrag { key: drag_key.clone(), clip_id, effect_index, old_effect: old_effect.clone() }),
-                }
+                cmds.push(AppCommand::BeginParamEditAt { addr: addr.clone(), key: key.clone() });
                 drag.started = true;
             }
-            let moved = |effect: &klipp_effects::BuiltinEffect, value: f32| match effect.clone() {
-                klipp_effects::BuiltinEffect::Reflection { gap, ripple_amount, ripple_size, ripple_speed, breakup, smear, fade, opacity, darken, contact, blend, tint, tint_amount, submerge, ripple_from, seed, time, .. } => klipp_effects::BuiltinEffect::Reflection {
-                    waterline: value, gap, ripple_amount, ripple_size, ripple_speed, breakup, smear, fade, opacity, darken, contact, blend, tint, tint_amount, submerge, ripple_from, seed, time,
-                },
-                other => other,
-            };
             match step {
                 GizmoStep::Nothing | GizmoStep::Start => {
                     state.viewer_waterline_drag = Some(drag);
@@ -5692,41 +5691,31 @@ impl ViewerPanel {
                 }
                 GizmoStep::Update | GizmoStep::End => {
                     let value = pointer_pos.map_or(shown, |p| viewer_screen_to_norm(image_rect, p).1.clamp(0.0, 1.0));
-                    match &addr {
-                        Some(a) => {
-                            cmds.push(AppCommand::SetParamAt { addr: a.clone(), key: whole.clone(), value: klipp_graph_format::ParamValue::Float(value) });
-                            if !keys.is_empty() {
-                                if let Ok(keyframe) = serde_json::to_value(klipp_core::keyframe::upserted(&keys, clip_time, value)) {
-                                    cmds.push(AppCommand::AddKeyAt { addr: a.clone(), key: whole.clone(), keyframe });
-                                }
-                            }
+                    cmds.push(AppCommand::SetParamAt { addr: addr.clone(), key: key.clone(), value: klipp_graph_format::ParamValue::Float(value) });
+                    // A key already there keeps its time and curve shape.
+                    if !keys.is_empty() {
+                        if let Ok(keyframe) = serde_json::to_value(klipp_core::keyframe::upserted(&keys, clip_time, value)) {
+                            cmds.push(AppCommand::AddKeyAt { addr: addr.clone(), key: key.clone(), keyframe });
                         }
-                        None => cmds.push(AppCommand::UpdateBuiltinEffect { clip_id, index: effect_index, effect: moved(&old_effect, value) }),
                     }
                     if step == GizmoStep::Update {
                         state.viewer_waterline_drag = Some(drag);
                         ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
                         ui.ctx().request_repaint();
                     } else {
-                        match &addr {
-                            Some(a) => cmds.push(AppCommand::EndParamEditAt { addr: a.clone(), key: whole.clone() }),
-                            None => cmds.push(AppCommand::EndEffectDrag { key: drag_key, clip_id, effect_index, new_effect: moved(&old_effect, value) }),
-                        }
+                        cmds.push(AppCommand::EndParamEditAt { addr: addr.clone(), key: key.clone() });
                     }
                 }
                 GizmoStep::Abandon => {
                     if drag.started {
-                        match &addr {
-                            Some(a) => cmds.push(AppCommand::AbandonParamEditAt { addr: a.clone(), key: whole.clone() }),
-                            None => cmds.push(AppCommand::AbandonEffectDrag { clip_id, effect_index, added: false }),
-                        }
+                        cmds.push(AppCommand::AbandonParamEditAt { addr: addr.clone(), key: key.clone() });
                     }
                 }
             }
         } else if let Some(p) = pointer_pos {
             let pressed = ui.input(|i| i.pointer.primary_pressed());
             if pressed && state.viewer_transform_drag.is_none() && state.viewer_corner_pin_drag.is_none() && viewer_rect.contains(p) && near(p) {
-                state.viewer_waterline_drag = Some(crate::state::ViewerWaterlineDrag { clip_id, effect_index, drag_start_pos: p, started: false });
+                state.viewer_waterline_drag = Some(crate::state::ViewerWaterlineDrag { clip_id, node, drag_start_pos: p, started: false });
             } else if near(p) {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
             }

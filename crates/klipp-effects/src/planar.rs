@@ -525,11 +525,15 @@ fn zncc(tpl: &Template, pyr: &Pyramid, g: &Homography, l: usize) -> f64 {
 }
 
 /// How sure a frame's fit is, from how alike the reference and the frame
-/// are (`zncc`), how far the round trip missed (`round_trip`, pixels),
-/// and whether the region holds the map at all (`conditioning`).
-fn confidence(zncc: f64, round_trip: f64, conditioning: f64) -> f32 {
+/// are (`zncc`), how far the round trip missed (`round_trip`, pixels) on
+/// a region `size` pixels across in this frame, and whether the region
+/// holds the map at all (`conditioning`). A miss counts against the
+/// region's size: a few pixels on a surface filling the frame is a
+/// fraction of one on a small one.
+fn confidence(zncc: f64, round_trip: f64, size: f64, conditioning: f64) -> f32 {
     let alike = ((zncc - 0.4) / 0.45).clamp(0.0, 1.0);
-    let returns = (1.0 - (round_trip - 0.5) / 3.0).clamp(0.0, 1.0);
+    let scale = (size / 200.0).max(1.0);
+    let returns = (1.0 - (round_trip / scale - 0.5) / 3.0).clamp(0.0, 1.0);
     let held = if conditioning < 1e-7 { 0.3 } else { 1.0 };
     (alike * returns * held) as f32
 }
@@ -637,7 +641,8 @@ pub fn track(
             // Found again after a loss: no frame before to go back to.
             None => if alike > 0.75 { 0.5 } else { f64::INFINITY },
         };
-        let confidence = confidence(alike, round_trip, conditioning);
+        let size = here.iter().map(|p| (p.0 - here[0].0).hypot(p.1 - here[0].1)).fold(0.0, f64::max);
+        let confidence = confidence(alike, round_trip, size, conditioning);
         let state = state_of(confidence);
         if state == State::Lost {
             failing += 1;

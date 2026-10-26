@@ -37,8 +37,10 @@ pub const REVISION: u64 = 2;
 /// revision 4 (M4 step F): a grade compound a group, an uneven scale's
 /// aspect, every enabled Opacity multiplying, a Speed Ramp without the
 /// fields that never drew, frei0r and OFX plug-ins as their own nodes; a
-/// revision-3 project is converted once (`klipp-convert` step 4).
-pub const PROJECT_REVISION: u64 = 4;
+/// revision-3 project is converted once (`klipp-convert` step 4). 5 keeps
+/// a tracked surface's keys as maps from its reference corners (#2754); a
+/// revision-4 project is converted once (`klipp-convert` step 5).
+pub const PROJECT_REVISION: u64 = 5;
 
 fn err(e: impl std::fmt::Display) -> String {
     e.to_string()

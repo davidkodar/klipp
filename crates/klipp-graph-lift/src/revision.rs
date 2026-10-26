@@ -12,7 +12,7 @@ use serde_json::Value;
 /// The newest revision this converter reads and writes: 2, the lifted
 /// form. Revision 1 (graphs holding only `klipp.legacy.*` nodes) exists in
 /// its tests and dry runs only.
-pub const KNOWN_REVISION: u64 = 4;
+pub const KNOWN_REVISION: u64 = 5;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum RevisionError {

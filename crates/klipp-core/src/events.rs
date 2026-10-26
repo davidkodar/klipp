@@ -4706,7 +4706,11 @@ pub enum AppEvent {
     /// shown; `held_secs` the file seconds read for the track, which can
     /// be fewer than the clip's when they would not all fit in memory.
     /// `direction` and `interactive` are the request's.
-    SurfaceTracked { clip_id: ClipId, surface: uuid::Uuid, name: String, corners: [[f32; 2]; 4], reference_secs: f64, keys: Vec<(f64, [[f32; 2]; 4])>, source_size: [u32; 2], media_fps: f64, held_secs: (f64, f64), direction: i8, interactive: bool },
+    /// A surface tracked (#2754): each key its file time, the map from
+    /// `corners` to that frame (fractions of the picture, row by row), the
+    /// tracker's confidence, 0 to 1, and how it was followed: 0 well, 1
+    /// uncertainly, 2 lost (the last good map held).
+    SurfaceTracked { clip_id: ClipId, surface: uuid::Uuid, name: String, corners: [[f32; 2]; 4], reference_secs: f64, keys: Vec<(f64, [f64; 9], f32, u8)>, source_size: [u32; 2], media_fps: f64, held_secs: (f64, f64), direction: i8, interactive: bool },
     SurfaceTrackFailed { clip_id: ClipId, surface: uuid::Uuid, error: String },
     /// The corners a [`AppCommand::SnapSurface`] found, as fractions of the
     /// clip's own picture, or `None` where nothing had an edge all round.

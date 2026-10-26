@@ -73,9 +73,12 @@ pub use grade_stills::{adopt_still, adopt_temp_stills, delete_grade_still_file, 
 /// keeps its id through a reorder and a save (`revision3`); a revision-2
 /// reader would rename them. 4 is picture revision 4 (M4 step F): its
 /// stored forms change for #1391, #1406, #1409, #1386 and the plug-in
-/// nodes, so a revision-3 reader would misread them. A file from before it
-/// is refused, naming the tool that converts it.
-pub const FORMAT_REVISION: u32 = 4;
+/// nodes, so a revision-3 reader would misread them. 5 keeps a tracked
+/// surface's keys as maps from its reference corners, with the tracker's
+/// confidence (#2754): their corners are gone, so a revision-4 reader
+/// would find no track. A file from before it is refused, naming the tool
+/// that converts it.
+pub const FORMAT_REVISION: u32 = 5;
 
 /// The side stores' revision (a Look, the stills index, a colour preset):
 /// they hold no effects, so they stay at 2 while the project is at 3.

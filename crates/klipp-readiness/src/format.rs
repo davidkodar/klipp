@@ -117,6 +117,9 @@ fn first_change(a: &Value, b: &Value, at: &str) -> String {
 /// The converted text opens, strictly, and saves again to the same
 /// document (its save stamps aside).
 fn saved(dir: &Path, converted: &str) -> Result<(), String> {
+    // Stepped on to today's revision (#2754), which the app opens and
+    // saves.
+    let converted = &klipp_convert::step5::convert(converted)?.text;
     std::fs::write(dir.join("project.json"), converted).map_err(|e| e.to_string())?;
     let loaded = klipp_project::load_project_strict(dir)?;
     let again = dir.with_extension("again.klipp");
