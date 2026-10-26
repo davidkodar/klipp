@@ -547,6 +547,11 @@ fn project_switch_command(method: &str, args: &Value) -> Result<Value, String> {
             };
         }
         if out["path"].is_null() == out["name"].is_null() { return Err("give exactly one of path or name".into()); }
+        match args.get("recovery") {
+            None | Some(Value::Null) => {}
+            Some(Value::String(s)) if s == "restore" || s == "keep" => out["recovery"] = json!(s),
+            _ => return Err("recovery must be restore or keep".into()),
+        }
     }
     Ok(out)
 }
@@ -2594,7 +2599,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({"path":{"type":"string"},"format":{"type":"string"},"overwrite":{"type":"boolean"}}), vec!["path"]),
         tool("klipp_open_project",
              "Open a project by path or recent name; protect unsaved changes. Guide: klipp_guide topic open_project.",
-             json!({ "path": { "type": "string" }, "name": { "type": "string" }, "save": { "type": "boolean" }, "discard_changes": { "type": "boolean" } }), vec![]),
+             json!({ "path": { "type": "string" }, "name": { "type": "string" }, "save": { "type": "boolean" }, "discard_changes": { "type": "boolean" }, "recovery": { "type": "string", "enum": ["restore", "keep"] } }), vec![]),
         tool("klipp_delivery_specs", "List the delivery specs (platforms, broadcast loudness, a streaming master) with their sources. Details: klipp_guide topic delivery_specs.", json!({}), vec![]),
         tool("klipp_check_delivery", "Check the timeline, or a finished file, against a delivery spec: each requirement pass, warn or fail with what to change. Details: klipp_guide topic check_delivery.", json!({ "spec": { "type": "string" }, "file": { "type": "string" } }), vec!["spec"]),
         tool("klipp_recent_projects", "List existing recent projects, most recent first. Names and paths are local project data. Guide: klipp_guide topic recent_projects.", json!({}), vec![]),

@@ -782,21 +782,77 @@ impl KlippApp {
         // the saved version retires it, which takes their crash
         // recovery away.
         let read_only = matches!(&self.lock_decision, Some((p, LockDecision::ReadOnly)) if p == path);
-        let autosave = autosave_path_for(path);
-        if autosave.exists() && !read_only {
-            // Compare modification times
-            let orig_modified = std::fs::metadata(path).and_then(|m| m.modified()).ok();
-            let auto_modified = std::fs::metadata(&autosave).and_then(|m| m.modified()).ok();
-            if let (Some(orig_t), Some(auto_t)) = (orig_modified, auto_modified) {
-                if auto_t > orig_t {
-                    self.state.show_autosave_recovery = true;
-                    self.state.autosave_recovery_path = Some(autosave);
-                    self.state.autosave_original_path = Some(path.to_path_buf());
-                    return;
-                }
-            }
+        // Judged by the saves themselves, not the folders' times, which
+        // the lock file moves (#2789).
+        if let Some(found) = klipp_project::recovery::newer_autosave(path).filter(|_| !read_only) {
+            self.state.show_autosave_recovery = true;
+            self.state.autosave_recovery_path = Some(found.autosave);
+            self.state.autosave_original_path = Some(path.to_path_buf());
+            return;
         }
         self.do_open_project_inner(path);
+    }
+
+    /// The lock and the auto-save, for an open from the control socket
+    /// (#2789), which has nobody to ask: a lock left by a Klipp that died
+    /// is taken over; one another Klipp holds refuses the open, as does an
+    /// auto-save newer than the last save when the request didn't say
+    /// whether to restore it. A refusal is the open's outcome, with why.
+    pub(super) fn control_open_checks(&mut self, path: &std::path::Path, recovery: Option<bool>) -> bool {
+        match self.open_refusal(path, recovery) {
+            Some(why) => {
+                self.note_project_event(ProjectEvent::Replaced, Some(why));
+                false
+            }
+            None => true,
+        }
+    }
+
+    fn open_refusal(&mut self, path: &std::path::Path, recovery: Option<bool>) -> Option<String> {
+        use klipp_project::lock::{self, Liveness, LockState};
+        match lock::inspect(path, &self.lock_holder) {
+            LockState::Held(info, Liveness::Dead) => {
+                self.state.toast.show(format!("Took over the lock left by Klipp (pid {}), which is no longer running", info.pid));
+                self.lock_decision = Some((path.to_path_buf(), LockDecision::TakeOver(Some(info))));
+            }
+            LockState::Held(info, _) => {
+                return Some(format!("another Klipp (pid {} on {}) has {} open: close it there first", info.pid, info.host, path.display()));
+            }
+            LockState::Free | LockState::Ours => {}
+        }
+        match (klipp_project::recovery::newer_autosave(path), recovery) {
+            (Some(found), None) => Some(format!(
+                "{} has an auto-save from {} newer than its last save ({}): unsaved work, usually from a crash. Open it again with recovery restore (the auto-save) or keep (the saved version)",
+                path.display(),
+                found.autosaved_at.as_deref().unwrap_or("an unknown time"),
+                found.saved_at.as_deref().unwrap_or("never saved"),
+            )),
+            _ => None,
+        }
+    }
+
+    /// Open the auto-save of `original` in its place (#2789): the work in
+    /// it unsaved until saved, under the project's own name.
+    pub(super) fn restore_autosave(&mut self, original: &std::path::Path) {
+        let Some(found) = klipp_project::recovery::newer_autosave(original) else {
+            self.do_open_project_inner(original);
+            return;
+        };
+        self.do_open_project_inner(&klipp_project::recovery::source_for(original, true));
+        // The project's own path, not the auto-save's.
+        self.state.project_path = Some(original.to_path_buf());
+        // Unsaved until it is saved explicitly: what is on disk is not what
+        // was restored.
+        self.state.saved_digest = None;
+        self.state.dirty = true;
+        self.state.toast.show(format!("Unsaved work was recovered from the auto-save of {}: save to keep it", found.autosaved_at.as_deref().unwrap_or("before the crash")));
+    }
+
+    /// Open `original` as saved, its auto-save set aside so it isn't
+    /// offered again (#2789).
+    pub(super) fn keep_saved_version(&mut self, original: &std::path::Path) {
+        retire_autosave(original);
+        self.do_open_project_inner(original);
     }
 
     /// Read the shot metadata of every item whose file was imported
@@ -1476,8 +1532,7 @@ pub(super) fn persist_workspaces(workspaces: &[crate::state::SavedWorkspaceLayou
 
 /// Returns the autosave path for a given project path: `<stem>_autosave.klipp`
 pub(crate) fn autosave_path_for(project_path: &Path) -> PathBuf {
-    let stem = project_path.file_stem().unwrap_or_default().to_string_lossy();
-    project_path.with_file_name(format!("{stem}_autosave.klipp"))
+    klipp_project::recovery::autosave_path_for(project_path)
 }
 
 /// Whether a path is an auto-save folder rather than a project.
@@ -1493,26 +1548,32 @@ pub(crate) fn project_for_autosave(path: &Path) -> Option<PathBuf> {
 }
 
 /// Mark a project's auto-save as seen after the user chose the saved
-/// version over it: the project folder's time moves past the auto-save's,
-/// so neither the open prompt nor the browser's "Unsaved work recovered"
-/// badge offers it again. The auto-save itself is left on disk, and goes
-/// the way it always has, on the next clean save or close.
+/// version over it, so neither the open prompt nor the browser's "Unsaved
+/// work recovered" badge offers it again; a later auto-save is offered
+/// (#2789). The auto-save itself is left on disk, and goes the way it
+/// always has, on the next clean save or close.
 pub(crate) fn retire_autosave(project_path: &Path) {
-    let now = std::time::SystemTime::now();
-    if let Err(e) = std::fs::File::open(project_path).and_then(|f| f.set_modified(now)) {
+    if let Err(e) = klipp_project::recovery::keep_saved(project_path) {
         tracing::warn!("Could not mark the auto-save of {project_path:?} as seen: {e}");
+    }
+}
+
+/// What to say at startup when projects among `recent` hold unsaved work
+/// in an auto-save newer than their last save (#2789), which a clean
+/// close never leaves: Klipp stopped without saving.
+pub(crate) fn crash_notice(recent: &[PathBuf]) -> Option<String> {
+    let kept: Vec<String> = recent.iter().filter(|p| has_newer_autosave(p)).map(|p| p.file_stem().unwrap_or_default().to_string_lossy().into_owned()).collect();
+    match kept.as_slice() {
+        [] => None,
+        [one] => Some(format!("Unsaved work in \u{201c}{one}\u{201d} was recovered: open it to restore or set it aside")),
+        many => Some(format!("Unsaved work was recovered in {} projects ({}): open one to restore or set it aside", many.len(), many.join(", "))),
     }
 }
 
 /// Whether a project has an auto-save newer than its last save: work
 /// that was never saved, usually because Klipp closed unexpectedly.
 pub(crate) fn has_newer_autosave(project_path: &Path) -> bool {
-    let modified = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
-    match (modified(project_path), modified(&autosave_path_for(project_path))) {
-        (Some(saved), Some(auto)) => auto > saved,
-        (None, Some(_)) => true,
-        _ => false,
-    }
+    klipp_project::recovery::newer_autosave(project_path).is_some()
 }
 
 /// Generate an ISO 8601 UTC timestamp string.

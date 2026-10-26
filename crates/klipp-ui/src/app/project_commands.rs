@@ -360,11 +360,21 @@ impl KlippApp {
                 }
                 true
             }
-            AppCommand::OpenProjectNow { path, save, discard_changes, expected_identity } => {
-                if !self.prepare_control_project_switch(*expected_identity, *save, *discard_changes) { return true; }
+            AppCommand::OpenProjectNow { path, save, discard_changes, expected_identity, recovery } => {
                 // As OpenProject resolves it: the control socket's open
                 // names a project.json as readily as its folder (#1143).
-                self.do_open_project_inner(&crate::project_paths::project_dir_of(path));
+                let path = crate::project_paths::project_dir_of(path);
+                // The lock and the auto-save before anything is saved or
+                // closed: a refused open leaves the open project as it was.
+                if !self.control_open_checks(&path, *recovery) {
+                    return true;
+                }
+                if !self.prepare_control_project_switch(*expected_identity, *save, *discard_changes) { return true; }
+                match (klipp_project::recovery::newer_autosave(&path), recovery) {
+                    (Some(_), Some(true)) => self.restore_autosave(&path),
+                    (Some(_), Some(false)) => self.keep_saved_version(&path),
+                    _ => self.do_open_project_inner(&path),
+                }
                 true
             }
             AppCommand::OpenProject { path } => {

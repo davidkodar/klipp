@@ -653,6 +653,12 @@ impl KlippApp {
                 app.state.clap_plugins.len()
             );
         }
+        // Klipp closed without saving last time (#2789): say where the
+        // work it kept is, once, as the projects page badges it.
+        let recent: Vec<std::path::PathBuf> = app.prefs.general.recent_projects.iter().take(12).map(|r| r.path.clone()).collect();
+        if let Some(note) = crash_notice(&recent) {
+            app.state.toast.show(note);
+        }
         klipp_core::startup_timer::mark("KlippApp::new returning");
         app
     }

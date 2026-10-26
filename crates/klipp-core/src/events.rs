@@ -1328,9 +1328,14 @@ pub enum AppCommand {
     /// The folder new projects go in and the welcome screen lists
     /// projects from (#1143).
     SetProjectsFolder { path: PathBuf },
-    /// Open `path` without a dialog or autosave recovery offer. The UI
-    /// checks identity and save/discard policy immediately before acting.
-    OpenProjectNow { path: PathBuf, save: bool, discard_changes: bool, expected_identity: u64 },
+    /// Open `path` without a dialog. The UI checks identity and
+    /// save/discard policy immediately before acting, and the project's
+    /// lock and auto-save as every open does (#2789): a lock left by a
+    /// Klipp that died is taken over, one another Klipp holds refuses the
+    /// open, and an auto-save newer than the last save refuses it unless
+    /// `recovery` says what to do, `Some(true)` restoring the auto-save and
+    /// `Some(false)` keeping the saved version.
+    OpenProjectNow { path: PathBuf, save: bool, discard_changes: bool, expected_identity: u64, recovery: Option<bool> },
     /// Close without a dialog, rechecking the dirty state on the UI thread.
     CloseProjectNow { save: bool, discard_changes: bool, expected_identity: u64 },
     CreateProject {

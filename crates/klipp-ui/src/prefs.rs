@@ -2187,15 +2187,24 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("klipp-newer-autosave-{}", std::process::id()));
         let project = dir.join("X.klipp");
         let autosave = crate::app::autosave_path_for(&project);
-        std::fs::create_dir_all(&project).unwrap();
+        let save = |folder: &std::path::Path, at: &str| {
+            std::fs::create_dir_all(folder).unwrap();
+            std::fs::write(folder.join("project.json"), format!(r#"{{"saved_at":"{at}","generation":"{at}","sequences":[]}}"#)).unwrap();
+        };
+        save(&project, "2026-10-26T10:00:00Z");
         assert!(!crate::app::has_newer_autosave(&project), "no auto-save at all");
-        std::fs::create_dir_all(&autosave).unwrap();
-        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
-        std::fs::File::open(&project).unwrap().set_modified(old).unwrap();
+        save(&autosave, "2026-10-26T10:05:00Z");
         assert!(crate::app::has_newer_autosave(&project));
+        // Said at startup, by the project's name.
+        let notice = crate::app::crash_notice(&[project.clone(), dir.join("Other.klipp")]).expect("a notice");
+        assert!(notice.contains("\u{201c}X\u{201d}") && notice.contains("recovered"), "{notice}");
+        // A lock written into the project afterwards doesn't hide it.
+        std::fs::write(project.join("project.lock"), "pid 1").unwrap();
+        assert!(crate::app::has_newer_autosave(&project), "the lock moves the folder's time, not the saves'");
         // Keep Saved Version marks it seen, and leaves it on disk.
         crate::app::retire_autosave(&project);
         assert!(!crate::app::has_newer_autosave(&project));
+        assert_eq!(crate::app::crash_notice(std::slice::from_ref(&project)), None);
         assert!(autosave.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
