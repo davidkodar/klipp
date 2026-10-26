@@ -89,6 +89,7 @@ pub fn slots_needed(effect: &BuiltinEffect) -> Option<usize> {
         | BuiltinEffect::Mirror { .. }
         | BuiltinEffect::LensDistortion { .. }
         | BuiltinEffect::Displace { .. }
+        | BuiltinEffect::Reflection { .. }
         | BuiltinEffect::Letterbox { .. }
         | BuiltinEffect::Dilate { .. }
         | BuiltinEffect::DirectionalBlur { .. }
@@ -422,6 +423,13 @@ impl GpuEffectsPipeline {
                     direction: *direction, seed: *seed, time: *time,
                 });
                 (&self.displace_pipeline, slot)
+            }
+            BuiltinEffect::Reflection { .. } => {
+                let Some(params) = effect.reflection_params(width, height).filter(|_| !crate::is_identity_effect(effect)) else {
+                    return Recorded::Identity;
+                };
+                let slot = rec.slots.claim(q, &params);
+                (&self.reflection_pipeline, slot)
             }
             BuiltinEffect::Letterbox { aspect_ratio, bar_color, opacity } => {
                 let slot = rec.slots.claim(q, &LetterboxParams {

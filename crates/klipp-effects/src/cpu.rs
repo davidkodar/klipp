@@ -473,6 +473,11 @@ pub(crate) fn apply(
             }
             crate::displace::cpu(&p, w, h, amount, size, speed, direction, seed, time)
         }
+        // The twin of `reflection::shader_wgsl` (#2707).
+        Reflection { .. } => match effect.reflection_params(w, h) {
+            Some(params) if !crate::is_identity_effect(effect) => crate::reflection::cpu(&p, &params),
+            _ => p,
+        },
         // The twin of `SHADER_BINOCULAR_VIGNETTE` (#989).
         BinocularVignette { amount, spacing, width: eye_w, height: eye_h, softness, fringe } => {
             if amount.abs() < f32::EPSILON && fringe.abs() < f32::EPSILON {

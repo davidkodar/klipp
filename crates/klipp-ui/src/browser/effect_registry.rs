@@ -394,6 +394,14 @@ impl EffectRegistry {
                 grouping: "Distort".into(),
             },
             EffectEntry {
+                name: "Reflection".into(),
+                category: EffectCategory::Distort,
+                source: EffectSource::Builtin(klipp_effects::reflection::surface("calm_water", 0.6).expect("a surface")),
+                source_label: "Built-in",
+                description: String::new(),
+                grouping: "Distort".into(),
+            },
+            EffectEntry {
                 name: "Displace".into(),
                 category: EffectCategory::Distort,
                 source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Displace {
