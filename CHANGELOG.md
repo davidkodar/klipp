@@ -41,6 +41,9 @@ The first release.
 - The RGB Curves graph fits inside the inspector.
 - The Audio Mixer's strips fit the panel, so every track's mute and solo can
   be reached, and dragging the mixer's top edge sets its height.
+- The Audio Mixer shows only tracks that can be heard: no strips for text
+  and subtitle tracks, or for a video track whose sound plays from an audio
+  track.
 
 ## 0.1.0-rc.3 — 2026-10-25
 
