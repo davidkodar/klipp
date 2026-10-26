@@ -6086,6 +6086,10 @@ impl TimelinePanel {
 
         // Clip name label
         if clip_rect.width() > 40.0 {
+            // A label stays on its own clip: the truncation guesses a
+            // text's width from its length, and a guess too short ran
+            // it over the next clip's label (#2666).
+            let painter = &painter.with_clip_rect(clip_rect.intersect(painter.clip_rect()));
             if let Some(title_data) = clip.title_data() {
                 // Title clip: show badge and text preview. Differentiate
                 // subtitle tracks (blue "S" badge) from text/title tracks
