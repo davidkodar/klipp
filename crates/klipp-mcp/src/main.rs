@@ -2817,6 +2817,11 @@ mod interface_tests {
         assert!(look.contains("```json") && look.contains("\"op\":\"look\""), "an op's example goes with it: {look}");
         let duck = guide_topic("op.duck").unwrap();
         assert!(duck.contains("bridge_secs") && !duck.contains("volume {clip_id"), "one op, not the next: {duck}");
+        // The audio effects and their params, no picture effect (#2780).
+        let clip_audio = guide_topic("op.clip_audio").unwrap();
+        assert!(clip_audio.contains("band1..band6 _enabled") && clip_audio.contains("pitch_shift") && !clip_audio.contains("vignette") && !clip_audio.contains("chroma_key"), "{clip_audio}");
+        let effect = guide_topic("op.effect").unwrap();
+        assert!(effect.contains("Kinds: `vignette`") && effect.contains("fill_bars"), "the picture kinds stay with effect: {effect}");
         assert!(guide_topic("op.teleport").unwrap_err().contains("ops_index"));
         let err = guide_topic("nope").unwrap_err();
         assert!(err.contains("ops") && err.contains("timeline-tools") && err.contains("a tool's name"), "{err}");

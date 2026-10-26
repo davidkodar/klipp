@@ -15,6 +15,26 @@
 //!
 //! A [`Refusal`] says which step, why, and what would make it possible.
 
+/// An audio chain's params by name: a number each, or `true`/`false` for
+/// a switch (an EQ band's `band1_enabled`), read as 1 and 0.
+fn audio_params<'de, D: serde::Deserializer<'de>>(d: D) -> Result<std::collections::BTreeMap<String, f32>, D::Error> {
+    use serde::Deserialize;
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Value {
+        Number(f32),
+        Switch(bool),
+    }
+    let map = std::collections::BTreeMap::<String, Value>::deserialize(d)?;
+    Ok(map
+        .into_iter()
+        .map(|(k, v)| match v {
+            Value::Number(n) => (k, n),
+            Value::Switch(b) => (k, if b { 1.0 } else { 0.0 }),
+        })
+        .collect())
+}
+
 fn strict_motion_spec<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<klipp_timeline::TitleMotionSpec>, D::Error> {
     use serde::Deserialize;
     let value = Option::<serde_json::Value>::deserialize(d)?;
@@ -1661,7 +1681,7 @@ pub enum Op {
     TrackAudio {
         track: TrackRef,
         effect: String,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "audio_params")]
         params: std::collections::BTreeMap<String, f32>,
         #[serde(default)]
         bypass: Option<bool>,
@@ -1675,7 +1695,7 @@ pub enum Op {
     ClipAudio {
         clip_id: ClipRef,
         effect: String,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "audio_params")]
         params: std::collections::BTreeMap<String, f32>,
         #[serde(default)]
         bypass: Option<bool>,
@@ -16020,7 +16040,14 @@ mod tests {
         let plan = one(serde_json::json!({ "op": "clip_audio", "clip_id": a.0.to_string(), "effect": "compressor", "params": { "ratio": 3.0 } })).unwrap();
         let EditCommand::EditAudioChain { new_state, .. } = &plan.steps[0].edit else { panic!() };
         assert_eq!(new_state.audio_effects.last().unwrap().effect_type, "compressor");
-        assert!(why(serde_json::json!({ "op": "clip_audio", "clip_id": a.0.to_string(), "effect": "compressor", "remove": true })).contains("has no compressor"), "nothing to take off yet");
+        assert!(why(serde_json::json!({ "op": "clip_audio", "clip_id": a.0.to_string(), "effect": "compressor", "remove": true })).contains("has no compressor"), "nothing to take off yet");        // A switch as true/false, as 1/0 (#2780).
+        let plan = one(serde_json::json!({ "op": "clip_audio", "clip_id": a.0.to_string(), "effect": "eq", "params": { "band1_enabled": true, "band2_enabled": false } })).unwrap();
+        let EditCommand::EditAudioChain { new_state, .. } = &plan.steps[0].edit else { panic!() };
+        let eq = new_state.audio_effects.last().unwrap();
+        let param = |n: &str| eq.params.iter().find(|(k, _)| k == n).map(|(_, v)| *v);
+        assert_eq!((param("band1_enabled"), param("band2_enabled")), (Some(1.0), Some(0.0)), "{eq:?}");
+        assert!(serde_json::from_value::<Op>(serde_json::json!({ "op": "track_audio", "track": "audio", "effect": "eq", "params": { "band1_enabled": false } })).is_ok());
+        assert!(serde_json::from_value::<Op>(serde_json::json!({ "op": "clip_audio", "clip_id": a.0.to_string(), "effect": "eq", "params": { "band1_enabled": "on" } })).is_err());
     }
 
     #[test]
