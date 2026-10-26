@@ -9106,6 +9106,38 @@ mod fits_its_column_tests {
         (right, edge, over)
     }
 
+    /// #2703: a title on a text track offers effects: its EFFECTS tab
+    /// has the add menu, and adding one makes the commands a shot's
+    /// would.
+    #[test]
+    fn a_title_offers_effects() {
+        let tc = |s: f64| klipp_core::Timecode::from_secs_f64(s, 24);
+        let td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Klipp".into(), ..Default::default() });
+        let title = klipp_timeline::Clip { kind: klipp_timeline::ClipKind::Title(td), ..klipp_timeline::Clip::gap(tc(0.0), tc(4.0)) };
+        let mut state = AppState::default();
+        let mut text = klipp_timeline::Track::new("T1", klipp_timeline::TrackKind::Text);
+        text.clips.push(title.clone());
+        state.sequences[0].tracks.insert(0, text);
+        state.selected_clip = Some(title.id);
+        let prefs = crate::prefs::Preferences::default();
+        let ctx = egui::Context::default();
+        crate::icons::install(&ctx);
+        let mut panel = NewInspectorPanel::default();
+        let mut texts = Vec::new();
+        for _ in 0..2 {
+            let mut active = InspectorTab::Effects;
+            let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(360.0, 1600.0))), ..Default::default() }, |ctx| {
+                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                    let _ = panel.show(ui, &state, &prefs, &KlippTheme::default(), &mut active);
+                });
+            });
+            texts = out.shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Text(t) => Some(t.galley.text().to_string()), _ => None }).collect();
+        }
+        assert!(texts.iter().any(|t| t == "+ Add effect"), "the title's EFFECTS tab: {texts:?}");
+        let cmds = crate::inspector::stack_view::add_effects_command(&state, &title, &[klipp_effects::BuiltinEffect::Glow { radius: 20.0, intensity: 0.5 }]).expect("a title takes an effect");
+        assert!(!cmds.is_empty());
+    }
+
     #[test]
     fn nothing_runs_past_the_column_at_its_narrowest() {
         let tc = |s: f64| klipp_core::Timecode::from_secs_f64(s, 24);
