@@ -61,6 +61,7 @@ fn every_effect() -> Vec<E> {
         E::Emboss { angle: 45.0, strength: 0.5, mix: 0.5 },
         E::Mirror { horizontal: 1, vertical: 0 },
         E::LensDistortion { distortion: 0.2, scale: 1.0 },
+        E::Displace { amount: 6.0, size: 24.0, speed: 1.0, direction: 0, seed: 3, time: 0.4 },
         E::Dilate { radius: 2 },
         E::Erode { radius: 2 },
         E::Denoise { spatial_sigma: 5.0, color_sigma: 0.1, iterations: 1 },
@@ -106,7 +107,7 @@ fn every_effect() -> Vec<E> {
             | E::RoundedCorners { .. } | E::DropShadow { .. } | E::FillBars { .. } | E::OuterGlow { .. }
             | E::LightWrap { .. } | E::AnamorphicStreak { .. } | E::FilmHalation { .. } | E::Invert { .. }
             | E::Posterize { .. } | E::Mosaic { .. } | E::EdgeDetect { .. } | E::ChannelMixer { .. }
-            | E::DirectionalBlur { .. } | E::Emboss { .. } | E::Mirror { .. } | E::LensDistortion { .. }
+            | E::DirectionalBlur { .. } | E::Emboss { .. } | E::Mirror { .. } | E::LensDistortion { .. } | E::Displace { .. }
             | E::Dilate { .. } | E::Erode { .. } | E::Denoise { .. } | E::Gamma { .. } | E::HSVAdjust { .. }
             | E::Vibrance { .. } | E::NoiseGenerator { .. } | E::MedianFilter { .. } | E::RadialBlur { .. }
             | E::Levels { .. } | E::Equalize { .. } | E::Letterbox { .. } | E::ChromaticAberration { .. }

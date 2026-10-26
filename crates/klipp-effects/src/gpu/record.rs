@@ -88,6 +88,7 @@ pub fn slots_needed(effect: &BuiltinEffect) -> Option<usize> {
         | BuiltinEffect::Transform { .. }
         | BuiltinEffect::Mirror { .. }
         | BuiltinEffect::LensDistortion { .. }
+        | BuiltinEffect::Displace { .. }
         | BuiltinEffect::Letterbox { .. }
         | BuiltinEffect::Dilate { .. }
         | BuiltinEffect::DirectionalBlur { .. }
@@ -410,6 +411,17 @@ impl GpuEffectsPipeline {
                     scale: *scale,
                 });
                 (&self.lens_distortion_pipeline, slot)
+            }
+            BuiltinEffect::Displace { amount, size, speed, direction, seed, time } => {
+                if amount.abs() < f32::EPSILON {
+                    return Recorded::Identity;
+                }
+                let slot = rec.slots.claim(q, &crate::gpu::DisplaceParams {
+                    width, height,
+                    amount: *amount, size: *size, speed: *speed,
+                    direction: *direction, seed: *seed, time: *time,
+                });
+                (&self.displace_pipeline, slot)
             }
             BuiltinEffect::Letterbox { aspect_ratio, bar_color, opacity } => {
                 let slot = rec.slots.claim(q, &LetterboxParams {

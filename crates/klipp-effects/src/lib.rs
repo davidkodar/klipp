@@ -40,6 +40,7 @@ pub mod layer;
 pub mod cpu_grade;
 pub mod deflicker;
 pub mod dither;
+pub mod displace;
 pub mod generator_grain;
 pub mod flicker;
 pub mod node_analysis;
@@ -613,6 +614,23 @@ pub enum BuiltinEffect {
         distortion: f32,
         /// Scale factor (0.5-2.0, default 1.0)
         scale: f32,
+    },
+    /// Displace (#2702): each pixel taken from a point moved by an
+    /// animated noise field, as water or heat haze moves a picture. See
+    /// [`displace`]. **The compositor sets `time`**, the clip's time in
+    /// seconds, as it sets Flicker's.
+    Displace {
+        /// How far a pixel moves at most, canvas pixels (default 12).
+        amount: f32,
+        /// How large the field's features are, canvas pixels (default 80).
+        size: f32,
+        /// How fast it moves, features per second (default 1).
+        speed: f32,
+        /// 0 both ways, 1 across only, 2 up and down only.
+        direction: u32,
+        seed: u32,
+        #[serde(default)]
+        time: f32,
     },
     /// Dilate: morphological dilation — expand bright areas.
     Dilate {
@@ -1251,6 +1269,12 @@ impl BuiltinEffect {
             // A block never smaller than a pixel.
             BuiltinEffect::Mosaic { block_size } => *block_size = (*block_size * k).max(1.0),
             BuiltinEffect::DirectionalBlur { distance, .. } => px(distance),
+            // The field's grain and its reach both in canvas pixels, so a
+            // proxy moves the same part of the picture.
+            BuiltinEffect::Displace { amount, size, .. } => {
+                px(amount);
+                px(size);
+            }
             BuiltinEffect::ChromaticAberration { red_shift, blue_shift, .. } => {
                 px(red_shift);
                 px(blue_shift);
@@ -1321,6 +1345,7 @@ pub fn is_identity_effect(effect: &BuiltinEffect) -> bool {
         BuiltinEffect::PictureTransform { .. } => effect.picture_transform_as_transform().is_some_and(|t| is_identity_effect(&t)),
         // A flicker of nothing, or one whose every jump holds (#989).
         BuiltinEffect::Flicker { amount, hold, .. } => amount.abs() < f32::EPSILON || *hold >= 1.0,
+        BuiltinEffect::Displace { amount, .. } => amount.abs() < f32::EPSILON,
         // No particles, or none to see (#1141).
         BuiltinEffect::Particles { amount, opacity, size, .. } => *amount < 1.0 || *opacity <= 0.0 || *size <= 0.0,
         BuiltinEffect::Merge { opacity, .. } => *opacity <= 0.0,

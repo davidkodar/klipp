@@ -394,6 +394,16 @@ impl EffectRegistry {
                 grouping: "Distort".into(),
             },
             EffectEntry {
+                name: "Displace".into(),
+                category: EffectCategory::Distort,
+                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Displace {
+                    amount: 12.0, size: 80.0, speed: 1.0, direction: 0, seed: 0, time: 0.0,
+                }),
+                source_label: "Built-in",
+                description: String::new(),
+                grouping: "Distort".into(),
+            },
+            EffectEntry {
                 name: "Rolling Shutter Correction".into(),
                 category: EffectCategory::Distort,
                 source: EffectSource::Builtin(klipp_effects::BuiltinEffect::RollingShutterCorrection {

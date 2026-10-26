@@ -122,6 +122,7 @@ fn cases() -> Vec<(&'static str, BuiltinEffect)> {
         ("Emboss", Emboss { angle: 45.0, strength: 1.0, mix: 0.7 }),
         ("Mirror", Mirror { horizontal: 1, vertical: 0 }),
         ("LensDistortion", LensDistortion { distortion: 0.3, scale: 1.0 }),
+        ("Displace", Displace { amount: 6.0, size: 24.0, speed: 1.0, direction: 0, seed: 3, time: 0.4 }),
         ("Dilate", Dilate { radius: 2 }),
         ("Erode", Erode { radius: 2 }),
         ("Denoise", Denoise { spatial_sigma: 2.0, color_sigma: 0.1, iterations: 1 }),

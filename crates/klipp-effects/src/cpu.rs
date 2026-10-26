@@ -466,6 +466,13 @@ pub(crate) fn apply(
         },
         // The twin of `SHADER_PARTICLES` (#1141).
         Particles { .. } => crate::particles::apply(effect, p, w, h),
+        // The twin of `displace::SHADER` (#2702).
+        Displace { amount, size, speed, direction, seed, time } => {
+            if amount.abs() < f32::EPSILON {
+                return p;
+            }
+            crate::displace::cpu(&p, w, h, amount, size, speed, direction, seed, time)
+        }
         // The twin of `SHADER_BINOCULAR_VIGNETTE` (#989).
         BinocularVignette { amount, spacing, width: eye_w, height: eye_h, softness, fringe } => {
             if amount.abs() < f32::EPSILON && fringe.abs() < f32::EPSILON {

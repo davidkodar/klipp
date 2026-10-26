@@ -444,6 +444,9 @@ fn builtin_effect_default(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
         BuiltinEffect::LensDistortion { .. } => BuiltinEffect::LensDistortion {
             distortion: 0.0, scale: 1.0,
         },
+        BuiltinEffect::Displace { .. } => BuiltinEffect::Displace {
+            amount: 12.0, size: 80.0, speed: 1.0, direction: 0, seed: 0, time: 0.0,
+        },
         BuiltinEffect::Dilate { .. } => BuiltinEffect::Dilate { radius: 1 },
         BuiltinEffect::Erode { .. } => BuiltinEffect::Erode { radius: 1 },
         BuiltinEffect::Denoise { .. } => BuiltinEffect::Denoise {
@@ -518,6 +521,7 @@ fn builtin_effect_has_multi_params(effect: &klipp_effects::BuiltinEffect) -> boo
         | BuiltinEffect::LightWrap { .. } | BuiltinEffect::AnamorphicStreak { .. } | BuiltinEffect::FilmHalation { .. }
         | BuiltinEffect::EdgeDetect { .. } | BuiltinEffect::ChannelMixer { .. } | BuiltinEffect::DirectionalBlur { .. }
         | BuiltinEffect::Emboss { .. } | BuiltinEffect::Mirror { .. } | BuiltinEffect::LensDistortion { .. }
+        | BuiltinEffect::Displace { .. }
         | BuiltinEffect::Denoise { .. } | BuiltinEffect::RollingShutterCorrection { .. } | BuiltinEffect::VideoStabilization { .. } | BuiltinEffect::SpeedRamp { .. }
         | BuiltinEffect::Deflicker { .. } | BuiltinEffect::TemporalDenoise { .. }
         | BuiltinEffect::HSVAdjust { .. } | BuiltinEffect::NoiseGenerator { .. }

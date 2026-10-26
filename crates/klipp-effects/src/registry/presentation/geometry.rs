@@ -15,6 +15,7 @@ const ROUNDED: &str = "klipp.fx.rounded_corners";
 const FILL_BARS: &str = "klipp.fx.fill_bars";
 const MIRROR: &str = "klipp.fx.mirror";
 const LENS: &str = "klipp.fx.lens_distortion";
+const DISPLACE: &str = "klipp.fx.displace";
 const LETTERBOX: &str = "klipp.fx.letterbox";
 const PIN: &str = "klipp.fx.corner_pin";
 const PICTURE_XF: &str = "klipp.fx.picture_transform";
@@ -50,6 +51,12 @@ pub(super) static PARAMS: &[ParamEntry] = &[
     at(MIRROR, "vertical", P::shown_as(Widget::Toggle)),
     at(LENS, "distortion", P::scrub(0.01, 2)),
     at(LENS, "scale", P::scrub(0.01, 2)),
+    at(DISPLACE, "amount", P::scrub(0.5, 1)),
+    at(DISPLACE, "size", P::scrub(1.0, 0)),
+    at(DISPLACE, "speed", P::scrub(0.05, 2)),
+    at(DISPLACE, "direction", P::shown_as(Widget::Combo).labels(&["Both", "Across", "Up and Down"])),
+    at(DISPLACE, "seed", P::scrub(1.0, 0).soft_whole((0, 10_000))),
+    at(DISPLACE, "time", P::hidden()),
     at(LETTERBOX, "aspect_ratio", P::scrub(0.01, 2).label("Aspect Ratio").suffix(Suffix::Text(":1"))),
     // A choice of two colours, not a 0-to-1 slider (IC5).
     at(LETTERBOX, "bar_color", P::shown_as(Widget::Combo).label("Bar Colour").labels(&["Black", "White"])),

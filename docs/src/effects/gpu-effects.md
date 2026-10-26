@@ -33,6 +33,7 @@ Effects are added from **Library → Video FX**. Parameters are listed by their 
 | Outer Glow | `radius`, `intensity`, `color` | Light spilling out past the layer's edge |
 | Mirror | `horizontal`, `vertical` (0 or 1) | Flips the picture |
 | Lens Distortion | `distortion` (−1 barrel to 1 pincushion), `scale` | Barrel or pincushion distortion |
+| Displace | `amount`, `size` (canvas px), `speed`, `direction` (both, across, up and down), `seed` | Each pixel moved by a drifting noise field: heat haze, water, a wobble |
 | Letterbox | `aspect_ratio`, `bar_color` (0 black, 1 white), `opacity` | Bars that matte the frame to an aspect ratio |
 | Fill Bars | `blur`, `zoom`, `darken` | Fills the bars around a picture of another shape with a blurred, zoomed copy of it |
 | Picture Transform | `position_x`, `position_y`, `scale_x`, `scale_y`, `rotation`, `anchor_x`, `anchor_y` | Moves the picture inside its frame, where it sits, rather than placing the frame |
