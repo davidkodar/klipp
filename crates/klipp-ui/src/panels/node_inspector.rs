@@ -2068,6 +2068,10 @@ impl NodeInspectorPanel {
                 CurveChannel::Green => &mut curves.green, CurveChannel::Blue => &mut curves.blue,
             };
             ui.horizontal(|ui| {
+                // The graph is `curve_w` wide, a pad in from each side:
+                // left to fill the row, it ran to the panel's edge, under
+                // the inspector's scroll bar (#2669).
+                ui.set_max_width(PAD + curve_w);
                 ui.add_space(PAD);
                 let hist = self.histogram_for(ch).copied();
                 #[cfg(any(test, feature = "row-recorder"))]
