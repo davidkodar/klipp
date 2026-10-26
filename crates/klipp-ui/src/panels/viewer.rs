@@ -607,7 +607,9 @@ impl ViewerPanel {
                 bar_rect, 0.0,
                 egui::Color32::from_rgba_premultiplied(0, 0, 0, 180),
             );
-            let tc_text = state.playhead.to_timecode_string();
+            // In frames at the sequence's rate: the raw value is ticks
+            // at an NTSC rate (#2665).
+            let tc_text = state.timecode_display().position(state.playhead);
             ui.painter().text(
                 egui::pos2(bar_rect.left() + 16.0, bar_rect.center().y),
                 egui::Align2::LEFT_CENTER,
@@ -6127,11 +6129,11 @@ impl ViewerPanel {
             );
 
             let in_str = media.default_source_in
-                .map(|t| t.to_timecode_string())
+                .map(|t| klipp_core::TimecodeDisplay::plain(media.fps).position(t))
                 .unwrap_or_else(|| "00:00:00:00".to_string());
             let out_str = media.default_source_out
-                .map(|t| t.to_timecode_string())
-                .unwrap_or_else(|| media.duration.to_timecode_string());
+                .map(|t| klipp_core::TimecodeDisplay::plain(media.fps).position(t))
+                .unwrap_or_else(|| klipp_core::TimecodeDisplay::plain(media.fps).position(media.duration));
             painter.text(
                 egui::pos2(cx, cy + 6.0),
                 egui::Align2::CENTER_CENTER,

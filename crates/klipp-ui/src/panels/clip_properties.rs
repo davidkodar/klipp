@@ -129,7 +129,7 @@ fn render_info_tab(ui: &mut egui::Ui, media: &klipp_media::MediaItem) {
                 };
                 kv(ui, "Frame rate", &fps_text);
             }
-            kv(ui, "Duration", &media.duration.to_timecode_string());
+            kv(ui, "Duration", &klipp_core::TimecodeDisplay::plain(media.fps).duration(media.duration));
             if !media.video_codec.is_empty() {
                 kv(ui, "Video codec", &media.video_codec.to_uppercase());
             }

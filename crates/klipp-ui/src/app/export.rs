@@ -691,7 +691,7 @@ pub(super) fn matte_gap_lines(
                 (AppCommand::TrackSubject { clip_id: gap.clip, model: model.to_string(), into: Some(klipp_core::SubjectMatteUse::Grade) }, "")
             }
         };
-        out.push((gap.clip, track, format!("{name} at {}{place}: {how}", clip.timeline_in.to_timecode_string())));
+        out.push((gap.clip, track, format!("{name} at {}{place}: {how}", seq.timecode_display().position(clip.timeline_in))));
     }
     out
 }
@@ -718,7 +718,7 @@ pub(super) fn offline_clips(seq: &klipp_timeline::Sequence, pool: &klipp_media::
         .filter_map(|clip| {
             let klipp_timeline::ClipKind::Media { media_id } = &clip.kind else { return None };
             let item = pool.get(media_id)?;
-            item.offline.then(|| (item.filename.clone(), clip.timeline_in.to_timecode_string()))
+            item.offline.then(|| (item.filename.clone(), seq.timecode_display().position(clip.timeline_in)))
         })
         .collect()
 }
@@ -1812,7 +1812,7 @@ impl KlippApp {
                     let in_pt = self.state.sequences[self.state.active_sequence_idx].in_point.unwrap();
                     let out_pt = self.state.sequences[self.state.active_sequence_idx].out_point.unwrap();
                     ui.radio_value(&mut self.export_dialog.range_mode, 1,
-                        format!("In/Out range ({} \u{2192} {})", in_pt.to_timecode_string(), out_pt.to_timecode_string()));
+                        format!("In/Out range ({} \u{2192} {})", self.state.timecode_display().position(in_pt), self.state.timecode_display().position(out_pt)));
                 }
                 let sel_count = self.state.selected_clips.len();
                 let sel_enabled = sel_count > 0;

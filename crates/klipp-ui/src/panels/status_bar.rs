@@ -242,7 +242,7 @@ fn left_fields(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme) {
 
     // Duration
     let dur = state.sequence_duration();
-    let dur_str = dur.to_timecode_string();
+    let dur_str = state.timecode_display().duration(dur);
     if !fits(ui, &["Duration:", &dur_str]) {
         return;
     }

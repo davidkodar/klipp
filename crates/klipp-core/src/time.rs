@@ -98,19 +98,6 @@ impl RationalTime {
             rate: new_rate,
         }
     }
-
-    /// Format as HH:MM:SS:FF at the stored rate
-    pub fn to_timecode_string(&self) -> String {
-        let total_frames = self.value.abs();
-        let rate = self.rate.max(1) as i64;
-        let ff = total_frames % rate;
-        let total_secs = total_frames / rate;
-        let ss = total_secs % 60;
-        let mm = (total_secs / 60) % 60;
-        let hh = total_secs / 3600;
-        let sign = if self.value < 0 { "-" } else { "" };
-        format!("{sign}{hh:02}:{mm:02}:{ss:02}:{ff:02}")
-    }
 }
 
 impl RationalTime {
@@ -361,6 +348,18 @@ mod timecode_display_tests {
             let back_frames = (back.to_secs_f64() * d.fps.as_f64()).round() as i64;
             assert_eq!(back_frames, frames, "{shown} came back as frame {back_frames}");
         }
+    }
+
+    /// #2665: at 23.976 a position's value counts ticks (1001 a frame), so
+    /// its timecode is in frames at the sequence's rate: frame 156 is
+    /// 00:00:06:12, not the ticks' 00:00:06:12012.
+    #[test]
+    fn an_ntsc_position_shows_its_frame_not_its_ticks() {
+        let fps = Fps::ntsc_23976();
+        let at = RationalTime { value: 156 * 1001, rate: fps.num };
+        let tc = TimecodeDisplay::plain(fps);
+        assert_eq!(tc.position(at), "00:00:06:12");
+        assert_eq!(tc.duration(at), "00:00:06:12");
     }
 
     #[test]
