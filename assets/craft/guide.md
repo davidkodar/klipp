@@ -331,7 +331,16 @@ exist until the plan runs.
   name or key and inside their ranges.
 - `clip_audio {clip_id, effect, params?, bypass?, remove?}`: the same on
   one clip's own chain (a linked pair's, either clip named): a built-in
-  effect or an installed plug-in.
+  effect or an installed plug-in. Five voice tools in it: `normalize`
+  brings the whole clip to `target_lufs` integrated by one gain, its
+  dynamics kept (measured in the background, none until then; `mode: 0`
+  rides the level instead, a leveler, and is the only mode a track
+  takes); `noise_reduction` turns each band down while it sits near its
+  own noise floor, the voice over it untouched (a sound held steady
+  longer than about 1.5 s counts as floor, so not on music); `deesser`
+  calms an "s" that stands out from the voice, its `threshold` in dB
+  relative to the voice; `declick` bridges clicks and pops;
+  `pitch_shift` moves the pitch by `semitones`, up positive.
   Kinds: `vignette`, `grain` (`film_grain`), `glow`, `bloom`, `diffusion`
   (`pro_mist`), `halation` (`film_halation`), `light_rays` (`god_rays`),
   `lens_flare`, `anamorphic` (`anamorphic_streak`, `streak`), `light_wrap`,

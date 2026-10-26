@@ -44,6 +44,7 @@ fn clip(path: &std::path::Path, from: u64, to: u64, gain: f32) -> AudioClipSnaps
         path: path.to_path_buf(),
         audio_effects: vec![],
         audio_effect_keyframes: Default::default(),
+        source_range: (0.0, 0.0),
         shape: AudioClipShape { gain, clip_duration_secs: (to - from) as f64 / 25.0, ..Default::default() },
         varispeed: None,
         exact_secs: None,

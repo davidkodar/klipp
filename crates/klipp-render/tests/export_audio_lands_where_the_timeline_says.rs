@@ -85,6 +85,7 @@ fn clip(path: PathBuf, start_frame: u64, end_frame: u64, source_start_secs: f64)
         path,
         audio_effects: vec![],
         audio_effect_keyframes: Default::default(),
+        source_range: (0.0, 0.0),
         shape: Default::default(),
         varispeed: None,
         exact_secs: None,

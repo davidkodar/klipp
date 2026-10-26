@@ -345,7 +345,12 @@ fn get_track_samples(
         let clip = &state.clips[clip_idx];
         // The clip's effects, made first: how far they look ahead says how
         // far past the clip's end its sound must be read.
-        let mut chain = (!clip.audio_effects.is_empty()).then(|| AudioEffectChain::from_instances_with_kfs(&clip.audio_effects, &clip.audio_effect_keyframes, sample_rate));
+        // A Normalize the app has not measured yet is measured here, as
+        // the app measures it, so the export is right and the same as
+        // playback once the app has caught up (#2778).
+        let (from, to) = clip.source_range;
+        let effects = crate::normalize::with_normalizes_measured(&clip.path, from, to, &clip.audio_effects, &clip.audio_effect_keyframes);
+        let mut chain = (!effects.is_empty()).then(|| AudioEffectChain::from_instances_with_kfs(&effects, &clip.audio_effect_keyframes, sample_rate));
         let latency_secs = chain.as_ref().map_or(0.0, |c| c.total_latency_samples(sample_rate) as f64 / sample_rate as f64);
         let until = decode_until(clip, fps, latency_secs);
         let buf = match decode_clip_audio(&clip.path, clip.source_start_secs, until, sample_rate) {
@@ -1082,6 +1087,7 @@ mod tests {
             path,
             audio_effects: vec![],
             audio_effect_keyframes: std::collections::HashMap::new(),
+            source_range: (0.0, 0.0),
             shape: AudioClipShape::default(),
             varispeed: None,
             exact_secs: None,
@@ -1144,6 +1150,7 @@ mod tests {
             path: std::path::PathBuf::new(),
             audio_effects: vec![],
             audio_effect_keyframes: std::collections::HashMap::new(),
+            source_range: (0.0, 0.0),
             shape: AudioClipShape::default(),
             varispeed,
             exact_secs: None,

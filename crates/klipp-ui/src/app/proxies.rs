@@ -529,6 +529,9 @@ impl KlippApp {
                     self.set_audio_effect_params(clip_id, effect_index, &params, "Learn Noise Profile");
                     self.state.toast.show(format!("Noise profile learned at {}", format_profile_time(source_secs)));
                 }
+                AppEvent::NormalizeMeasured { clip_id, effect_index, key, lufs } => {
+                    self.normalize_measured(clip_id, effect_index, key, lufs);
+                }
                 AppEvent::DenoiserProfileFailed { error } => {
                     tracing::warn!("Denoiser profile learning failed: {}", error);
                     self.state.toast.show(format!("Could not learn noise profile: {error}"));

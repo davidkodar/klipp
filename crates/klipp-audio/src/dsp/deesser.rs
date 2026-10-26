@@ -2,6 +2,8 @@ use super::{AudioEffect, AudioParamDescriptor, AudioProcessContext, ParamUnit};
 use std::f32::consts::PI;
 
 const MAX_CHANNELS: usize = 2;
+/// Below this level (-60 dBFS) the signal is silence, not a voice.
+const SILENCE: f32 = 0.001;
 
 /// Biquad coefficients for bandpass detection filter.
 #[derive(Debug, Clone, Copy)]
@@ -39,7 +41,10 @@ pub struct DeEsser {
     bp_state: [BiquadState; MAX_CHANNELS],
     // Envelope followers
     envelope: [f32; MAX_CHANNELS],
+    /// The whole signal's level, which the sibilance is judged against.
+    voice_envelope: [f32; MAX_CHANNELS],
     release_coeff: f32,
+    voice_release: f32,
     threshold_linear: f32,
     reduction_linear: f32,
     dirty: bool,
@@ -52,11 +57,13 @@ impl DeEsser {
             frequency: 6000.0,
             threshold: -20.0,
             reduction: 6.0,
-            bandwidth: 2.0,
+            bandwidth: 1.0,
             bp_coeffs: BiquadCoeffs::default(),
             bp_state: [BiquadState::default(); MAX_CHANNELS],
             envelope: [0.0; MAX_CHANNELS],
+            voice_envelope: [0.0; MAX_CHANNELS],
             release_coeff: 0.0,
+            voice_release: 0.0,
             threshold_linear: 0.0,
             reduction_linear: 0.0,
             dirty: true,
@@ -89,6 +96,7 @@ impl DeEsser {
 
         // Fast release for de-essing (~5ms)
         self.release_coeff = (-1.0 / (0.005 * self.sample_rate)).exp();
+        self.voice_release = (-1.0 / (0.030 * self.sample_rate)).exp();
         self.threshold_linear = db_to_linear(self.threshold);
         self.reduction_linear = db_to_linear(-self.reduction);
         self.dirty = false;
@@ -107,7 +115,7 @@ static PARAM_DESCS: &[AudioParamDescriptor] = &[
     AudioParamDescriptor { name: "frequency", label: "Frequency", default: 6000.0, min: 2000.0, max: 12000.0, unit: ParamUnit::Hz },
     AudioParamDescriptor { name: "threshold", label: "Threshold", default: -20.0, min: -40.0, max: 0.0, unit: ParamUnit::Db },
     AudioParamDescriptor { name: "reduction", label: "Reduction", default: 6.0, min: 0.0, max: 12.0, unit: ParamUnit::Db },
-    AudioParamDescriptor { name: "bandwidth", label: "Bandwidth", default: 2.0, min: 0.5, max: 5.0, unit: ParamUnit::None },
+    AudioParamDescriptor { name: "bandwidth", label: "Bandwidth", default: 1.0, min: 0.5, max: 5.0, unit: ParamUnit::None },
 ];
 
 impl AudioEffect for DeEsser {
@@ -163,15 +171,18 @@ impl AudioEffect for DeEsser {
                 } else {
                     *env = self.release_coeff * *env + (1.0 - self.release_coeff) * sib_level;
                 }
+                let voice = &mut self.voice_envelope[ch];
+                let level = input.abs();
+                *voice = if level > *voice { level } else { self.voice_release * *voice + (1.0 - self.voice_release) * level };
 
-                // If sibilance exceeds threshold, apply gain reduction
-                if *env > thresh {
-                    // How far above threshold (in linear domain)
-                    let excess_ratio = *env / thresh;
-                    // Gain reduction scales from 1.0 down to max_reduction
-                    let gain = (1.0 / excess_ratio).max(max_reduction);
-                    // Only reduce the sibilant frequency range (split-band approach):
-                    // Subtract the sibilance, add it back reduced
+                // Split-band and relative (#2778): the band is turned down
+                // by how far it stands above Threshold relative to the
+                // whole voice, at most Reduction, so a voice's own air
+                // stays and only an "s" that stands out from it is calmed,
+                // whatever the voice's level. Near silence is left alone.
+                if *env > thresh * *voice && *voice > SILENCE {
+                    let excess = *env / (thresh * *voice);
+                    let gain = (1.0 / excess).max(max_reduction);
                     buffer[idx] = input - sibilance + sibilance * gain;
                 }
             }
@@ -181,6 +192,7 @@ impl AudioEffect for DeEsser {
     fn reset(&mut self) {
         self.bp_state = [BiquadState::default(); MAX_CHANNELS];
         self.envelope = [0.0; MAX_CHANNELS];
+        self.voice_envelope = [0.0; MAX_CHANNELS];
     }
 
     fn serialize_params(&self) -> Vec<(String, f32)> {

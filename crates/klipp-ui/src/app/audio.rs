@@ -1054,6 +1054,66 @@ impl KlippApp {
         let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
     }
 
+    /// Every Normalize in Clip mode on the active sequence measured for
+    /// what it now is (#2778): one whose clip's range or chain before it
+    /// has changed since it was measured holds unity again until it is,
+    /// and is measured on a worker thread, once, as the export measures
+    /// it. Its result arrives as `AppEvent::NormalizeMeasured`.
+    pub(super) fn measure_stale_normalizes(&mut self) {
+        let seq_idx = self.state.active_sequence_idx;
+        let mut stale = Vec::new();
+        for clip in self.state.sequences[seq_idx].all_clips() {
+            if !clip.audio_effects.iter().any(klipp_render::normalize::is_clip_normalize) {
+                continue;
+            }
+            let Some(media) = clip.media_id().and_then(|m| self.state.media_pool.get(&m)).filter(|m| m.has_audio) else { continue };
+            let (from, to) = (clip.source_in.to_secs_f64(), clip.source_out.to_secs_f64());
+            for (idx, key) in klipp_render::normalize::stale_normalizes(&media.path, from, to, &clip.audio_effects, &clip.audio_effect_keyframes) {
+                stale.push((clip.id, idx, key, media.path.clone(), from, to, clip.audio_effects.clone(), clip.audio_effect_keyframes.clone()));
+            }
+        }
+        let mut cleared = false;
+        for (clip_id, idx, key, path, from, to, effects, keyframes) in stale {
+            // An old measurement no longer fits: unity until the new one.
+            if let Some(inst) = self.state.sequences[seq_idx].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).and_then(|c| c.audio_effects.get_mut(idx)) {
+                let before = inst.params.len();
+                inst.params.retain(|(k, _)| !k.starts_with("measured_"));
+                cleared |= inst.params.len() != before;
+            }
+            if !self.normalize_measuring.insert((clip_id, idx, key)) {
+                continue;
+            }
+            let tx = self.proxy_event_tx.clone();
+            let spawned = std::thread::Builder::new().name("klipp-normalize-measure".into()).spawn(move || {
+                let lufs = klipp_render::normalize::measure_normalize_input(&path, from, to, &effects, &keyframes, idx);
+                let _ = tx.send(AppEvent::NormalizeMeasured { clip_id, effect_index: idx, key, lufs });
+            });
+            if spawned.is_err() {
+                self.normalize_measuring.remove(&(clip_id, idx, key));
+            }
+        }
+        if cleared {
+            self.sync_sequence_to_engine();
+        }
+    }
+
+    /// A Normalize's measurement in: stored on it when it is still what was
+    /// measured (not a step to undo: it follows from the clip as it is).
+    pub(super) fn normalize_measured(&mut self, clip_id: klipp_core::ClipId, effect_index: usize, key: u64, lufs: Option<f32>) {
+        self.normalize_measuring.remove(&(clip_id, effect_index, key));
+        let seq_idx = self.state.active_sequence_idx;
+        let pool = &self.state.media_pool;
+        let Some(clip) = self.state.sequences[seq_idx].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)) else { return };
+        let Some(media) = clip.media_id().and_then(|m| pool.get(&m)) else { return };
+        let (from, to) = (clip.source_in.to_secs_f64(), clip.source_out.to_secs_f64());
+        if !klipp_render::normalize::stale_normalizes(&media.path, from, to, &clip.audio_effects, &clip.audio_effect_keyframes).contains(&(effect_index, key)) {
+            return;
+        }
+        klipp_render::normalize::set_normalize_measured(&mut clip.audio_effects[effect_index], lufs, key);
+        self.sync_sequence_to_engine();
+        self.state.dirty = true;
+    }
+
     /// Learn a Broadband Denoiser profile from the clip's conformed audio
     /// on a worker thread. The result arrives as
     /// `AppEvent::DenoiserProfileLearned` and is stored in the effect's

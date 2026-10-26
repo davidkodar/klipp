@@ -7086,6 +7086,11 @@ fn track_audio(seq: &Sequence, fps: Fps, i: usize, track: &TrackRef, edit: Audio
     let old = t.settings();
     let mut new = old.clone();
     let mut what = edit_audio_chain(i, &mut new.effects.audio, &on.name, &effect, &params, edit.bypass, edit.remove)?;
+    // A Normalize in Clip mode holds a gain measured from one clip's
+    // sound (#2778); a track's chain has no one clip to measure.
+    if new.effects.audio.iter().any(|inst| inst.effect_type == "normalize" && inst.enabled && inst.params.iter().find(|(k, _)| k == "mode").is_none_or(|(_, v)| *v > 0.5)) {
+        return Err(refuse(i, "a Normalize on a track has no one clip to measure", "on a track set mode 0 (ride: a leveler); for one clip's loudness put it on the clip with clip_audio, or bring clips to a target with klipp_normalize"));
+    }
     if !edit.remove && (edit.bypass.is_none() || !params.is_empty()) {
         what.push_str(", after every clip's own chain");
     }
@@ -7101,7 +7106,11 @@ fn clip_audio(seq: &Sequence, pool: &MediaPool, i: usize, given: &Clip, edit: Au
     }
     let (effect, params) = audio_chain_effect(i, &edit, transcripts)?;
     let mut new_state = crate::history::AudioChainSnapshot::from_clip(clip);
-    let what = edit_audio_chain(i, &mut new_state.audio_effects, &clip_name(seq, pool, given), &effect, &params, edit.bypass, edit.remove)?;
+    let mut what = edit_audio_chain(i, &mut new_state.audio_effects, &clip_name(seq, pool, given), &effect, &params, edit.bypass, edit.remove)?;
+    if effect == "normalize" && !edit.remove && params.iter().find(|(k, _)| k == "mode").is_none_or(|(_, v)| *v > 0.5) {
+        // Measured in the background, as the app opens the clip (#2778).
+        what.push_str(": one gain from the clip's measured loudness, held at none until it is measured (the export measures it if it has not been)");
+    }
     let edit = EditCommand::EditAudioChain { clip_id: clip.id, description: "Clip Audio", old_state: crate::history::AudioChainSnapshot::from_clip(clip), new_state };
     Ok((what, edit, vec![given.id]))
 }
@@ -14054,6 +14063,18 @@ mod tests {
         let r = resolve(&seq, &pool, &ops(r#"[{"op":"track_audio","track":"audio","effect":"reverb","params":{"bogus_param":5}}]"#)).unwrap_err();
         assert!(r.why.contains("reverb has no param \"bogus_param\"") && r.hint.contains("room_size, damping, wet, width, pre_delay"), "{r:?}");
         assert!(bad(r#"[{"op":"track_audio","track":"audio","effect":"limiter","remove":true}]"#).contains("has no limiter"));
+        // #2778: a Normalize on a track rides (mode 0); Clip mode needs one
+        // clip to measure, and says where it goes instead.
+        let r = resolve(&seq, &pool, &ops(r#"[{"op":"track_audio","track":"audio","effect":"normalize"}]"#)).unwrap_err();
+        assert!(r.why.contains("no one clip to measure") && r.hint.contains("clip_audio"), "{r:?}");
+        assert!(resolve(&seq, &pool, &ops(r#"[{"op":"track_audio","track":"audio","effect":"normalize","params":{"mode":0}}]"#)).is_ok());
+        // On a clip it says its gain comes once the clip is measured; the
+        // measurement is not a param an op sets.
+        let clip = seq.tracks[1].clips[0].id.0;
+        let plan = resolve(&seq, &pool, &ops(&format!(r#"[{{"op":"clip_audio","clip_id":"{clip}","effect":"normalize","params":{{"target_lufs":-16}}}}]"#))).unwrap();
+        assert!(plan.steps[0].what.contains("held at none until it is measured"), "{}", plan.steps[0].what);
+        let r = resolve(&seq, &pool, &ops(&format!(r#"[{{"op":"clip_audio","clip_id":"{clip}","effect":"normalize","params":{{"measured_lufs":-20}}}}]"#))).unwrap_err();
+        assert!(r.why.contains("no param \"measured_lufs\""), "{r:?}");
     }
 
     /// #847: one clip of a track that cannot take a change (fades longer

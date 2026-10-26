@@ -43,6 +43,7 @@ fn snapshot() -> SequenceSnapshot {
         path: tone(),
         audio_effects: vec![],
         audio_effect_keyframes: Default::default(),
+        source_range: (0.0, 0.0),
         shape: Default::default(),
         varispeed: None,
         exact_secs: None,

@@ -56,6 +56,8 @@ mod keyer_op_matches_the_app;
 mod layer_fx_goldens;
 #[path = "../normalize_clips.rs"]
 mod normalize_clips;
+#[path = "../normalize_effect_export.rs"]
+mod normalize_effect_export;
 #[path = "../odd_size_export.rs"]
 mod odd_size_export;
 #[path = "../pixel_check_fractional.rs"]

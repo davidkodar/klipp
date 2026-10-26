@@ -383,6 +383,9 @@ pub struct KlippApp {
     proxy_children: Vec<Arc<std::sync::atomic::AtomicU32>>,
     /// Channel for proxy generation events (started/complete/failed)
     proxy_event_tx: Sender<AppEvent>,
+    /// Normalize measurements under way (#2778): the clip, the effect's
+    /// place and what it is measured for, so each runs once.
+    normalize_measuring: std::collections::HashSet<(klipp_core::ClipId, usize, u64)>,
     /// The thread that makes skim frames, from decoders it keeps open
     /// per skimmed file. Both the media browser's hover and the timeline's
     /// skimmer ask it.
