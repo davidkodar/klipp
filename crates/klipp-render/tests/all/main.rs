@@ -78,6 +78,8 @@ mod pan_inside_a_card;
 mod frames_survive_save;
 #[path = "../scene_layers.rs"]
 mod scene_layers;
+#[path = "../secondaries_change_the_picture.rs"]
+mod secondaries_change_the_picture;
 #[path = "../place_by_sync.rs"]
 mod place_by_sync;
 #[path = "../tnr_export_cost.rs"]

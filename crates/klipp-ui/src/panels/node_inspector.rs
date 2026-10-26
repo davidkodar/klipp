@@ -17,6 +17,10 @@ pub struct NodeInspectorPanel {
     /// One printer point, from the colour preferences (#241), for the
     /// offset's readout in points.
     pub printer_point: f32,
+    /// Whether the graded clip's picture is scene-referred (HDR or camera
+    /// log), set as the inspector is drawn: where new and reset zones go
+    /// (#2767).
+    pub scene_referred: bool,
     // ── Inspector widgets ──
     pub lift_wheel: ColorWheelState,
     pub gamma_wheel: ColorWheelState,
@@ -76,6 +80,7 @@ impl Default for NodeInspectorPanel {
     fn default() -> Self {
         Self {
             printer_point: 0.0125,
+            scene_referred: false,
             lift_wheel: ColorWheelState::default(),
             gamma_wheel: ColorWheelState::default(),
             gain_wheel: ColorWheelState::default(),
@@ -2356,7 +2361,7 @@ impl NodeInspectorPanel {
     ) {
         self.hdr_zones_head(ui, node_id, params, Some(NodeKeys { tracks: keyframes, frame }), clip_id, cmds, theme);
         let picked = self.hdr_zone_picked(node_id);
-        let mut zones = params.hdr_zones.clone().unwrap_or_default();
+        let mut zones = params.hdr_zones.clone().unwrap_or_else(|| klipp_core::HdrZonesSettings::for_source(self.scene_referred));
         let before = zones.clone();
         let name = |control: &str| format!("hdr_{}_{control}", klipp_nodes::params::HDR_ZONE_KEYS[picked]);
         let mut rows: Vec<(&str, String, &mut f32, std::ops::RangeInclusive<f32>, &str)> = vec![("Saturation", name("saturation"), &mut zones.saturation[picked], 0.0..=2.0, "")];
@@ -2375,6 +2380,11 @@ impl NodeInspectorPanel {
         }
         if zones != before {
             params.hdr_zones = Some(zones.clone());
+        }
+        // Where the picked zone starts, as a share of white (#2767): on an
+        // SDR picture white is about +2.5 stops.
+        if picked > 0 {
+            ui.label(egui::RichText::new(zone_start_label(picked, zones.boundary[picked])).size(crate::theme::type_scale::CAPTION).color(theme.text_dim));
         }
         ui.add_space(8.0);
         hdr_zone_map(ui, &zones, picked, theme);
@@ -2401,7 +2411,7 @@ impl NodeInspectorPanel {
         theme: &KlippTheme,
     ) {
         use klipp_color::grade_model::hdr_zones::ZONE_NAMES;
-        let mut zones = params.hdr_zones.clone().unwrap_or_default();
+        let mut zones = params.hdr_zones.clone().unwrap_or_else(|| klipp_core::HdrZonesSettings::for_source(self.scene_referred));
         let before = zones.clone();
         let picked = self.hdr_zone_picked(node_id);
         ui.add_space(4.0);
@@ -2476,7 +2486,7 @@ impl NodeInspectorPanel {
                 .selected_text("Start from")
                 .width(150.0)
                 .show_ui(ui, |ui| {
-                    for (preset, about, settings) in klipp_core::HdrZonesSettings::presets() {
+                    for (preset, about, settings) in klipp_core::HdrZonesSettings::presets(self.scene_referred) {
                         if ui.selectable_label(false, preset).on_hover_text(about).clicked() {
                             let writes = hdr_zones_writes(&settings);
                             zones = settings;
@@ -2489,7 +2499,7 @@ impl NodeInspectorPanel {
                     }
                 });
             if ui.small_button("Reset zone").on_hover_text("Put this zone's colour, exposure, saturation and reach back").clicked() {
-                let fresh = klipp_core::HdrZonesSettings::default();
+                let fresh = klipp_core::HdrZonesSettings::for_source(self.scene_referred);
                 let mut values = vec![(name("exposure"), fresh.exposure[picked]), (name("colour_x"), 0.0), (name("colour_y"), 0.0), (name("saturation"), fresh.saturation[picked])];
                 if picked > 0 {
                     values.push((name("boundary"), fresh.boundary[picked]));
@@ -5171,6 +5181,17 @@ fn push_wheel_cmds(cmds: &mut Vec<AppCommand>, clip_id: ClipId, node_id: NodeId,
     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: format!("{}_master", prefix), value: master });
 }
 
+
+/// Where zone `zone` starts, its boundary `stops` from mid grey, in the
+/// words a colourist reads it in: the share of white (linear) it reaches
+/// from or up to (#2767).
+pub(crate) fn zone_start_label(zone: usize, stops: f32) -> String {
+    use klipp_color::grade_model::hdr_zones::{MID_GREY, ZONE_NAMES};
+    let of_white = MID_GREY * stops.exp2();
+    let at = if of_white >= 1.0 { format!("{of_white:.1}\u{00d7} white") } else { format!("{:.0}% of white", of_white * 100.0) };
+    let way = if zone <= 3 { "reaches up to" } else { "starts at" };
+    format!("{} {way} {at}", ZONE_NAMES[zone])
+}
 #[cfg(test)]
 mod huesat_curve_coverage {
     //! Every Hue/Sat curve the pipeline applies must be reachable.

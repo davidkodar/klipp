@@ -1367,6 +1367,8 @@ impl KlippApp {
                     // The selected node's masks a tracker drives, as the
                     // generated view marks them (#1398).
                     self.node_inspector_panel.tracked_masks = self.state.selected_node_id.map(|n| crate::panels::node_inspector::tracked_masks_of(clip, n)).unwrap_or_default();
+                    // Where new zones go (#2767).
+                    self.node_inspector_panel.scene_referred = self.state.media_pool.scene_referred(clip.media_id());
                     let panel_cmds = if drawn { generated_cmds } else { clip.edit_grade(|root| {
                         let graph: &mut klipp_nodes::NodeGraph =
                             match Self::resolve_graph_at_path_mut(root, &path) {

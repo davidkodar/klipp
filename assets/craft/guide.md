@@ -443,14 +443,19 @@ exist until the plan runs.
   effects, so a vignette or grade after it sees the reframed picture.
 - `qualify {clip_id, target?|hue?, …, exposure?, saturation?, hue_shift?,
   temperature?}`: a secondary. Key a colour or tone — a named `target`
-  (skin, sky, foliage, reds, blues…) or an explicit `hue` in degrees,
+  (skin, sky, foliage for leaves and grass olive to green, greens for
+  pure green, reds, blues…) or an explicit `hue` in degrees,
   narrowed by `hue_width` and saturation/luminance windows — and correct
   only what is keyed. `invert` grades everything but the key; `remove`
   clears it. Fix a sky, calm a loud shirt, keep skin warm while cooling
   the rest. Grade the primary first, then reach for a secondary.
 - `zones {clip_id | on, zone?, exposure?, hue?, amount?, saturation?,
   boundary?, falloff?, preset?, reset?}`: HDR zones, tonal balance placed
-  in stops about mid grey, the same on SDR, HDR and log material. A
+  in stops about mid grey. New zones are placed for the clip: on an SDR
+  picture light, highlight and specular start at +0.5, +1.5 and +2.2
+  stops (about 25%, 51% and 83% of white), inside its range, and the
+  reply says so; on HDR and log they reach on past white (+1, +2.5,
+  +4.5). Zones a grade already has keep their boundaries. A
   `zone` (global, black, dark, shadow, light, highlight, specular) takes
   an `exposure` in stops, a colour by `hue` (degrees on the wheel) and
   `amount` (0 to 1), and a `saturation`; `boundary` and `falloff` move
