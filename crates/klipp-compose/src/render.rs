@@ -6870,13 +6870,16 @@ fn title_metal(m:&klipp_core::title_material::TitleMaterial,font_px:f32,scale:f3
     let linear=|c:[u8;3]|c.map(|v|{let x=v as f32/255.0;if x<=0.04045 {x/12.92} else {((x+0.055)/1.055).powf(2.4)}});
     let light=|l:&klipp_core::title_material::MetalLight|(l.direction(),l.strength,linear(l.color));
     let off=([0.0,0.0,-1.0],0.0,[0.0;3]);
+    let share=(m.environment.studio+m.environment.sky+m.environment.shot).max(1.0);
     klipp_effects::gpu::TitleMetal {
         tint:m.tint,roughness:m.roughness,edge:m.edge,highlights:m.highlights,glints:m.glints,
         anisotropy:m.anisotropy,anisotropy_radians:m.anisotropy_angle.to_radians(),
         bevel_px:(m.bevel*font_px).max(1.0),depth:m.depth,
         key:light(&m.key_light),rim:m.rim_light.as_ref().map_or(off,light),
-        studio:m.environment.studio,sky:m.environment.sky,sky_tint:linear(m.environment.sky_tint),
-        shot:m.environment.shot,shot_blur_px:m.environment.shot_blur*1080.0*scale,contour:m.contour,
+        // The three are shares of what the metal sees: more shot is less
+        // studio and sky, not more light on top of them.
+        studio:m.environment.studio/share,sky:m.environment.sky/share,sky_tint:linear(m.environment.sky_tint),
+        shot:m.environment.shot/share,shot_blur_px:m.environment.shot_blur*1080.0*scale,contour:m.contour,
         seed:(m.preset as u32) as f32*7.31+1.0,glint_cell:(font_px*0.55).max(12.0),
     }
 }

@@ -269,7 +269,8 @@ fn image_sample(u0: f32, v0: f32) -> vec4<f32> {
 // tint and a seed, [4] the text's centre and the glints' cell size,
 // [5] the text's top left, which the glints' cells hang from, so they
 // stay on the letters as the title moves, and how far a reflection
-// reaches across the frame; [6] the contour.
+// reaches across the frame; [6] the contour and how the text's box is
+// stretched over the frame; [7] the frame's centre.
 fn metal_word(x: i32, y: i32) -> u32 {
     let cx=clamp(x,0,i32(p.width)-1); let cy=clamp(y,0,i32(p.height)-1);
     return input[u32(cy)*p.width+u32(cx)];
@@ -337,8 +338,11 @@ fn metal_shot_record(x: u32, y: u32, i: u32) {
     let n=metal_normal(i32(x),i32(y));
     let centre=vec2<f32>(metal_stop(4u,0u),metal_stop(4u,1u));
     let v=normalize(vec3<f32>(centre.x-fx,centre.y-fy,-metal_stop(2u,3u)));
-    let r=reflect(-v,n);
-    let at=centre+r.xy/max(-r.z,0.2)*metal_stop(5u,2u);
+    // The whole shot in small across the text's box, so the face carries
+    // its bands (sky above, sea below, a sun where it is), pushed along
+    // the bevel's slope: a bevel turned up sees what is above it.
+    let frame_centre=vec2<f32>(metal_stop(7u,0u),metal_stop(7u,1u));
+    let at=frame_centre+(vec2<f32>(fx,fy)-centre)*vec2<f32>(metal_stop(6u,1u),metal_stop(6u,2u))+n.xy/max(-n.z,0.25)*metal_stop(5u,2u);
     let fres=pow(1.0-clamp(dot(n,v),0.0,1.0),5.0)*p.row0.y;
     store_rgba(i,vec4<f32>(at.x,at.y,fres,metal_contour(i32(x),i32(y))));
 }
@@ -372,6 +376,9 @@ fn metal_face(x: u32, y: u32, i: u32) {
         let rim_l=vec3<f32>(metal_stop(0u,0u),metal_stop(0u,1u),metal_stop(0u,2u));
         let rim=metal_light(n,v,rim_l,rough+aniso*0.2)*metal_stop(0u,3u)*p.row0.w;
         lin+=rim*vec3<f32>(metal_stop(1u,0u),metal_stop(1u,1u),metal_stop(1u,2u))*fres;
+        // Never darker than a tenth of its own colour: a metal in a dark
+        // shot reads dark gold, not black, so the letters stay.
+        lin=max(lin,fres*0.1);
         // A dark line round the outer edge keeps a light metal's shape.
         lin*=metal_contour(i32(x),i32(y));
         let rgb=vec3<f32>(metal_shoulder(lin.x),metal_shoulder(lin.y),metal_shoulder(lin.z));

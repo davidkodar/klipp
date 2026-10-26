@@ -101,7 +101,7 @@ pub fn show(ui: &mut egui::Ui, theme: &KlippTheme, clip_id: ClipId, tb: &TextBox
         row(ui, cmds, clip_id, &base, "Studio", base.environment.studio, 100.0, 0.0..=200.0, 100.0 * TitleMaterial::preset(base.preset).environment.studio, "%", &|m, v| m.environment.studio = v.clamp(0.0, 2.0));
         row(ui, cmds, clip_id, &base, "Sky", base.environment.sky, 100.0, 0.0..=200.0, 100.0 * TitleMaterial::preset(base.preset).environment.sky, "%", &|m, v| m.environment.sky = v.clamp(0.0, 2.0));
         row(ui, cmds, clip_id, &base, "Shot behind", base.environment.shot, 100.0, 0.0..=200.0, 100.0 * TitleMaterial::preset(base.preset).environment.shot, "%", &|m, v| m.environment.shot = v.clamp(0.0, 2.0));
-        row(ui, cmds, clip_id, &base, "Shot blur", base.environment.shot_blur, 100.0, 0.0..=20.0, 4.0, "%", &|m, v| m.environment.shot_blur = v.clamp(0.0, 0.2));
+        row(ui, cmds, clip_id, &base, "Shot blur", base.environment.shot_blur, 100.0, 0.0..=20.0, 1.2, "%", &|m, v| m.environment.shot_blur = v.clamp(0.0, 0.2));
         if let Some(c) = colour(ui, "Sky colour", base.environment.sky_tint) {
             let mut next = base;
             next.environment.sky_tint = c;

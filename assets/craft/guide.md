@@ -613,8 +613,10 @@ exist until the plan runs.
   the key light where the shot's light comes from (a low sun on the
   right: `{azimuth: -10, elevation: 15, color: "#ffd8a0"}`). The metal
   reflects a studio, a sky and the shot behind the title (blurred),
-  mixed by their strengths, through a bevel cut into the letters: more
-  shot sets it in the scene, more studio makes it a product shot; the layer's effects run over it, so a
+  shares of what it sees (scaled to a sum of 1 past it), through a
+  bevel cut into the letters: the shot leads by default, so gold over a
+  sunset turns warm and over blue water cool; more studio makes it a
+  product shot; the layer's effects run over it, so a
   glow glows gold. Without a GPU the text shows its colour. A 3D text
   is not made metal.
 - `set_text {clip_id, text}`: the words of a title or a caption; its

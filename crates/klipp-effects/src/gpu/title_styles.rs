@@ -1955,8 +1955,11 @@ impl GpuEffectsPipeline {
         stops[2] = stop([m.studio, m.sky, m.anisotropy_radians, (fw.max(fh) as f32) * 1.2]);
         stops[3] = stop([m.sky_tint[0], m.sky_tint[1], m.sky_tint[2], m.seed]);
         stops[4] = stop([centre[0], centre[1], m.glint_cell.max(8.0), 0.0]);
-        stops[5] = stop([bounds[0], bounds[1], fh as f32 * 0.5, 0.0]);
-        stops[6] = stop([m.contour, 0.0, 0.0, 0.0]);
+        stops[5] = stop([bounds[0], bounds[1], fh as f32 * 0.3, 0.0]);
+        // The text's box over the middle 80% of the frame.
+        let half = [((bounds[2] - bounds[0]) * 0.5).max(1.0), ((bounds[3] - bounds[1]) * 0.5).max(1.0)];
+        stops[6] = stop([m.contour, fw as f32 * 0.4 / half[0], fh as f32 * 0.4 / half[1], 0.0]);
+        stops[7] = stop([fw as f32 * 0.5, fh as f32 * 0.5, 0.0, 0.0]);
         self.write_params(&FillParams {
             base: StyleParams {
                 op: 62,
