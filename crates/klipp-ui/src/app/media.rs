@@ -1095,6 +1095,7 @@ impl KlippApp {
                             .map(|d| d.as_secs())
                             .unwrap_or(0),
                         fingerprint: None,
+                        cache_key: None,
                         file_modified_at: None,
                         media_created_at: None,
                         color_label: Default::default(),
@@ -1727,7 +1728,16 @@ impl KlippApp {
             item.skim_file = None;
             item.waveform_data = None;
             item.audio_cache = None;
+            let was = item.fingerprint;
             item.fingerprint = compute_media_fingerprint(new_path);
+            // The same content as the file analysed: its analysis comes
+            // with it rather than running again (#2790).
+            if let (Some(old_key), true) = (item.cache_key.as_deref(), was.is_some() && was == item.fingerprint) {
+                if klipp_analysis::store::carry_over(old_key, new_path) {
+                    tracing::info!("relink: {} kept its analysis", item.filename);
+                }
+            }
+            item.cache_key = klipp_media::disk_cache::compute_cache_key(new_path);
             self.state.thumbnail_cache.set_filmstrip(media_id, Vec::new());
         }
         self.state.offline_media_ids.retain(|id| *id != media_id);

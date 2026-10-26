@@ -490,8 +490,17 @@ fn load_project_as(dir: &Path, form: crate::FileForm, strict: bool) -> Result<Lo
             }
         });
         let stored_path = Path::new(&item_json.path);
-        let path = if kind == MediaItemKind::File { resolve_media_path(dir, stored_path) } else { stored_path.to_path_buf() };
+        let mut path = if kind == MediaItemKind::File { resolve_media_path(dir, stored_path) } else { stored_path.to_path_buf() };
+        // The project folder copied or moved: the file where it was (#2790).
+        if kind == MediaItemKind::File && !path.exists() {
+            if let Some(absolute) = item_json.absolute_path.as_deref().map(Path::new).filter(|p| p.is_absolute() && p.exists()) {
+                path = absolute.to_path_buf();
+            }
+        }
         let offline = kind == MediaItemKind::File && !path.exists();
+        // The file's own fingerprint where it is there, else as stored, for
+        // a relink to tell the same content (#2790).
+        let fingerprint = if kind != MediaItemKind::File { None } else if offline { item_json.fingerprint } else { klipp_media::relink::fingerprint(&path) };
         if offline {
             warn!("Media file not found, marking offline: {:?}", path);
         }
@@ -527,7 +536,8 @@ fn load_project_as(dir: &Path, form: crate::FileForm, strict: bool) -> Result<Lo
             bin_id: item_json.bin_id.as_ref().and_then(|s| parse_uuid(s).ok().map(klipp_core::BinId)),
             parent_media_id: item_json.parent_media_id.as_ref().and_then(|s| parse_uuid(s).ok().map(klipp_core::MediaId)),
             added_at: item_json.added_at.unwrap_or(0),
-            fingerprint: None, // recomputed if needed
+            fingerprint,
+            cache_key: item_json.cache_key.clone(),
             file_modified_at: item_json.file_modified_at,
             media_created_at: item_json.media_created_at,
             color_label: klipp_media::ColorLabel::from_u8(item_json.color_label),

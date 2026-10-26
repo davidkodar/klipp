@@ -194,6 +194,11 @@ pub struct MediaItem {
     /// Used for content-based deduplication (Prompt 18).
     #[serde(default)]
     pub fingerprint: Option<u64>,
+    /// The file's disk-cache key where it was last found (its path, size
+    /// and date, `disk_cache::compute_cache_key`): its analysis is kept
+    /// under it, and a relink to the same content carries that over (#2790).
+    #[serde(default)]
+    pub cache_key: Option<String>,
     /// Filesystem modification time (Unix epoch seconds).
     #[serde(default)]
     pub file_modified_at: Option<u64>,
@@ -428,6 +433,7 @@ impl MediaItem {
             parent_media_id: None,
             added_at: 0,
             fingerprint: None,
+            cache_key: None,
             file_modified_at: None,
             media_created_at: None,
             color_label: ColorLabel::default(),
@@ -700,6 +706,7 @@ mod subclip_tests {
             parent_media_id: None,
             added_at: 0,
             fingerprint: None,
+            cache_key: None,
             file_modified_at: None,
             media_created_at: None,
             color_label: ColorLabel::default(),
@@ -882,6 +889,7 @@ mod effective_rotation_tests {
             parent_media_id: None,
             added_at: 0,
             fingerprint: None,
+            cache_key: None,
             file_modified_at: None,
             media_created_at: None,
             color_label: ColorLabel::default(),
@@ -1029,6 +1037,7 @@ pub fn merge_reprobed(old: &MediaItem, fresh: &mut MediaItem) {
         offline: _,
         is_still,
         fingerprint: _,
+        cache_key: _,
         file_modified_at: _,
         media_created_at: _,
         colour_space: _,
@@ -1141,6 +1150,7 @@ impl MediaItem {
             bin_id: None,
             added_at: 0,
             fingerprint: None,
+            cache_key: None,
             file_modified_at: None,
             media_created_at: None,
             color_label: ColorLabel::default(),
@@ -1430,7 +1440,7 @@ mod tests {
             id: _, path: _, offline: _,
             // Read from the file: given back by `take_probed_details`.
             filename: _, duration: _, fps: _, resolution: _, video_codec: _, audio_codec: _, has_audio: _, file_size_bytes: _,
-            sample_rate: _, audio_channels: _, is_still: _, fingerprint: _, file_modified_at: _, media_created_at: _,
+            sample_rate: _, audio_channels: _, is_still: _, fingerprint: _, cache_key: _, file_modified_at: _, media_created_at: _,
             colour_space: _, source_rotation: _, camera_make: _, camera_model: _, encoder: _, bit_depth: _,
             video_bitrate_kbps: _, audio_bitrate_kbps: _, color_primaries: _, color_transfer: _, pixel_format: _,
             detected_log_format: _, shot: _, metadata_read: _, truncated_from_secs: _,
