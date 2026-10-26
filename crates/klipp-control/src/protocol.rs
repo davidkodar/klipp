@@ -389,6 +389,18 @@ pub enum ControlCommand {
         /// are found from the edges round it, and tracked from.
         #[serde(default)]
         click: Option<[f32; 2]>,
+        /// The area followed, when it isn't the corners (#2754): four
+        /// corners of a larger part of the same plane with more on it (the
+        /// boat's side for its canopy, the whole wall for a sign).
+        #[serde(default)]
+        track_corners: Option<[[f32; 2]; 4]>,
+        /// Parts of the area left out (#2754): polygons, each three or
+        /// more points in fractions of the frame, that are on the area but
+        /// not of the plane (a screen playing in a wall, a reflection).
+        /// Left out, a surface tracked again keeps its own; `[]` clears
+        /// them.
+        #[serde(default)]
+        exclude: Option<Vec<Vec<[f32; 2]>>>,
         #[serde(default)]
         at_secs: Option<f64>,
         #[serde(default)]

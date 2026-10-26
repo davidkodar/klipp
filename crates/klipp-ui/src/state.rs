@@ -226,8 +226,30 @@ pub struct SurfaceTool {
     /// 1 or -1 continues the track only later or only earlier from here,
     /// laid over the rest of it; 0 tracks both ways.
     pub direction: i8,
-    /// The corner held, or 4 for the whole quad, and where the press was.
+    /// The area followed when it isn't the corners, in the same fractions
+    /// (#2754); `None` follows the corners themselves.
+    pub track: Option<[[f32; 2]; 4]>,
+    /// Parts of the area left out of the track, rectangles or outlines in
+    /// the same fractions (#2754).
+    pub exclude: Vec<Vec<[f32; 2]>>,
+    /// What a drag in the picture changes.
+    pub edit: SurfaceEdit,
+    /// The corner held, or 4 for the whole quad, 5 for a click off it, 6
+    /// for a rectangle being drawn; where the press was, and the quad
+    /// then.
     pub drag: Option<(usize, egui::Pos2, [[f32; 2]; 4])>,
+}
+
+/// What the surface tool's drags change (#2754).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SurfaceEdit {
+    /// The four corners things are pinned to.
+    #[default]
+    Corners,
+    /// The larger area of the same plane that is followed.
+    Area,
+    /// Rectangles drawn over parts that are not of the plane.
+    LeaveOut,
 }
 
 /// A reflection's waterline being dragged in the viewer (#2707).

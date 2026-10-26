@@ -3792,7 +3792,12 @@ pub enum AppCommand {
     /// track lost partway is continued. 0 follows both ways and replaces
     /// it. `interactive` is a person at the viewer: where the surface is
     /// lost, the playhead goes there with the corners up to correct.
-    TrackSurface { clip_id: ClipId, corners: [[f32; 2]; 4], at_secs: Option<f64>, name: Option<String>, surface: Option<uuid::Uuid>, direction: i8, interactive: bool },
+    ///
+    /// `track` is the area followed when it isn't the corners, a larger
+    /// part of the same plane; `exclude` are parts of it left out
+    /// (#2754), both as the corners are given. Left out on a surface the
+    /// clip has, the surface's own are carried to this frame.
+    TrackSurface { clip_id: ClipId, corners: [[f32; 2]; 4], at_secs: Option<f64>, name: Option<String>, surface: Option<uuid::Uuid>, direction: i8, interactive: bool, track: Option<[[f32; 2]; 4]>, exclude: Option<Vec<Vec<[f32; 2]>>> },
     /// The viewer's surface tool on a clip (#684 phase 2): four corners to
     /// set on the surface, then Track. With `surface`, they start where
     /// that surface is at the playhead, to correct and track it again.
@@ -4710,7 +4715,9 @@ pub enum AppEvent {
     /// `corners` to that frame (fractions of the picture, row by row), the
     /// tracker's confidence, 0 to 1, and how it was followed: 0 well, 1
     /// uncertainly, 2 lost (the last good map held).
-    SurfaceTracked { clip_id: ClipId, surface: uuid::Uuid, name: String, corners: [[f32; 2]; 4], reference_secs: f64, keys: Vec<(f64, [f64; 9], f32, u8)>, source_size: [u32; 2], media_fps: f64, held_secs: (f64, f64), direction: i8, interactive: bool },
+    /// `track_area` and `exclude` are the area followed and the parts left
+    /// out, on the reference frame as `corners` are.
+    SurfaceTracked { clip_id: ClipId, surface: uuid::Uuid, name: String, corners: [[f32; 2]; 4], reference_secs: f64, keys: Vec<(f64, [f64; 9], f32, u8)>, source_size: [u32; 2], media_fps: f64, held_secs: (f64, f64), direction: i8, interactive: bool, track_area: Option<[[f32; 2]; 4]>, exclude: Vec<Vec<[f32; 2]>> },
     SurfaceTrackFailed { clip_id: ClipId, surface: uuid::Uuid, error: String },
     /// The corners a [`AppCommand::SnapSurface`] found, as fractions of the
     /// clip's own picture, or `None` where nothing had an edge all round.

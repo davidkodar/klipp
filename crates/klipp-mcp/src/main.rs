@@ -631,7 +631,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
                 "method": "track_surface",
                 "clip_id": arg_str(args, "clip_id")?,
             });
-            for key in ["corners", "click", "at_secs", "name", "surface", "direction"] {
+            for key in ["corners", "click", "track_corners", "exclude", "at_secs", "name", "surface", "direction"] {
                 if let Some(x) = args.get(key).filter(|x| !x.is_null()) {
                     v[key] = x.clone();
                 }
@@ -2078,15 +2078,17 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
         tool("klipp_track_surface",
              "Track a planar surface in perspective for the pin op, from a click or corners measured with klipp_frame_at; in the background, as one undo step. Details: klipp_guide topic track_surface.",
              json!({
-                 "clip_id": { "type": "string", "description": "The clip of footage the surface is in" },
-                 "click": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "type": "number" }, "description": "[x,y] inside the surface, fractions of the frame; instead of corners" },
+                 "clip_id": { "type": "string", "description": "The footage clip" },
+                 "click": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "type": "number" }, "description": "[x,y] inside the surface, frame fractions; instead of corners" },
                  "corners": { "type": "array", "minItems": 4, "maxItems": 4,
                               "items": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "type": "number" } },
-                              "description": "[[x,y] top left, top right, bottom right, bottom left], fractions of the frame" },
-                 "at_secs": { "type": "number", "description": "Timeline second the corners are on; the playhead when left out" },
-                 "name": { "type": "string", "description": "What to call the surface, e.g. Phone screen" },
-                 "surface": { "type": "string", "description": "Id or name of a surface to track again from these corners" },
-                 "direction": { "type": "string", "enum": ["both", "forward", "backward"], "description": "One way only, merged into the surface's track; needs surface" },
+                              "description": "[[x,y] TL, TR, BR, BL], frame fractions" },
+                 "at_secs": { "type": "number", "description": "Timeline second of the corners; else the playhead" },
+                 "name": { "type": "string", "description": "Its name, e.g. Phone screen" },
+                 "surface": { "type": "string", "description": "Id or name of a surface to track again" },
+                 "direction": { "type": "string", "enum": ["both", "forward", "backward"], "description": "One way only, merged into its track; needs surface" },
+                 "track_corners": { "type": "array", "description": "Corners of a larger area of the plane to follow" },
+                 "exclude": { "type": "array", "description": "Polygons [[x,y],...] to leave out; [] clears" },
              }),
              vec!["clip_id"]),
         tool("klipp_select_clip",
@@ -2925,7 +2927,7 @@ mod interface_tests {
     #[test]
     fn every_tool_keeps_to_its_share_of_the_catalogue() {
         const SHARE: usize = 1_000;
-        const LARGER: &[(&str, usize)] = &[("klipp_graph", 2_186), ("klipp_export", 1_379), ("klipp_track_surface", 1_210)];
+        const LARGER: &[(&str, usize)] = &[("klipp_graph", 2_186), ("klipp_export", 1_379), ("klipp_track_surface", 1_280)];
         let tools = tool_definitions_for(false);
         let over: Vec<String> = tools
             .iter()

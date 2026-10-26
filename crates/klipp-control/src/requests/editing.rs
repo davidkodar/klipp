@@ -405,7 +405,7 @@ pub(crate) fn respond(
             Ok(v)
         }
 
-        ControlCommand::TrackSurface { clip_id, corners, click, at_secs, name, surface, direction } => {
+        ControlCommand::TrackSurface { clip_id, corners, click, track_corners, exclude, at_secs, name, surface, direction } => {
             let direction: i8 = match direction.as_deref().map(str::trim).map(str::to_lowercase).as_deref() {
                 None | Some("") | Some("both") => 0,
                 Some("forward") | Some("later") => 1,
@@ -428,6 +428,17 @@ pub(crate) fn respond(
                     return Err("the corners must enclose an area, as fractions of the frame: top left, top right, bottom right, bottom left".into());
                 }
                 _ => {}
+            }
+            if click.is_some() && (track_corners.is_some() || exclude.is_some()) {
+                return Err("track_corners and exclude go with corners: find the surface with click first, then track it again with its corners".into());
+            }
+            if let Some(t) = track_corners {
+                if !klipp_timeline::surface::quad_is_usable(&t) || t.iter().flatten().any(|v| !(-1.0..=2.0).contains(v)) {
+                    return Err("track_corners must enclose an area, as fractions of the frame: top left, top right, bottom right, bottom left".into());
+                }
+            }
+            if let Some(bad) = exclude.iter().flatten().position(|e| e.len() < 3 || e.iter().flatten().any(|v| !(-1.0..=2.0).contains(v))) {
+                return Err(format!("exclude {bad}: each part left out is a polygon of three or more points, fractions of the frame"));
             }
             let surface = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
@@ -452,7 +463,7 @@ pub(crate) fn respond(
                 }
             };
             let mut v = match (corners, click) {
-                (Some(corners), _) => send(AppCommand::TrackSurface { clip_id: id, corners, at_secs, name, surface, direction, interactive: false })?,
+                (Some(corners), _) => send(AppCommand::TrackSurface { clip_id: id, corners, at_secs, name, surface, direction, interactive: false, track: track_corners, exclude })?,
                 (None, Some(click)) => send(AppCommand::SnapSurface { clip_id: id, click, at_secs, then_track: true, name })?,
                 (None, None) => unreachable!("refused above"),
             };

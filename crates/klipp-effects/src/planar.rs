@@ -227,11 +227,24 @@ fn inside(q: &[(f64, f64); 4], p: (f64, f64)) -> bool {
     true
 }
 
+/// Whether `p` lies inside the polygon `poly`, by the even-odd rule.
+fn in_polygon(poly: &[(f64, f64)], p: (f64, f64)) -> bool {
+    let mut inside = false;
+    for i in 0..poly.len() {
+        let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
+        if (a.1 > p.1) != (b.1 > p.1) && p.0 < a.0 + (p.1 - a.1) / (b.1 - a.1) * (b.0 - a.0) {
+            inside = !inside;
+        }
+    }
+    inside
+}
+
 /// The pixels of each level a template of `quad` reads, on levels of
-/// `sizes` (finest first): the region grown by the margin, at most
+/// `sizes` (finest first): the region grown by the margin, less what lies
+/// in an `exclude` polygon (pixels of the finest level), at most
 /// [`Options::max_points`] of its pixels evenly taken, a pixel's border
 /// left out. With the region's own coordinates.
-pub(crate) fn cells(sizes: &[(usize, usize)], quad: &[(f64, f64); 4], opts: &Options) -> (Frame, Vec<Vec<(i32, i32)>>) {
+pub(crate) fn cells(sizes: &[(usize, usize)], quad: &[(f64, f64); 4], exclude: &[Vec<(f64, f64)>], opts: &Options) -> (Frame, Vec<Vec<(i32, i32)>>) {
     let frame = Frame::of(quad);
     let grown: [(f64, f64); 4] = std::array::from_fn(|i| (frame.cx + (quad[i].0 - frame.cx) * (1.0 + opts.margin), frame.cy + (quad[i].1 - frame.cy) * (1.0 + opts.margin)));
     let levels = sizes
@@ -246,7 +259,8 @@ pub(crate) fn cells(sizes: &[(usize, usize)], quad: &[(f64, f64); 4], opts: &Opt
             let mut cells: Vec<(i32, i32)> = Vec::new();
             for y in y0..=y1 {
                 for x in x0..=x1 {
-                    if inside(&q, (x as f64, y as f64)) {
+                    let finest = (x as f64 / k, y as f64 / k);
+                    if inside(&q, (x as f64, y as f64)) && !exclude.iter().any(|e| in_polygon(e, finest)) {
                         cells.push((x, y));
                     }
                 }
@@ -269,9 +283,9 @@ pub(crate) fn level_sizes(w: usize, h: usize, levels: usize) -> Vec<(usize, usiz
 }
 
 impl Template {
-    fn new(pyr: &Pyramid, quad: &[(f64, f64); 4], opts: &Options) -> Self {
+    fn new(pyr: &Pyramid, quad: &[(f64, f64); 4], exclude: &[Vec<(f64, f64)>], opts: &Options) -> Self {
         let sizes: Vec<(usize, usize)> = pyr.levels.iter().map(|l| (l.chans[0].w, l.chans[0].h)).collect();
-        let (frame, cells) = cells(&sizes, quad, opts);
+        let (frame, cells) = cells(&sizes, quad, exclude, opts);
         let levels = cells
             .into_iter()
             .zip(&pyr.levels)
@@ -592,7 +606,9 @@ pub(crate) trait Backend {
     type Pyr;
     type Tpl;
     fn pyramid(&mut self, frame: &GrayFrame, levels: usize) -> Self::Pyr;
-    fn template(&mut self, pyr: &Self::Pyr, quad: &[(f64, f64); 4], opts: &Options) -> Self::Tpl;
+    /// A template of `quad`, less what lies in `exclude` (pixels of
+    /// that frame).
+    fn template(&mut self, pyr: &Self::Pyr, quad: &[(f64, f64); 4], exclude: &[Vec<(f64, f64)>], opts: &Options) -> Self::Tpl;
     /// The template's region coordinates.
     fn region(&self, tpl: &Self::Tpl) -> Frame;
     #[allow(clippy::too_many_arguments)]
@@ -615,8 +631,8 @@ impl Backend for Cpu {
     fn pyramid(&mut self, frame: &GrayFrame, levels: usize) -> Pyramid {
         Pyramid::new(frame, levels)
     }
-    fn template(&mut self, pyr: &Pyramid, quad: &[(f64, f64); 4], opts: &Options) -> Template {
-        Template::new(pyr, quad, opts)
+    fn template(&mut self, pyr: &Pyramid, quad: &[(f64, f64); 4], exclude: &[Vec<(f64, f64)>], opts: &Options) -> Template {
+        Template::new(pyr, quad, exclude, opts)
     }
     fn region(&self, tpl: &Template) -> Frame {
         tpl.frame
@@ -631,26 +647,32 @@ impl Backend for Cpu {
 
 /// Follow the surface `quad` of `reference` through `frames`, each read
 /// by `next`, one after another: for each, the map from the reference's
-/// pixels to that frame's, with its confidence and state. A lost frame
-/// holds the last good map; the track goes on looking for the surface
-/// for [`Options::reacquire_for`] frames, then stops. `progress` is told
-/// how far it has got and stops it by returning false.
+/// pixels to that frame's, with its confidence and state. What lies in an
+/// `exclude` polygon (the reference's pixels; it moves with the surface)
+/// is left out: a part of the area that isn't on the plane, a screen
+/// playing in a wall. A lost frame holds the last good map; the track goes
+/// on looking for the surface for [`Options::reacquire_for`] frames, then
+/// stops. `progress` is told how far it has got and stops it by returning
+/// false.
 pub fn track(
     reference: &GrayFrame,
     quad: [(f64, f64); 4],
+    exclude: &[Vec<(f64, f64)>],
     frames: &[usize],
     next: &mut dyn FnMut(usize) -> Option<GrayFrame>,
     opts: &Options,
     progress: &dyn Fn(f32) -> bool,
 ) -> Vec<Tracked> {
-    track_on(&mut Cpu, reference, quad, frames, next, opts, progress)
+    track_on(&mut Cpu, reference, quad, exclude, frames, next, opts, progress)
 }
 
 /// [`track`] on `backend`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn track_on<B: Backend>(
     backend: &mut B,
     reference: &GrayFrame,
     quad: [(f64, f64); 4],
+    exclude: &[Vec<(f64, f64)>],
     frames: &[usize],
     next: &mut dyn FnMut(usize) -> Option<GrayFrame>,
     opts: &Options,
@@ -659,14 +681,16 @@ pub(crate) fn track_on<B: Backend>(
     let side = Frame::of(&quad).s * 2.0;
     let levels = depth(side, opts);
     let anchor_pyr = backend.pyramid(reference, levels);
-    let anchor = backend.template(&anchor_pyr, &quad, opts);
+    let anchor = backend.template(&anchor_pyr, &quad, exclude, opts);
+    // What is left out, where a map takes it.
+    let away = |h: &Homography| -> Vec<Vec<(f64, f64)>> { exclude.iter().map(|e| e.iter().map(|p| h.transform(p.0, p.1)).collect()).collect() };
     let anchor_frame = backend.region(&anchor);
     let to_anchor = anchor_frame.px().inverse().expect("a region of some size");
     let mut out = Vec::new();
     // The frame before: its pyramid, its region as a template, and the
     // map from the reference to it.
     let mut prev_pyr = anchor_pyr;
-    let mut prev = backend.template(&prev_pyr, &quad, opts);
+    let mut prev = backend.template(&prev_pyr, &quad, exclude, opts);
     let mut last = Homography::identity();
     // The move from the frame before the last to the last, the guess for
     // the next.
@@ -711,7 +735,7 @@ pub(crate) fn track_on<B: Backend>(
         // Back to the frame before from this one: where the corners land
         // against where they were.
         let here = map_quad(&h);
-        let cur_tpl = backend.template(&cur_pyr, &here, opts);
+        let cur_tpl = backend.template(&cur_pyr, &here, &away(&h), opts);
         let round_trip = match moved.and_then(|m| m.inverse()) {
             Some(back_guess) => {
                 let cur_to_px = backend.region(&cur_tpl).px();
@@ -809,7 +833,7 @@ mod tests {
     fn run(w: usize, h: usize, quad: [(f64, f64); 4], n: usize, map: &dyn Fn(usize) -> Homography, world: &dyn Fn(f64, f64) -> f64) -> Vec<Tracked> {
         let reference = seen(w, h, &Homography::identity(), world);
         let frames: Vec<usize> = (1..=n).collect();
-        track(&reference, quad, &frames, &mut |k| Some(seen(w, h, &map(k), world)), &Options::default(), &|_| true)
+        track(&reference, quad, &[], &frames, &mut |k| Some(seen(w, h, &map(k), world)), &Options::default(), &|_| true)
     }
 
     /// A textured surface turning away in perspective is followed, each
@@ -852,7 +876,7 @@ mod tests {
         let reference = seen(w, h, &Homography::identity(), &texture);
         let frames: Vec<usize> = (1..=12).collect();
         let shift = |k: usize| Homography { h: [[1.0, 0.0, 0.7 * k as f64], [0.0, 1.0, -0.4 * k as f64], [0.0, 0.0, 1.0]] };
-        let got = track(&reference, quad, &frames, &mut |k| {
+        let got = track(&reference, quad, &[], &frames, &mut |k| {
             let lit = move |x: f64, y: f64| texture(x, y) * (1.0 - 0.04 * k as f64) + 2.0 * k as f64 * (x / 300.0);
             Some(seen(w, h, &shift(k), &lit))
         }, &Options::default(), &|_| true);
@@ -873,7 +897,7 @@ mod tests {
         let reference = seen(w, h, &Homography::identity(), &texture);
         let frames: Vec<usize> = (1..=16).collect();
         let shift = |k: usize| Homography { h: [[1.0, 0.0, 0.5 * k as f64], [0.0, 1.0, 0.3 * k as f64], [0.0, 0.0, 1.0]] };
-        let got = track(&reference, quad, &frames, &mut |k| {
+        let got = track(&reference, quad, &[], &frames, &mut |k| {
             let mut f = seen(w, h, &shift(k), &texture);
             // A dark bar moving the other way, over a fifth of the region.
             let bar = 100 + 3 * k;
@@ -887,6 +911,36 @@ mod tests {
         assert_eq!(got.len(), 16);
         let worst = got.iter().map(|t| corner_error(&quad, &t.h, &shift(t.frame))).fold(0.0, f64::max);
         assert!(worst < 1.0, "worst {worst:.3} px");
+    }
+
+    /// A screen in the wall, playing something else every frame, over a
+    /// third of the area tracked: left out, the wall holds the track
+    /// exactly; left in, the track is no better.
+    #[test]
+    fn a_part_left_out_does_not_pull_the_track() {
+        let (w, h) = (320, 220);
+        let quad = [(80.0, 50.0), (240.0, 50.0), (240.0, 170.0), (80.0, 170.0)];
+        // The screen, in the reference's pixels; it moves with the wall.
+        let screen = vec![(140.0, 70.0), (225.0, 70.0), (225.0, 150.0), (140.0, 150.0)];
+        let course = [(0.7, -0.3), (0.5, 0.5), (0.6, -0.2), (0.9, 0.4)];
+        let play = |k: usize| move |x: f64, y: f64| {
+            if in_polygon(&[(140.0, 70.0), (225.0, 70.0), (225.0, 150.0), (140.0, 150.0)], (x, y)) {
+                // A pattern that runs across the screen fast.
+                128.0 + 90.0 * ((x + 7.0 * k as f64) * 0.3).sin() * ((y - 5.0 * k as f64) * 0.25).cos()
+            } else {
+                texture(x, y)
+            }
+        };
+        let reference = seen(w, h, &Homography::identity(), &play(0));
+        let frames: Vec<usize> = (1..=16).collect();
+        let run = |exclude: &[Vec<(f64, f64)>]| track(&reference, quad, exclude, &frames, &mut |k| Some(seen(w, h, &course_map(&quad, &course, k), &play(k))), &Options::default(), &|_| true);
+        let worst = |got: &[Tracked]| got.iter().map(|t| corner_error(&quad, &t.h, &course_map(&quad, &course, t.frame))).fold(0.0, f64::max);
+        let without = run(std::slice::from_ref(&screen));
+        assert_eq!(without.len(), 16);
+        assert!(without.iter().all(|t| t.state == State::Good), "{:?}", without.iter().map(|t| t.state).collect::<Vec<_>>());
+        assert!(worst(&without) < 0.6, "the screen left out: {:.3} px", worst(&without));
+        let with = run(&[]);
+        assert!(worst(&with) >= worst(&without), "left in it is no better: {:.3} vs {:.3}", worst(&with), worst(&without));
     }
 
     /// A fast pan, many pixels a frame, is caught by the coarse search.
@@ -912,7 +966,7 @@ mod tests {
         let flat = GrayFrame { data: vec![128; w * h], width: w, height: h };
         let shift = |k: usize| Homography { h: [[1.0, 0.0, 0.6 * k as f64], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] };
         let frames: Vec<usize> = (1..=20).collect();
-        let got = track(&reference, quad, &frames, &mut |k| Some(if (6..12).contains(&k) { flat.clone() } else { seen(w, h, &shift(k), &texture) }), &Options::default(), &|_| true);
+        let got = track(&reference, quad, &[], &frames, &mut |k| Some(if (6..12).contains(&k) { flat.clone() } else { seen(w, h, &shift(k), &texture) }), &Options::default(), &|_| true);
         let state = |k: usize| got.iter().find(|t| t.frame == k).map(|t| t.state);
         for k in 6..12 {
             assert_eq!(state(k), Some(State::Lost), "frame {k} has no surface");

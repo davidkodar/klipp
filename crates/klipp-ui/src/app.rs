@@ -189,7 +189,7 @@ use prefs_apply::*;
 use timeline_grade::*;
 use grade_edits::*;
 use tracking::*;
-pub(crate) use tracking::surface_on_frame;
+pub(crate) use tracking::{surface_area_on_frame, surface_on_frame};
 use linked_audio::*;
 use camera::*;
 use subtitles::*;

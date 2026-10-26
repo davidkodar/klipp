@@ -71,7 +71,8 @@ impl KlippApp {
             self.send_commands(vec![AppCommand::SeekTo(klipp_core::Timecode::from_secs_f64(at, rate))]);
             if let Some(s) = new.surfaces.iter().find(|s| s.id == surface.id) {
                 let corners = surface_on_frame(self.state.sequence(), &new, s, at, Some(edge));
-                self.state.surface_tool = Some(crate::state::SurfaceTool { clip_id, surface: Some(s.id), name: Some(s.name.clone()), corners, direction: way, drag: None });
+                let (track, exclude) = surface_area_on_frame(self.state.sequence(), &new, s, at, Some(edge));
+                self.state.surface_tool = Some(crate::state::SurfaceTool { clip_id, surface: Some(s.id), name: Some(s.name.clone()), corners, direction: way, track, exclude, edit: Default::default(), drag: None });
             }
             self.state.toast.show(format!("Lost \u{201c}{}\u{201d} at {at:.2} s: drag the corners onto it and press Continue", surface.name));
             return;
@@ -143,7 +144,7 @@ impl KlippApp {
         let frame = [self.state.sequence().resolution.width, self.state.sequence().resolution.height];
         let on_frame = klipp_timeline::surface::source_quad_in_frame(&on_source, shown, frame, Some(placed));
         if then_track {
-            self.send_commands(vec![AppCommand::TrackSurface { clip_id, corners: on_frame, at_secs: Some(at), name, surface: None, direction: 0, interactive: false }]);
+            self.send_commands(vec![AppCommand::TrackSurface { clip_id, corners: on_frame, at_secs: Some(at), name, surface: None, direction: 0, interactive: false, track: None, exclude: None }]);
             return;
         }
         match self.state.surface_tool.as_mut() {
@@ -190,11 +191,14 @@ impl KlippApp {
                     keys: Vec::new(),
                     source_size: shown,
                     media_fps: 0.0,
+                    track_area: None,
+                    exclude: Vec::new(),
                 };
                 surface_on_frame(self.state.sequence(), &clip, &middle, at, None)
             }
         };
-        self.state.surface_tool = Some(crate::state::SurfaceTool { clip_id, surface, name: existing.map(|s| s.name.clone()), corners, direction: 0, drag: None });
+        let (track, exclude) = existing.map(|s| surface_area_on_frame(self.state.sequence(), &clip, s, at, None)).unwrap_or_default();
+        self.state.surface_tool = Some(crate::state::SurfaceTool { clip_id, surface, name: existing.map(|s| s.name.clone()), corners, direction: 0, track, exclude, edit: Default::default(), drag: None });
         self.state.selected_clip = Some(clip_id);
     }
 
@@ -202,7 +206,7 @@ impl KlippApp {
     /// (#684), on a thread: the frames are read once, as for a window, and
     /// each followed frame's corners come back by file time.
     pub(super) fn start_surface_track(&mut self, job: SurfaceTrackJob) {
-        let SurfaceTrackJob { clip_id, surface, name, path, media_fps, frames: (first, last), reference, corners, pixels, direction, interactive, cancel } = job;
+        let SurfaceTrackJob { clip_id, surface, name, path, media_fps, frames: (first, last), reference, corners, track, exclude, pixels, direction, interactive, cancel } = job;
         self.state.tracking_in_progress.insert(clip_id);
         self.state.tracking_progress.insert(clip_id, 0.0);
         let event_tx = self.proxy_event_tx.clone();
@@ -239,7 +243,11 @@ impl KlippApp {
             };
             let last = first + frames.len().saturating_sub(1);
             let (gw, gh) = (reference_frame.width as f64, reference_frame.height as f64);
-            let quad_px = corners.map(|c| (c[0] as f64 * gw, c[1] as f64 * gh));
+            // The area followed: the corners, or a larger part of the plane
+            // round them (#2754); less what is left out. The map found is
+            // the plane's, so the corners go where it takes them either way.
+            let quad_px = track.unwrap_or(corners).map(|c| (c[0] as f64 * gw, c[1] as f64 * gh));
+            let exclude_px: Vec<Vec<(f64, f64)>> = exclude.iter().map(|e| e.iter().map(|c| (c[0] as f64 * gw, c[1] as f64 * gh)).collect()).collect();
             // The whole surface aligned frame to frame (#2754), its own
             // outline included, each frame with its confidence.
             let opts = klipp_effects::planar::Options::default();
@@ -251,8 +259,8 @@ impl KlippApp {
             // device), else the CPU, which follows the same.
             let mut gpu = klipp_effects::gpu::planar::PlanarGpu::new();
             let mut run = |frames: &[usize], progress: &dyn Fn(f32) -> bool| match gpu.as_mut() {
-                Some(g) => g.track(&reference_frame, quad_px, frames, &mut |f| decode(f), &opts, progress),
-                None => klipp_effects::planar::track(&reference_frame, quad_px, frames, &mut |f| decode(f), &opts, progress),
+                Some(g) => g.track(&reference_frame, quad_px, &exclude_px, frames, &mut |f| decode(f), &opts, progress),
+                None => klipp_effects::planar::track(&reference_frame, quad_px, &exclude_px, frames, &mut |f| decode(f), &opts, progress),
             };
             let ahead = run(&forward, &|p| report(p * share));
             let behind = run(&backward, &|p| report(share + p * (1.0 - share)));
@@ -293,7 +301,7 @@ impl KlippApp {
             if !going() {
                 return fail("cancelled".into());
             }
-            let _ = event_tx.send(klipp_core::AppEvent::SurfaceTracked { clip_id, surface, name, corners, reference_secs: reference as f64 / media_fps, keys, source_size, media_fps, held_secs, direction, interactive });
+            let _ = event_tx.send(klipp_core::AppEvent::SurfaceTracked { clip_id, surface, name, corners, reference_secs: reference as f64 / media_fps, keys, source_size, media_fps, held_secs, direction, interactive, track_area: track, exclude });
         });
     }
 }

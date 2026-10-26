@@ -4303,3 +4303,43 @@ fn restore_background_whole_routes_without_a_model_or_job() {
     assert_eq!(reply["ok"], false);
     assert!(h.cmd_rx.try_recv().is_err());
 }
+
+/// `track_surface` carries the area followed and the parts left out to
+/// the app as given (#2754): `exclude` left out keeps a surface's own,
+/// `[]` clears them; and it refuses either with a click, or a part left
+/// out that is not a polygon in the frame, sending nothing.
+#[test]
+fn track_surface_carries_the_area_and_the_parts_left_out() {
+    let mut h = harness();
+    let media = h.media_pool.write().unwrap().add(klipp_media::MediaItem::synthetic_for_test("/tmp/surface-fixture.mov".into(), None));
+    for c in h.sequence.write().unwrap().tracks.iter_mut().flat_map(|t| t.clips.iter_mut()) {
+        c.kind = klipp_timeline::ClipKind::Media { media_id: media };
+    }
+    let clip = h.ids.clip_a.clone();
+    let corners = json!([[0.4, 0.4], [0.6, 0.4], [0.6, 0.6], [0.4, 0.6]]);
+    let area = json!([[0.2, 0.2], [0.8, 0.2], [0.8, 0.8], [0.2, 0.8]]);
+    let part = json!([[0.45, 0.45], [0.55, 0.45], [0.5, 0.55]]);
+    h.ok(json!({"method": "track_surface", "clip_id": clip, "corners": corners, "track_corners": area, "exclude": [part]}));
+    h.ok(json!({"method": "track_surface", "clip_id": clip, "corners": corners, "exclude": []}));
+    h.ok(json!({"method": "track_surface", "clip_id": clip, "corners": corners}));
+    let sent: Vec<(Option<[[f32; 2]; 4]>, Option<Vec<Vec<[f32; 2]>>>)> = h.sent.lock().unwrap().iter().filter_map(|c| match c {
+        klipp_core::AppCommand::TrackSurface { track, exclude, .. } => Some((*track, exclude.clone())),
+        _ => None,
+    }).collect();
+    assert_eq!(sent, [
+        (Some([[0.2, 0.2], [0.8, 0.2], [0.8, 0.8], [0.2, 0.8]]), Some(vec![vec![[0.45, 0.45], [0.55, 0.45], [0.5, 0.55]]])),
+        (None, Some(Vec::new())),
+        (None, None),
+    ]);
+    for (bad, why) in [
+        (json!({"method": "track_surface", "clip_id": clip, "click": [0.5, 0.5], "exclude": [part]}), "go with corners"),
+        (json!({"method": "track_surface", "clip_id": clip, "corners": corners, "exclude": [[[0.1, 0.1], [0.2, 0.2]]]}), "exclude 0"),
+        (json!({"method": "track_surface", "clip_id": clip, "corners": corners, "exclude": [[[0.1, 0.1], [0.2, 0.2], [5.0, 0.2]]]}), "exclude 0"),
+        (json!({"method": "track_surface", "clip_id": clip, "corners": corners, "track_corners": [[0.2, 0.2], [0.2, 0.2], [0.2, 0.2], [0.2, 0.2]]}), "track_corners"),
+    ] {
+        let reply = h.call(bad.clone());
+        assert_eq!(reply["ok"], json!(false), "{bad}");
+        assert!(reply["error"].as_str().unwrap_or_default().contains(why), "{bad}: {}", reply["error"]);
+    }
+    assert_eq!(h.sent.lock().unwrap().iter().filter(|c| matches!(c, klipp_core::AppCommand::TrackSurface { .. })).count(), 3, "a refusal sends nothing");
+}
