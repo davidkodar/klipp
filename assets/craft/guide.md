@@ -303,7 +303,8 @@ exist until the plan runs.
   highlights; `reset` takes the clip to neutral first. Match shots to
   each other before making any of them look better.
 - `effect {clip_id, kind, amount?}`: a finishing effect on a picture
-  clip or native generator. `amount` is 0 to 1; a second of the same kind replaces the first.
+  clip, native generator or title (on a title it works on the drawn
+  text: blur softens it, glow lights around it). `amount` is 0 to 1; a second of the same kind replaces the first.
   With `on: "timeline"` or `on: {"group": name}` instead of `clip_id` it
   goes on every picture clip there in one step (a vignette and grain over
   the whole film); `on: {"track": n or "video", "from"?, "to"?}` does the

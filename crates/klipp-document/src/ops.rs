@@ -6513,7 +6513,10 @@ fn key_effect(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip
 }
 
 fn picture_effect(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, kind: &str, amount: Option<f32>) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
-    if clip.generator_data().is_some() {
+    // A generator's and a title's picture take effects as a shot's does:
+    // the renderer runs them on the layer they draw (#2703).
+    let title = matches!(clip.kind, ClipKind::Title(_));
+    if clip.generator_data().is_some() || title {
         if seq.tracks[ti].locked {
             return Err(refuse(i, format!("track {ti} is locked"), "unlock it first"));
         }
@@ -6521,6 +6524,11 @@ fn picture_effect(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &
         require_picture(seq, pool, i, ti, clip, "add the effect to")?;
     }
     let (fx, a) = named_picture_effect(kind, amount).map_err(|(why, fix)| refuse(i, why, fix))?;
+    // A title has one drawing per frame and no source frames around it,
+    // which an effect that reads other times needs.
+    if title && klipp_effects::registry::needs_other_times(&fx) {
+        return Err(refuse(i, format!("{kind} reads a clip's other frames, which a title does not have"), "add it to a media clip"));
+    }
     use klipp_effects::BuiltinEffect as E;
     // The same kind of effect replaces the one that is there.
     let kind_of = std::mem::discriminant(&fx);
@@ -6884,7 +6892,9 @@ fn effect_on_many(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id:
         }
         GradeOn::Track { track, from, to, .. } => {
             let on = TrackSpan::resolve(seq, fps, i, track, from.as_ref(), to.as_ref())?;
-            let (members, skipped) = on.members(seq, is_picture);
+            // A track's titles too (#2703): one track is asked for, unlike
+            // the timeline, whose picture is its shots.
+            let (members, skipped) = on.members(seq, |t: &klipp_timeline::Track, c: &Clip| is_picture(t, c) || matches!(c.kind, ClipKind::Title(_)));
             return on_each(i, &on, "pictures", members, skipped, |ti, clip| picture_effect(seq, pool, i, ti, clip, kind, amount));
         }
         GradeOn::Group { group, .. } => {
@@ -13364,6 +13374,43 @@ mod tests {
         assert!(resolve(&seq, &pool, &[both]).unwrap_err().why.contains("both"));
         assert!(resolve(&seq, &pool, &[effect(GradeOn::Group { group: "Day".into(), stage: None }, 0.3)]).is_err());
         assert!(resolve(&seq, &pool, &[Op::Effect { clip_id: None, on: None, kind: "grain".into(), amount: None, color: None, tolerance: None, softness: None, spill: None, low: None, high: None, invert: None }]).unwrap_err().why.contains("no clip"));
+    }
+
+    /// #2703: a title takes a picture effect as a shot does: by its id,
+    /// and with its track; a locked track still refuses it. The
+    /// timeline's picture stays its shots.
+    #[test]
+    fn a_title_takes_picture_effects() {
+        use klipp_effects::BuiltinEffect as E;
+        let (mut seq, pool, _, a, b) = fixture();
+        let td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Klipp".into(), ..Default::default() });
+        let title = title_clip(td, tc(1.0), tc(3.0), seq.fps);
+        let tid = title.id;
+        let mut text = Track::new("T1", TrackKind::Text);
+        text.clips.push(title);
+        seq.tracks.insert(0, text);
+        let effect = |clip_id: Option<ClipId>, on: Option<GradeOn>, kind: &str| Op::Effect { clip_id: clip_id.map(ClipRef::Id), on, kind: kind.into(), amount: Some(0.5), color: None, tolerance: None, softness: None, spill: None, low: None, high: None, invert: None };
+
+        for (kind, is) in [("blur", (|e: &E| matches!(e, E::GaussianBlur { .. })) as fn(&E) -> bool), ("directional_blur", |e| matches!(e, E::DirectionalBlur { .. })), ("glow", |e| matches!(e, E::Glow { .. }))] {
+            let plan = resolve(&seq, &pool, &[effect(Some(tid), None, kind)]).unwrap_or_else(|r| panic!("{kind}: {}", r.why));
+            let (clip_id, effects) = effects_after(&plan.steps[0].edit).unwrap();
+            assert_eq!(clip_id, tid);
+            assert!(effects.iter().any(is), "{kind}: {effects:?}");
+            assert!(plan.steps[0].what.contains("Klipp") || plan.steps[0].what.contains(" on "), "{}", plan.steps[0].what);
+        }
+
+        // The text track as a target takes its title.
+        let plan = resolve(&seq, &pool, &[effect(None, Some(GradeOn::Track { track: TrackRef::Index(0), from: None, to: None, itself: false }), "blur")]).unwrap_or_else(|r| panic!("{}", r.why));
+        let EditCommand::Batch(edits) = &plan.steps[0].edit else { panic!("{:?}", plan.steps[0].edit) };
+        assert_eq!(edits.iter().map(|e| effects_after(e).unwrap().0).collect::<Vec<_>>(), vec![tid]);
+
+        // The timeline's picture is its shots, not its titles.
+        let plan = resolve(&seq, &pool, &[effect(None, Some(GradeOn::Named("timeline".into())), "vignette")]).unwrap();
+        let EditCommand::Batch(edits) = &plan.steps[0].edit else { panic!("{:?}", plan.steps[0].edit) };
+        assert_eq!(edits.iter().map(|e| effects_after(e).unwrap().0).collect::<Vec<_>>(), vec![a, b]);
+
+        seq.tracks[0].locked = true;
+        assert!(resolve(&seq, &pool, &[effect(Some(tid), None, "blur")]).unwrap_err().why.contains("locked"));
     }
 
     /// #847: effect, look, grade and audio take every clip of a track,

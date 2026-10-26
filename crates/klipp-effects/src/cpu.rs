@@ -186,6 +186,29 @@ fn screen(base: &[f32], layer: &[f32], intensity: f32, desat: f32, yw: [f32; 3])
     out
 }
 
+/// A glow: the picture premultiplied, blurred and screened over itself,
+/// its light seen where the picture is clear, so it spreads past a
+/// layer's edges (#2703); the GPU's glow blend with `lift_alpha`. An
+/// opaque pixel is the plain screen.
+fn glow(p: &[f32], w: u32, h: u32, radius: f32, intensity: f32) -> Vec<f32> {
+    let seen: Vec<f32> = p.chunks_exact(4).flat_map(|c| [c[0] * c[3], c[1] * c[3], c[2] * c[3], c[3]]).collect();
+    let light = gaussian(&seen, w, h, radius, false);
+    let mut out = p.to_vec();
+    out.par_chunks_exact_mut(4).zip(light.par_chunks_exact(4)).for_each(|(o, l)| {
+        let b = [l[0] * intensity, l[1] * intensity, l[2] * intensity];
+        let a = o[3] + b[0].max(b[1]).max(b[2]).clamp(0.0, 1.0) * (1.0 - o[3]);
+        if a <= 0.0 {
+            o.copy_from_slice(&[0.0; 4]);
+            return;
+        }
+        for c in 0..3 {
+            o[c] = screen_at_ceiling(o[c] * o[3], b[c]) / a;
+        }
+        o[3] = a;
+    });
+    out
+}
+
 /// `screen_at_ceiling` in the shaders' shared helpers: the screen blend
 /// at the picture's own ceiling, so light lands on a highlight instead of
 /// the blend coming back negative.
@@ -393,7 +416,7 @@ pub(crate) fn apply(
             });
             out
         }
-        Glow { radius, intensity } => screen(&p, &gaussian(&p, w, h, radius, false), intensity, 0.0, yw),
+        Glow { radius, intensity } => glow(&p, w, h, radius, intensity),
         LightRays { center_x, center_y, threshold, samples, decay, intensity } => {
             let samples = samples.clamp(4, 128);
             let (cx, cy) = (center_x * wf, center_y * hf);

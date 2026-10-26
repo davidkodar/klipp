@@ -68,7 +68,9 @@ pub fn slots_needed(effect: &BuiltinEffect) -> Option<usize> {
         BuiltinEffect::RoundedCorners { .. } => Some(1),
         BuiltinEffect::FillBars { .. } => Some(GpuEffectsPipeline::FILL_SLOTS),
         BuiltinEffect::DropShadow { .. } | BuiltinEffect::OuterGlow { .. } => Some(5),
-        BuiltinEffect::Glow { .. } | BuiltinEffect::LightWrap { .. } => Some(4),
+        // Glow's layer is premultiplied first (#2703).
+        BuiltinEffect::Glow { .. } => Some(5),
+        BuiltinEffect::LightWrap { .. } => Some(4),
         BuiltinEffect::GaussianBlur { radius } => Some(boxes(*radius)),
         BuiltinEffect::Denoise { .. } => Some(1),
         BuiltinEffect::TiltShift { radius, .. } => Some(boxes(*radius) + 1),
@@ -875,13 +877,16 @@ impl GpuEffectsPipeline {
                 Recorded::Done
             }
             BuiltinEffect::Glow { radius, intensity } => {
-                // The whole picture blurred and screened over itself.
+                // The whole picture blurred and screened over itself, its
+                // light spreading past the edges of a layer with clear
+                // parts, a title's (#2703).
                 let Some(scratch) = scratch else { return Some(Recorded::NotRecordable) };
                 if !has_room(rec, effect) {
                     return Some(Recorded::OutOfSlots);
                 }
-                let blend = rec.slots.claim(q, &self.bloom_blend(width, height, *intensity, 0.0));
-                let light = LightLayer { seed: None, radius: *radius, blend: &self.glow_blend_pipeline, blend_slot: blend };
+                let seed = rec.slots.claim(q, &BloomThresholdParams { premultiply: 1, ..self.bloom_threshold(width, height, 0.0) });
+                let blend = rec.slots.claim(q, &BloomBlendParams { lift_alpha: 1, ..self.bloom_blend(width, height, *intensity, 0.0) });
+                let light = LightLayer { seed, radius: *radius, blend: &self.glow_blend_pipeline, blend_slot: blend };
                 self.record_light_layer(rec, src, dst, scratch, light, width, height);
                 Recorded::Done
             }
@@ -1026,7 +1031,7 @@ impl GpuEffectsPipeline {
 
     fn bloom_threshold(&self, width: u32, height: u32, threshold: f32) -> BloomThresholdParams {
         BloomThresholdParams {
-            width, height, threshold, _pad: 0,
+            width, height, threshold, premultiply: 0,
             luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad_luma: 0,
         }
     }
@@ -1034,7 +1039,7 @@ impl GpuEffectsPipeline {
     fn bloom_blend(&self, width: u32, height: u32, intensity: f32, desat: f32) -> BloomBlendParams {
         BloomBlendParams {
             width, height, intensity, desat,
-            luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad_luma: 0,
+            luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], lift_alpha: 0,
         }
     }
 

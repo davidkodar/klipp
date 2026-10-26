@@ -8619,7 +8619,10 @@ struct BloomThresholdParams {
     width: u32,
     height: u32,
     threshold: f32,
-    _pad: u32,
+    /// 1: no threshold, the picture premultiplied by its alpha: a
+    /// layer's light as it is seen, for a glow that spreads past its
+    /// edges (#2703).
+    premultiply: u32,
     /// Working-space luminance weights, for the brightness this effect
     /// gates on. `GpuEffectsPipeline::set_luma_coefs` installs them; the
     /// CPU twin reads the same numbers.
@@ -8643,7 +8646,9 @@ struct BloomBlendParams {
     luma_yr: f32,
     luma_yg: f32,
     luma_yb: f32,
-    _pad_luma: u32,
+    /// 1: the light spreads past the layer's edges, raising its alpha
+    /// where it lands (Glow, #2703).
+    lift_alpha: u32,
 }
 
 #[repr(C)]
@@ -16020,7 +16025,7 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
 const SHADER_BLOOM_THRESHOLD: &str = concat!(
     "
 struct Params {
-    width: u32, height: u32, threshold: f32, _pad: u32,
+    width: u32, height: u32, threshold: f32, premultiply: u32,
     luma_yr: f32, luma_yg: f32, luma_yb: f32, _pad_luma: u32,
 }
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
@@ -16035,6 +16040,10 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let px = unpack(input[idx]);
+    if params.premultiply == 1u {
+        output[idx] = pack(vec4<f32>(px.xyz * px.w, px.w));
+        return;
+    }
     let luma = dot(vec3<f32>(params.luma_yr, params.luma_yg, params.luma_yb), px.xyz);
     if luma > params.threshold {
         // A weight, not a ramp: normalising by 1 - threshold handed a 12x
@@ -16083,7 +16092,7 @@ const SHADER_GLOW_BLEND: &str = concat!(
     "
 struct Params {
     width: u32, height: u32, intensity: f32, desat: f32,
-    luma_yr: f32, luma_yg: f32, luma_yb: f32, _pad_luma: u32,
+    luma_yr: f32, luma_yg: f32, luma_yb: f32, lift_alpha: u32,
 }
 @group(0) @binding(0) var<storage, read> original: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read> blurred: array<vec4<f32>>;
@@ -16101,6 +16110,15 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
     let bl = unpack(blurred[idx]).xyz;
     let l = dot(vec3<f32>(params.luma_yr, params.luma_yg, params.luma_yb), bl.xyz);
     let b = (bl + (vec3<f32>(l) - bl) * params.desat) * params.intensity;
+    if params.lift_alpha == 1u {
+        // The light (premultiplied) screened over the layer as seen, and
+        // seen itself where the layer is clear: a glow past a title's
+        // edges (#2703). An opaque pixel comes out as below.
+        let lit = screen3_at_ceiling(o.xyz * o.w, b);
+        let a = o.w + clamp(max(b.x, max(b.y, b.z)), 0.0, 1.0) * (1.0 - o.w);
+        output[idx] = pack(select(vec4<f32>(0.0), vec4<f32>(lit / a, a), a > 0.0));
+        return;
+    }
     output[idx] = pack(vec4<f32>(screen3_at_ceiling(o.xyz, b), o.w));
 }
 "
