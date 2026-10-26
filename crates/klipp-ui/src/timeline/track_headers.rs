@@ -476,62 +476,66 @@ pub fn show(
             }
         }
 
-        // Mute button (right side, 16x16)
-        let mute_rect = egui::Rect::from_min_size(
-            egui::pos2(
-                track_rect.max.x - btn_size * 3.0 - 12.0,
-                track_rect.center().y - btn_size / 2.0,
-            ),
-            egui::vec2(btn_size, btn_size),
-        );
-        let mute_resp = ui.allocate_rect(mute_rect, egui::Sense::click());
-        let mute_active = track.muted;
-        // A muted track shows it at a glance: the button filled red, as
-        // the other header draws it (#2672).
-        let (mute_bg, mute_color) = if mute_active {
-            (theme.marker_error, theme.text_primary)
-        } else if mute_resp.hovered() {
-            (theme.bg_raised, theme.text_dim)
-        } else {
-            (egui::Color32::TRANSPARENT, theme.text_dim)
-        };
-        ui.painter().rect_filled(mute_rect, 3.0, mute_bg);
-        let mute_icon = if mute_active { Icon::SpeakerSlash } else { Icon::SpeakerHigh };
-        mute_icon.image(12.0).tint(mute_color).paint_at(ui, mute_rect.shrink(2.0));
-        styled_tooltip(&mute_resp, theme, if mute_active { "Unmute track" } else { "Mute track" }, None);
-        if mute_resp.clicked() {
-            toggle_mute = Some(track_idx);
-        }
+        // Mute and solo for the tracks that make sound; a title or
+        // caption track has none to silence (#2698).
+        if matches!(track.kind, TrackKind::Video | TrackKind::Audio) {
+            // Mute button (right side, 16x16)
+            let mute_rect = egui::Rect::from_min_size(
+                egui::pos2(
+                    track_rect.max.x - btn_size * 3.0 - 12.0,
+                    track_rect.center().y - btn_size / 2.0,
+                ),
+                egui::vec2(btn_size, btn_size),
+            );
+            let mute_resp = ui.allocate_rect(mute_rect, egui::Sense::click());
+            let mute_active = track.muted;
+            // A muted track shows it at a glance: the button filled red, as
+            // the other header draws it (#2672).
+            let (mute_bg, mute_color) = if mute_active {
+                (theme.marker_error, theme.text_primary)
+            } else if mute_resp.hovered() {
+                (theme.bg_raised, theme.text_dim)
+            } else {
+                (egui::Color32::TRANSPARENT, theme.text_dim)
+            };
+            ui.painter().rect_filled(mute_rect, 3.0, mute_bg);
+            let mute_icon = if mute_active { Icon::SpeakerSlash } else { Icon::SpeakerHigh };
+            mute_icon.image(12.0).tint(mute_color).paint_at(ui, mute_rect.shrink(2.0));
+            styled_tooltip(&mute_resp, theme, if mute_active { "Unmute track" } else { "Mute track" }, None);
+            if mute_resp.clicked() {
+                toggle_mute = Some(track_idx);
+            }
 
-        // Solo button (16x16)
-        let solo_rect = egui::Rect::from_min_size(
-            egui::pos2(
-                track_rect.max.x - btn_size * 2.0 - 8.0,
-                track_rect.center().y - btn_size / 2.0,
-            ),
-            egui::vec2(btn_size, btn_size),
-        );
-        let solo_resp = ui.allocate_rect(solo_rect, egui::Sense::click());
-        let solo_active = track.solo;
-        let solo_bg = if solo_active {
-            theme.accent // bright gold when active
-        } else if solo_resp.hovered() {
-            theme.bg_raised
-        } else {
-            egui::Color32::TRANSPARENT
-        };
-        let solo_text_color = if solo_active { theme.text_on_accent } else { theme.text_dim };
-        ui.painter().rect_filled(solo_rect, 2.0, solo_bg);
-        ui.painter().text(
-            solo_rect.center(),
-            egui::Align2::CENTER_CENTER,
-            "S",
-            egui::FontId::proportional(10.0),
-            solo_text_color,
-        );
-        styled_tooltip(&solo_resp, theme, "Solo track", None);
-        if solo_resp.clicked() {
-            cmds.push(AppCommand::SetTrackSolo { track_index: track_idx, solo: !solo_active });
+            // Solo button (16x16)
+            let solo_rect = egui::Rect::from_min_size(
+                egui::pos2(
+                    track_rect.max.x - btn_size * 2.0 - 8.0,
+                    track_rect.center().y - btn_size / 2.0,
+                ),
+                egui::vec2(btn_size, btn_size),
+            );
+            let solo_resp = ui.allocate_rect(solo_rect, egui::Sense::click());
+            let solo_active = track.solo;
+            let solo_bg = if solo_active {
+                theme.accent // bright gold when active
+            } else if solo_resp.hovered() {
+                theme.bg_raised
+            } else {
+                egui::Color32::TRANSPARENT
+            };
+            let solo_text_color = if solo_active { theme.text_on_accent } else { theme.text_dim };
+            ui.painter().rect_filled(solo_rect, 2.0, solo_bg);
+            ui.painter().text(
+                solo_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "S",
+                egui::FontId::proportional(10.0),
+                solo_text_color,
+            );
+            styled_tooltip(&solo_resp, theme, "Solo track", None);
+            if solo_resp.clicked() {
+                cmds.push(AppCommand::SetTrackSolo { track_index: track_idx, solo: !solo_active });
+            }
         }
 
         // Lock button (16x16)
