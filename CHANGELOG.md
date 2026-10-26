@@ -39,6 +39,8 @@ The first release.
 - Timecodes show frames, not internal ticks, at 23.976, 29.97 and 59.94 fps.
 - Overlapping title clips keep their labels apart on the timeline.
 - The RGB Curves graph fits inside the inspector.
+- The Audio Mixer's strips fit the panel, so every track's mute and solo can
+  be reached, and dragging the mixer's top edge sets its height.
 
 ## 0.1.0-rc.3 — 2026-10-25
 
