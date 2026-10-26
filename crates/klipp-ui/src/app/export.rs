@@ -75,6 +75,16 @@ pub(super) fn follow_marks(dialog: &mut ExportDialogState, seq: &klipp_timeline:
     }
 }
 
+/// The range an export asked for takes: the form's when the form sent it,
+/// else the marks' whatever the form has picked, as the socket's reply
+/// says (#2671).
+pub(super) fn range_for_export(dialog: &mut ExportDialogState, seq: &klipp_timeline::Sequence) {
+    if !std::mem::take(&mut dialog.form_export) {
+        dialog.range_picked = false;
+    }
+    follow_marks(dialog, seq);
+}
+
 pub(super) struct ExportDialogState {
     pub(super) output_path: String,
     pub(super) format: ExportFormat,
@@ -98,6 +108,9 @@ pub(super) struct ExportDialogState {
     /// whole timeline ([`follow_marks`]). Cleared when an export is
     /// queued and when the dialog opens.
     pub(super) range_picked: bool,
+    /// The export about to be handled was sent by the form's own Export
+    /// button, so its picked range stands ([`range_for_export`]).
+    pub(super) form_export: bool,
     /// In multi-marker mode, include the segment from sequence start
     /// to the first marker as its own export.
     pub(super) include_pre_marker_segment: bool,
@@ -181,6 +194,7 @@ impl Default for ExportDialogState {
             overwrite_without_asking: false,
             range_mode: 0,
             range_picked: false,
+            form_export: false,
             include_pre_marker_segment: true,
             include_post_marker_segment: true,
             selected_preset_id: None,
@@ -809,9 +823,9 @@ impl KlippApp {
             // written over (see `export_step`). The Force commands are
             // the answers to those two questions.
             AppCommand::ExportSequence { settings } => {
-                // A socket's export, or the form's with no range picked,
-                // takes the marks' range.
-                follow_marks(&mut self.export_dialog, &self.state.sequences[self.state.active_sequence_idx]);
+                // The form's export takes its range; any other, as a
+                // socket's, the marks'.
+                range_for_export(&mut self.export_dialog, &self.state.sequences[self.state.active_sequence_idx]);
                 self.export_or_ask(settings, Confirmed::Nothing);
                 true
             }
@@ -2214,6 +2228,7 @@ impl KlippApp {
                     self.state.show_export_dialog = false;
                     self.prefs.export.last_preset_id = self.export_dialog.selected_preset_id.clone();
                     self.prefs_dirty = true;
+                    self.export_dialog.form_export = true;
                     cmds.push(AppCommand::ExportSequence {
                         settings: build_export_settings(&self.export_dialog, self.prefs.audio.pan_law),
                     });
@@ -2280,6 +2295,7 @@ impl KlippApp {
                             self.state.show_export_dialog = false;
                             self.prefs.export.last_preset_id = self.export_dialog.selected_preset_id.clone();
                             self.prefs_dirty = true;
+                            self.export_dialog.form_export = true;
                             cmds.push(AppCommand::ExportSequence {
                                 settings: build_export_settings(&self.export_dialog, self.prefs.audio.pan_law),
                             });
@@ -4183,7 +4199,7 @@ mod custom_ceiling_tests {
 
 #[cfg(test)]
 mod export_range_tests {
-    use super::{follow_marks, ExportDialogState};
+    use super::{follow_marks, range_for_export, ExportDialogState};
 
     fn sixty_seconds(pool: &mut klipp_media::MediaPool) -> klipp_timeline::Sequence {
         let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
@@ -4215,6 +4231,16 @@ mod export_range_tests {
         dialog.range_picked = true;
         follow_marks(&mut dialog, &seq);
         assert_eq!(dialog.range_mode, 0);
+
+        // #2671: an export the form didn't send (the socket's) takes the
+        // marks' range, as its reply says, whatever the form has picked;
+        // the form's own takes its pick.
+        dialog.form_export = true;
+        range_for_export(&mut dialog, &seq);
+        assert_eq!(dialog.range_mode, 0, "the form's export keeps its pick");
+        assert!(!dialog.form_export, "for that export only");
+        range_for_export(&mut dialog, &seq);
+        assert_eq!(dialog.range_mode, 1, "the socket's takes In to Out");
 
         // The In/Out range renders 20-30 s: ten seconds, not sixty.
         let snapshot = klipp_export::RenderSnapshot::from_sequence_with_all(
