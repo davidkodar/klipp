@@ -308,7 +308,7 @@ fn a_style_op_makes_a_text_metal() {
 }
 
 /// Wrong metal values are refused with the choices or the range, nothing
-/// changed; a 3D text is not made metal yet.
+/// changed; a 3D text is made metal too.
 #[test]
 fn wrong_metal_values_are_refused() {
     let (mut d, id) = titled("Wrong metal");
@@ -326,7 +326,9 @@ fn wrong_metal_values_are_refused() {
         assert!(why.contains(says), "{material}: {why}");
     }
     assert_eq!(d.title().1, &before);
-    d.run(json!([{"op":"style","clip_id":id,"three_d":{"look":"block"}}])).unwrap();
-    let why = d.run(json!([{"op":"style","clip_id":id,"material":"gold"}])).unwrap_err();
-    assert!(why.contains("flat text"), "{why}");
+    // A 3D text is made metal as a flat one is.
+    d.run(json!([{"op":"style","clip_id":id,"three_d":{"look":"block"},"material":"chrome"}])).unwrap();
+    let text = d.title().1.primary_text().unwrap();
+    assert!(text.three_d.is_some());
+    assert_eq!(text.material.map(|m| m.preset), Some(klipp_core::title_material::MetalPreset::Chrome));
 }

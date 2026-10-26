@@ -332,3 +332,79 @@ fn the_metals_are_told_apart() {
     // Orange keeps green well above blue; pink has them close.
     assert!(copper[1] - copper[2] > rose[1] - rose[2] + 10.0, "copper is orange, rose gold pink: {copper:?} {rose:?}");
 }
+
+/// Gold at its defaults over blue water stays gold: red over green over
+/// blue, well apart, not the olive grey the blue alone would make of it.
+#[test]
+fn gold_over_blue_water_stays_gold() {
+    let Some(plain) = render(None, false, None) else {
+        assert!(!required(), "required, but the GPU stack declined the title");
+        eprintln!("UNVERIFIED: no GPU stack");
+        return;
+    };
+    let letters: Vec<usize> = (0..(W * H) as usize).filter(|&i| plain[i * 4] > 200).collect();
+    let (px, _) = over_flat(TitleMaterial { glints: 0.0, ..TitleMaterial::default() }, [0.03, 0.18, 0.32], Vec::new()).expect("drawn");
+    let m = stats(&px, &letters).0;
+    assert!(m[0] > m[1] && m[1] > m[2] && m[0] > m[2] + 45.0, "gold over blue water: {m:?}");
+}
+
+/// A bevelled 3D "Klipp" in `material` over one colour, turned a little.
+fn solid_over_flat(material: Option<TitleMaterial>, colour: [f32; 3]) -> Option<Vec<u8>> {
+    let three_d = klipp_core::text3d::Text3d { rotation: [10.0, -20.0, 0.0], ..klipp_core::text3d::Text3d::default().with_look("bevelled").expect("a look") };
+    let tb = klipp_timeline::TextBox { text: "Klipp".into(), font_size: 900.0, material, three_d: Some(three_d), ..Default::default() };
+    let td = klipp_timeline::TitleData::single_text(tb);
+    let mut text = Track::new("T1", TrackKind::Text);
+    text.clips = vec![Clip { kind: ClipKind::Title(td), ..Clip::gap(tc(0.0), tc(4.0)) }];
+    let mut v1 = Track::new("V1", TrackKind::Video);
+    v1.clips = vec![Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(4.0), tc(0.0), tc(4.0))];
+    let mut seq = Sequence::new_default();
+    seq.resolution = klipp_core::Resolution { width: W, height: H };
+    seq.tracks = vec![text, v1];
+    let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+    r.set_gpu_enabled(true);
+    Some(r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut Flat(colour), RenderOptions::default())?.0)
+}
+
+/// #2706: a 3D text is metal on every face. Gold keeps its hue and
+/// reflects, from shade to highlight, on its bevels and sides; silver
+/// with only the shot in its mix takes the colour of what is behind it.
+/// `KLIPP_METAL_3D_SHEET=<path.png>` writes every metal in 3D.
+#[test]
+fn a_3d_text_is_metal_on_every_face() {
+    let night = [0.01, 0.01, 0.02];
+    let Some(plain) = solid_over_flat(None, night) else {
+        assert!(!required(), "required, but the GPU stack declined the solid");
+        eprintln!("UNVERIFIED: no GPU stack");
+        return;
+    };
+    // The solid, wherever it differs from the night.
+    let solid: Vec<usize> = (0..(W * H) as usize).filter(|&i| plain[i * 4..i * 4 + 3].iter().any(|&v| v > 40)).collect();
+    assert!(solid.len() > 2_000, "the solid covers {} pixels", solid.len());
+    let gold = solid_over_flat(Some(TitleMaterial { glints: 0.0, ..TitleMaterial::default() }), night).expect("drawn");
+    let (mean, spread, lo, hi) = stats(&gold, &solid);
+    assert!(mean[0] > mean[1] && mean[1] > mean[2] && mean[0] > mean[2] + 30.0, "3D gold is gold: {mean:?}");
+    assert!(spread > 20.0 && hi > lo + 80.0, "3D gold reflects: spread {spread:.1}, {lo:.0}..{hi:.0}");
+    let only = TitleMaterial {
+        environment: klipp_core::title_material::MetalEnvironment { studio: 0.0, sky: 0.0, shot: 1.0, ..Default::default() },
+        glints: 0.0,
+        ..TitleMaterial::preset(MetalPreset::Silver)
+    };
+    let red = stats(&solid_over_flat(Some(only), [0.8, 0.05, 0.02]).expect("drawn"), &solid).0;
+    let blue = stats(&solid_over_flat(Some(only), [0.02, 0.1, 0.8]).expect("drawn"), &solid).0;
+    assert!(red[0] > red[2] + 30.0 && blue[2] > blue[0] + 30.0, "3D silver reflects the shot: {red:?} {blue:?}");
+
+    if let Some(path) = std::env::var_os("KLIPP_METAL_3D_SHEET") {
+        let rows: Vec<Option<TitleMaterial>> = std::iter::once(None).chain(MetalPreset::ALL.map(|p| Some(TitleMaterial::preset(p)))).collect();
+        let mut sheet = vec![0u8; (W * 2 * H * rows.len() as u32 * 4) as usize];
+        for (row, m) in rows.iter().enumerate() {
+            for (col, behind) in [[0.35, 0.5, 0.75], night].into_iter().enumerate() {
+                let tile = solid_over_flat(*m, behind).expect("drawn");
+                for y in 0..H as usize {
+                    let at = ((row * H as usize + y) * (W as usize * 2) + col * W as usize) * 4;
+                    sheet[at..at + W as usize * 4].copy_from_slice(&tile[y * W as usize * 4..(y + 1) * W as usize * 4]);
+                }
+            }
+        }
+        image::save_buffer(&path, &sheet, W * 2, H * rows.len() as u32, image::ExtendedColorType::Rgba8).unwrap();
+    }
+}

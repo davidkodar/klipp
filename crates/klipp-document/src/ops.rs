@@ -11031,9 +11031,6 @@ fn set_motion_extras(tb: &mut klipp_timeline::TextBox, fx: &mut Option<klipp_tim
     if let Some(ask) = &t.material {
         match ask {
             None => tb.material = None,
-            Some(_) if tb.three_d.is_some() => {
-                return Err("a metal is drawn on flat text; this text is in 3D (three_d: \"none\" makes it flat)".into());
-            }
             Some(ask) => {
                 let m = ask.apply(tb.material.as_ref());
                 // What a frame drawn without a GPU shows.

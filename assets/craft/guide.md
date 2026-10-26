@@ -640,8 +640,9 @@ exist until the plan runs.
   bevel cut into the letters: the shot leads by default, so gold over a
   sunset turns warm and over blue water cool; more studio makes it a
   product shot; the layer's effects run over it, so a
-  glow glows gold. Without a GPU the text shows its colour. A 3D text
-  is not made metal.
+  glow glows gold. A 3D text (three_d) is metal on every face, its
+  own bevels and sides reflecting. Without a GPU the text shows its
+  colour.
 - `set_text {clip_id, text}`: the words of a title or a caption; its
   look, place and timing stay. For the cue the transcript misheard and
   the name it cannot spell: read the captions once they are made
