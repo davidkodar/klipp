@@ -78,6 +78,16 @@ impl AudioEffect for Delay {
         }
     }
 
+    /// Echo after echo, each `feedback` of the one before, until the
+    /// wet sound is below −80 dB: one echo with no feedback.
+    fn tail_secs(&self) -> f32 {
+        if self.mix <= 0.0 {
+            return 0.0;
+        }
+        let echoes = if self.feedback > 0.0 { 1.0 + ((super::TAIL_FLOOR / self.mix).ln() / self.feedback.ln()).max(0.0).ceil() } else { 1.0 };
+        echoes * self.delay_time * 0.001
+    }
+
     fn set_param(&mut self, name: &str, value: f32) {
         match name {
             "delay_time" => self.delay_time = value.clamp(1.0, MAX_DELAY_MS),

@@ -202,6 +202,13 @@ struct ActiveAudioSource {
     /// Where its clip starts, for a source opened ahead of it to start
     /// on its own sample (#1588); `None` for one opened under its clip.
     starts_at: Option<Timecode>,
+    /// Whether its effects can ring on past its clip's end (#2780): a
+    /// PCM feeder's, with a tail or keyframes that could give one.
+    may_ring: bool,
+    /// The clip it last played, its out point, and where its sound ends
+    /// on the timeline in seconds (past a crossfade's handle): a source
+    /// retired there rings on; one whose clip was edited stops.
+    clip: Option<(klipp_core::ClipId, Timecode, f64)>,
 }
 /// Pre-opened audio source ready for loop swap (created by pre-seek thread).
 struct PreSeekAudioSource {
@@ -1515,6 +1522,10 @@ pub struct PlaybackEngine {
     boundary_frame: Option<(klipp_core::ClipId, crate::types::LinearFrame)>,
     // Audio — one source per active track, mixed through mix thread
     audio_sources: Vec<ActiveAudioSource>,
+    /// Sources whose clips have ended, their effects ringing on (#2780):
+    /// beside the sources that play now, at their clips' last settings,
+    /// until their tails have run.
+    audio_tails: Vec<ActiveAudioSource>,
     audio_output: Option<SendAudioOutput>,
     mix_thread: Option<MixThread>,
     mixer: std::sync::Arc<std::sync::Mutex<klipp_audio::AudioMixer>>,
@@ -2091,6 +2102,18 @@ pub(crate) fn key_track(key: usize) -> usize {
     key % LANE_STRIDE
 }
 
+/// Whether the clip after `clip` on `track`, from its out point, carries
+/// the sound of a source playing `media` through the chain `chain_fp` on:
+/// the same sound, played on by the one source.
+fn carried_on(track: &klipp_timeline::Track, clip: &klipp_timeline::Clip, media: MediaId, chain_fp: u64) -> bool {
+    track.clips.iter().any(|c| {
+        c.id != clip.id
+            && c.timeline_in == clip.timeline_out
+            && c.media_id() == Some(media)
+            && audio_chain_fingerprint_for(&c.audio_effects, &c.audio_effect_keyframes) == chain_fp
+    })
+}
+
 /// The media whose sound can crossfade in playback: see [`fadeable_media`].
 type FadeableMedia = std::collections::HashSet<MediaId>;
 
@@ -2229,6 +2252,64 @@ impl PlaybackEngine {
         self.fadeable_media = fadeable_media(&pool);
     }
 
+    /// Each source's clip as it plays at `tc` ([`ActiveAudioSource::clip`]),
+    /// and the test of whether one no longer wanted has reached its
+    /// clip's end, unedited, and can ring on (#2780).
+    fn note_source_clips(&mut self, tc: Timecode) -> impl Fn(&ActiveAudioSource) -> bool {
+        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+        for a in self.audio_sources.iter_mut().filter(|a| a.may_ring) {
+            if let Some(s) = sounding_for_key(&seq, &self.fadeable_media, a.track_index, tc) {
+                if s.clip.media_id() == Some(a.media_id) && audio_chain_fingerprint_for(&s.clip.audio_effects, &s.clip.audio_effect_keyframes) == a.audio_chain_fingerprint {
+                    a.clip = Some((s.clip.id, s.clip.timeline_out, s.clip.timeline_out.to_secs_f64() + s.extent.tail_secs));
+                }
+            }
+        }
+        // A clip as it was: still on its track, ending where it did.
+        let unedited: std::collections::HashSet<(usize, klipp_core::ClipId, Timecode)> = self
+            .audio_sources
+            .iter()
+            .filter_map(|a| {
+                let (id, out, _) = a.clip?;
+                seq.tracks.get(key_track(a.track_index))?.clips.iter().any(|c| c.id == id && c.timeline_out == out).then_some((a.track_index, id, out))
+            })
+            .collect();
+        let heard = tc.to_secs_f64();
+        move |a: &ActiveAudioSource| {
+            a.may_ring && a.clip.is_some_and(|(id, out, ends)| heard >= ends - 0.05 && unedited.contains(&(a.track_index, id, out)))
+        }
+    }
+
+    /// Stop the ringing sources whose tails have run, or that have rung
+    /// as long as any can, at `heard` seconds on the timeline.
+    fn end_rung_out_tails(&mut self, heard: f64) {
+        let mut done = Vec::new();
+        self.audio_tails.retain_mut(|t| {
+            let ends = t.clip.map_or(0.0, |(_, _, ends)| ends);
+            let tail = t.source.ring().and_then(|r| r.tail_secs()).unwrap_or(klipp_audio::dsp::MAX_TAIL_SECS as f64);
+            let rung = heard > ends + tail + 0.1;
+            if rung {
+                t.source.stop_detached();
+                done.push(t.mix.clone());
+            }
+            !rung
+        });
+        for mix in &done {
+            if let Some(mt) = &self.mix_thread {
+                mt.remove_staging_of(mix);
+            }
+        }
+    }
+
+    /// Stop every ringing source at once: a seek or a pause.
+    fn drop_audio_tails(&mut self) {
+        for mut t in std::mem::take(&mut self.audio_tails) {
+            t.source.stop_detached();
+            if let Some(mt) = &self.mix_thread {
+                mt.remove_staging_of(&t.mix);
+            }
+        }
+    }
+
     fn reconcile_audio_sources(&mut self) {
         if self.state != PlaybackState::Playing {
             return;
@@ -2254,15 +2335,26 @@ impl PlaybackEngine {
         // on its track now or is about to: a track has two across a cut.
         let identity = |(t, m, _, _, fx, kfs): &TrackAudioRow| (*t, *m, audio_chain_fingerprint_for(fx, kfs));
         let wanted: std::collections::HashSet<(usize, MediaId, u64)> = rows.iter().chain(ahead.iter().map(|(row, _)| row)).map(identity).collect();
+        let heard = tc.to_secs_f64();
+        let ended = self.note_source_clips(tc);
         let mut retired = Vec::new();
-        self.audio_sources.retain_mut(|a| {
-            let keep = wanted.contains(&(a.track_index, a.media_id, a.audio_chain_fingerprint));
-            if !keep {
+        let mut ringing = Vec::new();
+        for a in std::mem::take(&mut self.audio_sources) {
+            if wanted.contains(&(a.track_index, a.media_id, a.audio_chain_fingerprint)) {
+                self.audio_sources.push(a);
+            } else if ended(&a) {
+                // Its clip has ended: its effects ring on beside the
+                // next clip's sound, at its last settings (#2780).
+                debug!("audio source on track {} rings on past its clip's end at {heard:.3}s", a.track_index);
+                ringing.push(a);
+            } else {
+                let mut a = a;
                 a.source.stop_detached();
                 retired.push((a.track_index, a.mix.clone()));
             }
-            keep
-        });
+        }
+        self.audio_tails.extend(ringing);
+        self.end_rung_out_tails(heard);
         for (t, mix) in &retired {
             if let Some(mt) = &self.mix_thread {
                 mt.remove_staging_of(mix);
@@ -2493,6 +2585,7 @@ impl PlaybackEngine {
             cut_diag_until: None,
             boundary_frame: None,
             audio_sources: Vec::new(),
+            audio_tails: Vec::new(),
             audio_output,
             mix_thread: Some(mix_thread),
             mixer,
@@ -3223,6 +3316,7 @@ impl PlaybackEngine {
                     for active in &self.audio_sources {
                         active.source.pause();
                     }
+                    self.drop_audio_tails();
                     if let Some(aout) = &self.audio_output {
                         aout.0.pause();
                         // Drain stale samples so they don't play on resume
@@ -4446,18 +4540,15 @@ impl PlaybackEngine {
         let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
         for active in self.audio_sources.iter().filter(|a| a.track_index < LANE_STRIDE) {
             let Some(sounding) = sounding_for_key(&seq, &self.fadeable_media, active.track_index, active.starts_at.filter(|s| *s > at).unwrap_or(at)) else { continue };
-            if sounding.extent.tail_secs > 0.0 || sounding.extent.fade_out_secs > 0.0 || sounding.clip.media_id() != Some(active.media_id) {
+            // One that rings on is fed silence past its out point and
+            // ends itself when its tail has run (#2780).
+            if active.may_ring || sounding.extent.tail_secs > 0.0 || sounding.extent.fade_out_secs > 0.0 || sounding.clip.media_id() != Some(active.media_id) {
                 continue;
             }
             let end = sounding.clip.timeline_out;
             let Some(track) = seq.tracks.get(key_track(active.track_index)) else { continue };
             // Carried on by the next clip: the same sound, played on.
-            let carried = track.clips.iter().any(|c| {
-                c.id != sounding.clip.id
-                    && c.timeline_in == end
-                    && c.media_id() == Some(active.media_id)
-                    && audio_chain_fingerprint_for(&c.audio_effects, &c.audio_effect_keyframes) == active.audio_chain_fingerprint
-            });
+            let carried = carried_on(track, sounding.clip, active.media_id, active.audio_chain_fingerprint);
             if carried || end.to_secs_f64() > heard + OPEN_AHEAD_SECS {
                 continue;
             }
@@ -4560,7 +4651,13 @@ impl PlaybackEngine {
                     Some(at) if at > own_tc => at,
                     _ => own_tc,
                 };
-                if let Some(audio_clip) = sounding_for_key(&seq, &self.fadeable_media, active.track_index, own_tc).map(|s| s.clip) {
+                if let Some(sounding) = sounding_for_key(&seq, &self.fadeable_media, active.track_index, own_tc) {
+                    let audio_clip = sounding.clip;
+                    // Its sound stops at the out point, its effects ringing
+                    // on, unless the next clip plays it on (#2780).
+                    if let (Some(ring), Some(track)) = (active.source.ring(), seq.tracks.get(key_track(active.track_index))) {
+                        ring.set_stops(sounding.extent.tail_secs > 0.0 || !carried_on(track, audio_clip, active.media_id, active.audio_chain_fingerprint));
+                    }
                     // Compute clip-relative time for keyframe evaluation
                     let clip_time_secs = (heard_at - audio_clip.timeline_in.to_secs_f64()).max(0.0);
 
@@ -5039,10 +5136,11 @@ impl PlaybackEngine {
         if let Some(ref mt) = self.mix_thread {
             mt.clear_all();
         }
-        for active in &mut self.audio_sources {
+        for active in self.audio_sources.iter_mut().chain(self.audio_tails.iter_mut()) {
             active.source.stop_detached();
         }
         self.audio_sources.clear();
+        self.audio_tails.clear();
         // Drop mix thread and audio output
         self.mix_thread = None;
         self.audio_output = None;
@@ -5099,6 +5197,8 @@ impl PlaybackEngine {
                             source: AudioSource::PcmFeeder(feeder),
                             mix,
                             starts_at: None,
+                            may_ring: klipp_audio::dsp::AudioEffectChain::may_ring(&audio_effects, !audio_effect_keyframes.is_empty(), 48_000),
+                            clip: None,
                         });
                         return;
                     }
@@ -5127,6 +5227,8 @@ impl PlaybackEngine {
                     source: AudioSource::Decoder(adec),
                     mix,
                     starts_at: None,
+                    may_ring: false,
+                    clip: None,
                 });
             }
             Err(e) => {
@@ -5328,6 +5430,7 @@ impl PlaybackEngine {
         if let Some(ref mt) = self.mix_thread {
             mt.flush();
         }
+        self.drop_audio_tails();
 
         // Compute per-track seek positions from the timeline
         let seek_positions: Vec<(usize, f64)> = {
@@ -7130,6 +7233,8 @@ impl PlaybackEngine {
                         settings_fingerprint: 0,
                         source: ps_source.source,
                         starts_at: None,
+                        may_ring: false,
+                        clip: None,
                     });
                 }
                 // The pre-seek thread filled them on the envelopes of

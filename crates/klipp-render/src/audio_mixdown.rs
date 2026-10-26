@@ -82,7 +82,15 @@ struct TrackAudioState {
     /// at the offset its timeline position implies, never "wherever the
     /// last read stopped": a ranged export begins mid-clip, and the old
     /// read cursor started every clip from its first sample.
+    /// Since #2780 a buffer runs past its clip by the clip's effect
+    /// tail, which it is mixed for until it has rung out.
     buffers: Vec<(usize, Vec<f32>)>,
+    /// Where each clip's sound, once made, has rung out: the sample past
+    /// its tail. A clip not made yet may ring for up to
+    /// [`klipp_audio::dsp::MAX_TAIL_SECS`] past its end.
+    rung_out: std::collections::HashMap<usize, u64>,
+    /// Whether a clip's effects can ring past its end at all, asked once.
+    may_ring: std::collections::HashMap<usize, bool>,
 }
 
 impl AudioMixdown {
@@ -100,6 +108,8 @@ impl AudioMixdown {
             track_decoders.push(TrackAudioState {
                 clips: track.clips.clone(),
                 buffers: Vec::new(),
+                rung_out: Default::default(),
+                may_ring: Default::default(),
             });
             track_settings.push(TrackSettings {
                 volume: track.volume,
@@ -324,14 +334,25 @@ fn get_track_samples(
     let stereo_count = (end - first) as usize * 2;
 
     // The clips that cover this frame: one, or two where a crossfade
-    // overlaps the outgoing clip's tail with the incoming clip's head.
-    let covering: Vec<usize> = state
-        .clips
-        .iter()
-        .enumerate()
-        .filter(|(_, c)| frame_num >= c.timeline_start_frame && frame_num < c.timeline_end_frame)
-        .map(|(i, _)| i)
-        .collect();
+    // overlaps the outgoing clip's tail with the incoming clip's head;
+    // and the ones before it whose effects still ring (#2780), made
+    // first if a ranged export starts inside their tail.
+    let max_tail = (klipp_audio::dsp::MAX_TAIL_SECS as f64 * sample_rate as f64).ceil() as u64;
+    let mut covering = Vec::new();
+    for (i, c) in state.clips.iter().enumerate() {
+        if frame_num >= c.timeline_start_frame && frame_num < c.timeline_end_frame {
+            covering.push(i);
+            continue;
+        }
+        if frame_num < c.timeline_end_frame {
+            continue;
+        }
+        let clip_end = clip_samples(c, sample_rate, fps_num, fps_den).1;
+        let rung_out = state.rung_out.get(&i).copied().unwrap_or(clip_end + max_tail);
+        if first < rung_out && *state.may_ring.entry(i).or_insert_with(|| clip_may_ring(c, sample_rate)) {
+            covering.push(i);
+        }
+    }
     if covering.is_empty() {
         state.buffers.clear();
         return vec![0.0; stereo_count];
@@ -343,63 +364,9 @@ fn get_track_samples(
             continue;
         }
         let clip = &state.clips[clip_idx];
-        // The clip's effects, made first: how far they look ahead says how
-        // far past the clip's end its sound must be read.
-        // A Normalize the app has not measured yet is measured here, as
-        // the app measures it, so the export is right and the same as
-        // playback once the app has caught up (#2778).
-        let (from, to) = clip.source_range;
-        let effects = crate::normalize::with_normalizes_measured(&clip.path, from, to, &clip.audio_effects, &clip.audio_effect_keyframes);
-        let mut chain = (!effects.is_empty()).then(|| AudioEffectChain::from_instances_with_kfs(&effects, &clip.audio_effect_keyframes, sample_rate));
-        let latency_secs = chain.as_ref().map_or(0.0, |c| c.total_latency_samples(sample_rate) as f64 / sample_rate as f64);
-        let until = decode_until(clip, fps, latency_secs);
-        let buf = match decode_clip_audio(&clip.path, clip.source_start_secs, until, sample_rate) {
-            Ok(mut buf) => {
-                // A retimed clip (#642): its sound read at its speed, from
-                // where each moment of it on the timeline is in the source,
-                // as playback's feeder reads it; then the buffer is the
-                // clip's own time from its first sample, as at 1x.
-                if let Some(v) = clip.varispeed {
-                    let (start, end) = clip.span_secs(fps);
-                    let want = ((end - start).max(0.0) * sample_rate as f64).ceil() as usize + 1;
-                    let from = (v.source_at(0.0) - clip.source_start_secs) * sample_rate as f64;
-                    buf = if v.keep_pitch && v.speed > 0.0 {
-                        // On playback's grain grid: anchored at the clip's
-                        // in, its sound starting `head_secs` before it.
-                        let anchor = (v.source_in - clip.source_start_secs) * sample_rate as f64;
-                        klipp_audio::dsp::stretch::Stretcher::new(anchor, v.speed).read(&buf, 2, (-v.head_secs * sample_rate as f64).round() as i64, want)
-                    } else {
-                        klipp_audio::dsp::varispeed::read(&buf, 2, from, v.speed, want)
-                    };
-                }
-                // Apply per-clip audio effects (EQ, compressor, reverb, etc.).
-                // `decode_clip_audio` is called with `source_start_secs`, so the
-                // returned buffer's first sample IS clip-relative t=0. The chain
-                // sub-chunks internally and walks `clip_time_secs` forward
-                // through the buffer when keyframes are present, so a single
-                // call covers the whole clip.
-                if let Some(chain) = chain.as_mut() {
-                    let ctx = AudioProcessContext {
-                        sample_rate,
-                        channels: 2,
-                        clip_time_secs: 0.0,
-                    };
-                    // Effects that look ahead (STFT denoiser, pitch shift)
-                    // delay their output. Export has the whole clip, so
-                    // flush the delay with silence and drop the head to
-                    // keep the sound on the picture.
-                    let latency = chain.total_latency_samples(sample_rate) as usize * 2;
-                    buf.resize(buf.len() + latency, 0.0);
-                    chain.process(&mut buf, &ctx);
-                    buf.drain(..latency);
-                }
-                buf
-            }
-            Err(e) => {
-                warn!("AudioMixdown: failed to decode {:?}: {e}", clip.path);
-                Vec::new()
-            }
-        };
+        let buf = clip_sound(clip, sample_rate, fps_num, fps_den, fps);
+        let (clip_first, _) = clip_samples(clip, sample_rate, fps_num, fps_den);
+        state.rung_out.insert(clip_idx, clip_first + (buf.len() / 2) as u64);
         state.buffers.push((clip_idx, buf));
     }
 
@@ -411,9 +378,10 @@ fn get_track_samples(
         // clip's source start, which is what plays at that timeline start.
         // A clip placed by the sample starts, and ends, inside its first
         // and last frames: silent there before and after it (#1588).
+        // A buffer is the clip's length and its tail: it is mixed to its end.
         let (clip_first, clip_end) = clip_samples(clip, sample_rate, fps_num, fps_den);
         let from = first.max(clip_first);
-        let until = end.min(clip_end);
+        let until = end.min(clip_end.max(clip_first + (buffer.len() / 2) as u64));
         if until <= from {
             continue;
         }
@@ -453,6 +421,102 @@ fn get_track_samples(
         }
     }
     mixed
+}
+
+/// Whether a clip's effects can sound on past its end.
+fn clip_may_ring(clip: &AudioClipSnapshot, sample_rate: u32) -> bool {
+    AudioEffectChain::may_ring(&clip.audio_effects, !clip.audio_effect_keyframes.is_empty(), sample_rate)
+}
+
+/// A clip's sound as the mix takes it, from its first sample on the
+/// timeline: decoded, read at its speed, its own fades on it, then its
+/// effects. It is the clip's length, padded where the file runs short,
+/// and then its effects' tail (#2780): what they go on sounding with
+/// silence in, past its end, into a gap or under the next clip.
+fn clip_sound(clip: &AudioClipSnapshot, sample_rate: u32, fps_num: u64, fps_den: u64, fps: f64) -> Vec<f32> {
+    // A Normalize the app has not measured yet is measured here, as
+    // the app measures it, so the export is right and the same as
+    // playback once the app has caught up (#2778).
+    let (from, to) = clip.source_range;
+    let effects = crate::normalize::with_normalizes_measured(&clip.path, from, to, &clip.audio_effects, &clip.audio_effect_keyframes);
+    let mut chain = (!effects.is_empty()).then(|| AudioEffectChain::from_instances_with_kfs(&effects, &clip.audio_effect_keyframes, sample_rate));
+    let mut buf = match decode_clip_audio(&clip.path, clip.source_start_secs, decode_until(clip, fps, 0.0), sample_rate) {
+        Ok(buf) => buf,
+        Err(e) => {
+            warn!("AudioMixdown: failed to decode {:?}: {e}", clip.path);
+            return Vec::new();
+        }
+    };
+    // A retimed clip (#642): its sound read at its speed, from
+    // where each moment of it on the timeline is in the source,
+    // as playback's feeder reads it; then the buffer is the
+    // clip's own time from its first sample, as at 1x.
+    if let Some(v) = clip.varispeed {
+        let (start, end) = clip.span_secs(fps);
+        let want = ((end - start).max(0.0) * sample_rate as f64).ceil() as usize + 1;
+        let from = (v.source_at(0.0) - clip.source_start_secs) * sample_rate as f64;
+        buf = if v.keep_pitch && v.speed > 0.0 {
+            // On playback's grain grid: anchored at the clip's
+            // in, its sound starting `head_secs` before it.
+            let anchor = (v.source_in - clip.source_start_secs) * sample_rate as f64;
+            klipp_audio::dsp::stretch::Stretcher::new(anchor, v.speed).read(&buf, 2, (-v.head_secs * sample_rate as f64).round() as i64, want)
+        } else {
+            klipp_audio::dsp::varispeed::read(&buf, 2, from, v.speed, want)
+        };
+    }
+    // The clip's own length: what the file holds past its out point is
+    // not the clip's, and its effects hear silence there, as playback's.
+    // A file shorter than the timeline says plays silence to the end;
+    // without the warning that underrun looks like A/V drift.
+    let (clip_first, clip_end) = clip_samples(clip, sample_rate, fps_num, fps_den);
+    let frames = (clip_end - clip_first) as usize;
+    if buf.len() < frames * 2 {
+        tracing::warn!("audio_mixdown: clip underrun — padded {} samples of silence (expected {}, decoded {})", frames * 2 - buf.len(), frames * 2, buf.len());
+    }
+    buf.resize(frames * 2, 0.0);
+    envelope_samples(&mut buf, &clip.shape, 0.0, sample_rate);
+    // The clip's effects (EQ, compressor, reverb…), over the whole clip at
+    // once: the chain sub-chunks itself and walks `clip_time_secs` on
+    // through the buffer for keyframes. Then silence for the tail at the
+    // settings it ends on, and for the effects that look ahead (STFT
+    // denoiser, pitch shift) and so delay their output: that delay is
+    // dropped from the head, keeping the sound on the picture.
+    if let Some(chain) = chain.as_mut() {
+        let latency = chain.total_latency_samples(sample_rate) as usize;
+        chain.process(&mut buf, &AudioProcessContext { sample_rate, channels: 2, clip_time_secs: 0.0 });
+        let mut rest = vec![0.0; (chain.tail_frames(sample_rate) + latency) * 2];
+        chain.process(&mut rest, &AudioProcessContext { sample_rate, channels: 2, clip_time_secs: frames as f64 / sample_rate as f64 });
+        buf.extend(rest);
+        buf.drain(..latency * 2);
+    }
+    buf
+}
+
+/// A clip's own fades and its crossfades over its whole sound, before
+/// its effects, as the playback feeder applies them: a reverb rings on
+/// past a fade-out, in both. The anti-click ramp at its start too.
+/// `samples` start `from_secs` into the clip, counted from its extended
+/// start when a crossfade gives it a head.
+fn envelope_samples(samples: &mut [f32], shape: &AudioClipShape, from_secs: f64, sample_rate: u32) {
+    let head = shape.head_secs;
+    let crossfading = shape.crossfade_in_secs > 0.0 || shape.crossfade_out_secs > 0.0;
+    let ext_dur = head + shape.clip_duration_secs + shape.tail_secs;
+    let dur = shape.clip_duration_secs;
+    for (i, pair) in samples.chunks_mut(2).enumerate() {
+        let pos = from_secs + i as f64 / sample_rate as f64 - head;
+        let own = if shape.crossfade_in_secs > 0.0 {
+            // Fading in from silence already: no click to ramp out,
+            // and the anti-click ramp at the in point would dip the
+            // middle of the crossfade.
+            fade_out_only(pos, dur, shape.fade_out_secs as f64, shape.fade_out_curve)
+        } else {
+            fade_envelope(pos, dur, shape.fade_in_secs as f64, shape.fade_out_secs as f64, shape.fade_in_curve, shape.fade_out_curve)
+        };
+        let gain = if crossfading { own * crossfade_gain(pos + head, ext_dur, shape.crossfade_in_secs, shape.crossfade_out_secs) } else { own };
+        if gain != 1.0 {
+            pair.iter_mut().for_each(|s| *s *= gain);
+        }
+    }
 }
 
 /// A clip's volume, gain and pan at `clip_pos` seconds into it.
@@ -548,8 +612,6 @@ fn heard_gain(spans: &[(f64, f64)], pos: f64, dur: f64) -> f32 {
 fn shape_samples(samples: &mut [f32], shape: &AudioClipShape, clip_pos_ext: f64, timeline_secs: f64, fps: f64, sample_rate: u32) {
     let head = shape.head_secs;
     let clip_pos = clip_pos_ext - head;
-    let crossfading = shape.crossfade_in_secs > 0.0 || shape.crossfade_out_secs > 0.0;
-    let ext_dur = head + shape.clip_duration_secs + shape.tail_secs;
     // The levels at the frame's first sample and at the next frame's,
     // and a straight line between: keyframes move a level across a
     // frame, and holding it for the frame turned a duck into a staircase
@@ -559,8 +621,10 @@ fn shape_samples(samples: &mut [f32], shape: &AudioClipShape, clip_pos_ext: f64,
     let animated = !shape.volume_keyframes.is_empty() || !shape.gain_keyframes.is_empty() || !shape.pan_keyframes.is_empty() || !shape.param_modifiers.is_empty();
     let (vol_end, pan_end) = if animated { levels_at(shape, clip_pos + frame_secs, timeline_secs + frame_secs, fps) } else { (vol, pan) };
     let moving = (vol_end - vol).abs() > 1e-6 || (pan_end - pan).abs() > 1e-6;
-    let has_fade = crossfading || shape.heard.is_some() || shape.fade_in_secs > 0.001 || shape.fade_out_secs > 0.001 || clip_pos < ANTI_CLICK_SECS;
-    if !has_fade && !moving && (vol - 1.0).abs() < 1e-6 && pan.abs() < 1e-6 && shape.channel_config == 0 {
+    // The fades went on before the effects (`envelope_samples`); a
+    // multicam angle's gate on what they made.
+    let gated = shape.heard.is_some();
+    if !gated && !moving && (vol - 1.0).abs() < 1e-6 && pan.abs() < 1e-6 && shape.channel_config == 0 {
         return;
     }
     // Balance, as the output applies a clip's pan: centre is unity and
@@ -569,27 +633,9 @@ fn shape_samples(samples: &mut [f32], shape: &AudioClipShape, clip_pos_ext: f64,
     let n = (samples.len() / 2).max(1) as f32;
     let dur = shape.clip_duration_secs;
     for (i, pair) in samples.chunks_mut(2).enumerate() {
-        let fade = if has_fade {
-            let pos = clip_pos + i as f64 / sample_rate as f64;
-            let own = if shape.crossfade_in_secs > 0.0 {
-                // Fading in from silence already: no click to ramp out,
-                // and the anti-click ramp at the in point would dip the
-                // middle of the crossfade.
-                fade_out_only(pos, dur, shape.fade_out_secs as f64, shape.fade_out_curve)
-            } else {
-                fade_envelope(pos, dur, shape.fade_in_secs as f64, shape.fade_out_secs as f64, shape.fade_in_curve, shape.fade_out_curve)
-            };
-            let own = match &shape.heard {
-                Some(spans) => own * heard_gain(spans, pos, dur),
-                None => own,
-            };
-            if crossfading {
-                own * crossfade_gain(pos + head, ext_dur, shape.crossfade_in_secs, shape.crossfade_out_secs)
-            } else {
-                own
-            }
-        } else {
-            1.0
+        let fade = match &shape.heard {
+            Some(spans) => heard_gain(spans, clip_pos + i as f64 / sample_rate as f64, dur),
+            None => 1.0,
         };
         let t = if moving { i as f32 / n } else { 0.0 };
         let m = (vol + (vol_end - vol) * t) * fade;
@@ -840,6 +886,12 @@ fn append_stereo(frame: &ffmpeg_next::frame::Audio, buffer: &mut Vec<f32>) -> bo
 
 #[cfg(test)]
 mod tests {
+    /// A clip's shape as the mix puts it on: its fades, then its levels.
+    fn shape_all(samples: &mut [f32], shape: &AudioClipShape, clip_pos_ext: f64, timeline_secs: f64, fps: f64, sample_rate: u32) {
+        envelope_samples(samples, shape, clip_pos_ext, sample_rate);
+        shape_samples(samples, shape, clip_pos_ext, timeline_secs, fps, sample_rate);
+    }
+
     use super::*;
     use crate::snapshot::{AudioClipSnapshot, AudioTrackSnapshot, SequenceSnapshot, VarispeedRead};
 
@@ -984,10 +1036,10 @@ mod tests {
         // Through `shape_samples`: gated out between spans.
         let shape = AudioClipShape { clip_duration_secs: 10.0, heard: Some(vec![(0.0, 2.0), (5.0, 10.0)]), ..Default::default() };
         let mut s = vec![1.0f32; 8];
-        shape_samples(&mut s, &shape, 3.0, 3.0, 25.0, 48000);
+        shape_all(&mut s, &shape, 3.0, 3.0, 25.0, 48000);
         assert!(s.iter().all(|v| *v == 0.0));
         let mut s = vec![1.0f32; 8];
-        shape_samples(&mut s, &shape, 6.0, 6.0, 25.0, 48000);
+        shape_all(&mut s, &shape, 6.0, 6.0, 25.0, 48000);
         assert!(s.iter().all(|v| (*v - 1.0).abs() < 1e-6));
     }
 
@@ -1002,38 +1054,38 @@ mod tests {
         // Volume and gain multiply; a full-right balance silences the left.
         let shape = AudioClipShape { volume: 0.5, gain: 2.0, pan: 1.0, clip_duration_secs: 10.0, ..Default::default() };
         let mut s = ones(4);
-        shape_samples(&mut s, &shape, 1.0, 1.0, 25.0, sr);
+        shape_all(&mut s, &shape, 1.0, 1.0, 25.0, sr);
         assert_eq!(&s[..4], &[0.0, 1.0, 0.0, 1.0]);
 
         // A one-second linear fade-in: half way through, half the level.
         let shape = AudioClipShape { fade_in_secs: 1.0, clip_duration_secs: 10.0, ..Default::default() };
         let mut s = ones(2);
-        shape_samples(&mut s, &shape, 0.5, 0.5, 25.0, sr);
+        shape_all(&mut s, &shape, 0.5, 0.5, 25.0, sr);
         assert!((s[0] - 0.5).abs() < 1e-3, "{}", s[0]);
         // An exponential fade-in is the square of the ramp.
         let shape = AudioClipShape { fade_in_secs: 1.0, fade_in_curve: 1, clip_duration_secs: 10.0, ..Default::default() };
         let mut s = ones(2);
-        shape_samples(&mut s, &shape, 0.5, 0.5, 25.0, sr);
+        shape_all(&mut s, &shape, 0.5, 0.5, 25.0, sr);
         assert!((s[0] - 0.25).abs() < 1e-3, "{}", s[0]);
 
         // A fade-out of two seconds on a ten-second clip: at nine seconds, half.
         let shape = AudioClipShape { fade_out_secs: 2.0, clip_duration_secs: 10.0, ..Default::default() };
         let mut s = ones(2);
-        shape_samples(&mut s, &shape, 9.0, 9.0, 25.0, sr);
+        shape_all(&mut s, &shape, 9.0, 9.0, 25.0, sr);
         assert!((s[0] - 0.5).abs() < 1e-3, "{}", s[0]);
 
         // At the very start, the anti-click ramp: the first sample is silent,
         // two milliseconds in it is full.
         let shape = AudioClipShape { clip_duration_secs: 10.0, ..Default::default() };
         let mut s = ones(200);
-        shape_samples(&mut s, &shape, 0.0, 0.0, 25.0, sr);
+        shape_all(&mut s, &shape, 0.0, 0.0, 25.0, sr);
         assert_eq!(s[0], 0.0);
         assert!((s[199 * 2] - 1.0).abs() < 1e-3, "{}", s[199 * 2]);
 
         // Mono downmix sums the sides after the balance.
         let shape = AudioClipShape { channel_config: 1, clip_duration_secs: 10.0, ..Default::default() };
         let mut s = vec![1.0f32, 0.0, 1.0, 0.0];
-        shape_samples(&mut s, &shape, 1.0, 1.0, 25.0, sr);
+        shape_all(&mut s, &shape, 1.0, 1.0, 25.0, sr);
         assert_eq!(&s[..], &[0.5, 0.5, 0.5, 0.5]);
 
         // Left only and right only, each side of a split clip (#922),
@@ -1041,7 +1093,7 @@ mod tests {
         for (config, want) in [(5u8, [0.75f32, 0.75]), (6, [0.25, 0.25])] {
             let shape = AudioClipShape { channel_config: config, clip_duration_secs: 10.0, ..Default::default() };
             let mut s = vec![0.75f32, 0.25];
-            shape_samples(&mut s, &shape, 1.0, 1.0, 25.0, sr);
+            shape_all(&mut s, &shape, 1.0, 1.0, 25.0, sr);
             assert_eq!(&s[..], &want[..], "channel config {config}");
         }
 
@@ -1057,13 +1109,13 @@ mod tests {
             ..Default::default()
         };
         let mut s = ones(2);
-        shape_samples(&mut s, &shape, 1.0, 1.0, 25.0, sr);
+        shape_all(&mut s, &shape, 1.0, 1.0, 25.0, sr);
         assert!((s[0] - 0.5).abs() < 1e-3, "{}", s[0]);
         // And it moves across the frame, not in a step at its start: a
         // tenth of a second on, the level is a twentieth lower, with
         // every sample between on the line.
         let mut s = ones(4800);
-        shape_samples(&mut s, &shape, 1.0, 1.0, 25.0, sr);
+        shape_all(&mut s, &shape, 1.0, 1.0, 25.0, sr);
         assert!((s[0] - 0.5).abs() < 1e-3 && (s[4799 * 2] - 0.45).abs() < 1e-3, "{} then {}", s[0], s[4799 * 2]);
         assert!((s[2400 * 2] - 0.475).abs() < 1e-3, "{}", s[2400 * 2]);
         assert!(s.chunks(2).collect::<Vec<_>>().windows(2).all(|w| w[1][0] <= w[0][0]), "never a step up on the way down");

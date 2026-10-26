@@ -199,6 +199,20 @@ impl AudioEffect for Reverb {
         }
     }
 
+    /// The combs' loop gain is the feedback (their damping passes the
+    /// lows whole), so the tail lasts as many trips round the longest
+    /// comb as the feedback takes to reach −80 dB, after the pre-delay.
+    fn tail_secs(&self) -> f32 {
+        if self.wet <= 0.0 {
+            return 0.0;
+        }
+        let feedback = self.room_size * 0.28 + 0.7;
+        let trips = super::TAIL_FLOOR.ln() / feedback.ln();
+        let longest = self.combs_l.iter().chain(&self.combs_r).map(|c| c.buffer.len()).max().unwrap_or(0) as f32;
+        let allpasses = self.allpasses_l.iter().map(|a| a.buffer.len()).sum::<usize>() as f32;
+        (trips * longest + allpasses) / self.sample_rate + self.pre_delay_ms * 0.001
+    }
+
     fn set_param(&mut self, name: &str, value: f32) {
         match name {
             "room_size" => self.room_size = value.clamp(0.0, 1.0),

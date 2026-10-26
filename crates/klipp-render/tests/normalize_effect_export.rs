@@ -17,8 +17,14 @@ fn ffmpeg_ok() -> bool {
     std::process::Command::new("ffmpeg").arg("-version").output().is_ok_and(|o| o.status.success())
 }
 
-/// A crescendo: a 220 Hz tone growing from about −40 to −30 dBFS.
+/// A crescendo: a 220 Hz tone growing from about −40 to −30 dBFS. Made
+/// once: tests running side by side wrote the one file over each other.
 fn crescendo() -> Option<PathBuf> {
+    static MADE: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    MADE.get_or_init(make_crescendo).clone()
+}
+
+fn make_crescendo() -> Option<PathBuf> {
     if !ffmpeg_ok() {
         return None;
     }
