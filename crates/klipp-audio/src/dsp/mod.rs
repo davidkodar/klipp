@@ -117,6 +117,13 @@ pub trait AudioEffect: Send {
     fn latency_samples(&self) -> u32 {
         0
     }
+    /// How long the effect goes on sounding after its input stops, in
+    /// seconds, at its settings now: a reverb's or a delay's decay to
+    /// below −80 dB. Worked out from the settings, never measured, so
+    /// playback and the export ring a clip's tail for exactly as long.
+    fn tail_secs(&self) -> f32 {
+        0.0
+    }
     fn serialize_params(&self) -> Vec<(String, f32)>;
     fn deserialize_params(&mut self, params: &[(String, f32)]);
 
@@ -140,6 +147,12 @@ pub trait AudioEffect: Send {
 /// per-effect coefficient rebuilds (e.g. EQ biquads, LADSPA set_param)
 /// don't dominate CPU.
 const SUB_CHUNK_FRAMES: usize = 64;
+
+/// The longest a clip's effects ring on past its out point, in seconds.
+pub const MAX_TAIL_SECS: f32 = 10.0;
+
+/// The level a tail is followed down to, as a gain: −80 dB.
+const TAIL_FLOOR: f32 = 1e-4;
 
 /// Runtime effect chain processor.
 pub struct AudioEffectChain {
@@ -458,6 +471,26 @@ impl AudioEffectChain {
     /// convolution reverbs with long IRs fit comfortably under that
     /// bound, but a buggy plugin returning u32::MAX cannot mis-size
     /// a delay line by gigabytes.
+    /// How many frames the chain sounds on for after its input stops
+    /// (#2780): its effects' tails, one after another, at most
+    /// [`MAX_TAIL_SECS`]. Bypassed and fully dry effects add none.
+    pub fn tail_frames(&self, sample_rate: u32) -> usize {
+        let secs: f32 = self
+            .slots
+            .iter()
+            .filter(|s| s.enabled && s.wet_dry > 0.0)
+            .map(|s| s.effect.tail_secs().max(0.0))
+            .sum();
+        (secs.min(MAX_TAIL_SECS) as f64 * sample_rate as f64).ceil() as usize
+    }
+
+    /// Whether a chain of `instances` can ring past its input's end: a
+    /// tail at their settings, or keyframes (`keyframed`) that could give
+    /// it one by then.
+    pub fn may_ring(instances: &[AudioEffectInstance], keyframed: bool, sample_rate: u32) -> bool {
+        !instances.is_empty() && (keyframed || Self::from_instances(instances, sample_rate).tail_frames(sample_rate) > 0)
+    }
+
     pub fn total_latency_samples(&self, sample_rate: u32) -> u32 {
         let per_effect_cap = sample_rate.max(1);
         self.slots

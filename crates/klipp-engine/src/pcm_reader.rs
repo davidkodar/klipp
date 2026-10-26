@@ -119,6 +119,41 @@ pub struct PcmAudioFeeder {
     /// New effect settings for the running chain; see
     /// [`crate::audio_source::AudioSource::update_effect_settings`].
     pub effect_settings: crate::audio_source::EffectSettingsSlot,
+    /// Where the clip's sound stops and its effects ring on (#2780).
+    pub ring: Arc<Ring>,
+}
+
+/// A clip's sound stopping at its out point, its effects then fed
+/// silence for as long as their tail (#2780), as the export renders it:
+/// a reverb rings on into a gap or under the next clip.
+pub struct Ring {
+    /// Whether the sound stops at the end of the fade envelope (the
+    /// clip's out point, past a crossfade's handle): false while the
+    /// next clip carries the same sound on.
+    stops: AtomicBool,
+    /// The tail, in frames, from where the feed reached the out point;
+    /// `u64::MAX` before it has.
+    tail_frames: AtomicU64,
+}
+
+impl Default for Ring {
+    fn default() -> Self {
+        Self { stops: AtomicBool::new(false), tail_frames: AtomicU64::new(u64::MAX) }
+    }
+}
+
+impl Ring {
+    pub fn set_stops(&self, stops: bool) {
+        self.stops.store(stops, Ordering::Relaxed);
+    }
+
+    /// The tail in seconds, once the feed has reached the out point.
+    pub fn tail_secs(&self) -> Option<f64> {
+        match self.tail_frames.load(Ordering::Relaxed) {
+            u64::MAX => None,
+            n => Some(n as f64 / SAMPLE_RATE as f64),
+        }
+    }
 }
 
 /// A retimed clip's sound, read at its speed (#642): `speed` source
@@ -320,6 +355,7 @@ impl PcmAudioFeeder {
         let fade_gain = Arc::new(AtomicU32::new(1.0f32.to_bits()));
         let anti_click = Arc::new(AtomicBool::new(true));
         let varispeed = Arc::new(Varispeed::default());
+        let ring = Arc::new(Ring::default());
 
         let vol = volume.clone();
         let mute = muted.clone();
@@ -334,6 +370,7 @@ impl PcmAudioFeeder {
         let fg = fade_gain.clone();
         let ac = anti_click.clone();
         let vs = varispeed.clone();
+        let rg = ring.clone();
         let effect_settings: crate::audio_source::EffectSettingsSlot = Default::default();
         let settings_rx = effect_settings.clone();
 
@@ -375,6 +412,7 @@ impl PcmAudioFeeder {
                         fg,
                         ac,
                         vs,
+                        rg,
                         audio_effects,
                         audio_effect_keyframes,
                         settings_rx,
@@ -401,6 +439,7 @@ impl PcmAudioFeeder {
                 anti_click,
                 varispeed,
                 effect_settings,
+                ring,
             },
             consumer,
         ))
@@ -501,6 +540,7 @@ fn pcm_feed_thread(
     _fade_gain: Arc<AtomicU32>,
     anti_click: Arc<AtomicBool>,
     varispeed: Arc<Varispeed>,
+    ring: Arc<Ring>,
     audio_effects: Vec<AudioEffectInstance>,
     audio_effect_keyframes: std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
     effect_settings: crate::audio_source::EffectSettingsSlot,
@@ -550,6 +590,8 @@ fn pcm_feed_thread(
     let mut vari = false;
     // A forward read with its pitch kept (#925), carried between chunks.
     let mut stretcher: Option<klipp_audio::dsp::stretch::Stretcher> = None;
+    // The frames of tail still to ring, once past the out point (#2780).
+    let mut tail_left: Option<usize> = None;
 
     // Source frames per device frame, when the device is not at 48 kHz
     // (the slow path below resamples with a windowed sinc).
@@ -593,6 +635,8 @@ fn pcm_feed_thread(
                         chain.reset();
                     }
                     resampler = None;
+                    tail_left = None;
+                    ring.tail_frames.store(u64::MAX, Ordering::Relaxed);
 
                     debug!("pcm_feed: seek to {secs:.3}s → pos={read_pos} ({actual_secs:.3}s)");
                 }
@@ -687,13 +731,60 @@ fn pcm_feed_thread(
         // reversed, then faded, effected and sent on as at 1x, its time
         // being the clip's own.
         let (speed, vs_in, vs_out, keep_pitch) = varispeed.get();
-        if (speed - 1.0).abs() > 1e-6 && speed.is_finite() && speed != 0.0 {
-            if !vari {
-                vpos = (read_pos / CHANNELS) as f64;
-                vari = true;
+        let retimed = (speed - 1.0).abs() > 1e-6 && speed.is_finite() && speed != 0.0;
+        if retimed && !vari {
+            vpos = (read_pos / CHANNELS) as f64;
+            vari = true;
+        } else if !retimed && vari {
+            read_pos = ((vpos.max(0.0) as usize) * CHANNELS).min(total_floats);
+            vari = false;
+        }
+        // Where the feed is in the clip, on the fade envelope's clock,
+        // and the frames left before the clip's sound stops there.
+        let at = if vari { varispeed_clip_secs(vpos, speed, vs_in, vs_out) } else { (read_pos / CHANNELS) as f64 / SAMPLE_RATE as f64 };
+        let to_stop = if ring.stops.load(Ordering::Relaxed) { ((src_in + clip_dur - at) * SAMPLE_RATE as f64).round().max(0.0) as usize } else { usize::MAX };
+        if to_stop == 0 {
+            // Past the out point: the effects ring on with silence in
+            // for their tail, at the settings they ended on, then the
+            // feed ends. Without effects it ends here.
+            let Some(ref mut chain) = effect_chain else {
+                eof = true;
+                continue;
+            };
+            let left = *tail_left.get_or_insert_with(|| {
+                let frames = chain.tail_frames(SAMPLE_RATE);
+                ring.tail_frames.store(frames as u64, Ordering::Relaxed);
+                frames
+            });
+            if left == 0 {
+                eof = true;
+                continue;
             }
             let room = if needs_resample { ((vacant / CHANNELS).saturating_sub(2) as f64 * rate_ratio) as usize } else { vacant / CHANNELS };
-            let n = chunk_frames.min(room);
+            let n = chunk_frames.min(room).min(left);
+            if n == 0 {
+                std::thread::sleep(Duration::from_millis(1));
+                continue;
+            }
+            let mut buf = vec![0.0f32; n * CHANNELS];
+            chain.process_aligned(&mut buf, &AudioProcessContext { sample_rate: SAMPLE_RATE, channels: CHANNELS as u32, clip_time_secs: (at - src_in).max(0.0) });
+            if needs_resample {
+                let out = resampler.get_or_insert_with(|| PlaybackResampler::new(output_rate)).process(&buf);
+                producer.push_slice(&out);
+            } else {
+                producer.push_slice(&buf);
+            }
+            tail_left = Some(left - n);
+            if vari {
+                vpos += n as f64 * speed;
+            } else {
+                read_pos += n * CHANNELS;
+            }
+            continue;
+        }
+        if vari {
+            let room = if needs_resample { ((vacant / CHANNELS).saturating_sub(2) as f64 * rate_ratio) as usize } else { vacant / CHANNELS };
+            let n = chunk_frames.min(room).min(to_stop);
             if n == 0 {
                 std::thread::sleep(Duration::from_millis(1));
                 continue;
@@ -740,9 +831,6 @@ fn pcm_feed_thread(
                 eof = true;
             }
             continue;
-        } else if vari {
-            read_pos = ((vpos.max(0.0) as usize) * CHANNELS).min(total_floats);
-            vari = false;
         }
 
         if read_pos >= total_floats {
@@ -753,7 +841,7 @@ fn pcm_feed_thread(
         if !needs_resample {
             // Fast path: PCM is already at output_rate (48kHz == 48kHz)
             let remaining = total_floats - read_pos;
-            let to_push = chunk_floats.min(remaining).min(vacant);
+            let to_push = chunk_floats.min(remaining).min(vacant).min(to_stop.saturating_mul(CHANNELS));
 
             if is_muted && effect_chain.is_none() {
                 let zeros = vec![0.0f32; to_push];
@@ -803,7 +891,7 @@ fn pcm_feed_thread(
             // Two frames of headroom: a chunk can come out one frame longer
             // than the ratio says, and the ring would drop what does not fit.
             let fit = ((vacant / CHANNELS).saturating_sub(2) as f64 * rate_ratio) as usize;
-            let frames = chunk_frames.min(fit).min((total_floats - read_pos) / CHANNELS);
+            let frames = chunk_frames.min(fit).min((total_floats - read_pos) / CHANNELS).min(to_stop);
             if frames == 0 {
                 eof = read_pos + CHANNELS > total_floats;
                 std::thread::sleep(Duration::from_millis(1));
@@ -993,6 +1081,102 @@ mod tests {
         assert!(back.windows(2).all(|w| (w[1] - w[0] + 1.0).abs() < 0.01), "reversed steps one back: {:?}", &back[..4]);
         assert_eq!(first_frames(1.0).windows(2).filter(|w| (w[1] - w[0] - 1.0).abs() > 0.01).count(), 0, "1x as ever");
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// #2780: a clip's reverb rings past its out point in playback as in
+    /// the export, a fade-out going in before it in both. Measured: the
+    /// feeder's samples against the export's, the tail included, and the
+    /// feed ending where the tail does.
+    #[test]
+    fn a_tail_plays_as_the_export_renders_it() {
+        use ringbuf::traits::Consumer;
+        // Three seconds of a 440 Hz tone; the clip is its first second.
+        let tone: Vec<f32> = (0..SAMPLE_RATE as usize * 3).flat_map(|i| [0.25 * (2.0 * std::f32::consts::PI * 440.0 * i as f32 / SAMPLE_RATE as f32).sin(); CHANNELS]).collect();
+        let dir = klipp_testing::scratch::scratch_dir("klipp-pcm-tail");
+        let pcm = dir.join("tone.pcm");
+        write_pcm(&pcm, &tone);
+        // The same samples as a float WAV, for the export to decode.
+        let wav = dir.join("tone.wav");
+        let data: &[u8] = bytemuck::cast_slice(&tone);
+        let mut file = Vec::new();
+        file.extend(b"RIFF");
+        file.extend((36 + data.len() as u32).to_le_bytes());
+        file.extend(b"WAVEfmt ");
+        file.extend(16u32.to_le_bytes());
+        file.extend(3u16.to_le_bytes());
+        file.extend((CHANNELS as u16).to_le_bytes());
+        file.extend(SAMPLE_RATE.to_le_bytes());
+        file.extend((SAMPLE_RATE * 8).to_le_bytes());
+        file.extend(8u16.to_le_bytes());
+        file.extend(32u16.to_le_bytes());
+        file.extend(b"data");
+        file.extend((data.len() as u32).to_le_bytes());
+        file.extend(data);
+        std::fs::write(&wav, file).unwrap();
+        let reverb = klipp_core::AudioEffectInstance { effect_type: "reverb".into(), enabled: true, wet_dry: 1.0, params: vec![] };
+
+        // Playback: the clip's envelope, its sound stopping at its out point.
+        let (feeder, mut consumer) = PcmAudioFeeder::open(&pcm, SAMPLE_RATE, vec![reverb.clone()], Default::default()).unwrap();
+        feeder.set_fade(0.0, 1.0, 0.0, 0.5, 0, 0, 1.0);
+        feeder.ring.set_stops(true);
+        feeder.seek(0.0);
+        feeder.resume();
+        let mut played = Vec::new();
+        let mut buf = vec![0.0f32; 8192];
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        let mut quiet_since = std::time::Instant::now();
+        while std::time::Instant::now() < deadline && quiet_since.elapsed() < Duration::from_millis(500) {
+            let n = consumer.pop_slice(&mut buf);
+            if n > 0 {
+                played.extend_from_slice(&buf[..n]);
+                quiet_since = std::time::Instant::now();
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let tail = feeder.ring.tail_secs().expect("the feed reached the out point");
+
+        // The export of the same clip, alone on a six-second timeline.
+        let clip = klipp_render::snapshot::AudioClipSnapshot {
+            timeline_start_frame: 0,
+            timeline_end_frame: 25,
+            source_start_secs: 0.0,
+            path: wav,
+            audio_effects: vec![reverb],
+            audio_effect_keyframes: Default::default(),
+            source_range: (0.0, 1.0),
+            shape: klipp_render::snapshot::AudioClipShape { clip_duration_secs: 1.0, fade_out_secs: 0.5, ..Default::default() },
+            varispeed: None,
+            exact_secs: None,
+        };
+        let snapshot = klipp_render::snapshot::SequenceSnapshot {
+            fps: 25.0,
+            fps_num: 25,
+            fps_den: 1,
+            width: 64,
+            height: 64,
+            sample_rate: SAMPLE_RATE,
+            duration_frames: 150,
+            export_range: None,
+            video: Default::default(),
+            audio_tracks: vec![klipp_render::snapshot::AudioTrackSnapshot { volume: 1.0, pan: 0.0, muted: false, solo: false, clips: vec![clip], automation: Default::default(), effects: Vec::new() }],
+            pan_law: Default::default(),
+            global_lut_path: None,
+            subtitle_tracks: vec![],
+            chapters: vec![],
+            working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
+            grade_encoding: klipp_core::GradeEncoding::Bt1886,
+        };
+        let mut mix = klipp_render::AudioMixdown::new(&snapshot).unwrap();
+        let exported: Vec<f32> = (0..150).flat_map(|f| mix.get_frame_audio(f)).collect();
+
+        let out = SAMPLE_RATE as usize * CHANNELS;
+        assert!(tail > 1.0 && tail < 3.0, "the default reverb's tail: {tail} s");
+        assert_eq!(played.len(), out + (tail * SAMPLE_RATE as f64).round() as usize * CHANNELS, "the clip, then its tail, then nothing");
+        let loud = |s: &[f32]| s.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        assert!(loud(&played[out..out + 4800]) > 0.01, "it rings past the out point: {}", loud(&played[out..out + 4800]));
+        let worst = played.iter().zip(&exported).map(|(p, e)| (p - e).abs()).fold(0.0f32, f32::max);
+        assert!(worst < 1e-5, "playback and the export differ by {worst}");
+        assert!(loud(&exported[played.len()..]) < 1e-4, "the export is silent past the tail");
     }
 
     /// Where a varispeed read is in its clip: forward, the source run at

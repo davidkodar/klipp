@@ -58,6 +58,8 @@ mod layer_fx_goldens;
 mod normalize_clips;
 #[path = "../normalize_effect_export.rs"]
 mod normalize_effect_export;
+#[path = "../effect_tails_export.rs"]
+mod effect_tails_export;
 #[path = "../odd_size_export.rs"]
 mod odd_size_export;
 #[path = "../pixel_check_fractional.rs"]

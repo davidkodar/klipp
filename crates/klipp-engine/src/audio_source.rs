@@ -124,6 +124,15 @@ impl AudioSource {
         }
     }
 
+    /// Where the clip's sound stops and its effects ring on (#2780): the
+    /// PCM feeder's alone; the live decoder stops dead at the out point.
+    pub fn ring(&self) -> Option<&std::sync::Arc<crate::pcm_reader::Ring>> {
+        match self {
+            Self::PcmFeeder(f) => Some(&f.ring),
+            _ => None,
+        }
+    }
+
     /// Enable/disable anti-click fade at clip boundaries.
     pub fn set_anti_click(&self, enabled: bool) {
         if let Self::PcmFeeder(f) = self {

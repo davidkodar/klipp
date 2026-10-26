@@ -102,6 +102,14 @@ impl AudioEffect for Chorus {
         }
     }
 
+    /// Its voices' delay: the base and the sweep's depth.
+    fn tail_secs(&self) -> f32 {
+        if self.mix <= 0.0 {
+            return 0.0;
+        }
+        BASE_DELAY_SECS + self.depth * 0.001
+    }
+
     fn set_param(&mut self, name: &str, value: f32) {
         match name {
             "rate" => self.rate = value.clamp(0.1, 10.0),

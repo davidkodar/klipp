@@ -316,31 +316,6 @@ exist until the plan runs.
   goes on the track itself instead: one effect the track runs after
   every clip's own, clips added later included (a look for one camera's
   track, a vignette over a whole reel).
-- `track_audio {track, effect, params?, bypass?, remove?}`: the track's
-  own audio chain, run after every clip's own: an EQ and a compressor on
-  the dialogue track, a limiter on the music. `effect` is `eq`,
-  `compressor`, `limiter`, `gate`, `high_pass`, `denoiser`,
-  `voice_isolation`, `deesser`, `hum_removal`, `noise_reduction`,
-  `declick`, `normalize`, `reverb`, `delay`, `chorus`, `pitch_shift` or
-  `multiband_compressor`; `params` by name set it (the rest stay at their
-  defaults), on the one there or a new one at the end (a name the effect
-  lacks is refused; topic `op.track_audio` lists them); `bypass` switches
-  it off or on; `remove` takes it off. Set once, it holds for every clip
-  of the track. `effect` may also be an installed LV2 or CLAP plug-in's
-  id (`lv2:…`, `clap:…`; `audio_plugins` lists them), its `params` by
-  name or key and inside their ranges.
-- `clip_audio {clip_id, effect, params?, bypass?, remove?}`: the same on
-  one clip's own chain (a linked pair's, either clip named): a built-in
-  effect or an installed plug-in. Five voice tools in it: `normalize`
-  brings the whole clip to `target_lufs` integrated by one gain, its
-  dynamics kept (measured in the background, none until then; `mode: 0`
-  rides the level instead, a leveler, and is the only mode a track
-  takes); `noise_reduction` turns each band down while it sits near its
-  own noise floor, the voice over it untouched (a sound held steady
-  longer than about 1.5 s counts as floor, so not on music); `deesser`
-  calms an "s" that stands out from the voice, its `threshold` in dB
-  relative to the voice; `declick` bridges clicks and pops;
-  `pitch_shift` moves the pitch by `semitones`, up positive.
   Kinds: `vignette`, `grain` (`film_grain`), `glow`, `bloom`, `diffusion`
   (`pro_mist`), `halation` (`film_halation`), `light_rays` (`god_rays`),
   `lens_flare`, `anamorphic` (`anamorphic_streak`, `streak`), `light_wrap`,
@@ -404,6 +379,37 @@ exist until the plan runs.
   sequence) with the picture itself, enlarged and blurred, so the frame
   is full and the whole picture still shows; more `amount` is softer
   and darker. Put it on every such clip when asked to fill the bars.
+- `track_audio {track, effect, params?, bypass?, remove?}`: the track's
+  own audio chain, run after every clip's own: an EQ and a compressor on
+  the dialogue track, a limiter on the music. `effect` is `eq`,
+  `compressor`, `limiter`, `gate`, `high_pass`, `denoiser`,
+  `voice_isolation`, `deesser`, `hum_removal`, `noise_reduction`,
+  `declick`, `normalize`, `reverb`, `delay`, `chorus`, `pitch_shift` or
+  `multiband_compressor`; `params` by name set it (the rest stay at their
+  defaults), on the one there or a new one at the end (a name the effect
+  lacks is refused; topic `op.track_audio` lists them); `bypass` switches
+  it off or on; `remove` takes it off. Set once, it holds for every clip
+  of the track. `effect` may also be an installed LV2 or CLAP plug-in's
+  id (`lv2:…`, `clap:…`; `audio_plugins` lists them), its `params` by
+  name or key and inside their ranges.
+- `clip_audio {clip_id, effect, params?, bypass?, remove?}`: the same on
+  one clip's own chain (a linked pair's, either clip named): a built-in
+  effect or an installed plug-in. Five voice tools in it: `normalize`
+  brings the whole clip to `target_lufs` integrated by one gain, its
+  dynamics kept (measured in the background, none until then; `mode: 0`
+  rides the level instead, a leveler, and is the only mode a track
+  takes); `noise_reduction` turns each band down while it sits near its
+  own noise floor, the voice over it untouched (a sound held steady
+  longer than about 1.5 s counts as floor, so not on music); `deesser`
+  calms an "s" that stands out from the voice, its `threshold` in dB
+  relative to the voice; `declick` bridges clicks and pops;
+  `pitch_shift` moves the pitch by `semitones`, up positive.
+  A clip's `reverb`, `delay` and `chorus` ring on past its out point,
+  into a gap or under the next clip, until they fall below −80 dB (at
+  most 10 s), in playback and the export alike; its fade-out goes in
+  before them, so a reverb still rings after a fade. Playback that
+  starts inside a tail (after a seek or a pause) leaves it out; the
+  export has it.
 - `opacity_mask {clip_id, shape, feather?, invert?, clear?}`: fade a
   clip's opacity across the frame, whole at one line or ring and gone at
   another, so the track below shows through: a sky fading out, a picture

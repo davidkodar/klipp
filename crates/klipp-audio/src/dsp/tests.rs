@@ -1406,3 +1406,49 @@ fn apply_settings_changes_a_running_chain_in_place() {
     assert!(!chain.apply_settings(&two));
     assert_eq!(chain.slots[0].effect.get_param("threshold"), Some(-30.0));
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// Tails (#2780)
+// ═══════════════════════════════════════════════════════════════════
+
+fn instance(effect_type: &str, params: &[(&str, f32)]) -> AudioEffectInstance {
+    AudioEffectInstance { effect_type: effect_type.into(), enabled: true, wet_dry: 1.0, params: params.iter().map(|(k, v)| (k.to_string(), *v)).collect() }
+}
+
+/// A reverb's and a delay's tail rings for about as long as it says:
+/// sound just after the input stops, below −80 dB once it has run.
+#[test]
+fn a_tail_lasts_as_long_as_the_effect_says() {
+    for (kind, params) in [("reverb", vec![]), ("reverb", vec![("room_size", 0.9), ("pre_delay", 40.0)]), ("delay", vec![]), ("delay", vec![("feedback", 0.7), ("delay_time", 120.0)])] {
+        let mut chain = AudioEffectChain::from_instances(&[instance(kind, &params)], SR);
+        let tail = chain.tail_frames(SR);
+        assert!(tail > SR as usize / 2 && tail <= SR as usize * 10, "{kind} {params:?}: {tail}");
+        let mut buf = sine_stereo(440.0, 0.5, SR);
+        let burst = buf.len();
+        buf.resize(burst + (tail + SR as usize) * 2, 0.0);
+        chain.process(&mut buf, &make_ctx(SR));
+        let after = &buf[burst..];
+        assert!(rms(&after[..SR as usize / 5 * 2]) > 1e-3, "{kind} {params:?}: it rings on");
+        let past = after[tail * 2..].iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!(past < 1e-4, "{kind} {params:?}: {past} past its tail of {tail} frames");
+        // Most of the tail is heard: it is not twice as long as it needs.
+        let late = after[tail..tail * 2].iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!(late > 1e-6, "{kind} {params:?}: silent from half its tail ({late})");
+    }
+}
+
+/// A chain's tail is its effects' one after another: none when dry,
+/// bypassed or without one, at most ten seconds.
+#[test]
+fn a_chain_tail_sums_its_effects() {
+    let one = |i: AudioEffectInstance| AudioEffectChain::from_instances(&[i], SR).tail_frames(SR);
+    let reverb = one(instance("reverb", &[]));
+    let delay = one(instance("delay", &[]));
+    let both = AudioEffectChain::from_instances(&[instance("reverb", &[]), instance("eq", &[]), instance("delay", &[])], SR).tail_frames(SR);
+    assert!(both.abs_diff(reverb + delay) <= 1, "{both} against {reverb} + {delay}");
+    assert_eq!(one(instance("eq", &[])), 0);
+    assert_eq!(one(instance("reverb", &[("wet", 0.0)])), 0);
+    assert_eq!(one(AudioEffectInstance { enabled: false, ..instance("reverb", &[]) }), 0);
+    assert_eq!(one(AudioEffectInstance { wet_dry: 0.0, ..instance("delay", &[]) }), 0);
+    assert_eq!(one(instance("delay", &[("feedback", 0.95), ("delay_time", 2000.0)])), SR as usize * 10);
+}
