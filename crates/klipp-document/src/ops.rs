@@ -1297,9 +1297,17 @@ pub enum Op {
     /// tracking the surface moves the picture with it. `surface` is the
     /// surface's id or name; left out, the clip's latest. Track one first
     /// with track_surface.
+    ///
+    /// Or `layer`, a clip already on the timeline (a title, a graphic, a
+    /// generator, a picture), is pinned where it is, over its own time
+    /// (#2751): a title stays a title, its text and style still edited
+    /// as before.
     Pin {
         clip_id: ClipRef,
-        media_id: MediaId,
+        #[serde(default)]
+        media_id: Option<MediaId>,
+        #[serde(default)]
+        layer: Option<ClipRef>,
         #[serde(default)]
         surface: Option<String>,
         #[serde(default)]
@@ -3478,8 +3486,11 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let to = match to { Some(a) => Some(resolve_anchor(seq, fps, a, i)?), None => None };
             redact(seq, pool, fps, i, ti, clip, from, to, [*x, *y, *w, *h], kind, *amount)
         }
-        Op::Pin { clip_id, media_id, surface, from, to, fit, inset } => {
+        Op::Pin { clip_id, media_id, layer, surface, from, to, fit, inset } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            if media_id.is_some() == layer.is_some() {
+                return Err(refuse(i, "pin takes media_id or layer", "give media_id for a picture from the pool, or layer for a clip already on the timeline (a title, a graphic)"));
+            }
             let from = match from { Some(a) => Some(resolve_anchor(seq, fps, a, i)?), None => None };
             let to = match to { Some(a) => Some(resolve_anchor(seq, fps, a, i)?), None => None };
             let fit = match fit.as_deref().map(str::trim).map(str::to_lowercase).as_deref() {
@@ -3492,7 +3503,17 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             if !inset.is_finite() || !(0.0..=0.45).contains(&inset) {
                 return Err(refuse(i, format!("inset {inset} is out of range"), "give inset 0 to 0.45 of the surface each side"));
             }
-            pin(seq, pool, i, ti, clip, *media_id, surface.as_deref(), from, to, fit, inset)
+            match (media_id, layer) {
+                (Some(media_id), _) => pin(seq, pool, i, ti, clip, *media_id, surface.as_deref(), from, to, fit, inset),
+                (None, Some(layer)) => {
+                    if from.is_some() || to.is_some() {
+                        return Err(refuse(i, "a pinned layer keeps its own time", "leave out from and to; trim the layer to change when it shows"));
+                    }
+                    let (_, _, pinned) = resolve_clip(seq, fps, layer, i)?;
+                    pin_layer(seq, pool, i, clip, pinned, surface.as_deref(), fit, inset)
+                }
+                (None, None) => unreachable!("refused above"),
+            }
         }
         Op::Slide { clip_id, secs: by } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
@@ -6468,6 +6489,48 @@ fn pin(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, media
     let tracked = if s.keys.is_empty() { ", where it stays until the surface is tracked" } else { ", following it" };
     let what = format!("pin {} to the surface \"{}\" of {host} from {:.2} to {:.2} s on {where_}{tracked}", short_name(&item.filename), s.name, secs(a), secs(b));
     Ok((what, EditCommand::LinkedImport { video: Some(video), audio: None, created_video_track_at: created, created_audio_track_at: None, autoset: None }, ids))
+}
+
+/// `pinned`, a clip on the timeline, onto `clip`'s surface where it is
+/// (#2751): its corner pin on the surface's corners and the link the
+/// renderer follows, one step. Its picture is what it shows in the frame:
+/// a title or a generator the frame's own shape, a picture its own.
+#[allow(clippy::too_many_arguments)]
+fn pin_layer(seq: &Sequence, pool: &MediaPool, i: usize, clip: &Clip, pinned: &Clip, surface: Option<&str>, fit: Option<klipp_timeline::PinFit>, inset: f32) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    let host = clip_name(seq, pool, clip);
+    let layer = clip_name(seq, pool, pinned);
+    if pinned.id == clip.id {
+        return Err(refuse(i, format!("{host} can't be pinned to its own surface"), "pin another clip, a title or a graphic, to it"));
+    }
+    if seq.tracks.iter().find(|t| t.clips.iter().any(|c| c.id == pinned.id)).is_none_or(|t| t.kind == TrackKind::Audio) {
+        return Err(refuse(i, format!("{layer} has no picture"), "pin a title, a graphic, a generator or a picture"));
+    }
+    let Some(s) = find_surface(clip, surface) else {
+        let hint = if clip.surfaces.is_empty() { "track one with track_surface first".to_string() } else { format!("its surfaces are {}", clip.surfaces.iter().map(|s| format!("\"{}\" ({})", s.name, s.id)).collect::<Vec<_>>().join(", ")) };
+        return Err(refuse(i, match surface { Some(n) => format!("{host} has no surface \"{n}\""), None => format!("{host} has no tracked surface") }, hint));
+    };
+    if !klipp_timeline::surface::quad_is_usable(&s.corners) {
+        return Err(refuse(i, format!("the surface \"{}\" has no area", s.name), "track it again with four corners round it"));
+    }
+    if pinned.timeline_out <= clip.timeline_in || pinned.timeline_in >= clip.timeline_out {
+        return Err(refuse(i, format!("{layer} doesn't overlap {host}"), "move the layer over the clip with the surface first"));
+    }
+    let picture_size = pinned.media_id().and_then(|m| pool.get(&m)).and_then(|item| {
+        let (pw, ph) = (item.resolution.width, item.resolution.height);
+        (pw > 0 && ph > 0).then_some(if item.source_rotation.rem_euclid(180) == 90 { [ph, pw] } else { [pw, ph] })
+    });
+    let frame = [seq.resolution.width, seq.resolution.height];
+    let fit = fit.unwrap_or_else(|| klipp_timeline::PinFit::for_shapes(picture_size, s.aspect()));
+    let on_frame = klipp_timeline::surface::source_quad_in_frame(&s.corners, s.source_size, frame, None);
+    let target = klipp_timeline::surface::pin_target(&on_frame, s.aspect(), picture_size, fit, inset).unwrap_or(on_frame);
+    let [tl, tr, br, bl] = klipp_timeline::surface::pin_frame_corners(&target, picture_size, frame).unwrap_or(target);
+    // Its corner pin replaced, not stacked, when it was pinned before.
+    let (_, mut new) = effects_edit_and_after(pinned, |e| matches!(e, klipp_effects::BuiltinEffect::CornerPin { .. }), Some((klipp_effects::BuiltinEffect::CornerPin { tl, tr, br, bl }, Place::Last)))
+        .map_err(|e| refuse(i, format!("{layer} couldn't take its corner pin: {e}"), "report it"))?;
+    new.surface_pin = Some(klipp_timeline::SurfacePin { host: clip.id, surface: s.id, picture_size, fit, inset });
+    let tracked = if s.keys.is_empty() { ", where it stays until the surface is tracked" } else { ", following it" };
+    let what = format!("pin {layer} to the surface \"{}\" of {host}{tracked}", s.name);
+    Ok((what, EditCommand::ReplaceClip { description: "Pin to Surface", old: Box::new(pinned.clone()), new: Box::new(new) }, vec![pinned.id]))
 }
 
 /// Where an effect a list edit puts on goes.
@@ -13775,7 +13838,7 @@ mod tests {
         let mut logo = klipp_media::MediaItem::synthetic_for_test("/tmp/logo.png".into(), None);
         logo.is_still = true;
         let logo = pool.add(logo);
-        let pin_op = |surface: Option<&str>| Op::Pin { clip_id: ClipRef::Id(a), media_id: logo, surface: surface.map(str::to_string), from: Some(Anchor::Secs(1.0)), to: None, fit: None, inset: None };
+        let pin_op = |surface: Option<&str>| Op::Pin { clip_id: ClipRef::Id(a), media_id: Some(logo), layer: None, surface: surface.map(str::to_string), from: Some(Anchor::Secs(1.0)), to: None, fit: None, inset: None };
         assert!(resolve(&seq, &pool, &[pin_op(None)]).unwrap_err().hint.contains("track_surface"), "nothing tracked yet");
 
         // A 16:9 surface (0.3 of a 1920 frame across, 0.3 of 1080 down).
@@ -13798,7 +13861,7 @@ mod tests {
         square.resolution = klipp_core::Resolution { width: 800, height: 800 };
         let square = pool.add(square);
         let fitted = |fit: Option<&str>, inset: Option<f32>| {
-            let op = Op::Pin { clip_id: ClipRef::Id(a), media_id: square, surface: None, from: None, to: None, fit: fit.map(str::to_string), inset };
+            let op = Op::Pin { clip_id: ClipRef::Id(a), media_id: Some(square), layer: None, surface: None, from: None, to: None, fit: fit.map(str::to_string), inset };
             let plan = resolve(&seq, &pool, &[op]).unwrap();
             let EditCommand::LinkedImport { video: Some((picture, _)), .. } = &plan.steps[0].edit else { panic!() };
             picture.surface_pin.unwrap()
@@ -13806,7 +13869,7 @@ mod tests {
         assert_eq!(fitted(None, None).fit, klipp_timeline::PinFit::Fit);
         assert_eq!(fitted(Some("stretch"), Some(0.02)).fit, klipp_timeline::PinFit::Stretch);
         assert_eq!(fitted(None, Some(0.02)).inset, 0.02);
-        let bad = |fit: &str, inset: f32| resolve(&seq, &pool, &[Op::Pin { clip_id: ClipRef::Id(a), media_id: square, surface: None, from: None, to: None, fit: Some(fit.into()), inset: Some(inset) }]).unwrap_err().why;
+        let bad = |fit: &str, inset: f32| resolve(&seq, &pool, &[Op::Pin { clip_id: ClipRef::Id(a), media_id: Some(square), layer: None, surface: None, from: None, to: None, fit: Some(fit.into()), inset: Some(inset) }]).unwrap_err().why;
         assert!(bad("squash", 0.0).contains("not a fit"));
         assert!(bad("fit", 0.6).contains("out of range"));
 
@@ -13816,6 +13879,62 @@ mod tests {
         // Round trip through the wire format.
         let json = serde_json::to_string(&pin_op(None)).unwrap();
         assert!(json.contains("\"op\":\"pin\""), "{json}");
+    }
+
+    /// #2751: a title already on the timeline pins where it is: its corner
+    /// pin on the surface's corners and the link the renderer follows, one
+    /// step; and set_text afterwards changes its text and keeps it pinned.
+    /// A layer with media_id, from or to, or the host itself, is refused.
+    #[test]
+    fn a_title_pins_where_it_is_and_stays_editable() {
+        let (mut seq, pool, _, a, _) = fixture();
+        let corners = [[0.3, 0.3], [0.6, 0.3], [0.6, 0.6], [0.3, 0.6]];
+        let id = ClipId::new().0;
+        let frame = [seq.resolution.width, seq.resolution.height];
+        seq.tracks[0].clips[0].surfaces.push(klipp_timeline::Surface { id, name: "Wall".into(), corners, reference_secs: 0.0, keys: vec![klipp_timeline::SurfaceKey::at_corners(0.0, &corners, &corners).unwrap()], source_size: frame, media_fps: 25.0, track_area: None, exclude: Vec::new() });
+        let td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Open".into(), ..Default::default() });
+        let title = Clip { kind: klipp_timeline::ClipKind::Title(td), ..Clip::gap(tc(1.0), tc(3.0)) };
+        let tid = title.id;
+        let mut words = Track::new("T1", TrackKind::Text);
+        words.clips = vec![title];
+        seq.tracks.insert(0, words);
+        let ops: Vec<Op> = serde_json::from_value(serde_json::json!([{"op": "pin", "clip_id": a.to_string(), "layer": tid.to_string(), "surface": "wall"}])).unwrap();
+        let plan = resolve(&seq, &pool, &ops).unwrap();
+        assert!(plan.steps[0].what.contains("to the surface \"Wall\"") && plan.steps[0].what.contains("following it"), "{}", plan.steps[0].what);
+        let run = |seq: &Sequence, plan: &Plan| {
+            let mut seqs = vec![seq.clone()];
+            let (mut p, mut fps) = (pool.clone(), seq.fps);
+            let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+            for step in &plan.steps {
+                view.apply_forward(&step.edit);
+            }
+            seqs.remove(0)
+        };
+        let pinned = run(&seq, &plan);
+        let find = |seq: &Sequence| seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == tid).cloned().expect("the title");
+        let t = find(&pinned);
+        assert_eq!((secs(t.timeline_in), secs(t.timeline_out)), (1.0, 3.0), "where it was");
+        assert_eq!(t.surface_pin, Some(klipp_timeline::SurfacePin { host: a, surface: id, picture_size: None, fit: klipp_timeline::PinFit::Stretch, inset: 0.0 }));
+        assert!(matches!(klipp_timeline::test_clip::effects(&t).as_slice(), [klipp_effects::BuiltinEffect::CornerPin { tl, br, .. }] if *tl == corners[0] && *br == corners[2]), "{:?}", klipp_timeline::test_clip::effects(&t));
+        // Pinned again: one corner pin still.
+        let again = run(&pinned, &resolve(&pinned, &pool, &ops).unwrap());
+        assert_eq!(klipp_timeline::test_clip::effects(&find(&again)).len(), 1);
+        // Its text edited after: still pinned, the new text its own.
+        let edit: Vec<Op> = serde_json::from_value(serde_json::json!([{"op": "set_text", "clip_id": tid.to_string(), "text": "Closed"}])).unwrap();
+        let edited = find(&run(&pinned, &resolve(&pinned, &pool, &edit).unwrap()));
+        assert_eq!(edited.title_data().map(|d| d.text()), Some("Closed".to_string()));
+        assert_eq!(edited.surface_pin, t.surface_pin, "still pinned");
+        assert_eq!(klipp_timeline::test_clip::effects(&edited), klipp_timeline::test_clip::effects(&t), "its corner pin kept");
+        // Refused: both or neither source, a time of its own, the host itself.
+        for (bad, why) in [
+            (serde_json::json!({"op": "pin", "clip_id": a.to_string()}), "media_id or layer"),
+            (serde_json::json!({"op": "pin", "clip_id": a.to_string(), "layer": tid.to_string(), "from": {"secs": 1.5}}), "keeps its own time"),
+            (serde_json::json!({"op": "pin", "clip_id": a.to_string(), "layer": a.to_string()}), "its own surface"),
+        ] {
+            let ops: Vec<Op> = serde_json::from_value(serde_json::json!([bad])).unwrap();
+            let e = resolve(&seq, &pool, &ops).unwrap_err();
+            assert!(e.why.contains(why), "{bad}: {}", e.why);
+        }
     }
 
     #[test]

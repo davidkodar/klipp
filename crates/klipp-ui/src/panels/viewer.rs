@@ -5476,7 +5476,8 @@ impl ViewerPanel {
         if !ui.input(|i| i.pointer.any_down()) {
             let op = klipp_document::ops::Op::Pin {
                 clip_id: klipp_document::ops::ClipRef::Id(host),
-                media_id,
+                media_id: Some(media_id),
+                layer: None,
                 surface: Some(surface.id.to_string()),
                 from: None,
                 to: None,

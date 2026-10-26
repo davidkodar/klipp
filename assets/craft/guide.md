@@ -744,11 +744,14 @@ exist until the plan runs.
   It is refused through a retimed clip.
 - `format {width, height, fps?}`: set the sequence's picture size and
   optionally its rate. Fit the picture rather than stretching it.
-- `pin {clip_id, media_id, surface?, from?, to?, fit?, inset?}`: a
-  picture, video or still, onto a surface tracked in the clip (a phone
+- `pin {clip_id, media_id | layer, surface?, from?, to?, fit?, inset?}`:
+  a picture, video or still, onto a surface tracked in the clip (a phone
   screen, a sign, a monitor): it goes on a video track above, following
   the surface as the shot moves, from `from` to `to` (the clip's edges
-  when left out). `surface` is the id or name `klipp_track_surface` gave;
+  when left out). Or `layer`, a clip already on the timeline (a title,
+  a graphic, a generator), is pinned where it is over its own time,
+  without `from`/`to`: text on a wall stays a title, edited with
+  `set_text` and its style as before. `surface` is the id or name `klipp_track_surface` gave;
   left out, the clip's latest. `fit` is `stretch` (onto the four corners)
   or `fit` (its own shape kept, in the middle); left out, it stretches
   when the shapes nearly match and fits when they do not. `inset` leaves
