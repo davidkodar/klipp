@@ -2897,6 +2897,7 @@ dependencies = [
  "klipp-load-lock",
  "klipp-ml",
  "klipp-ml-ort",
+ "klipp-testing",
  "libloading 0.8.9",
  "livi",
  "ndarray 0.15.6",
@@ -3074,6 +3075,7 @@ name = "klipp-document"
 version = "0.1.0"
 dependencies = [
  "klipp-color",
+ "klipp-compose",
  "klipp-core",
  "klipp-effects",
  "klipp-graph-format",
@@ -3081,7 +3083,10 @@ dependencies = [
  "klipp-media",
  "klipp-nodes",
  "klipp-plugin",
+ "klipp-project",
+ "klipp-testing",
  "klipp-timeline",
+ "klipp-title",
  "serde",
  "serde_json",
  "tracing",

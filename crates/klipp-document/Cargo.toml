@@ -33,6 +33,11 @@ klipp-timeline = { workspace = true, features = ["test-clip"] }
 klipp-graph-format = { workspace = true }
 klipp-plugin = { workspace = true }
 uuid = { workspace = true }
+# The measured sweeps (tests/sweep_*.rs) render and save what the ops make.
+klipp-compose = { workspace = true }
+klipp-title = { workspace = true }
+klipp-project = { workspace = true }
+klipp-testing = { workspace = true }
 
 [lints]
 workspace = true
