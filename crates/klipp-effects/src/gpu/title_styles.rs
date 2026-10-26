@@ -1671,14 +1671,7 @@ impl GpuEffectsPipeline {
         self.title_metal_shots.remove(&slot);
         if let Some(TitleFill::Metal(m)) = &fill {
             if m.shot > 0.0 {
-                let small = u64::from(fw.div_ceil(METAL_SHOT_SCALE)) * u64::from(fh.div_ceil(METAL_SHOT_SCALE));
-                let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("title metal shot"),
-                    size: (count + small) * 16,
-                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                });
-                self.title_metal_shots.insert(slot, MetalShot { buffer, roi, tint: m.tint, shot: m.shot, blur_px: m.shot_blur_px });
+                self.stack_title_metal_shot_for(slot, roi, m);
             }
         }
         let s = self.title_style_scratch.as_ref().unwrap();
@@ -1983,6 +1976,36 @@ impl GpuEffectsPipeline {
             self.stack_pass(&self.title_style_pipeline, &s.work, &shot.buffer, (count as u32).div_ceil(WORKGROUP_SIZE), "title metal shot record");
         }
         true
+    }
+
+    /// A buffer for the metal title in `slot` to record where its pixels
+    /// see the shot behind it, over its box `roi` (#2706), kept for
+    /// [`Self::stack_title_metal_shot`]: a flat face's styles fill it, a 3D
+    /// solid's resolve. `false` for a box the frame cannot hold.
+    pub fn stack_title_metal_shot_for(&mut self, slot: usize, roi: [u32; 4], m: &TitleMetal) -> bool {
+        let (fw, fh) = self.stack_dims;
+        let count = u64::from(roi[2]) * u64::from(roi[3]);
+        if count == 0 || roi[0].saturating_add(roi[2]) > fw || roi[1].saturating_add(roi[3]) > fh {
+            return false;
+        }
+        let small = u64::from(fw.div_ceil(METAL_SHOT_SCALE)) * u64::from(fh.div_ceil(METAL_SHOT_SCALE));
+        if (count + small) * 16 > u64::from(self.device.limits().max_storage_buffer_binding_size) {
+            return false;
+        }
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("title metal shot"),
+            size: (count + small) * 16,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.title_metal_shots.insert(slot, MetalShot { buffer, roi, tint: m.tint, shot: m.shot, blur_px: m.shot_blur_px });
+        true
+    }
+
+    /// The record buffer [`Self::stack_title_metal_shot_for`] made for
+    /// `slot`.
+    pub fn stack_title_metal_shot_record(&self, slot: usize) -> Option<&wgpu::Buffer> {
+        self.title_metal_shots.get(&slot).map(|s| &s.buffer)
     }
 
     /// Resident finishing scratch only; excludes shared stack and source caches.

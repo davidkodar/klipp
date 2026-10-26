@@ -1214,6 +1214,14 @@ impl KlippApp {
                 // new value. This mutates `self.state.sequences[...]` only,
                 // not the shared `Arc<klipp_timeline::SharedSequence>` the engine reads.
                 let path = self.state.graph_descent_path.clone();
+                // A zones node's first edit places its zones for the
+                // clip's source first, here and in the engine alike
+                // (#2767).
+                let seed = zones_seed(&self.state, *clip_id, *node_id, param);
+                for (p, v) in &seed {
+                    write_node_param(&mut self.state, *clip_id, &path, target, p, *v);
+                    let _ = self.param_change_queue.push(ParamChange { clip_id: *clip_id, node_id: *node_id, param: p.clone(), value: *v });
+                }
                 write_node_param(&mut self.state, *clip_id, &path, target, param, *value);
                 // Push the change onto the engine's lock-free queue. The
                 // engine drains it at the start of each frame with a SINGLE
@@ -3544,6 +3552,30 @@ pub(super) fn write_node_param(state: &mut AppState, clip_id: klipp_core::ClipId
     }
 }
 
+/// The writes a zones node takes before its first edit (#2767): each
+/// zone's boundary as [`klipp_core::HdrZonesSettings::for_source`] places
+/// it for `clip_id`'s source. None when `param` is not a zone's, or the
+/// node already has zones of its own.
+pub(super) fn zones_seed(state: &AppState, clip_id: klipp_core::ClipId, node_id: klipp_nodes::NodeId, param: &str) -> Vec<(String, f32)> {
+    if !param.starts_with("hdr_") {
+        return Vec::new();
+    }
+    fn unset(graph: &klipp_nodes::NodeGraph, id: klipp_nodes::NodeId) -> Option<bool> {
+        graph.nodes.iter().find_map(|n| {
+            if n.id == id {
+                return Some(n.kind == klipp_nodes::NodeKind::HdrZones && n.params.hdr_zones.is_none());
+            }
+            n.params.compound_subgraph.as_ref().and_then(|g| unset(g, id))
+        })
+    }
+    let Some(clip) = state.sequences[state.active_sequence_idx].tracks.iter().find_map(|t| t.find_clip(clip_id)) else { return Vec::new() };
+    if unset(clip.grade(), node_id) != Some(true) {
+        return Vec::new();
+    }
+    let boundary = klipp_core::HdrZonesSettings::boundary_for(state.media_pool.scene_referred(clip.media_id()));
+    klipp_nodes::params::HDR_ZONE_KEYS.iter().enumerate().skip(1).map(|(k, key)| (format!("hdr_{key}_boundary"), boundary[k])).collect()
+}
+
 /// A node-param gesture closed: one `SetNodeGraph` step from `old_graph`,
 /// the grade as the gesture found it, to `clip_id`'s grade now. NodeGraph
 /// has no PartialEq, so the step is pushed even for a gesture that changed
@@ -3871,5 +3903,54 @@ mod picture_transform_tests {
         assert_ne!(base, text(None, true, 1.0, Default::default(), klipp_core::HdrMonitor::Off), "no LUT");
         assert_ne!(base, text(Some(p), true, 1.0, Default::default(), klipp_core::HdrMonitor::Preview), "HDR monitor");
         assert_eq!(base, text(Some(p), true, 0.999_9, Default::default(), klipp_core::HdrMonitor::Off), "float noise");
+    }
+}
+
+#[cfg(test)]
+mod zones_placed_for_their_source {
+    use super::*;
+
+    /// #2767: the colour page places a zones node's zones where the op
+    /// does: its first edit seeds the boundaries the `zones` op gives the
+    /// same clip, SDR or HDR; a node with zones of its own, or another
+    /// node's parameter, seeds nothing.
+    #[test]
+    fn the_ui_seeds_the_boundaries_the_op_gives() {
+        for hdr in [false, true] {
+            let mut state = AppState::default();
+            let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/zones.mov".into(), None);
+            item.duration = klipp_core::Timecode::from_secs_f64(4.0, 25);
+            item.video_codec = "h264".into();
+            if hdr {
+                item.colour_space = klipp_media::ColourSpace::Hdr10;
+            }
+            let media = state.media_pool.add(item);
+            let tc = |s: f64| klipp_core::Timecode::from_secs_f64(s, 25);
+            let mut clip = klipp_timeline::Clip::media(media, tc(0.0), tc(4.0), tc(0.0), tc(4.0));
+            let mut graph = klipp_nodes::defaults::default_graph();
+            let zones = klipp_nodes::NodeId::new_v4();
+            graph.splice_before_output(klipp_nodes::Node { id: zones, kind: klipp_nodes::NodeKind::HdrZones, label: "HDR Zones".into(), enabled: true, params: Default::default(), keyframes: Default::default(), output_link: None, input_links: vec![] });
+            klipp_timeline::GradeAccess::set_grade(&mut clip, graph);
+            let clip_id = clip.id;
+            let seq = &mut state.sequences[state.active_sequence_idx];
+            let v = seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+            seq.tracks[v].clips.push(clip);
+
+            let seeded: Vec<f32> = zones_seed(&state, clip_id, zones, "hdr_highlight_exposure").into_iter().map(|(_, v)| v).collect();
+            let op = klipp_document::ops::Op::Zones { clip_id: Some(klipp_document::ops::ClipRef::Id(clip_id)), on: None, zone: Some("highlight".into()), exposure: Some(-0.7), hue: None, amount: None, saturation: None, boundary: None, falloff: None, preset: None, reset: false };
+            let plan = klipp_document::ops::resolve(state.sequence(), &state.media_pool, &[op]).unwrap();
+            let klipp_document::history::EditCommand::SetNodeGraph { new_graph, .. } = &plan.steps[0].edit else { panic!() };
+            let by_op = new_graph.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::HdrZones).and_then(|n| n.params.hdr_zones.clone()).unwrap().boundary;
+            assert_eq!(seeded, by_op[1..].to_vec(), "hdr {hdr}: the colour page and the op place the zones alike");
+            assert_eq!(by_op, klipp_core::HdrZonesSettings::boundary_for(hdr));
+            assert!(zones_seed(&state, clip_id, zones, "exposure").is_empty(), "not a zone's parameter");
+        }
+    }
+
+    #[test]
+    fn the_panel_says_where_a_zone_starts() {
+        assert_eq!(crate::panels::node_inspector::zone_start_label(5, 1.5), "Highlight starts at 51% of white");
+        assert_eq!(crate::panels::node_inspector::zone_start_label(3, -1.0), "Shadow reaches up to 9% of white");
+        assert_eq!(crate::panels::node_inspector::zone_start_label(6, 4.5), "Specular starts at 4.1\u{00d7} white");
     }
 }

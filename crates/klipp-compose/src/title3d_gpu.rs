@@ -46,6 +46,32 @@ struct ViewParams {
     face: [f32; 4],
     side: [f32; 4],
     bevel: [f32; 4],
+    metal: [f32; 4],
+    metal_a: [f32; 4],
+    metal_b: [f32; 4],
+    sky_tint: [f32; 4],
+    key: [f32; 4],
+    key_color: [f32; 4],
+    rim: [f32; 4],
+    rim_color: [f32; 4],
+}
+
+impl ViewParams {
+    /// The solid in `m`'s metal (#2706): its tint, surface, mix and lights.
+    fn with_metal(self, m: &klipp_effects::gpu::TitleMetal) -> Self {
+        let v3 = |v: [f32; 3], w: f32| [v[0], v[1], v[2], w];
+        Self {
+            metal: v3(m.tint, 1.0),
+            metal_a: [m.roughness, m.edge, m.highlights, m.studio],
+            metal_b: [m.sky, m.anisotropy, m.anisotropy_radians, 0.0],
+            sky_tint: v3(m.sky_tint, 0.0),
+            key: v3(m.key.0, m.key.1),
+            key_color: v3(m.key.2, 0.0),
+            rim: v3(m.rim.0, m.rim.1),
+            rim_color: v3(m.rim.2, 0.0),
+            ..self
+        }
+    }
 }
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -54,6 +80,10 @@ struct ResolveParams {
     frame_width: u32,
     pad: [u32; 3],
     matrix: [[f32; 4]; 3],
+    /// Whether to write a metal's record for the shot, its bevel reach and
+    /// the box's stretch over the frame; the box's centre and the frame's.
+    metal: [f32; 4],
+    centres: [f32; 4],
 }
 struct Geometry {
     id: u64,
@@ -63,8 +93,11 @@ struct Geometry {
 }
 struct Targets {
     _color: wgpu::Texture,
+    _metal: wgpu::Texture,
     _depth: wgpu::Texture,
     color: wgpu::TextureView,
+    /// Each sample's normal and fresnel term, for a metal's record.
+    metal: wgpu::TextureView,
     depth: wgpu::TextureView,
     size: (u32, u32),
 }
@@ -78,6 +111,8 @@ pub(crate) struct GpuText3d {
     view_params: wgpu::Buffer,
     resolve_params: wgpu::Buffer,
     poses: wgpu::Buffer,
+    /// Bound as the record when the solid is not a metal reflecting the shot.
+    no_record: wgpu::Buffer,
     geometry: VecDeque<Geometry>,
     targets: Option<Targets>,
     frame: (u32, u32),
@@ -146,11 +181,18 @@ impl GpuText3d {
                 module: &shader,
                 entry_point: "fragment",
                 compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Rgba16Float,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
+                targets: &[
+                    Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Rgba16Float,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                    Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Rgba16Float,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                ],
             }),
             primitive: wgpu::PrimitiveState {
                 cull_mode: None,
@@ -181,6 +223,16 @@ impl GpuText3d {
                 ),
                 entry(1, storage(false), wgpu::ShaderStages::COMPUTE),
                 entry(2, uniform(), wgpu::ShaderStages::COMPUTE),
+                entry(
+                    3,
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    wgpu::ShaderStages::COMPUTE,
+                ),
+                entry(4, storage(false), wgpu::ShaderStages::COMPUTE),
             ],
         });
         let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -217,6 +269,7 @@ impl GpuText3d {
             wgpu::BufferUsages::UNIFORM,
         );
         let poses = buffer(48, wgpu::BufferUsages::STORAGE);
+        let no_record = buffer(16, wgpu::BufferUsages::STORAGE);
         Self {
             device,
             queue,
@@ -227,6 +280,7 @@ impl GpuText3d {
             view_params,
             resolve_params,
             poses,
+            no_record,
             geometry: VecDeque::new(),
             targets: None,
             frame: (0, 0),
@@ -343,14 +397,20 @@ impl GpuText3d {
             wgpu::TextureFormat::Rgba16Float,
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
         );
+        let metal = texture(
+            wgpu::TextureFormat::Rgba16Float,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        );
         let depth = texture(
             wgpu::TextureFormat::Depth32Float,
             wgpu::TextureUsages::RENDER_ATTACHMENT,
         );
         self.targets = Some(Targets {
             color: color.create_view(&Default::default()),
+            metal: metal.create_view(&Default::default()),
             depth: depth.create_view(&Default::default()),
             _color: color,
+            _metal: metal,
             _depth: depth,
             size: (w, h),
         });
@@ -359,13 +419,14 @@ impl GpuText3d {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn render(
         &mut self,
-        gpu: &GpuEffectsPipeline,
+        gpu: &mut GpuEffectsPipeline,
         slot: usize,
         id: u64,
         scene: &Scene,
         width: u32,
         height: u32,
         matrix: [[f32; 3]; 3],
+        metal: Option<&klipp_effects::gpu::TitleMetal>,
     ) -> Option<[u32; 4]> {
         if gpu.is_device_lost()
             || !self.same_device(gpu)
@@ -427,6 +488,14 @@ impl GpuText3d {
             });
         }
         view.roi = roi.map(|v| v as f32);
+        if let Some(m) = metal {
+            view = view.with_metal(m);
+        }
+        // A metal reflecting the shot leaves its record for the pass
+        // that draws the shot when the layers are laid.
+        let record = metal.filter(|m| m.shot > 0.0).is_some_and(|m| gpu.stack_title_metal_shot_for(slot, roi, m));
+        let (cx, cy) = (roi[0] as f32 + roi[2] as f32 * 0.5, roi[1] as f32 + roi[3] as f32 * 0.5);
+        let stretch = [width as f32 * 0.4 / (roi[2] as f32 * 0.5).max(1.0), height as f32 * 0.4 / (roi[3] as f32 * 0.5).max(1.0)];
         self.queue
             .write_buffer(&self.view_params, 0, bytemuck::bytes_of(&view));
         self.queue.write_buffer(&self.poses, 0, pose_bytes);
@@ -438,8 +507,11 @@ impl GpuText3d {
                 frame_width: width,
                 pad: [0; 3],
                 matrix: matrix.map(|r| [r[0], r[1], r[2], 0.0]),
+                metal: [if record { 1.0 } else { 0.0 }, height as f32 * 0.3, stretch[0], stretch[1]],
+                centres: [cx, cy, width as f32 * 0.5, height as f32 * 0.5],
             }),
         );
+        let record_buffer = if record { gpu.stack_title_metal_shot_record(slot)? } else { &self.no_record };
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("3D title"),
             layout: &self.layout,
@@ -471,6 +543,14 @@ impl GpuText3d {
                     binding: 2,
                     resource: self.resolve_params.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&targets.metal),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: record_buffer.as_entire_binding(),
+                },
             ],
         });
         let mut encoder = self
@@ -482,14 +562,24 @@ impl GpuText3d {
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("3D title surfaces"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &targets.color,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
+                color_attachments: &[
+                    Some(wgpu::RenderPassColorAttachment {
+                        view: &targets.color,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    }),
+                    Some(wgpu::RenderPassColorAttachment {
+                        view: &targets.metal,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    }),
+                ],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &targets.depth,
                     depth_ops: Some(wgpu::Operations {
@@ -640,6 +730,14 @@ fn project(scene: &Scene, width: u32, height: u32) -> Option<(ViewParams, [u32; 
         face: color(scene.face),
         side: color(scene.side),
         bevel: color(scene.bevel),
+        metal: [0.0; 4],
+        metal_a: [0.0; 4],
+        metal_b: [0.0; 4],
+        sky_tint: [0.0; 4],
+        key: [0.0; 4],
+        key_color: [0.0; 4],
+        rim: [0.0; 4],
+        rim_color: [0.0; 4],
     };
     if bytemuck::cast_slice::<ViewParams, f32>(&[view])
         .iter()
@@ -732,13 +830,14 @@ mod tests {
             let before = gpu.readback_stats();
             let roi = solid
                 .render(
-                    &gpu,
+                    &mut gpu,
                     0,
                     42,
                     &scene,
                     320,
                     180,
                     [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                    None,
                 )
                 .unwrap();
             let b = bounds.unwrap();

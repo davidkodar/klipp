@@ -443,14 +443,19 @@ exist until the plan runs.
   effects, so a vignette or grade after it sees the reframed picture.
 - `qualify {clip_id, target?|hue?, …, exposure?, saturation?, hue_shift?,
   temperature?}`: a secondary. Key a colour or tone — a named `target`
-  (skin, sky, foliage, reds, blues…) or an explicit `hue` in degrees,
+  (skin, sky, foliage for leaves and grass olive to green, greens for
+  pure green, reds, blues…) or an explicit `hue` in degrees,
   narrowed by `hue_width` and saturation/luminance windows — and correct
   only what is keyed. `invert` grades everything but the key; `remove`
   clears it. Fix a sky, calm a loud shirt, keep skin warm while cooling
   the rest. Grade the primary first, then reach for a secondary.
 - `zones {clip_id | on, zone?, exposure?, hue?, amount?, saturation?,
   boundary?, falloff?, preset?, reset?}`: HDR zones, tonal balance placed
-  in stops about mid grey, the same on SDR, HDR and log material. A
+  in stops about mid grey. New zones are placed for the clip: on an SDR
+  picture light, highlight and specular start at +0.5, +1.5 and +2.2
+  stops (about 25%, 51% and 83% of white), inside its range, and the
+  reply says so; on HDR and log they reach on past white (+1, +2.5,
+  +4.5). Zones a grade already has keep their boundaries. A
   `zone` (global, black, dark, shadow, light, highlight, specular) takes
   an `exposure` in stops, a colour by `hue` (degrees on the wheel) and
   `amount` (0 to 1), and a `saturation`; `boundary` and `falloff` move
@@ -640,8 +645,9 @@ exist until the plan runs.
   bevel cut into the letters: the shot leads by default, so gold over a
   sunset turns warm and over blue water cool; more studio makes it a
   product shot; the layer's effects run over it, so a
-  glow glows gold. Without a GPU the text shows its colour. A 3D text
-  is not made metal.
+  glow glows gold. A 3D text (three_d) is metal on every face, its
+  own bevels and sides reflecting. Without a GPU the text shows its
+  colour.
 - `set_text {clip_id, text}`: the words of a title or a caption; its
   look, place and timing stay. For the cue the transcript misheard and
   the name it cannot spell: read the captions once they are made

@@ -3750,7 +3750,8 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
         }
         Op::Zones { clip_id, on, zone, exposure, hue, amount, saturation, boundary, falloff, preset, reset } => {
             let target = grade_target(seq, pool, fps, i, clip_id.as_ref(), on.as_ref(), "set zones on")?;
-            zones(i, target, ZonesAsk { zone: zone.as_deref(), exposure: *exposure, hue: *hue, amount: *amount, saturation: *saturation, boundary: *boundary, falloff: *falloff, preset: preset.as_deref(), reset: *reset })
+            let scene_referred = target_scene_referred(seq, pool, &target);
+            zones(i, target, ZonesAsk { zone: zone.as_deref(), exposure: *exposure, hue: *hue, amount: *amount, saturation: *saturation, boundary: *boundary, falloff: *falloff, preset: preset.as_deref(), reset: *reset, scene_referred })
         }
         Op::Style { clip_id, track, from, to, size, color, font, bold, align, x, y, backing, outline, full_frame, shadow, backing_color, outline_color, glow, glow_color, gradient, glitch, chromatic, animate, enter, exit, animate_secs, stagger, loop_effect, roll_shape, edge_fade, typeset } => {
             if typeset.runs.is_some() && clip_id.is_none() {
@@ -8421,6 +8422,20 @@ struct GradeTarget {
     touched: Vec<ClipId>,
 }
 
+/// Whether a grade target's picture is scene-referred (HDR or camera
+/// log), as its media decodes: a clip by its own, a group or the timeline
+/// when any of their pictures is, so HDR material keeps the zones that
+/// reach past its white (#2767).
+fn target_scene_referred(seq: &Sequence, pool: &MediaPool, target: &GradeTarget) -> bool {
+    let scene = |c: &Clip| pool.scene_referred(c.media_id());
+    let clips: Vec<&Clip> = if target.touched.is_empty() {
+        seq.tracks.iter().filter(|t| t.kind == TrackKind::Video).flat_map(|t| &t.clips).collect()
+    } else {
+        seq.tracks.iter().flat_map(|t| &t.clips).filter(|c| target.touched.contains(&c.id)).collect()
+    };
+    clips.into_iter().any(scene)
+}
+
 fn find_grade_group<'a>(seq: &'a Sequence, i: usize, name: &str) -> Result<&'a klipp_timeline::GradeGroup, Refusal> {
     seq.grade_groups.iter().find(|g| g.name.eq_ignore_ascii_case(name.trim())).ok_or_else(|| {
         let names: Vec<String> = seq.grade_groups.iter().map(|g| format!("\"{}\"", g.name)).collect();
@@ -8724,16 +8739,22 @@ struct QualifyArgs<'a> {
 
 /// A named colour target for the qualifier: its hue centre and width in
 /// degrees, where colourists usually key each.
-fn qualifier_target(name: &str) -> Option<(f32, f32)> {
+/// A named target's hue centre and full width (degrees), and the
+/// saturation below which it keys nothing, when it has one.
+fn qualifier_target(name: &str) -> Option<(f32, f32, Option<f32>)> {
     match name.trim().to_lowercase().as_str() {
-        "skin" | "skin_tone" | "skintone" | "faces" => Some((28.0, 18.0)),
-        "reds" | "red" => Some((0.0, 20.0)),
-        "oranges" | "orange" => Some((30.0, 20.0)),
-        "yellows" | "yellow" => Some((55.0, 25.0)),
-        "greens" | "green" | "foliage" | "grass" => Some((120.0, 50.0)),
-        "cyans" | "cyan" | "teal" => Some((190.0, 30.0)),
-        "blues" | "blue" | "sky" => Some((220.0, 40.0)),
-        "magentas" | "magenta" | "purple" | "purples" => Some((300.0, 30.0)),
+        "skin" | "skin_tone" | "skintone" | "faces" => Some((28.0, 18.0, None)),
+        "reds" | "red" => Some((0.0, 20.0, None)),
+        "oranges" | "orange" => Some((30.0, 20.0, None)),
+        "yellows" | "yellow" => Some((55.0, 25.0, None)),
+        // Leaves and grass as a camera sees them, olive to green, not the
+        // pure green `greens` is (#2767): sunlit foliage sits about 70 to
+        // 110 degrees. Greys have a hue too, so a little colour is needed.
+        "foliage" | "grass" | "trees" | "leaves" => Some((90.0, 70.0, Some(0.1))),
+        "greens" | "green" => Some((120.0, 50.0, None)),
+        "cyans" | "cyan" | "teal" => Some((190.0, 30.0, None)),
+        "blues" | "blue" | "sky" => Some((220.0, 40.0, None)),
+        "magentas" | "magenta" | "purple" | "purples" => Some((300.0, 30.0, None)),
         _ => None,
     }
 }
@@ -8775,11 +8796,14 @@ fn qualify(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, a
 
     // Resolve a named target to a hue centre/width, unless one was given.
     let (mut hue_center, mut hue_width) = (a.hue, a.hue_width);
+    let mut sat_floor = None;
     if let Some(name) = a.target {
-        let (c, w) = qualifier_target(name).ok_or_else(|| refuse(i, format!("\"{name}\" is not a colour I key"), "target one of: skin, reds, oranges, yellows, greens, cyans, blues, magentas — or give a hue in degrees"))?;
+        let (c, w, floor) = qualifier_target(name).ok_or_else(|| refuse(i, format!("\"{name}\" is not a colour I key"), "target one of: skin, foliage, sky, reds, oranges, yellows, greens, cyans, blues, magentas — or give a hue in degrees"))?;
         hue_center.get_or_insert(c);
         hue_width.get_or_insert(w);
+        sat_floor = floor;
     }
+    let a = QualifyArgs { sat_low: a.sat_low.or(sat_floor), ..a };
 
     if let Some(rgb) = a.rgb {
         if hue_center.is_some() || a.sat_low.is_some() || a.sat_high.is_some() || a.lum_low.is_some() || a.lum_high.is_some() {
@@ -9832,6 +9856,9 @@ struct ZonesAsk<'a> {
     falloff: Option<f32>,
     preset: Option<&'a str>,
     reset: bool,
+    /// Whether the target's picture is scene-referred (HDR or camera
+    /// log), which sets the boundaries new zones get (#2767).
+    scene_referred: bool,
 }
 
 /// `zones`: the target's HDR Zones node (made before its output when it
@@ -9859,8 +9886,8 @@ fn zones(i: usize, target: GradeTarget, ask: ZonesAsk) -> Result<(String, EditCo
         }
     }
     let preset = match ask.preset {
-        Some(p) => Some(HdrZonesSettings::preset(p).ok_or_else(|| {
-            let known: Vec<&str> = HdrZonesSettings::presets().into_iter().map(|(n, _, _)| n).collect();
+        Some(p) => Some(HdrZonesSettings::preset(p, ask.scene_referred).ok_or_else(|| {
+            let known: Vec<&str> = HdrZonesSettings::presets(ask.scene_referred).into_iter().map(|(n, _, _)| n).collect();
             refuse(i, format!("\"{p}\" is not a zones preset"), format!("give preset as one of: {}", known.join(", ")))
         })?),
         None => None,
@@ -9880,10 +9907,12 @@ fn zones(i: usize, target: GradeTarget, ask: ZonesAsk) -> Result<(String, EditCo
         }
     };
     let node = graph.nodes.iter_mut().find(|n| n.id == node_id).ok_or_else(|| refuse(i, "the grade took no zones node", "this is a bug: tell the user the zones went nowhere"))?;
-    let mut z = node.params.hdr_zones.clone().unwrap_or_default();
+    // New zones are placed for the source; stored ones keep theirs.
+    let placed = node.params.hdr_zones.is_none() || ask.reset || ask.preset.is_some();
+    let mut z = node.params.hdr_zones.clone().unwrap_or_else(|| HdrZonesSettings::for_source(ask.scene_referred));
     let mut said = Vec::new();
     if ask.reset {
-        z = HdrZonesSettings::default();
+        z = HdrZonesSettings::for_source(ask.scene_referred);
         said.push("neutral".to_string());
     }
     if let (Some(p), Some(name)) = (preset, ask.preset) {
@@ -9918,6 +9947,11 @@ fn zones(i: usize, target: GradeTarget, ask: ZonesAsk) -> Result<(String, EditCo
         said.push(zone_said("falloff", v));
     }
     node.params.hdr_zones = Some(z);
+    if placed && !ask.scene_referred {
+        // Where the zones start, so "highlight" means what is shown.
+        let b = HdrZonesSettings::SDR_BOUNDARY;
+        said.push(format!("SDR picture, so light from {:+} stops, highlight from {:+}, specular from {:+} (about 25%, 51% and 83% of white)", b[4], b[5], b[6]));
+    }
     let what = format!("zones on {target_name}: {}", said.join(", "));
     let edit = EditCommand::SetNodeGraph { clip_id: id, old_graph: current, new_graph: graph };
     Ok((what, edit, touched))
@@ -11031,9 +11065,6 @@ fn set_motion_extras(tb: &mut klipp_timeline::TextBox, fx: &mut Option<klipp_tim
     if let Some(ask) = &t.material {
         match ask {
             None => tb.material = None,
-            Some(_) if tb.three_d.is_some() => {
-                return Err("a metal is drawn on flat text; this text is in 3D (three_d: \"none\" makes it flat)".into());
-            }
             Some(ask) => {
                 let m = ask.apply(tb.material.as_ref());
                 // What a frame drawn without a GPU shows.
@@ -16534,6 +16565,62 @@ mod tests {
     /// or from a preset by name; a second op edits the same node. Refused:
     /// a zone that isn't one, a reach for Global, a value out of range, an
     /// unknown preset, and nothing to set.
+    /// #2767: new zones are placed for the clip's source. On an SDR clip
+    /// Light, Highlight and Specular sit inside its range and the reply
+    /// says so; on an HDR one they reach past its white as before; zones
+    /// a grade already has keep their boundaries; a reset places them
+    /// again for the source.
+    #[test]
+    fn zones_are_placed_for_their_source() {
+        use klipp_core::HdrZonesSettings;
+        use klipp_timeline::GradeAccess;
+        let (seq, mut pool, media, a, _) = fixture();
+        let z = |zone: &str, exposure: Option<f32>, reset: bool| Op::Zones { clip_id: Some(ClipRef::Id(a)), on: None, zone: Some(zone.into()), exposure, hue: None, amount: None, saturation: None, boundary: None, falloff: None, preset: None, reset };
+        let zones_of = |plan: &Plan| match &plan.steps[0].edit {
+            EditCommand::SetNodeGraph { new_graph, .. } => new_graph.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::HdrZones).and_then(|n| n.params.hdr_zones.clone()).expect("zones"),
+            other => panic!("{other:?}"),
+        };
+        let plan = resolve(&seq, &pool, &[z("highlight", Some(-0.7), false)]).unwrap();
+        assert_eq!(zones_of(&plan).boundary, HdrZonesSettings::SDR_BOUNDARY);
+        assert!(plan.steps[0].what.contains("SDR picture, so light from +0.5 stops, highlight from +1.5"), "{}", plan.steps[0].what);
+
+        // A grade with zones of its own keeps them.
+        let mut kept = seq.clone();
+        let mut graph = match &plan.steps[0].edit { EditCommand::SetNodeGraph { new_graph, .. } => new_graph.clone(), _ => unreachable!() };
+        for n in graph.nodes.iter_mut().filter(|n| n.kind == klipp_nodes::NodeKind::HdrZones) {
+            n.params.hdr_zones.as_mut().unwrap().boundary[5] = 2.0;
+        }
+        kept.all_clips_mut().find(|c| c.id == a).unwrap().set_grade(graph);
+        let plan = resolve(&kept, &pool, &[z("shadow", Some(0.3), false)]).unwrap();
+        assert_eq!(zones_of(&plan).boundary[5], 2.0, "stored zones keep theirs");
+        assert!(!plan.steps[0].what.contains("SDR picture"), "{}", plan.steps[0].what);
+        let plan = resolve(&kept, &pool, &[z("shadow", None, true)]).unwrap();
+        assert_eq!(zones_of(&plan).boundary, HdrZonesSettings::SDR_BOUNDARY, "a reset places them again");
+
+        // An HDR clip's zones reach past its white, as before.
+        pool.get_mut(&media).unwrap().colour_space = klipp_media::ColourSpace::Hdr10;
+        let plan = resolve(&seq, &pool, &[z("highlight", Some(-0.7), false)]).unwrap();
+        assert_eq!(zones_of(&plan).boundary, HdrZonesSettings::DEFAULT_BOUNDARY);
+        assert!(!plan.steps[0].what.contains("SDR picture"), "{}", plan.steps[0].what);
+    }
+
+    /// #2767: `foliage` keys leaves as a camera sees them, olive to green,
+    /// with a little colour needed, where `greens` stays pure green.
+    #[test]
+    fn foliage_keys_olive_to_green() {
+        let (seq, pool, _, a, _) = fixture();
+        let q = |target: &str| Op::Qualify { clip_id: ClipRef::Id(a), target: Some(target.into()), hue: None, hue_width: None, sat_low: None, sat_high: None, lum_low: None, lum_high: None, invert: false, exposure: None, saturation: None, hue_shift: Some(40.0), temperature: None, remove: false, window: None, window_feather: None, rgb: None, keep: None, take_out: None };
+        let key = |target: &str| {
+            let plan = resolve(&seq, &pool, &[q(target)]).unwrap();
+            let EditCommand::SetNodeGraph { new_graph, .. } = &plan.steps[0].edit else { panic!() };
+            new_graph.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Qualifier).and_then(|n| n.params.qualifier.clone()).expect("a key")
+        };
+        let leaves = key("foliage");
+        assert_eq!((leaves.hue_center, leaves.hue_width, leaves.sat_low), (90.0, 70.0, 0.1));
+        let green = key("greens");
+        assert_eq!((green.hue_center, green.hue_width, green.sat_low), (120.0, 50.0, 0.0));
+    }
+
     #[test]
     fn zones_set_a_zone_or_start_from_a_preset() {
         use klipp_timeline::GradeAccess;
@@ -16574,7 +16661,7 @@ mod tests {
 
         let plan = resolve(&seq, &pool, &[z(None, None, None, None, None, Some("hdr highlight roll-off"))]).unwrap();
         let new_graph = &graph_of(&plan.steps[0].edit);
-        assert_eq!(zones_of(new_graph), klipp_core::HdrZonesSettings::preset("HDR highlight roll-off").unwrap());
+        assert_eq!(zones_of(new_graph), klipp_core::HdrZonesSettings::preset("HDR highlight roll-off", false).unwrap());
 
         let why = |op: Op| resolve(&seq, &pool, &[op]).unwrap_err().why;
         assert!(why(z(Some("midtones"), Some(1.0), None, None, None, None)).contains("not a zone"));

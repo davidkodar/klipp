@@ -425,8 +425,15 @@ pub struct HdrZonesSettings {
 }
 
 impl HdrZonesSettings {
-    /// The zones' boundaries as a new node has them, in stops.
+    /// The zones' boundaries as a new node has them, in stops, for a
+    /// scene-referred source (HDR or camera log), whose highlights run on
+    /// past display white.
     pub const DEFAULT_BOUNDARY: [f32; 7] = [0.0, -4.5, -2.5, -1.0, 1.0, 2.5, 4.5];
+    /// The same for an SDR source (#2767), whose white is about +2.5
+    /// stops: Light, Highlight and Specular inside its range, from about
+    /// 25%, 51% and 83% of white in linear light. The lower zones are as
+    /// above, well inside both.
+    pub const SDR_BOUNDARY: [f32; 7] = [0.0, -4.5, -2.5, -1.0, 0.5, 1.5, 2.2];
     /// A new zone's falloff, in stops.
     pub const DEFAULT_FALLOFF: f32 = 1.0;
 
@@ -438,6 +445,20 @@ impl HdrZonesSettings {
 }
 
 impl HdrZonesSettings {
+    /// The zones a new or reset zones node gets for its source (#2767):
+    /// neutral, with boundaries where that source's tones are, so on an
+    /// SDR picture "highlight" is its bright part rather than above its
+    /// white. The one place this is chosen: the colour page's zones, their
+    /// presets and the `zones` op all ask it. Stored zones keep theirs.
+    pub fn for_source(scene_referred: bool) -> Self {
+        Self { boundary: Self::boundary_for(scene_referred), ..Self::default() }
+    }
+
+    /// The boundaries [`Self::for_source`] places.
+    pub fn boundary_for(scene_referred: bool) -> [f32; 7] {
+        if scene_referred { Self::DEFAULT_BOUNDARY } else { Self::SDR_BOUNDARY }
+    }
+
     /// A zone colour wheel's puck for a tint of hue `hue` (degrees on the
     /// wheel: 0 red, 30 orange, 210 a cool blue) and `amount` (0 none, 1
     /// the wheel's rim).
@@ -448,10 +469,11 @@ impl HdrZonesSettings {
     }
 
     /// The zones' starting points (#240), as a colourist names them: each
-    /// its name, what it does, and its settings.
-    pub fn presets() -> Vec<(&'static str, &'static str, HdrZonesSettings)> {
+    /// its name, what it does, and its settings, its boundaries those of
+    /// the source ([`Self::for_source`]).
+    pub fn presets(scene_referred: bool) -> Vec<(&'static str, &'static str, HdrZonesSettings)> {
         let with = |f: &dyn Fn(&mut HdrZonesSettings)| {
-            let mut z = HdrZonesSettings::default();
+            let mut z = HdrZonesSettings::for_source(scene_referred);
             f(&mut z);
             z
         };
@@ -484,8 +506,8 @@ impl HdrZonesSettings {
     }
 
     /// The preset named `name` (any case), when there is one.
-    pub fn preset(name: &str) -> Option<HdrZonesSettings> {
-        Self::presets().into_iter().find(|(n, _, _)| n.eq_ignore_ascii_case(name.trim())).map(|(_, _, z)| z)
+    pub fn preset(name: &str, scene_referred: bool) -> Option<HdrZonesSettings> {
+        Self::presets(scene_referred).into_iter().find(|(n, _, _)| n.eq_ignore_ascii_case(name.trim())).map(|(_, _, z)| z)
     }
 }
 

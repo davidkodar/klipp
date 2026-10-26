@@ -16255,7 +16255,15 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
         if px.w <= 0.0 { return; }
         // Rolled off as the face is, so a bright shot does not clip it.
         // The shot as it is shown: a sun over white is white, not brighter.
-        let lit = px.xyz + fres * min(seen.xyz, vec3<f32>(1.0)) * p.tint_shot.w * rec.w;
+        var lit = px.xyz + fres * min(seen.xyz, vec3<f32>(1.0)) * p.tint_shot.w * rec.w;
+        // A coloured metal keeps its hue whatever it reflects: gold over
+        // blue water is a cooler gold, not olive. Pulled towards its own
+        // colour at the same brightness, as far as the metal is coloured;
+        // silver reflects colours as they are.
+        let weights = vec3<f32>(0.2126, 0.7152, 0.0722);
+        let chroma = (max(tint.x, max(tint.y, tint.z)) - min(tint.x, min(tint.y, tint.z))) / max(max(tint.x, max(tint.y, tint.z)), 1e-4);
+        let own = tint / max(dot(tint, weights), 1e-4) * dot(lit, weights);
+        lit = mix(lit, own, clamp(chroma * 1.3, 0.0, 0.85));
         px = vec4<f32>(select(lit, 0.75 + 0.25 * (vec3<f32>(1.0) - exp(-(lit - 0.75) / 0.25)), lit > vec3<f32>(0.75)), px.w);
         output[at] = pack(px);
         return;

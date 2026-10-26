@@ -3823,7 +3823,6 @@ pub(crate) fn apply_title_preset(tb: &mut klipp_timeline::TextBox, fx: &mut klip
             tb.material = Some(metal);
             tb.gradient = None;
             tb.pattern_fill = None;
-            tb.three_d = None;
         }
         _ => {}
     }

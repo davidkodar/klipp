@@ -29,6 +29,13 @@ impl MediaPool {
         self.items.get(id)
     }
 
+    /// Whether the picture of `media` decodes scene-referred (HDR or
+    /// camera log): what sets where a new grade's zones go (#2767). A clip
+    /// with no media, a generator or a title, is display-referred.
+    pub fn scene_referred(&self, media: Option<MediaId>) -> bool {
+        media.and_then(|m| self.get(&m)).is_some_and(MediaItem::scene_referred)
+    }
+
     pub fn get_mut(&mut self, id: &MediaId) -> Option<&mut MediaItem> {
         self.items.get_mut(id)
     }

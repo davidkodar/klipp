@@ -5538,8 +5538,8 @@ fn show_title_editor(
     show_title_motion_blur_group(ui, theme, clip_id, fx, cmds, target_oid, clip_time_secs, keyframe_tolerance);
     ui.add_space(2.0);
 
-    // A metal face (#2706), on flat text.
-    if let Some(tb) = tb_target.filter(|tb| tb.three_d.as_ref().is_none_or(|t| !t.enabled)) {
+    // A metal face (#2706), flat or 3D.
+    if let Some(tb) = tb_target {
         let status = crate::widgets::inspector_group::GroupStatus { count: None, active: tb.material.is_some() };
         if title_group_is_open(ui, theme, clip_id, "Metal", status) {
             ui.add_space(6.0);
