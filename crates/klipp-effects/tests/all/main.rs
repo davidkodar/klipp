@@ -76,6 +76,8 @@ mod presentation;
 mod recorded_effects;
 #[path = "../temporal_denoise_gpu.rs"]
 mod temporal_denoise_gpu;
+#[path = "../transitions_have_their_own_look.rs"]
+mod transitions_have_their_own_look;
 #[path = "../transitions_look_as_named.rs"]
 mod transitions_look_as_named;
 #[path = "../registry_coverage.rs"]
