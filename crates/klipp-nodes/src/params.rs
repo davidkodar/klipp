@@ -277,6 +277,13 @@ pub struct NodeParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mix: Option<f32>,
 
+    /// Blend as a merge (#2758): the picture on port 1 laid over the one
+    /// on port 0 as a layer mixer's top layer over its base, by its blend
+    /// mode and its opacity times its own alpha, the base's alpha kept.
+    /// `None`: a plain mix by `mix`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge: Option<klipp_core::LayerMixerInput>,
+
     // LayerMixer — per-port settings (None = default 2-input config,
     // composited Normal at full opacity). When the editor grows the
     // port count this Vec is grown in lockstep so `inputs[port]` is
