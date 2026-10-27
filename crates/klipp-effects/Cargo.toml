@@ -63,6 +63,10 @@ name = "all"
 path = "tests/all/main.rs"
 
 [[test]]
+name = "planar_bench"
+path = "tests/planar_bench.rs"
+
+[[test]]
 name = "display_encode_cost"
 path = "tests/display_encode_cost.rs"
 
