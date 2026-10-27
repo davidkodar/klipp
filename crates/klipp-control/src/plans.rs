@@ -16,7 +16,7 @@ pub(crate) fn resolve_plan(ctx: &ControlContext, ops: &[klipp_document::ops::Op]
     // changes a clip's own grade, and must not copy its group's into it.
     let seq = seq.with_own_grades();
     let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
-    let ops = &with_compositions(&with_templates(ops, template_dir().as_deref()), composition_dir().as_deref(), &project_sequence_ids(ctx, &seq));
+    let ops = &with_recipes(&with_compositions(&with_templates(ops, template_dir().as_deref()), composition_dir().as_deref(), &project_sequence_ids(ctx, &seq)), composition_dir().as_deref());
     let plan = klipp_document::ops::resolve_with(&seq, &pool, ops, &AnalysedTranscripts).map_err(|r| format!("{r} (step {} refused; nothing applied)", r.step + 1))?;
     Ok((plan, revision))
 }
@@ -34,7 +34,7 @@ pub(crate) fn resolve_plan_seeing(ctx: &ControlContext, ops: &[klipp_document::o
     let seq = seq.with_own_grades();
     let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
     let others = ctx.others.read().map_err(|_| "sequences lock poisoned")?.clone();
-    let ops = &with_compositions(&with_templates(ops, template_dir().as_deref()), composition_dir().as_deref(), &project_sequence_ids(ctx, &seq));
+    let ops = &with_recipes(&with_compositions(&with_templates(ops, template_dir().as_deref()), composition_dir().as_deref(), &project_sequence_ids(ctx, &seq)), composition_dir().as_deref());
     let plan = klipp_document::ops::resolve_in(&seq, &others, &pool, ops, &AnalysedTranscripts).map_err(|r| format!("{r} (step {} refused; nothing applied)", r.step + 1))?;
     Ok((plan, revision))
 }
@@ -57,6 +57,33 @@ fn project_sequence_ids(ctx: &ControlContext, open: &klipp_timeline::Sequence) -
         ids.extend(others.iter().map(|o| o.sequence.id));
     }
     ids
+}
+
+/// `ops` with each `recipe` op given what builds its recipe (#2758):
+/// the recipe of its name, Klipp's own or one saved in `dir`, with the
+/// op's slots and controls. One whose name names none is left without,
+/// which the document refuses.
+pub(crate) fn with_recipes(ops: &[klipp_document::ops::Op], dir: Option<&std::path::Path>) -> Vec<klipp_document::ops::Op> {
+    use klipp_document::ops::{Op, RecipeBuilder};
+    if !ops.iter().any(|op| matches!(op, Op::Recipe { .. })) {
+        return ops.to_vec();
+    }
+    let recipes = crate::recipes::all(dir.map(std::path::Path::to_path_buf));
+    ops.iter()
+        .cloned()
+        .map(|mut op| {
+            if let Op::Recipe { name, slots, controls, build, .. } = &mut op {
+                *build = crate::recipes::named(&recipes, name).ok().cloned().map(|recipe| {
+                    let (slots, controls) = (slots.clone(), controls.clone());
+                    RecipeBuilder(std::sync::Arc::new(move |seq: &klipp_timeline::Sequence, clip: klipp_core::ClipId| {
+                        let values = crate::recipes::values(&recipe, &slots, &controls)?;
+                        crate::recipes::on_clip(seq, clip, &recipe, &values)
+                    }))
+                });
+            }
+            op
+        })
+        .collect()
 }
 
 /// `ops` with each `template` op no title template answered given the
@@ -178,7 +205,15 @@ pub(crate) fn title_templates(dir: Option<&std::path::Path>, compositions: Optio
         text.push_str(&format!(" {} composition templates (a stack of clips placed as one): {}.", composed.len(), store.templates().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", ")));
     }
     text.push_str(" Place one with the template op by name, setting its fields (a composition's parameters) by label.");
-    json!({ "text": text, "builtin": builtin, "templates": list, "compositions": composed })
+    // Recipes (#2758): node groups built into a clip's picture.
+    let recipes = crate::recipes::all(compositions.map(std::path::Path::to_path_buf));
+    text.push_str(&format!(
+        " {} recipes, built into a clip's picture with the recipe op (slots and controls by name or label): {}.",
+        recipes.len(),
+        recipes.iter().map(|r| r.name.as_str()).collect::<Vec<_>>().join(", ")
+    ));
+    let recipes: Vec<serde_json::Value> = recipes.iter().map(crate::recipes::listed).collect();
+    json!({ "text": text, "builtin": builtin, "templates": list, "compositions": composed, "recipes": recipes })
 }
 
 /// Exact clip changes predicted by resolved cut edits. The UI applies the

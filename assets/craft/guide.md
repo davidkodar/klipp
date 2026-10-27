@@ -792,8 +792,14 @@ exist until the plan runs.
   difference kept as an offset. `action` unlink keeps the number where it
   is, relink follows the control again from there (the offset kept, so
   nothing jumps), reset_offset snaps it back to the control. One undo
-  step. A graph node's parameter (`node:...`) is the Composite page's,
-  not a template's yet.
+  step. A graph node's parameter (`node:...`) is a recipe's, set by the
+  `recipe` op.
+- `recipe {clip_id, name, slots?, controls?}`: a recipe built into the
+  clip's picture, as ordinary nodes the graph shows and edits (green
+  screen, picture in picture...). `slots` fills what it needs by name or
+  label: a media slot a media id, a colour slot `#rrggbb`; `controls` sets
+  its numbers. One undo step; `klipp_graph_read` shows the nodes.
+  `klipp_title_templates` lists the recipes with their slots and controls.
 - `join {clip_id, side?}`: a split undone later, or a scene cut found
   where the shot did not change: the clip and the piece of the same shot
   on its `side` ("next", the default, or "previous") made one again, its

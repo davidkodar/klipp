@@ -247,7 +247,14 @@ fn set_param(n: &mut Node, key: &ParamKey, value: &ParamValue) -> Result<(), Str
         if matches!(key.as_str(), "kind" | "type") {
             return Err(format!("{key} names what the node is, and isn't set"));
         }
-        let v = as_v1(value).ok_or_else(|| format!("{key} is set through the effect's own editor until effects become nodes"))?;
+        // An effect's colour is its sRGB bytes, as the entry stores it
+        // (#2758).
+        let v = match value {
+            ParamValue::Color { rgb, space } if space == crate::effect_params::SRGB => {
+                serde_json::json!(rgb.map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8))
+            }
+            _ => as_v1(value).ok_or_else(|| format!("{key} is set through the effect's own editor until effects become nodes"))?,
+        };
         if !crate::effect_params::is_field_key(key) {
             return Err(format!("{key} is the node's own, not a setting of its effect"));
         }
