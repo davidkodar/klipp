@@ -595,15 +595,10 @@ pub fn plate_frames(clip: &Clip) -> Vec<f64> {
     use klipp_timeline::GradeAccess;
     let mut found: Vec<f64> = clip.grade().nodes.iter().filter(|n| n.kind == klipp_nodes::NodeKind::DifferenceKey && n.enabled).filter_map(|n| picked(&n.params)).collect();
     if let Ok(lifted) = clip.picture_v2() {
-        for n in lifted.picture.graph.nodes.iter().filter(|n| n.enabled) {
-            let Some(payload) = n.legacy.as_ref().map(|l| &l.payload) else { continue };
-            if payload.get("kind").and_then(serde_json::Value::as_str) != Some("DifferenceKey") {
-                continue;
-            }
-            if let Some(secs) = payload.get("params").and_then(|p| serde_json::from_value::<klipp_nodes::NodeParams>(p.clone()).ok()).as_ref().and_then(picked) {
-                found.push(secs);
-            }
-        }
+        // As the run reads a grade node beside the chain.
+        let grade_nodes = lifted.picture.graph.nodes.iter().filter(|n| n.enabled && klipp_graph_lift::effect_params::tag(n).is_none());
+        let keys = grade_nodes.filter_map(|n| klipp_timeline::grade_node_for_run(n).ok()).filter(|n| n.kind == klipp_nodes::NodeKind::DifferenceKey);
+        found.extend(keys.filter_map(|n| picked(&n.params)));
     }
     let mut seen = std::collections::HashSet::new();
     found.retain(|s| seen.insert(s.to_bits()));
