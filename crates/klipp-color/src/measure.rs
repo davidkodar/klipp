@@ -1496,6 +1496,12 @@ impl LookTarget {
             // both against a studio key failed every shot of a correctly
             // exposed exterior (#328).
             "unbriefed" => LookTarget { black_l: Some(4.0), cast_a: Some(0.0), cast_b: Some(0.0), skin_l: Some(62.0), ..base("unbriefed") },
+            // Auto colour's starting grade where there is no brief (#2758):
+            // tone and balance to a neutral picture, black and white points,
+            // median, contrast and neutrals, as broadcast_neutral sets them;
+            // saturation left to the scene, which a starting grade does not
+            // choose (pushed, a warm room's walls read as skin and turned).
+            "starting" => LookTarget { black_l: Some(4.0), white_l: Some(95.0), mid_l: Some(48.0), contrast_range: Some(65.0), cast_a: Some(0.0), cast_b: Some(0.0), skin_l: Some(62.0), ..base("starting") },
             _ => return None,
         })
     }

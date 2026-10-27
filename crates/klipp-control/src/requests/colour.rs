@@ -7,6 +7,10 @@ use crate::*;
 #[path = "colour_group_tests.rs"]
 mod group_advice_tests;
 
+#[cfg(test)]
+#[path = "colour_auto_tests.rs"]
+mod auto_colour_tests;
+
 pub(crate) fn respond(
     ctx: &ControlContext,
     cmd: ControlCommand,
@@ -626,15 +630,18 @@ pub(crate) fn respond(
             Ok(json!({ "text": text, "before": before, "rounds": rounds, "hue_shift": shift, "applied": apply && !rounds.is_empty(), "undo_steps": undo_steps, "revision": ctx.shared.revision(), "next": if apply { "frame_at to see it; check with color reads every shot." } else { "Run it with apply true to turn the skin onto the band as one undo step." } }))
         }
 
-        ControlCommand::GradeToTarget { clip_id, apply, rounds, force, strength } => {
+        ControlCommand::GradeToTarget { clip_id, clips, look_if_unbriefed, apply, rounds, force, strength } => {
             if in_batch {
                 return Err("grade_to_target measures and applies; send it on its own".into());
             }
             let limits = GradeLimits::named(strength.as_deref().unwrap_or("gentle"))?;
+            if let Some(name) = look_if_unbriefed.as_deref().filter(|n| klipp_color::measure::LookTarget::preset(n).is_none()) {
+                return Err(format!("{name} is not a look; the presets are {}", klipp_color::measure::LookTarget::PRESETS.join(", ")));
+            }
             let shots: Vec<(String, f64, String)> = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
                 let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
-                let want = clip_id.as_deref().map(|s| s.parse::<uuid::Uuid>().map_err(|e| format!("clip_id is not a uuid: {e}"))).transpose()?;
+                let want: Vec<uuid::Uuid> = clip_id.iter().chain(&clips).map(|s| s.parse::<uuid::Uuid>().map_err(|e| format!("clip_id is not a uuid: {e}"))).collect::<Result<_, _>>()?;
                 // One clip asked for is found on whichever video track
                 // holds it; the whole pass takes the picture track.
                 // Every visible video track, the asked-for clip or all of
@@ -644,15 +651,16 @@ pub(crate) fn respond(
                     seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible).collect();
                 tracks.into_iter()
                     .flat_map(|t| t.clips.iter())
-                    .filter(|c| is_picture_clip(c) && want.is_none_or(|w| c.id.0 == w))
+                    .filter(|c| is_picture_clip(c) && (want.is_empty() || want.contains(&c.id.0)))
                     .map(|c| (c.id.0.to_string(), (c.timeline_in.to_secs_f64() + c.timeline_out.to_secs_f64()) / 2.0, c.media_id().and_then(|m| pool.get(&m)).map(|it| it.filename.clone()).unwrap_or_else(|| "clip".into())))
                     .take(48)
                     .collect()
             };
             if shots.is_empty() {
-                return Err(match &clip_id {
-                    Some(id) => format!("{id} is not a picture clip on a visible video track"),
-                    None => "no picture clip to grade on a video track".into(),
+                return Err(match (&clip_id, clips.is_empty()) {
+                    (Some(id), true) => format!("{id} is not a picture clip on a visible video track"),
+                    (_, false) => "none of those clips is a picture clip on a visible video track".into(),
+                    (None, true) => "no picture clip to grade on a video track".into(),
                 });
             }
             let n_rounds = if apply { rounds.unwrap_or(3).clamp(1, 5) } else { 0 };
@@ -660,7 +668,10 @@ pub(crate) fn respond(
             let mut per_shot = Vec::new();
             let mut lines = Vec::new();
             for (id, mid, name) in &shots {
-                let look = look_for(ctx, *mid);
+                let look = match look_for(ctx, *mid) {
+                    l if l.name == "unbriefed" => look_if_unbriefed.as_deref().and_then(klipp_color::measure::LookTarget::preset).unwrap_or(l),
+                    l => l,
+                };
                 // Three frames across the shot, not one: the middle
                 // reading grades it and the drift between them is said.
                 let span = shot_span(ctx, id).unwrap_or((*mid - 0.5, *mid + 0.5));

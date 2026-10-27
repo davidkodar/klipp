@@ -754,6 +754,18 @@ pub(crate) fn respond(
                     return Err(format!("the document is at revision {now}, the plan was made at {want}; plan again"));
                 }
             }
+            // Auto colour measures the rendered picture (#2758): sent alone,
+            // it is grade_to_target on those clips, one pass, one undo.
+            if let [klipp_document::ops::Op::AutoColour { clips, strength }] = ops.as_slice() {
+                if clips.is_empty() {
+                    return Err("auto_colour needs the clips to grade: name one, or the selection's".into());
+                }
+                let ids = {
+                    let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                    klipp_document::ops::clip_ids_of(&seq, clips).map_err(|r| format!("{} ({})", r.why, r.hint))?
+                };
+                return crate::handle(ctx, ControlCommand::GradeToTarget { clip_id: None, clips: ids.iter().map(|c| c.0.to_string()).collect(), look_if_unbriefed: Some("starting".into()), apply: true, rounds: None, force: false, strength: strength.clone() }, &mut None);
+            }
             let (plan, revision) = resolve_plan_seeing(ctx, &ops)?;
             if let Some(want) = expected_revision {
                 if revision != want {

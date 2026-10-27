@@ -45,7 +45,7 @@ fn context() -> ControlContext {
 
 fn preview(ctx: &ControlContext) -> serde_json::Value {
     respond(ctx, ControlCommand::GradeToTarget {
-        clip_id: None, apply: false, rounds: None, force: true, strength: None,
+        clip_id: None, clips: Vec::new(), look_if_unbriefed: None, apply: false, rounds: None, force: true, strength: None,
     }, &mut None).unwrap()
 }
 
