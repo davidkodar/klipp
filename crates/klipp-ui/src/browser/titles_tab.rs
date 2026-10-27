@@ -28,7 +28,8 @@ pub enum TitlesPreviewBg {
 }
 
 
-/// Built-in vs user-imported source filter for the Titles tab.
+/// The Titles tab's source filter (#2757): built in, the user's own, or
+/// an installed pack's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[derive(Default)]
 pub enum TitlesSourceFilter {
@@ -36,6 +37,7 @@ pub enum TitlesSourceFilter {
     All,
     Builtin,
     User,
+    Packs,
 }
 
 
@@ -92,11 +94,17 @@ impl<'a> Entry<'a> {
         }
     }
 
-    fn source_label(&self) -> &'static str {
+    /// Its source as the card says it (#2757): "Built-in", "Mine" or the
+    /// pack's name.
+    fn source_label(&self) -> String {
         match self {
-            Entry::Builtin(_) => "Built-in",
-            Entry::User(_) => "User",
+            Entry::Builtin(_) => "Built-in".into(),
+            Entry::User(t) => t.source.label(),
         }
+    }
+
+    fn is_from_pack(&self) -> bool {
+        matches!(self, Entry::User(t) if matches!(t.source, klipp_timeline::template_places::Source::Pack(_)))
     }
 }
 
@@ -297,8 +305,9 @@ pub fn show(
             })
             .collect();
         let scoped_total = scoped.len();
-        let user_count = scoped.iter().filter(|t| matches!(t, Entry::User(_))).count();
-        let builtin_count = scoped_total - user_count;
+        let pack_count = scoped.iter().filter(|t| t.is_from_pack()).count();
+        let user_count = scoped.iter().filter(|t| matches!(t, Entry::User(_))).count() - pack_count;
+        let builtin_count = scoped_total - user_count - pack_count;
 
         egui::Frame::none()
             .inner_margin(egui::Margin::symmetric(8.0, 0.0))
@@ -311,6 +320,7 @@ pub fn show(
                         scoped_total,
                         builtin_count,
                         user_count,
+                        pack_count,
                     );
                     ui.add_space(6.0);
                     animated_only_pill(ui, theme, animated_only);
@@ -347,7 +357,8 @@ pub fn show(
             .filter(|t| match *source_filter {
                 TitlesSourceFilter::All => true,
                 TitlesSourceFilter::Builtin => matches!(t, Entry::Builtin(_)),
-                TitlesSourceFilter::User => matches!(t, Entry::User(_)),
+                TitlesSourceFilter::User => matches!(t, Entry::User(_)) && !t.is_from_pack(),
+                TitlesSourceFilter::Packs => t.is_from_pack(),
             })
             .filter(|t| !*animated_only || template_is_animated(t))
             .filter(|t| {
@@ -401,6 +412,8 @@ pub fn show(
                             "Titles you add to the timeline show here".to_string()
                         } else if *source_filter == TitlesSourceFilter::User {
                             "No saved templates yet. Right-click a title clip and choose Save as Title Template.".to_string()
+                        } else if *source_filter == TitlesSourceFilter::Packs {
+                            "No template packs installed.".to_string()
                         } else {
                             "No titles in this category".to_string()
                         };
@@ -1186,15 +1199,17 @@ fn titles_segmented_filter(
     all_count: usize,
     builtin_count: usize,
     user_count: usize,
+    pack_count: usize,
 ) {
     let outer_h = 26.0;
     let pad = 2.0;
     let segments = [
         (TitlesSourceFilter::All, "All", all_count),
         (TitlesSourceFilter::Builtin, "Built-in", builtin_count),
-        (TitlesSourceFilter::User, "User", user_count),
+        (TitlesSourceFilter::User, "Mine", user_count),
+        (TitlesSourceFilter::Packs, "Packs", pack_count),
     ];
-    let mut seg_widths = [0.0f32; 3];
+    let mut seg_widths = [0.0f32; 4];
     let mut total_w = pad * 2.0;
     for (i, (_, label, count)) in segments.iter().enumerate() {
         let label_galley = ui.painter().layout_no_wrap(

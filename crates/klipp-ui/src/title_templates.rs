@@ -27,6 +27,10 @@ pub struct UserTitleTemplate {
     #[serde(default = "format_one")]
     pub format: u32,
     pub data: TitleData,
+    /// Where it is from (#2757): the user's own, or an installed pack's,
+    /// which is read-only.
+    #[serde(skip)]
+    pub source: klipp_timeline::template_places::Source,
     /// Bumped each time this session saves the template, so a browser
     /// card never shows the preview of what the name used to hold.
     #[serde(skip)]
@@ -47,13 +51,32 @@ pub struct TitleTemplateStore {
     dir: Option<PathBuf>,
     /// Sorted by name; each with the file it came from.
     entries: Vec<(PathBuf, UserTitleTemplate)>,
+    /// The installed packs' title templates (#2757), read-only, listed
+    /// after the user's own.
+    packs: Vec<UserTitleTemplate>,
     saves: u64,
 }
 
 impl TitleTemplateStore {
-    /// The store in the user's config directory.
+    /// The user's own store in Klipp's data folder, with the installed
+    /// packs' title templates beside it (#2757).
     pub fn load_default() -> Self {
-        Self::load(dirs::config_dir().map(|d| klipp_timeline::template_dir(&d)))
+        use klipp_timeline::template_places::{data_root, ensure_moved, installed, mine_titles, Source};
+        ensure_moved();
+        let root = data_root();
+        let mut store = Self::load(root.as_deref().map(mine_titles));
+        for (pack, folder) in root.as_deref().map(installed).unwrap_or_default() {
+            for path in std::fs::read_dir(folder.join("titles")).into_iter().flatten().flatten().map(|e| e.path()) {
+                if path.extension().and_then(|e| e.to_str()) == Some(EXTENSION) {
+                    if let Ok(mut t) = read_template(&path) {
+                        t.source = Source::Pack(pack.clone());
+                        store.packs.push(t);
+                    }
+                }
+            }
+        }
+        store.packs.sort_by(|a, b| (a.name.to_lowercase(), &a.source).cmp(&(b.name.to_lowercase(), &b.source)));
+        store
     }
 
     /// Read every `.klipptitle` in `dir`. Files that do not parse are
@@ -71,15 +94,18 @@ impl TitleTemplateStore {
                 }
             }
         }
-        let mut store = Self { dir, entries, saves: 0 };
+        let mut store = Self { dir, entries, packs: Vec::new(), saves: 0 };
         store.sort();
         store
     }
 
+    /// The user's own, then the installed packs' (#2757): the same name
+    /// may be in both, none hiding another.
     pub fn templates(&self) -> impl Iterator<Item = &UserTitleTemplate> {
-        self.entries.iter().map(|(_, t)| t)
+        self.entries.iter().map(|(_, t)| t).chain(self.packs.iter())
     }
 
+    /// The template called `name`: the user's own before a pack's.
     pub fn get(&self, name: &str) -> Option<&UserTitleTemplate> {
         self.templates().find(|t| t.name == name)
     }
@@ -108,6 +134,7 @@ impl TitleTemplateStore {
             written_by: env!("CARGO_PKG_VERSION").to_string(),
             format: klipp_timeline::TEMPLATE_FORMAT,
             data,
+            source: klipp_timeline::template_places::Source::Mine,
             revision: self.saves,
         };
         let path = match self.entries.iter().find(|(_, t)| t.name == name) {

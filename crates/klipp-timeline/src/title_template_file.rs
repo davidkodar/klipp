@@ -55,6 +55,27 @@ pub fn read_templates(dir: &Path) -> Vec<TemplateFile> {
     out
 }
 
+/// Every saved title template from the user's own and the installed
+/// packs under `root` (#2757), each with its source: the user's first,
+/// then each pack's. The built-ins are Klipp's code (`title_library`).
+pub fn read_all_templates(root: &Path) -> Vec<(crate::template_places::Source, TemplateFile)> {
+    use crate::template_places::{installed, mine_titles, Source};
+    let mut out: Vec<(Source, TemplateFile)> = read_templates(&mine_titles(root)).into_iter().map(|t| (Source::Mine, t)).collect();
+    for (pack, folder) in installed(root) {
+        out.extend(read_templates(&folder.join("titles")).into_iter().map(|t| (Source::Pack(pack.clone()), t)));
+    }
+    out
+}
+
+/// The title template called `name` among `all`, from `source` when one
+/// is given, else the user's own before a pack's (#2757).
+pub fn find_template<'a>(all: &'a [(crate::template_places::Source, TemplateFile)], name: &str, source: Option<&crate::template_places::Source>) -> Option<&'a TemplateFile> {
+    all.iter()
+        .filter(|(s, t)| t.name.eq_ignore_ascii_case(name.trim()) && source.is_none_or(|want| s == want))
+        .min_by_key(|(s, _)| s.rank())
+        .map(|(_, t)| t)
+}
+
 /// `data` saved as the template `name` in `dir` (#2757), the file the
 /// Titles browser writes: a template of that name is replaced when
 /// `replace`, else refused. Returns the file.

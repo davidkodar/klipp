@@ -868,6 +868,8 @@ fn handle(
             | ControlCommand::SaveTemplate { .. }
             | ControlCommand::ExportTemplatePack { .. }
             | ControlCommand::ImportTemplatePack { .. }
+            | ControlCommand::TemplatePacks
+            | ControlCommand::RemoveTemplatePack { .. }
             | ControlCommand::NodeTypes { .. }
             | ControlCommand::GraphRead { .. }
             | ControlCommand::GraphOps { .. }

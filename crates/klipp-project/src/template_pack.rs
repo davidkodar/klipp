@@ -34,6 +34,9 @@ pub struct PackManifest {
     pub name: String,
     #[serde(default)]
     pub written_by: String,
+    /// Who made it, its version and its licence, as the pack says.
+    #[serde(default, flatten)]
+    pub about: PackAbout,
     /// Title templates (`.klipptitle`).
     #[serde(default)]
     pub titles: Vec<TemplateFile>,
@@ -44,6 +47,18 @@ pub struct PackManifest {
     pub fonts: Vec<PackFont>,
     #[serde(default)]
     pub pictures: Vec<PackPicture>,
+}
+
+/// What a pack says of itself (#2757): who made it, which version, under
+/// which licence. Shown with the installed pack; nothing reads it as more.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PackAbout {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub author: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub version: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub licence: String,
 }
 
 /// A font the templates use: by catalogue name, or carried as its files
@@ -90,8 +105,8 @@ pub struct PackTargets {
     pub templates: PathBuf,
     /// Pictures, in a folder per pack.
     pub assets: PathBuf,
-    /// Fonts, as [`klipp_title`]'s fonts folder (carried ones go under
-    /// `packs/<family>`).
+    /// Carried fonts, a folder each (`<family>`): the pack's own
+    /// `fonts` folder when installed, which the title renderer reads.
     pub fonts: PathBuf,
 }
 
@@ -230,7 +245,8 @@ fn picture_licence(path: &Path, licences: &BTreeMap<String, String>) -> Option<S
 /// are refused, named. A font is named when it is in the catalogue,
 /// carried when it is installed with a licence beside it, and said to be
 /// left out otherwise. Returns what the pack holds, as a reply.
-pub fn export_pack(out: &Path, name: &str, mut titles: Vec<TemplateFile>, mut templates: Vec<CompositionTemplate>, licences: &BTreeMap<String, String>, fonts: &dyn FontLookup) -> Result<String, String> {
+#[allow(clippy::too_many_arguments)]
+pub fn export_pack(out: &Path, name: &str, about: &PackAbout, mut titles: Vec<TemplateFile>, mut templates: Vec<CompositionTemplate>, licences: &BTreeMap<String, String>, fonts: &dyn FontLookup) -> Result<String, String> {
     use zip::write::{SimpleFileOptions, ZipWriter};
     let name = name.trim();
     if name.is_empty() {
@@ -292,7 +308,7 @@ pub fn export_pack(out: &Path, name: &str, mut titles: Vec<TemplateFile>, mut te
         }
     }
     let count = titles.len() + templates.len();
-    let manifest = PackManifest { format: PACK_FORMAT, name: name.to_string(), written_by: env!("CARGO_PKG_VERSION").to_string(), titles, templates, fonts: manifest_fonts, pictures: manifest_pictures };
+    let manifest = PackManifest { format: PACK_FORMAT, name: name.to_string(), written_by: env!("CARGO_PKG_VERSION").to_string(), about: about.clone(), titles, templates, fonts: manifest_fonts, pictures: manifest_pictures };
     put(&mut zip, "pack.json", serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?.as_bytes())?;
     zip.finish().map_err(|e| e.to_string())?;
     let mut text = format!("packed \"{name}\" to {}: {count} template{}, {} picture{}", out.display(), if count == 1 { "" } else { "s" }, pictures.len(), if pictures.len() == 1 { "" } else { "s" });
@@ -359,7 +375,7 @@ fn import_pack_within(pack: &Path, to: &PackTargets, fonts: &dyn FontLookup, rep
         let mut any = false;
         for path in f.files.iter().chain(f.licence.iter()).filter(|p| p.starts_with("assets/fonts/")) {
             if let Some(bytes) = read_entry(&mut zip, path, entry, &mut left)? {
-                let at = inside(&to.fonts, &["packs", &family, &safe_file(path)])?;
+                let at = inside(&to.fonts, &[&family, &safe_file(path)])?;
                 std::fs::create_dir_all(at.parent().unwrap_or(&to.fonts)).map_err(|e| format!("{}: {e}", to.fonts.display()))?;
                 std::fs::write(&at, bytes).map_err(|e| format!("{}: {e}", at.display()))?;
                 any |= f.files.contains(path);
@@ -399,6 +415,111 @@ fn import_pack_within(pack: &Path, to: &PackTargets, fonts: &dyn FontLookup, rep
     Ok((manifest.name.clone(), report))
 }
 
+/// An installed pack (#2757), as its folder's `pack.json` and contents say.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InstalledPack {
+    /// The folder's name under `packs/`: the pack's name made safe.
+    pub folder: String,
+    pub name: String,
+    pub about: PackAbout,
+    pub titles: usize,
+    pub templates: usize,
+}
+
+/// What an installed pack's `pack.json` keeps: its name and what it says
+/// of itself, not its templates, which are files beside it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct InstalledManifest {
+    format: u32,
+    name: String,
+    #[serde(default)]
+    written_by: String,
+    #[serde(default, flatten)]
+    about: PackAbout,
+}
+
+/// The pack at `pack` installed under `root` (Klipp's data folder) as a
+/// folder of its own, `packs/<safe name>/` (#2757): its title templates,
+/// templates and recipes, pictures and carried fonts, and its `pack.json`.
+/// One already installed under that name is refused unless `update`, which
+/// replaces it whole. It is unpacked beside the others first and moved in
+/// only when whole, so a failed install leaves what was there.
+pub fn install_pack(pack: &Path, root: &Path, fonts: &dyn FontLookup, update: bool) -> Result<(InstalledPack, ImportReport), String> {
+    let file = std::fs::File::open(pack).map_err(|e| format!("{}: {e}", pack.display()))?;
+    let mut zip = zip::ZipArchive::new(file).map_err(|e| format!("not a template pack: {e}"))?;
+    let mut left = MAX_PACK_BYTES;
+    let json = read_entry(&mut zip, "pack.json", MAX_ENTRY_BYTES, &mut left)?.ok_or("not a template pack: it has no pack.json")?;
+    let head: InstalledManifest = serde_json::from_slice(&json).map_err(|e| format!("pack.json does not read: {e}"))?;
+    let folder = klipp_core::safe_name(&head.name);
+    let packs = klipp_timeline::template_places::packs(root);
+    let target = inside(&packs, &[&folder])?;
+    if target.exists() && !update {
+        return Err(format!("a pack called \"{}\" is installed already: update it, or remove it first", head.name));
+    }
+    let staging = inside(&packs, &[&format!(".installing-{}", uuid::Uuid::new_v4())])?;
+    let result = (|| -> Result<ImportReport, String> {
+        std::fs::create_dir_all(&staging).map_err(|e| format!("{}: {e}", staging.display()))?;
+        let to = PackTargets { titles: staging.join("titles"), templates: staging.join("templates"), assets: staging.join("pictures"), fonts: staging.join("fonts") };
+        let (name, report) = import_pack(pack, &to, fonts, false)?;
+        let manifest = InstalledManifest { format: PACK_FORMAT, name: name.clone(), written_by: head.written_by.clone(), about: head.about.clone() };
+        std::fs::write(staging.join("pack.json"), serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        if target.exists() {
+            std::fs::remove_dir_all(&target).map_err(|e| format!("{}: {e}", target.display()))?;
+        }
+        std::fs::rename(&staging, &target).map_err(|e| format!("{}: {e}", target.display()))?;
+        // The templates' pictures, named where they were unpacked.
+        let (from, to) = (staging.to_string_lossy().into_owned(), target.to_string_lossy().into_owned());
+        for dir in [target.join("titles"), target.join("templates")] {
+            for f in std::fs::read_dir(&dir).into_iter().flatten().flatten().map(|e| e.path()) {
+                if let Ok(text) = std::fs::read_to_string(&f) {
+                    if text.contains(&from) {
+                        std::fs::write(&f, text.replace(&from, &to)).map_err(|e| e.to_string())?;
+                    }
+                }
+            }
+        }
+        Ok(report)
+    })();
+    if staging.exists() {
+        let _ = std::fs::remove_dir_all(&staging);
+    }
+    let report = result?;
+    let installed = installed_packs(root).into_iter().find(|p| p.folder == folder).ok_or("the pack did not install")?;
+    Ok((installed, report))
+}
+
+/// The pack `name` (as it is called, or its folder's name) removed from
+/// under `root`: its folder and nothing else.
+pub fn remove_pack(root: &Path, name: &str) -> Result<InstalledPack, String> {
+    let folder = klipp_core::safe_name(name);
+    let Some(pack) = installed_packs(root).into_iter().find(|p| p.folder == folder) else {
+        let there: Vec<String> = installed_packs(root).into_iter().map(|p| format!("\"{}\"", p.name)).collect();
+        return Err(format!("no pack called \"{}\" is installed{}", name.trim(), if there.is_empty() { String::new() } else { format!(": there are {}", there.join(", ")) }));
+    };
+    let target = inside(&klipp_timeline::template_places::packs(root), &[&pack.folder])?;
+    std::fs::remove_dir_all(&target).map_err(|e| format!("{}: {e}", target.display()))?;
+    Ok(pack)
+}
+
+/// The packs installed under `root`, by folder.
+pub fn installed_packs(root: &Path) -> Vec<InstalledPack> {
+    let count = |dir: &Path, ext: &str| std::fs::read_dir(dir).into_iter().flatten().flatten().filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some(ext)).count();
+    klipp_timeline::template_places::installed(root)
+        .into_iter()
+        .filter(|(folder, _)| !folder.starts_with('.'))
+        .map(|(folder, path)| {
+            let head: Option<InstalledManifest> = crate::path_util::read_to_string_capped(&path.join("pack.json"), 1024 * 1024).ok().and_then(|t| serde_json::from_str(&t).ok());
+            InstalledPack {
+                name: head.as_ref().map_or_else(|| folder.clone(), |h| h.name.clone()),
+                about: head.map(|h| h.about).unwrap_or_default(),
+                titles: count(&path.join("titles"), klipp_timeline::TEMPLATE_EXTENSION),
+                templates: count(&path.join("templates"), klipp_timeline::composition_template::EXTENSION),
+                folder,
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -423,7 +544,7 @@ mod tests {
             (f == "House Sans").then(|| self.house.clone()).flatten().map(|p| (vec![p], "House Sans licence".into()))
         }
         fn available(&self, f: &str) -> bool {
-            self.bundled(f) || self.in_catalogue(f) || self.fonts.join("packs").join(f.to_lowercase().replace(' ', "-")).is_dir()
+            self.bundled(f) || self.in_catalogue(f) || self.fonts.join(f.to_lowercase().replace(' ', "-")).is_dir()
         }
         fn fallback(&self) -> String {
             "Inter".into()
@@ -472,10 +593,10 @@ mod tests {
         let fonts = Fonts { house: Some(house.clone()), fonts: dir("fonts-src") };
         let out = src.join("mine.klipppack");
 
-        let refused = export_pack(&out, "Mine", vec![card.clone()], vec![stack.clone(), recipe.clone()], &BTreeMap::new(), &fonts).unwrap_err();
+        let refused = export_pack(&out, "Mine", &PackAbout::default(), vec![card.clone()], vec![stack.clone(), recipe.clone()], &BTreeMap::new(), &fonts).unwrap_err();
         assert!(refused.contains("no licence for photo.png"), "{refused}");
         let licences: BTreeMap<String, String> = [("photo.png".to_string(), "CC0, the author".to_string())].into_iter().collect();
-        let text = export_pack(&out, "Mine", vec![card.clone()], vec![stack.clone(), recipe.clone()], &licences, &fonts).unwrap();
+        let text = export_pack(&out, "Mine", &PackAbout::default(), vec![card.clone()], vec![stack.clone(), recipe.clone()], &licences, &fonts).unwrap();
         assert!(text.contains("3 templates, 1 picture") && text.contains("by name: Anton") && text.contains("licence: House Sans") && text.contains("left out") && text.contains("Nowhere Serif"), "{text}");
 
         // A clean machine: none of the source files, empty folders.
@@ -491,8 +612,8 @@ mod tests {
         let installed = to.assets.join("mine").join("1-photo.png");
         assert_eq!(std::fs::read(&installed).unwrap(), b"PNG-BYTES");
         assert_eq!(std::fs::read_to_string(to.assets.join("mine").join("1-photo.png.licence.txt")).unwrap(), "CC0, the author");
-        assert_eq!(std::fs::read(to.fonts.join("packs/house-sans/housesans.ttf")).unwrap(), b"FONT-BYTES");
-        assert!(to.fonts.join("packs/house-sans/licence.txt").is_file());
+        assert_eq!(std::fs::read(to.fonts.join("house-sans/housesans.ttf")).unwrap(), b"FONT-BYTES");
+        assert!(to.fonts.join("house-sans/licence.txt").is_file());
 
         // The templates as made, the picture's path now the installed one.
         let titles = klipp_timeline::read_templates(&to.titles);
@@ -532,7 +653,7 @@ mod tests {
         let write = |format: u32| {
             let path = d.join(format!("p{format}.klipppack"));
             let mut zip = ZipWriter::new(std::fs::File::create(&path).unwrap());
-            let manifest = PackManifest { format, name: "Broken".into(), written_by: String::new(), titles: vec![TemplateFile { name: "Card".into(), category: String::new(), data: title(&["Inter"], Some(Path::new("assets/pictures/1-gone.png"))), format: 1 }], templates: Vec::new(), fonts: Vec::new(), pictures: vec![PackPicture { file: "assets/pictures/1-gone.png".into(), licence: "assets/pictures/1-gone.png.licence.txt".into() }] };
+            let manifest = PackManifest { format, name: "Broken".into(), written_by: String::new(), about: PackAbout::default(), titles: vec![TemplateFile { name: "Card".into(), category: String::new(), data: title(&["Inter"], Some(Path::new("assets/pictures/1-gone.png"))), format: 1 }], templates: Vec::new(), fonts: Vec::new(), pictures: vec![PackPicture { file: "assets/pictures/1-gone.png".into(), licence: "assets/pictures/1-gone.png.licence.txt".into() }] };
             zip.start_file("pack.json", SimpleFileOptions::default()).unwrap();
             zip.write_all(serde_json::to_string(&manifest).unwrap().as_bytes()).unwrap();
             zip.finish().unwrap();
@@ -565,6 +686,7 @@ mod tests {
             format: 1,
             name: "..".into(),
             written_by: String::new(),
+            about: PackAbout::default(),
             titles: vec![TemplateFile { name: "../../Card".into(), category: String::new(), data: title(&["../../x"], Some(Path::new(evil_picture))), format: 1 }],
             templates: Vec::new(),
             fonts: vec![PackFont { family: "../../x".into(), catalogue: false, files: vec![evil_font.into()], licence: Some("assets/fonts/../../LICENCE".into()) }],
@@ -591,7 +713,7 @@ mod tests {
         let outside: Vec<&PathBuf> = written.iter().filter(|p| !p.starts_with(&root) && **p != path).collect();
         assert!(outside.is_empty(), "written outside the targets: {outside:?}");
         assert!(to.assets.join("item").join("evil.png").is_file(), "the pack's folder named safely: {written:?}");
-        assert!(to.fonts.join("packs").join("x").join("evil.ttf").is_file(), "{written:?}");
+        assert!(to.fonts.join("x").join("evil.ttf").is_file(), "{written:?}");
         assert!(written.iter().all(|p| p.components().all(|c| c.as_os_str() != "..")));
 
         // An entry past the cap is refused before it is unpacked.
@@ -608,5 +730,80 @@ mod tests {
         let err = import_pack_within(&path, &to, &fonts, false, 1 << 20, 2048).unwrap_err();
         assert!(err.contains("more than a pack may hold"), "the whole pack's cap too: {err}");
         let _ = std::fs::remove_dir_all(&sandbox);
+    }
+
+    /// #2757: a pack installs as a folder of its own under `packs/`, with
+    /// what it says of itself; a second install of its name is refused
+    /// and an update replaces it whole; a name in the user's own and in
+    /// the pack is both, the user's found first unless the pack's is
+    /// asked for; removing it takes its folder and nothing else.
+    #[test]
+    fn a_pack_installs_updates_and_removes_as_a_unit() {
+        use klipp_timeline::template_places::{installed, mine_templates, mine_titles, packs, Source};
+        let src = dir("src3");
+        let photo = src.join("photo.png");
+        std::fs::write(&photo, b"PNG").unwrap();
+        let house = src.join("HouseSans.ttf");
+        std::fs::write(&house, b"FONT").unwrap();
+        let card = TemplateFile { name: "Card".into(), category: "Packed".into(), data: title(&["House Sans"], Some(&photo)), format: 1 };
+        let mut scene = Sequence::new_default();
+        scene.tracks[0].clips.push(Clip { kind: ClipKind::Title(title(&["Inter"], None)), ..Clip::gap(klipp_core::RationalTime::from_secs_f64(0.0, 24), klipp_core::RationalTime::from_secs_f64(3.0, 24)) });
+        let stack = klipp_timeline::composition_template::template_from_scene(&scene, &[], "Stack", None).unwrap();
+        let licences: BTreeMap<String, String> = [("photo.png".to_string(), "CC0".to_string())].into_iter().collect();
+        let out = src.join("bold.klipppack");
+        let about = PackAbout { author: "A. Maker".into(), version: "1.0".into(), licence: "CC-BY-4.0".into() };
+        export_pack(&out, "Bold Cards", &about, vec![card.clone()], vec![stack.clone()], &licences, &Fonts { house: Some(house), fonts: dir("f-src") }).unwrap();
+
+        // A data folder with the user's own Card and Stack, another pack,
+        // and a file beside them, none of which the pack may touch.
+        let root = dir("root3");
+        klipp_timeline::save_template(&mine_titles(&root), "Card", "Mine", &title(&["Inter"], None), false).unwrap();
+        let mut mine_stack = stack.clone();
+        mine_stack.id = uuid::Uuid::new_v4();
+        klipp_timeline::composition_template::CompositionTemplateStore::load(Some(mine_templates(&root))).save(mine_stack.clone()).unwrap();
+        let other = packs(&root).join("other");
+        std::fs::create_dir_all(other.join("templates")).unwrap();
+        std::fs::write(other.join("pack.json"), r#"{"format":1,"name":"Other"}"#).unwrap();
+        std::fs::write(root.join("keep.txt"), b"keep").unwrap();
+        let fonts = Fonts { house: None, fonts: packs(&root).join("bold-cards").join("fonts") };
+
+        let (pack, report) = install_pack(&out, &root, &fonts, false).unwrap();
+        assert_eq!((pack.folder.as_str(), pack.name.as_str(), pack.titles, pack.templates), ("bold-cards", "Bold Cards", 1, 1));
+        assert_eq!(pack.about, about);
+        assert_eq!(report.fonts_added, ["House Sans"]);
+        let folder = packs(&root).join("bold-cards");
+        assert!(folder.join("fonts/house-sans/housesans.ttf").is_file(), "its fonts in its own folder");
+        let titles = klipp_timeline::read_all_templates(&root);
+        let packed = titles.iter().find(|(s, _)| *s == Source::Pack("bold-cards".into())).map(|(_, t)| t).expect("the pack's Card");
+        let TitleObjectContent::Image(img) = &packed.data.objects.last().unwrap().content else { panic!() };
+        assert!(std::path::Path::new(&img.path).starts_with(&folder) && std::path::Path::new(&img.path).is_file(), "its picture in its folder: {}", img.path);
+        assert!(!installed(&root).iter().any(|(n, _)| n.starts_with('.')), "nothing left half-installed");
+
+        // A name in two sources: both, the user's own first.
+        assert_eq!(titles.iter().filter(|(_, t)| t.name == "Card").count(), 2);
+        assert_eq!(klipp_timeline::find_template(&titles, "card", None).unwrap().category, "Mine");
+        assert_eq!(klipp_timeline::find_template(&titles, "card", Some(&Source::Pack("bold-cards".into()))).unwrap().category, "Packed");
+        let store = klipp_timeline::composition_template::CompositionTemplateStore::load(Some(mine_templates(&root))).with_packs(&root).with_builtins();
+        assert_eq!(store.templates().filter(|t| t.name == "Stack").count(), 2);
+        assert_eq!(store.find("Stack", None).unwrap().id, mine_stack.id, "the user's own first");
+        let theirs = store.find("Stack", Some(&Source::Pack("bold-cards".into()))).unwrap();
+        assert_eq!(store.source_of(theirs.id), Source::Pack("bold-cards".into()));
+
+        // Installed again: refused; updated: replaced whole.
+        assert!(install_pack(&out, &root, &fonts, false).unwrap_err().contains("installed already"));
+        std::fs::write(folder.join("templates").join("left-behind.klipptemplate"), b"{}").unwrap();
+        install_pack(&out, &root, &fonts, true).unwrap();
+        assert!(!folder.join("templates").join("left-behind.klipptemplate").exists(), "an update replaces the folder");
+
+        // Removed: its folder, and nothing else.
+        assert!(remove_pack(&root, "No Such Pack").unwrap_err().contains("there are \"Bold Cards\", \"Other\""));
+        let gone = remove_pack(&root, "Bold Cards").unwrap();
+        assert_eq!(gone.folder, "bold-cards");
+        assert!(!folder.exists());
+        assert!(other.join("pack.json").is_file() && std::fs::read(root.join("keep.txt")).unwrap() == b"keep");
+        assert_eq!(klipp_timeline::read_templates(&mine_titles(&root)).len(), 1, "the user's own untouched");
+        assert_eq!(klipp_timeline::composition_template::CompositionTemplateStore::load(Some(mine_templates(&root))).templates().count(), 1);
+        let _ = std::fs::remove_dir_all(&src);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

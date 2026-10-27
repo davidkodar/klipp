@@ -1134,25 +1134,92 @@ pub fn missing_sequences(template: &CompositionTemplate, project: &[Sequence]) -
     template.sequences.iter().filter(|s| !project.iter().any(|p| p.id == s.id)).cloned().collect()
 }
 
+/// Every template file in `dir` that reads and checks, by name, a second
+/// file with an id already read left out.
+fn read_templates_in(dir: &Path) -> Vec<(PathBuf, CompositionTemplate)> {
+    let mut entries: Vec<(PathBuf, CompositionTemplate)> = Vec::new();
+    for path in std::fs::read_dir(dir).into_iter().flatten().flatten().map(|entry| entry.path()) {
+        if path.extension().and_then(|extension| extension.to_str()) != Some(EXTENSION) {
+            continue;
+        }
+        match read_capped(&path).and_then(|json| serde_json::from_str::<CompositionTemplate>(&json).map_err(|error| error.to_string())) {
+            Ok(template) if template.validate().is_ok() => {
+                // One id is one template: a second file carrying it is a
+                // copy, and saving would rewrite the first while dropping
+                // both from the list.
+                if entries.iter().any(|(_, existing)| existing.id == template.id) {
+                    tracing::warn!("Skipping template '{}': its id is already loaded from another file", path.display());
+                } else {
+                    entries.push((path, template));
+                }
+            }
+            Ok(template) => tracing::warn!("Skipping invalid template '{}': {}", path.display(), template.validate().unwrap_err()),
+            Err(error) => tracing::warn!("Skipping template '{}': {error}", path.display()),
+        }
+    }
+    entries.sort_by_key(|(path, template)| (template.name.to_lowercase(), path.clone()));
+    entries
+}
+
 #[derive(Debug, Default)]
 pub struct CompositionTemplateStore {
     dir: Option<PathBuf>,
     entries: Vec<(PathBuf, CompositionTemplate)>,
     /// The templates Klipp ships, when asked for ([`Self::with_builtins`]).
     builtins: Vec<CompositionTemplate>,
+    /// The installed packs' templates and recipes, by pack (#2757), when
+    /// asked for ([`Self::with_packs`]): read-only.
+    packs: Vec<(String, CompositionTemplate)>,
 }
 
 impl CompositionTemplateStore {
-    /// The store with the templates Klipp ships beside the user's (#2757):
-    /// listed after them, one of the same name hidden by the user's.
+    /// The store with the templates Klipp ships beside the user's (#2757),
+    /// listed after them and the packs'.
     pub fn with_builtins(mut self) -> Self {
         self.builtins = builtin_templates();
         self
     }
 
+    /// The store with each pack installed under `root` (see
+    /// [`crate::template_places::data_root`]) beside the user's (#2757):
+    /// its templates and recipes from its `templates` folder, read-only.
+    pub fn with_packs(mut self, root: &Path) -> Self {
+        for (name, folder) in crate::template_places::installed(root) {
+            self.packs.extend(read_templates_in(&folder.join("templates")).into_iter().map(|(_, t)| (name.clone(), t)));
+        }
+        self
+    }
+
+    /// Which source the template `id` is from (#2757): the user's own
+    /// first, then a pack's, then Klipp's.
+    pub fn source_of(&self, id: Uuid) -> crate::template_places::Source {
+        use crate::template_places::Source;
+        if self.entries.iter().any(|(_, t)| t.id == id) {
+            Source::Mine
+        } else if let Some((pack, _)) = self.packs.iter().find(|(_, t)| t.id == id) {
+            Source::Pack(pack.clone())
+        } else {
+            Source::Builtin
+        }
+    }
+
     /// Whether `id` is a template Klipp ships, which is never written.
     pub fn is_builtin(&self, id: Uuid) -> bool {
-        self.builtins.iter().any(|t| t.id == id) && !self.entries.iter().any(|(_, t)| t.id == id)
+        self.builtins.iter().any(|t| t.id == id) && self.source_of(id) == crate::template_places::Source::Builtin
+    }
+
+    /// The template or recipe called `name` (in any case), from `source`
+    /// when one is given, else the user's own before a pack's before
+    /// Klipp's (#2757): the same name may be in each.
+    pub fn find(&self, name: &str, source: Option<&crate::template_places::Source>) -> Option<&CompositionTemplate> {
+        self.templates()
+            .chain(self.recipes())
+            .chain(self.builtins.iter().filter(|t| t.kind == TemplateKind::Recipe))
+            .filter(|t| t.name.eq_ignore_ascii_case(name.trim()))
+            .map(|t| (self.source_of(t.id), t))
+            .filter(|(s, _)| source.is_none_or(|want| s == want))
+            .min_by_key(|(s, _)| s.rank())
+            .map(|(_, t)| t)
     }
 
     /// The template folder under `config` (the config directory).
@@ -1161,63 +1228,34 @@ impl CompositionTemplateStore {
     }
 
     pub fn load(dir: Option<PathBuf>) -> Self {
-        let mut entries = Vec::new();
-        if let Some(Ok(read)) = dir.as_deref().map(std::fs::read_dir) {
-            for path in read.flatten().map(|entry| entry.path()) {
-                if path.extension().and_then(|extension| extension.to_str()) != Some(EXTENSION) {
-                    continue;
-                }
-                match read_capped(&path)
-                    .and_then(|json| {
-                        serde_json::from_str::<CompositionTemplate>(&json)
-                            .map_err(|error| error.to_string())
-                    }) {
-                    Ok(template) if template.validate().is_ok() => {
-                        // One id is one template: a second file carrying
-                        // it is a copy, and saving would rewrite the
-                        // first while dropping both from the list.
-                        if entries
-                            .iter()
-                            .any(|(_, existing): &(PathBuf, CompositionTemplate)| {
-                                existing.id == template.id
-                            })
-                        {
-                            tracing::warn!("Skipping template '{}': its id is already loaded from another file", path.display());
-                        } else {
-                            entries.push((path, template));
-                        }
-                    }
-                    Ok(template) => tracing::warn!(
-                        "Skipping invalid template '{}': {}",
-                        path.display(),
-                        template.validate().unwrap_err()
-                    ),
-                    Err(error) => tracing::warn!("Skipping template '{}': {error}", path.display()),
-                }
-            }
-        }
-        entries.sort_by_key(|(path, template)| (template.name.to_lowercase(), path.clone()));
-        Self { dir, entries, builtins: Vec::new() }
+        let entries = dir.as_deref().map(read_templates_in).unwrap_or_default();
+        Self { dir, entries, builtins: Vec::new(), packs: Vec::new() }
     }
 
     /// The compositions: what is placed as a clip of its own. A recipe
     /// is never one (#2758).
+    /// The user's, then the packs', then Klipp's (#2757), each once (by
+    /// id): the same name may be in more than one, none hiding another.
     pub fn templates(&self) -> impl Iterator<Item = &CompositionTemplate> {
-        let shipped = self.builtins.iter().filter(|b| !self.entries.iter().any(|(_, t)| t.id == b.id || t.name.eq_ignore_ascii_case(&b.name)));
-        self.entries.iter().map(|(_, template)| template).chain(shipped).filter(|t| t.kind == TemplateKind::Composition)
+        let mine = self.entries.iter().map(|(_, t)| t);
+        let packs = self.packs.iter().map(|(_, t)| t).filter(|t| !self.entries.iter().any(|(_, m)| m.id == t.id));
+        let shipped = self.builtins.iter().filter(|b| !self.entries.iter().any(|(_, t)| t.id == b.id) && !self.packs.iter().any(|(_, t)| t.id == b.id));
+        mine.chain(packs).chain(shipped).filter(|t| t.kind == TemplateKind::Composition)
     }
 
-    /// The recipes saved here (#2758); [`builtin_recipes`] are the ones
-    /// Klipp ships.
+    /// The recipes saved here and in the installed packs (#2758);
+    /// [`builtin_recipes`] are the ones Klipp ships.
     pub fn recipes(&self) -> impl Iterator<Item = &CompositionTemplate> {
-        self.entries.iter().map(|(_, template)| template).filter(|t| t.kind == TemplateKind::Recipe)
+        let packs = self.packs.iter().map(|(_, t)| t).filter(|t| !self.entries.iter().any(|(_, m)| m.id == t.id));
+        self.entries.iter().map(|(_, template)| template).chain(packs).filter(|t| t.kind == TemplateKind::Recipe)
     }
 
     pub fn save(&mut self, mut template: CompositionTemplate) -> Result<(), String> {
         template.validate()?;
-        // A shipped template is never written: saved, it is a copy of
-        // the user's own.
-        if self.builtins.iter().any(|b| b.id == template.id) && !self.entries.iter().any(|(_, t)| t.id == template.id) {
+        // A shipped template or a pack's is never written: saved, it is a
+        // copy of the user's own.
+        let theirs = self.builtins.iter().any(|b| b.id == template.id) || self.packs.iter().any(|(_, p)| p.id == template.id);
+        if theirs && !self.entries.iter().any(|(_, t)| t.id == template.id) {
             template.id = Uuid::new_v4();
         }
         let dir = self
@@ -1647,12 +1685,15 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("klipp-builtins-{}", Uuid::new_v4()));
         let mut store = CompositionTemplateStore::load(Some(dir.clone())).with_builtins();
         assert!(store.templates().any(|t| t.name == "Split Screen") && store.is_builtin(split.id));
-        // Saved over, it is the user's copy, under a new id, hiding the shipped one.
+        // Saved over, it is the user's copy, under a new id, beside the
+        // shipped one (#2757: a name may be in two sources), found first.
         store.save(split.clone()).unwrap();
         let reread = CompositionTemplateStore::load(Some(dir.clone())).with_builtins();
         let named: Vec<&CompositionTemplate> = reread.templates().filter(|t| t.name == "Split Screen").collect();
-        assert_eq!(named.len(), 1, "one Split Screen listed");
-        assert!(named[0].id != split.id && !reread.is_builtin(named[0].id), "the user's copy");
+        assert_eq!(named.len(), 2, "the user's copy and the shipped one");
+        let mine = reread.find("Split Screen", None).unwrap();
+        assert!(mine.id != split.id && reread.source_of(mine.id) == crate::template_places::Source::Mine, "the user's copy first");
+        assert_eq!(reread.find("split screen", Some(&crate::template_places::Source::Builtin)).unwrap().id, split.id);
         // A layout that is not carried, or a format not known, is refused.
         let mut bad = split.clone();
         bad.formats.insert("tall".into(), Uuid::new_v4());

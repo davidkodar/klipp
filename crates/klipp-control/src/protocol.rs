@@ -1274,15 +1274,28 @@ pub enum ControlCommand {
         templates: Option<Vec<String>>,
         #[serde(default)]
         licences: std::collections::BTreeMap<String, String>,
+        /// Who made it, its version and its licence, as the pack says.
+        #[serde(default)]
+        author: String,
+        #[serde(default)]
+        version: String,
+        #[serde(default)]
+        licence: String,
     },
-    /// The pack at `path` read into the user's template folders (#2757):
-    /// a name already there kept unless `replace`; what is missing named,
-    /// with what is drawn instead.
+    /// The pack at `path` installed as a folder of its own under the
+    /// packs (#2757), read-only beside the user's templates: one of that
+    /// name already installed refused unless `replace` (an update, which
+    /// takes the old one away first); what is missing named, with what is
+    /// drawn instead.
     ImportTemplatePack {
         path: String,
         #[serde(default)]
         replace: bool,
     },
+    /// The installed template packs (#2757).
+    TemplatePacks,
+    /// The installed pack `name` removed: its folder, nothing else.
+    RemoveTemplatePack { name: String },
     /// The node types the registry describes, with their ports and
     /// parameters, optionally of one category (#1086).
     NodeTypes {

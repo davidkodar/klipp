@@ -39,14 +39,52 @@ pub(crate) fn resolve_plan_seeing(ctx: &ControlContext, ops: &[klipp_document::o
     Ok((plan, revision))
 }
 
-/// The user's title template folder (#1139).
+/// The user's own title template folder (#1139), in Klipp's data folder
+/// (#2757).
 pub(crate) fn template_dir() -> Option<std::path::PathBuf> {
-    dirs::config_dir().map(|c| klipp_timeline::template_dir(&c))
+    klipp_timeline::template_places::ensure_moved();
+    klipp_timeline::template_places::data_root().map(|r| klipp_timeline::template_places::mine_titles(&r))
 }
 
-/// The user's composition template folder (#225, #2757).
+/// The user's own composition template and recipe folder (#225, #2757).
 pub(crate) fn composition_dir() -> Option<std::path::PathBuf> {
-    dirs::config_dir().map(|c| klipp_timeline::composition_template::CompositionTemplateStore::default_dir(&c))
+    klipp_timeline::template_places::ensure_moved();
+    klipp_timeline::template_places::data_root().map(|r| klipp_timeline::template_places::mine_templates(&r))
+}
+
+/// The data folder a Mine folder is in, where the installed packs are
+/// too (#2757): Mine's folders are always `<root>/<name>`.
+fn root_of(mine: &std::path::Path) -> Option<&std::path::Path> {
+    mine.parent()
+}
+
+/// A template op's `source`, read (#2757); one that names none is the
+/// op's refusal to make, so it is read as none here.
+fn op_source(source: &Option<String>) -> Option<klipp_timeline::template_places::Source> {
+    source.as_deref().and_then(klipp_timeline::template_places::Source::parse)
+}
+
+/// The title templates of the user's own (`dir`) and of the packs
+/// installed beside it, with their sources (#2757).
+fn saved_titles(dir: Option<&std::path::Path>) -> Vec<(klipp_timeline::template_places::Source, klipp_timeline::TemplateFile)> {
+    use klipp_timeline::template_places::{installed, Source};
+    let Some(dir) = dir else { return Vec::new() };
+    let mut all: Vec<_> = klipp_timeline::read_templates(dir).into_iter().map(|t| (Source::Mine, t)).collect();
+    for (pack, folder) in root_of(dir).map(installed).unwrap_or_default() {
+        all.extend(klipp_timeline::read_templates(&folder.join("titles")).into_iter().map(|t| (Source::Pack(pack.clone()), t)));
+    }
+    all
+}
+
+/// The composition templates and recipes of the user's own (`dir`), the
+/// packs installed beside it and Klipp's.
+pub(crate) fn template_store(dir: Option<&std::path::Path>) -> klipp_timeline::composition_template::CompositionTemplateStore {
+    let store = klipp_timeline::composition_template::CompositionTemplateStore::load(dir.map(std::path::Path::to_path_buf));
+    match dir.and_then(root_of) {
+        Some(root) => store.with_packs(root),
+        None => store,
+    }
+    .with_builtins()
 }
 
 /// The ids of every sequence in the project: the open one and the others
@@ -68,7 +106,7 @@ pub(crate) fn with_recipes(ops: &[klipp_document::ops::Op], dir: Option<&std::pa
     if !ops.iter().any(|op| matches!(op, Op::Recipe { .. })) {
         return ops.to_vec();
     }
-    let recipes = crate::recipes::all(dir.map(std::path::Path::to_path_buf));
+    let recipes = crate::recipes::all(dir);
     // Where each media file's subject mattes are, for what the reply says
     // of a recipe reading one (#2758).
     let media = std::sync::Arc::new(crate::recipes::media_files(pool));
@@ -100,12 +138,12 @@ pub(crate) fn with_compositions(ops: &[klipp_document::ops::Op], dir: Option<&st
     if !ops.iter().any(|op| matches!(op, Op::Template { data: None, .. })) {
         return ops.to_vec();
     }
-    let store = klipp_timeline::composition_template::CompositionTemplateStore::load(dir.map(std::path::Path::to_path_buf)).with_builtins();
+    let store = template_store(dir);
     ops.iter()
         .cloned()
         .map(|mut op| {
-            if let Op::Template { name, data: None, composition, .. } = &mut op {
-                *composition = store.templates().find(|t| t.name.eq_ignore_ascii_case(name.trim())).map(|t| {
+            if let Op::Template { name, source, data: None, composition, .. } = &mut op {
+                *composition = store.find(name, op_source(source).as_ref()).filter(|t| t.kind == klipp_timeline::composition_template::TemplateKind::Composition).map(|t| {
                     let missing = t.sequences.iter().filter(|s| !have.contains(&s.id)).cloned().collect();
                     Box::new(PlacedComposition { template: t.clone(), missing })
                 });
@@ -125,12 +163,17 @@ pub(crate) fn with_templates(ops: &[klipp_document::ops::Op], dir: Option<&std::
     if !ops.iter().any(|op| matches!(op, Op::Template { .. })) {
         return ops.to_vec();
     }
-    let saved = dir.map(klipp_timeline::read_templates).unwrap_or_default();
+    let saved = saved_titles(dir);
     ops.iter()
         .cloned()
         .map(|mut op| {
-            if let Op::Template { name, data, .. } = &mut op {
-                *data = match saved.iter().find(|t| t.name.eq_ignore_ascii_case(name.trim())) {
+            if let Op::Template { name, source, data, .. } = &mut op {
+                let source = op_source(source);
+                let mine = match source {
+                    Some(klipp_timeline::template_places::Source::Builtin) => None,
+                    _ => klipp_timeline::find_template(&saved, name, source.as_ref()),
+                };
+                *data = match mine {
                     Some(t) => {
                         let mut td = t.data.clone();
                         td.template = Some(format!("user:{}", t.name));
@@ -168,10 +211,10 @@ fn listed_fields(td: &klipp_timeline::TitleData) -> Vec<serde_json::Value> {
 /// as made. A saved one of a built-in's name is the one placed.
 pub(crate) fn title_templates(dir: Option<&std::path::Path>, compositions: Option<&std::path::Path>) -> serde_json::Value {
     use klipp_timeline::title_library::{CATEGORIES, TITLES};
-    let saved = dir.map(klipp_timeline::read_templates).unwrap_or_default();
+    let saved = saved_titles(dir);
     let list: Vec<serde_json::Value> = saved
         .iter()
-        .map(|t| json!({ "name": t.name, "category": t.category, "fields": listed_fields(&t.data) }))
+        .map(|(source, t)| json!({ "name": t.name, "category": t.category, "source": source.name(), "fields": listed_fields(&t.data) }))
         .collect();
     let builtin: Vec<serde_json::Value> = TITLES
         .iter()
@@ -184,11 +227,11 @@ pub(crate) fn title_templates(dir: Option<&std::path::Path>, compositions: Optio
     let mut text = format!("{} built-in title templates. {}.", TITLES.len(), by_category.join("; "));
     text.push_str(&match saved.len() {
         0 => " None saved.".to_string(),
-        n => format!(" {n} saved: {}.", saved.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", ")),
+        n => format!(" {n} saved: {}.", saved.iter().map(|(s, t)| format!("{} ({})", t.name, s.name())).collect::<Vec<_>>().join(", ")),
     });
     // Composition templates (#2757): a stack of clips placed as one,
     // their parameters set by name or label.
-    let store = klipp_timeline::composition_template::CompositionTemplateStore::load(compositions.map(std::path::Path::to_path_buf)).with_builtins();
+    let store = template_store(compositions);
     let composed: Vec<serde_json::Value> = store
         .templates()
         .map(|t| {
@@ -206,7 +249,7 @@ pub(crate) fn title_templates(dir: Option<&std::path::Path>, compositions: Optio
             let slots: Vec<serde_json::Value> = t.slots.iter().map(|(name, s)| json!({ "name": name, "label": s.label, "kind": s.kind })).collect();
             // Shipped with Klipp, and laid out for which frames (#2757).
             let formats: Vec<&str> = std::iter::once("wide").chain(t.formats.keys().map(String::as_str)).collect();
-            json!({ "name": t.name, "category": t.category, "secs": secs, "parameters": parameters, "slots": slots, "builtin": store.is_builtin(t.id), "formats": formats })
+            json!({ "name": t.name, "category": t.category, "secs": secs, "parameters": parameters, "slots": slots, "source": store.source_of(t.id).name(), "formats": formats })
         })
         .collect();
     if !composed.is_empty() {
@@ -214,7 +257,7 @@ pub(crate) fn title_templates(dir: Option<&std::path::Path>, compositions: Optio
     }
     text.push_str(" Place one with the template op by name, setting its fields (a composition's parameters) by label.");
     // Recipes (#2758): node groups built into a clip's picture.
-    let recipes = crate::recipes::all(compositions.map(std::path::Path::to_path_buf));
+    let recipes = crate::recipes::all(compositions);
     text.push_str(&format!(
         " {} recipes, built into a clip's picture with the recipe op (slots and controls by name or label): {}.",
         recipes.len(),
@@ -675,7 +718,7 @@ mod template_tests {
         assert!(listed["text"].as_str().unwrap().contains("1 saved: Guest"), "{listed}");
         assert!(title_templates(None, None)["text"].as_str().unwrap().contains("None saved"));
 
-        let op = |name: &str| klipp_document::ops::Op::Template { name: name.into(), at: klipp_document::ops::Anchor::Secs(0.0), secs: 3.0, track: None, fields: Default::default(), data: None, composition: None };
+        let op = |name: &str| klipp_document::ops::Op::Template { name: name.into(), at: klipp_document::ops::Anchor::Secs(0.0), secs: 3.0, track: None, fields: Default::default(), source: None, data: None, composition: None };
         let filled = with_templates(&[op("guest"), op("Nobody")], Some(&dir));
         let data = |op: &klipp_document::ops::Op| match op {
             klipp_document::ops::Op::Template { data, .. } => data.as_deref().cloned(),
@@ -702,7 +745,7 @@ mod template_tests {
         assert_eq!(labels, ["Name", "Role", "Accent", "Size", "Speed"]);
         assert!(listed["text"].as_str().unwrap().contains("Lower Thirds: Name Bar"), "{}", listed["text"]);
 
-        let op = |name: &str| klipp_document::ops::Op::Template { name: name.into(), at: klipp_document::ops::Anchor::Secs(0.0), secs: 3.0, track: None, fields: Default::default(), data: None, composition: None };
+        let op = |name: &str| klipp_document::ops::Op::Template { name: name.into(), at: klipp_document::ops::Anchor::Secs(0.0), secs: 3.0, track: None, fields: Default::default(), source: None, data: None, composition: None };
         let filled = with_templates(&[op("name bar")], None);
         let klipp_document::ops::Op::Template { data: Some(td), .. } = &filled[0] else { panic!("a built-in by name") };
         assert_eq!(td.template.as_deref(), Some("Name Bar"));

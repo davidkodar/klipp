@@ -839,11 +839,30 @@ pub(crate) fn respond(
             Ok(reply)
         }
 
-        ControlCommand::ExportTemplatePack { path, name, templates, licences } => {
+        ControlCommand::ExportTemplatePack { path, name, templates, licences, author, version, licence } => {
             if in_batch {
                 return Err("packing templates is not part of a batch: send it on its own".into());
             }
-            export_template_pack(&path, &name, templates.as_deref(), &licences)
+            let about = klipp_project::template_pack::PackAbout { author, version, licence };
+            export_template_pack(&path, &name, &about, templates.as_deref(), &licences)
+        }
+
+        ControlCommand::TemplatePacks => {
+            let root = klipp_timeline::template_places::data_root().ok_or("no data folder to keep packs in")?;
+            let packs = klipp_project::template_pack::installed_packs(&root);
+            let listed: Vec<serde_json::Value> = packs.iter().map(|p| json!({ "name": p.name, "source": klipp_timeline::template_places::Source::Pack(p.folder.clone()).name(), "author": p.about.author, "version": p.about.version, "licence": p.about.licence, "titles": p.titles, "templates": p.templates })).collect();
+            let text = if packs.is_empty() { "no template packs installed".to_string() } else { format!("{} pack{} installed: {}", packs.len(), if packs.len() == 1 { "" } else { "s" }, packs.iter().map(|p| format!("{} ({} templates)", p.name, p.titles + p.templates)).collect::<Vec<_>>().join(", ")) };
+            Ok(json!({ "text": text, "packs": listed }))
+        }
+
+        ControlCommand::RemoveTemplatePack { name } => {
+            if in_batch {
+                return Err("removing a pack is not part of a batch: send it on its own".into());
+            }
+            let root = klipp_timeline::template_places::data_root().ok_or("no data folder to keep packs in")?;
+            let gone = klipp_project::template_pack::remove_pack(&root, &name)?;
+            let _ = send(AppCommand::ReloadTitleTemplates);
+            Ok(json!({ "text": format!("removed the pack \"{}\" and its {} templates", gone.name, gone.titles + gone.templates) }))
         }
 
         ControlCommand::ImportTemplatePack { path, replace } => {
@@ -1290,7 +1309,7 @@ impl klipp_project::template_pack::FontLookup for PackFonts {
     }
     fn available(&self, family: &str) -> bool {
         self.bundled(family) || self.registry.contains_key(family) || self.in_catalogue(family)
-            || klipp_title::catalogue::pack_faces_in(&klipp_title::catalogue::fonts_dir(), family).is_some()
+            || klipp_timeline::template_places::data_root().is_some_and(|root| klipp_title::catalogue::pack_faces_in(&root, family).is_some())
     }
     fn fallback(&self) -> String {
         "Noto Sans".into()
@@ -1298,7 +1317,7 @@ impl klipp_project::template_pack::FontLookup for PackFonts {
 }
 
 /// The `export_template_pack` request (#2757).
-fn export_template_pack(path: &str, name: &str, names: Option<&[String]>, licences: &std::collections::BTreeMap<String, String>) -> Result<serde_json::Value, String> {
+fn export_template_pack(path: &str, name: &str, about: &klipp_project::template_pack::PackAbout, names: Option<&[String]>, licences: &std::collections::BTreeMap<String, String>) -> Result<serde_json::Value, String> {
     let out = std::path::Path::new(path);
     if !out.is_absolute() || out.extension().and_then(|e| e.to_str()) != Some(klipp_project::template_pack::PACK_EXTENSION) {
         return Err(format!("give an absolute path ending in .{}", klipp_project::template_pack::PACK_EXTENSION));
@@ -1318,22 +1337,18 @@ fn export_template_pack(path: &str, name: &str, names: Option<&[String]>, licenc
             (titles.into_iter().filter(|t| wanted(&t.name)).collect(), templates.into_iter().filter(|t| wanted(&t.name)).collect())
         }
     };
-    let text = klipp_project::template_pack::export_pack(out, name, titles, templates, licences, &PackFonts::new())?;
+    let text = klipp_project::template_pack::export_pack(out, name, about, titles, templates, licences, &PackFonts::new())?;
     Ok(json!({ "text": text, "path": path }))
 }
 
-/// The `import_template_pack` request (#2757).
+/// The `import_template_pack` request (#2757): installed as a pack of
+/// its own, an update replacing one of its name when `replace`.
 fn import_template_pack(path: &str, replace: bool) -> Result<serde_json::Value, String> {
-    let config = dirs::config_dir().ok_or("no config folder to keep templates in")?;
-    let to = klipp_project::template_pack::PackTargets {
-        titles: klipp_timeline::template_dir(&config),
-        templates: klipp_timeline::composition_template::CompositionTemplateStore::default_dir(&config),
-        assets: config.join("klipp").join("template_assets"),
-        fonts: klipp_title::catalogue::fonts_dir(),
-    };
-    let (name, report) = klipp_project::template_pack::import_pack(std::path::Path::new(path), &to, &PackFonts::new(), replace)?;
+    let root = klipp_timeline::template_places::data_root().ok_or("no data folder to keep packs in")?;
+    let (pack, report) = klipp_project::template_pack::install_pack(std::path::Path::new(path), &root, &PackFonts::new(), replace)?;
     if !report.fonts_added.is_empty() {
         klipp_title::catalogue::note_fonts_added();
     }
-    Ok(json!({ "text": report.text(&name), "added": report.added, "skipped": report.skipped, "missing": report.fallbacks, "fonts_added": report.fonts_added }))
+    let source = klipp_timeline::template_places::Source::Pack(pack.folder.clone()).name();
+    Ok(json!({ "text": format!("{} (as {source})", report.text(&pack.name)), "source": source, "added": report.added, "missing": report.fallbacks, "fonts_added": report.fonts_added }))
 }

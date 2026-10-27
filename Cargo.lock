@@ -3489,6 +3489,7 @@ dependencies = [
 name = "klipp-timeline"
 version = "0.1.0"
 dependencies = [
+ "dirs",
  "klipp-color",
  "klipp-core",
  "klipp-effects",
