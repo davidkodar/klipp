@@ -26,7 +26,23 @@ Split a clip at the cuts in its picture: a flattened movie, a montage someone ex
 
 The `data` argument:
 
-Preview a native generator clip; apply true places it as one undo step. Give at_secs, secs (positive, at most one day), optional video track index, and data in the native generator format: {SolidColor:{color:[r,g,b,a]}}, {Gradient:{top:[r,g,b,a],bottom:[r,g,b,a],angle_deg:0}}, {LivingGradient:{a:[r,g,b,a],b:[r,g,b,a],angle_deg:20,drift_deg_per_sec:4,glow:0.35}}, {Grain:{color:[r,g,b,a],amount:0.35,size_px:2,speed:24}}, {Polygon:{sides:24,color:[r,g,b,a],fill:true}} for a circle, {Placeholder:{label:missing,color:[r,g,b,a]}}, or the string Countdown. Colour channels are bytes 0..255. Omit track to use/create a bottom Background video track. Overlaps and locked tracks are refused.
+Preview a native generator clip; apply true places it as one undo step. Give at_secs, secs (positive, at most one day), optional video track index, and data in the native generator format, one of these 14 kinds (colour channels are bytes 0..255, `[r,g,b,a]`):
+
+- `{SolidColor:{color}}`: one colour.
+- `{Gradient:{top,bottom,angle_deg?,grain?}}`: two colours across the frame at angle_deg (0 top to bottom); `four_point:{top_left,top_right,bottom_left,bottom_right}` in place of top and bottom blends four corners. grain 0 to its maximum, a little by default.
+- `{LivingGradient:{a,b,angle_deg,drift_deg_per_sec,glow,grain?}}`: a gradient that drifts slowly, with a soft glow.
+- `{Grain:{color,amount,size_px,speed}}`: a moving grain over a colour.
+- `{Polygon:{sides,color,outline_width_px?,fill?}}`: a regular polygon in the middle of the frame; sides 64 or more is a true circle, smooth at any size; fill false with an outline_width_px draws only its outline (a ring for the circle).
+- `{Star:{points,inner_radius_pct,color,outline_width_px?,fill?}}`: a star of points, its inner corners at inner_radius_pct (0.05 to 0.95) of the outer.
+- `{Placeholder:{label,color}}`: a labelled stand-in for a shot still to come.
+- `"ColorBars"`, `"ColorBars100"`: the seven SMPTE bars, at 75 % or 100 %.
+- `"ColorBarsSmpte"`: the full SMPTE pattern, the 75 % bars over the castellations and the −I / white / +Q / PLUGE row, for setting a monitor's black and white.
+- `"Countdown"`: a leader counting down the seconds.
+- `{Timer:{mode,initial_seconds,format,text_color,background_color}}`: a clock, mode CountUp or CountDown from initial_seconds, format Seconds, MmSs, HhMmSs or HhMmSsMs.
+- `{Slate:{project,scene,take,director,camera,date,framerate,notes,text_color,background_color}}`: a production slate, each field text.
+- `{StillFrame:{png_path,width,height}}`: a still from a PNG file (absolute path) of that size.
+
+Omit track to use/create a bottom Background video track. Overlaps and locked tracks are refused.
 
 ## klipp_export_timeline
 

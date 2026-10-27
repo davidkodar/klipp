@@ -74,6 +74,7 @@ fn generators() -> Vec<G> {
         },
         G::ColorBars,
         G::ColorBars100,
+        G::ColorBarsSmpte,
         G::Countdown,
         G::Timer {
             mode: Default::default(),

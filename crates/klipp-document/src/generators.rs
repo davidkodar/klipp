@@ -92,6 +92,7 @@ pub fn validate(data: &GeneratorData) -> Result<(), String> {
         | GeneratorData::Placeholder { .. }
         | GeneratorData::ColorBars
         | GeneratorData::ColorBars100
+        | GeneratorData::ColorBarsSmpte
         | GeneratorData::Countdown
         | GeneratorData::Slate { .. } => true,
         GeneratorData::Gradient { angle_deg, grain, .. } => angle_deg.is_finite() && grain_ok(*grain),

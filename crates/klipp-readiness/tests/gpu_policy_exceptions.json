@@ -1,6 +1,7 @@
 {
   "generator.ColorBars": "CpuCached #0",
   "generator.ColorBars100": "CpuCached #0",
+  "generator.ColorBarsSmpte": "CpuCached #0",
   "generator.Gradient": "CpuCached #0",
   "generator.Placeholder": "CpuCached #0",
   "generator.Polygon": "CpuCached #0",

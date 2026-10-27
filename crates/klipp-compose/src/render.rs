@@ -7373,7 +7373,7 @@ enum PlanPart {
 fn is_still_generator(g: &klipp_core::GeneratorData) -> bool {
     use klipp_core::GeneratorData as G;
     match g {
-        G::SolidColor { .. } | G::Placeholder { .. } | G::Gradient { .. } | G::ColorBars | G::ColorBars100 | G::Slate { .. } | G::Polygon { .. } | G::Star { .. } | G::StillFrame { .. } => true,
+        G::SolidColor { .. } | G::Placeholder { .. } | G::Gradient { .. } | G::ColorBars | G::ColorBars100 | G::ColorBarsSmpte | G::Slate { .. } | G::Polygon { .. } | G::Star { .. } | G::StillFrame { .. } => true,
         G::LivingGradient { .. } | G::Grain { .. } | G::Countdown | G::Timer { .. } => false,
     }
 }
@@ -8218,6 +8218,6 @@ fn generator_feature(g: &klipp_core::GeneratorData) -> &'static str {
     use klipp_core::GeneratorData::*;
     match g {
         Grain { .. } => "generator.grain", Countdown => "generator.countdown", Timer { .. } => "generator.timer", StillFrame { .. } => "generator.still_frame",
-        LivingGradient { .. } => "generator.living_gradient", SolidColor { .. } => "generator.solid", Placeholder { .. } => "generator.placeholder", Gradient { .. } => "generator.gradient", ColorBars => "generator.color_bars", ColorBars100 => "generator.color_bars_100", Slate { .. } => "generator.slate", Polygon { .. } => "generator.polygon", Star { .. } => "generator.star",
+        LivingGradient { .. } => "generator.living_gradient", SolidColor { .. } => "generator.solid", Placeholder { .. } => "generator.placeholder", Gradient { .. } => "generator.gradient", ColorBars => "generator.color_bars", ColorBars100 => "generator.color_bars_100", ColorBarsSmpte => "generator.color_bars_smpte", Slate { .. } => "generator.slate", Polygon { .. } => "generator.polygon", Star { .. } => "generator.star",
     }
 }

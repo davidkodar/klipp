@@ -124,6 +124,7 @@ pub fn generator(data: &GeneratorData) -> Capability {
         | Gradient { .. }
         | ColorBars
         | ColorBars100
+        | ColorBarsSmpte
         | Slate { .. }
         | Polygon { .. }
         | Star { .. } => cap(
