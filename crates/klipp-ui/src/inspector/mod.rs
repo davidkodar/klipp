@@ -1986,6 +1986,7 @@ fn show_title_pinned_core_textbox(
         }
         if let Some(family) = &choice.family {
             cmds.push(AppCommand::NoteRecentFont { family: family.clone() });
+            crate::missing_fonts::fetch_family(family);
         }
         if let Some(family) = choice.family {
             if has_selection && sel_range.0 < sel_range.1 {

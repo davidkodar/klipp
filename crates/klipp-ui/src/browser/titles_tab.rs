@@ -125,6 +125,9 @@ pub fn show(
 ) -> Vec<AppCommand> {
     let mut cmds = Vec::new();
     let avail = ui.available_rect_before_wrap();
+    // Cards show each template as it would be placed on this sequence's
+    // frame (#2734): a 9:16 sequence previews the 9:16 layout.
+    let frame = PreviewFrame::of(state.sequences[state.active_sequence_idx].resolution);
     // By template name; a snapshot, since the cards take `state`.
     let recent = state.library_recent.titles.clone();
     // A snapshot, since the cards below take `state` mutably.
@@ -431,13 +434,13 @@ pub fn show(
                                 let elapsed = read_anim_elapsed(ui, &title.key());
                                 let time = if elapsed > 0.0 { TitlePreviews::hover_time(elapsed) } else { REST_TIME };
                                 if elapsed > 0.0 {
-                                    request_ahead(previews, title, &display_text, time);
+                                    request_ahead(previews, title, &display_text, time, &frame);
                                 }
-                                let key = TitlePreviews::key(&title.key(), &display_text, time);
+                                let key = TitlePreviews::key(&frame.key(title), &display_text, time);
                                 let tex = previews
-                                    .get_or_request(&key, time, || preview_data(title, &display_text))
+                                    .get_or_request_sized(&key, time, frame.w, frame.h, || preview_data(title, &display_text, &frame))
                                     .cloned()
-                                    .or_else(|| previews.nearest_for(&title.key(), &display_text, time).cloned());
+                                    .or_else(|| previews.nearest_for(&frame.key(title), &display_text, time).cloned());
                                 let resp = title_card(
                                     ui,
                                     theme,
@@ -472,13 +475,13 @@ pub fn show(
                         let row_elapsed = read_anim_elapsed(ui, &title.key());
                         let time = if row_elapsed > 0.0 { TitlePreviews::hover_time(row_elapsed) } else { REST_TIME };
                         if row_elapsed > 0.0 {
-                            request_ahead(previews, title, &row_text, time);
+                            request_ahead(previews, title, &row_text, time, &frame);
                         }
-                        let key = TitlePreviews::key(&title.key(), &row_text, time);
+                        let key = TitlePreviews::key(&frame.key(title), &row_text, time);
                         let tex = previews
-                            .get_or_request(&key, time, || preview_data(title, &row_text))
+                            .get_or_request_sized(&key, time, frame.w, frame.h, || preview_data(title, &row_text, &frame))
                             .cloned()
-                            .or_else(|| previews.nearest_for(&title.key(), &row_text, time).cloned());
+                            .or_else(|| previews.nearest_for(&frame.key(title), &row_text, time).cloned());
                         let resp = title_list_row(
                             ui,
                             theme,
@@ -629,9 +632,10 @@ fn title_card(
     );
     crate::browser::library_card::library_card(ui, rect, title.name(), &caption, is_selected, hovered, theme, |p, area| {
         let top = egui::Rounding { nw: crate::theme::radius::PANEL, ne: crate::theme::radius::PANEL, sw: 0.0, se: 0.0 };
-        paint_preview_backdrop(p, area, top, preview_bg, footage);
+        let shown = preview.map_or(area, |t| fitted(area, t));
+        paint_preview_backdrop(p, shown, if shown == area { top } else { egui::Rounding::ZERO }, preview_bg, footage);
         if let Some(t) = preview {
-            p.image(t.id(), area, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+            p.image(t.id(), shown, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
         }
     });
     resp
@@ -673,20 +677,57 @@ fn paint_preview_backdrop(
 
 /// Queue the next moments of a hovered card so its motion plays
 /// without waiting on renders.
-fn request_ahead(previews: &mut TitlePreviews, title: &Entry, text: &str, time: f32) {
+fn request_ahead(previews: &mut TitlePreviews, title: &Entry, text: &str, time: f32, frame: &PreviewFrame) {
     use crate::browser::title_previews::{FRAME_STEP, LOOP_SECS};
     for k in 1..=6 {
         let ahead = (time + k as f32 * FRAME_STEP) % LOOP_SECS;
         let ahead = TitlePreviews::hover_time(ahead);
-        let key = TitlePreviews::key(&title.key(), text, ahead);
-        previews.request(&key, ahead, || preview_data(title, text));
+        let key = TitlePreviews::key(&frame.key(title), text, ahead);
+        previews.request_sized(&key, ahead, frame.w, frame.h, || preview_data(title, text, frame));
     }
 }
 
-/// The title a card renders: the template with the user's preview text
-/// in its primary layer, when one is typed.
-fn preview_data(title: &Entry, text: &str) -> TitleData {
-    let mut td = title.data();
+/// The frame the cards render a template on (#2734): the sequence's
+/// shape at the preview's height, and the sequence's own size, which a
+/// built-in is laid out for.
+pub(crate) struct PreviewFrame {
+    pub w: u32,
+    pub h: u32,
+    sequence: (u32, u32),
+    /// Marks a card's renders as this shape's in the preview cache.
+    tag: &'static str,
+}
+
+impl PreviewFrame {
+    pub(crate) fn of(r: klipp_core::Resolution) -> Self {
+        use crate::browser::title_previews::{PREVIEW_H, PREVIEW_W};
+        use klipp_timeline::title_library::Format;
+        let (w, h, tag) = match Format::of(r.width, r.height) {
+            Format::Wide => (PREVIEW_W, PREVIEW_H, ""),
+            Format::Tall => ((PREVIEW_H as f32 * r.width as f32 / r.height.max(1) as f32).round() as u32, PREVIEW_H, "\u{2}tall"),
+            Format::Square => (PREVIEW_H, PREVIEW_H, "\u{2}square"),
+        };
+        Self { w, h, sequence: (r.width, r.height), tag }
+    }
+
+    /// A card's key in the preview cache, for this shape.
+    fn key(&self, title: &Entry) -> String {
+        format!("{}{}", title.key(), self.tag)
+    }
+}
+
+/// The part of `area` a preview of `t`'s shape fills, centred: a 9:16
+/// preview stands in the middle of a wide card.
+fn fitted(area: egui::Rect, t: &egui::TextureHandle) -> egui::Rect {
+    let size = t.size_vec2();
+    let k = (area.width() / size.x.max(1.0)).min(area.height() / size.y.max(1.0));
+    egui::Rect::from_center_size(area.center(), size * k)
+}
+
+/// The title a card renders: the template laid out for the frame, with
+/// the user's preview text in its primary layer, when one is typed.
+fn preview_data(title: &Entry, text: &str, frame: &PreviewFrame) -> TitleData {
+    let mut td = klipp_timeline::title_library::for_frame(title.data(), frame.sequence.0, frame.sequence.1);
     if !text.trim().is_empty() && td.style_runs().is_empty() {
         if let Some(tb) = td.primary_text_mut() {
             tb.text = text.to_string();
@@ -783,9 +824,10 @@ fn title_list_row(
         egui::pos2(rect.min.x + 8.0, rect.min.y + 6.0),
         egui::vec2(mini_w, row_h - 12.0),
     );
-    paint_preview_backdrop(ui.painter(), mini_rect, egui::Rounding::same(4.0), preview_bg, footage);
+    let shown = preview.map_or(mini_rect, |t| fitted(mini_rect, t));
+    paint_preview_backdrop(ui.painter(), shown, egui::Rounding::same(4.0), preview_bg, footage);
     if let Some(t) = preview {
-        ui.painter().image(t.id(), mini_rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+        ui.painter().image(t.id(), shown, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
     }
 
     let text_x = mini_rect.max.x + 12.0;
@@ -1381,6 +1423,23 @@ fn titles_result_strip(
 #[cfg(test)]
 mod tests {
     use klipp_timeline::title_library::builtin;
+
+    /// #2734: on a 9:16 sequence a card renders the template as it would
+    /// be placed there, its own shape and layout; on 16:9, as designed.
+    #[test]
+    fn a_card_previews_the_sequences_format() {
+        use super::{preview_data, Entry, PreviewFrame, TitleData, TITLES};
+        let name_bar = Entry::Builtin(TITLES.iter().find(|t| t.name == "Name Bar").unwrap());
+        let name_y = |td: &TitleData| td.objects.iter().find(|o| o.name == "Name").unwrap().transform.center.y;
+        let wide = PreviewFrame::of(klipp_core::Resolution { width: 1920, height: 1080 });
+        let tall = PreviewFrame::of(klipp_core::Resolution { width: 1080, height: 1920 });
+        assert_eq!((wide.w, wide.h), (crate::browser::title_previews::PREVIEW_W, crate::browser::title_previews::PREVIEW_H));
+        assert!(tall.w < tall.h && (tall.w as f32 / tall.h as f32 - 0.5625).abs() < 0.01, "{}x{}", tall.w, tall.h);
+        assert_ne!(wide.key(&name_bar), tall.key(&name_bar), "each shape is cached apart");
+        assert_eq!(name_y(&preview_data(&name_bar, "", &wide)), name_y(&name_bar.data()), "16:9 as designed");
+        let placed = klipp_timeline::title_library::builtin("Name Bar").unwrap().data_for(1080, 1920);
+        assert_eq!(name_y(&preview_data(&name_bar, "", &tall)), name_y(&placed), "9:16 as it is placed there");
+    }
     use klipp_timeline::TitleObjectContent;
 
     /// A built-in's template as made, before its fields are published.
