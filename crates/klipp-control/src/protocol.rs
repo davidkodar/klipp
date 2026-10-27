@@ -1248,6 +1248,26 @@ pub enum ControlCommand {
         #[serde(default)]
         replace: bool,
     },
+    /// The user's templates (title templates, composition templates and
+    /// recipes) named in `templates` (all when left out) written as the
+    /// pack `name` to `path` (#2757); each picture's licence by its file
+    /// name in `licences`, or a `.licence.txt` beside it.
+    ExportTemplatePack {
+        path: String,
+        name: String,
+        #[serde(default)]
+        templates: Option<Vec<String>>,
+        #[serde(default)]
+        licences: std::collections::BTreeMap<String, String>,
+    },
+    /// The pack at `path` read into the user's template folders (#2757):
+    /// a name already there kept unless `replace`; what is missing named,
+    /// with what is drawn instead.
+    ImportTemplatePack {
+        path: String,
+        #[serde(default)]
+        replace: bool,
+    },
     /// The node types the registry describes, with their ports and
     /// parameters, optionally of one category (#1086).
     NodeTypes {

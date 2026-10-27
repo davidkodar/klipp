@@ -817,6 +817,23 @@ pub(crate) fn respond(
             Ok(reply)
         }
 
+        ControlCommand::ExportTemplatePack { path, name, templates, licences } => {
+            if in_batch {
+                return Err("packing templates is not part of a batch: send it on its own".into());
+            }
+            export_template_pack(&path, &name, templates.as_deref(), &licences)
+        }
+
+        ControlCommand::ImportTemplatePack { path, replace } => {
+            if in_batch {
+                return Err("importing a pack is not part of a batch: send it on its own".into());
+            }
+            let reply = import_template_pack(&path, replace)?;
+            // The Titles browser and the Templates tab show what came in.
+            let _ = send(AppCommand::ReloadTitleTemplates);
+            Ok(reply)
+        }
+
         ControlCommand::SaveTemplate { clip_ids: Some(_), clip_id: Some(_), .. } => Err("give clip_id for a title, or clip_ids for clips saved together, not both".into()),
 
         ControlCommand::SaveTemplate { clip_id: None, clip_ids: None, .. } => Err("give clip_id (a title) or clip_ids (clips saved together)".into()),
@@ -1190,4 +1207,85 @@ fn save_composition_template(ctx: &ControlContext, ids: &[String], name: &str, c
     }).chain(template.slots.values().map(|s| format!("{} (slot)", s.label))).collect();
     store.save(template)?;
     Ok(json!({ "text": format!("saved {} clip{} as the template \"{}\", exposing {}; the template op places it as one clip", ids.len(), if ids.len() == 1 { "" } else { "s" }, name.trim(), if exposed.is_empty() { "nothing".into() } else { exposed.join(", ") }) }))
+}
+
+/// The fonts a template pack needs to know of (#2757), from the machine's
+/// font list, the catalogue and the fonts packs carried in.
+struct PackFonts {
+    registry: klipp_title::font_discovery::FontRegistry,
+}
+
+impl PackFonts {
+    fn new() -> Self {
+        Self { registry: klipp_title::font_discovery::discover_system_fonts() }
+    }
+}
+
+impl klipp_project::template_pack::FontLookup for PackFonts {
+    fn bundled(&self, family: &str) -> bool {
+        klipp_title::bundled::BUNDLED.iter().any(|b| b.family.eq_ignore_ascii_case(family))
+    }
+    fn in_catalogue(&self, family: &str) -> bool {
+        klipp_title::catalogue::family(family).is_some()
+    }
+    fn carry(&self, family: &str) -> Option<(Vec<std::path::PathBuf>, String)> {
+        let faces = self.registry.get(family)?;
+        let files: Vec<std::path::PathBuf> = faces.iter().map(|f| f.path.clone()).collect();
+        // Its licence, as the font's own folder holds it.
+        let licence = files.iter().filter_map(|f| f.parent()).find_map(|dir| {
+            std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).find(|p| {
+                let n = p.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_uppercase();
+                ["OFL", "LICENSE", "LICENCE", "COPYING", "UFL"].iter().any(|k| n.starts_with(k))
+            }).and_then(|p| std::fs::read_to_string(p).ok())
+        })?;
+        Some((files, licence))
+    }
+    fn available(&self, family: &str) -> bool {
+        self.bundled(family) || self.registry.contains_key(family) || self.in_catalogue(family)
+            || klipp_title::catalogue::pack_faces_in(&klipp_title::catalogue::fonts_dir(), family).is_some()
+    }
+    fn fallback(&self) -> String {
+        "Noto Sans".into()
+    }
+}
+
+/// The `export_template_pack` request (#2757).
+fn export_template_pack(path: &str, name: &str, names: Option<&[String]>, licences: &std::collections::BTreeMap<String, String>) -> Result<serde_json::Value, String> {
+    let out = std::path::Path::new(path);
+    if !out.is_absolute() || out.extension().and_then(|e| e.to_str()) != Some(klipp_project::template_pack::PACK_EXTENSION) {
+        return Err(format!("give an absolute path ending in .{}", klipp_project::template_pack::PACK_EXTENSION));
+    }
+    let titles = crate::plans::template_dir().map(|d| klipp_timeline::read_templates(&d)).unwrap_or_default();
+    let store = klipp_timeline::composition_template::CompositionTemplateStore::load(crate::plans::composition_dir());
+    // Composition templates and recipes: one format, one pack.
+    let templates: Vec<_> = store.templates().chain(store.recipes()).cloned().collect();
+    let (titles, templates) = match names {
+        None => (titles, templates),
+        Some(names) => {
+            let wanted = |n: &str| names.iter().any(|w| w.trim().eq_ignore_ascii_case(n.trim()));
+            let unknown: Vec<&String> = names.iter().filter(|w| !titles.iter().any(|t| t.name.eq_ignore_ascii_case(w.trim())) && !templates.iter().any(|t| t.name.eq_ignore_ascii_case(w.trim()))).collect();
+            if !unknown.is_empty() {
+                return Err(format!("no saved template called {}: title_templates lists them", unknown.iter().map(|n| format!("\"{n}\"")).collect::<Vec<_>>().join(", ")));
+            }
+            (titles.into_iter().filter(|t| wanted(&t.name)).collect(), templates.into_iter().filter(|t| wanted(&t.name)).collect())
+        }
+    };
+    let text = klipp_project::template_pack::export_pack(out, name, titles, templates, licences, &PackFonts::new())?;
+    Ok(json!({ "text": text, "path": path }))
+}
+
+/// The `import_template_pack` request (#2757).
+fn import_template_pack(path: &str, replace: bool) -> Result<serde_json::Value, String> {
+    let config = dirs::config_dir().ok_or("no config folder to keep templates in")?;
+    let to = klipp_project::template_pack::PackTargets {
+        titles: klipp_timeline::template_dir(&config),
+        templates: klipp_timeline::composition_template::CompositionTemplateStore::default_dir(&config),
+        assets: config.join("klipp").join("template_assets"),
+        fonts: klipp_title::catalogue::fonts_dir(),
+    };
+    let (name, report) = klipp_project::template_pack::import_pack(std::path::Path::new(path), &to, &PackFonts::new(), replace)?;
+    if !report.fonts_added.is_empty() {
+        klipp_title::catalogue::note_fonts_added();
+    }
+    Ok(json!({ "text": report.text(&name), "added": report.added, "skipped": report.skipped, "missing": report.fallbacks, "fonts_added": report.fonts_added }))
 }

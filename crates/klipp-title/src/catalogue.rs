@@ -182,6 +182,30 @@ pub fn fetched_faces(name: &str) -> Option<Vec<FontInfo>> {
     fetched_faces_in(&fonts_dir(), name)
 }
 
+/// Where a template pack puts a font it carries (#2757): `packs/<family>`
+/// under `root`, beside the fetched catalogue families.
+pub fn pack_font_dir_in(root: &Path, family: &str) -> PathBuf {
+    root.join("packs").join(family.trim().to_lowercase().replace(' ', "-"))
+}
+
+/// The faces a template pack carried in for `name` under `root`.
+pub fn pack_faces_in(root: &Path, name: &str) -> Option<Vec<FontInfo>> {
+    let faces: Vec<FontInfo> = crate::font_discovery::scan_folder(&pack_font_dir_in(root, name)).into_values().flatten().collect();
+    (!faces.is_empty()).then_some(faces)
+}
+
+/// A family's faces that are not installed on the machine: fetched from
+/// the catalogue, else carried in by a template pack (#2757).
+pub fn extra_faces(name: &str) -> Option<Vec<FontInfo>> {
+    fetched_faces(name).or_else(|| pack_faces_in(&fonts_dir(), name))
+}
+
+/// Says fonts were added beside the catalogue's (a pack's, #2757), so
+/// renderers draw again what they drew while a face was missing.
+pub fn note_fonts_added() {
+    fetched_one();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
