@@ -13637,7 +13637,7 @@ mod tests {
         card.tracks[0].clips.push(Clip { kind: ClipKind::Title(title), ..Clip::gap(tc(0.0), tc(3.0)) });
         let mut t = CompositionTemplate::new("Card", card.id.0);
         t.parameters.insert("text".into(), TemplateParameter { label: "Headline".into(), default: klipp_core::TemplateValue::Text("Launch".into()), range: None, choices: vec![] });
-        t.bindings.push(TemplateBinding { parameter: "text".into(), property: "object:0.text".into(), link: None });
+        t.bindings.push(TemplateBinding { parameter: "text".into(), property: "object:0.text".into(), link: None, take: None });
         t.sequences = vec![card.clone()];
         let placed = PlacedComposition { template: t, missing: vec![card.clone()] };
         let op = |fields: serde_json::Value| Op::Template { name: "Card".into(), at: Anchor::Secs(1.0), secs: 3.0, track: None, fields: serde_json::from_value(fields).unwrap(), data: None, composition: Some(Box::new(placed.clone())) };
@@ -13697,7 +13697,7 @@ mod tests {
         card.tracks[0].clips.push(Clip::media(MediaId::new(), tc(0.0), tc(3.0), tc(0.0), tc(3.0)));
         let mut t = CompositionTemplate::new("Photo card", card.id.0);
         t.slots.insert("slot_1".into(), TemplateSlot { label: "Photo".into(), kind: SlotKind::Media });
-        t.bindings.push(TemplateBinding { parameter: "slot_1".into(), property: "clip:0.media".into(), link: None });
+        t.bindings.push(TemplateBinding { parameter: "slot_1".into(), property: "clip:0.media".into(), link: None, take: None });
         t.sequences = vec![card.clone()];
         let op = |t: &CompositionTemplate, fields: serde_json::Value| Op::Template { name: "Photo card".into(), at: Anchor::Secs(1.0), secs: 3.0, track: None, fields: serde_json::from_value(fields).unwrap(), data: None, composition: Some(Box::new(PlacedComposition { template: t.clone(), missing: vec![card.clone()] })) };
         let plan = resolve(&seq, &pool, &[op(&t, serde_json::json!({ "Photo": media.0.to_string() }))]).unwrap();
