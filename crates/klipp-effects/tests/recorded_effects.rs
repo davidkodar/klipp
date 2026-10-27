@@ -66,7 +66,7 @@ fn film() -> Vec<E> {
         E::Deflicker { strength: 0.5, window_secs: 1.0, gain: 1.1 },
         E::FilmGrain { amount: 0.3, size: 1.0, color: 0, shadows: 0.5, seed: 7 },
         E::NoiseGenerator { amount: 0.2, monochrome: 1, seed: 3 },
-        E::OldFilm { flicker: 0.2, scratches: 0.3, dust: 0.2, weave: 0.1, sepia: 0.4, seed: 5 },
+        E::OldFilm { flicker: 0.2, scratches: 0.3, dust: 0.2, weave: 0.1, sepia: 0.4, seed: 5, amount: 1.0, age: 0.0, mono: 0.0, stains: 0.0, frame_lines: 0.0, leaks: 0.0, burn: 0.0 },
         E::Vhs { tracking: 0.2, bleed: 0.3, noise: 0.2, scanlines: 0.4, seed: 9 },
         E::CornerPin { tl: [0.02, 0.01], tr: [0.97, 0.0], br: [1.0, 0.98], bl: [0.0, 1.0] },
     ]

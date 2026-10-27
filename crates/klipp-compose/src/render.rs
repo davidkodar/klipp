@@ -7420,7 +7420,7 @@ pub fn frame_blends(clip: &Clip, time: Timecode, media_fps: Option<f64>, fps: f6
     // are the same pair whichever way the clip plays.
     let speed = clip.speed_at(eval_clip_time(clip, time)).abs();
     let rate = media_fps.filter(|r| *r > 0.0).unwrap_or(fps);
-    blend && speed > 1e-6 && speed * rate < fps * (1.0 - 1e-6)
+    blend && clip.hold.is_none() && speed > 1e-6 && speed * rate < fps * (1.0 - 1e-6)
 }
 
 /// Whether `clip`'s picture holds a frei0r plug-in node, on or off (M4

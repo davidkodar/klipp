@@ -464,3 +464,15 @@ fn a_texts_3d_comes_back() {
     let ClipKind::Title(loaded) = &seqs[0].tracks[0].clips[0].kind else { panic!("not a title") };
     assert_eq!(loaded.primary_text(), Some(&tb));
 }
+
+/// #2773: a freeze frame keeps the source time it holds.
+#[test]
+fn a_freeze_frame_keeps_its_held_frame() {
+    let mut seq = Sequence::new_default();
+    let mut c = media_clip(0, 48);
+    c.hold = Some(tc(30));
+    seq.tracks[0].clips = vec![c, media_clip(48, 96)];
+    let back = round_trip("freeze", seq);
+    assert_eq!(back.tracks[0].clips[0].hold, Some(tc(30)), "the held frame was lost");
+    assert_eq!(back.tracks[0].clips[1].hold, None, "a playing clip holds nothing");
+}

@@ -42,6 +42,7 @@ pub mod deflicker;
 pub mod dither;
 pub mod displace;
 pub mod planar;
+pub mod old_film;
 pub mod reflection;
 pub mod generator_grain;
 pub mod flicker;
@@ -829,9 +830,33 @@ pub enum BuiltinEffect {
     /// the height), `width` tall, blurred by `radius` beyond it with a
     /// `softness` ramp.
     TiltShift { center: f32, width: f32, softness: f32, radius: f32 },
-    /// Old Film: flicker, scratches, dust, gate weave and a sepia wash.
-    /// The compositor sets `seed` to the frame number.
-    OldFilm { flicker: f32, scratches: f32, dust: f32, weave: f32, sepia: f32, seed: u32 },
+    /// Old Film (#2744, [`old_film`]): flicker, scratches, debris
+    /// (`dust`), gate weave and a sepia wash; the colour aged, black and
+    /// white, stains, the frame line, light leaks and burned edges, each
+    /// its own amount, the damage scaled together by `amount`. The
+    /// compositor sets `seed` to the frame number.
+    OldFilm {
+        flicker: f32,
+        scratches: f32,
+        dust: f32,
+        weave: f32,
+        sepia: f32,
+        seed: u32,
+        #[serde(default = "full")]
+        amount: f32,
+        #[serde(default)]
+        age: f32,
+        #[serde(default)]
+        mono: f32,
+        #[serde(default)]
+        stains: f32,
+        #[serde(default)]
+        frame_lines: f32,
+        #[serde(default)]
+        leaks: f32,
+        #[serde(default)]
+        burn: f32,
+    },
     /// VHS: tracking error, chroma bleed, tape noise and scanlines. The
     /// compositor sets `seed` to the frame number.
     Vhs { tracking: f32, bleed: f32, noise: f32, scanlines: f32, seed: u32 },
@@ -1093,6 +1118,11 @@ pub enum BuiltinEffect {
     /// compound node, which the renderer builds from the picture's
     /// `klipp.grade_compound` node. These kernels pass the picture.
     GradeCompound {},
+}
+
+/// A serde default of 1.
+fn full() -> f32 {
+    1.0
 }
 
 /// An amount from 0 to 1 saved before as a yes or no: yes is 1, no 0.
@@ -1426,6 +1456,13 @@ impl BuiltinEffect {
 
     /// A reflection's numbers for its computation on a layer `width` ×
     /// `height` (#2707).
+    /// An Old Film's numbers as both computations take them, at
+    /// `width` × `height` with the working space's `luma` weights.
+    pub fn old_film_params(&self, width: u32, height: u32, luma: [f32; 3]) -> Option<old_film::Params> {
+        let BuiltinEffect::OldFilm { flicker, scratches, dust, weave, sepia, seed, amount, age, mono, stains, frame_lines, leaks, burn } = *self else { return None };
+        Some(old_film::Params { width, height, flicker, scratches, dust, weave, sepia, seed, luma, amount, age, mono, stains, frame_lines, leaks, burn, _pad: [0; 2] })
+    }
+
     pub fn reflection_params(&self, width: u32, height: u32) -> Option<reflection::Params> {
         let BuiltinEffect::Reflection { waterline, gap, ripple_amount, ripple_size, ripple_speed, breakup, smear, fade, opacity, darken, contact, tint, tint_amount, submerge, seed, time, .. } = self else { return None };
         Some(reflection::Params {

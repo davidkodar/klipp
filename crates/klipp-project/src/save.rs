@@ -603,6 +603,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                         speed: if (c.speed - 1.0).abs() < f64::EPSILON { None } else { Some(c.speed) },
                         speed_keyframes: if c.speed_keyframes.is_empty() { None } else { Some(c.speed_keyframes.clone()) },
                         keep_pitch: c.keep_pitch.then_some(true),
+                        hold: c.hold.as_ref().map(timecode_to_json),
                         source_rotation: if c.source_rotation == 0 { None } else { Some(c.source_rotation) },
                         enabled: if c.enabled { None } else { Some(false) },
                         audio_effects: if c.audio_effects.is_empty() { None } else { Some(c.audio_effects.clone()) },

@@ -418,7 +418,7 @@ fn effect_cases() -> Vec<Case> {
         ("NoiseGenerator", NoiseGenerator { amount: 0.2, monochrome: 0, seed: 7 }),
         ("FilmGrain", FilmGrain { amount: 0.5, size: 2.0, color: 0, shadows: 0.6, seed: 11 }),
         ("TiltShift", TiltShift { center: 0.5, width: 0.3, softness: 0.2, radius: 6.0 }),
-        ("OldFilm", OldFilm { flicker: 0.5, scratches: 1.0, dust: 1.0, weave: 0.5, sepia: 0.6, seed: 13 }),
+        ("OldFilm", OldFilm { flicker: 0.5, scratches: 1.0, dust: 1.0, weave: 0.5, sepia: 0.6, seed: 13, amount: 1.0, age: 0.0, mono: 0.0, stains: 0.0, frame_lines: 0.0, leaks: 0.0, burn: 0.0 }),
         ("Vhs", Vhs { tracking: 0.6, bleed: 0.6, noise: 0.5, scanlines: 0.6, seed: 14 }),
         ("MedianFilter", MedianFilter { radius: 2 }),
         ("RadialBlur", RadialBlur { center_x: 0.5, center_y: 0.5, amount: 15.0, samples: 16, mode: 0 }),

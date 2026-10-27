@@ -330,7 +330,14 @@ exist until the plan runs.
   `heat_haze`: each pixel moved by a drifting noise field), `reflection`
   (`water_reflection`, and its surfaces `calm_water`, `rippled_water`,
   `glossy_floor`, `wet_street`, `glass`: see below), `emboss`, `edge_detect`
-  (`edges`), `denoise`, `vhs`, `old_film`, `flicker` (random jumps of
+  (`edges`), `denoise`, `vhs`, `old_film` (its templates `super8`, a
+  home movie; `film_16mm`, a documentary print; `silent_film`, the
+  1920s in black and white; `faded_70s`, colour gone warm and flat: the
+  amount is their damage, the template's own at the default; `params`
+  `age` and `amount` (Damage, 0 to 2) move a template, and each part has
+  its own: `flicker`, `scratches`, `dust` (debris: a few specks a frame,
+  each gone in a frame or two), `stains`, `weave`, `frame_lines`,
+  `leaks`, `burn`, `sepia`, `mono`), `flicker` (random jumps of
   the opacity; `exposure_flicker` of the light), `binocular`
   (`binocular_vignette`: two eyepieces, a fringe at their rims) and the
   particles `dust`, `snow`, `rain`, `sparks` and `embers` (`particles`
@@ -859,6 +866,12 @@ exist until the plan runs.
   draw attention to a region. `x,y` are its centre and `w,h` its size
   as frame fractions; `kind` is `box`, `ring` or `spot` (dim outside).
   The highlight fades in and out.
+- `freeze {clip_id, at, secs}`: a freeze frame. The clip's picture at
+  `at` is held for `secs` (a frame to 60) and inserted there; everything
+  from `at` on, on every unlocked track, moves on by `secs`, so picture
+  and sound stay in step. The held piece keeps the clip's grade and
+  effects, and its sound is silent. Trim it to change how long it holds;
+  it has no speed to retime.
 - `ramp {clip_id, from, to, secs?, ripple?, interpolation?}`: ramp speed
   from `from` times to `to` times over timeline seconds, then hold the
   new speed; the clip's length follows. `ripple: true` moves the clips

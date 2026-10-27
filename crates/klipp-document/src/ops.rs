@@ -1527,6 +1527,16 @@ pub enum Op {
         #[serde(default)]
         track: Option<TrackRef>,
     },
+    /// A freeze frame (#2773): the clip's picture at `at` held for `secs`
+    /// (a frame to 60), inserted there; everything from `at` on, on every
+    /// unlocked track, moves on by `secs`, as an insert edit does. The
+    /// held piece keeps the clip's grade and effects; its sound is
+    /// silent.
+    Freeze {
+        clip_id: ClipRef,
+        at: Anchor,
+        secs: f64,
+    },
     /// A speed ramp over the clip: from `from`× to `to`× (0.1 to 8) over
     /// `secs` from the clip's start (the whole clip when left out), then
     /// holding `to`. The clip's length on the timeline follows: with
@@ -2204,7 +2214,7 @@ pub const OP_NAMES: &[&str] = &[
     "graphics", "vector_path", "connector", "place", "add_track", "remove_track", "set_track", "track_automation", "trim", "j_cut", "l_cut", "split", "join", "remove", "move", "cut",
     "captions", "audio", "volume", "duck", "lower_third", "set_text", "grade", "effect", "redact",
     "slip", "slide", "pin", "role", "match", "matte", "format", "stabilize", "reframe", "zoom", "pan", "follow", "refit", "highlight",
-    "ramp", "grade_group", "remove_grade_group", "look", "qualify", "zones", "retime", "replace", "track_audio", "clip_audio", "clean_audio",
+    "ramp", "freeze", "grade_group", "remove_grade_group", "look", "qualify", "zones", "retime", "replace", "track_audio", "clip_audio", "clean_audio",
     "transition", "style", "title", "compose", "camera", "crop", "generator", "depth", "label", "motion_blur",
     "strobe", "set_length", "over_edits", "template", "edit_from_selects", "opacity_mask",
 ];
@@ -3779,6 +3789,11 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
         Op::Highlight { at, secs: hold, x, y, w, h, kind, color, stroke, track } => {
             let at = resolve_anchor(seq, fps, at, i)?;
             highlight(seq, fps, i, at, *hold, [*x, *y, *w, *h], kind, color.as_deref(), *stroke, track.as_ref())
+        }
+        Op::Freeze { clip_id, at, secs: hold } => {
+            let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            let at = resolve_anchor(seq, fps, at, i)?;
+            freeze(seq, pool, fps, i, ti, clip, at, *hold)
         }
         Op::Ramp { clip_id, from, to, secs: over, ripple, interpolation } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
@@ -6823,7 +6838,18 @@ pub fn named_picture_effect(kind: &str, amount: Option<f32>) -> Result<(klipp_ef
         "edge_detect" | "edges" => E::EdgeDetect { strength: a * 2.0, mix: 1.0 },
         "denoise" => E::Denoise { spatial_sigma: a * 4.0, color_sigma: a * 0.1, iterations: 1 },
         "vhs" => E::Vhs { tracking: a * 0.8, bleed: a, noise: a * 0.7, scanlines: a, seed: 1 },
-        "old_film" => E::OldFilm { flicker: a * 0.5, scratches: a, dust: a, weave: a * 0.5, sepia: a * 0.5, seed: 1 },
+        // Aged as well as damaged (#2744): its colour faded and warmed.
+        "old_film" => E::OldFilm { flicker: a * 0.5, scratches: a, dust: a, weave: a * 0.5, sepia: a * 0.5, seed: 1, amount: 1.0, age: a * 0.8, mono: 0.0, stains: a * 0.2, frame_lines: 0.0, leaks: 0.0, burn: 0.0 },
+        // The film templates (#2744), the amount their damage: the
+        // template's own at the default.
+        "super8" | "film_16mm" | "silent_film" | "faded_70s" => {
+            match klipp_effects::old_film::template(&kind.to_lowercase()) {
+                Some(E::OldFilm { flicker, scratches, dust, weave, sepia, seed, age, mono, stains, frame_lines, leaks, burn, .. }) => {
+                    E::OldFilm { flicker, scratches, dust, weave, sepia, seed, amount: (a * 2.0).min(2.0), age, mono, stains, frame_lines, leaks, burn }
+                }
+                _ => unreachable!("every template named here is an old film"),
+            }
+        }
         // A random flicker of the opacity, eight jumps a second, a third
         // of them holding (#989); more flickers deeper.
         "flicker" => E::Flicker { amount: a, speed: 8.0, smoothness: 0.0, hold: 0.3, seed: 1, target: 0, time: 0.0 },
@@ -6847,7 +6873,7 @@ pub fn named_picture_effect(kind: &str, amount: Option<f32>) -> Result<(klipp_ef
                 other => other,
             }
         }
-        other => return Err((format!("\"{other}\" is not an effect"), "use e.g. vignette, grain, glow, bloom, chroma_key, luma_key, corners, shadow, outer_glow, fill_bars, diffusion, halation, light_rays, lens_flare, anamorphic, light_wrap, blur, radial_blur, spin_blur, directional_blur, sharpen, chromatic_aberration, tilt_shift, mosaic, posterize, invert, mirror, lens_distortion, displace, reflection (water_reflection, calm_water, rippled_water, glossy_floor, wet_street, glass), emboss, edge_detect, denoise, vhs, old_film, flicker, exposure_flicker, binocular, dust, snow, rain, sparks or embers".into())),
+        other => return Err((format!("\"{other}\" is not an effect"), "use e.g. vignette, grain, glow, bloom, chroma_key, luma_key, corners, shadow, outer_glow, fill_bars, diffusion, halation, light_rays, lens_flare, anamorphic, light_wrap, blur, radial_blur, spin_blur, directional_blur, sharpen, chromatic_aberration, tilt_shift, mosaic, posterize, invert, mirror, lens_distortion, displace, reflection (water_reflection, calm_water, rippled_water, glossy_floor, wet_street, glass), emboss, edge_detect, denoise, vhs, old_film (super8, film_16mm, silent_film, faded_70s), flicker, exposure_flicker, binocular, dust, snow, rain, sparks or embers".into())),
     };
     Ok((fx, a))
 }
@@ -8486,6 +8512,9 @@ fn ramp(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, clip: &
     if !matches!(clip.kind, ClipKind::Media { .. }) {
         return Err(refuse(i, format!("{} cannot be ramped", clip_name(seq, pool, clip)), "ramp a media clip"));
     }
+    if clip.hold.is_some() {
+        return Err(refuse(i, format!("{} is a freeze frame, which has no speed", clip_name(seq, pool, clip)), "trim it to change how long it holds"));
+    }
     for (name, v) in [("from", from), ("to", to)] {
         if !v.is_finite() || !(0.1..=8.0).contains(&v) {
             return Err(refuse(i, format!("a {name} speed of {v}"), format!("give {name} between 0.1 and 8")));
@@ -8531,6 +8560,54 @@ fn ramp(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, clip: &
         .collect(),
     );
     Ok((what, edit, std::iter::once(clip.id).chain(moved).collect()))
+}
+
+/// [`Op::Freeze`]: the clip's frame at `at` held for `hold` seconds,
+/// inserted there.
+#[allow(clippy::too_many_arguments)]
+fn freeze(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, clip: &Clip, at: Timecode, hold: f64) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    if seq.tracks[ti].locked {
+        return Err(refuse(i, format!("track {ti} is locked"), "unlock it first"));
+    }
+    if !matches!(clip.kind, ClipKind::Media { .. }) || pool.get(&clip.media_id().unwrap_or_default()).is_some_and(|m| m.is_still) {
+        return Err(refuse(i, format!("{} has no moving picture to freeze", clip_name(seq, pool, clip)), "freeze a clip of a video file"));
+    }
+    if !hold.is_finite() || hold < secs(one_frame(fps)) || hold > 60.0 {
+        return Err(refuse(i, format!("a hold of {hold} s"), "give secs from a frame to 60"));
+    }
+    let at = snap(secs(at), fps);
+    if at < clip.timeline_in || at >= clip.timeline_out {
+        return Err(refuse(i, format!("{:.2} s is not inside {} ({:.2}-{:.2} s)", secs(at), clip_name(seq, pool, clip), secs(clip.timeline_in), secs(clip.timeline_out)), "freeze at a time inside the clip"));
+    }
+    // The source frame shown at `at`, held: its grade and effects with it,
+    // nothing of the clip's timing or links.
+    let rate = clip.source_in.rate.max(1);
+    let shown = Timecode::from_secs_f64(clip.source_secs_at(secs(at - clip.timeline_in), fps.as_f64()), rate);
+    let mut held = clip.clone();
+    held.id = ClipId::new();
+    held.timeline_in = at;
+    held.timeline_out = at + snap(hold, fps);
+    held.source_in = shown;
+    held.source_out = shown + Timecode::from_secs_f64(1.0 / fps.as_f64(), rate).max(Timecode { value: 1, rate });
+    held.speed = 1.0;
+    held.speed_keyframes.clear();
+    held.hold = Some(shown);
+    held.linked_clip_id = None;
+    held.group_id = None;
+    let id = held.id;
+    let mut scratch = seq.clone();
+    let edit = scratch.insert_edit(ti, held, at).ok_or_else(|| refuse(i, format!("track {ti} would not take an insert"), "unlock the track"))?;
+    let what = format!(
+        "freeze {} at {:.2} s for {:.2} s (its frame at {:.2} s of the file, its sound silent); {} clip(s) split, {} moved {:.2} s later",
+        clip_name(seq, pool, clip),
+        secs(at),
+        secs(snap(hold, fps)),
+        secs(shown),
+        edit.splits.len(),
+        edit.shifted.len(),
+        secs(snap(hold, fps)),
+    );
+    Ok((what, EditCommand::LegacyInsertEdit { edit, audio: None, created_audio_track_at: None }, vec![id]))
 }
 
 /// A highlight: shapes on a title clip over the region, faded in and out.
@@ -9594,6 +9671,9 @@ fn retime(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id: ClipId,
     };
     if !matches!(clip.kind, ClipKind::Media { .. }) {
         return Err(refuse(i, format!("{} cannot be retimed", clip_name(seq, pool, clip)), "retime a media clip"));
+    }
+    if clip.hold.is_some() {
+        return Err(refuse(i, format!("{} is a freeze frame, which has no speed", clip_name(seq, pool, clip)), "trim it to change how long it holds"));
     }
     let (lo, hi) = (klipp_timeline::SPEED_MIN, klipp_timeline::SPEED_MAX);
     if !speed.is_finite() || !(lo..=hi).contains(&speed.abs()) {
@@ -16519,6 +16599,37 @@ mod tests {
         assert!(!clip.speed_keyframes.is_empty(), "and it is ramped");
     }
 
+    /// #2773: a freeze frame holds the frame shown at its time for its
+    /// length, silent; the clip's rest, the clip after it and the sound
+    /// under them move on by that length; undo puts it all back. A time
+    /// outside the clip, or a hold of nothing, is refused.
+    #[test]
+    fn a_freeze_frame_holds_one_frame_and_moves_the_rest_on() {
+        let (seq, pool, _, a, b) = fixture();
+        let ab = seq.tracks[1].clips[1].id;
+        let plan = resolve(&seq, &pool, &[Op::Freeze { clip_id: ClipRef::Id(a), at: Anchor::Secs(2.0), secs: 2.0 }]).unwrap();
+        assert!(plan.steps[0].what.contains("its sound silent"), "{}", plan.steps[0].what);
+        let mut seqs = vec![seq.clone()];
+        let (mut p, mut f) = (pool.clone(), seq.fps);
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut f };
+        view.apply_forward(&plan.steps[0].edit);
+        let after = &view.sequences[0];
+        let held = after.tracks[0].clips.iter().find(|c| c.hold.is_some()).expect("a held piece");
+        assert_eq!((held.timeline_in, held.timeline_out), (tc(2.0), tc(4.0)), "2 s at 2 s");
+        let shown: Vec<f64> = (0..20).map(|k| held.source_secs_at(k as f64 * 0.1, 25.0)).collect();
+        assert!(shown.iter().all(|s| (s - 2.0).abs() < 1e-9), "the frame at 2 s throughout: {shown:?}");
+        assert!(!held.plays_its_sound(), "silent");
+        let at = |id: ClipId| find_clip(after, id).map(|(_, _, c)| (c.timeline_in, c.timeline_out)).unwrap();
+        assert_eq!(at(b), (tc(6.0), tc(10.0)), "the next clip moved on 2 s");
+        assert_eq!(at(ab), (tc(6.0), tc(10.0)), "its sound with it");
+        let rest = after.tracks[0].clips.iter().find(|c| c.timeline_in == tc(4.0) && c.hold.is_none()).expect("the clip's rest after the hold");
+        assert_eq!((rest.source_in, rest.timeline_out), (tc(2.0), tc(6.0)), "it plays on from 2 s");
+        view.apply_inverse(&plan.steps[0].edit);
+        assert_eq!(serde_json::to_value(&view.sequences[0]).unwrap(), serde_json::to_value(&seq).unwrap(), "undo restores it");
+        assert!(resolve(&seq, &pool, &[Op::Freeze { clip_id: ClipRef::Id(a), at: Anchor::Secs(5.0), secs: 1.0 }]).is_err(), "outside the clip");
+        assert!(resolve(&seq, &pool, &[Op::Freeze { clip_id: ClipRef::Id(a), at: Anchor::Secs(1.0), secs: 0.0 }]).is_err(), "a hold of nothing");
+    }
+
     /// #2485: an installed plug-in goes on a clip's sound or a track by
     /// its id, its params by name or key and inside their ranges; one not
     /// installed, a param it lacks or a value past its range is refused; a
@@ -19611,6 +19722,8 @@ mod effect_params_tests {
         assert!(matches!(effect("displace", r#"{"direction": 2}"#).unwrap(), E::Displace { direction: 2, .. }));
         // Every described effect takes them, not only the newest (#2744).
         assert!(matches!(effect("old_film", r#"{"scratches": 0, "sepia": 1}"#).unwrap(), E::OldFilm { scratches, sepia, .. } if scratches == 0.0 && sepia == 1.0));
+        // #2744: a template by name, its age and damage set by params.
+        assert!(matches!(effect("silent_film", r#"{"age": 0.9, "amount": 1.5}"#).unwrap(), E::OldFilm { mono, age, amount, .. } if mono == 1.0 && age == 0.9 && amount == 1.5));
         assert_eq!(effect("vignette", "{}").unwrap(), named_picture_effect("vignette", None).unwrap().0);
     }
 

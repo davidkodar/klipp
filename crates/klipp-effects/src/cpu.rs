@@ -953,47 +953,11 @@ pub(crate) fn apply(
                 }
             })
         }
-        OldFilm { flicker, scratches, dust, weave, sepia, seed } => {
-            let fseed = seed.wrapping_mul(2654435761);
-            let flick = 1.0 + (noise_hash(fseed) - 0.5) * flicker * 0.4;
-            let wx = (noise_hash(fseed.wrapping_add(11)) - 0.5) * weave * 6.0 * wf / 1920.0;
-            let wy = (noise_hash(fseed.wrapping_add(23)) - 0.5) * weave * 6.0 * hf / 1080.0;
-            let n_scr = (scratches * 4.0).round() as u32;
-            let life = seed / 6;
-            each_pixel(&p, w, h, |x, y, f| {
-                let o = f.clamped(round(x as f32 + wx), round(y as f32 + wy));
-                let l = luma(o, yw);
-                let mut r = o[0] + (l * 1.07 - o[0]) * sepia;
-                let mut g = o[1] + (l * 0.93 - o[1]) * sepia;
-                let mut b = o[2] + (l * 0.72 - o[2]) * sepia;
-                r *= flick;
-                g *= flick;
-                b *= flick;
-                let mut k = 0u32;
-                while k < n_scr {
-                    let sx = noise_hash(life.wrapping_add(k.wrapping_mul(97)).wrapping_mul(7919)) * wf;
-                    let jitter = (noise_hash(seed.wrapping_add(k.wrapping_mul(31))) - 0.5) * 2.0;
-                    if (x as f32 - (sx + jitter)).abs() < 0.8 {
-                        r += (1.0 - r) * 0.35;
-                        g += (1.0 - g) * 0.35;
-                        b += (1.0 - b) * 0.35;
-                    }
-                    k += 1;
-                }
-                let cx = x as u32 / 5;
-                let cy = y as u32 / 5;
-                let dh = noise_hash(cx.wrapping_mul(7919).wrapping_add(cy.wrapping_mul(104729)).wrapping_add(seed.wrapping_mul(15485863)));
-                if dh > 1.0 - dust * 0.004 {
-                    r *= 0.15;
-                    g *= 0.15;
-                    b *= 0.15;
-                }
-                let nx = (x as f32 - wf * 0.5) / (wf * 0.5);
-                let ny = (y as f32 - hf * 0.5) / (hf * 0.5);
-                let vig = 1.0 - 0.25 * (nx * nx + ny * ny);
-                [r * vig, g * vig, b * vig, o[3]]
-            })
-        }
+        // The twin of `old_film::shader_wgsl` (#2744).
+        OldFilm { .. } => match effect.old_film_params(w, h, yw) {
+            Some(params) => crate::old_film::cpu(&p, &params),
+            None => p,
+        },
         Vhs { tracking, bleed, noise, scanlines, seed } => {
             let band_y = noise_hash(seed.wrapping_mul(2654435761)) * hf;
             let band_h = hf * 0.06;

@@ -602,7 +602,7 @@ fn builtin_preview_params(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
             klipp_effects::BuiltinEffect::FilmGrain { amount: 0.6, size: 2.5, color: 0, shadows: 0.5, seed: 3 }
         }
         klipp_effects::BuiltinEffect::OldFilm { .. } => {
-            klipp_effects::BuiltinEffect::OldFilm { flicker: 0.4, scratches: 1.0, dust: 1.0, weave: 0.5, sepia: 0.7, seed: 5 }
+            klipp_effects::BuiltinEffect::OldFilm { flicker: 0.4, scratches: 1.0, dust: 1.0, weave: 0.5, sepia: 0.7, seed: 5, amount: 1.0, age: 0.0, mono: 0.0, stains: 0.0, frame_lines: 0.0, leaks: 0.0, burn: 0.0 }
         }
         // A still card shows a flicker mid-dip.
         klipp_effects::BuiltinEffect::Flicker { .. } => {

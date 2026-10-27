@@ -361,6 +361,18 @@ impl KlippApp {
                     }
                     true
                 }
+                AppCommand::FreezeFrame { clip_id, at_secs, secs } => {
+                    use klipp_document::ops::{Anchor, ClipRef, Op};
+                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    match klipp_document::ops::resolve(seq, &self.state.media_pool, &[Op::Freeze { clip_id: ClipRef::Id(*clip_id), at: Anchor::Secs(*at_secs), secs: *secs }]) {
+                        Ok(plan) => {
+                            let edits: Vec<_> = plan.steps.into_iter().map(|s| s.edit).collect();
+                            self.apply_edits_as_one(&edits, "Freeze Frame");
+                        }
+                        Err(r) => self.state.toast.show(format!("No freeze frame: {}. {}", r.why, r.hint)),
+                    }
+                    true
+                }
                 AppCommand::SetClipInterpolation { clip_id, interpolation } => {
                     let seq = &self.state.sequences[self.state.active_sequence_idx];
                     match klipp_document::ops::interpolation_at(seq, &self.state.media_pool, *clip_id, interpolation) {

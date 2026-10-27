@@ -8306,23 +8306,6 @@ struct TiltShiftParams {
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct OldFilmParams {
-    width: u32,
-    height: u32,
-    flicker: f32,
-    scratches: f32,
-    dust: f32,
-    weave: f32,
-    sepia: f32,
-    seed: u32,
-    luma_yr: f32,
-    luma_yg: f32,
-    luma_yb: f32,
-    _pad: u32,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct VhsParams {
     width: u32,
     height: u32,
@@ -17918,80 +17901,7 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
 
 // Old film — gate weave, flicker, sepia, scratches, dust and a soft
 // vignette, one pass, all driven by `seed` (the frame number).
-const SHADER_OLD_FILM: &str = concat!(
-    shader_pixel_storage_wgsl!(),
-    "
-struct Params {
-    width: u32, height: u32, flicker: f32, scratches: f32,
-    dust: f32, weave: f32, sepia: f32, seed: u32,
-    luma_yr: f32, luma_yg: f32, luma_yb: f32, _pad: u32,
-}
-
-@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
-@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
-@group(0) @binding(2) var<uniform> params: Params;
-
-fn hash(p: u32) -> f32 {
-    var x = p;
-    x = ((x >> 16u) ^ x) * 0x45d9f3bu;
-    x = ((x >> 16u) ^ x) * 0x45d9f3bu;
-    x = (x >> 16u) ^ x;
-    return f32(x) / 4294967295.0;
-}
-
-fn sample_clamped(x: f32, y: f32) -> vec4<f32> {
-    let xi = clamp(i32(round(x)), 0, i32(params.width) - 1);
-    let yi = clamp(i32(round(y)), 0, i32(params.height) - 1);
-    return unpack(input[u32(yi) * params.width + u32(xi)]);
-}
-
-@compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
-    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
-    let idx = gid.x;
-    if idx >= params.width * params.height { return; }
-    let x = idx % params.width;
-    let y = idx / params.width;
-    let wf = f32(params.width);
-    let hf = f32(params.height);
-    let fseed = params.seed * 2654435761u;
-    let flick = 1.0 + (hash(fseed) - 0.5) * params.flicker * 0.4;
-    let wx = (hash(fseed + 11u) - 0.5) * params.weave * 6.0 * wf / 1920.0;
-    let wy = (hash(fseed + 23u) - 0.5) * params.weave * 6.0 * hf / 1080.0;
-    let o = sample_clamped(f32(x) + wx, f32(y) + wy);
-    let l = dot(o.xyz, vec3<f32>(params.luma_yr, params.luma_yg, params.luma_yb));
-    var r = (o.x + (l * 1.07 - o.x) * params.sepia) * flick;
-    var g = (o.y + (l * 0.93 - o.y) * params.sepia) * flick;
-    var b = (o.z + (l * 0.72 - o.z) * params.sepia) * flick;
-    let n_scr = u32(round(params.scratches * 4.0));
-    let life = params.seed / 6u;
-    var k: u32 = 0u;
-    loop {
-        if k >= n_scr { break; }
-        let sx = hash((life + k * 97u) * 7919u) * wf;
-        let jitter = (hash(params.seed + k * 31u) - 0.5) * 2.0;
-        if abs(f32(x) - (sx + jitter)) < 0.8 {
-            r = r + (1.0 - r) * 0.35;
-            g = g + (1.0 - g) * 0.35;
-            b = b + (1.0 - b) * 0.35;
-        }
-        k = k + 1u;
-    }
-    let cx = x / 5u;
-    let cy = y / 5u;
-    let dh = hash(cx * 7919u + cy * 104729u + params.seed * 15485863u);
-    if dh > 1.0 - params.dust * 0.004 {
-        r = r * 0.15;
-        g = g * 0.15;
-        b = b * 0.15;
-    }
-    let nx = (f32(x) - wf * 0.5) / (wf * 0.5);
-    let ny = (f32(y) - hf * 0.5) / (hf * 0.5);
-    let vig = 1.0 - 0.25 * (nx * nx + ny * ny);
-    output[idx] = pack(vec4<f32>(r * vig, g * vig, b * vig, o.w));
-}
-"
-);
+const SHADER_OLD_FILM: &str = concat!(shader_pixel_storage_wgsl!(), crate::old_film::shader_wgsl!());
 
 // VHS — per-row tracking jitter with a wandering tear band, chroma
 // bleed (luma from here, chroma from a few pixels left), tape noise

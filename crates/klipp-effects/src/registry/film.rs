@@ -130,6 +130,13 @@ pub(super) static TYPES: &[EffectType] = &[
                 ParamDesc::float("weave", "Weave", 0.5, UNIT, Unit::Ratio),
                 ParamDesc::float("sepia", "Sepia", 0.6, UNIT, Unit::Ratio),
                 seed(),
+                ParamDesc::float("amount", "Damage", 1.0, (0.0, 2.0), Unit::Ratio),
+                ParamDesc::float("age", "Age", 0.0, UNIT, Unit::Ratio),
+                ParamDesc::float("mono", "Black and White", 0.0, UNIT, Unit::Ratio),
+                ParamDesc::float("stains", "Stains", 0.0, UNIT, Unit::Ratio),
+                ParamDesc::float("frame_lines", "Frame Line", 0.0, UNIT, Unit::Ratio),
+                ParamDesc::float("leaks", "Light Leaks", 0.0, UNIT, Unit::Ratio),
+                ParamDesc::float("burn", "Burned Edges", 0.0, UNIT, Unit::Ratio),
             ],
             ColourDomain::Linear,
             Spatial::Geometric,
@@ -137,7 +144,7 @@ pub(super) static TYPES: &[EffectType] = &[
             true,
         )),
         tag: "old_film",
-        sample: || BuiltinEffect::OldFilm { flicker: 0.4, scratches: 0.5, dust: 0.5, weave: 0.5, sepia: 0.6, seed: 0 },
+        sample: || BuiltinEffect::OldFilm { flicker: 0.4, scratches: 0.5, dust: 0.5, weave: 0.5, sepia: 0.6, seed: 0, amount: 1.0, age: 0.0, mono: 0.0, stains: 0.0, frame_lines: 0.0, leaks: 0.0, burn: 0.0 },
     },
     EffectType {
         desc: mixable(effect(
