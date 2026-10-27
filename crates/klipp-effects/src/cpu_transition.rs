@@ -497,19 +497,20 @@ fn pixel(params: &Params, from_buf: &Buf, to_buf: &Buf, idx: u32) -> V4 {
             result = lerp_pixel(from_block, to_px, t_px);
         }
     } else if params.kind_id == 20u32 {
-        // Ripple: radial sine displacement, envelope peaks at midpoint.
-        // param0=amplitude, param1=frequency, param2=speed
+        // Ripple: rings spreading from the centre through both shots, the
+        // surface lit by their slope, strongest at the cut. Sized by the
+        // frame: param0 the amplitude in pixels of a 1080-line frame,
+        // param1 the rings across its height, param2 their speed. Sized by
+        // the pixel instead, the rings were finer than the picture's detail
+        // and moved one shot only: a plain dissolve to see (#2764).
         let cx = f32c(params.width) * 0.5;
         let cy = f32c(params.height) * 0.5;
         let dx = f32c(x) - cx;
         let dy = f32c(y) - cy;
         let dist = length(vec2!(dx, dy));
-        let amplitude = params.param0;
-        let frequency = params.param1;
-        let speed = params.param2;
-        let envelope = sin(p * 3.14159265) * amplitude;
-        let phase = dist * frequency * 0.1 - p * speed * 10.0;
-        let ripple = sin(phase) * envelope;
+        let wave = sin(p * 3.14159265);
+        let phase = dist / f32c(params.height) * params.param1 * 6.28318530 - p * params.param2 * 10.0;
+        let ripple = sin(phase) * wave * params.param0 * f32c(params.height) / 1080.0;
         let mut nx: f32 = 0.0;
         let mut ny: f32 = 0.0;
         if dist > 0.1 {
@@ -518,11 +519,12 @@ fn pixel(params: &Params, from_buf: &Buf, to_buf: &Buf, idx: u32) -> V4 {
         }
         let sx = clamp(f32c(x) + nx * ripple, 0.0, f32c(params.width) - 1.0);
         let sy = clamp(f32c(y) + ny * ripple, 0.0, f32c(params.height) - 1.0);
-        let sample_idx = u32c(sy) * params.width + u32c(sx);
-        let from_distorted = unpack(from_buf[sample_idx]);
-        result = lerp_pixel(from_distorted, to_px, p);
+        let base = lerp_pixel(bilinear(false, sx, sy), bilinear(true, sx, sy), p);
+        let light = 1.0 + cos(phase) * wave * 0.15;
+        result = vec4!(clamp(base.x * light, 0.0, 255.0), clamp(base.y * light, 0.0, 255.0), clamp(base.z * light, 0.0, 255.0), base.w);
     } else if params.kind_id == 21u32 || params.kind_id == 22u32 {
-        // Page Turn (21) / Page Turn Reverse (22): peel from one side with fold shadow.
+        // Page Turn (21) / Page Turn Reverse (22): the page turns over from
+        // one side, a shadow at the fold and its curled back beside it.
         // param0 = shadow intensity, param1 = direction (0=RTL, 1=LTR) for PageTurn.
         let shadow_intensity = params.param0;
         let mut fx: f32 = f32c(x);
@@ -537,6 +539,21 @@ fn pixel(params: &Params, from_buf: &Buf, to_buf: &Buf, idx: u32) -> V4 {
             let shadow = shadow_intensity * exp(-shadow_dist * 3.0);
             let t = clamp(1.0 - shadow, 0.0, 1.0);
             result = vec4!(to_px.x * t, to_px.y * t, to_px.z * t, 255.0);
+        } else if norm_x > fold_x - (1.0 - fold_x) * 0.6 {
+            // The turned page curled over beside the fold: its back, the
+            // part past the fold mirrored, paler as paper's back is, lit
+            // along the curl. Without it the page slid off with no turn
+            // to see (#2764).
+            let fw = max((1.0 - fold_x) * 0.6, 0.001);
+            let d = (fold_x - norm_x) / fw;
+            let mut src = (fold_x + d * (1.0 - fold_x)) * f32c(params.width);
+            if params.kind_id == 22u32 || params.param1 > 0.5 {
+                src = f32c(params.width) - 1.0 - src;
+            }
+            let back = bilinear(false, clamp(src, 0.0, f32c(params.width) - 1.0), f32c(y));
+            let curl = 0.75 + 0.25 * sin(d * 3.14159265);
+            let paper = (back.rgb() * 0.45 + vec3!(0.55 * 255.0, 0.53 * 255.0, 0.5 * 255.0)) * curl;
+            result = vec4!(paper.x, paper.y, paper.z, 255.0);
         } else {
             let shadow_dist = (fold_x - norm_x) / denom;
             let shadow = shadow_intensity * 0.5 * exp(-shadow_dist * 2.0);
@@ -1137,7 +1154,11 @@ fn pixel(params: &Params, from_buf: &Buf, to_buf: &Buf, idx: u32) -> V4 {
             result = to_px;
         }
     } else if params.kind_id == 63u32 || params.kind_id == 64u32 || params.kind_id == 65u32 {
-        // Zoom family: scale from/to around frame center.
+        // Zoom family: scale from/to around frame center. In (63) the
+        // outgoing shot pushes in, out (64) the incoming one settles from
+        // close up, cross (65) both; whichever moves is blurred along the
+        // zoom, most at the cut, as a fast zoom is. Without the blur the
+        // zooms read as a plain dissolve on footage (#2764).
         let zoom_amount = max(params.param0, 1.001);
         let cx = f32c(params.width) * 0.5;
         let cy = f32c(params.height) * 0.5;
@@ -1147,34 +1168,25 @@ fn pixel(params: &Params, from_buf: &Buf, to_buf: &Buf, idx: u32) -> V4 {
         if params.kind_id == 65u32 && params.param1 > 0.5 {
             ep = p * p * (3.0 - 2.0 * p);
         }
-        let mut from_sample: V4 = Default::default();
-        let mut to_sample: V4 = Default::default();
-        if params.kind_id == 63u32 {
-            let scale_a = 1.0 + (zoom_amount - 1.0) * ep;
-            let from_sx = clamp(dx / scale_a + cx, 0.0, f32c(params.width) - 1.0);
-            let from_sy = clamp(dy / scale_a + cy, 0.0, f32c(params.height) - 1.0);
-            from_sample = bilinear(false, from_sx, from_sy);
-            to_sample = to_px;
-        } else if params.kind_id == 64u32 {
-            // The incoming shot settles from close up to its own size, the
-            // outgoing one left as it is: zoomed at the start, the cut
-            // jumped (#2765).
-            let scale_b = zoom_amount - (zoom_amount - 1.0) * ep;
-            let to_sx = clamp(dx / scale_b + cx, 0.0, f32c(params.width) - 1.0);
-            let to_sy = clamp(dy / scale_b + cy, 0.0, f32c(params.height) - 1.0);
-            from_sample = from_px;
-            to_sample = bilinear(true, to_sx, to_sy);
-        } else {
-            let scale_a = 1.0 + (zoom_amount - 1.0) * ep;
-            let scale_b = zoom_amount - (zoom_amount - 1.0) * ep;
-            let from_sx = clamp(dx / scale_a + cx, 0.0, f32c(params.width) - 1.0);
-            let from_sy = clamp(dy / scale_a + cy, 0.0, f32c(params.height) - 1.0);
-            let to_sx = clamp(dx / scale_b + cx, 0.0, f32c(params.width) - 1.0);
-            let to_sy = clamp(dy / scale_b + cy, 0.0, f32c(params.height) - 1.0);
-            from_sample = bilinear(false, from_sx, from_sy);
-            to_sample = bilinear(true, to_sx, to_sy);
+        let from_zooms = params.kind_id != 64u32;
+        let to_zooms = params.kind_id != 63u32;
+        // Each moving shot travels twice its zoom over the transition, so
+        // it is at the full zoom amount at the cut, where it is half of the
+        // picture; past that it is all but gone.
+        let travel = 2.0 * (zoom_amount - 1.0);
+        let scale_a = select(1.0, 1.0 + travel * ep, from_zooms);
+        let scale_b = select(1.0, 1.0 + travel * (1.0 - ep), to_zooms);
+        let blur = sin(p * 3.14159265) * 0.08;
+        let mut from_sum = vec4!(0.0);
+        let mut to_sum = vec4!(0.0);
+        for k in 0u32..6u32 {
+            let spread = 1.0 + blur * f32c(k) / 5.0;
+            let sa = scale_a * select(1.0, spread, from_zooms);
+            let sb = scale_b * select(1.0, spread, to_zooms);
+            from_sum = from_sum + bilinear(false, clamp(dx / sa + cx, 0.0, f32c(params.width) - 1.0), clamp(dy / sa + cy, 0.0, f32c(params.height) - 1.0));
+            to_sum = to_sum + bilinear(true, clamp(dx / sb + cx, 0.0, f32c(params.width) - 1.0), clamp(dy / sb + cy, 0.0, f32c(params.height) - 1.0));
         }
-        result = lerp_pixel(from_sample, to_sample, ep);
+        result = lerp_pixel(from_sum / 6.0, to_sum / 6.0, ep);
     } else if params.kind_id == 62u32 {
         // Bokeh Dissolve: screen-blend bloom + chromatic fringe.
         let bokeh_size = params.param0;
@@ -1388,26 +1400,35 @@ fn pixel(params: &Params, from_buf: &Buf, to_buf: &Buf, idx: u32) -> V4 {
         let to_s = unpack(to_buf[sample_idx]);
         result = lerp_pixel(from_s, to_s, p);
     } else if params.kind_id == 54u32 {
-        // Wave Distortion: sinusoidal displacement.
-        let amplitude = params.param0;
+        // Wave Distortion: both shots bent by a sine wave, its crests lit,
+        // strongest at the cut; param0 the amplitude in pixels of a
+        // 1080-line frame. Unlit, its bend read as a plain dissolve on
+        // footage (#2764).
         let frequency = params.param1;
         let dir = u32c(params.param2 + 0.5);
-        let envelope = sin(p * 3.14159265) * amplitude;
+        let wave = sin(p * 3.14159265);
+        let envelope = wave * params.param0 * f32c(params.height) / 1080.0;
+        let ay = f32c(y) / f32c(params.height) * frequency * 6.28318530;
+        let ax = f32c(x) / f32c(params.width) * frequency * 6.28318530;
         let mut off_x: f32 = 0.0;
         let mut off_y: f32 = 0.0;
+        let mut crest: f32 = 0.0;
         if dir == 0u32 {
-            off_x = sin(f32c(y) / f32c(params.height) * frequency * 6.28318530) * envelope;
+            off_x = sin(ay) * envelope;
+            crest = cos(ay);
         } else if dir == 1u32 {
-            off_y = sin(f32c(x) / f32c(params.width) * frequency * 6.28318530) * envelope;
+            off_y = sin(ax) * envelope;
+            crest = cos(ax);
         } else {
-            off_x = sin(f32c(y) / f32c(params.height) * frequency * 6.28318530) * envelope * 0.7;
-            off_y = sin(f32c(x) / f32c(params.width) * frequency * 6.28318530) * envelope * 0.7;
+            off_x = sin(ay) * envelope * 0.7;
+            off_y = sin(ax) * envelope * 0.7;
+            crest = (cos(ay) + cos(ax)) * 0.5;
         }
         let sx = clamp(f32c(x) + off_x, 0.0, f32c(params.width) - 1.0);
         let sy = clamp(f32c(y) + off_y, 0.0, f32c(params.height) - 1.0);
-        let from_s = bilinear(false, sx, sy);
-        let to_s = bilinear(true, sx, sy);
-        result = lerp_pixel(from_s, to_s, p);
+        let base = lerp_pixel(bilinear(false, sx, sy), bilinear(true, sx, sy), p);
+        let light = 1.0 + crest * wave * 0.15;
+        result = vec4!(clamp(base.x * light, 0.0, 255.0), clamp(base.y * light, 0.0, 255.0), clamp(base.z * light, 0.0, 255.0), base.w);
     } else if params.kind_id == 51u32 {
         // Colorize Flash: user-defined color washes over at the cut.
         let flash_color = vec3!(

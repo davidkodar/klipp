@@ -643,7 +643,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "ZoomInDissolve",
         display_name: "Zoom In Dissolve",
         short_label: "Zoom In",
-        default_params: TransitionUserParams { param0: 1.3, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
+        default_params: TransitionUserParams { param0: 1.5, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
         kind: TransitionKind::ZoomOutDissolve,
@@ -651,7 +651,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "ZoomOutDissolve",
         display_name: "Zoom Out Dissolve",
         short_label: "Zoom Out",
-        default_params: TransitionUserParams { param0: 1.3, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
+        default_params: TransitionUserParams { param0: 1.5, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
         kind: TransitionKind::CrossZoom,
