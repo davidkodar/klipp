@@ -1068,6 +1068,36 @@ pub fn reversed_frames_given() -> u64 {
     REVERSED_FRAMES_GIVEN.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// The frames the viewer's source handed out, while kept (#2863): each
+/// clip asked for, the source time asked, and the presentation time of
+/// the frame given. Off until [`keep_frames_given`] turns it on: what a
+/// test reads to tell a side of a transition that held one frame from one
+/// that played.
+static FRAMES_GIVEN: std::sync::Mutex<Option<Vec<(klipp_core::ClipId, f64, Option<f64>)>>> = std::sync::Mutex::new(None);
+/// Whether [`FRAMES_GIVEN`] keeps them: read without the lock, each frame.
+static KEEPING_FRAMES_GIVEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Start keeping the frames the viewer's source hands out, from none.
+pub fn keep_frames_given() {
+    *FRAMES_GIVEN.lock().unwrap_or_else(|e| e.into_inner()) = Some(Vec::new());
+    KEEPING_FRAMES_GIVEN.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The frames kept since [`keep_frames_given`], and stop keeping them.
+pub fn frames_given() -> Vec<(klipp_core::ClipId, f64, Option<f64>)> {
+    KEEPING_FRAMES_GIVEN.store(false, std::sync::atomic::Ordering::Relaxed);
+    FRAMES_GIVEN.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap_or_default()
+}
+
+pub(crate) fn note_frame_given(clip: klipp_core::ClipId, asked: f64, pts: Option<f64>) {
+    if !KEEPING_FRAMES_GIVEN.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    if let Some(kept) = FRAMES_GIVEN.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        kept.push((clip, asked, pts));
+    }
+}
+
 /// Clip streams opened, on screen or ahead, since the process began.
 pub fn streams_opened() -> u64 {
     STREAMS_OPENED.load(std::sync::atomic::Ordering::Relaxed)

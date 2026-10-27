@@ -283,7 +283,9 @@ fn source_frame(f: &HeldFrame) -> SourceFrame {
 /// too, which also decodes a window (#617). Not on `primary_track`, whose
 /// next shot the primary decoder prerolls; a shot on another track coming
 /// up as the primary's track runs out, behind a held still, was opened
-/// cold at the cut, the picture freezing half a second (#2097).
+/// cold at the cut, the picture freezing half a second (#2097). A
+/// transition's incoming side is opened from where it first shows,
+/// whatever its track (#2863).
 fn upcoming(seq: &Sequence, time: klipp_core::Timecode, playing: bool, primary_track: Option<usize>) -> Vec<(Want, f64)> {
     if !playing {
         return Vec::new();
@@ -309,6 +311,23 @@ fn upcoming(seq: &Sequence, time: klipp_core::Timecode, playing: bool, primary_t
         .map(|(_, _, c)| c)
         .filter_map(|c| Some((Want { clip: c.id, media: c.media_id()?, rotation: c.source_rotation, source_secs: c.source_secs_at(0.0, fps), reversed: c.is_reversed(), ahead: true }, c.timeline_in.to_secs_f64() - from)))
         .collect();
+    // A transition's incoming side coming up shows from the transition's
+    // start, in its handle before its cut (#2863): opened ahead from
+    // there, on any track, and handed to the primary decoder at the cut as
+    // any stream is. The primary decoder prerolls its track's next shot
+    // from the cut, and the side opened only as it came on screen had no
+    // frame until about the cut. One starting at its cut is a cut.
+    for t in seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible) {
+        for tr in &t.transitions {
+            let Some((start, _)) = klipp_timeline::crossfade::window(t, tr) else { continue };
+            let Some(b) = t.find_clip(tr.clip_b_id).filter(|b| b.enabled && start < b.timeline_in) else { continue };
+            let at = start.to_secs_f64();
+            let Some(media) = b.media_id().filter(|_| at > from && at <= to) else { continue };
+            out.retain(|(w, _)| w.clip != b.id);
+            let want = Want { clip: b.id, media, rotation: b.source_rotation, source_secs: klipp_compose::render::source_secs(b, start, fps), reversed: b.is_reversed(), ahead: true };
+            out.push((want, at - from));
+        }
+    }
     // The soonest first: with the decoders all open, the one due next.
     out.sort_by(|a, b| a.1.total_cmp(&b.1));
     out
@@ -387,10 +406,9 @@ impl FrameSource for ViewerSource<'_> {
     fn frame(&mut self, clip: &Clip, source_secs: f64, width: u32, height: u32) -> Option<SourceFrame> {
         // A reversed clip is never the primary decoder's, and its frames
         // are read at the time asked for (#617).
-        if clip.is_reversed() {
-            return self.streams.reversed_frame(clip, source_secs, width, height);
-        }
-        self.held(clip.id).map(source_frame)
+        let got = if clip.is_reversed() { self.streams.reversed_frame(clip, source_secs, width, height) } else { self.held(clip.id).map(source_frame) };
+        super::note_frame_given(clip.id, source_secs, got.as_ref().and_then(|f| f.pts));
+        got
     }
 
     fn frame_after(&mut self, clip: &Clip, source_secs: f64, width: u32, height: u32) -> Option<SourceFrame> {
