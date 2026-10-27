@@ -9,7 +9,7 @@ use klipp_effects::{apply_effects, BuiltinEffect};
 /// `scale`.
 fn alpha_in_from_edge(feather: f32, w: u32, scale: f32, d: u32) -> f32 {
     let h = w / 2;
-    let crop = BuiltinEffect::Crop { left: 0.2, right: 0.2, top: 0.0, bottom: 0.0, feather }.at_render_scale(scale);
+    let crop = BuiltinEffect::Crop { left: 0.2, right: 0.2, top: 0.0, bottom: 0.0, feather, aspect: 0.0, focus_x: 0.5, focus_y: 0.5 }.at_render_scale(scale);
     let out = apply_effects(&[crop], [0.5, 0.5, 0.5, 1.0].repeat((w * h) as usize), w, h);
     let edge = (0.2 * w as f32).ceil() as u32;
     out[(((h / 2) * w + edge + d) * 4 + 3) as usize]

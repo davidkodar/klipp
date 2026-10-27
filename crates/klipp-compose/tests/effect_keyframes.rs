@@ -21,7 +21,7 @@ fn key(time_secs: f64, value: f32) -> Keyframe {
 /// dropped from the chain, and would hide whether its keyframe landed).
 fn every_effect() -> Vec<E> {
     let all = vec![
-        E::Crop { left: 0.1, right: 0.1, top: 0.1, bottom: 0.1, feather: 0.1 },
+        E::Crop { left: 0.1, right: 0.1, top: 0.1, bottom: 0.1, feather: 0.1, aspect: 0.0, focus_x: 0.5, focus_y: 0.5},
         E::Transform {
             position_x: 0.0, position_y: 0.0, scale_x: 1.0, scale_y: 1.0, rotation: 0.0,
             anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None,

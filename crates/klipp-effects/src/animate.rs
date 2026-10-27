@@ -36,12 +36,15 @@ impl BuiltinEffect {
     pub fn animate(&mut self, f: &mut ParamFn) {
         use BuiltinEffect as E;
         match self {
-            E::Crop { left, right, top, bottom, feather } => {
+            E::Crop { left, right, top, bottom, feather, aspect, focus_x, focus_y } => {
                 real(f, "left", left);
                 real(f, "right", right);
                 real(f, "top", top);
                 real(f, "bottom", bottom);
                 real(f, "feather", feather);
+                real(f, "aspect", aspect);
+                real(f, "focus_x", focus_x);
+                real(f, "focus_y", focus_y);
             }
             E::Opacity { value } => real(f, "value", value),
             E::GaussianBlur { radius } => real(f, "radius", radius),

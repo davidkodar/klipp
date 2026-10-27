@@ -157,7 +157,7 @@ impl EffectRegistry {
                 name: "Crop".into(),
                 category: EffectCategory::Distort,
                 source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Crop {
-                    left: 0.0, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0,
+                    left: 0.0, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0, aspect: 0.0, focus_x: 0.5, focus_y: 0.5
                 }),
                 source_label: "Built-in",
                 description: String::new(),

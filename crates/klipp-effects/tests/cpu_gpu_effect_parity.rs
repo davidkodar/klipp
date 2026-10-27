@@ -84,8 +84,8 @@ fn cases() -> Vec<(&'static str, BuiltinEffect)> {
     vec![
         ("Opacity", Opacity { value: 0.5 }),
         ("ColorFade", ColorFade { color: [20, 40, 200, 255], duration_secs: 1.0, mode: ColorFadeMode::In, progress: 0.4 }),
-        ("Crop", Crop { left: 0.1, right: 0.05, top: 0.1, bottom: 0.2, feather: 0.0 }),
-        ("Crop feathered", Crop { left: 0.1, right: 0.05, top: 0.1, bottom: 0.2, feather: 0.05 }),
+        ("Crop", Crop { left: 0.1, right: 0.05, top: 0.1, bottom: 0.2, feather: 0.0, aspect: 0.0, focus_x: 0.5, focus_y: 0.5}),
+        ("Crop feathered", Crop { left: 0.1, right: 0.05, top: 0.1, bottom: 0.2, feather: 0.05, aspect: 0.0, focus_x: 0.5, focus_y: 0.5}),
         ("GaussianBlur", GaussianBlur { radius: 4.0 }),
         ("FocusBlur down", FocusBlur { radius: 5.0, vertical: true, band: 0.3 }),
         ("FocusBlur across", FocusBlur { radius: 3.0, vertical: false, band: 0.5 }),

@@ -1012,6 +1012,10 @@ pub struct Renderer {
     /// buffers reused from frame to frame. `precomp_ready` holds those
     /// composed this frame.
     precomp_scenes: HashMap<ClipId, Arc<wgpu::Buffer>>,
+    /// Each media clip's source size as last read, and the render's size
+    /// then (#2757): what a crop to a shape is worked out from, a kept
+    /// still's too.
+    source_sizes: HashMap<ClipId, ((u32, u32), (u32, u32))>,
     precomp_ready: std::collections::HashSet<ClipId>,
     /// The first of each clip's stack layers its title sources are drawn
     /// in this frame (#2758), after the layers of the stack.
@@ -1218,6 +1222,7 @@ impl Renderer {
             still_generators: HashMap::new(),
             still_layers: HashMap::new(),
             precomp_scenes: HashMap::new(),
+            source_sizes: HashMap::new(),
             side_title_slots: HashMap::new(),
             precomp_ready: std::collections::HashSet::new(),
             grade_split: GradeSplit::default(),
@@ -2675,6 +2680,9 @@ impl Renderer {
                     None => {
                         let Some(f) = src.frame(c, read_at, width, height) else { return Ok(None) };
                         source_pts = f.pts;
+                        if !precomp {
+                            self.source_sizes.insert(c.id, ((f.width, f.height), (width, height)));
+                        }
                         // A source of another size is fitted into the frame, as on
                         // the CPU: on the GPU when the source can seed at another
                         // size, else fitted here and sent up. It used to be
@@ -2708,6 +2716,11 @@ impl Renderer {
                         }
                     }
                 };
+                // A crop to a shape, worked out from the source's size now
+                // it is known (#2757): a crop and a placement, as on the CPU.
+                if let Some(&(size, _)) = self.source_sizes.get(&c.id).filter(|_| !precomp) {
+                    klipp_effects::resolve_cover_shapes(&mut fx, size, (width, height));
+                }
                 match pixels {
                     // An ungraded layer with effects takes the branch below:
                     // its effects run as a plan (step 11d).
@@ -4119,6 +4132,10 @@ impl Renderer {
         }
         self.authored_colours(&mut fx);
         self.at_render_scale(&mut fx);
+        // A crop to a shape, from the source's size as decoded (#2757).
+        if let (ClipKind::Media { .. }, Some(size)) = (&clip.kind, self.source_decoded) {
+            klipp_effects::resolve_cover_shapes(&mut fx, size, (width, height));
+        }
         self.title_light(clip, &mut fx);
         if crate::resolve::reads_below(clip) {
             self.put_below(clip, &fx, width, height);
@@ -4733,6 +4750,14 @@ impl Renderer {
                 }
                 self.authored_colours(&mut fx);
                 self.at_render_scale(&mut fx);
+                // A crop to a shape, from the source's size as read (#2757),
+                // the lists beside the effects kept in step.
+                if let (ClipKind::Media { .. }, Some(&(size, frame))) = (&clip.kind, self.source_sizes.get(&clip.id)) {
+                    for at in klipp_effects::resolve_cover_shapes(&mut fx, size, frame) {
+                        blends.insert(at, None);
+                        nodes.insert(at, None);
+                    }
+                }
                 // An effect beside the chain (a generator a merge lays
                 // over, #1746) is authored as the chain's are.
                 for b in blends.iter_mut().flatten() {

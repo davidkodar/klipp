@@ -29,7 +29,7 @@ fn colour() -> Vec<E> {
 }
 fn geometry() -> Vec<E> {
     vec![
-        E::Crop { left: 0.05, right: 0.1, top: 0.0, bottom: 0.08, feather: 1.5 },
+        E::Crop { left: 0.05, right: 0.1, top: 0.0, bottom: 0.08, feather: 1.5, aspect: 0.0, focus_x: 0.5, focus_y: 0.5},
         E::Transform {
             position_x: 2.0, position_y: -1.0, scale_x: 1.1, scale_y: 0.95, rotation: 4.0,
             anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 6.0, perspective: 1.2, focal_ref: None,
@@ -146,7 +146,7 @@ fn a_run_of_recorded_effects_is_one_submit() {
         E::Opacity { value: 1.0 },
         E::Gamma { gamma: 1.0 },
         E::Invert { mix: 0.0 },
-        E::Crop { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0 },
+        E::Crop { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0, aspect: 0.0, focus_x: 0.5, focus_y: 0.5},
         E::Mirror { horizontal: 0, vertical: 0 },
         E::LensDistortion { distortion: 0.0, scale: 1.0 },
         E::Displace { amount: 0.0, size: 80.0, speed: 1.0, direction: 0, seed: 0, time: 1.0 },

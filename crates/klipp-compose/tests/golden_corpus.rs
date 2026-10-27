@@ -376,8 +376,8 @@ fn effect_cases() -> Vec<Case> {
     let full = vec![
         ("Opacity", Opacity { value: 0.5 }),
         ("ColorFade", ColorFade { color: [20, 40, 200, 255], duration_secs: 1.0, mode: ColorFadeMode::In, progress: 0.4 }),
-        ("Crop", Crop { left: 0.1, right: 0.05, top: 0.1, bottom: 0.2, feather: 0.0 }),
-        ("Crop feathered", Crop { left: 0.1, right: 0.05, top: 0.1, bottom: 0.2, feather: 0.05 }),
+        ("Crop", Crop { left: 0.1, right: 0.05, top: 0.1, bottom: 0.2, feather: 0.0, aspect: 0.0, focus_x: 0.5, focus_y: 0.5}),
+        ("Crop feathered", Crop { left: 0.1, right: 0.05, top: 0.1, bottom: 0.2, feather: 0.05, aspect: 0.0, focus_x: 0.5, focus_y: 0.5}),
         ("GaussianBlur", GaussianBlur { radius: 4.0 }),
         ("FocusBlur", FocusBlur { radius: 5.0, vertical: true, band: 0.3 }),
         ("Sharpen", Sharpen { amount: 1.0 }),
@@ -842,7 +842,7 @@ fn matte_cases() -> Vec<Case> {
         let base = media(0.0, 4.0);
         let mut source = media(0.0, 4.0);
         if channel == MatteChannel::Alpha {
-            source = TestClip::of(source).effects(vec![BuiltinEffect::Crop { left: 0.2, right: 0.3, top: 0.1, bottom: 0.25, feather: 0.08 }]).build();
+            source = TestClip::of(source).effects(vec![BuiltinEffect::Crop { left: 0.2, right: 0.3, top: 0.1, bottom: 0.25, feather: 0.08, aspect: 0.0, focus_x: 0.5, focus_y: 0.5}]).build();
         }
         let mut consumer = media(0.0, 4.0);
         consumer = TestClip::of(consumer).effects(vec![BuiltinEffect::HSVAdjust { hue_shift: 90.0, saturation: 1.2, value: 1.0 }]).build();
@@ -1029,7 +1029,7 @@ fn title_blur_cases() -> Vec<Case> {
         let mut c = Clip { kind: ClipKind::Title(td), ..Clip::gap(tc(0.0), tc(4.0)) };
         c = TestClip::of(c)
             .effects(if crop {
-                vec![BuiltinEffect::Crop { left: 0.0, right: 0.3, top: 0.0, bottom: 0.0, feather: 0.0 }, transform(1.0, 0.0, 0.0)]
+                vec![BuiltinEffect::Crop { left: 0.0, right: 0.3, top: 0.0, bottom: 0.0, feather: 0.0, aspect: 0.0, focus_x: 0.5, focus_y: 0.5}, transform(1.0, 0.0, 0.0)]
             } else {
                 vec![transform(1.0, 0.0, 0.0)]
             })
