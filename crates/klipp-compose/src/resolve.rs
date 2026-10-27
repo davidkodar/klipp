@@ -79,8 +79,10 @@ pub enum MaskSource {
     /// output `port`.
     Grade { node: NodeId, port: u8 },
     /// A node beside the clip's chain (a window, a key), built into the
-    /// run, reading `input`, at output `port`.
-    Side { node: Box<klipp_nodes::Node>, port: u8, input: SideInput },
+    /// run, reading `input`, at output `port`; after `lead` (#2758), the
+    /// effects before it on its branch, in order, the first reading
+    /// `input`: a keyed, moved, blurred picture a merge lays over.
+    Side { node: Box<klipp_nodes::Node>, lead: Vec<klipp_nodes::Node>, port: u8, input: SideInput },
     /// Wiring the renderer can't give the matte (a file's; the ops refuse
     /// it): the effect is bypassed, said why.
     Unavailable(String),
@@ -428,6 +430,23 @@ fn blend_of(picture: &ClipPicture, node: &Node, t: f64, ctx: &klipp_core::EvalCo
     Some(Blend { blend, mask, fg, compound: None })
 }
 
+/// The most nodes a branch beside the chain runs before its last (#2758).
+const MAX_BRANCH: usize = 16;
+
+/// `side` (with the `lead` before it on its branch) put into `graph`,
+/// reading `feed`'s first output, once: a node already there isn't added
+/// or wired again.
+pub(crate) fn wire_side(graph: &mut klipp_nodes::NodeGraph, feed: klipp_nodes::NodeId, lead: &[klipp_nodes::Node], side: &klipp_nodes::Node) {
+    let mut from = feed;
+    for node in lead.iter().chain(std::iter::once(side)) {
+        if !graph.nodes.iter().any(|n| n.id == node.id) {
+            graph.nodes.push(node.clone());
+            graph.edges.push(klipp_nodes::Edge { from_node: from, from_port: 0, to_node: node.id, to_port: 0 });
+        }
+        from = node.id;
+    }
+}
+
 /// Where the matte (or a Merge's picture) an edge from `from`'s `port`
 /// brings comes from, at clip time `t`.
 fn mask_source(picture: &ClipPicture, from: &NodeId, port: &str, t: f64, ctx: &klipp_core::EvalContext) -> MaskSource {
@@ -466,24 +485,43 @@ fn mask_source(picture: &ClipPicture, from: &NodeId, port: &str, t: f64, ctx: &k
         return MaskSource::Unavailable(format!("{} is in the clip's chain, not beside it", producer.id));
     }
     // A node beside the chain: what it reads, and the node the run builds.
-    // What it reads, through any reroutes (#1746).
-    let mut input = picture.graph.edges.iter().find(|e| e.to.0 == producer.id).and_then(|e| by_id(&e.from.0).map(|n| (n, e.from.1.as_str())));
-    for _ in 0..=picture.graph.nodes.len() {
-        let Some((n, _)) = input.filter(|(n, _)| kind_of(n) == "Reroute") else { break };
-        input = picture.graph.edges.iter().find(|e| e.to.0 == n.id).and_then(|e| by_id(&e.from.0).map(|n| (n, e.from.1.as_str())));
-    }
-    let input = match input {
-        Some((n, "out")) if n.type_id.as_str() == lt::SOURCE => SideInput::Source,
-        Some((n, "out")) if n.type_id.as_str() == lt::GROUP => SideInput::Graded,
-        Some((n, key)) => return MaskSource::Unavailable(format!("{} reads {} {key}, which the renderer can't give it", producer.id, n.id)),
-        None => SideInput::Source,
+    // What it reads, through any reroutes (#1746), and back along its
+    // branch (#2758): each node beside the chain it reads, to the clip's
+    // source or its grade. A branch that reads the chain past those, or
+    // runs in a loop, can't be given.
+    let read_by = |id: NodeId| {
+        let mut input = picture.graph.edges.iter().find(|e| e.to.0 == id).and_then(|e| by_id(&e.from.0).map(|n| (n, e.from.1.as_str())));
+        for _ in 0..=picture.graph.nodes.len() {
+            let Some((n, _)) = input.filter(|(n, _)| kind_of(n) == "Reroute") else { break };
+            input = picture.graph.edges.iter().find(|e| e.to.0 == n.id).and_then(|e| by_id(&e.from.0).map(|n| (n, e.from.1.as_str())));
+        }
+        input
     };
+    let chain_ids: Vec<NodeId> = chain(picture).map(|c| c.iter().map(|n| n.id).collect()).unwrap_or_default();
+    let mut lead: Vec<klipp_nodes::Node> = Vec::new();
+    let mut at = producer;
+    let input = loop {
+        match read_by(at.id) {
+            Some((n, "out")) if n.type_id.as_str() == lt::SOURCE => break SideInput::Source,
+            Some((n, "out")) if n.type_id.as_str() == lt::GROUP => break SideInput::Graded,
+            Some((n, "out")) if !chain_ids.contains(&n.id) && n.id != producer.id && !lead.iter().any(|l| l.id == n.id) && lead.len() < MAX_BRANCH => {
+                match side_node(n, t, ctx) {
+                    Ok(node) => lead.push(node),
+                    Err(why) => return MaskSource::Unavailable(format!("{}: {why}", n.id)),
+                }
+                at = n;
+            }
+            Some((n, key)) => return MaskSource::Unavailable(format!("{} reads {} {key}, which the renderer can't give it", at.id, n.id)),
+            None => break SideInput::Source,
+        }
+    };
+    lead.reverse();
     let port = match index(producer, port) {
         Ok(port) => port,
         Err(why) => return MaskSource::Unavailable(why),
     };
     match side_node(producer, t, ctx) {
-        Ok(node) => MaskSource::Side { node: Box::new(node), port, input },
+        Ok(node) => MaskSource::Side { node: Box::new(node), lead, port, input },
         Err(why) => MaskSource::Unavailable(format!("{}: {why}", producer.id)),
     }
 }
@@ -527,8 +565,16 @@ fn side_node(n: &Node, t: f64, ctx: &klipp_core::EvalContext) -> Result<klipp_no
     if klipp_graph_lift::effect_params::tag(n).is_none() {
         return klipp_timeline::grade_node_for_run(n);
     }
-    let mut effect = klipp_graph_lift::effect_params::effect_of(n)?;
-    EffectNodeAnim::of(n)?.animate(&mut effect, t, ctx);
+    // A Transform beside the chain (#2758), a branch's move, holds its
+    // entry as a placement's does: read from it.
+    let effect = if n.type_id.as_str() == types::LEGACY_TRANSFORM {
+        let payload = n.legacy.as_ref().map(|l| &l.payload).ok_or_else(|| format!("{} has no entry", n.id))?;
+        decode(n, payload, t, ctx)?
+    } else {
+        let mut effect = klipp_graph_lift::effect_params::effect_of(n)?;
+        EffectNodeAnim::of(n)?.animate(&mut effect, t, ctx);
+        effect
+    };
     // A media source's frame, or what is below, is handed to the run
     // (#1746).
     let kind = if klipp_effects::draws_a_side_picture(&effect) { klipp_nodes::NodeKind::SidePicture } else { klipp_nodes::NodeKind::Effect };
