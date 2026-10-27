@@ -410,6 +410,28 @@ impl FrameSource for ViewerSource<'_> {
         Some(source_frame(&next))
     }
 
+    /// The frame after, where the viewer's decoders hold it on the GPU
+    /// (#2854): the primary's queue front, a clip stream's next, or a
+    /// reversed clip's window, as its sRGB bytes at the size decoded,
+    /// which the chain fits to the render. Only in the Rec.709 working
+    /// space, as its neighbours for a denoise are.
+    fn frame_after_on_gpu(&mut self, clip: &Clip, source_secs: f64, working: klipp_core::WorkingColorspace, _width: u32, _height: u32) -> Option<(f64, std::sync::Arc<dyn klipp_nodes::frame_context::GpuFramePixels>)> {
+        if working != klipp_core::WorkingColorspace::Rec709Linear {
+            return None;
+        }
+        if clip.is_reversed() {
+            return self.streams.reversed_frame_after_on_gpu(clip, source_secs);
+        }
+        let next = match self.primary {
+            Some((id, f)) if id == clip.id => {
+                let q = self.primary_queue?.lock().unwrap_or_else(|e| e.into_inner());
+                q.front().filter(|n| !n.is_eof && f.pts.is_some_and(|p| n.pts_secs() > p)).map(HeldFrame::copy_of)?
+            }
+            _ => self.streams.next_frame(clip.id)?,
+        };
+        Some((next.pts?, next.gpu_neighbour()?))
+    }
+
     /// From the file the viewer decodes the clip from, the proxy when it
     /// shows one, read as export reads its neighbours, by a reader kept
     /// across frames (#2013).

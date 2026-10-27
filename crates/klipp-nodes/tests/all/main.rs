@@ -20,6 +20,8 @@ mod composite_gpu_parity;
 mod contrast_pivot_encoding;
 #[path = "../difference_key_node.rs"]
 mod difference_key_node;
+#[path = "../blend_on_chain.rs"]
+mod blend_on_chain;
 #[path = "../denoise_on_chain.rs"]
 mod denoise_on_chain;
 #[path = "../effect_motion.rs"]

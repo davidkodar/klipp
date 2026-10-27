@@ -117,6 +117,13 @@ pub trait GpuFramePixels: Send + Sync {
     fn srgb8(&self) -> bool {
         false
     }
+    /// The size of [`Self::srgb8`]'s bytes where it isn't the frame's
+    /// (#2854): a viewer stream decoding below the render size, its frame
+    /// fitted into the render on the GPU as the frame shown is. `None`
+    /// (the default): the frame's size.
+    fn source_size(&self) -> Option<(u32, u32)> {
+        None
+    }
 }
 
 /// A source frame on the GPU (#1988), as [`SourceProvider::linear_on_gpu`]
@@ -187,6 +194,14 @@ pub trait SourceProvider {
     /// `source_secs`), from the reader it came from, at the render size,
     /// with its presentation time: a frame blend's other frame.
     fn next(&mut self, _source_secs: f64) -> Neighbour<LinearFrame> {
+        Neighbour::Missing(Missing::Unavailable)
+    }
+    /// [`Self::next`]'s frame where it is already on the GPU (#2854), its
+    /// `source_secs` its presentation time: a frame blend on the chain
+    /// binds it as it is. `Unavailable` (the default) where the source has
+    /// it only on the CPU, or not at all: the caller asks [`Self::next`]
+    /// then, and only that request is counted.
+    fn next_on_gpu(&mut self, _source_secs: f64) -> Neighbour<GpuLinearFrame> {
         Neighbour::Missing(Missing::Unavailable)
     }
 }
@@ -330,6 +345,28 @@ impl SourceProvider for BoundedSources<'_> {
             Neighbour::Frame(f) if f.pts.is_some_and(|p| p >= end) => Neighbour::Missing(Missing::OutOfRange),
             Neighbour::Missing(Missing::Unavailable) if self.inner.frame_secs().is_some_and(|d| source_secs + d >= end - 1e-6) => Neighbour::Missing(Missing::OutOfRange),
             got => self.sized(got),
+        }
+    }
+
+    /// [`Self::next`] on the GPU (#2854): past the media's end as `next`
+    /// is, and counted only when it gives a frame, as `linear_on_gpu` is.
+    fn next_on_gpu(&mut self, source_secs: f64) -> Neighbour<GpuLinearFrame> {
+        if let Err(m) = self.admit(source_secs) {
+            return Neighbour::Missing(m);
+        }
+        let end = self.inner.bounds().1;
+        match self.inner.next_on_gpu(source_secs) {
+            Neighbour::Frame(f) if f.source_secs >= end => Neighbour::Missing(Missing::OutOfRange),
+            got => match self.sized(got) {
+                Neighbour::Missing(Missing::Unavailable) => {
+                    let (node, _) = self.node.unwrap_or_default();
+                    if let Some(asked) = self.asked.get_mut(&node) {
+                        *asked = asked.saturating_sub(1);
+                    }
+                    Neighbour::Missing(Missing::Unavailable)
+                }
+                got => got,
+            },
         }
     }
 }
