@@ -2782,6 +2782,8 @@ pub enum AppCommand {
     /// below), set by the viewer's path-start handle (#1714).
     SetTitleArcStart { clip_id: ClipId, object_id: u32, start_angle: f32 },
     SetTitleBackground { clip_id: ClipId, bg_kind: u8, color: [u8; 4] },  // 0=None, 1=Color, 2=FullFrame
+    /// A title's contrast protection (#2734): 0 off, 1 auto, 2 always.
+    SetTitleContrastProtect { clip_id: ClipId, mode: u8 },
     SetTitleShadow { clip_id: ClipId, enabled: bool, color: [u8; 4], offset_x: f32, offset_y: f32, blur: f32 },
     /// Replace the entire drop-shadow stack. Each tuple is
     /// (color_rgba, offset_x, offset_y, blur). Existing per-index

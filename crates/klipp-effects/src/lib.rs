@@ -76,6 +76,7 @@ pub mod nv12_gpu;
 pub mod p010_gpu;
 pub mod shader_check;
 pub mod particles;
+pub mod protect;
 pub mod pieces;
 pub mod registry;
 pub mod rolling_shutter;

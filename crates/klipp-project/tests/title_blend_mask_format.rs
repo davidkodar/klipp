@@ -18,7 +18,7 @@ fn scratch(tag: &str) -> std::path::PathBuf {
 
 /// A word over a band, the band screened and the word masked by it.
 fn title(mixed: bool) -> TitleData {
-    let mut td = TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: TitleBackground::None, style: None, published: Vec::new(), template: None };
+    let mut td = TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: TitleBackground::None, style: None, published: Vec::new(), template: None, protect: Default::default() };
     let band = td.add_object(TitleObjectContent::Shape(Shape { kind: ShapeKind::Rectangle { corner_radius: 0.0 }, fill: Some([200, 40, 40, 255]), gradient: None, stroke: None, fit: None }), default_text_transform());
     let word = td.add_object(TitleObjectContent::TextBox(TextBox { text: "Word".into(), ..Default::default() }), default_text_transform());
     if mixed {

@@ -13,7 +13,7 @@ const H: u32 = 180;
 
 /// A blue rectangle a third of the frame wide and tall, in the middle.
 fn card(fx: LayerFx) -> TitleData {
-    let mut td = TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: TitleBackground::None, style: None, published: Vec::new(), template: None };
+    let mut td = TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: TitleBackground::None, style: None, published: Vec::new(), template: None, protect: Default::default() };
     let mut xf = default_text_transform();
     xf.size = TitlePosition { x: 1.0 / 3.0, y: 1.0 / 3.0 };
     let id = td.add_object(TitleObjectContent::Shape(Shape { kind: ShapeKind::Rectangle { corner_radius: 0.0 }, fill: Some([40, 80, 200, 255]), gradient: None, stroke: None, fit: None }), xf);
@@ -137,7 +137,7 @@ fn a_picture_fades_in_with_a_glow() {
     let img = image::RgbaImage::from_pixel(64, 64, image::Rgba([200, 40, 40, 255]));
     img.save(&path).unwrap();
     let make = |fx: LayerFx| {
-        let mut td = TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: TitleBackground::None, style: None, published: Vec::new(), template: None };
+        let mut td = TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: TitleBackground::None, style: None, published: Vec::new(), template: None, protect: Default::default() };
         let mut xf = default_text_transform();
         xf.size = TitlePosition { x: 0.2, y: 0.2 };
         let id = td.add_object(TitleObjectContent::Image(ImageLayer { path: path.to_string_lossy().into_owned(), fit: Default::default() }), xf);

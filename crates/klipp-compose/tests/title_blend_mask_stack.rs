@@ -61,7 +61,7 @@ fn rect(td: &mut TitleData, fill: [u8; 4], centre: (f32, f32), size: (f32, f32))
 /// A band, a word screened over it that rises in, and a stripe shown
 /// only inside the word, multiplied.
 fn title() -> TitleData {
-    let mut td = TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: TitleBackground::None, style: None, published: Vec::new(), template: None };
+    let mut td = TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: TitleBackground::None, style: None, published: Vec::new(), template: None, protect: Default::default() };
     rect(&mut td, [30, 60, 200, 230], (0.5, 0.5), (0.9, 0.5));
     let mut xf = default_text_transform();
     xf.size = TitlePosition { x: 1.0, y: 1.0 };

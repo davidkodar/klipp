@@ -33,9 +33,12 @@ pub struct Fields {
 
 impl TitleTemplate {
     /// The title the template makes, its layers named and its fields
-    /// published (#1724).
+    /// published (#1724), keeping its text readable over the picture
+    /// (#2734).
     pub fn build(&self) -> TitleData {
-        publish((self.create_data)(), &self.fields)
+        let mut td = publish((self.create_data)(), &self.fields);
+        td.protect = crate::ContrastProtect::Auto;
+        td
     }
 }
 
@@ -167,7 +170,7 @@ fn rect(x: f32, y: f32, w: f32, h: f32, fill: [u8; 4], radius: f32) -> Layer {
 
 /// Build a title from layers, back to front.
 fn layers(items: Vec<Layer>) -> TitleData {
-    let mut td = TitleData { objects: Vec::new(), next_object_id: 0, animation_type: TitleAnimationType::default(), background: TitleBackground::None, style: None, published: Vec::new(), template: None };
+    let mut td = TitleData { objects: Vec::new(), next_object_id: 0, animation_type: TitleAnimationType::default(), background: TitleBackground::None, style: None, published: Vec::new(), template: None, protect: Default::default() };
     for (content, transform, fx) in items {
         let id = td.add_object(content, transform);
         td.object_mut(id).expect("just added").fx = Some(fx);

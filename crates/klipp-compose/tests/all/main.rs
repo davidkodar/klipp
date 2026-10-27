@@ -120,6 +120,8 @@ mod title_layers_kept;
 mod title_loops_placed_gpu;
 #[path = "../title_metal_gpu.rs"]
 mod title_metal_gpu;
+#[path = "../title_contrast_protect.rs"]
+mod title_contrast_protect;
 #[path = "../title_moving_styles_gpu.rs"]
 mod title_moving_styles_gpu;
 #[path = "../title_routes_f16.rs"]

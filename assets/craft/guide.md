@@ -549,7 +549,7 @@ exist until the plan runs.
   `color` (`#rrggbb`) sets the colour of one that has one:
   `colorize_flash`, `light_leak`, `fade_to_color`.
   Both clips need footage beyond the cut to overlap.
-- `style {clip_id | track, from?, to?, size?, color?, font?, bold?, align?, x?, y?, backing?, backing_color?, outline?, outline_color?, shadow?, glow?, glow_color?, gradient?, glitch?, chromatic?, animate?, animate_secs?, stagger?, enter?, exit?, loop?, roll_shape?, edge_fade?, weight?, axes?, features?, last_line?, valign?, underline?, runs?, animators?, keys?, on_path?, blend?, mask?, three_d?, material?}`:
+- `style {clip_id | track, from?, to?, size?, color?, font?, bold?, align?, x?, y?, backing?, backing_color?, outline?, outline_color?, shadow?, glow?, glow_color?, gradient?, glitch?, chromatic?, animate?, animate_secs?, stagger?, enter?, exit?, loop?, roll_shape?, edge_fade?, weight?, axes?, features?, last_line?, valign?, underline?, runs?, animators?, keys?, on_path?, blend?, mask?, three_d?, material?, protect?}`:
   the look and place of one title, or of every title on a track
   (`"subtitle"` for all the captions), between `from` and `to` when
   given (anchors, as `{"secs": 44.0}`). `size` is pixels of a 1080-line frame, `color` is `#rrggbb`,
@@ -561,7 +561,13 @@ exist until the plan runs.
   a soft drop shadow behind the words: offset and blur in pixels of a
   1080-line frame (0, 4 and 8 when left out), `#rrggbb`, opacity 0 to 1
   (0.6), and opacity 0 takes it off. Bright text over a bright sky or
-  sand wants the shadow; a dark glow barely shows. Lift the captions with it for as long as
+  sand wants the shadow; a dark glow barely shows. `protect` keeps the
+  whole title readable over the picture: `auto` (every new title's)
+  darkens the picture round light text, or lightens it round dark text,
+  in a soft halo that follows the words, only where they would read
+  under 4.5:1 and only as far as that; `always` lays the halo whatever
+  is behind; `off` leaves the picture as it is (a title saved before
+  this came in is `off`). Lift the captions with it for as long as
   a lower third is up, so the two do not share the bottom of the frame.
   Everything else `title` takes for a look or a motion restyles in place
   too, the title keeping its id: never remove a title and make it again
@@ -587,7 +593,7 @@ exist until the plan runs.
   tall picture in a wide frame), `in_picture: true` keeps it in from the
   picture's own edge instead of on the bar. A title's `backing` panel
   (style, title) sits behind every line of it.
-- `title {text, at, secs?, style?, track?, x?, y?, size?, color?, font?, bold?, align?, backing?, backing_color?, full_frame?, outline?, outline_color?, glow?, glow_color?, gradient?, animate?, animate_secs?, stagger?, loop?, glitch?, chromatic?, enter?, exit?, over_faces?, shadow?, weight?, axes?, features?, last_line?, valign?, underline?, runs?, animators?, keys?, on_path?, blend?, mask?, three_d?, material?}`:
+- `title {text, at, secs?, style?, track?, x?, y?, size?, color?, font?, bold?, align?, backing?, backing_color?, full_frame?, outline?, outline_color?, glow?, glow_color?, gradient?, animate?, animate_secs?, stagger?, loop?, glitch?, chromatic?, enter?, exit?, over_faces?, shadow?, weight?, axes?, features?, last_line?, valign?, underline?, runs?, animators?, keys?, on_path?, blend?, mask?, three_d?, material?, protect?}`:
   a title from scratch: a heading, a callout or a hero card, on a text
   track (one is made on top if left out). `style` names a look, one of
   the brief's type styles or `heading`, `callout` or `card`, and its

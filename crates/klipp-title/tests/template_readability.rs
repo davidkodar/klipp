@@ -3,7 +3,8 @@
 //! a busy frame. Measured per text layer: the contrast (WCAG ratio) of its
 //! glyphs against what is round them as composited; that every text stays
 //! inside title-safe (5 % in from each edge); and the smallest text's size
-//! (in pixels of a 1080-line frame). Report: `target/sweep/templates.txt`.
+//! (in pixels of a 1080-line frame). Each is composited with its contrast
+//! protection, as the compositor lays it. Report: `target/sweep/templates.txt`.
 
 use klipp_testing::sweep::Sweep;
 use klipp_timeline::title_library::TITLES;
@@ -13,158 +14,32 @@ use klipp_title::TitleRenderer;
 /// Items known to fail, and the issue that holds each: generated from the
 /// sweep's first run, each to come off as #2734's work fixes it.
 const KNOWN: &[(&str, u32)] = &[
-    ("Clean Line 16:9 bright", 2734),
-    ("Clean Line 16:9 busy", 2734),
     ("Clean Line 9:16 bright", 2734),
-    ("Clean Line 9:16 busy", 2734),
-    ("Clean Line 1:1 bright", 2734),
-    ("Clean Line 1:1 busy", 2734),
-    ("Accent Block 16:9 bright", 2734),
-    ("Accent Block 16:9 busy", 2734),
     ("Accent Block 9:16 bright", 2734),
-    ("Accent Block 9:16 busy", 2734),
-    ("Accent Block 1:1 bright", 2734),
-    ("Accent Block 1:1 busy", 2734),
-    ("Pill 16:9 bright", 2734),
-    ("Pill 16:9 busy", 2734),
-    ("Pill 9:16 bright", 2734),
-    ("Pill 9:16 busy", 2734),
-    ("Pill 1:1 bright", 2734),
-    ("Pill 1:1 busy", 2734),
-    ("Stacked 16:9 bright", 2734),
-    ("Stacked 16:9 busy", 2734),
-    ("Stacked 9:16 bright", 2734),
-    ("Stacked 9:16 busy", 2734),
-    ("Stacked 1:1 bright", 2734),
-    ("Stacked 1:1 busy", 2734),
     ("Documentary 16:9 bright", 2734),
-    ("Documentary 16:9 busy", 2734),
     ("Documentary 9:16 bright", 2734),
-    ("Documentary 9:16 busy", 2734),
     ("Documentary 1:1 bright", 2734),
-    ("Documentary 1:1 busy", 2734),
-    ("Location 16:9 bright", 2734),
-    ("Location 16:9 busy", 2734),
-    ("Location 9:16 bright", 2734),
-    ("Location 9:16 busy", 2734),
-    ("Location 1:1 bright", 2734),
-    ("Location 1:1 busy", 2734),
-    ("Cinematic 16:9 bright", 2734),
-    ("Cinematic 9:16 bright", 2734),
-    ("Cinematic 1:1 bright", 2734),
-    ("Impact 16:9 bright", 2734),
-    ("Impact 16:9 busy", 2734),
-    ("Impact 9:16 bright", 2734),
-    ("Impact 9:16 busy", 2734),
-    ("Impact 1:1 bright", 2734),
-    ("Impact 1:1 busy", 2734),
     ("Editorial 16:9 bright", 2734),
-    ("Editorial 16:9 busy", 2734),
     ("Editorial 9:16 bright", 2734),
-    ("Editorial 9:16 busy", 2734),
     ("Editorial 1:1 bright", 2734),
-    ("Editorial 1:1 busy", 2734),
-    ("Minimal 16:9 bright", 2734),
-    ("Minimal 16:9 busy", 2734),
-    ("Minimal 9:16 bright", 2734),
-    ("Minimal 9:16 busy", 2734),
-    ("Minimal 1:1 bright", 2734),
-    ("Minimal 1:1 busy", 2734),
     ("Chapter 16:9 bright", 2734),
-    ("Chapter 16:9 busy", 2734),
     ("Chapter 9:16 bright", 2734),
-    ("Chapter 9:16 busy", 2734),
     ("Chapter 1:1 bright", 2734),
-    ("Chapter 1:1 busy", 2734),
     ("Chapter Number 16:9 bright", 2734),
-    ("Chapter Number 16:9 busy", 2734),
     ("Chapter Number 9:16 bright", 2734),
-    ("Chapter Number 9:16 busy", 2734),
     ("Chapter Number 1:1 bright", 2734),
-    ("Chapter Number 1:1 busy", 2734),
-    ("Statement 16:9 bright", 2734),
-    ("Statement 16:9 busy", 2734),
-    ("Statement 9:16 bright", 2734),
-    ("Statement 9:16 busy", 2734),
-    ("Statement 1:1 bright", 2734),
-    ("Statement 1:1 busy", 2734),
     ("Quote 16:9 bright", 2734),
-    ("Quote 16:9 busy", 2734),
     ("Quote 9:16 bright", 2734),
-    ("Quote 9:16 busy", 2734),
     ("Quote 1:1 bright", 2734),
-    ("Quote 1:1 busy", 2734),
-    ("Subtitle 16:9 bright", 2734),
-    ("Subtitle 9:16 bright", 2734),
-    ("Subtitle 1:1 bright", 2734),
-    ("Callout 16:9 bright", 2734),
-    ("Callout 9:16 bright", 2734),
-    ("Callout 1:1 bright", 2734),
-    ("Credits Roll 16:9 bright", 2734),
-    ("Credits Roll 16:9 busy", 2734),
-    ("Credits Roll 9:16 bright", 2734),
-    ("Credits Roll 9:16 busy", 2734),
-    ("Credits Roll 1:1 bright", 2734),
-    ("Credits Roll 1:1 busy", 2734),
-    ("End Credits 16:9 bright", 2734),
-    ("End Credits 16:9 busy", 2734),
-    ("End Credits 9:16 bright", 2734),
-    ("End Credits 9:16 busy", 2734),
-    ("End Credits 1:1 bright", 2734),
-    ("End Credits 1:1 busy", 2734),
-    ("End Card 16:9 bright", 2734),
-    ("End Card 9:16 bright", 2734),
-    ("End Card 1:1 bright", 2734),
     ("Cast 16:9 bright", 2734),
-    ("Cast 16:9 busy", 2734),
     ("Cast 9:16 bright", 2734),
-    ("Cast 9:16 busy", 2734),
     ("Cast 1:1 bright", 2734),
-    ("Cast 1:1 busy", 2734),
-    ("Thanks for Watching 16:9 bright", 2734),
-    ("Thanks for Watching 16:9 busy", 2734),
     ("Thanks for Watching 9:16 bright", 2734),
-    ("Thanks for Watching 9:16 busy", 2734),
-    ("Thanks for Watching 1:1 bright", 2734),
-    ("Thanks for Watching 1:1 busy", 2734),
-    ("Up Next 16:9 bright", 2734),
-    ("Up Next 16:9 busy", 2734),
-    ("Up Next 9:16 bright", 2734),
-    ("Up Next 9:16 busy", 2734),
-    ("Up Next 1:1 bright", 2734),
-    ("Up Next 1:1 busy", 2734),
-    ("Hook 16:9 bright", 2734),
-    ("Hook 16:9 busy", 2734),
-    ("Hook 9:16 bright", 2734),
-    ("Hook 9:16 busy", 2734),
-    ("Hook 1:1 bright", 2734),
-    ("Hook 1:1 busy", 2734),
-    ("Bold Caption 16:9 bright", 2734),
-    ("Bold Caption 16:9 busy", 2734),
-    ("Bold Caption 9:16 bright", 2734),
-    ("Bold Caption 9:16 busy", 2734),
-    ("Bold Caption 1:1 bright", 2734),
-    ("Bold Caption 1:1 busy", 2734),
     ("Question 16:9 bright", 2734),
-    ("Question 16:9 busy", 2734),
     ("Question 9:16 bright", 2734),
-    ("Question 9:16 busy", 2734),
     ("Question 1:1 bright", 2734),
-    ("Question 1:1 busy", 2734),
-    ("Tip 16:9 bright", 2734),
-    ("Tip 16:9 busy", 2734),
-    ("Tip 9:16 bright", 2734),
-    ("Tip 9:16 busy", 2734),
-    ("Tip 1:1 bright", 2734),
-    ("Tip 1:1 busy", 2734),
     ("Slate 9:16 title-safe", 2734),
     ("Slate 1:1 title-safe", 2734),
-    ("Timecode 16:9 bright", 2734),
-    ("Timecode 16:9 busy", 2734),
-    ("Timecode 9:16 bright", 2734),
-    ("Timecode 9:16 busy", 2734),
-    ("Timecode 1:1 bright", 2734),
-    ("Timecode 1:1 busy", 2734),
 ];
 
 /// Readable: a ratio of at least this between a text's glyphs and what
@@ -225,6 +100,18 @@ fn over(fg: &[u8], bg: &[u8]) -> Vec<u8> {
     }).collect()
 }
 
+/// `bg` as the template's contrast protection leaves it under `fg`
+/// (#2734), through the compositor's own CPU pass.
+fn protected(fg: &[u8], bg: &[u8], w: u32, h: u32, mode: u32) -> Vec<u8> {
+    if mode == 0 {
+        return bg.to_vec();
+    }
+    let lin = |px: &[u8]| -> Vec<f32> { px.chunks(4).flat_map(|p| [srgb_to_linear(p[0]), srgb_to_linear(p[1]), srgb_to_linear(p[2]), p[3] as f32 / 255.0]).collect() };
+    let mut acc = lin(bg);
+    klipp_effects::protect::protect_backdrop(&mut acc, &lin(fg), w, h, 1.0, mode, [0.2126, 0.7152, 0.0722]);
+    klipp_effects::linear_f32_rgba_to_srgb_u8(&acc)
+}
+
 /// `mask` grown by `r` pixels (a square), separably.
 fn dilate(mask: &[bool], w: usize, h: usize, r: usize) -> Vec<bool> {
     let mut row = vec![false; w * h];
@@ -276,7 +163,7 @@ fn sweep_templates() {
             }).count();
             sweep.check(&format!("{} {format} title-safe", template.name), format!("{outside} glyph pixels outside"), outside == 0);
             for (bg_name, bg) in backgrounds(w, h) {
-                let comp = over(&full, &bg);
+                let comp = over(&full, &protected(&full, &bg, w, h, td.protect.code()));
                 let mut worst = f32::MAX;
                 for glyphs in &layers {
                     if !glyphs.iter().any(|g| *g) {

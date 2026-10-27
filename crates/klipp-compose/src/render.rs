@@ -1076,6 +1076,15 @@ struct Layer {
     split: Option<(u32, BlendMode)>,
 }
 
+/// The contrast protection a clip asks for, as its code (#2734): a
+/// title's own, 0 for anything else.
+fn contrast_protect(c: &Clip) -> u32 {
+    match &c.kind {
+        ClipKind::Title(td) => td.protect.code(),
+        _ => 0,
+    }
+}
+
 /// What a track contributes at the frame's time.
 enum TrackItem<'a> {
     Clip(&'a Clip),
@@ -2345,6 +2354,11 @@ impl Renderer {
                     }
                     if let Err(why) = self.finish_placed(c, *slot, p.held.as_deref(), time, fps, width, height, &transforms, &mut stats) {
                         return self.gpu_stack_declines(why);
+                    }
+                    let protect = contrast_protect(c);
+                    let luma = klipp_color::linear::luma_coefs(self.working);
+                    if !self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_contrast_protect(*slot, opacity, protect, luma)) {
+                        return self.gpu_stack_declines("a title's contrast protection failed");
                     }
                     let (y0, y1) = p.rows;
                     let mode = c.blend_mode as u32;
@@ -3707,6 +3721,11 @@ impl Renderer {
                     apply_matte(&mut layer.pixels, &rendered, &binding, width, height,
                     klipp_color::linear::luma_coefs(self.working));
                 }
+            }
+            // A title keeps its text readable over what is below (#2734).
+            if let (TrackItem::Clip(c), Some(a)) = (item, acc.as_mut()) {
+                klipp_effects::protect::protect_backdrop(a, &layer.pixels, width, height, layer.opacity, contrast_protect(c),
+                    klipp_color::linear::luma_coefs(self.working));
             }
             match &mut acc {
                 None if layer.blend == BlendMode::Normal && layer.opacity >= 1.0 && layer.split.is_none() => acc = Some(layer.pixels),

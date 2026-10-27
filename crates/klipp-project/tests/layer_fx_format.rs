@@ -46,7 +46,7 @@ fn path(trim: bool) -> TitleObjectContent {
 }
 
 fn project_with(objects: Vec<(TitleObjectContent, LayerFx)>) -> Sequence {
-    let mut td = TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: TitleBackground::None, style: None, published: Vec::new(), template: None };
+    let mut td = TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: TitleBackground::None, style: None, published: Vec::new(), template: None, protect: Default::default() };
     for (content, fx) in objects {
         let id = td.add_object(content, default_text_transform());
         td.object_mut(id).unwrap().fx = Some(fx);

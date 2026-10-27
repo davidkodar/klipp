@@ -90,7 +90,7 @@ fn jpeg(path: &Path) {
 }
 
 fn image_title(path: &Path, fit: ImageFit, opacity: f32) -> TitleData {
-    let mut td = TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: TitleBackground::None, style: None, published: Vec::new(), template: None };
+    let mut td = TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: TitleBackground::None, style: None, published: Vec::new(), template: None, protect: Default::default() };
     let mut xf = default_text_transform();
     xf.center = TitlePosition { x: 0.45, y: 0.5 };
     xf.size = TitlePosition { x: 0.5, y: 0.6 };
