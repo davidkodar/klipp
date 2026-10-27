@@ -60,6 +60,7 @@ impl KlippApp {
             edit_plan: None,
             reviews: Vec::new(),
             awaiting_refit: false,
+            version_of: None,
         };
 
         // Reproduce track structure and move clips (offset to start at 0)
@@ -762,6 +763,7 @@ mod compound_clip_cycle_tests {
             edit_plan: None,
             reviews: Vec::new(),
             awaiting_refit: false,
+            version_of: None,
         }
     }
 

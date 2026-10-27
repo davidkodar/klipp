@@ -421,6 +421,7 @@ pub fn parse_xmeml(xml: &str) -> Result<ImportResult, String> {
         edit_plan: None,
         reviews: Vec::new(),
         awaiting_refit: false,
+        version_of: None,
     };
     Ok(ImportResult { sequence, media_pool: pool, warnings })
 }

@@ -728,6 +728,9 @@ impl AppState {
             used_in: self.sequences.iter().find(|other| {
                 other.id != seq.id && other.tracks.iter().flat_map(|t| &t.clips).any(|c| matches!(c.kind, klipp_timeline::ClipKind::Sequence { sequence_id, .. } if sequence_id == seq.id))
             }).map(|other| other.name.clone()),
+            version: seq.version_of.map(|v| klipp_core::VersionSummary { of: v.master.to_string(), stale: seq.version_is_stale(&self.sequences).unwrap_or(false) }),
+            width: seq.resolution.width,
+            height: seq.resolution.height,
         }).collect();
         (list, self.active_sequence_idx)
     }
@@ -1356,6 +1359,14 @@ impl TitlePositionPreset {
 pub struct PendingRefit {
     pub sequence: klipp_core::SequenceId,
     pub waiting: Vec<klipp_core::MediaId>,
+}
+
+/// One export of a delivery waiting its turn (#2724): its sequence,
+/// once reframed, exported with `settings`.
+#[derive(Debug, Clone)]
+pub struct PendingDelivery {
+    pub sequence: SequenceId,
+    pub settings: klipp_core::ExportSettings,
 }
 
 /// Document ops a panel asks the app to run as one undo step.
@@ -2732,6 +2743,10 @@ pub struct AppState {
     /// they are reframed (#2211), by sequence, so switching tabs meanwhile
     /// reframes the right one when it is next open.
     pub pending_refits: Vec<PendingRefit>,
+    /// A delivery's exports still to queue (#2724), each its sequence's,
+    /// in order, and the sequence to go back to when they are.
+    pub pending_deliveries: Vec<PendingDelivery>,
+    pub delivery_home: Option<SequenceId>,
     /// Clips kept matched followed their shot in a step just recorded
     /// (#2236): the engine is given the sequence again.
     pub matched_follow_sync: bool,
@@ -5048,6 +5063,8 @@ impl Default for AppState {
             transcript_panel_hovered: false,
             pending_doc_ops: Vec::new(),
             pending_refits: Vec::new(),
+            pending_deliveries: Vec::new(),
+            delivery_home: None,
             matched_follow_sync: false,
             role_sweep_key: None,
             show_project_notes: false,

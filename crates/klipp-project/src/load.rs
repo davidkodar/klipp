@@ -1089,6 +1089,7 @@ fn load_sequence_from_json(
         edit_plan: seq_json.edit_plan.clone(),
         reviews: seq_json.reviews.clone(),
         awaiting_refit: seq_json.awaiting_refit,
+        version_of: seq_json.version_of,
         camera: seq_json.camera.clone(),
         // Said nothing: take the rate's default, which is drop-frame at
         // 29.97 and 59.94. A project from before this field is not

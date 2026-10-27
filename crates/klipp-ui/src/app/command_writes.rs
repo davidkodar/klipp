@@ -66,6 +66,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SetAntiClickFade(..)
         | AppCommand::ShowExportDialog
         | AppCommand::ExportSequence { .. }
+        | AppCommand::ExportDelivery { .. }
         | AppCommand::CancelExport
         | AppCommand::CancelExportJob { .. }
         | AppCommand::DeleteExportPreset { .. }

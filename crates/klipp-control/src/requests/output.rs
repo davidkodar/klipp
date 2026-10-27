@@ -64,7 +64,14 @@ pub(crate) fn respond(
                 "sources": spec.sources,
             }))
         }
-        ControlCommand::Export { path, width, height, fps, crf, bit_depth, target_lufs, true_peak_dbtp, burn_captions, captions_608, hdr10plus, hdr, peak_nits, preset, codec, audio_codec, bitrate_kbps, encoder_speed } => {
+        ControlCommand::Export { outputs, .. } if !outputs.is_empty() => {
+            if in_batch {
+                return Err("a delivery is not part of a batch: send it on its own".into());
+            }
+            deliver(ctx, &outputs, &mut send)
+        }
+
+        ControlCommand::Export { path, width, height, fps, crf, bit_depth, target_lufs, true_peak_dbtp, burn_captions, captions_608, hdr10plus, hdr, peak_nits, preset, codec, audio_codec, bitrate_kbps, encoder_speed, outputs: _ } => {
             let out = std::path::PathBuf::from(&path);
             if !out.is_absolute() {
                 return Err(format!("export path must be absolute (got {path:?})"));
@@ -1061,6 +1068,96 @@ fn speed_ignored(settings: &klipp_core::ExportSettings) -> Option<String> {
 /// extension its path must end in (#1899).
 pub fn export_presets() -> Vec<(String, &'static str)> {
     klipp_core::builtin_presets().into_iter().map(|p| (p.name, p.settings.format.extension())).collect()
+}
+
+/// The aspect a delivery output names, as width and height parts.
+fn delivery_aspect(format: &str) -> Option<(u32, u32)> {
+    match format.trim().replace(['x', '/'], ":").as_str() {
+        "16:9" => Some((16, 9)),
+        "9:16" => Some((9, 16)),
+        "1:1" => Some((1, 1)),
+        "4:5" => Some((4, 5)),
+        _ => None,
+    }
+}
+
+/// A frame of `aspect` keeping `frame`'s short side, both sides even: as
+/// the app makes a version's.
+fn delivery_size(frame: (u32, u32), aspect: (u32, u32)) -> (u32, u32) {
+    let short = frame.0.min(frame.1).max(2) as f64;
+    let (a, b) = (aspect.0.max(1) as f64, aspect.1.max(1) as f64);
+    let even = |v: f64| ((v / 2.0).round() as u32).max(1) * 2;
+    if a <= b { (even(short), even(short * b / a)) } else { (even(short * a / b), even(short)) }
+}
+
+/// Every format of a delivery (#2724) checked, then sent to the app,
+/// which exports each from the open sequence's version at its aspect,
+/// made and reframed when there is none. A version older than the
+/// master's cut is named, never rebuilt unasked.
+fn deliver(ctx: &ControlContext, outputs: &[crate::protocol::DeliveryAsk], send: &mut dyn FnMut(AppCommand) -> Result<serde_json::Value, String>) -> Result<serde_json::Value, String> {
+    let (frame, master_id, master_name) = {
+        let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+        if seq.has_nothing_to_export() {
+            return Err("the timeline is empty: there is nothing to deliver. Place some clips first.".into());
+        }
+        let master = seq.version_of.map_or(seq.id, |v| v.master);
+        ((seq.resolution.width, seq.resolution.height), master.to_string(), seq.name.clone())
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut sent = Vec::new();
+    let mut said = Vec::new();
+    for o in outputs {
+        let aspect = delivery_aspect(&o.format).ok_or_else(|| format!("\"{}\" is not a format: give 16:9, 9:16, 1:1 or 4:5", o.format))?;
+        let out = std::path::PathBuf::from(&o.path);
+        if !out.is_absolute() {
+            return Err(format!("{}: the path must be absolute (got {:?})", o.format, o.path));
+        }
+        if !seen.insert(out.clone()) {
+            return Err(format!("two outputs are written to {}: give each its own file", o.path));
+        }
+        let format = match out.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref() {
+            Some("mp4") | None => klipp_core::ExportFormat::Mp4,
+            Some("mov") => klipp_core::ExportFormat::Mov,
+            Some("mkv") => klipp_core::ExportFormat::Mkv,
+            Some("webm") => klipp_core::ExportFormat::WebM,
+            Some(other) => return Err(format!("{}: .{other} is not a picture container for a delivery; use mp4, mov, mkv or webm", o.format)),
+        };
+        let mut settings = klipp_core::ExportSettings { output_path: out.clone(), format, ..Default::default() };
+        settings.fit_codecs_to_format();
+        let preset = match o.preset.as_deref() {
+            Some(name) => Some(apply_export_preset(&mut settings, name)?),
+            None => None,
+        };
+        let (w, h) = delivery_size(frame, aspect);
+        settings.resolution = Some(klipp_core::Resolution { width: w, height: h });
+        // Every platform asks for about -14 LUFS when nothing else says.
+        settings.target_lufs = o.target_lufs.or(settings.target_lufs).or(Some(-14.0));
+        if let Some(problem) = settings.container_problem() {
+            return Err(format!("{}: {problem}", o.format));
+        }
+        said.push(json!({ "format": o.format, "path": o.path, "size": format!("{w}x{h}"), "preset": preset, "target_lufs": settings.target_lufs, "video_codec": settings.video_codec.label() }));
+        sent.push(klipp_core::DeliveryOutput { aspect, settings });
+    }
+    // The master's versions older than its cut, by the app's own reckoning.
+    let stale: Vec<String> = {
+        let project = ctx.shared.project.lock().map_err(|_| "project status lock poisoned")?;
+        project.sequences.iter().filter(|s| s.version.as_ref().is_some_and(|v| v.of == master_id && v.stale)).filter(|s| sent.iter().any(|o| has_aspect((s.width, s.height), o.aspect))).map(|s| s.name.clone()).collect()
+    };
+    let mut v = send(AppCommand::ExportDelivery { outputs: sent })?;
+    v["outputs"] = json!(said);
+    let mut text = format!("{} format(s) of {master_name} queued, each exported from its version once that is reframed (a version made now waits for its files' framing analysis).", said.len());
+    if !stale.is_empty() {
+        text.push_str(&format!(" {} older than the master's last edit: what is delivered there is the old cut; rebuild it from the master to deliver the current one.", stale.join(", ")));
+        v["stale"] = json!(stale);
+    }
+    v["text"] = json!(text);
+    v["next"] = json!("Each format's render job appears in export_status as it is queued; follow each with follow_job.");
+    Ok(v)
+}
+
+/// Whether `size` has `aspect`, to a pixel.
+fn has_aspect(size: (u32, u32), aspect: (u32, u32)) -> bool {
+    (size.0 as u64 * aspect.1 as u64).abs_diff(size.1 as u64 * aspect.0 as u64) <= aspect.0.max(aspect.1) as u64
 }
 
 fn apply_export_preset(settings: &mut klipp_core::ExportSettings, name: &str) -> Result<String, String> {
