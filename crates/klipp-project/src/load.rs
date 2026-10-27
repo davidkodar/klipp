@@ -970,6 +970,7 @@ fn load_sequence_from_json(
                     speed: c.speed.unwrap_or(1.0),
                     speed_keyframes: c.speed_keyframes.clone().unwrap_or_default(),
                     keep_pitch: c.keep_pitch.unwrap_or(false),
+                    hold: c.hold.as_ref().map(|tc| RationalTime { value: tc.value, rate: tc.rate }),
                     source_rotation: c.source_rotation.unwrap_or(0),
                     enabled: c.enabled.unwrap_or(true),
                     solo: c.solo.unwrap_or(false),

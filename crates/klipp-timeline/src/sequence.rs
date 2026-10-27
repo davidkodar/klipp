@@ -1617,6 +1617,7 @@ impl Track {
             speed: 1.0,
             speed_keyframes: Vec::new(),
             keep_pitch: false,
+            hold: None,
             audio_effects: Vec::new(),
             audio_effect_keyframes: std::collections::HashMap::new(),
             source_rotation: 0,
@@ -1928,6 +1929,7 @@ impl Track {
             speed: clip.speed,
             speed_keyframes: clip.speed_keyframes.clone(),
             keep_pitch: clip.keep_pitch,
+            hold: clip.hold,
             source_rotation: clip.source_rotation,
             enabled: clip.enabled,
             solo: clip.solo,
@@ -2007,6 +2009,7 @@ impl Track {
             speed: clip.speed,
             speed_keyframes: clip.speed_keyframes.clone(),
             keep_pitch: clip.keep_pitch,
+            hold: clip.hold,
             source_rotation: clip.source_rotation,
             enabled: clip.enabled,
             solo: clip.solo,
@@ -2480,6 +2483,11 @@ pub struct Clip {
     /// Forward speeds only: a reversed clip's sound is tape's.
     #[serde(default)]
     pub keep_pitch: bool,
+    /// A freeze frame (#2773): the source time shown for the clip's whole
+    /// length, whatever its speed, its sound silent. Its length is its
+    /// timeline length; `None` plays the clip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hold: Option<Timecode>,
     /// Source media rotation in degrees (0, 90, 180, 270). Auto-detected from metadata.
     /// Applied as a pre-transform via the GPU pipeline. Users can override per-clip.
     #[serde(default)]
@@ -2701,7 +2709,7 @@ impl Clip {
     /// does, backward when reversed (#642); playback and export read it
     /// alike. A speed ramp has no one speed to read at, and is silent.
     pub fn plays_its_sound(&self) -> bool {
-        self.speed_keyframes.is_empty()
+        self.speed_keyframes.is_empty() && self.hold.is_none()
     }
 
     /// Whether its sound is read at another speed than its own.
@@ -2726,6 +2734,9 @@ impl Clip {
     /// `source_out` — the last of its range — and its last shows the frame
     /// at `source_in`.
     pub fn source_secs_at(&self, elapsed: f64, fps: f64) -> f64 {
+        if let Some(held) = self.hold {
+            return held.to_secs_f64();
+        }
         let dur = (self.timeline_out - self.timeline_in).to_secs_f64();
         let offset = |e: f64| {
             if e < 0.0 {
@@ -2993,6 +3004,7 @@ impl Clip {
             speed: 1.0,
             speed_keyframes: Vec::new(),
             keep_pitch: false,
+            hold: None,
             source_rotation: 0,
             enabled: true,
             solo: false,
@@ -3110,6 +3122,7 @@ impl Clip {
             speed: 1.0,
             speed_keyframes: Vec::new(),
             keep_pitch: false,
+            hold: None,
             source_rotation: 0,
             enabled: true,
             solo: false,
@@ -3216,6 +3229,7 @@ impl Clip {
             speed: 1.0,
             speed_keyframes: Vec::new(),
             keep_pitch: false,
+            hold: None,
             source_rotation: 0,
             enabled: true,
             solo: false,
