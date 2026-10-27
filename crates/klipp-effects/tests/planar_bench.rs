@@ -204,6 +204,27 @@ fn the_tracker_holds_real_surfaces() {
         if let Some(g) = gpu.as_mut() {
             runs.push(("gpu", run(clip, &path, Some(g))));
         }
+        // The CPU and the GPU tell the same story (#2858): the same states
+        // but on a frame or two at the edge of a loss, where a fit sits on
+        // the line between weak and lost and each side's arithmetic puts
+        // it either way; the same extent and the same count of lost frames
+        // within two; and where both follow the surface sure of the fit,
+        // the same corners within a pixel.
+        if let [(_, c), (_, g)] = runs.as_slice() {
+            let states_apart = c.iter().zip(g).filter(|(a, b)| a.state != b.state).count();
+            let lost = |t: &[Tracked]| t.iter().filter(|t| t.state == State::Lost).count();
+            // On the frames both follow and come back from within a pixel:
+            // a looser fit is each side's own path through a surface that
+            // barely holds the map, judged against the points by the
+            // limits above.
+            let corners_apart = c.iter().zip(g).filter(|(a, b)| a.state == State::Good && b.state == State::Good && a.round_trip_px <= 1.0 && b.round_trip_px <= 1.0)
+                .map(|(a, b)| clip.quad.iter().map(|p| { let (x, y) = (a.h.transform(p.0, p.1), b.h.transform(p.0, p.1)); (x.0 - y.0).hypot(x.1 - y.1) }).sum::<f64>() / 4.0)
+                .fold(0.0, f64::max);
+            eprintln!("{} cpu/gpu: {} and {} frames, {} and {} lost, states apart on {states_apart}, corners apart {corners_apart:.2} px", clip.name, c.len(), g.len(), lost(c), lost(g));
+            if c.len().abs_diff(g.len()) > 2 || lost(c).abs_diff(lost(g)) > 2 || states_apart > 2 || corners_apart > 1.0 {
+                over.push(format!("{}: the CPU and the GPU part: {} and {} frames, {} and {} lost, states apart on {states_apart}, corners apart {corners_apart:.2} px", clip.name, c.len(), g.len(), lost(c), lost(g)));
+            }
+        }
         for (on, tracked) in runs {
             let all = errors(clip, &tracked);
             // A frame past `loss_from` reported lost is not drift.

@@ -7,10 +7,13 @@ use super::{Alpha, Category, ColourDomain, EffectType, NodeTypeDesc, ParamDesc, 
 use crate::generator::SHAPES;
 use crate::{BlendMode, BuiltinEffect};
 
-/// A merge's inputs: the picture so far, and the one laid over it.
+/// A merge's inputs: the picture so far, the one laid over it, and a
+/// mask limiting where it is laid (#2758): the merge's result mixed back
+/// over the picture so far by the mask, as a masked effect's is.
 pub const MERGE_IN: &[PortDesc] = &[
     PortDesc { key: "in", ty: PortType::Image, optional: false, params: &[] },
     PortDesc { key: "fg", ty: PortType::Image, optional: true, params: &[] },
+    PortDesc { key: "mask", ty: PortType::Matte, optional: true, params: &[super::MASK_CHANNEL] },
 ];
 
 /// The blend modes a merge lays its picture over by, as saved.

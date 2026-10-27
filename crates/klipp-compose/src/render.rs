@@ -6726,12 +6726,23 @@ fn splice_blended(
         // on its first, drawn as a layer mixer's top layer over its base
         // by the merge's blend and opacity (#1746, #2758).
         if let (klipp_nodes::NodeKind::Blend, Some(fg), Some(BuiltinEffect::Merge { blend_mode, opacity })) = (kind, &b.fg, effects.first()) {
-            match producer_of(graph, fg, "picture", &mut unavailable) {
-                Some((p, port)) => {
+            // A masked merge (#2758): its matte on the third port, the
+            // merge mixed back over the picture so far by it, as a masked
+            // effect is. A mask that can't be had lays nothing.
+            let matte = match &b.mask {
+                None => Some(None),
+                Some(m) => producer_of(graph, m, "matte", &mut unavailable).map(Some),
+            };
+            match producer_of(graph, fg, "picture", &mut unavailable).zip(matte) {
+                Some(((p, port), matte)) => {
                     graph.edges.push(klipp_nodes::Edge { from_node: p, from_port: port, to_node: node, to_port: 1 });
+                    if let Some((m, m_port)) = matte {
+                        graph.edges.push(klipp_nodes::Edge { from_node: m, from_port: m_port, to_node: node, to_port: 2 });
+                    }
                     if let Some(n) = graph.nodes.iter_mut().find(|n| n.id == node) {
                         n.params.effects.clear();
                         n.params.merge = Some(klipp_nodes::LayerMixerInput { opacity: *opacity, blend_mode: *blend_mode });
+                        n.params.effect_blend = matte.map(|_| b.blend);
                     }
                 }
                 // No picture to lay over: the picture passes.

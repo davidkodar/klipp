@@ -381,6 +381,11 @@ impl ProjectTemplate {
         if let Some((i, _)) = self.bins.iter().enumerate().find(|(i, b)| b.parent.is_some_and(|p| p >= *i)) {
             return Err(format!("bin \"{}\" is under one that isn't before it", self.bins[i].name));
         }
+        // A copied file is named by its file name alone, in the
+        // template's media folder and in the project's.
+        for name in self.starter.iter().flat_map(|c| &c.media).filter_map(|m| m.packaged.as_deref()) {
+            crate::path_util::inside(Path::new("media"), &[name]).map_err(|e| format!("starter media {e}"))?;
+        }
         Ok(())
     }
 
@@ -540,8 +545,14 @@ impl ProjectTemplate {
             let into = project_dir.join("Template Media");
             std::fs::create_dir_all(&into).map_err(|e| format!("{}: {e}", into.display()))?;
             for (m, name) in copied {
-                let to = into.join(name);
-                std::fs::copy(path.join("media").join(name), &to).map_err(|e| format!("{name}: {e}"))?;
+                // One plain file name, from the template's media folder
+                // into the project's, and a file there, not a link.
+                let from = crate::path_util::inside(&path.join("media"), &[name])?;
+                let to = crate::path_util::inside(&into, &[name])?;
+                if !std::fs::symlink_metadata(&from).is_ok_and(|m| m.is_file()) {
+                    return Err(format!("{name}: not a file in the template"));
+                }
+                std::fs::copy(&from, &to).map_err(|e| format!("{name}: {e}"))?;
                 for item in pool.all_mut().filter(|i| i.path == m.path) {
                     item.path = to.clone();
                     item.offline = false;
@@ -923,12 +934,6 @@ mod tests {
         (vec![ep, spare, scene], pool, files)
     }
 
-    /// #618 part 2: chosen sequences are kept whole with what they open,
-    /// their media copied in or linked; a new project gets them with every
-    /// id new and the copied files in its own folder, a linked file that
-    /// is gone shown missing before and offline after. Part 3: the template
-    /// goes to another machine as a zip and comes back the same, and can be
-    /// renamed.
     /// A template zip past the import's caps (too many files, or more
     /// bytes than it may unpack, whatever its entries declare) is refused
     /// and nothing is added.
@@ -954,6 +959,46 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// A template's copied media is named by a plain file name: one that
+    /// names a parent folder or an absolute path is refused when the
+    /// template is read and again when a project is made from it, and no
+    /// file outside the project is written or emptied.
+    #[test]
+    fn starter_media_names_stay_in_their_folders() {
+        let root = std::env::temp_dir().join(format!("klipp-starter-names-{}", uuid::Uuid::new_v4()));
+        let (sequences, pool, _) = with_content(&root.join("footage"));
+        let setup = ProjectSetup { sequences: &sequences, pool: &pool, colour: colour() };
+        let choice = StarterChoice { sequences: vec![sequences[0].id], package_media: true };
+        let (t, files_in) = ProjectTemplate::capture_with_starter("Packed", "", &setup, &choice);
+        let path = t.save_with_starter(&root.join("templates"), files_in.as_ref()).unwrap();
+        let victim = root.join("victim.txt");
+        std::fs::write(&victim, b"keep me").unwrap();
+        let project = root.join("project");
+        for name in ["../../victim.txt".to_string(), victim.display().to_string(), "../outside.txt".into(), "..".into()] {
+            let mut tampered = ProjectTemplate::load(&path).unwrap();
+            tampered.starter.as_mut().unwrap().media[0].packaged = Some(name.clone());
+            assert!(tampered.validate().is_err(), "{name}: refused when read");
+            assert!(tampered.instantiate_at(&path, &project).is_err(), "{name}: refused when a project is made");
+            assert_eq!(std::fs::read(&victim).unwrap(), b"keep me", "{name}: nothing outside written or emptied");
+            assert!(!project.join("outside.txt").exists() && !root.join("templates").join("outside.txt").exists());
+            // The file as saved: refused on load as well.
+            let json = path.join("template.json");
+            let mut v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&json).unwrap()).unwrap();
+            let kept = v.clone();
+            v["starter"]["media"][0]["packaged"] = serde_json::json!(name);
+            std::fs::write(&json, v.to_string()).unwrap();
+            assert!(ProjectTemplate::load(&path).is_err(), "{name}: the file refused");
+            std::fs::write(&json, kept.to_string()).unwrap();
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// #618 part 2: chosen sequences are kept whole with what they open,
+    /// their media copied in or linked; a new project gets them with every
+    /// id new and the copied files in its own folder, a linked file that
+    /// is gone shown missing before and offline after. Part 3: the template
+    /// goes to another machine as a zip and comes back the same, and can be
+    /// renamed.
     #[test]
     fn starter_content_is_kept_and_travels() {
         let root = std::env::temp_dir().join(format!("klipp-starter-{}", uuid::Uuid::new_v4()));

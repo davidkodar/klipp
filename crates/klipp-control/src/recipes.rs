@@ -119,14 +119,14 @@ mod tests {
     #[test]
     fn every_built_in_recipe_reads_and_lists() {
         let recipes = ct::builtin_recipes();
-        assert_eq!(recipes.len(), 3, "every file in assets/recipes reads");
+        assert_eq!(recipes.len(), 4, "every file in assets/recipes reads");
         for r in &recipes {
             assert_eq!(r.kind, ct::TemplateKind::Recipe, "{}", r.name);
             let v = listed(r);
             assert_eq!(v["controls"].as_array().map(Vec::len), Some(r.parameters.len()), "{}", r.name);
         }
         assert!(named(&recipes, "green SCREEN").is_ok());
-        let why = named(&recipes, "sky").unwrap_err();
+        let why = named(&recipes, "no such recipe").unwrap_err();
         assert!(why.contains("\"Green screen\""), "names those there are: {why}");
     }
 
@@ -165,8 +165,8 @@ mod tests {
         assert_eq!(key, Some(([5, 190, 5], 0.25, 0.3)), "the key, its colour, tolerance and softness as given");
 
         let refused = |ops: &[Op]| format!("{:?}", resolve(&seq, &pool, &crate::plans::with_recipes(ops, None)).unwrap_err());
-        let why = refused(&[op("sky", json!({}), json!({}))]);
-        assert!(why.contains("there is no recipe") && why.contains("sky"), "{why}");
+        let why = refused(&[op("no such recipe", json!({}), json!({}))]);
+        assert!(why.contains("there is no recipe") && why.contains("no such recipe"), "{why}");
         assert!(refused(&[op("Green screen", json!({}), json!({}))]).contains("fill the slot 'screen'"));
     }
 
