@@ -568,6 +568,7 @@ pub fn builtin_effect_key(effect: &klipp_effects::BuiltinEffect) -> &'static str
         klipp_effects::BuiltinEffect::Merge { .. } => "merge",
         klipp_effects::BuiltinEffect::Generator { .. } => "generator",
         klipp_effects::BuiltinEffect::MediaSource { .. } => "media_source",
+        klipp_effects::BuiltinEffect::TitleSource { .. } => "title_source",
         klipp_effects::BuiltinEffect::ClipBelow {} => "clip_below",
         klipp_effects::BuiltinEffect::GradeCompound {} => "grade_compound",
         klipp_effects::BuiltinEffect::Bloom { .. } => "bloom",
