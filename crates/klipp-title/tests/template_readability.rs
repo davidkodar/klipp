@@ -5,6 +5,7 @@
 //! inside title-safe (5 % in from each edge); and the smallest text's size
 //! (in pixels of a 1080-line frame). Each is composited with its contrast
 //! protection, as the compositor lays it. Report: `target/sweep/templates.txt`.
+//! A template set in a catalogue face not fetched here is skipped.
 //! `KLIPP_TEMPLATES_SHEET=<dir>` writes contact sheets there, a page of
 //! templates each, every one in the three formats over the bright frame.
 
@@ -16,14 +17,8 @@ use klipp_title::TitleRenderer;
 /// Items known to fail, and the issue that holds each: generated from the
 /// sweep's first run, each to come off as #2734's work fixes it.
 const KNOWN: &[(&str, u32)] = &[
-    ("Documentary 16:9 bright", 2734),
-    ("Documentary 9:16 bright", 2734),
-    ("Documentary 1:1 bright", 2734),
     ("Editorial 16:9 bright", 2734),
-    ("Editorial 9:16 bright", 2734),
-    ("Editorial 1:1 bright", 2734),
     ("Chapter 16:9 bright", 2734),
-    ("Chapter 9:16 bright", 2734),
     ("Chapter 1:1 bright", 2734),
     ("Chapter Number 16:9 bright", 2734),
     ("Chapter Number 9:16 bright", 2734),
@@ -32,7 +27,6 @@ const KNOWN: &[(&str, u32)] = &[
     ("Quote 9:16 bright", 2734),
     ("Quote 1:1 bright", 2734),
     ("Cast 16:9 bright", 2734),
-    ("Cast 9:16 bright", 2734),
     ("Cast 1:1 bright", 2734),
     ("Question 16:9 bright", 2734),
     ("Question 1:1 bright", 2734),
@@ -112,8 +106,11 @@ fn protected(fg: &[u8], bg: &[u8], w: u32, h: u32, mode: u32) -> Vec<u8> {
     klipp_effects::linear_f32_rgba_to_srgb_u8(&acc)
 }
 
-/// The side of a contact sheet's cell, in pixels.
-const CELL: u32 = 300;
+/// The side of a contact sheet's cell, in pixels:
+/// `KLIPP_TEMPLATES_SHEET_CELL`, else 300.
+fn cell_side() -> u32 {
+    std::env::var("KLIPP_TEMPLATES_SHEET_CELL").ok().and_then(|v| v.parse().ok()).unwrap_or(300)
+}
 
 /// Contact sheets of the templates, a row each and a cell per format.
 struct Sheet {
@@ -123,15 +120,16 @@ struct Sheet {
 impl Sheet {
     /// `px` (`w` × `h`) shrunk into a cell, centred on grey.
     fn cell(px: &[u8], w: u32, h: u32) -> Vec<u8> {
-        let k = (CELL as f32 / w.max(h) as f32).min(1.0);
+        let cell = cell_side();
+        let k = (cell as f32 / w.max(h) as f32).min(1.0);
         let (cw, ch) = ((w as f32 * k) as u32, (h as f32 * k) as u32);
-        let (ox, oy) = ((CELL - cw) / 2, (CELL - ch) / 2);
-        let mut out = [60u8, 60, 60, 255].repeat((CELL * CELL) as usize);
+        let (ox, oy) = ((cell - cw) / 2, (cell - ch) / 2);
+        let mut out = [60u8, 60, 60, 255].repeat((cell * cell) as usize);
         for y in 0..ch {
             for x in 0..cw {
                 let (sx, sy) = (((x as f32 + 0.5) / k) as u32, ((y as f32 + 0.5) / k) as u32);
                 let i = ((sy.min(h - 1) * w + sx.min(w - 1)) * 4) as usize;
-                let o = (((oy + y) * CELL + ox + x) * 4) as usize;
+                let o = (((oy + y) * cell + ox + x) * 4) as usize;
                 out[o..o + 4].copy_from_slice(&px[i..i + 4]);
             }
         }
@@ -140,16 +138,17 @@ impl Sheet {
 
     /// Pages of 12 rows into `dir`.
     fn write(&self, dir: &std::path::Path) {
+        let cell = cell_side();
         std::fs::create_dir_all(dir).expect("the sheet folder");
         for (page, rows) in self.rows.chunks(12).enumerate() {
             let cols = rows.iter().map(|r| r.1.len()).max().unwrap_or(1) as u32;
-            let (w, h) = (cols * (CELL + 4), rows.len() as u32 * (CELL + 4));
+            let (w, h) = (cols * (cell + 4), rows.len() as u32 * (cell + 4));
             let mut img = [20u8, 20, 20, 255].repeat((w * h) as usize);
             for (r, (_, cells)) in rows.iter().enumerate() {
-                for (c, cell) in cells.iter().enumerate() {
-                    for y in 0..CELL {
-                        let o = (((r as u32 * (CELL + 4) + y) * w + c as u32 * (CELL + 4)) * 4) as usize;
-                        img[o..o + (CELL * 4) as usize].copy_from_slice(&cell[(y * CELL * 4) as usize..((y + 1) * CELL * 4) as usize]);
+                for (c, pixels) in cells.iter().enumerate() {
+                    for y in 0..cell {
+                        let o = (((r as u32 * (cell + 4) + y) * w + c as u32 * (cell + 4)) * 4) as usize;
+                        img[o..o + (cell * 4) as usize].copy_from_slice(&pixels[(y * cell * 4) as usize..((y + 1) * cell * 4) as usize]);
                     }
                 }
             }
@@ -196,6 +195,17 @@ fn sweep_templates() {
         let mut cells = Vec::new();
         let mut design: Option<Vec<f32>> = None;
         let td = template.data();
+        // Measured in its own faces: a catalogue face not fetched here
+        // would measure the fallback (`KLIPP_FONTS_DIR` names a folder of
+        // fetched faces).
+        let unfetched: Vec<String> = td.objects.iter().filter_map(|o| match &o.content {
+            TitleObjectContent::TextBox(tb) => Some(tb.font_name.clone()),
+            _ => None,
+        }).filter(|f| klipp_title::catalogue::family(f).is_some() && !klipp_title::catalogue::fetched(f)).collect();
+        if !unfetched.is_empty() {
+            sweep.skip(template.name, &format!("{} not fetched", unfetched.join(", ")));
+            continue;
+        }
         let texts: Vec<usize> = td.objects.iter().enumerate().filter(|(_, o)| matches!(o.content, TitleObjectContent::TextBox(_))).map(|(i, _)| i).collect();
         let smallest = td.objects.iter().filter_map(|o| match &o.content {
             TitleObjectContent::TextBox(tb) if !tb.text.trim().is_empty() => Some(tb.font_size),
