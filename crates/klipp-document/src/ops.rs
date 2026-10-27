@@ -6832,7 +6832,18 @@ pub fn named_picture_effect(kind: &str, amount: Option<f32>) -> Result<(klipp_ef
         "edge_detect" | "edges" => E::EdgeDetect { strength: a * 2.0, mix: 1.0 },
         "denoise" => E::Denoise { spatial_sigma: a * 4.0, color_sigma: a * 0.1, iterations: 1 },
         "vhs" => E::Vhs { tracking: a * 0.8, bleed: a, noise: a * 0.7, scanlines: a, seed: 1 },
-        "old_film" => E::OldFilm { flicker: a * 0.5, scratches: a, dust: a, weave: a * 0.5, sepia: a * 0.5, seed: 1 },
+        // Aged as well as damaged (#2744): its colour faded and warmed.
+        "old_film" => E::OldFilm { flicker: a * 0.5, scratches: a, dust: a, weave: a * 0.5, sepia: a * 0.5, seed: 1, amount: 1.0, age: a * 0.8, mono: 0.0, stains: a * 0.2, frame_lines: 0.0, leaks: 0.0, burn: 0.0 },
+        // The film templates (#2744), the amount their damage: the
+        // template's own at the default.
+        "super8" | "film_16mm" | "silent_film" | "faded_70s" => {
+            match klipp_effects::old_film::template(&kind.to_lowercase()) {
+                Some(E::OldFilm { flicker, scratches, dust, weave, sepia, seed, age, mono, stains, frame_lines, leaks, burn, .. }) => {
+                    E::OldFilm { flicker, scratches, dust, weave, sepia, seed, amount: (a * 2.0).min(2.0), age, mono, stains, frame_lines, leaks, burn }
+                }
+                _ => unreachable!("every template named here is an old film"),
+            }
+        }
         // A random flicker of the opacity, eight jumps a second, a third
         // of them holding (#989); more flickers deeper.
         "flicker" => E::Flicker { amount: a, speed: 8.0, smoothness: 0.0, hold: 0.3, seed: 1, target: 0, time: 0.0 },
@@ -6856,7 +6867,7 @@ pub fn named_picture_effect(kind: &str, amount: Option<f32>) -> Result<(klipp_ef
                 other => other,
             }
         }
-        other => return Err((format!("\"{other}\" is not an effect"), "use e.g. vignette, grain, glow, bloom, chroma_key, luma_key, corners, shadow, outer_glow, fill_bars, diffusion, halation, light_rays, lens_flare, anamorphic, light_wrap, blur, radial_blur, spin_blur, directional_blur, sharpen, chromatic_aberration, tilt_shift, mosaic, posterize, invert, mirror, lens_distortion, displace, reflection (water_reflection, calm_water, rippled_water, glossy_floor, wet_street, glass), emboss, edge_detect, denoise, vhs, old_film, flicker, exposure_flicker, binocular, dust, snow, rain, sparks or embers".into())),
+        other => return Err((format!("\"{other}\" is not an effect"), "use e.g. vignette, grain, glow, bloom, chroma_key, luma_key, corners, shadow, outer_glow, fill_bars, diffusion, halation, light_rays, lens_flare, anamorphic, light_wrap, blur, radial_blur, spin_blur, directional_blur, sharpen, chromatic_aberration, tilt_shift, mosaic, posterize, invert, mirror, lens_distortion, displace, reflection (water_reflection, calm_water, rippled_water, glossy_floor, wet_street, glass), emboss, edge_detect, denoise, vhs, old_film (super8, film_16mm, silent_film, faded_70s), flicker, exposure_flicker, binocular, dust, snow, rain, sparks or embers".into())),
     };
     Ok((fx, a))
 }
@@ -19664,6 +19675,8 @@ mod effect_params_tests {
         assert!(matches!(effect("displace", r#"{"direction": 2}"#).unwrap(), E::Displace { direction: 2, .. }));
         // Every described effect takes them, not only the newest (#2744).
         assert!(matches!(effect("old_film", r#"{"scratches": 0, "sepia": 1}"#).unwrap(), E::OldFilm { scratches, sepia, .. } if scratches == 0.0 && sepia == 1.0));
+        // #2744: a template by name, its age and damage set by params.
+        assert!(matches!(effect("silent_film", r#"{"age": 0.9, "amount": 1.5}"#).unwrap(), E::OldFilm { mono, age, amount, .. } if mono == 1.0 && age == 0.9 && amount == 1.5));
         assert_eq!(effect("vignette", "{}").unwrap(), named_picture_effect("vignette", None).unwrap().0);
     }
 

@@ -518,7 +518,7 @@ impl EffectRegistry {
                 name: "Old Film".into(),
                 category: EffectCategory::Film,
                 source: EffectSource::Builtin(klipp_effects::BuiltinEffect::OldFilm {
-                    flicker: 0.4, scratches: 0.5, dust: 0.5, weave: 0.5, sepia: 0.6, seed: 0,
+                    flicker: 0.4, scratches: 0.5, dust: 0.5, weave: 0.5, sepia: 0.6, seed: 0, amount: 1.0, age: 0.0, mono: 0.0, stains: 0.0, frame_lines: 0.0, leaks: 0.0, burn: 0.0,
                 }),
                 source_label: "Built-in",
                 description: "Flicker, scratches, dust, gate weave and a sepia wash.".into(),

@@ -430,10 +430,12 @@ impl PresetManager {
             klipp_effects::BuiltinEffect::FilmGrain { amount: 0.3, size: 1.6, color: 1, shadows: 0.6, seed: 0 });
 
         // ── Old Film ──────────────────────────────────────────
-        self.bi("klipp.fx.old_film", "Silent Era", "Sepia, heavy weave and scratches",
-            klipp_effects::BuiltinEffect::OldFilm { flicker: 0.6, scratches: 0.8, dust: 0.8, weave: 0.8, sepia: 0.9, seed: 0 });
-        self.bi("klipp.fx.old_film", "Home Movie", "Light wear, colour kept",
-            klipp_effects::BuiltinEffect::OldFilm { flicker: 0.3, scratches: 0.3, dust: 0.4, weave: 0.4, sepia: 0.15, seed: 0 });
+        // The film templates (#2744), then Age and Damage to move them.
+        for (name, label, what) in klipp_effects::old_film::TEMPLATES {
+            if let Some(effect) = klipp_effects::old_film::template(name) {
+                self.bi("klipp.fx.old_film", label, what, effect);
+            }
+        }
 
         // ── Flicker (#989) ────────────────────────────────────
         self.bi("klipp.fx.flicker", "Faulty Bulb", "Hard drops in brightness, a few still spells",

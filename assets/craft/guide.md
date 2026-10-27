@@ -330,7 +330,14 @@ exist until the plan runs.
   `heat_haze`: each pixel moved by a drifting noise field), `reflection`
   (`water_reflection`, and its surfaces `calm_water`, `rippled_water`,
   `glossy_floor`, `wet_street`, `glass`: see below), `emboss`, `edge_detect`
-  (`edges`), `denoise`, `vhs`, `old_film`, `flicker` (random jumps of
+  (`edges`), `denoise`, `vhs`, `old_film` (its templates `super8`, a
+  home movie; `film_16mm`, a documentary print; `silent_film`, the
+  1920s in black and white; `faded_70s`, colour gone warm and flat: the
+  amount is their damage, the template's own at the default; `params`
+  `age` and `amount` (Damage, 0 to 2) move a template, and each part has
+  its own: `flicker`, `scratches`, `dust` (debris: a few specks a frame,
+  each gone in a frame or two), `stains`, `weave`, `frame_lines`,
+  `leaks`, `burn`, `sepia`, `mono`), `flicker` (random jumps of
   the opacity; `exposure_flicker` of the light), `binocular`
   (`binocular_vignette`: two eyepieces, a fringe at their rims) and the
   particles `dust`, `snow`, `rain`, `sparks` and `embers` (`particles`
