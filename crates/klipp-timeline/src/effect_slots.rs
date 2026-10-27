@@ -714,6 +714,32 @@ impl Clip {
         }
     }
 
+    /// Switch the picture node at `path` on or off, as the A/B wipe of a
+    /// node's input against its output does (#2758): an effect by its
+    /// slot, any other node of the clip's picture (a merge, a node beside
+    /// the chain, a node of the grade) by its own switch. True when the
+    /// clip has it.
+    pub fn toggle_picture_node(&mut self, path: &klipp_graph_format::path::NodePath) -> bool {
+        let Some(node) = path.node() else { return false };
+        if path.root != (klipp_graph_format::path::Root::Clip { clip: self.id.0 }) {
+            return false;
+        }
+        if self.toggle_effect_node(node) {
+            return true;
+        }
+        let Ok(lifted) = self.picture_v2() else { return false };
+        let (last, through) = path.nodes.split_last().expect("a path to a node");
+        let mut nodes = &lifted.picture.graph.nodes;
+        for step in through {
+            match nodes.iter().find(|n| n.id == *step).and_then(|n| n.group.as_ref()) {
+                Some(g) => nodes = &g.graph.nodes,
+                None => return false,
+            }
+        }
+        let Some(on) = nodes.iter().find(|n| n.id == *last).map(|n| n.enabled) else { return false };
+        self.apply_picture_ops(&[klipp_graph_lift::ops::GraphOp::SetEnabled { path: path.clone(), enabled: !on }]).is_ok()
+    }
+
     /// The id of the entry at `index`, for an index a list widget holds:
     /// resolve it once, at the edge, and address the effect by id after.
     pub fn effect_id_at(&mut self, index: usize) -> Option<EffectId> {
