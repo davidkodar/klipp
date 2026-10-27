@@ -129,6 +129,12 @@ impl AudioEffect for Chorus {
         let num_voices = (self.voices as usize).clamp(1, MAX_VOICES);
         let wet = self.mix / 100.0;
         let dry = 1.0 - wet;
+        // Level kept on sound with no one pitch (a voice's breath, a band,
+        // noise), where the delayed copies are unrelated and add by power:
+        // the voices summed over the root of their count, the mix lifted
+        // by its own power's root. Averaged and mixed straight, half wet
+        // lost 4.9 dB on such sound (#2801).
+        let makeup = 1.0 / (dry * dry + wet * wet).sqrt();
         let base_delay_samples = BASE_DELAY_SECS * self.sample_rate;
         let depth_samples = self.depth * 0.001 * self.sample_rate;
         let lfo_inc = 2.0 * PI * self.rate / self.sample_rate;
@@ -158,9 +164,9 @@ impl AudioEffect for Chorus {
                     let delay = base_delay_samples + depth_samples * lfo_val;
                     wet_sum += self.delay_lines[ch][v].read_delay(delay);
                 }
-                wet_sum /= num_voices as f32;
+                wet_sum /= (num_voices as f32).sqrt();
 
-                buffer[idx] = dry_sample * dry + wet_sum * wet;
+                buffer[idx] = (dry_sample * dry + wet_sum * wet) * makeup;
             }
         }
     }
@@ -187,5 +193,40 @@ impl AudioEffect for Chorus {
 
     fn deserialize_params(&mut self, params: &[(String, f32)]) {
         for (name, value) in params { self.set_param(name, *value); }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn level_change(input: &[f32]) -> f32 {
+        let mut fx = Chorus::new(48_000);
+        let mut out = input.to_vec();
+        fx.process(&mut out, &AudioProcessContext { sample_rate: 48_000, channels: 2, clip_time_secs: 0.0 });
+        let rms = |b: &[f32]| (b[b.len() / 4..].iter().map(|s| s * s).sum::<f32>() / (b.len() * 3 / 4) as f32).sqrt();
+        20.0 * (rms(&out) / rms(input)).log10()
+    }
+
+    /// #2801: at its defaults the chorus keeps the level of sound with no
+    /// one pitch (it lost 4.9 dB), and of a held tone within a few dB.
+    #[test]
+    fn the_chorus_keeps_its_level() {
+        let mut x = 0x1234_5678u32;
+        let noise: Vec<f32> = (0..48_000).flat_map(|_| {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            let v = (x % 20_001) as f32 / 10_000.0 - 1.0;
+            [v * 0.2, v * 0.2]
+        }).collect();
+        let broadband = level_change(&noise);
+        assert!(broadband.abs() < 1.0, "noise: {broadband:+.2} dB");
+        let tone: Vec<f32> = (0..48_000).flat_map(|i| {
+            let v = 0.3 * (2.0 * PI * 440.0 * i as f32 / 48_000.0).sin();
+            [v, v]
+        }).collect();
+        let held = level_change(&tone);
+        assert!((-3.5..=3.5).contains(&held), "440 Hz: {held:+.2} dB");
     }
 }
