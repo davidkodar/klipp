@@ -811,6 +811,47 @@ pub fn template_fields(ui: &mut egui::Ui, theme: &KlippTheme, clip_id: klipp_cor
                     set(V::Size(v), true);
                 }
             }
+            // A family by name (#2757); one Klipp's catalogue has is
+            // fetched once it is set.
+            V::Font(family) => {
+                ui.horizontal(|ui| {
+                    ui.label(field.label.as_str());
+                    let mut edited = family.clone();
+                    let r = ui.add(egui::TextEdit::singleline(&mut edited).desired_width(f32::INFINITY).id_salt(("template_font", clip_id, index)));
+                    if r.lost_focus() && edited.trim() != family && !edited.trim().is_empty() {
+                        crate::missing_fonts::fetch_family(edited.trim());
+                        set(V::Font(edited.trim().to_string()), true);
+                    }
+                });
+            }
+            // How long the motion is laid over (#2757), as a drag of
+            // seconds: shown as it goes, one step when it ends.
+            V::Duration(secs) => {
+                ui.horizontal(|ui| {
+                    ui.label(field.label.as_str());
+                    let mut v = secs;
+                    let r = ui.add(egui::DragValue::new(&mut v).range(klipp_timeline::TITLE_DURATION_RANGE).speed(0.05).suffix(" s").fixed_decimals(2));
+                    if r.changed() {
+                        set(V::Duration(v), !r.dragged());
+                    } else if r.drag_stopped() {
+                        set(V::Duration(v), true);
+                    }
+                });
+            }
+            // An image layer's file (#2757): chosen from disk.
+            V::Picture(path) => {
+                ui.horizontal(|ui| {
+                    ui.label(field.label.as_str());
+                    let name = std::path::Path::new(&path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or(path.clone());
+                    ui.label(egui::RichText::new(name).color(theme.text_dim)).on_hover_text(path.as_str());
+                    if ui.button("Choose\u{2026}").clicked() {
+                        crate::file_dialog::spawn_pick(
+                            || rfd::FileDialog::new().set_title("Picture").add_filter("Images", &["png", "jpg", "jpeg", "webp", "tif", "tiff", "exr"]).pick_file(),
+                            move |chosen| vec![AppCommand::SetTitleField { clip_id, index, value: V::Picture(chosen.display().to_string()), done: true }],
+                        );
+                    }
+                });
+            }
         }
         ui.add_space(4.0);
     }

@@ -4049,12 +4049,20 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                     (Some(V::Colour(_)), serde_json::Value::String(s)) => V::Colour(parse_color(s).ok_or_else(|| refuse(i, format!("\"{s}\" is not a colour"), "write a colour as #rrggbb or #rrggbbaa"))?),
                     (Some(V::Speed(_)), serde_json::Value::Number(n)) => V::Speed(n.as_f64().unwrap_or(1.0) as f32),
                     (Some(V::Size(_)), serde_json::Value::Number(n)) => V::Size(n.as_f64().unwrap_or(1.0) as f32),
-                    _ => return Err(refuse(i, format!("\"{label}\" can't take {v}"), "give a text as words, a colour as #rrggbb, the speed and size as numbers")),
+                    (Some(V::Font(_)), serde_json::Value::String(s)) => V::Font(s.clone()),
+                    (Some(V::Duration(_)), serde_json::Value::Number(n)) => V::Duration(n.as_f64().unwrap_or(1.0) as f32),
+                    (Some(V::Picture(_)), serde_json::Value::String(s)) => V::Picture(s.clone()),
+                    _ => return Err(refuse(i, format!("\"{label}\" can't take {v}"), "give a text, font or picture as words, a colour as #rrggbb, the speed, size and duration (seconds) as numbers")),
                 };
                 td.set_field(index, &value).map_err(|e| refuse(i, e, "title_templates lists each template's fields"))?;
             }
             if !held.is_finite() || *held < 0.2 {
                 return Err(refuse(i, format!("{held} s is too short"), "hold it at least a fraction of a second"));
+            }
+            // Its motion laid over the time it is placed for, unless a
+            // Duration is given (#2757).
+            if let Some(k) = td.live_fields().into_iter().find(|(_, f, _)| matches!(f.kind, klipp_timeline::FieldKind::Duration { .. }) && !fields.keys().any(|l| l.eq_ignore_ascii_case(&f.label))).map(|(k, ..)| k) {
+                td.set_field(k, &V::Duration(*held as f32)).map_err(|e| refuse(i, e, "title_templates lists each template's fields"))?;
             }
             // Made from the template, as the titles browser names it
             // (#1716): the socket marks a built-in or a saved one.
@@ -13172,6 +13180,26 @@ mod tests {
         seq.resolution = klipp_core::Resolution { width: 1080, height: 1920 };
         let tall = name_y(&seq);
         assert!(tall < klipp_timeline::title_library::TALL_BAND_TOP - 0.05 && tall < wide, "up out of the band on 9:16: {tall} (16:9 {wide})");
+    }
+
+    /// #2757: a template with a Duration placed for twice the time it
+    /// was made over lays its motion over that time; a Duration given
+    /// in fields wins.
+    #[test]
+    fn a_templates_duration_follows_the_time_it_is_placed_for() {
+        let (seq, pool, ..) = fixture();
+        let mut td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Hi".into(), ..Default::default() });
+        td.objects[0].fx_mut().motion.enter = Some(klipp_core::title_motion::Motion::new(klipp_core::title_motion::MotionKind::Rise).duration(0.5));
+        let td = klipp_timeline::template_for_save(&td, 2.0, None).unwrap();
+        let enter = |secs: f64, fields: serde_json::Value| {
+            let op = Op::Template { name: "Hi".into(), at: Anchor::Secs(1.0), secs, track: None, fields: serde_json::from_value(fields).unwrap(), data: Some(Box::new(td.clone())) };
+            let plan = resolve(&seq, &pool, &[op]).unwrap();
+            let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!("a title clip") };
+            clip.title_data().unwrap().objects[0].fx().motion.enter.unwrap().duration_secs
+        };
+        assert!((enter(2.0, serde_json::json!({})) - 0.5).abs() < 1e-6, "placed for as long as made: as made");
+        assert!((enter(4.0, serde_json::json!({})) - 1.0).abs() < 1e-6, "twice as long: twice as slow");
+        assert!((enter(4.0, serde_json::json!({ "Duration": 1.0 })) - 0.25).abs() < 1e-6, "a Duration given wins");
     }
 
     /// #460: a heading at the top of a vertical frame stays whole inside

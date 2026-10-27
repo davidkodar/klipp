@@ -66,16 +66,20 @@ impl KlippApp {
                 }
                 true
             }
+            AppCommand::ReloadTitleTemplates => {
+                self.state.title_templates = crate::title_templates::TitleTemplateStore::load_default();
+                true
+            }
             AppCommand::SaveTitleTemplate { clip_id } => {
                 let data = self.state.sequences[self.state.active_sequence_idx]
                     .all_clips()
                     .find(|c| c.id == *clip_id)
                     .and_then(|c| match &c.kind {
-                        klipp_timeline::ClipKind::Title(td) => Some(td.clone()),
+                        klipp_timeline::ClipKind::Title(td) => Some((td.clone(), (c.timeline_out - c.timeline_in).to_secs_f64() as f32)),
                         _ => None,
                     });
-                if let Some(td) = data {
-                    self.state.title_template_dialog = Some(crate::title_templates::TemplateDialog::save(td));
+                if let Some((td, secs)) = data {
+                    self.state.title_template_dialog = Some(crate::title_templates::TemplateDialog::save(td, secs));
                 }
                 true
             }
@@ -3916,9 +3920,13 @@ pub(super) fn add_title_clip(
     let timeline_out = timeline_in + duration;
     let frame = state.sequences[state.active_sequence_idx].resolution;
     // A built-in template laid out for the sequence's frame (#2734).
-    let title_data = state.pending_title_data.take()
+    let mut title_data = state.pending_title_data.take()
         .map(|td| klipp_timeline::title_library::for_frame(td, frame.width, frame.height))
         .unwrap_or_default();
+    // A template's motion laid over the time it is placed for (#2757).
+    if let Some(k) = title_data.live_fields().into_iter().find(|(_, f, _)| matches!(f.kind, klipp_timeline::FieldKind::Duration { .. })).map(|(k, ..)| k) {
+        let _ = title_data.set_field(k, &klipp_core::TitleFieldValue::Duration(duration.to_secs_f64() as f32));
+    }
     let clip = klipp_timeline::Clip {
         id: klipp_core::ClipId::new(),
         kind: klipp_timeline::ClipKind::Title(title_data),

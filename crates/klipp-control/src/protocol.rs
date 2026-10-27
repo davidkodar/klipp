@@ -1223,6 +1223,19 @@ pub enum ControlCommand {
     /// The title templates, built-in (#1724) and saved (#1139), each with
     /// the fields it keeps editable: what a `template` op places and sets.
     TitleTemplates,
+    /// A title on the timeline saved as a template (#2757): `fields` by
+    /// label (its defaults and Duration when left out), in `category`;
+    /// a template of that name is replaced only with `replace`.
+    SaveTemplate {
+        clip_id: String,
+        name: String,
+        #[serde(default)]
+        category: Option<String>,
+        #[serde(default)]
+        fields: Option<Vec<String>>,
+        #[serde(default)]
+        replace: bool,
+    },
     /// The node types the registry describes, with their ports and
     /// parameters, optionally of one category (#1086).
     NodeTypes {

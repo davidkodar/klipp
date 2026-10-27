@@ -1079,6 +1079,12 @@ pub enum TitleFieldValue {
     /// How big the title is against the template's (#1724): 1.0 as made,
     /// 2.0 twice the size, grown from the template's anchor.
     Size(f32),
+    /// A text's font family (#2757).
+    Font(String),
+    /// How long the title's motion is laid out over, in seconds (#2757).
+    Duration(f32),
+    /// An image layer's file (#2757).
+    Picture(String),
 }
 
 /// A viewing LUT for the scopes to measure the picture through (#466):
@@ -2627,6 +2633,9 @@ pub enum AppCommand {
     /// Open the dialog that saves a title clip as a user template in
     /// the Titles browser.
     SaveTitleTemplate { clip_id: ClipId },
+    /// Read the saved title templates again: one saved over the control
+    /// socket joins the Titles browser (#2757).
+    ReloadTitleTemplates,
     /// Add an image layer (a logo, a still) to a title. The layer's
     /// box takes the picture's aspect at a third of the frame width.
     AddTitleImageObject { clip_id: ClipId, path: String },

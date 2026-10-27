@@ -83,8 +83,8 @@ pub use caption_motion::{animated_caption, CaptionAnimation, CaptionMotion, Capt
 pub use klipp_core::text3d;
 pub use klipp_core::text3d::{Bevel, BevelProfile, Camera3d, Light3d, Text3d, Text3dKeys};
 pub use credits::{credit_rows, credits_title, parse_credits, CreditLine, CreditsLayout, CreditsStyle};
-pub use title_template_file::{read_templates, template_dir, TemplateFile, TEMPLATE_EXTENSION};
-pub use title_fields::{FieldKind, LayerSize, LayerTiming, PublishedField, Timing, SIZE_RANGE as TITLE_SIZE_RANGE, SPEED_RANGE as TITLE_SPEED_RANGE};
+pub use title_template_file::{read_templates, save_template, template_dir, template_for_save, TemplateFile, TEMPLATE_EXTENSION, TEMPLATE_FORMAT};
+pub use title_fields::{FieldKind, LayerAnimators, LayerSize, LayerTiming, DURATION_RANGE as TITLE_DURATION_RANGE, PublishedField, Timing, SIZE_RANGE as TITLE_SIZE_RANGE, SPEED_RANGE as TITLE_SPEED_RANGE};
 pub mod crossfade;
 pub mod flatten;
 pub mod frame_glide;

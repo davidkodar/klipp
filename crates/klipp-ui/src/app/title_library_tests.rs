@@ -39,6 +39,9 @@ fn every_built_in_template_applies_in_one_drag_and_its_fields_edit() {
                 V::Colour(_) => V::Colour([220, 60, 40, 255]),
                 V::Speed(_) => V::Speed(2.0),
                 V::Size(_) => V::Size(1.5),
+                V::Font(_) => V::Font("Inter".into()),
+                V::Duration(_) => V::Duration(6.0),
+                V::Picture(p) => V::Picture(p),
             };
             state.set_title_field(id, index, &new, true).unwrap_or_else(|e| panic!("{}: {field}: {e}", tpl.name));
             assert_eq!(title(&state, id).field_value(index), Some(new), "{}: {field}", tpl.name);
