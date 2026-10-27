@@ -48,7 +48,7 @@ fn scene() -> (Sequence, Clip) {
     let mut pin = Clip::media(MediaId::new(), tc(0.0), tc(4.0), tc(0.0), tc(4.0));
     let [tl, tr, br, bl] = quad(0.1);
     pin = TestClip::of(pin).effect(BuiltinEffect::CornerPin { tl, tr, br, bl }).build();
-    pin.surface_pin = Some(SurfacePin { host: host.id, surface: id, picture_size: None, fit: Default::default(), inset: 0.0, on_loss: Default::default() });
+    pin.surface_pin = Some(SurfacePin { host: host.id, surface: id, picture_size: None, fit: Default::default(), inset: 0.0, on_loss: Default::default(), light: 0.0 });
     seq.tracks[0].clips.push(host);
     (seq, pin)
 }

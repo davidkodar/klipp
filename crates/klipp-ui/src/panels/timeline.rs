@@ -9061,10 +9061,31 @@ impl TimelinePanel {
                             .flat_map(|h| h.surfaces.iter().filter(|s| !s.keys.is_empty()).map(move |s| (h.id, s.id, s.name.clone())))
                             .collect();
                         // Pinned: what it does where the surface's track is
-                        // lost (#2751), pinned again with that.
+                        // lost and whether it takes the surface's light
+                        // (#2751), pinned again with that, the rest kept.
                         if let Some(pin) = clip.surface_pin {
+                            use klipp_timeline::PinLoss;
+                            let repin = |on_loss: PinLoss, light: f32| klipp_document::ops::Op::Pin {
+                                clip_id: klipp_document::ops::ClipRef::Id(pin.host),
+                                media_id: None,
+                                layer: Some(klipp_document::ops::ClipRef::Id(clip_id)),
+                                surface: Some(pin.surface.to_string()),
+                                from: None,
+                                to: None,
+                                fit: Some(match pin.fit { klipp_timeline::PinFit::Fit => "fit", klipp_timeline::PinFit::Stretch => "stretch" }.to_string()),
+                                inset: Some(pin.inset),
+                                on_loss: Some(match on_loss { PinLoss::Hold => "hold", PinLoss::Hide => "hide", PinLoss::Fade { .. } => "fade" }.to_string()),
+                                fade_secs: match on_loss { PinLoss::Fade { secs } => Some(secs), _ => None },
+                                light: Some(light),
+                                blend: Some(match clip.blend_mode {
+                                    klipp_core::BlendMode::Multiply => "multiply",
+                                    klipp_core::BlendMode::Screen => "screen",
+                                    klipp_core::BlendMode::Overlay => "overlay",
+                                    klipp_core::BlendMode::SoftLight => "soft_light",
+                                    _ => "normal",
+                                }.to_string()),
+                            };
                             ui.menu_rows("If the Track Is Lost", |ui| {
-                                use klipp_timeline::PinLoss;
                                 for (label, on_loss, hint) in [
                                     ("Hold", PinLoss::Hold, "Stay where the surface was last followed to"),
                                     ("Hide", PinLoss::Hide, "Gone until the surface is followed again"),
@@ -9072,23 +9093,16 @@ impl TimelinePanel {
                                 ] {
                                     let on = std::mem::discriminant(&pin.on_loss) == std::mem::discriminant(&on_loss);
                                     if ui.selectable_label(on, label).on_hover_text(hint).clicked() {
-                                        let op = klipp_document::ops::Op::Pin {
-                                            clip_id: klipp_document::ops::ClipRef::Id(pin.host),
-                                            media_id: None,
-                                            layer: Some(klipp_document::ops::ClipRef::Id(clip_id)),
-                                            surface: Some(pin.surface.to_string()),
-                                            from: None,
-                                            to: None,
-                                            fit: Some(match pin.fit { klipp_timeline::PinFit::Fit => "fit", klipp_timeline::PinFit::Stretch => "stretch" }.to_string()),
-                                            inset: Some(pin.inset),
-                                            on_loss: Some(match on_loss { PinLoss::Hold => "hold", PinLoss::Hide => "hide", PinLoss::Fade { .. } => "fade" }.to_string()),
-                                            fade_secs: None,
-                                        };
-                                        state.pending_doc_ops.push(crate::state::DocOpsRequest { label: format!("Pin: {label} If Lost"), ops: vec![op], independent: false });
+                                        state.pending_doc_ops.push(crate::state::DocOpsRequest { label: format!("Pin: {label} If Lost"), ops: vec![repin(on_loss, pin.light)], independent: false });
                                         ui.close_menu();
                                     }
                                 }
                             });
+                            let lit = pin.light > 0.0;
+                            if ui.selectable_label(lit, "Take the Surface's Light").on_hover_text("Darker or lighter as the surface is than where it was pinned (a surface tracked since this was measured)").clicked() {
+                                state.pending_doc_ops.push(crate::state::DocOpsRequest { label: "Pin: Take the Surface's Light".into(), ops: vec![repin(pin.on_loss, if lit { 0.0 } else { 1.0 })], independent: false });
+                                ui.close_menu();
+                            }
                         }
                         if !hosts.is_empty() {
                             ui.menu_rows("Pin to Surface", |ui| {
@@ -9105,6 +9119,8 @@ impl TimelinePanel {
                                             inset: None,
                                             on_loss: None,
                                             fade_secs: None,
+                                            light: None,
+                                            blend: None,
                                         };
                                         state.pending_doc_ops.push(crate::state::DocOpsRequest { label: format!("Pin to {name}"), ops: vec![op], independent: false });
                                         ui.close_menu();

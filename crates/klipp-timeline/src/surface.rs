@@ -61,6 +61,11 @@ pub struct SurfaceKey {
     pub confidence: Option<f32>,
     #[serde(default, skip_serializing_if = "TrackState::is_good")]
     pub state: TrackState,
+    /// How light the surface is in this frame (#2751): the mean brightness
+    /// of its region as the tracker read it, 0 to 1 as encoded. `None`
+    /// for a key from before it was measured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub light: Option<f32>,
 }
 
 fn homography(m: &Map) -> klipp_effects::homography::Homography {
@@ -103,7 +108,7 @@ impl SurfaceKey {
     /// The key whose surface is at `corners` in its frame, from reference
     /// corners `reference`; `None` where either quad is degenerate.
     pub fn at_corners(source_secs: f64, reference: &Quad, corners: &Quad) -> Option<Self> {
-        Some(Self { source_secs, map: map_between(reference, corners)?, confidence: None, state: TrackState::Good })
+        Some(Self { source_secs, map: map_between(reference, corners)?, confidence: None, state: TrackState::Good, light: None })
     }
 
     /// The surface's corners in this key's frame, from its reference
@@ -297,6 +302,21 @@ impl Surface {
         Some((source_secs - self.keys[start].source_secs).max(0.0))
     }
 
+    /// How much lighter the surface is at the frame shown at
+    /// `source_secs` than on its reference frame (#2751), in linear light,
+    /// within three stops either way: what a pinned clip taking its light
+    /// is multiplied by. `None` where the keys carry no light.
+    pub fn light_ratio(&self, source_secs: f64) -> Option<f32> {
+        let near = self.near();
+        let light_at = |t: f64| {
+            let at = self.keys.partition_point(|k| k.source_secs <= t + near).saturating_sub(1);
+            self.keys.get(at).and_then(|k| k.light)
+        };
+        let (now, then) = (light_at(source_secs)?, light_at(self.reference_secs)?);
+        let linear = |v: f32| v.max(1e-3).powf(2.2);
+        Some((linear(now) / linear(then)).clamp(0.125, 8.0))
+    }
+
     /// The file time the track covers, first to last key.
     pub fn tracked_secs(&self) -> Option<(f64, f64)> {
         Some((self.keys.first()?.source_secs, self.keys.last()?.source_secs))
@@ -347,6 +367,11 @@ pub struct SurfacePin {
     /// out.
     #[serde(default, skip_serializing_if = "PinLoss::is_hold")]
     pub on_loss: PinLoss,
+    /// How much the pinned clip takes the surface's light (#2751), 0 to
+    /// 1: at 1 it is as much darker or lighter as the surface is than on
+    /// its reference frame.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub light: f32,
 }
 
 /// What a pinned clip does where its surface's track is lost (#2751).
@@ -765,4 +790,18 @@ mod tests {
         assert_eq!(PinLoss::Hide.presence(None), 1.0);
         assert!((PinLoss::Fade { secs: 0.4 }.presence(Some(0.1)) - 0.75).abs() < 1e-6);
     }
+
+    /// #2751: the surface's light at a frame against its reference frame,
+    /// in linear light; none where the keys weren't measured.
+    #[test]
+    fn the_light_is_against_the_reference_frame() {
+        let corners = square(0.0);
+        let key = |t: f64, light: Option<f32>| SurfaceKey { light, ..SurfaceKey::at_corners(t, &corners, &corners).unwrap() };
+        let mut s = Surface { id: uuid::Uuid::nil(), name: "S".into(), corners, reference_secs: 1.0, keys: vec![key(0.0, Some(0.8)), key(1.0, Some(0.8)), key(2.0, Some(0.4))], source_size: [100, 100], media_fps: 1.0, track_area: None, exclude: Vec::new() };
+        assert!((s.light_ratio(1.0).unwrap() - 1.0).abs() < 1e-6);
+        assert!((s.light_ratio(2.0).unwrap() - 0.5f32.powf(2.2)).abs() < 1e-4, "half as light as encoded: {:?}", s.light_ratio(2.0));
+        s.keys[1].light = None;
+        assert_eq!(s.light_ratio(2.0), None, "the reference unmeasured");
+    }
 }
+

@@ -4730,17 +4730,18 @@ pub enum AppEvent {
     /// A surface tracked (#2754): each key its file time, the map from
     /// `corners` to that frame (fractions of the picture, row by row), the
     /// tracker's confidence, 0 to 1, and how it was followed: 0 well, 1
-    /// uncertainly, 2 lost (the last good map held).
+    /// uncertainly, 2 lost (the last good map held), and how light the
+    /// surface is there, 0 to 1 (#2751).
     /// `track_area` and `exclude` are the area followed and the parts left
     /// out, on the reference frame as `corners` are.
-    SurfaceTracked { clip_id: ClipId, surface: uuid::Uuid, name: String, corners: [[f32; 2]; 4], reference_secs: f64, keys: Vec<(f64, [f64; 9], f32, u8)>, source_size: [u32; 2], media_fps: f64, held_secs: (f64, f64), direction: i8, interactive: bool, track_area: Option<[[f32; 2]; 4]>, exclude: Vec<Vec<[f32; 2]>> },
+    SurfaceTracked { clip_id: ClipId, surface: uuid::Uuid, name: String, corners: [[f32; 2]; 4], reference_secs: f64, keys: Vec<(f64, [f64; 9], f32, u8, Option<f32>)>, source_size: [u32; 2], media_fps: f64, held_secs: (f64, f64), direction: i8, interactive: bool, track_area: Option<[[f32; 2]; 4]>, exclude: Vec<Vec<[f32; 2]>> },
     SurfaceTrackFailed { clip_id: ClipId, surface: uuid::Uuid, error: String },
     /// A [`AppCommand::CorrectSurface`] solved (#2754): the correction at
     /// file second `source_secs`, `corners` there as fractions of the
     /// picture, and each span re-solved, its keys as
     /// [`AppEvent::SurfaceTracked`]'s, replacing those strictly between
     /// its bounds (file seconds; `None` open to that end of the track).
-    SurfaceCorrected { clip_id: ClipId, surface: uuid::Uuid, source_secs: f64, corners: [[f32; 2]; 4], spans: Vec<(Option<f64>, Option<f64>, Vec<(f64, [f64; 9], f32, u8)>)> },
+    SurfaceCorrected { clip_id: ClipId, surface: uuid::Uuid, source_secs: f64, corners: [[f32; 2]; 4], spans: Vec<(Option<f64>, Option<f64>, Vec<(f64, [f64; 9], f32, u8, Option<f32>)>)> },
     /// The corners a [`AppCommand::SnapSurface`] found, as fractions of the
     /// clip's own picture, or `None` where none was found; `why` then
     /// says what was wrong (#2754).

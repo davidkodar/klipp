@@ -927,6 +927,29 @@ fn between(quad: &[(f64, f64); 4], x: &Homography, y: &Homography, k: f64) -> Ho
     Homography::from_4_points(quad, &to).unwrap_or(if k > 0.5 { *y } else { *x })
 }
 
+/// How light `quad` is in `frame` (#2751): the mean of a 16 × 16 grid
+/// of points spread over it (bilinear across its corners), 0 to 1 as
+/// the frame encodes it. Points off the frame are left out; `None` when
+/// all are.
+pub fn region_light(frame: &GrayFrame, quad: &[(f64, f64); 4]) -> Option<f32> {
+    const N: usize = 16;
+    let (mut sum, mut n) = (0.0f64, 0usize);
+    for j in 0..N {
+        for i in 0..N {
+            let (u, v) = ((i as f64 + 0.5) / N as f64, (j as f64 + 0.5) / N as f64);
+            let top = (quad[0].0 + (quad[1].0 - quad[0].0) * u, quad[0].1 + (quad[1].1 - quad[0].1) * u);
+            let bottom = (quad[3].0 + (quad[2].0 - quad[3].0) * u, quad[3].1 + (quad[2].1 - quad[3].1) * u);
+            let (x, y) = (top.0 + (bottom.0 - top.0) * v, top.1 + (bottom.1 - top.1) * v);
+            if x < 0.0 || y < 0.0 || x >= frame.width as f64 || y >= frame.height as f64 {
+                continue;
+            }
+            sum += frame.data[y as usize * frame.width + x as usize] as f64;
+            n += 1;
+        }
+    }
+    (n > 0).then(|| (sum / n as f64 / 255.0) as f32)
+}
+
 /// The spans of `tracked` (in order) that were not followed with
 /// confidence: `(first, last, state)` for each run of Low or Lost frames.
 pub fn weak_spans(tracked: &[Tracked]) -> Vec<(usize, usize, State)> {
@@ -1246,4 +1269,24 @@ mod tests {
         let alone = blend(&quad, Some(Anchor { frame: 0, h: shift(0.0) }), None, &ahead, &[]);
         assert_eq!(alone.iter().find(|t| t.frame == 4).unwrap().h.transform(0.0, 0.0).0, 44.0);
     }
+
+    /// #2751: a region's light is its mean brightness, what is off the
+    /// frame left out.
+    #[test]
+    fn a_regions_light_is_its_mean() {
+        let (w, h) = (100, 50);
+        let mut data = vec![0u8; w * h];
+        for y in 0..h {
+            for x in 50..w {
+                data[y * w + x] = 200;
+            }
+        }
+        let f = GrayFrame { data, width: w, height: h };
+        let all = region_light(&f, &[(0.0, 0.0), (100.0, 0.0), (100.0, 50.0), (0.0, 50.0)]).unwrap();
+        assert!((all - 100.0 / 255.0).abs() < 0.01, "{all}");
+        let half_off = region_light(&f, &[(50.0, 0.0), (150.0, 0.0), (150.0, 50.0), (50.0, 50.0)]).unwrap();
+        assert!((half_off - 200.0 / 255.0).abs() < 0.01, "only what is on the frame: {half_off}");
+        assert_eq!(region_light(&f, &[(200.0, 0.0), (300.0, 0.0), (300.0, 50.0), (200.0, 50.0)]), None);
+    }
 }
+
