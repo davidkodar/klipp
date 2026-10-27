@@ -6695,15 +6695,6 @@ fn template_value(p: &klipp_timeline::composition_template::TemplateParameter, v
 
 /// A composition template placed as one clip at `at` for `held` seconds
 /// (#2757): on `track`, else a free video track, else a new one on top;
-/// Where a placed template's control `parameter` stands (#2757): its
-/// value, or the start of its range when none was set.
-fn control_at(instance: &klipp_core::TemplateInstance, parameter: &str) -> f64 {
-    match instance.overrides.get(parameter) {
-        Some(klipp_core::TemplateValue::Number(n)) => *n,
-        _ => instance.links.iter().find(|l| l.parameter == parameter).map_or(0.0, |l| l.from[0]),
-    }
-}
-
 /// The `template_link` op (#2757) on `clip`: one `SetTemplateInstance`.
 fn template_link(i: usize, clip: &Clip, control: Option<&str>, target: Option<&str>, action: Option<&str>, value: Option<f64>) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     let ClipKind::TemplatePrecomposition { template_instance: old, .. } = &clip.kind else {
@@ -6756,7 +6747,7 @@ fn recipe_link(i: usize, clip: &Clip, control: Option<&str>, target: Option<&str
     let Some(at) = frames.iter().position(|f| f.recipe.as_ref().is_some_and(wants)) else { return Ok(None) };
     let placed = frames[at].recipe.clone().expect("a recipe frame");
     let (what, parameter, new) = link_edit(i, &placed.instance, control, target, action, value)?;
-    let c = control_at(&new, &parameter);
+    let c = new.control(&parameter);
     let mut ops = Vec::new();
     for l in new.links.iter().filter(|l| l.parameter == parameter) {
         let (k, param) = klipp_timeline::composition_template::node_binding(&l.property).ok_or_else(|| refuse(i, format!("'{}' is not a recipe's node parameter", l.property), "report it"))?;
@@ -6809,24 +6800,20 @@ fn link_edit(i: usize, old: &klipp_core::TemplateInstance, control: Option<&str>
             (format!("set control {name} to {v}"), name.to_string())
         }
         (None, Some(t)) => {
-            let at = new.links.iter().position(|l| l.property == t.trim()).ok_or_else(|| {
-                refuse(i, format!("no control drives \"{t}\""), format!("its controls drive {}", old.links.iter().map(|l| l.property.as_str()).collect::<Vec<_>>().join(", ")))
-            })?;
-            let parameter = new.links[at].parameter.clone();
-            let c = control_at(&new, &parameter);
-            let link = &mut new.links[at];
-            let what = match (action.map(str::trim), value) {
-                (Some("unlink"), None) => { link.unlink(c); format!("unlink {t} from {parameter}, kept at {:.3}", link.frozen) }
-                (Some("relink"), None) => { link.relink(c); format!("relink {t} to {parameter}, offset {:+.3} kept", link.offset) }
-                (Some("reset_offset"), None) => { link.reset_offset(); format!("reset {t}'s offset: it follows {parameter}") }
-                (None, Some(v)) => {
-                    link.set_value(c, v);
-                    if link.linked { format!("set {t} to {v}: offset {:+.3} on {parameter}", link.offset) } else { format!("set {t} to {v} (unlinked)") }
-                }
+            let t = t.trim();
+            let Some(parameter) = old.links.iter().find(|l| l.property == t).map(|l| l.parameter.clone()) else {
+                return Err(refuse(i, format!("no control drives \"{t}\""), format!("its controls drive {}", old.links.iter().map(|l| l.property.as_str()).collect::<Vec<_>>().join(", "))));
+            };
+            let act = match (action.map(str::trim), value) {
+                (Some("unlink"), None) => klipp_core::LinkAction::Unlink,
+                (Some("relink"), None) => klipp_core::LinkAction::Relink,
+                (Some("reset_offset"), None) => klipp_core::LinkAction::ResetOffset,
+                (None, Some(v)) => klipp_core::LinkAction::Set(v),
                 (Some(a), None) => return Err(refuse(i, format!("\"{a}\" is not an action on a target"), "use unlink, relink or reset_offset")),
                 (_, None) => return Err(refuse(i, format!("\"{t}\" needs an action or a value"), "use action unlink, relink or reset_offset, or a value")),
                 (Some(_), Some(_)) => return Err(refuse(i, "give an action or a value, not both", "a value sets it by hand")),
             };
+            let what = new.act_on_link(t, act).map_err(|e| refuse(i, e, "the timeline view lists what each control drives"))?;
             (what, parameter)
         }
     };

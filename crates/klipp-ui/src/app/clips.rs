@@ -5,6 +5,34 @@ use klipp_timeline::GradeAccess;
 use super::*;
 
 impl KlippApp {
+    /// A placed template's instance changed (#2757): on the clip, and one
+    /// undo step, a run of edits to the same `key` merged when `merge`.
+    fn commit_template_instance(&mut self, clip_id: klipp_core::ClipId, key: &str, old: klipp_core::TemplateInstance, new: klipp_core::TemplateInstance, merge: bool) {
+        if old == new {
+            return;
+        }
+        if let Some((ti, ci)) = self.state.sequences[self.state.active_sequence_idx].find_clip(clip_id) {
+            if let klipp_timeline::ClipKind::TemplatePrecomposition { template_instance, .. } = &mut self.state.sequences[self.state.active_sequence_idx].tracks[ti].clips[ci].kind {
+                *template_instance = new.clone();
+            }
+        }
+        let history = self.state.active_history_mut();
+        let merged = merge && history.merge_into_last(|last| match last {
+            crate::history::EditCommand::SetTemplateInstance { clip_id: last_clip, parameter: last_key, new: last_new, .. } if *last_clip == clip_id && last_key == key => {
+                **last_new = new.clone();
+                true
+            }
+            _ => false,
+        });
+        if !merged {
+            history.push(crate::history::HistoryEntry {
+                command: crate::history::EditCommand::SetTemplateInstance { clip_id, parameter: key.to_string(), old: Box::new(old), new: Box::new(new) },
+            });
+        }
+        self.sync_sequence_to_engine();
+        self.state.dirty = true;
+    }
+
     pub(super) fn handle_clip_commands(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
         if self.handle_clip_basic_ops(cmd, needs_refresh) { return true; }
         if self.handle_clip_selection_role(cmd, needs_refresh) { return true; }
@@ -548,28 +576,26 @@ impl KlippApp {
                         self.state.toast.show(error);
                         return true;
                     }
-                    if old != new {
-                        if let Some((ti, ci)) = self.state.sequences[self.state.active_sequence_idx].find_clip(*clip_id) {
-                            if let klipp_timeline::ClipKind::TemplatePrecomposition { template_instance, .. } = &mut self.state.sequences[self.state.active_sequence_idx].tracks[ti].clips[ci].kind {
-                                *template_instance = new.clone();
+                    self.commit_template_instance(*clip_id, parameter, old, new, true);
+                    true
+                }
+                AppCommand::SetTemplateLink { clip_id, property, action } => {
+                    let Some(old) = self.state.sequences[self.state.active_sequence_idx].find_clip(*clip_id)
+                        .and_then(|(ti, ci)| match &self.state.sequences[self.state.active_sequence_idx].tracks[ti].clips[ci].kind {
+                            klipp_timeline::ClipKind::TemplatePrecomposition { template_instance, .. } => Some(template_instance.clone()),
+                            _ => None,
+                        }) else { return true };
+                    let mut new = old.clone();
+                    match new.act_on_link(property, *action) {
+                        Ok(what) => {
+                            // A drag is one step; each button its own.
+                            let dragging = matches!(action, klipp_core::LinkAction::Set(_));
+                            if matches!(action, klipp_core::LinkAction::Relink) {
+                                self.state.toast.show(what);
                             }
+                            self.commit_template_instance(*clip_id, &format!("link:{property}"), old, new, dragging);
                         }
-                        let cid = *clip_id;
-                        let history = self.state.active_history_mut();
-                        let merged = history.merge_into_last(|last| match last {
-                            crate::history::EditCommand::SetTemplateInstance { clip_id, parameter: last_parameter, new: last_new, .. } if *clip_id == cid && last_parameter == parameter => {
-                                **last_new = new.clone();
-                                true
-                            }
-                            _ => false,
-                        });
-                        if !merged {
-                            history.push(crate::history::HistoryEntry {
-                                command: crate::history::EditCommand::SetTemplateInstance { clip_id: cid, parameter: parameter.clone(), old: Box::new(old), new: Box::new(new) },
-                            });
-                        }
-                        self.sync_sequence_to_engine();
-                        self.state.dirty = true;
+                        Err(error) => self.state.toast.show(error),
                     }
                     true
                 }

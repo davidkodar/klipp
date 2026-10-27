@@ -99,6 +99,60 @@ fn linked() -> bool {
     true
 }
 
+/// What a hand does to one link of a placed template (#2757).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LinkAction {
+    /// Stop following the control, keeping the value.
+    Unlink,
+    /// Follow it again from the value it has: nothing jumps.
+    Relink,
+    /// Snap back to the control.
+    ResetOffset,
+    /// A value typed or dragged: an offset while linked.
+    Set(f64),
+}
+
+impl TemplateInstance {
+    /// Where control `parameter` stands: its value, or the start of its
+    /// range when none was set.
+    pub fn control(&self, parameter: &str) -> f64 {
+        match self.overrides.get(parameter) {
+            Some(TemplateValue::Number(n)) => *n,
+            _ => self.links.iter().find(|l| l.parameter == parameter).map_or(0.0, |l| l.from[0]),
+        }
+    }
+
+    /// Applies `action` to the link driving `property`, saying what it
+    /// did, as the inspector's toast and the op's reply put it.
+    pub fn act_on_link(&mut self, property: &str, action: LinkAction) -> Result<String, String> {
+        let at = self.links.iter().position(|l| l.property == property)
+            .ok_or_else(|| format!("no control drives \"{property}\""))?;
+        let control = self.control(&self.links[at].parameter);
+        let link = &mut self.links[at];
+        let parameter = link.parameter.clone();
+        Ok(match action {
+            LinkAction::Unlink => {
+                link.unlink(control);
+                format!("unlinked {property} from {parameter}, kept at {:.3}", link.frozen)
+            }
+            LinkAction::Relink => {
+                link.relink(control);
+                format!("relinked {property} to {parameter}, offset {:+.3} kept", link.offset)
+            }
+            LinkAction::ResetOffset => {
+                link.reset_offset();
+                format!("reset {property}'s offset: it follows {parameter}")
+            }
+            LinkAction::Set(v) if !v.is_finite() => return Err("the value is not a number".into()),
+            LinkAction::Set(v) => {
+                link.set_value(control, v);
+                if link.linked { format!("set {property} to {v}: offset {:+.3} on {parameter}", link.offset) } else { format!("set {property} to {v} (unlinked)") }
+            }
+        })
+    }
+}
+
 impl TemplateLink {
     /// What the control at `control` makes the property, before the
     /// offset.
@@ -149,6 +203,27 @@ impl TemplateLink {
 
 #[cfg(test)]
 mod tests {
+
+    /// #2757: the inspector's and the op's one way to act on a link: a
+    /// hand value is an offset on the control, unlink keeps the value,
+    /// relink keeps it too, reset snaps back; an unknown target or a
+    /// value that is not a number is refused.
+    #[test]
+    fn acting_on_a_link_says_what_it_did() {
+        let link = TemplateLink { parameter: "grow".into(), property: "object:0.size".into(), from: [0.0, 1.0], to: [40.0, 80.0], curve: LinkCurve::Linear, offset: 0.0, linked: true, frozen: 0.0 };
+        let mut i = TemplateInstance { template_id: uuid::Uuid::nil(), bindings: Default::default(), overrides: [("grow".to_string(), TemplateValue::Number(0.5))].into_iter().collect(), media_slots: Default::default(), links: vec![link] };
+        assert_eq!(i.control("grow"), 0.5);
+        assert!(i.act_on_link("object:0.size", LinkAction::Set(70.0)).unwrap().contains("offset +10"));
+        assert!(i.act_on_link("object:0.size", LinkAction::Unlink).unwrap().contains("kept at 70"));
+        i.overrides.insert("grow".into(), TemplateValue::Number(0.0));
+        assert!(i.act_on_link("object:0.size", LinkAction::Relink).unwrap().contains("offset +30"), "70 kept at control 0 (mapped 40)");
+        assert!((i.links[0].effective(0.0) - 70.0).abs() < 1e-9);
+        i.act_on_link("object:0.size", LinkAction::ResetOffset).unwrap();
+        assert!((i.links[0].effective(0.0) - 40.0).abs() < 1e-9);
+        assert!(i.act_on_link("object:1.size", LinkAction::Unlink).unwrap_err().contains("no control drives"));
+        assert!(i.act_on_link("object:0.size", LinkAction::Set(f64::NAN)).is_err());
+    }
+
     use super::*;
 
     fn link(curve: LinkCurve) -> TemplateLink {
