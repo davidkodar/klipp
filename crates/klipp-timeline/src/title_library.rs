@@ -1,6 +1,7 @@
 //! The built-in title library (#1724): the curated templates the Titles
 //! browser shows by category and the template op places by name, each
-//! designed on the bundled faces, placed inside title-safe, moved by the
+//! designed on the bundled faces and the catalogue's (#2732), placed
+//! inside title-safe, laid out for the frame's format, moved by the
 //! motion model, and keeping a few fields editable once applied.
 //!
 //! Here, beside the title model, so the app and the control socket name
@@ -44,7 +45,9 @@ impl TitleTemplate {
     pub fn build_for(&self, width: u32, height: u32) -> TitleData {
         let (td, anchor) = self.laid_out(width, height);
         let mut td = publish(td, &self.fields, anchor);
-        td.protect = crate::ContrastProtect::Auto;
+        // A template with a backing of its own reads on it; a halo round
+        // the backing would only smudge the picture.
+        td.protect = if backed(&td) { crate::ContrastProtect::Off } else { crate::ContrastProtect::Auto };
         td
     }
 
@@ -125,8 +128,49 @@ impl TitleTemplate {
                 }
             }
         }
+        // Kept inside the frame as a whole: a text near an edge, set as
+        // wide in pixels as it was designed, can reach past it on a
+        // narrower frame.
+        let shift = {
+            let (mut lo, mut over) = (f32::INFINITY, f32::NEG_INFINITY);
+            for o in &td.objects {
+                let TitleObjectContent::TextBox(tb) = &o.content else { continue };
+                let t = &o.transform;
+                let chars = tb.text.lines().map(|l| l.chars().count()).max().unwrap_or(0) as f32;
+                let pad = td.objects.iter().find_map(|s| match &s.content {
+                    TitleObjectContent::Shape(Shape { fit: Some(f), .. }) if f.target == o.id => Some(f.padding.x),
+                    _ => None,
+                }).unwrap_or(0.0);
+                let wide = ((chars * 0.58 * tb.font_size).min(t.size.x * 1080.0 * w / short) + 2.0 * pad) / 1080.0 * short / w;
+                let x0 = t.center.x - t.anchor_norm.x * wide;
+                lo = lo.min(x0 - SAFE);
+                over = over.max(x0 + wide - right(t.center.y));
+            }
+            if over > 0.0 { -over } else if lo < 0.0 { -lo } else { 0.0 }
+        };
+        if shift != 0.0 {
+            for o in &mut td.objects {
+                if o.transform.size.x < FULL || matches!(o.content, TitleObjectContent::TextBox(_)) {
+                    o.transform.center.x += shift;
+                }
+            }
+        }
         (td, anchor)
     }
+}
+
+/// Whether every text of `td` sits on a backing of its own: an opaque
+/// shape fitted to it, or one its place is inside.
+fn backed(td: &TitleData) -> bool {
+    let backings: Vec<&crate::TitleObject> = td.objects.iter().filter(|o| matches!(&o.content, TitleObjectContent::Shape(s) if s.fill.is_some_and(|f| f[3] >= 150))).collect();
+    td.objects.iter().filter(|o| matches!(o.content, TitleObjectContent::TextBox(_))).all(|text| {
+        backings.iter().any(|b| {
+            let TitleObjectContent::Shape(s) = &b.content else { return false };
+            let (c, size, at) = (b.transform.center, b.transform.size, text.transform.center);
+            s.fit.as_ref().is_some_and(|f| f.target == text.id)
+                || ((at.x - c.x).abs() <= size.x / 2.0 && (at.y - c.y).abs() <= size.y / 2.0)
+        })
+    })
 }
 
 /// The frame a template was designed on, wide to high.
@@ -204,7 +248,7 @@ fn publish(mut td: TitleData, fields: &Fields, anchor: (f32, f32)) -> TitleData 
 }
 
 // ---------------------------------------------------------------------------
-// The curated set: every template designed on the bundled faces, placed
+// The curated set: every template designed on the bundled and catalogue faces, placed
 // inside title-safe, and moved by the motion model; backing shapes move
 // with their text. Each keeps a few fields editable once applied (#1724):
 // its texts, its accent, Size and Speed, so one drag and two sliders make
@@ -218,8 +262,15 @@ const MUTED: [u8; 4] = [205, 205, 212, 255];
 const ACCENT: [u8; 4] = [74, 143, 231, 255];
 const GRO: &str = "Inter";
 const DISPLAY: &str = "Bebas Neue";
-const SERIF: &str = "Libre Baskerville";
 const MONO: &str = "JetBrains Mono";
+// Faces from Klipp's catalogue (#2732), fetched when a title first uses
+// them; the bundled ones stand in until they arrive.
+const SANS: &str = "Manrope";
+const LABEL: &str = "Work Sans";
+const EDITORIAL: &str = "Playfair Display";
+const CLASSIC: &str = "Cormorant Garamond";
+const HEADING: &str = "DM Serif Display";
+const POSTER: &str = "Anton";
 
 /// A soft drop shadow that lifts text off footage without reading as
 /// a shadow.
@@ -236,7 +287,6 @@ fn lift() -> TitleShadow {
     }
 }
 
-/// A text layer in one of the bundled faces.
 /// A text layer as a template composes it: the text box and the stack
 /// its object will carry.
 struct Text {
@@ -262,6 +312,24 @@ fn face(text: &str, family: &str, style: FontStyle, size: f32, color: [u8; 4], a
 fn upper(mut t: Text, tracking: f32) -> Text {
     t.tb.case_transform = crate::TextCase::Uppercase;
     t.tb.tracking = tracking;
+    t
+}
+
+/// `t` at a weight of its family (100 thin to 900 black).
+fn weight(mut t: Text, w: u16) -> Text {
+    t.tb.font_weight = Some(w);
+    t
+}
+
+/// A light fill from `top` to `bottom`: depth without a look of its own.
+fn graded(mut t: Text, top: [u8; 4], bottom: [u8; 4]) -> Text {
+    t.tb.gradient = Some(crate::TextGradient { top_color: top, bottom_color: bottom, enabled: true, stops: Vec::new(), kind: Default::default(), stop_keyframes: Vec::new() });
+    t
+}
+
+/// `t` with its lines spaced by `spacing` (1 as set).
+fn spaced(mut t: Text, spacing: f32) -> Text {
+    t.tb.line_spacing = spacing;
     t
 }
 
@@ -421,12 +489,12 @@ fn lt_broadcast() -> TitleData {
 fn lt_documentary() -> TitleData {
     layers(vec![
         text_at(
-            moved(keeps_line(lifted(face("[Name]", SERIF, FontStyle::Italic, 46.0, WHITE, TextAlignment::Left))),
+            moved(keeps_line(lifted(face("[Name]", EDITORIAL, FontStyle::Italic, 52.0, WHITE, TextAlignment::Left))),
                 TitleMotion::both(enter(MotionKind::Rise, 0.8, Easing::OutCubic).distance(0.3), fade_out(0.5))),
             0.08, 0.815, 0.0,
         ),
         text_at(
-            moved(lifted(upper(face("[Title or role]", GRO, FontStyle::Regular, 22.0, MUTED, TextAlignment::Left), 3.0)),
+            moved(lifted(upper(weight(face("[Title or role]", LABEL, FontStyle::Regular, 28.0, MUTED, TextAlignment::Left), 500), 4.0)),
                 TitleMotion::both(enter(MotionKind::Rise, 0.8, Easing::OutCubic).distance(0.3).delay(0.15), fade_out(0.5))),
             0.08, 0.868, 0.0,
         ),
@@ -444,7 +512,7 @@ fn lt_location() -> TitleData {
 // ── Openers ──
 fn op_cinematic() -> TitleData {
     layers(vec![text_at(
-        moved(lifted(upper(face("[Title]", SERIF, FontStyle::Regular, 96.0, WHITE, TextAlignment::Center), 14.0)),
+        moved(lifted(upper(weight(face("[Title]", CLASSIC, FontStyle::Regular, 112.0, WHITE, TextAlignment::Center), 500), 18.0)),
             TitleMotion::both(enter(MotionKind::Blur, 1.4, Easing::OutCubic), Motion::new(MotionKind::Blur).duration(0.9).easing(Easing::InCubic))),
         0.5, 0.5, 0.5,
     )])
@@ -452,7 +520,7 @@ fn op_cinematic() -> TitleData {
 
 fn op_impact() -> TitleData {
     layers(vec![text_at(
-        moved(face("[BIG TITLE]", DISPLAY, FontStyle::Regular, 170.0, WHITE, TextAlignment::Center),
+        moved(lifted(graded(upper(face("[Big title]", POSTER, FontStyle::Regular, 180.0, WHITE, TextAlignment::Center), 2.0), WHITE, [214, 220, 230, 255])),
             TitleMotion::both(
                 enter(MotionKind::MaskRise, 0.55, Easing::OutExpo).stagger(StaggerUnit::Word, 0.08),
                 Motion::new(MotionKind::MaskDrop).duration(0.4).easing(Easing::InCubic),
@@ -464,21 +532,23 @@ fn op_impact() -> TitleData {
 fn op_editorial() -> TitleData {
     layers(vec![
         text_at(
-            moved(lifted(face("[Headline]", GRO, FontStyle::Bold, 104.0, WHITE, TextAlignment::Center)),
+            moved(lifted(weight(face("[Headline]", EDITORIAL, FontStyle::Bold, 112.0, WHITE, TextAlignment::Center), 700)),
                 TitleMotion::both(enter(MotionKind::Rise, 0.7, Easing::OutQuint).distance(0.35).stagger(StaggerUnit::Word, 0.06), fade_out(0.4))),
-            0.5, 0.46, 0.5,
+            0.5, 0.45, 0.5,
         ),
+        moving(rect(0.5, 0.548, 0.05, 0.004, ACCENT, 0.0),
+            TitleMotion::both(enter(MotionKind::Fade, 0.6, Easing::OutCubic).delay(0.3), fade_out(0.4))),
         text_at(
-            moved(lifted(upper(face("[Subtitle]", GRO, FontStyle::Regular, 28.0, MUTED, TextAlignment::Center), 5.0)),
+            moved(lifted(upper(weight(face("[Subtitle]", LABEL, FontStyle::Regular, 32.0, MUTED, TextAlignment::Center), 500), 6.0)),
                 TitleMotion::both(enter(MotionKind::Fade, 0.6, Easing::OutCubic).delay(0.35), fade_out(0.4))),
-            0.5, 0.585, 0.5,
+            0.5, 0.6, 0.5,
         ),
     ])
 }
 
 fn op_minimal() -> TitleData {
     layers(vec![text_at(
-        moved(lifted(upper(face("[Title]", GRO, FontStyle::Regular, 46.0, WHITE, TextAlignment::Center), 10.0)),
+        moved(lifted(upper(weight(face("[Title]", SANS, FontStyle::Regular, 76.0, WHITE, TextAlignment::Center), 300), 16.0)),
             TitleMotion::both(enter(MotionKind::Fade, 1.5, Easing::InOutCubic), fade_out(1.0))),
         0.5, 0.5, 0.5,
     )])
@@ -487,12 +557,12 @@ fn op_minimal() -> TitleData {
 fn op_chapter() -> TitleData {
     layers(vec![
         text_at(
-            moved(lifted(upper(face("Chapter One", MONO, FontStyle::Regular, 22.0, MUTED, TextAlignment::Center), 6.0)),
+            moved(lifted(upper(weight(face("Chapter One", LABEL, FontStyle::Regular, 30.0, MUTED, TextAlignment::Center), 500), 8.0)),
                 TitleMotion::both(Motion::new(MotionKind::Typewriter).duration(0.02).stagger(StaggerUnit::Char, 0.04), fade_out(0.4))),
-            0.5, 0.42, 0.5,
+            0.5, 0.41, 0.5,
         ),
         text_at(
-            moved(lifted(face("[Chapter title]", SERIF, FontStyle::Regular, 84.0, WHITE, TextAlignment::Center)),
+            moved(lifted(face("[Chapter title]", HEADING, FontStyle::Regular, 104.0, WHITE, TextAlignment::Center)),
                 TitleMotion::both(enter(MotionKind::MaskRise, 0.6, Easing::OutExpo).delay(0.5).stagger(StaggerUnit::Word, 0.1), fade_out(0.4))),
             0.5, 0.53, 0.5,
         ),
@@ -514,27 +584,30 @@ fn op_statement() -> TitleData {
 fn cap_quote() -> TitleData {
     layers(vec![
         text_at(
-            moved(lifted(face("\u{201c}[Quote]\u{201d}", SERIF, FontStyle::Italic, 54.0, WHITE, TextAlignment::Center)),
+            moved(lifted(spaced(face("\u{201c}[Quote]\u{201d}", EDITORIAL, FontStyle::Italic, 68.0, WHITE, TextAlignment::Center), 1.15)),
                 TitleMotion::both(enter(MotionKind::Fade, 0.8, Easing::OutCubic).stagger(StaggerUnit::Line, 0.15), fade_out(0.5))),
-            0.5, 0.47, 0.5,
+            0.5, 0.46, 0.5,
         ),
         text_at(
-            moved(lifted(upper(face("[Who said it]", GRO, FontStyle::Regular, 24.0, MUTED, TextAlignment::Center), 3.0)),
+            moved(lifted(upper(weight(face("\u{2014} [Who said it]", LABEL, FontStyle::Regular, 30.0, MUTED, TextAlignment::Center), 500), 5.0)),
                 TitleMotion::both(enter(MotionKind::Fade, 0.6, Easing::OutCubic).delay(0.5), fade_out(0.5))),
-            0.5, 0.60, 0.5,
+            0.5, 0.6, 0.5,
         ),
     ])
 }
 
 fn cap_caption() -> TitleData {
-    layers(vec![
-        rect(0.5, 0.885, 0.5, 0.075, [0, 0, 0, 170], 8.0),
+    // A box the size of the words, not a bar the width of the frame.
+    let mut td = layers(vec![
+        rect(0.5, 0.885, 0.3, 0.07, [0, 0, 0, 185], 12.0),
         text_at(
-            moved(face("[Caption]", GRO, FontStyle::Regular, 32.0, WHITE, TextAlignment::Center),
+            moved(weight(face("[Caption]", SANS, FontStyle::Regular, 42.0, WHITE, TextAlignment::Center), 600),
                 TitleMotion::both(enter(MotionKind::Fade, 0.3, Easing::OutCubic), fade_out(0.25))),
             0.5, 0.885, 0.5,
         ),
-    ])
+    ]);
+    fit(&mut td, 0, 1, (26.0, 12.0));
+    td
 }
 
 fn cap_subtitle() -> TitleData {
@@ -545,20 +618,22 @@ fn cap_subtitle() -> TitleData {
 }
 
 fn cap_callout() -> TitleData {
-    layers(vec![
-        rect(0.80, 0.14, 0.26, 0.08, [74, 143, 231, 240], 6.0),
+    let mut td = layers(vec![
+        rect(0.80, 0.14, 0.26, 0.08, [38, 99, 200, 245], 40.0),
         text_at(
-            moved(face("[Callout]", GRO, FontStyle::Bold, 30.0, WHITE, TextAlignment::Center),
+            moved(weight(face("[Callout]", SANS, FontStyle::Bold, 34.0, WHITE, TextAlignment::Center), 700),
                 TitleMotion::both(enter(MotionKind::ScaleUp, 0.35, Easing::OutBack), fade_out(0.25))),
             0.80, 0.14, 0.5,
         ),
-    ])
+    ]);
+    fit(&mut td, 0, 1, (32.0, 20.0));
+    td
 }
 
 // ── Credits ──
 fn cr_roll() -> TitleData {
     let mut td = layers(vec![text_at(
-        lifted(face("Director\n[Name]\n\nProducer\n[Name]\n\nEditor\n[Name]", GRO, FontStyle::Regular, 36.0, WHITE, TextAlignment::Center)),
+        lifted(spaced(face("Director\n[Name]\n\nProducer\n[Name]\n\nEditor\n[Name]", SANS, FontStyle::Regular, 44.0, WHITE, TextAlignment::Center), 1.2)),
         0.5, 0.5, 0.5,
     )]);
     if let Some(o) = td.primary_object_mut() {
@@ -569,7 +644,7 @@ fn cr_roll() -> TitleData {
 
 fn cr_end_card() -> TitleData {
     layers(vec![text_at(
-        moved(lifted(upper(face("The End", SERIF, FontStyle::Regular, 88.0, WHITE, TextAlignment::Center), 12.0)),
+        moved(lifted(upper(weight(face("The End", CLASSIC, FontStyle::Regular, 104.0, WHITE, TextAlignment::Center), 500), 16.0)),
             TitleMotion::both(enter(MotionKind::Fade, 2.0, Easing::InOutCubic), fade_out(1.5))),
         0.5, 0.5, 0.5,
     )])
@@ -578,12 +653,12 @@ fn cr_end_card() -> TitleData {
 fn cr_cast() -> TitleData {
     layers(vec![
         text_at(
-            moved(lifted(upper(face("[Role]", GRO, FontStyle::Regular, 24.0, MUTED, TextAlignment::Center), 4.0)),
+            moved(lifted(upper(weight(face("[Role]", LABEL, FontStyle::Regular, 30.0, MUTED, TextAlignment::Center), 500), 6.0)),
                 TitleMotion::both(enter(MotionKind::Rise, 0.6, Easing::OutQuint).distance(0.4), fade_out(0.4))),
-            0.5, 0.44, 0.5,
+            0.5, 0.43, 0.5,
         ),
         text_at(
-            moved(lifted(face("[Name]", SERIF, FontStyle::Regular, 62.0, WHITE, TextAlignment::Center)),
+            moved(lifted(face("[Name]", HEADING, FontStyle::Regular, 84.0, WHITE, TextAlignment::Center)),
                 TitleMotion::both(enter(MotionKind::Rise, 0.6, Easing::OutQuint).distance(0.4).delay(0.12), fade_out(0.4))),
             0.5, 0.525, 0.5,
         ),
@@ -593,7 +668,7 @@ fn cr_cast() -> TitleData {
 // ── Social ──
 fn so_hook() -> TitleData {
     layers(vec![text_at(
-        moved(lifted(face("[HOOK LINE]", DISPLAY, FontStyle::Regular, 150.0, [255, 214, 10, 255], TextAlignment::Center)),
+        moved(lifted(graded(upper(face("[Hook line]", POSTER, FontStyle::Regular, 150.0, [255, 214, 10, 255], TextAlignment::Center), 1.5), [255, 226, 70, 255], [255, 190, 0, 255])),
             TitleMotion::both(enter(MotionKind::Drop, 0.45, Easing::OutBack).distance(0.5).stagger(StaggerUnit::Word, 0.06), fade_out(0.25))),
         0.5, 0.45, 0.5,
     )])
@@ -723,12 +798,12 @@ fn op_title_card() -> TitleData {
         moving(rect(0.5, 0.5, 1.0, 1.0, [8, 8, 10, 170], 0.0),
             TitleMotion::both(enter(MotionKind::Fade, 0.8, Easing::OutCubic), fade_out(0.8))),
         text_at(
-            moved(face("[Title]", SERIF, FontStyle::Regular, 92.0, WHITE, TextAlignment::Center),
+            moved(face("[Title]", EDITORIAL, FontStyle::Regular, 100.0, WHITE, TextAlignment::Center),
                 TitleMotion::both(enter(MotionKind::FocusIn, 1.1, Easing::OutCubic).delay(0.3), fade_out(0.6))),
             0.5, 0.47, 0.5,
         ),
         text_at(
-            moved(upper(face("[Subtitle]", GRO, FontStyle::Regular, 24.0, MUTED, TextAlignment::Center), 8.0),
+            moved(upper(weight(face("[Subtitle]", LABEL, FontStyle::Regular, 30.0, MUTED, TextAlignment::Center), 500), 8.0),
                 TitleMotion::both(enter(MotionKind::Fade, 0.8, Easing::OutCubic).delay(0.9), fade_out(0.6))),
             0.5, 0.585, 0.5,
         ),
@@ -738,7 +813,7 @@ fn op_title_card() -> TitleData {
 // ── More end cards and credits (#1724) ──
 fn cr_end_credits() -> TitleData {
     let col = |text: &str, x: f32, anchor: f32, align: TextAlignment, colour: [u8; 4], style: FontStyle| text_at(
-        moved(lifted(face(text, GRO, style, 30.0, colour, align)),
+        moved(lifted(face(text, if style == FontStyle::Bold { SANS } else { LABEL }, style, 32.0, colour, align)),
             TitleMotion::both(enter(MotionKind::Fade, 0.8, Easing::OutCubic).delay(0.6).stagger(StaggerUnit::Line, 0.12), fade_out(0.6))),
         x, 0.62, anchor,
     );
@@ -752,7 +827,7 @@ fn cr_end_credits() -> TitleData {
     }
     layers(vec![
         text_at(
-            moved(lifted(upper(face("[Film title]", SERIF, FontStyle::Regular, 76.0, WHITE, TextAlignment::Center), 10.0)),
+            moved(lifted(upper(weight(face("[Film title]", CLASSIC, FontStyle::Regular, 88.0, WHITE, TextAlignment::Center), 500), 12.0)),
                 TitleMotion::both(enter(MotionKind::Fade, 1.2, Easing::InOutCubic), fade_out(0.8))),
             0.5, 0.30, 0.5,
         ),
@@ -976,6 +1051,20 @@ mod tests {
         assert_eq!(Format::of(1080, 1920), Format::Tall);
         assert_eq!(Format::of(1080, 1350), Format::Square);
         assert_eq!(Format::of(1080, 1080), Format::Square);
+    }
+
+    /// A template whose every text sits on a backing of its own keeps
+    /// the picture as it is; one with a text on the picture protects it
+    /// (#2734).
+    #[test]
+    fn a_backed_template_leaves_the_picture_alone() {
+        let protect = |name: &str| builtin(name).unwrap().data().protect;
+        for name in ["Name Bar", "Handle", "Subscribe", "Callout", "Slate", "Caption"] {
+            assert_eq!(protect(name), crate::ContrastProtect::Off, "{name}");
+        }
+        for name in ["Pill", "Clean Line", "Impact", "Quote"] {
+            assert_eq!(protect(name), crate::ContrastProtect::Auto, "{name}");
+        }
     }
 
     /// Laid out for another frame, a template keeps the distance between
