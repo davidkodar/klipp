@@ -101,13 +101,57 @@ pub fn installed(family: &str) -> bool {
 pub fn fetch_from_catalogue(missing: Vec<MissingFont>) -> Vec<MissingFont> {
     let (fetch, rest): (Vec<MissingFont>, Vec<MissingFont>) = missing.into_iter().partition(|m| klipp_title::catalogue::family(&m.family).is_some());
     for m in fetch {
-        let Some(family) = klipp_title::catalogue::family(&m.family) else { continue };
-        let _ = std::thread::Builder::new().name("klipp-font-fetch".into()).spawn(move || match klipp_title::catalogue::fetch(family) {
-            Ok(dir) => tracing::info!("font {} fetched into {}", family.name, dir.display()),
-            Err(e) => tracing::warn!("font {} could not be fetched: {e}", family.name),
-        });
+        if let Some(family) = klipp_title::catalogue::family(&m.family) {
+            fetch_in_background(family);
+        }
     }
     rest
+}
+
+/// The catalogue families being fetched now, so a second ask waits on
+/// the first rather than fetching again.
+static FETCHING: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+
+/// Fetches `family` on a thread of its own, once at a time; the titles
+/// are drawn again when it lands (`catalogue::fetches`).
+fn fetch_in_background(family: &'static klipp_title::catalogue::CatalogueFamily) {
+    {
+        let Ok(mut fetching) = FETCHING.lock() else { return };
+        if fetching.contains(&family.name.as_str()) {
+            return;
+        }
+        fetching.push(family.name.as_str());
+    }
+    let _ = std::thread::Builder::new().name("klipp-font-fetch".into()).spawn(move || {
+        match klipp_title::catalogue::fetch(family) {
+            Ok(dir) => tracing::info!("font {} fetched into {}", family.name, dir.display()),
+            Err(e) => tracing::warn!("font {} could not be fetched: {e}", family.name),
+        }
+        if let Ok(mut fetching) = FETCHING.lock() {
+            fetching.retain(|n| *n != family.name.as_str());
+        }
+    });
+}
+
+/// The catalogue families `titles` are set in that are not here yet,
+/// fetched (#2734): a title an edit places from a template, from the app
+/// or over the socket, is drawn in its own face as soon as it arrives.
+pub fn fetch_for<'a>(titles: impl IntoIterator<Item = &'a TitleData>) {
+    let mut families: Vec<String> = Vec::new();
+    for td in titles {
+        for f in fonts_of(td) {
+            if !families.contains(&f) {
+                families.push(f);
+            }
+        }
+    }
+    for name in families {
+        if let Some(family) = klipp_title::catalogue::family(&name).filter(|f| !klipp_title::catalogue::is_fetched(f)) {
+            if !klipp_title::font_discovery::font_installed(&klipp_title::font_discovery::discover_system_fonts(), &name) {
+                fetch_in_background(family);
+            }
+        }
+    }
 }
 
 impl AppState {

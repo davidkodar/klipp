@@ -196,6 +196,7 @@ impl KlippApp {
             unnamed_project: None,
             projects_root: None,
             project_copy: None,
+            fonts_seen: klipp_title::catalogue::fetches(),
             autosave_rx: None,
             last_heartbeat: std::time::Instant::now(),
             frame_count: 0,

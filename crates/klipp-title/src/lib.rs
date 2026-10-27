@@ -522,6 +522,8 @@ pub type LayerSoftener = Box<dyn FnMut(&mut [f32], u32, u32, f32, Option<(f32, R
 pub struct TitleRenderer {
     fallback_font: LoadedFont,
     font_cache: HashMap<String, LoadedFont>,
+    /// The catalogue fetches finished when its caches were last checked.
+    fonts_seen: u64,
     /// Shared registry of available system fonts. Cheap to clone — internally
     /// an `Arc` populated by `font_discovery::discover_system_fonts()`, which
     /// dedupes across the whole process and caches the result on disk.
@@ -710,6 +712,7 @@ impl TitleRenderer {
         Self {
             fallback_font,
             font_cache: HashMap::new(),
+            fonts_seen: catalogue::fetches(),
             font_registry: registry,
             texture_fill_cache: None,
             gpu_textures:Default::default(),
@@ -4151,6 +4154,7 @@ impl TitleRenderer {
     /// ([`CachedTextLayer`]): its box, and its glyph map as the render
     /// leaves it.
     fn text_layer_lookup(&mut self, single: &TitleData, width: u32, height: u32) -> Option<std::sync::Arc<KeptLayer>> {
+        self.fonts_current();
         let pos = self.text_layer_cache.iter().position(|c| c.width == width && c.height == height && &c.title == single)?;
         let entry = self.text_layer_cache.remove(pos);
         let kept = std::sync::Arc::clone(&entry.kept);
@@ -4187,6 +4191,7 @@ impl TitleRenderer {
     }
 
     fn cache_lookup(&mut self, title: &TitleData, width: u32, height: u32) -> Option<RestingSprite> {
+        self.fonts_current();
         let images = self.image_stamps(title);
         let pos = self.render_cache.iter().position(|c| {
             c.width == width && c.height == height && &c.title == title && c.images == images
@@ -4237,6 +4242,16 @@ impl TitleRenderer {
     /// memory (e.g. exporting a different project). Not currently
     /// invoked anywhere — the LRU bound (4 entries × 1920×1080×4 ≈
     /// 32 MB) is small enough to live indefinitely.
+    /// Drops what was drawn before a catalogue face arrived (#2734): a
+    /// title set in it was drawn in the fallback until then.
+    pub(crate) fn fonts_current(&mut self) {
+        let fetches = catalogue::fetches();
+        if fetches != self.fonts_seen {
+            self.fonts_seen = fetches;
+            self.invalidate_cache();
+        }
+    }
+
     pub fn invalidate_cache(&mut self) {
         self.geometry3d_cache.clear();
         self.render_cache.clear();

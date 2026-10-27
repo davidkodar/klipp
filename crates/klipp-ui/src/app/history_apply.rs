@@ -15,6 +15,11 @@ impl KlippApp {
         for e in edits {
             self.apply_edit_forward(e);
         }
+        // A title placed in a face Klipp's catalogue has is fetched (#2734).
+        crate::missing_fonts::fetch_for(edits.iter().filter_map(|e| match e {
+            EditCommand::AddTitleClip { clip, .. } => clip.title_data(),
+            _ => None,
+        }));
         // One step, or the open batch's edits (a socket or agent batch).
         self.state.push_edits_as_one(edits, label);
         self.state.dirty = true;
