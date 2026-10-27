@@ -127,7 +127,8 @@ pub fn match_grade_knobs(target: &serde_json::Value, reference: &serde_json::Val
     let warm = |v: &serde_json::Value| bal(v, "red") - bal(v, "blue");
     let green = |v: &serde_json::Value| bal(v, "green") - (bal(v, "red") + bal(v, "blue")) / 2.0;
     let temperature = some_if(((warm(reference) - warm(target)) * 4.0).clamp(-0.6, 0.6) as f32, 0.02);
-    let tint = some_if(((green(reference) - green(target)) * 4.0).clamp(-0.6, 0.6) as f32, 0.02);
+    // Tint + is magenta (#2769): a greener reference is a negative tint.
+    let tint = some_if(((green(target) - green(reference)) * 4.0).clamp(-0.6, 0.6) as f32, 0.02);
 
     MatchKnobs { exposure, lift, gain, temperature, tint }
 }

@@ -12,7 +12,8 @@
 //! names the light the scene is assumed to be lit by, relative to the
 //! working space's white: `temperature` moves it along the Planckian
 //! locus, one unit per mired (warmer picture = bluer assumed light), and
-//! `tint` off the locus, towards magenta for a greener picture. Bradford
+//! `tint` off the locus, towards green for a more magenta picture (#2769:
+//! a positive tint is magenta, as a positive temperature is warmer). Bradford
 //! then adapts that white to the working white. The matrix is normalised
 //! so a neutral keeps its luminance: the sliders change colour, not
 //! exposure.
@@ -52,7 +53,7 @@ pub fn white_balance_matrix(temperature: f32, tint: f32, ws: WorkingColorspace) 
     let white = (primaries.white.x as f64, primaries.white.y as f64);
     let base_mired = 1e6 / cct_of(white);
     let mired = (base_mired - temperature as f64 * MIRED_PER_TEMPERATURE).clamp(1e6 / MAX_CCT, 1e6 / MIN_CCT);
-    let src = off_locus(1e6 / mired, -(tint as f64) * DUV_PER_TINT);
+    let src = off_locus(1e6 / mired, (tint as f64) * DUV_PER_TINT);
     let dst = off_locus(1e6 / base_mired, 0.0);
     let m = mul(&from_xyz, &mul(&bradford(src, dst), &to_xyz));
     // Keep a neutral's luminance.
@@ -341,13 +342,15 @@ mod tests {
             let [_, a, b] = lab(c);
             if t > 0.0 { assert!(b > 5.0, "warm should be yellower: b {b}"); }
             if t < 0.0 { assert!(b < -5.0, "cool should be bluer: b {b}"); }
-            if tint > 0.0 { assert!(a < -3.0, "tint + should be greener: a {a}"); }
-            if tint < 0.0 { assert!(a > 3.0, "tint - should be more magenta: a {a}"); }
+            if tint > 0.0 { assert!(a > 3.0, "tint + should be more magenta: a {a}"); }
+            if tint < 0.0 { assert!(a < -3.0, "tint - should be greener: a {a}"); }
         }
     }
 
     /// The calibration: at mid-grey the new balance moves as far as the old
-    /// offsets did, so SDR grades keep their look.
+    /// offsets did, so SDR grades keep their look. The old offset's +
+    /// was green; tint's green is - now (#2769), so the two are compared
+    /// at opposite signs, the same move.
     #[test]
     fn mid_grey_moves_as_far_as_before() {
         let old = |t: f32, tint: f32| lab([0.18 + t / 1000.0, 0.18 + tint / 1000.0, 0.18 - t / 1000.0]);
@@ -355,7 +358,7 @@ mod tests {
             let new_t = lab(apply(&white_balance_matrix(s, 0.0, Rec709Linear).unwrap(), [0.18; 3]));
             let (o, n) = (old(s, 0.0)[2], new_t[2]);
             assert!((n - o).abs() / o < 0.15, "temperature {s}: Lab b {n} vs the old {o}");
-            let new_g = lab(apply(&white_balance_matrix(0.0, s, Rec709Linear).unwrap(), [0.18; 3]));
+            let new_g = lab(apply(&white_balance_matrix(0.0, -s, Rec709Linear).unwrap(), [0.18; 3]));
             let (o, n) = (old(0.0, s)[1], new_g[1]);
             assert!((n - o).abs() / o.abs() < 0.15, "tint {s}: Lab a {n} vs the old {o}");
         }

@@ -11,10 +11,7 @@ use serde_json::{json, Value};
 use sweep_common::*;
 
 /// Items known to fail, and the issue that holds each.
-const KNOWN: &[(&str, u32)] = &[
-    ("grade tint +25 is magenta", 2769),
-    ("grade tint -25 is green", 2769),
-];
+const KNOWN: &[(&str, u32)] = &[];
 
 /// A region's mean colour as shown: `x` and `y` ranges as frame fractions.
 fn region(f: &[f32], x: (f32, f32), y: (f32, f32)) -> [f32; 3] {
