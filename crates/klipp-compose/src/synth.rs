@@ -34,8 +34,8 @@ pub fn render_generator_with_slate_f16(
         // The slate's words over its colour as the title stacks them,
         // unrounded (#190).
         let title_data = build_slate_title_data(
-            project, scene, take, director, camera, date, framerate, notes,
-            *text_color, *background_color, h,
+            title_renderer, project, scene, take, director, camera, date, framerate, notes,
+            *text_color, *background_color, w, h,
         );
         return title_renderer.render_raster(&title_data, w, h).to_frame_f16();
     }
@@ -60,8 +60,8 @@ pub fn render_generator_with_slate(
     } = gen_data
     {
         let title_data = build_slate_title_data(
-            project, scene, take, director, camera, date, framerate, notes,
-            *text_color, *background_color, h,
+            title_renderer, project, scene, take, director, camera, date, framerate, notes,
+            *text_color, *background_color, w, h,
         );
         return title_renderer.render(&title_data, w, h);
     }
@@ -95,13 +95,17 @@ pub fn render_generator_with_slate(
     klipp_core::generator::render_generator(gen_data, w, h, elapsed_secs, total_secs)
 }
 
-/// Build a `TitleData` for a Slate generator. One TextBox containing
-/// the 8 fields as `LABEL:    value` lines, joined with `\n`. Empty
-/// fields are skipped — a fresh slate with only the project name set
-/// renders as just that one line. Background colour is painted via
+/// Build a `TitleData` for a Slate generator: its fields in two columns,
+/// the labels and their values, each row's pair on one line. Empty
+/// fields are skipped, so a fresh slate with only the project name set
+/// renders as that one row. The block is sized and centred to fill the
+/// frame inside a margin whatever its aspect (#2774): measured at a
+/// reference size with `renderer`, then scaled so its width and height
+/// both fit. Background colour is painted via
 /// `TitleBackground::FullFrame`.
 #[allow(clippy::too_many_arguments)]
 pub fn build_slate_title_data(
+    renderer: &mut klipp_title::TitleRenderer,
     project: &str,
     scene: &str,
     take: &str,
@@ -112,39 +116,71 @@ pub fn build_slate_title_data(
     notes: &str,
     text_color: [u8; 4],
     background_color: [u8; 4],
+    width: u32,
     height: u32,
 ) -> klipp_timeline::TitleData {
-    // Fixed-width label column so the field values line up vertically
-    // even in proportional fonts. Pad to 11 chars to leave room for
-    // the longest label ("FRAMERATE:").
-    let mut lines: Vec<String> = Vec::with_capacity(8);
-    let push = |lines: &mut Vec<String>, label: &str, value: &str| {
-        if !value.is_empty() {
-            lines.push(format!("{label:<11}{value}"));
-        }
-    };
-    push(&mut lines, "PROJECT:",   project);
-    push(&mut lines, "SCENE:",     scene);
-    push(&mut lines, "TAKE:",      take);
-    push(&mut lines, "DIRECTOR:",  director);
-    push(&mut lines, "CAMERA:",    camera);
-    push(&mut lines, "DATE:",      date);
-    push(&mut lines, "FRAMERATE:", framerate);
-    push(&mut lines, "NOTES:",     notes);
-    let text = lines.join("\n");
-
-    let text_box = klipp_timeline::TextBox {
+    use klipp_timeline::{TextAlignment, TitleObjectContent, TitlePosition};
+    let rows: Vec<(&str, &str)> = [
+        ("PROJECT", project),
+        ("SCENE", scene),
+        ("TAKE", take),
+        ("DIRECTOR", director),
+        ("CAMERA", camera),
+        ("DATE", date),
+        ("FRAMERATE", framerate),
+        ("NOTES", notes),
+    ]
+    .into_iter()
+    .filter(|(_, v)| !v.is_empty())
+    .collect();
+    let column = |text: String, size: f32, bold: bool| klipp_timeline::TextBox {
         text,
         color: text_color,
-        // Roughly 1080p / 24 ≈ 45 px font; floor at 20 so very small
-        // resolutions still produce legible output.
-        font_size: ((height as f32) / 24.0).max(20.0),
-        alignment: klipp_timeline::TextAlignment::Left,
+        font_size: size,
+        font_style: if bold { klipp_timeline::FontStyle::Bold } else { klipp_timeline::FontStyle::Regular },
+        alignment: TextAlignment::Left,
         line_spacing: 1.4,
         ..Default::default()
     };
+    let labels = rows.iter().map(|(l, _)| *l).collect::<Vec<_>>().join("\n");
+    let values = rows.iter().map(|(_, v)| *v).collect::<Vec<_>>().join("\n");
+    // Each column alone, unwrapped, at a reference size.
+    const REFERENCE: f32 = 60.0;
+    let mut measure = |text: &str, bold: bool| {
+        if text.is_empty() {
+            return (0.0f32, 0.0f32);
+        }
+        let mut td = klipp_timeline::TitleData::single_text(column(text.into(), REFERENCE, bold));
+        td.objects[0].transform.center = TitlePosition { x: 0.0, y: 0.5 };
+        td.objects[0].transform.size = TitlePosition { x: 50.0, y: 50.0 };
+        let l = renderer.render_layout(&td, width, height);
+        ((l.text_right - l.text_left).max(0.0), (l.text_bottom - l.text_top).max(0.0))
+    };
+    let (label_w, label_h) = measure(&labels, true);
+    let (value_w, value_h) = measure(&values, false);
+    let (w, h) = (width.max(1) as f32, height.max(1) as f32);
+    let gap = label_h.max(value_h) / rows.len().max(1) as f32 * 0.6;
+    let block_w = label_w + gap + value_w;
+    let block_h = label_h.max(value_h);
+    // Inside a margin of a twelfth of the frame's short side, and no
+    // larger than a frame's twelfth a line, so one field alone isn't huge.
+    let margin = w.min(h) / 12.0;
+    let fit = ((w - 2.0 * margin) / block_w.max(1.0)).min((h - 2.0 * margin) / block_h.max(1.0));
+    let line = h / 12.0 / (block_h.max(1.0) / rows.len().max(1) as f32);
+    let k = fit.min(line).max(0.05);
+    let size = (REFERENCE * k).max(8.0);
+    let left = (w - block_w * k) / 2.0;
+    let values_at = left + (label_w + gap) * k;
 
-    let mut td = klipp_timeline::TitleData::single_text(text_box);
+    let mut td = klipp_timeline::TitleData::single_text(column(labels, size, true));
+    td.objects[0].transform.center = TitlePosition { x: left / w, y: 0.5 };
+    td.objects[0].transform.size = TitlePosition { x: (label_w * k + 1.0) / w * 1.05, y: 0.95 };
+    let mut transform = klipp_timeline::default_text_transform();
+    // Each block is centred on its ink, which a value's descender
+    // lengthens: the values' first line is put level with the labels'.
+    transform.center = TitlePosition { x: values_at / w, y: 0.5 + (value_h - label_h) * k / 2.0 / h };
+    transform.size = TitlePosition { x: (value_w * k + 1.0) / w * 1.05, y: 0.95 };
+    td.add_object(TitleObjectContent::TextBox(column(values, size, false)), transform);
     td.background = klipp_timeline::TitleBackground::FullFrame { color: background_color };
     td
 }
@@ -219,5 +255,49 @@ mod tests {
         }
         assert!(worst <= 1.0, "{worst} code values from the byte slate");
         assert!(fractional > 100, "the words' edges keep their fractions: {fractional} pixels between codes");
+    }
+
+    /// The full slate.
+    fn slate() -> klipp_core::GeneratorData {
+        klipp_core::GeneratorData::Slate {
+            project: "Two Shores".into(),
+            scene: "12".into(),
+            take: "3".into(),
+            director: "Ana Ruiz".into(),
+            camera: "A".into(),
+            date: "2026-10-13".into(),
+            framerate: "25".into(),
+            notes: "Wind from the west, second unit".into(),
+            text_color: [240, 240, 240, 255],
+            background_color: [20, 24, 32, 255],
+        }
+    }
+
+    /// Where `frame`'s words are: the box round its light pixels, as
+    /// fractions of the frame (left, top, right, bottom).
+    fn ink(frame: &[u8], w: u32, h: u32) -> [f32; 4] {
+        let (mut l, mut t, mut r, mut b) = (w, h, 0, 0);
+        for y in 0..h {
+            for x in 0..w {
+                if frame[((y * w + x) * 4) as usize] > 128 {
+                    (l, t, r, b) = (l.min(x), t.min(y), r.max(x + 1), b.max(y + 1));
+                }
+            }
+        }
+        [l as f32 / w as f32, t as f32 / h as f32, r as f32 / w as f32, b as f32 / h as f32]
+    }
+
+    /// #2774: in a wide frame and an upright one alike, the slate's
+    /// fields fill the frame legibly: inside a margin on every side, over
+    /// most of its height or width, never past its edge.
+    #[test]
+    fn a_slate_fills_any_frame_inside_its_margins() {
+        for (w, h) in [(1920u32, 1080u32), (1080, 1920)] {
+            let frame = super::render_generator_with_slate(&mut klipp_title::TitleRenderer::new(), &slate(), w, h, 0.0, 5.0);
+            let [l, t, r, b] = ink(&frame, w, h);
+            assert!(l >= 0.04 && t >= 0.04 && r <= 0.96 && b <= 0.96, "{w}x{h}: inside the margins: {:?}", [l, t, r, b]);
+            assert!(r - l >= 0.6 || b - t >= 0.6, "{w}x{h}: fills the frame: {:?}", [l, t, r, b]);
+            assert!(((l + r) / 2.0 - 0.5).abs() < 0.1 && ((t + b) / 2.0 - 0.5).abs() < 0.1, "{w}x{h}: centred: {:?}", [l, t, r, b]);
+        }
     }
 }

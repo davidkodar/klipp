@@ -310,10 +310,18 @@ pub fn render_star(
 /// rather than silently substituting black.
 pub fn render_still_frame(png_path: &std::path::Path, width: u32, height: u32) -> Vec<u8> {
     match image::open(png_path) {
-        Ok(img) => img
-            .resize_exact(width, height, image::imageops::FilterType::Lanczos3)
-            .to_rgba8()
-            .into_raw(),
+        // Fitted inside the frame at its own aspect, centred, the rest
+        // clear, as a placed still is (#2774): never stretched to fill.
+        Ok(img) => {
+            let fitted = img.resize(width, height, image::imageops::FilterType::Lanczos3).to_rgba8();
+            if fitted.dimensions() == (width, height) {
+                return fitted.into_raw();
+            }
+            let mut frame = image::RgbaImage::new(width, height);
+            let (x, y) = ((width - fitted.width()) / 2, (height - fitted.height()) / 2);
+            image::imageops::replace(&mut frame, &fitted, x as i64, y as i64);
+            frame.into_raw()
+        }
         Err(_) => {
             let pixel_count = (width as usize) * (height as usize);
             let mut buf = Vec::with_capacity(pixel_count * 4);
@@ -1056,21 +1064,33 @@ pub fn timer_segments(
     let text = format_timer_value(value, format);
     let mut rects = Vec::new();
 
-    // Layout: digit 7-segment glyphs + colon dots + decimal dot.
-    let digit_h = (height / 3).max(10);
-    let digit_w = (digit_h * 3 / 5).max(1);
-    let separator_w = (digit_w / 4).max(2); // colon and dot share a width
-    let spacing = (digit_w / 4).max(1);
-
-    // Two-pass: measure total width, then lay out.
-    let total_w: u32 = text
-        .chars()
-        .map(|c| match c {
-            ':' | '.' => separator_w + spacing,
-            _ => digit_w + spacing,
-        })
-        .sum::<u32>()
-        .saturating_sub(spacing);
+    // Layout: digit 7-segment glyphs + colon dots + decimal dot, a third
+    // of the frame tall, or less so the string fits its width inside a
+    // margin in any aspect (#2774).
+    let sizes = |digit_h: u32| {
+        let digit_w = (digit_h * 3 / 5).max(1);
+        let separator_w = (digit_w / 4).max(2); // colon and dot share a width
+        let spacing = (digit_w / 4).max(1);
+        let total_w: u32 = text
+            .chars()
+            .map(|c| match c {
+                ':' | '.' => separator_w + spacing,
+                _ => digit_w + spacing,
+            })
+            .sum::<u32>()
+            .saturating_sub(spacing);
+        (digit_w, separator_w, spacing, total_w)
+    };
+    let room = width - width / 10;
+    let mut digit_h = (height / 3).max(10);
+    let (_, _, _, wide) = sizes(digit_h);
+    if wide > room {
+        digit_h = ((digit_h as u64 * room as u64 / wide as u64) as u32).max(4);
+        while digit_h > 4 && sizes(digit_h).3 > room {
+            digit_h -= 1;
+        }
+    }
+    let (digit_w, separator_w, spacing, total_w) = sizes(digit_h);
     let start_x = width.saturating_sub(total_w) / 2;
     let start_y = height.saturating_sub(digit_h) / 2;
 
@@ -1106,6 +1126,40 @@ pub fn timer_segments(
 
 #[cfg(test)]
 mod tests {
+    /// #2774: a timer's digits fit the frame's width inside a margin in
+    /// an upright frame as in a wide one, all of them drawn, and stay a
+    /// third of the frame tall where that fits.
+    #[test]
+    fn a_timer_fits_any_frame() {
+        use crate::types::{TimerFormat, TimerMode};
+        for (w, h, format) in [(1080u32, 1920u32, TimerFormat::MmSs), (1080, 1920, TimerFormat::HhMmSsMs), (1920, 1080, TimerFormat::HhMmSs)] {
+            let seg = super::timer_segments(w, h, 754.25, TimerMode::CountUp, 0.0, format, [255; 4], [0, 0, 0, 255]);
+            let (left, right) = seg.rects.iter().fold((u32::MAX, 0), |(l, r), b| (l.min(b[0]), r.max(b[2])));
+            assert!(left >= w / 20 && right <= w - w / 20, "{w}x{h} {format:?}: digits from {left} to {right}");
+            let tall = seg.rects.iter().map(|b| b[3]).max().unwrap() - seg.rects.iter().map(|b| b[1]).min().unwrap();
+            assert!(tall >= h / 30, "{w}x{h} {format:?}: legible, {tall} px tall");
+        }
+        let wide = super::timer_segments(1920, 1080, 754.0, TimerMode::CountUp, 0.0, TimerFormat::MmSs, [255; 4], [0, 0, 0, 255]);
+        let tall = wide.rects.iter().map(|b| b[3]).max().unwrap() - wide.rects.iter().map(|b| b[1]).min().unwrap();
+        assert!(tall >= 1080 / 3 - 4, "a short time in a wide frame keeps its size: {tall}");
+    }
+
+    /// #2774: a still frame keeps its picture's aspect, fitted and
+    /// centred, the rest of the frame clear.
+    #[test]
+    fn a_still_frame_keeps_its_aspect() {
+        let path = std::env::temp_dir().join(format!("klipp-still-aspect-{}.png", std::process::id()));
+        image::RgbaImage::from_pixel(1800, 700, image::Rgba([200, 100, 50, 255])).save(&path).unwrap();
+        let (w, h) = (192u32, 108u32);
+        let px = super::render_still_frame(&path, w, h);
+        let _ = std::fs::remove_file(&path);
+        let alpha = |y: u32| px[((y * w + w / 2) * 4 + 3) as usize];
+        let rows: Vec<u32> = (0..h).filter(|&y| alpha(y) > 0).collect();
+        // 1800×700 fitted to 192 wide is 74.7 tall, centred.
+        assert!((rows.len() as i32 - 75).abs() <= 1, "{} rows of picture", rows.len());
+        assert!((rows[0] as i32 - 17).abs() <= 1 && alpha(0) == 0 && alpha(h - 1) == 0, "centred, clear above and below: from row {}", rows[0]);
+    }
+
     /// The half-float gradient draws the picture the eight-bit one draws.
     ///
     /// Both are sRGB-encoded, so a code value means the same thing in
