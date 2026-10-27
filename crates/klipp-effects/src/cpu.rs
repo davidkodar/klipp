@@ -1028,7 +1028,7 @@ pub(crate) fn apply(
         // A merge is drawn by the plan's layer mixer, with its foreground;
         // the generator by the chain (`apply_chain`), a media source's
         // picture and what is below by the executor (`draws_a_side_picture`).
-        Merge { .. } | Generator { .. } | MediaSource { .. } | ClipBelow {} | GradeCompound {} => p,
+        Merge { .. } | Generator { .. } | MediaSource { .. } | TitleSource { .. } | ClipBelow {} | GradeCompound {} => p,
     }
 }
 

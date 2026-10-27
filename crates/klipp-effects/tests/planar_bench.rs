@@ -37,6 +37,10 @@ struct Clip {
     limit: (f64, f64),
     /// What the tracker can't do on it yet, when it can't.
     known: Option<String>,
+    /// From this frame on the surface may be lost (#2857): a frame checked
+    /// there that the tracker reports lost, or stopped at after a loss,
+    /// is reported, not drifted, and left out of the error.
+    loss_from: Option<usize>,
 }
 
 fn points(words: &[&str]) -> Points {
@@ -54,20 +58,21 @@ fn clips(text: &str) -> Vec<Clip> {
     for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
         let words: Vec<&str> = line.split_whitespace().collect();
         match words[0] {
-            "clip" => out.push(Clip { name: words[1].into(), local: None, quad: [(0.0, 0.0); 4], exclude: Vec::new(), at: Vec::new(), limit: (0.0, 0.0), known: None }),
+            "clip" => out.push(Clip { name: words[1].into(), local: None, quad: [(0.0, 0.0); 4], exclude: Vec::new(), at: Vec::new(), limit: (0.0, 0.0), known: None, loss_from: None }),
             "local" => {
                 let path = words[3..].join(" ");
                 let path = match path.strip_prefix("~/") {
                     Some(rest) => PathBuf::from(std::env::var_os("HOME").expect("HOME")).join(rest),
                     None => PathBuf::from(path),
                 };
-                out.push(Clip { name: words[1].into(), local: Some((path, words[2].into())), quad: [(0.0, 0.0); 4], exclude: Vec::new(), at: Vec::new(), limit: (0.0, 0.0), known: None });
+                out.push(Clip { name: words[1].into(), local: Some((path, words[2].into())), quad: [(0.0, 0.0); 4], exclude: Vec::new(), at: Vec::new(), limit: (0.0, 0.0), known: None, loss_from: None });
             }
             "quad" => out.last_mut().expect("a clip").quad = points(&words[1..]).try_into().expect("four corners"),
             "exclude" => out.last_mut().expect("a clip").exclude.push(points(&words[1..])),
             "at" => out.last_mut().expect("a clip").at.push((words[1].parse().expect("frame"), points(&words[2..]))),
             "limit" => out.last_mut().expect("a clip").limit = (words[1].parse().expect("mean"), words[2].parse().expect("drift")),
             "known" => out.last_mut().expect("a clip").known = Some(words[1..].join(" ")),
+            "loss_from" => out.last_mut().expect("a clip").loss_from = Some(words[1].parse().expect("frame")),
             other => panic!("unknown line {other}"),
         }
     }
@@ -199,12 +204,39 @@ fn the_tracker_holds_real_surfaces() {
         if let Some(g) = gpu.as_mut() {
             runs.push(("gpu", run(clip, &path, Some(g))));
         }
+        // The CPU and the GPU tell the same story (#2858): the same states
+        // but on a frame or two at the edge of a loss, where a fit sits on
+        // the line between weak and lost and each side's arithmetic puts
+        // it either way; the same extent and the same count of lost frames
+        // within two; and where both follow the surface sure of the fit,
+        // the same corners within a pixel.
+        if let [(_, c), (_, g)] = runs.as_slice() {
+            let states_apart = c.iter().zip(g).filter(|(a, b)| a.state != b.state).count();
+            let lost = |t: &[Tracked]| t.iter().filter(|t| t.state == State::Lost).count();
+            // On the frames both follow and come back from within a pixel:
+            // a looser fit is each side's own path through a surface that
+            // barely holds the map, judged against the points by the
+            // limits above.
+            let corners_apart = c.iter().zip(g).filter(|(a, b)| a.state == State::Good && b.state == State::Good && a.round_trip_px <= 1.0 && b.round_trip_px <= 1.0)
+                .map(|(a, b)| clip.quad.iter().map(|p| { let (x, y) = (a.h.transform(p.0, p.1), b.h.transform(p.0, p.1)); (x.0 - y.0).hypot(x.1 - y.1) }).sum::<f64>() / 4.0)
+                .fold(0.0, f64::max);
+            eprintln!("{} cpu/gpu: {} and {} frames, {} and {} lost, states apart on {states_apart}, corners apart {corners_apart:.2} px", clip.name, c.len(), g.len(), lost(c), lost(g));
+            if c.len().abs_diff(g.len()) > 2 || lost(c).abs_diff(lost(g)) > 2 || states_apart > 2 || corners_apart > 1.0 {
+                over.push(format!("{}: the CPU and the GPU part: {} and {} frames, {} and {} lost, states apart on {states_apart}, corners apart {corners_apart:.2} px", clip.name, c.len(), g.len(), lost(c), lost(g)));
+            }
+        }
         for (on, tracked) in runs {
-            let e = errors(clip, &tracked);
-            let mean = e.iter().map(|e| e.1).sum::<f64>() / e.len() as f64;
-            let drift = e.last().expect("frames checked").1;
+            let all = errors(clip, &tracked);
+            // A frame past `loss_from` reported lost is not drift.
+            let reported = |(f, _, s): &&(usize, f64, Option<State>)| clip.loss_from.is_some_and(|l| *f >= l) && !matches!(s, Some(State::Good | State::Low));
+            let e: Vec<&(usize, f64, Option<State>)> = all.iter().filter(|x| !reported(x)).collect();
+            let mean = if e.is_empty() { f64::INFINITY } else { e.iter().map(|e| e.1).sum::<f64>() / e.len() as f64 };
+            let drift = e.last().map_or(f64::INFINITY, |e| e.1);
             let lost = tracked.iter().filter(|t| t.state == State::Lost).count();
-            let each: Vec<String> = e.iter().map(|(f, px, s)| format!("{f}:{px:.2}{}", if s.is_some_and(|s| s != State::Good) { "*" } else { "" })).collect();
+            let each: Vec<String> = all.iter().map(|x| {
+                let (f, px, s) = x;
+                if reported(&x) { format!("{f}:reported-lost") } else { format!("{f}:{px:.2}{}", if s.is_some_and(|s| s != State::Good) { "*" } else { "" }) }
+            }).collect();
             eprintln!("{} {on}: mean {mean:.2} px, drift {drift:.2} px, {lost} lost of {}; {}", clip.name, tracked.len(), each.join(" "));
             let held = mean <= clip.limit.0 && drift <= clip.limit.1;
             match (&clip.known, held) {

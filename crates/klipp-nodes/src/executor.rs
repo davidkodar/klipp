@@ -16,11 +16,23 @@ use klipp_core::{BlendMode, LayerMixerInput};
 /// frame, which gives no coverage. The node then passes its input on.
 fn effect_blend_is_none(graph: &NodeGraph, node: &Node, clip_time_secs: f64) -> bool {
     let Some(blend) = node.params.effect_blend else { return false };
-    let mask_off = graph
-        .input_of(node.id, 1)
+    let mask_off = mask_port(node)
+        .and_then(|port| graph.input_of(node.id, port))
         .and_then(|id| graph.nodes.iter().find(|n| n.id == id))
         .is_some_and(|producer| !effective_enabled(producer, clip_time_secs));
     blend.mix == 0.0 || mask_off
+}
+
+/// The port a node's blend reads its mask on: an effect's second, a
+/// masked merge's third (its second is the picture it lays over, #2758);
+/// `None` for a node with no blend.
+fn mask_port(node: &Node) -> Option<u8> {
+    node.params.effect_blend?;
+    match node.kind {
+        NodeKind::Effect | NodeKind::EffectSegment | NodeKind::Frei0r => Some(1),
+        NodeKind::Blend if node.params.merge.is_some() => Some(2),
+        _ => None,
+    }
 }
 
 /// An effect node's result mixed back over its input on the CPU: by its
@@ -2342,7 +2354,7 @@ impl GraphExecutor {
                     let readers: Vec<_> = graph.edges.iter().filter(|e| e.from_node == n.id).collect();
                     let masks_only = !readers.is_empty()
                         && readers.iter().all(|e| {
-                            e.to_port == 1 && node_by_id.get(&e.to_node).is_some_and(|r| matches!(r.kind, NodeKind::Effect | NodeKind::EffectSegment | NodeKind::Frei0r) && r.params.effect_blend.is_some())
+                            node_by_id.get(&e.to_node).is_some_and(|r| mask_port(r) == Some(e.to_port))
                         });
                     let key = gpu_key(&n.kind, &params_for_frame(n, clip_time_secs)).filter(|_| masks_only)?;
                     Some(PendingKey { node: n.id, picture: graph.input_of(n.id, 0)?, key, readers: readers.len() })
@@ -2523,9 +2535,8 @@ impl GraphExecutor {
             // picture on the chain (#1266): drawn from the tail, or from a
             // chain started here on the picture the effect takes too, or
             // else keyed on the CPU now, from its picture's pixels.
-            let pending_mask = graph
-                .input_of(node_id, 1)
-                .filter(|_| matches!(node.kind, NodeKind::Effect | NodeKind::EffectSegment | NodeKind::Frei0r) && node.params.effect_blend.is_some())
+            let pending_mask = mask_port(node)
+                .and_then(|port| graph.input_of(node_id, port))
                 .and_then(|id| pending_keys.iter().find(|k| k.node == id).map(|k| (id, k.picture)));
             if let Some((key, picture)) = pending_mask {
                 let is_source = node_by_id.get(&picture).is_some_and(|n| n.kind == NodeKind::Source);
@@ -2586,6 +2597,12 @@ impl GraphExecutor {
             let mut chain_tail_fan_out_one = chain_tail
                 .map(|id| {
                     fan_out.get(&id).copied().unwrap_or(0).saturating_sub(served.get(&id).copied().unwrap_or(0)) <= 1
+                        // Every other reader has run, or is served by the
+                        // chain: none needs a CPU copy any more. A picture
+                        // beside the chain read from the source before a
+                        // masked merge whose key the chain draws from it
+                        // (#2758).
+                        || graph.edges.iter().filter(|e| e.from_node == id && e.to_node != node_id && !node_outputs.contains_key(&e.to_node)).count() <= served.get(&id).copied().unwrap_or(0)
                         // The one tail whose extra consumers the chain
                         // itself serves: a secondary's source keeps its
                         // picture in a side buffer for ApplyMatte and
@@ -2712,20 +2729,12 @@ impl GraphExecutor {
             // feeding a mixed effect's mask runs off the chain, its matte
             // made on the CPU where the effect can read it.
             let feeds_a_mask = graph.nodes.iter().any(|n| {
-                matches!(n.kind, NodeKind::Effect | NodeKind::EffectSegment | NodeKind::Frei0r) && n.params.effect_blend.is_some() && graph.input_of(n.id, 1) == Some(node_id)
+                mask_port(n).is_some_and(|port| graph.input_of(n.id, port) == Some(node_id))
             });
-            let effect_mask = match (node.kind, node.params.effect_blend) {
-                (NodeKind::Effect | NodeKind::EffectSegment | NodeKind::Frei0r, Some(_)) => graph.input_of(node_id, 1).map(|id| node_outputs.get(&id).filter(|m| !m.is_empty()).cloned()),
-                _ => None,
-            };
-            let effect_window = match (node.kind, node.params.effect_blend) {
-                (NodeKind::Effect | NodeKind::EffectSegment | NodeKind::Frei0r, Some(_)) => graph.input_of(node_id, 1).and_then(|id| window_mattes.get(&id).cloned()),
-                _ => None,
-            };
-            let effect_keyed = match (node.kind, node.params.effect_blend) {
-                (NodeKind::Effect | NodeKind::EffectSegment | NodeKind::Frei0r, Some(_)) => graph.input_of(node_id, 1).filter(|id| self.key_mattes.contains_key(id)),
-                _ => None,
-            };
+            let mask_input = mask_port(node).and_then(|port| graph.input_of(node_id, port));
+            let effect_mask = mask_input.map(|id| node_outputs.get(&id).filter(|m| !m.is_empty()).cloned());
+            let effect_window = mask_input.and_then(|id| window_mattes.get(&id).cloned());
+            let effect_keyed = mask_input.filter(|id| self.key_mattes.contains_key(id));
             let effect_mask_ready = effect_window.is_some() || effect_keyed.is_some() || !matches!(effect_mask, Some(None));
             // Handed to the dispatch, whichever way the node is dispatched
             // (extending a chain, or starting one); each node sets it anew,
@@ -2815,10 +2824,7 @@ impl GraphExecutor {
             {
                 let mut readers = graph.edges.iter().filter(|e| e.from_node == node_id).peekable();
                 let only_masks_effects = readers.peek().is_some()
-                    && readers.all(|e| {
-                        e.to_port == 1
-                            && node_by_id.get(&e.to_node).is_some_and(|n| matches!(n.kind, NodeKind::Effect | NodeKind::EffectSegment | NodeKind::Frei0r) && n.params.effect_blend.is_some())
-                    });
+                    && readers.all(|e| node_by_id.get(&e.to_node).is_some_and(|n| mask_port(n) == Some(e.to_port)));
                 if only_masks_effects {
                     // As drawn now: keyframes, then the window's tracked motion (#238).
                     let masks = node.params.masks.as_ref().map(|ms| ms.evaluated_in(clip_time_secs, height as f32 / width.max(1) as f32));
@@ -2923,8 +2929,10 @@ impl GraphExecutor {
             // mask while that picture was on the GPU: the flush just made
             // them, so the mask is read again. Without it the mix ran with
             // no matte, white, and the whole effect was drawn.
-            if self.effect_mask.is_none() && self.effect_window.is_none() && self.effect_keyed.is_none() && matches!(node.kind, NodeKind::Effect | NodeKind::EffectSegment | NodeKind::Frei0r) && node.params.effect_blend.is_some() {
-                self.effect_mask = graph.input_of(node_id, 1).and_then(|id| node_outputs.get(&id)).filter(|m| !m.is_empty()).cloned();
+            if self.effect_mask.is_none() && self.effect_window.is_none() && self.effect_keyed.is_none() {
+                if let Some(port) = mask_port(node) {
+                    self.effect_mask = graph.input_of(node_id, port).and_then(|id| node_outputs.get(&id)).filter(|m| !m.is_empty()).cloned();
+                }
             }
 
             // A picture that is only in a slot kept for a gate (M3 step
@@ -3041,19 +3049,56 @@ impl GraphExecutor {
                         },
                     };
                     if placed {
-                        {
+                        // A masked merge's matte (#2758), as a masked
+                        // effect's is taken: a window's shapes, a key drawn
+                        // on the GPU (put back for its other readers), or
+                        // its pixels.
+                        let (mask, window) = (self.effect_mask.take(), self.effect_window.take());
+                        let keyed = self.effect_keyed.take().and_then(|id| self.key_mattes.remove(&id).map(|k| (id, k)));
+                        let luma = klipp_color::linear::luma_coefs(self.working_colorspace);
+                        let landed = {
                             let other = &composite.as_ref().expect("placed above").1;
                             let gpu = self.gpu.as_mut().expect("gpu checked above");
-                            if let (NodeKind::Blend, Some(top)) = (node.kind, params.merge) {
-                                gpu.apply_merge_chain(chain_slot_a, width, height, top.opacity, top.blend_mode as u32, other);
-                            } else if node.kind == NodeKind::Blend {
-                                let mix = params.mix.unwrap_or(0.5).clamp(0.0, 1.0);
-                                gpu.apply_blend_chain(chain_slot_a, width, height, mix, other);
-                            } else {
-                                gpu.apply_over_chain(chain_slot_a, width, height, other);
+                            match (node.kind, params.merge, params.effect_blend) {
+                                (NodeKind::Blend, Some(top), Some(blend)) => {
+                                    let matte = match (&window, &keyed, &mask) {
+                                        (Some(shapes), _, _) => Some(klipp_effects::gpu::EffectMatte::Shapes(shapes.as_slice())),
+                                        (None, Some((_, (m, _))), _) => Some(klipp_effects::gpu::EffectMatte::Keyed(m)),
+                                        (None, None, Some(pixels)) => Some(klipp_effects::gpu::EffectMatte::Pixels(pixels.as_slice())),
+                                        (None, None, None) => None,
+                                    };
+                                    let run = klipp_effects::mask_mix::MaskMix::new(blend.mix, blend.channel, luma)
+                                        .ok()
+                                        .and_then(|mix| gpu.chain_merge_mixed(chain_slot_a, width, height, top.opacity, top.blend_mode as u32, other, mix, matte));
+                                    // Not mixed: the run is incomplete and
+                                    // taken another way, never laid unmasked.
+                                    // Mixed in place, the picture is where
+                                    // the run says, not flipped.
+                                    run.filter(|r| r.complete).map(|r| r.in_a)
+                                }
+                                (NodeKind::Blend, Some(top), None) => {
+                                    gpu.apply_merge_chain(chain_slot_a, width, height, top.opacity, top.blend_mode as u32, other);
+                                    Some(!chain_slot_a)
+                                }
+                                (NodeKind::Blend, None, _) => {
+                                    let mix = params.mix.unwrap_or(0.5).clamp(0.0, 1.0);
+                                    gpu.apply_blend_chain(chain_slot_a, width, height, mix, other);
+                                    Some(!chain_slot_a)
+                                }
+                                _ => {
+                                    gpu.apply_over_chain(chain_slot_a, width, height, other);
+                                    Some(!chain_slot_a)
+                                }
+                            }
+                        };
+                        if let Some((id, k)) = keyed {
+                            self.key_mattes.insert(id, k);
+                            if landed.is_some() {
+                                self.keyed_matte_read(id);
                             }
                         }
-                        chain_slot_a = !chain_slot_a;
+                        self.run_effects_incomplete |= landed.is_none();
+                        chain_slot_a = landed.unwrap_or(!chain_slot_a);
                         chain_tail = Some(node_id);
                         node_outputs.insert(node_id, Arc::new(Vec::new()));
                         self.draw_keys_of(node_id, chain_slot_a, &mut pending_keys, &mut served, graph, width, height);
@@ -3507,38 +3552,39 @@ impl GraphExecutor {
             if [1, 2].into_iter().any(|port| graph.input_of(node_id, port).is_some_and(is_gpu_source)) {
                 return Err(ExecutorError::CpuSourceRequired);
             }
+            // The mask a mixed node reads, on its own port: an effect's
+            // second, a masked merge's third (#2758).
+            let mport = mask_port(node).unwrap_or(1);
+            let mask_slice = if mport == 2 { tertiary_slice } else { secondary_slice };
             // A mixed effect off the chain whose window was left for the GPU
             // to draw (#1242): drawn here on the CPU instead.
             let window_on_cpu;
-            let secondary_slice = match graph.input_of(node_id, 1).filter(|id| secondary_slice.is_none() && window_mattes.contains_key(id)).and_then(|id| node_by_id.get(&id).copied()) {
+            let mask_slice = match graph.input_of(node_id, mport).filter(|id| mask_slice.is_none() && window_mattes.contains_key(id)).and_then(|id| node_by_id.get(&id).copied()) {
                 Some(window) => {
                     let window_params = params_for_frame(window, clip_time_secs);
                     window_on_cpu = self.execute_node(window.id, &NodeKind::Mask, &window_params, primary_slice, None, None, width, height, source_frame, frame_number, clip_time_secs, None, None);
                     cpu_fallback_count += 1;
                     Some(window_on_cpu.as_slice())
                 }
-                None => secondary_slice,
+                None => mask_slice,
             };
             // A mixed effect off the chain whose key was drawn on the GPU
             // (#1266): its matte is read back (the chain that drew it is
             // submitted by now), since the key's picture may be nowhere on
             // the CPU.
             let key_read_back;
-            let secondary_slice = match graph.input_of(node_id, 1).filter(|id| secondary_slice.is_none() && self.key_mattes.contains_key(id)) {
+            let mask_slice = match graph.input_of(node_id, mport).filter(|id| mask_slice.is_none() && self.key_mattes.contains_key(id)) {
                 Some(key) => {
                     key_read_back = self.gpu.as_ref().zip(self.key_mattes.get(&key)).and_then(|(g, (m, _))| g.read_keyed_matte(m, (width as usize) * (height as usize)));
                     self.keyed_matte_read(key);
                     key_read_back.as_deref()
                 }
-                None => secondary_slice,
+                None => mask_slice,
             };
-            if matches!(node.kind, NodeKind::Effect | NodeKind::EffectSegment | NodeKind::Frei0r)
-                && node.params.effect_blend.is_some()
-                && graph.input_of(node_id, 1).is_some()
-                && secondary_slice.is_none()
-            {
+            if mask_port(node).is_some() && graph.input_of(node_id, mport).is_some() && mask_slice.is_none() {
                 return Err(ExecutorError::MaskUnavailable(node_id));
             }
+            let (secondary_slice, tertiary_slice) = if mport == 2 { (secondary_slice, mask_slice) } else { (mask_slice, tertiary_slice) };
             // The matte a grade's alpha takes (#898) is there, or the run
             // is refused: a clip shown whole where it should be cut out
             // would say nothing. No pixels is a window with nothing
@@ -6942,9 +6988,16 @@ impl GraphExecutor {
                 // layer mixer lays a top layer over its base; with
                 // nothing on port 1, the picture as it is.
                 if let Some(top) = params.merge {
-                    return match secondary_input {
-                        Some(fg) => layer_mixer_compose(&[(0, fg), (1, primary_input)], &[top, LayerMixerInput::default()], primary_input.len() / 4),
-                        None => primary_input.to_vec(),
+                    let Some(fg) = secondary_input else { return primary_input.to_vec() };
+                    let merged = layer_mixer_compose(&[(0, fg), (1, primary_input)], &[top, LayerMixerInput::default()], primary_input.len() / 4);
+                    // Masked (#2758): mixed back over the picture so far by
+                    // the matte on its third port, as a masked effect is.
+                    return match params.effect_blend {
+                        Some(blend) => mix_effect_cpu(blend, klipp_color::linear::luma_coefs(self.working_colorspace), primary_input, merged, tertiary_input).unwrap_or_else(|| {
+                            self.run_mix_refused += 1;
+                            primary_input.to_vec()
+                        }),
+                        None => merged,
                     };
                 }
                 let mix = params.mix.unwrap_or(0.5).clamp(0.0, 1.0);

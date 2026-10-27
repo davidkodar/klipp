@@ -78,7 +78,11 @@ pub(crate) fn parameter(node: &Node, key: &str, value: &Value) -> Result<ParamVa
     // A keyframe alias (a chroma key's `spill` for its `soft_edge`) is
     // written to its field by the effect's own setter.
     let aliased = p.key != p.field && node.type_id.as_str() == types::LEGACY_EFFECT;
-    if (p.key != p.field && !aliased) || p.index.is_some() || p.field.contains('.') {
+    // A grade node's keyed setting (a luma key's `luma_key_low`, saved as
+    // `luma_key.low`) is written by the grade's own override (#2758),
+    // which takes a number or a switch.
+    let grade_keyed = p.key != p.field && node.type_id.as_str() == types::LEGACY_NODE && p.index.is_none() && klipp_nodes::NodeParams::default().apply_override(p.key, 1.0);
+    if !grade_keyed && ((p.key != p.field && !aliased) || p.index.is_some() || p.field.contains('.')) {
         return Err(format!("{key} needs a saved-field adapter before it can be set through graph operations"));
     }
     let wrong = || format!("{key} expects {:?}", p.kind);

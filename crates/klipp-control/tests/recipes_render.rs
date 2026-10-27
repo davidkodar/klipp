@@ -112,7 +112,10 @@ fn every_built_in_recipe_draws_on_the_gpu_and_passes_its_checks() {
         assert!(!checks.is_empty(), "{name} says what it does: give it checks");
         let plain = Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(2.0)) };
         let before = sequence(plain.clone());
-        let values: BTreeMap<String, TemplateValue> = recipe.slots.iter().map(|(n, s)| (n.clone(), filled(s.kind))).collect();
+        let mut values: BTreeMap<String, TemplateValue> = recipe.slots.iter().map(|(n, s)| (n.clone(), filled(s.kind))).collect();
+        // The controls its checks are measured with, where its file names
+        // them.
+        values.extend(recipe.graph.as_ref().unwrap().check_with.iter().map(|(n, v)| (n.clone(), TemplateValue::Number(*v))));
         let (ops, _) = klipp_control::recipes::on_clip(&before, plain.id, recipe, &values).unwrap_or_else(|e| panic!("{name}: {e}"));
         let mut placed = plain.clone();
         placed.apply_picture_ops(&ops).unwrap_or_else(|e| panic!("{name}: {e}"));
@@ -130,4 +133,45 @@ fn every_built_in_recipe_draws_on_the_gpu_and_passes_its_checks() {
             assert!((check.min..=check.max).contains(&v), "{name}: {} ({:?} at {:?} reads {v:.3}, not {}..{})", check.says, check.channel, check.at, check.min, check.max);
         }
     }
+}
+
+/// A masked merge (#2758) by a window, not a key: the picture laid only
+/// inside the window, the clip as it was outside, on the GPU stack with
+/// nothing falling back and within a level of the CPU. A recipe made here
+/// for the test, placed the way the recipe op places one.
+#[test]
+fn a_merge_masked_by_a_window_lays_its_picture_inside_it() {
+    let recipe: klipp_timeline::composition_template::CompositionTemplate = serde_json::from_value(serde_json::json!({
+        "format_version": 2, "id": "7f0e3c2a-6b1d-4e95-8a47-1c9d2b3e4f50", "name": "Windowed picture", "kind": "recipe",
+        "composition_id": "00000000-0000-0000-0000-000000000000",
+        "slots": { "picture": { "label": "Picture", "kind": "media" } },
+        "bindings": [{ "parameter": "picture", "property": "node:1.media" }],
+        "graph": { "ops": [
+            { "op": "add", "after": { "anchor": "end" }, "type": "klipp.fx.merge", "params": { "blend_mode": "Normal" } },
+            { "op": "add_beside", "at": { "anchor": "source" }, "type": "klipp.fx.media_source" },
+            { "op": "connect", "from": { "anchor": "source" }, "from_port": "out", "to": { "new": 1 }, "to_port": "in" },
+            { "op": "add_beside", "at": { "anchor": "source" }, "type": "klipp.grade.mask",
+              "params": { "masks": { "masks": [{ "shape": { "Rectangle": { "center_x": 0.25, "center_y": 0.5, "width": 0.3, "height": 0.6, "rotation": 0 } }, "feather": 0, "opacity": 1, "invert": false, "enabled": true }] } } },
+            { "op": "connect", "from": { "anchor": "source" }, "from_port": "out", "to": { "new": 3 }, "to_port": "in" },
+            { "op": "connect", "from": { "new": 1 }, "from_port": "out", "to": { "new": 0 }, "to_port": "fg" },
+            { "op": "connect", "from": { "new": 3 }, "from_port": "out", "to": { "new": 0 }, "to_port": "mask" }
+        ] }
+    })).unwrap();
+    recipe.validate().unwrap();
+    let plain = Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(2.0)) };
+    let before = sequence(plain.clone());
+    let values = BTreeMap::from([("picture".to_string(), filled(SlotKind::Media))]);
+    let (ops, _) = klipp_control::recipes::on_clip(&before, plain.id, &recipe, &values).unwrap_or_else(|e| panic!("{e}"));
+    let mut placed = plain.clone();
+    placed.apply_picture_ops(&ops).unwrap_or_else(|e| panic!("{e}"));
+    let seq = sequence(placed);
+    let want = cpu(&seq, ViewChannel::Picture);
+    let Some(shown) = stack(&seq, ViewChannel::Picture, "windowed merge") else { return };
+    assert!(worst(&want, &shown) <= 1, "the stack draws {} levels from the CPU", worst(&want, &shown));
+    let at = |f: &[u8], x: f32, y: f32| { let i = (((y * H as f32) as u32 * W + (x * W as f32) as u32) * 4) as usize; [f[i], f[i + 1], f[i + 2]] };
+    let inside = at(&shown, 0.25, 0.5);
+    assert!(inside[0] > 200 && inside[1] < 60, "the picture inside the window: {inside:?}");
+    let outside = at(&shown, 0.75, 0.15);
+    let clip = at(&cpu(&before, ViewChannel::Picture), 0.75, 0.15);
+    assert!(outside.iter().zip(clip).all(|(a, b)| a.abs_diff(b) <= 1), "the clip as it was outside: {outside:?} against {clip:?}");
 }

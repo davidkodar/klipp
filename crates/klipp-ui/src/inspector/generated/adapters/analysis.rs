@@ -44,7 +44,12 @@ mod trajectory_tests {
         item.fps = klipp_core::Fps::new(24, 1);
         item.resolution = klipp_core::Resolution { width: 1920, height: 1080 };
         let clip = klipp_timeline::test_clip::TestClip::of(klipp_timeline::Clip::media(item.id, tc(0.0), tc(2.0), tc(0.0), tc(2.0))).effect(klipp_effects::BuiltinEffect::VideoStabilization { smoothing, crop_ratio: 0.0, zoom: false }).build();
-        let step = |i: usize| Homography { h: [[1.0, 0.0, if i.is_multiple_of(2) { 2.0 } else { -1.5 }], [0.0, 1.0, 0.5], [0.0, 0.0, 1.0]] };
+        // A shake in the analysis' own units, frame heights (#2771): a few
+        // pixels of a 1080-line frame each way, drifting, well inside the
+        // hand's shake the smoothing may take out (#2823). In pixels, as it
+        // was written, every smoothing was held to the same limit and drew
+        // the same line.
+        let step = |i: usize| Homography { h: [[1.0, 0.0, if i.is_multiple_of(2) { 0.004 } else { -0.003 }], [0.0, 1.0, 0.001], [0.0, 0.0, 1.0]] };
         let frame_transforms: Vec<Homography> = (0..47).map(step).collect();
         let accumulated = accumulate_trajectory(&frame_transforms);
         let trajectory = accumulated.iter().map(decompose_homography).collect();

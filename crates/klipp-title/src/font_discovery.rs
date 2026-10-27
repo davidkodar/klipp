@@ -263,7 +263,7 @@ fn run_scan_and_publish() {
         None => {
             let mut fonts: BTreeMap<String, Vec<FontInfo>> = BTreeMap::new();
             for dir in &dirs {
-                scan_directory(Path::new(dir), &mut fonts);
+                scan_directory(Path::new(dir), &mut fonts, &mut Vec::new());
             }
             tracing::info!("Font discovery: scanned {} families from disk", fonts.len());
             // Persist the result so the next launch is fast. Failures here are
@@ -327,18 +327,37 @@ pub(crate) fn font_directories() -> Vec<String> {
 /// fetched catalogue family's faces (#2732).
 pub fn scan_folder(dir: &Path) -> BTreeMap<String, Vec<FontInfo>> {
     let mut fonts = BTreeMap::new();
-    scan_directory(dir, &mut fonts);
+    scan_directory(dir, &mut fonts, &mut Vec::new());
     fonts
 }
 
-fn scan_directory(dir: &Path, fonts: &mut BTreeMap<String, Vec<FontInfo>>) {
+/// How deep a font folder scan goes: folders nested past this are left.
+pub(crate) const MAX_FONT_DEPTH: usize = 16;
+
+/// Whether `dir` is a folder to scan from where the scan has been
+/// (`seen`, the folders it is inside): not past [`MAX_FONT_DEPTH`], and
+/// not one it is already inside, so a link back up the tree ends there.
+pub(crate) fn enter_font_dir(dir: &Path, seen: &mut Vec<PathBuf>) -> bool {
+    let Ok(real) = std::fs::canonicalize(dir) else { return false };
+    if seen.len() >= MAX_FONT_DEPTH || seen.contains(&real) {
+        return false;
+    }
+    seen.push(real);
+    true
+}
+
+fn scan_directory(dir: &Path, fonts: &mut BTreeMap<String, Vec<FontInfo>>, seen: &mut Vec<PathBuf>) {
+    if !enter_font_dir(dir, seen) {
+        return;
+    }
     let Ok(entries) = std::fs::read_dir(dir) else {
+        seen.pop();
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            scan_directory(&path, fonts);
+            scan_directory(&path, fonts, seen);
         } else if let Some(ext) = path.extension() {
             let ext = ext.to_string_lossy().to_lowercase();
             if ext == "ttf" || ext == "otf" {
@@ -348,6 +367,7 @@ fn scan_directory(dir: &Path, fonts: &mut BTreeMap<String, Vec<FontInfo>>) {
             }
         }
     }
+    seen.pop();
 }
 
 fn parse_font_info(path: &Path) -> Option<FontInfo> {
@@ -540,6 +560,22 @@ fn normalize_style(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// A font folder with a link back up into itself is scanned once:
+    /// the scan ends, and the font in it is listed once.
+    #[cfg(unix)]
+    #[test]
+    fn a_font_folder_linking_to_itself_is_scanned_once() {
+        let dir = std::env::temp_dir().join(format!("klipp-font-loop-{}", std::process::id()));
+        let inner = dir.join("inner");
+        std::fs::create_dir_all(&inner).unwrap();
+        std::fs::copy(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts/Inter/Inter-Regular.ttf"), inner.join("Inter-Regular.ttf")).unwrap();
+        std::os::unix::fs::symlink(&dir, inner.join("loop")).unwrap();
+        let found = scan_folder(&dir);
+        assert_eq!(found.values().map(Vec::len).sum::<usize>(), 1, "{found:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::*;
 
     #[test]

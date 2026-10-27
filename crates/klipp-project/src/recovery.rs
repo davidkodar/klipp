@@ -47,7 +47,8 @@ fn stamp(folder: &Path) -> Option<Stamp> {
         #[serde(default)]
         generation: Option<String>,
     }
-    let head: Option<Head> = std::fs::read(&file).ok().and_then(|b| serde_json::from_slice(&b).ok());
+    // Read within the cap a project file is loaded with.
+    let head: Option<Head> = crate::path_util::read_capped(&file, 64 * 1024 * 1024).ok().and_then(|b| serde_json::from_slice(&b).ok());
     Some(Stamp { saved_at: head.as_ref().and_then(|h| h.saved_at.clone()), generation: head.and_then(|h| h.generation), modified: Some(modified) })
 }
 

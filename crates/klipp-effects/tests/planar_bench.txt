@@ -15,7 +15,10 @@
 # last one (drift), in pixels: about twice what the tracker made of it
 # when the clip was added. `known` marks a clip the tracker can't hold
 # yet: reported, not failed, until it holds within its limit, and then
-# failed until the line is taken off.
+# failed until the line is taken off. `loss_from` is the frame from which
+# the surface may be lost: a frame checked there that the tracker reports
+# lost (or stopped at after a loss) counts as reported, not drifted, and
+# is left out of the errors; before it, a lost frame is an error.
 
 clip bar-neon-sign c4abafc284ceccd391d4a2c3c3f41861cc6893b500cda59e9330464f9690960d https://cdn.coverr.co/videos/coverr-bar-neon-sign-1956/1080p.mp4?download=true
 # A lit sign on a wall, the camera held by hand at dusk.
@@ -65,5 +68,5 @@ at 180 978.68,275.27 519.96,242.58 550,244.36 435.2,246.63
 at 270 793.99,275.97 502.52,242 533.01,243.81 417.74,246.31
 at 360 553.83,280.05 479.08,242.63 509.74,244.4 393.91,246.46
 at 450 396.57,279.97 464.14,242.56 494.46,244.62 378.84,245.78
-limit 3 6
-known the water is lost as the drone turns away, from about frame 200
+limit 7 11
+loss_from 200

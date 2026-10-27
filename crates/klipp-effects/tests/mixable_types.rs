@@ -42,9 +42,14 @@ fn a_mixable_type_takes_an_optional_mask_and_says_which_channel_is_the_mask() {
     assert_eq!((MASK_CHANNEL.default, MASK_CHANNEL.migrated), ("luminance", "red"));
     for t in effect_types() {
         let has_mask = t.desc.inputs.iter().any(|p| p.key == "mask");
-        assert_eq!(has_mask, t.desc.mixable, "{}: a mask input exactly when mixable", t.tag);
+        // A merge takes a mask limiting where it lays its picture (#2758),
+        // its second port being that picture: not mixable, masked.
+        assert_eq!(has_mask, t.desc.mixable || t.tag == "merge", "{}: a mask input exactly when mixable, or a merge", t.tag);
         if t.desc.mixable {
             assert_eq!(t.desc.inputs, MIXABLE_IN, "{}", t.tag);
         }
     }
+    let merge = effect_types().find(|t| t.tag == "merge").expect("a merge");
+    assert_eq!(merge.desc.inputs.iter().map(|p| p.key).collect::<Vec<_>>(), ["in", "fg", "mask"]);
+    assert_eq!(merge.desc.inputs[2].params, &[MASK_CHANNEL]);
 }

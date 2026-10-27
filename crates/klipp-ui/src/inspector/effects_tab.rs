@@ -381,6 +381,8 @@ fn builtin_effect_default(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
         },
         // The item stays: a reset is its time.
         BuiltinEffect::MediaSource { media, .. } => BuiltinEffect::MediaSource { media: media.clone(), offset: 0.0 },
+        // The title stays: it has nothing to reset to.
+        BuiltinEffect::TitleSource { title } => BuiltinEffect::TitleSource { title: title.clone() },
         BuiltinEffect::ClipBelow {} => BuiltinEffect::ClipBelow {},
         BuiltinEffect::GradeCompound {} => BuiltinEffect::GradeCompound {},
         BuiltinEffect::ColourSpaceTransform { .. } => BuiltinEffect::ColourSpaceTransform {

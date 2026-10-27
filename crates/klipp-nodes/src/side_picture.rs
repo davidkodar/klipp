@@ -22,6 +22,9 @@ pub enum SideKey {
     /// A media item's frame at the clip's time plus an offset: the item's
     /// pool id and the offset's bits, as a media source holds them.
     Media { item: String, offset_bits: u32 },
+    /// A title drawn as a picture (#2758): the title as its file stores
+    /// it.
+    Title { title: String },
     /// What the tracks below the clip's composite to, seen through the
     /// clip's placement.
     Below,
@@ -35,6 +38,7 @@ impl SideKey {
     pub fn of(effect: &klipp_effects::BuiltinEffect) -> Option<Self> {
         match effect {
             klipp_effects::BuiltinEffect::MediaSource { media, offset } => Some(Self::Media { item: media.clone(), offset_bits: offset.to_bits() }),
+            klipp_effects::BuiltinEffect::TitleSource { title } => Some(Self::Title { title: title.clone() }),
             klipp_effects::BuiltinEffect::ClipBelow {} => Some(Self::Below),
             _ => None,
         }
@@ -44,6 +48,7 @@ impl SideKey {
     pub fn name(&self) -> String {
         match self {
             Self::Media { .. } => crate::decline::effect_name(&klipp_effects::BuiltinEffect::MediaSource { media: String::new(), offset: 0.0 }),
+            Self::Title { .. } => crate::decline::effect_name(&klipp_effects::BuiltinEffect::TitleSource { title: String::new() }),
             Self::Below => crate::decline::effect_name(&klipp_effects::BuiltinEffect::ClipBelow {}),
             Self::GradeInput => "Grade input".into(),
         }

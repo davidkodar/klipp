@@ -13,6 +13,11 @@ pub fn key_for(path: &Path) -> Option<String> {
     klipp_media::disk_cache::compute_cache_key(path)
 }
 
+/// Whether `key` has the shape [`key_for`] gives: 16 lowercase hex digits.
+pub fn is_key(key: &str) -> bool {
+    key.len() == 16 && key.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 fn file_for(key: &str, id: &str, version: u32) -> PathBuf {
     analysis_dir().join(key).join(format!("{id}.v{version}.json"))
 }
@@ -50,6 +55,11 @@ pub fn carry_over(old_key: &str, new_path: &Path) -> bool {
 
 /// [`carry_over`] in the analysis store at `root`.
 pub fn carry_over_in(root: &Path, old_key: &str, new_path: &Path) -> bool {
+    // A key is what `key_for` makes, 16 hex digits: a folder of the
+    // store, never a path of another shape read from a project.
+    if !is_key(old_key) {
+        return false;
+    }
     let Some(new_key) = key_for(new_path) else { return false };
     let (from, to) = (root.join(old_key), root.join(&new_key));
     if new_key == old_key || !from.is_dir() {
@@ -73,6 +83,29 @@ pub fn carry_over_in(root: &Path, old_key: &str, new_path: &Path) -> bool {
 
 #[cfg(test)]
 mod carry_over_tests {
+
+    /// A key read from a project that is not one `key_for` makes (a root,
+    /// a climb out of the store, an absolute path) carries nothing over:
+    /// no folder outside the store is read into it.
+    #[test]
+    fn only_a_store_key_is_carried_over() {
+        let root = std::env::temp_dir().join(format!("klipp-carry-keys-{}", std::process::id()));
+        let store = root.join("store");
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&store).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("private.txt"), b"x").unwrap();
+        let file = root.join("clip.mov");
+        std::fs::write(&file, b"media").unwrap();
+        for key in ["/", "..", "../outside", outside.to_str().unwrap(), "0123456789ABCDEF", "0123456789abcde", ""] {
+            assert!(!is_key(key), "{key:?}");
+            assert!(!carry_over_in(&store, key, &file), "{key:?}");
+        }
+        assert_eq!(std::fs::read_dir(&store).unwrap().count(), 0, "nothing came into the store");
+        assert!(is_key("0123456789abcdef"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     use super::*;
 
     /// #2790: a file moved and relinked is the same file to its analysis.

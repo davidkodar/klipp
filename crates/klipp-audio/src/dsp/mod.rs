@@ -623,6 +623,13 @@ pub fn create_effect(type_id: &str, sample_rate: u32) -> Option<Box<dyn AudioEff
         if let Some(last_colon) = rest.rfind(':') {
             let path_str = &rest[..last_colon];
             let label = &rest[last_colon + 1..];
+            // Only a plug-in the LADSPA scan found is loaded, as frei0r,
+            // CLAP and LV2 resolve theirs: an effect id names a library,
+            // it never decides which one is loaded.
+            if !crate::ladspa::is_scanned(std::path::Path::new(path_str), label) {
+                tracing::warn!("LADSPA plug-in not installed, left offline: {type_id}");
+                return None;
+            }
             return match crate::ladspa::LadspaEffect::new(
                 std::path::Path::new(path_str),
                 label,

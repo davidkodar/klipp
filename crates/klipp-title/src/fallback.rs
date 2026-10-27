@@ -233,11 +233,23 @@ impl SystemFonts {
 
 /// The font files under `dir`, at any depth.
 fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    collect_in(dir, out, &mut Vec::new());
+}
+
+/// [`collect`], through the folders `seen` holds (the ones it is inside),
+/// as deep as the font scan goes and never into one twice.
+fn collect_in(dir: &Path, out: &mut Vec<PathBuf>, seen: &mut Vec<PathBuf>) {
+    if !crate::font_discovery::enter_font_dir(dir, seen) {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        seen.pop();
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            collect(&path, out);
+            collect_in(&path, out, seen);
         } else if let Some(ext) = path.extension() {
             let ext = ext.to_string_lossy().to_lowercase();
             if ext == "ttf" || ext == "otf" || ext == "ttc" {
@@ -245,6 +257,7 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
             }
         }
     }
+    seen.pop();
 }
 
 /// The codepoints the first face in a font file maps to a glyph, as
