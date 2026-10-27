@@ -1890,7 +1890,19 @@ fn socket_path_from(over: Option<&str>, runtime: Option<&str>, uid: u32, is_dir:
     if is_dir(&run) {
         return run.join("klipp-control.sock");
     }
-    std::env::temp_dir().join(format!("klipp-control-{uid}.sock"))
+    fallback_socket_dir(uid).join("klipp-control.sock")
+}
+
+/// The user's own folder for the socket when there is no runtime folder:
+/// `klipp-<uid>` in the temp folder, made private (0700) by the app, so
+/// nobody else can put a socket where a client looks.
+pub fn fallback_socket_dir(uid: u32) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("klipp-{uid}"))
+}
+
+/// The current user's id.
+pub fn current_uid() -> u32 {
+    unsafe { libc_getuid() }
 }
 
 // Avoids a `libc` dependency for one call.
@@ -1935,7 +1947,7 @@ mod socket_path_tests {
         assert_eq!(without, with, "found without the variable");
         assert_eq!(socket_path_from(Some("/x/test.sock"), None, 1000, &has_run), PathBuf::from("/x/test.sock"), "the override wins");
         let none = socket_path_from(None, None, 1000, &|_| false);
-        assert_eq!(none, std::env::temp_dir().join("klipp-control-1000.sock"), "no runtime directory at all: /tmp, as before");
+        assert_eq!(none, std::env::temp_dir().join("klipp-1000").join("klipp-control.sock"), "no runtime directory at all: the user's own folder in /tmp");
     }
 }
 

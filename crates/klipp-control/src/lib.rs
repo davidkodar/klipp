@@ -142,6 +142,29 @@ pub fn spawn(ctx: ControlContext) -> Option<std::path::PathBuf> {
 /// Bind the control socket at `path`, or beside it when another Klipp
 /// owns it.
 ///
+/// `dir` as this user's private folder: made 0700 when it is not there,
+/// and refused when it is a link, someone else's, or open to others, so
+/// no other user can have put a socket in it.
+fn private_dir(dir: &std::path::Path, uid: u32) -> Result<(), String> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+    if let Err(e) = std::fs::DirBuilder::new().mode(0o700).create(dir) {
+        if e.kind() != std::io::ErrorKind::AlreadyExists {
+            return Err(format!("{}: {e}", dir.display()));
+        }
+    }
+    let meta = std::fs::symlink_metadata(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    if !meta.is_dir() || meta.uid() != uid || meta.permissions().mode() & 0o077 != 0 {
+        return Err(format!("{} is not this user's private folder: the control socket is not opened there", dir.display()));
+    }
+    Ok(())
+}
+
+/// Whether the other end of `stream` runs as this user: what a client
+/// checks before it sends anything to a socket.
+pub fn peer_is_same_user(stream: &UnixStream) -> bool {
+    local_peer::same_user(stream)
+}
+
 /// A socket file left by a crashed instance would make bind fail
 /// forever, so a file there used to be removed unconditionally. When a
 /// Klipp was still running, that unlinked its live socket: the second
@@ -153,7 +176,11 @@ pub fn spawn(ctx: ControlContext) -> Option<std::path::PathBuf> {
 /// setting `KLIPP_CONTROL_SOCKET` to it.
 fn claim_socket(path: &std::path::Path, pid: u32) -> Result<(UnixListener, std::path::PathBuf), String> {
     if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        if parent == protocol::fallback_socket_dir(protocol::current_uid()) {
+            private_dir(parent, protocol::current_uid())?;
+        } else {
+            let _ = std::fs::create_dir_all(parent);
+        }
     }
     let path = if path.exists() && UnixStream::connect(path).is_ok() {
         let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "klipp-control".into());
@@ -495,7 +522,7 @@ mod timeline_view_tests {
         seq.tracks[0].clips = vec![clip];
         let pool = klipp_media::MediaPool::new();
         let op = Op::Recipe { clip_id: ClipRef::Id(id), name: "Green screen".into(), slots: [("screen".to_string(), serde_json::json!("#00ff00"))].into(), controls: Default::default(), build: None };
-        let plan = resolve(&seq, &pool, &crate::plans::with_recipes(&[op], None)).unwrap_or_else(|r| panic!("{r:?}"));
+        let plan = resolve(&seq, &pool, &crate::plans::with_recipes(&[op], None, &klipp_media::MediaPool::new())).unwrap_or_else(|r| panic!("{r:?}"));
         let klipp_document::history::EditCommand::PictureEdit { edit, .. } = &plan.steps[0].edit else { panic!("a picture step") };
         seq.tracks[0].clips[0].restore_picture(&edit.after);
         let text = timeline_text(&seq, &pool, None, 1, TimelineView::default());
@@ -898,6 +925,32 @@ fn handle(
 
 #[cfg(test)]
 mod tests {
+
+    /// The fallback socket folder is this user's alone: made 0700, and
+    /// one open to others or a link to elsewhere is refused. A client
+    /// talks only to a peer of its own user.
+    #[test]
+    fn the_fallback_socket_folder_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let uid = protocol::current_uid();
+        let root = std::env::temp_dir().join(format!("klipp-private-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let fresh = root.join("fresh");
+        private_dir(&fresh, uid).unwrap();
+        assert_eq!(std::fs::metadata(&fresh).unwrap().permissions().mode() & 0o777, 0o700);
+        let open = root.join("open");
+        std::fs::create_dir_all(&open).unwrap();
+        std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(private_dir(&open, uid).is_err(), "open to others");
+        let link = root.join("link");
+        std::os::unix::fs::symlink(&fresh, &link).unwrap();
+        assert!(private_dir(&link, uid).is_err(), "a link");
+        assert!(private_dir(&fresh, uid.wrapping_add(1)).is_err(), "someone else's");
+        let (a, _b) = UnixStream::pair().unwrap();
+        assert!(peer_is_same_user(&a));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     use super::*;
 
     /// Exhaustive on purpose: a variant added to `LogFormat` stops this

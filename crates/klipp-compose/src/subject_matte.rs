@@ -158,16 +158,32 @@ pub fn source_times_held(seq: &Sequence, clip: &Clip, last: Option<f64>) -> Vec<
     out
 }
 
+/// The settings of `clip`'s enabled External Mattes: its grade's, and
+/// those beside its picture's chain (#2758), which a recipe reads a
+/// tracked subject by.
+pub fn external_mattes(clip: &Clip) -> Vec<klipp_nodes::NodeParams> {
+    let mut out: Vec<klipp_nodes::NodeParams> = clip.grade().nodes.iter().filter(|n| n.kind == NodeKind::ExternalMatte && n.enabled).map(|n| n.params.clone()).collect();
+    if let Ok(lifted) = clip.picture_v2() {
+        for n in lifted.picture.graph.nodes.iter().filter(|n| n.enabled) {
+            let Some(payload) = n.legacy.as_ref().map(|l| &l.payload) else { continue };
+            if payload.get("kind").and_then(serde_json::Value::as_str) != Some("ExternalMatte") {
+                continue;
+            }
+            if let Some(params) = payload.get("params").and_then(|p| serde_json::from_value::<klipp_nodes::NodeParams>(p.clone()).ok()) {
+                out.push(params);
+            }
+        }
+    }
+    out
+}
+
 /// The models `clip`'s grade binds tracked subjects by (#1881): its
 /// enabled External Mattes bound to a subject, each model once, by its
-/// index (0 the subject, 1 the foreground).
+/// index (0 the subject, 1 the foreground); beside its chain too (#2758).
 pub fn subject_models_of(clip: &Clip) -> Vec<u32> {
-    let mut out: Vec<u32> = clip
-        .grade()
-        .nodes
+    let mut out: Vec<u32> = external_mattes(clip)
         .iter()
-        .filter(|n| n.kind == NodeKind::ExternalMatte && n.enabled)
-        .filter_map(|n| n.params.matte_subject.map(|m| m.index() as u32))
+        .filter_map(|p| p.matte_subject.map(|m| m.index() as u32))
         .collect();
     out.sort_unstable();
     out.dedup();
@@ -175,13 +191,11 @@ pub fn subject_models_of(clip: &Clip) -> Vec<u32> {
 }
 
 /// The matte sequence folders `clip`'s grade reads by path: its External
-/// Mattes whose file is a matte sequence.
+/// Mattes whose file is a matte sequence; beside its chain too (#2758).
 pub fn sequences_of(clip: &Clip) -> Vec<PathBuf> {
-    clip.grade()
-        .nodes
-        .iter()
-        .filter(|n| n.kind == NodeKind::ExternalMatte && n.enabled)
-        .filter_map(|n| n.params.matte_image_path.clone())
+    external_mattes(clip)
+        .into_iter()
+        .filter_map(|p| p.matte_image_path)
         .filter(|p| matte_sequence::is_sequence(p))
         .collect()
 }

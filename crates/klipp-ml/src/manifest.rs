@@ -307,6 +307,14 @@ fn first_notice(id: &ModelId) -> bool {
         .unwrap_or(false)
 }
 
+
+/// Whether `id` can name a model's file in the cache: letters, digits,
+/// `-`, `_` and `.`, not starting with a dot and never `..`, so the file
+/// it names stays in the cache folder.
+pub fn valid_model_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 128 && !id.starts_with('.') && !id.contains("..") && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+}
+
 #[cfg(test)]
 mod notice_tests {
     use super::*;
@@ -348,6 +356,9 @@ impl ModelManifest {
             }
             if entry.id.is_empty() {
                 return Err(ManifestError::Invalid("model id is empty".into()));
+            }
+            if !valid_model_id(&entry.id) {
+                return Err(ManifestError::Invalid(format!("model id {:?} is not letters, digits, '-', '_' and '.'", entry.id)));
             }
             if !seen_ids.insert(entry.id.clone()) {
                 return Err(ManifestError::Invalid(format!(
@@ -487,6 +498,18 @@ pub fn load_effective() -> Result<ModelManifest, ManifestError> {
 
 #[cfg(test)]
 mod tests {
+
+    /// A model id names a file in the cache and nothing else.
+    #[test]
+    fn a_model_id_names_a_file_in_the_cache() {
+        for ok in ["whisper-base", "rf_detr.v2", "a"] {
+            assert!(valid_model_id(ok), "{ok}");
+        }
+        for bad in ["", "../x", "a/b", ".hidden", "a..b", "x\\y", "with space"] {
+            assert!(!valid_model_id(bad), "{bad:?}");
+        }
+    }
+
     use super::*;
 
     fn valid_manifest_str() -> &'static str {

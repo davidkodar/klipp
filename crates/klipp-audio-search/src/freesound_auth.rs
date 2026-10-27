@@ -86,8 +86,11 @@ pub fn save_at(path: &std::path::Path, tokens: &Tokens) -> Result<(), String> {
     }
     let text = serde_json::to_string_pretty(tokens).map_err(|e| e.to_string())?;
     let part = path.with_extension("json.part");
+    // A fresh file each time, so its mode is the one set here and not a
+    // leftover's.
+    let _ = std::fs::remove_file(&part);
     let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -285,6 +288,24 @@ pub fn open_browser(url: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+
+    /// The token file is the user's alone even when a leftover partial
+    /// file was readable by others.
+    #[cfg(unix)]
+    #[test]
+    fn the_token_file_is_private_whatever_was_left() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("klipp-token-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("freesound.json");
+        let part = path.with_extension("json.part");
+        std::fs::write(&part, b"old").unwrap();
+        std::fs::set_permissions(&part, std::fs::Permissions::from_mode(0o644)).unwrap();
+        save_at(&path, &Tokens { access_token: "a".into(), refresh_token: "r".into(), expires_at: 0, username: None }).unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::*;
 
     fn tokens() -> Tokens {

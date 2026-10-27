@@ -5109,7 +5109,9 @@ impl Renderer {
     /// its External Mattes are bound to; nothing asked when none are.
     fn note_subject_mattes(&mut self, clip: &Clip, src: &mut dyn FrameSource) {
         let mut dirs: [Option<std::path::PathBuf>; 2] = [None, None];
-        for model in clip.grade().nodes.iter().filter(|n| n.kind == klipp_nodes::NodeKind::ExternalMatte).filter_map(|n| n.params.matte_subject) {
+        // Its grade's and those beside its chain (#2758).
+        let mattes = crate::subject_matte::external_mattes(clip);
+        for model in mattes.iter().filter_map(|p| p.matte_subject) {
             if dirs[model.index()].is_none() {
                 dirs[model.index()] = src.subject_matte_dir(clip, model.index() as u32);
             }
@@ -5121,9 +5123,7 @@ impl Renderer {
         }
         // A matte sequence, bound either way, is read at the media's last
         // frame past its end, as the picture is.
-        let reads_sequence = clip.grade().nodes.iter().any(|n| {
-            n.kind == klipp_nodes::NodeKind::ExternalMatte && (n.params.matte_subject.is_some() || n.params.matte_image_path.as_deref().is_some_and(klipp_nodes::matte_sequence::is_sequence))
-        });
+        let reads_sequence = mattes.iter().any(|p| p.matte_subject.is_some() || p.matte_image_path.as_deref().is_some_and(klipp_nodes::matte_sequence::is_sequence));
         let last = reads_sequence.then(|| src.media_range(clip)).flatten().map(|(_, end)| {
             let rate = src.media_fps(clip).filter(|r| *r > 0.0).unwrap_or(24.0);
             crate::subject_matte::last_frame_secs(end, rate)
