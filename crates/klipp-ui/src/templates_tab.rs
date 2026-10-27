@@ -56,7 +56,11 @@ pub fn show(
             for template in templates {
                 ui.push_id(template.id, |ui| {
                     ui.group(|ui| {
-                        ui.label(egui::RichText::new(&template.name).strong());
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(&template.name).strong());
+                            // Where it is from (#2757): Built-in, Mine or a pack.
+                            ui.label(egui::RichText::new(state.composition_templates.source_of(template.id).label()).small().color(theme.text_dim));
+                        });
                         if !template.category.is_empty() {
                             ui.label(
                                 egui::RichText::new(&template.category)

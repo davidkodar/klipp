@@ -182,22 +182,22 @@ pub fn fetched_faces(name: &str) -> Option<Vec<FontInfo>> {
     fetched_faces_in(&fonts_dir(), name)
 }
 
-/// Where a template pack puts a font it carries (#2757): `packs/<family>`
-/// under `root`, beside the fetched catalogue families.
-pub fn pack_font_dir_in(root: &Path, family: &str) -> PathBuf {
-    root.join("packs").join(klipp_core::safe_name(family))
-}
-
-/// The faces a template pack carried in for `name` under `root`.
+/// The faces an installed template pack carried in for `name` (#2757):
+/// in any pack's `fonts/<family>` folder under `root`, Klipp's data folder
+/// ([`klipp_timeline::template_places::data_root`]).
 pub fn pack_faces_in(root: &Path, name: &str) -> Option<Vec<FontInfo>> {
-    let faces: Vec<FontInfo> = crate::font_discovery::scan_folder(&pack_font_dir_in(root, name)).into_values().flatten().collect();
+    let family = klipp_core::safe_name(name);
+    let faces: Vec<FontInfo> = klipp_timeline::template_places::installed(root)
+        .into_iter()
+        .flat_map(|(_, pack)| crate::font_discovery::scan_folder(&pack.join("fonts").join(&family)).into_values().flatten())
+        .collect();
     (!faces.is_empty()).then_some(faces)
 }
 
 /// A family's faces that are not installed on the machine: fetched from
-/// the catalogue, else carried in by a template pack (#2757).
+/// the catalogue, else carried in by an installed template pack (#2757).
 pub fn extra_faces(name: &str) -> Option<Vec<FontInfo>> {
-    fetched_faces(name).or_else(|| pack_faces_in(&fonts_dir(), name))
+    fetched_faces(name).or_else(|| klipp_timeline::template_places::data_root().and_then(|root| pack_faces_in(&root, name)))
 }
 
 /// Says fonts were added beside the catalogue's (a pack's, #2757), so

@@ -80,7 +80,7 @@ impl KlippApp {
             AppCommand::ReloadTitleTemplates => {
                 self.state.title_templates = crate::title_templates::TitleTemplateStore::load_default();
                 // And the composition templates, saved the same way (#2757).
-                self.state.composition_templates = crate::parameterized_templates::CompositionTemplateStore::load(dirs::config_dir().map(|d| crate::parameterized_templates::CompositionTemplateStore::default_dir(&d))).with_builtins();
+                self.state.composition_templates = crate::parameterized_templates::load_store();
                 true
             }
             AppCommand::SaveTitleTemplate { clip_id } => {

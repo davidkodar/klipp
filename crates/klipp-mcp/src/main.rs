@@ -1193,12 +1193,15 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             }
             // Template packs (#2757).
             None => match args.get("pack") {
-                Some(p) if p.get("import").and_then(|v| v.as_bool()) == Some(true) => {
-                    json!({ "method": "import_template_pack", "path": arg_str(p, "path")?, "replace": p.get("replace").and_then(|v| v.as_bool()).unwrap_or(false) })
+                Some(p) if p.get("list").and_then(|v| v.as_bool()) == Some(true) => json!({ "method": "template_packs" }),
+                Some(p) if p.get("remove").is_some() => json!({ "method": "remove_template_pack", "name": arg_str(p, "remove")? }),
+                Some(p) if p.get("import").and_then(|v| v.as_bool()) == Some(true) || p.get("update").and_then(|v| v.as_bool()) == Some(true) => {
+                    let update = p.get("update").and_then(|v| v.as_bool()).unwrap_or(false) || p.get("replace").and_then(|v| v.as_bool()).unwrap_or(false);
+                    json!({ "method": "import_template_pack", "path": arg_str(p, "path")?, "replace": update })
                 }
                 Some(p) => {
                     let mut v = json!({ "method": "export_template_pack", "path": arg_str(p, "path")?, "name": arg_str(p, "name")? });
-                    for k in ["templates", "licences"] {
+                    for k in ["templates", "licences", "author", "version", "licence"] {
                         if let Some(x) = p.get(k) { v[k] = x.clone(); }
                     }
                     v
@@ -3146,8 +3149,12 @@ mod wait_tests {
             json!({ "method": "import_template_pack", "path": "/tmp/a.klipppack", "replace": false })
         );
         assert!(tool_to_command("klipp_title_templates", &json!({ "pack": { "name": "Mine" } })).is_err(), "a path is needed");
+        // Installed packs (#2757): listed, removed, updated.
+        assert_eq!(tool_to_command("klipp_title_templates", &json!({ "pack": { "list": true } })).unwrap(), json!({ "method": "template_packs" }));
+        assert_eq!(tool_to_command("klipp_title_templates", &json!({ "pack": { "remove": "Bold Cards" } })).unwrap(), json!({ "method": "remove_template_pack", "name": "Bold Cards" }));
+        assert_eq!(tool_to_command("klipp_title_templates", &json!({ "pack": { "update": true, "path": "/tmp/a.klipppack" } })).unwrap(), json!({ "method": "import_template_pack", "path": "/tmp/a.klipppack", "replace": true }));
         // The control socket reads both as its commands.
-        for m in [json!({ "method": "export_template_pack", "path": "/x.klipppack", "name": "Mine" }), json!({ "method": "import_template_pack", "path": "/x.klipppack" })] {
+        for m in [json!({ "method": "export_template_pack", "path": "/x.klipppack", "name": "Mine", "author": "A", "version": "1", "licence": "CC0" }), json!({ "method": "import_template_pack", "path": "/x.klipppack" }), json!({ "method": "template_packs" }), json!({ "method": "remove_template_pack", "name": "x" })] {
             serde_json::from_value::<klipp_control::protocol::ControlCommand>(m.clone()).unwrap_or_else(|e| panic!("{m}: {e}"));
         }
     }

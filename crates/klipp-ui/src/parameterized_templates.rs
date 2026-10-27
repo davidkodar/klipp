@@ -236,6 +236,21 @@ pub use klipp_core::TemplateValue;
 
 pub use klipp_timeline::composition_template::{CompositionTemplate, CompositionTemplateStore, NumberRange, TemplateBinding, TemplateParameter};
 
+/// The composition templates and recipes the app shows (#2757): the
+/// user's own in Klipp's data folder, the installed packs' and Klipp's,
+/// what was kept in the config folder moved over first.
+pub fn load_store() -> CompositionTemplateStore {
+    use klipp_timeline::template_places::{data_root, ensure_moved, mine_templates};
+    ensure_moved();
+    let root = data_root();
+    let store = CompositionTemplateStore::load(root.as_deref().map(mine_templates));
+    match root.as_deref() {
+        Some(root) => store.with_packs(root),
+        None => store,
+    }
+    .with_builtins()
+}
+
 /// Build a starter template from a composition. The first text object becomes
 /// an exposed `text` parameter; more elaborate parameter authoring remains a
 /// later slice, while the saved composition is already reusable and editable.

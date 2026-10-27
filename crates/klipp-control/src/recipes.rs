@@ -14,11 +14,12 @@ use serde_json::{json, Value};
 
 use crate::graph_wire::GraphWireOp;
 
-/// Every recipe there is: Klipp's own, then those saved in `dir` (the
-/// template folder). A saved one named like a built-in is listed after it.
-pub fn all(dir: Option<std::path::PathBuf>) -> Vec<CompositionTemplate> {
-    let mut recipes = ct::builtin_recipes();
-    recipes.extend(ct::CompositionTemplateStore::load(dir).recipes().cloned());
+/// Every recipe there is (#2757): the user's own (in `dir`, the template
+/// folder), then the installed packs', then Klipp's. A name asked for
+/// finds the first, so the user's own of a name comes before Klipp's.
+pub fn all(dir: Option<&std::path::Path>) -> Vec<CompositionTemplate> {
+    let mut recipes: Vec<CompositionTemplate> = crate::plans::template_store(dir).recipes().cloned().collect();
+    recipes.extend(ct::builtin_recipes());
     recipes
 }
 
