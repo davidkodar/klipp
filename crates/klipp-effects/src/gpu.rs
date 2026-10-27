@@ -13671,8 +13671,15 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
         let intensity = clamp(params.param0, 0.0, 2.0);
         let leak_t = pow(p * (1.0 - p) * 4.0, 0.7) * intensity;
         let base = lerp_pixel(from_px, to_px, p);
-        // Pure additive — leak colour added uniformly so non-amber leaks look right.
-        let add = leak_color * leak_t;
+        // A soft patch of light drifting across the frame as the shots
+        // change, brightest at its middle: added over the whole frame it
+        // was a wash (#2765). Additive, so a leak of any colour shows.
+        let lx = (-0.2 + 1.4 * p) * f32(params.width);
+        let ly = 0.35 * f32(params.height);
+        let ex = (f32(x) - lx) / (0.45 * f32(params.width));
+        let ey = (f32(y) - ly) / (0.6 * f32(params.height));
+        let falloff = exp(-2.5 * (ex * ex + ey * ey));
+        let add = leak_color * leak_t * falloff * 0.8;
         result = vec4<f32>(
             min(base.x + add.x, 255.0),
             min(base.y + add.y, 255.0),
@@ -13685,7 +13692,13 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
         let from_norm = from_px.rgb / 255.0;
         let luma = dot(from_norm, vec3<f32>(0.2126, 0.7152, 0.0722));
         let softness = max(params.param0 * 0.15, 0.01);
-        let t = smoothstep(p - softness, p + softness, luma);
+        // Each pixel turns over when the transition reaches 1 - its luma,
+        // the progress stretched by the softness so the first starts at 0
+        // and the last ends at 1: against the luma itself it began and
+        // ended part way, a pop at both cuts (#2765).
+        let start = 1.0 - luma;
+        let at = p * (1.0 + 2.0 * softness) - softness;
+        let t = smoothstep(start - softness, start + softness, at);
         result = lerp_pixel(from_px, to_px, t);
     } else if params.kind_id == 14u || params.kind_id == 15u {
         // Circle Wipe In (14) expands from center; Out (15) contracts to center.
@@ -14460,11 +14473,14 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
             from_sample = bilinear(false, from_sx, from_sy);
             to_sample = to_px;
         } else if params.kind_id == 64u {
-            let scale_a = zoom_amount - (zoom_amount - 1.0) * ep;
-            let from_sx = clamp(dx / scale_a + cx, 0.0, f32(params.width) - 1.0);
-            let from_sy = clamp(dy / scale_a + cy, 0.0, f32(params.height) - 1.0);
-            from_sample = bilinear(false, from_sx, from_sy);
-            to_sample = to_px;
+            // The incoming shot settles from close up to its own size, the
+            // outgoing one left as it is: zoomed at the start, the cut
+            // jumped (#2765).
+            let scale_b = zoom_amount - (zoom_amount - 1.0) * ep;
+            let to_sx = clamp(dx / scale_b + cx, 0.0, f32(params.width) - 1.0);
+            let to_sy = clamp(dy / scale_b + cy, 0.0, f32(params.height) - 1.0);
+            from_sample = from_px;
+            to_sample = bilinear(true, to_sx, to_sy);
         } else {
             let scale_a = 1.0 + (zoom_amount - 1.0) * ep;
             let scale_b = zoom_amount - (zoom_amount - 1.0) * ep;
@@ -14589,32 +14605,26 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
             255.0,
         );
     } else if params.kind_id == 57u {
-        // Glitch RGB Split: per-block RGB channel separation with blackouts.
+        // Glitch RGB Split: bands of the picture with their red pushed one
+        // way and their blue the other, the bands and their pushes jumping a
+        // dozen times through the transition, strongest at the cut. Per
+        // 8-pixel block, with blocks blacked out, it was black specks with
+        // no split to see (#2765). param1 the band height's unit in pixels.
         let intensity = params.param0;
         let block_size = max(params.param1, 1.0);
         let envelope = sin(p * 3.14159265) * intensity;
-        let block_x = u32(f32(x) / block_size);
-        let block_y = u32(f32(y) / block_size);
-        let hash_r = rand3(block_x + block_y * 65536u, bitcast<u32>(p), 6u);
-        let hash_g = rand3(block_x + block_y * 65536u, bitcast<u32>(p), 7u);
-        let hash_b = rand3(block_x + block_y * 65536u, bitcast<u32>(p), 8u);
-        let r_shift = (hash_r - 0.5) * envelope * 80.0;
-        let g_shift = (hash_g - 0.5) * envelope * 60.0;
-        let b_shift = (hash_b - 0.5) * envelope * 80.0;
-        let rx = clamp(f32(x) + r_shift, 0.0, f32(params.width) - 1.0);
-        let gx = clamp(f32(x) + g_shift, 0.0, f32(params.width) - 1.0);
-        let bx = clamp(f32(x) + b_shift, 0.0, f32(params.width) - 1.0);
+        let band = u32(f32(y) / (block_size * 3.0));
+        let step = u32(p * 12.0);
+        let on = select(0.0, 1.0, rand3(band, step, 6u) > 0.35);
+        let shift = (0.3 + 0.7 * rand3(band, step, 7u)) * envelope * 0.04 * f32(params.width) * on;
+        let rx = clamp(f32(x) + shift, 0.0, f32(params.width) - 1.0);
+        let bx = clamp(f32(x) - shift, 0.0, f32(params.width) - 1.0);
         let r_idx = u32(y) * params.width + u32(rx);
-        let g_idx = u32(y) * params.width + u32(gx);
         let b_idx = u32(y) * params.width + u32(bx);
         let r_val = lerp_pixel(to_bytes(unpack(from_buf[r_idx])), to_bytes(unpack(to_buf[r_idx])), p).x;
-        let g_val = lerp_pixel(to_bytes(unpack(from_buf[g_idx])), to_bytes(unpack(to_buf[g_idx])), p).y;
+        let g_val = lerp_pixel(from_px, to_px, p).y;
         let b_val = lerp_pixel(to_bytes(unpack(from_buf[b_idx])), to_bytes(unpack(to_buf[b_idx])), p).z;
-        var blackout: f32 = 1.0;
-        if hash_r < envelope * 0.15 {
-            blackout = 0.0;
-        }
-        result = vec4<f32>(r_val * blackout, g_val * blackout, b_val * blackout, 255.0);
+        result = vec4<f32>(r_val, g_val, b_val, 255.0);
     } else if params.kind_id == 55u {
         // Static TV: noise + scan lines + horizontal band shift.
         let intensity = params.param0;
@@ -14744,10 +14754,17 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
             1.0,
         );
         let base = lerp_pixel(from_px, to_px, dissolve_t);
+        // The picture in the flash's colour, its light kept and lifted: a
+        // flat colour over it hid the shot for much of the transition
+        // (#2765).
+        let coefs = vec3<f32>(0.2126, 0.7152, 0.0722);
+        let l = dot(base.xyz / 255.0, coefs);
+        let cl = max(dot(flash_color / 255.0, coefs), 0.05);
+        let tinted = min(flash_color * (l / cl) * 1.4, vec3<f32>(255.0));
         result = vec4<f32>(
-            mix(base.x, flash_color.x, flash_t),
-            mix(base.y, flash_color.y, flash_t),
-            mix(base.z, flash_color.z, flash_t),
+            mix(base.x, tinted.x, flash_t),
+            mix(base.y, tinted.y, flash_t),
+            mix(base.z, tinted.z, flash_t),
             255.0,
         );
     } else if params.kind_id == 52u {
@@ -14870,16 +14887,19 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
         let grey = vec4<f32>(luma, luma, luma, 255.0);
         result = mix(base, grey, envelope);
     } else if params.kind_id == 45u {
-        // Additive Dissolve: cross-dissolve with additive brightness boost.
-        let intensity = params.param0;
-        let envelope = sin(p * 3.14159265) * intensity;
+        // Additive Dissolve: the incoming shot rises to full while the
+        // outgoing one is still full, then that one falls; the two
+        // screened together, so the middle is the brighter of both lifted
+        // rather than half of white added over it, a wash (#2765). param0
+        // the share of that over a plain dissolve.
+        let intensity = clamp(params.param0, 0.0, 1.0);
+        let wa = min(1.0, 2.0 * (1.0 - p));
+        let wb = min(1.0, 2.0 * p);
+        let a = clamp(from_px.xyz / 255.0, vec3<f32>(0.0), vec3<f32>(1.0)) * wa;
+        let b = clamp(to_px.xyz / 255.0, vec3<f32>(0.0), vec3<f32>(1.0)) * wb;
+        let screen = (vec3<f32>(1.0) - (vec3<f32>(1.0) - a) * (vec3<f32>(1.0) - b)) * 255.0;
         let base = lerp_pixel(from_px, to_px, p);
-        let add_val = envelope * 0.5 * 255.0;
-        result = clamp(
-            base + vec4<f32>(add_val, add_val, add_val, 0.0),
-            vec4<f32>(0.0),
-            vec4<f32>(255.0, 255.0, 255.0, 255.0),
-        );
+        result = vec4<f32>(mix(base.xyz, screen, intensity), 255.0);
     } else if params.kind_id == 46u {
         // Fade to Color: A → solid color → B. User-supplied sRGB → linear.
         let fade_color = vec4<f32>(

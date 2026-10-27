@@ -35,6 +35,7 @@ impl KlippApp {
                     secs,
                     remove: false,
                     pieces: None,
+                    color: None,
                 };
                 let fps = seq.fps.as_f64();
                 // With the framing analysis a smooth cut is checked by (#2219).
@@ -55,6 +56,7 @@ impl KlippApp {
                             secs: frames as f64 / fps,
                             remove: false,
                             pieces: None,
+                            color: None,
                         };
                         klipp_document::ops::resolve_with(seq, &self.state.media_pool, std::slice::from_ref(&op), analysis).ok().map(|plan| (plan, frames))
                     };

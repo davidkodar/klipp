@@ -451,7 +451,7 @@ pub fn to_ops(plan: &EditPlan, seq: &Sequence, pool: &MediaPool, brief: Option<&
     // The joins: a transition sits on the outgoing clip, the one before.
     for (i, s) in plan.segments.iter().enumerate().skip(1) {
         if let Some(kind) = &s.transition {
-            ops.push(Op::Transition { clip_id: clip(i - 1), kind: kind.clone(), secs: DEFAULT_TRANSITION_SECS, remove: false, pieces: None });
+            ops.push(Op::Transition { clip_id: clip(i - 1), kind: kind.clone(), secs: DEFAULT_TRANSITION_SECS, remove: false, pieces: None, color: None });
         }
     }
     // The music under it all, on an audio track of its own at the
