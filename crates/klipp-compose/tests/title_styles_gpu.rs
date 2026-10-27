@@ -1743,7 +1743,7 @@ fn path_remaining_pose_sequence(keyed:bool,mode:u8,w:u32,h:u32)->Sequence {
         title.objects[0].fx_mut().animators=vec![Animator{props:match case {
             11=>AnimatorProps{rotation:38.0,..Default::default()},
             12=>AnimatorProps{colour:Some([30,180,230,150]),opacity:0.6,..Default::default()},
-            _=>AnimatorProps{dx:0.2,dy:-0.3,scale:1.4,rotation:25.0,blur:0.1,colour:Some([30,180,230,150]),opacity:0.7},
+            _=>AnimatorProps{dx:0.2,dy:-0.3,scale:1.4,rotation:25.0,blur:0.1,colour:Some([30,180,230,150]),opacity:0.7,backing:None},
         },..Default::default()}];
         if case==13 {title.objects[0].fx_mut().motion.enter.as_mut().unwrap().kind=MotionKind::MaskRise;}
     }

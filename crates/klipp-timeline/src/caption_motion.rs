@@ -26,13 +26,15 @@ pub enum CaptionMotion {
     Karaoke,
     /// The word being spoken jumps up and takes the active colour.
     Bounce,
+    /// The word being spoken sits on a box of the active colour, dark.
+    Box,
     /// Each word appears as it is said.
     Typewriter,
 }
 
 impl CaptionMotion {
     /// Every style, as the ops and the captions form name them.
-    pub const ALL: [CaptionMotion; 5] = [Self::Pop, Self::Highlight, Self::Karaoke, Self::Bounce, Self::Typewriter];
+    pub const ALL: [CaptionMotion; 6] = [Self::Pop, Self::Highlight, Self::Karaoke, Self::Bounce, Self::Box, Self::Typewriter];
 
     /// As the captions form lists it.
     pub fn label(self) -> &'static str {
@@ -41,6 +43,7 @@ impl CaptionMotion {
             Self::Highlight => "Highlight",
             Self::Karaoke => "Karaoke",
             Self::Bounce => "Bounce",
+            Self::Box => "Box",
             Self::Typewriter => "Typewriter",
         }
     }
@@ -51,6 +54,7 @@ impl CaptionMotion {
             Self::Highlight => "highlight",
             Self::Karaoke => "karaoke",
             Self::Bounce => "bounce",
+            Self::Box => "box",
             Self::Typewriter => "typewriter",
         }
     }
@@ -264,6 +268,7 @@ fn word_animator(screen: &CaptionScreen, anim: &CaptionAnimation) -> Animator {
         CaptionMotion::Highlight => (current(), AnimatorProps { colour, ..Default::default() }),
         CaptionMotion::Karaoke => (said(), AnimatorProps { colour, ..Default::default() }),
         CaptionMotion::Bounce => (current(), AnimatorProps { dy: -0.25 * amount, scale: 1.0 + 0.08 * amount, colour, ..Default::default() }),
+        CaptionMotion::Box => (current(), AnimatorProps { backing: colour, colour: Some([16, 16, 20, 255]), ..Default::default() }),
         // The words not yet said: from the last said to the end, unseen.
         CaptionMotion::Typewriter => {
             let mut start = vec![key(0.0, 0.0)];

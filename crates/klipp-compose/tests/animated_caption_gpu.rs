@@ -1,5 +1,6 @@
 //! An animated caption (#2710) on the GPU stack: the word being spoken
-//! takes its colour there as on the CPU path, with no fallback. A
+//! takes its colour, or its box, there as on the CPU path, with no
+//! fallback. A
 //! missing GPU is reported as unverified; with `KLIPP_TEST_REQUIRE_GPU=1`
 //! it fails.
 
@@ -69,4 +70,6 @@ fn the_spoken_word_takes_its_colour_on_the_gpu() {
     let after = red(CaptionMotion::Karaoke, 1.7).unwrap();
     assert!(before > 50 && after > before * 3 / 2, "karaoke fills as the words are said: {before} then {after}");
     assert!(red(CaptionMotion::Pop, 1.7).unwrap() > 50, "pop colours the spoken word");
+    // A box behind the spoken word is larger than the word's own ink.
+    assert!(red(CaptionMotion::Box, 1.7).unwrap() > red(CaptionMotion::Highlight, 1.7).unwrap(), "box: the spoken word's box");
 }

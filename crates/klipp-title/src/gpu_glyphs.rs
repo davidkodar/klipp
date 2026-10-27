@@ -453,7 +453,7 @@ pub fn takes_glyph_route(title: &TitleData, scene: Option<&TitleData>) -> bool {
     {
         return false;
     }
-    let raster_animator = fx.animators.iter().any(|a| a.enabled && (a.props.blur != 0.0 || a.props.colour.is_some()));
+    let raster_animator = fx.animators.iter().any(|a| a.enabled && (a.props.blur != 0.0 || a.props.paints()));
     let stagger_blur = fx.motion.enter.iter().chain(fx.motion.exit.iter()).any(|m|m.kind.blurs() && m.stagger!=klipp_timeline::StaggerUnit::None);
     // Text on a still linked path that only moves is the resting sprite
     // posed glyph by glyph, as the CPU draws it; translating it in the

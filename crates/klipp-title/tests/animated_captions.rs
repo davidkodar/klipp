@@ -1,6 +1,8 @@
 //! Animated captions (#2710) as drawn: at the second word's moment,
 //! highlight colours that word alone, karaoke the words said so far, pop
-//! makes that word larger, and typewriter draws only the words said.
+//! makes that word larger, box sets it dark on a box of the colour, and
+//! typewriter draws only the words said. `KLIPP_CAPTION_PNG=<path>`
+//! writes the box frame.
 
 use klipp_timeline::caption_motion::{animated_caption, CaptionScreen, TimedWord};
 use klipp_timeline::{CaptionAnimation, CaptionMotion, TitleData};
@@ -70,6 +72,20 @@ fn the_spoken_word_is_shown_at_its_time() {
     let ink = |td: &TitleData, t: f32| per_word(&draw(td, t), &spans)[1].1;
     let pop = caption(CaptionMotion::Pop);
     assert!(ink(&pop, 0.7) as f32 > ink(&pop, 0.2) as f32 * 1.2, "pop: {} vs {}", ink(&pop, 0.7), ink(&pop, 0.2));
+
+    // Box: the second word on a box of the colour, the word dark on it;
+    // the others as they were.
+    assert_eq!(red(CaptionMotion::Box), [false, true, false], "box: behind the second word alone");
+    let boxed = draw(&caption(CaptionMotion::Box), 0.7);
+    if let Some(path) = std::env::var_os("KLIPP_CAPTION_PNG") {
+        image::save_buffer(path, &boxed, W, H, image::ColorType::Rgba8).expect("the frame is written");
+    }
+    let (x0, x1) = spans[1];
+    let dark = (0..H).flat_map(|y| (x0..=x1).map(move |x| (y, x))).filter(|&(y, x)| {
+        let p = &boxed[((y * W + x) * 4) as usize..((y * W + x) * 4 + 4) as usize];
+        p[3] > 200 && p[0] < 60 && p[1] < 60 && p[2] < 60
+    }).count();
+    assert!(dark > 100, "the word drawn dark on its box: {dark} pixels");
 
     // Typewriter: before the third word, it is not drawn.
     let typed = per_word(&draw(&caption(CaptionMotion::Typewriter), 0.7), &spans);
