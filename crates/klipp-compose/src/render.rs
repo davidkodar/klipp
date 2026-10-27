@@ -987,6 +987,12 @@ pub struct Renderer {
     /// the frame size and the working space are the same. A changed file
     /// is read again.
     still_layers: HashMap<ClipId, StillLayer>,
+    /// Each precomposition's scene composed on the stack before its
+    /// parent's, kept on the GPU to seed its layer (#2757), by clip; the
+    /// buffers reused from frame to frame. `precomp_ready` holds those
+    /// composed this frame.
+    precomp_scenes: HashMap<ClipId, Arc<wgpu::Buffer>>,
+    precomp_ready: std::collections::HashSet<ClipId>,
     /// This stack frame's grade time by part, as its layers run (#2107).
     grade_split: GradeSplit,
     /// The subject matte sequences piece transitions read (#985 phase 3):
@@ -1187,6 +1193,8 @@ impl Renderer {
             grade_source_scene: false,
             still_generators: HashMap::new(),
             still_layers: HashMap::new(),
+            precomp_scenes: HashMap::new(),
+            precomp_ready: std::collections::HashSet::new(),
             grade_split: GradeSplit::default(),
             subject_mattes: HashMap::new(),
             clip_subject_dirs: HashMap::new(),
@@ -2186,6 +2194,28 @@ impl Renderer {
             }
         }
 
+        // ── 0. Each precomposition's scene composed on the stack first,
+        // before this frame's own state is worked out, and kept to seed
+        // its layer (#2757) ──
+        if self.nesting == 0 {
+            self.precomp_ready.clear();
+        }
+        let scenes: Vec<(ClipId, Arc<Sequence>, Timecode)> = items
+            .iter()
+            .filter_map(|(_, item)| match item {
+                Item::Clip { c, .. } if matches!(c.kind, ClipKind::Precomposition { .. } | ClipKind::TemplatePrecomposition { .. }) => {
+                    c.precomp.clone().map(|scene| {
+                        let at = precomposition_time(c, &scene, time, fps);
+                        (c.id, scene, at)
+                    })
+                }
+                _ => None,
+            })
+            .collect();
+        for (id, scene, at) in scenes {
+            self.compose_precomposition(id, &scene, at, width, height, src, opts);
+        }
+
         let mut transforms: HashMap<ClipId, ResolvedTransform> = HashMap::new();
         for (_, item) in &items {
             let clips: Vec<&Clip> = match item {
@@ -2525,13 +2555,18 @@ impl Renderer {
         // are the title's own, not in its picture's list.
         let mut lead: Vec<BuiltinEffect> = Vec::new();
         let placed = match &c.kind {
-            ClipKind::Media { .. } => {
+            // A precomposition whose scene the stack has composed (#2757)
+            // is placed as footage is, seeded from that scene.
+            kind @ (ClipKind::Media { .. } | ClipKind::Precomposition { .. } | ClipKind::TemplatePrecomposition { .. })
+                if matches!(kind, ClipKind::Media { .. }) || self.precomp_ready.contains(&c.id) =>
+            {
+                let precomp = !matches!(kind, ClipKind::Media { .. });
                 let at = source_secs(c, time, fps);
                 // A slowed clip's frames blended at the head of its grade's
                 // run, on the chain (#2854): read half a media frame early,
                 // as the composite reads them, so the frame read is the one
                 // at or before the time and the blend has the next to go to.
-                let blending = frame_blends(c, time, src.media_fps(c), fps);
+                let blending = !precomp && frame_blends(c, time, src.media_fps(c), fps);
                 let read_at = match src.media_fps(c).filter(|r| *r > 0.0) {
                     Some(rate) if blending => at - 0.5 / rate,
                     _ => at,
@@ -2541,15 +2576,21 @@ impl Renderer {
                 // GPU while its file, the size and the working space stand
                 // (#2092): not read from the source again, nor uploaded, but
                 // seeded from there into its grade or its layer.
-                let still = src.still_file(c);
-                let kept = still.as_ref().and_then(|file| {
+                let still = if precomp { None } else { src.still_file(c) };
+                let scene = precomp.then(|| self.precomp_scenes.get(&c.id).cloned()).flatten().and_then(|buffer| {
+                    let g = self.executor.gpu_pipeline_or_init()?;
+                    Some(Arc::new(AccSeed { buffer, device: g.device(), queue: g.queue(), width, height }) as Arc<dyn GpuPixels>)
+                });
+                let kept = scene.or_else(|| still.as_ref().and_then(|file| {
                     let k = self.still_layers.get(&c.id).filter(|k| &k.file == file && k.size == (width, height) && k.working == self.working)?;
                     let g = self.executor.gpu_pipeline_or_init()?;
                     Some(Arc::new(AccSeed { buffer: Arc::clone(&k.buffer), device: g.device(), queue: g.queue(), width, height }) as Arc<dyn GpuPixels>)
-                });
+                }));
                 let (pixels, other_size, (fw, fh)) = match kept {
                     Some(seed) => {
-                        stats.stills_kept += 1;
+                        if !precomp {
+                            stats.stills_kept += 1;
+                        }
                         (SourcePixels::Gpu(seed), false, (width, height))
                     }
                     None => {
@@ -3535,6 +3576,45 @@ impl Renderer {
 
     /// The stack cannot take this frame: `None`, and the reason in the
     /// log once, until it changes.
+    /// Precomposition `id`'s `scene` at `at`, composed on the GPU stack as
+    /// `render_scene` composes it on the CPU (its own scale, no shutter,
+    /// LUT or inspection of the parent's, alpha kept), and kept for its
+    /// layer to seed from (#2757). The parent's frame state is put back
+    /// after; a scene the stack declines leaves its layer to the CPU.
+    #[allow(clippy::too_many_arguments)]
+    fn compose_precomposition(&mut self, id: ClipId, scene: &Sequence, at: Timecode, width: u32, height: u32, src: &mut dyn FrameSource, opts: RenderOptions) {
+        if self.nesting >= klipp_timeline::flatten::MAX_COMPOUND_DEPTH {
+            return;
+        }
+        self.nesting += 1;
+        let shutter = std::mem::take(&mut self.shutter);
+        let title_shutter = std::mem::take(&mut self.title_shutter);
+        let lut = self.global_lut.take();
+        let inspect = std::mem::take(&mut self.inspect);
+        let (px_scale, hdr_peak, title_nits) = (self.px_scale, self.hdr_peak, self.title_nits);
+        let (decline, declined_after_work, started) = (self.frame_decline, self.gpu_export_declined_after_work, self.stack_work_started);
+        let composed = self.composite_on_gpu(scene, at, width, height, src, RenderOptions { keep_alpha: true, ..opts }).is_some();
+        (self.px_scale, self.hdr_peak, self.title_nits) = (px_scale, hdr_peak, title_nits);
+        (self.frame_decline, self.gpu_export_declined_after_work, self.stack_work_started) = (decline, declined_after_work, started);
+        self.inspect = inspect;
+        self.global_lut = lut;
+        self.shutter = shutter;
+        self.title_shutter = title_shutter;
+        self.nesting -= 1;
+        if !composed {
+            return;
+        }
+        let reuse = self.precomp_scenes.remove(&id);
+        let kept = self.executor.gpu_pipeline_or_init().and_then(|g| g.stack_keep_chain(reuse));
+        if let Some(kept) = kept {
+            if self.precomp_scenes.len() >= 8 {
+                self.precomp_scenes.retain(|k, _| self.precomp_ready.contains(k));
+            }
+            self.precomp_scenes.insert(id, kept);
+            self.precomp_ready.insert(id);
+        }
+    }
+
     fn gpu_stack_declines<T>(&mut self, why: &'static str) -> Option<T> {
         self.gpu_export_declined_after_work = self.stack_work_started;
         self.frame_decline = Some(why);
