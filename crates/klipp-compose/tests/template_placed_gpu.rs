@@ -127,6 +127,7 @@ fn a_placed_template_draws_its_composition_with_the_value_set() {
         bindings: [("text".to_string(), "object:0.text".to_string())].into_iter().collect(),
         overrides: [("text".to_string(), klipp_core::TemplateValue::Text("Ship it".into()))].into_iter().collect(),
         media_slots: Default::default(),
+        links: Vec::new(),
     };
     let mut placed = Clip::precomposition(made.id, tc(0.0), tc(3.0));
     placed.kind = ClipKind::TemplatePrecomposition { sequence_id: made.id, template_instance: instance };
@@ -169,6 +170,7 @@ fn a_slot_shows_its_placeholder_until_it_is_filled() {
             bindings: [("slot_1".to_string(), "clip:0.media".to_string())].into_iter().collect(),
             overrides: Default::default(),
             media_slots: media.map(|m| ("slot_1".to_string(), m.0.to_string())).into_iter().collect(),
+            links: Vec::new(),
         };
         let mut clip = Clip::precomposition(scene.id, tc(0.0), tc(3.0));
         clip.kind = ClipKind::TemplatePrecomposition { sequence_id: scene.id, template_instance: instance };
@@ -188,4 +190,51 @@ fn a_slot_shows_its_placeholder_until_it_is_filled() {
     let (filled, _) = r.render_display_u8_on_gpu(&placed(Some(klipp_core::MediaId::new())), tc(1.0), W, H, &mut Orange, RenderOptions::default()).expect("the stack drew the filled slot");
     assert_eq!(klipp_effects::residency::last_frame().fallback_count(), 0, "filled: on the GPU");
     assert!(filled[mid] > 200 && filled[mid + 2] < 90, "the media given: {:?}", &filled[mid..mid + 3]);
+}
+
+/// #2757: a macro control at 0, 0.5 and 1 drives a placed template's
+/// headline opacity on an ease-in curve: each frame is the card with that
+/// opacity set by hand, its brightest pixel follows the curve (0, a
+/// quarter, full, in display light), on the stack with no fallback.
+#[test]
+fn a_macro_control_drives_a_placed_templates_opacity_on_the_gpu() {
+    let mut made = card("Launch");
+    let ClipKind::Title(td) = &mut made.tracks[0].clips[0].kind else { unreachable!() };
+    td.background = TitleBackground::None;
+    let link = klipp_core::TemplateLink {
+        parameter: "fade".into(),
+        property: "object:0.opacity".into(),
+        from: [0.0, 1.0],
+        to: [0.0, 1.0],
+        curve: klipp_core::LinkCurve::EaseIn,
+        offset: 0.0,
+        linked: true,
+        frozen: 0.0,
+    };
+    let srgb = |v: f64| if v <= 0.0031308 { 12.92 * v } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 } * 255.0;
+    for (control, opacity) in [(0.0, 0.0), (0.5, 0.25), (1.0, 1.0)] {
+        let instance = klipp_core::TemplateInstance {
+            template_id: klipp_core::SequenceId::new().0,
+            bindings: Default::default(),
+            overrides: [("fade".to_string(), klipp_core::TemplateValue::Number(control))].into_iter().collect(),
+            media_slots: Default::default(),
+            links: vec![link.clone()],
+        };
+        let mut placed = Clip::precomposition(made.id, tc(0.0), tc(3.0));
+        placed.kind = ClipKind::TemplatePrecomposition { sequence_id: made.id, template_instance: instance };
+        let Some(px) = on_gpu(&outer(placed, &made)) else {
+            assert!(!required(), "required, but the GPU stack declined the placed template");
+            eprintln!("UNVERIFIED: no GPU stack");
+            return;
+        };
+        assert_eq!(klipp_effects::residency::last_frame().fallback_count(), 0, "control {control}: composed on the GPU");
+        let mut by_hand = made.clone();
+        let ClipKind::Title(td) = &mut by_hand.tracks[0].clips[0].kind else { unreachable!() };
+        td.objects[0].opacity = opacity as f32;
+        let reference = on_gpu(&outer(Clip::precomposition(by_hand.id, tc(0.0), tc(3.0)), &by_hand)).expect("the stack drew the card");
+        assert!(worst(&px, &reference) <= 2, "control {control}: {} levels from opacity {opacity} set by hand", worst(&px, &reference));
+        let peak = px.chunks(4).map(|p| p[0]).max().unwrap() as f64;
+        eprintln!("control {control}: peak {peak}, expected {:.1}", srgb(opacity));
+        assert!((peak - srgb(opacity)).abs() <= 4.0, "control {control}: peak {peak}, the curve says {:.1}", srgb(opacity));
+    }
 }

@@ -1241,6 +1241,10 @@ pub enum ControlCommand {
         category: Option<String>,
         #[serde(default)]
         fields: Option<Vec<String>>,
+        /// Macro controls of clips saved together (#2757): each a slider
+        /// driving numbers of their layers, named by label.
+        #[serde(default)]
+        controls: Vec<klipp_timeline::composition_template::ControlSpec>,
         #[serde(default)]
         replace: bool,
     },

@@ -90,6 +90,7 @@ fn a_template_instance_survives_project_round_trip() {
                 TemplateValue::Text("xytx --launch".into()),
             )]),
             media_slots: BTreeMap::new(),
+            links: Vec::new(),
         },
     };
     let mut outer = Sequence::new_default();

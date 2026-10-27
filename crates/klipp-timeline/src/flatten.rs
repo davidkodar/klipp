@@ -46,7 +46,14 @@ enum Target<'a> {
     Slot(usize),
 }
 
+/// A graph node's parameter, `node:<path>.<param>`: the Composite page's
+/// (#2758), not placed by a template yet.
+const NODE_TARGETS_LATER: &str = "is a graph node's parameter, which the Composite page (#2758) binds; a template cannot set it yet";
+
 fn binding_parts(property: &str) -> Result<Target<'_>, String> {
+    if property.starts_with("node:") {
+        return Err(format!("template binding '{property}' {NODE_TARGETS_LATER}"));
+    }
     if let Some(rest) = property.strip_prefix("clip:") {
         let Some((n, "media")) = rest.split_once('.') else {
             return Err(format!("template binding '{property}' must use clip:<index>.media"));
@@ -59,6 +66,52 @@ fn binding_parts(property: &str) -> Result<Target<'_>, String> {
     };
     let index = object.parse::<usize>().map_err(|_| format!("template binding '{property}' has an invalid object index"))?;
     Ok(Target::Object(index, path))
+}
+
+/// The number a title layer's `path` holds (#2757): what a control's link
+/// drives. `None` for a path that is not a number of that layer.
+fn layer_number(o: &crate::TitleObject, path: &str) -> Option<f64> {
+    use crate::TitleObjectContent as C;
+    let tb = match &o.content { C::TextBox(tb) => Some(tb), _ => None };
+    Some(match path {
+        "size" => tb?.font_size as f64,
+        "tracking" => tb?.tracking as f64,
+        "line_spacing" => tb?.line_spacing as f64,
+        "opacity" => o.opacity as f64,
+        "x" => o.transform.center.x as f64,
+        "y" => o.transform.center.y as f64,
+        "rotation" => o.transform.rotation as f64,
+        "motion.enter.duration_secs" => o.fx().motion.enter.as_ref()?.duration_secs as f64,
+        "motion.exit.duration_secs" => o.fx().motion.exit.as_ref()?.duration_secs as f64,
+        _ => return None,
+    })
+}
+
+/// Sets that number (#2757), kept in its range: a size above 1, an
+/// opacity 0 to 1, a duration above a frame's worth.
+fn set_layer_number(o: &mut crate::TitleObject, path: &str, v: f64) {
+    use crate::TitleObjectContent as C;
+    let v = v as f32;
+    match (path, &mut o.content) {
+        ("size", C::TextBox(tb)) => tb.font_size = v.max(1.0),
+        ("tracking", C::TextBox(tb)) => tb.tracking = v,
+        ("line_spacing", C::TextBox(tb)) => tb.line_spacing = v.max(0.1),
+        ("opacity", _) => o.opacity = v.clamp(0.0, 1.0),
+        ("x", _) => o.transform.center.x = v,
+        ("y", _) => o.transform.center.y = v,
+        ("rotation", _) => o.transform.rotation = v,
+        ("motion.enter.duration_secs", _) => if let Some(m) = o.fx_mut().motion.enter.as_mut() { m.duration_secs = v.max(0.01) },
+        ("motion.exit.duration_secs", _) => if let Some(m) = o.fx_mut().motion.exit.as_mut() { m.duration_secs = v.max(0.01) },
+        _ => {}
+    }
+}
+
+/// What a link to `property` in `sequence` reads now: the number it drives,
+/// for an unlink to keep (#2757).
+pub fn linked_value(sequence: &Sequence, property: &str) -> Option<f64> {
+    let Ok(Target::Object(index, path)) = binding_parts(property) else { return None };
+    let o = sequence.tracks.iter().flat_map(|t| &t.clips).filter_map(|c| c.title_data()).flat_map(|t| t.objects.iter()).nth(index)?;
+    layer_number(o, path)
 }
 
 /// A slot no media was given for: a dark neutral picture, so the
@@ -93,6 +146,17 @@ pub fn validate_template_instance(instance: &klipp_core::TemplateInstance, seque
                 ("float.keyframes", klipp_core::TemplateValue::Number(_)) if !target.transform.center_y_keyframes.is_empty() => {}
                 _ => return Err(format!("value for parameter '{parameter}' does not fit '{property}'")),
             }
+        }
+    }
+    // A control's links (#2757): each to a number of a layer there is.
+    for link in &instance.links {
+        let Target::Object(index, path) = binding_parts(&link.property).map_err(|e| format!("control '{}': {e}", link.parameter))? else {
+            return Err(format!("control '{}' drives '{}', which is not a number", link.parameter, link.property));
+        };
+        let target = sequence.tracks.iter().flat_map(|track| &track.clips).filter_map(|c| c.title_data()).flat_map(|t| t.objects.iter()).nth(index)
+            .ok_or_else(|| format!("control '{}' targets missing object {index}", link.parameter))?;
+        if layer_number(target, path).is_none() {
+            return Err(format!("control '{}' drives '{}', which is not a number of that layer", link.parameter, link.property));
         }
     }
     Ok(())
@@ -170,6 +234,18 @@ fn apply_template_instance(sequence: &mut Sequence, instance: &klipp_core::Templ
                     _ => return Err(format!("unsupported value for template binding '{parameter}' at '{property}'")),
                 }
             }
+        }
+    }
+    // Each control's links, from where the control stands (#2757).
+    let mut objects: Vec<&mut crate::TitleObject> = sequence.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).filter_map(|c| match &mut c.kind { ClipKind::Title(t) => Some(t), _ => None }).flat_map(|t| t.objects.iter_mut()).collect();
+    for link in &instance.links {
+        let Ok(Target::Object(index, path)) = binding_parts(&link.property) else { continue };
+        let control = match instance.overrides.get(&link.parameter) {
+            Some(klipp_core::TemplateValue::Number(n)) => *n,
+            _ => link.from[0],
+        };
+        if let Some(o) = objects.get_mut(index) {
+            set_layer_number(o, path, link.effective(control));
         }
     }
     Ok(())
@@ -1009,6 +1085,7 @@ mod tests {
                 bindings: BTreeMap::from([("command".into(), "object:0.text".into())]),
                 overrides: BTreeMap::from([("command".into(), klipp_core::TemplateValue::Text("resolved".into()))]),
                 media_slots: BTreeMap::new(),
+                links: Vec::new(),
             },
         };
         let pre_id = pre.id;
