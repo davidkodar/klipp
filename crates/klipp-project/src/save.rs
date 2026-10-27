@@ -448,6 +448,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
         edit_plan: seq.edit_plan.clone(),
         reviews: seq.reviews.clone(),
         awaiting_refit: seq.awaiting_refit,
+        version_of: seq.version_of,
         camera: seq.camera.clone(),
         timeline_graph: seq.timeline_grade().cloned(),
         grade_groups: seq.grade_groups.clone(),

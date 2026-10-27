@@ -822,6 +822,10 @@ impl KlippApp {
             // offline is asked about first, then a source about to be
             // written over (see `export_step`). The Force commands are
             // the answers to those two questions.
+            AppCommand::ExportDelivery { outputs } => {
+                self.start_delivery(outputs);
+                true
+            }
             AppCommand::ExportSequence { settings } => {
                 // The form's export takes its range; any other, as a
                 // socket's, the marks'.

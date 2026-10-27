@@ -3846,8 +3846,8 @@ fn status_lists_the_sequences_and_switch_sequence_opens_one() {
     {
         let mut p = h.shared.project.lock().unwrap();
         p.sequences = vec![
-            klipp_core::SequenceSummary { id: "a".into(), name: "Main".into(), clips: 3, used_in: None },
-            klipp_core::SequenceSummary { id: "b".into(), name: "Social cut".into(), clips: 1, used_in: None },
+            klipp_core::SequenceSummary { id: "a".into(), name: "Main".into(), clips: 3, used_in: None, version: None, width: 0, height: 0 },
+            klipp_core::SequenceSummary { id: "b".into(), name: "Social cut".into(), clips: 1, used_in: None, version: None, width: 0, height: 0 },
         ];
         p.active_sequence = 0;
     }
@@ -3910,7 +3910,7 @@ fn edit_from_selects_names_the_sequence_and_content_it_copied() {
 fn remove_sequence_is_refused_until_confirmed_and_never_for_a_held_or_only_one() {
     let mut h = harness();
     let set = |h: &mut Harness, list: Vec<klipp_core::SequenceSummary>| h.shared.project.lock().unwrap().sequences = list;
-    let summary = |id: &str, name: &str, clips, used_in: Option<&str>| klipp_core::SequenceSummary { id: id.into(), name: name.into(), clips, used_in: used_in.map(Into::into) };
+    let summary = |id: &str, name: &str, clips, used_in: Option<&str>| klipp_core::SequenceSummary { id: id.into(), name: name.into(), clips, used_in: used_in.map(Into::into), version: None, width: 0, height: 0 };
     let (a, b, c, d) = ("00000000-0000-4000-8000-00000000000a", "00000000-0000-4000-8000-00000000000b", "00000000-0000-4000-8000-00000000000c", "00000000-0000-4000-8000-00000000000d");
     set(&mut h, vec![summary(a, "Main", 3, None), summary(b, "Demo", 2, None), summary(c, "Nest", 1, Some("Main")), summary(d, "Spare", 0, None)]);
     let refused = |h: &mut Harness, cmd: Value, why: &str| {
@@ -3992,7 +3992,7 @@ fn a_refused_picture_write_is_in_the_reply() {
 #[test]
 fn duplicate_sequence_copies_and_opens_the_copy() {
     let mut h = harness();
-    let summary = |id: &str, name: &str| klipp_core::SequenceSummary { id: id.into(), name: name.into(), clips: 1, used_in: None };
+    let summary = |id: &str, name: &str| klipp_core::SequenceSummary { id: id.into(), name: name.into(), clips: 1, used_in: None, version: None, width: 0, height: 0 };
     let (a, b) = ("00000000-0000-4000-8000-00000000000a", "00000000-0000-4000-8000-00000000000b");
     {
         let mut p = h.shared.project.lock().unwrap();
@@ -4559,6 +4559,28 @@ fn make_shorts_refuses_before_building_anything() {
         (json!({ "method": "make_shorts", "media_id": media, "moments": moment }), "analyze it first"),
     ] {
         let reply = h.call(request);
+        assert_eq!(reply["ok"], json!(false), "{reply}");
+        assert!(reply["error"].as_str().unwrap_or_default().contains(why), "{why}: {reply}");
+    }
+}
+
+/// #2724: a delivery is refused before anything is queued for a format
+/// it doesn't know, a relative path, or two outputs to one file.
+#[test]
+fn a_delivery_refuses_what_it_cannot_write() {
+    let mut h = harness();
+    {
+        let mut seq = h.sequence.write().unwrap();
+        let at = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 30);
+        let media = klipp_core::MediaId::new();
+        seq.tracks[0].clips.push(klipp_timeline::Clip::media(media, at(0.0), at(4.0), at(0.0), at(4.0)));
+    }
+    for (outputs, why) in [
+        (json!([{ "format": "21:9", "path": "/tmp/a.mp4" }]), "not a format"),
+        (json!([{ "format": "9:16", "path": "b.mp4" }]), "must be absolute"),
+        (json!([{ "format": "9:16", "path": "/tmp/c.mp4" }, { "format": "1:1", "path": "/tmp/c.mp4" }]), "two outputs"),
+    ] {
+        let reply = h.call(json!({ "method": "export", "outputs": outputs }));
         assert_eq!(reply["ok"], json!(false), "{reply}");
         assert!(reply["error"].as_str().unwrap_or_default().contains(why), "{why}: {reply}");
     }

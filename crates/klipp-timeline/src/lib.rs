@@ -123,7 +123,7 @@ pub use klipp_core::fill_gradient::{GradientKind, GradientStop, MAX_GRADIENT_STO
 pub use sequence::{
     effective_timeline_duration_for_keyframes, one_frame, speed_at_keyframes, speed_integral_keyframes,
     AnchorAlignment, BakedOwn, Camera, CaptionStyle, ChannelConfig, Clip, ClipLabel, ClipMarker, GradeFlag, ClipRole, FadeCurve, GradeVersion, LinkMode,
-    FirstClipAutoSet, GradeGroup, GradeStage, Look, MagneticAnchor, MatteBinding, Sequence, StencilSettings, Track, TrackEffects, TrackPaste, TrackSettings, OwnEffects, TrackKind, TrackRole,
+    FirstClipAutoSet, GradeGroup, GradeStage, Look, MagneticAnchor, MatteBinding, Sequence, VersionOf, StencilSettings, Track, TrackEffects, TrackPaste, TrackSettings, OwnEffects, TrackKind, TrackRole,
     Transition, TransitionKind, TransformLink, TransformLinkTarget, SPEED_MAX, SPEED_MIN, DEFAULT_TITLE_NITS, TITLE_NITS_RANGE,
 };
 

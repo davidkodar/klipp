@@ -769,6 +769,7 @@ pub fn parse_fcpxml(xml: &str) -> Result<ImportResult, FcpxmlImportError> {
                 edit_plan: None,
                 reviews: Vec::new(),
                 awaiting_refit: false,
+                version_of: None,
             };
             return Ok(ImportResult {
                 sequence,
@@ -894,6 +895,7 @@ pub fn parse_fcpxml(xml: &str) -> Result<ImportResult, FcpxmlImportError> {
         edit_plan: None,
         reviews: Vec::new(),
         awaiting_refit: false,
+        version_of: None,
     };
 
     // Touch MarkerId so it isn't a dead import if no sequence markers are

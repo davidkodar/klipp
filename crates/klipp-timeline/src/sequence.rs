@@ -93,6 +93,11 @@ pub struct Sequence {
     /// it is opened again.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub awaiting_refit: bool,
+    /// The sequence this one is a version of at another aspect, and that
+    /// master's cut when it was copied (#2724): a master cut since makes
+    /// the version older than it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version_of: Option<VersionOf>,
     /// A move over the whole sequence; see [`Camera`]. Empty means none,
     /// which is what every sequence made before this had.
     #[serde(default, skip_serializing_if = "Camera::is_default")]
@@ -351,7 +356,51 @@ impl GradeGroup {
     }
 }
 
+/// Where a version at another aspect came from (#2724): its master, and
+/// the master's [`Sequence::cut_stamp`] when it was copied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VersionOf {
+    pub master: SequenceId,
+    pub cut: u64,
+}
+
 impl Sequence {
+    /// A stamp of the sequence's cut (#2724): every clip's place on the
+    /// timeline, its source range, its media and speed, on every track. A
+    /// trim, a shot added, removed or moved changes it; a grade or an
+    /// effect does not. FNV-1a, the same in every build.
+    pub fn cut_stamp(&self) -> u64 {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut eat = |bytes: &[u8]| {
+            for b in bytes {
+                h = (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3);
+            }
+        };
+        for (ti, track) in self.tracks.iter().enumerate() {
+            eat(&(ti as u64).to_le_bytes());
+            for c in &track.clips {
+                eat(c.id.0.as_bytes());
+                for t in [c.timeline_in, c.timeline_out, c.source_in, c.source_out] {
+                    eat(&t.to_secs_f64().to_bits().to_le_bytes());
+                }
+                eat(&c.speed.to_bits().to_le_bytes());
+                eat(&[u8::from(c.enabled), u8::from(c.hold.is_some())]);
+                if let Some(m) = c.media_id() {
+                    eat(m.0.as_bytes());
+                }
+            }
+        }
+        h
+    }
+
+    /// Whether this version is older than its master's cut, among `all`:
+    /// `None` when it is no version, or its master is gone.
+    pub fn version_is_stale(&self, all: &[Sequence]) -> Option<bool> {
+        let v = self.version_of?;
+        let master = all.iter().find(|s| s.id == v.master)?;
+        Some(master.cut_stamp() != v.cut)
+    }
+
     /// The size and rate the sequence would take from a first video clip
     /// of `resolution` and `fps`, where [`Self::first_clip_autoset`] allows
     /// it, without taking them: the settings before and after. `None` when
@@ -706,6 +755,7 @@ impl Sequence {
             edit_plan: None,
             reviews: Vec::new(),
             awaiting_refit: false,
+            version_of: None,
         }
     }
 
@@ -3369,6 +3419,25 @@ pub fn effective_timeline_duration_for_keyframes(
 
 #[cfg(test)]
 mod tests {
+    /// #2724: a version is older than its master once the master's cut
+    /// changes (a trim, a shot added), not when a grade does.
+    #[test]
+    fn a_version_goes_stale_when_its_masters_cut_changes() {
+        let at = |s: f64| RationalTime::from_secs_f64(s, 30);
+        let mut master = Sequence::new_default();
+        master.tracks[0].clips.push(Clip::media(MediaId::new(), at(0.0), at(4.0), at(0.0), at(4.0)));
+        let mut version = master.clone();
+        version.id = SequenceId::new();
+        version.version_of = Some(VersionOf { master: master.id, cut: master.cut_stamp() });
+        let fresh = |m: &Sequence, v: &Sequence| v.version_is_stale(&[m.clone(), v.clone()]);
+        assert_eq!(fresh(&master, &version), Some(false));
+        master.tracks[0].clips[0].gain = 0.5;
+        assert_eq!(fresh(&master, &version), Some(false), "a gain is not the cut");
+        master.tracks[0].clips[0].timeline_out = at(3.0);
+        assert_eq!(fresh(&master, &version), Some(true), "trimmed");
+        assert_eq!(master.version_is_stale(&[master.clone()]), None, "the master is no version");
+    }
+
     use super::*;
 
     /// #496: an explicit size and rate survive the first clip; an
@@ -4535,6 +4604,7 @@ mod tests {
             edit_plan: None,
             reviews: Vec::new(),
             awaiting_refit: false,
+            version_of: None,
         }
     }
 
