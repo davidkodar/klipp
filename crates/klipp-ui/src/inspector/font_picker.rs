@@ -82,6 +82,8 @@ pub struct Picked {
     pub weight: Option<u16>,
     /// A family starred or unstarred.
     pub toggle_favourite: Option<String>,
+    /// A catalogue family to fetch so it previews, not yet chosen (#2732).
+    pub preview: Option<String>,
 }
 
 /// The picker's open state and search, kept between frames.
@@ -211,12 +213,23 @@ pub fn picker(
                 if !more.is_empty() {
                     ui.label(egui::RichText::new("From Klipp\u{2019}s catalogue").size(crate::theme::type_scale::CAPTION).color(theme.text_dim));
                     for family in more {
-                        let row = ui.allocate_response(egui::vec2(ui.available_width(), PREVIEW_H as f32), egui::Sense::click());
+                        let (eye_rect, eye) = ui.allocate_exact_size(egui::vec2(18.0, PREVIEW_H as f32), egui::Sense::click());
+                        let fetching = crate::missing_fonts::fetching(&family.name);
+                        let eye = eye.on_hover_text(if fetching { "Fetching\u{2026}" } else { "Preview: fetch this font to see the title\u{2019}s words in it" });
+                        let icon_rect = egui::Rect::from_center_size(eye_rect.center(), egui::vec2(14.0, 14.0));
+                        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(icon_rect), |ui| {
+                            ui.add(Icon::Eye.image(14.0).tint(if fetching { theme.accent } else { theme.text_dim }));
+                        });
+                        if eye.clicked() && !fetching {
+                            out.preview = Some(family.name.clone());
+                        }
+                        let row_rect = egui::Rect::from_min_max(egui::pos2(eye_rect.max.x, eye_rect.min.y), egui::pos2(ui.max_rect().max.x, eye_rect.max.y));
+                        let row = ui.interact(row_rect, ui.id().with(("catalogue_row", &family.name)), egui::Sense::click());
                         if row.hovered() {
                             ui.painter().rect_filled(row.rect, 3.0, theme.bg_hover);
                         }
                         let tags: Vec<&str> = family.style.iter().chain(&family.mood).map(String::as_str).take(3).collect();
-                        ui.painter().text(row.rect.left_center() + egui::vec2(22.0, 0.0), egui::Align2::LEFT_CENTER, &family.name, egui::FontId::proportional(13.0), theme.text_secondary);
+                        ui.painter().text(row.rect.left_center() + egui::vec2(4.0, 0.0), egui::Align2::LEFT_CENTER, &family.name, egui::FontId::proportional(13.0), theme.text_secondary);
                         ui.painter().text(row.rect.right_center() - egui::vec2(4.0, 0.0), egui::Align2::RIGHT_CENTER, tags.join(" \u{b7} "), egui::FontId::proportional(10.0), theme.text_dim);
                         let row = row.on_hover_text(format!("Fetched when chosen ({}); the title shows it once it is here", family.licence));
                         if row.clicked() {
@@ -308,6 +321,27 @@ mod tests {
         // And a row picks its family.
         let picked = click(&ctx, &starred, &previews, egui::pos2(160.0, first.1 - 6.0));
         assert_eq!(picked.family.as_deref(), Some("Bebas Neue"));
+    }
+
+    /// A catalogue family not here (#2732): its eye asks for it to be
+    /// fetched so it previews, without choosing it; its row chooses it.
+    #[test]
+    fn a_catalogue_rows_eye_previews_and_its_row_chooses() {
+        let ctx = egui::Context::default();
+        let previews = FontPreviews::default();
+        let f = frame(&ctx, &[], &previews, Vec::new());
+        click(&ctx, &[], &previews, at(&f, "Inter").expect("the field names the font"));
+        frame(&ctx, &[], &previews, vec![egui::Event::Text("great vibes".into())]);
+        let f = frame(&ctx, &[], &previews, Vec::new());
+        let name = at(&f, "Great Vibes").expect("offered from the catalogue");
+        // The eye sits at the row's left, as a star does on a font here.
+        let eye = egui::pos2(8.0 + 7.0 + 9.0, name.y);
+        let picked = click(&ctx, &[], &previews, eye);
+        assert_eq!(picked.preview.as_deref(), Some("Great Vibes"));
+        assert!(picked.family.is_none(), "previewing does not choose it");
+        let picked = click(&ctx, &[], &previews, name);
+        assert_eq!(picked.family.as_deref(), Some("Great Vibes"));
+        assert!(picked.preview.is_none());
     }
 
     /// Sections: starred, recent (not starred), the rest; all by search.
