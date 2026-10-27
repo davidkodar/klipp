@@ -64,18 +64,19 @@ pub(crate) fn respond(
                 "sources": spec.sources,
             }))
         }
-        ControlCommand::Export { outputs, .. } if !outputs.is_empty() => {
+        ControlCommand::Export { outputs, overwrite, .. } if !outputs.is_empty() => {
             if in_batch {
                 return Err("a delivery is not part of a batch: send it on its own".into());
             }
-            deliver(ctx, &outputs, &mut send)
+            deliver(ctx, &outputs, overwrite, &mut send)
         }
 
-        ControlCommand::Export { path, width, height, fps, crf, bit_depth, target_lufs, true_peak_dbtp, burn_captions, captions_608, hdr10plus, hdr, peak_nits, preset, codec, audio_codec, bitrate_kbps, encoder_speed, outputs: _ } => {
+        ControlCommand::Export { path, width, height, fps, crf, bit_depth, target_lufs, true_peak_dbtp, burn_captions, captions_608, hdr10plus, hdr, peak_nits, preset, codec, audio_codec, bitrate_kbps, encoder_speed, outputs: _, overwrite } => {
             let out = std::path::PathBuf::from(&path);
             if !out.is_absolute() {
                 return Err(format!("export path must be absolute (got {path:?})"));
             }
+            may_replace(&out, overwrite)?;
             let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
             // Nothing to export: it rendered a 261-byte file and called it a
             // success (#655).
@@ -1137,7 +1138,19 @@ fn delivery_size(frame: (u32, u32), aspect: (u32, u32)) -> (u32, u32) {
 /// which exports each from the open sequence's version at its aspect,
 /// made and reframed when there is none. A version older than the
 /// master's cut is named, never rebuilt unasked.
-fn deliver(ctx: &ControlContext, outputs: &[crate::protocol::DeliveryAsk], send: &mut dyn FnMut(AppCommand) -> Result<serde_json::Value, String>) -> Result<serde_json::Value, String> {
+/// Whether a render may be written to `out`: a file already there only
+/// when `overwrite` says so, never a folder, as timeline export asks.
+fn may_replace(out: &std::path::Path, overwrite: bool) -> Result<(), String> {
+    if out.is_dir() {
+        return Err(format!("{} is a folder: give a file's path", out.display()));
+    }
+    if out.exists() && !overwrite {
+        return Err(format!("{} exists: send overwrite true to replace it", out.display()));
+    }
+    Ok(())
+}
+
+fn deliver(ctx: &ControlContext, outputs: &[crate::protocol::DeliveryAsk], overwrite: bool, send: &mut dyn FnMut(AppCommand) -> Result<serde_json::Value, String>) -> Result<serde_json::Value, String> {
     let (frame, master_id, master_name) = {
         let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
         if seq.has_nothing_to_export() {
@@ -1158,6 +1171,7 @@ fn deliver(ctx: &ControlContext, outputs: &[crate::protocol::DeliveryAsk], send:
         if !seen.insert(out.clone()) {
             return Err(format!("two outputs are written to {}: give each its own file", o.path));
         }
+        may_replace(&out, overwrite)?;
         let format = match out.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref() {
             Some("mp4") | None => klipp_core::ExportFormat::Mp4,
             Some("mov") => klipp_core::ExportFormat::Mov,

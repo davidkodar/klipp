@@ -1598,6 +1598,35 @@ fn an_export_says_it_covers_the_in_out_range() {
     assert_eq!((r["export"]["range"]["in"].as_f64(), r["export"]["range"]["out"].as_f64()), (Some(20.0), Some(30.0)), "{r}");
 }
 
+/// An export never replaces a file that is already there unless the call
+/// says overwrite, and never writes to a folder: the existing file's
+/// bytes are untouched and no render is started.
+#[test]
+fn an_export_refuses_an_existing_file_unless_told_to_overwrite() {
+    let mut h = harness();
+    let media = h.media_pool.write().unwrap().add(klipp_media::MediaItem::synthetic_for_test("/tmp/export-overwrite-fixture.mov".into(), None));
+    for c in h.sequence.write().unwrap().tracks.iter_mut().flat_map(|t| t.clips.iter_mut()) {
+        c.kind = klipp_timeline::ClipKind::Media { media_id: media };
+    }
+    let dir = std::env::temp_dir().join(format!("klipp-export-overwrite-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let kept = dir.join("old.mp4");
+    std::fs::write(&kept, "keep me").unwrap();
+    for (path, why) in [(&kept, "exists"), (&dir, "is a folder")] {
+        let reply = h.call(json!({ "method": "export", "path": path }));
+        assert_eq!(reply["ok"], json!(false), "{reply}");
+        assert!(reply["error"].as_str().is_some_and(|e| e.contains(why)), "{reply}");
+        assert!(h.cmd_rx.recv_timeout(std::time::Duration::from_millis(200)).is_err(), "no render started");
+    }
+    assert_eq!(std::fs::read_to_string(&kept).unwrap(), "keep me");
+    // Asked for, it goes ahead; a new file needs no asking.
+    for req in [json!({ "method": "export", "path": kept, "overwrite": true }), json!({ "method": "export", "path": dir.join("new.mp4") })] {
+        h.ok(req);
+        assert!(matches!(h.cmd_rx.recv_timeout(std::time::Duration::from_secs(5)), Ok(klipp_core::AppCommand::ExportSequence { .. })));
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// #2477: an export chooses its output transfer, under the dialog's
 /// rules: HDR at 10 bits in hevc, h264 or ProRes, a mastering peak for PQ
 /// only, and the reply says what it delivers.

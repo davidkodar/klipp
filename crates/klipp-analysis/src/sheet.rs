@@ -27,6 +27,21 @@ fn any_font() -> Option<PathBuf> {
     p.is_file().then_some(p)
 }
 
+/// `value` as one option value inside an ffmpeg filtergraph: escaped for
+/// the option parser (`\\`, `'`, `:`) and again for the graph's own
+/// (`\\`, `'`, `[`, `]`, `,`, `;`), so a path holding any of them stays
+/// one value and can add no option or filter.
+pub(crate) fn filter_value(value: &str) -> String {
+    let escape = |s: &str, special: &[char]| s.chars().fold(String::with_capacity(s.len()), |mut out, c| {
+        if special.contains(&c) {
+            out.push('\\');
+        }
+        out.push(c);
+        out
+    });
+    escape(&escape(value, &['\\', '\'', ':']), &['\\', '\'', '[', ']', ',', ';'])
+}
+
 /// How long a sheet's hardware decode may take before it is given up
 /// for the CPU: ffmpeg's VAAPI decode can deadlock on a seek into some
 /// files and wait forever, which held a review past any deadline (#519).
@@ -68,7 +83,7 @@ fn sheet_by_seeking(ffmpeg: &Path, media: &Path, tiles_secs: &[f64], cols: u32, 
             let (h, m, sec) = ((*t / 3600.0) as u64, ((*t / 60.0) as u64) % 60, *t % 60.0);
             graph.push_str(&format!(
                 ",drawtext=fontfile={}:text='{h:02}\\:{m:02}\\:{sec:06.3}':x=6:y=6:fontsize={size}:fontcolor=white:box=1:boxcolor=black@0.5",
-                font.display()
+                filter_value(&font.to_string_lossy())
             ));
         }
         graph.push_str(&format!("[t{k}];"));
@@ -89,7 +104,7 @@ fn sheet_by_filter(ffmpeg: &Path, media: &Path, from_secs: f64, span: f64, frame
     if let Some(font) = any_font() {
         vf.push_str(&format!(
             ",drawtext=fontfile={}:text='%{{pts\\:hms\\:{:.3}}}':x=6:y=6:fontsize={}:fontcolor=white:box=1:boxcolor=black@0.5",
-            font.display(),
+            filter_value(&font.to_string_lossy()),
             from_secs,
             (tile_width / 14).clamp(10, 28)
         ));
@@ -201,4 +216,26 @@ fn image_size(path: &Path) -> Option<(u32, u32)> {
         i += 2 + len;
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    /// A font path holding a filtergraph's special characters stays one
+    /// value: ffmpeg draws with the font at that path, and nothing in the
+    /// name becomes an option or a filter.
+    #[test]
+    fn a_font_path_with_graph_characters_stays_one_value() {
+        let Some(font) = super::any_font() else { return };
+        let dir = std::env::temp_dir().join(format!("klipp-sheet-font-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let odd = dir.join("a:b,c'd[e];f.ttf");
+        std::fs::copy(&font, &odd).unwrap();
+        let out = dir.join("tile.png");
+        let graph = format!("color=c=black:s=64x36:d=1,drawtext=fontfile={}:text='x':fontcolor=white", super::filter_value(&odd.to_string_lossy()));
+        let ok = std::process::Command::new("ffmpeg").args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", &graph, "-frames:v", "1"]).arg(&out).status().is_ok_and(|s| s.success());
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(ok, "drawtext read the font at the odd path");
+        // ":" escaped for the option, then that backslash for the graph.
+        assert_eq!(super::filter_value("a:b"), "a\\\\:b");
+    }
 }

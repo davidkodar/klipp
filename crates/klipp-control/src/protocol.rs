@@ -1113,6 +1113,10 @@ pub enum ControlCommand {
         /// fields above are left out.
         #[serde(default)]
         outputs: Vec<DeliveryAsk>,
+        /// Replace a file already at the path (or at an output's). Left
+        /// out, an existing file is refused, as timeline export does.
+        #[serde(default)]
+        overwrite: bool,
     },
     /// Every render job the app knows: status, progress, result.
     ExportStatus {

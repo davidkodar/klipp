@@ -1346,10 +1346,17 @@ impl KlippApp {
                     &self.prefs.external_tools.video_editor
                 };
 
+                // Only a regular file, by absolute path: the default opener
+                // gets it as a file:// URI, the configured editor as one
+                // argument, never as an option or a folder.
+                let Some(uri) = crate::ui_util::file_uri(&path) else {
+                    self.state.toast.show(format!("{filename} is not a file Klipp can hand to another app"));
+                    return true;
+                };
                 #[cfg(target_os = "linux")]
                 {
                     let spawn_result = if app.trim().is_empty() {
-                        crate::ui_util::open_external(&path)
+                        crate::ui_util::open_external(&uri)
                     } else {
                         crate::ui_util::spawn_reaped(std::process::Command::new(app).arg(&path)).map(|_| ())
                     };

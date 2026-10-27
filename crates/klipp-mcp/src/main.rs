@@ -1039,10 +1039,11 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
         }
         "klipp_export" => {
             // A delivery of several formats (#2724) names a file for each.
+            let overwrite = args.get("overwrite").and_then(|v| v.as_bool()).unwrap_or(false);
             if let Some(outputs) = args.get("outputs").filter(|o| o.as_array().is_some_and(|a| !a.is_empty())) {
-                return Ok(json!({ "method": "export", "outputs": outputs }));
+                return Ok(json!({ "method": "export", "outputs": outputs, "overwrite": overwrite }));
             }
-            let mut v = json!({ "method": "export", "path": arg_str(args, "path")? });
+            let mut v = json!({ "method": "export", "path": arg_str(args, "path")?, "overwrite": overwrite });
             for key in ["width", "height", "crf", "bit_depth", "bitrate_kbps"] {
                 if let Some(n) = args.get(key).and_then(|v| v.as_u64()) {
                     v[key] = json!(n);
@@ -2418,7 +2419,8 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
         tool("klipp_export",
              "Render the active sequence to an absolute path with the defaults, a preset, or a codec, bit depth and bitrate; asynchronous. Details: klipp_guide topic export.",
              json!({
-                 "path": { "type": "string", "description": "Absolute output path" },
+                 "path": { "type": "string" },
+                 "overwrite": { "type": "boolean" },
                  "width": { "type": "integer" }, "height": { "type": "integer" },
                  "fps": { "type": "number" },
                  "crf": { "type": "integer", "description": "lower is better (23)" },

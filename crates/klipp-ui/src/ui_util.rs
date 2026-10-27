@@ -113,6 +113,27 @@ pub fn open_external(target: impl AsRef<std::ffi::OsStr>) -> std::io::Result<()>
     spawn_reaped(std::process::Command::new("xdg-open").arg(target)).map(|_| ())
 }
 
+/// `path` as a `file://` URI for the desktop's opener, when it is an
+/// absolute path to a regular file: what "Open in External App" hands
+/// over, so nothing a project names can reach the opener as an option, a
+/// folder or another kind of target. Bytes outside the unreserved set and
+/// `/` are percent-encoded.
+pub fn file_uri(path: &std::path::Path) -> Option<String> {
+    use std::os::unix::ffi::OsStrExt;
+    if !path.is_absolute() || !std::fs::metadata(path).is_ok_and(|m| m.is_file()) {
+        return None;
+    }
+    let mut uri = String::from("file://");
+    for &b in path.as_os_str().as_bytes() {
+        if b.is_ascii_alphanumeric() || b"-._~/".contains(&b) {
+            uri.push(b as char);
+        } else {
+            uri.push_str(&format!("%{b:02X}"));
+        }
+    }
+    Some(uri)
+}
+
 /// Start `cmd` with a null stdin and wait for it on a short-lived thread,
 /// so it never shares the terminal the app was started from (#1767) and
 /// never lingers as a zombie once it exits (#1785). Returns its pid.
@@ -130,6 +151,24 @@ pub fn spawn_reaped(cmd: &mut std::process::Command) -> std::io::Result<u32> {
 
 #[cfg(test)]
 mod tests {
+
+    /// Only an absolute path to a regular file becomes a URI, every odd
+    /// byte encoded: a folder, a relative or option-like name, and a path
+    /// that isn't there give none.
+    #[test]
+    fn only_a_regular_file_is_handed_to_the_opener() {
+        let dir = std::env::temp_dir().join(format!("klipp-file-uri-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let odd = dir.join("a b#c%d.mov");
+        std::fs::write(&odd, b"x").unwrap();
+        let uri = file_uri(&odd).expect("a file");
+        assert!(uri.starts_with("file:///") && uri.ends_with("/a%20b%23c%25d.mov"), "{uri}");
+        assert_eq!(file_uri(&dir), None, "a folder");
+        assert_eq!(file_uri(std::path::Path::new("--version")), None, "an option-like name");
+        assert_eq!(file_uri(&dir.join("gone.mov")), None, "a path that isn't there");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// #822: names are cut by characters, so a multi-byte letter at the
     /// cut point is kept whole instead of panicking.
     #[test]
