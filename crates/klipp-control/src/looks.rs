@@ -123,12 +123,29 @@ pub fn match_grade_knobs(target: &serde_json::Value, reference: &serde_json::Val
     // Mid: the exposure in stops that brings the mid grey together.
     let (tm, rm) = (ire(target, "mid").max(0.5), ire(reference, "mid").max(0.5));
     let exposure = some_if((rm / tm).log2().clamp(-1.0, 1.0) as f32, 0.05);
-    // Balance: warmth is red minus blue, tint is green against the rest.
-    let warm = |v: &serde_json::Value| bal(v, "red") - bal(v, "blue");
-    let green = |v: &serde_json::Value| bal(v, "green") - (bal(v, "red") + bal(v, "blue")) / 2.0;
-    let temperature = some_if(((warm(reference) - warm(target)) * 4.0).clamp(-0.6, 0.6) as f32, 0.02);
-    // Tint + is magenta (#2769): a greener reference is a negative tint.
-    let tint = some_if(((green(target) - green(reference)) * 4.0).clamp(-0.6, 0.6) as f32, 0.02);
+    // Balance (#2878): the white balance, in the grade's mireds, that
+    // moves the target's average colour by the Lab a*/b* gap to the
+    // reference's, solved through the balance itself. The knobs had been
+    // the RGB gap times four, under a mired: nothing visible moved.
+    let linear = |v: &serde_json::Value| ["red", "green", "blue"].map(|k| klipp_color::transfer::srgb_to_linear(bal(v, k) as f32));
+    let lab = |c: [f32; 3]| klipp_color::measure::linear_to_lab(c[0], c[1], c[2]);
+    let (t, r) = (lab(linear(target)), lab(linear(reference)));
+    let solve = |k: f32| klipp_color::white_balance::white_balance_for_lab_shift(linear(target), (r.a - t.a) * k, (r.b - t.b) * k, klipp_core::WorkingColorspace::Rec709Linear);
+    // A gap past the grade's ±50 is closed as far as the range goes, in
+    // its own direction: the shift scaled down, not one knob clamped.
+    let (mut temp, mut tnt) = solve(1.0);
+    let mut k = 1.0f32;
+    for _ in 0..4 {
+        let over = temp.abs().max(tnt.abs()) / 50.0;
+        if over <= 1.0 {
+            break;
+        }
+        k /= over * 1.02;
+        (temp, tnt) = solve(k);
+    }
+    // A mired moves a grey about 0.2 b*: under one is not seen.
+    let temperature = some_if(temp.clamp(-50.0, 50.0), 1.0);
+    let tint = some_if(tnt.clamp(-50.0, 50.0), 1.0);
 
     MatchKnobs { exposure, lift, gain, temperature, tint }
 }

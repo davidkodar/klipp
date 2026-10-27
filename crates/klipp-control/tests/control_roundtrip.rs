@@ -2701,6 +2701,29 @@ fn match_grade_knobs_close_the_gap() {
     assert!(k.gain.unwrap() > 0.0, "target is darker at the top: raise gain, got {:?}", k.gain);
     assert!(k.temperature.unwrap() > 0.0, "target is cooler: warm it, got {:?}", k.temperature);
 
+    // #2878: a cool target matched to a warmer reference, measured on
+    // the target's colour through the balance the knobs set: a gap the
+    // grade's range covers closes by at least 80%; a bigger one moves to
+    // the edge of the range in its own direction, a* kept close.
+    let flat = |px: [u8; 4]| klipp_control::frame_stats(&std::iter::repeat_n(px, 320 * 180).flatten().collect::<Vec<u8>>(), 320, 180, 0.0);
+    let lab = |c: [f32; 3]| klipp_color::measure::linear_to_lab(c[0], c[1], c[2]);
+    let lin = |p: [u8; 4]| [p[0], p[1], p[2]].map(|v| klipp_color::transfer::srgb_to_linear(v as f32 / 255.0));
+    let matched = |cool: [u8; 4], warm: [u8; 4]| {
+        let k = match_grade_knobs(&flat(cool), &flat(warm));
+        let t = k.temperature.expect("a white-balance move");
+        let m = klipp_color::white_balance::white_balance_matrix(t, k.tint.unwrap_or(0.0), klipp_core::WorkingColorspace::Rec709Linear).unwrap();
+        let moved = m.map(|row| row[0] * lin(cool)[0] + row[1] * lin(cool)[1] + row[2] * lin(cool)[2]);
+        let (before, after, goal) = (lab(lin(cool)), lab(moved), lab(lin(warm)));
+        eprintln!("b* gap {:.1} -> {:.1}, a* gap {:.1} -> {:.1} (temperature {t:.1}, tint {:?})", (goal.b - before.b).abs(), (goal.b - after.b).abs(), (goal.a - before.a).abs(), (goal.a - after.a).abs(), k.tint);
+        (t, (goal.b - before.b).abs(), (goal.b - after.b).abs(), (goal.a - before.a).abs(), (goal.a - after.a).abs())
+    };
+    let (t, gap, left, a_gap, a_left) = matched([124, 128, 138, 255], [136, 128, 122, 255]);
+    assert!(t > 5.0 && left < 0.2 * gap, "within range: b* gap {gap:.1} left at {left:.1}");
+    assert!(a_left <= a_gap.max(1.0), "a* not pushed away");
+    let (t, gap, left, a_gap, a_left) = matched([110, 125, 160, 255], [160, 128, 100, 255]);
+    assert!(t > 45.0 && left < 0.85 * gap, "past the range: to its edge, b* gap {gap:.1} left at {left:.1}");
+    assert!(a_left <= a_gap.max(1.0) + 1.0, "a* kept close: {a_gap:.1} -> {a_left:.1}");
+
     // A clip matched to itself moves nothing.
     let same = match_grade_knobs(&reference, &reference);
     assert!(same.is_empty(), "no gap, no grade: {same:?}");
