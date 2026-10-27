@@ -102,6 +102,8 @@ mod side_mattes_render;
 mod speed_ramp_retime;
 #[path = "../stack_effects_plan.rs"]
 mod stack_effects_plan;
+#[path = "../clean_frame_plate.rs"]
+mod clean_frame_plate;
 #[path = "../surface_pin.rs"]
 mod surface_pin;
 #[path = "../surface_pin_node.rs"]

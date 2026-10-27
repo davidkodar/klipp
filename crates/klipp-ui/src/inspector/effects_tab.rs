@@ -369,6 +369,11 @@ fn builtin_effect_default(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
         },
         BuiltinEffect::LumaKey { .. } => BuiltinEffect::LumaKey { low: 0.0, high: 0.1, soft: 0.05, invert: false },
         BuiltinEffect::CornerPin { .. } => klipp_effects::corner_pin::still(),
+        // The shape stays: a reset is its settings.
+        BuiltinEffect::Warp { mode, .. } => {
+            let Some(BuiltinEffect::Warp { amplitude, wavelength, speed, direction, angle, strength, radius, center_x, center_y, band, .. }) = klipp_effects::registry::effect_type("warp").map(|t| (t.sample)()) else { return effect.clone() };
+            BuiltinEffect::Warp { mode: *mode, amplitude, wavelength, speed, direction, angle, strength, radius, center_x, center_y, band, time: 0.0 }
+        }
         // The surface stays: a reset is its edges.
         BuiltinEffect::SurfacePin { surface, .. } => BuiltinEffect::SurfacePin { surface: surface.clone(), inset: 0.0, on_source: [[0.0; 2]; 4], source: [0; 2] },
         // The file stays: a reset is the look at full strength.

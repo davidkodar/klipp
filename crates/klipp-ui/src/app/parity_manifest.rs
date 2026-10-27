@@ -141,6 +141,8 @@ impl CoverageKey {
     }
 }
 
+// A test's catalog, built once: its rows' presentations kept inline.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug)]
 pub(super) enum CatalogValue {
     Parameter {

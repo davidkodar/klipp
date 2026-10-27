@@ -118,6 +118,8 @@ const SHOWN_NOW: &[(&str, &str, &str)] = &[
     ("klipp.grade.qualifier", "qual_lum_soft", "the HSL mode's, #895"),
     // The matte finesse's denoise (#901), new.
     ("klipp.grade.qualifier", "qual_denoise", "the matte's denoise, #901"),
+    // A tracked subject an external matte reads (#2758), new.
+    ("klipp.grade.external_matte", "matte_subject", "the tracked subject, #2758"),
 ];
 
 /// What the variant's stored values switch on.
@@ -137,6 +139,8 @@ fn visible(pres: &Presentation, on: &[&str]) -> bool {
     match pres.visible_if {
         None => true,
         Some(klipp_effects::registry::presentation::Cond::ParamIs { key, value }) => (value != 0.0) == on.contains(&key),
+        // Grade switches only; a choice's options aren't a grade row's.
+        Some(c @ klipp_effects::registry::presentation::Cond::ParamIn { .. }) => on.contains(&c.key()),
     }
 }
 

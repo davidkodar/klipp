@@ -259,6 +259,46 @@ pub(super) static TYPES: &[EffectType] = &[
             time: 0.0,
         },
     },
+    // The picture bent by one of the shared warps (#2758): a wave, a
+    // twirl, a bulge or pinch, ripples, torn rows. Its time is the
+    // compositor's, as Displace's is.
+    EffectType {
+        desc: mixable(geometry(
+            "klipp.fx.warp",
+            "Warp",
+            &[
+                choice("mode", "Shape", 0.0, &["wave", "twirl", "bulge", "ripples", "torn_rows"]),
+                ParamDesc::float("amplitude", "Amplitude", 20.0, (0.0, 400.0), Unit::Per1080),
+                ParamDesc::float("wavelength", "Wavelength", 0.2, (0.01, 2.0), Unit::Normalised),
+                ParamDesc::float("speed", "Speed", 1.0, (0.0, 20.0), Unit::Ratio),
+                choice("direction", "Direction", 0.0, &["across", "up_down", "both"]),
+                ParamDesc::float("angle", "Angle", 180.0, (-1440.0, 1440.0), Unit::Degrees),
+                ParamDesc::float("strength", "Strength", 0.5, (-0.9, 3.0), Unit::Ratio),
+                ParamDesc::float("radius", "Radius", 0.5, (0.0, 2.0), Unit::Normalised),
+                ParamDesc::float("center_x", "Centre X", 0.5, (0.0, 1.0), Unit::Normalised),
+                ParamDesc::float("center_y", "Centre Y", 0.5, (0.0, 1.0), Unit::Normalised),
+                ParamDesc::float("band", "Band", 0.04, (0.005, 0.5), Unit::Normalised),
+                ParamDesc { soft: None, ..ParamDesc::float("time", "Time", 0.0, (0.0, 1.0), Unit::Seconds).fixed() },
+            ],
+            Spatial::Geometric,
+            false,
+        )),
+        tag: "warp",
+        sample: || BuiltinEffect::Warp {
+            mode: 0,
+            amplitude: 20.0,
+            wavelength: 0.2,
+            speed: 1.0,
+            direction: 0,
+            angle: 180.0,
+            strength: 0.5,
+            radius: 0.5,
+            center_x: 0.5,
+            center_y: 0.5,
+            band: 0.04,
+            time: 0.0,
+        },
+    },
     // The layer mirrored about a waterline (#2707). It draws below the
     // layer, so it runs on the placed layer; its time is the
     // compositor's, as Displace's is.

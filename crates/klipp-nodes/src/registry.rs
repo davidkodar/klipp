@@ -351,6 +351,9 @@ static P_EXTERNAL_MATTE: &[ParamDesc] = &[
 static P_DIFFERENCE_KEY: &[ParamDesc] = &[
     ParamDesc { field: "difference_key.enabled", index: None, key: "difference_key.enabled", label: "Enabled", kind: ParamKind::Bool, default: 0.0, range: None, soft: None, unit: Unit::None, scaling: Scaling::None, keyframable: false, derived: false },
     ParamDesc { field: "difference_key.plate_path", index: None, key: "difference_key.plate_path", label: "Clean plate", kind: ParamKind::Other, default: f32::NAN, range: None, soft: None, unit: Unit::None, scaling: Scaling::None, keyframable: false, derived: false },
+    // A frame of the clip's own media as the plate (#2758), by its source
+    // seconds; unset, the file.
+    ParamDesc { field: "difference_key.plate_frame", index: None, key: "difference_key.plate_frame", label: "Clean frame", kind: ParamKind::Other, default: f32::NAN, range: None, soft: None, unit: Unit::Seconds, scaling: Scaling::None, keyframable: false, derived: false },
     ParamDesc { field: "difference_key.tolerance", index: None, key: "difference_key.tolerance", label: "Tolerance", kind: ParamKind::Float, default: 0.05, range: None, soft: Some((0.0, 1.0)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: false, derived: false },
     ParamDesc { field: "difference_key.soft", index: None, key: "difference_key.soft", label: "Softness", kind: ParamKind::Float, default: 0.02, range: None, soft: Some((0.0, 0.5)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: false, derived: false },
     ParamDesc { field: "difference_key.invert", index: None, key: "difference_key.invert", label: "Invert", kind: ParamKind::Bool, default: 0.0, range: None, soft: None, unit: Unit::None, scaling: Scaling::None, keyframable: false, derived: false },

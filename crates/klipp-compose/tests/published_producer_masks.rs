@@ -86,7 +86,7 @@ fn producer(p: Producer) -> Node {
         }),
         Producer::LumaKey => node(NodeKind::LumaKey, NodeParams { luma_key: Some(klipp_core::LumaKeySettings { enabled: true, low: 0.3, high: 0.4, soft: 0.05, ..Default::default() }), ..Default::default() }),
         Producer::DifferenceKey => node(NodeKind::DifferenceKey, NodeParams {
-            difference_key: Some(klipp_core::DifferenceKeySettings { enabled: true, plate_path: Some(plate()), tolerance: 0.1, soft: 0.3, invert: false, match_space: klipp_core::DifferenceKeyMatchSpace::Rgb }),
+            difference_key: Some(klipp_core::DifferenceKeySettings { enabled: true, plate_path: Some(plate()), plate_frame: None, tolerance: 0.1, soft: 0.3, invert: false, match_space: klipp_core::DifferenceKeyMatchSpace::Rgb }),
             ..Default::default()
         }),
         Producer::Window => {

@@ -18,7 +18,7 @@ use super::parity_manifest::{
 };
 use crate::inspector::generated::{effect_value, row};
 use klipp_core::AppCommand;
-use klipp_effects::registry::presentation::{Cond, Presentation, Widget};
+use klipp_effects::registry::presentation::{Presentation, Widget};
 use klipp_effects::registry::{effect_types, EffectType, ParamDesc, ParamKind};
 use klipp_effects::BuiltinEffect;
 use klipp_timeline::test_clip;
@@ -129,13 +129,15 @@ pub(super) fn acting_sample(ty: &EffectType) -> BuiltinEffect {
         "merge" => BuiltinEffect::Merge { blend_mode: klipp_effects::BlendMode::Screen, opacity: 0.5 },
         // The item the harness's sources hold, a little on.
         "media_source" => BuiltinEffect::MediaSource { media: super::parity_pixels::MEDIA_ITEM.into(), offset: 0.25 },
+        // On the screen its fixture's clip carries (`fixture_on`).
+        "surface_pin" => BuiltinEffect::SurfacePin { surface: PARITY_SCREEN.into(), inset: 0.0, on_source: [[0.0; 2]; 4], source: [0; 2] },
         _ => (ty.sample)(),
     }
 }
 
 pub(super) fn editable(ty: &EffectType, pres: &Presentation) -> Result<BuiltinEffect, String> {
     let mut effect = acting_sample(ty);
-    for Cond::ParamIs { key, value } in [pres.visible_if, pres.enabled_if].into_iter().flatten() {
+    for (key, value) in [pres.visible_if, pres.enabled_if].into_iter().flatten().map(|c| (c.key(), c.a_value_meeting_it())) {
         let desc = ty
             .desc
             .params
@@ -157,8 +159,28 @@ pub(super) fn editable(ty: &EffectType, pres: &Presentation) -> Result<BuiltinEf
     Ok(effect)
 }
 
+/// The surface a surface pin's fixture clip carries, by name.
+const PARITY_SCREEN: &str = "Parity screen";
+
 pub(super) fn fixture_on(effect: &BuiltinEffect, surface: Surface) -> klipp_timeline::Clip {
     let mut clip = fixture(effect);
+    if matches!(effect, BuiltinEffect::SurfacePin { .. }) {
+        // A screen leaning in the shot, still, on a picture of any size
+        // (no size: the frame's), so the pin and its inset show.
+        let screen = [[0.2, 0.15], [0.8, 0.2], [0.75, 0.85], [0.25, 0.8]];
+        let key = |secs| klipp_timeline::SurfaceKey::at_corners(secs, &screen, &screen).expect("a quad");
+        clip.surfaces.push(klipp_timeline::Surface {
+            id: uuid::Uuid::new_v4(),
+            name: PARITY_SCREEN.into(),
+            corners: screen,
+            reference_secs: 0.0,
+            keys: vec![key(0.0), key(3600.0)],
+            source_size: [0, 0],
+            media_fps: 0.0,
+            track_area: None,
+            exclude: Vec::new(),
+        });
+    }
     if matches!(effect, BuiltinEffect::Opacity { .. }) && surface == Surface::EffectsStack {
         // The final enabled Opacity becomes the clip anchor. The first
         // remains a card and must be exercised independently.
@@ -541,7 +563,7 @@ fn run_entry(report: &mut Report, entry: &CatalogEntry, surface: Surface, varian
     // the row comes and goes with it, the condition's stored field set the
     // other way on the effect straight, no widget involved; drawing either
     // writes nothing.
-    if let Some(Cond::ParamIs { key: cond_key, value: met }) = pres.visible_if {
+    if let Some((cond_key, met)) = pres.visible_if.map(|c| (c.key(), c.a_value_meeting_it())) {
         report.case(&name("shown with its condition"), [key(Interaction::ConditionalVisibility)], || {
             let cond = ty.desc.params.iter().find(|p| p.key == cond_key).ok_or_else(|| format!("unknown condition {cond_key}"))?;
             let drawn = |effect: &BuiltinEffect| -> Result<usize, String> {

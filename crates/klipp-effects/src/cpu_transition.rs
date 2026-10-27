@@ -52,16 +52,9 @@ fn lerp_pixel(a: V4, b: V4, t: f32) -> V4 {
     a * (1.0 - t) + b * t
 }
 
-fn hash_u(v: u32) -> u32 {
-    let mut x = v;
-    x = ((x >> 16) ^ x).wrapping_mul(0x45d9f3b);
-    x = ((x >> 16) ^ x).wrapping_mul(0x45d9f3b);
-    (x >> 16) ^ x
-}
-
-fn rand3(a: u32, b: u32, c: u32) -> f32 {
-    hash_u(a ^ hash_u(b ^ hash_u(c))) as f32 / 4294967295.0
-}
+// The shader's hash and its warps are `crate::warp`'s, shared with the
+// Warp effect.
+use crate::warp::{band_shift as warp_band_shift, rand3, ripple as warp_ripple, twirl as warp_twirl, wave as warp_wave};
 
 /// The shader's `burn_noise`.
 fn burn_noise(px: f32, py: f32) -> f32 {
@@ -505,21 +498,11 @@ fn pixel(params: &Params, from_buf: &Buf, to_buf: &Buf, idx: u32) -> V4 {
         // and moved one shot only: a plain dissolve to see (#2764).
         let cx = f32c(params.width) * 0.5;
         let cy = f32c(params.height) * 0.5;
-        let dx = f32c(x) - cx;
-        let dy = f32c(y) - cy;
-        let dist = length(vec2!(dx, dy));
         let wave = sin(p * 3.14159265);
-        let phase = dist / f32c(params.height) * params.param1 * 6.28318530 - p * params.param2 * 10.0;
-        let ripple = sin(phase) * wave * params.param0 * f32c(params.height) / 1080.0;
-        let mut nx: f32 = 0.0;
-        let mut ny: f32 = 0.0;
-        if dist > 0.1 {
-            nx = dx / dist;
-            ny = dy / dist;
-        }
-        let sx = clamp(f32c(x) + nx * ripple, 0.0, f32c(params.width) - 1.0);
-        let sy = clamp(f32c(y) + ny * ripple, 0.0, f32c(params.height) - 1.0);
-        let base = lerp_pixel(bilinear(false, sx, sy), bilinear(true, sx, sy), p);
+        // The rings are the shared warp's (`crate::warp`).
+        let r = warp_ripple(f32c(x), f32c(y), f32c(params.width), f32c(params.height), cx, cy, params.param1, p * params.param2 * 10.0, wave, params.param0);
+        let phase = r.z;
+        let base = lerp_pixel(bilinear(false, r.x, r.y), bilinear(true, r.x, r.y), p);
         let light = 1.0 + cos(phase) * wave * 0.15;
         result = vec4!(clamp(base.x * light, 0.0, 255.0), clamp(base.y * light, 0.0, 255.0), clamp(base.z * light, 0.0, 255.0), base.w);
     } else if params.kind_id == 21u32 || params.kind_id == 22u32 {
@@ -1308,10 +1291,8 @@ fn pixel(params: &Params, from_buf: &Buf, to_buf: &Buf, idx: u32) -> V4 {
         let intensity = params.param0;
         let block_size = max(params.param1, 1.0);
         let envelope = sin(p * 3.14159265) * intensity;
-        let band = u32c(f32c(y) / (block_size * 3.0));
-        let step = u32c(p * 12.0);
-        let on = select(0.0, 1.0, rand3(band, step, 6u32) > 0.35);
-        let shift = (0.3 + 0.7 * rand3(band, step, 7u32)) * envelope * 0.04 * f32c(params.width) * on;
+        // The torn rows are the shared warp's (`crate::warp`).
+        let shift = warp_band_shift(f32c(y), block_size * 3.0, u32c(p * 12.0), envelope, f32c(params.width));
         let rx = clamp(f32c(x) + shift, 0.0, f32c(params.width) - 1.0);
         let bx = clamp(f32c(x) - shift, 0.0, f32c(params.width) - 1.0);
         let r_idx = u32c(y) * params.width + u32c(rx);
@@ -1382,20 +1363,12 @@ fn pixel(params: &Params, from_buf: &Buf, to_buf: &Buf, idx: u32) -> V4 {
         // Swirl: rotational distortion spiraling from center.
         let cx = f32c(params.width) * 0.5;
         let cy = f32c(params.height) * 0.5;
-        let dx = f32c(x) - cx;
-        let dy = f32c(y) - cy;
-        let dist = length(vec2!(dx, dy));
         let max_r = max(length(vec2!(cx, cy)), 1.0);
-        let norm_dist = dist / max_r;
         let max_angle = params.param0 * 3.14159265 / 180.0;
-        let falloff = params.param1;
         let envelope = sin(p * 3.14159265);
-        let swirl_angle = max_angle * envelope * exp(-norm_dist * falloff);
-        let cos_a = cos(swirl_angle);
-        let sin_a = sin(swirl_angle);
-        let sx = clamp(cos_a * dx - sin_a * dy + cx, 0.0, f32c(params.width) - 1.0);
-        let sy = clamp(sin_a * dx + cos_a * dy + cy, 0.0, f32c(params.height) - 1.0);
-        let sample_idx = u32c(sy) * params.width + u32c(sx);
+        // The turn is the shared warp's (`crate::warp`).
+        let s = warp_twirl(f32c(x), f32c(y), f32c(params.width), f32c(params.height), cx, cy, max_r, max_angle * envelope, params.param1);
+        let sample_idx = u32c(s.y) * params.width + u32c(s.x);
         let from_s = unpack(from_buf[sample_idx]);
         let to_s = unpack(to_buf[sample_idx]);
         result = lerp_pixel(from_s, to_s, p);
@@ -1404,30 +1377,12 @@ fn pixel(params: &Params, from_buf: &Buf, to_buf: &Buf, idx: u32) -> V4 {
         // strongest at the cut; param0 the amplitude in pixels of a
         // 1080-line frame. Unlit, its bend read as a plain dissolve on
         // footage (#2764).
-        let frequency = params.param1;
-        let dir = u32c(params.param2 + 0.5);
         let wave = sin(p * 3.14159265);
         let envelope = wave * params.param0 * f32c(params.height) / 1080.0;
-        let ay = f32c(y) / f32c(params.height) * frequency * 6.28318530;
-        let ax = f32c(x) / f32c(params.width) * frequency * 6.28318530;
-        let mut off_x: f32 = 0.0;
-        let mut off_y: f32 = 0.0;
-        let mut crest: f32 = 0.0;
-        if dir == 0u32 {
-            off_x = sin(ay) * envelope;
-            crest = cos(ay);
-        } else if dir == 1u32 {
-            off_y = sin(ax) * envelope;
-            crest = cos(ax);
-        } else {
-            off_x = sin(ay) * envelope * 0.7;
-            off_y = sin(ax) * envelope * 0.7;
-            crest = (cos(ay) + cos(ax)) * 0.5;
-        }
-        let sx = clamp(f32c(x) + off_x, 0.0, f32c(params.width) - 1.0);
-        let sy = clamp(f32c(y) + off_y, 0.0, f32c(params.height) - 1.0);
-        let base = lerp_pixel(bilinear(false, sx, sy), bilinear(true, sx, sy), p);
-        let light = 1.0 + crest * wave * 0.15;
+        // The bend is the shared warp's (`crate::warp`).
+        let b = warp_wave(f32c(x), f32c(y), f32c(params.width), f32c(params.height), envelope, params.param1, u32c(params.param2 + 0.5), 0.0);
+        let base = lerp_pixel(bilinear(false, b.x, b.y), bilinear(true, b.x, b.y), p);
+        let light = 1.0 + b.z * wave * 0.15;
         result = vec4!(clamp(base.x * light, 0.0, 255.0), clamp(base.y * light, 0.0, 255.0), clamp(base.z * light, 0.0, 255.0), base.w);
     } else if params.kind_id == 51u32 {
         // Colorize Flash: user-defined color washes over at the cut.

@@ -479,6 +479,10 @@ fn builtin_preview_params(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
         klipp_effects::BuiltinEffect::Generator { .. } => klipp_effects::BuiltinEffect::Generator {
             shape: 1, color_a: [30, 60, 160, 255], color_b: [250, 200, 120, 255], angle: 30.0, center_x: 0.5, center_y: 0.5, radius: 0.5,
         },
+        // A twirl, what a bend looks like at a glance.
+        klipp_effects::BuiltinEffect::Warp { .. } => klipp_effects::BuiltinEffect::Warp {
+            mode: klipp_effects::warp::TWIRL, amplitude: 20.0, wavelength: 0.2, speed: 1.0, direction: 0, angle: 220.0, strength: 0.5, radius: 0.6, center_x: 0.5, center_y: 0.5, band: 0.04, time: 0.0,
+        },
         klipp_effects::BuiltinEffect::CornerPin { .. } | klipp_effects::BuiltinEffect::SurfacePin { .. } => {
             // A card leaning back into the frame: the pin as a picture
             // on a surface, not a rectangle.

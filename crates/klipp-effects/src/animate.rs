@@ -312,6 +312,17 @@ impl BuiltinEffect {
                 }
             }
             E::SurfacePin { inset, .. } => real(f, "inset", inset),
+            E::Warp { amplitude, wavelength, speed, angle, strength, radius, center_x, center_y, band, .. } => {
+                real(f, "amplitude", amplitude);
+                real(f, "wavelength", wavelength);
+                real(f, "speed", speed);
+                real(f, "angle", angle);
+                real(f, "strength", strength);
+                real(f, "radius", radius);
+                real(f, "center_x", center_x);
+                real(f, "center_y", center_y);
+                real(f, "band", band);
+            }
             E::Transform { .. }
             | E::ColorFade { .. }
             | E::FocusBlur { .. }

@@ -76,6 +76,26 @@ struct Synthetic {
     reads: u32,
 }
 
+/// [`Synthetic`]'s subject matte sequence at `size` for `model`, made
+/// once.
+fn subject_matte((w, h): (u32, u32), model: u32) -> Option<std::path::PathBuf> {
+    use klipp_nodes::matte_sequence as seq;
+    static MADE: std::sync::Mutex<Vec<((u32, u32, u32), std::path::PathBuf)>> = std::sync::Mutex::new(Vec::new());
+    let mut made = MADE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, dir)) = made.iter().find(|(k, _)| *k == (w, h, model)) {
+        return Some(dir.clone());
+    }
+    let dir = std::env::temp_dir().join(format!("klipp-parity-subject-{}-{w}x{h}-{model}", std::process::id()));
+    let manifest = seq::Manifest { format: seq::FORMAT, fps: 24.0, width: w, height: h, rotation: 0, model: "parity".into(), model_bytes: 0, provider: "cpu".into(), algorithm: 1, steadied: false };
+    seq::create(&dir, &manifest).ok()?;
+    let alpha: Vec<u8> = (0..w * h).map(|i| if i % w < w / 2 { 255 } else { 0 }).collect();
+    for f in 0..=240 {
+        seq::put(&dir, &manifest, seq::key_of(f as f64 / 24.0), &alpha).ok()?;
+    }
+    made.push(((w, h, model), dir.clone()));
+    Some(dir)
+}
+
 impl FrameSource for Synthetic {
     fn frame(&mut self, _clip: &Clip, secs: f64, _width: u32, _height: u32) -> Option<SourceFrame> {
         self.reads += 1;
@@ -93,6 +113,13 @@ impl FrameSource for Synthetic {
     /// oracle's renderers hold ([`analyses`]).
     fn analysis_key(&mut self, clip: &Clip, kind: klipp_analysis::assets::AssetKind) -> Option<klipp_analysis::assets::AssetKey> {
         matches!(clip.kind, klipp_timeline::ClipKind::Media { .. }).then(|| stand_in_key(kind)).flatten()
+    }
+
+    /// A tracked subject's matte (#2758): its left half, for every frame
+    /// of its first ten seconds, the subject's (model 0) and the
+    /// foreground's (model 1) the same, so picking one shows.
+    fn subject_matte_dir(&mut self, _clip: &Clip, model: u32) -> Option<std::path::PathBuf> {
+        subject_matte(self.size, model)
     }
 
     /// A media source's item (#1746), [`MEDIA_ITEM`]: the same pattern

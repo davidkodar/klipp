@@ -36,9 +36,10 @@ fn whole(addr: &NodePath, key: &str, value: &impl serde::Serialize) -> Option<Ap
 
 /// Draw the matte `addr` names in `graph`, `clip`'s picture, and push the
 /// commands its edits imply: `false`, drawing nothing, when `addr` isn't a
-/// matte beside the chain.
+/// matte beside the chain. `source_secs` is the clip's source time at the
+/// playhead, the frame a difference key's plate can be picked at.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn show(ui: &mut egui::Ui, theme: &KlippTheme, clip: &klipp_timeline::Clip, graph: &Graph, addr: &NodePath, frame: FrameSelection, cmds: &mut Vec<AppCommand>) -> bool {
+pub(crate) fn show(ui: &mut egui::Ui, theme: &KlippTheme, clip: &klipp_timeline::Clip, graph: &Graph, addr: &NodePath, frame: FrameSelection, source_secs: f64, cmds: &mut Vec<AppCommand>) -> bool {
     let Some((node, kind, params)) = matte_at(graph, addr) else { return false };
     let Some(ty) = klipp_nodes::registry::node_type(kind) else { return false };
     // The rows read the settings as a grade node's entry holds them.
@@ -61,7 +62,7 @@ pub(crate) fn show(ui: &mut egui::Ui, theme: &KlippTheme, clip: &klipp_timeline:
                 true
             }
             "plate_file" => {
-                plate_picker(ui, theme, addr, &params, cmds);
+                plate_picker(ui, theme, addr, &params, source_secs, cmds);
                 true
             }
             _ => false,
@@ -98,27 +99,45 @@ fn by_path(cmd: AppCommand, addr: &NodePath) -> Option<AppCommand> {
     })
 }
 
-/// A difference key's clean plate: its name, Browse and Clear.
-fn plate_picker(ui: &mut egui::Ui, theme: &KlippTheme, addr: &NodePath, params: &NodeParams, cmds: &mut Vec<AppCommand>) {
+/// A difference key's clean plate: a frame of the clip's own picked at
+/// the playhead (#2758), or a file; its name, Use This Frame, Browse and
+/// Clear.
+fn plate_picker(ui: &mut egui::Ui, theme: &KlippTheme, addr: &NodePath, params: &NodeParams, source_secs: f64, cmds: &mut Vec<AppCommand>) {
     let plate = params.difference_key.as_ref().and_then(|d| d.plate_path.clone());
+    let picked = params.difference_key.as_ref().and_then(|d| d.plate_frame);
     ui.horizontal(|ui| {
         ui.label("Plate");
-        match &plate {
-            Some(p) => {
+        match (&plate, picked) {
+            (_, Some(secs)) => {
+                ui.label(format!("The clip's frame at {secs:.2} s")).on_hover_text("The clip's own frame, in its file's seconds: a trim leaves it where it is");
+            }
+            (Some(p), None) => {
                 ui.label(p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned())).on_hover_text(p.display().to_string());
             }
-            None => {
+            (None, None) => {
                 ui.label(egui::RichText::new("None chosen").color(theme.text_dim));
             }
         }
     });
     let key = params.difference_key.clone().unwrap_or_default();
+    let with_frame = {
+        let key = key.clone();
+        move |addr: &NodePath, secs: Option<f64>| {
+            let mut key = key.clone();
+            key.plate_frame = secs;
+            whole(addr, "difference_key", &key)
+        }
+    };
     let with_plate = move |addr: &NodePath, plate: Option<std::path::PathBuf>| {
         let mut key = key.clone();
         key.plate_path = plate;
+        key.plate_frame = None;
         whole(addr, "difference_key", &key)
     };
     ui.horizontal(|ui| {
+        if ui.button("Use This Frame").on_hover_text("The clip's frame at the playhead as the clean plate: park on a frame without the subject").clicked() {
+            cmds.extend(with_frame(addr, Some(source_secs)));
+        }
         if ui.button("Browse\u{2026}").on_hover_text("Choose the clean plate: the shot without its subject").clicked() {
             let (addr, with_plate) = (addr.clone(), with_plate.clone());
             crate::file_dialog::spawn_pick(
@@ -126,7 +145,7 @@ fn plate_picker(ui: &mut egui::Ui, theme: &KlippTheme, addr: &NodePath, params: 
                 move |chosen| with_plate(&addr, Some(chosen)).into_iter().collect(),
             );
         }
-        if plate.is_some() && ui.button("Clear").clicked() {
+        if (plate.is_some() || picked.is_some()) && ui.button("Clear").clicked() {
             cmds.extend(with_plate(addr, None));
         }
     });

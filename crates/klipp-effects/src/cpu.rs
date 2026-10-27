@@ -483,6 +483,11 @@ pub(crate) fn apply(
         },
         // The twin of `SHADER_PARTICLES` (#1141).
         Particles { .. } => crate::particles::apply(effect, p, w, h),
+        // The twin of the Warp's shader (#2758).
+        Warp { .. } => match effect.warp_settings() {
+            Some(s) if !crate::warp::is_identity(&s) => crate::warp::cpu(&p, w, h, &s),
+            _ => p,
+        },
         // The twin of `displace::SHADER` (#2702).
         Displace { amount, size, speed, direction, seed, time } => {
             if amount.abs() < f32::EPSILON {
