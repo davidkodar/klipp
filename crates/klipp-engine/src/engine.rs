@@ -9200,6 +9200,14 @@ impl PlaybackEngine {
         if self.compare_effect_active {
             blockers.push("compare mode active");
         }
+        // A node past the grade viewed: the stack draws the chain cut there
+        // (#2879); the fast paths would show the whole chain.
+        if let Some(at) = &self.solo {
+            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+            if at.path.root_clip().map(klipp_core::ClipId).is_some_and(|c| seq.grade_node_at(c, &at.path).is_err()) {
+                blockers.push("node viewed past the grade");
+            }
+        }
         if blockers.iter().any(|b| matches!(*b, "KLIPP_DIRECT_PRESENT=0" | "not playing" | "not a slider drag on the parked frame")) {
             return blockers;
         }
@@ -14576,6 +14584,76 @@ mod viewer_mode_route_tests {
             engine.state = PlaybackState::Paused;
             set(&mut engine, false);
             assert!(!engine.fast_path_blockers_for(FastPath::PausedPresent).contains(name), "{name} off");
+        }
+    }
+}
+
+#[cfg(test)]
+mod view_past_grade_tests {
+    use super::*;
+    use klipp_timeline::Sequence;
+    use std::sync::Mutex;
+
+    /// #2879: a node of a clip's chain past its grade, viewed, is drawn by
+    /// cutting the chain there: the frame's sequence holds the clip cut,
+    /// the inspection carries no solo, the fast paths stand aside by name
+    /// and the GPU stack may take the frame. A grade's own node is left to
+    /// the inspection, as before.
+    #[test]
+    fn a_node_past_the_grade_is_drawn_cut_on_the_stack() {
+        let tc = |s: f64| RationalTime::from_secs_f64(s, 30);
+        let mut clip = klipp_timeline::Clip::media(MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0));
+        let root = klipp_graph_format::path::Root::Clip { clip: clip.id.0 };
+        let display = clip.picture_v2().unwrap().picture.graph.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_format::lifted::types::SCENE_TO_DISPLAY).unwrap().id;
+        let mk = |e: klipp_effects::BuiltinEffect| -> klipp_graph_format::Node {
+            let payload = serde_json::to_value(&e).unwrap();
+            serde_json::from_value(serde_json::json!({
+                "id": klipp_graph_format::NodeId::new_v4(),
+                "type_id": klipp_graph_lift::names::effect_node_type(payload["type"].as_str().unwrap()),
+                "legacy": { "payload": payload },
+            })).unwrap()
+        };
+        let (glow, invert) = (mk(klipp_effects::BuiltinEffect::Glow { radius: 6.0, intensity: 0.8, threshold: 0.5 }), mk(klipp_effects::BuiltinEffect::Invert { mix: 1.0 }));
+        let at = |id| klipp_graph_format::path::NodePath::new(root, [id]);
+        clip.apply_picture_ops(&[
+            klipp_graph_lift::ops::GraphOp::AddNode { after: at(display), node: Box::new(glow.clone()) },
+            klipp_graph_lift::ops::GraphOp::AddNode { after: at(glow.id), node: Box::new(invert.clone()) },
+        ]).unwrap();
+        let id = clip.id;
+        let mut seq = Sequence::new_default();
+        let mut v1 = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+        v1.clips = vec![clip];
+        seq.tracks = vec![v1];
+
+        let solo = klipp_compose::InspectAt::out(at(glow.id));
+        let mut cut = seq.clone();
+        assert!(super::view::cut_for_solo(&mut cut, &solo), "the glow is past the grade, on the chain");
+        let enabled = |s: &Sequence, n| s.all_clips().find(|c| c.id == id).unwrap().picture_v2().unwrap().picture.graph.nodes.iter().find(|x| x.id == n).unwrap().enabled;
+        assert!(enabled(&cut, glow.id) && !enabled(&cut, invert.id), "the invert after it is off");
+        assert!(enabled(&seq, invert.id), "only the frame's copy is cut");
+        // A grade's own node: the inspection shows it.
+        let grade = seq.all_clips().find(|c| c.id == id).unwrap().grade().nodes[0].id;
+        assert!(!super::view::cut_for_solo(&mut seq.clone(), &klipp_compose::inspect::grade_node(id, grade)));
+
+        let sequence = Arc::new(klipp_timeline::SharedSequence::new(seq));
+        let (_cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
+        let (ev_tx, _ev_rx) = crossbeam_channel::unbounded();
+        let fb = || Arc::new(Mutex::new(crate::texture::FrameBuffer::new(16, 16)));
+        let mut engine = PlaybackEngine::new(
+            cmd_rx, ev_tx, fb(), fb(),
+            Arc::clone(&sequence), Arc::new(RwLock::new(klipp_media::MediaPool::new())), Box::new(|| {}),
+            Arc::new(Mutex::new(None)), Arc::new(Mutex::new(crate::perf::PerfRing::default())),
+        );
+        engine.playhead = tc(1.0);
+        engine.solo = Some(solo);
+        assert!(engine.inspect_request(&sequence.read().unwrap(), Some(id), true).solo.is_none(), "drawn cut, not inspected");
+        if !klipp_compose::gpu_composite_enabled() || !direct_present_enabled() {
+            return;
+        }
+        for (state, mode) in [(PlaybackState::Paused, FastPath::PausedPresent), (PlaybackState::Playing, FastPath::Playing)] {
+            engine.state = state;
+            assert!(engine.fast_path_blockers_for(mode).contains(&"node viewed past the grade"), "{mode:?}");
+            assert!(engine.gpu_composite_allowed(), "{mode:?}: the stack may take it");
         }
     }
 }

@@ -1072,6 +1072,24 @@ impl Clip {
         }
     }
 
+    /// The clip as its picture's chain shows at `node` (#2879): every
+    /// node of the chain after it switched off, but the display step, the
+    /// placement and the output, so the frame is that node's picture,
+    /// placed as the clip is. False when `node` isn't on the chain (a
+    /// node beside it, a grade's own node, or one the clip lacks).
+    pub fn cut_chain_at(&mut self, node: NodeId) -> bool {
+        let Ok(lifted) = self.picture_v2() else { return false };
+        let chain = chain(&lifted.picture);
+        let Some(at) = chain.iter().position(|n| n.id == node) else { return false };
+        let root = Root::Clip { clip: self.id.0 };
+        let ops: Vec<GraphOp> = chain[at + 1..]
+            .iter()
+            .filter(|n| n.enabled && !matches!(n.type_id.as_str(), lt::PLACEMENT | lt::OUTPUT | lt::SCENE_TO_DISPLAY))
+            .map(|n| GraphOp::SetEnabled { path: klipp_graph_format::path::NodePath::new(root, [n.id]), enabled: false })
+            .collect();
+        ops.is_empty() || self.apply_picture_ops(&ops).is_ok()
+    }
+
     /// Put the clip's picture back as an edit left it (undo, redo).
     pub fn restore_picture(&mut self, fields: &ClipPictureFields) {
         self.picture = fields.clone();

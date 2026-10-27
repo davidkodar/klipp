@@ -144,6 +144,8 @@ mod title_routes_f16;
 mod truth_lanes_render;
 #[path = "../vector_glow_parity.rs"]
 mod vector_glow_parity;
+#[path = "../view_any_node.rs"]
+mod view_any_node;
 #[path = "../wide_gamut_scene_export.rs"]
 mod wide_gamut_scene_export;
 #[path = "../a_grade_of_the_wrong_size.rs"]
