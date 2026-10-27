@@ -6443,9 +6443,10 @@ fn splice_blended(
             BuiltinEffect::MediaSource { .. } | BuiltinEffect::ClipBelow {} => klipp_nodes::NodeKind::SidePicture,
             // A grade in the chain (#1746): the executor's compound node.
             BuiltinEffect::GradeCompound {} => klipp_nodes::NodeKind::Compound,
-            // A merge with a picture to lay over: the grade's layer mixer
-            // draws it, that picture on top (#1746).
-            BuiltinEffect::Merge { .. } if blend(i).is_some_and(|b| b.fg.is_some()) => klipp_nodes::NodeKind::LayerMixer,
+            // A merge with a picture to lay over: a Blend drawing it as the
+            // grade's layer mixer would, that picture on top (#1746), on
+            // the GPU chain with the picture so far (#2758).
+            BuiltinEffect::Merge { .. } if blend(i).is_some_and(|b| b.fg.is_some()) => klipp_nodes::NodeKind::Blend,
             e if spills(e) => klipp_nodes::NodeKind::EffectSegment,
             _ => klipp_nodes::NodeKind::Effect,
         };
@@ -6548,18 +6549,16 @@ fn splice_blended(
             }
             continue;
         }
-        // A merge's picture on the mixer's top port, the picture so far
-        // under it; its blend and opacity on the top one (#1746).
-        if let (klipp_nodes::NodeKind::LayerMixer, Some(fg), Some(BuiltinEffect::Merge { blend_mode, opacity })) = (kind, &b.fg, effects.first()) {
+        // A merge's picture on the Blend's second port, the picture so far
+        // on its first, drawn as a layer mixer's top layer over its base
+        // by the merge's blend and opacity (#1746, #2758).
+        if let (klipp_nodes::NodeKind::Blend, Some(fg), Some(BuiltinEffect::Merge { blend_mode, opacity })) = (kind, &b.fg, effects.first()) {
             match producer_of(graph, fg, "picture", &mut unavailable) {
                 Some((p, port)) => {
-                    for e in graph.edges.iter_mut().filter(|e| e.to_node == node && e.to_port == 0) {
-                        e.to_port = 1;
-                    }
-                    graph.edges.push(klipp_nodes::Edge { from_node: p, from_port: port, to_node: node, to_port: 0 });
+                    graph.edges.push(klipp_nodes::Edge { from_node: p, from_port: port, to_node: node, to_port: 1 });
                     if let Some(n) = graph.nodes.iter_mut().find(|n| n.id == node) {
-                        let top = klipp_nodes::LayerMixerInput { opacity: *opacity, blend_mode: *blend_mode };
-                        n.params.layer_mixer = Some(klipp_nodes::LayerMixerParams { inputs: vec![top, klipp_nodes::LayerMixerInput::default()] });
+                        n.params.effects.clear();
+                        n.params.merge = Some(klipp_nodes::LayerMixerInput { opacity: *opacity, blend_mode: *blend_mode });
                     }
                 }
                 // No picture to lay over: the picture passes.

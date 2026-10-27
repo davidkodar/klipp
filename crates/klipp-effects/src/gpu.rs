@@ -345,6 +345,7 @@ pub struct GpuEffectsPipeline {
     apply_matte_pipeline: wgpu::ComputePipeline,
     deflicker_pipeline: wgpu::ComputePipeline,
     blend_mix_pipeline: wgpu::ComputePipeline,
+    merge_over_pipeline: wgpu::ComputePipeline,
     layer_over_pipeline: wgpu::ComputePipeline,
     /// The picture a Corrector's mix over all its stages blends against
     /// (its Keep/Mix stage pair, within the one node). A grade
@@ -1382,6 +1383,7 @@ impl GpuEffectsPipeline {
         let apply_matte_pipeline = create_pipeline(&device, &apply_matte_pl, "apply_matte", SHADER_APPLY_MATTE_CHAIN);
         let deflicker_pipeline = create_pipeline(&device, &pipeline_layout, "deflicker", SHADER_DEFLICKER);
         let blend_mix_pipeline = create_pipeline(&device, &huesat_pl, "blend_mix", SHADER_BLEND_MIX);
+        let merge_over_pipeline = create_pipeline(&device, &huesat_pl, "merge_over", SHADER_MERGE_OVER);
         let layer_over_pipeline = create_pipeline(&device, &huesat_pl, "layer_over", SHADER_LAYER_OVER);
         let mask_pipeline = create_pipeline(&device, &mask_v2_pl, "mask_v2", SHADER_MASK_V2);
         let color_balance_pipeline = create_pipeline(&device, &pipeline_layout, "color_balance", SHADER_COLOR_BALANCE);
@@ -1811,6 +1813,7 @@ impl GpuEffectsPipeline {
             apply_matte_pipeline,
             deflicker_pipeline,
             blend_mix_pipeline,
+            merge_over_pipeline,
             layer_over_pipeline,
             grade_mix_src: None,
             mask_pipeline,
@@ -5062,6 +5065,33 @@ impl GpuEffectsPipeline {
     /// chain and background the kept picture `other`.
     pub fn apply_over_chain(&mut self, in_is_a: bool, width: u32, height: u32, other: &KeptPicture) {
         self.dispatch_composite(in_is_a, width, height, 1.0, /* over = */ true, other);
+    }
+
+    /// Dispatch-only merge (#2758): the kept picture `other` laid over
+    /// the chain's as a layer mixer's top layer over its base, by `mode`
+    /// (`BlendMode as u32`) and `opacity` times its own alpha, the
+    /// chain's alpha kept: `layer_mixer_compose` for two layers.
+    pub fn apply_merge_chain(&mut self, in_is_a: bool, width: u32, height: u32, opacity: f32, mode: u32, other: &KeptPicture) {
+        if self.is_device_lost() {
+            return;
+        }
+        let slot = self.next_params_slot();
+        self.write_chain_params(slot, &GpuMergeParams { width, height, opacity, mode });
+        let (a, b) = (self.buf_a.as_ref().expect(Self::CHAIN_BG_EXPECT), self.buf_b.as_ref().expect(Self::CHAIN_BG_EXPECT));
+        let (input, output) = if in_is_a { (a, b) } else { (b, a) };
+        let other = self.slot_pool.buffer(other.0);
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("chain_bg_merge_over"),
+            layout: &self.huesat_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.chain_params.buffer(slot).as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: other.as_entire_binding() },
+            ],
+        });
+        let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
+        Self::record_compute_dispatch(enc, &self.merge_over_pipeline, &bind_group, (width * height).div_ceil(WORKGROUP_SIZE));
     }
 
     fn dispatch_composite(&mut self, in_is_a: bool, width: u32, height: u32, mix: f32, over: bool, other: &KeptPicture) {
@@ -9222,6 +9252,17 @@ struct GpuGradeMixParams {
     _pad: u32,
 }
 
+/// A merge's top layer over the chain (#2758): its opacity and its blend
+/// mode as `SHADER_BLEND_LAYER` numbers them (`BlendMode as u32`).
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuMergeParams {
+    width: u32,
+    height: u32,
+    opacity: f32,
+    mode: u32,
+}
+
 /// A gate's blend: its mix, and which channel of its matte is the
 /// coverage (`MaskChannel` as numbered: red, luminance, alpha), with the
 /// working space's luma weights for the second.
@@ -11499,26 +11540,11 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
 "
 );
 
-// Opposite direction: packed sRGB-u8 RGBA (4 bytes per pixel, one u32)
-// → linear-f32 vec4 RGBA. Reads from `input: array<u32>`, writes to
-// `output: array<vec4<f32>>`. Same binding layout as SHADER_LINEAR_TO_U8
-// so it reuses the pipeline's 3-binding bind_group_layout. Powers the
-// phase-4d GPU-resident decode → grade path: the decoder's output
-// buffer is plugged in as `input`, the grade chain's `buf_a` is the
-// `output`.
-// One layer onto the accumulator, in place: `klipp_effects::composite::blend_layer_linear`
-// transcribed, mode by mode, in the same arithmetic order, so the stack
-// on the GPU is the CPU stack to the level. Mode 13 is a plain lerp of
-// every channel, an adjustment layer's opacity. Rows `y0..y1` only.
-const SHADER_BLEND_LAYER: &str = concat!(
-    "
-struct Params { width: u32, height: u32, opacity: f32, mode: u32, y0: u32, y1: u32, _p0: u32, _p1: u32 }
-@group(0) @binding(0) var<storage, read> layer: array<vec4<f32>>;
-@group(0) @binding(1) var<storage, read_write> acc: array<vec4<f32>>;
-@group(0) @binding(2) var<uniform> params: Params;
-",
-    shader_linear_helpers_wgsl!(),
-    "
+/// The blend modes of a layer over what is under it, `blend3(mode, under,
+/// layer)`: `klipp_effects::composite`'s, mode by mode.
+macro_rules! shader_blend_modes_wgsl {
+    () => {
+        "
 fn overlay_ch(base: f32, blend: f32) -> f32 {
     if base < 0.5 { return 2.0 * base * blend; }
     return 1.0 - 2.0 * (1.0 - base) * (1.0 - blend);
@@ -11554,6 +11580,31 @@ fn blend3(mode: u32, d: vec3<f32>, s: vec3<f32>) -> vec3<f32> {
         default: { return s; }
     }
 }
+"
+    };
+}
+
+// Opposite direction: packed sRGB-u8 RGBA (4 bytes per pixel, one u32)
+// → linear-f32 vec4 RGBA. Reads from `input: array<u32>`, writes to
+// `output: array<vec4<f32>>`. Same binding layout as SHADER_LINEAR_TO_U8
+// so it reuses the pipeline's 3-binding bind_group_layout. Powers the
+// phase-4d GPU-resident decode → grade path: the decoder's output
+// buffer is plugged in as `input`, the grade chain's `buf_a` is the
+// `output`.
+// One layer onto the accumulator, in place: `klipp_effects::composite::blend_layer_linear`
+// transcribed, mode by mode, in the same arithmetic order, so the stack
+// on the GPU is the CPU stack to the level. Mode 13 is a plain lerp of
+// every channel, an adjustment layer's opacity. Rows `y0..y1` only.
+const SHADER_BLEND_LAYER: &str = concat!(
+    "
+struct Params { width: u32, height: u32, opacity: f32, mode: u32, y0: u32, y1: u32, _p0: u32, _p1: u32 }
+@group(0) @binding(0) var<storage, read> layer: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> acc: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+",
+    shader_linear_helpers_wgsl!(),
+    shader_blend_modes_wgsl!(),
+    "
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
     let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
@@ -11579,6 +11630,35 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
 }
 "
 );
+
+// A merge's picture over the chain's (#2758): `layer_mixer_compose` for
+// a top layer over its base, the blended colour mixed over the base by
+// the opacity times the top's alpha, the base's alpha kept.
+const SHADER_MERGE_OVER: &str = concat!(
+    "
+struct Params { width: u32, height: u32, opacity: f32, mode: u32 }
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+@group(0) @binding(3) var<storage, read> other: array<vec4<f32>>;
+",
+    shader_linear_helpers_wgsl!(),
+    shader_blend_modes_wgsl!(),
+    "
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let base = unpack(input[idx]);
+    let top = unpack(other[idx]);
+    let op = clamp(params.opacity, 0.0, 1.0) * clamp(top.w, 0.0, 1.0);
+    let b = blend3(params.mode, base.xyz, top.xyz);
+    output[idx] = pack(vec4<f32>(base.xyz + (b - base.xyz) * op, base.w));
+}
+"
+);
+
 
 // An sRGB RGBA8 sprite, rows y0..y1, decoded to linear with its alpha
 // kept straight.
@@ -19959,6 +20039,7 @@ pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
         ("SHADER_APPLY_MATTE_CHAIN", SHADER_APPLY_MATTE_CHAIN),
         ("SHADER_CLARITY_APPLY", SHADER_CLARITY_APPLY),
         ("SHADER_BLEND_LAYER", SHADER_BLEND_LAYER),
+        ("SHADER_MERGE_OVER", SHADER_MERGE_OVER),
         ("SHADER_PREMULTIPLY", SHADER_PREMULTIPLY),
         ("SHADER_ALPHA_FORM", SHADER_ALPHA_FORM),
         ("SHADER_SPRITE_ROWS", SHADER_SPRITE_ROWS),
