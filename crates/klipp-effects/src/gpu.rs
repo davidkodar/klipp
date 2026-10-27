@@ -7157,6 +7157,23 @@ impl GpuEffectsPipeline {
         Some(KeptPicture(id))
     }
 
+    /// Layer `slot` of the stack in a pool slot of its own (#2758): a title
+    /// drawn there as a layer is, handed to a clip's run as its side
+    /// picture. `None` without that layer or a slot.
+    pub fn stack_layer_as_picture(&mut self, slot: usize) -> Option<KeptPicture> {
+        if self.is_device_lost() {
+            return None;
+        }
+        let (width, height) = self.stack_dims;
+        let layer = self.stack_layers.get(slot)?.clone();
+        let device = &self.device;
+        let id = self.slot_pool.lease(SlotKey { width, height, usage: SlotUsage::Image }, |k| slot_buffer(device, k)).ok()?;
+        let mut enc = self.encoder(Some("stack_layer_as_picture"));
+        enc.copy_buffer_to_buffer(&layer, 0, self.slot_pool.buffer(id), 0, u64::from(width) * u64::from(height) * 16);
+        self.submit(enc);
+        Some(KeptPicture(id))
+    }
+
     /// Keep the chain's picture (in `buf_a` when `in_is_a`) in a pool slot
     /// of its own, copied in the chain's encoder, so it is ordered against
     /// the passes around it. `None` when there is no chain or the pool's

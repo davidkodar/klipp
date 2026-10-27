@@ -1106,6 +1106,16 @@ pub enum BuiltinEffect {
         offset: f32,
     },
 
+    /// A title drawn as a picture (#2758): beside a picture's chain, the
+    /// foreground a Merge lays over it, as a title clip on the track above
+    /// would be drawn, styles, motion and all. `title` is the title as a
+    /// title file stores it (JSON), made by the title op; the renderer
+    /// draws it and the executor reads the picture through its frame
+    /// context. These kernels pass the picture they are given.
+    TitleSource {
+        title: String,
+    },
+
     /// What is below the clip (#1746): everything the tracks under its
     /// track composite to at its time, before the timeline's grade, seen
     /// through the clip's placement so it lines up with what is under the
@@ -1144,7 +1154,7 @@ fn amount_or_yes_no<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f32, D::Er
 /// media item's, or what is below the clip): the executor's side
 /// picture node draws it, never this crate's kernels.
 pub fn draws_a_side_picture(effect: &BuiltinEffect) -> bool {
-    matches!(effect, BuiltinEffect::MediaSource { .. } | BuiltinEffect::ClipBelow {})
+    matches!(effect, BuiltinEffect::MediaSource { .. } | BuiltinEffect::TitleSource { .. } | BuiltinEffect::ClipBelow {})
 }
 
 impl BuiltinEffect {

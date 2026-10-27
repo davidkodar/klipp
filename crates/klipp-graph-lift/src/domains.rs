@@ -63,8 +63,8 @@ fn node_step(n: &Node, catalog: &dyn PortCatalog) -> DomainStep {
         lt::SOURCE | lt::OUTPUT | lt::GROUP | lt::GROUP_INPUT | lt::GROUP_OUTPUT | lt::GROUP_FRAME | lt::MERGE | lt::PLACEMENT | lt::TEMPORAL_DENOISE | lt::FRAME_BLEND => DomainStep::Keeps,
         // What is below the clip: the composite, display-referred (#1746,
         // #1867). Another media item's frame, given its display step as it
-        // is read (#1857).
-        _ if matches!(crate::effect_params::tag(n), Some("clip_below" | "media_source")) => DomainStep::Gives(PictureDomain::Display),
+        // is read (#1857). A title, drawn as a title clip is (#2758).
+        _ if matches!(crate::effect_params::tag(n), Some("clip_below" | "media_source" | "title_source")) => DomainStep::Gives(PictureDomain::Display),
         _ if makes_its_own(n) => DomainStep::Undeclared,
         _ if catalog.node_spec(n).is_none() => DomainStep::Undeclared,
         _ => DomainStep::Keeps,

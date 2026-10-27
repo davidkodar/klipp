@@ -1013,6 +1013,9 @@ pub struct Renderer {
     /// composed this frame.
     precomp_scenes: HashMap<ClipId, Arc<wgpu::Buffer>>,
     precomp_ready: std::collections::HashSet<ClipId>,
+    /// The first of each clip's stack layers its title sources are drawn
+    /// in this frame (#2758), after the layers of the stack.
+    side_title_slots: HashMap<ClipId, usize>,
     /// This stack frame's grade time by part, as its layers run (#2107).
     grade_split: GradeSplit,
     /// The subject matte sequences piece transitions read (#985 phase 3):
@@ -1215,6 +1218,7 @@ impl Renderer {
             still_generators: HashMap::new(),
             still_layers: HashMap::new(),
             precomp_scenes: HashMap::new(),
+            side_title_slots: HashMap::new(),
             precomp_ready: std::collections::HashSet::new(),
             grade_split: GradeSplit::default(),
             subject_mattes: HashMap::new(),
@@ -2165,6 +2169,7 @@ impl Renderer {
         let mut items: Vec<(&Track, Item)> = Vec::with_capacity(stack.len());
         let mut n_slots = 0usize;
         let mut sources: HashSet<ClipId> = HashSet::new();
+        self.side_title_slots.clear();
         for (_, track, item) in &stack {
             match item {
                 TrackItem::Clip(c) => {
@@ -2180,6 +2185,13 @@ impl Renderer {
                     }
                     items.push((track, Item::Clip { c, slot: n_slots }));
                     n_slots += 1;
+                    // A layer for each title it draws beside its chain
+                    // (#2758), drawn as a title clip's is.
+                    let titles = crate::resolve::title_sources(c).len();
+                    if titles > 0 {
+                        self.side_title_slots.insert(c.id, n_slots);
+                        n_slots += titles;
+                    }
                 }
                 TrackItem::Transition { a, b, kind, progress, params, shutter } => {
                     // A smooth cut morphs two held frames by their motion
@@ -2195,6 +2207,9 @@ impl Renderer {
                         // stacking loop's for now (#1746).
                         if crate::resolve::reads_below(side) {
                             return self.gpu_stack_declines("clip below");
+                        }
+                        if !crate::resolve::title_sources(side).is_empty() {
+                            return self.gpu_stack_declines("a title source inside a transition");
                         }
                         // A side seen through a matte is matted before the
                         // sides mix (step 2); one that is a matte, a stencil
@@ -2608,8 +2623,10 @@ impl Renderer {
         // No frei0r test here: the stack declines a frame with a frei0r
         // plug-in before a layer is placed (M4 step 5), so none reaches it.
         let clip_time = eval_clip_time(c, time);
-        // Its media sources' frames, for its plan (#1746).
+        // Its media sources' frames, for its plan (#1746), and its titles'
+        // pictures, drawn on the stack (#2758).
         self.read_media_frames(c, clip_time, width, height, src);
+        self.put_titles(c, clip_time, width, height, true)?;
         let mut rows = (0, height);
         let mut redrawn = false;
         let mut effects_done = false;
@@ -4080,6 +4097,7 @@ impl Renderer {
         // Read here, where the frames come from, for whichever run draws
         // its effects; after a scene's clips, which set their own.
         self.read_media_frames(clip, clip_time, width, height, src);
+        let _ = self.put_titles(clip, clip_time, width, height, false);
         if self.inspect.ungraded && self.inspect.clip == Some(clip.id) {
             let mut before = (*input.pixels()).clone();
             if let Some(t) = hdr {
@@ -4582,6 +4600,41 @@ impl Renderer {
             });
             self.executor.put_side_picture(klipp_nodes::side_picture::SideKey::Media { item: media, offset_bits: offset.to_bits() }, got);
         }
+    }
+
+    /// The pictures `clip`'s title sources draw at `clip_time` (#2758), for
+    /// its plan: each title drawn as a title clip's would be, timed from
+    /// the clip's start. On the GPU stack (`on_gpu`) in the layer kept for
+    /// it, handed to the run as it lies there; on the CPU, rastered there.
+    /// A title that moves by effects of its own is the CPU route's for now,
+    /// said; one its file doesn't read as is missing, said.
+    fn put_titles(&mut self, clip: &Clip, clip_time: f64, width: u32, height: u32, on_gpu: bool) -> Result<(), &'static str> {
+        use klipp_nodes::side_picture::{SideKey, SideMissing};
+        let total = (clip.timeline_out - clip.timeline_in).to_secs_f64() as f32;
+        for (k, title) in crate::resolve::title_sources(clip).into_iter().enumerate() {
+            let key = SideKey::Title { title: title.clone() };
+            let Ok(td) = serde_json::from_str::<klipp_timeline::TitleData>(&title) else {
+                self.executor.put_side_picture(key, Err(SideMissing::Unsupported("its title doesn't read".into())));
+                continue;
+            };
+            if !on_gpu {
+                // As a title clip of the clip's own span would be drawn.
+                let stand_in = Clip { kind: ClipKind::Title(td.clone()), ..Clip::gap(clip.timeline_in, clip.timeline_out) };
+                let frame = self.title_linear_at(&stand_in, &td, clip_time, width, height);
+                self.executor.put_side_picture(key, Ok(Arc::new(frame)));
+                continue;
+            }
+            let slot = self.side_title_slots.get(&clip.id).copied().ok_or("a title source's layer")? + k;
+            match self.place_title_source(&td, slot, width, height, clip_time, total) {
+                Some((_, fx)) if fx.is_empty() => {}
+                Some(_) => return Err("a title source with effects of its own"),
+                None => return Err("a title source the stack couldn't draw"),
+            }
+            let picture = self.executor.gpu_pipeline_or_init().and_then(|g| g.stack_layer_as_picture(slot)).ok_or("a title source's picture couldn't be kept")?;
+            self.executor.put_side_picture(key.clone(), Err(SideMissing::Unavailable));
+            self.executor.put_side_picture_on_gpu(key, picture);
+        }
+        Ok(())
     }
 
     /// What is below `clip` (#1746), for its Clip Below: the stacking
@@ -6619,7 +6672,7 @@ fn splice_blended(
             BuiltinEffect::Frei0r { .. } => klipp_nodes::NodeKind::Frei0r,
             // Another media item's frame, or what is below, handed to the
             // run (#1746).
-            BuiltinEffect::MediaSource { .. } | BuiltinEffect::ClipBelow {} => klipp_nodes::NodeKind::SidePicture,
+            BuiltinEffect::MediaSource { .. } | BuiltinEffect::TitleSource { .. } | BuiltinEffect::ClipBelow {} => klipp_nodes::NodeKind::SidePicture,
             // A grade in the chain (#1746): the executor's compound node.
             BuiltinEffect::GradeCompound {} => klipp_nodes::NodeKind::Compound,
             // A merge with a picture to lay over: a Blend drawing it as the

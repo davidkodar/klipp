@@ -99,6 +99,22 @@ pub(super) static TYPES: &[EffectType] = &[
     },
     EffectType {
         desc: NodeTypeDesc {
+            // Drawn by the renderer as a title is, read by the executor
+            // from its frame context.
+            gpu: false,
+            ..composite(
+                "klipp.fx.title_source",
+                "Title Source",
+                IMAGE_IN,
+                &[ParamDesc { kind: ParamKind::Other, soft: None, ..ParamDesc::float("title", "Title", f32::NAN, (0.0, 0.0), Unit::None).fixed() }],
+                Spatial::Global,
+            )
+        },
+        tag: "title_source",
+        sample: || BuiltinEffect::TitleSource { title: String::new() },
+    },
+    EffectType {
+        desc: NodeTypeDesc {
             // Drawn by the executor from what the render composited below.
             gpu: false,
             ..composite("klipp.fx.clip_below", "Clip Below", IMAGE_IN, &[], Spatial::Global)
