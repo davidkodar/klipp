@@ -1218,7 +1218,8 @@ mod menu_smoke_tests {
     /// #2704: the clip menu's Effects ▸ Opacity Gradient fades the clip
     /// across the frame, and offers to take it off once it has one.
     /// #2751: a clip over a clip with a tracked surface offers Pin to
-    /// Surface, the surface by name, and choosing it pins the clip there.
+    /// Surface, the surface by name with its ready looks, and choosing one
+    /// pins the clip there in that look.
     #[test]
     fn the_clip_menu_pins_a_clip_to_a_tracked_surface_under_it() {
         let mut timeline = Timeline::new();
@@ -1238,14 +1239,14 @@ mod menu_smoke_tests {
         let drawn = timeline.frame(Vec::new());
         let at = drawn.into_iter().find(|(t, _)| t == "smoke.mov").expect("the clip is drawn").1;
         timeline.right_click(at);
-        let drawn = timeline.open_submenus(&["Effects", "Pin to Surface"]);
-        let item = drawn.iter().find(|(t, _)| t == "Wall").unwrap_or_else(|| panic!("the surface in the menu: {drawn:?}")).1;
+        let drawn = timeline.open_submenus(&["Effects", "Pin to Surface", "Wall"]);
+        let item = drawn.iter().find(|(t, _)| t == "Text on a Wall").unwrap_or_else(|| panic!("the surface's looks in the menu: {drawn:?}")).1;
         let button = |pressed| egui::Event::PointerButton { pos: item, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
         timeline.frame(vec![egui::Event::PointerMoved(item), button(true)]);
         timeline.frame(vec![button(false)]);
         let ops: Vec<_> = timeline.state.pending_doc_ops.iter().flat_map(|r| r.ops.iter()).collect();
         assert!(
-            ops.iter().any(|op| matches!(op, klipp_document::ops::Op::Pin { clip_id: klipp_document::ops::ClipRef::Id(h), layer: Some(klipp_document::ops::ClipRef::Id(l)), surface: Some(s), media_id: None, .. } if *h == host_id && *l == layer && *s == surface.to_string())),
+            ops.iter().any(|op| matches!(op, klipp_document::ops::Op::Pin { clip_id: klipp_document::ops::ClipRef::Id(h), layer: Some(klipp_document::ops::ClipRef::Id(l)), surface: Some(s), media_id: None, template: Some(t), .. } if *h == host_id && *l == layer && *s == surface.to_string() && t == "text_on_wall")),
             "{ops:?}"
         );
     }

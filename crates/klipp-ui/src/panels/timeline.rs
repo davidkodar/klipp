@@ -9076,6 +9076,7 @@ impl TimelinePanel {
                                 inset: Some(pin.inset),
                                 on_loss: Some(match on_loss { PinLoss::Hold => "hold", PinLoss::Hide => "hide", PinLoss::Fade { .. } => "fade" }.to_string()),
                                 fade_secs: match on_loss { PinLoss::Fade { secs } => Some(secs), _ => None },
+                                template: None,
                                 light: Some(light),
                                 blend: Some(match clip.blend_mode {
                                     klipp_core::BlendMode::Multiply => "multiply",
@@ -9107,24 +9108,36 @@ impl TimelinePanel {
                         if !hosts.is_empty() {
                             ui.menu_rows("Pin to Surface", |ui| {
                                 for (host, surface, name) in &hosts {
-                                    if ui.button(name).on_hover_text("On the surface, following it through the shot").clicked() {
-                                        let op = klipp_document::ops::Op::Pin {
-                                            clip_id: klipp_document::ops::ClipRef::Id(*host),
-                                            media_id: None,
-                                            layer: Some(klipp_document::ops::ClipRef::Id(clip_id)),
-                                            surface: Some(surface.to_string()),
-                                            from: None,
-                                            to: None,
-                                            fit: None,
-                                            inset: None,
-                                            on_loss: None,
-                                            fade_secs: None,
-                                            light: None,
-                                            blend: None,
-                                        };
-                                        state.pending_doc_ops.push(crate::state::DocOpsRequest { label: format!("Pin to {name}"), ops: vec![op], independent: false });
-                                        ui.close_menu();
-                                    }
+                                    // As it is, or in one of the ready looks
+                                    // (#2751).
+                                    ui.menu_rows(name, |ui| {
+                                        for (label, template, hint) in [
+                                            ("As It Is", None, "On the surface, following it through the shot"),
+                                            ("Text on a Wall", Some("text_on_wall"), "Fitted inside a margin, as dark as the wall is, fading out where the surface is lost"),
+                                            ("Screen Replacement", Some("screen"), "Stretched inside the bezel, in its own light, hidden where the screen is lost"),
+                                            ("Sign", Some("sign"), "Fitted, in most of the scene's light, fading out where the surface is lost"),
+                                        ] {
+                                            if ui.button(label).on_hover_text(hint).clicked() {
+                                                let op = klipp_document::ops::Op::Pin {
+                                                    clip_id: klipp_document::ops::ClipRef::Id(*host),
+                                                    media_id: None,
+                                                    layer: Some(klipp_document::ops::ClipRef::Id(clip_id)),
+                                                    surface: Some(surface.to_string()),
+                                                    from: None,
+                                                    to: None,
+                                                    fit: None,
+                                                    inset: None,
+                                                    on_loss: None,
+                                                    fade_secs: None,
+                                                    light: None,
+                                                    blend: None,
+                                                    template: template.map(str::to_string),
+                                                };
+                                                state.pending_doc_ops.push(crate::state::DocOpsRequest { label: format!("Pin to {name}"), ops: vec![op], independent: false });
+                                                ui.close_menu();
+                                            }
+                                        }
+                                    });
                                 }
                             });
                         }
