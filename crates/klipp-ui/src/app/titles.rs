@@ -212,8 +212,10 @@ impl KlippApp {
                 self.sync_sequence_to_engine();
                 self.render_title_to_viewer(clip_id);
                 // A title placed from a template may name a font this
-                // computer lacks: say so, with a replacement (#1720).
+                // computer lacks: one Klipp's catalogue has is fetched
+                // (#2734); for any other, say so, with a replacement (#1720).
                 let missing: Vec<_> = self.state.missing_fonts(&crate::missing_fonts::installed).into_iter().filter(|m| m.titles.iter().any(|t| t.clip == clip_id)).collect();
+                let missing = crate::missing_fonts::fetch_from_catalogue(missing);
                 if !missing.is_empty() {
                     self.state.missing_fonts_dialog = Some(crate::missing_fonts::MissingFontsDialog { fonts: missing, chosen: Default::default() });
                 }

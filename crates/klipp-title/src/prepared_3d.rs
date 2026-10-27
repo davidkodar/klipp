@@ -52,6 +52,7 @@ impl TitleRenderer {
         time: f32,
         window: Option<f32>,
     ) -> Option<PreparedText3d> {
+        self.fonts_current();
         if title.objects.len() != 1
             || title.background != TitleBackground::None
             || title.mixes_layers()

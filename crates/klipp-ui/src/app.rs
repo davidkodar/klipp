@@ -421,6 +421,9 @@ pub struct KlippApp {
     /// A Save As copying the project to another filesystem, on its own
     /// thread.
     project_copy: Option<ProjectCopy>,
+    /// The catalogue fetches finished when the titles were last drawn:
+    /// a face that arrives since redraws them (#2734).
+    fonts_seen: u64,
     /// Result channel for the in-flight background auto-save.
     ///
     /// `Some` from the moment a writer thread is spawned until the UI

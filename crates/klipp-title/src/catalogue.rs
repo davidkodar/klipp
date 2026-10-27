@@ -9,7 +9,7 @@
 //! need none of this and work offline.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::OnceLock;
 
 use serde::Deserialize;
@@ -122,6 +122,21 @@ pub fn fetched(name: &str) -> bool {
     family(name).is_some_and(is_fetched)
 }
 
+/// How many fetches have finished in this process: a renderer that has
+/// seen fewer drops what it drew while a face was missing, and the app
+/// draws its titles again (#2734).
+static FETCHES: AtomicU64 = AtomicU64::new(0);
+
+/// The fetches finished so far, for [`FETCHES`]'s readers.
+pub fn fetches() -> u64 {
+    FETCHES.load(Ordering::Acquire)
+}
+
+/// Counts a fetch finished.
+pub(crate) fn fetched_one() {
+    FETCHES.fetch_add(1, Ordering::Release);
+}
+
 /// Fetch `family` into its folder under `root`: each file and its licence
 /// from its address, checked against its size and SHA-256 before it is
 /// kept, a file already there at its size left. Returns its folder.
@@ -140,6 +155,7 @@ pub fn fetch_in(root: &Path, family: &CatalogueFamily, cancel: &AtomicBool) -> R
         klipp_ml::download::write_and_verify(&mut body, &file.sha256, file.size, &partial, &target, &mut klipp_ml::download::NoOpProgress, cancel, &file.name)
             .map_err(|e| format!("{} {}: {e}", family.name, file.name))?;
     }
+    fetched_one();
     Ok(dir)
 }
 

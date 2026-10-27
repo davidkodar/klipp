@@ -174,6 +174,20 @@ impl KlippApp {
         self.do_save_project(to);
     }
 
+    /// Draws the titles again once a catalogue face they wait for has
+    /// arrived (#2734): until then they were set in the fallback.
+    pub(super) fn poll_fetched_fonts(&mut self) {
+        let fetches = klipp_title::catalogue::fetches();
+        if fetches == self.fonts_seen {
+            return;
+        }
+        self.fonts_seen = fetches;
+        self.sync_and_refresh_frame();
+        if let Some(id) = self.state.selected_clip.filter(|id| self.state.sequence().all_clips().any(|c| c.id == *id && c.title_data().is_some())) {
+            self.render_title_to_viewer(id);
+        }
+    }
+
     /// Take a finished background copy of the project (Save As across
     /// filesystems), and say how far one still running has got.
     pub(super) fn poll_project_copy(&mut self) {
