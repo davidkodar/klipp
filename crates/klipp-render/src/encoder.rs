@@ -612,13 +612,13 @@ impl Encoder {
                             apply_color_tags(&mut video_ctx, settings);
                         }
                         ExportVideoCodec::ProRes422 => {
-                            video_opts.set("profile:v", "2");
+                            video_opts.set("profile", "2");
                         }
                         ExportVideoCodec::ProRes422HQ => {
-                            video_opts.set("profile:v", "3");
+                            video_opts.set("profile", "3");
                         }
                         ExportVideoCodec::ProRes4444 => {
-                            video_opts.set("profile:v", "4");
+                            video_opts.set("profile", "4");
                         }
                         ExportVideoCodec::DNxHD115 => {
                             video_ctx.set_bit_rate(115_000_000);

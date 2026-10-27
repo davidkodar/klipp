@@ -4503,3 +4503,29 @@ fn an_export_to_a_gif_path_is_an_animated_gif() {
         assert_eq!((settings.format, settings.video_codec), (klipp_core::ExportFormat::Gif, klipp_core::ExportVideoCodec::Gif), "{request}");
     }
 }
+
+/// #2784: an export of another shape than the timeline says the picture
+/// is letterboxed, and how to fill the frame; one of the same shape says
+/// nothing.
+#[test]
+fn an_export_of_another_shape_says_it_is_letterboxed() {
+    let mut h = harness();
+    let media = h.media_pool.write().unwrap().add(klipp_media::MediaItem::synthetic_for_test("/tmp/export-shape-fixture.mov".into(), None));
+    {
+        let mut seq = h.sequence.write().unwrap();
+        seq.resolution = klipp_core::Resolution { width: 1920, height: 1080 };
+        for c in seq.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()) {
+            c.kind = klipp_timeline::ClipKind::Media { media_id: media };
+        }
+    }
+    let mut export = |preset: &str| {
+        let r = h.ok(json!({ "method": "export", "path": "/tmp/klipp-shape.mp4", "preset": preset }));
+        assert!(matches!(h.cmd_rx.recv_timeout(std::time::Duration::from_secs(5)), Ok(klipp_core::AppCommand::ExportSequence { .. })));
+        r["export"]["frame_warning"].clone()
+    };
+    let vertical = export("Instagram Vertical");
+    let said = vertical.as_str().unwrap_or_default();
+    assert!(said.contains("1920x1080") && said.contains("1080x1920") && said.contains("above and below") && said.contains("format op"), "{vertical}");
+    assert!(export("Instagram Square").as_str().unwrap_or_default().contains("above and below"), "square: a wide picture letterboxed");
+    assert!(export("YouTube 1080p").is_null(), "the same shape says nothing");
+}

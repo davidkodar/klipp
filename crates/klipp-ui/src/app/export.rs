@@ -1363,6 +1363,19 @@ impl KlippApp {
                             ui.end_row();
                         }
 
+                        // Another shape than the timeline's (#2784): fitted
+                        // whole with bars, and how to fill it instead.
+                        let shape = {
+                            let res = self.state.sequence().resolution;
+                            let size = dialog_settings(&self.export_dialog).resolution;
+                            klipp_core::ExportSettings { resolution: size, ..Default::default() }.shape_warning(res.width, res.height)
+                        };
+                        if let Some(warning) = shape {
+                            ui.label("");
+                            ui.label(egui::RichText::new(format!("\u{26A0} {warning}")).small().color(ui.visuals().warn_fg_color));
+                            ui.end_row();
+                        }
+
                         // A codec the container cannot hold moves the export
                         // to the codec's own container (ProRes and DNxHD to
                         // MOV, VP9 to WebM), and the audio follows.
