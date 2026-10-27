@@ -39,7 +39,9 @@ impl HumRemoval {
         let mut hr = Self {
             sample_rate: sample_rate as f32,
             fundamental_hz: 50.0,
-            harmonics: 3,
+            // Up to the 5th: mains hum carries its odd harmonics most, and
+            // with three the 250 Hz of 50 Hz hum stayed (#2779).
+            harmonics: 5,
             q: 30.0,
             harmonic_enabled: [true; MAX_HARMONICS],
             channels: std::array::from_fn(|_| std::array::from_fn(|_| BiquadFilter::new())),
@@ -123,7 +125,7 @@ static PARAM_DESCS: &[AudioParamDescriptor] = &[
     AudioParamDescriptor {
         name: "harmonics",
         label: "Harmonics",
-        default: 3.0,
+        default: 5.0,
         min: 1.0,
         max: 5.0,
         unit: ParamUnit::None,
@@ -270,10 +272,10 @@ mod tests {
     }
 
     #[test]
-    fn defaults_are_50hz_3_harmonics_q30() {
+    fn defaults_are_50hz_5_harmonics_q30() {
         let hr = HumRemoval::new(48000);
         assert_eq!(hr.get_param("fundamental_hz"), Some(50.0));
-        assert_eq!(hr.get_param("harmonics"), Some(3.0));
+        assert_eq!(hr.get_param("harmonics"), Some(5.0));
         assert_eq!(hr.get_param("q"), Some(30.0));
     }
 
@@ -524,5 +526,30 @@ mod tests {
             "44.1 kHz: cut at f0±0.5 Hz = {cut:.4}, pass at 25 Hz = {pass:.4}"
         );
         assert!(hr.magnitude_at(1000.0) > 0.99);
+    }
+
+    /// #2779: at its defaults, 50 Hz hum and its harmonics up to the 5th
+    /// come out, each by more than 10 dB, and a voice tone between them
+    /// stays. Measured on each, alone.
+    #[test]
+    fn the_default_takes_out_the_hum_and_its_harmonics() {
+        let level = |hz: f32, fx: &mut HumRemoval| {
+            let sr = 48_000u32;
+            let mut buf: Vec<f32> = (0..sr as usize).flat_map(|i| {
+                let v = 0.1 * (2.0 * std::f32::consts::PI * hz * i as f32 / sr as f32).sin();
+                [v, v]
+            }).collect();
+            fx.reset();
+            fx.process(&mut buf, &AudioProcessContext { sample_rate: sr, channels: 2, clip_time_secs: 0.0 });
+            let tail = &buf[buf.len() / 2..];
+            20.0 * ((tail.iter().map(|s| s * s).sum::<f32>() / tail.len() as f32).sqrt() / (0.1 / 2f32.sqrt())).log10()
+        };
+        let mut fx = HumRemoval::new(48_000);
+        for hz in [50.0, 100.0, 150.0, 200.0, 250.0] {
+            let db = level(hz, &mut fx);
+            assert!(db < -10.0, "{hz} Hz: {db:+.1} dB");
+        }
+        let voice = level(1000.0, &mut fx);
+        assert!(voice.abs() < 0.5, "1 kHz: {voice:+.2} dB");
     }
 }

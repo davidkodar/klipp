@@ -11,7 +11,7 @@ const SR: u32 = 48_000;
 
 /// Items known not to do what they say, and the issue that holds each.
 /// Issue 0: found by the sweep, not filed yet.
-const KNOWN: &[(&str, u32)] = &[("hum_removal 250 Hz", 2779), ("chorus keeps the level", 2801)];
+const KNOWN: &[(&str, u32)] = &[("chorus keeps the level", 2801)];
 
 /// Interleaved stereo of `f(t)` for `secs`.
 fn signal(secs: f32, f: impl Fn(f32) -> f32) -> Vec<f32> {
