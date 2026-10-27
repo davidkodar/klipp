@@ -238,3 +238,64 @@ fn a_macro_control_drives_a_placed_templates_opacity_on_the_gpu() {
         assert!((peak - srgb(opacity)).abs() <= 4.0, "control {control}: peak {peak}, the curve says {:.1}", srgb(opacity));
     }
 }
+
+/// Each media clip by its media: the first slot's red, any other blue;
+/// the red one a wide (16:9) source when `.1`, else a tall (9:16) one,
+/// and the blue the other.
+struct ByMedia(klipp_core::MediaId, bool);
+
+impl FrameSource for ByMedia {
+    fn frame(&mut self, clip: &Clip, _: f64, _: u32, _: u32) -> Option<SourceFrame> {
+        let first = clip.media_id() == Some(self.0);
+        let c = if first { [0.8f32, 0.05, 0.05, 1.0] } else { [0.05f32, 0.1, 0.8, 1.0] };
+        let (w, h) = if first == self.1 { (320u32, 180u32) } else { (180, 320) };
+        Some(SourceFrame { pixels: klipp_compose::SourcePixels::Linear(std::sync::Arc::new(c.repeat((w * h) as usize))), width: w, height: h, pts: None })
+    }
+}
+
+/// #2757: the shipped split screen, placed in a wide, a tall and a square
+/// sequence, draws its layout for each: the first picture in the left
+/// half (the top one on a tall frame), the second in the other, the line
+/// between them, whether each is wide or tall footage, on the stack with
+/// no fallback.
+#[test]
+fn the_split_screen_lays_out_for_each_frame_on_the_gpu() {
+    let split = klipp_timeline::composition_template::builtin_templates().into_iter().find(|t| t.name == "Split Screen").expect("shipped");
+    let (first, second) = (klipp_core::MediaId::new(), klipp_core::MediaId::new());
+    for ((w, h), first_wide) in [(1920u32, 1080u32), (1080, 1920), (1080, 1080)].into_iter().flat_map(|f| [(f, true), (f, false)]) {
+        let layout = split.composition_for(w, h).unwrap().clone();
+        let mut instance = klipp_timeline::composition_template::instance_for(&split);
+        instance.media_slots.insert("slot_1".into(), first.0.to_string());
+        instance.media_slots.insert("slot_2".into(), second.0.to_string());
+        let mut clip = Clip::precomposition(layout.id, tc(0.0), tc(3.0));
+        clip.kind = ClipKind::TemplatePrecomposition { sequence_id: layout.id, template_instance: instance };
+        let mut v = Track::new("V1", TrackKind::Video);
+        v.clips = vec![clip];
+        let mut seq = Sequence::new_default();
+        seq.resolution = klipp_core::Resolution { width: w, height: h };
+        seq.tracks = vec![v];
+        let mut all = split.sequences.clone();
+        all.push(seq.clone());
+        let flat = klipp_timeline::flatten::flatten_sequence(&seq, &all);
+        let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+        r.set_gpu_enabled(true);
+        let Some((px, _)) = r.render_display_u8_on_gpu(&flat, tc(1.0), w, h, &mut ByMedia(first, first_wide), RenderOptions::default()) else {
+            assert!(!required(), "required, but the GPU stack declined the split screen");
+            eprintln!("UNVERIFIED: no GPU stack");
+            return;
+        };
+        assert_eq!(klipp_effects::residency::last_frame().fallback_count(), 0, "{w}x{h}: on the GPU");
+        let at = |x: u32, y: u32| { let i = ((y * w + x) * 4) as usize; [px[i], px[i + 1], px[i + 2]] };
+        let (a, b, mid) = if h > w { (at(w / 2, h / 4), at(w / 2, 3 * h / 4), at(w / 4, h / 2)) } else { (at(w / 4, h / 2), at(3 * w / 4, h / 2), at(w / 2, h / 4)) };
+        eprintln!("{w}x{h} (first wide: {first_wide}): first {a:?}, second {b:?}, line {mid:?}");
+        assert!(a[0] > 150 && a[2] < 100, "{w}x{h}: the first picture where it goes: {a:?}");
+        assert!(b[2] > 150 && b[0] < 100, "{w}x{h}: the second where it goes: {b:?}");
+        // Each half covered to its far corners, nothing of the other in it.
+        let corners = if h > w { [(4, 4, true), (w - 5, h / 2 - 8, true), (4, h / 2 + 8, false), (w - 5, h - 5, false)] } else { [(4, 4, true), (w / 2 - 8, h - 5, true), (w / 2 + 8, 4, false), (w - 5, h - 5, false)] };
+        for (x, y, is_first) in corners {
+            let p = at(x, y);
+            assert!(if is_first { p[0] > 150 && p[2] < 100 } else { p[2] > 150 && p[0] < 100 }, "{w}x{h} (first wide: {first_wide}): ({x}, {y}) shows {p:?}");
+        }
+        assert!(mid.iter().all(|c| *c > 200), "{w}x{h}: the line between them: {mid:?}");
+    }
+}

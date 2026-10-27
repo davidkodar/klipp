@@ -100,7 +100,7 @@ pub(crate) fn with_compositions(ops: &[klipp_document::ops::Op], dir: Option<&st
     if !ops.iter().any(|op| matches!(op, Op::Template { data: None, .. })) {
         return ops.to_vec();
     }
-    let store = klipp_timeline::composition_template::CompositionTemplateStore::load(dir.map(std::path::Path::to_path_buf));
+    let store = klipp_timeline::composition_template::CompositionTemplateStore::load(dir.map(std::path::Path::to_path_buf)).with_builtins();
     ops.iter()
         .cloned()
         .map(|mut op| {
@@ -188,7 +188,7 @@ pub(crate) fn title_templates(dir: Option<&std::path::Path>, compositions: Optio
     });
     // Composition templates (#2757): a stack of clips placed as one,
     // their parameters set by name or label.
-    let store = klipp_timeline::composition_template::CompositionTemplateStore::load(compositions.map(std::path::Path::to_path_buf));
+    let store = klipp_timeline::composition_template::CompositionTemplateStore::load(compositions.map(std::path::Path::to_path_buf)).with_builtins();
     let composed: Vec<serde_json::Value> = store
         .templates()
         .map(|t| {
@@ -204,7 +204,9 @@ pub(crate) fn title_templates(dir: Option<&std::path::Path>, compositions: Optio
             }).collect();
             let secs = t.composition().map(|s| s.total_duration().to_secs_f64()).unwrap_or(0.0);
             let slots: Vec<serde_json::Value> = t.slots.iter().map(|(name, s)| json!({ "name": name, "label": s.label, "kind": s.kind })).collect();
-            json!({ "name": t.name, "category": t.category, "secs": secs, "parameters": parameters, "slots": slots })
+            // Shipped with Klipp, and laid out for which frames (#2757).
+            let formats: Vec<&str> = std::iter::once("wide").chain(t.formats.keys().map(String::as_str)).collect();
+            json!({ "name": t.name, "category": t.category, "secs": secs, "parameters": parameters, "slots": slots, "builtin": store.is_builtin(t.id), "formats": formats })
         })
         .collect();
     if !composed.is_empty() {
