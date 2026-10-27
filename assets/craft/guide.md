@@ -304,7 +304,7 @@ exist until the plan runs.
   each other before making any of them look better.
 - `effect {clip_id, kind, amount?}`: a finishing effect on a picture
   clip, native generator or title (on a title it works on the drawn
-  text: blur softens it, glow lights around it). `amount` is 0 to 1; a second of the same kind replaces the first.
+  text: blur softens it, glow lights around it). `amount` is 0 to 1, one scale for every kind: about 0.3 subtle, 0.5 clearly there, 1 strong; a second of the same kind replaces the first.
   With `on: "timeline"` or `on: {"group": name}` instead of `clip_id` it
   goes on every picture clip there in one step (a vignette and grain over
   the whole film); `on: {"track": n or "video", "from"?, "to"?}` does the

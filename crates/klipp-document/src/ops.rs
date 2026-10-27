@@ -6669,7 +6669,8 @@ pub fn named_picture_effect(kind: &str, amount: Option<f32>) -> Result<(klipp_ef
     }
     use klipp_effects::BuiltinEffect as E;
     let fx = match kind.to_lowercase().as_str() {
-        "vignette" => E::Vignette { amount: -a * 0.8, size: 0.8, softness: 0.5, roundness: 0.7 },
+        // On one scale with the rest (#2762): 0.5 clearly visible, 1 strong.
+        "vignette" => E::Vignette { amount: -(a * 1.2).min(1.0), size: 0.7, softness: 0.5, roundness: 0.7 },
         "grain" | "film_grain" => E::FilmGrain { amount: a * 0.5, size: 1.0, color: 0, shadows: 0.3, seed: 1 },
         // Round a picture's highlights, not over all of it (#2763); a
         // title glows whole (`picture_effect`).
@@ -6689,13 +6690,13 @@ pub fn named_picture_effect(kind: &str, amount: Option<f32>) -> Result<(klipp_ef
         "bloom" => E::Bloom { threshold: 0.7, radius: a * 40.0 + 10.0, intensity: a },
         "diffusion" | "pro_mist" => E::Diffusion { amount: a, radius: 20.0, threshold: 0.6, desaturation: 0.1 },
         "halation" | "film_halation" => E::FilmHalation { threshold: 0.75, radius: a * 30.0 + 10.0, intensity: a, hue: 0.05 },
-        "light_rays" | "god_rays" => E::LightRays { center_x: 0.5, center_y: 0.35, threshold: 0.7, samples: 48, decay: 0.95, intensity: a },
+        "light_rays" | "god_rays" => E::LightRays { center_x: 0.5, center_y: 0.35, threshold: 0.5, samples: 48, decay: 0.95, intensity: a * 1.5 },
         // Its core a seventh of the frame, as the app's default: at the
         // frame's whole size it veiled the picture white (#2763).
         "lens_flare" => E::LensFlare { position_x: 0.7, position_y: 0.3, brightness: a, flare_size: 0.15, ghost_count: 4, ghost_intensity: a * 0.5, chromatic_aberration: 0.3 },
         // Length is in canvas pixels (0 to 200, 80 by default): the default
         // amount gives a streak about that long (#1189).
-        "anamorphic" | "anamorphic_streak" | "streak" => E::AnamorphicStreak { threshold: 0.75, length: a * 200.0, intensity: a, tint: 0.6 },
+        "anamorphic" | "anamorphic_streak" | "streak" => E::AnamorphicStreak { threshold: 0.6, length: a * 200.0, intensity: a * 1.5, tint: 0.6 },
         "light_wrap" => E::LightWrap { width: a * 20.0, intensity: a, softness: 0.5 },
         "blur" => E::GaussianBlur { radius: a * 20.0 },
         // The blur's amount runs 0 to 50 (10 by default): squared, the
@@ -6705,12 +6706,13 @@ pub fn named_picture_effect(kind: &str, amount: Option<f32>) -> Result<(klipp_ef
         // about 11 rather than 18, where the picture was gone (#2763).
         "radial_blur" | "zoom_blur" => E::RadialBlur { center_x: 0.5, center_y: 0.5, amount: a * a * a * 50.0, samples: 24, mode: 0 },
         "spin_blur" => E::RadialBlur { center_x: 0.5, center_y: 0.5, amount: a * a * a * 50.0, samples: 24, mode: 1 },
-        "directional_blur" | "motion_blur" => E::DirectionalBlur { angle: 0.0, distance: a * 40.0, samples: 24 },
+        "directional_blur" | "motion_blur" => E::DirectionalBlur { angle: 0.0, distance: a * 60.0, samples: 24 },
         "sharpen" => E::Sharpen { amount: a },
         "chromatic_aberration" | "rgb_split" | "fringe" => E::ChromaticAberration { red_shift: a * 8.0, blue_shift: -a * 8.0, center_x: 0.5, center_y: 0.5 },
         "tilt_shift" => E::TiltShift { center: 0.5, width: 0.3, softness: 0.2, radius: a * 20.0 },
         "mosaic" | "pixelate" => E::Mosaic { block_size: a * 40.0 + 2.0 },
-        "posterize" => E::Posterize { levels: (32.0 - a * 28.0).max(2.0) },
+        // Bands that show by the middle: 9 at 0.5, 2 at full.
+        "posterize" => E::Posterize { levels: (2.0 + (1.0 - a) * (1.0 - a) * 30.0).round() },
         "invert" => E::Invert { mix: a },
         "mirror" => E::Mirror { horizontal: 1, vertical: 0 },
         // Scaled up so the corners still read inside the picture: past its
@@ -6739,12 +6741,12 @@ pub fn named_picture_effect(kind: &str, amount: Option<f32>) -> Result<(klipp_ef
         // the picture by the amount, flat areas were a grey wash (#2763).
         "edge_detect" | "edges" => E::EdgeDetect { strength: a * 2.0, mix: 1.0 },
         "denoise" => E::Denoise { spatial_sigma: a * 4.0, color_sigma: a * 0.1, iterations: 1 },
-        "vhs" => E::Vhs { tracking: a * 0.5, bleed: a, noise: a * 0.5, scanlines: a, seed: 1 },
+        "vhs" => E::Vhs { tracking: a * 0.8, bleed: a, noise: a * 0.7, scanlines: a, seed: 1 },
         "old_film" => E::OldFilm { flicker: a * 0.5, scratches: a, dust: a, weave: a * 0.5, sepia: a * 0.5, seed: 1 },
         // A random flicker of the opacity, eight jumps a second, a third
         // of them holding (#989); more flickers deeper.
         "flicker" => E::Flicker { amount: a, speed: 8.0, smoothness: 0.0, hold: 0.3, seed: 1, target: 0, time: 0.0 },
-        "exposure_flicker" => E::Flicker { amount: a * 0.5, speed: 8.0, smoothness: 0.3, hold: 0.3, seed: 1, target: 1, time: 0.0 },
+        "exposure_flicker" => E::Flicker { amount: a * 0.8, speed: 8.0, smoothness: 0.3, hold: 0.3, seed: 1, target: 1, time: 0.0 },
         // Two eyepieces, the outside darker the more, a fringe at their
         // rims (#989).
         // Black outside the eyepieces from the default amount up, as
@@ -6756,12 +6758,15 @@ pub fn named_picture_effect(kind: &str, amount: Option<f32>) -> Result<(klipp_ef
             let kind = match kind { "snow" => 1, "rain" => 2, "sparks" => 3, "embers" => 4, _ => 0 };
             match klipp_effects::particles::preset(kind) {
                 E::Particles { style: kind, amount, size, speed, direction, spread, lifetime, opacity, color, seed, time } => {
-                    E::Particles { style: kind, amount: amount * (0.5 + a), size, speed, direction, spread, lifetime, opacity: (opacity * (0.6 + 0.4 * a)).min(1.0), color, seed, time }
+                    // Many more, and bigger, with the amount: at the kind's
+                    // own count they were specks too few to see at 0.5
+                    // (#2762); 0.5 is now four times it.
+                    E::Particles { style: kind, amount: amount * (1.0 + 6.0 * a), size: size * (0.8 + 0.8 * a), speed, direction, spread, lifetime, opacity: (opacity * (0.6 + 0.4 * a)).min(1.0), color, seed, time }
                 }
                 other => other,
             }
         }
-        other => return Err((format!("\"{other}\" is not an effect"), "use e.g. vignette, grain, glow, bloom, chroma_key, luma_key, corners, shadow, outer_glow, fill_bars, diffusion, halation, light_rays, lens_flare, anamorphic, blur, radial_blur, directional_blur, sharpen, chromatic_aberration, tilt_shift, mosaic, posterize, invert, mirror, lens_distortion, displace, reflection (water_reflection, calm_water, rippled_water, glossy_floor, wet_street, glass), edge_detect, denoise, vhs, old_film, flicker, exposure_flicker, binocular, dust, snow, rain, sparks or embers".into())),
+        other => return Err((format!("\"{other}\" is not an effect"), "use e.g. vignette, grain, glow, bloom, chroma_key, luma_key, corners, shadow, outer_glow, fill_bars, diffusion, halation, light_rays, lens_flare, anamorphic, light_wrap, blur, radial_blur, spin_blur, directional_blur, sharpen, chromatic_aberration, tilt_shift, mosaic, posterize, invert, mirror, lens_distortion, displace, reflection (water_reflection, calm_water, rippled_water, glossy_floor, wet_street, glass), emboss, edge_detect, denoise, vhs, old_film, flicker, exposure_flicker, binocular, dust, snow, rain, sparks or embers".into())),
     };
     Ok((fx, a))
 }

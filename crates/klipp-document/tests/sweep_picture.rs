@@ -10,7 +10,7 @@ use serde_json::json;
 use sweep_common::*;
 
 /// Items known to fail, and the issue that holds each.
-const KNOWN: &[(&str, u32)] = &[("dust", 2762), ("rain", 2762), ("sparks", 2762), ("embers", 2762)];
+const KNOWN: &[(&str, u32)] = &[];
 
 /// The effect kinds the op takes, by their own names (aliases left out).
 const KINDS: &[&str] = &[
