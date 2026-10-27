@@ -1675,9 +1675,11 @@ pub struct PlaybackEngine {
     // When active on the current clip, the engine renders the chain twice
     // (once normal, once with the target effect's enabled flag flipped to
     // false) and writes the bypassed version to FrameBuffer.compare_effect_data.
+    // Any node of the clip's picture by its path, not only an effect: the
+    // A/B wipe of a node's input against its output (#2758).
     pub compare_effect_active: bool,
     pub compare_effect_clip_id: Option<klipp_core::ClipId>,
-    pub compare_effect_node: Option<uuid::Uuid>,
+    pub compare_effect_node: Option<klipp_graph_format::path::NodePath>,
     // Matte preview — when true, show B&W qualifier/mask matte instead of graded frame
     matte_preview: bool,
     /// What the viewer shows while grading for an HDR delivery
@@ -3848,7 +3850,7 @@ impl PlaybackEngine {
             }
 
             AppCommand::SetSplitCompareNode { clip_id, path } => {
-                self.compare_effect_node = path.as_ref().and_then(|p| p.node());
+                self.compare_effect_node = path.clone().filter(|p| p.node().is_some());
                 self.compare_effect_active = clip_id.is_some() && self.compare_effect_node.is_some();
                 self.compare_effect_clip_id = clip_id;
                 debug!(
@@ -9025,11 +9027,6 @@ impl PlaybackEngine {
                 }
             }
         }
-        // A channel view is drawn by the stack's finish (#2758); the
-        // graded path shows the picture.
-        if self.view_channel != klipp_core::ViewChannel::Picture {
-            blockers.push("channel view");
-        }
         // What the byte-identity of *direct present* rests on, and what
         // the graded path can live with.
         //
@@ -9107,7 +9104,7 @@ impl PlaybackEngine {
         if self.hdr_reference_output {
             blockers.push("HDR reference output active");
         }
-        if self.compare_stabilization || self.compare_effect_active {
+        if self.compare_stabilization {
             blockers.push("compare mode active");
         }
         // Before/after split: the grade stores the pre-grade frame for the
@@ -9194,6 +9191,15 @@ impl PlaybackEngine {
 
     fn fast_path_blockers_for(&self, mode: FastPath) -> Vec<&'static str> {
         let mut blockers = self.display_path_blockers(mode);
+        // Drawn by the GPU stack, which the fast paths are not (#2758): a
+        // channel view is the stack's finish, and the A/B wipe of a node
+        // the stack drawing the frame twice.
+        if self.view_channel != klipp_core::ViewChannel::Picture {
+            blockers.push("channel view");
+        }
+        if self.compare_effect_active {
+            blockers.push("compare mode active");
+        }
         if blockers.iter().any(|b| matches!(*b, "KLIPP_DIRECT_PRESENT=0" | "not playing" | "not a slider drag on the parked frame")) {
             return blockers;
         }
@@ -9740,21 +9746,20 @@ impl PlaybackEngine {
     /// and the grade chain can be seeded from the decoder's GPU buffer,
     /// the readback has no consumer at all.
     ///
-    /// Compare modes and paused scrubbing still need it. The drag
-    /// exception is deliberate: during a Playing param-drag with no
-    /// compare mode active the encode runs at full resolution ~30 times a
-    /// second purely to refresh a scope preview the user is not looking
-    /// at, so a slightly stale preview buys back the frame budget.
+    /// The stabilisation compare and paused scrubbing still need it; the
+    /// A/B wipe of a node draws both its halves on the GPU stack (#2758).
+    /// The drag exception is deliberate: during a Playing param-drag with
+    /// no compare mode active the encode runs at full resolution ~30
+    /// times a second purely to refresh a scope preview the user is not
+    /// looking at, so a slightly stale preview buys back the frame budget.
     fn pregrade_encode_needed(&self) -> bool {
         let drag_skip = drag_downsample_enabled()
             && self.in_node_param_edit
             && self.state == PlaybackState::Playing
             && !self.compare_stabilization
-            && !self.compare_effect_active
             && !self.bypass_color_grade;
         (self.state != PlaybackState::Playing
             || self.compare_stabilization
-            || self.compare_effect_active
             || self.in_node_param_edit)
             && !drag_skip
     }
@@ -14517,6 +14522,61 @@ mod title_fast_path_tests {
         let blockers = engine.fast_path_blockers_for(FastPath::ParkedDrag);
         assert!(!blockers.iter().any(|b| b.contains("title")), "ParkedDrag: {blockers:?}");
         assert!(!PlaybackEngine::titles_over_clip(&sequence.read().unwrap(), engine.playhead));
+    }
+}
+
+#[cfg(test)]
+mod viewer_mode_route_tests {
+    use super::*;
+    use klipp_timeline::Sequence;
+    use std::sync::Mutex;
+
+    /// #2758: a channel view and the A/B wipe of a node are drawn by the
+    /// GPU stack, so each keeps the frame off both fast paths, by name,
+    /// and leaves the stack free to take it. Named on the display
+    /// blockers they sent the viewer to the CPU's reference route.
+    #[test]
+    fn a_channel_view_and_a_node_wipe_take_the_gpu_stack() {
+        let tc = |s: f64| RationalTime::from_secs_f64(s, 30);
+        let mut seq = Sequence::new_default();
+        let mut v1 = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+        let clip = klipp_timeline::Clip::media(MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0));
+        let id = clip.id;
+        v1.clips = vec![clip];
+        seq.tracks = vec![v1];
+        let sequence = Arc::new(klipp_timeline::SharedSequence::new(seq));
+        let (_cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
+        let (ev_tx, _ev_rx) = crossbeam_channel::unbounded();
+        let fb = || Arc::new(Mutex::new(crate::texture::FrameBuffer::new(16, 16)));
+        let mut engine = PlaybackEngine::new(
+            cmd_rx, ev_tx, fb(), fb(),
+            Arc::clone(&sequence), Arc::new(RwLock::new(klipp_media::MediaPool::new())), Box::new(|| {}),
+            Arc::new(Mutex::new(None)), Arc::new(Mutex::new(crate::perf::PerfRing::default())),
+        );
+        engine.playhead = tc(1.0);
+        if !klipp_compose::gpu_composite_enabled() || !direct_present_enabled() {
+            return;
+        }
+        let node = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: id.0 }, [uuid::Uuid::new_v4()]);
+        let modes: [(&str, Box<dyn Fn(&mut PlaybackEngine, bool)>); 2] = [
+            ("channel view", Box::new(|e, on| {
+                e.handle_command(AppCommand::SetViewChannel { channel: if on { klipp_core::ViewChannel::Alpha } else { klipp_core::ViewChannel::Picture } });
+            })),
+            ("compare mode active", Box::new(move |e, on| {
+                e.handle_command(AppCommand::SetSplitCompareNode { clip_id: on.then_some(id), path: on.then(|| node.clone()) });
+            })),
+        ];
+        for (name, set) in &modes {
+            set(&mut engine, true);
+            for (state, mode) in [(PlaybackState::Paused, FastPath::PausedPresent), (PlaybackState::Playing, FastPath::Playing)] {
+                engine.state = state;
+                assert!(engine.fast_path_blockers_for(mode).contains(name), "{name}, {mode:?}: off the fast paths");
+                assert!(engine.gpu_composite_allowed(), "{name}, {mode:?}: the stack may take the frame");
+            }
+            engine.state = PlaybackState::Paused;
+            set(&mut engine, false);
+            assert!(!engine.fast_path_blockers_for(FastPath::PausedPresent).contains(name), "{name} off");
+        }
     }
 }
 

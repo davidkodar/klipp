@@ -210,6 +210,7 @@ impl KlippApp {
             let time = (self.state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64()).max(0.0);
             let keyboard_enabled = self.state.active_panel == Some(crate::state::PanelKind::PictureGraph);
             self.node_graph_v2_panel.picture_solo = self.state.solo_node;
+            self.node_graph_v2_panel.compared_node = self.state.split_compare_node.as_ref().filter(|(c, _)| *c == clip.id).and_then(|(_, p)| p.node());
             self.node_graph_v2_panel.node_feedback = self.state.node_feedback(clip.id);
             self.node_graph_v2_panel.node_labels = super::node_labels::canvas_labels(&self.state.sequences[self.state.active_sequence_idx]);
             match self.node_graph_v2_panel.show_picture(ui, clip, &mut level, &mut self.state.selected_node_id, &mut self.state.selected_node_ids, theme, time, keyboard_enabled, &self.state.node_thumbs, self.state.node_thumbs_gen, &mut self.state.deferred_texture_drops[self.state.deferred_texture_drops_slot]) {
