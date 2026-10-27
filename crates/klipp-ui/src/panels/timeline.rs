@@ -9060,6 +9060,36 @@ impl TimelinePanel {
                             .filter(|h| h.id != clip_id && h.timeline_in < clip.timeline_out && clip.timeline_in < h.timeline_out)
                             .flat_map(|h| h.surfaces.iter().filter(|s| !s.keys.is_empty()).map(move |s| (h.id, s.id, s.name.clone())))
                             .collect();
+                        // Pinned: what it does where the surface's track is
+                        // lost (#2751), pinned again with that.
+                        if let Some(pin) = clip.surface_pin {
+                            ui.menu_rows("If the Track Is Lost", |ui| {
+                                use klipp_timeline::PinLoss;
+                                for (label, on_loss, hint) in [
+                                    ("Hold", PinLoss::Hold, "Stay where the surface was last followed to"),
+                                    ("Hide", PinLoss::Hide, "Gone until the surface is followed again"),
+                                    ("Fade Out", PinLoss::Fade { secs: PinLoss::FADE_SECS }, "Fade out over a moment from where it is lost"),
+                                ] {
+                                    let on = std::mem::discriminant(&pin.on_loss) == std::mem::discriminant(&on_loss);
+                                    if ui.selectable_label(on, label).on_hover_text(hint).clicked() {
+                                        let op = klipp_document::ops::Op::Pin {
+                                            clip_id: klipp_document::ops::ClipRef::Id(pin.host),
+                                            media_id: None,
+                                            layer: Some(klipp_document::ops::ClipRef::Id(clip_id)),
+                                            surface: Some(pin.surface.to_string()),
+                                            from: None,
+                                            to: None,
+                                            fit: Some(match pin.fit { klipp_timeline::PinFit::Fit => "fit", klipp_timeline::PinFit::Stretch => "stretch" }.to_string()),
+                                            inset: Some(pin.inset),
+                                            on_loss: Some(match on_loss { PinLoss::Hold => "hold", PinLoss::Hide => "hide", PinLoss::Fade { .. } => "fade" }.to_string()),
+                                            fade_secs: None,
+                                        };
+                                        state.pending_doc_ops.push(crate::state::DocOpsRequest { label: format!("Pin: {label} If Lost"), ops: vec![op], independent: false });
+                                        ui.close_menu();
+                                    }
+                                }
+                            });
+                        }
                         if !hosts.is_empty() {
                             ui.menu_rows("Pin to Surface", |ui| {
                                 for (host, surface, name) in &hosts {
@@ -9073,6 +9103,8 @@ impl TimelinePanel {
                                             to: None,
                                             fit: None,
                                             inset: None,
+                                            on_loss: None,
+                                            fade_secs: None,
                                         };
                                         state.pending_doc_ops.push(crate::state::DocOpsRequest { label: format!("Pin to {name}"), ops: vec![op], independent: false });
                                         ui.close_menu();

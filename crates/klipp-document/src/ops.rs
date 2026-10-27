@@ -1323,6 +1323,13 @@ pub enum Op {
         /// height on each side: for a screen tracked by its bezel.
         #[serde(default)]
         inset: Option<f32>,
+        /// Where the surface's track is lost (#2751): "hold" the last good
+        /// place (the default), "hide", or "fade" out over `fade_secs`
+        /// (0.3 when left out).
+        #[serde(default)]
+        on_loss: Option<String>,
+        #[serde(default)]
+        fade_secs: Option<f32>,
     },
     /// Move what a clip shows without moving the clip: its source in and
     /// out both by `secs` (later in the file for positive), the timeline
@@ -3486,7 +3493,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let to = match to { Some(a) => Some(resolve_anchor(seq, fps, a, i)?), None => None };
             redact(seq, pool, fps, i, ti, clip, from, to, [*x, *y, *w, *h], kind, *amount)
         }
-        Op::Pin { clip_id, media_id, layer, surface, from, to, fit, inset } => {
+        Op::Pin { clip_id, media_id, layer, surface, from, to, fit, inset, on_loss, fade_secs } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             if media_id.is_some() == layer.is_some() {
                 return Err(refuse(i, "pin takes media_id or layer", "give media_id for a picture from the pool, or layer for a clip already on the timeline (a title, a graphic)"));
@@ -3503,14 +3510,24 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             if !inset.is_finite() || !(0.0..=0.45).contains(&inset) {
                 return Err(refuse(i, format!("inset {inset} is out of range"), "give inset 0 to 0.45 of the surface each side"));
             }
+            let fade = fade_secs.unwrap_or(klipp_timeline::PinLoss::FADE_SECS);
+            if !fade.is_finite() || !(0.05..=10.0).contains(&fade) {
+                return Err(refuse(i, format!("fade_secs {fade} is out of range"), "give fade_secs 0.05 to 10"));
+            }
+            let on_loss = match on_loss.as_deref().map(str::trim).map(str::to_lowercase).as_deref() {
+                None | Some("") | Some("hold") => klipp_timeline::PinLoss::Hold,
+                Some("hide") => klipp_timeline::PinLoss::Hide,
+                Some("fade") | Some("fade_out") => klipp_timeline::PinLoss::Fade { secs: fade },
+                Some(other) => return Err(refuse(i, format!("\"{other}\" is not what a pin does where its track is lost"), "use hold, hide or fade")),
+            };
             match (media_id, layer) {
-                (Some(media_id), _) => pin(seq, pool, i, ti, clip, *media_id, surface.as_deref(), from, to, fit, inset),
+                (Some(media_id), _) => pin(seq, pool, i, ti, clip, *media_id, surface.as_deref(), from, to, fit, inset, on_loss),
                 (None, Some(layer)) => {
                     if from.is_some() || to.is_some() {
                         return Err(refuse(i, "a pinned layer keeps its own time", "leave out from and to; trim the layer to change when it shows"));
                     }
                     let (_, _, pinned) = resolve_clip(seq, fps, layer, i)?;
-                    pin_layer(seq, pool, i, clip, pinned, surface.as_deref(), fit, inset)
+                    pin_layer(seq, pool, i, clip, pinned, surface.as_deref(), fit, inset, on_loss)
                 }
                 (None, None) => unreachable!("refused above"),
             }
@@ -6434,7 +6451,7 @@ pub fn find_surface<'c>(clip: &'c Clip, name: Option<&str>) -> Option<&'c klipp_
 }
 
 #[allow(clippy::too_many_arguments)]
-fn pin(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, media_id: MediaId, surface: Option<&str>, from: Option<Timecode>, to: Option<Timecode>, fit: Option<klipp_timeline::PinFit>, inset: f32) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+fn pin(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, media_id: MediaId, surface: Option<&str>, from: Option<Timecode>, to: Option<Timecode>, fit: Option<klipp_timeline::PinFit>, inset: f32, on_loss: klipp_timeline::PinLoss) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     let host = clip_name(seq, pool, clip);
     let Some(s) = find_surface(clip, surface) else {
         let hint = if clip.surfaces.is_empty() {
@@ -6475,7 +6492,7 @@ fn pin(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, media
     let target = klipp_timeline::surface::pin_target(&on_frame, s.aspect(), picture_size, fit, inset).unwrap_or(on_frame);
     let [tl, tr, br, bl] = klipp_timeline::surface::pin_frame_corners(&target, picture_size, frame).unwrap_or(target);
     add_plain_effects(&mut picture, &[klipp_effects::BuiltinEffect::CornerPin { tl, tr, br, bl }]).map_err(|e| refuse(i, format!("the picture couldn't take its corner pin: {e}"), "report it"))?;
-    picture.surface_pin = Some(klipp_timeline::SurfacePin { host: clip.id, surface: s.id, picture_size, fit, inset });
+    picture.surface_pin = Some(klipp_timeline::SurfacePin { host: clip.id, surface: s.id, picture_size, fit, inset, on_loss });
     let above = (0..ti).rev().find(|k| seq.tracks[*k].kind == TrackKind::Video && !seq.tracks[*k].locked && overlapping(seq, *k, a, b, None).is_none());
     let (video, created) = match above {
         Some(k) => ((picture, k), None),
@@ -6496,7 +6513,7 @@ fn pin(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, media
 /// renderer follows, one step. Its picture is what it shows in the frame:
 /// a title or a generator the frame's own shape, a picture its own.
 #[allow(clippy::too_many_arguments)]
-fn pin_layer(seq: &Sequence, pool: &MediaPool, i: usize, clip: &Clip, pinned: &Clip, surface: Option<&str>, fit: Option<klipp_timeline::PinFit>, inset: f32) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+fn pin_layer(seq: &Sequence, pool: &MediaPool, i: usize, clip: &Clip, pinned: &Clip, surface: Option<&str>, fit: Option<klipp_timeline::PinFit>, inset: f32, on_loss: klipp_timeline::PinLoss) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     let host = clip_name(seq, pool, clip);
     let layer = clip_name(seq, pool, pinned);
     if pinned.id == clip.id {
@@ -6527,7 +6544,7 @@ fn pin_layer(seq: &Sequence, pool: &MediaPool, i: usize, clip: &Clip, pinned: &C
     // Its corner pin replaced, not stacked, when it was pinned before.
     let (_, mut new) = effects_edit_and_after(pinned, |e| matches!(e, klipp_effects::BuiltinEffect::CornerPin { .. }), Some((klipp_effects::BuiltinEffect::CornerPin { tl, tr, br, bl }, Place::Last)))
         .map_err(|e| refuse(i, format!("{layer} couldn't take its corner pin: {e}"), "report it"))?;
-    new.surface_pin = Some(klipp_timeline::SurfacePin { host: clip.id, surface: s.id, picture_size, fit, inset });
+    new.surface_pin = Some(klipp_timeline::SurfacePin { host: clip.id, surface: s.id, picture_size, fit, inset, on_loss });
     let tracked = if s.keys.is_empty() { ", where it stays until the surface is tracked" } else { ", following it" };
     let what = format!("pin {layer} to the surface \"{}\" of {host}{tracked}", s.name);
     Ok((what, EditCommand::ReplaceClip { description: "Pin to Surface", old: Box::new(pinned.clone()), new: Box::new(new) }, vec![pinned.id]))
@@ -13862,7 +13879,7 @@ mod tests {
         let mut logo = klipp_media::MediaItem::synthetic_for_test("/tmp/logo.png".into(), None);
         logo.is_still = true;
         let logo = pool.add(logo);
-        let pin_op = |surface: Option<&str>| Op::Pin { clip_id: ClipRef::Id(a), media_id: Some(logo), layer: None, surface: surface.map(str::to_string), from: Some(Anchor::Secs(1.0)), to: None, fit: None, inset: None };
+        let pin_op = |surface: Option<&str>| Op::Pin { clip_id: ClipRef::Id(a), media_id: Some(logo), layer: None, surface: surface.map(str::to_string), from: Some(Anchor::Secs(1.0)), to: None, fit: None, inset: None, on_loss: None, fade_secs: None };
         assert!(resolve(&seq, &pool, &[pin_op(None)]).unwrap_err().hint.contains("track_surface"), "nothing tracked yet");
 
         // A 16:9 surface (0.3 of a 1920 frame across, 0.3 of 1080 down).
@@ -13876,7 +13893,7 @@ mod tests {
         let EditCommand::LinkedImport { video: Some((picture, 0)), created_video_track_at: Some(0), .. } = &step.edit else { panic!("{:?}", step.edit) };
         assert_eq!((secs(picture.timeline_in), secs(picture.timeline_out)), (1.0, 4.0));
         // The logo is 1920x1080 as the test media is: the surface's shape, so it stretches straight onto the corners.
-        assert_eq!(picture.surface_pin, Some(klipp_timeline::SurfacePin { host: a, surface: id, picture_size: Some([1920, 1080]), fit: klipp_timeline::PinFit::Stretch, inset: 0.0 }));
+        assert_eq!(picture.surface_pin, Some(klipp_timeline::SurfacePin { host: a, surface: id, picture_size: Some([1920, 1080]), fit: klipp_timeline::PinFit::Stretch, inset: 0.0, on_loss: Default::default() }));
         assert!(matches!(klipp_timeline::test_clip::effects(picture).as_slice(), [klipp_effects::BuiltinEffect::CornerPin { tl, br, .. }] if *tl == corners[0] && *br == corners[2]), "{:?}", klipp_timeline::test_clip::effects(picture));
 
         // A square picture keeps its shape: it fits, inside the surface.
@@ -13885,7 +13902,7 @@ mod tests {
         square.resolution = klipp_core::Resolution { width: 800, height: 800 };
         let square = pool.add(square);
         let fitted = |fit: Option<&str>, inset: Option<f32>| {
-            let op = Op::Pin { clip_id: ClipRef::Id(a), media_id: Some(square), layer: None, surface: None, from: None, to: None, fit: fit.map(str::to_string), inset };
+            let op = Op::Pin { clip_id: ClipRef::Id(a), media_id: Some(square), layer: None, surface: None, from: None, to: None, fit: fit.map(str::to_string), inset, on_loss: None, fade_secs: None };
             let plan = resolve(&seq, &pool, &[op]).unwrap();
             let EditCommand::LinkedImport { video: Some((picture, _)), .. } = &plan.steps[0].edit else { panic!() };
             picture.surface_pin.unwrap()
@@ -13893,7 +13910,7 @@ mod tests {
         assert_eq!(fitted(None, None).fit, klipp_timeline::PinFit::Fit);
         assert_eq!(fitted(Some("stretch"), Some(0.02)).fit, klipp_timeline::PinFit::Stretch);
         assert_eq!(fitted(None, Some(0.02)).inset, 0.02);
-        let bad = |fit: &str, inset: f32| resolve(&seq, &pool, &[Op::Pin { clip_id: ClipRef::Id(a), media_id: Some(square), layer: None, surface: None, from: None, to: None, fit: Some(fit.into()), inset: Some(inset) }]).unwrap_err().why;
+        let bad = |fit: &str, inset: f32| resolve(&seq, &pool, &[Op::Pin { clip_id: ClipRef::Id(a), media_id: Some(square), layer: None, surface: None, from: None, to: None, fit: Some(fit.into()), inset: Some(inset), on_loss: None, fade_secs: None }]).unwrap_err().why;
         assert!(bad("squash", 0.0).contains("not a fit"));
         assert!(bad("fit", 0.6).contains("out of range"));
 
@@ -13938,7 +13955,7 @@ mod tests {
         let find = |seq: &Sequence| seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == tid).cloned().expect("the title");
         let t = find(&pinned);
         assert_eq!((secs(t.timeline_in), secs(t.timeline_out)), (1.0, 3.0), "where it was");
-        assert_eq!(t.surface_pin, Some(klipp_timeline::SurfacePin { host: a, surface: id, picture_size: None, fit: klipp_timeline::PinFit::Stretch, inset: 0.0 }));
+        assert_eq!(t.surface_pin, Some(klipp_timeline::SurfacePin { host: a, surface: id, picture_size: None, fit: klipp_timeline::PinFit::Stretch, inset: 0.0, on_loss: Default::default() }));
         assert!(matches!(klipp_timeline::test_clip::effects(&t).as_slice(), [klipp_effects::BuiltinEffect::CornerPin { tl, br, .. }] if *tl == corners[0] && *br == corners[2]), "{:?}", klipp_timeline::test_clip::effects(&t));
         // Pinned again: one corner pin still.
         let again = run(&pinned, &resolve(&pinned, &pool, &ops).unwrap());
@@ -13949,6 +13966,20 @@ mod tests {
         assert_eq!(edited.title_data().map(|d| d.text()), Some("Closed".to_string()));
         assert_eq!(edited.surface_pin, t.surface_pin, "still pinned");
         assert_eq!(klipp_timeline::test_clip::effects(&edited), klipp_timeline::test_clip::effects(&t), "its corner pin kept");
+        // Where the track is lost: hide, or fade over its time; hold kept
+        // when left out.
+        let lose = |extra: serde_json::Value| {
+            let mut op = serde_json::json!({"op": "pin", "clip_id": a.to_string(), "layer": tid.to_string(), "surface": "wall"});
+            op.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            let ops: Vec<Op> = serde_json::from_value(serde_json::json!([op])).unwrap();
+            resolve(&seq, &pool, &ops).map(|plan| find(&run(&seq, &plan)).surface_pin.unwrap().on_loss)
+        };
+        assert_eq!(lose(serde_json::json!({})).unwrap(), klipp_timeline::PinLoss::Hold);
+        assert_eq!(lose(serde_json::json!({"on_loss": "hide"})).unwrap(), klipp_timeline::PinLoss::Hide);
+        assert_eq!(lose(serde_json::json!({"on_loss": "fade"})).unwrap(), klipp_timeline::PinLoss::Fade { secs: 0.3 });
+        assert_eq!(lose(serde_json::json!({"on_loss": "fade", "fade_secs": 1.0})).unwrap(), klipp_timeline::PinLoss::Fade { secs: 1.0 });
+        assert!(lose(serde_json::json!({"on_loss": "vanish"})).unwrap_err().hint.contains("hold, hide or fade"));
+        assert!(lose(serde_json::json!({"on_loss": "fade", "fade_secs": 0.0})).unwrap_err().why.contains("out of range"));
         // Refused: both or neither source, a time of its own, the host itself.
         for (bad, why) in [
             (serde_json::json!({"op": "pin", "clip_id": a.to_string()}), "media_id or layer"),

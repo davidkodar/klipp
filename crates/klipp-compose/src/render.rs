@@ -1015,6 +1015,9 @@ pub struct Renderer {
     /// Pinned clips' corners on their surfaces this frame (#684), resolved
     /// with the transforms.
     pins: HashMap<ClipId, klipp_timeline::surface::Quad>,
+    /// How much of each pinned clip shows where its surface's track is
+    /// lost (#2751), with `pins`: absent is all of it.
+    pin_presence: HashMap<ClipId, f32>,
     working: WorkingColorspace,
     grade_encoding: klipp_core::GradeEncoding,
     /// The frame's motion from its analyses, for the CPU kernels'
@@ -1131,6 +1134,7 @@ impl Renderer {
             shutter: HashMap::new(),
             title_shutter: HashMap::new(),
             pins: HashMap::new(),
+            pin_presence: HashMap::new(),
             px_scale: 1.0,
             working: WorkingColorspace::default(),
             grade_encoding: klipp_core::grade_encoding(),
@@ -1754,6 +1758,7 @@ impl Renderer {
             None => resolved,
         };
         let (fx, opacity) = clip_effects(clip, time, fps, Some(resolved), eval::surface_pin_corners(clip, seq, time, fps, &|_| None));
+        let opacity = opacity * eval::surface_pin_presence(clip, seq, time, fps);
         if has_active_effects(&fx) || (opacity - 1.0).abs() > 1e-6 {
             return Single::ForTheStack;
         }
@@ -2429,6 +2434,7 @@ impl Renderer {
         self.note_switched_off(c);
         self.note_subject_mattes(c, src);
         let (mut fx, opacity) = clip_effects(c, time, fps, transforms.get(&c.id).copied(), self.pins.get(&c.id).copied());
+        let opacity = opacity * self.pin_presence.get(&c.id).copied().unwrap_or(1.0);
         self.authored_colours(&mut fx);
         self.at_render_scale(&mut fx);
         // Read at the render's size: a gap is in its pixels.
@@ -3860,6 +3866,7 @@ impl Renderer {
             self.found.ungraded = Some(before);
         }
         let (mut fx, opacity) = clip_effects(clip, time, fps, transforms.get(&clip.id).copied(), self.pins.get(&clip.id).copied());
+        let opacity = opacity * self.pin_presence.get(&clip.id).copied().unwrap_or(1.0);
         // Measured alone, the clip is its own picture (#2475): a fill in
         // its bars, a shadow or a glow drawn around it is not its footage,
         // and a fill hid the bars the measure leaves out. Each is an
@@ -5468,9 +5475,14 @@ impl Renderer {
     /// the render scale).
     fn resolve_pins<'c>(&mut self, seq: &Sequence, clips: impl Iterator<Item = &'c Clip>, time: Timecode, fps: f64, transforms: &HashMap<ClipId, ResolvedTransform>) {
         self.pins.clear();
+        self.pin_presence.clear();
         for c in clips {
             if let Some(q) = eval::surface_pin_corners(c, seq, time, fps, &|host| transforms.get(&host.id).copied()) {
                 self.pins.insert(c.id, q);
+            }
+            let shown = eval::surface_pin_presence(c, seq, time, fps);
+            if shown < 1.0 {
+                self.pin_presence.insert(c.id, shown);
             }
         }
     }
