@@ -254,7 +254,10 @@ pub(crate) fn apply(
             let col = [decode(color[0] as f32 / 255.0), decode(color[1] as f32 / 255.0), decode(color[2] as f32 / 255.0), color[3] as f32 / 255.0];
             each_value(p, |c| mix(col, c, t))
         }
-        Crop { left, right, top, bottom, feather } => {
+        // A shape to cover is made a crop and a placement where the
+        // source's size is known (`cover_shape`); what reaches here is
+        // the crop as given.
+        Crop { left, right, top, bottom, feather, .. } => {
             if left <= 0.0 && right <= 0.0 && top <= 0.0 && bottom <= 0.0 {
                 return p;
             }
@@ -468,6 +471,11 @@ pub(crate) fn apply(
             }
             p
         }
+        // A surface pin is the corner pin it is in this frame.
+        SurfacePin { .. } => match crate::corner_pin::surface_as_pin(effect, w, h) {
+            Some(pin) => apply(&pin, p, w, h, yw),
+            None => p,
+        },
         // A flicker is the plain effect it is at its time (#989).
         Flicker { .. } => match crate::flicker::as_plain(effect) {
             Some(plain) => apply(&plain, p, w, h, yw),
@@ -475,6 +483,11 @@ pub(crate) fn apply(
         },
         // The twin of `SHADER_PARTICLES` (#1141).
         Particles { .. } => crate::particles::apply(effect, p, w, h),
+        // The twin of the Warp's shader (#2758).
+        Warp { .. } => match effect.warp_settings() {
+            Some(s) if !crate::warp::is_identity(&s) => crate::warp::cpu(&p, w, h, &s),
+            _ => p,
+        },
         // The twin of `displace::SHADER` (#2702).
         Displace { amount, size, speed, direction, seed, time } => {
             if amount.abs() < f32::EPSILON {

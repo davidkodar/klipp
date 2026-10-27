@@ -74,6 +74,9 @@ pub fn values(recipe: &CompositionTemplate, slots: &BTreeMap<String, Value>, con
                 Some("foreground") => TemplateValue::Text("Foreground".into()),
                 _ => return Err(format!("slot \"{}\" takes \"subject\" (one detected subject) or \"foreground\" (everything in front)", s.label)),
             },
+            // One of the clip's tracked surfaces, found when the clip is
+            // known (`on_clip`).
+            SlotKind::Surface => TemplateValue::Text(v.as_str().ok_or_else(|| format!("slot \"{}\" takes the name or id of a surface tracked in the clip", s.label))?.trim().to_string()),
             SlotKind::Media | SlotKind::Clip => TemplateValue::Text(v.as_str().ok_or_else(|| format!("slot \"{}\" takes an id", s.label))?.to_string()),
         };
         out.insert(name.clone(), value);
@@ -111,8 +114,23 @@ pub fn on_clip(seq: &Sequence, clip: ClipId, recipe: &CompositionTemplate, value
         let title = klipp_document::ops::title_from_fields(seq, &fields, start, end - start).map_err(|e| format!("slot \"{}\": {e}", slot.label))?;
         values.insert(name.clone(), TemplateValue::Text(serde_json::to_string(&title).map_err(|e| e.to_string())?));
     }
+    // A surface slot's surface, by name or id, kept by its id.
+    for (name, slot) in recipe.slots.iter().filter(|(_, s)| s.kind == SlotKind::Surface) {
+        let Some(TemplateValue::Text(given)) = values.get(name) else { continue };
+        let found = c.surfaces.iter().find(|s| s.id.to_string() == *given).or_else(|| c.surfaces.iter().find(|s| s.name.eq_ignore_ascii_case(given)));
+        let Some(surface) = found else {
+            let have: Vec<String> = c.surfaces.iter().map(|s| format!("\"{}\"", s.name)).collect();
+            let have = if have.is_empty() { "none yet: track_surface tracks one".to_string() } else { have.join(", ") };
+            return Err(format!("slot \"{}\": the clip has no surface \"{given}\"; it has {have}", slot.label));
+        };
+        values.insert(name.clone(), TemplateValue::Text(surface.id.to_string()));
+    }
     let values = &values;
-    let wire = wire_ops(recipe, clip, &anchors, values, seq.resolution)?;
+    // Measured on this sequence and this clip: its seconds made its media's.
+    let fps = f64::from(seq.fps.num) / f64::from(seq.fps.den.max(1));
+    let source_at = |t: f64| c.source_secs_at(t, fps);
+    let placing = ct::Placing { frame: seq.resolution, length: (c.timeline_out - c.timeline_in).to_secs_f64(), source_at: &source_at };
+    let wire = wire_ops(recipe, clip, &anchors, values, &placing)?;
     let docs = crate::graph_model::documents(seq, Root::Clip { clip: clip.0 })?;
     let prepared = crate::graph_prepare::prepare(&wire, docs).map_err(|(at, why)| match at {
         Some(i) => format!("\"{}\" step {i}: {why}", recipe.name),
@@ -120,7 +138,7 @@ pub fn on_clip(seq: &Sequence, clip: ClipId, recipe: &CompositionTemplate, value
     })?;
     // The node each op made, which its controls set later (#2758).
     let nodes = prepared.created.iter().filter_map(|(k, path)| Some((*k, path.node()?))).collect();
-    let placed = RecipeInstance { name: recipe.name.clone(), instance: recipe.recipe_instance(values, seq.resolution), nodes };
+    let placed = RecipeInstance { name: recipe.name.clone(), instance: recipe.recipe_instance(values, &placing), nodes };
     Ok((prepared.ops, placed))
 }
 
@@ -158,8 +176,8 @@ pub(crate) fn subject_note(seq: &Sequence, clip: ClipId, recipe: &CompositionTem
 }
 
 /// The recipe's graph ops for clip `clip`, as the wire takes them.
-pub(crate) fn wire_ops(recipe: &CompositionTemplate, clip: ClipId, anchors: &BTreeMap<&str, uuid::Uuid>, values: &BTreeMap<String, TemplateValue>, frame: klipp_core::Resolution) -> Result<Vec<GraphWireOp>, String> {
-    let ops = recipe.recipe_ops(clip.0, anchors, values, frame)?;
+pub(crate) fn wire_ops(recipe: &CompositionTemplate, clip: ClipId, anchors: &BTreeMap<&str, uuid::Uuid>, values: &BTreeMap<String, TemplateValue>, placed: &ct::Placing) -> Result<Vec<GraphWireOp>, String> {
+    let ops = recipe.recipe_ops(clip.0, anchors, values, placed)?;
     ops.into_iter().enumerate().map(|(i, op)| serde_json::from_value(op).map_err(|e| format!("\"{}\" step {i}: {e}", recipe.name))).collect()
 }
 
@@ -172,7 +190,7 @@ mod tests {
     #[test]
     fn every_built_in_recipe_reads_and_lists() {
         let recipes = ct::builtin_recipes();
-        assert_eq!(recipes.len(), 5, "every file in assets/recipes reads");
+        assert_eq!(recipes.len(), 7, "every file in assets/recipes reads");
         for r in &recipes {
             assert_eq!(r.kind, ct::TemplateKind::Recipe, "{}", r.name);
             let v = listed(r);

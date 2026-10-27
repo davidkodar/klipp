@@ -387,9 +387,11 @@ pub(crate) fn picture_clip_at(ctx: &ControlContext, secs: f64) -> Option<klipp_c
 /// conversion, against [`klipp_color::measure::range_tag_holds`]. A tag
 /// the codes contradict is not taken: (stated, contradicted).
 fn range_reading(path: &std::path::Path, secs: f64) -> (bool, bool) {
+    // Media only: a list of other inputs has no range to read.
+    let Ok(input) = klipp_media::input_args(path) else { return (false, false) };
     let tag = std::process::Command::new("ffprobe")
         .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=color_range", "-of", "csv=p=0"])
-        .arg(path)
+        .args(&input)
         .stderr(std::process::Stdio::null())
         .output()
         .ok()
@@ -400,8 +402,8 @@ fn range_reading(path: &std::path::Path, secs: f64) -> (bool, bool) {
     }
     // Full to full: the scale leaves the codes as they are stored.
     let codes = std::process::Command::new("ffmpeg")
-        .args(["-hide_banner", "-nostats", "-ss", &format!("{secs}"), "-i"])
-        .arg(path)
+        .args(["-hide_banner", "-nostats", "-ss", &format!("{secs}")])
+        .args(&input)
         .args(["-frames:v", "1", "-vf", "scale=320:180:in_range=pc:out_range=pc", "-f", "rawvideo", "-pix_fmt", "gray", "-"])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())

@@ -18,7 +18,7 @@ use crate::inspector::generated::{effect_value, row};
 use crate::state::AppState;
 use crate::theme::KlippTheme;
 use klipp_core::{AppCommand, ClipId};
-use klipp_effects::registry::presentation::{Cond, Presentation, Widget};
+use klipp_effects::registry::presentation::{Presentation, Widget};
 use klipp_effects::registry::{effect_types, EffectType, ParamDesc, ParamKind};
 use klipp_effects::BuiltinEffect;
 use klipp_timeline::{test_clip, GradeAccess};
@@ -180,7 +180,7 @@ fn shown_index(desc: &ParamDesc, value: &Value) -> Option<usize> {
 fn shown_fixture(ty: &EffectType, pres: &Presentation) -> Result<(BuiltinEffect, &'static str), String> {
     let mut effect = super::parity_numeric::acting_sample(ty);
     let mut variant = "sample";
-    for Cond::ParamIs { key, value } in [pres.visible_if, pres.enabled_if].into_iter().flatten() {
+    for (key, value) in [pres.visible_if, pres.enabled_if].into_iter().flatten().map(|c| (c.key(), c.a_value_meeting_it())) {
         let desc = ty.desc.params.iter().find(|p| p.key == key).ok_or_else(|| format!("its condition names {key:?}, not a parameter"))?;
         let want = value as usize;
         if shown_index(desc, &stored(&effect, desc)) != Some(want) {
@@ -367,8 +367,8 @@ pub(super) fn require(manifest: &mut Manifest) {
 /// case switches on first, else "sample".
 pub(super) fn grade_variant(ty: &klipp_nodes::registry::NodeType, desc: &ParamDesc) -> &'static str {
     let pres = ty.presentation(desc);
-    let unmet = [pres.visible_if, pres.enabled_if].into_iter().flatten().any(|Cond::ParamIs { key, value }| {
-        ty.desc.params.iter().find(|p| p.key == key).is_none_or(|cond| cond.default.round() as i64 != value as i64)
+    let unmet = [pres.visible_if, pres.enabled_if].into_iter().flatten().any(|c| {
+        ty.desc.params.iter().find(|p| p.key == c.key()).is_none_or(|cond| !c.holds_for(cond.default.round()))
     });
     if unmet { "conditions met" } else { "sample" }
 }
@@ -1197,7 +1197,7 @@ fn set_switch(params: &mut klipp_nodes::NodeParams, field: &str, on: bool) -> Re
 /// written to the node straight, it isn't, or fewer times; and drawing
 /// either writes nothing.
 pub(super) fn visibility_case(start: &Grade, ty: &klipp_nodes::registry::NodeType, desc: &ParamDesc, name: &str) -> Result<(), String> {
-    let Some(Cond::ParamIs { key, value }) = ty.presentation(desc).visible_if else { return Err(format!("{} has no condition", desc.key)) };
+    let Some((key, value)) = ty.presentation(desc).visible_if.map(|c| (c.key(), c.a_value_meeting_it())) else { return Err(format!("{} has no condition", desc.key)) };
     let cond = ty.desc.params.iter().find(|p| p.key == key).ok_or_else(|| format!("its condition names {key:?}, not a parameter"))?;
     let drawn = |g: &mut Grade| -> Result<usize, String> {
         let before = (g.picture(), g.state.active_history().undo_count());
@@ -1415,7 +1415,7 @@ pub(super) fn meet_conditions(base: &Grade, ty: &klipp_nodes::registry::NodeType
     let pres = ty.presentation(desc);
     let mut shown = base.twin();
     let mut variant = "sample";
-    for Cond::ParamIs { key, value } in [pres.visible_if, pres.enabled_if].into_iter().flatten() {
+    for (key, value) in [pres.visible_if, pres.enabled_if].into_iter().flatten().map(|c| (c.key(), c.a_value_meeting_it())) {
         let cond = ty.desc.params.iter().find(|p| p.key == key).ok_or_else(|| format!("its condition names {key:?}, not a parameter"))?;
         let at = shown_index(cond, &shown.value(cond));
         if at != Some(value as usize) {
@@ -1481,6 +1481,11 @@ fn discrete_cases(report: &mut Report, ty: &klipp_nodes::registry::NodeType, des
     // values that moves the frame.
     report.case_or_blocked(&format!("{id} {} on {surface:?} drawn", desc.key), [key(Interaction::Pixels)], || {
         let base = super::parity_grade_numeric::shown_in_frame(&shown, ty, desc);
+        // By design (#2758): the timeline's grade grades no clip's media, so
+        // there is no tracked subject for it to read.
+        if desc.key == "matte_subject" && base.root == GradeRoot::Timeline {
+            return Ok(());
+        }
         let labels = menu_labels(desc, &pres);
         let at = shown_index(desc, &base.value(desc)).unwrap_or(0);
         let others: Vec<Option<usize>> = match pres.widget {

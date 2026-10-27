@@ -213,7 +213,7 @@ impl RenderDecoder {
         source_rotation: i32,
     ) -> Result<Self, RenderError> {
         let mut format_ctx =
-            ffmpeg_next::format::input(path).map_err(RenderError::Decode)?;
+            klipp_media::open_input(path).map_err(RenderError::Decode)?;
 
         let video_stream = format_ctx
             .streams()
@@ -1178,7 +1178,7 @@ fn rotate_rgba<T: Copy + Default + Send + Sync>(
 /// The picture's size upright: the video stream's coded size, turned for a
 /// 90° or 270° `rotation`. `None` when the file cannot be read.
 pub(crate) fn display_size(path: &Path, rotation: i32) -> Option<(u32, u32)> {
-    let input = ffmpeg_next::format::input(path).ok()?;
+    let input = klipp_media::open_input(path).ok()?;
     let stream = input.streams().best(ffmpeg_next::media::Type::Video)?;
     let (w, h) = unsafe {
         let par = (*stream.as_ptr()).codecpar;

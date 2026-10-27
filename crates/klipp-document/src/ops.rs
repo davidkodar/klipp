@@ -2119,6 +2119,14 @@ pub enum Op {
         top: f32,
         #[serde(default)]
         bottom: f32,
+        /// A shape to cover instead of sides (#2757), width over height:
+        /// the picture cropped to it and scaled to fill it whatever its
+        /// own shape, for a Transform to place.
+        #[serde(default)]
+        cover: Option<f32>,
+        /// Where that crop is centred, fractions of the picture.
+        #[serde(default)]
+        focus: Option<[f32; 2]>,
     },
     /// Place a native generator. Omit track to use/create a bottom
     /// Background video track. Give exactly one of secs or end; end can
@@ -4741,9 +4749,14 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             }
             Ok((format!("{before} {}", said.join(" and ")), EditCommand::SetClipLabels { description: "Label Clip", changes: vec![(clip.id, old, new)] }, vec![clip.id]))
         }
-        Op::Crop { clip_id, left, right, top, bottom } => {
+        Op::Crop { clip_id, left, right, top, bottom, cover, focus } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
-            crop(seq, pool, i, ti, clip, [*left, *right, *top, *bottom])
+            match cover {
+                None if focus.is_none() => crop(seq, pool, i, ti, clip, [*left, *right, *top, *bottom]),
+                None => Err(refuse(i, "a focus is for a crop to a shape", "give cover, width over height, with it")),
+                Some(_) if [left, right, top, bottom].iter().any(|v| **v != 0.0) => Err(refuse(i, "give sides or a shape to cover, not both", "cover crops to the shape by itself")),
+                Some(a) => crop_to_cover(seq, pool, i, ti, clip, *a, focus.unwrap_or([0.5, 0.5])),
+            }
         }
         Op::Generator { data, at, secs: hold, end, track } => {
             crate::generators::validate(data).map_err(|why| refuse(i, why, "use valid generator parameters"))?;
@@ -6982,7 +6995,7 @@ fn redact(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, clip:
     // bleed the outside in.
     let mut cover = Clip::media(*media_id, a, b, src_in, src_out);
     cover.volume = 0.0;
-    add_plain_effects(&mut cover, &[hide, E::Crop { left, right, top, bottom, feather: 0.0 }]).map_err(|e| refuse(i, format!("the cover couldn't take its effects: {e}"), "report it"))?;
+    add_plain_effects(&mut cover, &[hide, E::Crop { left, right, top, bottom, feather: 0.0, aspect: 0.0, focus_x: 0.5, focus_y: 0.5 }]).map_err(|e| refuse(i, format!("the cover couldn't take its effects: {e}"), "report it"))?;
     // A video track above with room, else a new one on top.
     let above = (0..ti).rev().find(|k| seq.tracks[*k].kind == TrackKind::Video && !seq.tracks[*k].locked && overlapping(seq, *k, a, b, None).is_none());
     let (video, created) = match above {
@@ -8003,8 +8016,27 @@ fn crop(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, side
         // First in the chain, so what follows — corners, a shadow — sees
         // the picture as cropped.
         let what = format!("crop {}: {left:.3} left, {right:.3} right, {top:.3} top, {bottom:.3} bottom", clip_name(seq, pool, clip));
-        (what, Some((E::Crop { left, right, top, bottom, feather: 0.0 }, Place::First)))
+        (what, Some((E::Crop { left, right, top, bottom, feather: 0.0, aspect: 0.0, focus_x: 0.5, focus_y: 0.5 }, Place::First)))
     };
+    let edit = effects_edit(clip, is_crop, add).map_err(|why| refuse(i, why, "crop it in its node view"))?;
+    Ok((what, edit, vec![clip.id]))
+}
+
+/// The `crop` op's `cover` (#2757): the clip's crop made one to the shape
+/// `aspect`, around `focus`, which the renderer works out from the
+/// source's size, so the picture fills that shape whatever its own.
+fn crop_to_cover(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, aspect: f32, focus: [f32; 2]) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    require_picture(seq, pool, i, ti, clip, "crop")?;
+    if !aspect.is_finite() || !(0.1..=10.0).contains(&aspect) {
+        return Err(refuse(i, format!("a shape of {aspect}"), "give cover as width over height, from 0.1 to 10: 1 a square, 0.5625 a 9:16 box"));
+    }
+    if !focus.iter().all(|f| f.is_finite() && (0.0..=1.0).contains(f)) {
+        return Err(refuse(i, "the focus is outside the picture", "give focus as [x, y] from 0 to 1, the middle [0.5, 0.5]"));
+    }
+    use klipp_effects::BuiltinEffect as E;
+    let is_crop = |e: &E| matches!(e, E::Crop { .. });
+    let what = format!("crop {} to cover a {aspect:.3} shape around {:.2}, {:.2}", clip_name(seq, pool, clip), focus[0], focus[1]);
+    let add = Some((E::Crop { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0, aspect, focus_x: focus[0], focus_y: focus[1] }, Place::First));
     let edit = effects_edit(clip, is_crop, add).map_err(|why| refuse(i, why, "crop it in its node view"))?;
     Ok((what, edit, vec![clip.id]))
 }
@@ -8566,7 +8598,7 @@ fn pan_inside(seq: &Sequence, pool: &MediaPool, i: usize, clip: &Clip, sorted: &
     let (index, base) = match CropSides::of(clip) {
         Some(c) => (c.index, c.base()),
         None => {
-            let crop = klipp_effects::BuiltinEffect::Crop { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0 };
+            let crop = klipp_effects::BuiltinEffect::Crop { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0, aspect: 0.0, focus_x: 0.5, focus_y: 0.5};
             let (edit, after) = effects_edit_and_after(clip, |_| false, Some((crop, Place::First))).map_err(|why| refuse(i, why, "crop it in its node view first"))?;
             steps.push(edit);
             scratch = after;
@@ -13725,6 +13757,31 @@ mod tests {
         assert!(link(&view.sequences[0], serde_json::json!({ "target": "object:0.size", "action": "spin" })).unwrap_err().contains("unlink, relink or reset_offset"));
     }
 
+    /// #2757: `crop` with `cover` sets a crop to that shape around the
+    /// focus; sides with it, a shape out of range or a focus off the
+    /// picture are refused.
+    #[test]
+    fn a_crop_can_cover_a_shape() {
+        let (seq, pool, _, a, _) = fixture();
+        let op = |v: serde_json::Value| -> Result<Plan, String> {
+            let mut o = serde_json::json!({ "op": "crop", "clip_id": a.0.to_string() });
+            o.as_object_mut().unwrap().extend(v.as_object().unwrap().clone());
+            resolve(&seq, &pool, &[serde_json::from_value(o).unwrap()]).map_err(|e| e.to_string())
+        };
+        let plan = op(serde_json::json!({ "cover": 0.5625, "focus": [0.3, 0.5] })).unwrap();
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&plan.steps[0].edit);
+        let clip = view.sequences[0].all_clips().find(|c| c.id == a).unwrap();
+        assert!(clip.builtin_effects().iter().any(|e| matches!(e, klipp_effects::BuiltinEffect::Crop { aspect, focus_x, .. } if (*aspect - 0.5625).abs() < 1e-6 && (*focus_x - 0.3).abs() < 1e-6)));
+        assert!(op(serde_json::json!({ "cover": 1.0, "left": 0.2 })).unwrap_err().contains("not both"));
+        assert!(op(serde_json::json!({ "cover": 50.0 })).unwrap_err().contains("width over height"));
+        assert!(op(serde_json::json!({ "cover": 1.0, "focus": [1.5, 0.5] })).unwrap_err().contains("outside the picture"));
+        assert!(op(serde_json::json!({ "focus": [0.5, 0.5] })).unwrap_err().contains("a focus is for"));
+    }
+
     /// #460: a heading at the top of a vertical frame stays whole inside
     /// title-safe, and the size estimate is the frame's own: on 16:9 it is
     /// the same as it always was.
@@ -16918,7 +16975,7 @@ mod tests {
     fn a_cropped_picture_is_placed_by_what_the_crop_leaves() {
         let (seq, pool, _media, a, _) = fixture();
         // Keep the right half of the picture.
-        let cropped = resolve(&seq, &pool, &[Op::Crop { clip_id: ClipRef::Id(a), left: 0.5, right: 0.0, top: 0.0, bottom: 0.0 }]).unwrap();
+        let cropped = resolve(&seq, &pool, &[Op::Crop { clip_id: ClipRef::Id(a), left: 0.5, right: 0.0, top: 0.0, bottom: 0.0, cover: None, focus: None }]).unwrap();
         let mut seqs = vec![seq.clone()];
         let mut p = pool.clone();
         let mut fps = seq.fps;
@@ -16964,7 +17021,7 @@ mod tests {
         let (seq, pool, _media, a, _) = fixture();
         use klipp_effects::BuiltinEffect as E;
         // A window in a desktop recording: 320 px in from the left of 3840.
-        let op = Op::Crop { clip_id: ClipRef::Id(a), left: 320.0 / 3840.0, right: 320.0 / 3840.0, top: 106.0 / 2160.0, bottom: 54.0 / 2160.0 };
+        let op = Op::Crop { clip_id: ClipRef::Id(a), left: 320.0 / 3840.0, right: 320.0 / 3840.0, top: 106.0 / 2160.0, bottom: 54.0 / 2160.0, cover: None, focus: None };
         let plan = resolve(&seq, &pool, &[op]).unwrap();
         let new_effects = &effects_after(&plan.steps[0].edit).expect("effects edit").1;
         assert!(matches!(new_effects.first(), Some(E::Crop { left, .. }) if (*left - 0.0833).abs() < 1e-3));
@@ -16975,13 +17032,13 @@ mod tests {
         let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
         view.apply_forward(&plan.steps[0].edit);
         let cropped = view.sequences[0].clone();
-        let off = resolve(&cropped, &pool, &[Op::Crop { clip_id: ClipRef::Id(a), left: 0.0, right: 0.0, top: 0.0, bottom: 0.0 }]).unwrap();
+        let off = resolve(&cropped, &pool, &[Op::Crop { clip_id: ClipRef::Id(a), left: 0.0, right: 0.0, top: 0.0, bottom: 0.0, cover: None, focus: None }]).unwrap();
         let new_effects = &effects_after(&off.steps[0].edit).expect("effects edit").1;
         assert!(new_effects.is_empty(), "four zeros take it off");
 
         let bad = |op: Op| resolve(&seq, &pool, &[op]).unwrap_err();
-        assert!(bad(Op::Crop { clip_id: ClipRef::Id(a), left: 0.6, right: 0.5, top: 0.0, bottom: 0.0 }).why.contains("leaves nothing"));
-        assert!(bad(Op::Crop { clip_id: ClipRef::Id(a), left: 0.0, right: 0.0, top: 0.0, bottom: 0.0 }).why.contains("no crop"));
+        assert!(bad(Op::Crop { clip_id: ClipRef::Id(a), left: 0.6, right: 0.5, top: 0.0, bottom: 0.0, cover: None, focus: None }).why.contains("leaves nothing"));
+        assert!(bad(Op::Crop { clip_id: ClipRef::Id(a), left: 0.0, right: 0.0, top: 0.0, bottom: 0.0, cover: None, focus: None }).why.contains("no crop"));
     }
 
     #[test]
@@ -20379,7 +20436,7 @@ mod effects_edit_tests {
 
         // A crop goes first; after a placed kind, the edit is the picture's
         // too (M4 step 12b), never a whole-list write.
-        let crop = effects_edit(&clip, |e| matches!(e, E::Crop { .. }), Some((E::Crop { left: 0.1, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0 }, Place::First))).unwrap();
+        let crop = effects_edit(&clip, |e| matches!(e, E::Crop { .. }), Some((E::Crop { left: 0.1, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0, aspect: 0.0, focus_x: 0.5, focus_y: 0.5}, Place::First))).unwrap();
         let EditCommand::PictureEdit { edit, .. } = crop else { panic!("a picture edit") };
         let mut after = clip.clone();
         after.restore_picture(&edit.after);

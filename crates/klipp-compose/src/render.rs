@@ -1012,10 +1012,17 @@ pub struct Renderer {
     /// buffers reused from frame to frame. `precomp_ready` holds those
     /// composed this frame.
     precomp_scenes: HashMap<ClipId, Arc<wgpu::Buffer>>,
+    /// Each media clip's source size as last read, and the render's size
+    /// then (#2757): what a crop to a shape is worked out from, a kept
+    /// still's too.
+    source_sizes: HashMap<ClipId, ((u32, u32), (u32, u32))>,
     precomp_ready: std::collections::HashSet<ClipId>,
     /// The first of each clip's stack layers its title sources are drawn
     /// in this frame (#2758), after the layers of the stack.
     side_title_slots: HashMap<ClipId, usize>,
+    /// Clean frames read for difference keys (#2758), by their key and
+    /// the size they were read at; a few kept.
+    clean_frames: HashMap<(klipp_nodes::side_picture::SideKey, u32, u32), Arc<Vec<f32>>>,
     /// This stack frame's grade time by part, as its layers run (#2107).
     grade_split: GradeSplit,
     /// The subject matte sequences piece transitions read (#985 phase 3):
@@ -1218,7 +1225,9 @@ impl Renderer {
             still_generators: HashMap::new(),
             still_layers: HashMap::new(),
             precomp_scenes: HashMap::new(),
+            source_sizes: HashMap::new(),
             side_title_slots: HashMap::new(),
+            clean_frames: HashMap::new(),
             precomp_ready: std::collections::HashSet::new(),
             grade_split: GradeSplit::default(),
             subject_mattes: HashMap::new(),
@@ -2675,6 +2684,9 @@ impl Renderer {
                     None => {
                         let Some(f) = src.frame(c, read_at, width, height) else { return Ok(None) };
                         source_pts = f.pts;
+                        if !precomp {
+                            self.source_sizes.insert(c.id, ((f.width, f.height), (width, height)));
+                        }
                         // A source of another size is fitted into the frame, as on
                         // the CPU: on the GPU when the source can seed at another
                         // size, else fitted here and sent up. It used to be
@@ -2708,6 +2720,11 @@ impl Renderer {
                         }
                     }
                 };
+                // A crop to a shape, worked out from the source's size now
+                // it is known (#2757): a crop and a placement, as on the CPU.
+                if let Some(&(size, _)) = self.source_sizes.get(&c.id).filter(|_| !precomp) {
+                    klipp_effects::resolve_cover_shapes(&mut fx, size, (width, height));
+                }
                 match pixels {
                     // An ungraded layer with effects takes the branch below:
                     // its effects run as a plan (step 11d).
@@ -4119,6 +4136,10 @@ impl Renderer {
         }
         self.authored_colours(&mut fx);
         self.at_render_scale(&mut fx);
+        // A crop to a shape, from the source's size as decoded (#2757).
+        if let (ClipKind::Media { .. }, Some(size)) = (&clip.kind, self.source_decoded) {
+            klipp_effects::resolve_cover_shapes(&mut fx, size, (width, height));
+        }
         self.title_light(clip, &mut fx);
         if crate::resolve::reads_below(clip) {
             self.put_below(clip, &fx, width, height);
@@ -4600,6 +4621,49 @@ impl Renderer {
             });
             self.executor.put_side_picture(klipp_nodes::side_picture::SideKey::Media { item: media, offset_bits: offset.to_bits() }, got);
         }
+        self.put_clean_frames(clip, width, height, src);
+    }
+
+    /// The frames `clip`'s difference keys pick from its own media as
+    /// their clean plates (#2758), for its run: each checked against the
+    /// media before anything is decoded, read once at the render size by
+    /// the media reader (as a media source's frame is, not the clip's own
+    /// decoder) and kept. One refused gives the key no plate, said why.
+    fn put_clean_frames(&mut self, clip: &Clip, width: u32, height: u32, src: &mut dyn FrameSource) {
+        use klipp_nodes::side_picture::{SideKey, SideMissing};
+        let picked = crate::resolve::plate_frames(clip);
+        if picked.is_empty() {
+            return;
+        }
+        let media = clip.media_id().map(|m| m.0.to_string());
+        let range = src.media_range(clip);
+        for secs in picked {
+            let key = SideKey::Plate { media: media.clone().unwrap_or_default(), secs_bits: secs.to_bits() };
+            let got = match (&media, crate::resolve::clean_frame_refused(secs, range)) {
+                (None, _) => Err(SideMissing::Unsupported("the clip has no media to pick a clean frame from".into())),
+                (_, Some(why)) => Err(SideMissing::Unsupported(why)),
+                (Some(media), None) => match self.clean_frames.get(&(key.clone(), width, height)) {
+                    Some(frame) => Ok(Arc::clone(frame)),
+                    None => {
+                        let transfer = src.media_transfer(media);
+                        let read = src.media_frame(media, secs, self.working, width, height).map(|mut frame| {
+                            if let Some(t) = transfer {
+                                self.display_render(&mut frame, t);
+                            }
+                            Arc::new(frame)
+                        });
+                        if let Ok(frame) = &read {
+                            if self.clean_frames.len() >= 4 {
+                                self.clean_frames.clear();
+                            }
+                            self.clean_frames.insert((key.clone(), width, height), Arc::clone(frame));
+                        }
+                        read
+                    }
+                },
+            };
+            self.executor.put_side_picture(key, got);
+        }
     }
 
     /// The pictures `clip`'s title sources draw at `clip_time` (#2758), for
@@ -4733,6 +4797,14 @@ impl Renderer {
                 }
                 self.authored_colours(&mut fx);
                 self.at_render_scale(&mut fx);
+                // A crop to a shape, from the source's size as read (#2757),
+                // the lists beside the effects kept in step.
+                if let (ClipKind::Media { .. }, Some(&(size, frame))) = (&clip.kind, self.source_sizes.get(&clip.id)) {
+                    for at in klipp_effects::resolve_cover_shapes(&mut fx, size, frame) {
+                        blends.insert(at, None);
+                        nodes.insert(at, None);
+                    }
+                }
                 // An effect beside the chain (a generator a merge lays
                 // over, #1746) is authored as the chain's are.
                 for b in blends.iter_mut().flatten() {
@@ -6974,7 +7046,7 @@ pub fn list_effects(
 
 /// What one frame gives an animated effect (R16): the film effects' seed,
 /// a flicker's and particles' time, the deflicker gain, a pinned clip's first corner pin, a colour fade's
-/// progress.
+/// progress, a surface pin's corners.
 pub(crate) fn frame_inputs(
     clip: &Clip,
     effect: &mut BuiltinEffect,
@@ -6983,6 +7055,7 @@ pub(crate) fn frame_inputs(
     pin: Option<klipp_timeline::surface::Quad>,
     pinned: &mut bool,
 ) {
+    surface_inputs(clip, effect, t, fps);
     match effect {
         // The animated film effects take a fresh pattern per frame: the
         // seed is the timeline frame number, so a still export and a scrub
@@ -6992,8 +7065,9 @@ pub(crate) fn frame_inputs(
         }
         // A flicker jumps by the clip's time (#989).
         BuiltinEffect::Flicker { time, .. } => *time = t as f32,
-        // A displacement moves by the clip's time (#2702).
-        BuiltinEffect::Displace { time, .. } => *time = t as f32,
+        // A displacement moves by the clip's time (#2702), a warp too
+        // (#2758).
+        BuiltinEffect::Displace { time, .. } | BuiltinEffect::Warp { time, .. } => *time = t as f32,
         // A reflection ripples by the clip's time (#2707).
         BuiltinEffect::Reflection { time, .. } => *time = t as f32,
         // Particles move by the clip's time (#1141).
@@ -7026,6 +7100,22 @@ pub(crate) fn frame_inputs(
             };
         }
         _ => {}
+    }
+}
+
+/// A surface pin's corners at `t`, timeline seconds into `clip`: the
+/// clip's surface it names (by id, else by name) as the clip's picture
+/// shows it then, its inset taken, in fractions of that picture, with
+/// the picture's size. On a surface the clip lacks, or one not tracked,
+/// they stay unset and the pin draws nothing.
+pub(crate) fn surface_inputs(clip: &Clip, effect: &mut BuiltinEffect, t: f64, fps: f64) {
+    let BuiltinEffect::SurfacePin { surface, inset, on_source, source } = effect else { return };
+    (*on_source, *source) = ([[0.0; 2]; 4], [0; 2]);
+    let named = clip.surfaces.iter().find(|s| s.id.to_string() == *surface).or_else(|| clip.surfaces.iter().find(|s| s.name == *surface));
+    let Some(s) = named.filter(|s| !s.keys.is_empty()) else { return };
+    let shown = s.corners_shown_at(clip.source_secs_at(t.max(0.0), fps));
+    if let Some(q) = klipp_timeline::surface::pin_target(&shown, None, None, klipp_timeline::PinFit::Stretch, *inset) {
+        (*on_source, *source) = (q, s.source_size);
     }
 }
 

@@ -89,6 +89,7 @@ pub fn slots_needed(effect: &BuiltinEffect) -> Option<usize> {
         | BuiltinEffect::Mirror { .. }
         | BuiltinEffect::LensDistortion { .. }
         | BuiltinEffect::Displace { .. }
+        | BuiltinEffect::Warp { .. }
         | BuiltinEffect::Reflection { .. }
         | BuiltinEffect::Letterbox { .. }
         | BuiltinEffect::Dilate { .. }
@@ -108,6 +109,7 @@ pub fn slots_needed(effect: &BuiltinEffect) -> Option<usize> {
         | BuiltinEffect::OldFilm { .. }
         | BuiltinEffect::Vhs { .. }
         | BuiltinEffect::CornerPin { .. }
+        | BuiltinEffect::SurfacePin { .. }
         | BuiltinEffect::AnamorphicStreak { .. }
         | BuiltinEffect::ChromaticAberration { .. }
         | BuiltinEffect::LensFlare { .. }
@@ -169,6 +171,10 @@ impl GpuEffectsPipeline {
         // A flicker records as the plain effect it is now (#989).
         if let Some(plain) = crate::flicker::as_plain(effect) {
             return self.record_effect(&plain, src, dst, scratch, width, height, rec);
+        }
+        // A surface pin, as the corner pin it is in this frame.
+        if let Some(pin) = crate::corner_pin::surface_as_pin(effect, width, height) {
+            return self.record_effect(&pin, src, dst, scratch, width, height, rec);
         }
         // Each arm checks its identity before its slots, so an effect that
         // records nothing never asks for a refill.
@@ -347,6 +353,7 @@ impl GpuEffectsPipeline {
                 top,
                 bottom,
                 feather,
+                ..
             } => {
                 if *left <= 0.0 && *right <= 0.0 && *top <= 0.0 && *bottom <= 0.0 {
                     return Recorded::Identity;
@@ -412,6 +419,19 @@ impl GpuEffectsPipeline {
                     scale: *scale,
                 });
                 (&self.lens_distortion_pipeline, slot)
+            }
+            BuiltinEffect::Warp { .. } => {
+                let Some(s) = effect.warp_settings().filter(|s| !crate::warp::is_identity(s)) else {
+                    return Recorded::Identity;
+                };
+                let slot = rec.slots.claim(q, &crate::gpu::WarpParams {
+                    width, height,
+                    mode: s.mode, direction: s.direction,
+                    amplitude: s.amplitude, wavelength: s.wavelength, speed: s.speed, angle: s.angle,
+                    strength: s.strength, radius: s.radius, center_x: s.center_x, center_y: s.center_y,
+                    band: s.band, time: s.time, _pad0: 0, _pad1: 0,
+                });
+                (&self.warp_pipeline, slot)
             }
             BuiltinEffect::Displace { amount, size, speed, direction, seed, time } => {
                 if amount.abs() < f32::EPSILON {

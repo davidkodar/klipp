@@ -3,7 +3,7 @@
 //! `klipp-ui/tests/fixtures/old_rows.json`). Today's labels are kept where
 //! they differ from the catalog's.
 
-use super::{ParamEntry, Presentation as P, Suffix, TypeEntry, Widget};
+use super::{Cond, ParamEntry, Presentation as P, Suffix, TypeEntry, Widget};
 
 const fn at(type_id: &'static str, key: &'static str, pres: P) -> ParamEntry {
     ParamEntry { type_id, key, pres }
@@ -16,9 +16,11 @@ const FILL_BARS: &str = "klipp.fx.fill_bars";
 const MIRROR: &str = "klipp.fx.mirror";
 const LENS: &str = "klipp.fx.lens_distortion";
 const DISPLACE: &str = "klipp.fx.displace";
+const WARP: &str = "klipp.fx.warp";
 const REFLECTION: &str = "klipp.fx.reflection";
 const LETTERBOX: &str = "klipp.fx.letterbox";
 const PIN: &str = "klipp.fx.corner_pin";
+const SURFACE_PIN: &str = "klipp.fx.surface_pin";
 const PICTURE_XF: &str = "klipp.fx.picture_transform";
 
 pub(super) static PARAMS: &[ParamEntry] = &[
@@ -58,6 +60,20 @@ pub(super) static PARAMS: &[ParamEntry] = &[
     at(DISPLACE, "direction", P::shown_as(Widget::Combo).labels(&["Both", "Across", "Up and Down"])),
     at(DISPLACE, "seed", P::scrub(1.0, 0).soft_whole((0, 10_000))),
     at(DISPLACE, "time", P::hidden()),
+    // Each shape's own rows (#2758): 0 wave, 1 twirl, 2 bulge, 3 ripples,
+    // 4 torn rows.
+    at(WARP, "mode", P::shown_as(Widget::Combo).labels(&["Wave", "Twirl", "Bulge or Pinch", "Ripples", "Torn Rows"])),
+    at(WARP, "amplitude", P::scrub(0.5, 1).visible_if(Cond::ParamIn { key: "mode", values: &[0.0, 3.0] })),
+    at(WARP, "wavelength", P::scrub(0.005, 3).visible_if(Cond::ParamIn { key: "mode", values: &[0.0, 3.0] })),
+    at(WARP, "speed", P::scrub(0.05, 2).visible_if(Cond::ParamIn { key: "mode", values: &[0.0, 3.0, 4.0] })),
+    at(WARP, "direction", P::shown_as(Widget::Combo).labels(&["Across", "Up and Down", "Both"]).visible_if(Cond::ParamIs { key: "mode", value: 0.0 })),
+    at(WARP, "angle", P::scrub(1.0, 0).visible_if(Cond::ParamIs { key: "mode", value: 1.0 })),
+    at(WARP, "strength", P::scrub(0.01, 2).visible_if(Cond::ParamIn { key: "mode", values: &[2.0, 4.0] })),
+    at(WARP, "radius", P::scrub(0.005, 3).visible_if(Cond::ParamIn { key: "mode", values: &[1.0, 2.0] })),
+    at(WARP, "center_x", P::scrub(0.005, 3).visible_if(Cond::ParamIn { key: "mode", values: &[1.0, 2.0, 3.0] })),
+    at(WARP, "center_y", P::scrub(0.005, 3).visible_if(Cond::ParamIn { key: "mode", values: &[1.0, 2.0, 3.0] })),
+    at(WARP, "band", P::scrub(0.002, 3).visible_if(Cond::ParamIs { key: "mode", value: 4.0 })),
+    at(WARP, "time", P::hidden()),
     // One drag (the viewer's waterline) and two sliders first (#2707).
     at(REFLECTION, "waterline", P::scrub(0.002, 3).order(0)),
     at(REFLECTION, "ripple_amount", P::scrub(0.2, 1).order(1)),
@@ -94,6 +110,9 @@ pub(super) static PARAMS: &[ParamEntry] = &[
     at(PIN, "br_y", P::scrub(0.002, 3).label("Bottom Right Y")),
     at(PIN, "bl_x", P::scrub(0.002, 3).label("Bottom Left X")),
     at(PIN, "bl_y", P::scrub(0.002, 3).label("Bottom Left Y")),
+    // Named where the pin is made (the recipe's surface slot): not a row.
+    at(SURFACE_PIN, "surface", P::hidden()),
+    at(SURFACE_PIN, "inset", P::scrub(0.005, 3)),
     at(PICTURE_XF, "position_x", P::scrub(1.0, 1)),
     at(PICTURE_XF, "position_y", P::scrub(1.0, 1)),
     at(PICTURE_XF, "scale_x", P::scrub(0.01, 2)),

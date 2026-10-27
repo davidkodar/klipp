@@ -42,7 +42,7 @@ fn cases() -> Vec<(&'static str, BuiltinEffect, Highlights)> {
     vec![
         ("Opacity", Opacity { value: 0.5 }, Keeps),
         ("ColorFade", ColorFade { color: [20, 40, 200, 255], duration_secs: 1.0, mode: ColorFadeMode::In, progress: 0.4 }, Maps),
-        ("Crop feathered", Crop { left: 0.1, right: 0.05, top: 0.1, bottom: 0.2, feather: 0.05 }, Keeps),
+        ("Crop feathered", Crop { left: 0.1, right: 0.05, top: 0.1, bottom: 0.2, feather: 0.05, aspect: 0.0, focus_x: 0.5, focus_y: 0.5}, Keeps),
         ("GaussianBlur", GaussianBlur { radius: 4.0 }, Keeps),
         ("Sharpen", Sharpen { amount: 1.0 }, Keeps),
         ("Transform", Transform {

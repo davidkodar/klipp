@@ -2216,7 +2216,7 @@ mod drag_coalesce_tests {
     // ── #409: a gesture dropped or re-begun ─────────────────────────
 
     fn effect_entry(clip_id: ClipId, effect_index: usize, left: f32) -> HistoryEntry {
-        let crop = klipp_effects::BuiltinEffect::Crop { left, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0 };
+        let crop = klipp_effects::BuiltinEffect::Crop { left, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0, aspect: 0.0, focus_x: 0.5, focus_y: 0.5 };
         HistoryEntry {
             command: EditCommand::EditBuiltinEffect { clip_id, effect_index, old_effect: crop.clone(), new_effect: crop },
         }
@@ -2283,7 +2283,7 @@ mod drag_coalesce_tests {
         match &h.undo_stack[0].entry.command {
             EditCommand::EditBuiltinEffect { effect_index, old_effect, .. } => {
                 assert_eq!(*effect_index, 1);
-                assert_eq!(*old_effect, klipp_effects::BuiltinEffect::Crop { left: 0.5, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0 },
+                assert_eq!(*old_effect, klipp_effects::BuiltinEffect::Crop { left: 0.5, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0, aspect: 0.0, focus_x: 0.5, focus_y: 0.5},
                     "the entry undoes to the second gesture's start, not the gizmo's");
             }
             other => panic!("expected EditBuiltinEffect, got {other:?}"),
@@ -3022,7 +3022,7 @@ mod linked_import_tests {
     fn a_drag_on_an_effect_is_recognised_whatever_its_key() {
         let t = |f: i64| klipp_core::RationalTime { value: f, rate: 30 };
         let clip = Clip::media(klipp_core::MediaId::new(), t(0), t(30), t(0), t(30));
-        let effect = klipp_effects::BuiltinEffect::Crop { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0 };
+        let effect = klipp_effects::BuiltinEffect::Crop { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0, aspect: 0.0, focus_x: 0.5, focus_y: 0.5};
         let mut h = CommandHistory::new();
         assert!(!h.is_dragging_builtin_effect(clip.id, 0));
         h.begin_drag("viewer_transform_x".into(), HistoryEntry { command: EditCommand::EditBuiltinEffect {

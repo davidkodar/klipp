@@ -972,7 +972,11 @@ exist until the plan runs.
   off the picture's sides. The remainder is transparent, so a cropped
   screen window can be composed as a card and rounded with `corners`.
   All four zero removes the crop. A new crop replaces a pan inside the
-  card, which keys the crop.
+  card, which keys the crop. `cover` (width over height, 1 a square,
+  0.5625 a 9:16 box) instead crops the picture to that shape and scales
+  it to fill it, whatever the footage's own shape, around `focus` ([x, y]
+  of the picture, the middle by default): a Transform after it then
+  places the box. A picture slot in a template is set this way.
 - `generator {data, at, secs?|end?, track?}`: place native generator
   data as in `klipp_generator`. Give exactly one duration, `secs` or
   an `end` anchor. Without a track it uses a bottom Background video

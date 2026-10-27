@@ -619,9 +619,9 @@ mod tests {
             assert_eq!(from_params(t.tag, &map).unwrap(), moved, "{} moved", t.tag);
             n += 1;
         }
-        // The luma key among them (#1638), displace (#2702) and reflection
-        // (#2707).
-        assert_eq!(n, 69, "every described effect");
+        // The luma key among them (#1638), displace (#2702), reflection
+        // (#2707), the surface pin and the warp (#2758).
+        assert_eq!(n, 71, "every described effect");
     }
 
     /// A frei0r plug-in is stored as `klipp.frei0r` (picture revision 4):

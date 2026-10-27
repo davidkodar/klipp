@@ -102,8 +102,12 @@ mod side_mattes_render;
 mod speed_ramp_retime;
 #[path = "../stack_effects_plan.rs"]
 mod stack_effects_plan;
+#[path = "../clean_frame_plate.rs"]
+mod clean_frame_plate;
 #[path = "../surface_pin.rs"]
 mod surface_pin;
+#[path = "../surface_pin_node.rs"]
+mod surface_pin_node;
 #[path = "../temporal_denoise_at_the_source.rs"]
 mod temporal_denoise_at_the_source;
 #[path = "../temporal_denoise_gpu.rs"]
@@ -134,6 +138,8 @@ mod title_loops_placed_gpu;
 mod title_metal_gpu;
 #[path = "../title_contrast_protect.rs"]
 mod title_contrast_protect;
+#[path = "../crop_cover_shape.rs"]
+mod crop_cover_shape;
 #[path = "../template_placed_gpu.rs"]
 mod template_placed_gpu;
 #[path = "../animated_caption_gpu.rs"]

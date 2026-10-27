@@ -562,7 +562,7 @@ impl VideoDecoder {
         // the stream's own frame rate: which of its frames a time shows
         // is decided at half of *its* frame, as export's decoder does (#696).
         let source_fps = {
-            let ctx = ffmpeg_next::format::input(path)
+            let ctx = klipp_media::open_input(path)
                 .map_err(|e| DecoderError::Open(e.to_string()))?;
             let stream = ctx
                 .streams()
@@ -1602,7 +1602,7 @@ fn open_hardware_in_time(path: &Path, try_cuvid: bool) -> Option<Result<OpenedDe
 /// [`open_hardware_in_time`]'s work: open the decoder on a container of
 /// its own and decode until the first frame comes.
 fn open_hardware_to_first_frame(path: &Path, try_cuvid: bool) -> Result<OpenedDecoder, ffmpeg_next::Error> {
-    let mut format_ctx = ffmpeg_next::format::input(path)?;
+    let mut format_ctx = klipp_media::open_input(path)?;
     let stream = format_ctx.streams().best(ffmpeg_next::media::Type::Video).ok_or(ffmpeg_next::Error::StreamNotFound)?;
     let stream_index = stream.index();
     let mut opened = open_video_decoder(&stream, true, try_cuvid, None)?;
@@ -2560,7 +2560,7 @@ fn decode_thread_main(
     source_fps: f64,
 ) {
     DECODE_PATH.with(|p| *p.borrow_mut() = Some(path.clone()));
-    let mut format_ctx = match ffmpeg_next::format::input(&path) {
+    let mut format_ctx = match klipp_media::open_input(&path) {
         Ok(ctx) => ctx,
         Err(e) => {
             warn!("decode_thread: failed to open {:?}: {e}", path);
@@ -4070,7 +4070,7 @@ mod sw_frames_on_gpu_tests {
             std::fs::rename(&partial, &out).ok()?;
         }
         ffmpeg_next::init().ok()?;
-        let mut input = ffmpeg_next::format::input(&out).ok()?;
+        let mut input = klipp_media::open_input(&out).ok()?;
         let stream = input.streams().best(ffmpeg_next::media::Type::Video)?;
         let index = stream.index();
         let mut decoder = ffmpeg_next::codec::context::Context::from_parameters(stream.parameters()).ok()?.decoder().video().ok()?;

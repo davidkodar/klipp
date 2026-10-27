@@ -332,12 +332,18 @@ composition and is refused with a hint to save it again):
 * `parameters` — by name: `{label, default, range?, choices}`, the
   default a `TemplateValue` (`Text`, `Color`, `Number`, `Bool`, `Enum`).
 * `slots` — by name: `{label, kind}`, kind `media`, `clip`, `title`,
-  `subject_matte` or `colour`.
+  `subject_matte`, `colour` or `surface` (a surface tracked in the clip,
+  by name or id).
 * `bindings` — `{parameter, property, link?}`: a parameter or slot to a
   property path (`object:<i>.text|color|font|picture|size|opacity|…`,
   `clip:<n>.media`, `node:<op>.<param>`). With `link: {to: [a, b],
   curve}` the parameter is a macro control: its range maps onto `to`
-  on `linear`, `ease_in`, `ease_out` or `ease_in_out`.
+  on `linear`, `ease_in`, `ease_out` or `ease_in_out`. A recipe's link
+  may say what `to` is measured against, `per`: `width` or `height`
+  (fractions of the frame, made pixels of the sequence), or `source`
+  (seconds into the clip, made its media's own seconds, so a picked
+  frame stays on its frame through a trim; a time past the clip's end is
+  refused).
 
 ### The placed instance
 

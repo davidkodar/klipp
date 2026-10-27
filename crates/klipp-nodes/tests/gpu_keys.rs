@@ -94,6 +94,7 @@ fn difference_key(plate: &std::path::Path) -> Node {
         difference_key: Some(klipp_core::DifferenceKeySettings {
             enabled: true,
             plate_path: Some(plate.to_path_buf()),
+            plate_frame: None,
             tolerance: 0.1,
             soft: 0.3,
             invert: false,

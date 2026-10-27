@@ -358,7 +358,7 @@ fn builtin_effect_default(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
         // No setting of it fills nothing; this is where it starts.
         BuiltinEffect::FillBars { .. } => BuiltinEffect::FillBars { blur: 0.05, zoom: 1.0, darken: 0.25 },
         BuiltinEffect::Sharpen { .. } => BuiltinEffect::Sharpen { amount: 0.0 },
-        BuiltinEffect::Crop { .. } => BuiltinEffect::Crop { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0 },
+        BuiltinEffect::Crop { .. } => BuiltinEffect::Crop { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0, aspect: 0.0, focus_x: 0.5, focus_y: 0.5},
         BuiltinEffect::Transform { .. } => BuiltinEffect::Transform {
             position_x: 0.0, position_y: 0.0, scale_x: 1.0, scale_y: 1.0,
             rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0,
@@ -369,6 +369,13 @@ fn builtin_effect_default(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
         },
         BuiltinEffect::LumaKey { .. } => BuiltinEffect::LumaKey { low: 0.0, high: 0.1, soft: 0.05, invert: false },
         BuiltinEffect::CornerPin { .. } => klipp_effects::corner_pin::still(),
+        // The shape stays: a reset is its settings.
+        BuiltinEffect::Warp { mode, .. } => {
+            let Some(BuiltinEffect::Warp { amplitude, wavelength, speed, direction, angle, strength, radius, center_x, center_y, band, .. }) = klipp_effects::registry::effect_type("warp").map(|t| (t.sample)()) else { return effect.clone() };
+            BuiltinEffect::Warp { mode: *mode, amplitude, wavelength, speed, direction, angle, strength, radius, center_x, center_y, band, time: 0.0 }
+        }
+        // The surface stays: a reset is its edges.
+        BuiltinEffect::SurfacePin { surface, .. } => BuiltinEffect::SurfacePin { surface: surface.clone(), inset: 0.0, on_source: [[0.0; 2]; 4], source: [0; 2] },
         // The file stays: a reset is the look at full strength.
         BuiltinEffect::Lut3D { path, .. } => BuiltinEffect::Lut3D { path: path.clone(), opacity: 1.0, tetrahedral: true, prepared: None },
         BuiltinEffect::PictureTransform { .. } => BuiltinEffect::PictureTransform {

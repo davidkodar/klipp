@@ -114,19 +114,57 @@ pub struct LinkMap {
     pub to: [f64; 2],
     #[serde(default)]
     pub curve: klipp_core::LinkCurve,
-    /// A recipe's link onto a size in pixels (#2758): `to` is a fraction
-    /// of the frame's width or height, made pixels for the sequence the
-    /// recipe is placed in, so it places the same at any size.
+    /// What a recipe's link is measured against where it is placed
+    /// (#2758): a fraction of the frame's width or height made pixels for
+    /// the sequence, so it places the same at any size; or seconds into
+    /// the clip made its source seconds, so a time stays on its frame.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub per: Option<FrameSide>,
+    pub per: Option<Per>,
 }
 
-/// A side of the frame a recipe's link is measured against (#2758).
+/// What a recipe's link is measured against (#2758).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum FrameSide {
+pub enum Per {
+    /// The frame's width.
     Width,
+    /// The frame's height.
     Height,
+    /// Seconds into the clip, made its media's own seconds.
+    Source,
+}
+
+/// Where a recipe is placed (#2758), what its links are measured against:
+/// the sequence's `frame`, and the clip, `length` seconds long, whose
+/// source time `source_at` seconds into it is.
+pub struct Placing<'a> {
+    pub frame: klipp_core::Resolution,
+    pub length: f64,
+    pub source_at: &'a dyn Fn(f64) -> f64,
+}
+
+/// A time as itself.
+fn same_time(t: f64) -> f64 {
+    t
+}
+
+impl Placing<'static> {
+    /// On a frame alone: a clip of any length whose source time is its own.
+    pub fn on_frame(frame: klipp_core::Resolution) -> Self {
+        Placing { frame, length: f64::INFINITY, source_at: &same_time }
+    }
+}
+
+impl Placing<'_> {
+    /// A link's ends `to`, made what it is measured `per`.
+    fn measured(&self, per: Option<Per>, to: [f64; 2]) -> [f64; 2] {
+        match per {
+            Some(Per::Width) => to.map(|v| v * self.frame.width as f64),
+            Some(Per::Height) => to.map(|v| v * self.frame.height as f64),
+            Some(Per::Source) => to.map(|v| (self.source_at)(v)),
+            None => to,
+        }
+    }
 }
 
 /// The instance a placed `template` starts as (#2757): plain bindings by
@@ -299,19 +337,13 @@ fn param_value(value: &TemplateValue) -> serde_json::Value {
 impl CompositionTemplate {
     /// The instance a recipe placed with `values` keeps (#2758): its
     /// controls where `values` set them (else their defaults), and each
-    /// control's links, a link measured `per` a side of the frame made
-    /// pixels of `frame`; a number control bound straight is a link
-    /// across its own range.
-    pub fn recipe_instance(&self, values: &BTreeMap<String, TemplateValue>, frame: klipp_core::Resolution) -> klipp_core::TemplateInstance {
+    /// control's links measured where it is `placed`; a number control
+    /// bound straight is a link across its own range.
+    pub fn recipe_instance(&self, values: &BTreeMap<String, TemplateValue>, placed: &Placing) -> klipp_core::TemplateInstance {
         let mut instance = instance_for(self);
         let linked = self.bindings.iter().filter(|b| b.link.is_some() && self.parameters.contains_key(&b.parameter));
         for (l, b) in instance.links.iter_mut().zip(linked) {
-            let side = match b.link.as_ref().and_then(|m| m.per) {
-                Some(FrameSide::Width) => frame.width as f64,
-                Some(FrameSide::Height) => frame.height as f64,
-                None => 1.0,
-            };
-            l.to = [l.to[0] * side, l.to[1] * side];
+            l.to = placed.measured(b.link.as_ref().and_then(|m| m.per), l.to);
         }
         // A number control set straight onto its node stays live too: a
         // link across its own range.
@@ -334,9 +366,9 @@ impl CompositionTemplate {
     /// each binding's value set on its node: the value given in `values`
     /// by parameter or slot name, else the parameter's default; a
     /// control's link maps its number onto the node's range. A slot left
-    /// unfilled is refused, by name. A link measured `per` a side of the
-    /// frame is made pixels of `frame`, the sequence's size.
-    pub fn recipe_ops(&self, clip: Uuid, anchors: &BTreeMap<&str, Uuid>, values: &BTreeMap<String, TemplateValue>, frame: klipp_core::Resolution) -> Result<Vec<serde_json::Value>, String> {
+    /// unfilled is refused, by name. A link is measured where the recipe
+    /// is `placed` ([`Per`]); a time past the clip's end is refused, said.
+    pub fn recipe_ops(&self, clip: Uuid, anchors: &BTreeMap<&str, Uuid>, values: &BTreeMap<String, TemplateValue>, placed: &Placing) -> Result<Vec<serde_json::Value>, String> {
         let graph = self.graph.as_ref().filter(|_| self.kind == TemplateKind::Recipe).ok_or_else(|| format!("\"{}\" is not a recipe", self.name))?;
         for name in values.keys() {
             if !self.parameters.contains_key(name) && !self.slots.contains_key(name) {
@@ -380,12 +412,10 @@ impl CompositionTemplate {
                 (Some(link), TemplateValue::Number(n)) => {
                     let range = self.parameters.get(&b.parameter).and_then(|p| p.range.as_ref());
                     let from = [range.and_then(|r| r.min).unwrap_or(0.0), range.and_then(|r| r.max).unwrap_or(1.0)];
-                    let side = match link.per {
-                        Some(FrameSide::Width) => frame.width as f64,
-                        Some(FrameSide::Height) => frame.height as f64,
-                        None => 1.0,
-                    };
-                    let to = [link.to[0] * side, link.to[1] * side];
+                    if link.per == Some(Per::Source) && !(0.0..placed.length).contains(n) {
+                        return Err(format!("control '{}': {n} s is past the clip's end ({:.2} s)", b.parameter, placed.length));
+                    }
+                    let to = placed.measured(link.per, link.to);
                     let mapped = klipp_core::TemplateLink { parameter: b.parameter.clone(), property: b.property.clone(), from, to, curve: link.curve, offset: 0.0, linked: true, frozen: 0.0 };
                     TemplateValue::Number(mapped.effective(*n))
                 }
@@ -423,6 +453,9 @@ pub enum SlotKind {
     SubjectMatte,
     /// A colour.
     Colour,
+    /// A surface tracked in the clip the recipe is placed on (a sign, a
+    /// screen): its name or id.
+    Surface,
 }
 
 impl CompositionTemplate {
@@ -829,12 +862,14 @@ pub fn builtin_templates() -> Vec<CompositionTemplate> {
 /// The recipes Klipp ships (#2758), as files in `assets/recipes`: each a
 /// recipe like a saved one, read and checked as one is.
 pub fn builtin_recipes() -> Vec<CompositionTemplate> {
-    const FILES: [&str; 5] = [
+    const FILES: [&str; 7] = [
         include_str!("../../../assets/recipes/green_screen.klipptemplate"),
         include_str!("../../../assets/recipes/picture_in_picture.klipptemplate"),
         include_str!("../../../assets/recipes/matted_glow.klipptemplate"),
         include_str!("../../../assets/recipes/sky.klipptemplate"),
         include_str!("../../../assets/recipes/text_behind_subject.klipptemplate"),
+        include_str!("../../../assets/recipes/screen_replacement.klipptemplate"),
+        include_str!("../../../assets/recipes/clean_plate_background.klipptemplate"),
     ];
     FILES
         .iter()
@@ -1247,10 +1282,10 @@ mod tests {
         let clip = Uuid::new_v4();
         let anchors = BTreeMap::from([("source", Uuid::new_v4()), ("end", Uuid::new_v4())]);
         let frame = klipp_core::Resolution { width: 1000, height: 500 };
-        let why = r.recipe_ops(clip, &anchors, &BTreeMap::new(), frame).unwrap_err();
+        let why = r.recipe_ops(clip, &anchors, &BTreeMap::new(), &Placing::on_frame(frame)).unwrap_err();
         assert!(why.contains("fill the slot 'picture'"), "{why}");
         let values = BTreeMap::from([("picture".to_string(), TemplateValue::Text("m".into())), ("across".to_string(), TemplateValue::Number(1.0))]);
-        let ops = r.recipe_ops(clip, &anchors, &values, frame).unwrap();
+        let ops = r.recipe_ops(clip, &anchors, &values, &Placing::on_frame(frame)).unwrap();
         assert_eq!(ops[0]["after"], serde_json::json!({ "root": { "clip": clip }, "nodes": [anchors["end"]] }));
         assert_eq!(ops[2]["to"], serde_json::json!({ "root": { "clip": clip }, "nodes": [{ "new": 1 }] }));
         assert_eq!(ops[1]["params"]["media"], "m");

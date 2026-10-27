@@ -13,6 +13,7 @@
   "klipp.fx.frei0r": "RoundTrip #1465",
   "klipp.fx.grade_compound": "Conditional #1465",
   "klipp.fx.media_source": "Conditional #1465",
+  "klipp.fx.title_source": "Conditional #1465",
   "klipp.fx.merge": "Conditional #1465",
   "klipp.fx.speed_ramp": "Conditional #1465",
   "klipp.fx.temporal_denoise": "Conditional #2337",

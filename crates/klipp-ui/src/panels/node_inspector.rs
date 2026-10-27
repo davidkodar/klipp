@@ -3214,6 +3214,28 @@ impl NodeInspectorPanel {
             cmds.extend(crate::subject_track::card_ui(ui, crate::subject_track::subject_card(clip_id, model.index() as u32).as_ref(), clip_id, theme));
             ui.add_space(4.0);
         }
+        // Which tracked subject it reads, if any (#2758): none (the image),
+        // the subject, or everything in front: of the media of the clip it
+        // grades.
+        ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new("Tracked subject").small().color(theme.text_dim));
+            let names = ["None", "Subject", "Foreground"];
+            let current = subject.map_or(0, |m| m.index() + 1);
+            #[cfg(any(test, feature = "row-recorder"))]
+            crate::widgets::row_recorder::control(ui.next_auto_id(), "choice", "matte_subject", "Tracked subject", current);
+            let mut picked = current;
+            egui::ComboBox::from_id_salt(("ext_matte_subject", node_id)).selected_text(names[current]).show_ui(ui, |ui| {
+                for (i, name) in names.iter().enumerate() {
+                    if ui.selectable_label(picked == i, *name).clicked() {
+                        picked = i;
+                    }
+                }
+            });
+            if picked != current {
+                atomic_node_edit_batch(cmds, clip_id, |c| c.push(AppCommand::SetNodeParam { clip_id, node_id, param: "matte_subject".into(), value: picked as f32 }));
+            }
+        });
         let tracked = tracked.or_else(|| subject.map(|_| std::path::PathBuf::new()));
         // File picker.
         if tracked.is_none() { ui.horizontal(|ui| {
@@ -3330,10 +3352,12 @@ impl NodeInspectorPanel {
         // Clean-plate file picker.
         ui.horizontal(|ui| {
             ui.add_space(8.0);
-            let label = match &dk.plate_path {
-                Some(p) => p.file_name().map(|f| f.to_string_lossy().to_string())
+            let label = match (&dk.plate_path, dk.plate_frame) {
+                // Picked from the clip's own frames (#2758), over the file.
+                (_, Some(secs)) => format!("the clip's frame at {secs:.2} s"),
+                (Some(p), None) => p.file_name().map(|f| f.to_string_lossy().to_string())
                     .unwrap_or_else(|| p.to_string_lossy().to_string()),
-                None => "(no plate selected)".to_string(),
+                (None, None) => "(no plate selected)".to_string(),
             };
             ui.label(egui::RichText::new(label).small().color(theme.text_dim));
         });

@@ -70,6 +70,8 @@ mod log_format_override;
 mod looks_each_saved;
 #[path = "../manifest_order.rs"]
 mod manifest_order;
+#[path = "../listed_media_offline.rs"]
+mod listed_media_offline;
 #[path = "../media_kind_round_trip.rs"]
 mod media_kind_round_trip;
 #[path = "../media_outside_the_folder.rs"]

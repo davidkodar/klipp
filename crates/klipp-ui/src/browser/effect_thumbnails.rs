@@ -457,7 +457,7 @@ fn builtin_preview_params(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
         klipp_effects::BuiltinEffect::FillBars { .. } => effect.clone(),
         klipp_effects::BuiltinEffect::Crop { .. } => {
             klipp_effects::BuiltinEffect::Crop {
-                left: 0.15, right: 0.15, top: 0.15, bottom: 0.15, feather: 0.05,
+                left: 0.15, right: 0.15, top: 0.15, bottom: 0.15, feather: 0.05, aspect: 0.0, focus_x: 0.5, focus_y: 0.5
             }
         }
         klipp_effects::BuiltinEffect::Transform { .. } => {
@@ -479,7 +479,11 @@ fn builtin_preview_params(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
         klipp_effects::BuiltinEffect::Generator { .. } => klipp_effects::BuiltinEffect::Generator {
             shape: 1, color_a: [30, 60, 160, 255], color_b: [250, 200, 120, 255], angle: 30.0, center_x: 0.5, center_y: 0.5, radius: 0.5,
         },
-        klipp_effects::BuiltinEffect::CornerPin { .. } => {
+        // A twirl, what a bend looks like at a glance.
+        klipp_effects::BuiltinEffect::Warp { .. } => klipp_effects::BuiltinEffect::Warp {
+            mode: klipp_effects::warp::TWIRL, amplitude: 20.0, wavelength: 0.2, speed: 1.0, direction: 0, angle: 220.0, strength: 0.5, radius: 0.6, center_x: 0.5, center_y: 0.5, band: 0.04, time: 0.0,
+        },
+        klipp_effects::BuiltinEffect::CornerPin { .. } | klipp_effects::BuiltinEffect::SurfacePin { .. } => {
             // A card leaning back into the frame: the pin as a picture
             // on a surface, not a rectangle.
             klipp_effects::corner_pin::with_corners([[0.12, 0.2], [0.88, 0.08], [0.8, 0.9], [0.2, 0.82]])
@@ -1219,7 +1223,7 @@ fn builtin_proxy_for(n: &str, plugin_name: &str) -> Option<klipp_effects::Builti
     }
     if n.contains("crop") && !n.contains("copyrectangle") {
         return Some(klipp_effects::BuiltinEffect::Crop {
-            left: 0.12, right: 0.12, top: 0.12, bottom: 0.12, feather: 0.04,
+            left: 0.12, right: 0.12, top: 0.12, bottom: 0.12, feather: 0.04, aspect: 0.0, focus_x: 0.5, focus_y: 0.5
         });
     }
     if n.contains("transform") || n.contains("card3d") || n.contains("cornerpin") || n.contains("lensdistortion") || n.contains("idistort") {

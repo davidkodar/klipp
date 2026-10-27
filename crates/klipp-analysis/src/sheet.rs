@@ -54,8 +54,9 @@ fn sheet_by_seeking(ffmpeg: &Path, media: &Path, tiles_secs: &[f64], cols: u32, 
     let mut cmd = std::process::Command::new(ffmpeg);
     cmd.args(["-hide_banner", "-nostats", "-loglevel", "error", "-y"]);
     let hw = if gpu { crate::hwaccel_args(ffmpeg, "") } else { Vec::new() };
+    let input = klipp_media::input_args(media)?;
     for t in tiles_secs {
-        cmd.args(&hw).arg("-ss").arg(format!("{t:.3}")).arg("-i").arg(media);
+        cmd.args(&hw).arg("-ss").arg(format!("{t:.3}")).args(&input);
     }
     let w = tile_width.clamp(64, 1024);
     let font = any_font();
@@ -103,8 +104,7 @@ fn sheet_by_filter(ffmpeg: &Path, media: &Path, from_secs: f64, span: f64, frame
         .arg(format!("{from_secs:.3}"))
         .arg("-t")
         .arg(format!("{span:.3}"))
-        .arg("-i")
-        .arg(media)
+        .args(klipp_media::input_args(media)?)
         .args(["-an", "-sn", "-vf", &vf, "-frames:v", "1", "-q:v", "4"])
         .arg(out);
     run_sheet(ffmpeg, &mut cmd, gpu, out)
@@ -171,8 +171,7 @@ pub fn audio_excerpt(ffmpeg: &Path, media: &Path, from_secs: f64, to_secs: f64, 
         .arg(format!("{from_secs:.3}"))
         .arg("-t")
         .arg(format!("{span:.3}"))
-        .arg("-i")
-        .arg(media)
+        .args(klipp_media::input_args(media)?)
         .args(["-vn", "-sn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le"])
         .arg(out)
         .stderr(std::process::Stdio::piped())

@@ -1,0 +1,176 @@
+{
+  "format_version": 2,
+  "id": "a5c1e7d3-2b9f-4e60-8d47-1f3a6c9e2b85",
+  "name": "Replace background (clean plate)",
+  "category": "Keying",
+  "written_by": "built-in",
+  "kind": "recipe",
+  "composition_id": "00000000-0000-0000-0000-000000000000",
+  "parameters": {
+    "clean_frame": {
+      "label": "Clean frame (seconds into the clip)",
+      "default": {
+        "type": "Number",
+        "value": 0.0
+      },
+      "range": {
+        "min": 0.0,
+        "max": 3600.0
+      }
+    },
+    "tolerance": {
+      "label": "Tolerance",
+      "default": {
+        "type": "Number",
+        "value": 0.1
+      },
+      "range": {
+        "min": 0.0,
+        "max": 1.0
+      }
+    },
+    "softness": {
+      "label": "Softness",
+      "default": {
+        "type": "Number",
+        "value": 0.05
+      },
+      "range": {
+        "min": 0.0,
+        "max": 0.5
+      }
+    }
+  },
+  "slots": {
+    "background": {
+      "label": "New background",
+      "kind": "media"
+    }
+  },
+  "bindings": [
+    {
+      "parameter": "background",
+      "property": "node:1.media"
+    },
+    {
+      "parameter": "clean_frame",
+      "property": "node:4.difference_key.plate_frame",
+      "link": {
+        "to": [
+          0.0,
+          3600.0
+        ],
+        "per": "source"
+      }
+    },
+    {
+      "parameter": "tolerance",
+      "property": "node:4.difference_key.tolerance"
+    },
+    {
+      "parameter": "softness",
+      "property": "node:4.difference_key.soft"
+    }
+  ],
+  "graph": {
+    "ops": [
+      {
+        "op": "add",
+        "after": {
+          "anchor": "end"
+        },
+        "type": "klipp.fx.merge",
+        "label": "New background",
+        "params": {
+          "blend_mode": "Normal"
+        }
+      },
+      {
+        "op": "add_beside",
+        "at": {
+          "anchor": "source"
+        },
+        "type": "klipp.fx.media_source",
+        "label": "New background"
+      },
+      {
+        "op": "connect",
+        "from": {
+          "anchor": "source"
+        },
+        "from_port": "out",
+        "to": {
+          "new": 1
+        },
+        "to_port": "in"
+      },
+      {
+        "op": "connect",
+        "from": {
+          "new": 1
+        },
+        "from_port": "out",
+        "to": {
+          "new": 0
+        },
+        "to_port": "fg"
+      },
+      {
+        "op": "add_beside",
+        "at": {
+          "anchor": "source"
+        },
+        "type": "klipp.grade.difference_key",
+        "label": "Where the shot is as its clean frame",
+        "params": {
+          "difference_key.enabled": true,
+          "difference_key.invert": true
+        }
+      },
+      {
+        "op": "connect",
+        "from": {
+          "anchor": "source"
+        },
+        "from_port": "out",
+        "to": {
+          "new": 4
+        },
+        "to_port": "in"
+      },
+      {
+        "op": "connect",
+        "from": {
+          "new": 4
+        },
+        "from_port": "out",
+        "to": {
+          "new": 0
+        },
+        "to_port": "mask"
+      }
+    ],
+    "checks": [
+      {
+        "at": [
+          0.1,
+          0.5
+        ],
+        "channel": "red",
+        "min": 0.9,
+        "max": 1.0,
+        "says": "the new background where the shot is as its clean frame"
+      },
+      {
+        "at": [
+          0.5,
+          0.5
+        ],
+        "channel": "red",
+        "min": 0.0,
+        "max": 0.2,
+        "says": "the subject, kept in front"
+      }
+    ]
+  }
+}

@@ -692,7 +692,7 @@ pub(crate) fn decode_clip_audio(
     until: Option<f64>,
     output_rate: u32,
 ) -> Result<Vec<f32>, RenderError> {
-    let mut format_ctx = ffmpeg_next::format::input(path).map_err(RenderError::Decode)?;
+    let mut format_ctx = klipp_media::open_input(path).map_err(RenderError::Decode)?;
 
     let audio_stream = format_ctx
         .streams()

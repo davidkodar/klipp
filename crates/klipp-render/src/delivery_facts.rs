@@ -94,8 +94,8 @@ fn sidecar_captions(path: &Path) -> bool {
 fn measure_loudness(path: &Path) -> Result<(f32, f32), String> {
     use std::io::Read;
     let mut child = std::process::Command::new("ffmpeg")
-        .args(["-nostdin", "-v", "error", "-i"])
-        .arg(path)
+        .args(["-nostdin", "-v", "error"])
+        .args(klipp_media::input_args(path)?)
         .args(["-map", "0:a:0", "-ac", "2", "-ar", "48000", "-f", "f32le", "-"])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())

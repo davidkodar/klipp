@@ -48,6 +48,7 @@ fn graph(path: &std::path::Path) -> NodeGraph {
     let settings = klipp_core::DifferenceKeySettings {
         enabled: true,
         plate_path: Some(path.to_path_buf()),
+        plate_frame: None,
         tolerance: 0.05,
         soft: 0.1,
         invert: false,

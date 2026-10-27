@@ -775,7 +775,7 @@ mod qc_geometry_tests {
             assert!(before.findings.iter().any(|f|f.rule=="title_over_face"), "{}",before.text());
             // The second case explicitly appends Crop AFTER Transform.
             let cropped = std::mem::replace(&mut seq.tracks[1].clips[0], Clip::gap(tc(0.0),tc(4.0)));
-            seq.tracks[1].clips[0] = klipp_timeline::test_clip::TestClip::of(cropped).effect(klipp_effects::BuiltinEffect::Crop { left:0.25,right:0.0,top:0.0,bottom:0.0,feather:0.0 }).build();
+            seq.tracks[1].clips[0] = klipp_timeline::test_clip::TestClip::of(cropped).effect(klipp_effects::BuiltinEffect::Crop { left:0.25,right:0.0,top:0.0,bottom:0.0,feather:0.0, aspect: 0.0, focus_x: 0.5, focus_y: 0.5}).build();
             let after = qc::check(&seq,&pool,&Host);
             assert!(after.findings.iter().any(|f|f.rule=="title_overlap_unchecked"), "{}",after.text());
             assert!(!after.findings.iter().any(|f|f.rule=="title_over_face"));
