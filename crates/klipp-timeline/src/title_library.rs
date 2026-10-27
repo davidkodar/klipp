@@ -34,15 +34,158 @@ pub struct Fields {
 impl TitleTemplate {
     /// The title the template makes, its layers named and its fields
     /// published (#1724), keeping its text readable over the picture
-    /// (#2734).
+    /// (#2734), laid out for a wide frame.
     pub fn build(&self) -> TitleData {
-        let mut td = publish((self.create_data)(), &self.fields);
+        self.build_for(1920, 1080)
+    }
+
+    /// [`Self::build`] laid out for a `width` × `height` frame (#2734):
+    /// see [`Format`].
+    pub fn build_for(&self, width: u32, height: u32) -> TitleData {
+        let (td, anchor) = self.laid_out(width, height);
+        let mut td = publish(td, &self.fields, anchor);
         td.protect = crate::ContrastProtect::Auto;
         td
     }
+
+    /// The template's layers for a `width` × `height` frame, and the
+    /// point its Size grows from there. A wide frame takes them as they
+    /// were designed. Elsewhere each layer keeps its distance from the
+    /// template's anchor in frame heights of the design, so the layout
+    /// is the same shape at the same type size, not stretched with the
+    /// frame; the anchor moves by [`Format::place`]; a centred opener
+    /// grows into the room a tall or square frame has across it; and
+    /// each text is wrapped inside title-safe, and on a tall frame, low
+    /// down, clear of the strip the platforms' buttons cover.
+    fn laid_out(&self, width: u32, height: u32) -> (TitleData, (f32, f32)) {
+        let mut td = (self.create_data)();
+        let a = self.fields.anchor;
+        let format = Format::of(width, height);
+        if format == Format::Wide {
+            return (td, a);
+        }
+        let (w, h) = (width.max(1) as f32, height.max(1) as f32);
+        let short = w.min(h);
+        let (sx, sy) = (DESIGN_ASPECT * short / w, short / h);
+        let centred = (a.0 - 0.5).abs() < 0.05 && (a.1 - 0.5).abs() < 0.05;
+        let grow = match (centred && self.category != "Utility", format) {
+            (true, Format::Tall) => 1.25,
+            (true, _) => 1.1,
+            _ => 1.0,
+        };
+        let anchor = format.place(a);
+        // How far right a layer at `y` may reach.
+        let right = |y: f32| if format == Format::Tall && y > 0.5 { TALL_STRIP_LEFT } else { 1.0 - SAFE };
+        let map_x = |x: f32| anchor.0 + (x - a.0) * sx * grow;
+        let map_y = |y: f32| anchor.1 + (y - a.1) * sy * grow;
+        for o in &mut td.objects {
+            let t = &mut o.transform;
+            let text = matches!(o.content, TitleObjectContent::TextBox(_));
+            // A frame-sized shape stays the frame's; a text's box is where
+            // its words start, whatever its size.
+            if text || t.size.x < FULL {
+                t.center.x = map_x(t.center.x);
+                t.center_x_keyframes.iter_mut().for_each(|k| k.value = map_x(k.value));
+            }
+            if text || t.size.y < FULL {
+                t.center.y = map_y(t.center.y);
+                t.center_y_keyframes.iter_mut().for_each(|k| k.value = map_y(k.value));
+            }
+            match &mut o.content {
+                TitleObjectContent::TextBox(tb) => {
+                    tb.font_size *= grow;
+                    let ax = t.anchor_norm.x.clamp(0.0, 1.0);
+                    let room_left = if ax > 0.0 { (t.center.x - SAFE) / ax } else { f32::INFINITY };
+                    // Its lowest line, about: the lines it was typed in, at
+                    // the type's height in the frame.
+                    let lines = tb.text.lines().count().max(1) as f32;
+                    let low = t.center.y + lines * tb.font_size * 1.2 / 1080.0 * short / h / 2.0;
+                    let room_right = if ax < 1.0 { (right(low) - t.center.x) / (1.0 - ax) } else { f32::INFINITY };
+                    t.size.x = t.size.x.min(room_left).min(room_right).max(0.2);
+                    // Lines set as lines (a slate, a cast list) keep them,
+                    // smaller, rather than breaking inside one.
+                    if tb.text.contains('\n') && tb.fit == crate::TextFit::Wrap {
+                        tb.fit = crate::TextFit::Shrink { min_size: (tb.font_size * 0.6).round() };
+                    }
+                }
+                TitleObjectContent::Shape(shape) if shape.fit.is_some() => {}
+                _ => {
+                    if t.size.x < FULL {
+                        t.size.x *= sx * grow;
+                    }
+                    if t.size.y < FULL {
+                        t.size.y *= sy * grow;
+                    }
+                    if t.size.x < FULL {
+                        let over = t.center.x + (1.0 - t.anchor_norm.x) * t.size.x - right(t.center.y);
+                        if over > 0.0 {
+                            t.size.x = (t.size.x - over).max(0.01);
+                        }
+                    }
+                }
+            }
+        }
+        (td, anchor)
+    }
 }
 
-fn publish(mut td: TitleData, fields: &Fields) -> TitleData {
+/// The frame a template was designed on, wide to high.
+const DESIGN_ASPECT: f32 = 16.0 / 9.0;
+
+/// Title-safe's margin, a share of the frame from each edge.
+const SAFE: f32 = 0.05;
+
+/// A layer at least this share of the frame across is frame-sized.
+const FULL: f32 = 0.95;
+
+/// The top of the band at the bottom of a tall frame that the platforms
+/// cover with captions and their buttons (#2734), a share of its height.
+pub const TALL_BAND_TOP: f32 = 0.80;
+
+/// The left edge of the strip at the right of a tall frame's lower half
+/// that the platforms' action buttons cover (#2734).
+pub const TALL_STRIP_LEFT: f32 = 0.86;
+
+/// The shape of the frame a template is laid out for (#2734).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Format {
+    /// 16:9 and wider: the design.
+    Wide,
+    /// 9:16 and other portrait frames, for phones.
+    Tall,
+    /// 1:1 and near it.
+    Square,
+}
+
+impl Format {
+    /// The format of a `width` × `height` frame.
+    pub fn of(width: u32, height: u32) -> Self {
+        let aspect = width as f32 / height.max(1) as f32;
+        if aspect >= 1.3 {
+            Self::Wide
+        } else if aspect <= 0.77 {
+            Self::Tall
+        } else {
+            Self::Square
+        }
+    }
+
+    /// Where a template anchored at `a` (a point of the frame) sits in
+    /// this format. Low on a tall frame it comes up out of the band the
+    /// platforms cover, and a corner mark goes to the top corner; low on
+    /// a square frame it comes up a little; anything else stays.
+    pub fn place(self, a: (f32, f32)) -> (f32, f32) {
+        match self {
+            Self::Wide => a,
+            Self::Tall if a.1 > 0.88 && (a.0 < 0.2 || a.0 > 0.8) => (a.0, 1.0 - a.1),
+            Self::Tall if a.1 > 0.6 => (a.0.min(TALL_STRIP_LEFT - 0.04), 0.5 + (a.1 - 0.5) * 0.62),
+            Self::Square if a.1 > 0.6 => (a.0, 0.5 + (a.1 - 0.5) * 0.9),
+            _ => a,
+        }
+    }
+}
+
+fn publish(mut td: TitleData, fields: &Fields, anchor: (f32, f32)) -> TitleData {
     use crate::{FieldKind, PublishedField};
     let texts: Vec<usize> = td.objects.iter().enumerate().filter(|(_, o)| matches!(o.content, TitleObjectContent::TextBox(_))).map(|(i, _)| i).collect();
     let mut published = Vec::new();
@@ -53,7 +196,7 @@ fn publish(mut td: TitleData, fields: &Fields) -> TitleData {
     if let Some(o) = fields.accent.and_then(|a| td.objects.get(a)) {
         published.push(PublishedField { label: "Accent".into(), kind: FieldKind::Colour { object: o.id } });
     }
-    let anchor = TitlePosition { x: fields.anchor.0, y: fields.anchor.1 };
+    let anchor = TitlePosition { x: anchor.0, y: anchor.1 };
     published.push(PublishedField { label: "Size".into(), kind: td.size_field(anchor) });
     published.extend(td.default_fields().into_iter().filter(|f| matches!(f.kind, FieldKind::Speed { .. })));
     td.published = published;
@@ -485,7 +628,8 @@ fn ut_slate() -> TitleData {
         text_at(
             moved(face("PROJECT   [Project]\nSCENE     [1]\nTAKE      [1]\nDATE      [2026-01-01]", MONO, FontStyle::Bold, 40.0, WHITE, TextAlignment::Left),
                 TitleMotion::enter(Motion::new(MotionKind::Typewriter).duration(0.02).stagger(StaggerUnit::Line, 0.18))),
-            0.5, 0.5, 0.5,
+            // Its left edge where the block of lines comes out centred.
+            0.36, 0.5, 0.0,
         ),
     ])
 }
@@ -784,6 +928,16 @@ pub const CATEGORIES: &[&str] = &["Lower Thirds", "Openers", "Captions", "Credit
 /// (#2734).
 pub const MIN_TEXT_SIZE: f32 = 28.0;
 
+/// A title just made from a template, laid out for a `width` × `height`
+/// frame (#2734): a built-in made again for it, anything else (a saved
+/// template, a title of its own) as it is.
+pub fn for_frame(td: TitleData, width: u32, height: u32) -> TitleData {
+    match td.template.as_deref().and_then(builtin) {
+        Some(t) if Format::of(width, height) != Format::Wide => t.data_for(width, height),
+        _ => td,
+    }
+}
+
 /// The built-in template called `name`, in any case.
 pub fn builtin(name: &str) -> Option<&'static TitleTemplate> {
     let name = name.trim();
@@ -794,7 +948,12 @@ impl TitleTemplate {
     /// The title the template makes, marked as made from it (#1716): what
     /// a drop from the browser and the template op place.
     pub fn data(&self) -> TitleData {
-        let mut td = self.build();
+        self.data_for(1920, 1080)
+    }
+
+    /// [`Self::data`] laid out for a `width` × `height` frame (#2734).
+    pub fn data_for(&self, width: u32, height: u32) -> TitleData {
+        let mut td = self.build_for(width, height);
         td.template = Some(self.name.to_string());
         // No text smaller than reads on a phone (#2734): a role line or a
         // label at 20 px of a 1080 frame was a few pixels tall there.
@@ -804,5 +963,34 @@ impl TitleTemplate {
             }
         }
         td
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_frame_is_wide_tall_or_square() {
+        assert_eq!(Format::of(1920, 1080), Format::Wide);
+        assert_eq!(Format::of(1080, 1920), Format::Tall);
+        assert_eq!(Format::of(1080, 1350), Format::Square);
+        assert_eq!(Format::of(1080, 1080), Format::Square);
+    }
+
+    /// Laid out for another frame, a template keeps the distance between
+    /// its layers in pixels (#2734): a lower third's name and role are as
+    /// far apart on a 9:16 frame as on a 16:9 one of the same short side.
+    #[test]
+    fn a_layout_keeps_its_spacing_in_pixels() {
+        let t = builtin("Name Bar").unwrap();
+        let gap = |w: u32, h: u32| {
+            let td = t.build_for(w, h);
+            let at = |name: &str| td.objects.iter().find(|o| o.name == name).unwrap().transform.center;
+            let (a, b) = (at("Name"), at("Role"));
+            ((b.x - a.x) * w as f32, (b.y - a.y) * h as f32)
+        };
+        let (wide, tall) = (gap(1920, 1080), gap(1080, 1920));
+        assert!((wide.0 - tall.0).abs() < 0.5 && (wide.1 - tall.1).abs() < 0.5, "{wide:?} vs {tall:?}");
     }
 }

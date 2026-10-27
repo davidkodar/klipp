@@ -4013,7 +4013,9 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
         Op::Template { name, at, secs: held, track, fields, data } => {
             use klipp_core::TitleFieldValue as V;
             let at = resolve_anchor(seq, fps, at, i)?;
-            let mut td = data.as_deref().cloned().ok_or_else(|| refuse(i, format!("there is no title template \"{name}\""), "title_templates lists the built-in and saved templates"))?;
+            let td = data.as_deref().cloned().ok_or_else(|| refuse(i, format!("there is no title template \"{name}\""), "title_templates lists the built-in and saved templates"))?;
+            // A built-in laid out for the sequence's frame (#2734).
+            let mut td = klipp_timeline::title_library::for_frame(td, seq.resolution.width, seq.resolution.height);
             for (label, v) in fields {
                 let Some(index) = td.field_named(label) else {
                     let labels: Vec<String> = td.live_fields().into_iter().map(|(_, f, _)| f.label.clone()).collect();
@@ -13017,6 +13019,30 @@ mod tests {
         let look = Look { typeset: typesetting(&off, 0).unwrap(), ..Default::default() };
         assert_eq!(restyle(&always, &look, 3.0).unwrap().protect, klipp_timeline::ContrastProtect::Off);
         assert!(serde_json::from_value::<Typeset>(serde_json::json!({"protect": "sometimes"})).is_err(), "an unknown mode is refused");
+    }
+
+    /// #2734: a built-in template is laid out for the sequence's frame: on
+    /// a 9:16 frame a lower third comes up out of the band the platforms
+    /// cover, on 16:9 it is placed as designed.
+    #[test]
+    fn a_template_is_laid_out_for_the_sequences_frame() {
+        let (mut seq, pool, ..) = fixture();
+        let name_y = |seq: &Sequence| {
+            let op: Op = serde_json::from_value(serde_json::json!({"op": "template", "name": "Name Bar", "at": {"secs": 1.0}, "secs": 3.0})).unwrap();
+            let Op::Template { name, at, secs, track, fields, .. } = op else { unreachable!() };
+            let data = klipp_timeline::title_library::builtin("Name Bar").map(|t| Box::new(t.data()));
+            let plan = resolve(seq, &pool, &[Op::Template { name, at, secs, track, fields, data }]).unwrap();
+            let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!("a title clip") };
+            let td = clip.title_data().unwrap();
+            let k = td.field_named("Name").expect("the name");
+            let klipp_timeline::FieldKind::Text { object } = td.published[k].kind else { panic!() };
+            td.object(object).unwrap().transform.center.y
+        };
+        let wide = name_y(&seq);
+        assert_eq!(wide, klipp_timeline::title_library::builtin("Name Bar").unwrap().data().objects.iter().find(|o| o.name == "Name").unwrap().transform.center.y, "as designed on 16:9");
+        seq.resolution = klipp_core::Resolution { width: 1080, height: 1920 };
+        let tall = name_y(&seq);
+        assert!(tall < klipp_timeline::title_library::TALL_BAND_TOP - 0.05 && tall < wide, "up out of the band on 9:16: {tall} (16:9 {wide})");
     }
 
     /// #460: a heading at the top of a vertical frame stays whole inside

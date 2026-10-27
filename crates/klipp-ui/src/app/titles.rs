@@ -3912,7 +3912,10 @@ pub(super) fn add_title_clip(
     let timeline_in = timeline_in.rescale_to(fps_rate);
     let duration = klipp_core::RationalTime::from_frames(duration_frames as i64, fps_rate);
     let timeline_out = timeline_in + duration;
+    let frame = state.sequences[state.active_sequence_idx].resolution;
+    // A built-in template laid out for the sequence's frame (#2734).
     let title_data = state.pending_title_data.take()
+        .map(|td| klipp_timeline::title_library::for_frame(td, frame.width, frame.height))
         .unwrap_or_default();
     let clip = klipp_timeline::Clip {
         id: klipp_core::ClipId::new(),
