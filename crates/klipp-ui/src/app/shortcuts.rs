@@ -7,6 +7,21 @@ use super::*;
 
 impl KlippApp {
     pub(super) fn handle_global_shortcuts(&mut self, ctx: &egui::Context) -> Vec<AppCommand> {
+        // An editor layout's one command on a key is two Klipp actions
+        // here: the one the selection does not mean sits this frame out
+        // (#2934, `keybindings::resolved`).
+        let losers = ctx.input(|i| shared_key_losers(&self.state, &self.key_bindings, i));
+        if losers.is_empty() {
+            return self.dispatch_shortcuts(ctx);
+        }
+        let all = self.key_bindings.clone();
+        self.key_bindings = all.without(&losers);
+        let cmds = self.dispatch_shortcuts(ctx);
+        self.key_bindings = all;
+        cmds
+    }
+
+    fn dispatch_shortcuts(&mut self, ctx: &egui::Context) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
         // Skip single-key shortcuts when ANY text edit widget has focus (search bars,
         // title text editor, timecode entry, rename fields, etc.).
@@ -484,8 +499,9 @@ impl KlippApp {
                 }
             }
             // [ / ], Alt+D, the printer lights and Ctrl+Shift+R: the
-            // grade's keys, on the level the node canvas shows (#1742).
-            grade_node_keys(&mut self.state, &kb, i, cmds);
+            // grade's keys, on the level the node canvas shows (#1742),
+            // stepping aside for a trim of selected edit points (#2934).
+            editor_grade_keys(&mut self.state, &kb, i, cmds);
             // Copy / Copy Attributes / Copy Color Nodes
             //
             // Two distinct rebindable actions share defaults at Ctrl+C:
@@ -499,37 +515,7 @@ impl KlippApp {
             // is treated as authoritative). egui's TextEdit consumes
             // Ctrl+C internally when a text field has focus, so this
             // dispatch never fights the OS-level text clipboard.
-            let in_color_panel = matches!(
-                self.state.active_panel,
-                Some(crate::state::PanelKind::NodeGraph) | Some(crate::state::PanelKind::NodeInspector)
-            );
-            let has_node_selection = !self.state.selected_node_ids.is_empty()
-                || self.state.selected_node_id.is_some();
-            let copy_clip_pressed = kb.is_action_pressed("copy_clip", i);
-            let copy_color_pressed = kb.is_action_pressed("copy_color_nodes", i);
-            match (copy_color_pressed, copy_clip_pressed) {
-                (true, true) => {
-                    // Shared-default conflict — panel context decides.
-                    if in_color_panel && has_node_selection {
-                        if let Some(clip_id) = self.state.selected_clip {
-                            cmds.push(AppCommand::CopyColorNodes { clip_id });
-                        }
-                    } else if let Some(clip_id) = self.state.selected_clip {
-                        cmds.push(AppCommand::CopyClip { clip_id });
-                    }
-                }
-                (true, false) => {
-                    if let Some(clip_id) = self.state.selected_clip {
-                        cmds.push(AppCommand::CopyColorNodes { clip_id });
-                    }
-                }
-                (false, true) => {
-                    if let Some(clip_id) = self.state.selected_clip {
-                        cmds.push(AppCommand::CopyClip { clip_id });
-                    }
-                }
-                (false, false) => {}
-            }
+            cmds.extend(clipboard_copy(&self.state, &kb, i));
             if kb.is_action_pressed("copy_attributes", i) {
                 if let Some(clip_id) = self.state.selected_clip {
                     cmds.push(AppCommand::CopyAttributes { clip_id });
@@ -542,30 +528,7 @@ impl KlippApp {
             if kb.is_action_pressed("paste_insert", i) {
                 cmds.push(AppCommand::PasteClipInsert);
             }
-            let paste_clip_pressed = kb.is_action_pressed("paste_clip", i);
-            let paste_color_pressed = kb.is_action_pressed("paste_color_nodes", i);
-            let color_clipboard_ready = self.state.grade_node_clipboard.as_ref()
-                .is_some_and(|c| !c.nodes.is_empty());
-            match (paste_color_pressed, paste_clip_pressed) {
-                (true, true) => {
-                    if in_color_panel && color_clipboard_ready {
-                        if let Some(clip_id) = self.state.selected_clip {
-                            cmds.push(AppCommand::PasteColorNodes { clip_id });
-                        }
-                    } else {
-                        cmds.push(AppCommand::PasteClip);
-                    }
-                }
-                (true, false) => {
-                    if let Some(clip_id) = self.state.selected_clip {
-                        cmds.push(AppCommand::PasteColorNodes { clip_id });
-                    }
-                }
-                (false, true) => {
-                    cmds.push(AppCommand::PasteClip);
-                }
-                (false, false) => {}
-            }
+            cmds.extend(clipboard_paste(&self.state, &kb, i));
             if kb.is_action_pressed("paste_attributes", i)
                 && self.state.attributes_clipboard.is_some() && self.state.selected_clip.is_some() {
                     self.state.show_paste_attributes_dialog = true;
@@ -1277,6 +1240,86 @@ pub(super) fn remove_selected_keyframe(state: &crate::state::AppState, sk: &crat
     // effect list, as its card takes one off (#1419).
     Some(crate::inspector::stack_view::route_placed(clip, vec![cmd])).filter(|c| !c.is_empty())
 }
+
+/// The actions a press leaves out because the key it shares with another
+/// action is the other's, by what is selected (#2934). Each pair is one
+/// command in an editor layout that binds both to one key; with keys of
+/// their own, both run as pressed.
+pub(super) fn shared_key_losers(state: &crate::state::AppState, kb: &crate::keybindings::KeyBindings, i: &egui::InputState) -> Vec<&'static str> {
+    let both = |a: &str, b: &str| kb.is_action_pressed(a, i) && kb.is_action_pressed(b, i);
+    let mut out = Vec::new();
+    // Trim the selected edit points, else nudge the selected clips.
+    for (trim, nudge) in [("trim_edit_back", "nudge_clips_back"), ("trim_edit_forward", "nudge_clips_forward"), ("trim_edit_back_many", "nudge_clips_back_many"), ("trim_edit_forward_many", "nudge_clips_forward_many")] {
+        if both(trim, nudge) {
+            out.push(if state.selected_edits.is_empty() { trim } else { nudge });
+        }
+    }
+    // Delete closes up a selected clip's place, or the marked range: it
+    // already extracts a range with no clip selected.
+    if both("delete_clip", "extract_edit") {
+        out.push("extract_edit");
+    }
+    // Lift a selected clip, else the marked range.
+    if both("lift_clip", "lift_edit") {
+        out.push(if state.selected_clip.is_some() { "lift_edit" } else { "lift_clip" });
+    }
+    // A marker on the selected clip, else on the timeline.
+    if both("add_marker", "add_clip_marker") {
+        out.push(if state.selected_clip.is_some() { "add_marker" } else { "add_clip_marker" });
+    }
+    // Match frame from the viewer shown: from the source to the timeline,
+    // or from the timeline to its source.
+    if both("match_frame_program_to_source", "match_frame_source_to_program") {
+        out.push(if state.viewer_mode == klipp_core::ViewerMode::Source { "match_frame_program_to_source" } else { "match_frame_source_to_program" });
+    }
+    out
+}
+
+/// Whether the colour panel has the keys (the node canvas or the node
+/// inspector): where Copy and Paste mean the grade's nodes when they
+/// share a key with the clip's.
+fn in_color_panel(state: &crate::state::AppState) -> bool {
+    matches!(state.active_panel, Some(crate::state::PanelKind::NodeGraph) | Some(crate::state::PanelKind::NodeInspector))
+}
+
+/// Copy, of the clip or of its grade's nodes. Two rebindable actions share
+/// Ctrl+C by default: when both are pressed, the colour panel with a node
+/// selected takes it for the nodes, anywhere else the clip (#2934). Bound
+/// apart, each key is its own.
+pub(super) fn clipboard_copy(state: &crate::state::AppState, kb: &crate::keybindings::KeyBindings, i: &egui::InputState) -> Option<AppCommand> {
+    let clip_id = state.selected_clip?;
+    let has_node_selection = !state.selected_node_ids.is_empty() || state.selected_node_id.is_some();
+    match (kb.is_action_pressed("copy_color_nodes", i), kb.is_action_pressed("copy_clip", i)) {
+        (true, true) if in_color_panel(state) && has_node_selection => Some(AppCommand::CopyColorNodes { clip_id }),
+        (true, true) | (false, true) => Some(AppCommand::CopyClip { clip_id }),
+        (true, false) => Some(AppCommand::CopyColorNodes { clip_id }),
+        (false, false) => None,
+    }
+}
+
+/// Paste, as [`clipboard_copy`]: shared, the colour panel with nodes on the
+/// grade clipboard takes it for the nodes, anywhere else the clip.
+pub(super) fn clipboard_paste(state: &crate::state::AppState, kb: &crate::keybindings::KeyBindings, i: &egui::InputState) -> Option<AppCommand> {
+    let color_clipboard_ready = state.grade_node_clipboard.as_ref().is_some_and(|c| !c.nodes.is_empty());
+    match (kb.is_action_pressed("paste_color_nodes", i), kb.is_action_pressed("paste_clip", i)) {
+        (true, true) if in_color_panel(state) && color_clipboard_ready => state.selected_clip.map(|clip_id| AppCommand::PasteColorNodes { clip_id }),
+        (true, true) | (false, true) => Some(AppCommand::PasteClip),
+        (true, false) => state.selected_clip.map(|clip_id| AppCommand::PasteColorNodes { clip_id }),
+        (false, false) => None,
+    }
+}
+
+/// The grade's keys in the editor: as on the node canvas, but a key that
+/// trims selected edit points trims them and nothing else. `[` and `]`
+/// are both by default, and stepped the node selection behind the trim.
+pub(super) fn editor_grade_keys(state: &mut crate::state::AppState, kb: &crate::keybindings::KeyBindings, i: &egui::InputState, cmds: &mut Vec<AppCommand>) {
+    let trimming = !state.selected_edits.is_empty()
+        && ["trim_edit_back", "trim_edit_forward", "trim_edit_back_many", "trim_edit_forward_many"].iter().any(|a| kb.is_action_pressed(a, i));
+    if !trimming {
+        grade_node_keys(state, kb, i, cmds);
+    }
+}
+
 
 /// The grade's keys (#1742), acting on the level of the grade the node
 /// canvas shows (`graph_descent_path`), not only its top:

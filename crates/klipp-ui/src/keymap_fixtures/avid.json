@@ -1,0 +1,952 @@
+{
+ "editor": "Media Composer",
+ "platform": "Windows",
+ "version": "2026.x (current release 2026.8)",
+ "sources": [
+  {
+   "url": "https://resources.avid.com/SupportFiles/attach/Media_Composer/2026/Media_Composer_v2026.x_Editing_Guide.pdf",
+   "title": "Avid Media Composer v2026.x Editing Guide (PDF, 1320 pp.; 'Keyboard Settings' default-keyboard illustration p.1205, playback key table p.399-400)",
+   "date_or_version": "v2026.x; PDF created 2026-08-31; listed on the MC 2026 documentation page (updated 2026-10-22)"
+  },
+  {
+   "url": "https://resources.avid.com/SupportFiles/attach/Media_Composer/2026/Media_Composer_v2026.x_FX_Guide.pdf",
+   "title": "Avid Media Composer v2026.x Effects and Color Correction Guide",
+   "date_or_version": "v2026.x; PDF created 2026-08-31"
+  },
+  {
+   "url": "https://resources.avid.com/SupportFiles/attach/Media_Composer/2026/2026.8/Media_Composer_v2026.8_ReadMe.pdf",
+   "title": "Avid Media Composer ReadMe for Version 2026.8",
+   "date_or_version": "2026.8; updated 2026-10-09"
+  },
+  {
+   "url": "https://kb.avid.com/pkb/articles/en_US/Knowledge/Media-Composer-2026-Documentation",
+   "title": "Media Composer 2026 Documentation (Avid Knowledge Base)",
+   "date_or_version": "page updated 2026-10-22"
+  },
+  {
+   "url": "https://resources.avid.com/SupportFiles/attach/70024_MediaComposer_FilmComposer_Keyboard.pdf",
+   "title": "Avid Media Composer & Film Composer for the Windows NT Operating System - Quick Reference / Media Composer Keyboard (0130-04213-01 Rev. A)",
+   "date_or_version": "(c) 1999; used ONLY to name keys whose icons are identical in the 2026 illustration, and as a secondary source for modifier shortcuts"
+  },
+  {
+   "url": "https://resources.avid.com/supportfiles/attach/keyboard%20shortcuts.pdf",
+   "title": "Keyboard Shortcuts for Avid Editors (Media Composer, Newscutter, and Symphony) - hosted on resources.avid.com, credited 'With thanks to Benjamin Hershleder at Moviola'",
+   "date_or_version": "PDF dated 2009-02-16; old, partly third-party authored; secondary only"
+  }
+ ],
+ "actions": {
+  "set_in_point": {
+   "command": "Mark IN",
+   "keys": [
+    "I",
+    "E"
+   ],
+   "note": "I: p.400 'By default on United States keyboards, the Mark IN key is the I key'; E: Mark IN icon on E in the 2026 illustration (labelled Mark IN in the 1999 chart)."
+  },
+  "set_out_point": {
+   "command": "Mark OUT",
+   "keys": [
+    "O",
+    "R"
+   ],
+   "note": "O: 'the Mark OUT key is the O key'; R: Mark OUT icon in the 2026 illustration (labelled in the 1999 chart)."
+  },
+  "clear_in_point": {
+   "command": "Clear IN Mark",
+   "keys": [
+    "D"
+   ],
+   "note": "Keyboard Settings illustration (\"Keyboard - MC English (United States)\", Editing Guide p.1205); key names from Avid's labelled Windows NT keyboard chart, whose icons match the 2026 illustration key for key"
+  },
+  "clear_out_point": {
+   "command": "Clear OUT Mark",
+   "keys": [
+    "F"
+   ],
+   "note": "Keyboard Settings illustration (\"Keyboard - MC English (United States)\", Editing Guide p.1205); key names from Avid's labelled Windows NT keyboard chart, whose icons match the 2026 illustration key for key"
+  },
+  "clear_in_out": {
+   "command": "Clear Both Marks",
+   "keys": [
+    "G"
+   ],
+   "note": "Keyboard Settings illustration (\"Keyboard - MC English (United States)\", Editing Guide p.1205); key names from Avid's labelled Windows NT keyboard chart, whose icons match the 2026 illustration key for key"
+  },
+  "set_range_to_clip": {
+   "command": "Mark Clip",
+   "keys": [
+    "T"
+   ],
+   "note": "Keyboard Settings illustration (\"Keyboard - MC English (United States)\", Editing Guide p.1205); key names from Avid's labelled Windows NT keyboard chart, whose icons match the 2026 illustration key for key. Marks IN/OUT at the clip under the position indicator on selected tracks."
+  },
+  "insert_edit": {
+   "command": "Splice-in",
+   "keys": [
+    "V"
+   ],
+   "note": "Editing Guide: 'Press the V key to perform a splice-in edit'."
+  },
+  "overwrite_edit": {
+   "command": "Overwrite",
+   "keys": [
+    "B"
+   ],
+   "note": "Editing Guide: 'Press the B key to perform an overwrite edit'."
+  },
+  "lift_edit": {
+   "command": "Lift",
+   "keys": [
+    "Z"
+   ],
+   "note": "Keyboard Settings illustration (\"Keyboard - MC English (United States)\", Editing Guide p.1205); key names from Avid's labelled Windows NT keyboard chart, whose icons match the 2026 illustration key for key"
+  },
+  "extract_edit": {
+   "command": "Extract",
+   "keys": [
+    "X"
+   ],
+   "note": "Keyboard Settings illustration (\"Keyboard - MC English (United States)\", Editing Guide p.1205); key names from Avid's labelled Windows NT keyboard chart, whose icons match the 2026 illustration key for key"
+  },
+  "replace_edit": {
+   "command": "Replace Edit",
+   "keys": [],
+   "note": "Button on the Edit tab of the Command palette; not on the default keyboard."
+  },
+  "fit_to_fill_edit": {
+   "command": "Fit to Fill",
+   "keys": [],
+   "note": "Button on the Edit tab of the Command palette (overwrite with a variable-speed effect); not on the default keyboard."
+  },
+  "split_at_playhead": {
+   "command": "Add Edit",
+   "keys": [],
+   "note": "Guide: 'you must first map the Add Edit button onto the keyboard' (MultiCam chapter)."
+  },
+  "add_default_transition": {
+   "command": "Add Dissolve",
+   "keys": [
+    "\\"
+   ],
+   "note": "Keyboard Settings illustration (\"Keyboard - MC English (United States)\", Editing Guide p.1205); key names from Avid's labelled Windows NT keyboard chart, whose icons match the 2026 illustration key for key. Adds the default dissolve at the nearest transition on selected tracks."
+  },
+  "add_audio_crossfade": {
+   "command": "Add Dissolve",
+   "keys": [
+    "\\"
+   ],
+   "note": "Same command: Add Dissolve on selected audio tracks is the audio crossfade; Avid has no separate audio-only command. Same key as add_default_transition."
+  },
+  "lift_clip": {
+   "command": "Delete (Lift/Overwrite segment tool, the default)",
+   "keys": [
+    "Delete"
+   ],
+   "note": "p.622-623: 'By default, Media Composer deletes the selected segment and leaves blank space' when Delete is pressed with selected segments."
+  },
+  "delete_clip": {
+   "command": "Delete (Extract/Splice-in segment tool)",
+   "keys": [],
+   "note": "Delete closes the gap only when the yellow Extract/Splice-in segment tool is active (or set as Default Segment Tool); there is no separate default key for a ripple delete."
+  },
+  "cut_clip": {
+   "command": "Cut",
+   "keys": [
+    "Ctrl+X"
+   ],
+   "note": "p.624 'Cutting, Copying, and Pasting in the Timeline': selected segments."
+  },
+  "copy_clip": {
+   "command": "Copy",
+   "keys": [
+    "Ctrl+C"
+   ],
+   "note": "p.624: selected segments. (The C key is 'Copy to Clipboard' of IN-OUT marked material, a different command.)"
+  },
+  "paste_clip": {
+   "command": "Paste",
+   "keys": [
+    "Ctrl+V"
+   ],
+   "note": "p.624: pastes the segment at the position indicator using the default segment tool."
+  },
+  "undo": {
+   "command": "Undo",
+   "keys": [
+    "Ctrl+Z"
+   ],
+   "note": "'Undoing or Redoing Edits'."
+  },
+  "redo": {
+   "command": "Redo",
+   "keys": [
+    "Ctrl+R"
+   ],
+   "note": "'Undoing or Redoing Edits': 'Press Ctrl+R'."
+  },
+  "create_multicam": {
+   "command": "Group Clip (Clip > Group Clips)",
+   "keys": [
+    "Ctrl+Shift+G"
+   ],
+   "note": "2009 sheet: 'Shift + Ctrl + G creates a Group Clip'; the 2026.8 ReadMe names Ctrl+Shift+G among the modifier shortcuts 'for Multicam editing'. A group clip is Avid's multicam clip."
+  },
+  "move_clips_up_a_track": {
+   "command": "Move Clip Up",
+   "keys": [
+    "ArrowUp"
+   ],
+   "note": "p.~617: 'The Move Clip Up and Move Clip Down keys are assigned to the up and down arrows of the default keyboard settings.' (In MultiCamera editing the same arrows are Previous/Next In Group.)"
+  },
+  "move_clips_down_a_track": {
+   "command": "Move Clip Down",
+   "keys": [
+    "ArrowDown"
+   ],
+   "note": "Same sentence as Move Clip Up."
+  },
+  "nudge_clips_back": {
+   "command": "Trim Left 1 Frame (on selected segments)",
+   "keys": [
+    ","
+   ],
+   "note": "Keyboard Settings illustration (\"Keyboard - MC English (United States)\", Editing Guide p.1205); key names from Avid's labelled Windows NT keyboard chart, whose icons match the 2026 illustration key for key. Guide p.621: segments move horizontally 'using the Trim left and Trim right keys'."
+  },
+  "nudge_clips_forward": {
+   "command": "Trim Right 1 Frame (on selected segments)",
+   "keys": [
+    "."
+   ],
+   "note": "Keyboard Settings illustration (\"Keyboard - MC English (United States)\", Editing Guide p.1205); key names from Avid's labelled Windows NT keyboard chart, whose icons match the 2026 illustration key for key. Same as nudge_clips_back."
+  },
+  "nudge_clips_back_many": {
+   "command": "Trim Left 10 Frames (on selected segments)",
+   "keys": [
+    "M"
+   ],
+   "note": "Keyboard Settings illustration (\"Keyboard - MC English (United States)\", Editing Guide p.1205); key names from Avid's labelled Windows NT keyboard chart, whose icons match the 2026 illustration key for key. 10 frames (8 in 24p)."
+  },
+  "nudge_clips_forward_many": {
+   "command": "Trim Right 10 Frames (on selected segments)",
+   "keys": [
+    "/"
+   ],
+   "note": "Keyboard Settings illustration (\"Keyboard - MC English (United States)\", Editing Guide p.1205); key names from Avid's labelled Windows NT keyboard chart, whose icons match the 2026 illustration key for key. 10 frames (8 in 24p)."
+  },
+  "trim_edit_back": {
+   "command": "Trim Left 1 Frame",
+   "keys": [
+    ","
+   ],
+   "note": "Keyboard Settings illustration (\"Keyboard - MC English (United States)\", Editing Guide p.1205); key names from Avid's labelled Windows NT keyboard chart, whose icons match the 2026 illustration key for key. Same keys as the nudge actions: in Avid one key trims a selected transition or moves selected"
+  },
+  "trim_edit_forward": {
+   "command": "Trim Right 1 Frame",
+   "keys": [
+    "."
+   ],
+   "note": "Keyboard Settings illustration (\"Keyboard - MC English (United States)\", Editing Guide p.1205); key names from Avid's labelled Windows NT keyboard chart, whose icons match the 2026 illustration key for key"
+  },
+  "trim_edit_back_many": {
+   "command": "Trim Left 10 Frames",
+   "keys": [
+    "M"
+   ],
+   "note": "Keyboard Settings illustration (\"Keyboard - MC English (United States)\", Editing Guide p.1205); key names from Avid's labelled Windows NT keyboard chart, whose icons match the 2026 illustration key for key"
+  },
+  "trim_edit_forward_many": {
+   "command": "Trim Right 10 Frames",
+   "keys": [
+    "/"
+   ],
+   "note": "Keyboard Settings illustration (\"Keyboard - MC English (United States)\", Editing Guide p.1205); key names from Avid's labelled Windows NT keyboard chart, whose icons match the 2026 illustration key for key"
+  },
+  "trim_tool": {
+   "command": "Trim Mode",
+   "keys": [
+    "U"
+   ],
+   "note": "Keyboard Settings illustration (\"Keyboard - MC English (United States)\", Editing Guide p.1205); key names from Avid's labelled Windows NT keyboard chart, whose icons match the 2026 illustration key for key. Trim chapter table: 'U Nearest transition'."
+  },
+  "select_edit_point": {
+   "command": "Trim Mode (select nearest transition)",
+   "keys": [
+    "U"
+   ],
+   "note": "Trim chapter p.653 table: U = nearest transition, A = previous, S = next. Side cycling is P / [ / ] (Trim A Side / AB Sides / B Side, editor_only). Same key as trim_tool."
+  },
+  "extend_edit": {
+   "command": "Extend",
+   "keys": [],
+   "note": "Button on the Trim tab of the Command palette ('You can map the Extend button'); Avid extends to the Mark IN/OUT, not the playhead."
+  },
+  "trim_in_to_playhead": {
+   "command": "Top",
+   "keys": [],
+   "note": "Top button (Edit tab of the Command palette): extracts from the start of the clip to the position indicator."
+  },
+  "trim_out_to_playhead": {
+   "command": "Tail",
+   "keys": [],
+   "note": "Tail button (Edit tab of the Command palette): extracts from the position indicator to the end of the clip."
+  },
+  "ripple_trim_head": {
+   "command": "Top",
+   "keys": [],
+   "note": "Same command as trim_in_to_playhead."
+  },
+  "ripple_trim_tail": {
+   "command": "Tail",
+   "keys": [],
+   "note": "Same command as trim_out_to_playhead."
+  },
+  "freeze_frame": {
+   "command": "Freeze Frame (Composer menu)",
+   "keys": [],
+   "note": "Menu command Composer > Freeze Frame; no default key given."
+  },
+  "add_marker": {
+   "command": "Add Marker",
+   "keys": [],
+   "note": "Guide: 'Map the Add Marker button to a key ... Drag an Add Marker button to a key on the Keyboard palette'."
+  },
+  "prev_marker": {
+   "command": "Go to Previous Marker",
+   "keys": [],
+   "note": "'Click the Go to Previous Marker button in the Move tab of the Command palette'."
+  },
+  "next_marker": {
+   "command": "Go to Next Marker",
+   "keys": [],
+   "note": "'Click the Go to Next Marker button in the Move tab of the Command palette'."
+  },
+  "match_frame_program_to_source": {
+   "command": "Match Frame",
+   "keys": [],
+   "note": "Match Frame button 'appears by default in the second row of buttons below the Source monitor'; not on the default keyboard."
+  },
+  "match_frame_source_to_program": {
+   "command": "Reverse Match Frame",
+   "keys": [],
+   "note": "'Click the Reverse Match Frame button in the Other tab of the Command palette'."
+  },
+  "play_around_edit": {
+   "command": "Play Loop (Trim mode)",
+   "keys": [],
+   "note": "'The Play Loop button does not appear in Source/Record mode by default. You must map it'. Its Trim-mode key is not given in text (see unverifiable)."
+  },
+  "key_linear": {
+   "command": "Linear (keyframe interpolation, right-click menu)",
+   "keys": [],
+   "note": "Right-click menu on the keyframe graph/track; no default key."
+  },
+  "leave_compound": {
+   "command": "Step Out",
+   "keys": [],
+   "note": "Timeline bottom-toolbar button (Step In / Step Out of nested segments); not on the default keyboard."
+  },
+  "play_pause": {
+   "command": "Play",
+   "keys": [
+    "Space",
+    "5",
+    "`",
+    "Tab"
+   ],
+   "note": "p.400 table: 'Left quote or tilde key (above Tab key), Tab key, 5 key, Space bar - Start and stop playback'."
+  },
+  "play_in_to_out": {
+   "command": "Play IN to OUT",
+   "keys": [
+    "6"
+   ],
+   "note": "Keyboard Settings illustration (\"Keyboard - MC English (United States)\", Editing Guide p.1205); key names from Avid's labelled Windows NT keyboard chart, whose icons match the 2026 illustration key for key"
+  },
+  "step_backward": {
+   "command": "Step Backward (1 frame)",
+   "keys": [
+    "ArrowLeft",
+    "3"
+   ],
+   "note": "p.400 table."
+  },
+  "step_forward": {
+   "command": "Step Forward (1 frame)",
+   "keys": [
+    "ArrowRight",
+    "4"
+   ],
+   "note": "p.400 table."
+  },
+  "go_to_start": {
+   "command": "Home",
+   "keys": [
+    "Home"
+   ],
+   "note": "p.400: 'Home key - move to the beginning of a clip or sequence'."
+  },
+  "go_to_end": {
+   "command": "End",
+   "keys": [
+    "End"
+   ],
+   "note": "p.400: 'End key - move to the end of a clip or sequence'."
+  },
+  "shuttle_reverse": {
+   "command": "Play Reverse",
+   "keys": [
+    "J"
+   ],
+   "note": "J-K-L three-button play."
+  },
+  "shuttle_pause": {
+   "command": "Pause",
+   "keys": [
+    "K"
+   ],
+   "note": "J-K-L three-button play."
+  },
+  "shuttle_forward": {
+   "command": "Play Forward",
+   "keys": [
+    "L"
+   ],
+   "note": "J-K-L three-button play."
+  },
+  "prev_edit_point": {
+   "command": "Go to Previous Edit",
+   "keys": [
+    "A"
+   ],
+   "note": "Keyboard Settings illustration (\"Keyboard - MC English (United States)\", Editing Guide p.1205); key names from Avid's labelled Windows NT keyboard chart, whose icons match the 2026 illustration key for key; trim table 'A Previous transition'."
+  },
+  "next_edit_point": {
+   "command": "Go to Next Edit",
+   "keys": [
+    "S"
+   ],
+   "note": "Keyboard Settings illustration (\"Keyboard - MC English (United States)\", Editing Guide p.1205); key names from Avid's labelled Windows NT keyboard chart, whose icons match the 2026 illustration key for key; trim table 'S Next transition'."
+  },
+  "toggle_keyframe": {
+   "command": "Add Keyframe",
+   "keys": [
+    "'"
+   ],
+   "note": "Keyboard Settings illustration (\"Keyboard - MC English (United States)\", Editing Guide p.1205); key names from Avid's labelled Windows NT keyboard chart, whose icons match the 2026 illustration key for key. Avid's only adds a keyframe (does not remove)."
+  },
+  "zoom_in": {
+   "command": "More Detail (Timeline)",
+   "keys": [
+    "Ctrl+]"
+   ],
+   "note": "2026 guide: 'zooming in or out ... by using Ctrl + [ and Ctrl + ] (Windows)'; direction from the 1999 chart ('Ctrl+] Shows more detail in Timeline') and 2009 sheet."
+  },
+  "zoom_out": {
+   "command": "Less Detail (Timeline)",
+   "keys": [
+    "Ctrl+["
+   ],
+   "note": "As zoom_in; 1999 chart: 'Ctrl+[ Shows less detail in Timeline'."
+  },
+  "fit_to_window": {
+   "command": "Show entire sequence",
+   "keys": [
+    "Ctrl+/"
+   ],
+   "note": "'Ctrl + / (Windows) to show the entire sequence'."
+  },
+  "toggle_fullscreen": {
+   "command": "Full Screen Playback (Composer menu)",
+   "keys": [
+    "Ctrl+Shift+F"
+   ],
+   "note": "'To disable full screen playback: Type Shift+Ctrl+F'; enabling is via Composer > Full Screen Playback (the guide names the key only for turning it off)."
+  },
+  "close_project": {
+   "command": "Close Project",
+   "keys": [
+    "Ctrl+Shift+W"
+   ],
+   "note": "p.~22: 'To close the current project ... Select File > Close Project. Press Ctrl+Shift+W'."
+  },
+  "multicam_angle_1": {
+   "command": "MultiCam key M1",
+   "keys": [
+    "F9"
+   ],
+   "note": "2026 illustration labels F9 'M1'; the MultiCam chapter says angles are cut 'by using the MultiCam keys' and refers to 'the default MultiCam keys'. Also: numeric-keypad 1 switches angles in split views (numpad not writable in Klipp notation; keypad position mapping differs from angle order)."
+  },
+  "multicam_angle_2": {
+   "command": "MultiCam key M2",
+   "keys": [
+    "F10"
+   ],
+   "note": "2026 illustration labels F10 'M2'; the MultiCam chapter says angles are cut 'by using the MultiCam keys' and refers to 'the default MultiCam keys'. Also: numeric-keypad 2 switches angles in split views (numpad not writable in Klipp notation; keypad position mapping differs from angle order)."
+  },
+  "multicam_angle_3": {
+   "command": "MultiCam key M3",
+   "keys": [
+    "F11"
+   ],
+   "note": "2026 illustration labels F11 'M3'; the MultiCam chapter says angles are cut 'by using the MultiCam keys' and refers to 'the default MultiCam keys'. Also: numeric-keypad 3 switches angles in split views (numpad not writable in Klipp notation; keypad position mapping differs from angle order)."
+  },
+  "multicam_angle_4": {
+   "command": "MultiCam key M4",
+   "keys": [
+    "F12"
+   ],
+   "note": "2026 illustration labels F12 'M4'; the MultiCam chapter says angles are cut 'by using the MultiCam keys' and refers to 'the default MultiCam keys'. Also: numeric-keypad 4 switches angles in split views (numpad not writable in Klipp notation; keypad position mapping differs from angle order)."
+  },
+  "multicam_angle_5": {
+   "command": "Numeric keypad angle switch (Nine Split)",
+   "keys": [],
+   "note": "Only the numeric keypad: 'Press a number key on the numeric keypad to switch to a new camera angle' (keypad 5 = a split position, e.g. 5 = center, 7 = upper left). Numpad keys cannot be written in Klipp notation; no main-keyboard default."
+  },
+  "multicam_angle_6": {
+   "command": "Numeric keypad angle switch (Nine Split)",
+   "keys": [],
+   "note": "Only the numeric keypad: 'Press a number key on the numeric keypad to switch to a new camera angle' (keypad 6 = a split position, e.g. 5 = center, 7 = upper left). Numpad keys cannot be written in Klipp notation; no main-keyboard default."
+  },
+  "multicam_angle_7": {
+   "command": "Numeric keypad angle switch (Nine Split)",
+   "keys": [],
+   "note": "Only the numeric keypad: 'Press a number key on the numeric keypad to switch to a new camera angle' (keypad 7 = a split position, e.g. 5 = center, 7 = upper left). Numpad keys cannot be written in Klipp notation; no main-keyboard default."
+  },
+  "multicam_angle_8": {
+   "command": "Numeric keypad angle switch (Nine Split)",
+   "keys": [],
+   "note": "Only the numeric keypad: 'Press a number key on the numeric keypad to switch to a new camera angle' (keypad 8 = a split position, e.g. 5 = center, 7 = upper left). Numpad keys cannot be written in Klipp notation; no main-keyboard default."
+  },
+  "multicam_angle_9": {
+   "command": "Numeric keypad angle switch (Nine Split)",
+   "keys": [],
+   "note": "Only the numeric keypad: 'Press a number key on the numeric keypad to switch to a new camera angle' (keypad 9 = a split position, e.g. 5 = center, 7 = upper left). Numpad keys cannot be written in Klipp notation; no main-keyboard default."
+  }
+ },
+ "loose": {},
+ "not_checked": {
+  "save_project": "Avid saves projects/bins automatically; no Save shortcut is stated in the 2026 guides (File > Save Bin's key not given). The full modifier list lives only in the in-app Help > Shortcuts.",
+  "import_media": "Import (File > Input > Import Media) exists; no default key in the fetched documents (Ctrl+I is Clip Info).",
+  "export": "Export (File > Output > Export) exists; no default key in the fetched documents.",
+  "new_project": "New project is made in the Select Project dialog; no shortcut documented.",
+  "open_project": "Opening a project is via the Select Project dialog after Close Project; no shortcut documented.",
+  "quit": "File > Exit exists; no shortcut documented in the fetched sources.",
+  "preferences": "Avid's Settings (File > Settings) are the nearest; the only key seen is Ctrl+= 'settings for the active window' in the 2009 sheet - not the same thing.",
+  "create_title": "Titler+ / Title Tool exist (Tools / Clip menu); no default key in the fetched documents.",
+  "toggle_multicam_mode": "MultiCamera Mode (Composer menu). The 2026.8 ReadMe names Ctrl+Shift+M as a modifier shortcut 'for Multicam editing' but does not say which command it runs; not recorded as a key.",
+  "toggle_audio_mixer": "Audio Mixer (Tools > Audio Mixer); no key in 2026 docs. Ctrl+1 in the old sheets opens the Audio tool (meters), not the mixer.",
+  "toggle_color_panel": "Color Correction mode/workspace exists; no default key found.",
+  "toggle_scopes": "Scopes exist in Color Correction mode; no default key found.",
+  "toggle_safe_areas": "Safe Title/Action guides via the Grid button in Effect mode; no default key found.",
+  "toggle_grid_overlay": "Effect Grid via the Grid button in Effect mode; no default key found.",
+  "prev_keyframe": "Keyframe navigation commands exist in Effect Editor; no default key found in the fetched docs.",
+  "next_keyframe": "As prev_keyframe."
+ },
+ "not_in_editor": [
+  "ai_cancel_inference",
+  "ai_detect_objects",
+  "ai_isolate_object",
+  "ai_remove_background",
+  "ai_run_inference",
+  "blade_tool",
+  "range_tool",
+  "select_tool",
+  "text_tool",
+  "mask_tool",
+  "connect_clip",
+  "disconnect_clip",
+  "copy_attributes",
+  "paste_attributes",
+  "copy_color_nodes",
+  "paste_color_nodes",
+  "next_color_node",
+  "prev_color_node",
+  "reset_current_node",
+  "toggle_node_bypass",
+  "printer_blue_down",
+  "printer_blue_up",
+  "printer_green_down",
+  "printer_green_up",
+  "printer_master_down",
+  "printer_master_up",
+  "printer_red_down",
+  "printer_red_up",
+  "cycle_scope_mode",
+  "toggle_false_color",
+  "toggle_zebra",
+  "toggle_matte_preview",
+  "toggle_before_after",
+  "add_clip_marker",
+  "group_clips",
+  "ungroup_clips",
+  "duplicate_clip",
+  "select_all",
+  "deselect_all",
+  "paste_insert",
+  "select_backward",
+  "select_forward",
+  "select_track_backward",
+  "select_track_forward",
+  "select_track_clips",
+  "toggle_skimming",
+  "toggle_audio_skim",
+  "toggle_snap",
+  "toggle_edit_mode",
+  "toggle_loop",
+  "toggle_keyframe_editor",
+  "key_ease_in",
+  "key_ease_out",
+  "key_ease_in_out",
+  "swap_stacked_focus",
+  "command_palette",
+  "focus_panel_search",
+  "zoom_to_selection",
+  "extract_frame_to_bin",
+  "extract_frame_to_file",
+  "toggle_ai_tools_panel",
+  "toggle_browser_panel",
+  "toggle_inspector_panel",
+  "toggle_project_notes",
+  "toggle_subtitle_editor",
+  "toggle_perf_overlay",
+  "toggle_perf_recording",
+  "place_on_top_edit",
+  "save_project_as"
+ ],
+ "editor_only": [
+  {
+   "command": "Step Backward 10 Frames",
+   "keys": [
+    "1"
+   ]
+  },
+  {
+   "command": "Step Forward 10 Frames",
+   "keys": [
+    "2"
+   ]
+  },
+  {
+   "command": "Select V2 Track",
+   "keys": [
+    "7"
+   ]
+  },
+  {
+   "command": "Select V1 Track",
+   "keys": [
+    "8"
+   ]
+  },
+  {
+   "command": "Select A1 Track",
+   "keys": [
+    "9"
+   ]
+  },
+  {
+   "command": "Select A2 Track",
+   "keys": [
+    "0"
+   ]
+  },
+  {
+   "command": "Select A3 Track",
+   "keys": [
+    "-"
+   ]
+  },
+  {
+   "command": "Select A4 Track",
+   "keys": [
+    "="
+   ]
+  },
+  {
+   "command": "Go to IN",
+   "keys": [
+    "Q",
+    "Alt+I"
+   ]
+  },
+  {
+   "command": "Go to OUT",
+   "keys": [
+    "W"
+   ]
+  },
+  {
+   "command": "Source/Record Mode",
+   "keys": [
+    "Y"
+   ]
+  },
+  {
+   "command": "Trim A Side",
+   "keys": [
+    "P"
+   ]
+  },
+  {
+   "command": "Trim AB Sides (both sides)",
+   "keys": [
+    "["
+   ]
+  },
+  {
+   "command": "Trim B Side",
+   "keys": [
+    "]"
+   ]
+  },
+  {
+   "command": "Focus",
+   "keys": [
+    "H"
+   ]
+  },
+  {
+   "command": "Mouse Shuttle",
+   "keys": [
+    ";"
+   ]
+  },
+  {
+   "command": "Mouse Jog",
+   "keys": [
+    "N"
+   ]
+  },
+  {
+   "command": "Copy to Clipboard (IN-OUT marked material)",
+   "keys": [
+    "C"
+   ]
+  },
+  {
+   "command": "Toggle Source/Record (switch active monitor); exits Trim mode",
+   "keys": [
+    "Escape"
+   ]
+  },
+  {
+   "command": "Previous In Group / Next In Group (MultiCamera)",
+   "keys": [
+    "ArrowUp",
+    "ArrowDown"
+   ]
+  },
+  {
+   "command": "Enlarge / Reduce track",
+   "keys": [
+    "Ctrl+L",
+    "Ctrl+K"
+   ]
+  },
+  {
+   "command": "Enlarge / Reduce audio waveform only",
+   "keys": [
+    "Ctrl+Alt+L",
+    "Ctrl+Alt+K"
+   ]
+  },
+  {
+   "command": "Find (Edit > Find)",
+   "keys": [
+    "Ctrl+F"
+   ]
+  },
+  {
+   "command": "Find next",
+   "keys": [
+    "Ctrl+G"
+   ]
+  },
+  {
+   "command": "Clip Info / bin info",
+   "keys": [
+    "Ctrl+I"
+   ]
+  },
+  {
+   "command": "Paste Audio Keyframes",
+   "keys": [
+    "Ctrl+Shift+V"
+   ]
+  },
+  {
+   "command": "Stop render / waveform redraw",
+   "keys": [
+    "Ctrl+."
+   ]
+  },
+  {
+   "command": "Switch windows / switch tabs",
+   "keys": [
+    "Ctrl+ArrowUp",
+    "Ctrl+ArrowDown",
+    "Ctrl+Tab"
+   ]
+  },
+  {
+   "command": "Place Markers window info in Console",
+   "keys": [
+    "Ctrl+Alt+P"
+   ]
+  },
+  {
+   "command": "Project window",
+   "keys": [
+    "Ctrl+9"
+   ]
+  },
+  {
+   "command": "Select all tracks / Deselect all tracks",
+   "keys": [
+    "Ctrl+A",
+    "Ctrl+Shift+A"
+   ]
+  },
+  {
+   "command": "New sequence from the active Sequence Template",
+   "keys": [
+    "Ctrl+Shift+N"
+   ]
+  },
+  {
+   "command": "New tape name (Capture tool)",
+   "keys": [
+    "Ctrl+N"
+   ]
+  },
+  {
+   "command": "Capture-mode function keys: subclip IN/OUT, log/capture, colored markers",
+   "keys": [
+    "F1",
+    "F2",
+    "F4",
+    "F5",
+    "F6",
+    "F7",
+    "F8",
+    "F9",
+    "F10",
+    "F11",
+    "F12"
+   ]
+  },
+  {
+   "command": "Audio tool",
+   "keys": [
+    "Ctrl+1"
+   ]
+  },
+  {
+   "command": "Avid Calculator",
+   "keys": [
+    "Ctrl+2"
+   ]
+  },
+  {
+   "command": "Command Palette",
+   "keys": [
+    "Ctrl+3"
+   ]
+  },
+  {
+   "command": "Composer window",
+   "keys": [
+    "Ctrl+4"
+   ]
+  },
+  {
+   "command": "Console",
+   "keys": [
+    "Ctrl+6"
+   ]
+  },
+  {
+   "command": "Capture tool",
+   "keys": [
+    "Ctrl+7"
+   ]
+  },
+  {
+   "command": "Effect Palette",
+   "keys": [
+    "Ctrl+8"
+   ]
+  },
+  {
+   "command": "Timeline window",
+   "keys": [
+    "Ctrl+0"
+   ]
+  },
+  {
+   "command": "Settings for the active window",
+   "keys": [
+    "Ctrl+="
+   ]
+  },
+  {
+   "command": "New video track / New audio track",
+   "keys": [
+    "Ctrl+Y",
+    "Ctrl+U"
+   ]
+  },
+  {
+   "command": "Duplicate (bin clip/sequence)",
+   "keys": [
+    "Ctrl+D"
+   ]
+  },
+  {
+   "command": "New bin",
+   "keys": [
+    "Ctrl+N"
+   ]
+  },
+  {
+   "command": "Close window / bin",
+   "keys": [
+    "Ctrl+W"
+   ]
+  },
+  {
+   "command": "Zoom (drag an area) / Zoom back",
+   "keys": [
+    "Ctrl+M",
+    "Ctrl+J"
+   ]
+  },
+  {
+   "command": "Select clips/segments copy: Copy to Source monitor / Lift to Source / Extract to Source",
+   "keys": [
+    "Alt+C",
+    "Alt+Z",
+    "Alt+X"
+   ]
+  },
+  {
+   "command": "Mark Clip ignoring track selection",
+   "keys": [
+    "Alt+T"
+   ]
+  }
+ ],
+ "deviations": {
+  "add_audio_crossfade": {
+   "documented": [
+    "\\"
+   ],
+   "why": "\\\\ is one Media Composer command, Add Dissolve, on the selected tracks; Klipp has two actions, and \\\\ goes to add_default_transition"
+  },
+  "trim_tool": {
+   "documented": [
+    "U"
+   ],
+   "why": "U is one Media Composer command, Trim Mode, entered at the nearest transition; select_edit_point does that in Klipp, and trim_tool would arm a tool as well"
+  }
+ }
+}

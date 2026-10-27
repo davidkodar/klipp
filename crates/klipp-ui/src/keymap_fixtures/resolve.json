@@ -1,0 +1,1584 @@
+{
+ "editor": "DaVinci Resolve",
+ "platform": "Windows/Linux",
+ "version": "DaVinci Resolve 21 (Reference Manual dated July 2026)",
+ "sources": [
+  {
+   "url": "https://documents.blackmagicdesign.com/UserManuals/DaVinci_Resolve_21_Reference_Manual.pdf",
+   "title": "DaVinci Resolve 21 Reference Manual",
+   "date_or_version": "July 2026, DaVinci Resolve 21 (4,400+ pages; macOS key names, Option=Alt, Command=Ctrl on Windows/Linux)"
+  },
+  {
+   "url": "https://documents.blackmagicdesign.com/UserManuals/DaVinci-Resolve-15-Keyboard-Shortcuts.pdf",
+   "title": "DaVinci Resolve 15 Keyboard Shortcuts (file content headed 'Guide - DaVinci Resolve 11 Menus & Keyboard Shortcuts')",
+   "date_or_version": "Resolve 11 content; used only where noted (quit) and for cross-checks"
+  }
+ ],
+ "actions": {
+  "add_audio_crossfade": {
+   "command": "Timeline > Add Audio Only Transition",
+   "keys": [
+    "Shift+T"
+   ],
+   "note": "Adds the standard transition to the selected audio edit only, i.e. an audio crossfade (manual ch. on audio, 'Add Audio Only Transition (Shift-T)')."
+  },
+  "add_clip_marker": {
+   "command": "Add Marker (with clips selected)",
+   "keys": [
+    "M"
+   ],
+   "note": "Resolve has one Add Marker command: with clips selected and the playhead over them, M marks the clips; with nothing selected it marks the timeline ruler. Shift-M is Modify Marker in Resolve."
+  },
+  "add_default_transition": {
+   "command": "Timeline > Add Transition",
+   "keys": [
+    "Ctrl+T"
+   ],
+   "note": "Adds the standard transition to selected edit points."
+  },
+  "add_marker": {
+   "command": "Add Marker",
+   "keys": [
+    "M"
+   ]
+  },
+  "blade_tool": {
+   "command": "Blade Edit Mode (Razor)",
+   "keys": [
+    "B"
+   ]
+  },
+  "clear_in_out": {
+   "command": "Clear In and Out",
+   "keys": [
+    "Alt+X"
+   ]
+  },
+  "clear_in_point": {
+   "command": "Clear In",
+   "keys": [
+    "Alt+I"
+   ]
+  },
+  "clear_out_point": {
+   "command": "Clear Out",
+   "keys": [
+    "Alt+O"
+   ]
+  },
+  "close_project": {
+   "command": "File > Close Project",
+   "keys": [],
+   "note": "Command exists in the File menu; the manual gives no key for it."
+  },
+  "copy_clip": {
+   "command": "Edit > Copy",
+   "keys": [
+    "Ctrl+C"
+   ]
+  },
+  "copy_color_nodes": {
+   "command": "Edit > Copy (node selected, Color page)",
+   "keys": [
+    "Ctrl+C"
+   ],
+   "note": "Same Copy command; with a node selected in the Node Editor it copies the node."
+  },
+  "create_multicam": {
+   "command": "Create New Multicam Clip Using Selected Clips (Media Pool)",
+   "keys": [],
+   "note": "Command exists (Media Pool context menu); no key given in the manual."
+  },
+  "cut_clip": {
+   "command": "Edit > Ripple Cut",
+   "keys": [
+    "Ctrl+Shift+X"
+   ],
+   "note": "Klipp's Cut removes the clips as Delete does (closes the gap: crates/klipp-ui/src/app/clips.rs CutClip). Resolve's Edit > Cut (Ctrl+X) leaves a gap; Ripple Cut closes it."
+  },
+  "delete_clip": {
+   "command": "Ripple Delete (Forward Delete key)",
+   "keys": [
+    "Delete"
+   ],
+   "note": "Deletes and closes the gap. Manual is written in macOS keys and says Option=Alt, Command=Ctrl on Windows/Linux; its Mac 'Delete' key is Backspace and 'Forward Delete' is Delete here (the manual's own figure caption names Backspace for the leave-gap delete)."
+  },
+  "deselect_all": {
+   "command": "Deselect All",
+   "keys": [
+    "Ctrl+Shift+A"
+   ]
+  },
+  "export": {
+   "command": "File > Quick Export",
+   "keys": [],
+   "note": "Klipp's Export opens the render dialog; Resolve's nearest single command is Quick Export (or the Deliver page). No key given in the manual. (Ctrl+E in the old Resolve 11 list was Export Project, a .drp project file, not a render.)"
+  },
+  "extend_edit": {
+   "command": "Trim > Extend Edit",
+   "keys": [
+    "E"
+   ]
+  },
+  "extract_edit": {
+   "command": "Ripple Delete of the marked In/Out range (Forward Delete)",
+   "keys": [
+    "Delete"
+   ],
+   "note": "Resolve has no separate Extract: with Timeline In/Out set, Forward Delete removes the range and closes the gap. In Resolve ' (apostrophe) is Last Frame of clip. Manual is written in macOS keys and says Option=Alt, Command=Ctrl on Windows/Linux; its Mac 'Delete' key is Backspace and 'Forward Delete' "
+  },
+  "extract_frame_to_file": {
+   "command": "File > Export > Current Frame as Still",
+   "keys": [],
+   "note": "No key given in the manual."
+  },
+  "fit_to_fill_edit": {
+   "command": "Fit to Fill",
+   "keys": [
+    "Shift+F11"
+   ]
+  },
+  "fit_to_window": {
+   "command": "View > Zoom > Zoom to Fit",
+   "keys": [
+    "Shift+Z"
+   ],
+   "note": "Frames the whole timeline; toggles back to the previous zoom."
+  },
+  "freeze_frame": {
+   "command": "Clip > Freeze Frame",
+   "keys": [
+    "Shift+R"
+   ]
+  },
+  "go_to_end": {
+   "command": "Timeline End",
+   "keys": [
+    "End"
+   ]
+  },
+  "go_to_start": {
+   "command": "Timeline Start",
+   "keys": [
+    "Home"
+   ]
+  },
+  "import_media": {
+   "command": "Import Media",
+   "keys": [
+    "Ctrl+I"
+   ],
+   "note": "Documented on the Cut page ('b) Press Command-I'); File > Import > Media is the shared menu command."
+  },
+  "insert_edit": {
+   "command": "Insert",
+   "keys": [
+    "F9"
+   ]
+  },
+  "lift_clip": {
+   "command": "Delete Selected (leave gap)",
+   "keys": [
+    "Backspace"
+   ],
+   "note": "'Delete clip and leave gap (lift edit)'. Manual is written in macOS keys and says Option=Alt, Command=Ctrl on Windows/Linux; its Mac 'Delete' key is Backspace and 'Forward Delete' is Delete here (the manual's own figure caption names Backspace for the leave-gap delete)."
+  },
+  "lift_edit": {
+   "command": "Delete of the marked In/Out range (leave gap)",
+   "keys": [
+    "Backspace"
+   ],
+   "note": "Resolve has no separate Lift: with Timeline In/Out set, Delete removes the range and leaves a gap. In Resolve ; (semicolon) is First Frame of clip. Manual is written in macOS keys and says Option=Alt, Command=Ctrl on Windows/Linux; its Mac 'Delete' key is Backspace and 'Forward Delete' is Delete her"
+  },
+  "match_frame_program_to_source": {
+   "command": "Match Frame",
+   "keys": [
+    "F"
+   ]
+  },
+  "match_frame_source_to_program": {
+   "command": "Match Frame (from the Source Viewer)",
+   "keys": [
+    "F"
+   ],
+   "note": "'Match Frame also works in the opposite direction': the same F key, used with the Source Viewer active, moves the Timeline playhead to the matching frame. Shift-F is Full Screen Viewer in Resolve."
+  },
+  "move_clips_down_a_track": {
+   "command": "Move clip down a track",
+   "keys": [
+    "Alt+ArrowDown"
+   ]
+  },
+  "move_clips_up_a_track": {
+   "command": "Move clip up a track",
+   "keys": [
+    "Alt+ArrowUp"
+   ]
+  },
+  "multicam_angle_1": {
+   "command": "Clip > Multicam Cut > Angle 1",
+   "keys": [
+    "1"
+   ],
+   "note": "Cut-and-switch, as clicking an angle in the Source Viewer."
+  },
+  "multicam_angle_2": {
+   "command": "Clip > Multicam Cut > Angle 2",
+   "keys": [
+    "2"
+   ],
+   "note": "Cut-and-switch, as clicking an angle in the Source Viewer."
+  },
+  "multicam_angle_3": {
+   "command": "Clip > Multicam Cut > Angle 3",
+   "keys": [
+    "3"
+   ],
+   "note": "Cut-and-switch, as clicking an angle in the Source Viewer."
+  },
+  "multicam_angle_4": {
+   "command": "Clip > Multicam Cut > Angle 4",
+   "keys": [
+    "4"
+   ],
+   "note": "Cut-and-switch, as clicking an angle in the Source Viewer."
+  },
+  "multicam_angle_5": {
+   "command": "Clip > Multicam Cut > Angle 5",
+   "keys": [
+    "5"
+   ],
+   "note": "Cut-and-switch, as clicking an angle in the Source Viewer."
+  },
+  "multicam_angle_6": {
+   "command": "Clip > Multicam Cut > Angle 6",
+   "keys": [
+    "6"
+   ],
+   "note": "Cut-and-switch, as clicking an angle in the Source Viewer."
+  },
+  "multicam_angle_7": {
+   "command": "Clip > Multicam Cut > Angle 7",
+   "keys": [
+    "7"
+   ],
+   "note": "Cut-and-switch, as clicking an angle in the Source Viewer."
+  },
+  "multicam_angle_8": {
+   "command": "Clip > Multicam Cut > Angle 8",
+   "keys": [
+    "8"
+   ],
+   "note": "Cut-and-switch, as clicking an angle in the Source Viewer."
+  },
+  "multicam_angle_9": {
+   "command": "Clip > Multicam Cut > Angle 9",
+   "keys": [
+    "9"
+   ],
+   "note": "Cut-and-switch, as clicking an angle in the Source Viewer."
+  },
+  "new_project": {
+   "command": "File > New Project",
+   "keys": [],
+   "note": "No key given in the manual. Ctrl+N in Resolve is File > New Timeline."
+  },
+  "next_color_node": {
+   "command": "Color > Nodes > Next Node",
+   "keys": [
+    "Shift+Alt+'"
+   ]
+  },
+  "next_edit_point": {
+   "command": "Next Clip/Edit",
+   "keys": [
+    "ArrowDown"
+   ]
+  },
+  "next_keyframe": {
+   "command": "Next Keyframe",
+   "keys": [
+    "Shift+'"
+   ],
+   "note": "Edit page: 'Shift-Apostrophe moves the playhead to the next keyframe to the right'. (Fusion page uses Alt+] instead.)"
+  },
+  "next_marker": {
+   "command": "Next Marker",
+   "keys": [
+    "Shift+ArrowDown"
+   ]
+  },
+  "nudge_clips_back": {
+   "command": "Nudge One Frame Left",
+   "keys": [
+    ","
+   ],
+   "note": "One Resolve command nudges whatever is selected, clip or edit point."
+  },
+  "nudge_clips_back_many": {
+   "command": "Fast Nudge Left",
+   "keys": [
+    "Shift+,"
+   ],
+   "note": "Resolve's fast nudge is 5 frames by default (customizable in User Preferences); Klipp's is 10."
+  },
+  "nudge_clips_forward": {
+   "command": "Nudge One Frame Right",
+   "keys": [
+    "."
+   ],
+   "note": "One Resolve command nudges whatever is selected, clip or edit point."
+  },
+  "nudge_clips_forward_many": {
+   "command": "Fast Nudge Right",
+   "keys": [
+    "Shift+."
+   ],
+   "note": "5 frames by default in Resolve; Klipp moves 10."
+  },
+  "overwrite_edit": {
+   "command": "Overwrite",
+   "keys": [
+    "F10"
+   ]
+  },
+  "paste_attributes": {
+   "command": "Edit > Paste Attributes",
+   "keys": [
+    "Alt+V"
+   ]
+  },
+  "paste_clip": {
+   "command": "Edit > Paste",
+   "keys": [
+    "Ctrl+V"
+   ]
+  },
+  "paste_color_nodes": {
+   "command": "Edit > Paste (Node Editor)",
+   "keys": [
+    "Ctrl+V"
+   ]
+  },
+  "paste_insert": {
+   "command": "Edit > Paste Insert",
+   "keys": [
+    "Ctrl+Shift+V"
+   ]
+  },
+  "place_on_top_edit": {
+   "command": "Place On Top",
+   "keys": [
+    "F12"
+   ]
+  },
+  "play_around_edit": {
+   "command": "Play Around Selection",
+   "keys": [
+    "/"
+   ],
+   "note": "Plays pre-roll to post-roll around the selected edit/clip (or the playhead); loops when Loop is on."
+  },
+  "play_in_to_out": {
+   "command": "Play In to Out",
+   "keys": [
+    "Alt+/"
+   ]
+  },
+  "play_pause": {
+   "command": "Play/Stop",
+   "keys": [
+    "Space"
+   ]
+  },
+  "prev_color_node": {
+   "command": "Color > Nodes > Previous Node",
+   "keys": [
+    "Shift+Alt+;"
+   ]
+  },
+  "prev_edit_point": {
+   "command": "Previous Clip/Edit",
+   "keys": [
+    "ArrowUp"
+   ]
+  },
+  "prev_keyframe": {
+   "command": "Previous Keyframe",
+   "keys": [
+    "Shift+;"
+   ],
+   "note": "Edit page: 'Shift-Semicolon moves the playhead to the next previous keyframe on the left'. (Fusion page uses Alt+[.)"
+  },
+  "prev_marker": {
+   "command": "Previous Marker",
+   "keys": [
+    "Shift+ArrowUp"
+   ]
+  },
+  "preferences": {
+   "command": "DaVinci Resolve > Preferences",
+   "keys": [
+    "Ctrl+,"
+   ]
+  },
+  "printer_red_up": {
+   "command": "Printer Light Hotkeys: Plus Red",
+   "keys": [],
+   "note": "Numeric keypad 7 after Color > Printer Light Hotkeys is turned on (Ctrl+Alt+`); keypad keys cannot be written in Klipp's notation."
+  },
+  "printer_red_down": {
+   "command": "Printer Light Hotkeys: Minus Red",
+   "keys": [],
+   "note": "Numeric keypad 4 after Color > Printer Light Hotkeys is turned on (Ctrl+Alt+`); keypad keys cannot be written in Klipp's notation."
+  },
+  "printer_green_up": {
+   "command": "Printer Light Hotkeys: Plus Green",
+   "keys": [],
+   "note": "Numeric keypad 8 after Color > Printer Light Hotkeys is turned on (Ctrl+Alt+`); keypad keys cannot be written in Klipp's notation."
+  },
+  "printer_green_down": {
+   "command": "Printer Light Hotkeys: Minus Green",
+   "keys": [],
+   "note": "Numeric keypad 5 after Color > Printer Light Hotkeys is turned on (Ctrl+Alt+`); keypad keys cannot be written in Klipp's notation."
+  },
+  "printer_blue_up": {
+   "command": "Printer Light Hotkeys: Plus Blue",
+   "keys": [],
+   "note": "Numeric keypad 9 after Color > Printer Light Hotkeys is turned on (Ctrl+Alt+`); keypad keys cannot be written in Klipp's notation."
+  },
+  "printer_blue_down": {
+   "command": "Printer Light Hotkeys: Minus Blue",
+   "keys": [],
+   "note": "Numeric keypad 6 after Color > Printer Light Hotkeys is turned on (Ctrl+Alt+`); keypad keys cannot be written in Klipp's notation."
+  },
+  "quit": {
+   "command": "Quit DaVinci Resolve",
+   "keys": [
+    "Ctrl+Q"
+   ],
+   "note": "The Resolve 21 manual lists the command (Menu Descriptions) without a key; the key is from Blackmagic's older official list (Resolve 11 content), see unverifiable."
+  },
+  "redo": {
+   "command": "Edit > Redo",
+   "keys": [
+    "Ctrl+Shift+Z"
+   ]
+  },
+  "replace_edit": {
+   "command": "Replace",
+   "keys": [
+    "F11"
+   ]
+  },
+  "reset_current_node": {
+   "command": "Reset Selected Node Grade",
+   "keys": [
+    "Shift+Home"
+   ],
+   "note": "'To reset a selected node: Press (Shift-home)'."
+  },
+  "ripple_trim_head": {
+   "command": "Trim > Trim Start",
+   "keys": [
+    "Shift+["
+   ],
+   "note": "Moves the In point of the clip at the playhead to the playhead; ripples in Trim mode, resizes (leaves a gap) in Selection mode. Ctrl+Shift+[ (always ripples) is used for trim_in_to_playhead."
+  },
+  "ripple_trim_tail": {
+   "command": "Trim > Trim End",
+   "keys": [
+    "Shift+]"
+   ],
+   "note": "Out-point counterpart of Trim Start; ripples in Trim mode."
+  },
+  "save_project": {
+   "command": "File > Save Project",
+   "keys": [
+    "Ctrl+S"
+   ]
+  },
+  "save_project_as": {
+   "command": "File > Save Project As",
+   "keys": [
+    "Ctrl+Shift+S"
+   ]
+  },
+  "select_all": {
+   "command": "Edit > Select All",
+   "keys": [
+    "Ctrl+A"
+   ]
+  },
+  "select_backward": {
+   "command": "Timeline > Select Clips Backward > On All Tracks",
+   "keys": [
+    "Ctrl+Alt+Y"
+   ]
+  },
+  "select_edit_point": {
+   "command": "Select Nearest Edit Point (V) / Edit Point Type (U)",
+   "keys": [
+    "V",
+    "U"
+   ],
+   "note": "Klipp's one action selects the nearest edit when none is selected, else cycles its side; Resolve splits that into V (select nearest edit) and U (cycle outgoing/centre/incoming)."
+  },
+  "select_forward": {
+   "command": "Timeline > Select Clips Forward > On All Tracks",
+   "keys": [
+    "Alt+Y"
+   ]
+  },
+  "select_tool": {
+   "command": "Selection Mode",
+   "keys": [
+    "A"
+   ]
+  },
+  "select_track_backward": {
+   "command": "Timeline > Select Clips Backward > On This Track",
+   "keys": [
+    "Ctrl+Y"
+   ]
+  },
+  "select_track_forward": {
+   "command": "Timeline > Select Clips Forward > On This Track",
+   "keys": [
+    "Y"
+   ]
+  },
+  "set_in_point": {
+   "command": "Mark In",
+   "keys": [
+    "I"
+   ]
+  },
+  "set_out_point": {
+   "command": "Mark Out",
+   "keys": [
+    "O"
+   ]
+  },
+  "set_range_to_clip": {
+   "command": "Mark Clip",
+   "keys": [
+    "X"
+   ],
+   "note": "'Set In and Out points to fit the current clip at playhead'."
+  },
+  "shuttle_forward": {
+   "command": "Play Forward",
+   "keys": [
+    "L"
+   ]
+  },
+  "shuttle_pause": {
+   "command": "Stop",
+   "keys": [
+    "K"
+   ]
+  },
+  "shuttle_reverse": {
+   "command": "Play Reverse",
+   "keys": [
+    "J"
+   ]
+  },
+  "split_at_playhead": {
+   "command": "Timeline > Split Clip / Timeline > Razor",
+   "keys": [
+    "Ctrl+\\",
+    "Ctrl+B"
+   ],
+   "note": "Ctrl+\\ is in the Edit page chapters; Ctrl+B (Timeline > Razor) is stated in the Fairlight chapter of the same manual, as a shared Timeline menu command."
+  },
+  "step_backward": {
+   "command": "Step One Frame Reverse",
+   "keys": [
+    "ArrowLeft"
+   ]
+  },
+  "step_forward": {
+   "command": "Step One Frame Forward",
+   "keys": [
+    "ArrowRight"
+   ]
+  },
+  "toggle_audio_mixer": {
+   "command": "Show/hide Mixer panel (Interface Toolbar)",
+   "keys": [],
+   "note": "Manual: panel show/hide shortcuts 'can be assigned using the Keyboard Customization window' (no default)."
+  },
+  "toggle_audio_skim": {
+   "command": "Timeline > Audio Scrubbing",
+   "keys": [
+    "Shift+S"
+   ]
+  },
+  "toggle_before_after": {
+   "command": "Bypass Color Grades and Fusion Effects",
+   "keys": [
+    "Shift+D"
+   ]
+  },
+  "toggle_browser_panel": {
+   "command": "Show/hide Media Pool panel (Interface Toolbar)",
+   "keys": [],
+   "note": "Panel toggles have no default key; they can be assigned."
+  },
+  "toggle_fullscreen": {
+   "command": "Workspace > Viewer Mode > Cinema Viewer",
+   "keys": [
+    "Ctrl+F"
+   ]
+  },
+  "toggle_inspector_panel": {
+   "command": "Show/hide Inspector panel (Interface Toolbar)",
+   "keys": [],
+   "note": "Panel toggles have no default key. Ctrl+Shift+I in Resolve is File > Import Timeline."
+  },
+  "toggle_keyframe": {
+   "command": "Mark > Add Keyframe",
+   "keys": [
+    "Ctrl+["
+   ],
+   "note": "Resolve's command only adds; Mark > Delete Keyframe is Alt+]."
+  },
+  "toggle_keyframe_editor": {
+   "command": "Show/hide Keyframes panel / curve (Interface Toolbar)",
+   "keys": [],
+   "note": "Panel toggles have no default key. Shift+K in Resolve is Play Slow."
+  },
+  "toggle_loop": {
+   "command": "Playback > Loop/Unloop",
+   "keys": [
+    "Ctrl+/"
+   ]
+  },
+  "toggle_multicam_mode": {
+   "command": "Source Viewer mode drop-down > Multicam",
+   "keys": [],
+   "note": "Chosen from the Source Viewer mode drop-down; no key given."
+  },
+  "toggle_node_bypass": {
+   "command": "Color > Nodes > Enable/Disable Selected Nodes",
+   "keys": [
+    "Ctrl+D"
+   ]
+  },
+  "toggle_project_notes": {
+   "command": "File > Project Notes",
+   "keys": [],
+   "note": "No key given. Ctrl+Shift+N in Resolve is File > New Bin."
+  },
+  "toggle_safe_areas": {
+   "command": "View > Safe Area > On/Off",
+   "keys": [],
+   "note": "No key given. Alt+S in Resolve's Color page adds a serial node."
+  },
+  "toggle_scopes": {
+   "command": "Workspace > Video Scopes > On/Off",
+   "keys": [
+    "Ctrl+Shift+W"
+   ]
+  },
+  "toggle_snap": {
+   "command": "Snapping",
+   "keys": [
+    "N"
+   ]
+  },
+  "trim_edit_back": {
+   "command": "Nudge One Frame Left (edit point selected)",
+   "keys": [
+    ","
+   ],
+   "note": "Same Resolve command as nudge_clips_back; it rolls/ripples a selected edit."
+  },
+  "trim_edit_back_many": {
+   "command": "Fast Nudge Left (edit point selected)",
+   "keys": [
+    "Shift+,"
+   ],
+   "note": "5 frames by default in Resolve; Klipp trims 10. In Resolve Shift+[ is Trim Start."
+  },
+  "trim_edit_forward": {
+   "command": "Nudge One Frame Right (edit point selected)",
+   "keys": [
+    "."
+   ],
+   "note": "Same Resolve command as nudge_clips_forward."
+  },
+  "trim_edit_forward_many": {
+   "command": "Fast Nudge Right (edit point selected)",
+   "keys": [
+    "Shift+."
+   ],
+   "note": "5 frames by default in Resolve; Klipp trims 10. In Resolve Shift+] is Trim End."
+  },
+  "trim_in_to_playhead": {
+   "command": "Trim > Ripple Start to Playhead",
+   "keys": [
+    "Ctrl+Shift+["
+   ]
+  },
+  "trim_out_to_playhead": {
+   "command": "Trim > Ripple End to Playhead",
+   "keys": [
+    "Ctrl+Shift+]"
+   ]
+  },
+  "trim_tool": {
+   "command": "Trim Edit Mode",
+   "keys": [
+    "T"
+   ]
+  },
+  "undo": {
+   "command": "Edit > Undo",
+   "keys": [
+    "Ctrl+Z"
+   ]
+  },
+  "zoom_in": {
+   "command": "Zoom In",
+   "keys": [
+    "Ctrl+="
+   ]
+  },
+  "zoom_out": {
+   "command": "Zoom Out",
+   "keys": [
+    "Ctrl+-"
+   ]
+  }
+ },
+ "loose": {
+  "toggle_matte_preview": {
+   "command": "Highlight (Color page Viewer)",
+   "keys": [
+    "Shift+H"
+   ],
+   "note": "Loose match: Highlight shows the current node's qualifier/window matte over grey. Leave out if only an exact match is wanted."
+  }
+ },
+ "not_checked": {},
+ "not_in_editor": [
+  "ai_cancel_inference",
+  "ai_detect_objects",
+  "ai_isolate_object",
+  "ai_remove_background",
+  "ai_run_inference",
+  "command_palette",
+  "connect_clip",
+  "disconnect_clip",
+  "copy_attributes",
+  "create_title",
+  "cycle_scope_mode",
+  "duplicate_clip",
+  "extract_frame_to_bin",
+  "focus_panel_search",
+  "group_clips",
+  "ungroup_clips",
+  "key_ease_in",
+  "key_ease_in_out",
+  "key_ease_out",
+  "key_linear",
+  "leave_compound",
+  "mask_tool",
+  "open_project",
+  "printer_master_down",
+  "printer_master_up",
+  "range_tool",
+  "select_track_clips",
+  "swap_stacked_focus",
+  "text_tool",
+  "toggle_ai_tools_panel",
+  "toggle_color_panel",
+  "toggle_edit_mode",
+  "toggle_false_color",
+  "toggle_grid_overlay",
+  "toggle_perf_overlay",
+  "toggle_perf_recording",
+  "toggle_skimming",
+  "toggle_subtitle_editor",
+  "toggle_zebra",
+  "zoom_to_selection"
+ ],
+ "editor_only": [
+  {
+   "command": "Timeline > Select Nearest Clip/Gap",
+   "keys": [
+    "Shift+V"
+   ]
+  },
+  {
+   "command": "Toggle selection V+A / V / A",
+   "keys": [
+    "Alt+U"
+   ]
+  },
+  {
+   "command": "Timeline > Linked Selection",
+   "keys": [
+    "Ctrl+Shift+L"
+   ]
+  },
+  {
+   "command": "Clip > Linked Clips (link/unlink)",
+   "keys": [
+    "Ctrl+Alt+L"
+   ]
+  },
+  {
+   "command": "Clip Enable (disable/enable selected clips)",
+   "keys": [
+    "D"
+   ]
+  },
+  {
+   "command": "Clip > Change Clip Duration",
+   "keys": [
+    "Ctrl+D"
+   ]
+  },
+  {
+   "command": "Edit > Cut (leave gap)",
+   "keys": [
+    "Ctrl+X"
+   ]
+  },
+  {
+   "command": "Ripple Overwrite",
+   "keys": [
+    "Shift+F10"
+   ]
+  },
+  {
+   "command": "Append to End of Timeline",
+   "keys": [
+    "Shift+F12"
+   ]
+  },
+  {
+   "command": "Timeline > Add Video Only Transition",
+   "keys": [
+    "Alt+T"
+   ]
+  },
+  {
+   "command": "Dynamic Trim mode",
+   "keys": [
+    "W"
+   ]
+  },
+  {
+   "command": "Toggle Slip / Slide (Trim mode, clip selected)",
+   "keys": [
+    "S"
+   ]
+  },
+  {
+   "command": "Dynamic trim reverse / forward (Quick Trim)",
+   "keys": [
+    "Ctrl+J",
+    "Ctrl+L"
+   ]
+  },
+  {
+   "command": "Fast Reverse",
+   "keys": [
+    "Shift+J"
+   ]
+  },
+  {
+   "command": "Fast Forward",
+   "keys": [
+    "Shift+L"
+   ]
+  },
+  {
+   "command": "Play Slow (1/2, 1/4, 1/8)",
+   "keys": [
+    "Shift+K"
+   ]
+  },
+  {
+   "command": "Play Again",
+   "keys": [
+    "Alt+L"
+   ]
+  },
+  {
+   "command": "Stop and go to last position",
+   "keys": [
+    "Alt+K"
+   ]
+  },
+  {
+   "command": "Play Around In",
+   "keys": [
+    "Alt+Space"
+   ]
+  },
+  {
+   "command": "Play Around Out",
+   "keys": [
+    "Shift+Space"
+   ]
+  },
+  {
+   "command": "Effects Search dialog (Cut, Edit, Color, Fairlight)",
+   "keys": [
+    "Shift+Space"
+   ]
+  },
+  {
+   "command": "Play to Out",
+   "keys": [
+    "Ctrl+Alt+/"
+   ]
+  },
+  {
+   "command": "Step One Second Reverse / Forward",
+   "keys": [
+    "Shift+ArrowLeft",
+    "Shift+ArrowRight"
+   ]
+  },
+  {
+   "command": "First Frame of clip at playhead",
+   "keys": [
+    ";"
+   ]
+  },
+  {
+   "command": "Last Frame of clip at playhead",
+   "keys": [
+    "'"
+   ]
+  },
+  {
+   "command": "Playback > Previous Gap",
+   "keys": [
+    "Ctrl+Alt+;"
+   ]
+  },
+  {
+   "command": "Playback > Next Gap",
+   "keys": [
+    "Ctrl+Alt+'"
+   ]
+  },
+  {
+   "command": "Go to In",
+   "keys": [
+    "Shift+I"
+   ]
+  },
+  {
+   "command": "Go to Out",
+   "keys": [
+    "Shift+O"
+   ]
+  },
+  {
+   "command": "Mark Selection (In/Out to selected clips)",
+   "keys": [
+    "Shift+A"
+   ]
+  },
+  {
+   "command": "Mark Split > Mark Video In / Mark Video Out",
+   "keys": [
+    "Shift+Alt+I",
+    "Shift+Alt+O"
+   ]
+  },
+  {
+   "command": "Mark Split > Mark Audio In / Mark Audio Out",
+   "keys": [
+    "Ctrl+Alt+I",
+    "Ctrl+Alt+O"
+   ]
+  },
+  {
+   "command": "Clear Video In and Out (split)",
+   "keys": [
+    "Shift+Alt+X"
+   ]
+  },
+  {
+   "command": "Clear Audio In and Out (split)",
+   "keys": [
+    "Ctrl+Alt+X"
+   ]
+  },
+  {
+   "command": "Add Marker and open Modify Marker",
+   "keys": [
+    "Ctrl+M"
+   ]
+  },
+  {
+   "command": "Mark > Modify Marker",
+   "keys": [
+    "Shift+M"
+   ]
+  },
+  {
+   "command": "Mark > Delete Marker",
+   "keys": [
+    "Alt+M"
+   ]
+  },
+  {
+   "command": "Mark > Create Subclip",
+   "keys": [
+    "Alt+B"
+   ]
+  },
+  {
+   "command": "Mark > Delete Keyframe",
+   "keys": [
+    "Alt+]"
+   ]
+  },
+  {
+   "command": "Mark > Make Static Keyframe",
+   "keys": [
+    "Ctrl+]"
+   ]
+  },
+  {
+   "command": "Toggle focus Source / Timeline Viewer",
+   "keys": [
+    "Q"
+   ]
+  },
+  {
+   "command": "Source Timeline view on/off",
+   "keys": [
+    "Alt+Q"
+   ]
+  },
+  {
+   "command": "Source Tape view",
+   "keys": [
+    "Shift+Q"
+   ]
+  },
+  {
+   "command": "Edit > Switch focus to timeline after edit",
+   "keys": [
+    "Shift+Alt+Q"
+   ]
+  },
+  {
+   "command": "Clip > Find Clip in Media Pool",
+   "keys": [
+    "Alt+F"
+   ]
+  },
+  {
+   "command": "Timeline > Swap Timeline and Source Viewer",
+   "keys": [
+    "Ctrl+PageUp"
+   ]
+  },
+  {
+   "command": "Clip > Retime Controls",
+   "keys": [
+    "Ctrl+R"
+   ]
+  },
+  {
+   "command": "Clip > Multicam Switch > Angle 1-9",
+   "keys": [
+    "Alt+1",
+    "Alt+2",
+    "Alt+3",
+    "Alt+4",
+    "Alt+5",
+    "Alt+6",
+    "Alt+7",
+    "Alt+8",
+    "Alt+9"
+   ]
+  },
+  {
+   "command": "Edit > Multicam > Previous Angle / Next Angle",
+   "keys": [
+    "Ctrl+Shift+ArrowLeft",
+    "Ctrl+Shift+ArrowRight"
+   ]
+  },
+  {
+   "command": "Edit > Multicam > Video and Audio / Video Only / Audio Only",
+   "keys": [
+    "Shift+Alt+[",
+    "Shift+Alt+]",
+    "Shift+Alt+\\"
+   ]
+  },
+  {
+   "command": "Edit > Multicam > Previous Page / Next Page",
+   "keys": [
+    "Shift+Alt+ArrowLeft",
+    "Shift+Alt+ArrowRight"
+   ]
+  },
+  {
+   "command": "Video destination to track 1-8",
+   "keys": [
+    "Alt+1",
+    "Alt+2",
+    "Alt+3",
+    "Alt+4",
+    "Alt+5",
+    "Alt+6",
+    "Alt+7",
+    "Alt+8"
+   ]
+  },
+  {
+   "command": "Audio destination to track 1-8",
+   "keys": [
+    "Ctrl+Alt+1",
+    "Ctrl+Alt+2",
+    "Ctrl+Alt+3",
+    "Ctrl+Alt+4",
+    "Ctrl+Alt+5",
+    "Ctrl+Alt+6",
+    "Ctrl+Alt+7",
+    "Ctrl+Alt+8"
+   ]
+  },
+  {
+   "command": "Move video destination control up / down",
+   "keys": [
+    "Ctrl+Shift+ArrowUp",
+    "Ctrl+Shift+ArrowDown"
+   ]
+  },
+  {
+   "command": "Move audio destination control up / down",
+   "keys": [
+    "Ctrl+Alt+ArrowUp",
+    "Ctrl+Alt+ArrowDown"
+   ]
+  },
+  {
+   "command": "Auto Select video track 1-8 / all video",
+   "keys": [
+    "Alt+F1",
+    "Alt+F2",
+    "Alt+F3",
+    "Alt+F4",
+    "Alt+F5",
+    "Alt+F6",
+    "Alt+F7",
+    "Alt+F8",
+    "Alt+F9"
+   ]
+  },
+  {
+   "command": "Auto Select audio track 1-8 / all audio",
+   "keys": [
+    "Ctrl+Alt+F1",
+    "Ctrl+Alt+F2",
+    "Ctrl+Alt+F3",
+    "Ctrl+Alt+F4",
+    "Ctrl+Alt+F5",
+    "Ctrl+Alt+F6",
+    "Ctrl+Alt+F7",
+    "Ctrl+Alt+F8",
+    "Ctrl+Alt+F9"
+   ]
+  },
+  {
+   "command": "Lock video track 1-8 / all video",
+   "keys": [
+    "Shift+Alt+1",
+    "Shift+Alt+2",
+    "Shift+Alt+3",
+    "Shift+Alt+4",
+    "Shift+Alt+5",
+    "Shift+Alt+6",
+    "Shift+Alt+7",
+    "Shift+Alt+8",
+    "Shift+Alt+9"
+   ]
+  },
+  {
+   "command": "Lock audio track 1-8 / all audio",
+   "keys": [
+    "Shift+Alt+F1",
+    "Shift+Alt+F2",
+    "Shift+Alt+F3",
+    "Shift+Alt+F4",
+    "Shift+Alt+F5",
+    "Shift+Alt+F6",
+    "Shift+Alt+F7",
+    "Shift+Alt+F8",
+    "Shift+Alt+F9"
+   ]
+  },
+  {
+   "command": "Timeline > Video Track Enable 1-9",
+   "keys": [
+    "Ctrl+Shift+1",
+    "Ctrl+Shift+2",
+    "Ctrl+Shift+3",
+    "Ctrl+Shift+4",
+    "Ctrl+Shift+5",
+    "Ctrl+Shift+6",
+    "Ctrl+Shift+7",
+    "Ctrl+Shift+8",
+    "Ctrl+Shift+9"
+   ]
+  },
+  {
+   "command": "Trim > Slip Audio One Frame Reverse / Forward",
+   "keys": [
+    "Alt+,",
+    "Alt+."
+   ]
+  },
+  {
+   "command": "Trim > Slip Audio One Subframe Reverse / Forward",
+   "keys": [
+    "Alt+ArrowLeft",
+    "Alt+ArrowRight"
+   ]
+  },
+  {
+   "command": "Trim > Slip Eye One Frame Reverse / Forward",
+   "keys": [
+    "Ctrl+Alt+,",
+    "Ctrl+Alt+."
+   ]
+  },
+  {
+   "command": "Clip > Audio > Increase / Decrease Audio Level 1dB",
+   "keys": [
+    "Ctrl+Alt+=",
+    "Ctrl+Alt+-"
+   ]
+  },
+  {
+   "command": "Clip > Audio > Increase / Decrease Audio Level 3dB",
+   "keys": [
+    "Shift+Alt+=",
+    "Shift+Alt+-"
+   ]
+  },
+  {
+   "command": "Move clip selection with arrows",
+   "keys": [
+    "Ctrl+ArrowUp",
+    "Ctrl+ArrowDown",
+    "Ctrl+ArrowLeft",
+    "Ctrl+ArrowRight"
+   ]
+  },
+  {
+   "command": "Workspace > Viewer Mode > Enhanced Viewer",
+   "keys": [
+    "Alt+F"
+   ]
+  },
+  {
+   "command": "Workspace > Viewer Mode > Full Screen Viewer",
+   "keys": [
+    "Shift+F"
+   ]
+  },
+  {
+   "command": "View > Viewer Overlay > Toggle On/Off",
+   "keys": [
+    "Shift+`"
+   ]
+  },
+  {
+   "command": "Viewer 100% (Actual Size)",
+   "keys": [
+    "Shift+Alt+Z"
+   ]
+  },
+  {
+   "command": "Playback > Render Cache: cycle Off/Smart/User",
+   "keys": [
+    "Alt+R"
+   ]
+  },
+  {
+   "command": "Project Manager",
+   "keys": [
+    "Shift+1"
+   ]
+  },
+  {
+   "command": "Switch to Page (pages in order)",
+   "keys": [
+    "Shift+2",
+    "Shift+3",
+    "Shift+4",
+    "Shift+5",
+    "Shift+6",
+    "Shift+7",
+    "Shift+8"
+   ]
+  },
+  {
+   "command": "Project Settings",
+   "keys": [
+    "Shift+9"
+   ]
+  },
+  {
+   "command": "Workspace > Active Panel Selection (Edit page: Media Folders, Media Clips, Source Viewer, Timeline, Timeline Viewer, Effects, Edit Index, -, Inspector)",
+   "keys": [
+    "Ctrl+1",
+    "Ctrl+2",
+    "Ctrl+3",
+    "Ctrl+4",
+    "Ctrl+5",
+    "Ctrl+6",
+    "Ctrl+7",
+    "Ctrl+9"
+   ]
+  },
+  {
+   "command": "File > New Timeline",
+   "keys": [
+    "Ctrl+N"
+   ]
+  },
+  {
+   "command": "File > New Bin",
+   "keys": [
+    "Ctrl+Shift+N"
+   ]
+  },
+  {
+   "command": "File > Import Timeline > Import AAF, EDL, XML, DRT",
+   "keys": [
+    "Ctrl+Shift+I"
+   ]
+  },
+  {
+   "command": "File > Export > Export AAF, XML, DRT",
+   "keys": [
+    "Ctrl+Shift+O"
+   ]
+  },
+  {
+   "command": "File > Create Timeline Backup",
+   "keys": [
+    "Ctrl+Alt+S"
+   ]
+  },
+  {
+   "command": "Set Poster Frame / Clear Poster Frame (Media Pool)",
+   "keys": [
+    "Ctrl+P",
+    "Alt+P"
+   ]
+  },
+  {
+   "command": "Color > Stills > Grab Still",
+   "keys": [
+    "Ctrl+Alt+G"
+   ]
+  },
+  {
+   "command": "Color > Stills > Play Still / Wipe On/Off",
+   "keys": [
+    "Ctrl+W"
+   ]
+  },
+  {
+   "command": "Color > Stills > Next Still / Previous Still",
+   "keys": [
+    "Ctrl+Alt+N",
+    "Ctrl+Alt+B"
+   ]
+  },
+  {
+   "command": "Invert Wipe",
+   "keys": [
+    "Alt+W"
+   ]
+  },
+  {
+   "command": "Split Screen on/off",
+   "keys": [
+    "Ctrl+Alt+W"
+   ]
+  },
+  {
+   "command": "Color > Auto Color",
+   "keys": [
+    "Shift+Alt+C"
+   ]
+  },
+  {
+   "command": "Primaries / Log wheels mode",
+   "keys": [
+    "Alt+Z"
+   ]
+  },
+  {
+   "command": "Color > Printer Light Hotkeys",
+   "keys": [
+    "Ctrl+Alt+`"
+   ]
+  },
+  {
+   "command": "Highlight BW (high-contrast highlight)",
+   "keys": [
+    "Shift+Alt+H"
+   ]
+  },
+  {
+   "command": "Color > Nodes > Add Serial",
+   "keys": [
+    "Alt+S"
+   ]
+  },
+  {
+   "command": "Color > Nodes > Add Before Current",
+   "keys": [
+    "Shift+S"
+   ]
+  },
+  {
+   "command": "Color > Nodes > Append Node",
+   "keys": [
+    "Alt+K"
+   ]
+  },
+  {
+   "command": "Color > Nodes > Add Parallel",
+   "keys": [
+    "Alt+P"
+   ]
+  },
+  {
+   "command": "Color > Nodes > Add Layer",
+   "keys": [
+    "Alt+L"
+   ]
+  },
+  {
+   "command": "Color > Nodes > Add Outside",
+   "keys": [
+    "Alt+O"
+   ]
+  },
+  {
+   "command": "Color > Nodes > Add Serial Node + CPW / LPW / PPW / PCW",
+   "keys": [
+    "Alt+C",
+    "Alt+Q",
+    "Alt+G",
+    "Alt+B"
+   ]
+  },
+  {
+   "command": "Color > Nodes > Add Splitter/Combiner Nodes",
+   "keys": [
+    "Alt+Y"
+   ]
+  },
+  {
+   "command": "Color > Nodes > Enable/Disable All Nodes",
+   "keys": [
+    "Alt+D"
+   ]
+  },
+  {
+   "command": "Reset All Grades and Nodes",
+   "keys": [
+    "Ctrl+Home"
+   ]
+  },
+  {
+   "command": "Reset Grades and Keep Nodes",
+   "keys": [
+    "Ctrl+Shift+Home"
+   ]
+  },
+  {
+   "command": "Color > Grade Version > Add / Default",
+   "keys": [
+    "Ctrl+Y",
+    "Ctrl+U"
+   ]
+  },
+  {
+   "command": "Color > Memories > Save Memory A-H",
+   "keys": [
+    "Alt+1",
+    "Alt+2",
+    "Alt+3",
+    "Alt+4",
+    "Alt+5",
+    "Alt+6",
+    "Alt+7",
+    "Alt+8"
+   ]
+  },
+  {
+   "command": "Color > Memories > Load Memory A-H",
+   "keys": [
+    "Ctrl+1",
+    "Ctrl+2",
+    "Ctrl+3",
+    "Ctrl+4",
+    "Ctrl+5",
+    "Ctrl+6",
+    "Ctrl+7",
+    "Ctrl+8"
+   ]
+  },
+  {
+   "command": "Color > Preview Memory / Original Memory",
+   "keys": [
+    "Shift+Alt+P",
+    "Shift+Alt+O"
+   ]
+  },
+  {
+   "command": "Edit > Paste Value",
+   "keys": [
+    "Shift+Alt+V"
+   ]
+  },
+  {
+   "command": "Color > Tracker > Track Forward / Track Reverse / Track Stop",
+   "keys": [
+    "Ctrl+T",
+    "Alt+T",
+    "Ctrl+Alt+T"
+   ]
+  },
+  {
+   "command": "Color > Resolve Live / Live Freeze / Live Snapshot",
+   "keys": [
+    "Ctrl+R",
+    "Ctrl+Shift+R",
+    "Ctrl+Alt+R"
+   ]
+  },
+  {
+   "command": "Timeline Thumbnail Mode: C mode sorting",
+   "keys": [
+    "Ctrl+PageDown"
+   ]
+  }
+ ],
+ "deviations": {}
+}

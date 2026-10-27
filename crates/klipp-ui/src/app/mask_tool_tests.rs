@@ -359,10 +359,14 @@ fn p_is_the_mask_tool() {
     assert_eq!(press(egui::Modifiers::NONE), ["mask_tool"]);
     assert_eq!(press(egui::Modifiers::CTRL | egui::Modifiers::SHIFT), ["toggle_perf_overlay"]);
     assert_eq!(press(egui::Modifiers::CTRL | egui::Modifiers::ALT), ["toggle_perf_recording"]);
-    // Every editor layout gives P to the pen, and to nothing else.
-    for preset in [crate::keymap_presets::PREMIERE, crate::keymap_presets::AVID, crate::keymap_presets::RESOLVE, crate::keymap_presets::FINAL_CUT] {
-        let on_p: Vec<&str> = preset.iter().filter(|(_, keys)| keys.contains(&"P")).map(|(a, _)| *a).collect();
-        assert_eq!(on_p, ["mask_tool"]);
+    // P is the pen in the layouts where it is a pen or nothing else; in
+    // Media Composer and Final Cut it is the editor's own command (Trim A
+    // Side, the Position tool), which Klipp lacks, so nothing runs (#2934).
+    use crate::keybindings::KeymapPreset as K;
+    for (preset, want) in [(K::Premiere, &["mask_tool"][..]), (K::Resolve, &["mask_tool"]), (K::Avid, &[]), (K::FinalCut, &[])] {
+        let p = crate::keybindings::KeyCombo::parse("P").unwrap();
+        let on_p: Vec<String> = preset.bindings().into_iter().filter(|(_, keys)| keys.contains(&p)).map(|(a, _)| a).collect();
+        assert_eq!(on_p, want, "{preset:?}");
     }
     assert!(include_str!("shortcuts.rs").contains("cmds.push(AppCommand::SetActiveTool(Tool::Mask))"));
 }
