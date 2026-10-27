@@ -297,6 +297,52 @@ mod tests {
         assert_eq!(names, ["Picture in picture", "Green screen"], "a frame for each, holding its controls");
     }
 
+    /// A behaviour's control stays live (#2758): a recipe's wiggle, put on
+    /// by its modify op, takes the control's value when placed and again
+    /// when template_link moves the control.
+    #[test]
+    fn a_behaviours_control_stays_live() {
+        use klipp_document::history::EditCommand;
+        use klipp_document::ops::{resolve, ClipRef, Op};
+        let recipe: CompositionTemplate = serde_json::from_value(json!({
+            "format_version": 2, "id": "5c2a9e71-3d4b-4f86-a1e0-7b9d2c6f4a13", "name": "Shaking", "kind": "recipe",
+            "composition_id": "00000000-0000-0000-0000-000000000000",
+            "parameters": { "shake": { "label": "Shake", "default": { "type": "Number", "value": 30.0 }, "range": { "min": 0.0, "max": 200.0 } } },
+            "bindings": [{ "parameter": "shake", "property": "node:0.position_x~amplitude" }],
+            "graph": { "ops": [
+                { "op": "add", "after": { "anchor": "end" }, "type": "klipp.fx.picture_transform" },
+                { "op": "modify", "path": { "new": 0 }, "key": "position_x", "modifiers": [{ "type": "wiggle", "amplitude": 0.0, "frequency": 3.0 }] }
+            ] }
+        }))
+        .unwrap();
+        let dir = std::env::temp_dir().join(format!("klipp-recipe-behaviour-{}", uuid::Uuid::new_v4()));
+        ct::CompositionTemplateStore::load(Some(dir.clone())).save(recipe).unwrap();
+        let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let mut seq = Sequence::new_default();
+        let clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0));
+        let id = clip.id;
+        let mut track = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+        track.clips = vec![clip];
+        seq.tracks = vec![track];
+        let ops = [
+            Op::Recipe { clip_id: ClipRef::Id(id), name: "Shaking".into(), slots: BTreeMap::new(), controls: BTreeMap::new(), build: None },
+            Op::TemplateLink { clip_id: ClipRef::Id(id), control: Some("Shake".into()), target: None, action: None, value: Some(50.0) },
+        ];
+        let plan = resolve(&seq, &klipp_media::MediaPool::new(), &crate::plans::with_recipes(&ops, Some(&dir), &klipp_media::MediaPool::new())).unwrap_or_else(|r| panic!("{r:?}"));
+        let mut c = seq.all_clips().find(|c| c.id == id).unwrap().clone();
+        let mut amplitudes = Vec::new();
+        for step in &plan.steps {
+            let EditCommand::PictureEdit { edit, .. } = &step.edit else { panic!("a picture step: {:?}", step.edit) };
+            c.restore_picture(&edit.after);
+            let graph = c.picture_v2().unwrap().picture.graph.clone();
+            let mv = graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("picture_transform")).unwrap();
+            let anim = mv.anim.get(&klipp_graph_format::ParamKey::from("position_x")).expect("the wiggle");
+            amplitudes.push(anim.modifiers.as_ref().unwrap()["modifiers"][0]["amplitude"].as_f64().unwrap());
+        }
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(amplitudes, [30.0, 50.0], "placed at the control's default, then where it was moved");
+    }
+
     /// Text behind a subject (#2758) whose clip's media has no subject
     /// matte yet: the recipe is placed, and the reply says how many of the
     /// clip's frames have one and that track_subject makes the rest, by

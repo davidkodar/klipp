@@ -70,6 +70,38 @@ pub(crate) fn parameter_op(node: &Node, path: klipp_graph_format::path::NodePath
     Ok(GraphOp::SetParam { path, key: key.into(), value: parameter(node, key, value)? })
 }
 
+/// The most behaviours one parameter takes.
+const MAX_MODIFIERS: usize = 8;
+
+/// The behaviours `modifiers` put on `key` of `node` (#2758): each a
+/// clip's behaviour as it is stored (`{"type": "wiggle", "amplitude":
+/// …, "frequency": …}`), its keys kept; none takes them off. An effect's
+/// parameter that moves over time only, at most [`MAX_MODIFIERS`], every
+/// number finite.
+pub(crate) fn modifiers_op(node: &Node, path: klipp_graph_format::path::NodePath, key: &str, modifiers: &[Value]) -> Result<klipp_graph_lift::ops::GraphOp, String> {
+    if node.type_id.as_str() != types::LEGACY_EFFECT {
+        return Err(format!("{key}: only an effect's parameters take behaviours"));
+    }
+    let desc = descriptor(node).ok_or("this node has no registered parameter description")?;
+    desc.params.iter().find(|p| p.key == key && p.keyframable).ok_or_else(|| format!("{key} is not a parameter of this node that moves over time"))?;
+    if modifiers.len() > MAX_MODIFIERS {
+        return Err(format!("{key} takes at most {MAX_MODIFIERS} behaviours"));
+    }
+    let stack: Vec<klipp_core::modifier::Modifier> = modifiers
+        .iter()
+        .map(|m| serde_json::from_value(m.clone()).map_err(|e| format!("{key}: a behaviour is like {{\"type\": \"wiggle\", \"amplitude\": 20, \"frequency\": 2}}: {e}")))
+        .collect::<Result<_, _>>()?;
+    let stored = serde_json::to_value(klipp_core::modifier::ModifierStack { modifiers: stack.clone() }).map_err(|e| e.to_string())?;
+    // A number too large for its field reads back as nothing.
+    if stored.to_string().contains("null") {
+        return Err(format!("{key}: a behaviour's numbers must be finite"));
+    }
+    let keys = node.anim.get(&klipp_graph_format::ParamKey::from(key)).map(|a| a.keys.clone()).unwrap_or_default();
+    let modifiers = (!stack.is_empty()).then_some(stored);
+    let anim = (!keys.is_empty() || modifiers.is_some()).then_some(klipp_graph_format::Animation { keys, modifiers });
+    Ok(klipp_graph_lift::ops::GraphOp::SetAnim { path, key: key.into(), anim })
+}
+
 pub(crate) fn parameter(node: &Node, key: &str, value: &Value) -> Result<ParamValue, String> {
     let desc = descriptor(node).ok_or("this node has no registered parameter description")?;
     let p = desc.params.iter().find(|p| p.key == key && !p.derived).ok_or_else(|| format!("unknown or derived parameter {key}"))?;
@@ -190,6 +222,33 @@ fn frei0r_payload(node: &Node, key: &str, value: &Value) -> Result<Option<Value>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A parameter's behaviours (#2758): a wiggle on a move's position,
+    /// its keys kept; refused on a grade node, a parameter that doesn't
+    /// move over time, one not there, too many, one that isn't a
+    /// behaviour, and numbers that aren't finite.
+    #[test]
+    fn behaviours_go_on_an_effects_moving_parameters_only() {
+        use klipp_graph_lift::ops::GraphOp;
+        let path = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: uuid::Uuid::new_v4() }, [uuid::Uuid::new_v4()]);
+        let mv = new_node("klipp.fx.picture_transform", uuid::Uuid::new_v4(), None).unwrap();
+        let wiggle = json!({ "type": "wiggle", "amplitude": 20.0, "frequency": 2.0 });
+        let GraphOp::SetAnim { anim: Some(a), .. } = modifiers_op(&mv, path.clone(), "position_x", std::slice::from_ref(&wiggle)).unwrap() else { panic!("a behaviour set") };
+        assert_eq!(a.modifiers.unwrap()["modifiers"][0]["amplitude"], json!(20.0));
+        let GraphOp::SetAnim { anim, .. } = modifiers_op(&mv, path.clone(), "position_x", &[]).unwrap() else { panic!() };
+        assert!(anim.is_none(), "none takes them off");
+        let key = new_node("klipp.grade.difference_key", uuid::Uuid::new_v4(), None).unwrap();
+        let refused = [
+            modifiers_op(&key, path.clone(), "difference_key.tolerance", std::slice::from_ref(&wiggle)),
+            modifiers_op(&mv, path.clone(), "not_a_parameter", std::slice::from_ref(&wiggle)),
+            modifiers_op(&mv, path.clone(), "position_x", &vec![wiggle.clone(); 9]),
+            modifiers_op(&mv, path.clone(), "position_x", &[json!({ "type": "explode" })]),
+            modifiers_op(&mv, path.clone(), "position_x", &[json!({ "type": "wiggle", "amplitude": 1e300, "frequency": 2.0 })]),
+        ];
+        for (i, r) in refused.into_iter().enumerate() {
+            assert!(r.is_err(), "case {i} refused");
+        }
+    }
 
     /// A difference key's clean frame (#2758) takes source seconds from 0,
     /// and nothing else, said.

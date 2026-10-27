@@ -164,15 +164,9 @@ pub fn source_times_held(seq: &Sequence, clip: &Clip, last: Option<f64>) -> Vec<
 pub fn external_mattes(clip: &Clip) -> Vec<klipp_nodes::NodeParams> {
     let mut out: Vec<klipp_nodes::NodeParams> = clip.grade().nodes.iter().filter(|n| n.kind == NodeKind::ExternalMatte && n.enabled).map(|n| n.params.clone()).collect();
     if let Ok(lifted) = clip.picture_v2() {
-        for n in lifted.picture.graph.nodes.iter().filter(|n| n.enabled) {
-            let Some(payload) = n.legacy.as_ref().map(|l| &l.payload) else { continue };
-            if payload.get("kind").and_then(serde_json::Value::as_str) != Some("ExternalMatte") {
-                continue;
-            }
-            if let Some(params) = payload.get("params").and_then(|p| serde_json::from_value::<klipp_nodes::NodeParams>(p.clone()).ok()) {
-                out.push(params);
-            }
-        }
+        // As the run reads a grade node beside the chain.
+        let grade_nodes = lifted.picture.graph.nodes.iter().filter(|n| n.enabled && klipp_graph_lift::effect_params::tag(n).is_none());
+        out.extend(grade_nodes.filter_map(|n| klipp_timeline::grade_node_for_run(n).ok()).filter(|n| n.kind == NodeKind::ExternalMatte).map(|n| n.params));
     }
     out
 }

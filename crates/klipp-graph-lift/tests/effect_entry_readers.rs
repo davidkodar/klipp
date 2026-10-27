@@ -28,7 +28,7 @@ const ALLOWED: &[(&str, usize, &str)] = &[
     ("klipp-graph-lift/src/ops.rs", 10, "grade nodes, the stored form, and the in-memory test of an effect node"),
     ("klipp-graph-lift/src/stack_view.rs", 1, "an OFX node's enabled flag"),
     ("klipp-graph-lift/src/topology.rs", 1, "a grade node's label"),
-    ("klipp-compose/src/resolve.rs", 2, "a fixed placement's Transform entry, and a grade producer's kind"),
+    ("klipp-compose/src/resolve.rs", 3, "a fixed placement's Transform entry and a branch's Transform beside the chain (#2758), both a move's stored entry; and a grade producer's kind"),
     ("klipp-control/src/graph_masks.rs", 1, "grade mask nodes"),
     ("klipp-control/src/graph_model.rs", 2, "a grade node's kind and params"),
     ("klipp-control/src/graph_read.rs", 2, "a grade node's params and label"),

@@ -6779,6 +6779,16 @@ fn recipe_link(i: usize, clip: &Clip, control: Option<&str>, target: Option<&str
         let (k, param) = klipp_timeline::composition_template::node_binding(&l.property).ok_or_else(|| refuse(i, format!("'{}' is not a recipe's node parameter", l.property), "report it"))?;
         let node = placed.nodes.get(&k).copied().ok_or_else(|| refuse(i, format!("the node \"{}\"'s step {k} made is gone", placed.name), "place the recipe again"))?;
         let n = graph.nodes.iter().find(|n| n.id == node).ok_or_else(|| refuse(i, format!("a node of \"{}\" was removed", placed.name), "place the recipe again"))?;
+        // A behaviour's field (#2758): the parameter's behaviours with it set.
+        if let Some((_, behaviour_of, field)) = klipp_timeline::composition_template::behaviour_binding(&l.property) {
+            let key = klipp_graph_format::ParamKey::from(behaviour_of);
+            let mut anim = n.anim.get(&key).cloned().ok_or_else(|| refuse(i, format!("the behaviour \"{}\" put on {behaviour_of} was taken off", placed.name), "place the recipe again"))?;
+            let first = anim.modifiers.as_mut().and_then(|m| m["modifiers"].get_mut(0)).and_then(|m| m.as_object_mut());
+            let first = first.ok_or_else(|| refuse(i, format!("the behaviour \"{}\" put on {behaviour_of} was taken off", placed.name), "place the recipe again"))?;
+            first.insert(field.to_owned(), serde_json::json!(l.effective(c)));
+            ops.push(GraphOp::SetAnim { path: NodePath::new(Root::Clip { clip: clip.id.0 }, [node]), key, anim: Some(anim) });
+            continue;
+        }
         let whole = klipp_graph_lift::effect_params::tag(n)
             .and_then(klipp_effects::registry::effect_type)
             .and_then(|t| t.desc.params.iter().find(|d| d.key == param).map(|d| d.kind == klipp_effects::registry::ParamKind::Whole))

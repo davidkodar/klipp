@@ -326,7 +326,8 @@ composition and is refused with a hint to save it again):
 * `composition_id` and `sequences` — a composition carries its
   sequence and every sequence it nests, so it inserts into any project.
 * `graph` — a recipe's `{ops, checks, check_with}` instead: graph ops
-  addressed from anchors or `{"new": k}`, the harness's checks, and the
+  addressed from anchors or `{"new": k}` (`modify` among them, putting
+  behaviours on a node's parameter), the harness's checks, and the
   control values the checks run with where the test shot needs other
   values than the defaults.
 * `parameters` — by name: `{label, default, range?, choices}`, the
@@ -336,7 +337,9 @@ composition and is refused with a hint to save it again):
   by name or id).
 * `bindings` — `{parameter, property, link?}`: a parameter or slot to a
   property path (`object:<i>.text|color|font|picture|size|opacity|…`,
-  `clip:<n>.media`, `node:<op>.<param>`). With `link: {to: [a, b],
+  `clip:<n>.media`, `node:<op>.<param>`, or `node:<op>.<param>~<field>`
+  for a field of the first behaviour a recipe's `modify` op puts on that
+  parameter, as a wiggle's `amplitude`). With `link: {to: [a, b],
   curve}` the parameter is a macro control: its range maps onto `to`
   on `linear`, `ease_in`, `ease_out` or `ease_in_out`. A recipe's link
   may say what `to` is measured against, `per`: `width` or `height`

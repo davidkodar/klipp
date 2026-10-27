@@ -303,6 +303,24 @@ pub fn node_binding(property: &str) -> Option<(usize, &str)> {
     (!param.is_empty()).then_some((k, param))
 }
 
+/// `node:<k>.<param>~<field>` (#2758): a field of the first behaviour a
+/// recipe's `modify` op puts on parameter `param` of the node op `k`
+/// adds (a wiggle's `amplitude`); `None` for another property.
+pub fn behaviour_binding(property: &str) -> Option<(usize, &str, &str)> {
+    let (k, rest) = node_binding(property)?;
+    let (param, field) = rest.split_once('~')?;
+    (!param.is_empty() && !field.is_empty()).then_some((k, param, field))
+}
+
+/// Whether recipe op `op` is the `modify` op on parameter `param` of the
+/// node op `k` adds: its path that new node, before or after the path is
+/// rooted.
+fn modifies(op: &serde_json::Value, k: usize, param: &str) -> bool {
+    let new = serde_json::json!({ "new": k });
+    let path = &op["path"];
+    op["op"] == "modify" && op["key"] == param && (*path == new || path["nodes"].as_array().is_some_and(|n| n.len() == 1 && n[0] == new))
+}
+
 /// The anchors of `clip`'s picture (#2758), by name: the node ids down
 /// to each.
 pub fn recipe_anchors(clip: &crate::Clip) -> Result<BTreeMap<&'static str, Uuid>, String> {
@@ -422,6 +440,13 @@ impl CompositionTemplate {
                 (Some(_), _) => return Err(format!("control '{}' drives a link, so it is a number", b.parameter)),
                 (None, v) => v.clone(),
             };
+            // A behaviour's field, on the modify op that puts it there.
+            if let Some((_, behaviour_of, field)) = behaviour_binding(&b.property) {
+                let op = ops.iter_mut().find(|o| modifies(o, k, behaviour_of)).ok_or_else(|| format!("'{}' names no behaviour a modify op puts on op {k}'s {behaviour_of}", b.property))?;
+                let first = op["modifiers"].get_mut(0).and_then(|m| m.as_object_mut()).ok_or_else(|| format!("'{}': its modify op puts no behaviour there", b.property))?;
+                first.insert(field.to_owned(), param_value(&value));
+                continue;
+            }
             let op = ops.get_mut(k).and_then(|o| o.as_object_mut()).ok_or_else(|| format!("'{}' names op {k}, which the recipe lacks", b.property))?;
             let params = op.entry("params").or_insert_with(|| serde_json::json!({}));
             params[param] = param_value(&value);
@@ -478,6 +503,11 @@ impl CompositionTemplate {
                     let adds = graph.ops.get(k).and_then(|o| o.get("op")).and_then(|o| o.as_str()).is_some_and(|o| matches!(o, "add" | "add_beside"));
                     if !adds {
                         return Err(format!("'{}' names op {k}, which adds no node", b.property));
+                    }
+                    if let Some((_, param, _)) = behaviour_binding(&b.property) {
+                        if !graph.ops.iter().any(|o| modifies(o, k, param)) {
+                            return Err(format!("'{}' names a behaviour no modify op puts on op {k}'s {param}", b.property));
+                        }
                     }
                 }
             }
@@ -1261,6 +1291,8 @@ mod tests {
         let r = recipes.iter().find(|r| r.name == "Picture in picture").expect("a built-in");
         assert!(r.validate().is_ok());
         assert_eq!(node_binding("node:3.scale_x"), Some((3, "scale_x")));
+        assert_eq!(behaviour_binding("node:3.position_x~amplitude"), Some((3, "position_x", "amplitude")));
+        assert_eq!(behaviour_binding("node:3.position_x"), None);
         assert_eq!(node_binding("node:x.scale_x"), None);
         assert_eq!(node_binding("node:3."), None);
 

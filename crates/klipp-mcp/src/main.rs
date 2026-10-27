@@ -2508,7 +2508,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "The font families a title can name, and Klipp's catalogue to fetch. Details: klipp_guide topic fonts.",
              json!({ "query": { "type": "string" }, "fetch": { "type": "string", "description": "a catalogue family to fetch" } }), vec![]),
         tool("klipp_graph",
-             "Atomic graph edit, one undo step; read graph_read/node_types first. Guide: klipp_guide topic graph.",
+             "One undo step. Read graph_read/node_types first; guide topic graph.",
              json!({"ops":graph_schema::ops_schema(),"label":{"type":"string"},"expected_revision":{"type":"integer","minimum":0},"expected_project_identity":{"type":"integer","minimum":0}}), vec!["ops"]),
         tool("klipp_graph_read",
              "Read graph at path; empty nodes reads root. Depth controls nested bodies. Omissions are flagged; \
@@ -2799,7 +2799,7 @@ mod interface_tests {
         let definitions = tool_definitions_for(false);
         let graph = definitions.iter().find(|t| t["name"] == "klipp_graph").unwrap();
         let ops = graph["inputSchema"]["properties"]["ops"]["items"]["properties"]["op"]["enum"].as_array().unwrap();
-        assert_eq!(ops.len(), 12);
+        assert_eq!(ops.len(), 13);
         for op in [json!({"op":"publish","path":path,"from":path,"from_port":"out","key":"matte"}),
                    json!({"op":"unpublish","path":path,"key":"matte"})] {
             assert!(ops.contains(&op["op"]));
