@@ -804,6 +804,11 @@ impl TitleRenderer {
         // Installed on the machine, else a catalogue family fetched since
         // the font scan ran (#2732).
         let fetched = if self.font_registry.contains_key(family) { None } else { catalogue::fetched_faces(family) };
+        // A variable face named by its style alone is set at the style's
+        // weight, not at whatever its default instance is: Manrope's is
+        // ExtraLight, which drew a bold name hairline-thin (#2734).
+        let weight = if matches!(style, FontStyle::Bold | FontStyle::BoldItalic) { 700.0 } else { 400.0 };
+        let mut reweigh = false;
         if let Some(infos) = self.font_registry.get(family).or(fetched.as_ref()) {
 
             // Try exact style match first, then fall back to Regular, then first available
@@ -813,13 +818,17 @@ impl TitleRenderer {
                 .or_else(|| infos.iter().find(|i| i.style == "Regular"))
                 .or_else(|| infos.first());
 
-            if let Some(info) = info {
+            reweigh = info.is_some_and(|i| i.axes.iter().any(|a| a.tag == "wght" && a.default != weight && (a.min..=a.max).contains(&weight)));
+            if let Some(info) = info.filter(|_| !reweigh) {
                 if let Ok(data) = std::fs::read(&info.path) {
                     if let Some(font) = LoadedFont::new(std::borrow::Cow::Owned(data)) {
                         self.font_cache.insert(key.clone(), font);
                     }
                 }
             }
+        }
+        if reweigh {
+            return self.ensure_face_loaded(family, style, Some(weight as u16), &[]);
         }
 
         key
@@ -12823,6 +12832,18 @@ mod font_weight_tests {
         let info = font_discovery::FontInfo { family: VARIABLE.into(), style: "Regular".into(), path, weight: traits.weight, italic: traits.italic, axes: traits.axes };
         r.font_registry = std::sync::Arc::new([(VARIABLE.to_string(), vec![info])].into_iter().collect());
         r
+    }
+
+    /// #2734: a variable face set Bold with no weight named draws at 700,
+    /// as a weight of 700 does, not at its default instance.
+    #[test]
+    fn a_variable_face_set_bold_draws_at_its_bold_weight() {
+        let mut r = with_variable_family();
+        let bold = r.render_layout(&boxed(VARIABLE, FontStyle::Bold, |_| {}), W, H);
+        let at_700 = r.render_layout(&boxed(VARIABLE, FontStyle::Regular, |tb| tb.font_weight = Some(700)), W, H);
+        let regular = r.render_layout(&boxed(VARIABLE, FontStyle::Regular, |_| {}), W, H);
+        assert_eq!(ink_sum(&bold), ink_sum(&at_700), "Bold is the weight axis at 700");
+        assert!(ink_sum(&bold) > ink_sum(&regular), "Bold draws heavier than Regular");
     }
 
     fn at_axes(axes: &[(&str, f32)]) -> TitleData {
