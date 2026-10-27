@@ -6831,7 +6831,8 @@ fn label_name(label: &str) -> String {
 #[allow(clippy::too_many_arguments)]
 fn place_composition(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, at: Timecode, held: f64, track: Option<&TrackRef>, fields: &std::collections::BTreeMap<String, serde_json::Value>, placed: &PlacedComposition) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     let t = &placed.template;
-    let composition = t.composition().ok_or_else(|| refuse(i, format!("the template \"{}\" does not carry its composition", t.name), "save it again from the project it was made in"))?;
+    // Its layout for this sequence's frame (#2757): tall, square or wide.
+    let composition = t.composition_for(seq.resolution.width, seq.resolution.height).ok_or_else(|| refuse(i, format!("the template \"{}\" does not carry its composition", t.name), "save it again from the project it was made in"))?;
     if composition.id == seq.id || placed.missing.iter().any(|s| s.id == seq.id) {
         return Err(refuse(i, "a template cannot be placed in its own composition", "switch to another sequence"));
     }

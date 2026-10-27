@@ -5005,7 +5005,7 @@ impl Default for AppState {
             effect_filter_hide_unsupported: false,
             preset_manager: crate::effect_presets::PresetManager::new(),
             title_templates: crate::title_templates::TitleTemplateStore::load_default(),
-            composition_templates: crate::parameterized_templates::CompositionTemplateStore::load(dirs::config_dir().map(|d| crate::parameterized_templates::CompositionTemplateStore::default_dir(&d))),
+            composition_templates: crate::parameterized_templates::CompositionTemplateStore::load(dirs::config_dir().map(|d| crate::parameterized_templates::CompositionTemplateStore::default_dir(&d))).with_builtins(),
             title_template_dialog: None,
             composition_save_dialog: None,
             credits_dialog: None,

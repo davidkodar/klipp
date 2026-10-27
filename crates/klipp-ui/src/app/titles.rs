@@ -80,7 +80,7 @@ impl KlippApp {
             AppCommand::ReloadTitleTemplates => {
                 self.state.title_templates = crate::title_templates::TitleTemplateStore::load_default();
                 // And the composition templates, saved the same way (#2757).
-                self.state.composition_templates = crate::parameterized_templates::CompositionTemplateStore::load(dirs::config_dir().map(|d| crate::parameterized_templates::CompositionTemplateStore::default_dir(&d)));
+                self.state.composition_templates = crate::parameterized_templates::CompositionTemplateStore::load(dirs::config_dir().map(|d| crate::parameterized_templates::CompositionTemplateStore::default_dir(&d))).with_builtins();
                 true
             }
             AppCommand::SaveTitleTemplate { clip_id } => {
@@ -140,11 +140,13 @@ impl KlippApp {
                     return true;
                 };
                 let sequence_idx = self.state.active_sequence_idx;
-                let sequence_id = klipp_core::SequenceId(template.composition_id);
+                // Its layout for this sequence's frame (#2757).
+                let frame = self.state.sequences[sequence_idx].resolution;
+                let sequence_id = template.composition_for(frame.width, frame.height).map_or(klipp_core::SequenceId(template.composition_id), |s| s.id);
                 // The template carries its composition (#2757): the one in
                 // the project when it has it, else the template's, copied in.
                 let template_sequence = self.state.sequences.iter().find(|candidate| candidate.id == sequence_id).cloned()
-                    .or_else(|| template.composition().cloned());
+                    .or_else(|| template.composition_for(frame.width, frame.height).cloned());
                 let Some(duration) = template_sequence.as_ref().map(|sequence| sequence.total_duration()) else {
                     self.state.toast.show("The template's composition is missing");
                     return true;

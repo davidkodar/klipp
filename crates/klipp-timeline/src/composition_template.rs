@@ -168,6 +168,12 @@ pub struct CompositionTemplate {
     /// picture. `None` for a composition.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub graph: Option<RecipeGraph>,
+    /// The composition laid out for other frames (#2757): `tall` (9:16
+    /// and other portrait frames) and `square`, each the id of one of
+    /// `sequences`, with the same layers in the same order, so one set of
+    /// bindings fits all. A frame without its own is given the main one.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub formats: BTreeMap<String, Uuid>,
 }
 
 /// What a template file holds (#2758): a composition, placed as a clip
@@ -421,7 +427,19 @@ impl CompositionTemplate {
                     }
                 }
             }
-            TemplateKind::Composition => {}
+            TemplateKind::Composition => {
+                // Each format's layout carried, and every binding and
+                // control resolving in it as in the main one.
+                for (key, id) in &self.formats {
+                    if !matches!(key.as_str(), "tall" | "square") {
+                        return Err(format!("format '{key}' is not tall or square"));
+                    }
+                    let layout = self.sequences.iter().find(|s| s.id.0 == *id).ok_or_else(|| format!("the {key} layout is not carried"))?;
+                    let mut instance = instance_for(self);
+                    instance.bindings.retain(|_, p| !p.starts_with("clip:"));
+                    crate::flatten::validate_template_instance(&instance, layout).map_err(|e| format!("the {key} layout: {e}"))?;
+                }
+            }
         }
         if self.name.trim().is_empty() {
             return Err("a template needs a name".into());
@@ -462,6 +480,7 @@ impl CompositionTemplate {
             slots: BTreeMap::new(),
             kind: TemplateKind::Composition,
             graph: None,
+            formats: BTreeMap::new(),
         }
     }
 }
@@ -471,6 +490,17 @@ impl CompositionTemplate {
     /// The composition's sequence the template carries.
     pub fn composition(&self) -> Option<&Sequence> {
         self.sequences.iter().find(|s| s.id.0 == self.composition_id)
+    }
+
+    /// The composition for a `width` × `height` frame (#2757): its own
+    /// layout for a tall or square frame when it has one, else the main.
+    pub fn composition_for(&self, width: u32, height: u32) -> Option<&Sequence> {
+        let key = match crate::title_library::Format::of(width, height) {
+            crate::title_library::Format::Tall => "tall",
+            crate::title_library::Format::Square => "square",
+            crate::title_library::Format::Wide => return self.composition(),
+        };
+        self.formats.get(key).and_then(|id| self.sequences.iter().find(|s| s.id.0 == *id)).or_else(|| self.composition())
     }
 }
 
@@ -727,6 +757,25 @@ pub fn composition_sequences(root: &Sequence, all: &[Sequence]) -> Vec<Sequence>
     out
 }
 
+/// The composition templates Klipp ships (#2757), as files in
+/// `assets/templates`: each read and checked as a saved one is.
+pub fn builtin_templates() -> Vec<CompositionTemplate> {
+    const FILES: &[&str] = &[
+        include_str!("../../../assets/templates/split_screen.klipptemplate"),
+    ];
+    FILES
+        .iter()
+        .filter_map(|json| match serde_json::from_str::<CompositionTemplate>(json).map_err(|e| e.to_string()).and_then(|t| t.validate().map(|()| t)) {
+            Ok(t) => Some(t),
+            Err(why) => {
+                tracing::error!("a built-in template doesn't read: {why}");
+                debug_assert!(false, "a built-in template doesn't read: {why}");
+                None
+            }
+        })
+        .collect()
+}
+
 /// The recipes Klipp ships (#2758), as files in `assets/recipes`: each a
 /// recipe like a saved one, read and checked as one is.
 pub fn builtin_recipes() -> Vec<CompositionTemplate> {
@@ -758,9 +807,23 @@ pub fn missing_sequences(template: &CompositionTemplate, project: &[Sequence]) -
 pub struct CompositionTemplateStore {
     dir: Option<PathBuf>,
     entries: Vec<(PathBuf, CompositionTemplate)>,
+    /// The templates Klipp ships, when asked for ([`Self::with_builtins`]).
+    builtins: Vec<CompositionTemplate>,
 }
 
 impl CompositionTemplateStore {
+    /// The store with the templates Klipp ships beside the user's (#2757):
+    /// listed after them, one of the same name hidden by the user's.
+    pub fn with_builtins(mut self) -> Self {
+        self.builtins = builtin_templates();
+        self
+    }
+
+    /// Whether `id` is a template Klipp ships, which is never written.
+    pub fn is_builtin(&self, id: Uuid) -> bool {
+        self.builtins.iter().any(|t| t.id == id) && !self.entries.iter().any(|(_, t)| t.id == id)
+    }
+
     /// The template folder under `config` (the config directory).
     pub fn default_dir(config: &Path) -> PathBuf {
         config.join("klipp").join("templates")
@@ -804,13 +867,14 @@ impl CompositionTemplateStore {
             }
         }
         entries.sort_by_key(|(path, template)| (template.name.to_lowercase(), path.clone()));
-        Self { dir, entries }
+        Self { dir, entries, builtins: Vec::new() }
     }
 
     /// The compositions: what is placed as a clip of its own. A recipe
     /// is never one (#2758).
     pub fn templates(&self) -> impl Iterator<Item = &CompositionTemplate> {
-        self.entries.iter().map(|(_, template)| template).filter(|t| t.kind == TemplateKind::Composition)
+        let shipped = self.builtins.iter().filter(|b| !self.entries.iter().any(|(_, t)| t.id == b.id || t.name.eq_ignore_ascii_case(&b.name)));
+        self.entries.iter().map(|(_, template)| template).chain(shipped).filter(|t| t.kind == TemplateKind::Composition)
     }
 
     /// The recipes saved here (#2758); [`builtin_recipes`] are the ones
@@ -819,8 +883,13 @@ impl CompositionTemplateStore {
         self.entries.iter().map(|(_, template)| template).filter(|t| t.kind == TemplateKind::Recipe)
     }
 
-    pub fn save(&mut self, template: CompositionTemplate) -> Result<(), String> {
+    pub fn save(&mut self, mut template: CompositionTemplate) -> Result<(), String> {
         template.validate()?;
+        // A shipped template is never written: saved, it is a copy of
+        // the user's own.
+        if self.builtins.iter().any(|b| b.id == template.id) && !self.entries.iter().any(|(_, t)| t.id == template.id) {
+            template.id = Uuid::new_v4();
+        }
         let dir = self
             .dir
             .as_ref()
