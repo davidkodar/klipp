@@ -1095,10 +1095,17 @@ impl KlippApp {
                 // for the next frame to arrive on its own.
                 // The canvas marks the soloed node of the grade it shows.
                 self.state.solo_node = at.as_ref().and_then(|a| a.path.node());
+                self.state.solo_at = at.clone();
                 self.state.viewed_node_name = at.as_ref().map(|a| {
                     let clip = match a.path.root { klipp_graph_format::path::Root::Clip { clip } => self.state.sequence().all_clips().find(|c| c.id.0 == clip), _ => None };
                     clip.and_then(|c| crate::panels::node_graph_v2::node_name(c, &a.path)).filter(|n| !n.is_empty()).unwrap_or_else(|| "a node".into())
                 });
+                *needs_refresh = true;
+                false
+            }
+            AppCommand::SetViewChannel { channel } => {
+                // The viewer's alone; the engine draws it.
+                self.state.view_channel = *channel;
                 *needs_refresh = true;
                 false
             }

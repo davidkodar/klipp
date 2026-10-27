@@ -831,6 +831,8 @@ impl PlaybackEngine {
     fn render_cache_key(&mut self, seq: &Sequence, primary: Option<ClipId>, size: (u32, u32)) -> Option<crate::render_cache::RenderCacheKey> {
         if self.in_node_param_edit
             || self.solo.is_some()
+            // The cache holds the picture, not a channel of it.
+            || self.view_channel != klipp_core::ViewChannel::Picture
             || self.matte_preview
             // The cache holds display bytes of the SDR picture; HDR
             // monitoring shows another picture entirely.
@@ -946,6 +948,7 @@ impl PlaybackEngine {
                 .hdr_monitor
                 .renders_hdr()
                 .then_some(klipp_color::hdr::DEFAULT_MASTERING_MAX_LUMA_CD_M2),
+            view_channel: self.view_channel,
             ..Default::default()
         };
         let shown = self.renderer.render_display_on_gpu(seq, time, width, height, &mut src, opts, out);
@@ -1002,6 +1005,7 @@ impl PlaybackEngine {
                 .hdr_monitor
                 .renders_hdr()
                 .then_some(klipp_color::hdr::DEFAULT_MASTERING_MAX_LUMA_CD_M2),
+            view_channel: self.view_channel,
             ..Default::default()
         };
         let (out, found) = self.renderer.render_inspected(seq, time, w, h, &mut src, opts, inspect);

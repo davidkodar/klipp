@@ -299,6 +299,12 @@ impl KlippApp {
                 *shown = compare;
             }
         }
+        let viewing = klipp_core::events::ViewerShows { channel: s.view_channel, solo: s.solo_at.clone() };
+        if let Ok(mut shown) = s.control_shared.viewing.lock() {
+            if *shown != viewing {
+                *shown = viewing;
+            }
+        }
     }
 
     /// Where the project's other sequences are published for the control

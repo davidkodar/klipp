@@ -2240,6 +2240,7 @@ impl ViewerPanel {
         self.draw_scope_cursor(ui.painter(), state, &frame);
         self.draw_hdr_monitor(ui, state, theme, image_rect, cmds);
         draw_viewed_node(ui, state, image_rect, cmds);
+        draw_view_channel(ui, state, image_rect, cmds);
     }
 
     /// HDR monitoring: what the viewer shows for an HDR delivery, and the
@@ -8404,6 +8405,72 @@ fn draw_viewed_node(ui: &mut egui::Ui, state: &AppState, image_rect: egui::Rect,
     ui.painter().galley(chip.min + egui::vec2(8.0, 4.0), galley, egui::Color32::BLACK);
     if resp.on_hover_text("Back to the finished picture (1)").clicked() {
         cmds.push(AppCommand::SetNodeSolo { at: None });
+    }
+}
+
+/// While one channel of the picture is shown in grey, the viewer says
+/// which in its corner, under a viewed node's chip, with one click back
+/// to the picture (#2758).
+fn draw_view_channel(ui: &mut egui::Ui, state: &AppState, image_rect: egui::Rect, cmds: &mut Vec<AppCommand>) {
+    let channel = state.view_channel;
+    if channel == klipp_core::ViewChannel::Picture {
+        return;
+    }
+    let text = format!("Channel: {}   \u{2715}", view_channel_label(channel));
+    let font = egui::FontId::proportional(12.0);
+    let galley = ui.painter().layout_no_wrap(text, font, egui::Color32::BLACK);
+    let below = if state.solo_node.is_some() && state.viewed_node_name.is_some() { 30.0 } else { 0.0 };
+    let chip = egui::Rect::from_min_size(image_rect.min + egui::vec2(8.0, 8.0 + below), galley.size() + egui::vec2(16.0, 8.0));
+    let resp = ui.interact(chip, ui.id().with("view_channel"), egui::Sense::click());
+    let cyan = egui::Color32::from_rgb(0x6c, 0xd4, 0xe8);
+    ui.painter().rect_filled(chip, 4.0, if resp.hovered() { cyan } else { cyan.gamma_multiply(0.85) });
+    ui.painter().galley(chip.min + egui::vec2(8.0, 4.0), galley, egui::Color32::BLACK);
+    if resp.on_hover_text("Back to the picture").clicked() {
+        cmds.push(AppCommand::SetViewChannel { channel: klipp_core::ViewChannel::Picture });
+    }
+}
+
+/// A channel's name in the viewer's chrome.
+pub fn view_channel_label(channel: klipp_core::ViewChannel) -> &'static str {
+    use klipp_core::ViewChannel as V;
+    match channel {
+        V::Picture => "Picture",
+        V::Red => "Red",
+        V::Green => "Green",
+        V::Blue => "Blue",
+        V::Alpha => "Alpha",
+        V::Luma => "Luma",
+    }
+}
+
+#[cfg(test)]
+mod view_channel_tests {
+    use super::*;
+
+    /// A channel shown is named in the viewer's corner, and a click there
+    /// goes back to the picture (#2758); the picture itself has no chip.
+    #[test]
+    fn the_viewer_names_the_channel_and_clicks_back() {
+        let ctx = egui::Context::default();
+        let mut state = AppState::default();
+        let image = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(640.0, 360.0));
+        let run = |state: &AppState, events: Vec<egui::Event>| {
+            let mut cmds = Vec::new();
+            let out = ctx.run(egui::RawInput { screen_rect: Some(image), events, ..Default::default() }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| draw_view_channel(ui, state, image, &mut cmds));
+            });
+            let texts: Vec<String> = out.shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Text(t) => Some(t.galley.text().to_owned()), _ => None }).collect();
+            (texts, cmds)
+        };
+        let (texts, _) = run(&state, Vec::new());
+        assert!(!texts.iter().any(|t| t.starts_with("Channel")), "the picture, no chip: {texts:?}");
+        state.view_channel = klipp_core::ViewChannel::Alpha;
+        let (texts, _) = run(&state, Vec::new());
+        assert!(texts.iter().any(|t| t.starts_with("Channel: Alpha")), "{texts:?}");
+        let at = egui::pos2(20.0, 16.0);
+        run(&state, vec![egui::Event::PointerMoved(at), egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE }]);
+        let (_, cmds) = run(&state, vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE }]);
+        assert!(matches!(cmds.as_slice(), [AppCommand::SetViewChannel { channel: klipp_core::ViewChannel::Picture }]), "{cmds:?}");
     }
 }
 

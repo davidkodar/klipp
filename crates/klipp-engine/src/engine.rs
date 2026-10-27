@@ -1711,6 +1711,9 @@ pub struct PlaybackEngine {
     /// active clip's graph (so switching clips silently un-solos).
     /// The soloed node's output, by path (M3 step 16a).
     solo: Option<klipp_compose::InspectAt>,
+    /// What the viewer shows of the picture (#2758): the picture, or one
+    /// channel of it in grey (`AppCommand::SetViewChannel`).
+    view_channel: klipp_core::ViewChannel,
     /// `solo` in the grade the fast paths run (`v1_graph_setup`).
     fast_solo: Option<klipp_nodes::NodeId>,
     /// V2 canvas "nodes visible right now" set — the executor
@@ -2792,6 +2795,7 @@ impl PlaybackEngine {
             node_sample: None,
             node_sample_since: None,
             solo: None,
+            view_channel: klipp_core::ViewChannel::Picture,
             fast_solo: None,
             visible_node_thumbs: std::collections::HashSet::new(),
             thumbnail_request: 0,
@@ -3996,6 +4000,13 @@ impl PlaybackEngine {
             }
             AppCommand::SampleNodeInput { clip_id, node_id, at, nx, ny } => {
                 self.sample_node_input(clip_id, node_id, &at, nx, ny);
+            }
+            AppCommand::SetViewChannel { channel } => {
+                if self.view_channel != channel {
+                    self.view_channel = channel;
+                    debug!("View channel: {channel:?}");
+                    self.regrade_cached_frame();
+                }
             }
             AppCommand::SetNodeSolo { at } => {
                 self.solo = at;
@@ -9013,6 +9024,11 @@ impl PlaybackEngine {
                     blockers.push("node param edit in progress");
                 }
             }
+        }
+        // A channel view is drawn by the stack's finish (#2758); the
+        // graded path shows the picture.
+        if self.view_channel != klipp_core::ViewChannel::Picture {
+            blockers.push("channel view");
         }
         // What the byte-identity of *direct present* rests on, and what
         // the graded path can live with.

@@ -150,6 +150,8 @@ The frame at a time on the timeline, as a PNG, without leaving the playhead wher
 
 Left out, max_width gives the viewer's frame, at most 1280 wide; the viewer decodes at the playback size, which can be smaller. A max_width wider than the viewer's frame is drawn from the files at that width, up to the timeline's, as the export draws it, for judging small type and fine detail at full size; the reply's drawn says so.
 
+channel shows one channel of the frame in grey: red, green or blue of the picture as it shows, alpha (black where nothing covers the frame, white where it is opaque) or luma. node shows a node of a clip's grade in place of the finished frame, by its path as graph_read gives it ({root: {clip}, nodes: [...]}); an effect after the grade is refused, not shown alone yet. channel alpha checks a key or a matte directly: with nothing below the keyed clip, a chroma key over its screen is black on the screen and white on the subject. Both are for that one frame: the viewer's own channel and node are put back after, and the frame is the viewer's size.
+
 ## klipp_fonts
 
 The font families a title or a brief's type style can name: those bundled with Klipp, always there, and those installed on this machine. Any other name falls back to Inter; set_brief, plan and apply warn when one is named. The text names the bundled families and counts the installed ones, which are listed in installed; query (a word, e.g. "serif" or "mono") lists only the families whose name holds it.
