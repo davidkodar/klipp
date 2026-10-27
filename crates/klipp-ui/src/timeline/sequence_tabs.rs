@@ -161,6 +161,14 @@ pub fn show(
                     }
                 }
             });
+            // A version older than its master's cut, made again from it
+            // when asked, never on its own (#2724).
+            if state.sequences[i].version_is_stale(&state.sequences) == Some(true)
+                && ui.button("Rebuild from Master").on_hover_text("This version is older than the master's last edit. Copy the master's cut in again: the clips still there keep their framing here, the new ones are reframed").clicked()
+            {
+                cmds.push(AppCommand::RebuildVersion { sequence_idx: i });
+                ui.close_menu();
+            }
             if ui.button("Sequence Settings...").clicked() {
                 cmds.push(AppCommand::OpenSequenceSettings { sequence_idx: i });
                 ui.close_menu();

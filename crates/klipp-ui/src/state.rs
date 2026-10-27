@@ -1359,6 +1359,9 @@ impl TitlePositionPreset {
 pub struct PendingRefit {
     pub sequence: klipp_core::SequenceId,
     pub waiting: Vec<klipp_core::MediaId>,
+    /// Clips whose framing is kept, not refit: a rebuilt version's that
+    /// are still there (#2724).
+    pub keep: Vec<klipp_core::ClipId>,
 }
 
 /// One export of a delivery waiting its turn (#2724): its sequence,

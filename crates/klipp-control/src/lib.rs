@@ -799,6 +799,7 @@ fn handle(
             | ControlCommand::ProjectTemplates { .. }
             | ControlCommand::NewSequence { .. }
             | ControlCommand::MakeShorts { .. }
+            | ControlCommand::RebuildVersion { .. }
             | ControlCommand::RenameSequence { .. }
             | ControlCommand::SwitchSequence { .. }
             | ControlCommand::DuplicateSequence { .. }

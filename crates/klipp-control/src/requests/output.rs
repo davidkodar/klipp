@@ -1147,7 +1147,7 @@ fn deliver(ctx: &ControlContext, outputs: &[crate::protocol::DeliveryAsk], send:
     v["outputs"] = json!(said);
     let mut text = format!("{} format(s) of {master_name} queued, each exported from its version once that is reframed (a version made now waits for its files' framing analysis).", said.len());
     if !stale.is_empty() {
-        text.push_str(&format!(" {} older than the master's last edit: what is delivered there is the old cut; rebuild it from the master to deliver the current one.", stale.join(", ")));
+        text.push_str(&format!(" {} older than the master's last edit: what is delivered there is the old cut; rebuild_version it to deliver the current one.", stale.join(", ")));
         v["stale"] = json!(stale);
     }
     v["text"] = json!(text);

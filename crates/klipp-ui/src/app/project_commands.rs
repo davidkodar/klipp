@@ -729,9 +729,13 @@ impl KlippApp {
                     } else if !klipp_analysis::subject_detection_enabled() {
                         self.state.toast.show(format!("{name}: subject detection is off in Preferences, so its pictures are centred for review"));
                     }
-                    self.state.pending_refits.push(crate::state::PendingRefit { sequence: id, waiting });
+                    self.state.pending_refits.push(crate::state::PendingRefit { sequence: id, waiting, keep: Vec::new() });
                     self.send_commands(vec![AppCommand::SetActiveSequence { sequence_idx: index }]);
                 }
+                true
+            }
+            AppCommand::RebuildVersion { sequence_idx } => {
+                self.rebuild_version(*sequence_idx);
                 true
             }
             AppCommand::RenameSequence { sequence_idx, new_name } => {

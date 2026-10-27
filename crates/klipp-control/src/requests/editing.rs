@@ -358,6 +358,28 @@ pub(crate) fn respond(
             }))
         }
 
+        ControlCommand::RebuildVersion { sequence_id } => {
+            if in_batch {
+                return Err("rebuild_version is not part of a batch: send it on its own".into());
+            }
+            let project = ctx.shared.project.lock().map_err(|_| "project status lock poisoned")?;
+            let index = match sequence_id.as_deref() {
+                Some(id) => project.sequences.iter().position(|s| s.id == id).ok_or_else(|| format!("no sequence {id}"))?,
+                None => project.active_sequence,
+            };
+            let Some(seq) = project.sequences.get(index) else { return Err("no sequence is open".into()) };
+            let Some(version) = seq.version.as_ref() else {
+                return Err(format!("{} is no version of another sequence: nothing to rebuild it from", seq.name));
+            };
+            if !version.stale {
+                return Err(format!("{} already has its master's cut: nothing to rebuild", seq.name));
+            }
+            drop(project);
+            let mut v = send(AppCommand::RebuildVersion { sequence_idx: index })?;
+            v["next"] = json!("Its clips still in the cut keep their framing; the new ones are reframed once their framing analysis is done. Look at the new ones with klipp_frame_at.");
+            Ok(v)
+        }
+
         ControlCommand::RenameSequence { name } => {
             let name = name.trim().to_string();
             if name.is_empty() {

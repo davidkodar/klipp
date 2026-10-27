@@ -1523,6 +1523,14 @@ pub enum ControlCommand {
         height: u32,
         fps: f64,
     },
+    /// A version at another aspect made again from its master's cut
+    /// (#2724): the sequence by id, else the open one. Each clip still in
+    /// the cut keeps the framing given it in the version; the new ones
+    /// are reframed. One undo step.
+    RebuildVersion {
+        #[serde(default)]
+        sequence_id: Option<String>,
+    },
     /// A short clip for each of `moments` of a media file (#2720), each
     /// in a sequence of its own, 1080x1920: its speech placed on clean
     /// word edges, tightened when `tighten` (the default), filling the

@@ -51,7 +51,39 @@ impl ExportPresetSettings {
     pub fn is_10bit(&self) -> bool {
         self.video_codec != ExportVideoCodec::Gif && !self.video_codec.writes_8bit(self.bit_depth)
     }
+
+    /// An export to `output_path` with the preset's settings, the rest
+    /// the defaults.
+    pub fn settings_for(&self, output_path: std::path::PathBuf) -> crate::ExportSettings {
+        crate::ExportSettings {
+            output_path,
+            format: self.format,
+            video_codec: self.video_codec,
+            resolution: self.resolution,
+            fps: self.fps,
+            crf: self.crf,
+            preset: self.preset,
+            audio_codec: self.audio_codec,
+            audio_bitrate_kbps: self.audio_bitrate_kbps,
+            video_bitrate_kbps: self.video_bitrate_kbps,
+            rate_control: self.rate_control,
+            target_lufs: self.target_lufs,
+            true_peak_dbtp: self.true_peak_dbtp,
+            bit_depth: self.bit_depth,
+            ..Default::default()
+        }
+    }
 }
+
+/// The formats a delivery offers in one click (#2724): its label, its
+/// aspect as width and height parts, the suffix its file takes, and the
+/// built-in preset it is written with.
+pub const DELIVERY_TEMPLATES: &[(&str, (u32, u32), &str, &str)] = &[
+    ("YouTube 16:9", (16, 9), "16x9", "00000000-0000-4000-a000-000000000001"),
+    ("Shorts, Reels, TikTok 9:16", (9, 16), "9x16", "00000000-0000-4000-a000-000000000006"),
+    ("Square 1:1", (1, 1), "1x1", "00000000-0000-4000-a000-000000000005"),
+    ("Instagram feed 4:5", (4, 5), "4x5", "00000000-0000-4000-a000-000000000010"),
+];
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProxyResolution {
@@ -199,6 +231,27 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 format: ExportFormat::Mp4,
                 video_codec: ExportVideoCodec::H264,
                 resolution: Some(Resolution { width: 1080, height: 1920 }),
+                fps: None,
+                crf: 20,
+                preset: EncoderPreset::Medium,
+                audio_codec: ExportAudioCodec::Aac,
+                audio_bitrate_kbps: Some(192),
+                video_bitrate_kbps: None,
+                rate_control: RateControl::Crf,
+                target_lufs: Some(WEB_LOUDNESS_LUFS),
+                true_peak_dbtp: None,
+                bit_depth: 0,
+            },
+        },
+        // The feed's tallest post (#2724).
+        ExportPreset {
+            id: "00000000-0000-4000-a000-000000000010".into(),
+            name: "Instagram Feed 4:5".into(),
+            built_in: true,
+            settings: ExportPresetSettings {
+                format: ExportFormat::Mp4,
+                video_codec: ExportVideoCodec::H264,
+                resolution: Some(Resolution { width: 1080, height: 1350 }),
                 fps: None,
                 crf: 20,
                 preset: EncoderPreset::Medium,

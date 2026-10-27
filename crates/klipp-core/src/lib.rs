@@ -77,7 +77,7 @@ pub use color_grade::{ColorMatchSettings, ColorWarperParams, CurveSet, Differenc
 pub use colorspace::{ColorMatrix, ColorPrimaries, ColorRange, ColorTransfer, SourceColorspace};
 pub use keyframe::{Handles, Interpolation, KeyEase, Keyframe, TitlePositionAxis, TitleTransformProperty};
 pub use events::{AppCommand, AppEvent, SubjectMatteUse, AudioParam, TitleFieldValue, CameraParam, ChapterSnapshot, ControlShared, DEFAULT_TRUE_PEAK_DBTP, CompositeFallback, ExportStatus, ExportTimings, ProjectStatus, ProxyStatus, RecentProjectSummary, SequenceSummary, VersionSummary, DeliveryOutput, TransportStatus, launch_identity_base, DEFAULT_MASTERING_PEAK_NITS, EncoderPreset, ExportAudioCodec, ExportFormat, ExportSettings, ExportVideoCodec, HdrMode, HdrMonitor, MASTERING_PEAK_CHOICES, MASTERING_PEAK_RANGE, MarkerColor, MarkerKind, ReviewStatus, MediaLoadedPayload, NodeSampleRefusal, OdtChoice, ParamChange, ProjectColour, RateControl, ScopeLut, SdrTransfer, SelectRange, ToneMapOp, Tool, TrackTarget, VideoParam, ViewerMode, ViewerOverlay, WipeClip};
-pub use export_preset::{ExportPreset, ExportPresetSettings, PresetId, ProxyResolution, builtin_presets};
+pub use export_preset::{ExportPreset, ExportPresetSettings, PresetId, ProxyResolution, builtin_presets, DELIVERY_TEMPLATES};
 pub use id::{BinId, ClipId, GradeGroupId, GroupId, MarkerId, MediaId, SequenceId, TrackId, TransitionId};
 pub use time::{Fps, RationalTime, TimeRange, Timecode, TimecodeDisplay};
 pub use modifier::{EvalContext, Extrapolation, Modifier, ModifierBlend, ModifierStack, ParamId, Waveform, evaluate_param};
