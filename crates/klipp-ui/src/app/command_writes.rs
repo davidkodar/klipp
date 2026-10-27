@@ -584,6 +584,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::CreateTitleInViewer { .. }
         | AppCommand::InsertCompositionTemplate { .. }
         | AppCommand::SetTemplateOverride { .. }
+        | AppCommand::SetTemplateLink { .. }
         | AppCommand::SaveCompositionTemplate { .. }
         | AppCommand::AddTitleImageObject { .. }
         | AppCommand::SetTitleImagePath { .. }
