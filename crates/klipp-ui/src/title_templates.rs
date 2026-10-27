@@ -312,7 +312,7 @@ pub fn show_dialog(ctx: &egui::Context, state: &mut crate::state::AppState) {
 }
 
 /// Cancel and a confirm button; true when confirm was clicked.
-fn dialog_buttons(ui: &mut egui::Ui, confirm: &str, enabled: bool, close: &mut bool) -> bool {
+pub(crate) fn dialog_buttons(ui: &mut egui::Ui, confirm: &str, enabled: bool, close: &mut bool) -> bool {
     let mut go = false;
     ui.horizontal(|ui| {
         if ui.button("Cancel").clicked() {

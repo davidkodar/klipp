@@ -161,7 +161,8 @@ pub(crate) fn title_templates(dir: Option<&std::path::Path>, compositions: Optio
         .map(|t| {
             let parameters: Vec<serde_json::Value> = t.parameters.iter().map(|(name, p)| json!({ "name": name, "label": p.label, "default": p.default, "choices": p.choices })).collect();
             let secs = t.composition().map(|s| s.total_duration().to_secs_f64()).unwrap_or(0.0);
-            json!({ "name": t.name, "category": t.category, "secs": secs, "parameters": parameters })
+            let slots: Vec<serde_json::Value> = t.slots.iter().map(|(name, s)| json!({ "name": name, "label": s.label, "kind": s.kind })).collect();
+            json!({ "name": t.name, "category": t.category, "secs": secs, "parameters": parameters, "slots": slots })
         })
         .collect();
     if !composed.is_empty() {

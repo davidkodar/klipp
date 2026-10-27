@@ -4041,7 +4041,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
         }
         Op::Template { at, secs: held, track, fields, data: None, composition: Some(placed), .. } => {
             let at = resolve_anchor(seq, fps, at, i)?;
-            place_composition(seq, fps, i, at, *held, track.as_ref(), fields, placed)
+            place_composition(seq, pool, fps, i, at, *held, track.as_ref(), fields, placed)
         }
         Op::Template { name, at, secs: held, track, fields, data, .. } => {
             use klipp_core::TitleFieldValue as V;
@@ -6630,7 +6630,7 @@ fn template_value(p: &klipp_timeline::composition_template::TemplateParameter, v
 /// the sequences it needs copied in first; its parameters set from
 /// `fields` by name or label. One step.
 #[allow(clippy::too_many_arguments)]
-fn place_composition(seq: &Sequence, fps: Fps, i: usize, at: Timecode, held: f64, track: Option<&TrackRef>, fields: &std::collections::BTreeMap<String, serde_json::Value>, placed: &PlacedComposition) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+fn place_composition(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, at: Timecode, held: f64, track: Option<&TrackRef>, fields: &std::collections::BTreeMap<String, serde_json::Value>, placed: &PlacedComposition) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     let t = &placed.template;
     let composition = t.composition().ok_or_else(|| refuse(i, format!("the template \"{}\" does not carry its composition", t.name), "save it again from the project it was made in"))?;
     if composition.id == seq.id || placed.missing.iter().any(|s| s.id == seq.id) {
@@ -6642,9 +6642,21 @@ fn place_composition(seq: &Sequence, fps: Fps, i: usize, at: Timecode, held: f64
     let tl_in = at;
     let tl_out = snap(secs(at) + held, fps).max(tl_in + one_frame(fps));
     let mut overrides = std::collections::BTreeMap::new();
+    let mut media_slots = std::collections::BTreeMap::new();
     for (key, v) in fields {
+        // A media slot, filled with a media item by its id (#2757).
+        if let Some((slot, def)) = t.slots.iter().find(|(n, d)| n.eq_ignore_ascii_case(key.trim()) || d.label.eq_ignore_ascii_case(key.trim())) {
+            if def.kind != klipp_timeline::composition_template::SlotKind::Media {
+                return Err(refuse(i, format!("\"{key}\" is a {:?} slot, which a template does not fill yet", def.kind), "fill it on the Composite page"));
+            }
+            let id = serde_json::from_value::<MediaId>(v.clone()).ok()
+                .filter(|id| pool.get(id).is_some())
+                .ok_or_else(|| refuse(i, format!("\"{key}\" takes a media item's id, not {v}"), "list_media gives each item's id"))?;
+            media_slots.insert(slot.clone(), id.0.to_string());
+            continue;
+        }
         let (pname, p) = t.parameters.iter().find(|(n, p)| n.eq_ignore_ascii_case(key.trim()) || p.label.eq_ignore_ascii_case(key.trim())).ok_or_else(|| {
-            let names: Vec<&str> = t.parameters.values().map(|p| p.label.as_str()).collect();
+            let names: Vec<&str> = t.parameters.values().map(|p| p.label.as_str()).chain(t.slots.values().map(|d| d.label.as_str())).collect();
             refuse(i, format!("\"{}\" has no parameter \"{key}\"", t.name), if names.is_empty() { "it has no parameters".to_string() } else { format!("its parameters are {}", names.join(", ")) })
         })?;
         let value = template_value(p, v).ok_or_else(|| refuse(i, format!("\"{key}\" can't take {v}"), "give a text or a choice as words, a colour as #rrggbb, a number or true/false"))?;
@@ -6655,7 +6667,7 @@ fn place_composition(seq: &Sequence, fps: Fps, i: usize, at: Timecode, held: f64
         template_id: t.id,
         bindings: t.bindings.iter().map(|b| (b.parameter.clone(), b.property.clone())).collect(),
         overrides,
-        media_slots: Default::default(),
+        media_slots,
     };
     klipp_timeline::flatten::validate_template_instance(&instance, composition).map_err(|e| refuse(i, e, "save the template again"))?;
     let mut edits = Vec::new();
@@ -13348,6 +13360,34 @@ mod tests {
         let why = |fields: serde_json::Value| resolve(&seq, &pool, &[op(fields)]).unwrap_err().to_string();
         assert!(why(serde_json::json!({ "Logo": "x" })).contains("its parameters are Headline"));
         assert!(why(serde_json::json!({ "Headline": 3 })).contains("can't take"));
+    }
+
+    /// #2757: a template's media slot is filled by the template op with a
+    /// media item from the pool, by its label; an id the pool has not got
+    /// is refused, as is a slot kind a template does not fill.
+    #[test]
+    fn a_template_op_fills_a_media_slot() {
+        use klipp_timeline::composition_template::{CompositionTemplate, SlotKind, TemplateBinding, TemplateSlot};
+        let (seq, pool, media, ..) = fixture();
+        let mut card = Sequence::new_default();
+        card.tracks[0].clips.push(Clip::media(MediaId::new(), tc(0.0), tc(3.0), tc(0.0), tc(3.0)));
+        let mut t = CompositionTemplate::new("Photo card", card.id.0);
+        t.slots.insert("slot_1".into(), TemplateSlot { label: "Photo".into(), kind: SlotKind::Media });
+        t.bindings.push(TemplateBinding { parameter: "slot_1".into(), property: "clip:0.media".into() });
+        t.sequences = vec![card.clone()];
+        let op = |t: &CompositionTemplate, fields: serde_json::Value| Op::Template { name: "Photo card".into(), at: Anchor::Secs(1.0), secs: 3.0, track: None, fields: serde_json::from_value(fields).unwrap(), data: None, composition: Some(Box::new(PlacedComposition { template: t.clone(), missing: vec![card.clone()] })) };
+        let plan = resolve(&seq, &pool, &[op(&t, serde_json::json!({ "Photo": media.0.to_string() }))]).unwrap();
+        let EditCommand::Batch(edits) = &plan.steps[0].edit else { panic!("a batch") };
+        let instance = edits.iter().find_map(|e| match e {
+            EditCommand::LegacyAppendClip { clip, .. } => match &clip.kind { ClipKind::TemplatePrecomposition { template_instance, .. } => Some(template_instance.clone()), _ => None },
+            _ => None,
+        }).expect("the placed clip");
+        assert_eq!(instance.media_slots.get("slot_1"), Some(&media.0.to_string()));
+        let why = |t: &CompositionTemplate, fields: serde_json::Value| resolve(&seq, &pool, &[op(t, fields)]).unwrap_err().to_string();
+        assert!(why(&t, serde_json::json!({ "Photo": MediaId::new().0.to_string() })).contains("media item's id"));
+        let mut matte = t.clone();
+        matte.slots.get_mut("slot_1").unwrap().kind = SlotKind::SubjectMatte;
+        assert!(why(&matte, serde_json::json!({ "Photo": media.0.to_string() })).contains("does not fill yet"));
     }
 
     /// #460: a heading at the top of a vertical frame stays whole inside

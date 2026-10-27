@@ -204,6 +204,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::RefineFilmstrip { .. }
         | AppCommand::SaveTitleTemplate { .. }
         | AppCommand::ReloadTitleTemplates
+        | AppCommand::SaveSelectionAsTemplate
         | AppCommand::SelectTitleObject { .. }
         | AppCommand::TitlePathError { .. }
         | AppCommand::SetTitleFadeDuration { .. }

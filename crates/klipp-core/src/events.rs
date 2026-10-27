@@ -2633,6 +2633,9 @@ pub enum AppCommand {
     /// Open the dialog that saves a title clip as a user template in
     /// the Titles browser.
     SaveTitleTemplate { clip_id: ClipId },
+    /// Save the selected clips together as a composition template: opens
+    /// its dialog (#2757).
+    SaveSelectionAsTemplate,
     /// Read the saved title templates again: one saved over the control
     /// socket joins the Titles browser (#2757).
     ReloadTitleTemplates,

@@ -106,6 +106,37 @@ pub struct CompositionTemplate {
     /// template inserts into any project.
     #[serde(default)]
     pub sequences: Vec<Sequence>,
+    /// Its slots (#2757), by name: what the user fills in when the
+    /// template is placed or later, each bound like a parameter (a media
+    /// slot to `clip:<n>.media`); until filled it shows a placeholder.
+    /// The same slots a Composite recipe declares (#2758).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub slots: BTreeMap<String, TemplateSlot>,
+}
+
+/// One slot of a template or a recipe (#2757, #2758): what the user calls
+/// it and what fills it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TemplateSlot {
+    pub label: String,
+    pub kind: SlotKind,
+}
+
+/// What fills a slot. A template fills media slots; the Composite page's
+/// recipes add the others (#2758).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SlotKind {
+    /// A media item from the pool: a picture or a video.
+    Media,
+    /// A clip on the timeline.
+    Clip,
+    /// A title.
+    Title,
+    /// A subject matte of a clip.
+    SubjectMatte,
+    /// A colour.
+    Colour,
 }
 
 impl CompositionTemplate {
@@ -128,7 +159,7 @@ impl CompositionTemplate {
                 .map_err(|error| format!("parameter '{name}': {error}"))?;
         }
         for binding in &self.bindings {
-            if !self.parameters.contains_key(&binding.parameter) {
+            if !self.parameters.contains_key(&binding.parameter) && !self.slots.contains_key(&binding.parameter) {
                 return Err(format!(
                     "binding references unknown parameter '{}'",
                     binding.parameter
@@ -155,6 +186,7 @@ impl CompositionTemplate {
             bindings: Vec::new(),
             written_by: env!("CARGO_PKG_VERSION").to_string(),
             sequences: Vec::new(),
+            slots: BTreeMap::new(),
         }
     }
 }
@@ -165,6 +197,135 @@ impl CompositionTemplate {
     pub fn composition(&self) -> Option<&Sequence> {
         self.sequences.iter().find(|s| s.id.0 == self.composition_id)
     }
+}
+
+/// What a scene can expose as a template's parameter or slot (#2757): its
+/// name in the template, what the user calls it, the parameter (`None`
+/// for a media slot) and the property it is bound to.
+#[derive(Debug, Clone)]
+pub struct Candidate {
+    pub name: String,
+    pub label: String,
+    pub parameter: Option<TemplateParameter>,
+    pub property: String,
+}
+
+impl Candidate {
+    /// Whether it is offered ticked: a text, and a media slot.
+    pub fn by_default(&self) -> bool {
+        self.parameter.is_none() || matches!(self.parameter.as_ref().map(|p| &p.default), Some(TemplateValue::Text(_)) if self.property.ends_with(".text"))
+    }
+}
+
+fn text_param(label: String, default: TemplateValue) -> Option<TemplateParameter> {
+    Some(TemplateParameter { label, default, range: None, choices: Vec::new() })
+}
+
+/// What `scene` can expose (#2757), in its tracks' order: each title
+/// layer's text, colour and font, each image layer's picture, and each
+/// media clip as a slot.
+pub fn candidates(scene: &Sequence) -> Vec<Candidate> {
+    use crate::{ClipKind, TitleObjectContent};
+    let mut out = Vec::new();
+    let mut object = 0usize;
+    let mut texts = 0usize;
+    let mut slots = 0usize;
+    for (n, clip) in scene.tracks.iter().flat_map(|t| &t.clips).enumerate() {
+        match &clip.kind {
+            ClipKind::Title(title) => {
+                for o in &title.objects {
+                    let i = object;
+                    object += 1;
+                    let named = |fallback: String| if o.name.trim().is_empty() { fallback } else { o.name.trim().to_string() };
+                    let colour = |c: [u8; 4]| TemplateValue::Color(c.map(|v| v as f32 / 255.0));
+                    match &o.content {
+                        TitleObjectContent::TextBox(tb) => {
+                            texts += 1;
+                            let label = named(format!("Text {texts}"));
+                            out.push(Candidate { name: format!("text_{i}"), label: label.clone(), parameter: text_param(label.clone(), TemplateValue::Text(tb.text.clone())), property: format!("object:{i}.text") });
+                            out.push(Candidate { name: format!("color_{i}"), label: format!("{label} colour"), parameter: text_param(format!("{label} colour"), colour(tb.color)), property: format!("object:{i}.color") });
+                            out.push(Candidate { name: format!("font_{i}"), label: format!("{label} font"), parameter: text_param(format!("{label} font"), TemplateValue::Text(tb.font_name.clone())), property: format!("object:{i}.font") });
+                        }
+                        TitleObjectContent::Shape(shape) => {
+                            if let Some(fill) = shape.fill {
+                                let label = named(format!("Shape {}", i + 1));
+                                out.push(Candidate { name: format!("color_{i}"), label: format!("{label} colour"), parameter: text_param(format!("{label} colour"), colour(fill)), property: format!("object:{i}.color") });
+                            }
+                        }
+                        TitleObjectContent::Image(img) => {
+                            let label = named(img.stem());
+                            out.push(Candidate { name: format!("picture_{i}"), label: label.clone(), parameter: text_param(label, TemplateValue::Text(img.path.clone())), property: format!("object:{i}.picture") });
+                        }
+                    }
+                }
+            }
+            ClipKind::Media { .. } => {
+                slots += 1;
+                out.push(Candidate { name: format!("slot_{slots}"), label: format!("Media {slots}"), parameter: None, property: format!("clip:{n}.media") });
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The clips `ids` of `seq` as a scene of their own (#2757): their tracks
+/// kept in order, their times from the first one's start, the timeline
+/// untouched. `None` when none is there.
+pub fn scene_from_clips(seq: &Sequence, ids: &[klipp_core::ClipId]) -> Option<Sequence> {
+    let picked: Vec<(usize, &crate::Clip)> = seq.tracks.iter().enumerate().flat_map(|(t, track)| track.clips.iter().filter(|c| ids.contains(&c.id)).map(move |c| (t, c))).collect();
+    let start = picked.iter().map(|(_, c)| c.timeline_in).min()?;
+    let mut scene = Sequence::new_default();
+    scene.name = "Template".into();
+    scene.fps = seq.fps;
+    scene.resolution = seq.resolution;
+    scene.tracks.clear();
+    for (t, track) in seq.tracks.iter().enumerate() {
+        let clips: Vec<crate::Clip> = picked.iter().filter(|(pt, _)| *pt == t).map(|(_, c)| {
+            let mut c = (*c).clone();
+            c.timeline_in -= start;
+            c.timeline_out -= start;
+            c
+        }).collect();
+        if !clips.is_empty() {
+            let mut new = crate::Track::new(&track.name, track.kind);
+            new.clips = clips;
+            new.sort_clips();
+            scene.tracks.push(new);
+        }
+    }
+    Some(scene)
+}
+
+/// A template of `scene` called `name` (#2757), carrying it and what it
+/// nests among `all`, exposing the candidates labelled in `chosen` (in
+/// any case), or those offered ticked when none are named. An unknown
+/// label is refused with the ones there are.
+pub fn template_from_scene(scene: &Sequence, all: &[Sequence], name: &str, chosen: Option<&[String]>) -> Result<CompositionTemplate, String> {
+    let offered = candidates(scene);
+    let picked: Vec<&Candidate> = match chosen {
+        None => offered.iter().filter(|c| c.by_default()).collect(),
+        Some(labels) => labels.iter().map(|l| offered.iter().find(|c| c.label.eq_ignore_ascii_case(l.trim())).ok_or_else(|| {
+            format!("the clips have no \"{l}\" to expose: they have {}", offered.iter().map(|c| c.label.as_str()).collect::<Vec<_>>().join(", "))
+        })).collect::<Result<_, _>>()?,
+    };
+    let mut t = CompositionTemplate::new(name.trim(), scene.id.0);
+    for c in picked {
+        match &c.parameter {
+            Some(p) => {
+                t.parameters.insert(c.name.clone(), p.clone());
+            }
+            None => {
+                t.slots.insert(c.name.clone(), TemplateSlot { label: c.label.clone(), kind: SlotKind::Media });
+            }
+        }
+        t.bindings.push(TemplateBinding { parameter: c.name.clone(), property: c.property.clone() });
+    }
+    let mut with_scene: Vec<Sequence> = all.to_vec();
+    with_scene.push(scene.clone());
+    t.sequences = composition_sequences(scene, &with_scene);
+    t.validate()?;
+    Ok(t)
 }
 
 /// `root` and every sequence it nests, compound or precomposition, at any
@@ -381,5 +542,75 @@ mod tests {
         assert_eq!(serde_json::to_value(back).unwrap(), serde_json::to_value(&t).unwrap());
         assert_eq!(back.composition().map(|s| s.id), Some(root.id));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A scene of a title (a text and a filled shape) and a media clip.
+    fn card_and_photo() -> (Sequence, klipp_core::ClipId, klipp_core::ClipId) {
+        let mut title = crate::TitleData::single_text(crate::TextBox { text: "Launch".into(), color: [255, 255, 255, 255], ..Default::default() });
+        let at = title.objects[0].transform.clone();
+        title.add_object(crate::TitleObjectContent::Shape(crate::Shape { kind: crate::ShapeKind::Rectangle { corner_radius: 0.0 }, fit: None, fill: Some([200, 0, 0, 255]), gradient: None, stroke: None }), at);
+        let mut seq = Sequence::new_default();
+        let text = Clip { kind: ClipKind::Title(title), ..Clip::gap(tc(2.0), tc(5.0)) };
+        let photo = Clip::media(klipp_core::MediaId::new(), tc(2.0), tc(5.0), tc(0.0), tc(3.0));
+        let (t, p) = (text.id, photo.id);
+        seq.tracks[0].clips.push(photo);
+        let mut top = crate::Track::new("V2", crate::TrackKind::Video);
+        top.clips.push(text);
+        seq.tracks.insert(0, top);
+        (seq, t, p)
+    }
+
+    /// #2757: clips saved together keep their tracks, start at 0 and
+    /// leave the timeline as it was; the scene offers each text, colour
+    /// and font, the shape's colour and the media clip as a slot, its
+    /// texts and slots ticked; an unknown label is refused.
+    #[test]
+    fn clips_saved_together_offer_their_texts_colours_and_slots() {
+        let (seq, t, p) = card_and_photo();
+        let before = serde_json::to_value(&seq).unwrap();
+        let scene = scene_from_clips(&seq, &[t, p]).expect("a scene");
+        assert_eq!(serde_json::to_value(&seq).unwrap(), before, "the timeline untouched");
+        assert_eq!(scene.tracks.len(), 2);
+        assert!(scene.tracks.iter().flat_map(|t| &t.clips).all(|c| c.timeline_in == tc(0.0)), "from the first one's start");
+        let labels: Vec<String> = candidates(&scene).into_iter().map(|c| c.label).collect();
+        assert_eq!(labels, ["Text 1", "Text 1 colour", "Text 1 font", "Shape 2 colour", "Media 1"]);
+        let t = template_from_scene(&scene, &[], "Card", None).unwrap();
+        assert_eq!(t.parameters.values().map(|p| p.label.as_str()).collect::<Vec<_>>(), ["Text 1"], "texts by default");
+        assert_eq!(t.slots.values().map(|s| (s.label.as_str(), s.kind)).collect::<Vec<_>>(), [("Media 1", SlotKind::Media)]);
+        assert!(template_from_scene(&scene, &[], "Card", Some(&["Logo".into()])).unwrap_err().contains("they have Text 1"));
+    }
+
+    /// Placed, an empty slot shows the placeholder and a filled one its
+    /// media; a colour and a font set by their parameters land on their
+    /// layers.
+    #[test]
+    fn a_placed_template_fills_its_slots_and_sets_its_properties() {
+        let (seq, t, p) = card_and_photo();
+        let scene = scene_from_clips(&seq, &[t, p]).unwrap();
+        let chosen: Vec<String> = ["Text 1", "Shape 2 colour", "Text 1 font", "Media 1"].map(String::from).to_vec();
+        let template = template_from_scene(&scene, &[], "Card", Some(&chosen)).unwrap();
+        let place = |overrides: Vec<(&str, klipp_core::TemplateValue)>, media: Option<klipp_core::MediaId>| {
+            let instance = klipp_core::TemplateInstance {
+                template_id: template.id,
+                bindings: template.bindings.iter().map(|b| (b.parameter.clone(), b.property.clone())).collect(),
+                overrides: overrides.into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
+                media_slots: media.map(|m| ("slot_1".to_string(), m.0.to_string())).into_iter().collect(),
+            };
+            let mut clip = Clip::precomposition(scene.id, tc(0.0), tc(3.0));
+            clip.kind = ClipKind::TemplatePrecomposition { sequence_id: scene.id, template_instance: instance };
+            let mut outer = Sequence::new_default();
+            outer.tracks[0].clips.push(clip);
+            let flat = crate::flatten::flatten_sequence(&outer, &[outer.clone(), scene.clone()]);
+            let inner = flat.all_clips().find_map(|c| c.precomp.clone()).expect("the scene");
+            (*inner).clone()
+        };
+        let empty = place(vec![], None);
+        assert!(empty.all_clips().any(|c| matches!(c.kind, ClipKind::Generator(klipp_core::GeneratorData::SolidColor { color }) if color == crate::flatten::SLOT_PLACEHOLDER)), "the placeholder where no media was given");
+        let media = klipp_core::MediaId::new();
+        let filled = place(vec![("color_1", klipp_core::TemplateValue::Color([0.0, 0.0, 1.0, 1.0])), ("font_0", klipp_core::TemplateValue::Text("Anton".into()))], Some(media));
+        assert!(filled.all_clips().any(|c| matches!(c.kind, ClipKind::Media { media_id } if media_id == media)), "the slot's media");
+        let title = filled.all_clips().find_map(|c| c.title_data().cloned()).unwrap();
+        assert!(matches!(&title.objects[0].content, crate::TitleObjectContent::TextBox(tb) if tb.font_name == "Anton"));
+        assert!(matches!(&title.objects[1].content, crate::TitleObjectContent::Shape(s) if s.fill == Some([0, 0, 255, 255])));
     }
 }

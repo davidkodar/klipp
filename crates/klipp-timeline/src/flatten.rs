@@ -38,27 +38,56 @@ use klipp_core::{ClipId, RationalTime, SequenceId};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-fn binding_parts(property: &str) -> Result<(usize, &str), String> {
+/// What a template binding names (#225, #2757): a title layer's property,
+/// `object:<i>.<property>` (the i-th layer of the composition's titles, in
+/// track order), or a media slot, `clip:<n>.media` (its n-th clip).
+enum Target<'a> {
+    Object(usize, &'a str),
+    Slot(usize),
+}
+
+fn binding_parts(property: &str) -> Result<Target<'_>, String> {
+    if let Some(rest) = property.strip_prefix("clip:") {
+        let Some((n, "media")) = rest.split_once('.') else {
+            return Err(format!("template binding '{property}' must use clip:<index>.media"));
+        };
+        let n = n.parse::<usize>().map_err(|_| format!("template binding '{property}' has an invalid clip index"))?;
+        return Ok(Target::Slot(n));
+    }
     let Some((object, path)) = property.strip_prefix("object:").and_then(|p| p.split_once('.')) else {
-        return Err(format!("template binding '{property}' must use object:<index>.<property>"));
+        return Err(format!("template binding '{property}' must use object:<index>.<property> or clip:<index>.media"));
     };
     let index = object.parse::<usize>().map_err(|_| format!("template binding '{property}' has an invalid object index"))?;
-    Ok((index, path))
+    Ok(Target::Object(index, path))
 }
+
+/// A slot no media was given for: a dark neutral picture, so the
+/// template shows where its media goes (#2757).
+pub const SLOT_PLACEHOLDER: [u8; 4] = [52, 54, 60, 255];
 
 /// Validate the binding grammar once, at insertion, so flattening cannot
 /// silently reinterpret a saved template instance.
 pub fn validate_template_instance(instance: &klipp_core::TemplateInstance, sequence: &Sequence) -> Result<(), String> {
     for (parameter, property) in &instance.bindings {
-        let (index, path) = binding_parts(property).map_err(|e| format!("parameter '{parameter}': {e}"))?;
+        let (index, path) = match binding_parts(property).map_err(|e| format!("parameter '{parameter}': {e}"))? {
+            Target::Slot(n) => {
+                sequence.tracks.iter().flat_map(|track| &track.clips).nth(n).ok_or_else(|| format!("slot '{parameter}' targets missing clip {n}"))?;
+                continue;
+            }
+            Target::Object(index, path) => (index, path),
+        };
         let target = sequence.tracks.iter().flat_map(|track| &track.clips)
             .filter_map(|clip| match &clip.kind { ClipKind::Title(title) => Some(title), _ => None })
             .flat_map(|title| title.objects.iter()).nth(index)
             .ok_or_else(|| format!("parameter '{parameter}' targets missing object {index}"))?;
         if let Some(value) = instance.overrides.get(parameter) {
+            use crate::TitleObjectContent as C;
             match (path, value) {
-                ("text", klipp_core::TemplateValue::Text(_)) if matches!(target.content, crate::TitleObjectContent::TextBox(_)) => {}
-                ("fill_and_glow", klipp_core::TemplateValue::Color(_)) if matches!(target.content, crate::TitleObjectContent::Shape(_)) => {}
+                ("text", klipp_core::TemplateValue::Text(_)) if matches!(target.content, C::TextBox(_)) => {}
+                ("fill_and_glow", klipp_core::TemplateValue::Color(_)) if matches!(target.content, C::Shape(_)) => {}
+                ("color", klipp_core::TemplateValue::Color(_)) if matches!(target.content, C::TextBox(_) | C::Shape(_)) => {}
+                ("font", klipp_core::TemplateValue::Text(_)) if matches!(target.content, C::TextBox(_)) => {}
+                ("picture", klipp_core::TemplateValue::Text(_)) if matches!(target.content, C::Image(_)) => {}
                 ("motion.enter.duration_secs", klipp_core::TemplateValue::Number(_)) if target.fx().motion.enter.is_some() => {}
                 ("motion.enter.direction", klipp_core::TemplateValue::Enum(direction)) if ["left", "right", "up", "down"].contains(&direction.as_str()) && target.fx().motion.enter.is_some() => {}
                 ("float.keyframes", klipp_core::TemplateValue::Number(_)) if !target.transform.center_y_keyframes.is_empty() => {}
@@ -71,14 +100,43 @@ pub fn validate_template_instance(instance: &klipp_core::TemplateInstance, seque
 
 fn apply_template_instance(sequence: &mut Sequence, instance: &klipp_core::TemplateInstance) -> Result<(), String> {
     validate_template_instance(instance, sequence)?;
+    // Media slots (#2757): the clip given its media, or the placeholder.
+    for (slot, property) in &instance.bindings {
+        let Ok(Target::Slot(n)) = binding_parts(property) else { continue };
+        let Some(clip) = sequence.tracks.iter_mut().flat_map(|track| track.clips.iter_mut()).nth(n) else { continue };
+        clip.kind = match instance.media_slots.get(slot).and_then(|id| id.parse::<uuid::Uuid>().ok()) {
+            Some(id) => ClipKind::Media { media_id: klipp_core::MediaId(id) },
+            None => ClipKind::Generator(klipp_core::GeneratorData::SolidColor { color: SLOT_PLACEHOLDER }),
+        };
+    }
+    // Each title layer's index counts across the composition's titles,
+    // in track order, as `validate_template_instance` counts them.
+    let mut first = 0;
     for track in &mut sequence.tracks {
         for clip in &mut track.clips {
             let ClipKind::Title(title) = &mut clip.kind else { continue };
+            let base = first;
+            first += title.objects.len();
             for (parameter, property) in &instance.bindings {
                 let Some(value) = instance.overrides.get(parameter) else { continue };
-                let Ok((index, path)) = binding_parts(property) else { continue };
+                let Ok(Target::Object(index, path)) = binding_parts(property) else { continue };
+                let Some(index) = index.checked_sub(base) else { continue };
                 let Some(target) = title.objects.get_mut(index) else { continue };
                 match (path, value) {
+                    ("color", klipp_core::TemplateValue::Color(color)) => {
+                        let rgba = color.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8);
+                        match &mut target.content {
+                            crate::TitleObjectContent::TextBox(tb) => tb.color = rgba,
+                            crate::TitleObjectContent::Shape(shape) => shape.fill = Some(rgba),
+                            _ => {}
+                        }
+                    }
+                    ("font", klipp_core::TemplateValue::Text(family)) => {
+                        if let crate::TitleObjectContent::TextBox(tb) = &mut target.content { tb.font_name = family.clone(); }
+                    }
+                    ("picture", klipp_core::TemplateValue::Text(path)) => {
+                        if let crate::TitleObjectContent::Image(img) = &mut target.content { img.path = path.clone(); }
+                    }
                     ("text", klipp_core::TemplateValue::Text(text)) => {
                         if let crate::TitleObjectContent::TextBox(box_) = &mut target.content { box_.text = text.clone(); }
                     }

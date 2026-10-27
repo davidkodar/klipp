@@ -1065,7 +1065,7 @@ mod menu_smoke_tests {
         assert!(lacking.is_empty(), "the clip's menu lacks {lacking:?}; it shows {menu:?}");
         // What can't apply is left out, and the track's items are the
         // track header's (#2674).
-        for absent in ["Insert", "Overwrite", "Lift", "Group", "Ungroup", "Align to Audio Reference", "Match Colour to Reference", "Create Compound Clip", "Paste Attributes", "Lock Track", "Reset Track Height", "Text"] {
+        for absent in ["Insert", "Overwrite", "Lift", "Group", "Ungroup", "Align to Audio Reference", "Match Colour to Reference", "Create Compound Clip", "Save as Template", "Paste Attributes", "Lock Track", "Reset Track Height", "Text"] {
             assert!(!menu.iter().any(|t| t == absent || t.starts_with(&format!("{absent}\u{2026}"))), "{absent} is shown: {menu:?}");
         }
         for (path, items) in [
