@@ -274,6 +274,29 @@ impl Surface {
         if self.media_fps > 0.0 { 0.5 / self.media_fps } else { 1e-6 }
     }
 
+    /// How long, in file seconds, the track has been lost at the frame
+    /// shown at `source_secs` (#2751): from the first key of the lost run
+    /// it is in, or past either end of what was followed (a track whose
+    /// lost tail was let go) from that end. `None` where it is followed,
+    /// and for a surface not tracked at all.
+    pub fn lost_for(&self, source_secs: f64) -> Option<f64> {
+        let (first, last) = (self.keys.first()?, self.keys.last()?);
+        let near = self.near();
+        let step = if self.media_fps > 0.0 { 1.0 / self.media_fps } else { near * 2.0 };
+        if source_secs > last.source_secs + near {
+            return Some(source_secs - (last.source_secs + step));
+        }
+        if source_secs < first.source_secs - near {
+            return Some((first.source_secs - step) - source_secs);
+        }
+        let at = self.keys.partition_point(|k| k.source_secs <= source_secs + near).saturating_sub(1);
+        if self.keys[at].state != TrackState::Lost {
+            return None;
+        }
+        let start = (0..=at).rev().take_while(|&i| self.keys[i].state == TrackState::Lost).last().unwrap_or(at);
+        Some((source_secs - self.keys[start].source_secs).max(0.0))
+    }
+
     /// The file time the track covers, first to last key.
     pub fn tracked_secs(&self) -> Option<(f64, f64)> {
         Some((self.keys.first()?.source_secs, self.keys.last()?.source_secs))
@@ -319,6 +342,43 @@ pub struct SurfacePin {
     /// were tracked.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub inset: f32,
+    /// What the pinned clip does where its surface's track is lost
+    /// (#2751): holds the last good place (as before), hides, or fades
+    /// out.
+    #[serde(default, skip_serializing_if = "PinLoss::is_hold")]
+    pub on_loss: PinLoss,
+}
+
+/// What a pinned clip does where its surface's track is lost (#2751).
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PinLoss {
+    /// Stays at the last place the surface was followed to.
+    #[default]
+    Hold,
+    /// Gone while the track is lost.
+    Hide,
+    /// Fades out over `secs` from where the track is lost.
+    Fade { secs: f32 },
+}
+
+impl PinLoss {
+    fn is_hold(&self) -> bool {
+        *self == PinLoss::Hold
+    }
+
+    /// The fade a fade out takes unless said otherwise.
+    pub const FADE_SECS: f32 = 0.3;
+
+    /// How much of the pinned clip shows `lost_for` timeline seconds after
+    /// its track was lost (`None`: it isn't lost), 0 to 1.
+    pub fn presence(&self, lost_for: Option<f64>) -> f32 {
+        match (self, lost_for) {
+            (_, None) | (PinLoss::Hold, _) => 1.0,
+            (PinLoss::Hide, Some(_)) => 0.0,
+            (PinLoss::Fade { secs }, Some(t)) => (1.0 - t as f32 / secs.max(1e-3)).clamp(0.0, 1.0),
+        }
+    }
 }
 
 fn is_zero(v: &f32) -> bool {
@@ -684,5 +744,25 @@ mod tests {
         assert!(near(at(2.0).unwrap(), square(0.3)) && near(at(1.0).unwrap(), square(0.0)), "the anchors kept");
         assert_eq!(s.keys.len(), 30);
         assert!(s.weak_spans().is_empty(), "{:?}", s.weak_spans());
+    }
+
+    /// #2751: where the track is lost, from the first lost key of the run
+    /// or past either end of what was followed; nowhere else.
+    #[test]
+    fn the_time_lost_is_from_where_the_track_was_lost() {
+        let corners = square(0.0);
+        let key = |t: f64, state: TrackState| SurfaceKey { state, ..SurfaceKey::at_corners(t, &corners, &corners).unwrap() };
+        let mut s = Surface { id: uuid::Uuid::nil(), name: "S".into(), corners, reference_secs: 1.0, keys: Vec::new(), source_size: [100, 100], media_fps: 10.0, track_area: None, exclude: Vec::new() };
+        assert_eq!(s.lost_for(1.0), None, "not tracked: not lost");
+        s.keys = (10..=30).map(|k| key(k as f64 / 10.0, if (18..22).contains(&k) { TrackState::Lost } else { TrackState::Good })).collect();
+        assert_eq!(s.lost_for(1.5), None);
+        assert!((s.lost_for(2.0).unwrap() - 0.2).abs() < 1e-9, "two frames into the run lost from 1.8");
+        assert_eq!(s.lost_for(2.3), None, "found again");
+        assert!((s.lost_for(3.5).unwrap() - 0.4).abs() < 1e-9, "past the end of what was followed");
+        assert!((s.lost_for(0.5).unwrap() - 0.4).abs() < 1e-9, "before its start");
+        assert_eq!(PinLoss::Hold.presence(Some(5.0)), 1.0);
+        assert_eq!(PinLoss::Hide.presence(Some(0.0)), 0.0);
+        assert_eq!(PinLoss::Hide.presence(None), 1.0);
+        assert!((PinLoss::Fade { secs: 0.4 }.presence(Some(0.1)) - 0.75).abs() < 1e-6);
     }
 }

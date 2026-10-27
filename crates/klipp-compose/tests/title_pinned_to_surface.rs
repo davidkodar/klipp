@@ -36,6 +36,12 @@ fn quad(x: f32) -> [[f32; 2]; 4] {
 /// A host clip tracked from x 0.1 at file 0 s to x 0.6 at 4 s, and white
 /// `text` pinned to that surface on the track above.
 fn scene(text: &str) -> Sequence {
+    scene_losing(text, None, Default::default())
+}
+
+/// [`scene`], the track lost from `lost_from` file seconds on (the keys
+/// there holding the last good place), the pin doing `on_loss` there.
+fn scene_losing(text: &str, lost_from: Option<f64>, on_loss: klipp_timeline::PinLoss) -> Sequence {
     let mut seq = Sequence::new_default();
     seq.resolution = klipp_core::Resolution { width: W, height: H };
     let mut host = Clip::media(MediaId::new(), tc(0.0), tc(4.0), tc(0.0), tc(4.0));
@@ -45,7 +51,18 @@ fn scene(text: &str) -> Sequence {
         name: "Wall".into(),
         corners: quad(0.1),
         reference_secs: 0.0,
-        keys: vec![SurfaceKey::at_corners(0.0, &quad(0.1), &quad(0.1)).unwrap(), SurfaceKey::at_corners(4.0, &quad(0.1), &quad(0.6)).unwrap()],
+        keys: match lost_from {
+            None => vec![SurfaceKey::at_corners(0.0, &quad(0.1), &quad(0.1)).unwrap(), SurfaceKey::at_corners(4.0, &quad(0.1), &quad(0.6)).unwrap()],
+            // A key every half second, lost from `from` on, held there.
+            Some(from) => (0..=8)
+                .map(|k| {
+                    let t = k as f64 * 0.5;
+                    let x = 0.1 + 0.125 * t.min(from) as f32;
+                    let key = SurfaceKey::at_corners(t, &quad(0.1), &quad(x)).unwrap();
+                    if t >= from { SurfaceKey { state: klipp_timeline::TrackState::Lost, confidence: Some(0.0), ..key } } else { key }
+                })
+                .collect(),
+        },
         source_size: [W, H],
         media_fps: 0.0,
         track_area: None,
@@ -54,13 +71,36 @@ fn scene(text: &str) -> Sequence {
     let td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: text.into(), font_size: 300.0, ..Default::default() });
     let [tl, tr, br, bl] = quad(0.1);
     let mut title = TestClip::of(Clip { kind: ClipKind::Title(td), ..Clip::gap(tc(0.0), tc(4.0)) }).effect(E::CornerPin { tl, tr, br, bl }).build();
-    title.surface_pin = Some(SurfacePin { host: host.id, surface: id, picture_size: None, fit: Default::default(), inset: 0.0 });
+    title.surface_pin = Some(SurfacePin { host: host.id, surface: id, picture_size: None, fit: Default::default(), inset: 0.0, on_loss });
     let mut video = Track::new("V1", TrackKind::Video);
     video.clips = vec![host];
     let mut words = Track::new("T1", TrackKind::Text);
     words.clips = vec![title];
     seq.tracks = vec![words, video];
     seq
+}
+
+/// The brightest red level in the frame.
+fn peak(px: &[u8]) -> u8 {
+    px.chunks_exact(4).map(|p| p[0]).max().unwrap_or(0)
+}
+
+/// The frame at `secs`, on the CPU path and, when there is one, the GPU
+/// stack, which must agree.
+fn frame(seq: &Sequence, secs: f64) -> Vec<u8> {
+    let mut cpu = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+    cpu.set_gpu_enabled(false);
+    let want = klipp_effects::linear_f32_rgba_to_srgb_u8(&cpu.render(seq, tc(secs), W, H, &mut Nothing, RenderOptions::default()));
+    let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+    r.set_gpu_enabled(true);
+    match r.render_display_u8_on_gpu(seq, tc(secs), W, H, &mut Nothing, RenderOptions::default()) {
+        Some((stack, _)) => {
+            let worst = stack.iter().zip(&want).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap_or(0);
+            assert!(worst <= 3, "at {secs} s the stack differs from the CPU path by {worst} levels");
+        }
+        None => assert!(!required(), "no GPU stack"),
+    }
+    want
 }
 
 /// The box round every lit pixel: x0, y0, x1, y1, in fractions.
@@ -121,3 +161,22 @@ fn a_pinned_titles_new_text_is_drawn_on_its_surface() {
     assert!(within(after, quad(0.35), 0.01), "the new text on the surface: {after:?}");
     assert!(before != after, "the new text is what is drawn: {before:?} vs {after:?}");
 }
+
+/// #2751: where the surface's track is lost, a pin set to hide is gone,
+/// one set to fade dims over its fade, and one set to hold (the default)
+/// stays at the last good place, on the GPU stack as on the CPU path.
+#[test]
+fn a_pinned_title_hides_fades_or_holds_where_its_track_is_lost() {
+    use klipp_timeline::PinLoss;
+    let hold = scene_losing("Klipp", Some(2.0), PinLoss::Hold);
+    let held = peak(&frame(&hold, 3.0));
+    assert!(held > 200, "held: still drawn ({held})");
+    assert!(within(lit(&frame(&hold, 3.0)), quad(0.35), 0.01), "at the last good place");
+    let hide = scene_losing("Klipp", Some(2.0), PinLoss::Hide);
+    assert!(peak(&frame(&hide, 1.5)) > 200, "followed: drawn");
+    assert!(peak(&frame(&hide, 3.0)) < 8, "lost: hidden ({})", peak(&frame(&hide, 3.0)));
+    let fade = scene_losing("Klipp", Some(2.0), PinLoss::Fade { secs: 1.0 });
+    let (at_loss, half, after) = (peak(&frame(&fade, 1.9)), peak(&frame(&fade, 2.5)), peak(&frame(&fade, 3.5)));
+    assert!(at_loss > 200 && half > 40 && half < at_loss - 30 && after < 8, "fading: {at_loss} then {half} then {after}");
+}
+

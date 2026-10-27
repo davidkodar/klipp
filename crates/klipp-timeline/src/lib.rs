@@ -99,7 +99,7 @@ pub mod surface;
 #[cfg(any(test, feature = "test-clip"))]
 pub mod test_clip;
 pub mod track_automation;
-pub use surface::{PinFit, Surface, SurfaceKey, SurfacePin, TrackState};
+pub use surface::{PinFit, PinLoss, Surface, SurfaceKey, SurfacePin, TrackState};
 pub use shared::{SequenceRead, SequenceRevision, SequenceWrite, SharedSequence};
 
 pub use klipp_core::title_motion::{Animator, AnimatorProps, RangeSelector, SelectOrder, SelectShape, SelectUnit, UnitPose, CrawlDirection, CubicBezier, EdgeFade, Easing, LoopGeometry, LoopPose, Motion, MotionKind, ScrollDirection, StaggerUnit, TitleLoop, TitleMotion};

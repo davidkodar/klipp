@@ -751,14 +751,18 @@ exist until the plan runs.
   It is refused through a retimed clip.
 - `format {width, height, fps?}`: set the sequence's picture size and
   optionally its rate. Fit the picture rather than stretching it.
-- `pin {clip_id, media_id | layer, surface?, from?, to?, fit?, inset?}`:
+- `pin {clip_id, media_id | layer, surface?, from?, to?, fit?, inset?, on_loss?, fade_secs?}`:
   a picture, video or still, onto a surface tracked in the clip (a phone
   screen, a sign, a monitor): it goes on a video track above, following
   the surface as the shot moves, from `from` to `to` (the clip's edges
   when left out). Or `layer`, a clip already on the timeline (a title,
   a graphic, a generator), is pinned where it is over its own time,
   without `from`/`to`: text on a wall stays a title, edited with
-  `set_text` and its style as before. `surface` is the id or name `klipp_track_surface` gave;
+  `set_text` and its style as before. `on_loss` is what it does where
+  the surface's track is lost (klipp_list_clips' `lost`): `hold` the
+  last good place (the default), `hide`, or `fade` out over `fade_secs`
+  (0.3). A sign that leaves the shot hides or fades; pin again with the
+  same layer to change it. `surface` is the id or name `klipp_track_surface` gave;
   left out, the clip's latest. `fit` is `stretch` (onto the four corners)
   or `fit` (its own shape kept, in the middle); left out, it stretches
   when the shapes nearly match and fits when they do not. `inset` leaves

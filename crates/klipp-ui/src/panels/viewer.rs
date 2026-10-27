@@ -5483,6 +5483,8 @@ impl ViewerPanel {
                 to: None,
                 fit: None,
                 inset: Some(SURFACE_DROP_INSET),
+                on_loss: None,
+                fade_secs: None,
             };
             state.pending_doc_ops.push(crate::state::DocOpsRequest { label: format!("Pin to {}", surface.name), ops: vec![op], independent: false });
             state.dragging_media = None;

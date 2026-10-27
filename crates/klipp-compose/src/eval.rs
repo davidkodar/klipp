@@ -213,6 +213,32 @@ pub fn surface_pin_corners(
     klipp_timeline::surface::pin_frame_corners(&target, pin.picture_size, frame)
 }
 
+/// How much of pinned `clip` shows at `time` (#2751): all of it while
+/// its surface is followed, and where the track is lost what its pin's
+/// `on_loss` says: still all (hold), none (hide), or less and less over
+/// the fade. 1 for a clip not pinned.
+pub fn surface_pin_presence(clip: &klipp_timeline::Clip, seq: &klipp_timeline::Sequence, time: klipp_core::Timecode, fps: f64) -> f32 {
+    let Some(pin) = clip.surface_pin else { return 1.0 };
+    if pin.on_loss == klipp_timeline::PinLoss::Hold {
+        return 1.0;
+    }
+    let carries = |c: &&klipp_timeline::Clip| c.surfaces.iter().any(|s| s.id == pin.surface);
+    let under = |c: &&klipp_timeline::Clip| c.timeline_in <= time && time < c.timeline_out;
+    let clips = || seq.tracks.iter().flat_map(|t| t.clips.iter());
+    let Some(host) = clips()
+        .find(|c| c.id == pin.host && carries(c) && under(c))
+        .or_else(|| clips().find(|c| carries(c) && under(c)))
+        .or_else(|| clips().find(|c| c.id == pin.host && carries(c)))
+    else {
+        return 1.0;
+    };
+    let Some(surface) = host.surfaces.iter().find(|s| s.id == pin.surface) else { return 1.0 };
+    let elapsed = (time - host.timeline_in).to_secs_f64();
+    // File seconds lost, as the timeline runs them.
+    let lost = surface.lost_for(host.source_secs_at(elapsed, fps)).map(|secs| secs / host.speed.abs().max(1e-6));
+    pin.on_loss.presence(lost)
+}
+
 /// Evaluate a single clip's *own* transform — keyframes + modifiers
 /// resolved against the clip's `BuiltinEffect::Transform` defaults
 /// (or the conventional `(0,0,1,1,0,0.5,0.5)` if no enabled Transform effect
