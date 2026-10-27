@@ -15269,11 +15269,11 @@ fn grade_smoothstep(lo: f32, hi: f32, x: f32) -> f32 {
     let t = clamp((x - lo) / (hi - lo), 0.0, 1.0);
     return t * t * (3.0 - 2.0 * t);
 }
-// (highlights, shadows, whites, blacks)
+// (highlights, shadows, whites, blacks): klipp_grade_model::tone_weights.
 fn tone_weights(l: f32) -> vec4<f32> {
     return vec4<f32>(
-        grade_smoothstep(0.45, 0.85, l),
-        1.0 - grade_smoothstep(0.30, 0.65, l),
+        0.22 * grade_smoothstep(MID_GREY_ENCODED, 0.85, l),
+        0.13 * grade_smoothstep(0.0, 0.22, l) * (1.0 - grade_smoothstep(0.22, MID_GREY_ENCODED, l)),
         grade_smoothstep(0.65, 0.95, l),
         1.0 - grade_smoothstep(0.10, 0.40, l),
     );

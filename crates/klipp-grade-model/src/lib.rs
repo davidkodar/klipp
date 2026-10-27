@@ -261,15 +261,28 @@ fn smoothstep(lo: f32, hi: f32, x: f32) -> f32 {
 /// shadows, whites, blacks). Whites and blacks are the ends, highlights
 /// and shadows the broader bands either side of mid grey; each control
 /// adds `amount × weight` to the encoding.
+///
+/// Shadows lifts or sinks the quarter tones, never black or mid grey
+/// themselves; highlights the tones from mid grey up, most at white
+/// (#2768). Both are scaled so that ±0.3 is a moderate move (about ten
+/// and seventeen levels of eight-bit at their peak) and ±1 a strong
+/// one, and neither turns the tones over: their slope stays under one.
 #[inline]
 pub fn tone_weights(l: f32) -> [f32; 4] {
     [
-        smoothstep(0.45, 0.85, l),
-        1.0 - smoothstep(0.30, 0.65, l),
+        HIGHLIGHTS_REACH * smoothstep(MID_GREY_ENCODED, 0.85, l),
+        SHADOWS_REACH * smoothstep(0.0, SHADOWS_PEAK, l) * (1.0 - smoothstep(SHADOWS_PEAK, MID_GREY_ENCODED, l)),
         smoothstep(0.65, 0.95, l),
         1.0 - smoothstep(0.10, 0.40, l),
     ]
 }
+
+/// How far highlights and shadows at ±1 move the encoding at their
+/// band's peak (#2768).
+pub const HIGHLIGHTS_REACH: f32 = 0.22;
+pub const SHADOWS_REACH: f32 = 0.13;
+/// The encoded luma the shadows band peaks at: the quarter tones.
+pub const SHADOWS_PEAK: f32 = 0.22;
 
 /// The log wheels' band weights at encoded luma `l`: (low, mid, high),
 /// Gaussian bands about the shadows, mid grey and the highlights. Each
@@ -541,14 +554,48 @@ mod tests {
     #[test]
     fn the_bands_sit_on_the_tones_they_name() {
         let [hi, sh, wh, bl] = tone_weights(grade_encode(0.0));
-        assert!((hi, sh, wh, bl) == (0.0, 1.0, 0.0, 1.0), "black: {:?}", (hi, sh, wh, bl));
+        assert!((hi, sh, wh, bl) == (0.0, 0.0, 0.0, 1.0), "black: {:?}", (hi, sh, wh, bl));
         let [hi, sh, wh, bl] = tone_weights(1.0);
-        assert!((hi, sh, wh, bl) == (1.0, 0.0, 1.0, 0.0), "white: {:?}", (hi, sh, wh, bl));
+        assert!((hi, sh, wh, bl) == (HIGHLIGHTS_REACH, 0.0, 1.0, 0.0), "white: {:?}", (hi, sh, wh, bl));
         let [hi, sh, wh, bl] = tone_weights(MID_GREY_ENCODED);
-        assert!(hi < 0.1 && sh < 0.5 && wh == 0.0 && bl == 0.0, "mid grey: {:?}", (hi, sh, wh, bl));
+        assert!(hi == 0.0 && sh == 0.0 && wh == 0.0 && bl == 0.0, "mid grey: {:?}", (hi, sh, wh, bl));
+        assert_eq!(tone_weights(SHADOWS_PEAK)[1], SHADOWS_REACH, "the quarter tones");
         let [low, mid, high] = log_wheel_weights(MID_GREY_ENCODED);
         assert!(close(mid, 1.0, 1e-6) && low < 0.2 && high < 0.2, "the mid band peaks at mid grey");
         assert!(log_wheel_weights(0.20)[0] > 0.99 && log_wheel_weights(0.78)[2] > 0.99);
+    }
+
+    /// #2768: on a grey ramp, shadows and highlights at ±0.3 are a
+    /// moderate move within their tones, black, mid grey and white held
+    /// where the other band's are; at ±1 a strong one; and at any amount
+    /// the ramp still rises.
+    #[test]
+    fn shadows_and_highlights_are_moderate_within_their_tones() {
+        let levels = |e: f32| e * 255.0;
+        let moved = |hi: f32, sh: f32, e: f32| {
+            let [h, s, _, _] = tone_weights(e);
+            levels(e + hi * h + sh * s) - levels(e)
+        };
+        // Shadows +0.3: black stays, the quarter tones lift about ten
+        // levels, mid grey and up untouched.
+        assert_eq!(moved(0.0, 0.3, 0.0), 0.0, "black");
+        let quarter = moved(0.0, 0.3, SHADOWS_PEAK);
+        assert!((7.0..14.0).contains(&quarter), "quarter tones lift {quarter}");
+        assert!(moved(0.0, 0.3, MID_GREY_ENCODED).abs() < 0.5 && moved(0.0, 0.3, 1.0) == 0.0, "mid grey and white");
+        // Highlights -0.3: white comes down under twenty levels, mid
+        // grey and below untouched.
+        let white = moved(-0.3, 0.0, 1.0);
+        assert!((-20.0..-10.0).contains(&white), "white {white}");
+        assert!(moved(-0.3, 0.0, MID_GREY_ENCODED) == 0.0 && moved(-0.3, 0.0, 0.1) == 0.0, "mid grey and the shadows");
+        // At full, a strong recovery or lift.
+        assert!(moved(-1.0, 0.0, 1.0) < -50.0 && moved(0.0, 1.0, SHADOWS_PEAK) > 30.0);
+        // The ramp still rises at every amount.
+        for a in [-1.0f32, -0.3, 0.3, 1.0] {
+            for (hi, sh) in [(a, 0.0), (0.0, a), (a, a)] {
+                let curve: Vec<f32> = (0..=400).map(|i| { let e = i as f32 / 400.0; let [h, s, _, _] = tone_weights(e); e + hi * h + sh * s }).collect();
+                assert!(curve.windows(2).all(|w| w[1] > w[0]), "highlights {hi}, shadows {sh}: the ramp turns over");
+            }
+        }
     }
 
     /// #900: the ranges move the low and high bands, never past mid grey.
