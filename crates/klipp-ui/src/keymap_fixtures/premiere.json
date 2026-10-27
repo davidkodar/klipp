@@ -1,0 +1,1585 @@
+{
+ "editor": "Premiere Pro",
+ "platform": "Windows",
+ "version": "Current Premiere (helpx now titles it 'Premiere'); default-shortcuts page 'Last updated on Jan 7, 2026', no app version stated",
+ "sources": [
+  {
+   "url": "https://helpx.adobe.com/premiere/desktop/get-started/keyboard-shortcuts/default-keyboard-shortcuts.html",
+   "title": "Premiere keyboard shortcuts | Premiere (heading: Default keyboard shortcuts)",
+   "date_or_version": "Last updated on Jan 7, 2026; read via Internet Archive capture 20261014091708 (live page returns 403)"
+  },
+  {
+   "url": "https://helpx.adobe.com/premiere-pro/using/keyboard-shortcuts.html",
+   "title": "Keyboard shortcuts in Premiere Pro",
+   "date_or_version": "ModifiedDate 2025-06-09; capture 20250821212536 (previous official page; source for playback/trim/navigation keys the 2026 page dropped)"
+  },
+  {
+   "url": "https://helpx.adobe.com/premiere/desktop/edit-projects/change-clip-sequence/select-clips.html",
+   "title": "Select clips",
+   "date_or_version": "ModifiedDate 2026-08-18; capture 20260926103212"
+  },
+  {
+   "url": "https://helpx.adobe.com/premiere/desktop/edit-projects/trim-clips/perform-ripple-edits.html",
+   "title": "Perform ripple edits in Premiere Pro",
+   "date_or_version": "Last updated Mar 23, 2026; capture 20261020044845"
+  },
+  {
+   "url": "https://helpx.adobe.com/premiere/desktop/edit-projects/trim-clips/perform-rolling-edits.html",
+   "title": "Perform rolling edits in Premiere Pro",
+   "date_or_version": "Last updated Aug 22, 2025; capture 20261019054349"
+  },
+  {
+   "url": "https://helpx.adobe.com/premiere/desktop/add-text-images/draw-objects/create-free-form-shapes-for-masking.html",
+   "title": "Create free-form shapes for masking",
+   "date_or_version": "ModifiedDate 2026-01-07; capture 20261023080324"
+  },
+  {
+   "url": "https://helpx.adobe.com/premiere/desktop/edit-projects/change-clip-speed/change-clip-speed-and-duration-using-the-rate-stretch-tool.html",
+   "title": "Change clip speed and duration using the Rate Stretch tool",
+   "date_or_version": "ModifiedDate 2026-01-07; capture 20260913202906"
+  },
+  {
+   "url": "https://helpx.adobe.com/premiere/desktop/add-video-effects/control-effects-and-transitions-using-keyframes/change-keyframe-interpolation-method.html",
+   "title": "Change the keyframe interpolation method",
+   "date_or_version": "Last updated Aug 22, 2025; capture 20260510161159"
+  },
+  {
+   "url": "https://helpx.adobe.com/premiere/desktop/edit-projects/set-up-multi-camera-sequences-for-editing/create-a-multi-camera-source-sequence.html",
+   "title": "Create a multi-camera source sequence",
+   "date_or_version": "Last updated Jan 7, 2026; capture 20261019141945"
+  },
+  {
+   "url": "https://helpx.adobe.com/premiere/desktop/render-and-export/render-sequences-for-playback/play-back-in-a-continuous-loop.html",
+   "title": "Loop playback in Premiere",
+   "date_or_version": "Last updated Aug 18, 2026; capture 20261022001428"
+  },
+  {
+   "url": "https://helpx.adobe.com/premiere/desktop/render-and-export/render-sequences-for-playback/play-clips-with-preroll-and-postroll.html",
+   "title": "Play clips with preroll and postroll",
+   "date_or_version": "ModifiedDate 2026-08-18; capture 20260924041400"
+  },
+  {
+   "url": "https://helpx.adobe.com/premiere/desktop/edit-projects/trim-clips/about-trim-mode.html",
+   "title": "About Trim mode",
+   "date_or_version": "ModifiedDate 2026-08-18; capture 20260913203256"
+  },
+  {
+   "url": "https://helpx.adobe.com/premiere/desktop/get-started/source-and-program-monitor-adjustments/view-safe-zones-in-the-monitors.html",
+   "title": "View safe zones in the monitors",
+   "date_or_version": "ModifiedDate 2026-01-07; capture 20261022001428"
+  },
+  {
+   "url": "https://helpx.adobe.com/premiere/desktop/correct-color/color-mode-fundamentals/about-comparison-view.html",
+   "title": "About Comparison View",
+   "date_or_version": "ModifiedDate 2026-08-18; capture 20260919002759"
+  },
+  {
+   "url": "https://helpx.adobe.com/premiere/desktop/edit-projects/change-clip-sequence/snap-clips.html",
+   "title": "Snap clips",
+   "date_or_version": "ModifiedDate 2026-08-18; capture 20260917215937"
+  },
+  {
+   "url": "https://helpx.adobe.com/premiere/desktop/edit-projects/change-clip-sequence/different-ways-to-move-clips.html",
+   "title": "Different ways to move clips",
+   "date_or_version": "ModifiedDate 2026-04-01; capture 20261023185646"
+  },
+  {
+   "url": "https://helpx.adobe.com/premiere/desktop/edit-projects/change-clip-sequence/navigate-sequences-in-the-timeline.html",
+   "title": "Navigate sequences in the Timeline",
+   "date_or_version": "Last updated Jan 7, 2026; capture 20260921232508"
+  },
+  {
+   "url": "https://helpx.adobe.com/premiere/desktop/render-and-export/export-files/export-a-still-frame.html",
+   "title": "Export a still frame",
+   "date_or_version": "ModifiedDate 2026-01-07; capture 20260925023302"
+  },
+  {
+   "url": "https://helpx.adobe.com/premiere/desktop/get-started/tour-the-workspace/tools-panel-and-options-panel.html",
+   "title": "Tools panel and Options panel",
+   "date_or_version": "ModifiedDate 2026-01-07; capture 20261020071008"
+  },
+  {
+   "url": "https://helpx.adobe.com/premiere/desktop/add-text-images/stylize-text/create-titles.html",
+   "title": "Create titles",
+   "date_or_version": "ModifiedDate 2026-04-08; capture 20261019025218"
+  },
+  {
+   "url": "https://helpx.adobe.com/premiere/desktop/edit-projects/trim-clips/cut-clips.html",
+   "title": "Cut clips in Premiere Pro",
+   "date_or_version": "Last updated Aug 22, 2025; capture 20261019204804"
+  }
+ ],
+ "actions": {
+  "add_audio_crossfade": {
+   "command": "Apply Audio Transition",
+   "keys": [
+    "Ctrl+Shift+D"
+   ],
+   "note": "Applies the default audio transition (a crossfade by default) at the edit nearest the playhead, as Klipp's AddDefaultTransition{audio:true} does."
+  },
+  "add_default_transition": {
+   "command": "Apply Video Transition",
+   "keys": [
+    "Ctrl+D"
+   ],
+   "note": "Applies the default video transition at the nearest edit point (Klipp: 'the default transition at the nearest cut', #918). Premiere's 'Apply Default Transitions to Selection' (Shift+D) works on selected clips instead and is listed under editor_only."
+  },
+  "add_marker": {
+   "command": "Add Marker",
+   "keys": [
+    "M"
+   ],
+   "note": "Markers menu. Note: about-comparison-view.html (2026-08-18) calls it 'Add Marker (Control or Command + M)', contradicting the shortcut table; the table is used."
+  },
+  "clear_in_out": {
+   "command": "Clear In and Out",
+   "keys": [
+    "Ctrl+Shift+X"
+   ]
+  },
+  "clear_in_point": {
+   "command": "Clear In",
+   "keys": [
+    "Ctrl+Shift+I"
+   ]
+  },
+  "clear_out_point": {
+   "command": "Clear Out",
+   "keys": [
+    "Ctrl+Shift+O"
+   ]
+  },
+  "close_project": {
+   "command": "Close Project",
+   "keys": [
+    "Ctrl+Shift+W"
+   ],
+   "note": "Premiere's plain 'Close' (Ctrl+W) closes the active panel item, not the project."
+  },
+  "copy_clip": {
+   "command": "Copy",
+   "keys": [
+    "Ctrl+C"
+   ]
+  },
+  "create_multicam": {
+   "command": "Create Multi-Camera Source Sequence",
+   "keys": [],
+   "note": "Clip > Create Multi-Camera Source Sequence; no key in the Clip menu table on the default-shortcuts page (absence, not an explicit statement)."
+  },
+  "create_title": {
+   "command": "Text",
+   "keys": [
+    "Ctrl+T"
+   ],
+   "note": "Graphics and Titles > New Layer > Text."
+  },
+  "cut_clip": {
+   "command": "Cut",
+   "keys": [
+    "Ctrl+X"
+   ]
+  },
+  "delete_clip": {
+   "command": "Ripple Delete",
+   "keys": [
+    "Shift+Delete",
+    "Alt+Backspace"
+   ],
+   "note": "Edit menu Ripple Delete = Shift+Delete; Timeline panel Ripple Delete = Alt+Backspace. Klipp's Delete closes the gap."
+  },
+  "deselect_all": {
+   "command": "Deselect All",
+   "keys": [
+    "Ctrl+Shift+A"
+   ]
+  },
+  "export": {
+   "command": "Export Media",
+   "keys": [
+    "Ctrl+M"
+   ]
+  },
+  "extend_edit": {
+   "command": "Extend Selected Edit to Playhead",
+   "keys": [
+    "E"
+   ]
+  },
+  "extract_edit": {
+   "command": "Extract",
+   "keys": [
+    "'"
+   ]
+  },
+  "focus_panel_search": {
+   "command": "Select Find Box",
+   "keys": [
+    "Shift+F"
+   ],
+   "note": "Only on the 2025 page's application-shortcuts list (headed 'Multi-camera' there); dropped from the 2026 page. Edit > Find... (Ctrl+F) opens a find dialog and is listed under editor_only."
+  },
+  "go_to_end": {
+   "command": "Go to Sequence-Clip End",
+   "keys": [
+    "End"
+   ],
+   "note": "2025 page only."
+  },
+  "go_to_start": {
+   "command": "Go to Sequence-Clip Start",
+   "keys": [
+    "Home"
+   ],
+   "note": "2025 page only."
+  },
+  "group_clips": {
+   "command": "Group",
+   "keys": [
+    "Ctrl+G"
+   ]
+  },
+  "import_media": {
+   "command": "Import...",
+   "keys": [
+    "Ctrl+I"
+   ]
+  },
+  "insert_edit": {
+   "command": "Insert",
+   "keys": [
+    ","
+   ]
+  },
+  "key_ease_in": {
+   "command": "Ease In",
+   "keys": [],
+   "note": "Keyframe interpolation context-menu item; no key on either shortcut table (absence)."
+  },
+  "key_ease_out": {
+   "command": "Ease Out",
+   "keys": [],
+   "note": "As key_ease_in."
+  },
+  "key_linear": {
+   "command": "Linear",
+   "keys": [],
+   "note": "As key_ease_in."
+  },
+  "lift_clip": {
+   "command": "Clear",
+   "keys": [
+    "Delete",
+    "Backspace"
+   ],
+   "note": "Edit > Clear = Delete; Timeline panel 'Clear Selection' = Backspace. Leaves a gap."
+  },
+  "lift_edit": {
+   "command": "Lift",
+   "keys": [
+    ";"
+   ]
+  },
+  "mask_tool": {
+   "command": "Pen Tool",
+   "keys": [
+    "P"
+   ],
+   "note": "'Use the Pen Tool (P) to create ... shapes for masking.'"
+  },
+  "match_frame_program_to_source": {
+   "command": "Match Frame",
+   "keys": [
+    "F"
+   ]
+  },
+  "match_frame_source_to_program": {
+   "command": "Reverse Match Frame",
+   "keys": [
+    "Shift+R"
+   ]
+  },
+  "multicam_angle_1": {
+   "command": "Select Camera 1",
+   "keys": [
+    "1"
+   ],
+   "note": "2025 page only."
+  },
+  "multicam_angle_2": {
+   "command": "Select Camera 2",
+   "keys": [
+    "2"
+   ],
+   "note": "2025 page only."
+  },
+  "multicam_angle_3": {
+   "command": "Select Camera 3",
+   "keys": [
+    "3"
+   ],
+   "note": "2025 page only."
+  },
+  "multicam_angle_4": {
+   "command": "Select Camera 4",
+   "keys": [
+    "4"
+   ],
+   "note": "2025 page only."
+  },
+  "multicam_angle_5": {
+   "command": "Select Camera 5",
+   "keys": [
+    "5"
+   ],
+   "note": "2025 page only."
+  },
+  "multicam_angle_6": {
+   "command": "Select Camera 6",
+   "keys": [
+    "6"
+   ],
+   "note": "2025 page only."
+  },
+  "multicam_angle_7": {
+   "command": "Select Camera 7",
+   "keys": [
+    "7"
+   ],
+   "note": "2025 page only."
+  },
+  "multicam_angle_8": {
+   "command": "Select Camera 8",
+   "keys": [
+    "8"
+   ],
+   "note": "2025 page only."
+  },
+  "multicam_angle_9": {
+   "command": "Select Camera 9",
+   "keys": [
+    "9"
+   ],
+   "note": "2025 page only."
+  },
+  "new_project": {
+   "command": "New Project …",
+   "keys": [
+    "Ctrl+Alt+N"
+   ]
+  },
+  "next_edit_point": {
+   "command": "Go to Next Edit Point",
+   "keys": [
+    "ArrowDown"
+   ],
+   "note": "2025 page only."
+  },
+  "prev_edit_point": {
+   "command": "Go to Previous Edit Point",
+   "keys": [
+    "ArrowUp"
+   ],
+   "note": "2025 page only."
+  },
+  "next_marker": {
+   "command": "Go to Next Marker",
+   "keys": [
+    "Shift+M"
+   ]
+  },
+  "prev_marker": {
+   "command": "Go to Previous Marker",
+   "keys": [
+    "Ctrl+Shift+M"
+   ]
+  },
+  "nudge_clips_back": {
+   "command": "Nudge Clip Selection Left One Frame",
+   "keys": [
+    "Alt+ArrowLeft"
+   ],
+   "note": "Timeline panel. Premiere's Alt+, / Alt+. are Slide Clip Selection, not nudge. different-ways-to-move-clips.html (2026-04-01) says plain arrows nudge and Ctrl+arrows nudge further, which contradicts the table; the table is used."
+  },
+  "nudge_clips_forward": {
+   "command": "Nudge Clip Selection Right One Frame",
+   "keys": [
+    "Alt+ArrowRight"
+   ],
+   "note": "As nudge_clips_back."
+  },
+  "nudge_clips_back_many": {
+   "command": "Nudge Clip Selection Left Five Frames",
+   "keys": [
+    "Shift+Alt+ArrowLeft"
+   ],
+   "note": "Five frames in Premiere, ten in Klipp."
+  },
+  "nudge_clips_forward_many": {
+   "command": "Nudge Clip Selection Right Five Frames",
+   "keys": [
+    "Shift+Alt+ArrowRight"
+   ],
+   "note": "Five frames in Premiere, ten in Klipp."
+  },
+  "open_project": {
+   "command": "Open Project...",
+   "keys": [
+    "Ctrl+O"
+   ]
+  },
+  "overwrite_edit": {
+   "command": "Overwrite",
+   "keys": [
+    "."
+   ]
+  },
+  "paste_attributes": {
+   "command": "Paste Attributes",
+   "keys": [
+    "Ctrl+Alt+V"
+   ]
+  },
+  "paste_clip": {
+   "command": "Paste",
+   "keys": [
+    "Ctrl+V"
+   ]
+  },
+  "paste_insert": {
+   "command": "Paste Insert",
+   "keys": [
+    "Ctrl+Shift+V"
+   ],
+   "note": "Listed in the Edit section of the 2025 page; absent from the 2026 Edit menu table."
+  },
+  "play_around_edit": {
+   "command": "Play Around",
+   "keys": [
+    "Shift+K"
+   ],
+   "note": "Premiere plays a few seconds before and after the playhead (play-clips-with-preroll-and-postroll.html: 'Press Shift + K'); Klipp loops around the edit. Close, not identical."
+  },
+  "play_in_to_out": {
+   "command": "Play In to Out",
+   "keys": [
+    "Ctrl+Shift+Space"
+   ],
+   "note": "2025 page only."
+  },
+  "play_pause": {
+   "command": "Play-Stop Toggle",
+   "keys": [
+    "Space"
+   ],
+   "note": "2025 page; 2026 page lists Space only as Metadata panel 'Play'."
+  },
+  "quit": {
+   "command": "Exit",
+   "keys": [
+    "Ctrl+Q"
+   ]
+  },
+  "redo": {
+   "command": "Redo",
+   "keys": [
+    "Ctrl+Shift+Z"
+   ]
+  },
+  "ripple_trim_head": {
+   "command": "Ripple Trim Previous Edit To Playhead",
+   "keys": [
+    "Q"
+   ],
+   "note": "Same Premiere command as trim_in_to_playhead (Klipp's trim_in_to_playhead dispatches RippleTrimHead); one key can serve only one action, so the preset gives Q to trim_in_to_playhead. Premiere's Alt+[ is 'Set Work Area Bar In Point'."
+  },
+  "ripple_trim_tail": {
+   "command": "Ripple Trim Next Edit To Playhead",
+   "keys": [
+    "W"
+   ],
+   "note": "As ripple_trim_head; W goes to trim_out_to_playhead. Premiere's Alt+] is 'Set Work Area Bar Out Point'."
+  },
+  "save_project": {
+   "command": "Save",
+   "keys": [
+    "Ctrl+S"
+   ]
+  },
+  "save_project_as": {
+   "command": "Save As...",
+   "keys": [
+    "Ctrl+Shift+S"
+   ]
+  },
+  "select_all": {
+   "command": "Select All",
+   "keys": [
+    "Ctrl+A"
+   ]
+  },
+  "select_tool": {
+   "command": "Selection Tool",
+   "keys": [
+    "V"
+   ],
+   "note": "'Selection Tool (V)'."
+  },
+  "set_in_point": {
+   "command": "Mark In",
+   "keys": [
+    "I"
+   ]
+  },
+  "set_out_point": {
+   "command": "Mark Out",
+   "keys": [
+    "O"
+   ]
+  },
+  "set_range_to_clip": {
+   "command": "Mark Clip",
+   "keys": [
+    "X"
+   ]
+  },
+  "shuttle_forward": {
+   "command": "Shuttle Right",
+   "keys": [
+    "L"
+   ],
+   "note": "2025 page only; play-active-sequence-in-program-monitor.html also describes J/K/L."
+  },
+  "shuttle_pause": {
+   "command": "Shuttle Stop",
+   "keys": [
+    "K"
+   ]
+  },
+  "shuttle_reverse": {
+   "command": "Shuttle Left",
+   "keys": [
+    "J"
+   ]
+  },
+  "split_at_playhead": {
+   "command": "Add Edit",
+   "keys": [
+    "Ctrl+K"
+   ]
+  },
+  "step_backward": {
+   "command": "Step Back",
+   "keys": [
+    "ArrowLeft"
+   ],
+   "note": "2025 page; navigate-sequences-in-the-timeline.html (2026) also says Left/Right move one frame."
+  },
+  "step_forward": {
+   "command": "Step Forward",
+   "keys": [
+    "ArrowRight"
+   ]
+  },
+  "toggle_audio_skim": {
+   "command": "Toggle Audio During Scrubbing",
+   "keys": [
+    "Shift+S"
+   ],
+   "note": "2025 page only."
+  },
+  "toggle_fullscreen": {
+   "command": "Toggle Full Screen",
+   "keys": [
+    "Ctrl+`"
+   ],
+   "note": "2025 page only."
+  },
+  "toggle_loop": {
+   "command": "Loop Playback",
+   "keys": [],
+   "note": "A monitor button (added via Button Editor); no key given. Ctrl+L is 'Loop' only inside the Audio Track Mixer, Effect Controls and Metadata panels; application-wide Ctrl+L is Clip > Link."
+  },
+  "toggle_multicam_mode": {
+   "command": "Toggle Multi-Camera View",
+   "keys": [
+    "Shift+0"
+   ],
+   "note": "2025 page only."
+  },
+  "toggle_safe_areas": {
+   "command": "Safe Margins",
+   "keys": [],
+   "note": "Monitor Settings / panel menu item; no key given (absence)."
+  },
+  "toggle_skimming": {
+   "command": "Hover Scrub",
+   "keys": [
+    "Shift+H"
+   ],
+   "note": "Project panel shortcut (hover scrub of thumbnails)."
+  },
+  "toggle_snap": {
+   "command": "Snap in Timeline",
+   "keys": [
+    "S"
+   ]
+  },
+  "trim_edit_back": {
+   "command": "Trim Backward",
+   "keys": [
+    "Ctrl+ArrowLeft"
+   ],
+   "note": "2025 page only."
+  },
+  "trim_edit_forward": {
+   "command": "Trim Forward",
+   "keys": [
+    "Ctrl+ArrowRight"
+   ],
+   "note": "2025 page only."
+  },
+  "trim_edit_back_many": {
+   "command": "Trim Backward Many",
+   "keys": [
+    "Ctrl+Shift+ArrowLeft"
+   ],
+   "note": "2025 page only; 'many' is Premiere's large trim offset, not ten frames."
+  },
+  "trim_edit_forward_many": {
+   "command": "Trim Forward Many",
+   "keys": [
+    "Ctrl+Shift+ArrowRight"
+   ],
+   "note": "As trim_edit_back_many."
+  },
+  "trim_in_to_playhead": {
+   "command": "Ripple Trim Previous Edit To Playhead",
+   "keys": [
+    "Q"
+   ],
+   "note": "Moves the head of the clip under the playhead to it, with ripple. Non-ripple 'Trim Previous Edit to Playhead' is Ctrl+Alt+Q (editor_only)."
+  },
+  "trim_out_to_playhead": {
+   "command": "Ripple Trim Next Edit To Playhead",
+   "keys": [
+    "W"
+   ],
+   "note": "Non-ripple 'Trim Next Edit to Playhead' is Ctrl+Alt+W (editor_only)."
+  },
+  "trim_tool": {
+   "command": "Ripple Edit Tool / Rolling Edit Tool",
+   "keys": [
+    "B",
+    "N"
+   ],
+   "note": "'Use B on your keyboard to activate the Ripple Edit tool' (perform-ripple-edits.html); 'Use N ... Rolling Edit tool' (perform-rolling-edits.html, https://helpx.adobe.com/premiere/desktop/edit-projects/trim-clips/perform-rolling-edits.html)."
+  },
+  "undo": {
+   "command": "Undo",
+   "keys": [
+    "Ctrl+Z"
+   ]
+  },
+  "ungroup_clips": {
+   "command": "Ungroup",
+   "keys": [
+    "Ctrl+Shift+G"
+   ]
+  },
+  "zoom_in": {
+   "command": "Zoom In",
+   "keys": [
+    "="
+   ],
+   "note": "Sequence menu. navigate-sequences-in-the-timeline.html prose says '+'; the table says '='."
+  },
+  "zoom_out": {
+   "command": "Zoom Out",
+   "keys": [
+    "-"
+   ]
+  }
+ },
+ "loose": {
+  "select_edit_point": {
+   "command": "Trim Edit",
+   "keys": [
+    "Shift+T"
+   ],
+   "note": "Sequence > Trim Edit selects the edit point nearest the playhead and enters Trim mode; pressing again exits (about-trim-mode.html). Klipp's second press cycles the side instead. 2025 page also lists 'Toggle Trim Type' on Shift+T."
+  },
+  "toggle_before_after": {
+   "command": "Comparison View",
+   "keys": [],
+   "note": "Color-mode Comparison View (graded vs ungraded split); the page gives no key (absence)."
+  },
+  "toggle_audio_mixer": {
+   "command": "Audio Track Mixer",
+   "keys": [
+    "Shift+6"
+   ],
+   "note": "Window menu: opens/focuses the panel rather than toggling; left out of the preset by convention."
+  },
+  "toggle_browser_panel": {
+   "command": "Projects",
+   "keys": [
+    "Shift+1"
+   ],
+   "note": "Window menu; opens/focuses, not a toggle."
+  },
+  "toggle_inspector_panel": {
+   "command": "Effect Controls",
+   "keys": [
+    "Shift+5"
+   ],
+   "note": "Window menu; opens/focuses, not a toggle."
+  },
+  "toggle_color_panel": {
+   "command": "Color (workspace)",
+   "keys": [
+    "Shift+Alt+5"
+   ],
+   "note": "Window > Workspaces > Color; switches workspace, not a panel toggle."
+  }
+ },
+ "not_checked": {
+  "blade_tool": "Premiere command or its default key not found on a current official page; see unverifiable",
+  "duplicate_clip": "Premiere command or its default key not found on a current official page; see unverifiable",
+  "extract_frame_to_bin": "Premiere command or its default key not found on a current official page; see unverifiable",
+  "extract_frame_to_file": "Premiere command or its default key not found on a current official page; see unverifiable",
+  "fit_to_window": "Premiere command or its default key not found on a current official page; see unverifiable",
+  "freeze_frame": "Premiere command or its default key not found on a current official page; see unverifiable",
+  "next_keyframe": "Premiere command or its default key not found on a current official page; see unverifiable",
+  "preferences": "No current fetched page names the Preferences command or a key for it.",
+  "prev_keyframe": "Premiere command or its default key not found on a current official page; see unverifiable",
+  "replace_edit": "Premiere command or its default key not found on a current official page; see unverifiable",
+  "select_backward": "Premiere command or its default key not found on a current official page; see unverifiable",
+  "select_forward": "Premiere command or its default key not found on a current official page; see unverifiable",
+  "text_tool": "Premiere command or its default key not found on a current official page; see unverifiable",
+  "toggle_keyframe": "Premiere command or its default key not found on a current official page; see unverifiable",
+  "key_ease_in_out": "change-keyframe-interpolation-method.html lists Linear, Bezier, Auto Bezier, Continuous Bezier, Hold, Ease In, Ease Out; no ease-in-and-out item. Listed under klipp_only."
+ },
+ "not_in_editor": [
+  "ai_cancel_inference",
+  "ai_detect_objects",
+  "ai_isolate_object",
+  "ai_remove_background",
+  "ai_run_inference",
+  "add_clip_marker",
+  "command_palette",
+  "connect_clip",
+  "disconnect_clip",
+  "copy_attributes",
+  "copy_color_nodes",
+  "paste_color_nodes",
+  "cycle_scope_mode",
+  "fit_to_fill_edit",
+  "leave_compound",
+  "move_clips_down_a_track",
+  "move_clips_up_a_track",
+  "next_color_node",
+  "prev_color_node",
+  "place_on_top_edit",
+  "printer_blue_down",
+  "printer_blue_up",
+  "printer_green_down",
+  "printer_green_up",
+  "printer_master_down",
+  "printer_master_up",
+  "printer_red_down",
+  "printer_red_up",
+  "range_tool",
+  "reset_current_node",
+  "select_track_backward",
+  "select_track_clips",
+  "select_track_forward",
+  "swap_stacked_focus",
+  "toggle_ai_tools_panel",
+  "toggle_edit_mode",
+  "toggle_false_color",
+  "toggle_grid_overlay",
+  "toggle_keyframe_editor",
+  "toggle_matte_preview",
+  "toggle_node_bypass",
+  "toggle_perf_overlay",
+  "toggle_perf_recording",
+  "toggle_project_notes",
+  "toggle_scopes",
+  "toggle_subtitle_editor",
+  "toggle_zebra",
+  "zoom_to_selection"
+ ],
+ "editor_only": [
+  {
+   "command": "New Sequence…",
+   "keys": [
+    "Ctrl+N"
+   ]
+  },
+  {
+   "command": "Close",
+   "keys": [
+    "Ctrl+W"
+   ]
+  },
+  {
+   "command": "Save a Copy...",
+   "keys": [
+    "Ctrl+Alt+S"
+   ]
+  },
+  {
+   "command": "Import from Media Browser",
+   "keys": [
+    "Ctrl+Alt+I"
+   ]
+  },
+  {
+   "command": "Send to Media Encoder",
+   "keys": [
+    "Shift+Alt+M"
+   ]
+  },
+  {
+   "command": "Get Media File Properties for Selection...",
+   "keys": [
+    "Ctrl+Shift+H"
+   ]
+  },
+  {
+   "command": "Bin (File > New)",
+   "keys": [
+    "Ctrl+/"
+   ]
+  },
+  {
+   "command": "Duplicate",
+   "keys": [
+    "Ctrl+Shift+/"
+   ]
+  },
+  {
+   "command": "Find...",
+   "keys": [
+    "Ctrl+F"
+   ]
+  },
+  {
+   "command": "Edit Original",
+   "keys": [
+    "Ctrl+E"
+   ]
+  },
+  {
+   "command": "Keyboard Shortcuts",
+   "keys": [
+    "Ctrl+Alt+K"
+   ]
+  },
+  {
+   "command": "Make Subclip...",
+   "keys": [
+    "Ctrl+U"
+   ]
+  },
+  {
+   "command": "Audio Channels...",
+   "keys": [
+    "Shift+G"
+   ]
+  },
+  {
+   "command": "Audio Gain…",
+   "keys": [
+    "G"
+   ]
+  },
+  {
+   "command": "Speed/Duration...",
+   "keys": [
+    "Ctrl+R"
+   ]
+  },
+  {
+   "command": "Enable",
+   "keys": [
+    "Shift+E"
+   ]
+  },
+  {
+   "command": "Link",
+   "keys": [
+    "Ctrl+L"
+   ]
+  },
+  {
+   "command": "Render Effects In to Out",
+   "keys": [
+    "Enter"
+   ]
+  },
+  {
+   "command": "Add Edit to All Tracks",
+   "keys": [
+    "Ctrl+Shift+K"
+   ]
+  },
+  {
+   "command": "Apply Default Transitions to Selection",
+   "keys": [
+    "Shift+D"
+   ]
+  },
+  {
+   "command": "Next in Sequence",
+   "keys": [
+    "Shift+;"
+   ]
+  },
+  {
+   "command": "Previous in Sequence",
+   "keys": [
+    "Ctrl+Shift+;"
+   ]
+  },
+  {
+   "command": "Make Subsequence",
+   "keys": [
+    "Shift+U"
+   ]
+  },
+  {
+   "command": "Add new caption track",
+   "keys": [
+    "Ctrl+Alt+A"
+   ]
+  },
+  {
+   "command": "Add caption at playhead",
+   "keys": [
+    "Ctrl+Alt+C"
+   ]
+  },
+  {
+   "command": "Go to the next caption segment",
+   "keys": [
+    "Ctrl+Alt+ArrowDown"
+   ]
+  },
+  {
+   "command": "Go to the previous caption segment",
+   "keys": [
+    "Ctrl+Alt+ArrowUp"
+   ]
+  },
+  {
+   "command": "Mark Selection",
+   "keys": [
+    "/"
+   ]
+  },
+  {
+   "command": "Go to In",
+   "keys": [
+    "Shift+I"
+   ]
+  },
+  {
+   "command": "Go to Out",
+   "keys": [
+    "Shift+O"
+   ]
+  },
+  {
+   "command": "Clear Selected Marker",
+   "keys": [
+    "Ctrl+Alt+M"
+   ]
+  },
+  {
+   "command": "Clear All Markers",
+   "keys": [
+    "Ctrl+Shift+Alt+M"
+   ]
+  },
+  {
+   "command": "Rectangle (New Layer)",
+   "keys": [
+    "Ctrl+Alt+R"
+   ]
+  },
+  {
+   "command": "Ellipse (New Layer)",
+   "keys": [
+    "Ctrl+Alt+E"
+   ]
+  },
+  {
+   "command": "Bring to Front",
+   "keys": [
+    "Ctrl+Shift+]"
+   ]
+  },
+  {
+   "command": "Bring Forward",
+   "keys": [
+    "Ctrl+]"
+   ]
+  },
+  {
+   "command": "Send Backward",
+   "keys": [
+    "Ctrl+["
+   ]
+  },
+  {
+   "command": "Send to Back",
+   "keys": [
+    "Ctrl+Shift+["
+   ]
+  },
+  {
+   "command": "Select Next Layer",
+   "keys": [
+    "Ctrl+Alt+]"
+   ]
+  },
+  {
+   "command": "Select Previous Layer",
+   "keys": [
+    "Ctrl+Alt+["
+   ]
+  },
+  {
+   "command": "Workspaces > All Panels",
+   "keys": [
+    "Shift+Alt+1"
+   ]
+  },
+  {
+   "command": "Workspaces > Assembly",
+   "keys": [
+    "Shift+Alt+2"
+   ]
+  },
+  {
+   "command": "Workspaces > Audio",
+   "keys": [
+    "Shift+Alt+3"
+   ]
+  },
+  {
+   "command": "Workspaces > Captions and Graphics",
+   "keys": [
+    "Shift+Alt+4"
+   ]
+  },
+  {
+   "command": "Workspaces > Editing",
+   "keys": [
+    "Shift+Alt+6"
+   ]
+  },
+  {
+   "command": "Workspaces > Effects",
+   "keys": [
+    "Shift+Alt+7"
+   ]
+  },
+  {
+   "command": "Workspaces > Essential",
+   "keys": [
+    "Shift+Alt+8"
+   ]
+  },
+  {
+   "command": "Workspaces > Learning",
+   "keys": [
+    "Shift+Alt+9"
+   ]
+  },
+  {
+   "command": "Reset to Saved Layout",
+   "keys": [
+    "Shift+Alt+0"
+   ]
+  },
+  {
+   "command": "Audio Clip Mixer (Window)",
+   "keys": [
+    "Shift+9"
+   ]
+  },
+  {
+   "command": "Effects (Window)",
+   "keys": [
+    "Shift+7"
+   ]
+  },
+  {
+   "command": "Media Browser (Window)",
+   "keys": [
+    "Shift+8"
+   ]
+  },
+  {
+   "command": "Program Monitor (Window)",
+   "keys": [
+    "Shift+4"
+   ]
+  },
+  {
+   "command": "Source Monitor (Window)",
+   "keys": [
+    "Shift+2"
+   ]
+  },
+  {
+   "command": "Timeline (Window)",
+   "keys": [
+    "Shift+3"
+   ]
+  },
+  {
+   "command": "Premiere Pro Help...",
+   "keys": [
+    "F1"
+   ]
+  },
+  {
+   "command": "Show/Hide Tracks (Audio Track Mixer panel)",
+   "keys": [
+    "Ctrl+Alt+T"
+   ]
+  },
+  {
+   "command": "Meter Input(s) Only (Audio Track Mixer panel)",
+   "keys": [
+    "Ctrl+Shift+I"
+   ]
+  },
+  {
+   "command": "Loop (Audio Track Mixer / Metadata panel)",
+   "keys": [
+    "Ctrl+L"
+   ]
+  },
+  {
+   "command": "Loop During Audio-Only Playback (Effect Controls panel)",
+   "keys": [
+    "Ctrl+L"
+   ]
+  },
+  {
+   "command": "Remove Selected Effect (Effect Controls panel)",
+   "keys": [
+    "Backspace"
+   ]
+  },
+  {
+   "command": "New Custom Bin (Effects panel)",
+   "keys": [
+    "Ctrl+/"
+   ]
+  },
+  {
+   "command": "Delete Custom Item (Effects panel)",
+   "keys": [
+    "Backspace"
+   ]
+  },
+  {
+   "command": "Select Directory List (Media Browser panel)",
+   "keys": [
+    "Shift+ArrowLeft"
+   ]
+  },
+  {
+   "command": "Select Media List (Media Browser panel)",
+   "keys": [
+    "Shift+ArrowRight"
+   ]
+  },
+  {
+   "command": "Open in Source Monitor (Media Browser / Project panel)",
+   "keys": [
+    "Shift+O"
+   ]
+  },
+  {
+   "command": "Show Rulers (Program Monitor panel)",
+   "keys": [
+    "Ctrl+R"
+   ]
+  },
+  {
+   "command": "Show Guides (Program Monitor panel)",
+   "keys": [
+    "Ctrl+;"
+   ]
+  },
+  {
+   "command": "Snap in Program Monitor",
+   "keys": [
+    "Ctrl+Shift+;"
+   ]
+  },
+  {
+   "command": "Lock Guides (Program Monitor panel)",
+   "keys": [
+    "Ctrl+Shift+Alt+R"
+   ]
+  },
+  {
+   "command": "Nudge Selected Object up/right/left/down by five frames (Program Monitor panel)",
+   "keys": [
+    "Ctrl+Shift+ArrowUp",
+    "Ctrl+Shift+ArrowRight",
+    "Ctrl+Shift+ArrowLeft",
+    "Ctrl+Shift+ArrowDown"
+   ]
+  },
+  {
+   "command": "Nudge Selected Object up/right/left/down by one frame (Program Monitor panel)",
+   "keys": [
+    "Ctrl+ArrowUp",
+    "Ctrl+ArrowRight",
+    "Ctrl+ArrowLeft",
+    "Ctrl+ArrowDown"
+   ]
+  },
+  {
+   "command": "New Bin (Project panel)",
+   "keys": [
+    "Ctrl+B"
+   ]
+  },
+  {
+   "command": "List (Project panel)",
+   "keys": [
+    "Ctrl+PageUp"
+   ]
+  },
+  {
+   "command": "Icon (Project panel)",
+   "keys": [
+    "Ctrl+PageDown"
+   ]
+  },
+  {
+   "command": "Delete Selection with Options (Project panel)",
+   "keys": [
+    "Ctrl+Delete"
+   ]
+  },
+  {
+   "command": "Thumbnail Size Next (Project panel)",
+   "keys": [
+    "Shift+]"
+   ]
+  },
+  {
+   "command": "Thumbnail Size Previous (Project panel)",
+   "keys": [
+    "Shift+["
+   ]
+  },
+  {
+   "command": "Toggle View (Project panel)",
+   "keys": [
+    "Shift+\\"
+   ]
+  },
+  {
+   "command": "Decrease Audio Tracks Height",
+   "keys": [
+    "Alt+-"
+   ]
+  },
+  {
+   "command": "Decrease Video Tracks Height",
+   "keys": [
+    "Ctrl+-"
+   ]
+  },
+  {
+   "command": "Increase Audio Tracks Height",
+   "keys": [
+    "Alt+="
+   ]
+  },
+  {
+   "command": "Increase Video Tracks Height",
+   "keys": [
+    "Ctrl+="
+   ]
+  },
+  {
+   "command": "Set Work Area Bar In Point",
+   "keys": [
+    "Alt+["
+   ]
+  },
+  {
+   "command": "Set Work Area Bar Out Point",
+   "keys": [
+    "Alt+]"
+   ]
+  },
+  {
+   "command": "Show Next Screen",
+   "keys": [
+    "PageDown"
+   ]
+  },
+  {
+   "command": "Show Previous Screen",
+   "keys": [
+    "PageUp"
+   ]
+  },
+  {
+   "command": "Slide Clip Selection Left Five Frames",
+   "keys": [
+    "Shift+Alt+,"
+   ]
+  },
+  {
+   "command": "Slide Clip Selection Left One Frame",
+   "keys": [
+    "Alt+,"
+   ]
+  },
+  {
+   "command": "Slide Clip Selection Right Five Frames",
+   "keys": [
+    "Shift+Alt+."
+   ]
+  },
+  {
+   "command": "Slide Clip Selection Right One Frame",
+   "keys": [
+    "Alt+."
+   ]
+  },
+  {
+   "command": "Slip Clip Selection Left Five Frames",
+   "keys": [
+    "Ctrl+Shift+Alt+ArrowLeft"
+   ]
+  },
+  {
+   "command": "Slip Clip Selection Left One Frame",
+   "keys": [
+    "Ctrl+Alt+ArrowLeft"
+   ]
+  },
+  {
+   "command": "Slip Clip Selection Right Five Frames",
+   "keys": [
+    "Ctrl+Shift+Alt+ArrowRight"
+   ]
+  },
+  {
+   "command": "Slip Clip Selection Right One Frame",
+   "keys": [
+    "Ctrl+Alt+ArrowRight"
+   ]
+  },
+  {
+   "command": "Rate Stretch Tool",
+   "keys": [
+    "R"
+   ]
+  },
+  {
+   "command": "Go to Next Edit Point on Any Track",
+   "keys": [
+    "Shift+ArrowDown"
+   ]
+  },
+  {
+   "command": "Go to Previous Edit Point on Any Track",
+   "keys": [
+    "Shift+ArrowUp"
+   ]
+  },
+  {
+   "command": "Go to Selected Clip End",
+   "keys": [
+    "Shift+End"
+   ]
+  },
+  {
+   "command": "Go to Selected Clip Start",
+   "keys": [
+    "Shift+Home"
+   ]
+  },
+  {
+   "command": "Increase Clip Volume",
+   "keys": [
+    "]"
+   ]
+  },
+  {
+   "command": "Increase Clip Volume Many",
+   "keys": [
+    "Shift+]"
+   ]
+  },
+  {
+   "command": "Maximize or Restore Active Frame",
+   "keys": [
+    "Shift+`"
+   ]
+  },
+  {
+   "command": "Maximize or Restore Frame Under Cursor",
+   "keys": [
+    "`"
+   ]
+  },
+  {
+   "command": "Minimize All Tracks",
+   "keys": [
+    "Shift+-"
+   ]
+  },
+  {
+   "command": "Play In to Out with Preroll/Postroll",
+   "keys": [
+    "Shift+Space"
+   ]
+  },
+  {
+   "command": "Play from Playhead to Out Point",
+   "keys": [
+    "Ctrl+Space"
+   ]
+  },
+  {
+   "command": "Reveal Nested Sequence",
+   "keys": [
+    "Ctrl+Shift+F"
+   ]
+  },
+  {
+   "command": "Select Clip at Playhead",
+   "keys": [
+    "D"
+   ]
+  },
+  {
+   "command": "Select Next Clip",
+   "keys": [
+    "Ctrl+ArrowDown"
+   ]
+  },
+  {
+   "command": "Select Previous Clip",
+   "keys": [
+    "Ctrl+ArrowUp"
+   ]
+  },
+  {
+   "command": "Select Next Panel",
+   "keys": [
+    "Ctrl+Shift+."
+   ]
+  },
+  {
+   "command": "Select Previous Panel",
+   "keys": [
+    "Ctrl+Shift+,"
+   ]
+  },
+  {
+   "command": "Set Poster Frame",
+   "keys": [
+    "Shift+P"
+   ]
+  },
+  {
+   "command": "Shuttle Slow Left",
+   "keys": [
+    "Shift+J"
+   ]
+  },
+  {
+   "command": "Shuttle Slow Right",
+   "keys": [
+    "Shift+L"
+   ]
+  },
+  {
+   "command": "Step Back Five Frames - Units",
+   "keys": [
+    "Shift+ArrowLeft"
+   ]
+  },
+  {
+   "command": "Step Forward Five Frames - Units",
+   "keys": [
+    "Shift+ArrowRight"
+   ]
+  },
+  {
+   "command": "Toggle All Audio Targets",
+   "keys": [
+    "Ctrl+9"
+   ]
+  },
+  {
+   "command": "Toggle All Source Audio",
+   "keys": [
+    "Ctrl+Alt+9"
+   ]
+  },
+  {
+   "command": "Toggle All Source Video",
+   "keys": [
+    "Ctrl+Alt+0"
+   ]
+  },
+  {
+   "command": "Toggle All Video Targets",
+   "keys": [
+    "Ctrl+0"
+   ]
+  },
+  {
+   "command": "Toggle Trim Type",
+   "keys": [
+    "Shift+T"
+   ]
+  },
+  {
+   "command": "Trim Next Edit to Playhead",
+   "keys": [
+    "Ctrl+Alt+W"
+   ]
+  },
+  {
+   "command": "Trim Previous Edit to Playhead",
+   "keys": [
+    "Ctrl+Alt+Q"
+   ]
+  }
+ ],
+ "deviations": {
+  "ripple_trim_head": {
+   "documented": [
+    "Q"
+   ],
+   "why": "Q is one Premiere command, Ripple Trim Previous Edit to Playhead, which trim_in_to_playhead already is in Klipp; a ripple trim of the selected clip would run with it"
+  },
+  "ripple_trim_tail": {
+   "documented": [
+    "W"
+   ],
+   "why": "W is one Premiere command, Ripple Trim Next Edit to Playhead, which trim_out_to_playhead already is in Klipp; a ripple trim of the selected clip would run with it"
+  }
+ }
+}

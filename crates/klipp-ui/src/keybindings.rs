@@ -65,9 +65,11 @@ impl KeyCombo {
         } else {
             // Text-based keys (punctuation: ,  .  ;  '  etc.). Ctrl and
             // Alt suppress the text event, so a modified one is read as
-            // a key press instead.
-            input.events.iter().any(|e| matches!(e, egui::Event::Text(s) if *s == self.key))
-                || ((self.ctrl || self.alt)
+            // a key press instead; and Shift types another character (`<`
+            // for `,`), so Shift+punctuation is read on its key too (#2934:
+            // a layout's Shift+, never fired).
+            input.events.iter().any(|e| matches!(e, egui::Event::Text(s) if *s == self.key && !self.shift))
+                || ((self.ctrl || self.alt || self.shift)
                     && egui::Key::from_name(&self.key).is_some_and(|k| {
                         input.key_pressed(k) || self.shifted_punctuation_pressed(k, input)
                     }))
@@ -124,6 +126,121 @@ impl KeyCombo {
     }
 }
 
+/// Where a frame's keys are read (`app::shortcuts::key_scope`), as far as
+/// which actions can fire there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Place {
+    /// No project open: the launch screen.
+    Launch,
+    /// A text field has the keys.
+    Typing,
+    /// The picture's node canvas has the keys.
+    PictureCanvas,
+    /// The grade's node canvas has the keys.
+    GradeCanvas,
+    /// The editor: the timeline, the viewers and the panels.
+    Editor,
+}
+
+impl Place {
+    pub const ALL: [Place; 5] = [Place::Launch, Place::Typing, Place::PictureCanvas, Place::GradeCanvas, Place::Editor];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Place::Launch => "on the launch screen",
+            Place::Typing => "while typing",
+            Place::PictureCanvas => "on the picture canvas",
+            Place::GradeCanvas => "on the grade canvas",
+            Place::Editor => "in the editor",
+        }
+    }
+}
+
+/// The actions every place reads, a project open or not
+/// (`shortcuts_app`).
+pub const APP_ACTIONS: &[&str] = &["new_project", "open_project", "preferences", "quit"];
+/// The Ctrl combinations, read while typing and on the canvases too
+/// (`shortcuts_ctrl_global`).
+pub const CTRL_ACTIONS: &[&str] = &[
+    "close_project", "command_palette", "export", "focus_panel_search", "group_clips", "import_media", "redo",
+    "save_project", "save_project_as", "toggle_audio_mixer", "toggle_subtitle_editor", "undo", "ungroup_clips",
+];
+/// The grade's keys, on the grade canvas and in the editor
+/// (`grade_node_keys`).
+pub const GRADE_ACTIONS: &[&str] = &[
+    "next_color_node", "prev_color_node", "printer_blue_down", "printer_blue_up", "printer_green_down", "printer_green_up",
+    "printer_master_down", "printer_master_up", "printer_red_down", "printer_red_up", "reset_current_node", "toggle_node_bypass",
+];
+/// Playback, read wherever no text field or dialog has the keys
+/// (`panels::transport`).
+pub const TRANSPORT_ACTIONS: &[&str] = &[
+    "play_pause", "step_backward", "step_forward", "go_to_start", "go_to_end", "shuttle_reverse", "shuttle_pause",
+    "shuttle_forward", "next_marker", "prev_marker", "play_in_to_out",
+];
+
+/// Where `action`'s key fires. Every action not named above is the
+/// editor's alone.
+pub fn action_places(action: &str) -> &'static [Place] {
+    use Place::*;
+    if APP_ACTIONS.contains(&action) {
+        &[Launch, Typing, PictureCanvas, GradeCanvas, Editor]
+    } else if CTRL_ACTIONS.contains(&action) {
+        &[Typing, PictureCanvas, GradeCanvas, Editor]
+    } else if TRANSPORT_ACTIONS.contains(&action) {
+        &[PictureCanvas, GradeCanvas, Editor]
+    } else if GRADE_ACTIONS.contains(&action) {
+        &[GradeCanvas, Editor]
+    } else {
+        &[Editor]
+    }
+}
+
+/// The first place both actions fire, if any.
+pub fn shared_place(a: &str, b: &str) -> Option<Place> {
+    action_places(a).iter().copied().find(|p| action_places(b).contains(p))
+}
+
+/// The edit-point trims, which the grade's keys step aside for.
+const TRIM_ACTIONS: &[&str] = &["trim_edit_back", "trim_edit_forward", "trim_edit_back_many", "trim_edit_forward_many"];
+
+/// Two actions the dispatcher tells apart when they share a key, so one
+/// key never runs both: why, or `None` for an ordinary pair.
+pub fn resolved(a: &str, b: &str) -> Option<&'static str> {
+    let pair = |x: &str, y: &str| (a == x && b == y) || (a == y && b == x);
+    if pair("copy_clip", "copy_color_nodes") || pair("paste_clip", "paste_color_nodes") {
+        return Some("the colour panel takes it for the grade's nodes, anywhere else the clip (`clipboard_copy`, `clipboard_paste`)");
+    }
+    let trim_and_grade = (TRIM_ACTIONS.contains(&a) && GRADE_ACTIONS.contains(&b)) || (TRIM_ACTIONS.contains(&b) && GRADE_ACTIONS.contains(&a));
+    if trim_and_grade {
+        return Some("with edit points selected the trim takes it, else the grade (`editor_grade_keys`)");
+    }
+    // One command in an editor's layout, two actions here: the selection
+    // picks (`app::shortcuts::shared_key_losers`).
+    let nudge = |t: &str, n: &str| pair(t, n);
+    if nudge("trim_edit_back", "nudge_clips_back") || nudge("trim_edit_forward", "nudge_clips_forward") || nudge("trim_edit_back_many", "nudge_clips_back_many") || nudge("trim_edit_forward_many", "nudge_clips_forward_many") {
+        return Some("with edit points selected they are trimmed, else the selected clips nudged");
+    }
+    if pair("delete_clip", "extract_edit") {
+        return Some("Delete takes a selected clip out, else the marked range");
+    }
+    if pair("lift_clip", "lift_edit") {
+        return Some("a selected clip is lifted, else the marked range");
+    }
+    if pair("add_marker", "add_clip_marker") {
+        return Some("a marker on the selected clip, else on the timeline");
+    }
+    pair("match_frame_program_to_source", "match_frame_source_to_program").then_some("from the viewer shown: the source's frame in the timeline, or the timeline's in its source")
+}
+
+/// Two actions on one key in one place.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Conflict {
+    pub a: String,
+    pub b: String,
+    pub combo: KeyCombo,
+    pub place: Place,
+}
+
 /// A named starting layout: Klipp's own, or the defaults of the NLE an
 /// editor is arriving from. Only actions Klipp has are mapped; a key a
 /// preset claims is taken off whichever Klipp action held it, so no
@@ -169,6 +286,18 @@ impl KeymapPreset {
         }
     }
 
+    /// The keys the editor uses for commands Klipp lacks: no Klipp action
+    /// keeps one under this preset.
+    pub(crate) fn taken(self) -> &'static [&'static str] {
+        match self {
+            KeymapPreset::Klipp => &[],
+            KeymapPreset::Premiere => crate::keymap_presets::PREMIERE_TAKEN,
+            KeymapPreset::Avid => crate::keymap_presets::AVID_TAKEN,
+            KeymapPreset::Resolve => crate::keymap_presets::RESOLVE_TAKEN,
+            KeymapPreset::FinalCut => crate::keymap_presets::FINAL_CUT_TAKEN,
+        }
+    }
+
     /// How many actions the preset gives a key.
     pub fn mapped_count(self) -> usize {
         self.table().iter().filter(|(_, combos)| !combos.is_empty()).count()
@@ -195,7 +324,8 @@ impl KeymapPreset {
             .iter()
             .map(|(a, combos)| (*a, combos.iter().filter_map(|c| KeyCombo::parse(c)).collect()))
             .collect();
-        let claimed: Vec<&KeyCombo> = table.iter().flat_map(|(_, c)| c).collect();
+        let taken: Vec<KeyCombo> = self.taken().iter().filter_map(|c| KeyCombo::parse(c)).collect();
+        let claimed: Vec<&KeyCombo> = table.iter().flat_map(|(_, c)| c).chain(&taken).collect();
         for (action, combos) in map.iter_mut() {
             if !table.iter().any(|(a, _)| a == action) {
                 combos.retain(|c| !claimed.contains(&c));
@@ -254,6 +384,15 @@ impl KeyBindings {
                     && parse_egui_key(&c.key).is_some_and(|k| input.key_down(k))
             })
         })
+    }
+
+    /// These bindings with `actions` unbound: for one frame's dispatch.
+    pub fn without(&self, actions: &[&str]) -> Self {
+        let mut kb = self.clone();
+        for a in actions {
+            kb.bindings.remove(*a);
+        }
+        kb
     }
 
     /// Get display string for an action's primary binding.
@@ -609,21 +748,22 @@ impl KeyBindings {
         Ok(())
     }
 
-    /// Find conflicts: actions that share the same key combo.
-    pub fn find_conflicts(&self) -> Vec<(String, String, KeyCombo)> {
+    /// Two actions on one key where both are read (#2934): the same
+    /// combination, in a [`Place`] where both fire. One key for a
+    /// timeline action and another for the grade canvas alone is not a
+    /// conflict; one key for two editor actions is.
+    pub fn find_conflicts(&self) -> Vec<Conflict> {
         let mut conflicts = Vec::new();
         let actions: Vec<_> = self.bindings.iter().collect();
         for i in 0..actions.len() {
             for j in (i + 1)..actions.len() {
+                let Some(place) = shared_place(actions[i].0, actions[j].0) else { continue };
+                if resolved(actions[i].0, actions[j].0).is_some() {
+                    continue;
+                }
                 for combo_a in actions[i].1 {
-                    for combo_b in actions[j].1 {
-                        if combo_a == combo_b {
-                            conflicts.push((
-                                actions[i].0.clone(),
-                                actions[j].0.clone(),
-                                combo_a.clone(),
-                            ));
-                        }
+                    if actions[j].1.contains(combo_a) {
+                        conflicts.push(Conflict { a: actions[i].0.clone(), b: actions[j].0.clone(), combo: combo_a.clone(), place });
                     }
                 }
             }
@@ -1228,8 +1368,8 @@ mod preset_tests {
     #[test]
     fn no_preset_makes_one_press_run_two_actions() {
         use std::collections::BTreeMap;
-        // [ and ]: an edit point trim or a colour node step, never both (#913).
-        let allowed = ["Ctrl+C", "Ctrl+V", "[", "]"];
+        // A pair the dispatcher tells apart is one action a press (#913,
+        // #2934: `resolved`).
         for preset in KeymapPreset::ALL {
             let mut by_combo: BTreeMap<String, Vec<String>> = BTreeMap::new();
             for (action, combos) in preset.bindings() {
@@ -1239,7 +1379,7 @@ mod preset_tests {
             }
             let clashes: Vec<String> = by_combo
                 .iter()
-                .filter(|(c, acts)| acts.len() > 1 && !allowed.contains(&c.as_str()))
+                .filter(|(_, acts)| acts.iter().enumerate().any(|(i, a)| acts[i + 1..].iter().any(|b| super::shared_place(a, b).is_some() && super::resolved(a, b).is_none())))
                 .map(|(c, acts)| format!("{c} -> {}", acts.join(", ")))
                 .collect();
             assert!(clashes.is_empty(), "{preset:?}: {clashes:#?}");

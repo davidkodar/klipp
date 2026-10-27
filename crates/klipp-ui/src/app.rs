@@ -154,6 +154,8 @@ mod viewer_harness;
 #[cfg(test)]
 mod mask_tool_tests;
 #[cfg(test)]
+mod keymap_tests;
+#[cfg(test)]
 mod mask_key_lanes_tests;
 #[cfg(test)]
 mod key_selection_tests;

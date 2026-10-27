@@ -1,0 +1,1740 @@
+{
+ "editor": "Final Cut Pro",
+ "platform": "macOS (Command as Ctrl, Option as Alt; Control-key shortcuts noted separately, not writable in Klipp notation)",
+ "version": "Final Cut Pro 12.4 (User Guide for Mac, page version 12.4 / macOS 26.6, fetched 2026-10-28)",
+ "sources": [
+  {
+   "url": "https://support.apple.com/guide/final-cut-pro/ver90ba5929/12.4/mac/26.6",
+   "title": "Keyboard shortcuts in Final Cut Pro for Mac - Apple Support (Final Cut Pro User Guide for Mac)",
+   "date_or_version": "Final Cut Pro 12.4, macOS 26.6; fetched 2026-10-28. Canonical: https://support.apple.com/guide/final-cut-pro/keyboard-shortcuts-ver90ba5929/mac. One page with tables Application, Editing, Effects, General, Marking, Organization, Playback and navigation, Share and tools, View, Windows."
+  }
+ ],
+ "actions": {
+  "add_audio_crossfade": {
+   "command": "Crossfade",
+   "keys": [
+    "Alt+T"
+   ]
+  },
+  "add_default_transition": {
+   "command": "Add Default Transition",
+   "keys": [
+    "Ctrl+T"
+   ]
+  },
+  "add_marker": {
+   "command": "Add Marker",
+   "keys": [
+    "M"
+   ]
+  },
+  "blade_tool": {
+   "command": "Blade Tool",
+   "keys": [
+    "B"
+   ]
+  },
+  "clear_in_out": {
+   "command": "Clear Selected Ranges",
+   "keys": [
+    "Alt+X"
+   ]
+  },
+  "clear_in_point": {
+   "command": "Clear Range Start",
+   "keys": [
+    "Alt+I"
+   ]
+  },
+  "clear_out_point": {
+   "command": "Clear Range End",
+   "keys": [
+    "Alt+O"
+   ]
+  },
+  "copy_clip": {
+   "command": "Copy",
+   "keys": [
+    "Ctrl+C"
+   ]
+  },
+  "create_title": {
+   "command": "Connect Default Title",
+   "keys": [],
+   "note": "Connects the default title at the playhead, as Klipp Create Title Clip does. Also listed as Add Basic Title (Control-T) under Effects. documented as Control-T; needs the Control key, which Klipp notation cannot write (Ctrl stands for Command)"
+  },
+  "cut_clip": {
+   "command": "Cut",
+   "keys": [
+    "Ctrl+X"
+   ]
+  },
+  "delete_clip": {
+   "command": "Delete",
+   "keys": [
+    "Backspace"
+   ],
+   "note": "Mac Delete is Backspace; the page documents only Delete, not Forward Delete. In the timeline Delete removes the selection and closes the gap."
+  },
+  "deselect_all": {
+   "command": "Deselect All",
+   "keys": [
+    "Ctrl+Shift+A"
+   ]
+  },
+  "export": {
+   "command": "Share to Default Destination",
+   "keys": [
+    "Ctrl+E"
+   ],
+   "note": "Exports the project with the default share destination."
+  },
+  "extend_edit": {
+   "command": "Extend Edit",
+   "keys": [
+    "Shift+X"
+   ],
+   "note": "Extends the selected edit point to the skimmer or playhead, as Klipp Extend Edit to Playhead does. FCP E is Append to Storyline."
+  },
+  "extract_edit": {
+   "command": "Delete",
+   "keys": [
+    "Backspace"
+   ],
+   "note": "Same FCP command as delete_clip: Delete on a timeline range selection removes it and closes the gap. FCP has no separate in/out extract command; binding both Klipp actions to one key is the caller's call."
+  },
+  "fit_to_window": {
+   "command": "Zoom to Fit",
+   "keys": [
+    "Shift+Z"
+   ]
+  },
+  "focus_panel_search": {
+   "command": "Find",
+   "keys": [
+    "Ctrl+F"
+   ],
+   "note": "Shows/hides the Filter window (browser) or timeline index (timeline)."
+  },
+  "freeze_frame": {
+   "command": "Insert/Connect Freeze Frame",
+   "keys": [
+    "Alt+F"
+   ]
+  },
+  "go_to_end": {
+   "command": "Go to End",
+   "keys": [
+    "End"
+   ],
+   "note": "page also gives the Fn-arrow laptop form"
+  },
+  "go_to_start": {
+   "command": "Go to Beginning",
+   "keys": [
+    "Home"
+   ],
+   "note": "page also gives the Fn-arrow laptop form"
+  },
+  "import_media": {
+   "command": "Import Media",
+   "keys": [
+    "Ctrl+I"
+   ]
+  },
+  "insert_edit": {
+   "command": "Insert",
+   "keys": [
+    "W"
+   ]
+  },
+  "leave_compound": {
+   "command": "Timeline History Back",
+   "keys": [
+    "Ctrl+["
+   ],
+   "note": "Timeline History Back returns from an opened compound clip to the parent timeline, as Klipp Leave Compound Clip does."
+  },
+  "lift_clip": {
+   "command": "Replace with Gap",
+   "keys": [
+    "Shift+Backspace"
+   ],
+   "note": "Mac Shift-Delete is Shift+Backspace; Forward Delete is not documented."
+  },
+  "lift_edit": {
+   "command": "Replace with Gap",
+   "keys": [
+    "Shift+Backspace"
+   ],
+   "note": "Same FCP command as lift_clip: on a range selection it leaves a gap. FCP has no separate in/out lift command; binding both Klipp actions to one key is the caller's call."
+  },
+  "match_frame_program_to_source": {
+   "command": "Reveal Source in Browser",
+   "keys": [
+    "Shift+F"
+   ],
+   "note": "Reveals the timeline clip's source in the browser at the matching frame."
+  },
+  "move_clips_down_a_track": {
+   "command": "Move Down",
+   "keys": [
+    "Alt+ArrowDown"
+   ],
+   "note": "Moves selected connected clips down. Nudge Down has the same key."
+  },
+  "move_clips_up_a_track": {
+   "command": "Move Up",
+   "keys": [
+    "Alt+ArrowUp"
+   ],
+   "note": "Moves selected connected clips up. Nudge Up has the same key."
+  },
+  "multicam_angle_1": {
+   "command": "Cut and Switch to Viewer Angle 1",
+   "keys": [
+    "1"
+   ]
+  },
+  "multicam_angle_2": {
+   "command": "Cut and Switch to Viewer Angle 2",
+   "keys": [
+    "2"
+   ]
+  },
+  "multicam_angle_3": {
+   "command": "Cut and Switch to Viewer Angle 3",
+   "keys": [
+    "3"
+   ]
+  },
+  "multicam_angle_4": {
+   "command": "Cut and Switch to Viewer Angle 4",
+   "keys": [
+    "4"
+   ]
+  },
+  "multicam_angle_5": {
+   "command": "Cut and Switch to Viewer Angle 5",
+   "keys": [
+    "5"
+   ]
+  },
+  "multicam_angle_6": {
+   "command": "Cut and Switch to Viewer Angle 6",
+   "keys": [
+    "6"
+   ]
+  },
+  "multicam_angle_7": {
+   "command": "Cut and Switch to Viewer Angle 7",
+   "keys": [
+    "7"
+   ]
+  },
+  "multicam_angle_8": {
+   "command": "Cut and Switch to Viewer Angle 8",
+   "keys": [
+    "8"
+   ]
+  },
+  "multicam_angle_9": {
+   "command": "Cut and Switch to Viewer Angle 9",
+   "keys": [
+    "9"
+   ]
+  },
+  "new_project": {
+   "command": "New Project",
+   "keys": [
+    "Ctrl+N"
+   ]
+  },
+  "next_edit_point": {
+   "command": "Down / Go to Next Edit",
+   "keys": [
+    "ArrowDown",
+    "'"
+   ],
+   "note": "Down Arrow (Down: next edit point in the timeline) and Apostrophe (Go to Next Edit)."
+  },
+  "next_marker": {
+   "command": "Next Marker",
+   "keys": [],
+   "note": "documented as Control-Apostrophe (’); needs the Control key, which Klipp notation cannot write (Ctrl stands for Command)"
+  },
+  "nudge_clips_back": {
+   "command": "Nudge Left",
+   "keys": [
+    ","
+   ],
+   "note": "Nudge moves the selection (clips, or a selected edit point) one frame."
+  },
+  "nudge_clips_back_many": {
+   "command": "Nudge Left Many",
+   "keys": [
+    "Shift+,"
+   ]
+  },
+  "nudge_clips_forward": {
+   "command": "Nudge Right",
+   "keys": [
+    "."
+   ]
+  },
+  "nudge_clips_forward_many": {
+   "command": "Nudge Right Many",
+   "keys": [
+    "Shift+."
+   ]
+  },
+  "open_project": {
+   "command": "Open Library",
+   "keys": [
+    "Ctrl+O"
+   ],
+   "note": "A library is FCP's project file."
+  },
+  "overwrite_edit": {
+   "command": "Overwrite",
+   "keys": [
+    "D"
+   ]
+  },
+  "paste_attributes": {
+   "command": "Paste Attributes",
+   "keys": [
+    "Ctrl+Shift+V"
+   ]
+  },
+  "paste_insert": {
+   "command": "Paste Insert at Playhead",
+   "keys": [
+    "Ctrl+V"
+   ],
+   "note": "FCP Command-V inserts the Clipboard at the playhead (ripple), which is Klipp Paste Insert, not the plain paste."
+  },
+  "place_on_top_edit": {
+   "command": "Connect to Primary Storyline",
+   "keys": [
+    "Q"
+   ],
+   "note": "Connect edits the source above the primary storyline at the playhead without moving anything, as Place on Top does. Klipp connect_clip (attach an existing timeline clip) is a different action."
+  },
+  "play_in_to_out": {
+   "command": "Play Selection",
+   "keys": [
+    "/"
+   ],
+   "note": "Plays the range selection."
+  },
+  "play_pause": {
+   "command": "Play/Pause",
+   "keys": [
+    "Space"
+   ]
+  },
+  "preferences": {
+   "command": "Settings",
+   "keys": [
+    "Ctrl+,"
+   ]
+  },
+  "prev_edit_point": {
+   "command": "Up / Go to Previous Edit",
+   "keys": [
+    "ArrowUp",
+    ";"
+   ],
+   "note": "Up Arrow (Up) and Semicolon (Go to Previous Edit)."
+  },
+  "prev_marker": {
+   "command": "Previous Marker",
+   "keys": [],
+   "note": "documented as Control-Semicolon (;); needs the Control key, which Klipp notation cannot write (Ctrl stands for Command)"
+  },
+  "quit": {
+   "command": "Quit",
+   "keys": [
+    "Ctrl+Q"
+   ]
+  },
+  "range_tool": {
+   "command": "Range Selection Tool",
+   "keys": [
+    "R"
+   ]
+  },
+  "redo": {
+   "command": "Redo Change",
+   "keys": [
+    "Ctrl+Shift+Z"
+   ]
+  },
+  "replace_edit": {
+   "command": "Replace",
+   "keys": [
+    "Shift+R"
+   ]
+  },
+  "ripple_trim_head": {
+   "command": "Trim Start",
+   "keys": [
+    "Alt+["
+   ],
+   "note": "Trims the selected (or topmost) clip start to the playhead; in the magnetic timeline this ripples, as Klipp Ripple Trim Head does. Klipp trim_in_to_playhead is the non-ripple, proximity variant."
+  },
+  "ripple_trim_tail": {
+   "command": "Trim End",
+   "keys": [
+    "Alt+]"
+   ],
+   "note": "As Trim Start; matches Klipp Ripple Trim Tail."
+  },
+  "select_all": {
+   "command": "Select All",
+   "keys": [
+    "Ctrl+A"
+   ]
+  },
+  "select_edit_point": {
+   "command": "Select Left and Right Edit Edges",
+   "keys": [
+    "\\"
+   ],
+   "note": "Selects the edit point nearest the pointer/playhead. Choosing a side is Select Left Edge [ / Select Right Edge ] (FCP has no cycle-side command). FCP U is Unrate."
+  },
+  "select_tool": {
+   "command": "Select (Arrow) Tool",
+   "keys": [
+    "A"
+   ]
+  },
+  "set_in_point": {
+   "command": "Set Range Start",
+   "keys": [
+    "I"
+   ]
+  },
+  "set_out_point": {
+   "command": "Set Range End",
+   "keys": [
+    "O"
+   ]
+  },
+  "set_range_to_clip": {
+   "command": "Select Clip Range",
+   "keys": [
+    "X"
+   ]
+  },
+  "shuttle_forward": {
+   "command": "Play Forward",
+   "keys": [
+    "L"
+   ]
+  },
+  "shuttle_pause": {
+   "command": "Stop",
+   "keys": [
+    "K"
+   ]
+  },
+  "shuttle_reverse": {
+   "command": "Play Reverse",
+   "keys": [
+    "J"
+   ]
+  },
+  "split_at_playhead": {
+   "command": "Blade",
+   "keys": [
+    "Ctrl+B"
+   ],
+   "note": "Blade cuts the primary storyline clip (or the selection); Blade All (Shift-Command-B) cuts all clips."
+  },
+  "step_backward": {
+   "command": "Go to Previous Frame",
+   "keys": [
+    "ArrowLeft"
+   ]
+  },
+  "step_forward": {
+   "command": "Go to Next Frame",
+   "keys": [
+    "ArrowRight"
+   ]
+  },
+  "toggle_audio_skim": {
+   "command": "Audio Skimming",
+   "keys": [
+    "Shift+S"
+   ]
+  },
+  "toggle_browser_panel": {
+   "command": "Show/Hide Browser",
+   "keys": [],
+   "note": "documented as Control-Command-1; needs the Control key, which Klipp notation cannot write (Ctrl stands for Command)"
+  },
+  "toggle_inspector_panel": {
+   "command": "Show/Hide Inspector",
+   "keys": [
+    "Ctrl+4"
+   ]
+  },
+  "toggle_keyframe_editor": {
+   "command": "Show/Hide Video Animation",
+   "keys": [],
+   "note": "The Video Animation editor shows clip keyframes in the timeline. documented as Control-V; needs the Control key, which Klipp notation cannot write (Ctrl stands for Command)"
+  },
+  "toggle_loop": {
+   "command": "Loop Playback",
+   "keys": [
+    "Ctrl+L"
+   ]
+  },
+  "toggle_multicam_mode": {
+   "command": "Show/Hide Angles",
+   "keys": [
+    "Ctrl+Shift+7"
+   ]
+  },
+  "toggle_scopes": {
+   "command": "Show/Hide Video Scopes",
+   "keys": [
+    "Ctrl+7"
+   ]
+  },
+  "toggle_skimming": {
+   "command": "Skimming",
+   "keys": [
+    "S"
+   ]
+  },
+  "toggle_snap": {
+   "command": "Snapping",
+   "keys": [
+    "N"
+   ]
+  },
+  "trim_edit_back": {
+   "command": "Nudge Left",
+   "keys": [
+    ","
+   ],
+   "note": "With an edit point selected, Nudge Left trims it one frame. Same command/key as nudge_clips_back; Klipp only runs trim_edit_* with an edit selected."
+  },
+  "trim_edit_back_many": {
+   "command": "Nudge Left Many",
+   "keys": [
+    "Shift+,"
+   ],
+   "note": "As trim_edit_back, 10 frames."
+  },
+  "trim_edit_forward": {
+   "command": "Nudge Right",
+   "keys": [
+    "."
+   ],
+   "note": "As trim_edit_back."
+  },
+  "trim_edit_forward_many": {
+   "command": "Nudge Right Many",
+   "keys": [
+    "Shift+."
+   ],
+   "note": "As trim_edit_back, 10 frames."
+  },
+  "trim_tool": {
+   "command": "Trim Tool",
+   "keys": [
+    "T"
+   ]
+  },
+  "undo": {
+   "command": "Undo Change",
+   "keys": [
+    "Ctrl+Z"
+   ]
+  },
+  "zoom_in": {
+   "command": "Zoom In",
+   "keys": [
+    "Ctrl+="
+   ],
+   "note": "page says Plus Sign (+); written as the = key it shares on a US layout"
+  },
+  "zoom_out": {
+   "command": "Zoom Out",
+   "keys": [
+    "Ctrl+-"
+   ]
+  }
+ },
+ "loose": {
+  "duplicate_clip": {
+   "command": "Duplicate",
+   "keys": [
+    "Ctrl+D"
+   ],
+   "note": "LOOSE: the page says Duplicate acts on the browser selection, Klipp duplicates a timeline clip."
+  },
+  "play_around_edit": {
+   "command": "Play Around",
+   "keys": [
+    "Shift+/"
+   ],
+   "note": "LOOSE: FCP plays around the playhead once; Klipp loops around the selected edit (or playhead). page says Shift-Question Mark (?); ? is Shift+/ on a US layout"
+  },
+  "toggle_color_panel": {
+   "command": "Go to Color Inspector",
+   "keys": [
+    "Ctrl+6"
+   ],
+   "note": "LOOSE: makes the Color inspector active and adds Color Adjustments; it opens rather than toggles."
+  },
+  "toggle_fullscreen": {
+   "command": "Play Full Screen",
+   "keys": [
+    "Ctrl+Shift+F"
+   ],
+   "note": "LOOSE: FCP plays full screen from the playhead; there is no plain full-screen toggle on the page."
+  },
+  "ungroup_clips": {
+   "command": "Break Apart Clip Items",
+   "keys": [
+    "Ctrl+Shift+G"
+   ],
+   "note": "LOOSE: breaks a compound/storyline into its parts; FCP has no clip groups."
+  }
+ },
+ "not_checked": {
+  "add_clip_marker": "FCP Add Marker (M) marks the clip under the playhead when one is selected; no separate clip-marker command on the page.",
+  "close_project": "No Close Library / Close Project shortcut on the page.",
+  "save_project": "No Save command on the page.",
+  "save_project_as": "No Save As command on the page.",
+  "create_multicam": "New Multicam Clip is not on the page (page lists only common commands).",
+  "cycle_scope_mode": "Page has Show Vectorscope (Control-Command-V) and Show Video Waveform (Control-Command-W), which pick a scope, not cycle; no cycle command.",
+  "extract_frame_to_bin": "No frame-grab command on the page.",
+  "extract_frame_to_file": "No frame-grab command on the page.",
+  "fit_to_fill_edit": "No fit-to-fill edit on the page.",
+  "group_clips": "FCP has no clip groups; New Compound Clip (Option-G) and Create Storyline (Command-G) are different operations.",
+  "key_ease_in": "No keyframe interpolation command on the page.",
+  "key_ease_in_out": "No keyframe interpolation command on the page.",
+  "key_ease_out": "No keyframe interpolation command on the page.",
+  "key_linear": "No keyframe interpolation command on the page.",
+  "match_frame_source_to_program": "No reverse match frame on the page.",
+  "next_keyframe": "No next/previous keyframe command on the page (Option-Right Arrow is Go to Next Field/Subframe and Move Right).",
+  "prev_keyframe": "No next/previous keyframe command on the page (Option-Left Arrow is Go to Previous Field/Subframe and Move Left).",
+  "toggle_keyframe": "No add/remove keyframe command on the page.",
+  "paste_clip": "FCP Command-V is Paste Insert at Playhead (mapped to paste_insert); the page has no overwrite paste. Paste as Connected (Option-V) puts the clip above the storyline.",
+  "select_backward": "No select-backward/forward-all-tracks command on the page.",
+  "select_forward": "No select-backward/forward-all-tracks command on the page.",
+  "select_track_backward": "No per-track select command on the page.",
+  "select_track_forward": "No per-track select command on the page.",
+  "select_track_clips": "No per-track select command on the page.",
+  "text_tool": "No text tool on the page (Y is Open Audition).",
+  "toggle_audio_mixer": "No audio mixer on the page; Show/Hide Audio Meters (Shift-Command-8) is a different panel.",
+  "toggle_before_after": "No before/after toggle on the page; Show/Hide Comparison Viewer (Control-Command-6) is a different view.",
+  "toggle_false_color": "No false-colour overlay on the page.",
+  "toggle_zebra": "No zebra overlay on the page.",
+  "toggle_grid_overlay": "No grid overlay on the page.",
+  "toggle_safe_areas": "No safe-zone toggle on the page.",
+  "toggle_matte_preview": "No matte preview toggle on the page.",
+  "toggle_subtitle_editor": "Edit Caption (Control-Shift-C) opens the selected caption in the caption editor; it is not a panel toggle.",
+  "zoom_to_selection": "No zoom-to-selection on the page (Zoom to Fit is fit_to_window)."
+ },
+ "not_in_editor": [
+  "ai_cancel_inference",
+  "ai_detect_objects",
+  "ai_isolate_object",
+  "ai_remove_background",
+  "ai_run_inference",
+  "command_palette",
+  "copy_color_nodes",
+  "paste_color_nodes",
+  "next_color_node",
+  "prev_color_node",
+  "reset_current_node",
+  "toggle_node_bypass",
+  "printer_blue_down",
+  "printer_blue_up",
+  "printer_green_down",
+  "printer_green_up",
+  "printer_master_down",
+  "printer_master_up",
+  "printer_red_down",
+  "printer_red_up",
+  "swap_stacked_focus",
+  "toggle_ai_tools_panel",
+  "toggle_perf_overlay",
+  "toggle_perf_recording",
+  "toggle_project_notes",
+  "mask_tool",
+  "connect_clip",
+  "disconnect_clip",
+  "trim_in_to_playhead",
+  "trim_out_to_playhead",
+  "copy_attributes",
+  "toggle_edit_mode"
+ ],
+ "editor_only": [
+  {
+   "command": "Hide Application",
+   "keys": [
+    "Ctrl+H"
+   ]
+  },
+  {
+   "command": "Hide Other Applications",
+   "keys": [
+    "Ctrl+Alt+H"
+   ]
+  },
+  {
+   "command": "Keyboard Customization",
+   "keys": [
+    "Ctrl+Alt+K"
+   ]
+  },
+  {
+   "command": "Minimize",
+   "keys": [
+    "Ctrl+M"
+   ]
+  },
+  {
+   "command": "Append to Storyline",
+   "keys": [
+    "E"
+   ]
+  },
+  {
+   "command": "Audition: Duplicate as Audition",
+   "keys": [
+    "Alt+Y"
+   ]
+  },
+  {
+   "command": "Audition: Duplicate from Original",
+   "keys": [
+    "Ctrl+Shift+Y"
+   ]
+  },
+  {
+   "command": "Audition: Replace and Add to Audition",
+   "keys": [
+    "Shift+Y"
+   ]
+  },
+  {
+   "command": "Blade All",
+   "keys": [
+    "Ctrl+Shift+B"
+   ]
+  },
+  {
+   "command": "Collapse to Connected Storyline",
+   "keys": [
+    "Ctrl+Shift+ArrowDown"
+   ]
+  },
+  {
+   "command": "Connect to Primary Storyline - Backtimed",
+   "keys": [
+    "Shift+Q"
+   ]
+  },
+  {
+   "command": "Create Audition",
+   "keys": [
+    "Ctrl+Y"
+   ]
+  },
+  {
+   "command": "Create Storyline",
+   "keys": [
+    "Ctrl+G"
+   ]
+  },
+  {
+   "command": "Delete Selection Only",
+   "keys": [
+    "Ctrl+Alt+Backspace"
+   ]
+  },
+  {
+   "command": "Detect Edits",
+   "keys": [
+    "Shift+E"
+   ]
+  },
+  {
+   "command": "Enable Beat Detection",
+   "keys": [
+    "Alt+B"
+   ]
+  },
+  {
+   "command": "Enable/Disable Clip",
+   "keys": [
+    "V"
+   ]
+  },
+  {
+   "command": "Extend Selection Down",
+   "keys": [
+    "Shift+ArrowDown"
+   ]
+  },
+  {
+   "command": "Extend Selection Up",
+   "keys": [
+    "Shift+ArrowUp"
+   ]
+  },
+  {
+   "command": "Finalize Audition",
+   "keys": [
+    "Shift+Alt+Y"
+   ]
+  },
+  {
+   "command": "Insert Gap",
+   "keys": [
+    "Alt+W"
+   ]
+  },
+  {
+   "command": "Insert Default Generator",
+   "keys": [
+    "Ctrl+Alt+W"
+   ]
+  },
+  {
+   "command": "Lift from Storyline",
+   "keys": [
+    "Ctrl+Alt+ArrowUp"
+   ]
+  },
+  {
+   "command": "Move Left",
+   "keys": [
+    "Alt+ArrowLeft"
+   ]
+  },
+  {
+   "command": "Move Right",
+   "keys": [
+    "Alt+ArrowRight"
+   ]
+  },
+  {
+   "command": "New Compound Clip",
+   "keys": [
+    "Alt+G"
+   ]
+  },
+  {
+   "command": "Nudge Audio Subframe Left",
+   "keys": [
+    "Alt+,"
+   ]
+  },
+  {
+   "command": "Nudge Audio Subframe Left Many",
+   "keys": [
+    "Shift+Alt+,"
+   ]
+  },
+  {
+   "command": "Nudge Audio Subframe Right",
+   "keys": [
+    "Alt+."
+   ]
+  },
+  {
+   "command": "Nudge Audio Subframe Right Many",
+   "keys": [
+    "Shift+Alt+."
+   ]
+  },
+  {
+   "command": "Nudge Down",
+   "keys": [
+    "Alt+ArrowDown"
+   ]
+  },
+  {
+   "command": "Nudge Up",
+   "keys": [
+    "Alt+ArrowUp"
+   ]
+  },
+  {
+   "command": "Open Audition",
+   "keys": [
+    "Y"
+   ]
+  },
+  {
+   "command": "Override Connections",
+   "keys": [
+    "`"
+   ]
+  },
+  {
+   "command": "Overwrite - Backtimed",
+   "keys": [
+    "Shift+D"
+   ]
+  },
+  {
+   "command": "Overwrite to Primary Storyline",
+   "keys": [
+    "Ctrl+Alt+ArrowDown"
+   ]
+  },
+  {
+   "command": "Paste as Connected",
+   "keys": [
+    "Alt+V"
+   ]
+  },
+  {
+   "command": "Previous Audio Angle",
+   "keys": [
+    "Shift+Alt+ArrowLeft"
+   ]
+  },
+  {
+   "command": "Previous Video Angle",
+   "keys": [
+    "Ctrl+Shift+ArrowLeft"
+   ]
+  },
+  {
+   "command": "Replace from Start",
+   "keys": [
+    "Alt+R"
+   ]
+  },
+  {
+   "command": "Select Clip",
+   "keys": [
+    "C"
+   ]
+  },
+  {
+   "command": "Select Clip Above",
+   "keys": [
+    "Ctrl+ArrowUp"
+   ]
+  },
+  {
+   "command": "Select Clip Below",
+   "keys": [
+    "Ctrl+ArrowDown"
+   ]
+  },
+  {
+   "command": "Select Left Audio Edge",
+   "keys": [
+    "Shift+["
+   ]
+  },
+  {
+   "command": "Select Left Edge",
+   "keys": [
+    "["
+   ]
+  },
+  {
+   "command": "Select Left and Right Audio Edit Edges",
+   "keys": [
+    "Shift+\\"
+   ]
+  },
+  {
+   "command": "Select Next Audio Angle",
+   "keys": [
+    "Shift+Alt+ArrowRight"
+   ]
+  },
+  {
+   "command": "Select Next Clip",
+   "keys": [
+    "Ctrl+ArrowRight"
+   ]
+  },
+  {
+   "command": "Select Next Video Angle",
+   "keys": [
+    "Ctrl+Shift+ArrowRight"
+   ]
+  },
+  {
+   "command": "Select Previous Clip",
+   "keys": [
+    "Ctrl+ArrowLeft"
+   ]
+  },
+  {
+   "command": "Select Right Audio Edge",
+   "keys": [
+    "Shift+]"
+   ]
+  },
+  {
+   "command": "Select Right Edge",
+   "keys": [
+    "]"
+   ]
+  },
+  {
+   "command": "Set Additional Selection End",
+   "keys": [
+    "Ctrl+Shift+O"
+   ]
+  },
+  {
+   "command": "Set Additional Selection Start",
+   "keys": [
+    "Ctrl+Shift+I"
+   ]
+  },
+  {
+   "command": "Solo",
+   "keys": [
+    "Alt+S"
+   ]
+  },
+  {
+   "command": "Source Media: Audio & Video",
+   "keys": [
+    "Shift+1"
+   ]
+  },
+  {
+   "command": "Source Media: Audio Only",
+   "keys": [
+    "Shift+3"
+   ]
+  },
+  {
+   "command": "Source Media: Video Only",
+   "keys": [
+    "Shift+2"
+   ]
+  },
+  {
+   "command": "Switch to Viewer Angle 1",
+   "keys": [
+    "Alt+1"
+   ]
+  },
+  {
+   "command": "Switch to Viewer Angle 2",
+   "keys": [
+    "Alt+2"
+   ]
+  },
+  {
+   "command": "Switch to Viewer Angle 3",
+   "keys": [
+    "Alt+3"
+   ]
+  },
+  {
+   "command": "Switch to Viewer Angle 4",
+   "keys": [
+    "Alt+4"
+   ]
+  },
+  {
+   "command": "Switch to Viewer Angle 5",
+   "keys": [
+    "Alt+5"
+   ]
+  },
+  {
+   "command": "Switch to Viewer Angle 6",
+   "keys": [
+    "Alt+6"
+   ]
+  },
+  {
+   "command": "Switch to Viewer Angle 7",
+   "keys": [
+    "Alt+7"
+   ]
+  },
+  {
+   "command": "Switch to Viewer Angle 8",
+   "keys": [
+    "Alt+8"
+   ]
+  },
+  {
+   "command": "Switch to Viewer Angle 9",
+   "keys": [
+    "Alt+9"
+   ]
+  },
+  {
+   "command": "Timeline Scrolling",
+   "keys": [
+    "Shift+Alt+S"
+   ]
+  },
+  {
+   "command": "Toggle Storyline Mode",
+   "keys": [
+    "G"
+   ]
+  },
+  {
+   "command": "Trim to Selection",
+   "keys": [
+    "Alt+\\"
+   ]
+  },
+  {
+   "command": "Add Adjustment Clip",
+   "keys": [
+    "Alt+A"
+   ]
+  },
+  {
+   "command": "Add Color Adjustment",
+   "keys": [
+    "Ctrl+Alt+O"
+   ]
+  },
+  {
+   "command": "Add Default Audio Effect",
+   "keys": [
+    "Ctrl+Alt+E"
+   ]
+  },
+  {
+   "command": "Add Default Video Effect",
+   "keys": [
+    "Alt+E"
+   ]
+  },
+  {
+   "command": "Color Board: Reset Current Board Controls",
+   "keys": [
+    "Alt+Backspace"
+   ]
+  },
+  {
+   "command": "Copy Effects",
+   "keys": [
+    "Ctrl+Alt+C"
+   ]
+  },
+  {
+   "command": "Copy Keyframes",
+   "keys": [
+    "Shift+Alt+C"
+   ]
+  },
+  {
+   "command": "Cut Keyframes",
+   "keys": [
+    "Shift+Alt+X"
+   ]
+  },
+  {
+   "command": "Enable/Disable Balance Color",
+   "keys": [
+    "Ctrl+Alt+B"
+   ]
+  },
+  {
+   "command": "Match Audio",
+   "keys": [
+    "Ctrl+Shift+M"
+   ]
+  },
+  {
+   "command": "Match Color",
+   "keys": [
+    "Ctrl+Alt+M"
+   ]
+  },
+  {
+   "command": "Next Text",
+   "keys": [
+    "Alt+Tab"
+   ]
+  },
+  {
+   "command": "Paste Effects",
+   "keys": [
+    "Ctrl+Alt+V"
+   ]
+  },
+  {
+   "command": "Paste Keyframes",
+   "keys": [
+    "Shift+Alt+V"
+   ]
+  },
+  {
+   "command": "Previous Text",
+   "keys": [
+    "Shift+Alt+Tab"
+   ]
+  },
+  {
+   "command": "Remove Attributes",
+   "keys": [
+    "Ctrl+Shift+X"
+   ]
+  },
+  {
+   "command": "Remove Effects",
+   "keys": [
+    "Ctrl+Alt+X"
+   ]
+  },
+  {
+   "command": "Retime: Create Normal Speed Segment",
+   "keys": [
+    "Shift+N"
+   ]
+  },
+  {
+   "command": "Retime: Hold",
+   "keys": [
+    "Shift+H"
+   ]
+  },
+  {
+   "command": "Retime: Reset",
+   "keys": [
+    "Ctrl+Alt+R"
+   ]
+  },
+  {
+   "command": "Show/Hide Retime Editor",
+   "keys": [
+    "Ctrl+R"
+   ]
+  },
+  {
+   "command": "Consolidate Motion Content",
+   "keys": [
+    "Ctrl+Shift+Alt+C"
+   ]
+  },
+  {
+   "command": "Go to Event Viewer",
+   "keys": [
+    "Ctrl+Alt+3"
+   ]
+  },
+  {
+   "command": "Move to Trash",
+   "keys": [
+    "Ctrl+Backspace"
+   ]
+  },
+  {
+   "command": "Project Properties",
+   "keys": [
+    "Ctrl+J"
+   ]
+  },
+  {
+   "command": "Reveal in Finder",
+   "keys": [
+    "Ctrl+Shift+R"
+   ]
+  },
+  {
+   "command": "Add Caption",
+   "keys": [
+    "Alt+C"
+   ]
+  },
+  {
+   "command": "Add Marker and Modify",
+   "keys": [
+    "Alt+M"
+   ]
+  },
+  {
+   "command": "Favorite",
+   "keys": [
+    "F"
+   ]
+  },
+  {
+   "command": "New Keyword Collection",
+   "keys": [
+    "Ctrl+Shift+K"
+   ]
+  },
+  {
+   "command": "New Smart Collection",
+   "keys": [
+    "Ctrl+Alt+N"
+   ]
+  },
+  {
+   "command": "Reject",
+   "keys": [
+    "Backspace"
+   ]
+  },
+  {
+   "command": "Set Additional Range End",
+   "keys": [
+    "Ctrl+Shift+O"
+   ]
+  },
+  {
+   "command": "Set Additional Range Start",
+   "keys": [
+    "Ctrl+Shift+I"
+   ]
+  },
+  {
+   "command": "Closed Captions",
+   "keys": [
+    "Ctrl+Shift+C"
+   ]
+  },
+  {
+   "command": "Subtitles",
+   "keys": [
+    "Ctrl+Shift+S"
+   ]
+  },
+  {
+   "command": "Unrate",
+   "keys": [
+    "U"
+   ]
+  },
+  {
+   "command": "Hide Browser Clips",
+   "keys": [
+    "Alt+H"
+   ]
+  },
+  {
+   "command": "New Event",
+   "keys": [
+    "Alt+N"
+   ]
+  },
+  {
+   "command": "New Folder",
+   "keys": [
+    "Ctrl+Shift+N"
+   ]
+  },
+  {
+   "command": "Reveal Project in Browser",
+   "keys": [
+    "Ctrl+Shift+Alt+F"
+   ]
+  },
+  {
+   "command": "Show/Hide Hidden Clips",
+   "keys": [
+    "Shift+Alt+H"
+   ]
+  },
+  {
+   "command": "Synchronize Clips",
+   "keys": [
+    "Ctrl+Alt+G"
+   ]
+  },
+  {
+   "command": "Clip Skimming",
+   "keys": [
+    "Ctrl+Alt+S"
+   ]
+  },
+  {
+   "command": "Cut/Switch Multicam Audio Only",
+   "keys": [
+    "Shift+Alt+3"
+   ]
+  },
+  {
+   "command": "Cut/Switch Multicam Audio and Video",
+   "keys": [
+    "Shift+Alt+1"
+   ]
+  },
+  {
+   "command": "Cut/Switch Multicam Video Only",
+   "keys": [
+    "Shift+Alt+2"
+   ]
+  },
+  {
+   "command": "Duplicate Range: Go to Next Related Clip",
+   "keys": [
+    "Ctrl+Alt+ArrowRight"
+   ]
+  },
+  {
+   "command": "Duplicate Range: Go to Previous Related Clip",
+   "keys": [
+    "Ctrl+Alt+ArrowLeft"
+   ]
+  },
+  {
+   "command": "Go Back 10 Frames",
+   "keys": [
+    "Shift+ArrowLeft"
+   ]
+  },
+  {
+   "command": "Go Forward 10 Frames",
+   "keys": [
+    "Shift+ArrowRight"
+   ]
+  },
+  {
+   "command": "Go to Next Bank",
+   "keys": [
+    "Shift+Alt+'"
+   ]
+  },
+  {
+   "command": "Go to Next Field",
+   "keys": [
+    "Alt+ArrowRight"
+   ]
+  },
+  {
+   "command": "Go to Next Focus Point",
+   "keys": [
+    "Ctrl+Shift+Alt+ArrowRight"
+   ]
+  },
+  {
+   "command": "Go to Next Subframe",
+   "keys": [
+    "Alt+ArrowRight"
+   ]
+  },
+  {
+   "command": "Go to Previous Bank",
+   "keys": [
+    "Shift+Alt+;"
+   ]
+  },
+  {
+   "command": "Go to Previous Field",
+   "keys": [
+    "Alt+ArrowLeft"
+   ]
+  },
+  {
+   "command": "Go to Previous Focus Point",
+   "keys": [
+    "Ctrl+Shift+Alt+ArrowLeft"
+   ]
+  },
+  {
+   "command": "Go to Previous Subframe",
+   "keys": [
+    "Alt+ArrowLeft"
+   ]
+  },
+  {
+   "command": "Go to Range End",
+   "keys": [
+    "Shift+O"
+   ]
+  },
+  {
+   "command": "Go to Range Start",
+   "keys": [
+    "Shift+I"
+   ]
+  },
+  {
+   "command": "Monitor Audio",
+   "keys": [
+    "Shift+A"
+   ]
+  },
+  {
+   "command": "Negative Timecode Entry",
+   "keys": [
+    "-"
+   ]
+  },
+  {
+   "command": "Paste Timecode",
+   "keys": [
+    "Ctrl+Shift+Alt+V"
+   ]
+  },
+  {
+   "command": "Play from Playhead",
+   "keys": [
+    "Alt+Space"
+   ]
+  },
+  {
+   "command": "Play Rate .5",
+   "keys": [
+    "Alt+L"
+   ]
+  },
+  {
+   "command": "Play Rate -.5",
+   "keys": [
+    "Alt+J"
+   ]
+  },
+  {
+   "command": "Play Reverse",
+   "keys": [
+    "Shift+Space"
+   ]
+  },
+  {
+   "command": "Positive Timecode Entry",
+   "keys": [
+    "="
+   ]
+  },
+  {
+   "command": "Set Monitoring Angle",
+   "keys": [
+    "Shift+V"
+   ]
+  },
+  {
+   "command": "Start/Stop Voiceover Recording",
+   "keys": [
+    "Shift+Alt+A"
+   ]
+  },
+  {
+   "command": "Timeline History Forward",
+   "keys": [
+    "Ctrl+]"
+   ]
+  },
+  {
+   "command": "Crop Tool",
+   "keys": [
+    "Shift+C"
+   ]
+  },
+  {
+   "command": "Distort Tool",
+   "keys": [
+    "Alt+D"
+   ]
+  },
+  {
+   "command": "Hand Tool",
+   "keys": [
+    "H"
+   ]
+  },
+  {
+   "command": "Position Tool",
+   "keys": [
+    "P"
+   ]
+  },
+  {
+   "command": "Transform Tool",
+   "keys": [
+    "Shift+T"
+   ]
+  },
+  {
+   "command": "Zoom Tool",
+   "keys": [
+    "Z"
+   ]
+  },
+  {
+   "command": "Decrease Clip Height",
+   "keys": [
+    "Ctrl+Shift+-"
+   ]
+  },
+  {
+   "command": "Increase Clip Height",
+   "keys": [
+    "Ctrl+Shift+="
+   ]
+  },
+  {
+   "command": "Show Fewer Filmstrip Frames",
+   "keys": [
+    "Ctrl+Shift+,"
+   ]
+  },
+  {
+   "command": "Show Image Playground",
+   "keys": [
+    "Shift+Alt+P"
+   ]
+  },
+  {
+   "command": "Show/Hide 2-Up When Trimming",
+   "keys": [
+    "Alt+U"
+   ]
+  },
+  {
+   "command": "Show/Hide Audio Lanes",
+   "keys": [
+    "Ctrl+Shift+Alt+S"
+   ]
+  },
+  {
+   "command": "Show More Filmstrip Frames",
+   "keys": [
+    "Ctrl+Shift+."
+   ]
+  },
+  {
+   "command": "Show One Frame per Filmstrip",
+   "keys": [
+    "Ctrl+Shift+Alt+,"
+   ]
+  },
+  {
+   "command": "Toggle Filmstrip/List View",
+   "keys": [
+    "Ctrl+Alt+2"
+   ]
+  },
+  {
+   "command": "Vertical Zoom to Fit",
+   "keys": [
+    "Shift+Alt+Z"
+   ]
+  },
+  {
+   "command": "View Clip Names",
+   "keys": [
+    "Shift+Alt+N"
+   ]
+  },
+  {
+   "command": "Background Tasks",
+   "keys": [
+    "Ctrl+9"
+   ]
+  },
+  {
+   "command": "Go to Audio Enhancements",
+   "keys": [
+    "Ctrl+8"
+   ]
+  },
+  {
+   "command": "Go to Browser",
+   "keys": [
+    "Ctrl+1"
+   ]
+  },
+  {
+   "command": "Go to Inspector",
+   "keys": [
+    "Ctrl+Alt+4"
+   ]
+  },
+  {
+   "command": "Go to Timeline",
+   "keys": [
+    "Ctrl+2"
+   ]
+  },
+  {
+   "command": "Go to Viewer",
+   "keys": [
+    "Ctrl+3"
+   ]
+  },
+  {
+   "command": "Record Voiceover",
+   "keys": [
+    "Ctrl+Alt+8"
+   ]
+  },
+  {
+   "command": "Show Horizon",
+   "keys": [
+    "Ctrl+Shift+H"
+   ]
+  },
+  {
+   "command": "Show/Hide Audio Meters",
+   "keys": [
+    "Ctrl+Shift+8"
+   ]
+  },
+  {
+   "command": "Show/Hide Effects Browser",
+   "keys": [
+    "Ctrl+5"
+   ]
+  },
+  {
+   "command": "Show/Hide Keyword Editor",
+   "keys": [
+    "Ctrl+K"
+   ]
+  },
+  {
+   "command": "Show/Hide Libraries",
+   "keys": [
+    "Ctrl+1"
+   ]
+  },
+  {
+   "command": "Show/Hide Photos, Videos, and Audio",
+   "keys": [
+    "Ctrl+Shift+1"
+   ]
+  },
+  {
+   "command": "Show/Hide Sidebar",
+   "keys": [
+    "Ctrl+`"
+   ]
+  },
+  {
+   "command": "Show/Hide 360° Viewer",
+   "keys": [
+    "Ctrl+Alt+7"
+   ]
+  },
+  {
+   "command": "Show/Hide Timeline Index",
+   "keys": [
+    "Ctrl+Shift+2"
+   ]
+  },
+  {
+   "command": "Show/Hide Titles and Generators",
+   "keys": [
+    "Ctrl+Alt+1"
+   ]
+  }
+ ],
+ "deviations": {}
+}

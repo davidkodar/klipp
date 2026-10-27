@@ -4386,11 +4386,11 @@ impl PreferencesPanel {
                 egui::FontId::proportional(11.0),
                 warn_color,
             );
-            for (i, (a, b, combo)) in conflicts.iter().enumerate() {
+            for (i, crate::keybindings::Conflict { a, b, combo, place }) in conflicts.iter().enumerate() {
                 ui.painter().text(
                     egui::pos2(rect.left() + 28.0, rect.top() + 28.0 + i as f32 * 18.0),
                     egui::Align2::LEFT_CENTER,
-                    format!("{} and {} both use {}", KeyBindings::action_label(a), KeyBindings::action_label(b), combo.display()),
+                    format!("{} and {} both use {} {}", KeyBindings::action_label(a), KeyBindings::action_label(b), combo.display(), place.label()),
                     egui::FontId::proportional(10.0),
                     theme.marker_warning,
                 );
