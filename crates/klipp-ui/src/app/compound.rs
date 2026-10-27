@@ -920,8 +920,8 @@ mod structure_tests {
         check("a filled port", &g, &[], &ids[1..3]);
         // A frame round a grouped node and one left out.
         let (mut g, ids) = chain(&[Exposure, Saturation, Contrast]);
-        g.frames.push(klipp_nodes::NodeFrame { id: uuid::Uuid::new_v4(), label: "F".into(), description: String::new(), color_rgba: 0, contained_node_ids: [ids[1], ids[3]].into_iter().collect() });
-        g.frames.push(klipp_nodes::NodeFrame { id: uuid::Uuid::new_v4(), label: "G".into(), description: String::new(), color_rgba: 0, contained_node_ids: [ids[2]].into_iter().collect() });
+        g.frames.push(klipp_nodes::NodeFrame { id: uuid::Uuid::new_v4(), label: "F".into(), description: String::new(), color_rgba: 0, contained_node_ids: [ids[1], ids[3]].into_iter().collect(), recipe: None });
+        g.frames.push(klipp_nodes::NodeFrame { id: uuid::Uuid::new_v4(), label: "G".into(), description: String::new(), color_rgba: 0, contained_node_ids: [ids[2]].into_iter().collect(), recipe: None });
         check("frames", &g, &[], &ids[1..3]);
         // A compound among the nodes grouped.
         let (mut g, ids) = chain(&[Exposure, Compound, Contrast]);

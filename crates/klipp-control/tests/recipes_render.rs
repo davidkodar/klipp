@@ -113,7 +113,7 @@ fn every_built_in_recipe_draws_on_the_gpu_and_passes_its_checks() {
         let plain = Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(2.0)) };
         let before = sequence(plain.clone());
         let values: BTreeMap<String, TemplateValue> = recipe.slots.iter().map(|(n, s)| (n.clone(), filled(s.kind))).collect();
-        let ops = klipp_control::recipes::on_clip(&before, plain.id, recipe, &values).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let (ops, _) = klipp_control::recipes::on_clip(&before, plain.id, recipe, &values).unwrap_or_else(|e| panic!("{name}: {e}"));
         let mut placed = plain.clone();
         placed.apply_picture_ops(&ops).unwrap_or_else(|e| panic!("{name}: {e}"));
         let seq = sequence(placed);

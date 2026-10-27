@@ -271,6 +271,37 @@ fn param_value(value: &TemplateValue) -> serde_json::Value {
 }
 
 impl CompositionTemplate {
+    /// The instance a recipe placed with `values` keeps (#2758): its
+    /// controls where `values` set them (else their defaults), and each
+    /// control's links, a link measured `per` a side of the frame made
+    /// pixels of `frame`; a number control bound straight is a link
+    /// across its own range.
+    pub fn recipe_instance(&self, values: &BTreeMap<String, TemplateValue>, frame: klipp_core::Resolution) -> klipp_core::TemplateInstance {
+        let mut instance = instance_for(self);
+        let linked = self.bindings.iter().filter(|b| b.link.is_some() && self.parameters.contains_key(&b.parameter));
+        for (l, b) in instance.links.iter_mut().zip(linked) {
+            let side = match b.link.as_ref().and_then(|m| m.per) {
+                Some(FrameSide::Width) => frame.width as f64,
+                Some(FrameSide::Height) => frame.height as f64,
+                None => 1.0,
+            };
+            l.to = [l.to[0] * side, l.to[1] * side];
+        }
+        // A number control set straight onto its node stays live too: a
+        // link across its own range.
+        for b in self.bindings.iter().filter(|b| b.link.is_none()) {
+            let Some(p) = self.parameters.get(&b.parameter).filter(|p| matches!(p.default, TemplateValue::Number(_))) else { continue };
+            let range = [p.range.as_ref().and_then(|r| r.min).unwrap_or(0.0), p.range.as_ref().and_then(|r| r.max).unwrap_or(1.0)];
+            instance.bindings.remove(&b.parameter);
+            instance.links.push(klipp_core::TemplateLink { parameter: b.parameter.clone(), property: b.property.clone(), from: range, to: range, curve: klipp_core::LinkCurve::Linear, offset: 0.0, linked: true, frozen: 0.0 });
+            instance.overrides.entry(b.parameter.clone()).or_insert_with(|| p.default.clone());
+        }
+        for (name, v) in values.iter().filter(|(n, _)| self.parameters.contains_key(*n)) {
+            instance.overrides.insert(name.clone(), v.clone());
+        }
+        instance
+    }
+
     /// The graph ops that build this recipe into the picture of clip
     /// `clip` (#2758): its anchors resolved against `anchors`
     /// ([`recipe_anchors`]), each new node's path rooted at the clip, and
@@ -699,9 +730,10 @@ pub fn composition_sequences(root: &Sequence, all: &[Sequence]) -> Vec<Sequence>
 /// The recipes Klipp ships (#2758), as files in `assets/recipes`: each a
 /// recipe like a saved one, read and checked as one is.
 pub fn builtin_recipes() -> Vec<CompositionTemplate> {
-    const FILES: [&str; 2] = [
+    const FILES: [&str; 3] = [
         include_str!("../../../assets/recipes/green_screen.klipptemplate"),
         include_str!("../../../assets/recipes/picture_in_picture.klipptemplate"),
+        include_str!("../../../assets/recipes/matted_glow.klipptemplate"),
     ];
     FILES
         .iter()

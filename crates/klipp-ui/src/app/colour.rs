@@ -818,6 +818,7 @@ impl KlippApp {
                         description: String::new(),
                         color_rgba,
                         contained_node_ids: valid_ids,
+                        recipe: None,
                     });
                 });
                 true
