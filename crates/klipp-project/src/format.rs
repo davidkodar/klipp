@@ -458,6 +458,9 @@ pub struct ClipJson {
     pub speed_keyframes: Option<Vec<klipp_core::Keyframe>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep_pitch: Option<bool>,
+    /// A freeze frame's source time (#2773).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hold: Option<TimecodeJson>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_rotation: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1095,7 +1098,7 @@ mod tests {
             role_source: Default::default(),
             matched_to: None,
             param_modifiers: None,
-            speed: None, speed_keyframes: None, keep_pitch: None,
+            speed: None, speed_keyframes: None, keep_pitch: None, hold: None,
             source_rotation: None,
             enabled: None,
             audio_effects: None,
@@ -1169,7 +1172,7 @@ mod tests {
             clip_markers: None,
             effect_keyframes: None,
             role: None, role_source: Default::default(), matched_to: None, param_modifiers: None,
-            speed: None, speed_keyframes: None, keep_pitch: None,
+            speed: None, speed_keyframes: None, keep_pitch: None, hold: None,
             source_rotation: None, enabled: None,
             audio_effects: None,
             audio_effect_keyframes: std::collections::HashMap::new(),
@@ -1372,7 +1375,7 @@ mod tests {
             matte_feather_keyframes: None, matte_choke_keyframes: None,
             clip_markers: None, effect_keyframes: None,
             role: None, role_source: Default::default(), matched_to: None, param_modifiers: None,
-            speed: None, speed_keyframes: None, keep_pitch: None,
+            speed: None, speed_keyframes: None, keep_pitch: None, hold: None,
             source_rotation: None, enabled: None,
             audio_effects: None,
             audio_effect_keyframes: std::collections::HashMap::new(),

@@ -825,6 +825,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::EndSequenceCameraDrag { .. }
         | AppCommand::SetClipSpeed { .. }
         | AppCommand::SetClipInterpolation { .. }
+        | AppCommand::FreezeFrame { .. }
         | AppCommand::AddSpeedKeyframe { .. }
         | AppCommand::RemoveSpeedKeyframe { .. }
         | AppCommand::UpdateSpeedKeyframe { .. }

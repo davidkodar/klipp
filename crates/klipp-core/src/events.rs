@@ -3619,6 +3619,9 @@ pub enum AppCommand {
     /// repeats the nearest, "blend" cross-fades, "flow" follows the motion
     /// (#2773), as the retime and ramp ops' `interpolation`.
     SetClipInterpolation { clip_id: ClipId, interpolation: String },
+    /// Hold `clip_id`'s frame at `at_secs` on the timeline for `secs`,
+    /// inserted there, the rest moved on (#2773).
+    FreezeFrame { clip_id: ClipId, at_secs: f64, secs: f64 },
 
     // Speed keyframes (variable speed ramp)
     /// Add a speed keyframe to a clip at the given time.

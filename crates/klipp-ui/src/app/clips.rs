@@ -1910,6 +1910,7 @@ pub(super) fn duplicate_after(clip: &klipp_timeline::Clip) -> klipp_timeline::Cl
         speed: clip.speed,
         speed_keyframes: clip.speed_keyframes.clone(),
         keep_pitch: clip.keep_pitch,
+        hold: None,
         source_rotation: clip.source_rotation,
         enabled: clip.enabled,
         solo: clip.solo,

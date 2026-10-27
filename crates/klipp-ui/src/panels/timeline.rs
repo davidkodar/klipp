@@ -8523,6 +8523,14 @@ impl TimelinePanel {
                     cmds.push(AppCommand::OpenSpeedDialog { clip_id });
                     ui.close_menu();
                 }
+                // The frame under the playhead held (#2773).
+                let playhead = state.playhead;
+                if media_id.is_some() && clip.hold.is_none() && playhead >= clip.timeline_in && playhead < clip.timeline_out
+                    && ui.button("Freeze Frame").on_hover_text("Hold the frame at the playhead for 2 seconds; the rest moves on").clicked()
+                {
+                    cmds.push(AppCommand::FreezeFrame { clip_id, at_secs: playhead.to_secs_f64(), secs: 2.0 });
+                    ui.close_menu();
+                }
                 let enable_label = if clip.enabled { "Disable Clip" } else { "Enable Clip" };
                 if ui.button(enable_label).clicked() {
                     cmds.push(AppCommand::SetClipEnabled { clip_id, enabled: !clip.enabled });

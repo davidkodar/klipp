@@ -853,6 +853,12 @@ exist until the plan runs.
   draw attention to a region. `x,y` are its centre and `w,h` its size
   as frame fractions; `kind` is `box`, `ring` or `spot` (dim outside).
   The highlight fades in and out.
+- `freeze {clip_id, at, secs}`: a freeze frame. The clip's picture at
+  `at` is held for `secs` (a frame to 60) and inserted there; everything
+  from `at` on, on every unlocked track, moves on by `secs`, so picture
+  and sound stay in step. The held piece keeps the clip's grade and
+  effects, and its sound is silent. Trim it to change how long it holds;
+  it has no speed to retime.
 - `ramp {clip_id, from, to, secs?, ripple?, interpolation?}`: ramp speed
   from `from` times to `to` times over timeline seconds, then hold the
   new speed; the clip's length follows. `ripple: true` moves the clips

@@ -1057,7 +1057,7 @@ mod menu_smoke_tests {
         let menu = timeline.right_click(at);
         let top = [
             "Cut", "Copy", "Paste at Playhead", "Duplicate Clip", "Delete Clip",
-            "Rename Clip", "Clip Colour", "Speed", "Disable Clip", "Match Frame", "Reveal in Media Pool",
+            "Rename Clip", "Clip Colour", "Speed", "Freeze Frame", "Disable Clip", "Match Frame", "Reveal in Media Pool",
             "Edit", "Colour", "Effects", "Link & Group",
             "Export This Clip", "Open in External App", "Properties",
         ];

@@ -197,6 +197,7 @@ fn show_bin_media_video(
         speed: 1.0,
         speed_keyframes: Vec::new(),
         keep_pitch: false,
+        hold: None,
         source_rotation: 0,
         enabled: true,
         solo: false,
