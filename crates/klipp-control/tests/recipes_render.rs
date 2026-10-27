@@ -449,3 +449,41 @@ fn a_behaviour_a_recipe_puts_on_moves_the_picture_over_time() {
         assert!(worst(&s, &alone) <= 1, "no shake at {secs} s: the clip, {} levels off", worst(&s, &alone));
     }
 }
+
+/// Colour hold (#2758): the colour picked is kept and the rest goes grey
+/// at its own brightness. Holding the test shot's green leaves its patch
+/// as the clip shows it; holding red greys the patch to its luminance,
+/// never to its brightest channel; the grey background is grey either
+/// way. On the GPU stack with nothing falling back.
+#[test]
+fn colour_hold_keeps_the_colour_picked_and_greys_the_rest() {
+    let recipes = builtin_recipes();
+    let recipe = recipes.iter().find(|r| r.name == "Colour hold").expect("the recipe");
+    let plain = shot_clip();
+    let held = |rgb: [f32; 3]| {
+        let before = sequence(plain.clone());
+        let values = BTreeMap::from([("colour".to_string(), TemplateValue::Color([rgb[0], rgb[1], rgb[2], 1.0]))]);
+        let (ops, _) = klipp_control::recipes::on_clip(&before, plain.id, recipe, &values).unwrap_or_else(|e| panic!("{e}"));
+        let mut c = plain.clone();
+        c.apply_picture_ops(&ops).unwrap_or_else(|e| panic!("{e}"));
+        sequence(c)
+    };
+    let srgb = |v: f32| klipp_color::transfer::linear_to_srgb(v);
+    let Some(green) = stack(&held([srgb(GREEN[0]), srgb(GREEN[1]), srgb(GREEN[2])]), ViewChannel::Picture, "green held") else { return };
+    let Some(red) = stack(&held([0.85, 0.12, 0.1]), ViewChannel::Picture, "red held") else { return };
+    let Some(alone) = stack(&sequence(plain.clone()), ViewChannel::Picture, "the clip") else { return };
+    let at = |f: &[u8], x: f32, y: f32| { let i = (((y * H as f32) as u32 * W + (x * W as f32) as u32) * 4) as usize; [f[i], f[i + 1], f[i + 2]] };
+    let (patch, ground) = ((0.5, 0.5), (0.12, 0.15));
+    let apart = |a: [u8; 3], b: [u8; 3]| a.iter().zip(b).map(|(x, y)| x.abs_diff(y)).max().unwrap();
+    assert!(apart(at(&green, patch.0, patch.1), at(&alone, patch.0, patch.1)) <= 1, "green held: the patch as it was");
+    let grey = at(&red, patch.0, patch.1);
+    assert!(grey.iter().all(|c| c.abs_diff(grey[0]) <= 1), "red held: the patch grey, {grey:?}");
+    // The patch's luminance, sRGB-encoded: what grey it goes, not its
+    // brightest channel.
+    let luma = srgb(0.2126 * GREEN[0] + 0.7152 * GREEN[1] + 0.0722 * GREEN[2]) * 255.0;
+    assert!((f32::from(grey[0]) - luma).abs() <= 2.0, "at its own brightness: {grey:?}, its luminance {luma}");
+    for f in [&green, &red] {
+        assert!(apart(at(f, ground.0, ground.1), at(&alone, ground.0, ground.1)) <= 1, "the grey ground as it was");
+    }
+}
+

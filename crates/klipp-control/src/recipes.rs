@@ -190,7 +190,7 @@ mod tests {
     #[test]
     fn every_built_in_recipe_reads_and_lists() {
         let recipes = ct::builtin_recipes();
-        assert_eq!(recipes.len(), 7, "every file in assets/recipes reads");
+        assert_eq!(recipes.len(), 14, "every file in assets/recipes reads");
         for r in &recipes {
             assert_eq!(r.kind, ct::TemplateKind::Recipe, "{}", r.name);
             let v = listed(r);

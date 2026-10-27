@@ -927,7 +927,7 @@ pub fn builtin_templates() -> Vec<CompositionTemplate> {
 /// The recipes Klipp ships (#2758), as files in `assets/recipes`: each a
 /// recipe like a saved one, read and checked as one is.
 pub fn builtin_recipes() -> Vec<CompositionTemplate> {
-    const FILES: [&str; 7] = [
+    const FILES: [&str; 14] = [
         include_str!("../../../assets/recipes/green_screen.klipptemplate"),
         include_str!("../../../assets/recipes/picture_in_picture.klipptemplate"),
         include_str!("../../../assets/recipes/matted_glow.klipptemplate"),
@@ -935,6 +935,13 @@ pub fn builtin_recipes() -> Vec<CompositionTemplate> {
         include_str!("../../../assets/recipes/text_behind_subject.klipptemplate"),
         include_str!("../../../assets/recipes/screen_replacement.klipptemplate"),
         include_str!("../../../assets/recipes/clean_plate_background.klipptemplate"),
+        include_str!("../../../assets/recipes/colour_hold.klipptemplate"),
+        include_str!("../../../assets/recipes/camera_shake.klipptemplate"),
+        include_str!("../../../assets/recipes/glitch.klipptemplate"),
+        include_str!("../../../assets/recipes/gradient_map.klipptemplate"),
+        include_str!("../../../assets/recipes/wave.klipptemplate"),
+        include_str!("../../../assets/recipes/twirl.klipptemplate"),
+        include_str!("../../../assets/recipes/bulge.klipptemplate"),
     ];
     FILES
         .iter()

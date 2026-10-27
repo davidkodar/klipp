@@ -1,0 +1,101 @@
+{
+  "format_version": 2,
+  "id": "d93a5f71-2e8c-4b46-9f13-6a0c7e4b8d52",
+  "name": "Twirl",
+  "category": "Distort",
+  "written_by": "built-in",
+  "kind": "recipe",
+  "composition_id": "00000000-0000-0000-0000-000000000000",
+  "parameters": {
+    "angle": {
+      "label": "Angle",
+      "default": {
+        "type": "Number",
+        "value": 180.0
+      },
+      "range": {
+        "min": -1440.0,
+        "max": 1440.0
+      }
+    },
+    "radius": {
+      "label": "Radius",
+      "default": {
+        "type": "Number",
+        "value": 0.5
+      },
+      "range": {
+        "min": 0.0,
+        "max": 2.0
+      }
+    },
+    "centre_x": {
+      "label": "Centre X",
+      "default": {
+        "type": "Number",
+        "value": 0.5
+      },
+      "range": {
+        "min": 0.0,
+        "max": 1.0
+      }
+    },
+    "centre_y": {
+      "label": "Centre Y",
+      "default": {
+        "type": "Number",
+        "value": 0.5
+      },
+      "range": {
+        "min": 0.0,
+        "max": 1.0
+      }
+    }
+  },
+  "slots": {},
+  "bindings": [
+    {
+      "parameter": "angle",
+      "property": "node:0.angle"
+    },
+    {
+      "parameter": "radius",
+      "property": "node:0.radius"
+    },
+    {
+      "parameter": "centre_x",
+      "property": "node:0.center_x"
+    },
+    {
+      "parameter": "centre_y",
+      "property": "node:0.center_y"
+    }
+  ],
+  "graph": {
+    "ops": [
+      {
+        "op": "add",
+        "after": {
+          "anchor": "end"
+        },
+        "type": "klipp.fx.warp",
+        "params": {
+          "mode": "twirl"
+        },
+        "label": "Twirl"
+      }
+    ],
+    "checks": [
+      {
+        "at": [
+          0.32,
+          0.32
+        ],
+        "channel": "green",
+        "min": 0.55,
+        "max": 0.62,
+        "says": "the patch's corner, turned away"
+      }
+    ]
+  }
+}

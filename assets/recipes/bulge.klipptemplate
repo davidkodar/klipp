@@ -1,0 +1,101 @@
+{
+  "format_version": 2,
+  "id": "4c8f2a96-7d1e-4b53-a0f6-2e9b5d3c7a14",
+  "name": "Bulge or pinch",
+  "category": "Distort",
+  "written_by": "built-in",
+  "kind": "recipe",
+  "composition_id": "00000000-0000-0000-0000-000000000000",
+  "parameters": {
+    "amount": {
+      "label": "Amount",
+      "default": {
+        "type": "Number",
+        "value": 0.5
+      },
+      "range": {
+        "min": -0.9,
+        "max": 0.9
+      }
+    },
+    "radius": {
+      "label": "Radius",
+      "default": {
+        "type": "Number",
+        "value": 0.5
+      },
+      "range": {
+        "min": 0.0,
+        "max": 2.0
+      }
+    },
+    "centre_x": {
+      "label": "Centre X",
+      "default": {
+        "type": "Number",
+        "value": 0.5
+      },
+      "range": {
+        "min": 0.0,
+        "max": 1.0
+      }
+    },
+    "centre_y": {
+      "label": "Centre Y",
+      "default": {
+        "type": "Number",
+        "value": 0.5
+      },
+      "range": {
+        "min": 0.0,
+        "max": 1.0
+      }
+    }
+  },
+  "slots": {},
+  "bindings": [
+    {
+      "parameter": "amount",
+      "property": "node:0.strength"
+    },
+    {
+      "parameter": "radius",
+      "property": "node:0.radius"
+    },
+    {
+      "parameter": "centre_x",
+      "property": "node:0.center_x"
+    },
+    {
+      "parameter": "centre_y",
+      "property": "node:0.center_y"
+    }
+  ],
+  "graph": {
+    "ops": [
+      {
+        "op": "add",
+        "after": {
+          "anchor": "end"
+        },
+        "type": "klipp.fx.warp",
+        "params": {
+          "mode": "bulge"
+        },
+        "label": "Bulge or pinch"
+      }
+    ],
+    "checks": [
+      {
+        "at": [
+          0.28,
+          0.5
+        ],
+        "channel": "green",
+        "min": 0.6,
+        "max": 1.0,
+        "says": "the patch, swollen past its edge"
+      }
+    ]
+  }
+}
