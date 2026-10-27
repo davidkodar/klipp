@@ -43,6 +43,15 @@ pub fn show(ui: &mut Ui, theme: &KlippTheme, state: &AppState, cmds: &mut Vec<Ap
                 }
             });
         }
+        // One channel of the picture in grey (#2758).
+        row(ui, theme, "Channel", |ui| {
+            for channel in klipp_core::ViewChannel::ALL {
+                let label = crate::panels::viewer::view_channel_label(channel);
+                if ui.selectable_label(state.view_channel == channel, RichText::new(label).size(12.0)).clicked() && state.view_channel != channel {
+                    cmds.push(AppCommand::SetViewChannel { channel });
+                }
+            }
+        });
         ui.add_space(4.0);
     });
 

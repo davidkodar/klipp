@@ -269,6 +269,44 @@ impl FadeCurve {
     }
 }
 
+/// What the viewer shows of the picture (#2758): the picture itself, or
+/// one of its channels in grey. Red, green and blue are the flattened
+/// picture's, as it shows; alpha is the composite's coverage before it
+/// is flattened (0 black, 1 white); luma is the working space's own
+/// luminance of the flattened picture. Only the viewer reads it: an
+/// export is always the picture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ViewChannel {
+    #[default]
+    Picture,
+    Red,
+    Green,
+    Blue,
+    Alpha,
+    Luma,
+}
+
+impl ViewChannel {
+    pub const ALL: [ViewChannel; 6] = [ViewChannel::Picture, ViewChannel::Red, ViewChannel::Green, ViewChannel::Blue, ViewChannel::Alpha, ViewChannel::Luma];
+
+    /// The name an agent or a menu uses for it.
+    pub fn name(self) -> &'static str {
+        match self {
+            ViewChannel::Picture => "picture",
+            ViewChannel::Red => "red",
+            ViewChannel::Green => "green",
+            ViewChannel::Blue => "blue",
+            ViewChannel::Alpha => "alpha",
+            ViewChannel::Luma => "luma",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<ViewChannel> {
+        ViewChannel::ALL.into_iter().find(|c| c.name().eq_ignore_ascii_case(name))
+    }
+}
+
 /// Where a clip's role came from (#2216): never set, chosen by a person
 /// (or an agent asked to), or proposed once from what the sound is. A
 /// role set by hand is never replaced by a proposal, and a clip is

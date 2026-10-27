@@ -2429,6 +2429,13 @@ pub struct AppState {
     /// "S" badge on the soloed node and the toolbar's "SOLO: …"
     /// indicator. Cleared by AppCommand::SetNodeSolo { at: None }.
     pub solo_node: Option<klipp_nodes::NodeId>,
+    /// `solo_node` by its full path and output, as the engine has it:
+    /// what a frame read puts back after viewing a node of its own
+    /// (#2758).
+    pub solo_at: Option<klipp_graph_format::path::NodeOutput>,
+    /// What the viewer shows of the picture (#2758): the picture, or one
+    /// channel of it in grey.
+    pub view_channel: klipp_core::ViewChannel,
     /// What the program viewer shows instead of the finished picture
     /// while a node is viewed: the node's name (#1763).
     pub viewed_node_name: Option<String>,
@@ -4955,6 +4962,8 @@ impl Default for AppState {
             hue_curve_awaiting: None,
             matte_preview_active: false,
             solo_node: None,
+            solo_at: None,
+            view_channel: klipp_core::ViewChannel::Picture,
             viewed_node_name: None,
             before_after_active: false,
             stabilization_compare_active: false,
