@@ -244,13 +244,15 @@ pub fn source(s: &Settings, x: f32, y: f32, w: f32, h: f32) -> V2 {
     let (cx, cy) = (s.center_x * w, s.center_y * h);
     match s.mode {
         WAVE => {
-            let p = wave(x, y, w, h, s.amplitude * h / 1080.0, 1.0 / max(s.wavelength, 0.001), s.direction, s.time * s.speed);
+            // The phase in turns, wrapped to one: sin repeats, and a
+            // long clip's large argument would round apart on the GPU.
+            let p = wave(x, y, w, h, s.amplitude * h / 1080.0, 1.0 / max(s.wavelength, 0.001), s.direction, fract(s.time * s.speed));
             vec2!(p.x, p.y)
         }
         TWIRL => twirl(x, y, w, h, cx, cy, max(s.radius * h, 1.0), s.angle * 3.14159265 / 180.0, 3.0),
         BULGE => bulge(x, y, cx, cy, s.radius * h, s.strength),
         RIPPLE => {
-            let p = ripple(x, y, w, h, cx, cy, 1.0 / max(s.wavelength, 0.001), s.time * s.speed * 6.28318530, 1.0, s.amplitude);
+            let p = ripple(x, y, w, h, cx, cy, 1.0 / max(s.wavelength, 0.001), fract(s.time * s.speed) * 6.28318530, 1.0, s.amplitude);
             vec2!(p.x, p.y)
         }
         _ => {
@@ -323,14 +325,14 @@ fn warp_source(x: f32, y: f32, w: f32, h: f32) -> vec2<f32> {
     let cx = params.center_x * w;
     let cy = params.center_y * h;
     if params.mode == 0u {
-        let p = warp_wave(x, y, w, h, params.amplitude * h / 1080.0, 1.0 / max(params.wavelength, 0.001), params.direction, params.time * params.speed);
+        let p = warp_wave(x, y, w, h, params.amplitude * h / 1080.0, 1.0 / max(params.wavelength, 0.001), params.direction, fract(params.time * params.speed));
         return p.xy;
     } else if params.mode == 1u {
         return warp_twirl(x, y, w, h, cx, cy, max(params.radius * h, 1.0), params.angle * 3.14159265 / 180.0, 3.0);
     } else if params.mode == 2u {
         return warp_bulge(x, y, cx, cy, params.radius * h, params.strength);
     } else if params.mode == 3u {
-        let p = warp_ripple(x, y, w, h, cx, cy, 1.0 / max(params.wavelength, 0.001), params.time * params.speed * 6.28318530, 1.0, params.amplitude);
+        let p = warp_ripple(x, y, w, h, cx, cy, 1.0 / max(params.wavelength, 0.001), fract(params.time * params.speed) * 6.28318530, 1.0, params.amplitude);
         return p.xy;
     }
     let step = u32(max(params.time * params.speed, 0.0));

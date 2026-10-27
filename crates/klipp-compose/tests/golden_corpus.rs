@@ -427,6 +427,9 @@ fn effect_cases() -> Vec<Case> {
         ("Deflicker", Deflicker { strength: 1.0, window_secs: 1.0, gain: 1.18 }),
         ("Letterbox", Letterbox { aspect_ratio: 2.39, bar_color: 0, opacity: 1.0 }),
         ("ChromaticAberration", ChromaticAberration { red_shift: 3.0, blue_shift: -3.0, center_x: 0.5, center_y: 0.5 }),
+        ("GradientMap", GradientMap { shadow: [20, 24, 64], mid: [190, 90, 70], highlight: [255, 236, 190], mix: 0.8 }),
+        ("Warp", Warp { mode: 0, amplitude: 60.0, wavelength: 0.3, speed: 1.0, direction: 0, angle: 180.0, strength: 0.5, radius: 0.5, center_x: 0.5, center_y: 0.5, band: 0.04, time: 0.4 }),
+        ("Warp twirl", Warp { mode: 1, amplitude: 20.0, wavelength: 0.2, speed: 1.0, direction: 0, angle: 120.0, strength: 0.5, radius: 0.4, center_x: 0.45, center_y: 0.55, band: 0.04, time: 0.0 }),
     ];
     let around = vec![
         ("RoundedCorners", RoundedCorners { radius: 6.0, feather: 1.0 }),
@@ -486,6 +489,12 @@ const EFFECTS_IN_A_LATER_BATCH: &[&str] = &[
     // compound node: drawn against the clip's own grade in
     // `grade_compound_render.rs`.
     "GradeCompound",
+    // A surface tracked in the clip, which the corpus's clips carry none
+    // of: drawn as the corner pin on its corners in `surface_pin_node.rs`.
+    "SurfacePin",
+    // A title drawn as a picture, laid over by a Merge beside the chain:
+    // drawn against the same title as a clip in `title_source_render.rs`.
+    "TitleSource",
 ];
 
 /// One moving, grainy clip carrying `fx` (#1024).
@@ -522,8 +531,8 @@ fn temporal_cases() -> Vec<Case> {
     // Odd timeline frames: at half speed each falls halfway between two
     // source frames, so both are weighed in.
     case.times = vec![13.0 / 24.0, 31.0 / 24.0];
-    // Blending two decoded frames is a CPU step on the source.
-    case.declines = Some(vec![Path::Stack, Path::Export]);
+    // Every path blends the two decoded frames: the stack and the export
+    // on the GPU since #2864.
     out.push(case);
 
     // Stabilisation with its analysis (`renderer`'s): every frame

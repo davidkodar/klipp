@@ -131,6 +131,11 @@ pub(super) fn acting_sample(ty: &EffectType) -> BuiltinEffect {
         "media_source" => BuiltinEffect::MediaSource { media: super::parity_pixels::MEDIA_ITEM.into(), offset: 0.25 },
         // On the screen its fixture's clip carries (`fixture_on`).
         "surface_pin" => BuiltinEffect::SurfacePin { surface: PARITY_SCREEN.into(), inset: 0.0, on_source: [[0.0; 2]; 4], source: [0; 2] },
+        // A title to draw: the sample's is empty, and draws nothing.
+        "title_source" => {
+            let title = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Parity".into(), font_size: 120.0, color: [235, 210, 120, 255], ..Default::default() });
+            BuiltinEffect::TitleSource { title: serde_json::to_string(&title).unwrap_or_default() }
+        }
         _ => (ty.sample)(),
     }
 }

@@ -219,7 +219,7 @@ pub(super) static TYPES: &[EffectType] = &[
             Spatial::PerPixel,
         ),
         tag: "gradient_map",
-        sample: || BuiltinEffect::GradientMap { shadow: [20, 24, 60], mid: [190, 90, 70], highlight: [255, 236, 190], mix: 1.0 },
+        sample: || BuiltinEffect::GradientMap { shadow: [20, 24, 64], mid: [190, 90, 70], highlight: [255, 236, 190], mix: 1.0 },
     },
     EffectType {
         desc: mixable(colour(
