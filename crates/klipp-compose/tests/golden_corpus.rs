@@ -1120,7 +1120,7 @@ fn renderer(gpu: bool, ws: WorkingColorspace) -> Renderer {
     // The temporal cases' analyses: every frame shifted (3.5, -1.5),
     // rows sheared by the picture moving between frames, light that
     // flickers frame to frame.
-    r.set_asset_store(analysis::store(vec![analysis::stabilised_by(3.5, -1.5, 96), analysis::sheared(96), analysis::flickering(96)]));
+    r.set_asset_store(analysis::store(vec![analysis::stabilised_by(0.04, -0.02, 96), analysis::sheared(96), analysis::flickering(96)]));
     r
 }
 

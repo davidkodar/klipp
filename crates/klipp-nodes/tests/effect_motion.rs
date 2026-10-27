@@ -27,10 +27,11 @@ fn frame() -> Vec<f32> {
         .collect()
 }
 
-/// A correction as stabilisation makes them: a small turn and a shift.
+/// A correction as stabilisation makes them: a small turn and a shift,
+/// in the frame's units (centred, its height 1).
 fn turned() -> Homography {
     let (s, c) = 2.5f64.to_radians().sin_cos();
-    Homography { h: [[c, -s, 6.3], [s, c, -4.7], [0.00004, -0.00003, 1.0]] }
+    Homography { h: [[c, -s, 0.04], [s, c, -0.03], [0.0, 0.0, 1.0]] }
 }
 
 /// Every effect's analysis, whatever node asks: a stabilisation's

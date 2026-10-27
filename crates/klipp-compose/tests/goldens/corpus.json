@@ -1,6 +1,6 @@
 {
-  "recorded_on": "c428151f",
-  "reason": "#2795: reflection whole at the waterline",
+  "recorded_on": "cbaf5e08",
+  "reason": "#2771: stabilisation in the frame's units, a shaking camera",
   "frames": [
   {"case":"effect/Opacity","kind":"rgba","len":9216,"offset":0,"path":"cpu","t":"0.5"},
   {"case":"effect/Opacity","kind":"rgba","len":9216,"offset":9216,"path":"CpuWithGpu","t":"0.5"},

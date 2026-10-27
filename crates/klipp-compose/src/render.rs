@@ -5434,7 +5434,7 @@ impl Renderer {
                 continue;
             };
             let Some(a) = blob.data.downcast_ref::<klipp_effects::node_analysis::NodeAnalysis>() else { continue };
-            let at = a.at(effect, source_secs, height);
+            let at = a.at(effect, source_secs, width, height);
             let covered = match effect {
                 BuiltinEffect::Deflicker { .. } => at.gain.is_some(),
                 BuiltinEffect::VideoStabilization { .. } => at.motion.stabilization.is_some(),

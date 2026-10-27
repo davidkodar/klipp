@@ -78,13 +78,23 @@ fn entry(source_secs: f64, fps: f64, n: usize) -> Option<usize> {
 
 impl NodeAnalysis {
     /// What `effect` applies on the frame shown at `source_secs`, at the
-    /// render's `height`.
-    pub fn at(&self, effect: &BuiltinEffect, source_secs: f64, height: u32) -> AtFrame {
+    /// render's `width` × `height`.
+    pub fn at(&self, effect: &BuiltinEffect, source_secs: f64, width: u32, height: u32) -> AtFrame {
         match self {
             NodeAnalysis::Deflicker { gains, fps } => AtFrame { gain: entry(source_secs, *fps, gains.len()).map(|i| gains[i]), ..Default::default() },
             NodeAnalysis::Stabilisation { smoothed, fps } => {
+                let (w, h) = (width.max(1) as f64, height.max(1) as f64);
+                // Enlarged as far as the clip's corrections need past the
+                // effect's own crop, so no frame's edge is ever stretched
+                // in (#2771).
+                let own = match effect {
+                    BuiltinEffect::VideoStabilization { crop_ratio, zoom, .. } => crate::stabilization_crop_zoom(*crop_ratio, *zoom) as f64,
+                    _ => 1.0,
+                };
+                let more = (smoothed.fill_zoom(w / h) / own).max(1.0);
+                let enlarge = Homography { h: [[1.0 / more, 0.0, 0.5 * w * (1.0 - 1.0 / more)], [0.0, 1.0 / more, 0.5 * h * (1.0 - 1.0 / more)], [0.0, 0.0, 1.0]] };
                 let stabilization = entry(source_secs, *fps, smoothed.corrections.len()).map(|i| {
-                    let h = &smoothed.corrections[i].h;
+                    let h = &crate::stabilization::in_pixels(&smoothed.corrections[i], w, h).multiply(&enlarge).h;
                     [h[0][0] as f32, h[0][1] as f32, h[0][2] as f32, h[1][0] as f32, h[1][1] as f32, h[1][2] as f32, h[2][0] as f32, h[2][1] as f32, h[2][2] as f32, 0.0, 0.0, 0.0]
                 });
                 AtFrame { motion: MotionData { stabilization, rsc_rows: None }, gain: None }
@@ -113,16 +123,16 @@ mod tests {
         let a = NodeAnalysis::Deflicker { gains, fps: 25.0 };
         let fx = BuiltinEffect::Deflicker { strength: 1.0, window_secs: 1.0, gain: 1.0 };
         // A clip trimmed to start at 2 s: its first frame shows source 2 s.
-        assert_eq!(a.at(&fx, 2.0, 8).gain, Some(50.0));
-        assert_eq!(a.at(&fx, 2.04, 8).gain, Some(51.0));
+        assert_eq!(a.at(&fx, 2.0, 8, 8).gain, Some(50.0));
+        assert_eq!(a.at(&fx, 2.04, 8, 8).gain, Some(51.0));
         // Past the analysis, and before it: no entry, never the last one's
         // or the first one's.
-        assert_eq!(a.at(&fx, 3.96, 8).gain, Some(99.0));
-        assert_eq!(a.at(&fx, 3.99, 8).gain, Some(99.0), "the last frame's later half is still its own");
-        assert_eq!(a.at(&fx, 4.0, 8).gain, None);
-        assert_eq!(a.at(&fx, -0.04, 8).gain, None);
+        assert_eq!(a.at(&fx, 3.96, 8, 8).gain, Some(99.0));
+        assert_eq!(a.at(&fx, 3.99, 8, 8).gain, Some(99.0), "the last frame's later half is still its own");
+        assert_eq!(a.at(&fx, 4.0, 8, 8).gain, None);
+        assert_eq!(a.at(&fx, -0.04, 8, 8).gain, None);
         // Far past the analysis: none either.
-        assert_eq!(a.at(&fx, 100.0, 8).gain, None, "far past the analysis: none");
+        assert_eq!(a.at(&fx, 100.0, 8, 8).gain, None, "far past the analysis: none");
     }
 
     /// A deflicker's window and a stabilisation's smoothing shape what's
@@ -137,5 +147,90 @@ mod tests {
         assert_ne!(derive_at(0.08), derive_at(0.3), "another window, other gains");
         assert!(derive(&BuiltinEffect::Invert { mix: 1.0 }, &raw).is_none());
         assert_ne!(derivation_params(&BuiltinEffect::Deflicker { strength: 1.0, window_secs: 0.5, gain: 1.0 }), derivation_params(&BuiltinEffect::Deflicker { strength: 1.0, window_secs: 1.0, gain: 1.0 }));
+    }
+
+    /// A handheld tracking shot (#2771): the camera follows sideways at a
+    /// steady 6 px a frame of a 960 × 540 frame, the ground at the bottom
+    /// passing faster than the trees at the top, and shakes. The scene
+    /// point frame `i` shows at its pixel (`x`, `y`).
+    fn tracking(i: usize, x: f64, y: f64) -> (f64, f64) {
+        let t = i as f64;
+        let turn = 0.004 * (1.1 * t).sin();
+        let (dx, dy) = (x - 480.0, y - 270.0);
+        let (qx, qy) = (480.0 + dx * turn.cos() - dy * turn.sin(), 270.0 + dx * turn.sin() + dy * turn.cos());
+        let shake = (5.0 * (1.9 * t).sin() + 3.0 * (0.7 * t + 0.4).sin(), 4.0 * (1.3 * t + 1.0).sin());
+        (qx + t * 6.0 * (0.7 + 0.6 * qy / 540.0) + shake.0, qy + shake.1)
+    }
+
+    /// The tracking shot's frame `i` as the analysis decodes it, 480 wide:
+    /// blocks of grey, each its own.
+    fn tracking_frame(i: usize) -> (Vec<u8>, u32, u32) {
+        let (w, h) = (480u32, 270u32);
+        let mut px = Vec::with_capacity((w * h * 4) as usize);
+        for y in 0..h {
+            for x in 0..w {
+                let (u, v) = tracking(i, x as f64 * 2.0 + 0.5, y as f64 * 2.0 + 0.5);
+                let cell = ((u / 20.0).floor() as i64).wrapping_mul(73_856_093) ^ ((v / 20.0).floor() as i64).wrapping_mul(19_349_663);
+                let g = 30 + (cell.rem_euclid(196)) as u8;
+                px.extend_from_slice(&[g, g, g, 255]);
+            }
+        }
+        (px, w, h)
+    }
+
+    /// Stabilised, the tracking shot keeps its track and loses its shake:
+    /// each frame's correction only turns, scales and shifts it, never
+    /// leaning it however the parallax builds up; the picture still moves
+    /// at the camera's pace; and the frame is enlarged just enough that
+    /// no output pixel is taken from past its edge.
+    #[test]
+    fn a_tracking_shot_keeps_its_track_and_loses_its_shake() {
+        let n = 96;
+        let mut next = 0;
+        let mut decode = |_t: f64| {
+            next += 1;
+            Some(tracking_frame(next - 1))
+        };
+        let raw = serde_json::to_value(crate::stabilization::analyze_clip(24.0, n, &mut decode, &|_| true).unwrap()).unwrap();
+        let fx = BuiltinEffect::VideoStabilization { smoothing: 0.5, crop_ratio: 0.0, zoom: false };
+        let a = derive(&fx, &raw).unwrap();
+        let (w, h) = (960.0, 540.0);
+        let mut view = Vec::new();
+        let mut lean = 0.0f64;
+        let mut turn = 0.0f64;
+        let mut outside = 0.0f64;
+        for i in 0..n {
+            let m = a.at(&fx, i as f64 / 24.0, w as u32, h as u32).motion.stabilization.unwrap();
+            let map = |x: f64, y: f64| {
+                let m = m.map(f64::from);
+                let z = m[6] * x + m[7] * y + m[8];
+                ((m[0] * x + m[1] * y + m[2]) / z, (m[3] * x + m[4] * y + m[5]) / z)
+            };
+            // A turn, a scale and a shift have equal diagonals and
+            // opposite off-diagonals; a lean doesn't.
+            lean = lean.max(((m[0] - m[4]).abs() + (m[1] + m[3]).abs()) as f64);
+            turn = turn.max((m[3] as f64).atan2(m[0] as f64).abs());
+            for (x, y) in [(0.0, 0.0), (w, 0.0), (0.0, h), (w, h)] {
+                let (sx, sy) = map(x, y);
+                outside = outside.max(-sx).max(sx - w).max(-sy).max(sy - h);
+            }
+            let (cx, cy) = map(w / 2.0, h / 2.0);
+            view.push(tracking(i, cx, cy));
+        }
+        assert!(lean < 0.01, "no lean: {lean}");
+        assert!(turn < 0.02, "turned by at most a hand's shake: {turn} rad");
+        assert!(outside < 1.0, "never past the frame's edge: {outside} px");
+        let still: Vec<(f64, f64)> = (0..n).map(|i| tracking(i, w / 2.0, h / 2.0)).collect();
+        let shake = |p: &[(f64, f64)]| {
+            let d: Vec<f64> = p.windows(3).map(|k| (k[0].0 - 2.0 * k[1].0 + k[2].0).hypot(k[0].1 - 2.0 * k[1].1 + k[2].1)).collect();
+            (d.iter().map(|v| v * v).sum::<f64>() / d.len() as f64).sqrt()
+        };
+        assert!(shake(&view) < shake(&still) * 0.25, "the shake gone: {} of {}", shake(&view), shake(&still));
+        let pace = (view[n - 1].0 - view[0].0) / (n - 1) as f64;
+        assert!((pace - 6.0).abs() < 0.9, "the track kept, at 6 px a frame: {pace}");
+        let zoom = a.at(&fx, 1.0, w as u32, h as u32);
+        let m = zoom.motion.stabilization.unwrap();
+        let scale = (m[0] as f64).hypot(m[3] as f64);
+        assert!(scale > 0.85, "enlarged no more than the shake needs: {}", 1.0 / scale);
     }
 }

@@ -19,7 +19,9 @@ pub struct MotionParams {
     pub scale: f64,
 }
 
-/// Raw analysis: per-frame affine transforms for the entire clip.
+/// Raw analysis: per-frame affine transforms for the entire clip, in
+/// the frame's own units (#2771): centred on the frame, its height 1, so
+/// they hold at any size the frame is rendered at.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct StabilizationData {
     /// Frame-to-frame affine transforms. Length = frame_count - 1.
@@ -36,7 +38,9 @@ pub struct StabilizationData {
 #[derive(Debug, Clone)]
 pub struct SmoothedTrajectory {
     pub smoothed: Vec<MotionParams>,
-    /// `correction[i] = recompose(smoothed[i]) * inverse(accumulated[i])`
+    /// Where each output pixel of frame `i` is taken from in the frame
+    /// (`recompose(trajectory[i]) * inverse(recompose(smoothed[i]))`), in
+    /// the frame's units: a turn, scale and shift, never a shear.
     pub corrections: Vec<Homography>,
     /// Tracks which smoothing window produced this (for lazy re-smooth detection).
     pub smoothing_window_secs: f64,
@@ -302,7 +306,23 @@ pub fn recompose_homography(p: &MotionParams) -> Homography {
 // Gaussian smoothing
 // ---------------------------------------------------------------------------
 
-/// Apply 1D Gaussian smoothing to a signal with boundary clamping.
+/// `values[i]`, carried on past either end as the line through the end
+/// and its mirror: a path moving steadily at an end keeps moving, so a
+/// pan is followed to the clip's first and last frame (#2771).
+fn extended(values: &[f64], i: i64) -> f64 {
+    let last = values.len() as i64 - 1;
+    let at = |k: i64| values[k.clamp(0, last) as usize];
+    if i < 0 {
+        2.0 * values[0] - at(-i)
+    } else if i > last {
+        2.0 * values[last as usize] - at(2 * last - i)
+    } else {
+        values[i as usize]
+    }
+}
+
+/// Apply 1D Gaussian smoothing to a signal, its ends carried on by
+/// [`extended`].
 fn gaussian_smooth_1d(values: &[f64], radius: usize) -> Vec<f64> {
     let n = values.len();
     if n == 0 {
@@ -328,15 +348,57 @@ fn gaussian_smooth_1d(values: &[f64], radius: usize) -> Vec<f64> {
             kernel
                 .iter()
                 .enumerate()
-                .map(|(j, &kval)| {
-                    let idx =
-                        (i as i64 + j as i64 - radius as i64).clamp(0, n as i64 - 1) as usize;
-                    values[idx] * kval
-                })
+                .map(|(j, &kval)| kval * extended(values, i as i64 + j as i64 - radius as i64))
                 .sum()
         })
         .collect();
     result
+}
+
+/// How far a frame's smoothed camera may be from its own, in frame
+/// heights, radians and scale (#2771).
+const MAX_SHIFT: f64 = 0.05;
+const MAX_TURN: f64 = 0.03;
+const MAX_SCALE: f64 = 0.03;
+/// The most a clip is enlarged to fill: past the limits above, never
+/// reached.
+const MAX_FILL: f64 = 1.5;
+
+/// The frame's units for pixels of a `width` × `height` frame: centred,
+/// the height 1.
+fn units(width: f64, height: f64) -> Homography {
+    let k = 1.0 / height.max(1.0);
+    Homography { h: [[k, 0.0, -0.5 * width * k], [0.0, k, -0.5], [0.0, 0.0, 1.0]] }
+}
+
+/// `t`, a transform of the frame's units, in pixels of a `width` ×
+/// `height` frame.
+pub fn in_pixels(t: &Homography, width: f64, height: f64) -> Homography {
+    let to = units(width, height);
+    let back = to.inverse().unwrap_or_else(Homography::identity);
+    back.multiply(t).multiply(&to)
+}
+
+impl SmoothedTrajectory {
+    /// How much a frame of `aspect` (width over height) must be enlarged
+    /// about its centre so that every frame's correction takes its
+    /// pixels from inside the frame, never past its edge (#2771): one
+    /// zoom for the whole clip, so it doesn't breathe.
+    pub fn fill_zoom(&self, aspect: f64) -> f64 {
+        let (a, half) = (aspect.max(1e-3), 0.5);
+        self.corrections
+            .iter()
+            .map(|c| {
+                let m = &c.h;
+                // The corners of the output, half `a` / 2 by half 1 / 2
+                // over the zoom, land inside the frame along each axis.
+                let across = (m[0][0].abs() * a * half + m[0][1].abs() * half) / (a * half - m[0][2].abs()).max(1e-6);
+                let down = (m[1][0].abs() * a * half + m[1][1].abs() * half) / (half - m[1][2].abs()).max(1e-6);
+                across.max(down)
+            })
+            .fold(1.0, f64::max)
+            .min(MAX_FILL)
+    }
 }
 
 /// Smooth the accumulated trajectory using a Gaussian kernel.
@@ -364,17 +426,25 @@ pub fn smooth_trajectory(
     let mut corrections = Vec::with_capacity(n);
 
     for i in 0..n {
+        let raw = data.trajectory[i];
+        // Never more than a hand's shake from where the camera went: a
+        // turn of the shot the window is too long for is followed, not
+        // held against (#2771).
+        let near = |s: f64, r: f64, by: f64| r + (s - r).clamp(-by, by);
         let sp = MotionParams {
-            tx: smooth_tx[i],
-            ty: smooth_ty[i],
-            rotation: smooth_rot[i],
-            scale: smooth_scale[i],
+            tx: near(smooth_tx[i], raw.tx, MAX_SHIFT),
+            ty: near(smooth_ty[i], raw.ty, MAX_SHIFT),
+            rotation: near(smooth_rot[i], raw.rotation, MAX_TURN),
+            scale: near(smooth_scale[i], raw.scale, MAX_SCALE * raw.scale),
         };
         smoothed.push(sp);
 
-        let smooth_h = recompose_homography(&sp);
-        let correction = match data.accumulated[i].inverse() {
-            Some(inv) => smooth_h.multiply(&inv),
+        // Output pixel to frame pixel: the frame's camera from the
+        // smoothed one. Both are a turn, scale and shift, so whatever
+        // shear the fits picked up along the way (a tracking shot's
+        // parallax) never leans the picture (#2771).
+        let correction = match recompose_homography(&sp).inverse() {
+            Some(inv) => recompose_homography(&raw).multiply(&inv),
             None => Homography::identity(),
         };
         corrections.push(correction);
@@ -439,9 +509,13 @@ pub fn analyze_clip(
             16, // search_radius
         );
 
-        // RANSAC affine — if it fails, use identity (static frame).
-        let transform = ransac_affine(&matches, 200, 2.0, 15)
-            .unwrap_or_else(Homography::identity);
+        // RANSAC affine — if it fails, use identity (static frame). In
+        // the frame's units, as it is kept.
+        let to = units(w as f64, h as f64);
+        let transform = match (ransac_affine(&matches, 200, 2.0, 15), to.inverse()) {
+            (Some(t), Some(back)) => to.multiply(&t).multiply(&back),
+            _ => Homography::identity(),
+        };
 
         frame_transforms.push(transform);
 

@@ -442,8 +442,11 @@ exist until the plan runs.
   {start: [0.5, 0.4], end: [0.5, 0.9]}}}` fades a clip out toward the
   bottom. A clip whose alpha is already another matte (a cut-out) is
   refused.
-- `stabilize {clip_id, smoothing?}`: steady a shaky clip; it crops the
-  edges a little to hide the movement.
+- `stabilize {clip_id, smoothing?}`: steady a shaky clip. Only the
+  shake is taken out: a pan, a tracking move or a slow turn is kept, and
+  the picture is never leaned or sheared. It enlarges the picture just
+  as far as that clip's correction needs, so no edge is ever stretched
+  in.
 - `retime {clip_id, speed | fit, ripple?}`: change a clip's speed, its linked
   sound with it. Above 1 is faster and shorter, below 1 slower and
   longer, negative plays it reversed. `fit: true` in place of `speed` is

@@ -67,7 +67,8 @@ pub struct AssetKey {
 pub fn algorithm(kind: AssetKind) -> u32 {
     match kind {
         AssetKind::Deflicker => 1,
-        AssetKind::Stabilisation => 1,
+        // 2: in the frame's units, centred, its height 1 (#2771).
+        AssetKind::Stabilisation => 2,
         AssetKind::RollingShutter => 1,
     }
 }

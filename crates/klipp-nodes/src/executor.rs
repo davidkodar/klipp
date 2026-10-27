@@ -219,7 +219,7 @@ fn with_gain<'a>(effects: &'a [klipp_effects::BuiltinEffect], at: Option<&klipp_
 /// with no entry for a time inside the media, is a neighbour missing,
 /// which an export refuses; a time past the media's edge is a fallback.
 #[allow(clippy::type_complexity)]
-fn resolve_analysis(graph: &NodeGraph, ctx: &crate::frame_context::FrameContext<'_>, height: u32) -> (HashMap<NodeId, klipp_effects::node_analysis::AtFrame>, Vec<(NodeId, klipp_effects::BuiltinEffect, crate::DeclineOutcome, &'static str)>) {
+fn resolve_analysis(graph: &NodeGraph, ctx: &crate::frame_context::FrameContext<'_>, width: u32, height: u32) -> (HashMap<NodeId, klipp_effects::node_analysis::AtFrame>, Vec<(NodeId, klipp_effects::BuiltinEffect, crate::DeclineOutcome, &'static str)>) {
     use crate::frame_context::{Analysis, NODE_ANALYSIS_SCHEMA};
     use crate::DeclineOutcome;
     let mut out = HashMap::new();
@@ -227,7 +227,7 @@ fn resolve_analysis(graph: &NodeGraph, ctx: &crate::frame_context::FrameContext<
     for node in graph.nodes.iter().filter(|n| matches!(n.kind, NodeKind::Effect | NodeKind::EffectSegment)) {
         let Some(effect) = node.params.effects.iter().find(|e| klipp_effects::node_analysis::derivation_params(e).is_some()) else { continue };
         let found = match ctx.analysis.lookup_effect(node.id, effect, NODE_ANALYSIS_SCHEMA) {
-            Analysis::Ready(blob) => blob.data.downcast_ref::<klipp_effects::node_analysis::NodeAnalysis>().map(|a| a.at(effect, ctx.source_secs, height)),
+            Analysis::Ready(blob) => blob.data.downcast_ref::<klipp_effects::node_analysis::NodeAnalysis>().map(|a| a.at(effect, ctx.source_secs, width, height)),
             Analysis::Absent | Analysis::Stale { .. } => None,
         };
         match found {
@@ -2013,7 +2013,7 @@ impl GraphExecutor {
             }
         };
         plan.refresh(graph);
-        let (analysis, missing) = ctx.as_deref().map(|c| resolve_analysis(graph, c, height)).unwrap_or_default();
+        let (analysis, missing) = ctx.as_deref().map(|c| resolve_analysis(graph, c, width, height)).unwrap_or_default();
         self.run_analysis = analysis;
         self.run_analysis_missing = missing;
         self.run_motion_uploaded = false;
@@ -10022,7 +10022,7 @@ mod analysis_node_tests {
 
     /// A shaky trajectory of 48 frames at 24 fps.
     fn shaky() -> StabilizationData {
-        let step = |i: usize| klipp_effects::homography::Homography { h: [[1.0, 0.0, if i.is_multiple_of(2) { 3.0 } else { -2.0 }], [0.0, 1.0, 0.5], [0.0, 0.0, 1.0]] };
+        let step = |i: usize| klipp_effects::homography::Homography { h: [[1.0, 0.0, if i.is_multiple_of(2) { 0.03 } else { -0.02 }], [0.0, 1.0, 0.005], [0.0, 0.0, 1.0]] };
         let frame_transforms: Vec<_> = (0..47).map(step).collect();
         let accumulated = accumulate_trajectory(&frame_transforms);
         let trajectory = accumulated.iter().map(decompose_homography).collect();
@@ -10081,14 +10081,13 @@ mod analysis_node_tests {
             ofx: None,
             source_at: &|t| t,
         };
-        let (run, missing) = resolve_analysis(&graph, &ctx, 8);
+        let (run, missing) = resolve_analysis(&graph, &ctx, 8, 8);
         assert!(missing.is_empty(), "both have theirs: {missing:?}");
         let h = |n: &Node| run.get(&n.id).and_then(|at| at.motion.stabilization).expect("its correction");
         assert_ne!(h(&a), h(&b), "two smoothings, two corrections");
         let own = |s: f32| {
-            let smoothed = smooth_trajectory(&data, (s as f64 * 2.0).max(0.05));
-            let m = smoothed.corrections[20].h;
-            [m[0][0] as f32, m[0][1] as f32, m[0][2] as f32, m[1][0] as f32, m[1][1] as f32, m[1][2] as f32, m[2][0] as f32, m[2][1] as f32, m[2][2] as f32, 0.0, 0.0, 0.0]
+            let smoothed = NodeAnalysis::Stabilisation { smoothed: smooth_trajectory(&data, (s as f64 * 2.0).max(0.05)), fps: 24.0 };
+            smoothed.at(&stabilise(s).params.effects[0], 20.0 / 24.0, 8, 8).motion.stabilization.expect("frame 20's")
         };
         assert_eq!(h(&a), own(0.1));
         assert_eq!(h(&b), own(0.9));
@@ -10107,7 +10106,7 @@ mod analysis_node_tests {
             clip: klipp_core::ClipId::new(), frame: 0, source: (klipp_core::MediaId::nil(), 0.0), clip_time_secs: 0.0, frame_number: 0, fps: 24.0,
             source_secs: 0.0, source_pts: None, sources: &mut sources, analysis: &inputs, instances: &mut instances, ofx: None, source_at: &|t| t,
         };
-        let (run, missing) = resolve_analysis(&graph, &ctx, 8);
+        let (run, missing) = resolve_analysis(&graph, &ctx, 8, 8);
         assert!(run.is_empty());
         assert_eq!(missing.iter().map(|m| m.2).collect::<Vec<_>>(), [crate::DeclineOutcome::NeighbourMissing], "declined");
     }
