@@ -1,0 +1,1243 @@
+{
+  "format_version": 2,
+  "id": "c32c0a6e-efc8-5de6-adaf-547658e8e028",
+  "name": "Stinger",
+  "category": "Transitions",
+  "composition_id": "06a305bb-9b72-51a0-9f78-104c5361a292",
+  "parameters": {
+    "colour": {
+      "label": "Colour",
+      "default": {
+        "type": "Color",
+        "value": [
+          0.2901961,
+          0.56078434,
+          0.90588236,
+          1.0
+        ]
+      }
+    }
+  },
+  "bindings": [
+    {
+      "parameter": "colour",
+      "property": "object:0.color"
+    }
+  ],
+  "written_by": "",
+  "sequences": [
+    {
+      "id": "06a305bb-9b72-51a0-9f78-104c5361a292",
+      "name": "Stinger wide",
+      "fps": {
+        "num": 24,
+        "den": 1
+      },
+      "resolution": {
+        "width": 1920,
+        "height": 1080
+      },
+      "first_clip_autoset": {
+        "resolution": true,
+        "fps": true
+      },
+      "tracks": [
+        {
+          "id": "023e63cf-4a79-4d35-a782-2cb3b902ef31",
+          "name": "T 1",
+          "kind": "Text",
+          "clips": [
+            {
+              "id": "5864a6b1-39e8-5489-a156-917e98b1c969",
+              "kind": {
+                "type": "title",
+                "objects": [
+                  {
+                    "id": 0,
+                    "name": "Shape 1",
+                    "transform": {
+                      "center": {
+                        "x": 0.5,
+                        "y": 0.5
+                      },
+                      "center_x_keyframes": [],
+                      "center_y_keyframes": [],
+                      "size_x_keyframes": [],
+                      "size_y_keyframes": [],
+                      "size": {
+                        "x": 1.0,
+                        "y": 1.0
+                      },
+                      "rotation": 0.0,
+                      "rotation_keyframes": [],
+                      "anchor_norm": {
+                        "x": 0.5,
+                        "y": 0.5
+                      },
+                      "anchor_x_keyframes": [],
+                      "anchor_y_keyframes": []
+                    },
+                    "visible": true,
+                    "locked": false,
+                    "opacity": 1.0,
+                    "opacity_keyframes": [],
+                    "content": {
+                      "Shape": {
+                        "kind": {
+                          "Rectangle": {
+                            "corner_radius": 0.0
+                          }
+                        },
+                        "fill": [
+                          74,
+                          143,
+                          231,
+                          255
+                        ],
+                        "stroke": null
+                      }
+                    },
+                    "fx": {
+                      "motion": {
+                        "enter": {
+                          "kind": "SlideRight",
+                          "duration_secs": 0.35,
+                          "delay_secs": 0.0,
+                          "easing": "OutCubic",
+                          "stagger": "None",
+                          "stagger_secs": 0.05,
+                          "distance": 1.0,
+                          "amount": null,
+                          "anchor": null
+                        },
+                        "exit": {
+                          "kind": "SlideRight",
+                          "duration_secs": 0.35,
+                          "delay_secs": 0.0,
+                          "easing": "InCubic",
+                          "stagger": "None",
+                          "stagger_secs": 0.05,
+                          "distance": 1.0,
+                          "amount": null,
+                          "anchor": null
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "id": 1,
+                    "name": "Shape 2",
+                    "transform": {
+                      "center": {
+                        "x": 0.5,
+                        "y": 0.5
+                      },
+                      "center_x_keyframes": [],
+                      "center_y_keyframes": [],
+                      "size_x_keyframes": [],
+                      "size_y_keyframes": [],
+                      "size": {
+                        "x": 1.0,
+                        "y": 1.0
+                      },
+                      "rotation": 0.0,
+                      "rotation_keyframes": [],
+                      "anchor_norm": {
+                        "x": 0.5,
+                        "y": 0.5
+                      },
+                      "anchor_x_keyframes": [],
+                      "anchor_y_keyframes": []
+                    },
+                    "visible": true,
+                    "locked": false,
+                    "opacity": 1.0,
+                    "opacity_keyframes": [],
+                    "content": {
+                      "Shape": {
+                        "kind": {
+                          "Rectangle": {
+                            "corner_radius": 0.0
+                          }
+                        },
+                        "fill": [
+                          18,
+                          18,
+                          22,
+                          255
+                        ],
+                        "stroke": null
+                      }
+                    },
+                    "fx": {
+                      "motion": {
+                        "enter": {
+                          "kind": "SlideRight",
+                          "duration_secs": 0.35,
+                          "delay_secs": 0.1,
+                          "easing": "OutCubic",
+                          "stagger": "None",
+                          "stagger_secs": 0.05,
+                          "distance": 1.0,
+                          "amount": null,
+                          "anchor": null
+                        },
+                        "exit": {
+                          "kind": "SlideRight",
+                          "duration_secs": 0.3,
+                          "delay_secs": 0.0,
+                          "easing": "InCubic",
+                          "stagger": "None",
+                          "stagger_secs": 0.05,
+                          "distance": 1.0,
+                          "amount": null,
+                          "anchor": null
+                        }
+                      }
+                    }
+                  }
+                ],
+                "next_object_id": 2,
+                "animation_type": "Static",
+                "background": "None",
+                "published": [
+                  {
+                    "label": "Size",
+                    "kind": {
+                      "Size": {
+                        "factor": 1.0,
+                        "anchor": {
+                          "x": 0.5,
+                          "y": 0.5
+                        },
+                        "base": [
+                          {
+                            "object": 0,
+                            "center": {
+                              "x": 0.5,
+                              "y": 0.5
+                            },
+                            "size": {
+                              "x": 1.0,
+                              "y": 1.0
+                            },
+                            "font_size": null
+                          },
+                          {
+                            "object": 1,
+                            "center": {
+                              "x": 0.5,
+                              "y": 0.5
+                            },
+                            "size": {
+                              "x": 1.0,
+                              "y": 1.0
+                            },
+                            "font_size": null
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "label": "Speed",
+                    "kind": {
+                      "Speed": {
+                        "factor": 1.0,
+                        "base": [
+                          {
+                            "object": 0,
+                            "enter": {
+                              "duration_secs": 0.35,
+                              "delay_secs": 0.0,
+                              "stagger_secs": 0.05
+                            },
+                            "exit": {
+                              "duration_secs": 0.35,
+                              "delay_secs": 0.0,
+                              "stagger_secs": 0.05
+                            }
+                          },
+                          {
+                            "object": 1,
+                            "enter": {
+                              "duration_secs": 0.35,
+                              "delay_secs": 0.1,
+                              "stagger_secs": 0.05
+                            },
+                            "exit": {
+                              "duration_secs": 0.3,
+                              "delay_secs": 0.0,
+                              "stagger_secs": 0.05
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              },
+              "timeline_in": {
+                "value": 0,
+                "rate": 24
+              },
+              "timeline_out": {
+                "value": 29,
+                "rate": 24
+              },
+              "source_in": {
+                "value": 0,
+                "rate": 24
+              },
+              "source_out": {
+                "value": 29,
+                "rate": 24
+              },
+              "node_graph": {
+                "nodes": [
+                  {
+                    "id": "e4d62cb0-124c-46c3-817e-acbe60fd0edc",
+                    "kind": "Source",
+                    "label": "Source",
+                    "enabled": true,
+                    "params": {},
+                    "keyframes": {
+                      "tracks": []
+                    },
+                    "output_link": null,
+                    "input_links": []
+                  },
+                  {
+                    "id": "48aed688-2485-4e0a-b490-ea78030c8480",
+                    "kind": "Corrector",
+                    "label": "Corrector",
+                    "enabled": true,
+                    "params": {},
+                    "keyframes": {
+                      "tracks": []
+                    },
+                    "output_link": null,
+                    "input_links": []
+                  },
+                  {
+                    "id": "2d337ab9-97a4-4d21-9937-8ec33ebd06a3",
+                    "kind": "Output",
+                    "label": "Output",
+                    "enabled": true,
+                    "params": {},
+                    "keyframes": {
+                      "tracks": []
+                    },
+                    "output_link": null,
+                    "input_links": []
+                  }
+                ],
+                "edges": [
+                  {
+                    "from_node": "e4d62cb0-124c-46c3-817e-acbe60fd0edc",
+                    "from_port": 0,
+                    "to_node": "48aed688-2485-4e0a-b490-ea78030c8480",
+                    "to_port": 0
+                  },
+                  {
+                    "from_node": "48aed688-2485-4e0a-b490-ea78030c8480",
+                    "from_port": 0,
+                    "to_node": "2d337ab9-97a4-4d21-9937-8ec33ebd06a3",
+                    "to_port": 0
+                  }
+                ],
+                "output_node_id": "2d337ab9-97a4-4d21-9937-8ec33ebd06a3",
+                "node_positions": {
+                  "48aed688-2485-4e0a-b490-ea78030c8480": {
+                    "x": 220.0,
+                    "y": 0.0
+                  },
+                  "e4d62cb0-124c-46c3-817e-acbe60fd0edc": {
+                    "x": 0.0,
+                    "y": 0.0
+                  },
+                  "2d337ab9-97a4-4d21-9937-8ec33ebd06a3": {
+                    "x": 440.0,
+                    "y": 0.0
+                  }
+                }
+              },
+              "effects": [],
+              "builtin_effects": [],
+              "builtin_effects_enabled": [],
+              "opacity_keyframes": [],
+              "transform_pos_x_keyframes": [],
+              "transform_pos_y_keyframes": [],
+              "transform_scale_keyframes": [],
+              "transform_rotation_keyframes": [],
+              "effect_keyframes": {},
+              "grade_versions": [],
+              "active_grade_version": null,
+              "linked_clip_id": null,
+              "linked_title_asset_id": null,
+              "group_id": null,
+              "magnetic_anchor": null,
+              "gain": 1.0,
+              "volume": 1.0,
+              "pan": 0.0,
+              "fade_in_secs": 0.0,
+              "fade_out_secs": 0.0,
+              "fade_in_curve": "Linear",
+              "fade_out_curve": "Linear",
+              "channel_config": "Default",
+              "volume_keyframes": [],
+              "pan_keyframes": [],
+              "gain_keyframes": [],
+              "clip_markers": [],
+              "role": "Dialogue",
+              "speed": 1.0,
+              "speed_keyframes": [],
+              "keep_pitch": false,
+              "source_rotation": 0,
+              "enabled": true,
+              "solo": false,
+              "blend_mode": "Normal",
+              "consumed_as_matte": false,
+              "transform_link": null,
+              "multicam_angle": 0,
+              "audio_effect_keyframes": {},
+              "track_points": []
+            }
+          ],
+          "transitions": [],
+          "opacity": 1.0,
+          "volume": 1.0,
+          "muted": false,
+          "solo": false,
+          "visible": true,
+          "pan": 0.0,
+          "locked": false,
+          "sync_lock": false,
+          "targeted": true,
+          "source_patch": false,
+          "magnetic_role": "Free",
+          "storyline_anchor": null,
+          "colour_label": 0,
+          "channel_waveforms": false,
+          "source_file": null,
+          "record_armed": false
+        }
+      ],
+      "in_point": null,
+      "out_point": null,
+      "markers": [],
+      "last_playhead": null,
+      "drop_frame": false
+    },
+    {
+      "id": "32efb9cb-3e66-5e0d-af14-78c3c25e64ab",
+      "name": "Stinger tall",
+      "fps": {
+        "num": 24,
+        "den": 1
+      },
+      "resolution": {
+        "width": 1080,
+        "height": 1920
+      },
+      "first_clip_autoset": {
+        "resolution": true,
+        "fps": true
+      },
+      "tracks": [
+        {
+          "id": "65c3241b-8536-49a1-836e-ab8c047105df",
+          "name": "T 1",
+          "kind": "Text",
+          "clips": [
+            {
+              "id": "5864a6b1-39e8-5489-a156-917e98b1c969",
+              "kind": {
+                "type": "title",
+                "objects": [
+                  {
+                    "id": 0,
+                    "name": "Shape 1",
+                    "transform": {
+                      "center": {
+                        "x": 0.5,
+                        "y": 0.5
+                      },
+                      "center_x_keyframes": [],
+                      "center_y_keyframes": [],
+                      "size_x_keyframes": [],
+                      "size_y_keyframes": [],
+                      "size": {
+                        "x": 1.0,
+                        "y": 1.0
+                      },
+                      "rotation": 0.0,
+                      "rotation_keyframes": [],
+                      "anchor_norm": {
+                        "x": 0.5,
+                        "y": 0.5
+                      },
+                      "anchor_x_keyframes": [],
+                      "anchor_y_keyframes": []
+                    },
+                    "visible": true,
+                    "locked": false,
+                    "opacity": 1.0,
+                    "opacity_keyframes": [],
+                    "content": {
+                      "Shape": {
+                        "kind": {
+                          "Rectangle": {
+                            "corner_radius": 0.0
+                          }
+                        },
+                        "fill": [
+                          74,
+                          143,
+                          231,
+                          255
+                        ],
+                        "stroke": null
+                      }
+                    },
+                    "fx": {
+                      "motion": {
+                        "enter": {
+                          "kind": "SlideRight",
+                          "duration_secs": 0.35,
+                          "delay_secs": 0.0,
+                          "easing": "OutCubic",
+                          "stagger": "None",
+                          "stagger_secs": 0.05,
+                          "distance": 1.0,
+                          "amount": null,
+                          "anchor": null
+                        },
+                        "exit": {
+                          "kind": "SlideRight",
+                          "duration_secs": 0.35,
+                          "delay_secs": 0.0,
+                          "easing": "InCubic",
+                          "stagger": "None",
+                          "stagger_secs": 0.05,
+                          "distance": 1.0,
+                          "amount": null,
+                          "anchor": null
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "id": 1,
+                    "name": "Shape 2",
+                    "transform": {
+                      "center": {
+                        "x": 0.5,
+                        "y": 0.5
+                      },
+                      "center_x_keyframes": [],
+                      "center_y_keyframes": [],
+                      "size_x_keyframes": [],
+                      "size_y_keyframes": [],
+                      "size": {
+                        "x": 1.0,
+                        "y": 1.0
+                      },
+                      "rotation": 0.0,
+                      "rotation_keyframes": [],
+                      "anchor_norm": {
+                        "x": 0.5,
+                        "y": 0.5
+                      },
+                      "anchor_x_keyframes": [],
+                      "anchor_y_keyframes": []
+                    },
+                    "visible": true,
+                    "locked": false,
+                    "opacity": 1.0,
+                    "opacity_keyframes": [],
+                    "content": {
+                      "Shape": {
+                        "kind": {
+                          "Rectangle": {
+                            "corner_radius": 0.0
+                          }
+                        },
+                        "fill": [
+                          18,
+                          18,
+                          22,
+                          255
+                        ],
+                        "stroke": null
+                      }
+                    },
+                    "fx": {
+                      "motion": {
+                        "enter": {
+                          "kind": "SlideRight",
+                          "duration_secs": 0.35,
+                          "delay_secs": 0.1,
+                          "easing": "OutCubic",
+                          "stagger": "None",
+                          "stagger_secs": 0.05,
+                          "distance": 1.0,
+                          "amount": null,
+                          "anchor": null
+                        },
+                        "exit": {
+                          "kind": "SlideRight",
+                          "duration_secs": 0.3,
+                          "delay_secs": 0.0,
+                          "easing": "InCubic",
+                          "stagger": "None",
+                          "stagger_secs": 0.05,
+                          "distance": 1.0,
+                          "amount": null,
+                          "anchor": null
+                        }
+                      }
+                    }
+                  }
+                ],
+                "next_object_id": 2,
+                "animation_type": "Static",
+                "background": "None",
+                "published": [
+                  {
+                    "label": "Size",
+                    "kind": {
+                      "Size": {
+                        "factor": 1.0,
+                        "anchor": {
+                          "x": 0.5,
+                          "y": 0.5
+                        },
+                        "base": [
+                          {
+                            "object": 0,
+                            "center": {
+                              "x": 0.5,
+                              "y": 0.5
+                            },
+                            "size": {
+                              "x": 1.0,
+                              "y": 1.0
+                            },
+                            "font_size": null
+                          },
+                          {
+                            "object": 1,
+                            "center": {
+                              "x": 0.5,
+                              "y": 0.5
+                            },
+                            "size": {
+                              "x": 1.0,
+                              "y": 1.0
+                            },
+                            "font_size": null
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "label": "Speed",
+                    "kind": {
+                      "Speed": {
+                        "factor": 1.0,
+                        "base": [
+                          {
+                            "object": 0,
+                            "enter": {
+                              "duration_secs": 0.35,
+                              "delay_secs": 0.0,
+                              "stagger_secs": 0.05
+                            },
+                            "exit": {
+                              "duration_secs": 0.35,
+                              "delay_secs": 0.0,
+                              "stagger_secs": 0.05
+                            }
+                          },
+                          {
+                            "object": 1,
+                            "enter": {
+                              "duration_secs": 0.35,
+                              "delay_secs": 0.1,
+                              "stagger_secs": 0.05
+                            },
+                            "exit": {
+                              "duration_secs": 0.3,
+                              "delay_secs": 0.0,
+                              "stagger_secs": 0.05
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              },
+              "timeline_in": {
+                "value": 0,
+                "rate": 24
+              },
+              "timeline_out": {
+                "value": 29,
+                "rate": 24
+              },
+              "source_in": {
+                "value": 0,
+                "rate": 24
+              },
+              "source_out": {
+                "value": 29,
+                "rate": 24
+              },
+              "node_graph": {
+                "nodes": [
+                  {
+                    "id": "053e4dff-3a6f-4bbd-a1e4-97102dae1c75",
+                    "kind": "Source",
+                    "label": "Source",
+                    "enabled": true,
+                    "params": {},
+                    "keyframes": {
+                      "tracks": []
+                    },
+                    "output_link": null,
+                    "input_links": []
+                  },
+                  {
+                    "id": "27554b45-4c34-4165-b97b-c46dae818710",
+                    "kind": "Corrector",
+                    "label": "Corrector",
+                    "enabled": true,
+                    "params": {},
+                    "keyframes": {
+                      "tracks": []
+                    },
+                    "output_link": null,
+                    "input_links": []
+                  },
+                  {
+                    "id": "107b5b6a-5c77-4428-9a45-541c969a2588",
+                    "kind": "Output",
+                    "label": "Output",
+                    "enabled": true,
+                    "params": {},
+                    "keyframes": {
+                      "tracks": []
+                    },
+                    "output_link": null,
+                    "input_links": []
+                  }
+                ],
+                "edges": [
+                  {
+                    "from_node": "053e4dff-3a6f-4bbd-a1e4-97102dae1c75",
+                    "from_port": 0,
+                    "to_node": "27554b45-4c34-4165-b97b-c46dae818710",
+                    "to_port": 0
+                  },
+                  {
+                    "from_node": "27554b45-4c34-4165-b97b-c46dae818710",
+                    "from_port": 0,
+                    "to_node": "107b5b6a-5c77-4428-9a45-541c969a2588",
+                    "to_port": 0
+                  }
+                ],
+                "output_node_id": "107b5b6a-5c77-4428-9a45-541c969a2588",
+                "node_positions": {
+                  "107b5b6a-5c77-4428-9a45-541c969a2588": {
+                    "x": 440.0,
+                    "y": 0.0
+                  },
+                  "053e4dff-3a6f-4bbd-a1e4-97102dae1c75": {
+                    "x": 0.0,
+                    "y": 0.0
+                  },
+                  "27554b45-4c34-4165-b97b-c46dae818710": {
+                    "x": 220.0,
+                    "y": 0.0
+                  }
+                }
+              },
+              "effects": [],
+              "builtin_effects": [],
+              "builtin_effects_enabled": [],
+              "opacity_keyframes": [],
+              "transform_pos_x_keyframes": [],
+              "transform_pos_y_keyframes": [],
+              "transform_scale_keyframes": [],
+              "transform_rotation_keyframes": [],
+              "effect_keyframes": {},
+              "grade_versions": [],
+              "active_grade_version": null,
+              "linked_clip_id": null,
+              "linked_title_asset_id": null,
+              "group_id": null,
+              "magnetic_anchor": null,
+              "gain": 1.0,
+              "volume": 1.0,
+              "pan": 0.0,
+              "fade_in_secs": 0.0,
+              "fade_out_secs": 0.0,
+              "fade_in_curve": "Linear",
+              "fade_out_curve": "Linear",
+              "channel_config": "Default",
+              "volume_keyframes": [],
+              "pan_keyframes": [],
+              "gain_keyframes": [],
+              "clip_markers": [],
+              "role": "Dialogue",
+              "speed": 1.0,
+              "speed_keyframes": [],
+              "keep_pitch": false,
+              "source_rotation": 0,
+              "enabled": true,
+              "solo": false,
+              "blend_mode": "Normal",
+              "consumed_as_matte": false,
+              "transform_link": null,
+              "multicam_angle": 0,
+              "audio_effect_keyframes": {},
+              "track_points": []
+            }
+          ],
+          "transitions": [],
+          "opacity": 1.0,
+          "volume": 1.0,
+          "muted": false,
+          "solo": false,
+          "visible": true,
+          "pan": 0.0,
+          "locked": false,
+          "sync_lock": false,
+          "targeted": true,
+          "source_patch": false,
+          "magnetic_role": "Free",
+          "storyline_anchor": null,
+          "colour_label": 0,
+          "channel_waveforms": false,
+          "source_file": null,
+          "record_armed": false
+        }
+      ],
+      "in_point": null,
+      "out_point": null,
+      "markers": [],
+      "last_playhead": null,
+      "drop_frame": false
+    },
+    {
+      "id": "0b58f837-afb8-5b6f-9931-9fbd50ebb4f9",
+      "name": "Stinger square",
+      "fps": {
+        "num": 24,
+        "den": 1
+      },
+      "resolution": {
+        "width": 1080,
+        "height": 1080
+      },
+      "first_clip_autoset": {
+        "resolution": true,
+        "fps": true
+      },
+      "tracks": [
+        {
+          "id": "da999d86-6f1e-4c0c-8671-462bc1c3ba4b",
+          "name": "T 1",
+          "kind": "Text",
+          "clips": [
+            {
+              "id": "5864a6b1-39e8-5489-a156-917e98b1c969",
+              "kind": {
+                "type": "title",
+                "objects": [
+                  {
+                    "id": 0,
+                    "name": "Shape 1",
+                    "transform": {
+                      "center": {
+                        "x": 0.5,
+                        "y": 0.5
+                      },
+                      "center_x_keyframes": [],
+                      "center_y_keyframes": [],
+                      "size_x_keyframes": [],
+                      "size_y_keyframes": [],
+                      "size": {
+                        "x": 1.0,
+                        "y": 1.0
+                      },
+                      "rotation": 0.0,
+                      "rotation_keyframes": [],
+                      "anchor_norm": {
+                        "x": 0.5,
+                        "y": 0.5
+                      },
+                      "anchor_x_keyframes": [],
+                      "anchor_y_keyframes": []
+                    },
+                    "visible": true,
+                    "locked": false,
+                    "opacity": 1.0,
+                    "opacity_keyframes": [],
+                    "content": {
+                      "Shape": {
+                        "kind": {
+                          "Rectangle": {
+                            "corner_radius": 0.0
+                          }
+                        },
+                        "fill": [
+                          74,
+                          143,
+                          231,
+                          255
+                        ],
+                        "stroke": null
+                      }
+                    },
+                    "fx": {
+                      "motion": {
+                        "enter": {
+                          "kind": "SlideRight",
+                          "duration_secs": 0.35,
+                          "delay_secs": 0.0,
+                          "easing": "OutCubic",
+                          "stagger": "None",
+                          "stagger_secs": 0.05,
+                          "distance": 1.0,
+                          "amount": null,
+                          "anchor": null
+                        },
+                        "exit": {
+                          "kind": "SlideRight",
+                          "duration_secs": 0.35,
+                          "delay_secs": 0.0,
+                          "easing": "InCubic",
+                          "stagger": "None",
+                          "stagger_secs": 0.05,
+                          "distance": 1.0,
+                          "amount": null,
+                          "anchor": null
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "id": 1,
+                    "name": "Shape 2",
+                    "transform": {
+                      "center": {
+                        "x": 0.5,
+                        "y": 0.5
+                      },
+                      "center_x_keyframes": [],
+                      "center_y_keyframes": [],
+                      "size_x_keyframes": [],
+                      "size_y_keyframes": [],
+                      "size": {
+                        "x": 1.0,
+                        "y": 1.0
+                      },
+                      "rotation": 0.0,
+                      "rotation_keyframes": [],
+                      "anchor_norm": {
+                        "x": 0.5,
+                        "y": 0.5
+                      },
+                      "anchor_x_keyframes": [],
+                      "anchor_y_keyframes": []
+                    },
+                    "visible": true,
+                    "locked": false,
+                    "opacity": 1.0,
+                    "opacity_keyframes": [],
+                    "content": {
+                      "Shape": {
+                        "kind": {
+                          "Rectangle": {
+                            "corner_radius": 0.0
+                          }
+                        },
+                        "fill": [
+                          18,
+                          18,
+                          22,
+                          255
+                        ],
+                        "stroke": null
+                      }
+                    },
+                    "fx": {
+                      "motion": {
+                        "enter": {
+                          "kind": "SlideRight",
+                          "duration_secs": 0.35,
+                          "delay_secs": 0.1,
+                          "easing": "OutCubic",
+                          "stagger": "None",
+                          "stagger_secs": 0.05,
+                          "distance": 1.0,
+                          "amount": null,
+                          "anchor": null
+                        },
+                        "exit": {
+                          "kind": "SlideRight",
+                          "duration_secs": 0.3,
+                          "delay_secs": 0.0,
+                          "easing": "InCubic",
+                          "stagger": "None",
+                          "stagger_secs": 0.05,
+                          "distance": 1.0,
+                          "amount": null,
+                          "anchor": null
+                        }
+                      }
+                    }
+                  }
+                ],
+                "next_object_id": 2,
+                "animation_type": "Static",
+                "background": "None",
+                "published": [
+                  {
+                    "label": "Size",
+                    "kind": {
+                      "Size": {
+                        "factor": 1.0,
+                        "anchor": {
+                          "x": 0.5,
+                          "y": 0.5
+                        },
+                        "base": [
+                          {
+                            "object": 0,
+                            "center": {
+                              "x": 0.5,
+                              "y": 0.5
+                            },
+                            "size": {
+                              "x": 1.0,
+                              "y": 1.0
+                            },
+                            "font_size": null
+                          },
+                          {
+                            "object": 1,
+                            "center": {
+                              "x": 0.5,
+                              "y": 0.5
+                            },
+                            "size": {
+                              "x": 1.0,
+                              "y": 1.0
+                            },
+                            "font_size": null
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "label": "Speed",
+                    "kind": {
+                      "Speed": {
+                        "factor": 1.0,
+                        "base": [
+                          {
+                            "object": 0,
+                            "enter": {
+                              "duration_secs": 0.35,
+                              "delay_secs": 0.0,
+                              "stagger_secs": 0.05
+                            },
+                            "exit": {
+                              "duration_secs": 0.35,
+                              "delay_secs": 0.0,
+                              "stagger_secs": 0.05
+                            }
+                          },
+                          {
+                            "object": 1,
+                            "enter": {
+                              "duration_secs": 0.35,
+                              "delay_secs": 0.1,
+                              "stagger_secs": 0.05
+                            },
+                            "exit": {
+                              "duration_secs": 0.3,
+                              "delay_secs": 0.0,
+                              "stagger_secs": 0.05
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              },
+              "timeline_in": {
+                "value": 0,
+                "rate": 24
+              },
+              "timeline_out": {
+                "value": 29,
+                "rate": 24
+              },
+              "source_in": {
+                "value": 0,
+                "rate": 24
+              },
+              "source_out": {
+                "value": 29,
+                "rate": 24
+              },
+              "node_graph": {
+                "nodes": [
+                  {
+                    "id": "68eff1d3-d9fc-4e1a-b305-5056b0078e1d",
+                    "kind": "Source",
+                    "label": "Source",
+                    "enabled": true,
+                    "params": {},
+                    "keyframes": {
+                      "tracks": []
+                    },
+                    "output_link": null,
+                    "input_links": []
+                  },
+                  {
+                    "id": "56717096-ac71-4831-9f6c-2d52641af86a",
+                    "kind": "Corrector",
+                    "label": "Corrector",
+                    "enabled": true,
+                    "params": {},
+                    "keyframes": {
+                      "tracks": []
+                    },
+                    "output_link": null,
+                    "input_links": []
+                  },
+                  {
+                    "id": "aa683b2a-cbc4-4a3c-bd2f-20d7be4eeacb",
+                    "kind": "Output",
+                    "label": "Output",
+                    "enabled": true,
+                    "params": {},
+                    "keyframes": {
+                      "tracks": []
+                    },
+                    "output_link": null,
+                    "input_links": []
+                  }
+                ],
+                "edges": [
+                  {
+                    "from_node": "68eff1d3-d9fc-4e1a-b305-5056b0078e1d",
+                    "from_port": 0,
+                    "to_node": "56717096-ac71-4831-9f6c-2d52641af86a",
+                    "to_port": 0
+                  },
+                  {
+                    "from_node": "56717096-ac71-4831-9f6c-2d52641af86a",
+                    "from_port": 0,
+                    "to_node": "aa683b2a-cbc4-4a3c-bd2f-20d7be4eeacb",
+                    "to_port": 0
+                  }
+                ],
+                "output_node_id": "aa683b2a-cbc4-4a3c-bd2f-20d7be4eeacb",
+                "node_positions": {
+                  "aa683b2a-cbc4-4a3c-bd2f-20d7be4eeacb": {
+                    "x": 440.0,
+                    "y": 0.0
+                  },
+                  "56717096-ac71-4831-9f6c-2d52641af86a": {
+                    "x": 220.0,
+                    "y": 0.0
+                  },
+                  "68eff1d3-d9fc-4e1a-b305-5056b0078e1d": {
+                    "x": 0.0,
+                    "y": 0.0
+                  }
+                }
+              },
+              "effects": [],
+              "builtin_effects": [],
+              "builtin_effects_enabled": [],
+              "opacity_keyframes": [],
+              "transform_pos_x_keyframes": [],
+              "transform_pos_y_keyframes": [],
+              "transform_scale_keyframes": [],
+              "transform_rotation_keyframes": [],
+              "effect_keyframes": {},
+              "grade_versions": [],
+              "active_grade_version": null,
+              "linked_clip_id": null,
+              "linked_title_asset_id": null,
+              "group_id": null,
+              "magnetic_anchor": null,
+              "gain": 1.0,
+              "volume": 1.0,
+              "pan": 0.0,
+              "fade_in_secs": 0.0,
+              "fade_out_secs": 0.0,
+              "fade_in_curve": "Linear",
+              "fade_out_curve": "Linear",
+              "channel_config": "Default",
+              "volume_keyframes": [],
+              "pan_keyframes": [],
+              "gain_keyframes": [],
+              "clip_markers": [],
+              "role": "Dialogue",
+              "speed": 1.0,
+              "speed_keyframes": [],
+              "keep_pitch": false,
+              "source_rotation": 0,
+              "enabled": true,
+              "solo": false,
+              "blend_mode": "Normal",
+              "consumed_as_matte": false,
+              "transform_link": null,
+              "multicam_angle": 0,
+              "audio_effect_keyframes": {},
+              "track_points": []
+            }
+          ],
+          "transitions": [],
+          "opacity": 1.0,
+          "volume": 1.0,
+          "muted": false,
+          "solo": false,
+          "visible": true,
+          "pan": 0.0,
+          "locked": false,
+          "sync_lock": false,
+          "targeted": true,
+          "source_patch": false,
+          "magnetic_role": "Free",
+          "storyline_anchor": null,
+          "colour_label": 0,
+          "channel_waveforms": false,
+          "source_file": null,
+          "record_armed": false
+        }
+      ],
+      "in_point": null,
+      "out_point": null,
+      "markers": [],
+      "last_playhead": null,
+      "drop_frame": false
+    }
+  ],
+  "formats": {
+    "square": "0b58f837-afb8-5b6f-9931-9fbd50ebb4f9",
+    "tall": "32efb9cb-3e66-5e0d-af14-78c3c25e64ab"
+  }
+}

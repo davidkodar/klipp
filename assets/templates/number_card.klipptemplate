@@ -1,0 +1,1508 @@
+{
+  "format_version": 2,
+  "id": "a382ad56-9242-5739-aeac-17f0f6f3309b",
+  "name": "Number Card",
+  "category": "Numbers",
+  "composition_id": "e745a77c-4a29-5bb0-9e25-f5520bff5a1c",
+  "parameters": {
+    "label": {
+      "label": "Label",
+      "default": {
+        "type": "Text",
+        "value": "Days of sun a year"
+      }
+    },
+    "number": {
+      "label": "Number",
+      "default": {
+        "type": "Text",
+        "value": "42"
+      }
+    },
+    "size": {
+      "label": "Size",
+      "default": {
+        "type": "Number",
+        "value": 0.5
+      },
+      "range": {
+        "min": 0.0,
+        "max": 1.0
+      }
+    }
+  },
+  "bindings": [
+    {
+      "parameter": "number",
+      "property": "object:0.text"
+    },
+    {
+      "parameter": "label",
+      "property": "object:1.text"
+    },
+    {
+      "parameter": "size",
+      "property": "object:0.size",
+      "link": {
+        "to": [
+          200.0,
+          400.0
+        ],
+        "curve": "linear"
+      }
+    }
+  ],
+  "written_by": "",
+  "sequences": [
+    {
+      "id": "e745a77c-4a29-5bb0-9e25-f5520bff5a1c",
+      "name": "Number Card wide",
+      "fps": {
+        "num": 24,
+        "den": 1
+      },
+      "resolution": {
+        "width": 1920,
+        "height": 1080
+      },
+      "first_clip_autoset": {
+        "resolution": true,
+        "fps": true
+      },
+      "tracks": [
+        {
+          "id": "5edfdc8f-dcfa-45a3-9984-ad6f4b83ab77",
+          "name": "T 1",
+          "kind": "Text",
+          "clips": [
+            {
+              "id": "93818a2a-3071-506e-9f3f-ccf2dba1111b",
+              "kind": {
+                "type": "title",
+                "objects": [
+                  {
+                    "id": 0,
+                    "name": "Text 1",
+                    "transform": {
+                      "center": {
+                        "x": 0.5,
+                        "y": 0.44
+                      },
+                      "center_x_keyframes": [],
+                      "center_y_keyframes": [],
+                      "size_x_keyframes": [],
+                      "size_y_keyframes": [],
+                      "size": {
+                        "x": 1.0,
+                        "y": 1.0
+                      },
+                      "rotation": 0.0,
+                      "rotation_keyframes": [],
+                      "anchor_norm": {
+                        "x": 0.5,
+                        "y": 0.5
+                      },
+                      "anchor_x_keyframes": [],
+                      "anchor_y_keyframes": []
+                    },
+                    "visible": true,
+                    "locked": false,
+                    "opacity": 1.0,
+                    "opacity_keyframes": [],
+                    "content": {
+                      "TextBox": {
+                        "text": "42",
+                        "font_size": 300.0,
+                        "font_name": "Anton",
+                        "font_style": "Regular",
+                        "color": [
+                          255,
+                          214,
+                          10,
+                          255
+                        ],
+                        "alignment": "Center",
+                        "gradient": null,
+                        "pattern_fill": null,
+                        "pattern_fill_enabled": true,
+                        "tracking": 0.0,
+                        "line_spacing": 1.0,
+                        "write_on": 1.0,
+                        "extrusion": null,
+                        "text_path": null,
+                        "char_animation": null,
+                        "texture_fill": null,
+                        "style_runs": [],
+                        "ass_style_name": null,
+                        "underline": false,
+                        "strikethrough": false,
+                        "case_transform": "None",
+                        "baseline_shift": 0.0,
+                        "outline_write_on": 1.0,
+                        "chromatic_aberration_px": 0.0,
+                        "glitch_intensity": 0.0,
+                        "drop_cap_scale": 0.0,
+                        "columns": 1,
+                        "vertical_layout": false,
+                        "text_direction": "Ltr"
+                      }
+                    },
+                    "fx": {
+                      "motion": {
+                        "enter": {
+                          "kind": "Pop",
+                          "duration_secs": 0.5,
+                          "delay_secs": 0.0,
+                          "easing": "OutBack",
+                          "stagger": "None",
+                          "stagger_secs": 0.05,
+                          "distance": 0.6,
+                          "amount": null,
+                          "anchor": null
+                        },
+                        "exit": {
+                          "kind": "Fade",
+                          "duration_secs": 0.3,
+                          "delay_secs": 0.0,
+                          "easing": "InCubic",
+                          "stagger": "None",
+                          "stagger_secs": 0.05,
+                          "distance": 0.6,
+                          "amount": null,
+                          "anchor": null
+                        }
+                      },
+                      "shadows": [
+                        {
+                          "enabled": true,
+                          "color": [
+                            0,
+                            0,
+                            0,
+                            120
+                          ],
+                          "offset_x": 0.0,
+                          "offset_x_keyframes": [],
+                          "offset_y": 3.0,
+                          "offset_y_keyframes": [],
+                          "blur": 12.0,
+                          "blur_keyframes": []
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "id": 1,
+                    "name": "Text 2",
+                    "transform": {
+                      "center": {
+                        "x": 0.5,
+                        "y": 0.64
+                      },
+                      "center_x_keyframes": [],
+                      "center_y_keyframes": [],
+                      "size_x_keyframes": [],
+                      "size_y_keyframes": [],
+                      "size": {
+                        "x": 1.0,
+                        "y": 1.0
+                      },
+                      "rotation": 0.0,
+                      "rotation_keyframes": [],
+                      "anchor_norm": {
+                        "x": 0.5,
+                        "y": 0.5
+                      },
+                      "anchor_x_keyframes": [],
+                      "anchor_y_keyframes": []
+                    },
+                    "visible": true,
+                    "locked": false,
+                    "opacity": 1.0,
+                    "opacity_keyframes": [],
+                    "content": {
+                      "TextBox": {
+                        "text": "Days of sun a year",
+                        "font_size": 44.0,
+                        "font_name": "Work Sans",
+                        "font_style": "Bold",
+                        "color": [
+                          255,
+                          255,
+                          255,
+                          255
+                        ],
+                        "alignment": "Center",
+                        "gradient": null,
+                        "pattern_fill": null,
+                        "pattern_fill_enabled": true,
+                        "tracking": 3.0,
+                        "line_spacing": 1.0,
+                        "write_on": 1.0,
+                        "extrusion": null,
+                        "text_path": null,
+                        "char_animation": null,
+                        "texture_fill": null,
+                        "style_runs": [],
+                        "ass_style_name": null,
+                        "underline": false,
+                        "strikethrough": false,
+                        "case_transform": "Uppercase",
+                        "baseline_shift": 0.0,
+                        "outline_write_on": 1.0,
+                        "chromatic_aberration_px": 0.0,
+                        "glitch_intensity": 0.0,
+                        "drop_cap_scale": 0.0,
+                        "columns": 1,
+                        "vertical_layout": false,
+                        "text_direction": "Ltr"
+                      }
+                    },
+                    "fx": {
+                      "motion": {
+                        "enter": {
+                          "kind": "Rise",
+                          "duration_secs": 0.45,
+                          "delay_secs": 0.25,
+                          "easing": "OutCubic",
+                          "stagger": "None",
+                          "stagger_secs": 0.05,
+                          "distance": 0.6,
+                          "amount": null,
+                          "anchor": null
+                        },
+                        "exit": {
+                          "kind": "Fade",
+                          "duration_secs": 0.3,
+                          "delay_secs": 0.0,
+                          "easing": "InCubic",
+                          "stagger": "None",
+                          "stagger_secs": 0.05,
+                          "distance": 0.6,
+                          "amount": null,
+                          "anchor": null
+                        }
+                      },
+                      "shadows": [
+                        {
+                          "enabled": true,
+                          "color": [
+                            0,
+                            0,
+                            0,
+                            120
+                          ],
+                          "offset_x": 0.0,
+                          "offset_x_keyframes": [],
+                          "offset_y": 3.0,
+                          "offset_y_keyframes": [],
+                          "blur": 12.0,
+                          "blur_keyframes": []
+                        }
+                      ]
+                    }
+                  }
+                ],
+                "next_object_id": 2,
+                "animation_type": "Static",
+                "background": "None",
+                "published": [
+                  {
+                    "label": "Size",
+                    "kind": {
+                      "Size": {
+                        "factor": 1.0,
+                        "anchor": {
+                          "x": 0.5,
+                          "y": 0.5
+                        },
+                        "base": [
+                          {
+                            "object": 0,
+                            "center": {
+                              "x": 0.5,
+                              "y": 0.44
+                            },
+                            "size": {
+                              "x": 1.0,
+                              "y": 1.0
+                            },
+                            "font_size": 300.0
+                          },
+                          {
+                            "object": 1,
+                            "center": {
+                              "x": 0.5,
+                              "y": 0.64
+                            },
+                            "size": {
+                              "x": 1.0,
+                              "y": 1.0
+                            },
+                            "font_size": 44.0
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "label": "Speed",
+                    "kind": {
+                      "Speed": {
+                        "factor": 1.0,
+                        "base": [
+                          {
+                            "object": 0,
+                            "enter": {
+                              "duration_secs": 0.5,
+                              "delay_secs": 0.0,
+                              "stagger_secs": 0.05
+                            },
+                            "exit": {
+                              "duration_secs": 0.3,
+                              "delay_secs": 0.0,
+                              "stagger_secs": 0.05
+                            }
+                          },
+                          {
+                            "object": 1,
+                            "enter": {
+                              "duration_secs": 0.45,
+                              "delay_secs": 0.25,
+                              "stagger_secs": 0.05
+                            },
+                            "exit": {
+                              "duration_secs": 0.3,
+                              "delay_secs": 0.0,
+                              "stagger_secs": 0.05
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ],
+                "protect": "auto"
+              },
+              "timeline_in": {
+                "value": 0,
+                "rate": 24
+              },
+              "timeline_out": {
+                "value": 120,
+                "rate": 24
+              },
+              "source_in": {
+                "value": 0,
+                "rate": 24
+              },
+              "source_out": {
+                "value": 120,
+                "rate": 24
+              },
+              "node_graph": {
+                "nodes": [
+                  {
+                    "id": "d29e7da4-7518-427c-8c88-934ab4259c58",
+                    "kind": "Source",
+                    "label": "Source",
+                    "enabled": true,
+                    "params": {},
+                    "keyframes": {
+                      "tracks": []
+                    },
+                    "output_link": null,
+                    "input_links": []
+                  },
+                  {
+                    "id": "9ab2b318-93b0-4461-91a3-b41fa8ff0e59",
+                    "kind": "Corrector",
+                    "label": "Corrector",
+                    "enabled": true,
+                    "params": {},
+                    "keyframes": {
+                      "tracks": []
+                    },
+                    "output_link": null,
+                    "input_links": []
+                  },
+                  {
+                    "id": "75026f3e-76e5-4a98-a421-1eca44b5566c",
+                    "kind": "Output",
+                    "label": "Output",
+                    "enabled": true,
+                    "params": {},
+                    "keyframes": {
+                      "tracks": []
+                    },
+                    "output_link": null,
+                    "input_links": []
+                  }
+                ],
+                "edges": [
+                  {
+                    "from_node": "d29e7da4-7518-427c-8c88-934ab4259c58",
+                    "from_port": 0,
+                    "to_node": "9ab2b318-93b0-4461-91a3-b41fa8ff0e59",
+                    "to_port": 0
+                  },
+                  {
+                    "from_node": "9ab2b318-93b0-4461-91a3-b41fa8ff0e59",
+                    "from_port": 0,
+                    "to_node": "75026f3e-76e5-4a98-a421-1eca44b5566c",
+                    "to_port": 0
+                  }
+                ],
+                "output_node_id": "75026f3e-76e5-4a98-a421-1eca44b5566c",
+                "node_positions": {
+                  "75026f3e-76e5-4a98-a421-1eca44b5566c": {
+                    "x": 440.0,
+                    "y": 0.0
+                  },
+                  "d29e7da4-7518-427c-8c88-934ab4259c58": {
+                    "x": 0.0,
+                    "y": 0.0
+                  },
+                  "9ab2b318-93b0-4461-91a3-b41fa8ff0e59": {
+                    "x": 220.0,
+                    "y": 0.0
+                  }
+                }
+              },
+              "effects": [],
+              "builtin_effects": [],
+              "builtin_effects_enabled": [],
+              "opacity_keyframes": [],
+              "transform_pos_x_keyframes": [],
+              "transform_pos_y_keyframes": [],
+              "transform_scale_keyframes": [],
+              "transform_rotation_keyframes": [],
+              "effect_keyframes": {},
+              "grade_versions": [],
+              "active_grade_version": null,
+              "linked_clip_id": null,
+              "linked_title_asset_id": null,
+              "group_id": null,
+              "magnetic_anchor": null,
+              "gain": 1.0,
+              "volume": 1.0,
+              "pan": 0.0,
+              "fade_in_secs": 0.0,
+              "fade_out_secs": 0.0,
+              "fade_in_curve": "Linear",
+              "fade_out_curve": "Linear",
+              "channel_config": "Default",
+              "volume_keyframes": [],
+              "pan_keyframes": [],
+              "gain_keyframes": [],
+              "clip_markers": [],
+              "role": "Dialogue",
+              "speed": 1.0,
+              "speed_keyframes": [],
+              "keep_pitch": false,
+              "source_rotation": 0,
+              "enabled": true,
+              "solo": false,
+              "blend_mode": "Normal",
+              "consumed_as_matte": false,
+              "transform_link": null,
+              "multicam_angle": 0,
+              "audio_effect_keyframes": {},
+              "track_points": []
+            }
+          ],
+          "transitions": [],
+          "opacity": 1.0,
+          "volume": 1.0,
+          "muted": false,
+          "solo": false,
+          "visible": true,
+          "pan": 0.0,
+          "locked": false,
+          "sync_lock": false,
+          "targeted": true,
+          "source_patch": false,
+          "magnetic_role": "Free",
+          "storyline_anchor": null,
+          "colour_label": 0,
+          "channel_waveforms": false,
+          "source_file": null,
+          "record_armed": false
+        }
+      ],
+      "in_point": null,
+      "out_point": null,
+      "markers": [],
+      "last_playhead": null,
+      "drop_frame": false
+    },
+    {
+      "id": "8e9c0549-17b4-5702-8fce-4f0649c8919b",
+      "name": "Number Card tall",
+      "fps": {
+        "num": 24,
+        "den": 1
+      },
+      "resolution": {
+        "width": 1080,
+        "height": 1920
+      },
+      "first_clip_autoset": {
+        "resolution": true,
+        "fps": true
+      },
+      "tracks": [
+        {
+          "id": "5c5e1975-c323-403c-94ae-e1bca328ef6b",
+          "name": "T 1",
+          "kind": "Text",
+          "clips": [
+            {
+              "id": "93818a2a-3071-506e-9f3f-ccf2dba1111b",
+              "kind": {
+                "type": "title",
+                "objects": [
+                  {
+                    "id": 0,
+                    "name": "Text 1",
+                    "transform": {
+                      "center": {
+                        "x": 0.5,
+                        "y": 0.46625
+                      },
+                      "center_x_keyframes": [],
+                      "center_y_keyframes": [],
+                      "size_x_keyframes": [],
+                      "size_y_keyframes": [],
+                      "size": {
+                        "x": 0.72,
+                        "y": 1.0
+                      },
+                      "rotation": 0.0,
+                      "rotation_keyframes": [],
+                      "anchor_norm": {
+                        "x": 0.5,
+                        "y": 0.5
+                      },
+                      "anchor_x_keyframes": [],
+                      "anchor_y_keyframes": []
+                    },
+                    "visible": true,
+                    "locked": false,
+                    "opacity": 1.0,
+                    "opacity_keyframes": [],
+                    "content": {
+                      "TextBox": {
+                        "text": "42",
+                        "font_size": 300.0,
+                        "font_name": "Anton",
+                        "font_style": "Regular",
+                        "color": [
+                          255,
+                          214,
+                          10,
+                          255
+                        ],
+                        "alignment": "Center",
+                        "gradient": null,
+                        "pattern_fill": null,
+                        "pattern_fill_enabled": true,
+                        "tracking": 0.0,
+                        "line_spacing": 1.0,
+                        "write_on": 1.0,
+                        "extrusion": null,
+                        "text_path": null,
+                        "char_animation": null,
+                        "texture_fill": null,
+                        "style_runs": [],
+                        "ass_style_name": null,
+                        "underline": false,
+                        "strikethrough": false,
+                        "case_transform": "None",
+                        "baseline_shift": 0.0,
+                        "outline_write_on": 1.0,
+                        "chromatic_aberration_px": 0.0,
+                        "glitch_intensity": 0.0,
+                        "drop_cap_scale": 0.0,
+                        "columns": 1,
+                        "vertical_layout": false,
+                        "text_direction": "Ltr"
+                      }
+                    },
+                    "fx": {
+                      "motion": {
+                        "enter": {
+                          "kind": "Pop",
+                          "duration_secs": 0.5,
+                          "delay_secs": 0.0,
+                          "easing": "OutBack",
+                          "stagger": "None",
+                          "stagger_secs": 0.05,
+                          "distance": 0.6,
+                          "amount": null,
+                          "anchor": null
+                        },
+                        "exit": {
+                          "kind": "Fade",
+                          "duration_secs": 0.3,
+                          "delay_secs": 0.0,
+                          "easing": "InCubic",
+                          "stagger": "None",
+                          "stagger_secs": 0.05,
+                          "distance": 0.6,
+                          "amount": null,
+                          "anchor": null
+                        }
+                      },
+                      "shadows": [
+                        {
+                          "enabled": true,
+                          "color": [
+                            0,
+                            0,
+                            0,
+                            120
+                          ],
+                          "offset_x": 0.0,
+                          "offset_x_keyframes": [],
+                          "offset_y": 3.0,
+                          "offset_y_keyframes": [],
+                          "blur": 12.0,
+                          "blur_keyframes": []
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "id": 1,
+                    "name": "Text 2",
+                    "transform": {
+                      "center": {
+                        "x": 0.5,
+                        "y": 0.57875
+                      },
+                      "center_x_keyframes": [],
+                      "center_y_keyframes": [],
+                      "size_x_keyframes": [],
+                      "size_y_keyframes": [],
+                      "size": {
+                        "x": 0.72,
+                        "y": 1.0
+                      },
+                      "rotation": 0.0,
+                      "rotation_keyframes": [],
+                      "anchor_norm": {
+                        "x": 0.5,
+                        "y": 0.5
+                      },
+                      "anchor_x_keyframes": [],
+                      "anchor_y_keyframes": []
+                    },
+                    "visible": true,
+                    "locked": false,
+                    "opacity": 1.0,
+                    "opacity_keyframes": [],
+                    "content": {
+                      "TextBox": {
+                        "text": "Days of sun a year",
+                        "font_size": 44.0,
+                        "font_name": "Work Sans",
+                        "font_style": "Bold",
+                        "color": [
+                          255,
+                          255,
+                          255,
+                          255
+                        ],
+                        "alignment": "Center",
+                        "gradient": null,
+                        "pattern_fill": null,
+                        "pattern_fill_enabled": true,
+                        "tracking": 3.0,
+                        "line_spacing": 1.0,
+                        "write_on": 1.0,
+                        "extrusion": null,
+                        "text_path": null,
+                        "char_animation": null,
+                        "texture_fill": null,
+                        "style_runs": [],
+                        "ass_style_name": null,
+                        "underline": false,
+                        "strikethrough": false,
+                        "case_transform": "Uppercase",
+                        "baseline_shift": 0.0,
+                        "outline_write_on": 1.0,
+                        "chromatic_aberration_px": 0.0,
+                        "glitch_intensity": 0.0,
+                        "drop_cap_scale": 0.0,
+                        "columns": 1,
+                        "vertical_layout": false,
+                        "text_direction": "Ltr"
+                      }
+                    },
+                    "fx": {
+                      "motion": {
+                        "enter": {
+                          "kind": "Rise",
+                          "duration_secs": 0.45,
+                          "delay_secs": 0.25,
+                          "easing": "OutCubic",
+                          "stagger": "None",
+                          "stagger_secs": 0.05,
+                          "distance": 0.6,
+                          "amount": null,
+                          "anchor": null
+                        },
+                        "exit": {
+                          "kind": "Fade",
+                          "duration_secs": 0.3,
+                          "delay_secs": 0.0,
+                          "easing": "InCubic",
+                          "stagger": "None",
+                          "stagger_secs": 0.05,
+                          "distance": 0.6,
+                          "amount": null,
+                          "anchor": null
+                        }
+                      },
+                      "shadows": [
+                        {
+                          "enabled": true,
+                          "color": [
+                            0,
+                            0,
+                            0,
+                            120
+                          ],
+                          "offset_x": 0.0,
+                          "offset_x_keyframes": [],
+                          "offset_y": 3.0,
+                          "offset_y_keyframes": [],
+                          "blur": 12.0,
+                          "blur_keyframes": []
+                        }
+                      ]
+                    }
+                  }
+                ],
+                "next_object_id": 2,
+                "animation_type": "Static",
+                "background": "None",
+                "published": [
+                  {
+                    "label": "Size",
+                    "kind": {
+                      "Size": {
+                        "factor": 1.0,
+                        "anchor": {
+                          "x": 0.5,
+                          "y": 0.5
+                        },
+                        "base": [
+                          {
+                            "object": 0,
+                            "center": {
+                              "x": 0.5,
+                              "y": 0.46625
+                            },
+                            "size": {
+                              "x": 0.72,
+                              "y": 1.0
+                            },
+                            "font_size": 300.0
+                          },
+                          {
+                            "object": 1,
+                            "center": {
+                              "x": 0.5,
+                              "y": 0.57875
+                            },
+                            "size": {
+                              "x": 0.72,
+                              "y": 1.0
+                            },
+                            "font_size": 44.0
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "label": "Speed",
+                    "kind": {
+                      "Speed": {
+                        "factor": 1.0,
+                        "base": [
+                          {
+                            "object": 0,
+                            "enter": {
+                              "duration_secs": 0.5,
+                              "delay_secs": 0.0,
+                              "stagger_secs": 0.05
+                            },
+                            "exit": {
+                              "duration_secs": 0.3,
+                              "delay_secs": 0.0,
+                              "stagger_secs": 0.05
+                            }
+                          },
+                          {
+                            "object": 1,
+                            "enter": {
+                              "duration_secs": 0.45,
+                              "delay_secs": 0.25,
+                              "stagger_secs": 0.05
+                            },
+                            "exit": {
+                              "duration_secs": 0.3,
+                              "delay_secs": 0.0,
+                              "stagger_secs": 0.05
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ],
+                "protect": "auto"
+              },
+              "timeline_in": {
+                "value": 0,
+                "rate": 24
+              },
+              "timeline_out": {
+                "value": 120,
+                "rate": 24
+              },
+              "source_in": {
+                "value": 0,
+                "rate": 24
+              },
+              "source_out": {
+                "value": 120,
+                "rate": 24
+              },
+              "node_graph": {
+                "nodes": [
+                  {
+                    "id": "afc58f4b-0972-4063-8a51-2ac2842af3ee",
+                    "kind": "Source",
+                    "label": "Source",
+                    "enabled": true,
+                    "params": {},
+                    "keyframes": {
+                      "tracks": []
+                    },
+                    "output_link": null,
+                    "input_links": []
+                  },
+                  {
+                    "id": "8ba8670d-8d29-4c79-a0d3-c25d7cba30d0",
+                    "kind": "Corrector",
+                    "label": "Corrector",
+                    "enabled": true,
+                    "params": {},
+                    "keyframes": {
+                      "tracks": []
+                    },
+                    "output_link": null,
+                    "input_links": []
+                  },
+                  {
+                    "id": "456c411a-4dc8-476c-b25a-2e2edc10f861",
+                    "kind": "Output",
+                    "label": "Output",
+                    "enabled": true,
+                    "params": {},
+                    "keyframes": {
+                      "tracks": []
+                    },
+                    "output_link": null,
+                    "input_links": []
+                  }
+                ],
+                "edges": [
+                  {
+                    "from_node": "afc58f4b-0972-4063-8a51-2ac2842af3ee",
+                    "from_port": 0,
+                    "to_node": "8ba8670d-8d29-4c79-a0d3-c25d7cba30d0",
+                    "to_port": 0
+                  },
+                  {
+                    "from_node": "8ba8670d-8d29-4c79-a0d3-c25d7cba30d0",
+                    "from_port": 0,
+                    "to_node": "456c411a-4dc8-476c-b25a-2e2edc10f861",
+                    "to_port": 0
+                  }
+                ],
+                "output_node_id": "456c411a-4dc8-476c-b25a-2e2edc10f861",
+                "node_positions": {
+                  "8ba8670d-8d29-4c79-a0d3-c25d7cba30d0": {
+                    "x": 220.0,
+                    "y": 0.0
+                  },
+                  "456c411a-4dc8-476c-b25a-2e2edc10f861": {
+                    "x": 440.0,
+                    "y": 0.0
+                  },
+                  "afc58f4b-0972-4063-8a51-2ac2842af3ee": {
+                    "x": 0.0,
+                    "y": 0.0
+                  }
+                }
+              },
+              "effects": [],
+              "builtin_effects": [],
+              "builtin_effects_enabled": [],
+              "opacity_keyframes": [],
+              "transform_pos_x_keyframes": [],
+              "transform_pos_y_keyframes": [],
+              "transform_scale_keyframes": [],
+              "transform_rotation_keyframes": [],
+              "effect_keyframes": {},
+              "grade_versions": [],
+              "active_grade_version": null,
+              "linked_clip_id": null,
+              "linked_title_asset_id": null,
+              "group_id": null,
+              "magnetic_anchor": null,
+              "gain": 1.0,
+              "volume": 1.0,
+              "pan": 0.0,
+              "fade_in_secs": 0.0,
+              "fade_out_secs": 0.0,
+              "fade_in_curve": "Linear",
+              "fade_out_curve": "Linear",
+              "channel_config": "Default",
+              "volume_keyframes": [],
+              "pan_keyframes": [],
+              "gain_keyframes": [],
+              "clip_markers": [],
+              "role": "Dialogue",
+              "speed": 1.0,
+              "speed_keyframes": [],
+              "keep_pitch": false,
+              "source_rotation": 0,
+              "enabled": true,
+              "solo": false,
+              "blend_mode": "Normal",
+              "consumed_as_matte": false,
+              "transform_link": null,
+              "multicam_angle": 0,
+              "audio_effect_keyframes": {},
+              "track_points": []
+            }
+          ],
+          "transitions": [],
+          "opacity": 1.0,
+          "volume": 1.0,
+          "muted": false,
+          "solo": false,
+          "visible": true,
+          "pan": 0.0,
+          "locked": false,
+          "sync_lock": false,
+          "targeted": true,
+          "source_patch": false,
+          "magnetic_role": "Free",
+          "storyline_anchor": null,
+          "colour_label": 0,
+          "channel_waveforms": false,
+          "source_file": null,
+          "record_armed": false
+        }
+      ],
+      "in_point": null,
+      "out_point": null,
+      "markers": [],
+      "last_playhead": null,
+      "drop_frame": false
+    },
+    {
+      "id": "79ed2bad-c3ca-5ff7-819e-29829b854c9e",
+      "name": "Number Card square",
+      "fps": {
+        "num": 24,
+        "den": 1
+      },
+      "resolution": {
+        "width": 1080,
+        "height": 1080
+      },
+      "first_clip_autoset": {
+        "resolution": true,
+        "fps": true
+      },
+      "tracks": [
+        {
+          "id": "cc92978e-574d-4238-a5ba-8ca05c4b93e1",
+          "name": "T 1",
+          "kind": "Text",
+          "clips": [
+            {
+              "id": "93818a2a-3071-506e-9f3f-ccf2dba1111b",
+              "kind": {
+                "type": "title",
+                "objects": [
+                  {
+                    "id": 0,
+                    "name": "Text 1",
+                    "transform": {
+                      "center": {
+                        "x": 0.5,
+                        "y": 0.44
+                      },
+                      "center_x_keyframes": [],
+                      "center_y_keyframes": [],
+                      "size_x_keyframes": [],
+                      "size_y_keyframes": [],
+                      "size": {
+                        "x": 0.9,
+                        "y": 1.0
+                      },
+                      "rotation": 0.0,
+                      "rotation_keyframes": [],
+                      "anchor_norm": {
+                        "x": 0.5,
+                        "y": 0.5
+                      },
+                      "anchor_x_keyframes": [],
+                      "anchor_y_keyframes": []
+                    },
+                    "visible": true,
+                    "locked": false,
+                    "opacity": 1.0,
+                    "opacity_keyframes": [],
+                    "content": {
+                      "TextBox": {
+                        "text": "42",
+                        "font_size": 300.0,
+                        "font_name": "Anton",
+                        "font_style": "Regular",
+                        "color": [
+                          255,
+                          214,
+                          10,
+                          255
+                        ],
+                        "alignment": "Center",
+                        "gradient": null,
+                        "pattern_fill": null,
+                        "pattern_fill_enabled": true,
+                        "tracking": 0.0,
+                        "line_spacing": 1.0,
+                        "write_on": 1.0,
+                        "extrusion": null,
+                        "text_path": null,
+                        "char_animation": null,
+                        "texture_fill": null,
+                        "style_runs": [],
+                        "ass_style_name": null,
+                        "underline": false,
+                        "strikethrough": false,
+                        "case_transform": "None",
+                        "baseline_shift": 0.0,
+                        "outline_write_on": 1.0,
+                        "chromatic_aberration_px": 0.0,
+                        "glitch_intensity": 0.0,
+                        "drop_cap_scale": 0.0,
+                        "columns": 1,
+                        "vertical_layout": false,
+                        "text_direction": "Ltr"
+                      }
+                    },
+                    "fx": {
+                      "motion": {
+                        "enter": {
+                          "kind": "Pop",
+                          "duration_secs": 0.5,
+                          "delay_secs": 0.0,
+                          "easing": "OutBack",
+                          "stagger": "None",
+                          "stagger_secs": 0.05,
+                          "distance": 0.6,
+                          "amount": null,
+                          "anchor": null
+                        },
+                        "exit": {
+                          "kind": "Fade",
+                          "duration_secs": 0.3,
+                          "delay_secs": 0.0,
+                          "easing": "InCubic",
+                          "stagger": "None",
+                          "stagger_secs": 0.05,
+                          "distance": 0.6,
+                          "amount": null,
+                          "anchor": null
+                        }
+                      },
+                      "shadows": [
+                        {
+                          "enabled": true,
+                          "color": [
+                            0,
+                            0,
+                            0,
+                            120
+                          ],
+                          "offset_x": 0.0,
+                          "offset_x_keyframes": [],
+                          "offset_y": 3.0,
+                          "offset_y_keyframes": [],
+                          "blur": 12.0,
+                          "blur_keyframes": []
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "id": 1,
+                    "name": "Text 2",
+                    "transform": {
+                      "center": {
+                        "x": 0.5,
+                        "y": 0.64
+                      },
+                      "center_x_keyframes": [],
+                      "center_y_keyframes": [],
+                      "size_x_keyframes": [],
+                      "size_y_keyframes": [],
+                      "size": {
+                        "x": 0.9,
+                        "y": 1.0
+                      },
+                      "rotation": 0.0,
+                      "rotation_keyframes": [],
+                      "anchor_norm": {
+                        "x": 0.5,
+                        "y": 0.5
+                      },
+                      "anchor_x_keyframes": [],
+                      "anchor_y_keyframes": []
+                    },
+                    "visible": true,
+                    "locked": false,
+                    "opacity": 1.0,
+                    "opacity_keyframes": [],
+                    "content": {
+                      "TextBox": {
+                        "text": "Days of sun a year",
+                        "font_size": 44.0,
+                        "font_name": "Work Sans",
+                        "font_style": "Bold",
+                        "color": [
+                          255,
+                          255,
+                          255,
+                          255
+                        ],
+                        "alignment": "Center",
+                        "gradient": null,
+                        "pattern_fill": null,
+                        "pattern_fill_enabled": true,
+                        "tracking": 3.0,
+                        "line_spacing": 1.0,
+                        "write_on": 1.0,
+                        "extrusion": null,
+                        "text_path": null,
+                        "char_animation": null,
+                        "texture_fill": null,
+                        "style_runs": [],
+                        "ass_style_name": null,
+                        "underline": false,
+                        "strikethrough": false,
+                        "case_transform": "Uppercase",
+                        "baseline_shift": 0.0,
+                        "outline_write_on": 1.0,
+                        "chromatic_aberration_px": 0.0,
+                        "glitch_intensity": 0.0,
+                        "drop_cap_scale": 0.0,
+                        "columns": 1,
+                        "vertical_layout": false,
+                        "text_direction": "Ltr"
+                      }
+                    },
+                    "fx": {
+                      "motion": {
+                        "enter": {
+                          "kind": "Rise",
+                          "duration_secs": 0.45,
+                          "delay_secs": 0.25,
+                          "easing": "OutCubic",
+                          "stagger": "None",
+                          "stagger_secs": 0.05,
+                          "distance": 0.6,
+                          "amount": null,
+                          "anchor": null
+                        },
+                        "exit": {
+                          "kind": "Fade",
+                          "duration_secs": 0.3,
+                          "delay_secs": 0.0,
+                          "easing": "InCubic",
+                          "stagger": "None",
+                          "stagger_secs": 0.05,
+                          "distance": 0.6,
+                          "amount": null,
+                          "anchor": null
+                        }
+                      },
+                      "shadows": [
+                        {
+                          "enabled": true,
+                          "color": [
+                            0,
+                            0,
+                            0,
+                            120
+                          ],
+                          "offset_x": 0.0,
+                          "offset_x_keyframes": [],
+                          "offset_y": 3.0,
+                          "offset_y_keyframes": [],
+                          "blur": 12.0,
+                          "blur_keyframes": []
+                        }
+                      ]
+                    }
+                  }
+                ],
+                "next_object_id": 2,
+                "animation_type": "Static",
+                "background": "None",
+                "published": [
+                  {
+                    "label": "Size",
+                    "kind": {
+                      "Size": {
+                        "factor": 1.0,
+                        "anchor": {
+                          "x": 0.5,
+                          "y": 0.5
+                        },
+                        "base": [
+                          {
+                            "object": 0,
+                            "center": {
+                              "x": 0.5,
+                              "y": 0.44
+                            },
+                            "size": {
+                              "x": 0.9,
+                              "y": 1.0
+                            },
+                            "font_size": 300.0
+                          },
+                          {
+                            "object": 1,
+                            "center": {
+                              "x": 0.5,
+                              "y": 0.64
+                            },
+                            "size": {
+                              "x": 0.9,
+                              "y": 1.0
+                            },
+                            "font_size": 44.0
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "label": "Speed",
+                    "kind": {
+                      "Speed": {
+                        "factor": 1.0,
+                        "base": [
+                          {
+                            "object": 0,
+                            "enter": {
+                              "duration_secs": 0.5,
+                              "delay_secs": 0.0,
+                              "stagger_secs": 0.05
+                            },
+                            "exit": {
+                              "duration_secs": 0.3,
+                              "delay_secs": 0.0,
+                              "stagger_secs": 0.05
+                            }
+                          },
+                          {
+                            "object": 1,
+                            "enter": {
+                              "duration_secs": 0.45,
+                              "delay_secs": 0.25,
+                              "stagger_secs": 0.05
+                            },
+                            "exit": {
+                              "duration_secs": 0.3,
+                              "delay_secs": 0.0,
+                              "stagger_secs": 0.05
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ],
+                "protect": "auto"
+              },
+              "timeline_in": {
+                "value": 0,
+                "rate": 24
+              },
+              "timeline_out": {
+                "value": 120,
+                "rate": 24
+              },
+              "source_in": {
+                "value": 0,
+                "rate": 24
+              },
+              "source_out": {
+                "value": 120,
+                "rate": 24
+              },
+              "node_graph": {
+                "nodes": [
+                  {
+                    "id": "b0fba43a-a60d-41c5-92ee-02524d13aa35",
+                    "kind": "Source",
+                    "label": "Source",
+                    "enabled": true,
+                    "params": {},
+                    "keyframes": {
+                      "tracks": []
+                    },
+                    "output_link": null,
+                    "input_links": []
+                  },
+                  {
+                    "id": "0859d0e0-f7b5-4590-abee-5e26bfcf2f27",
+                    "kind": "Corrector",
+                    "label": "Corrector",
+                    "enabled": true,
+                    "params": {},
+                    "keyframes": {
+                      "tracks": []
+                    },
+                    "output_link": null,
+                    "input_links": []
+                  },
+                  {
+                    "id": "5336b44a-d1fe-405c-818a-04cccd36d68f",
+                    "kind": "Output",
+                    "label": "Output",
+                    "enabled": true,
+                    "params": {},
+                    "keyframes": {
+                      "tracks": []
+                    },
+                    "output_link": null,
+                    "input_links": []
+                  }
+                ],
+                "edges": [
+                  {
+                    "from_node": "b0fba43a-a60d-41c5-92ee-02524d13aa35",
+                    "from_port": 0,
+                    "to_node": "0859d0e0-f7b5-4590-abee-5e26bfcf2f27",
+                    "to_port": 0
+                  },
+                  {
+                    "from_node": "0859d0e0-f7b5-4590-abee-5e26bfcf2f27",
+                    "from_port": 0,
+                    "to_node": "5336b44a-d1fe-405c-818a-04cccd36d68f",
+                    "to_port": 0
+                  }
+                ],
+                "output_node_id": "5336b44a-d1fe-405c-818a-04cccd36d68f",
+                "node_positions": {
+                  "0859d0e0-f7b5-4590-abee-5e26bfcf2f27": {
+                    "x": 220.0,
+                    "y": 0.0
+                  },
+                  "b0fba43a-a60d-41c5-92ee-02524d13aa35": {
+                    "x": 0.0,
+                    "y": 0.0
+                  },
+                  "5336b44a-d1fe-405c-818a-04cccd36d68f": {
+                    "x": 440.0,
+                    "y": 0.0
+                  }
+                }
+              },
+              "effects": [],
+              "builtin_effects": [],
+              "builtin_effects_enabled": [],
+              "opacity_keyframes": [],
+              "transform_pos_x_keyframes": [],
+              "transform_pos_y_keyframes": [],
+              "transform_scale_keyframes": [],
+              "transform_rotation_keyframes": [],
+              "effect_keyframes": {},
+              "grade_versions": [],
+              "active_grade_version": null,
+              "linked_clip_id": null,
+              "linked_title_asset_id": null,
+              "group_id": null,
+              "magnetic_anchor": null,
+              "gain": 1.0,
+              "volume": 1.0,
+              "pan": 0.0,
+              "fade_in_secs": 0.0,
+              "fade_out_secs": 0.0,
+              "fade_in_curve": "Linear",
+              "fade_out_curve": "Linear",
+              "channel_config": "Default",
+              "volume_keyframes": [],
+              "pan_keyframes": [],
+              "gain_keyframes": [],
+              "clip_markers": [],
+              "role": "Dialogue",
+              "speed": 1.0,
+              "speed_keyframes": [],
+              "keep_pitch": false,
+              "source_rotation": 0,
+              "enabled": true,
+              "solo": false,
+              "blend_mode": "Normal",
+              "consumed_as_matte": false,
+              "transform_link": null,
+              "multicam_angle": 0,
+              "audio_effect_keyframes": {},
+              "track_points": []
+            }
+          ],
+          "transitions": [],
+          "opacity": 1.0,
+          "volume": 1.0,
+          "muted": false,
+          "solo": false,
+          "visible": true,
+          "pan": 0.0,
+          "locked": false,
+          "sync_lock": false,
+          "targeted": true,
+          "source_patch": false,
+          "magnetic_role": "Free",
+          "storyline_anchor": null,
+          "colour_label": 0,
+          "channel_waveforms": false,
+          "source_file": null,
+          "record_armed": false
+        }
+      ],
+      "in_point": null,
+      "out_point": null,
+      "markers": [],
+      "last_playhead": null,
+      "drop_frame": false
+    }
+  ],
+  "formats": {
+    "square": "79ed2bad-c3ca-5ff7-819e-29829b854c9e",
+    "tall": "8e9c0549-17b4-5702-8fce-4f0649c8919b"
+  }
+}

@@ -256,25 +256,25 @@ fn publish(mut td: TitleData, fields: &Fields, anchor: (f32, f32)) -> TitleData 
 // ---------------------------------------------------------------------------
 
 
-const WHITE: [u8; 4] = [255, 255, 255, 255];
-const INK: [u8; 4] = [18, 18, 22, 255];
-const MUTED: [u8; 4] = [225, 225, 230, 255];
-const ACCENT: [u8; 4] = [74, 143, 231, 255];
-const GRO: &str = "Inter";
-const DISPLAY: &str = "Bebas Neue";
-const MONO: &str = "JetBrains Mono";
+pub const WHITE: [u8; 4] = [255, 255, 255, 255];
+pub const INK: [u8; 4] = [18, 18, 22, 255];
+pub const MUTED: [u8; 4] = [225, 225, 230, 255];
+pub const ACCENT: [u8; 4] = [74, 143, 231, 255];
+pub const GRO: &str = "Inter";
+pub const DISPLAY: &str = "Bebas Neue";
+pub const MONO: &str = "JetBrains Mono";
 // Faces from Klipp's catalogue (#2732), fetched when a title first uses
 // them; the bundled ones stand in until they arrive.
-const SANS: &str = "Manrope";
-const LABEL: &str = "Work Sans";
-const EDITORIAL: &str = "Playfair Display";
-const CLASSIC: &str = "Cormorant Garamond";
-const HEADING: &str = "DM Serif Display";
-const POSTER: &str = "Anton";
+pub const SANS: &str = "Manrope";
+pub const LABEL: &str = "Work Sans";
+pub const EDITORIAL: &str = "Playfair Display";
+pub const CLASSIC: &str = "Cormorant Garamond";
+pub const HEADING: &str = "DM Serif Display";
+pub const POSTER: &str = "Anton";
 
 /// A soft drop shadow that lifts text off footage without reading as
 /// a shadow.
-fn lift() -> TitleShadow {
+pub fn lift() -> TitleShadow {
     TitleShadow {
         color: [0, 0, 0, 120],
         offset_x: 0.0,
@@ -288,13 +288,15 @@ fn lift() -> TitleShadow {
 }
 
 /// A text layer as a template composes it: the text box and the stack
-/// its object will carry.
-struct Text {
+/// its object will carry. With the helpers round it (`face`, `text_at`,
+/// `rect`, `layers`, `enter`...), the vocabulary the built-ins and the
+/// motion pack's authoring (#2757) design in.
+pub struct Text {
     tb: crate::TextBox,
     fx: crate::LayerFx,
 }
 
-fn face(text: &str, family: &str, style: FontStyle, size: f32, color: [u8; 4], align: TextAlignment) -> Text {
+pub fn face(text: &str, family: &str, style: FontStyle, size: f32, color: [u8; 4], align: TextAlignment) -> Text {
     Text {
         tb: crate::TextBox {
             text: text.into(),
@@ -309,58 +311,58 @@ fn face(text: &str, family: &str, style: FontStyle, size: f32, color: [u8; 4], a
     }
 }
 
-fn upper(mut t: Text, tracking: f32) -> Text {
+pub fn upper(mut t: Text, tracking: f32) -> Text {
     t.tb.case_transform = crate::TextCase::Uppercase;
     t.tb.tracking = tracking;
     t
 }
 
 /// `t` at a weight of its family (100 thin to 900 black).
-fn weight(mut t: Text, w: u16) -> Text {
+pub fn weight(mut t: Text, w: u16) -> Text {
     t.tb.font_weight = Some(w);
     t
 }
 
 /// A light fill from `top` to `bottom`: depth without a look of its own.
-fn graded(mut t: Text, top: [u8; 4], bottom: [u8; 4]) -> Text {
+pub fn graded(mut t: Text, top: [u8; 4], bottom: [u8; 4]) -> Text {
     t.tb.gradient = Some(crate::TextGradient { top_color: top, bottom_color: bottom, enabled: true, stops: Vec::new(), kind: Default::default(), stop_keyframes: Vec::new() });
     t
 }
 
 /// `t` with its lines spaced by `spacing` (1 as set).
-fn spaced(mut t: Text, spacing: f32) -> Text {
+pub fn spaced(mut t: Text, spacing: f32) -> Text {
     t.tb.line_spacing = spacing;
     t
 }
 
-fn lifted(mut t: Text) -> Text {
+pub fn lifted(mut t: Text) -> Text {
     t.fx.shadows.push(lift());
     t
 }
 
 /// A name that keeps its line: a long one is set smaller to fit its box
 /// rather than wrapping under the lines below it (#1722).
-fn keeps_line(mut t: Text) -> Text {
+pub fn keeps_line(mut t: Text) -> Text {
     t.tb.fit = crate::TextFit::Shrink { min_size: (t.tb.font_size * 0.5).round() };
     t
 }
 
 /// [`text_at`] in a box `w` of the frame wide, for a layer that has to
 /// stay inside a bar.
-fn boxed_at(t: Text, x: f32, y: f32, w: f32) -> Layer {
+pub fn boxed_at(t: Text, x: f32, y: f32, w: f32) -> Layer {
     let mut layer = text_at(t, x, y, 0.0);
     layer.1.size.x = w;
     layer
 }
 
-fn moved(mut t: Text, motion: TitleMotion) -> Text {
+pub fn moved(mut t: Text, motion: TitleMotion) -> Text {
     t.fx.motion = motion;
     t
 }
 
 /// Where a layer sits: `x`, `y` in 0..1 of the frame; the anchor
 /// chooses which point of the layer lands there (0 = left/top).
-fn at(x: f32, y: f32, anchor_x: f32) -> ObjectTransform {
+pub fn at(x: f32, y: f32, anchor_x: f32) -> ObjectTransform {
     ObjectTransform {
         center: TitlePosition { x, y },
         anchor_norm: TitlePosition { x: anchor_x, y: 0.5 },
@@ -369,9 +371,9 @@ fn at(x: f32, y: f32, anchor_x: f32) -> ObjectTransform {
 }
 
 /// One layer of a template: what it is, where it sits, and its stack.
-type Layer = (TitleObjectContent, ObjectTransform, crate::LayerFx);
+pub type Layer = (TitleObjectContent, ObjectTransform, crate::LayerFx);
 
-fn rect(x: f32, y: f32, w: f32, h: f32, fill: [u8; 4], radius: f32) -> Layer {
+pub fn rect(x: f32, y: f32, w: f32, h: f32, fill: [u8; 4], radius: f32) -> Layer {
     (
         TitleObjectContent::Shape(Shape { kind: ShapeKind::Rectangle { corner_radius: radius }, fit: None, fill: Some(fill), gradient: None, stroke: None }),
         ObjectTransform { center: TitlePosition { x, y }, size: TitlePosition { x: w, y: h }, ..default_text_transform() },
@@ -380,7 +382,7 @@ fn rect(x: f32, y: f32, w: f32, h: f32, fill: [u8; 4], radius: f32) -> Layer {
 }
 
 /// Build a title from layers, back to front.
-fn layers(items: Vec<Layer>) -> TitleData {
+pub fn layers(items: Vec<Layer>) -> TitleData {
     let mut td = TitleData { objects: Vec::new(), next_object_id: 0, animation_type: TitleAnimationType::default(), background: TitleBackground::None, style: None, published: Vec::new(), template: None, protect: Default::default() };
     for (content, transform, fx) in items {
         let id = td.add_object(content, transform);
@@ -389,28 +391,28 @@ fn layers(items: Vec<Layer>) -> TitleData {
     td
 }
 
-fn text_at(t: Text, x: f32, y: f32, anchor_x: f32) -> Layer {
+pub fn text_at(t: Text, x: f32, y: f32, anchor_x: f32) -> Layer {
     (TitleObjectContent::TextBox(t.tb), at(x, y, anchor_x), t.fx)
 }
 
 // ── Motion presets ──
-fn enter(kind: MotionKind, secs: f32, easing: Easing) -> Motion {
+pub fn enter(kind: MotionKind, secs: f32, easing: Easing) -> Motion {
     Motion::new(kind).duration(secs).easing(easing)
 }
-fn fade_out(secs: f32) -> Motion {
+pub fn fade_out(secs: f32) -> Motion {
     Motion::new(MotionKind::Fade).duration(secs).easing(Easing::InCubic)
 }
 
 /// A backing shape that moves with its text (#1724): a bar that sits
 /// still while the words slide in reads as pasted on.
-fn moving(mut layer: Layer, motion: TitleMotion) -> Layer {
+pub fn moving(mut layer: Layer, motion: TitleMotion) -> Layer {
     layer.2.motion = motion;
     layer
 }
 
 /// Shape `shape` sized to text `text`, padded (1080p pixels): the backing
 /// follows whatever is typed.
-fn fit(td: &mut TitleData, shape: usize, text: usize, pad: (f32, f32)) {
+pub fn fit(td: &mut TitleData, shape: usize, text: usize, pad: (f32, f32)) {
     let target = td.objects[text].id;
     if let TitleObjectContent::Shape(s) = &mut td.objects[shape].content {
         s.fit = Some(crate::ShapeFit { target, padding: TitlePosition { x: pad.0, y: pad.1 } });
@@ -418,7 +420,7 @@ fn fit(td: &mut TitleData, shape: usize, text: usize, pad: (f32, f32)) {
 }
 
 /// A heavy outline that keeps a caption readable on any picture.
-fn outlined(mut t: Text, width: f32) -> Text {
+pub fn outlined(mut t: Text, width: f32) -> Text {
     t.fx.outlines.push(crate::TextOutline { enabled: true, color: [0, 0, 0, 255], width, width_keyframes: Vec::new() });
     t
 }

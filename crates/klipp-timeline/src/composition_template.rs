@@ -1081,7 +1081,19 @@ pub fn composition_sequences(root: &Sequence, all: &[Sequence]) -> Vec<Sequence>
 /// `assets/templates`: each read and checked as a saved one is.
 pub fn builtin_templates() -> Vec<CompositionTemplate> {
     const FILES: &[&str] = &[
+        include_str!("../../../assets/templates/word_reveal.klipptemplate"),
+        include_str!("../../../assets/templates/line_wipe.klipptemplate"),
+        include_str!("../../../assets/templates/number_card.klipptemplate"),
+        include_str!("../../../assets/templates/countdown.klipptemplate"),
+        include_str!("../../../assets/templates/top_five.klipptemplate"),
+        include_str!("../../../assets/templates/hook.klipptemplate"),
+        include_str!("../../../assets/templates/end_card.klipptemplate"),
+        include_str!("../../../assets/templates/photo_lower_third.klipptemplate"),
+        include_str!("../../../assets/templates/banner_lower_third.klipptemplate"),
         include_str!("../../../assets/templates/split_screen.klipptemplate"),
+        include_str!("../../../assets/templates/collage.klipptemplate"),
+        include_str!("../../../assets/templates/stinger.klipptemplate"),
+        include_str!("../../../assets/templates/opener.klipptemplate"),
     ];
     FILES
         .iter()
