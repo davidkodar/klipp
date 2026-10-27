@@ -71,7 +71,7 @@ fn scene_losing(text: &str, lost_from: Option<f64>, on_loss: klipp_timeline::Pin
     let td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: text.into(), font_size: 300.0, ..Default::default() });
     let [tl, tr, br, bl] = quad(0.1);
     let mut title = TestClip::of(Clip { kind: ClipKind::Title(td), ..Clip::gap(tc(0.0), tc(4.0)) }).effect(E::CornerPin { tl, tr, br, bl }).build();
-    title.surface_pin = Some(SurfacePin { host: host.id, surface: id, picture_size: None, fit: Default::default(), inset: 0.0, on_loss, light: 0.0 });
+    title.surface_pin = Some(SurfacePin { host: host.id, surface: id, picture_size: None, fit: Default::default(), inset: 0.0, on_loss, light: 0.0, shade: 0.0, texture: 0.0 });
     let mut video = Track::new("V1", TrackKind::Video);
     video.clips = vec![host];
     let mut words = Track::new("T1", TrackKind::Text);

@@ -38,6 +38,8 @@ mod gpu_composite;
 mod grade_alpha_output;
 #[path = "../grade_compound_render.rs"]
 mod grade_compound_render;
+#[path = "../surface_shade_render.rs"]
+mod surface_shade_render;
 #[path = "../reflection_render.rs"]
 mod reflection_render;
 #[path = "../grade_cpu_gpu_parity.rs"]

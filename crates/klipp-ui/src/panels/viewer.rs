@@ -5486,6 +5486,8 @@ impl ViewerPanel {
                 on_loss: None,
                 fade_secs: None,
                 light: None,
+                shade: None,
+                texture: None,
                 blend: None,
                 template: None,
             };

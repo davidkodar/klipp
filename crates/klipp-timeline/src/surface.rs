@@ -372,6 +372,15 @@ pub struct SurfacePin {
     /// its reference frame.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub light: f32,
+    /// How much its brightness follows the surface's light across it
+    /// (#2751), 0 to 1: at 1 it is as much darker where the surface is in
+    /// shade, and lighter where lit, as the surface is against its own
+    /// average under it.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub shade: f32,
+    /// How much of the surface's texture shows through it, 0 to 1.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub texture: f32,
 }
 
 /// What a pinned clip does where its surface's track is lost (#2751).
