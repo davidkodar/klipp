@@ -1227,7 +1227,15 @@ pub enum ControlCommand {
     /// label (its defaults and Duration when left out), in `category`;
     /// a template of that name is replaced only with `replace`.
     SaveTemplate {
-        clip_id: String,
+        /// A title, saved as a title template; or, with `clip_ids`, left
+        /// out.
+        #[serde(default)]
+        clip_id: Option<String>,
+        /// Clips saved together as a composition template (#2757): its
+        /// fields are the texts, colours, fonts, pictures and media slots
+        /// they can expose, by label.
+        #[serde(default)]
+        clip_ids: Option<Vec<String>>,
         name: String,
         #[serde(default)]
         category: Option<String>,

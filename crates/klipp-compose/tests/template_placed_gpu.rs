@@ -145,3 +145,47 @@ fn a_placed_template_draws_its_composition_with_the_value_set() {
     assert!(blue > 1000, "the card is drawn: {blue} pixels of its backing");
     assert_eq!(frame.fallback_count(), 0, "composed on the GPU: {:?}", frame.events);
 }
+
+/// Every media clip a flat orange.
+struct Orange;
+
+impl FrameSource for Orange {
+    fn frame(&mut self, _: &Clip, _: f64, width: u32, height: u32) -> Option<SourceFrame> {
+        let px = [0.8f32, 0.3, 0.05, 1.0].repeat((width * height) as usize);
+        Some(SourceFrame { pixels: klipp_compose::SourcePixels::Linear(std::sync::Arc::new(px)), width, height, pts: None })
+    }
+}
+
+/// #2757: a template's media slot, empty, shows its placeholder; filled,
+/// the media given; on the GPU stack, no fallback either way.
+#[test]
+fn a_slot_shows_its_placeholder_until_it_is_filled() {
+    let mut scene = Sequence::new_default();
+    scene.resolution = klipp_core::Resolution { width: W, height: H };
+    scene.tracks[0].clips = vec![Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(3.0), tc(0.0), tc(3.0))];
+    let placed = |media: Option<klipp_core::MediaId>| {
+        let instance = klipp_core::TemplateInstance {
+            template_id: klipp_core::SequenceId::new().0,
+            bindings: [("slot_1".to_string(), "clip:0.media".to_string())].into_iter().collect(),
+            overrides: Default::default(),
+            media_slots: media.map(|m| ("slot_1".to_string(), m.0.to_string())).into_iter().collect(),
+        };
+        let mut clip = Clip::precomposition(scene.id, tc(0.0), tc(3.0));
+        clip.kind = ClipKind::TemplatePrecomposition { sequence_id: scene.id, template_instance: instance };
+        outer(clip, &scene)
+    };
+    let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+    r.set_gpu_enabled(true);
+    let Some((empty, _)) = r.render_display_u8_on_gpu(&placed(None), tc(1.0), W, H, &mut Orange, RenderOptions::default()) else {
+        assert!(!required(), "required, but the GPU stack declined the slot");
+        eprintln!("UNVERIFIED: no GPU stack");
+        return;
+    };
+    assert_eq!(klipp_effects::residency::last_frame().fallback_count(), 0, "empty: on the GPU");
+    let mid = ((H / 2 * W + W / 2) * 4) as usize;
+    let p = klipp_timeline::flatten::SLOT_PLACEHOLDER;
+    assert!((0..3).all(|c| (empty[mid + c] as i32 - p[c] as i32).abs() <= 2), "the placeholder: {:?}", &empty[mid..mid + 3]);
+    let (filled, _) = r.render_display_u8_on_gpu(&placed(Some(klipp_core::MediaId::new())), tc(1.0), W, H, &mut Orange, RenderOptions::default()).expect("the stack drew the filled slot");
+    assert_eq!(klipp_effects::residency::last_frame().fallback_count(), 0, "filled: on the GPU");
+    assert!(filled[mid] > 200 && filled[mid + 2] < 90, "the media given: {:?}", &filled[mid..mid + 3]);
+}

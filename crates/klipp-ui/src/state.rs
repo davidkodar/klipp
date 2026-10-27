@@ -2604,6 +2604,8 @@ pub struct AppState {
     pub composition_templates: crate::parameterized_templates::CompositionTemplateStore,
     /// The open save / rename / delete title-template dialog.
     pub title_template_dialog: Option<crate::title_templates::TemplateDialog>,
+    /// Clips being saved together as a composition template (#2757).
+    pub composition_save_dialog: Option<crate::parameterized_templates::CompositionSaveDialog>,
     /// The open credits-from-a-list dialog (#1514).
     pub credits_dialog: Option<crate::credits_dialog::CreditsDialog>,
     /// The open Normalize dialog (#1843).
@@ -4994,6 +4996,7 @@ impl Default for AppState {
             title_templates: crate::title_templates::TitleTemplateStore::load_default(),
             composition_templates: crate::parameterized_templates::CompositionTemplateStore::load(dirs::config_dir().map(|d| crate::parameterized_templates::CompositionTemplateStore::default_dir(&d))),
             title_template_dialog: None,
+            composition_save_dialog: None,
             credits_dialog: None,
             normalize_dialog: None,
             shorts_dialog: None,

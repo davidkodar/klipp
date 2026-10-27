@@ -66,8 +66,21 @@ impl KlippApp {
                 }
                 true
             }
+            AppCommand::SaveSelectionAsTemplate => {
+                let mut ids = self.state.selected_clips.clone();
+                if let Some(primary) = self.state.selected_clip.filter(|p| !ids.contains(p)) {
+                    ids.push(primary);
+                }
+                match klipp_timeline::composition_template::scene_from_clips(self.state.sequence(), &ids) {
+                    Some(scene) => self.state.composition_save_dialog = Some(crate::parameterized_templates::CompositionSaveDialog::new(scene)),
+                    None => self.state.toast.show("Select clips first"),
+                }
+                true
+            }
             AppCommand::ReloadTitleTemplates => {
                 self.state.title_templates = crate::title_templates::TitleTemplateStore::load_default();
+                // And the composition templates, saved the same way (#2757).
+                self.state.composition_templates = crate::parameterized_templates::CompositionTemplateStore::load(dirs::config_dir().map(|d| crate::parameterized_templates::CompositionTemplateStore::default_dir(&d)));
                 true
             }
             AppCommand::SaveTitleTemplate { clip_id } => {

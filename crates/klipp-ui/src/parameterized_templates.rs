@@ -610,6 +610,83 @@ impl TemplateInstanceExt for TemplateInstance {
     }
 }
 
+/// Clips saved together as a composition template (#2757): their scene,
+/// its name and category, and what it exposes, each by label, ticked or
+/// not, a media slot marked.
+#[derive(Debug, Clone)]
+pub struct CompositionSaveDialog {
+    pub scene: klipp_timeline::Sequence,
+    pub name: String,
+    pub category: String,
+    pub picks: Vec<(String, bool, bool)>,
+}
+
+impl CompositionSaveDialog {
+    /// For `scene`: its texts and media slots ticked, its colours, fonts
+    /// and pictures offered.
+    pub fn new(scene: klipp_timeline::Sequence) -> Self {
+        let picks = klipp_timeline::composition_template::candidates(&scene).into_iter().map(|c| (c.label.clone(), c.by_default(), c.parameter.is_none())).collect();
+        Self { scene, name: "My Template".into(), category: "My Templates".into(), picks }
+    }
+}
+
+/// The dialog that saves clips as a composition template (#2757).
+pub fn show_save_dialog(ctx: &egui::Context, state: &mut crate::state::AppState) {
+    let Some(dialog) = state.composition_save_dialog.as_mut() else { return };
+    let (mut open, mut close) = (true, false);
+    let mut save = false;
+    egui::Window::new("Save as Template")
+        .collapsible(false)
+        .resizable(false)
+        .open(&mut open)
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .show(ctx, |ui| {
+            ui.set_min_width(300.0);
+            ui.horizontal(|ui| {
+                ui.label("Name:");
+                ui.text_edit_singleline(&mut dialog.name).request_focus();
+            });
+            ui.horizontal(|ui| {
+                ui.label("Category:");
+                ui.text_edit_singleline(&mut dialog.category);
+            });
+            if !dialog.picks.is_empty() {
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new("What can be changed once it is placed").strong());
+                for (label, on, slot) in dialog.picks.iter_mut() {
+                    let text = if *slot { format!("{label} (filled with media)") } else { label.clone() };
+                    ui.checkbox(on, text);
+                }
+            }
+            ui.add_space(8.0);
+            save = crate::title_templates::dialog_buttons(ui, "Save", !dialog.name.trim().is_empty(), &mut close);
+        });
+    if save {
+        let chosen: Vec<String> = dialog.picks.iter().filter(|(_, on, _)| *on).map(|(l, ..)| l.clone()).collect();
+        let mut scene = dialog.scene.clone();
+        scene.name = dialog.name.trim().to_string();
+        let made = klipp_timeline::composition_template::template_from_scene(&scene, &state.sequences, &dialog.name, Some(&chosen)).and_then(|mut t| {
+            t.category = dialog.category.trim().to_string();
+            // Saved over a template of the same name, as a title template is.
+            if let Some(existing) = state.composition_templates.templates().find(|e| e.name.eq_ignore_ascii_case(t.name.trim())) {
+                t.id = existing.id;
+            }
+            let name = t.name.clone();
+            state.composition_templates.save(t).map(|_| name)
+        });
+        match made {
+            Ok(name) => {
+                state.toast.show(format!("Saved template \"{name}\""));
+                close = true;
+            }
+            Err(e) => state.toast.show(format!("Template not saved: {e}")),
+        }
+    }
+    if close || !open {
+        state.composition_save_dialog = None;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

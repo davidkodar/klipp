@@ -9317,6 +9317,11 @@ impl TimelinePanel {
                         cmds.push(AppCommand::CreateCompoundClip { name: "Compound Clip".into() });
                         ui.close_menu();
                     }
+                    // The clips together as a template placed as one (#2757).
+                    if has_multi_for_compound && ui.button("Save as Template\u{2026}").on_hover_text("Save these clips as a template: placed as one clip, its texts, colours and media changeable").clicked() {
+                        cmds.push(AppCommand::SaveSelectionAsTemplate);
+                        ui.close_menu();
+                    }
                     // Multicam bundles the video clips at the playhead.
                     if is_video_track && ui.button("Create Multicam Clip").clicked() {
                         cmds.push(AppCommand::CreateMulticamClip);
