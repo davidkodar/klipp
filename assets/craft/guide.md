@@ -522,13 +522,15 @@ exist until the plan runs.
   against the camera's scratch track. It cross-correlates the two,
   reports the match confidence, and moves the clip into sync; it refuses
   when the two share no common sound.
-- `transition {clip_id, kind?, secs?, remove?}`: a transition between a clip and
+- `transition {clip_id, kind?, secs?, remove?, color?}`: a transition between a clip and
   the one after it, `secs` long, on the cut. `remove: true` takes the
   transition on that cut off again, the crossfade on its sound with it. `cross_dissolve` is the
   default and the only one an interview or a documentary wants; a
   dissolve marks a passage of time or place. `dip_to_black` and
   `dip_to_white` mark a break. A stylised kind (`zoom`, `whip`,
   `glitch`, `film_burn`) is a style choice the brief has to ask for.
+  `color` (`#rrggbb`) sets the colour of one that has one:
+  `colorize_flash`, `light_leak`, `fade_to_color`.
   Both clips need footage beyond the cut to overlap.
 - `style {clip_id | track, from?, to?, size?, color?, font?, bold?, align?, x?, y?, backing?, backing_color?, outline?, outline_color?, shadow?, glow?, glow_color?, gradient?, glitch?, chromatic?, animate?, animate_secs?, stagger?, enter?, exit?, loop?, roll_shape?, edge_fade?, weight?, axes?, features?, last_line?, valign?, underline?, runs?, animators?, keys?, on_path?, blend?, mask?, three_d?, material?}`:
   the look and place of one title, or of every title on a track

@@ -16,11 +16,6 @@ use sweep_common::*;
 /// Items known to fail, and the issue that holds each; 0: found by the
 /// sweep, not filed yet.
 const KNOWN: &[(&str, u32)] = &[
-    ("LightLeak picture", 2765),
-    ("ColorizeFlash picture", 2765),
-    ("AdditiveDissolve picture", 2765),
-    ("LuminanceDissolve ends", 2765),
-    ("ZoomOutDissolve ends", 2765),
 ];
 
 /// Those that pass through a flat colour on purpose.
