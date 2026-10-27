@@ -1339,6 +1339,13 @@ pub enum Op {
         /// screen, overlay or soft_light.
         #[serde(default)]
         blend: Option<String>,
+        /// A ready look (#2751), each field above it sets standing unless
+        /// given: "text_on_wall" (fitted, a margin, takes the light, fades
+        /// out where lost), "screen" (stretched onto a screen tracked by
+        /// its bezel, its own light, hidden where lost) or "sign" (fitted,
+        /// takes most of the light, fades out where lost).
+        #[serde(default)]
+        template: Option<String>,
     },
     /// Move what a clip shows without moving the clip: its source in and
     /// out both by `secs` (later in the file for positive), the timeline
@@ -3507,8 +3514,25 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let to = match to { Some(a) => Some(resolve_anchor(seq, fps, a, i)?), None => None };
             redact(seq, pool, fps, i, ti, clip, from, to, [*x, *y, *w, *h], kind, *amount)
         }
-        Op::Pin { clip_id, media_id, layer, surface, from, to, fit, inset, on_loss, fade_secs, light, blend } => {
+        Op::Pin { clip_id, media_id, layer, surface, from, to, fit, inset, on_loss, fade_secs, light, blend, template } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            // A template's look, under what was given.
+            let (fit, inset, on_loss, light, blend) = match template.as_deref().map(str::trim).map(str::to_lowercase).as_deref() {
+                None | Some("") => (fit.clone(), *inset, on_loss.clone(), *light, blend.clone()),
+                Some(name) => {
+                    let Some(t) = PIN_TEMPLATES.iter().find(|t| t.name == name || t.aliases.contains(&name)) else {
+                        return Err(refuse(i, format!("\"{name}\" is not a pin template"), format!("use {}", PIN_TEMPLATES.iter().map(|t| t.name).collect::<Vec<_>>().join(", "))));
+                    };
+                    (
+                        fit.clone().or(Some(t.fit.to_string())),
+                        inset.or(Some(t.inset)),
+                        on_loss.clone().or(Some(t.on_loss.to_string())),
+                        light.or(Some(t.light)),
+                        blend.clone().or(Some(t.blend.to_string())),
+                    )
+                }
+            };
+            let (fit, on_loss, blend) = (&fit, &on_loss, &blend);
             if media_id.is_some() == layer.is_some() {
                 return Err(refuse(i, "pin takes media_id or layer", "give media_id for a picture from the pool, or layer for a clip already on the timeline (a title, a graphic)"));
             }
@@ -6535,6 +6559,30 @@ fn pin(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, media
     let what = format!("pin {} to the surface \"{}\" of {host} from {:.2} to {:.2} s on {where_}{tracked}", short_name(&item.filename), s.name, secs(a), secs(b));
     Ok((what, EditCommand::LinkedImport { video: Some(video), audio: None, created_video_track_at: created, created_audio_track_at: None, autoset: None }, ids))
 }
+
+/// A ready look for a pin (#2751): what each sets unless given.
+struct PinTemplate {
+    name: &'static str,
+    aliases: &'static [&'static str],
+    fit: &'static str,
+    inset: f32,
+    light: f32,
+    blend: &'static str,
+    on_loss: &'static str,
+}
+
+/// The pin templates: text painted on a wall, a phone or monitor's
+/// picture replaced, a sign put up in the scene.
+const PIN_TEMPLATES: [PinTemplate; 3] = [
+    // On the surface itself: its shape kept inside a margin, as dark as
+    // the wall is, gone gently with it.
+    PinTemplate { name: "text_on_wall", aliases: &["text_on_a_wall", "wall"], fit: "fit", inset: 0.05, light: 1.0, blend: "normal", on_loss: "fade" },
+    // A screen gives its own light: onto the four corners inside the
+    // bezel, never darkened, and nothing where the screen isn't seen.
+    PinTemplate { name: "screen", aliases: &["screen_replacement", "phone", "monitor"], fit: "stretch", inset: 0.02, light: 0.0, blend: "normal", on_loss: "hide" },
+    // A board in the scene's light, a little of it held back so it reads.
+    PinTemplate { name: "sign", aliases: &["billboard", "poster"], fit: "fit", inset: 0.0, light: 0.8, blend: "normal", on_loss: "fade" },
+];
 
 /// What a pin does beyond where it goes (#2751): where the track is
 /// lost, how much it takes the surface's light, how it blends.
@@ -13947,7 +13995,7 @@ mod tests {
         let mut logo = klipp_media::MediaItem::synthetic_for_test("/tmp/logo.png".into(), None);
         logo.is_still = true;
         let logo = pool.add(logo);
-        let pin_op = |surface: Option<&str>| Op::Pin { clip_id: ClipRef::Id(a), media_id: Some(logo), layer: None, surface: surface.map(str::to_string), from: Some(Anchor::Secs(1.0)), to: None, fit: None, inset: None, on_loss: None, fade_secs: None, light: None, blend: None };
+        let pin_op = |surface: Option<&str>| Op::Pin { clip_id: ClipRef::Id(a), media_id: Some(logo), layer: None, surface: surface.map(str::to_string), from: Some(Anchor::Secs(1.0)), to: None, fit: None, inset: None, on_loss: None, fade_secs: None, light: None, blend: None, template: None };
         assert!(resolve(&seq, &pool, &[pin_op(None)]).unwrap_err().hint.contains("track_surface"), "nothing tracked yet");
 
         // A 16:9 surface (0.3 of a 1920 frame across, 0.3 of 1080 down).
@@ -13970,7 +14018,7 @@ mod tests {
         square.resolution = klipp_core::Resolution { width: 800, height: 800 };
         let square = pool.add(square);
         let fitted = |fit: Option<&str>, inset: Option<f32>| {
-            let op = Op::Pin { clip_id: ClipRef::Id(a), media_id: Some(square), layer: None, surface: None, from: None, to: None, fit: fit.map(str::to_string), inset, on_loss: None, fade_secs: None, light: None, blend: None };
+            let op = Op::Pin { clip_id: ClipRef::Id(a), media_id: Some(square), layer: None, surface: None, from: None, to: None, fit: fit.map(str::to_string), inset, on_loss: None, fade_secs: None, light: None, blend: None, template: None };
             let plan = resolve(&seq, &pool, &[op]).unwrap();
             let EditCommand::LinkedImport { video: Some((picture, _)), .. } = &plan.steps[0].edit else { panic!() };
             picture.surface_pin.unwrap()
@@ -13978,7 +14026,7 @@ mod tests {
         assert_eq!(fitted(None, None).fit, klipp_timeline::PinFit::Fit);
         assert_eq!(fitted(Some("stretch"), Some(0.02)).fit, klipp_timeline::PinFit::Stretch);
         assert_eq!(fitted(None, Some(0.02)).inset, 0.02);
-        let bad = |fit: &str, inset: f32| resolve(&seq, &pool, &[Op::Pin { clip_id: ClipRef::Id(a), media_id: Some(square), layer: None, surface: None, from: None, to: None, fit: Some(fit.into()), inset: Some(inset), on_loss: None, fade_secs: None, light: None, blend: None }]).unwrap_err().why;
+        let bad = |fit: &str, inset: f32| resolve(&seq, &pool, &[Op::Pin { clip_id: ClipRef::Id(a), media_id: Some(square), layer: None, surface: None, from: None, to: None, fit: Some(fit.into()), inset: Some(inset), on_loss: None, fade_secs: None, light: None, blend: None, template: None }]).unwrap_err().why;
         assert!(bad("squash", 0.0).contains("not a fit"));
         assert!(bad("fit", 0.6).contains("out of range"));
 
@@ -14062,6 +14110,24 @@ mod tests {
         assert_eq!(look(serde_json::json!({"light": 0.8, "blend": "soft_light"})).unwrap(), (0.8, klipp_core::BlendMode::SoftLight));
         assert!(look(serde_json::json!({"light": 1.5})).unwrap_err().why.contains("out of range"));
         assert!(look(serde_json::json!({"blend": "dissolve"})).unwrap_err().hint.contains("multiply"));
+        // The ready looks: each sets its look, a field given stands.
+        let templated = |extra: serde_json::Value| {
+            let mut op = serde_json::json!({"op": "pin", "clip_id": a.to_string(), "layer": tid.to_string(), "surface": "wall"});
+            op.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            let ops: Vec<Op> = serde_json::from_value(serde_json::json!([op])).unwrap();
+            resolve(&seq, &pool, &ops).map(|plan| {
+                let c = find(&run(&seq, &plan));
+                let p = c.surface_pin.unwrap();
+                (p.fit, p.inset, p.light, p.on_loss, c.blend_mode)
+            })
+        };
+        use klipp_timeline::{PinFit, PinLoss};
+        let fade = PinLoss::Fade { secs: PinLoss::FADE_SECS };
+        assert_eq!(templated(serde_json::json!({"template": "text_on_wall"})).unwrap(), (PinFit::Fit, 0.05, 1.0, fade, klipp_core::BlendMode::Normal));
+        assert_eq!(templated(serde_json::json!({"template": "screen"})).unwrap(), (PinFit::Stretch, 0.02, 0.0, PinLoss::Hide, klipp_core::BlendMode::Normal));
+        assert_eq!(templated(serde_json::json!({"template": "sign"})).unwrap(), (PinFit::Fit, 0.0, 0.8, fade, klipp_core::BlendMode::Normal));
+        assert_eq!(templated(serde_json::json!({"template": "screen", "inset": 0.0, "on_loss": "fade"})).unwrap(), (PinFit::Stretch, 0.0, 0.0, fade, klipp_core::BlendMode::Normal), "given fields stand");
+        assert!(templated(serde_json::json!({"template": "mural"})).unwrap_err().hint.contains("text_on_wall"));
         // Refused: both or neither source, a time of its own, the host itself.
         for (bad, why) in [
             (serde_json::json!({"op": "pin", "clip_id": a.to_string()}), "media_id or layer"),

@@ -5487,6 +5487,7 @@ impl ViewerPanel {
                 fade_secs: None,
                 light: None,
                 blend: None,
+                template: None,
             };
             state.pending_doc_ops.push(crate::state::DocOpsRequest { label: format!("Pin to {}", surface.name), ops: vec![op], independent: false });
             state.dragging_media = None;
