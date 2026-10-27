@@ -130,6 +130,10 @@ pub fn build(edl: &Edl, name: &str, fps: Fps, mut find: impl FnMut(&Event) -> Op
             "AA" | "A12" => vec![(TrackKind::Audio, 0), (TrackKind::Audio, 1)],
             other => {
                 let n = other.strip_prefix('A').and_then(|n| if n.is_empty() { Some(1) } else { n.parse::<usize>().ok() }).unwrap_or(1);
+                if n > MAX_AUDIO_CHANNEL {
+                    warnings.push(format!("Event {:03}: audio channel {n} is past the {MAX_AUDIO_CHANNEL} tracks an import makes, left out", e.number));
+                    continue;
+                }
                 vec![(TrackKind::Audio, n.saturating_sub(1))]
             }
         };
@@ -143,6 +147,10 @@ pub fn build(edl: &Edl, name: &str, fps: Fps, mut find: impl FnMut(&Event) -> Op
     seq.renumber_tracks();
     (seq, warnings)
 }
+
+/// The most audio tracks an EDL import makes: an event on a channel past
+/// it is left out with a warning.
+pub const MAX_AUDIO_CHANNEL: usize = 64;
 
 /// The `index`th track of `kind`, made as needed: picture tracks above
 /// the sound ones.
@@ -178,6 +186,22 @@ pub fn match_in_pool(pool: &MediaPool, e: &Event, fps: Fps) -> Option<Matched> {
 
 #[cfg(test)]
 mod tests {
+
+    /// An event on an audio channel past [`MAX_AUDIO_CHANNEL`] is left out
+    /// with a warning; no track is made for it.
+    #[test]
+    fn a_channel_past_the_cap_makes_no_tracks() {
+        let list = "TITLE: X\nFCM: NON-DROP FRAME\n\n\
+001  A001C001 A999999999 C        00:00:01:00 00:00:03:00 00:00:00:00 00:00:02:00\n\
+002  A001C001 A64   C        00:00:01:00 00:00:03:00 00:00:02:00 00:00:04:00\n";
+        let edl = parse(list, fps());
+        let m = MediaId::new();
+        let (seq, warnings) = build(&edl, "X", fps(), |_| Some(Matched { media_id: m, start_frames: None }));
+        assert!(warnings.iter().any(|w| w.contains("Event 001") && w.contains("left out")), "{warnings:?}");
+        let audio = seq.tracks.iter().filter(|t| t.kind == TrackKind::Audio).count();
+        assert_eq!(audio, 64, "channel 64 is made; 999999999 is not");
+    }
+
     use super::*;
 
     const LIST: &str = "TITLE: Scene 1\nFCM: NON-DROP FRAME\n\n\

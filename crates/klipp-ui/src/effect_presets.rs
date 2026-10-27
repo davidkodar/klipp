@@ -568,6 +568,7 @@ pub fn builtin_effect_key(effect: &klipp_effects::BuiltinEffect) -> &'static str
         klipp_effects::BuiltinEffect::Merge { .. } => "merge",
         klipp_effects::BuiltinEffect::Generator { .. } => "generator",
         klipp_effects::BuiltinEffect::MediaSource { .. } => "media_source",
+        klipp_effects::BuiltinEffect::TitleSource { .. } => "title_source",
         klipp_effects::BuiltinEffect::ClipBelow {} => "clip_below",
         klipp_effects::BuiltinEffect::GradeCompound {} => "grade_compound",
         klipp_effects::BuiltinEffect::Bloom { .. } => "bloom",
@@ -658,7 +659,9 @@ mod tests {
     fn every_built_in_preset_is_keyed_by_its_type_id() {
         let m = manager(std::path::Path::new("/nonexistent/klipp-presets"));
         let builtins: Vec<_> = m.presets.iter().filter(|p| p.is_builtin).collect();
-        assert_eq!(builtins.len(), 149);
+        // The four film templates in place of the two old film presets
+        // (#2831).
+        assert_eq!(builtins.len(), 151);
         for p in &builtins {
             let id = p.builtin.as_ref().and_then(preset_type_id);
             assert_eq!(Some(p.effect_key.as_str()), id, "{}", p.name);

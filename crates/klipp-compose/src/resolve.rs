@@ -541,6 +541,21 @@ pub fn media_sources(clip: &Clip) -> Vec<(String, f32)> {
     found
 }
 
+/// The titles `clip`'s title source nodes draw (#2758), as their files
+/// store them: each enabled one with a title, once.
+pub fn title_sources(clip: &Clip) -> Vec<String> {
+    let Ok(lifted) = clip.picture_v2() else { return Vec::new() };
+    let mut found: Vec<String> = Vec::new();
+    for n in lifted.picture.graph.nodes.iter().filter(|n| n.enabled && klipp_graph_lift::effect_params::tag(n) == Some("title_source")) {
+        if let Ok(BuiltinEffect::TitleSource { title }) = klipp_graph_lift::effect_params::effect_of(n) {
+            if !title.is_empty() && !found.contains(&title) {
+                found.push(title);
+            }
+        }
+    }
+    found
+}
+
 /// Whether `clip`'s picture holds an enabled Clip Below node (#1746): the
 /// clip is drawn over what is below it.
 pub fn reads_below(clip: &Clip) -> bool {

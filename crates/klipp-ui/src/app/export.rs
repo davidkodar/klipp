@@ -3402,7 +3402,11 @@ impl KlippApp {
                 let path = path.clone();
                 // EBU-STL is binary; the rest are text (#1516).
                 let is_stl = path.extension().and_then(|s| s.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("stl"));
-                let read = std::fs::read(&path).and_then(|bytes| {
+                // A regular file, read within the cap the importers use:
+                // never a pipe or device that would block or never end.
+                let regular = std::fs::metadata(&path).map(|m| m.is_file()).unwrap_or(false);
+                let read = if regular { klipp_project::path_util::read_capped(&path, 64 * 1024 * 1024) } else { Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a regular file")) };
+                let read = read.and_then(|bytes| {
                     if is_stl {
                         Ok((String::new(), bytes))
                     } else {

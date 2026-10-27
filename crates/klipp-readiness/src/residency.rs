@@ -99,7 +99,7 @@ pub fn effect(effect: &E) -> Capability {
         E::Equalize { .. } => cap(Gpu, "Effect recorder; histogram, CDF and map passes stay in GPU buffers", None),
         E::Frei0r { .. } => cap(RoundTrip, "Plugin ABI consumes CPU pixels; explicit local CPU segment", Some(1465)),
         E::TemporalDenoise { .. } => cap(Conditional, "Neighbours on the GPU at the render size (playback, pause, export) use the GPU kernel; software-decoded or fitted neighbours, and the composite stack, still run the CPU kernel", Some(2337)),
-        E::MediaSource { .. } | E::ClipBelow { .. } | E::Merge { .. } | E::GradeCompound { .. } | E::SpeedRamp { .. } =>
+        E::MediaSource { .. } | E::TitleSource { .. } | E::ClipBelow { .. } | E::Merge { .. } | E::GradeCompound { .. } | E::SpeedRamp { .. } =>
             cap(Conditional, "Graph/source operation, not an effect-recorder pass; residency depends on connected sources and conversion", Some(1465)),
         E::VideoStabilization { .. } | E::RollingShutterCorrection { .. } | E::Deflicker { .. } =>
             cap(Gpu, "Picture warp/gain is GPU; preparation/analysis is separate offline CPU work", None),

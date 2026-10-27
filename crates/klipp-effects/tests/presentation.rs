@@ -123,7 +123,7 @@ fn covered() -> Vec<&'static klipp_effects::registry::EffectType> {
 
 /// Types made after the old inspector was recorded (#1746, #989, #1638): their rows
 /// are the tables' alone, with no old row to match.
-const AFTER_THE_RECORDING: &[&str] = &["klipp.fx.lut_3d", "klipp.fx.colour_space_transform", "klipp.fx.picture_transform", "klipp.fx.flicker", "klipp.fx.binocular_vignette", "klipp.fx.merge", "klipp.fx.generator", "klipp.fx.luma_key", "klipp.fx.particles", "klipp.fx.media_source", "klipp.fx.clip_below", "klipp.fx.grade_compound", "klipp.fx.displace", "klipp.fx.reflection", "klipp.fx.old_film"];
+const AFTER_THE_RECORDING: &[&str] = &["klipp.fx.lut_3d", "klipp.fx.colour_space_transform", "klipp.fx.picture_transform", "klipp.fx.flicker", "klipp.fx.binocular_vignette", "klipp.fx.merge", "klipp.fx.generator", "klipp.fx.luma_key", "klipp.fx.particles", "klipp.fx.media_source", "klipp.fx.title_source", "klipp.fx.clip_below", "klipp.fx.grade_compound", "klipp.fx.displace", "klipp.fx.reflection", "klipp.fx.old_film"];
 
 #[test]
 fn a_covered_type_names_every_param() {
@@ -259,6 +259,8 @@ fn presentation_matches_the_old_rows() {
 /// fixed (fixed means not keyframable, and a fixed parameter is still
 /// edited by hand).
 const HIDDEN: &[(&str, &str)] = &[
+    // A title source's title (#2758): made and changed by the title op.
+    ("klipp.fx.title_source", "title"),
     ("klipp.fx.transform", "focal_ref"),
     ("klipp.fx.film_grain", "seed"),
     ("klipp.fx.old_film", "seed"),
