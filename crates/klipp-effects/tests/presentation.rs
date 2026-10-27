@@ -137,6 +137,8 @@ fn a_covered_type_names_every_param() {
 /// Differences from today's rows that are meant, by (type, parameter,
 /// what): each is a reviewed change (m3-work-breakdown's IC list).
 const MEANT: &[(&str, &str, &str)] = &[
+    // #2763: Glow's threshold, where its light starts, is a row of its own.
+    ("klipp.fx.glow", "threshold", "row"),
     // IC2: Vibrance resets to its catalog default, 0, not 0.5.
     ("klipp.fx.vibrance", "amount", "reset"),
     // IC12: a Transform effect card shows its own tilt and perspective

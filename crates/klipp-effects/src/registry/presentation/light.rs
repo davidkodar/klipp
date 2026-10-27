@@ -15,6 +15,7 @@ pub(super) static PARAMS: &[ParamEntry] = &[
     at("klipp.fx.bloom", "intensity", P::scrub(0.01, 2)),
     at("klipp.fx.glow", "radius", P::scrub(0.5, 1)),
     at("klipp.fx.glow", "intensity", P::scrub(0.01, 2)),
+    at("klipp.fx.glow", "threshold", P::scrub(0.005, 2)),
     at("klipp.fx.light_rays", "center_x", P::scrub(0.005, 3)),
     at("klipp.fx.light_rays", "center_y", P::scrub(0.005, 3)),
     at("klipp.fx.light_rays", "threshold", P::scrub(0.005, 2)),
