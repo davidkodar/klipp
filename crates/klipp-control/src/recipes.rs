@@ -62,9 +62,19 @@ pub fn values(recipe: &CompositionTemplate, slots: &BTreeMap<String, Value>, con
             .ok_or_else(|| format!("\"{}\" has no slot \"{given}\"", recipe.name))?;
         let value = match s.kind {
             SlotKind::Colour => TemplateValue::Color(colour(v)?),
-            SlotKind::Media | SlotKind::Clip | SlotKind::Title | SlotKind::SubjectMatte => {
-                TemplateValue::Text(v.as_str().ok_or_else(|| format!("slot \"{}\" takes an id", s.label))?.to_string())
-            }
+            // The title op's fields, or its text alone, made into the title
+            // when the clip is known (`on_clip`).
+            SlotKind::Title => match v {
+                Value::String(_) | Value::Object(_) => TemplateValue::Text(v.to_string()),
+                _ => return Err(format!("slot \"{}\" takes the title's text, or the title op's fields", s.label)),
+            },
+            // The tracked matte of the clip's media, by its model.
+            SlotKind::SubjectMatte => match v.as_str().map(str::trim).map(str::to_lowercase).as_deref() {
+                Some("subject") => TemplateValue::Text("Subject".into()),
+                Some("foreground") => TemplateValue::Text("Foreground".into()),
+                _ => return Err(format!("slot \"{}\" takes \"subject\" (one detected subject) or \"foreground\" (everything in front)", s.label)),
+            },
+            SlotKind::Media | SlotKind::Clip => TemplateValue::Text(v.as_str().ok_or_else(|| format!("slot \"{}\" takes an id", s.label))?.to_string()),
         };
         out.insert(name.clone(), value);
     }
@@ -92,6 +102,16 @@ fn colour(v: &Value) -> Result<[f32; 4], String> {
 pub fn on_clip(seq: &Sequence, clip: ClipId, recipe: &CompositionTemplate, values: &BTreeMap<String, TemplateValue>) -> Result<(Vec<GraphOp>, RecipeInstance), String> {
     let c = seq.all_clips().find(|c| c.id == clip).ok_or("no such clip on the open sequence")?;
     let anchors = ct::recipe_anchors(c)?;
+    // A title slot's title, made by the title op over the clip's span.
+    let mut values = values.clone();
+    for (name, slot) in recipe.slots.iter().filter(|(_, s)| s.kind == SlotKind::Title) {
+        let Some(TemplateValue::Text(fields)) = values.get(name) else { continue };
+        let fields: Value = serde_json::from_str(fields).map_err(|e| format!("slot \"{}\": {e}", slot.label))?;
+        let (start, end) = (c.timeline_in.to_secs_f64(), c.timeline_out.to_secs_f64());
+        let title = klipp_document::ops::title_from_fields(seq, &fields, start, end - start).map_err(|e| format!("slot \"{}\": {e}", slot.label))?;
+        values.insert(name.clone(), TemplateValue::Text(serde_json::to_string(&title).map_err(|e| e.to_string())?));
+    }
+    let values = &values;
     let wire = wire_ops(recipe, clip, &anchors, values, seq.resolution)?;
     let docs = crate::graph_model::documents(seq, Root::Clip { clip: clip.0 })?;
     let prepared = crate::graph_prepare::prepare(&wire, docs).map_err(|(at, why)| match at {
@@ -102,6 +122,39 @@ pub fn on_clip(seq: &Sequence, clip: ClipId, recipe: &CompositionTemplate, value
     let nodes = prepared.created.iter().filter_map(|(k, path)| Some((*k, path.node()?))).collect();
     let placed = RecipeInstance { name: recipe.name.clone(), instance: recipe.recipe_instance(values, seq.resolution), nodes };
     Ok((prepared.ops, placed))
+}
+
+/// Each media file's path and rotation, by its id: where its subject
+/// mattes are kept (#2758).
+pub(crate) fn media_files(pool: &klipp_media::MediaPool) -> std::collections::HashMap<klipp_core::MediaId, (std::path::PathBuf, i32)> {
+    pool.all().map(|m| (m.id, (m.path.clone(), m.source_rotation))).collect()
+}
+
+/// What the reply says of a recipe's subject matte (#2758): nothing when
+/// the clip's media has its frames, else how many it has and that
+/// `track_subject` makes the rest, only those, with the model it reads.
+/// Never a model fetched: that is the person's to ask for.
+pub(crate) fn subject_note(seq: &Sequence, clip: ClipId, recipe: &CompositionTemplate, values: &BTreeMap<String, TemplateValue>, media: &std::collections::HashMap<klipp_core::MediaId, (std::path::PathBuf, i32)>) -> Option<String> {
+    let c = seq.all_clips().find(|c| c.id == clip)?;
+    let klipp_timeline::ClipKind::Media { media_id } = &c.kind else { return None };
+    let (path, rotation) = media.get(media_id)?;
+    let mut said = Vec::new();
+    for (name, _) in recipe.slots.iter().filter(|(_, s)| s.kind == SlotKind::SubjectMatte) {
+        let Some(TemplateValue::Text(model)) = values.get(name) else { continue };
+        let index = u32::from(model == "Foreground");
+        let word = if index == 1 { "foreground" } else { "subject" };
+        let times = klipp_compose::subject_matte::source_times(seq, c);
+        let have = klipp_compose::subject_matte::media_dir(path, klipp_compose::subject_matte::decode_rotation(c, *rotation), index)
+            .and_then(|dir| klipp_compose::subject_matte::coverage(&dir, &times))
+            .map_or(0, |(have, _)| have);
+        if have < times.len() {
+            said.push(format!(
+                "its {word} matte has {have} of the clip's {} frames: track_subject with model {word} makes the missing ones (it downloads the model only if you ask it to), and the text shows in front where none is made yet",
+                times.len()
+            ));
+        }
+    }
+    (!said.is_empty()).then(|| said.join("; "))
 }
 
 /// The recipe's graph ops for clip `clip`, as the wire takes them.
@@ -119,7 +172,7 @@ mod tests {
     #[test]
     fn every_built_in_recipe_reads_and_lists() {
         let recipes = ct::builtin_recipes();
-        assert_eq!(recipes.len(), 4, "every file in assets/recipes reads");
+        assert_eq!(recipes.len(), 5, "every file in assets/recipes reads");
         for r in &recipes {
             assert_eq!(r.kind, ct::TemplateKind::Recipe, "{}", r.name);
             let v = listed(r);
@@ -149,7 +202,7 @@ mod tests {
             clip_id: ClipRef::Id(id), name: name.into(),
             slots: serde_json::from_value(slots).unwrap(), controls: serde_json::from_value(controls).unwrap(), build: None,
         };
-        let bound = crate::plans::with_recipes(&[op("green screen", json!({"screen": "#05be05"}), json!({"Tolerance": 0.25, "Softness": 0.3}))], None);
+        let bound = crate::plans::with_recipes(&[op("green screen", json!({"screen": "#05be05"}), json!({"Tolerance": 0.25, "Softness": 0.3}))], None, &klipp_media::MediaPool::new());
         let plan = resolve(&seq, &pool, &bound).unwrap_or_else(|r| panic!("{r:?}"));
         let [step] = plan.steps.as_slice() else { panic!("one step: {:?}", plan.steps.len()) };
         let EditCommand::PictureEdit { clip_id, edit, .. } = &step.edit else { panic!("a picture step") };
@@ -164,7 +217,7 @@ mod tests {
         // the field it stands for.
         assert_eq!(key, Some(([5, 190, 5], 0.25, 0.3)), "the key, its colour, tolerance and softness as given");
 
-        let refused = |ops: &[Op]| format!("{:?}", resolve(&seq, &pool, &crate::plans::with_recipes(ops, None)).unwrap_err());
+        let refused = |ops: &[Op]| format!("{:?}", resolve(&seq, &pool, &crate::plans::with_recipes(ops, None, &klipp_media::MediaPool::new())).unwrap_err());
         let why = refused(&[op("no such recipe", json!({}), json!({}))]);
         assert!(why.contains("there is no recipe") && why.contains("no such recipe"), "{why}");
         assert!(refused(&[op("Green screen", json!({}), json!({}))]).contains("fill the slot 'screen'"));
@@ -198,7 +251,7 @@ mod tests {
             link(None, Some("node:3.scale_y"), 0.9),
             link(Some("Size"), None, 1.0),
         ];
-        let plan = resolve(&seq, &pool, &crate::plans::with_recipes(&ops, None)).unwrap_or_else(|r| panic!("{r:?}"));
+        let plan = resolve(&seq, &pool, &crate::plans::with_recipes(&ops, None, &klipp_media::MediaPool::new())).unwrap_or_else(|r| panic!("{r:?}"));
         assert_eq!(plan.steps.len(), 6, "each one step");
         let mut c = seq.all_clips().find(|c| c.id == id).unwrap().clone();
         let mut at = Vec::new();
@@ -224,6 +277,36 @@ mod tests {
         let frames = &c.picture_v2().unwrap().picture.graph.ui.frames;
         let names: Vec<&str> = frames.iter().filter_map(|f| f["recipe"]["name"].as_str()).collect();
         assert_eq!(names, ["Picture in picture", "Green screen"], "a frame for each, holding its controls");
+    }
+
+    /// Text behind a subject (#2758) whose clip's media has no subject
+    /// matte yet: the recipe is placed, and the reply says how many of the
+    /// clip's frames have one and that track_subject makes the rest, by
+    /// the model the slot names; nothing is fetched. With every frame there,
+    /// nothing is said. A slot given another model is refused, said.
+    #[test]
+    fn a_missing_subject_matte_is_said_with_how_to_make_it() {
+        let recipes = ct::builtin_recipes();
+        let r = named(&recipes, "Text behind subject").unwrap();
+        let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+        let mut seq = Sequence::new_default();
+        seq.fps = klipp_core::Fps::new(24, 1);
+        let media = klipp_core::MediaId::new();
+        let clip = klipp_timeline::Clip::media(media, t(0.0), t(1.0), t(0.0), t(1.0));
+        let id = clip.id;
+        let mut track = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+        track.clips = vec![clip];
+        seq.tracks = vec![track];
+        let file = std::env::temp_dir().join(format!("klipp-no-matte-{}.mov", uuid::Uuid::new_v4()));
+        let files = std::collections::HashMap::from([(media, (file, 0))]);
+        let slots = BTreeMap::from([("title".to_string(), json!("Hello")), ("Subject".to_string(), json!("foreground"))]);
+        let v = values(r, &slots, &BTreeMap::new()).unwrap();
+        let note = subject_note(&seq, id, r, &v, &files).expect("said");
+        assert!(note.contains("has 0 of the clip's") && note.contains("track_subject with model foreground") && note.contains("only if you ask"), "{note}");
+        assert!(values(r, &BTreeMap::from([("subject".to_string(), json!("cat"))]), &BTreeMap::new()).unwrap_err().contains("\"subject\""));
+        // The title slot is the title op's: its text made into a title.
+        let (ops, _) = on_clip(&seq, id, r, &v).unwrap();
+        assert!(!ops.is_empty());
     }
 
     /// Values are taken by name or label, colours as hex or a list, and

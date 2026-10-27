@@ -25,7 +25,35 @@ const GREEN: [f32; 3] = [0.02, 0.75, 0.02];
 /// picture is red.
 struct Shot;
 
+/// Whether (x, y), fractions of the frame, is on the test shot's subject:
+/// the known mask its subject matte holds.
+fn on_subject(x: f32, y: f32) -> bool {
+    (0.55..0.85).contains(&x) && (0.2..0.9).contains(&y)
+}
+
+/// The test shot's subject matte (#2758): a matte sequence, as the subject
+/// matte pass leaves one, of the known mask at every frame of the clip.
+fn subject_dir() -> std::path::PathBuf {
+    static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        use klipp_nodes::matte_sequence as seq;
+        let dir = std::env::temp_dir().join(format!("klipp-recipe-subject-{}", std::process::id()));
+        let manifest = seq::Manifest { format: seq::FORMAT, fps: 24.0, width: W, height: H, rotation: 0, model: "test".into(), model_bytes: 0, provider: "cpu".into(), algorithm: 1, steadied: false };
+        seq::create(&dir, &manifest).unwrap();
+        let alpha: Vec<u8> = (0..W * H).map(|i| if on_subject((i % W) as f32 / W as f32, (i / W) as f32 / H as f32) { 255 } else { 0 }).collect();
+        for f in 0..=48 {
+            seq::put(&dir, &manifest, seq::key_of(f as f64 / 24.0), &alpha).unwrap();
+        }
+        dir
+    })
+    .clone()
+}
+
 impl FrameSource for Shot {
+    fn subject_matte_dir(&mut self, _clip: &Clip, _model: u32) -> Option<std::path::PathBuf> {
+        Some(subject_dir())
+    }
+
     fn frame(&mut self, _c: &Clip, _secs: f64, w: u32, h: u32) -> Option<SourceFrame> {
         let v = (0..w * h)
             .flat_map(|i| {
@@ -98,6 +126,9 @@ fn filled(kind: SlotKind) -> TemplateValue {
             let srgb = |v: f32| klipp_color::transfer::linear_to_srgb(v);
             TemplateValue::Color([srgb(GREEN[0]), srgb(GREEN[1]), srgb(GREEN[2]), 1.0])
         }
+        // A title the size of the shot, as the title op makes it.
+        SlotKind::Title => TemplateValue::Text(serde_json::json!({ "text": "BEHIND", "size": 600 }).to_string()),
+        SlotKind::SubjectMatte => TemplateValue::Text("Subject".into()),
         other => panic!("the harness has no {other:?} to fill a slot with yet"),
     }
 }
@@ -174,4 +205,62 @@ fn a_merge_masked_by_a_window_lays_its_picture_inside_it() {
     let outside = at(&shown, 0.75, 0.15);
     let clip = at(&cpu(&before, ViewChannel::Picture), 0.75, 0.15);
     assert!(outside.iter().zip(clip).all(|(a, b)| a.abs_diff(b) <= 1), "the clip as it was outside: {outside:?} against {clip:?}");
+}
+
+/// `recipe` placed on the test shot's clip with the harness's slots and
+/// `values` over them: the sequence it makes.
+fn placed_with(recipe: &klipp_timeline::composition_template::CompositionTemplate, plain: &Clip) -> Sequence {
+    let before = sequence(plain.clone());
+    let values: BTreeMap<String, TemplateValue> = recipe.slots.iter().map(|(n, s)| (n.clone(), filled(s.kind))).collect();
+    let (ops, _) = klipp_control::recipes::on_clip(&before, plain.id, recipe, &values).unwrap_or_else(|e| panic!("{e}"));
+    let mut placed = plain.clone();
+    placed.apply_picture_ops(&ops).unwrap_or_else(|e| panic!("{e}"));
+    sequence(placed)
+}
+
+/// Text behind a subject (#2758), measured on the test shot with its
+/// known subject mask: on the subject the frame is the clip alone, in
+/// front of the text; off it, the clip with the same title merged over it
+/// unmasked. One clip's graph, one subject matte read (inverted, the title
+/// laid where the subject isn't), on the GPU stack with nothing falling
+/// back.
+#[test]
+fn text_behind_a_subject_shows_only_off_the_subject() {
+    let recipes = builtin_recipes();
+    let recipe = recipes.iter().find(|r| r.name == "Text behind subject").expect("the recipe");
+    // The same graph without its matte: the title merged over the whole clip.
+    let mut unmasked = recipe.clone();
+    let graph = unmasked.graph.as_mut().unwrap();
+    graph.ops.truncate(4);
+    unmasked.slots.remove("subject");
+    unmasked.bindings.retain(|b| b.parameter != "subject");
+    let plain = Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(2.0)) };
+    let Some(behind) = stack(&placed_with(recipe, &plain), ViewChannel::Picture, "text behind subject") else { return };
+    let Some(titled) = stack(&placed_with(&unmasked, &plain), ViewChannel::Picture, "the title over the clip") else { return };
+    let Some(alone) = stack(&sequence(plain), ViewChannel::Picture, "the clip alone") else { return };
+    let (mut on, mut off) = (0u8, 0u8);
+    let (mut text_off, mut text_on) = (0usize, 0usize);
+    for y in 0..H {
+        for x in 0..W {
+            let (fx, fy) = ((x as f32 + 0.5) / W as f32, (y as f32 + 0.5) / H as f32);
+            // A pixel's width from the mask's edge either way is left out.
+            let near_edge = [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)].iter().any(|(dx, dy)| on_subject(fx + dx / W as f32, fy + dy / H as f32) != on_subject(fx, fy));
+            if near_edge {
+                continue;
+            }
+            let i = ((y * W + x) * 4) as usize;
+            let apart = |f: &[u8], g: &[u8]| (0..3).map(|c| f[i + c].abs_diff(g[i + c])).max().unwrap();
+            let has_text = apart(&titled, &alone) > 40;
+            if on_subject(fx, fy) {
+                on = on.max(apart(&behind, &alone));
+                text_on += usize::from(has_text);
+            } else {
+                off = off.max(apart(&behind, &titled));
+                text_off += usize::from(has_text);
+            }
+        }
+    }
+    assert!(text_on > 50 && text_off > 50, "the title crosses the subject's edge: {text_on} of its pixels on it, {text_off} off");
+    assert!(on <= 1, "on the subject the clip alone shows: {on} levels from it");
+    assert!(off <= 1, "off the subject the title shows: {off} levels from it unmasked");
 }

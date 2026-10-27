@@ -4137,12 +4137,16 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
         Op::Recipe { clip_id, name, build, .. } => {
             let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             let build = build.as_ref().ok_or_else(|| refuse(i, format!("there is no recipe \"{name}\""), "title_templates lists the recipes"))?;
-            let (mut ops, placed) = (build.0)(seq, clip.id).map_err(|why| refuse(i, why, "title_templates lists each recipe's slots and controls"))?;
+            let RecipeBuild { mut ops, placed, note } = (build.0)(seq, clip.id).map_err(|why| refuse(i, why, "title_templates lists each recipe's slots and controls"))?;
             // A frame round the nodes it made, which keeps its controls
             // live (#2758).
             ops.push(recipe_frame(clip, placed).map_err(|why| refuse(i, why, "report it"))?);
             let edit = clip.clone().apply_picture_ops(&ops).map_err(|why| refuse(i, format!("the recipe \"{name}\" doesn't fit this clip's picture: {why}"), "report it"))?;
-            Ok((format!("{name} on the clip"), EditCommand::PictureEdit { clip_id: clip.id, description: "Recipe", edit: Box::new(edit) }, vec![clip.id]))
+            let what = match note {
+                Some(note) => format!("{name} on the clip; {note}"),
+                None => format!("{name} on the clip"),
+            };
+            Ok((what, EditCommand::PictureEdit { clip_id: clip.id, description: "Recipe", edit: Box::new(edit) }, vec![clip.id]))
         }
         Op::AddTrack { kind, name } => {
             let want = track_kind(kind).ok_or_else(|| refuse(i, format!("\"{kind}\" is not a track kind"), "use video, audio, text or subtitle"))?;
@@ -6656,7 +6660,16 @@ pub struct PlacedComposition {
 /// What builds a recipe into a clip's picture (#2758): the graph ops
 /// for the clip it is given, in the sequence as it stands.
 #[derive(Clone)]
-pub struct RecipeBuilder(pub std::sync::Arc<dyn Fn(&Sequence, ClipId) -> Result<(Vec<klipp_graph_lift::ops::GraphOp>, klipp_core::RecipeInstance), String> + Send + Sync>);
+pub struct RecipeBuilder(pub std::sync::Arc<dyn Fn(&Sequence, ClipId) -> Result<RecipeBuild, String> + Send + Sync>);
+
+/// What a recipe's builder gives (#2758): the graph ops, the instance its
+/// frame keeps, and anything the reply says beside (a subject matte the
+/// clip's media hasn't got yet, and how to make it).
+pub struct RecipeBuild {
+    pub ops: Vec<klipp_graph_lift::ops::GraphOp>,
+    pub placed: klipp_core::RecipeInstance,
+    pub note: Option<String>,
+}
 
 impl std::fmt::Debug for RecipeBuilder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -12547,6 +12560,38 @@ fn connector(seq: &Sequence, fps: Fps, i: usize, at: Timecode, held: f64, ends: 
     place_title(seq, fps, i, at, held, track, td, &format!("connector {:.2},{:.2} to {:.2},{:.2}", ends[0][0], ends[0][1], ends[1][0], ends[1][1]), &note)
 }
 
+/// The title the title op makes of `fields` over `secs` from `at_secs` of
+/// `seq` (#2758): a recipe's title slot, made as the same op would make it
+/// on the track above, its style, safe areas and typesetting applied.
+/// `fields` are the op's own (`text`, `style`, `size`...), or its text
+/// alone; where it goes and for how long are the clip's. Over faces: a
+/// title a recipe lays inside a clip is meant to be where the picture is.
+pub fn title_from_fields(seq: &Sequence, fields: &serde_json::Value, at_secs: f64, secs: f64) -> Result<klipp_timeline::TitleData, String> {
+    let mut op = match fields {
+        serde_json::Value::String(text) => serde_json::json!({ "text": text }),
+        serde_json::Value::Object(_) => fields.clone(),
+        _ => return Err("a title slot takes the title's text, or the title op's fields".into()),
+    };
+    for key in ["op", "at", "secs", "track"] {
+        if op.get(key).is_some() {
+            return Err(format!("a title slot's \"{key}\" is the clip's, not given"));
+        }
+    }
+    op["op"] = serde_json::json!("title");
+    op["at"] = serde_json::json!({ "secs": at_secs });
+    op["secs"] = serde_json::json!(secs);
+    op.as_object_mut().expect("an object").entry("over_faces").or_insert(serde_json::json!(true));
+    let op: Op = serde_json::from_value(op).map_err(|e| format!("the title: {e}"))?;
+    let plan = resolve(seq, &MediaPool::new(), &[op]).map_err(|r| format!("the title: {}; {}", r.why, r.hint))?;
+    match plan.steps.first().map(|s| &s.edit) {
+        Some(EditCommand::AddTitleClip { clip, .. }) => match &clip.kind {
+            ClipKind::Title(td) => Ok(td.clone()),
+            _ => Err("the title op made no title".into()),
+        },
+        _ => Err("the title op made no title".into()),
+    }
+}
+
 /// Put `td` on the timeline at `at` for `secs`, on `track` or on a text
 /// track with room (one made when there is none): the edit, named `what`
 /// with `note` after where it went. The title op and a template's (#1139)
@@ -13241,6 +13286,21 @@ mod tests {
             {"op":"title","text":"","at":{"secs":0},"secs":3}
         ])).unwrap();
         assert!(resolve(&seq, &pool, &empty_title).is_err());
+    }
+
+    /// A recipe's title slot (#2758) is made by the title op: its text
+    /// alone, or its fields with a style, give the title the op would put
+    /// on the track above; where and how long are the clip's, so a slot
+    /// naming them is refused, and so is an empty title.
+    #[test]
+    fn a_title_slot_is_made_by_the_title_op() {
+        let (seq, ..) = fixture();
+        let plain = title_from_fields(&seq, &serde_json::json!("Hello"), 0.0, 2.0).unwrap();
+        assert_eq!(plain.text(), "Hello");
+        let sized = title_from_fields(&seq, &serde_json::json!({ "text": "Hello", "size": 300 }), 0.0, 2.0).unwrap();
+        assert_eq!(sized.font_size(), 300.0);
+        assert!(title_from_fields(&seq, &serde_json::json!({ "text": "Hi", "at": 3.0 }), 0.0, 2.0).unwrap_err().contains("\"at\""));
+        assert!(title_from_fields(&seq, &serde_json::json!(""), 0.0, 2.0).is_err());
     }
 
     #[test]

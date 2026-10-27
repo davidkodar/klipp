@@ -522,7 +522,7 @@ mod timeline_view_tests {
         seq.tracks[0].clips = vec![clip];
         let pool = klipp_media::MediaPool::new();
         let op = Op::Recipe { clip_id: ClipRef::Id(id), name: "Green screen".into(), slots: [("screen".to_string(), serde_json::json!("#00ff00"))].into(), controls: Default::default(), build: None };
-        let plan = resolve(&seq, &pool, &crate::plans::with_recipes(&[op], None)).unwrap_or_else(|r| panic!("{r:?}"));
+        let plan = resolve(&seq, &pool, &crate::plans::with_recipes(&[op], None, &klipp_media::MediaPool::new())).unwrap_or_else(|r| panic!("{r:?}"));
         let klipp_document::history::EditCommand::PictureEdit { edit, .. } = &plan.steps[0].edit else { panic!("a picture step") };
         seq.tracks[0].clips[0].restore_picture(&edit.after);
         let text = timeline_text(&seq, &pool, None, 1, TimelineView::default());
