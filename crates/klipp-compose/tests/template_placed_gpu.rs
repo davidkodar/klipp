@@ -299,3 +299,48 @@ fn the_split_screen_lays_out_for_each_frame_on_the_gpu() {
         assert!(mid.iter().all(|c| *c > 200), "{w}x{h}: the line between them: {mid:?}");
     }
 }
+
+/// #2757: every built-in template, placed in a wide, a tall and a square
+/// sequence with its picture slots filled, draws on the stack with no
+/// fallback, and each slot's picture is seen in the frame.
+#[test]
+fn every_built_in_template_draws_on_the_gpu_in_every_frame() {
+    for t in klipp_timeline::composition_template::builtin_templates() {
+        for (w, h) in [(960u32, 540u32), (540, 960), (540, 540)] {
+            let layout = t.composition_for(w, h).unwrap().clone();
+            let mut instance = klipp_timeline::composition_template::instance_for(&t);
+            let media = klipp_core::MediaId::new();
+            for slot in t.slots.keys() {
+                instance.media_slots.insert(slot.clone(), media.0.to_string());
+            }
+            let secs = layout.total_duration().to_secs_f64();
+            let mut clip = Clip::precomposition(layout.id, tc(0.0), tc(secs));
+            clip.kind = ClipKind::TemplatePrecomposition { sequence_id: layout.id, template_instance: instance };
+            let mut v = Track::new("V1", TrackKind::Video);
+            v.clips = vec![clip];
+            let mut seq = Sequence::new_default();
+            seq.resolution = klipp_core::Resolution { width: w, height: h };
+            seq.tracks = vec![v];
+            let mut all = t.sequences.clone();
+            all.push(seq.clone());
+            let flat = klipp_timeline::flatten::flatten_sequence(&seq, &all);
+            let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+            r.set_gpu_enabled(true);
+            // At rest, or a stinger mid-sweep.
+            let at = if t.name == "Stinger" { 0.2 } else { (secs * 0.6).min(3.0) };
+            let Some((px, _)) = r.render_display_u8_on_gpu(&flat, tc(at), w, h, &mut Orange, RenderOptions::default()) else {
+                assert!(!required(), "required, but the GPU stack declined {} at {w}x{h}", t.name);
+                eprintln!("UNVERIFIED: no GPU stack");
+                return;
+            };
+            assert_eq!(klipp_effects::residency::last_frame().fallback_count(), 0, "{} {w}x{h}: on the GPU", t.name);
+            let lit = px.chunks(4).filter(|p| p.iter().take(3).any(|c| *c > 30)).count();
+            assert!(lit > 200, "{} {w}x{h}: something drawn ({lit} pixels)", t.name);
+            if !t.slots.is_empty() {
+                // Its hue, dimmed or not (a hook dims its picture).
+                let orange = px.chunks(4).filter(|p| p[0] > 60 && p[0] as u32 > 2 * p[2] as u32 && p[0] > p[1]).count();
+                assert!(orange > (w * h / 20) as usize, "{} {w}x{h}: its slots' picture seen ({orange} pixels)", t.name);
+            }
+        }
+    }
+}

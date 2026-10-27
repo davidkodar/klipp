@@ -171,6 +171,118 @@ fn only_text(td: &TitleData, k: usize) -> TitleData {
     t
 }
 
+/// Measures one title, `data_for` laying it out for each format, as
+/// `name`: its smallest text, its text inside title-safe and (tall) clear
+/// of the buttons, its spacing as designed, and its contrast over the
+/// three frames. Pushes its sheet row.
+fn measure(sweep: &mut Sweep, renderer: &mut TitleRenderer, sheet: &mut Sheet, sheet_on: bool, name: &str, data_for: &dyn Fn(u32, u32) -> TitleData) {
+    let mut cells = Vec::new();
+    let mut design: Option<Vec<f32>> = None;
+    let td = data_for(1920, 1080);
+    // Measured in its own faces: a catalogue face not fetched here
+    // would measure the fallback (`KLIPP_FONTS_DIR` names a folder of
+    // fetched faces).
+    let unfetched: Vec<String> = td.objects.iter().filter_map(|o| match &o.content {
+        TitleObjectContent::TextBox(tb) => Some(tb.font_name.clone()),
+        _ => None,
+    }).filter(|f| klipp_title::catalogue::family(f).is_some() && !klipp_title::catalogue::fetched(f)).collect();
+    if !unfetched.is_empty() {
+        sweep.skip(name, &format!("{} not fetched", unfetched.join(", ")));
+        return;
+    }
+    let texts: Vec<usize> = td.objects.iter().enumerate().filter(|(_, o)| matches!(o.content, TitleObjectContent::TextBox(_))).map(|(i, _)| i).collect();
+    if texts.is_empty() {
+        sweep.skip(name, "no text");
+        return;
+    }
+    let smallest = td.objects.iter().filter_map(|o| match &o.content {
+        TitleObjectContent::TextBox(tb) if !tb.text.trim().is_empty() => Some(tb.font_size),
+        _ => None,
+    }).fold(f32::MAX, f32::min);
+    sweep.check(&format!("{name} smallest text"), format!("{smallest:.0} px of 1080"), smallest >= MIN_SIZE);
+    for &(format, w, h) in FORMATS {
+        // Laid out for the frame, as the app and the template op make it.
+        let td = data_for(w, h);
+        let full = renderer.render(&td, w, h);
+        let (wu, hu) = (w as usize, h as usize);
+        let r = ((w.min(h) as f32) * 0.012).max(3.0) as usize;
+        let layers: Vec<Vec<bool>> = texts.iter().map(|&k| renderer.render(&only_text(&td, k), w, h).chunks(4).map(|p| p[3] > 153).collect()).collect();
+        // Inside title-safe: no glyph within 5 % of an edge.
+        let (mx, my) = (wu / 20, hu / 20);
+        let outside = layers.iter().flat_map(|m| m.iter().enumerate()).filter(|(i, on)| **on && {
+            let (x, y) = (i % wu, i / wu);
+            x < mx || x >= wu - mx || y < my || y >= hu - my
+        }).count();
+        sweep.check(&format!("{name} {format} title-safe"), format!("{outside} glyph pixels outside"), outside == 0);
+        if Format::of(w, h) == Format::Tall {
+            // Clear of what the platforms cover on a phone: the band
+            // at the bottom and the buttons down the right.
+            let (band, strip) = ((hu as f32 * TALL_BAND_TOP) as usize, (wu as f32 * TALL_STRIP_LEFT) as usize);
+            let covered = layers.iter().flat_map(|m| m.iter().enumerate()).filter(|(i, on)| **on && {
+                let (x, y) = (i % wu, i / wu);
+                y >= band || (y >= hu / 2 && x >= strip)
+            }).count();
+            sweep.check(&format!("{} {format} clear of buttons", name), format!("{covered} glyph pixels covered"), covered == 0);
+        }
+        // The layout keeps its shape: each text's distance from the
+        // next, in the title's type size, is the design's (16:9, the
+        // first format) whatever the frame.
+        let centres: Vec<(f32, f32)> = layers.iter().filter_map(|m| {
+            let on: Vec<usize> = m.iter().enumerate().filter(|(_, g)| **g).map(|(i, _)| i).collect();
+            (!on.is_empty()).then(|| {
+                let (x0, x1) = on.iter().fold((usize::MAX, 0), |(lo, hi), i| (lo.min(i % wu), hi.max(i % wu)));
+                let (y0, y1) = (on[0] / wu, on[on.len() - 1] / wu);
+                ((x0 + x1) as f32 / 2.0, (y0 + y1) as f32 / 2.0)
+            })
+        }).collect();
+        let type_px = texts.first().and_then(|&k| match &td.objects[k].content {
+            TitleObjectContent::TextBox(tb) => Some(tb.font_size * w.min(h) as f32 / 1080.0),
+            _ => None,
+        }).unwrap_or(1.0);
+        let gaps: Vec<f32> = centres.windows(2).map(|p| (p[1].0 - p[0].0).hypot(p[1].1 - p[0].1) / type_px).collect();
+        match &design {
+            None => design = Some(gaps),
+            Some(want) if !gaps.is_empty() => {
+                let worst = gaps.iter().zip(want).map(|(g, d)| (g / d.max(1e-3)).max(d / g.max(1e-3))).fold(1.0f32, f32::max);
+                sweep.check(&format!("{} {format} keeps its spacing", name), format!("{worst:.2}x the design's"), worst <= SPACING);
+            }
+            _ => {}
+        }
+        for (bg_name, bg) in backgrounds(w, h) {
+            let comp = over(&full, &protected(&full, &bg, w, h, td.protect.code()));
+            if sheet_on && bg_name == "bright" {
+                cells.push(Sheet::cell(&comp, w, h));
+            }
+            let mut worst = f32::MAX;
+            for glyphs in &layers {
+                if !glyphs.iter().any(|g| *g) {
+                    continue;
+                }
+                let near = dilate(glyphs, wu, hu, r);
+                let (mut lt, mut nt, mut lb, mut nb) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+                for i in 0..wu * hu {
+                    let l = luminance(&comp[i * 4..i * 4 + 4]);
+                    if glyphs[i] {
+                        lt += l;
+                        nt += 1.0;
+                    } else if near[i] {
+                        lb += l;
+                        nb += 1.0;
+                    }
+                }
+                let (a, b) = (lt / nt.max(1.0), lb / nb.max(1.0));
+                worst = worst.min((a.max(b) + 0.05) / (a.min(b) + 0.05));
+            }
+            if worst == f32::MAX {
+                sweep.skip(&format!("{} {format} {bg_name}", name), "no text drawn");
+                continue;
+            }
+            sweep.check(&format!("{} {format} {bg_name}", name), format!("contrast {worst:.2}:1"), worst >= CONTRAST);
+        }
+    }
+    sheet.rows.push((name.to_string(), cells));
+}
+
 #[test]
 fn sweep_templates() {
     let mut sweep = Sweep::new("templates", KNOWN);
@@ -178,110 +290,37 @@ fn sweep_templates() {
     let sheet_dir = std::env::var_os("KLIPP_TEMPLATES_SHEET").map(std::path::PathBuf::from);
     let mut sheet = Sheet { rows: Vec::new() };
     for template in TITLES {
-        let mut cells = Vec::new();
-        let mut design: Option<Vec<f32>> = None;
-        let td = template.data();
-        // Measured in its own faces: a catalogue face not fetched here
-        // would measure the fallback (`KLIPP_FONTS_DIR` names a folder of
-        // fetched faces).
-        let unfetched: Vec<String> = td.objects.iter().filter_map(|o| match &o.content {
-            TitleObjectContent::TextBox(tb) => Some(tb.font_name.clone()),
-            _ => None,
-        }).filter(|f| klipp_title::catalogue::family(f).is_some() && !klipp_title::catalogue::fetched(f)).collect();
-        if !unfetched.is_empty() {
-            sweep.skip(template.name, &format!("{} not fetched", unfetched.join(", ")));
-            continue;
+        measure(&mut sweep, &mut renderer, &mut sheet, sheet_dir.is_some(), template.name, &|w, h| template.data_for(w, h));
+    }
+    // The built-in composition templates' titles (#2757): each as placed,
+    // its controls at their defaults, in the layout for each frame.
+    for t in klipp_timeline::composition_template::builtin_templates() {
+        let titles_in = |w: u32, h: u32| -> Vec<TitleData> { placed_titles(&t, w, h) };
+        for k in 0..titles_in(1920, 1080).len() {
+            let name = if titles_in(1920, 1080).len() == 1 { t.name.clone() } else { format!("{} title {}", t.name, k + 1) };
+            measure(&mut sweep, &mut renderer, &mut sheet, sheet_dir.is_some(), &name, &|w, h| titles_in(w, h).swap_remove(k));
         }
-        let texts: Vec<usize> = td.objects.iter().enumerate().filter(|(_, o)| matches!(o.content, TitleObjectContent::TextBox(_))).map(|(i, _)| i).collect();
-        let smallest = td.objects.iter().filter_map(|o| match &o.content {
-            TitleObjectContent::TextBox(tb) if !tb.text.trim().is_empty() => Some(tb.font_size),
-            _ => None,
-        }).fold(f32::MAX, f32::min);
-        sweep.check(&format!("{} smallest text", template.name), format!("{smallest:.0} px of 1080"), smallest >= MIN_SIZE);
-        for &(format, w, h) in FORMATS {
-            // Laid out for the frame, as the app and the template op make it.
-            let td = template.data_for(w, h);
-            let full = renderer.render(&td, w, h);
-            let (wu, hu) = (w as usize, h as usize);
-            let r = ((w.min(h) as f32) * 0.012).max(3.0) as usize;
-            let layers: Vec<Vec<bool>> = texts.iter().map(|&k| renderer.render(&only_text(&td, k), w, h).chunks(4).map(|p| p[3] > 153).collect()).collect();
-            // Inside title-safe: no glyph within 5 % of an edge.
-            let (mx, my) = (wu / 20, hu / 20);
-            let outside = layers.iter().flat_map(|m| m.iter().enumerate()).filter(|(i, on)| **on && {
-                let (x, y) = (i % wu, i / wu);
-                x < mx || x >= wu - mx || y < my || y >= hu - my
-            }).count();
-            sweep.check(&format!("{} {format} title-safe", template.name), format!("{outside} glyph pixels outside"), outside == 0);
-            if Format::of(w, h) == Format::Tall {
-                // Clear of what the platforms cover on a phone: the band
-                // at the bottom and the buttons down the right.
-                let (band, strip) = ((hu as f32 * TALL_BAND_TOP) as usize, (wu as f32 * TALL_STRIP_LEFT) as usize);
-                let covered = layers.iter().flat_map(|m| m.iter().enumerate()).filter(|(i, on)| **on && {
-                    let (x, y) = (i % wu, i / wu);
-                    y >= band || (y >= hu / 2 && x >= strip)
-                }).count();
-                sweep.check(&format!("{} {format} clear of buttons", template.name), format!("{covered} glyph pixels covered"), covered == 0);
-            }
-            // The layout keeps its shape: each text's distance from the
-            // next, in the title's type size, is the design's (16:9, the
-            // first format) whatever the frame.
-            let centres: Vec<(f32, f32)> = layers.iter().filter_map(|m| {
-                let on: Vec<usize> = m.iter().enumerate().filter(|(_, g)| **g).map(|(i, _)| i).collect();
-                (!on.is_empty()).then(|| {
-                    let (x0, x1) = on.iter().fold((usize::MAX, 0), |(lo, hi), i| (lo.min(i % wu), hi.max(i % wu)));
-                    let (y0, y1) = (on[0] / wu, on[on.len() - 1] / wu);
-                    ((x0 + x1) as f32 / 2.0, (y0 + y1) as f32 / 2.0)
-                })
-            }).collect();
-            let type_px = texts.first().and_then(|&k| match &td.objects[k].content {
-                TitleObjectContent::TextBox(tb) => Some(tb.font_size * w.min(h) as f32 / 1080.0),
-                _ => None,
-            }).unwrap_or(1.0);
-            let gaps: Vec<f32> = centres.windows(2).map(|p| (p[1].0 - p[0].0).hypot(p[1].1 - p[0].1) / type_px).collect();
-            match &design {
-                None => design = Some(gaps),
-                Some(want) if !gaps.is_empty() => {
-                    let worst = gaps.iter().zip(want).map(|(g, d)| (g / d.max(1e-3)).max(d / g.max(1e-3))).fold(1.0f32, f32::max);
-                    sweep.check(&format!("{} {format} keeps its spacing", template.name), format!("{worst:.2}x the design's"), worst <= SPACING);
-                }
-                _ => {}
-            }
-            for (bg_name, bg) in backgrounds(w, h) {
-                let comp = over(&full, &protected(&full, &bg, w, h, td.protect.code()));
-                if sheet_dir.is_some() && bg_name == "bright" {
-                    cells.push(Sheet::cell(&comp, w, h));
-                }
-                let mut worst = f32::MAX;
-                for glyphs in &layers {
-                    if !glyphs.iter().any(|g| *g) {
-                        continue;
-                    }
-                    let near = dilate(glyphs, wu, hu, r);
-                    let (mut lt, mut nt, mut lb, mut nb) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
-                    for i in 0..wu * hu {
-                        let l = luminance(&comp[i * 4..i * 4 + 4]);
-                        if glyphs[i] {
-                            lt += l;
-                            nt += 1.0;
-                        } else if near[i] {
-                            lb += l;
-                            nb += 1.0;
-                        }
-                    }
-                    let (a, b) = (lt / nt.max(1.0), lb / nb.max(1.0));
-                    worst = worst.min((a.max(b) + 0.05) / (a.min(b) + 0.05));
-                }
-                if worst == f32::MAX {
-                    sweep.skip(&format!("{} {format} {bg_name}", template.name), "no text drawn");
-                    continue;
-                }
-                sweep.check(&format!("{} {format} {bg_name}", template.name), format!("contrast {worst:.2}:1"), worst >= CONTRAST);
-            }
-        }
-        sheet.rows.push((template.name.to_string(), cells));
     }
     if let Some(dir) = &sheet_dir {
         sheet.write(dir);
     }
     sweep.finish();
+}
+
+/// The titles of `t` placed in a `w` × `h` sequence, as its layout for the
+/// frame holds them with its parameters and controls at their defaults.
+fn placed_titles(t: &klipp_timeline::composition_template::CompositionTemplate, w: u32, h: u32) -> Vec<TitleData> {
+    use klipp_timeline::{Clip, ClipKind, Sequence};
+    let layout = t.composition_for(w, h).expect("a layout").clone();
+    let secs = layout.total_duration();
+    let mut clip = Clip::precomposition(layout.id, klipp_core::RationalTime::from_secs_f64(0.0, 24), secs);
+    clip.kind = ClipKind::TemplatePrecomposition { sequence_id: layout.id, template_instance: klipp_timeline::composition_template::instance_for(t) };
+    let mut outer = Sequence::new_default();
+    outer.resolution = klipp_core::Resolution { width: w, height: h };
+    outer.tracks[0].clips.push(clip);
+    let mut all = t.sequences.clone();
+    all.push(outer.clone());
+    let flat = klipp_timeline::flatten::flatten_sequence(&outer, &all);
+    let scene = flat.all_clips().find_map(|c| c.precomp.clone()).expect("the scene");
+    scene.all_clips().filter_map(|c| c.title_data().cloned()).collect()
 }
