@@ -1,0 +1,51 @@
+# The planar tracker's real-footage bench (#2754): scripts/planar-bench.sh
+# fetches each clip by its address, checks its sha256 and runs
+# klipp-effects' planar_bench test over this file. The clips are free
+# licence (Coverr License, Mixkit Stock Video Free License) and are never
+# kept in the repository.
+#
+# Frames are the clip's own, counted from 0, read at 1280 pixels across
+# (ffmpeg scale=1280:-2:flags=bicubic, grey), the size the editor tracks
+# at. `quad` is the surface set on the clip's first frame and `exclude` a
+# part of it left out; each `at` line is where the same points on the
+# surface are on that frame. The points were followed by patch matching,
+# each on its own, checked by eye against the first frame at the last
+# line and fitted by one homography per line (under 1.6 px off).
+# `limit` is the most mean point error over all lines and the most at the
+# last one (drift), in pixels: about twice what the tracker made of it
+# when the clip was added.
+
+clip bar-neon-sign c4abafc284ceccd391d4a2c3c3f41861cc6893b500cda59e9330464f9690960d https://cdn.coverr.co/videos/coverr-bar-neon-sign-1956/1080p.mp4?download=true
+# A lit sign on a wall, the camera held by hand at dusk.
+quad 316,337 433,342 432,625 297,615
+at 0 330,351 330,415 326,505 396,510 319,522 394,600 324,598 437,345
+at 100 316.14,343.23 316.22,407.16 312.72,497.19 382.73,501.95 305.87,514.13 381,591.92 311.09,590.19 423.21,336.89
+at 200 314.22,333.24 314.54,397.33 311.19,487.12 381.19,491.86 304.39,504.15 379.68,581.62 309.8,579.93 421.27,326.82
+at 300 307.93,329.52 308.86,393.73 305.8,483.67 375.9,487.89 298.89,500.64 374.85,577.75 304.68,576.59 415.31,322.63
+at 400 303.01,330.98 303.9,395.1 301.2,485.04 371.34,489.1 294.64,501.9 370.66,578.92 300.62,577.97 410.21,323.77
+at 500 299.22,326.7 300.4,390.72 298,480.85 368.19,484.66 291.29,497.87 367.8,574.3 297.49,573.74 406.28,319.07
+at 600 293.06,321.29 294.09,385.39 292.13,475.66 362.43,479.19 286.04,492.47 362.2,568.85 292.01,568.32 400.55,314.02
+limit 0.5 1
+
+clip subway-facade 1242a396d33b415a0850c4121a98bfb0e643a33e4d90525e79fe33ac03f03e8b https://cdn.coverr.co/videos/coverr-lit-up-subway-sign-7988/1080p.mp4?download=true
+# A building's windows and stone, the camera panning; the sign beside it lights up.
+quad 880,165 1270,85 1270,505 880,550
+at 0 975,190 1190,105 900,520 1016,170 1241,463 1129,323 982,374
+at 34 980.39,195.69 1192.01,111.96 905.67,525.71 1021,175.82 1245.82,468.78 1133.91,328.85 987.44,380.18
+at 68 962.52,198.37 1174,114.86 886.97,527.55 1003.91,177.96 1223.67,471.62 1113.41,331.84 968.62,382.17
+at 102 937.75,205.82 1148,124.02 861.19,533.46 977.8,185.88 1195.18,479.92 1085.85,339.78 942.69,388.98
+at 136 928.29,207.4 1134.73,125.88 852,534.54 967.63,186.82 1182.5,480.89 1074.27,341.1 932.92,389.84
+at 170 923.34,207.33 1133.61,122.86 849.03,534.21 963.27,186.04 1176.85,479.76 1068.96,340.1 928.47,389.36
+limit 3.5 5
+
+clip harbour-boat f71369383eb964919a2630d0ab3e937d7068b2a207bf273544a463bfde51f617 https://assets.mixkit.co/videos/2874/2874-1080.mp4
+# A moored boat's side rocking on the water, the camera drifting; its fender left out.
+quad 845,448 1275,515 1275,650 845,555
+exclude 1055,485 1170,500 1170,560 1055,550
+at 60 855,487 922,518 1000,540 1032,545 1085,548 1215,578 975,527
+at 120 862.29,483.01 935.6,513.28 1020.82,534.78 1055.57,539.7 1112.15,541.39 1249,571.35 993.5,521.91
+at 180 877.87,488.3 951.78,517.3 1037.53,537.55 1072.21,541.78 1128.69,543.22 1267.89,570.06 1010,525.32
+at 240 889.05,486.73 960.89,515.71 1042.78,535.69 1076.35,539.88 1131.11,541.36 1266.18,569.03 1016,523.28
+at 300 900.03,486.67 964.67,514.1 1039.31,532.66 1069.9,536.24 1120.39,537.22 1247,562.76 1015.18,520.81
+at 360 901.36,477.44 956.15,505.26 1020.79,524.68 1047.27,528.71 1092.37,530.81 1203.93,558.77 998.62,512.28
+limit 1.5 2
