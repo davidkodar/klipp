@@ -190,6 +190,16 @@ impl ControlCommand {
     }
 }
 
+/// A moment to make a short of: where it runs in the file, and the line
+/// it opens on, its name and hook title.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ShortMomentAsk {
+    pub from_secs: f64,
+    pub to_secs: f64,
+    #[serde(default)]
+    pub hook: Option<String>,
+}
+
 // One of these is deserialised per request off a socket, used, and
 // dropped. It is never stored in a collection and never on a hot path,
 // so the gap between the smallest variant and the largest costs one
@@ -1494,6 +1504,22 @@ pub enum ControlCommand {
         width: u32,
         height: u32,
         fps: f64,
+    },
+    /// A short clip for each of `moments` of a media file (#2720), each
+    /// in a sequence of its own, 1080x1920: its speech placed on clean
+    /// word edges, tightened when `tighten` (the default), filling the
+    /// frame and following the speaker, every other piece pushed in,
+    /// captioned, its hook as a title when `hook_title`, its sound to
+    /// `platform`'s loudness.
+    MakeShorts {
+        media_id: String,
+        moments: Vec<ShortMomentAsk>,
+        #[serde(default)]
+        platform: Option<String>,
+        #[serde(default)]
+        tighten: Option<bool>,
+        #[serde(default)]
+        hook_title: bool,
     },
     /// A marker on the timeline at `at_secs` (a range with
     /// `duration_secs`): a label, a note, a colour (red, orange, yellow,
