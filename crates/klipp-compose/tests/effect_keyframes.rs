@@ -62,7 +62,7 @@ fn every_effect() -> Vec<E> {
         E::Mirror { horizontal: 1, vertical: 0 },
         E::LensDistortion { distortion: 0.2, scale: 1.0 },
         E::Displace { amount: 6.0, size: 24.0, speed: 1.0, direction: 0, seed: 3, time: 0.4 },
-        E::Reflection { waterline: 0.55, gap: 0.0, ripple_amount: 3.0, ripple_size: 12.0, ripple_speed: 1.0, breakup: 0.5, smear: 0.3, fade: 0.4, opacity: 0.8, darken: 0.0, contact: 0.0, blend: 0, tint: [20, 40, 60], tint_amount: 0.2, tint_auto: false, darken_auto: false, water: [0, 0, 0], water_key: 0, submerge: true, ripple_from: 0, seed: 3, time: 0.4 },
+        E::Reflection { waterline: 0.55, gap: 0.0, ripple_amount: 3.0, ripple_size: 12.0, ripple_speed: 1.0, breakup: 0.5, smear: 0.3, fade: 0.4, opacity: 0.8, darken: 0.0, contact: 0.0, blend: 0, tint: [20, 40, 60], tint_amount: 0.2, tint_auto: false, darken_auto: false, water: [0, 0, 0], water_key: 0, submerge: 1.0, ripple_from: 0, seed: 3, time: 0.4 },
         E::Dilate { radius: 2 },
         E::Erode { radius: 2 },
         E::Denoise { spatial_sigma: 5.0, color_sigma: 0.1, iterations: 1 },

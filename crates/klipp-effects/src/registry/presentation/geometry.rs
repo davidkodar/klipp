@@ -75,7 +75,7 @@ pub(super) static PARAMS: &[ParamEntry] = &[
     at(REFLECTION, "tint_auto", P::shown_as(Widget::Toggle).order(9)),
     at(REFLECTION, "tint", P::shown_as(Widget::ColourRgb).order(9)),
     at(REFLECTION, "tint_amount", P::scrub(0.005, 2).order(10)),
-    at(REFLECTION, "submerge", P::shown_as(Widget::Toggle).order(11)),
+    at(REFLECTION, "submerge", P::scrub(0.005, 2).order(11)),
     at(REFLECTION, "ripple_from", P::hidden()),
     at(REFLECTION, "seed", P::scrub(1.0, 0).soft_whole((0, 10_000)).order(12)),
     at(REFLECTION, "time", P::hidden()),

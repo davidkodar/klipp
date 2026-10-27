@@ -19460,8 +19460,8 @@ mod effect_params_tests {
         for (name, _, _) in klipp_effects::reflection::SURFACES {
             assert!(matches!(named_picture_effect(name, None).unwrap().0, E::Reflection { .. }), "{name}");
         }
-        let fx = effect("rippled_water", r##"{"waterline": 0.62, "tint": "#1d3b4f", "blend": "soft_light", "submerge": false, "fade": 0.9}"##).unwrap();
-        assert!(matches!(fx, E::Reflection { waterline, tint: [0x1d, 0x3b, 0x4f], blend: 2, submerge: false, fade, .. } if waterline == 0.62 && fade == 0.9), "{fx:?}");
+        let fx = effect("rippled_water", r##"{"waterline": 0.62, "tint": "#1d3b4f", "blend": "soft_light", "submerge": 0.3, "fade": 0.9}"##).unwrap();
+        assert!(matches!(fx, E::Reflection { waterline, tint: [0x1d, 0x3b, 0x4f], blend: 2, submerge, fade, .. } if submerge == 0.3 && waterline == 0.62 && fade == 0.9), "{fx:?}");
         let (_, fix) = effect("calm_water", r#"{"blend": "multiply"}"#).unwrap_err();
         assert!(fix.contains("blend (normal, screen, soft_light, overlay)"), "{fix}");
     }
