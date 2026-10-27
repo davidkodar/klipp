@@ -4949,28 +4949,16 @@ impl ViewerPanel {
             rotate_point(raw_corners[i], pos_screen, rotation_rad)
         });
 
-        // Painter for the transform overlay. Sits in `Order::Middle` —
-        // above the viewer image (which paints in the central panel
-        // at `Order::Background`) but BELOW everything in
-        // `Order::Foreground`: context menus, dropdowns, modal
-        // dialogs, tooltips. Earlier this layer was on `Foreground`,
-        // which made the bounding-box outline + handles bleed
-        // through any open clip-context menu (egui's menus also live
-        // on `Foreground`, and within the same Order they stack by
-        // creation sequence — the per-frame redraw of the overlay
-        // ended up on top). `Middle` keeps the overlay visible over
-        // the viewer image (the toolbar / transport / panel chrome
-        // don't overlap the viewer rect, so they don't visually
-        // cover the handles in regular dock layouts) while letting
-        // every popup naturally occlude it.
+        // Painter for the transform overlay: the viewer's own layer, over
+        // the picture and under every window and popup (#2852). On a
+        // layer of its own, `Order::Middle`, it ran through a floating
+        // window such as Clip Properties, which egui keeps in that order
+        // too; on `Foreground` before that, through context menus.
         //
         // Clipped to the viewer: a picture that fills the viewer's height
         // put its rotation handle above the panel, over the page tabs,
         // where a click on "Colour" grabbed it.
-        let painter = ui.ctx().layer_painter(egui::LayerId::new(
-            egui::Order::Middle,
-            ui.id().with("transform_controls"),
-        )).with_clip_rect(viewer_rect);
+        let painter = viewer_overlay_painter(ui, viewer_rect);
 
         // Draw bounding box outline
         let outline_color = egui::Color32::from_rgba_unmultiplied(255, 255, 255, 180);
@@ -5254,10 +5242,9 @@ impl ViewerPanel {
         let mut run = false;
         let mut correct = false;
         let mut cancel = false;
-        egui::Area::new(egui::Id::new("surface_tool_bar"))
-            .fixed_pos(image_rect.left_top() + egui::vec2(8.0, 8.0))
-            .order(egui::Order::Foreground)
-            .show(ui.ctx(), |ui| {
+        // On the viewer's own layer, under any window over it (#2852).
+        let bar_area = egui::Rect::from_min_max(image_rect.left_top() + egui::vec2(8.0, 8.0), image_rect.right_bottom());
+        ui.new_child(egui::UiBuilder::new().max_rect(bar_area)).scope(|ui| {
                 let frame = egui::Frame::popup(ui.style());
                 let r = frame.show(ui, |ui| {
                     ui.horizontal(|ui| {
@@ -5505,10 +5492,9 @@ impl ViewerPanel {
             return;
         }
         let pct = (state.tracking_progress.get(&clip_id).copied().unwrap_or(0.0) * 100.0).round();
-        egui::Area::new(egui::Id::new("surface_tracking_badge"))
-            .fixed_pos(image_rect.left_top() + egui::vec2(8.0, 8.0))
-            .order(egui::Order::Foreground)
-            .show(ui.ctx(), |ui| {
+        // On the viewer's own layer, under any window over it (#2852).
+        let badge_area = egui::Rect::from_min_max(image_rect.left_top() + egui::vec2(8.0, 8.0), image_rect.right_bottom());
+        ui.new_child(egui::UiBuilder::new().max_rect(badge_area)).scope(|ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.label(format!("Tracking the surface\u{2026} {pct:.0}%"));
@@ -8480,5 +8466,41 @@ mod title_view_tests {
         let moved = TitleView { image_rect: rect, placement: Some((192.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.5)), frame: (1920.0, 1080.0) };
         let d = moved.to_screen(0.5, 0.5) - TitleView::flat(rect).to_screen(0.5, 0.5);
         assert!((d.x - 96.0).abs() < 1e-3 && d.y.abs() < 1e-3, "{d:?}");
+    }
+}
+
+/// The painter a viewer overlay draws with (#2852): the viewer panel's
+/// own layer, clipped to `clip`, so the gizmo, guides, outlines and pins
+/// lie over the picture and under every window, menu and popup.
+pub(crate) fn viewer_overlay_painter(ui: &egui::Ui, clip: egui::Rect) -> egui::Painter {
+    ui.painter().with_clip_rect(clip.intersect(ui.clip_rect()))
+}
+
+#[cfg(test)]
+mod overlay_layer_tests {
+    /// #2852: a viewer overlay paints on the viewer panel's own layer,
+    /// which egui keeps under every window (`Middle`) and popup
+    /// (`Foreground`, `Tooltip`); and the viewer makes no layer of its own
+    /// for one, the right-click menu being its only popup.
+    #[test]
+    fn viewer_overlays_paint_under_windows_and_popups() {
+        let ctx = egui::Context::default();
+        let mut layers = None;
+        let _ = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let p = super::viewer_overlay_painter(ui, ui.max_rect());
+                layers = Some((p.layer_id(), ui.layer_id()));
+            });
+        });
+        let (overlay, panel) = layers.expect("drawn");
+        assert_eq!(overlay, panel, "the panel's own layer");
+        assert!(overlay.order < egui::Order::Middle, "under windows and popups: {:?}", overlay.order);
+
+        let src = include_str!("viewer.rs");
+        // The viewer's code, not this test's.
+        let src = &src[..src.find("mod overlay_layer_tests").expect("this module")];
+        let code: String = src.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+        assert_eq!(code.matches("layer_painter(").count(), 0, "an overlay on a layer of its own");
+        assert_eq!(code.matches(".order(egui::Order::Foreground)").count(), 1, "only the right-click menu floats");
     }
 }
