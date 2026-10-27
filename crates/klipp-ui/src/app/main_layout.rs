@@ -838,6 +838,22 @@ impl KlippApp {
             // scope UI even when the grade tabs were all you wanted.)
             self.state.show_color_panel = to == Workspace::Color;
 
+            // The Composite page is the clip's picture graph (#2758): the
+            // dock open at the picture's top level, as it was put back on
+            // the way out.
+            if to == Workspace::Composite {
+                self.dock_before_composite = Some(self.state.graph_dock_open);
+                self.state.graph_dock_open = true;
+                self.state.graph_dock_path.clear();
+                self.state.graph_descent_path.clear();
+                self.state.repair_graph_dock();
+                self.state.active_panel = Some(crate::state::PanelKind::PictureGraph);
+            } else if from == Workspace::Composite {
+                if let Some(was) = self.dock_before_composite.take() {
+                    self.state.graph_dock_open = was;
+                }
+            }
+
             // Render the playhead's frame again for the new page. The
             // Colour page opened on a black viewer until the playhead
             // was moved; while parked this is a regrade of the parked
@@ -1681,6 +1697,7 @@ pub(super) fn show_panel(state: &mut crate::state::AppState, layout: &mut crate:
     match workspace {
         Some("edit") => state.active_workspace = Workspace::Edit,
         Some("colour" | "color") => state.active_workspace = Workspace::Color,
+        Some("composite") => state.active_workspace = Workspace::Composite,
         Some("export") => state.active_workspace = Workspace::Export,
         _ => {}
     }

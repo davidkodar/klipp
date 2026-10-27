@@ -38,6 +38,8 @@ pub(super) struct PictureCanvas<'a> {
     /// The node picked on the canvas: an effect a matte added now masks.
     selected: Option<NodeId>,
     pub(super) keyboard_enabled: bool,
+    /// The add menu grouped for the Composite page (#2758).
+    pub(super) composite_menu: bool,
 }
 
 fn image_port(key: &str) -> PortSpec {
@@ -231,7 +233,7 @@ impl<'a> PictureCanvas<'a> {
             .or_else(|| add_after(graph));
         Ok(Self { graph, level, nodes, edges, positions,
             frames: graph.ui.frames.iter().filter_map(|v| serde_json::from_value(v.clone()).ok()).collect(),
-            notes: graph.ui.sticky_notes.iter().filter_map(|v| serde_json::from_value(v.clone()).ok()).collect(), after, selected, keyboard_enabled: true })
+            notes: graph.ui.sticky_notes.iter().filter_map(|v| serde_json::from_value(v.clone()).ok()).collect(), after, selected, keyboard_enabled: true, composite_menu: false })
     }
 
     fn path(&self, node: NodeId) -> NodePath {
@@ -377,7 +379,7 @@ impl<'a> CanvasGraph for PictureCanvas<'a> {
     fn frames(&self) -> &[NodeFrame] { &self.frames }
     fn sticky_notes(&self) -> &[NodeStickyNote] { &self.notes }
     fn signal_role(&self, node: NodeId, port: u8) -> PortRole { self.nodes.iter().find(|n| n.node.id == node).map_or(PortRole::Primary, |n| n.kind().output_port_role(port)) }
-    fn add_menu(&self) -> &[MenuCategory] { picture_menu() }
+    fn add_menu(&self) -> &[MenuCategory] { if self.composite_menu { composite_menu() } else { picture_menu() } }
     fn grade_tools(&self) -> bool { false }
     fn keyboard_enabled(&self) -> bool { self.keyboard_enabled }
     fn thumbnail_output(&self, _: klipp_core::ClipId, node: NodeId, _: &[NodeId]) -> Option<NodeOutput> { self.output(node) }
@@ -592,6 +594,40 @@ pub(super) fn picture_menu() -> &'static [MenuCategory] {
     })
 }
 
+/// The add menu on the Composite page (#2758): the same nodes as
+/// [`picture_menu`], grouped by what layering asks for first: what to lay
+/// over and the sources it comes from, keys, mattes, moves, looks.
+pub(super) fn composite_menu() -> &'static [MenuCategory] {
+    static MENU: std::sync::OnceLock<Vec<MenuCategory>> = std::sync::OnceLock::new();
+    MENU.get_or_init(|| {
+        let of = |categories: &[Category], also: &[&'static str], but: &[&'static str]| -> Vec<(&'static str, &'static str)> {
+            let mut entries: Vec<_> = klipp_effects::registry::effect_types()
+                .filter(|t| (categories.contains(&t.desc.category) || also.contains(&t.tag)) && !but.contains(&t.tag))
+                .filter(|t| !crate::inspector::stack_view::is_placed_kind(t.tag) && !klipp_effects::draws_a_side_picture(&(t.sample)()))
+                .map(|t| (t.desc.name, t.tag))
+                .collect();
+            entries.sort_by_key(|e| e.0);
+            entries
+        };
+        let keys = ["light_wrap"];
+        let composite: Vec<_> = of(&[Category::Composite], &[], &[]).into_iter().chain(crate::picture_mattes::SOURCES.iter().map(|s| (s.name, s.tag))).collect();
+        [
+            ("Composite", composite),
+            ("Keying", of(&[Category::Key], &keys, &[])),
+            ("Mattes", crate::picture_mattes::MATTES.iter().map(|m| (m.name, m.tag)).collect()),
+            ("Transform", of(&[Category::Geometry], &[], &[])),
+            ("Stylise", of(&[Category::BlurDetail, Category::LightGlow, Category::FilmTemporal], &[], &keys)),
+            ("Colour", of(&[Category::Colour], &[], &[])),
+            ("Plug-ins", of(&[Category::PlugIn], &[], &[])),
+            ("Wiring", vec![("Reroute", REROUTE)]),
+            ("Grade", vec![("Grade", GRADE)]),
+        ]
+        .into_iter()
+        .filter(|(_, entries)| !entries.is_empty())
+        .collect()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -773,6 +809,62 @@ mod tests {
         assert!(inside.nodes.iter().any(|n| klipp_graph_lift::structure::kind_of(n.node) == "Corrector"), "its Corrector is inside");
         c.restore_picture(&edit.before);
         assert_eq!(*c.picture_v2().unwrap(), before);
+    }
+
+    /// #2758: the Composite page's add menu groups what layering asks for
+    /// first (a merge and the sources to lay over in Composite, a light
+    /// wrap with the keys, a corner pin with the moves). From it a merge
+    /// goes on the chain, then, with it picked, a gradient from Composite
+    /// goes beside the chain wired into the merge's picture, each one
+    /// undoable step; drawn, the clip shows the gradient over it,
+    /// measured against the picture before.
+    #[test]
+    fn the_composite_pages_menu_lays_a_source_over_the_clip() {
+        let has = |heading: &str, tag: &str| composite_menu().iter().any(|(label, items)| *label == heading && items.iter().any(|(_, t)| *t == tag));
+        assert!(has("Composite", "merge") && has("Composite", "source.gradient") && has("Composite", "source.media") && has("Composite", "source.below"));
+        assert!(has("Keying", "chroma_key") && has("Keying", "light_wrap") && has("Transform", "corner_pin") && has("Mattes", "matte.window"));
+        // The same nodes as the picture menu, regrouped.
+        let tags = |menu: &[MenuCategory]| { let mut t: Vec<&str> = menu.iter().flat_map(|(_, e)| e.iter().map(|(_, t)| *t)).collect(); t.sort(); t };
+        assert_eq!(tags(composite_menu()), tags(picture_menu()));
+
+        let t = |s| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let mut c = Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0));
+        let draw = |c: &Clip| {
+            struct Chart;
+            impl klipp_compose::FrameSource for Chart {
+                fn frame(&mut self, _c: &Clip, _s: f64, w: u32, h: u32) -> Option<klipp_compose::SourceFrame> {
+                    let v = (0..w * h).flat_map(|i| { let x = (i % w) as f32 / w as f32; [0.1 + 0.7 * x, 0.3, 0.6 - 0.4 * x, 1.0] }).collect();
+                    Some(klipp_compose::SourceFrame { pixels: klipp_compose::SourcePixels::Linear(std::sync::Arc::new(v)), width: w, height: h, pts: None })
+                }
+            }
+            let mut seq = klipp_timeline::Sequence::new_default();
+            seq.resolution = klipp_core::Resolution { width: 64, height: 36 };
+            let mut track = klipp_timeline::Track::new("V", klipp_timeline::TrackKind::Video);
+            track.clips = vec![c.clone()];
+            seq.tracks = vec![track];
+            let mut r = klipp_compose::Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+            r.set_gpu_enabled(false);
+            klipp_effects::linear_f32_rgba_to_srgb_u8(&r.render_inspected(&seq, t(1.0), 64, 36, &mut Chart, Default::default(), Default::default()).0)
+        };
+        let before = draw(&c);
+        let pick = |c: &mut Clip, kind: &str, selected: Option<NodeId>| {
+            let graph = c.picture_v2().unwrap().picture.graph.clone();
+            let mut model = PictureCanvas::new(&graph, root(c), selected).unwrap();
+            model.composite_menu = true;
+            assert!(model.add_menu().iter().any(|(_, items)| items.iter().any(|(_, t)| *t == kind)), "{kind} on the page's menu");
+            let Some(AppCommand::GraphOps { ops, .. }) = model.command(AppCommand::AddNode { clip_id: c.id, kind: kind.into(), node_id: None, position: (420.0, 120.0) }) else { panic!("{kind}: one graph batch") };
+            c.apply_picture_ops(&ops).unwrap_or_else(|e| panic!("{kind}: {e}"));
+        };
+        pick(&mut c, "merge", None);
+        let graph = c.picture_v2().unwrap().picture.graph.clone();
+        let merge = graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("merge")).expect("a merge on the chain").id;
+        pick(&mut c, "source.gradient", Some(merge));
+        let graph = c.picture_v2().unwrap().picture.graph.clone();
+        let fed = graph.edges.iter().find(|e| e.to == (merge, "fg".into())).expect("the merge's picture wired").from.0;
+        assert_eq!(graph.nodes.iter().find(|n| n.id == fed).and_then(klipp_graph_lift::effect_params::tag), Some("generator"));
+        let after = draw(&c);
+        let changed = before.iter().zip(&after).enumerate().filter(|(i, _)| i % 4 != 3).map(|(_, (a, b))| a.abs_diff(*b)).max().unwrap_or(0);
+        assert!(changed > 20, "the picture changed by {changed} levels");
     }
 
     /// A matte from the Mattes menu, with the blur picked, masks the blur
