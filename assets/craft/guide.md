@@ -415,8 +415,7 @@ exist until the plan runs.
   into a gap or under the next clip, until they fall below −80 dB (at
   most 10 s), in playback and the export alike; its fade-out goes in
   before them, so a reverb still rings after a fade. Playback that
-  starts inside a tail (after a seek or a pause) leaves it out; the
-  export has it.
+  starts inside a tail (after a seek or a pause) plays it from there.
 - `opacity_mask {clip_id, shape, feather?, invert?, clear?}`: fade a
   clip's opacity across the frame, whole at one line or ring and gone at
   another, so the track below shows through: a sky fading out, a picture

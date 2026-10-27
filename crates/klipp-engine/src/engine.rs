@@ -2315,6 +2315,111 @@ impl PlaybackEngine {
         }
     }
 
+    /// The clips whose effects still ring at `tc`, playback starting there
+    /// (a play, a seek, a play after a pause): each one's sound opened as a
+    /// tail, put back twice its tail before the clip's end, its fades on
+    /// and its effects run through to `tc` without being heard, so it
+    /// plays on from there as the export has it (#2793). Started inside a
+    /// tail, playback was silent where the export rang.
+    fn open_ringing_tails(&mut self, tc: Timecode) {
+        let heard = tc.to_secs_f64();
+        struct Tail {
+            key: usize,
+            media: MediaId,
+            path: std::path::PathBuf,
+            from_source: f64,
+            discard: usize,
+            effects: Vec<klipp_core::AudioEffectInstance>,
+            keyframes: std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
+            sound: ClipSound,
+            source_in: f64,
+            duration: f64,
+            clip: (klipp_core::ClipId, Timecode, f64),
+        }
+        let tails: Vec<Tail> = {
+            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+            let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());
+            let fps = seq.fps.as_f64();
+            let mut tails = Vec::new();
+            for (ti, track) in seq.tracks.iter().enumerate() {
+                for clip in &track.clips {
+                    let out = clip.timeline_out.to_secs_f64();
+                    if out > heard || heard >= out + klipp_audio::dsp::MAX_TAIL_SECS as f64 {
+                        continue;
+                    }
+                    // A clip playback would ring: its own sound at 1x, from a
+                    // conformed file, not handed on to a crossfade or to the
+                    // next clip of the same sound.
+                    if !clip.enabled || !clip.plays_its_sound() || clip.is_varispeed() || klipp_timeline::crossfade::extent(track, clip).tail_secs > 0.0 {
+                        continue;
+                    }
+                    let Some(media) = clip.media_id() else { continue };
+                    let Some(path) = pool.get(&media).filter(|i| i.has_audio).and_then(|i| i.audio_cache.as_ref()).map(|c| c.pcm_path.clone()).filter(|p| p.exists()) else { continue };
+                    if track.kind == klipp_timeline::TrackKind::Video
+                        && clip.linked_clip_id.is_some_and(|l| seq.tracks.iter().any(|t| t.kind == klipp_timeline::TrackKind::Audio && t.clips.iter().any(|c| c.id == l)))
+                    {
+                        continue;
+                    }
+                    let (effects, keyframes) = (clip.audio_effects.clone(), clip.audio_effect_keyframes.clone());
+                    if !klipp_audio::dsp::AudioEffectChain::may_ring(&effects, !keyframes.is_empty(), 48_000)
+                        || carried_on(track, clip, media, audio_chain_fingerprint_for(&effects, &keyframes))
+                    {
+                        continue;
+                    }
+                    let chain = klipp_audio::dsp::AudioEffectChain::from_instances(&effects, 48_000);
+                    let tail = (chain.tail_frames(48_000) + chain.total_latency_samples(48_000) as usize) as f64 / 48_000.0;
+                    if heard >= out + tail {
+                        continue;
+                    }
+                    // Twice the tail back: what came before has fallen to
+                    // under -160 dB by the playhead.
+                    let from = clip.timeline_in.to_secs_f64().max(out - 2.0 * tail);
+                    tails.push(Tail {
+                        key: ti,
+                        media,
+                        path,
+                        from_source: klipp_compose::render::source_secs(clip, RationalTime::from_secs_f64(from, 48_000), fps),
+                        discard: ((heard - from) * 48_000.0).round() as usize,
+                        effects,
+                        keyframes,
+                        sound: clip_sound_at(&seq, clip, out, fps),
+                        source_in: clip.source_in.to_secs_f64(),
+                        duration: clip.duration().to_secs_f64(),
+                        clip: (clip.id, clip.timeline_out, out),
+                    });
+                }
+            }
+            tails
+        };
+        for t in tails {
+            let before = self.audio_sources.len();
+            self.open_audio_source(t.key, t.media, &t.path, t.from_source, t.effects, t.keyframes);
+            if self.audio_sources.len() == before {
+                continue;
+            }
+            let Some(mut a) = self.audio_sources.pop() else { continue };
+            if a.source.ring().is_none() {
+                a.source.stop_detached();
+                if let Some(mt) = &self.mix_thread {
+                    mt.remove_staging_of(&a.mix);
+                }
+                continue;
+            }
+            let s = &t.sound;
+            a.source.set_fade(t.source_in, t.duration, s.fade_in as f64, s.fade_out as f64, fade_curve_to_u32(s.fade_in_curve), fade_curve_to_u32(s.fade_out_curve), s.gain);
+            if let Some(ring) = a.source.ring() {
+                ring.set_stops(true);
+            }
+            a.mix.set(s.volume * s.gain, s.pan, channel_config_to_u32(s.channel_config));
+            a.source.discard(t.discard);
+            a.clip = Some(t.clip);
+            // Its pre-roll runs now, while the rest are made ready.
+            a.source.resume();
+            debug!("audio tail on track {} opened {:.3}s into its ring", t.key, heard - t.clip.2);
+            self.audio_tails.push(a);
+        }
+    }
+
     /// Stop every ringing source at once: a seek or a pause.
     fn drop_audio_tails(&mut self) {
         for mut t in std::mem::take(&mut self.audio_tails) {
@@ -4479,6 +4584,7 @@ impl PlaybackEngine {
                 track_idx, audio_effects.len(), audio_effect_keyframes.len());
             self.open_audio_source(track_idx, media_id, &path, source_secs, audio_effects, audio_effect_keyframes);
         }
+        self.open_ringing_tails(tc);
         // Apply per-clip volume from sequence data
         self.sync_clip_volumes();
 
@@ -5449,6 +5555,7 @@ impl PlaybackEngine {
             mt.flush();
         }
         self.drop_audio_tails();
+        self.open_ringing_tails(tc);
 
         // Compute per-track seek positions from the timeline
         let seek_positions: Vec<(usize, f64)> = {

@@ -124,6 +124,15 @@ impl AudioSource {
         }
     }
 
+    /// Run `frames` through the effects from where the feed was put and
+    /// drop them before anything is heard (#2793): the PCM feeder's
+    /// alone, which is the only one that rings a tail.
+    pub fn discard(&self, frames: usize) {
+        if let Self::PcmFeeder(f) = self {
+            f.discard(frames);
+        }
+    }
+
     /// Where the clip's sound stops and its effects ring on (#2780): the
     /// PCM feeder's alone; the live decoder stops dead at the out point.
     pub fn ring(&self) -> Option<&std::sync::Arc<crate::pcm_reader::Ring>> {
