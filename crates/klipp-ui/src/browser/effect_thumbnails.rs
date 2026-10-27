@@ -470,7 +470,7 @@ fn builtin_preview_params(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
         }
         // Nothing to show without a file, or the renderer's tables: the
         // card shows the picture as it is.
-        klipp_effects::BuiltinEffect::Lut3D { .. } | klipp_effects::BuiltinEffect::ColourSpaceTransform { .. } | klipp_effects::BuiltinEffect::Merge { .. } | klipp_effects::BuiltinEffect::MediaSource { .. } | klipp_effects::BuiltinEffect::ClipBelow {} | klipp_effects::BuiltinEffect::GradeCompound {} => effect.clone(),
+        klipp_effects::BuiltinEffect::Lut3D { .. } | klipp_effects::BuiltinEffect::ColourSpaceTransform { .. } | klipp_effects::BuiltinEffect::Merge { .. } | klipp_effects::BuiltinEffect::MediaSource { .. } | klipp_effects::BuiltinEffect::TitleSource { .. } | klipp_effects::BuiltinEffect::ClipBelow {} | klipp_effects::BuiltinEffect::GradeCompound {} => effect.clone(),
         // Smaller and turned, so the card shows a picture inside its frame.
         klipp_effects::BuiltinEffect::PictureTransform { .. } => klipp_effects::BuiltinEffect::PictureTransform {
             position_x: 0.0, position_y: 0.0, scale_x: 0.7, scale_y: 0.7, rotation: 12.0, anchor_x: 0.5, anchor_y: 0.5,

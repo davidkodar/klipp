@@ -57,7 +57,7 @@ pub fn slots_needed(effect: &BuiltinEffect) -> Option<usize> {
     match effect {
         // Done elsewhere, or not by the GPU at all: they pass the frame
         // through here, as they did, without breaking a run.
-        BuiltinEffect::SpeedRamp { .. } | BuiltinEffect::TemporalDenoise { .. } | BuiltinEffect::Frei0r { .. } | BuiltinEffect::Merge { .. } | BuiltinEffect::MediaSource { .. } | BuiltinEffect::ClipBelow {} | BuiltinEffect::GradeCompound {} => Some(0),
+        BuiltinEffect::SpeedRamp { .. } | BuiltinEffect::TemporalDenoise { .. } | BuiltinEffect::Frei0r { .. } | BuiltinEffect::Merge { .. } | BuiltinEffect::MediaSource { .. } | BuiltinEffect::TitleSource { .. } | BuiltinEffect::ClipBelow {} | BuiltinEffect::GradeCompound {} => Some(0),
         BuiltinEffect::RollingShutterCorrection { .. } | BuiltinEffect::VideoStabilization { .. } => Some(1),
         // A bright or copied layer, three box passes over it (zero boxes
         // too, as before) and the blend: see `record_light_layer`.
@@ -815,7 +815,7 @@ impl GpuEffectsPipeline {
             // Drawn by the plan's layer mixer, with its foreground (#1746).
             BuiltinEffect::Merge { .. } => Recorded::Identity,
             // Read by the executor from its frame context (#1746).
-            BuiltinEffect::MediaSource { .. } | BuiltinEffect::ClipBelow {} | BuiltinEffect::GradeCompound {} => Recorded::Identity,
+            BuiltinEffect::MediaSource { .. } | BuiltinEffect::TitleSource { .. } | BuiltinEffect::ClipBelow {} | BuiltinEffect::GradeCompound {} => Recorded::Identity,
             // The motion data is the node's analysis for the frame, uploaded
             // before it records (M4 step 9); without it the frame passes
             // through.
