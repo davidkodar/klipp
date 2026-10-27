@@ -60,6 +60,32 @@ fn source() -> Option<std::path::PathBuf> {
     Some(out)
 }
 
+/// Eight seconds of 4K H.264 panning across a still, blurred noise, a
+/// keyframe every 90 frames: motion optical flow follows everywhere,
+/// where the test pattern's flat areas and changing shapes are cross-faded
+/// as motion it can't. `None` without ffmpeg.
+fn pan_source() -> Option<std::path::PathBuf> {
+    let out = std::env::temp_dir().join("klipp-reversed-4k-noise-pan-gop90.mp4");
+    if out.exists() {
+        return Some(out);
+    }
+    let partial = common::unshared(&out, "mp4");
+    let ok = std::process::Command::new("ffmpeg")
+        .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "nullsrc=s=4800x2700:d=1,geq=lum='random(1)*255':cb=128:cr=128,gblur=sigma=3"])
+        .args(["-vf", &format!("loop=-1:1:0,fps=30000/1001,crop={W}:{H}:x='40+t*90':y='30+t*40',trim=duration=8")])
+        .args(["-c:v", "libx264", "-preset", "ultrafast", "-profile:v", "high", "-g", "90", "-keyint_min", "90", "-sc_threshold", "0", "-pix_fmt", "yuv420p"])
+        .arg(&partial)
+        .status()
+        .ok()?
+        .success();
+    if !ok {
+        let _ = std::fs::remove_file(&partial);
+        return None;
+    }
+    std::fs::rename(&partial, &out).ok()?;
+    Some(out)
+}
+
 fn tc(secs: f64) -> RationalTime {
     RationalTime::from_secs_f64(secs, FPS.num)
 }
@@ -226,6 +252,28 @@ fn at_a_tenth_reversed_only_the_frames_due_are_made() {
     assert!(made <= 3 * 4, "{made} source frames made in 3 s at a tenth");
     assert!(made >= 6, "it plays on: {made} frames in 3 s");
     assert_eq!(fell, (0, 0, 0), "no fallbacks or readbacks at a tenth either");
+}
+
+/// Retimed by optical flow at a tenth reversed (#2854), the in-between
+/// frames are drawn on the GPU stack: it presents at the timeline's rate,
+/// and nothing falls back to the CPU composite or reads back. It left the
+/// stack for the CPU, 146 to 208 ms a frame at 4K.
+#[test]
+fn at_a_tenth_reversed_by_flow_the_frames_stay_on_the_gpu() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    if ready().is_none() {
+        return;
+    }
+    let video = pan_source().expect("ffmpeg made the panning source");
+    let flow = klipp_timeline::test_clip::TestClip::of(clip_at(MediaId::new(), -0.1, 0.0, 80.0)).effect(klipp_effects::BuiltinEffect::SpeedRamp { speed: 1.0, blend_mode: 2 }).build();
+    let r = start(&video, vec![flow]);
+    let (shown, made, fell) = play(&r, 2.0, 5.0);
+    stop(r);
+    let presented = presented_fps(&shown, 2.0);
+    let by_feature = klipp_effects::residency::snapshot().by_feature;
+    eprintln!("−0.1 reversed by flow: {presented:.1} presents a second, {made} source frames in the last 4 s; fallbacks and readbacks {fell:?}; by feature {by_feature:?}");
+    assert!(presented >= 29.0, "flow at a tenth presents {presented:.1} frames a second");
+    assert_eq!(fell, (0, 0, 0), "no picture fallbacks, engine readbacks or effect downloads while it played (picture, engine, effects)");
 }
 
 #[test]

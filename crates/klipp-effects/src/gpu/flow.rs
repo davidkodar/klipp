@@ -12,6 +12,13 @@
 //! count and by bytes, and a pair far from the one asked for (a seek,
 //! another clip) is dropped first, so two flows close together, each
 //! dropping the other's pairs, estimate every frame afresh.
+//!
+//! On the executor's chain (#2854) the frames are already on the GPU:
+//! a pair's flow is estimated from them there and only its fields are
+//! kept, each in-between drawn from the frames bound as they are, into
+//! the chain's buffer, nothing read back. Its key alone names the pair
+//! there; whether its motion was followed is read from its count without
+//! waiting, by the frame after.
 use super::{poll_until_mapped, GpuEffectsPipeline};
 use crate::flow::{self, Interpolated};
 use wgpu::util::DeviceExt;
@@ -43,8 +50,12 @@ struct Pair {
     size: (u32, u32),
     /// [`fingerprint`] of the two frames uploaded.
     print: u64,
-    a: wgpu::Buffer,
-    b: wgpu::Buffer,
+    /// The two frames, uploaded; `None` for a pair of the chain's, whose
+    /// frames are bound as they are each time.
+    frames: Option<(wgpu::Buffer, wgpu::Buffer)>,
+    /// A chain pair's count, copied out to be read without waiting, and
+    /// what the read found.
+    count_read: Option<CountRead>,
     forward: wgpu::Buffer,
     backward: wgpu::Buffer,
     count: wgpu::Buffer,
@@ -52,6 +63,17 @@ struct Pair {
     /// Read back with the pair's first frame; kept after.
     unreliable: Option<f32>,
     bytes: u64,
+}
+
+/// A pair's count on its way back without a wait (#2854).
+struct CountRead {
+    staging: wgpu::Buffer,
+    /// The copy into it is submitted: the pair was made on an earlier
+    /// call, whose chain has gone.
+    submitted: bool,
+    asked: bool,
+    /// Whether the map came back, and well, once it has.
+    mapped: std::sync::Arc<std::sync::Mutex<Option<bool>>>,
 }
 
 pub(super) struct FlowGpu {
@@ -534,7 +556,7 @@ impl GpuEffectsPipeline {
         let flow_gpu = self.flow_gpu.get_or_insert_with(|| FlowGpu::new(&device));
         let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("flow") });
         let print = fingerprint(a, b);
-        let index = match flow_gpu.pairs.iter().position(|p| p.key == key && p.size == (width, height) && p.print == print) {
+        let index = match flow_gpu.pairs.iter().position(|p| p.key == key && p.size == (width, height) && p.print == print && p.frames.is_some()) {
             Some(i) => i,
             None => {
                 // Pairs far from this one first, then the oldest, past the
@@ -559,7 +581,8 @@ impl GpuEffectsPipeline {
         let (kept_bytes, out, staging) = flow_gpu.frame.take().expect("made above");
         let pair = &flow_gpu.pairs[index];
         let params = Params { src_w: width, src_h: height, lr: luma[0], lg: luma[1], lb: luma[2], t, total: pair.work.0 * pair.work.1, ..Params::level(pair.work.0, pair.work.1, 0) };
-        pass(&device, &mut enc, &flow_gpu.synth, &params, &[&pair.a, &pair.b, &pair.forward, &pair.backward, &pair.count, &out], (width, height));
+        let (fa, fb) = pair.frames.as_ref().expect("an uploaded pair");
+        pass(&device, &mut enc, &flow_gpu.synth, &params, &[fa, fb, &pair.forward, &pair.backward, &pair.count, &out], (width, height));
         // The frame and its pair's count, read back in one map.
         enc.copy_buffer_to_buffer(&out, 0, &staging, 0, frame_bytes);
         enc.copy_buffer_to_buffer(&pair.count, 0, &staging, frame_bytes, 4);
@@ -593,11 +616,98 @@ impl GpuEffectsPipeline {
     pub fn flow_pairs_kept(&self) -> usize {
         self.flow_gpu.as_ref().map_or(0, |f| f.pairs.len())
     }
+
+    /// The in-between at `t` from `a` to `b`, frames on the GPU already
+    /// (linear RGBA, `width` × `height`), drawn into `out`, recorded on
+    /// the chain's encoder (#2854): the chain's [`interpolate_by_flow`],
+    /// nothing uploaded or read back. A frame whose motion can't be
+    /// followed is cross-faded in the draw. `None` when it couldn't be
+    /// recorded; else the share of the pair's frame that couldn't be
+    /// followed once it is known, which is from the frame after the
+    /// pair's first.
+    ///
+    /// [`interpolate_by_flow`]: Self::interpolate_by_flow
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn record_flow_on_chain(&mut self, key: FlowKey, a: &wgpu::Buffer, b: &wgpu::Buffer, out: &wgpu::Buffer, width: u32, height: u32, t: f32, luma: [f32; 3]) -> Option<Option<f32>> {
+        let frame_bytes = u64::from(width) * u64::from(height) * 16;
+        if self.is_device_lost() || width == 0 || height == 0 || [a, b, out].iter().any(|buf| buf.size() < frame_bytes) {
+            return None;
+        }
+        let device = self.device.clone();
+        let flow_gpu = self.flow_gpu.get_or_insert_with(|| FlowGpu::new(&device));
+        let enc = self.chain_encoder.as_mut()?;
+        let index = match flow_gpu.pairs.iter().position(|p| p.key == key && p.size == (width, height) && p.frames.is_none()) {
+            Some(i) => i,
+            None => {
+                flow_gpu.pairs.retain(|p| p.key.clip == key.clip && p.key != key && (p.key.from_secs - key.from_secs).abs() <= KEPT_SPAN_SECS);
+                let mut pair = estimate_fields(&device, &self.queue, flow_gpu, enc, key, a, b, (width, height), luma);
+                let staging = device.create_buffer(&wgpu::BufferDescriptor { label: Some("flow_count_read"), size: 4, usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+                enc.copy_buffer_to_buffer(&pair.count, 0, &staging, 0, 4);
+                pair.count_read = Some(CountRead { staging, submitted: false, asked: false, mapped: Default::default() });
+                flow_gpu.pairs.push(pair);
+                while flow_gpu.pairs.len() > KEPT_PAIRS || (flow_gpu.pairs.len() > 1 && flow_gpu.pairs.iter().map(|p| p.bytes).sum::<u64>() > KEPT_BYTES) {
+                    flow_gpu.pairs.remove(0);
+                }
+                flow_gpu.pairs.len() - 1
+            }
+        };
+        let pair = &mut flow_gpu.pairs[index];
+        let params = Params { src_w: width, src_h: height, lr: luma[0], lg: luma[1], lb: luma[2], t, total: pair.work.0 * pair.work.1, ..Params::level(pair.work.0, pair.work.1, 0) };
+        pass(&device, enc, &flow_gpu.synth, &params, &[a, b, &pair.forward, &pair.backward, &pair.count, out], (width, height));
+        // The count, copied out with the estimate and submitted with it:
+        // asked for by the frame after, once that chain has gone, and read
+        // when it is there.
+        if pair.unreliable.is_none() {
+            if let Some(read) = &mut pair.count_read {
+                if !read.submitted {
+                    // Made on this call: its copy goes with this chain.
+                    read.submitted = true;
+                } else if read.asked {
+                    let _ = device.poll(wgpu::Maintain::Poll);
+                    let mapped = *read.mapped.lock().unwrap_or_else(|e| e.into_inner());
+                    match mapped {
+                        Some(true) => {
+                            let count = u32::from_le_bytes(read.staging.slice(..4).get_mapped_range()[..4].try_into().expect("four bytes"));
+                            read.staging.unmap();
+                            pair.unreliable = Some(count as f32 / (pair.work.0 * pair.work.1) as f32);
+                            pair.count_read = None;
+                        }
+                        // Not read: not known, and not asked again.
+                        Some(false) => pair.count_read = None,
+                        None => {}
+                    }
+                } else {
+                    read.asked = true;
+                    let mapped = std::sync::Arc::clone(&read.mapped);
+                    read.staging.slice(..4).map_async(wgpu::MapMode::Read, move |r| {
+                        *mapped.lock().unwrap_or_else(|e| e.into_inner()) = Some(r.is_ok());
+                    });
+                }
+            }
+        }
+        Some(pair.unreliable)
+    }
 }
 
 /// Upload `a` and `b` and record their flow's estimate into `enc`.
 #[allow(clippy::too_many_arguments)]
 fn estimate_pair(device: &wgpu::Device, queue: &wgpu::Queue, gpu: &FlowGpu, enc: &mut wgpu::CommandEncoder, key: FlowKey, a: &[f32], b: &[f32], size: (u32, u32), luma: [f32; 3]) -> Pair {
+    let storage = |label: &str, size: u64, extra: wgpu::BufferUsages| device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size, usage: wgpu::BufferUsages::STORAGE | extra, mapped_at_creation: false });
+    let frame_bytes = u64::from(size.0) * u64::from(size.1) * 16;
+    let fa = storage("flow_a", frame_bytes, wgpu::BufferUsages::COPY_DST);
+    let fb = storage("flow_b", frame_bytes, wgpu::BufferUsages::COPY_DST);
+    queue.write_buffer(&fa, 0, bytemuck::cast_slice(a));
+    queue.write_buffer(&fb, 0, bytemuck::cast_slice(b));
+    let mut pair = estimate_fields(device, queue, gpu, enc, key, &fa, &fb, size, luma);
+    pair.bytes += 2 * frame_bytes;
+    pair.frames = Some((fa, fb));
+    pair
+}
+
+/// Record the flow's estimate between `fa` and `fb` (linear RGBA on the
+/// GPU, `size`) into `enc`: a pair holding only its fields.
+#[allow(clippy::too_many_arguments)]
+fn estimate_fields(device: &wgpu::Device, queue: &wgpu::Queue, gpu: &FlowGpu, enc: &mut wgpu::CommandEncoder, key: FlowKey, fa: &wgpu::Buffer, fb: &wgpu::Buffer, size: (u32, u32), luma: [f32; 3]) -> Pair {
     let sizes = flow::level_sizes(flow::work_size(size.0, size.1));
     let work = sizes[0];
     let offsets: Vec<u32> = sizes.iter().scan(0u32, |at, &(w, h)| {
@@ -607,11 +717,6 @@ fn estimate_pair(device: &wgpu::Device, queue: &wgpu::Queue, gpu: &FlowGpu, enc:
     }).collect();
     let cells: u64 = sizes.iter().map(|&(w, h)| u64::from(w * h)).sum();
     let storage = |label: &str, size: u64, extra: wgpu::BufferUsages| device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size, usage: wgpu::BufferUsages::STORAGE | extra, mapped_at_creation: false });
-    let frame_bytes = u64::from(size.0) * u64::from(size.1) * 16;
-    let fa = storage("flow_a", frame_bytes, wgpu::BufferUsages::COPY_DST);
-    let fb = storage("flow_b", frame_bytes, wgpu::BufferUsages::COPY_DST);
-    queue.write_buffer(&fa, 0, bytemuck::cast_slice(a));
-    queue.write_buffer(&fb, 0, bytemuck::cast_slice(b));
     let lum_a = storage("flow_lum_a", cells * 4, wgpu::BufferUsages::empty());
     let lum_b = storage("flow_lum_b", cells * 4, wgpu::BufferUsages::empty());
     let forward = storage("flow_forward", cells * 16, wgpu::BufferUsages::empty());
@@ -621,8 +726,8 @@ fn estimate_pair(device: &wgpu::Device, queue: &wgpu::Queue, gpu: &FlowGpu, enc:
     queue.write_buffer(&count, 0, &[0; 4]);
 
     let base = Params { src_w: size.0, src_h: size.1, lr: luma[0], lg: luma[1], lb: luma[2], ..Params::level(work.0, work.1, 0) };
-    pass(device, enc, &gpu.luma, &base, &[&fa, &lum_a], work);
-    pass(device, enc, &gpu.luma, &base, &[&fb, &lum_b], work);
+    pass(device, enc, &gpu.luma, &base, &[fa, &lum_a], work);
+    pass(device, enc, &gpu.luma, &base, &[fb, &lum_b], work);
     for level in 1..sizes.len() {
         let (w, h) = sizes[level];
         let (cw, ch) = sizes[level - 1];
@@ -640,8 +745,7 @@ fn estimate_pair(device: &wgpu::Device, queue: &wgpu::Queue, gpu: &FlowGpu, enc:
         }
     }
     pass(device, enc, &gpu.count, &Params::level(work.0, work.1, 0), &[&forward, &backward, &count], work);
-    let bytes = 2 * frame_bytes + 2 * cells * 16;
-    Pair { key, size, print: 0, a: fa, b: fb, forward, backward, count, work, unreliable: None, bytes }
+    Pair { key, size, print: 0, frames: None, count_read: None, forward, backward, count, work, unreliable: None, bytes: 2 * cells * 16 }
 }
 
 #[cfg(test)]
