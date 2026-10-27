@@ -1,0 +1,124 @@
+{
+  "format_version": 2,
+  "id": "c41f8a27-6e9b-4d35-a2c0-9b7e3f5d1a48",
+  "name": "Glitch",
+  "category": "Stylise",
+  "written_by": "built-in",
+  "kind": "recipe",
+  "composition_id": "00000000-0000-0000-0000-000000000000",
+  "parameters": {
+    "amount": {
+      "label": "Amount",
+      "default": {
+        "type": "Number",
+        "value": 0.6
+      },
+      "range": {
+        "min": 0.0,
+        "max": 1.0
+      }
+    },
+    "speed": {
+      "label": "Speed",
+      "default": {
+        "type": "Number",
+        "value": 8.0
+      },
+      "range": {
+        "min": 0.0,
+        "max": 30.0
+      }
+    }
+  },
+  "slots": {},
+  "bindings": [
+    {
+      "parameter": "amount",
+      "property": "node:0.strength",
+      "link": {
+        "to": [
+          0.0,
+          3.0
+        ]
+      }
+    },
+    {
+      "parameter": "speed",
+      "property": "node:0.speed"
+    },
+    {
+      "parameter": "amount",
+      "property": "node:1.red_shift",
+      "link": {
+        "to": [
+          0.0,
+          12.0
+        ]
+      }
+    },
+    {
+      "parameter": "amount",
+      "property": "node:1.blue_shift",
+      "link": {
+        "to": [
+          0.0,
+          -12.0
+        ]
+      }
+    },
+    {
+      "parameter": "amount",
+      "property": "node:2.amount",
+      "link": {
+        "to": [
+          0.0,
+          0.12
+        ]
+      }
+    }
+  ],
+  "graph": {
+    "ops": [
+      {
+        "op": "add",
+        "after": {
+          "anchor": "end"
+        },
+        "type": "klipp.fx.warp",
+        "params": {
+          "mode": "torn_rows",
+          "band": 0.05
+        },
+        "label": "Torn rows"
+      },
+      {
+        "op": "add",
+        "after": {
+          "new": 0
+        },
+        "type": "klipp.fx.chromatic_aberration",
+        "label": "Colour split"
+      },
+      {
+        "op": "add",
+        "after": {
+          "new": 1
+        },
+        "type": "klipp.fx.noise_generator",
+        "label": "Static"
+      }
+    ],
+    "checks": [
+      {
+        "at": [
+          0.26,
+          0.5
+        ],
+        "channel": "green",
+        "min": 0.6,
+        "max": 1.0,
+        "says": "the patch, torn sideways past its edge"
+      }
+    ]
+  }
+}

@@ -1,0 +1,144 @@
+{
+  "format_version": 2,
+  "id": "7a3d9e52-1c6b-4f28-b0e4-5d9f2a8c1e76",
+  "name": "Camera shake",
+  "category": "Motion",
+  "written_by": "built-in",
+  "kind": "recipe",
+  "composition_id": "00000000-0000-0000-0000-000000000000",
+  "parameters": {
+    "strength": {
+      "label": "Strength",
+      "default": {
+        "type": "Number",
+        "value": 20.0
+      },
+      "range": {
+        "min": 0.0,
+        "max": 200.0
+      }
+    },
+    "speed": {
+      "label": "Speed",
+      "default": {
+        "type": "Number",
+        "value": 4.0
+      },
+      "range": {
+        "min": 0.1,
+        "max": 20.0
+      }
+    },
+    "rotation": {
+      "label": "Rotation",
+      "default": {
+        "type": "Number",
+        "value": 1.0
+      },
+      "range": {
+        "min": 0.0,
+        "max": 15.0
+      }
+    }
+  },
+  "slots": {},
+  "bindings": [
+    {
+      "parameter": "strength",
+      "property": "node:0.position_x~amplitude"
+    },
+    {
+      "parameter": "strength",
+      "property": "node:0.position_y~amplitude"
+    },
+    {
+      "parameter": "speed",
+      "property": "node:0.position_x~frequency"
+    },
+    {
+      "parameter": "speed",
+      "property": "node:0.position_y~frequency"
+    },
+    {
+      "parameter": "rotation",
+      "property": "node:0.rotation~amplitude"
+    },
+    {
+      "parameter": "speed",
+      "property": "node:0.rotation~frequency"
+    }
+  ],
+  "graph": {
+    "ops": [
+      {
+        "op": "add",
+        "after": {
+          "anchor": "end"
+        },
+        "type": "klipp.fx.picture_transform",
+        "params": {
+          "scale_x": 1.1,
+          "scale_y": 1.1
+        },
+        "label": "Handheld"
+      },
+      {
+        "op": "modify",
+        "path": {
+          "new": 0
+        },
+        "key": "position_x",
+        "modifiers": [
+          {
+            "type": "wiggle",
+            "amplitude": 0.0,
+            "frequency": 4.0
+          }
+        ]
+      },
+      {
+        "op": "modify",
+        "path": {
+          "new": 0
+        },
+        "key": "position_y",
+        "modifiers": [
+          {
+            "type": "wiggle",
+            "amplitude": 0.0,
+            "frequency": 4.0
+          }
+        ]
+      },
+      {
+        "op": "modify",
+        "path": {
+          "new": 0
+        },
+        "key": "rotation",
+        "modifiers": [
+          {
+            "type": "wiggle",
+            "amplitude": 0.0,
+            "frequency": 4.0
+          }
+        ]
+      }
+    ],
+    "checks": [
+      {
+        "at": [
+          0.1,
+          0.15
+        ],
+        "channel": "red",
+        "min": 0.55,
+        "max": 0.62,
+        "says": "the background, still grey through a gentle shake, no edge shown"
+      }
+    ],
+    "check_with": {
+      "strength": 4.0
+    }
+  }
+}
