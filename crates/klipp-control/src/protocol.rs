@@ -1244,6 +1244,24 @@ pub enum ControlCommand {
         #[serde(default)]
         min_gap_secs: Option<f64>,
     },
+    /// The moments of a long talk, podcast, stream or vlog that stand on
+    /// their own as short clips (#2720), ranked, each with why. A read;
+    /// changes nothing.
+    FindMoments {
+        media_id: String,
+        /// The length aimed for, seconds (30).
+        #[serde(default)]
+        length: Option<f64>,
+        /// How many (5).
+        #[serde(default)]
+        count: Option<usize>,
+        /// Words one of which a moment must hold.
+        #[serde(default)]
+        include: Vec<String>,
+        /// Words no moment may hold.
+        #[serde(default)]
+        exclude: Vec<String>,
+    },
     /// A scope image of a frame: waveform, parade, vectorscope or
     /// histogram, GPU-drawn from the frame at `secs`, written to `path`.
     /// Measures the frame without disturbing the viewer's own scopes:

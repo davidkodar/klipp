@@ -825,6 +825,7 @@ fn handle(
         #[cfg(feature = "test-hooks")]
         cmd @ ControlCommand::ShowPanel { .. } => requests::editing::respond(ctx, cmd, collect),
         cmd @ (ControlCommand::Selects { .. }
+            | ControlCommand::FindMoments { .. }
             | ControlCommand::SearchMusic { .. }
             | ControlCommand::SearchSfx { .. }
             | ControlCommand::AddMusic { .. }
