@@ -18,7 +18,7 @@ use super::parity_manifest::{
 };
 use crate::inspector::generated::{effect_value, row};
 use klipp_core::AppCommand;
-use klipp_effects::registry::presentation::{Cond, Presentation, Widget};
+use klipp_effects::registry::presentation::{Presentation, Widget};
 use klipp_effects::registry::{effect_types, EffectType, ParamDesc, ParamKind};
 use klipp_effects::BuiltinEffect;
 use klipp_timeline::test_clip;
@@ -137,7 +137,7 @@ pub(super) fn acting_sample(ty: &EffectType) -> BuiltinEffect {
 
 pub(super) fn editable(ty: &EffectType, pres: &Presentation) -> Result<BuiltinEffect, String> {
     let mut effect = acting_sample(ty);
-    for Cond::ParamIs { key, value } in [pres.visible_if, pres.enabled_if].into_iter().flatten() {
+    for (key, value) in [pres.visible_if, pres.enabled_if].into_iter().flatten().map(|c| (c.key(), c.a_value_meeting_it())) {
         let desc = ty
             .desc
             .params
@@ -563,7 +563,7 @@ fn run_entry(report: &mut Report, entry: &CatalogEntry, surface: Surface, varian
     // the row comes and goes with it, the condition's stored field set the
     // other way on the effect straight, no widget involved; drawing either
     // writes nothing.
-    if let Some(Cond::ParamIs { key: cond_key, value: met }) = pres.visible_if {
+    if let Some((cond_key, met)) = pres.visible_if.map(|c| (c.key(), c.a_value_meeting_it())) {
         report.case(&name("shown with its condition"), [key(Interaction::ConditionalVisibility)], || {
             let cond = ty.desc.params.iter().find(|p| p.key == cond_key).ok_or_else(|| format!("unknown condition {cond_key}"))?;
             let drawn = |effect: &BuiltinEffect| -> Result<usize, String> {

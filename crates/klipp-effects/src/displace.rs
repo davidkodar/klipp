@@ -144,27 +144,12 @@ fn dn_offset(x: f32, y: f32, amount: f32, size: f32, speed: f32, direction: u32,
 }
 pub(crate) use noise_wgsl;
 
-/// The GPU's Displace: one pass, each pixel from where the field moves
-/// it, premultiplied while mixed. After the pixel storage and
-/// [`noise_wgsl`].
-macro_rules! shader_wgsl {
+/// [`sample_premultiplied`] in WGSL, reading the shader's `input` at its
+/// `params.width` × `params.height`: what a shader that moves pixels
+/// samples by (the Warp's too). After its declarations.
+macro_rules! sample_wgsl {
     () => {
         "
-struct Params {
-    width: u32,
-    height: u32,
-    amount: f32,
-    size: f32,
-    speed: f32,
-    direction: u32,
-    seed: u32,
-    time: f32,
-}
-
-@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
-@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
-@group(0) @binding(2) var<uniform> params: Params;
-
 fn at(x: i32, y: i32) -> vec4<f32> {
     let w = i32(params.width);
     let h = i32(params.height);
@@ -188,6 +173,32 @@ fn sample_premultiplied(sx: f32, sy: f32) -> vec4<f32> {
     if sum.a > 1e-6 { return vec4<f32>(sum.rgb / sum.a, sum.a); }
     return vec4<f32>(0.0);
 }
+
+"
+    };
+}
+pub(crate) use sample_wgsl;
+
+/// The GPU's Displace: one pass, each pixel from where the field moves
+/// it, premultiplied while mixed. After the pixel storage and
+/// [`noise_wgsl`]; [`sample_wgsl`] after it.
+macro_rules! shader_wgsl {
+    () => {
+        "
+struct Params {
+    width: u32,
+    height: u32,
+    amount: f32,
+    size: f32,
+    speed: f32,
+    direction: u32,
+    seed: u32,
+    time: f32,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
 
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {

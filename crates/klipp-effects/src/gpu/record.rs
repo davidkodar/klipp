@@ -89,6 +89,7 @@ pub fn slots_needed(effect: &BuiltinEffect) -> Option<usize> {
         | BuiltinEffect::Mirror { .. }
         | BuiltinEffect::LensDistortion { .. }
         | BuiltinEffect::Displace { .. }
+        | BuiltinEffect::Warp { .. }
         | BuiltinEffect::Reflection { .. }
         | BuiltinEffect::Letterbox { .. }
         | BuiltinEffect::Dilate { .. }
@@ -417,6 +418,19 @@ impl GpuEffectsPipeline {
                     scale: *scale,
                 });
                 (&self.lens_distortion_pipeline, slot)
+            }
+            BuiltinEffect::Warp { .. } => {
+                let Some(s) = effect.warp_settings().filter(|s| !crate::warp::is_identity(s)) else {
+                    return Recorded::Identity;
+                };
+                let slot = rec.slots.claim(q, &crate::gpu::WarpParams {
+                    width, height,
+                    mode: s.mode, direction: s.direction,
+                    amplitude: s.amplitude, wavelength: s.wavelength, speed: s.speed, angle: s.angle,
+                    strength: s.strength, radius: s.radius, center_x: s.center_x, center_y: s.center_y,
+                    band: s.band, time: s.time, _pad0: 0, _pad1: 0,
+                });
+                (&self.warp_pipeline, slot)
             }
             BuiltinEffect::Displace { amount, size, speed, direction, seed, time } => {
                 if amount.abs() < f32::EPSILON {

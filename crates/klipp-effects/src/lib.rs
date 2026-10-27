@@ -41,6 +41,7 @@ pub mod cpu_grade;
 pub mod deflicker;
 pub mod dither;
 pub mod displace;
+pub mod warp;
 pub mod planar;
 pub mod old_film;
 pub mod reflection;
@@ -639,6 +640,36 @@ pub enum BuiltinEffect {
         /// 0 both ways, 1 across only, 2 up and down only.
         direction: u32,
         seed: u32,
+        #[serde(default)]
+        time: f32,
+    },
+    /// Warp (#2758): the picture bent by one of [`warp`]'s shapes, each
+    /// pixel taken from where the shape moves it: a wave, a twirl, a
+    /// bulge or pinch, ripples, or rows torn sideways. The same shapes the
+    /// transitions that bend two shots use. **The compositor sets
+    /// `time`**, the clip's time in seconds, as it sets Displace's.
+    Warp {
+        /// 0 wave, 1 twirl, 2 bulge or pinch, 3 ripples, 4 torn rows.
+        mode: u32,
+        /// Wave, ripples: how far at most, pixels of a 1080-line frame.
+        amplitude: f32,
+        /// Wave, ripples: a wave's length, a fraction of the frame.
+        wavelength: f32,
+        /// Waves, rings or tears a second.
+        speed: f32,
+        /// Wave: 0 across, 1 up and down, 2 both.
+        direction: u32,
+        /// Twirl: the turn at its centre, degrees.
+        angle: f32,
+        /// Bulge (above 0) or pinch (below), -0.9 to 0.9; torn rows: how
+        /// far they tear.
+        strength: f32,
+        /// Twirl, bulge: its reach, a fraction of the frame's height.
+        radius: f32,
+        center_x: f32,
+        center_y: f32,
+        /// Torn rows: a band's height, a fraction of the frame's height.
+        band: f32,
         #[serde(default)]
         time: f32,
     },
@@ -1465,6 +1496,13 @@ pub fn draws_outside_the_picture(effect: &BuiltinEffect) -> bool {
 }
 
 impl BuiltinEffect {
+    /// A Warp's settings as its kernels take them; `None` for another
+    /// effect.
+    pub fn warp_settings(&self) -> Option<warp::Settings> {
+        let BuiltinEffect::Warp { mode, amplitude, wavelength, speed, direction, angle, strength, radius, center_x, center_y, band, time } = *self else { return None };
+        Some(warp::Settings { mode, amplitude, wavelength, speed, direction, angle, strength, radius, center_x, center_y, band, time })
+    }
+
     /// A reflection's (#2707) row of the frame `height` tall from which
     /// the layer is blended by another mode, and that mode: the rows
     /// below its waterline mix with the picture below as water does.
@@ -1560,6 +1598,7 @@ pub fn is_identity_effect(effect: &BuiltinEffect) -> bool {
                 && rotation_y.abs() < f32::EPSILON
         }
         BuiltinEffect::CornerPin { tl, tr, br, bl } => corner_pin::is_still(&[*tl, *tr, *br, *bl]),
+        BuiltinEffect::Warp { .. } => effect.warp_settings().is_none_or(|s| warp::is_identity(&s)),
         BuiltinEffect::Lut3D { opacity, .. } => *opacity <= 0.0,
         BuiltinEffect::PictureTransform { .. } => effect.picture_transform_as_transform().is_some_and(|t| is_identity_effect(&t)),
         // A flicker of nothing, or one whose every jump holds (#989).

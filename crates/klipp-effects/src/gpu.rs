@@ -253,6 +253,7 @@ pub struct GpuEffectsPipeline {
     mirror_pipeline: wgpu::ComputePipeline,
     lens_distortion_pipeline: wgpu::ComputePipeline,
     displace_pipeline: wgpu::ComputePipeline,
+    warp_pipeline: wgpu::ComputePipeline,
     reflection_pipeline: wgpu::ComputePipeline,
     dilate_pipeline: wgpu::ComputePipeline,
     erode_pipeline: wgpu::ComputePipeline,
@@ -1138,6 +1139,7 @@ impl GpuEffectsPipeline {
         let mirror_pipeline = create_pipeline(&device, &pipeline_layout, "mirror", SHADER_MIRROR);
         let lens_distortion_pipeline = create_pipeline(&device, &pipeline_layout, "lens_distortion", SHADER_LENS_DISTORTION);
         let displace_pipeline = create_pipeline(&device, &pipeline_layout, "displace", SHADER_DISPLACE);
+        let warp_pipeline = create_pipeline(&device, &pipeline_layout, "warp", SHADER_WARP);
         let reflection_pipeline = create_pipeline(&device, &pipeline_layout, "reflection", SHADER_REFLECTION);
         let dilate_pipeline = create_pipeline(&device, &pipeline_layout, "dilate", SHADER_DILATE);
         let erode_pipeline = create_pipeline(&device, &pipeline_layout, "erode", SHADER_ERODE);
@@ -1772,6 +1774,7 @@ impl GpuEffectsPipeline {
             mirror_pipeline,
             lens_distortion_pipeline,
             displace_pipeline,
+            warp_pipeline,
             reflection_pipeline,
             dilate_pipeline,
             erode_pipeline,
@@ -9832,6 +9835,29 @@ pub(crate) struct DisplaceParams {
 }
 // 8 fields x 4 bytes = 32 bytes
 
+/// [`crate::warp`]'s pass (#2758), in the shader's order.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub(crate) struct WarpParams {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) mode: u32,
+    pub(crate) direction: u32,
+    pub(crate) amplitude: f32,
+    pub(crate) wavelength: f32,
+    pub(crate) speed: f32,
+    pub(crate) angle: f32,
+    pub(crate) strength: f32,
+    pub(crate) radius: f32,
+    pub(crate) center_x: f32,
+    pub(crate) center_y: f32,
+    pub(crate) band: f32,
+    pub(crate) time: f32,
+    pub(crate) _pad0: u32,
+    pub(crate) _pad1: u32,
+}
+// 16 fields x 4 bytes = 64 bytes
+
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct DilateErodeParams {
@@ -13646,6 +13672,7 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
 
 const SHADER_TRANSITION: &str = concat!(
     shader_pixel_storage_wgsl!(),
+    crate::warp::functions_wgsl!(),
     "
 struct Params {
     width: u32,
@@ -13693,16 +13720,7 @@ fn lerp_pixel(a: vec4<f32>, b: vec4<f32>, t: f32) -> vec4<f32> {
 // integer inputs (pixel or block coordinates, progress's bits), so the
 // pattern is the same on every GPU and on the CPU. A `fract(sin(…))`
 // hash depended on each GPU's approximation of `sin` at large arguments.
-fn hash_u(v: u32) -> u32 {
-    var x = v;
-    x = ((x >> 16u) ^ x) * 0x45d9f3bu;
-    x = ((x >> 16u) ^ x) * 0x45d9f3bu;
-    return (x >> 16u) ^ x;
-}
-
-fn rand3(a: u32, b: u32, c: u32) -> f32 {
-    return f32(hash_u(a ^ hash_u(b ^ hash_u(c)))) / 4294967295.0;
-}
+// `hash_u` and `rand3` are the shared warps' (`crate::warp`).
 
 // Smooth value noise for the film burn's edge: `rand3` at the corners of
 // a unit grid, blended with a smoothstep. Integer-hashed, so the same on
@@ -14137,21 +14155,11 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
         // and moved one shot only: a plain dissolve to see (#2764).
         let cx = f32(params.width) * 0.5;
         let cy = f32(params.height) * 0.5;
-        let dx = f32(x) - cx;
-        let dy = f32(y) - cy;
-        let dist = length(vec2<f32>(dx, dy));
         let wave = sin(p * 3.14159265);
-        let phase = dist / f32(params.height) * params.param1 * 6.28318530 - p * params.param2 * 10.0;
-        let ripple = sin(phase) * wave * params.param0 * f32(params.height) / 1080.0;
-        var nx: f32 = 0.0;
-        var ny: f32 = 0.0;
-        if dist > 0.1 {
-            nx = dx / dist;
-            ny = dy / dist;
-        }
-        let sx = clamp(f32(x) + nx * ripple, 0.0, f32(params.width) - 1.0);
-        let sy = clamp(f32(y) + ny * ripple, 0.0, f32(params.height) - 1.0);
-        let base = lerp_pixel(bilinear(false, sx, sy), bilinear(true, sx, sy), p);
+        // The rings are the shared warp's (`crate::warp`).
+        let r = warp_ripple(f32(x), f32(y), f32(params.width), f32(params.height), cx, cy, params.param1, p * params.param2 * 10.0, wave, params.param0);
+        let phase = r.z;
+        let base = lerp_pixel(bilinear(false, r.x, r.y), bilinear(true, r.x, r.y), p);
         let light = 1.0 + cos(phase) * wave * 0.15;
         result = vec4<f32>(clamp(base.x * light, 0.0, 255.0), clamp(base.y * light, 0.0, 255.0), clamp(base.z * light, 0.0, 255.0), base.w);
     } else if params.kind_id == 21u || params.kind_id == 22u {
@@ -14966,10 +14974,8 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
         let intensity = params.param0;
         let block_size = max(params.param1, 1.0);
         let envelope = sin(p * 3.14159265) * intensity;
-        let band = u32(f32(y) / (block_size * 3.0));
-        let step = u32(p * 12.0);
-        let on = select(0.0, 1.0, rand3(band, step, 6u) > 0.35);
-        let shift = (0.3 + 0.7 * rand3(band, step, 7u)) * envelope * 0.04 * f32(params.width) * on;
+        // The torn rows are the shared warp's (`crate::warp`).
+        let shift = warp_band_shift(f32(y), block_size * 3.0, u32(p * 12.0), envelope, f32(params.width));
         let rx = clamp(f32(x) + shift, 0.0, f32(params.width) - 1.0);
         let bx = clamp(f32(x) - shift, 0.0, f32(params.width) - 1.0);
         let r_idx = u32(y) * params.width + u32(rx);
@@ -15040,20 +15046,12 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
         // Swirl: rotational distortion spiraling from center.
         let cx = f32(params.width) * 0.5;
         let cy = f32(params.height) * 0.5;
-        let dx = f32(x) - cx;
-        let dy = f32(y) - cy;
-        let dist = length(vec2<f32>(dx, dy));
         let max_r = max(length(vec2<f32>(cx, cy)), 1.0);
-        let norm_dist = dist / max_r;
         let max_angle = params.param0 * 3.14159265 / 180.0;
-        let falloff = params.param1;
         let envelope = sin(p * 3.14159265);
-        let swirl_angle = max_angle * envelope * exp(-norm_dist * falloff);
-        let cos_a = cos(swirl_angle);
-        let sin_a = sin(swirl_angle);
-        let sx = clamp(cos_a * dx - sin_a * dy + cx, 0.0, f32(params.width) - 1.0);
-        let sy = clamp(sin_a * dx + cos_a * dy + cy, 0.0, f32(params.height) - 1.0);
-        let sample_idx = u32(sy) * params.width + u32(sx);
+        // The turn is the shared warp's (`crate::warp`).
+        let s = warp_twirl(f32(x), f32(y), f32(params.width), f32(params.height), cx, cy, max_r, max_angle * envelope, params.param1);
+        let sample_idx = u32(s.y) * params.width + u32(s.x);
         let from_s = to_bytes(unpack(from_buf[sample_idx]));
         let to_s = to_bytes(unpack(to_buf[sample_idx]));
         result = lerp_pixel(from_s, to_s, p);
@@ -15062,30 +15060,12 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
         // strongest at the cut; param0 the amplitude in pixels of a
         // 1080-line frame. Unlit, its bend read as a plain dissolve on
         // footage (#2764).
-        let frequency = params.param1;
-        let dir = u32(params.param2 + 0.5);
         let wave = sin(p * 3.14159265);
         let envelope = wave * params.param0 * f32(params.height) / 1080.0;
-        let ay = f32(y) / f32(params.height) * frequency * 6.28318530;
-        let ax = f32(x) / f32(params.width) * frequency * 6.28318530;
-        var off_x: f32 = 0.0;
-        var off_y: f32 = 0.0;
-        var crest: f32 = 0.0;
-        if dir == 0u {
-            off_x = sin(ay) * envelope;
-            crest = cos(ay);
-        } else if dir == 1u {
-            off_y = sin(ax) * envelope;
-            crest = cos(ax);
-        } else {
-            off_x = sin(ay) * envelope * 0.7;
-            off_y = sin(ax) * envelope * 0.7;
-            crest = (cos(ay) + cos(ax)) * 0.5;
-        }
-        let sx = clamp(f32(x) + off_x, 0.0, f32(params.width) - 1.0);
-        let sy = clamp(f32(y) + off_y, 0.0, f32(params.height) - 1.0);
-        let base = lerp_pixel(bilinear(false, sx, sy), bilinear(true, sx, sy), p);
-        let light = 1.0 + crest * wave * 0.15;
+        // The bend is the shared warp's (`crate::warp`).
+        let b = warp_wave(f32(x), f32(y), f32(params.width), f32(params.height), envelope, params.param1, u32(params.param2 + 0.5), 0.0);
+        let base = lerp_pixel(bilinear(false, b.x, b.y), bilinear(true, b.x, b.y), p);
+        let light = 1.0 + b.z * wave * 0.15;
         result = vec4<f32>(clamp(base.x * light, 0.0, 255.0), clamp(base.y * light, 0.0, 255.0), clamp(base.z * light, 0.0, 255.0), base.w);
     } else if params.kind_id == 51u {
         // Colorize Flash: user-defined color washes over at the cut.
@@ -17721,7 +17701,11 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
 }
 ";
 
-const SHADER_DISPLACE: &str = concat!(shader_pixel_storage_wgsl!(), crate::displace::noise_wgsl!(), crate::displace::shader_wgsl!());
+const SHADER_DISPLACE: &str = concat!(shader_pixel_storage_wgsl!(), crate::displace::noise_wgsl!(), crate::displace::shader_wgsl!(), crate::displace::sample_wgsl!());
+
+/// [`crate::warp`]'s pass (#2758): the shared warps, the Warp's own
+/// choice among them, and the displace sampler.
+const SHADER_WARP: &str = concat!(shader_pixel_storage_wgsl!(), crate::warp::functions_wgsl!(), crate::warp::shader_wgsl!(), crate::displace::sample_wgsl!());
 
 const SHADER_REFLECTION: &str = concat!(shader_pixel_storage_wgsl!(), crate::displace::noise_wgsl!(), crate::reflection::shader_wgsl!());
 
@@ -20170,6 +20154,7 @@ pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
         ("SHADER_MIRROR", SHADER_MIRROR),
         ("SHADER_LENS_DISTORTION", SHADER_LENS_DISTORTION),
         ("SHADER_DISPLACE", SHADER_DISPLACE),
+        ("SHADER_WARP", SHADER_WARP),
         ("SHADER_REFLECTION", SHADER_REFLECTION),
         ("SHADER_DILATE", SHADER_DILATE),
         ("SHADER_ERODE", SHADER_ERODE),

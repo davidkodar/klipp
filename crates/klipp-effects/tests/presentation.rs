@@ -123,7 +123,7 @@ fn covered() -> Vec<&'static klipp_effects::registry::EffectType> {
 
 /// Types made after the old inspector was recorded (#1746, #989, #1638): their rows
 /// are the tables' alone, with no old row to match.
-const AFTER_THE_RECORDING: &[&str] = &["klipp.fx.lut_3d", "klipp.fx.colour_space_transform", "klipp.fx.picture_transform", "klipp.fx.flicker", "klipp.fx.binocular_vignette", "klipp.fx.merge", "klipp.fx.generator", "klipp.fx.luma_key", "klipp.fx.particles", "klipp.fx.media_source", "klipp.fx.title_source", "klipp.fx.surface_pin", "klipp.fx.clip_below", "klipp.fx.grade_compound", "klipp.fx.displace", "klipp.fx.reflection", "klipp.fx.old_film"];
+const AFTER_THE_RECORDING: &[&str] = &["klipp.fx.lut_3d", "klipp.fx.colour_space_transform", "klipp.fx.picture_transform", "klipp.fx.flicker", "klipp.fx.binocular_vignette", "klipp.fx.merge", "klipp.fx.generator", "klipp.fx.luma_key", "klipp.fx.particles", "klipp.fx.media_source", "klipp.fx.title_source", "klipp.fx.surface_pin", "klipp.fx.warp", "klipp.fx.clip_below", "klipp.fx.grade_compound", "klipp.fx.displace", "klipp.fx.reflection", "klipp.fx.old_film"];
 
 #[test]
 fn a_covered_type_names_every_param() {
@@ -173,9 +173,9 @@ fn stored(case: &serde_json::Value, p: &ParamDesc) -> Option<f32> {
 fn shows(t: &klipp_effects::registry::EffectType, case: &serde_json::Value, pres: &Presentation) -> bool {
     match pres.visible_if {
         None => true,
-        Some(presentation::Cond::ParamIs { key, value }) => {
-            let p = t.desc.params.iter().find(|p| p.key == key).unwrap_or_else(|| panic!("{}: a condition on {key}, no such parameter", t.desc.id));
-            stored(case, p) == Some(value)
+        Some(c) => {
+            let p = t.desc.params.iter().find(|p| p.key == c.key()).unwrap_or_else(|| panic!("{}: a condition on {}, no such parameter", t.desc.id, c.key()));
+            stored(case, p).is_some_and(|v| c.holds_for(v))
         }
     }
 }
@@ -262,6 +262,7 @@ const HIDDEN: &[(&str, &str)] = &[
     // A title source's title (#2758): made and changed by the title op.
     ("klipp.fx.title_source", "title"),
     ("klipp.fx.surface_pin", "surface"),
+    ("klipp.fx.warp", "time"),
     ("klipp.fx.transform", "focal_ref"),
     ("klipp.fx.film_grain", "seed"),
     ("klipp.fx.old_film", "seed"),
@@ -360,6 +361,8 @@ const CHOICE_LABELS: &[(&str, &str, &[&str])] = &[
     ("klipp.fx.radial_blur", "mode", &["Zoom", "Spin"]),
     ("klipp.fx.flicker", "target", &["Opacity", "Exposure", "Gamma"]),
     ("klipp.fx.displace", "direction", &["Both", "Across", "Up and Down"]),
+    ("klipp.fx.warp", "mode", &["Wave", "Twirl", "Bulge or Pinch", "Ripples", "Torn Rows"]),
+    ("klipp.fx.warp", "direction", &["Across", "Up and Down", "Both"]),
     ("klipp.fx.reflection", "blend", &["Normal", "Screen", "Soft Light", "Overlay"]),
     ("klipp.fx.particles", "style", &["Dust", "Snow", "Rain", "Sparks", "Embers"]),
     ("klipp.fx.merge", "blend_mode", &["Normal", "Add", "Multiply", "Screen", "Overlay", "Soft Light", "Hard Light", "Difference", "Exclusion", "Colour Dodge", "Colour Burn", "Darken", "Lighten"]),
