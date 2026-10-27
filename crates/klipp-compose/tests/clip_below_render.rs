@@ -257,14 +257,57 @@ fn nothing_is_below_the_bottom_track() {
     assert_eq!(worst_levels(&out, &alone), 0);
 }
 
-/// The GPU display stack doesn't draw what is below a clip yet: it
-/// declines the frame, named, so the timeline render draws it, and the
-/// count of its declines says how often.
+fn display(linear: &[f32]) -> Vec<u8> {
+    klipp_color::display::display_transform_ws_to(linear, klipp_color::display::ToneMapOp::None, klipp_core::WorkingColorspace::Rec709Linear, klipp_core::SdrTransfer::Srgb)
+}
+
+/// The GPU display stack lays a clip that reads what is below it over
+/// what is there (#2758): by each blend mode, its frame is the CPU's
+/// within a level, with nothing falling back. It declined such a frame,
+/// which the timeline render drew on the CPU.
 #[test]
-fn the_gpu_stack_declines_a_clip_below_named() {
+fn the_gpu_stack_lays_a_clip_over_what_is_below_it() {
+    if !gpu_routes().contains(&true) {
+        eprintln!("UNVERIFIED: no GPU");
+        return;
+    }
     let mut src = sources();
     let ground = MediaId::new();
-    let seq = sequence(vec![vec![media(ground, 0.0, 2.0)], vec![merged(media(src.top, 0.0, 2.0), BlendMode::Difference, 1.0, true)]]);
+    let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+    r.set_gpu_enabled(true);
+    let plain = display(&render(false, &sequence(vec![vec![media(ground, 0.0, 2.0)], vec![media(src.top, 0.0, 2.0)]]), &mut src, 1.0).0);
+    for mode in [
+        BlendMode::Normal, BlendMode::Add, BlendMode::Multiply, BlendMode::Screen, BlendMode::Overlay, BlendMode::SoftLight, BlendMode::HardLight,
+        BlendMode::Difference, BlendMode::Exclusion, BlendMode::ColorDodge, BlendMode::ColorBurn, BlendMode::Darken, BlendMode::Lighten,
+    ] {
+        let seq = sequence(vec![vec![media(ground, 0.0, 2.0)], vec![merged(media(src.top, 0.0, 2.0), mode, 0.8, true)]]);
+        let (cpu, found) = render(false, &seq, &mut src, 1.0);
+        assert!(found.declines.is_empty(), "{mode:?}: {:?}", found.declines);
+        let cpu = display(&cpu);
+        let frame = klipp_effects::residency::frame("test", 1.0);
+        let drawn = r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default());
+        drop(frame);
+        let Some((stack, _)) = drawn else { panic!("{mode:?}: the stack declined: {:?}", r.last_decline()) };
+        let fell = klipp_effects::residency::last_frame();
+        assert_eq!(fell.fallback_count(), 0, "{mode:?}: nothing falls back: {:?}", fell.events);
+        let off = cpu.iter().zip(&stack).enumerate().filter(|(i, _)| i % 4 != 3).map(|(_, (a, b))| a.abs_diff(*b)).max().unwrap_or(0);
+        assert!(off <= 1, "{mode:?}: the stack draws {off} levels from the CPU");
+        if mode != BlendMode::Normal {
+            let changed = cpu.iter().zip(&plain).enumerate().filter(|(i, _)| i % 4 != 3).map(|(_, (a, b))| a.abs_diff(*b)).max().unwrap_or(0);
+            assert!(changed > 3, "{mode:?}: what is below changed the picture");
+        }
+    }
+}
+
+/// One whose below is seen through a move or a tilt is still the
+/// timeline render's: the stack declines it, named, and the count of its
+/// declines says how often.
+#[test]
+fn the_gpu_stack_declines_a_moved_clip_below_named() {
+    let mut src = sources();
+    let ground = MediaId::new();
+    let top = merged(placed(media(src.top, 0.0, 2.0), 0.6, 0.6, 10.0, 12.0, 4.0), BlendMode::Difference, 1.0, true);
+    let seq = sequence(vec![vec![media(ground, 0.0, 2.0)], vec![top]]);
     let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
     if !gpu_routes().contains(&true) {
         eprintln!("UNVERIFIED: no GPU");
@@ -273,7 +316,7 @@ fn the_gpu_stack_declines_a_clip_below_named() {
     r.set_gpu_enabled(true);
     let before = klipp_compose::GPU_STACK_DECLINES.load(std::sync::atomic::Ordering::Relaxed);
     assert!(r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()).is_none());
-    assert_eq!(r.last_decline(), Some("clip below"));
+    assert_eq!(r.last_decline(), Some("clip below, moved or tilted"));
     assert!(klipp_compose::GPU_STACK_DECLINES.load(std::sync::atomic::Ordering::Relaxed) > before);
 }
 

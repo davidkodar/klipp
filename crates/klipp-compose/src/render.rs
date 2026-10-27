@@ -956,6 +956,9 @@ pub struct Renderer {
     /// What the tracks below composite to, while a clip that reads it is
     /// drawn in the stacking loop (#1746): a Clip Below's picture.
     below: Option<Arc<Vec<f32>>>,
+    /// What is below the clip the GPU stack is laying now (#2758): the
+    /// composite so far, kept on the GPU for its run to read.
+    stack_below: Option<klipp_effects::gpu::KeptPicture>,
     /// Where analysis assets are kept (M4 step 8): the analysis cache.
     assets: Box<dyn klipp_analysis::assets::AssetStore + Send>,
     /// Analyses derived from their assets with an effect's settings, each
@@ -1160,6 +1163,7 @@ impl Renderer {
             matte_input: None,
             run_display: None,
             below: None,
+            stack_below: None,
             plan_misses: 0,
             spliced: klipp_nodes::NodeGraph::default(),
             passthrough: passthrough_graph(),
@@ -2116,8 +2120,10 @@ impl Renderer {
                 // with its instances (M4 step 5): the stack has no frei0r,
                 // and running the layer's effects here would leave it out.
                 Some("frei0r plug-in")
-            } else if crate::resolve::reads_below(c) {
-                // What is below is the CPU stacking loop's for now (#1746).
+            } else if crate::resolve::reads_below(c) && (c.matte_source.is_some() || c.matte_stencil.is_some() || c.consumed_as_matte) {
+                // What is below is read by the clip as the stack lays it
+                // (#2758); one in a matte's play is the CPU stacking
+                // loop's for now (#1746).
                 Some("clip below")
             } else if crate::resolve::has_grade_compound(c) {
                 // A grade in the chain runs in the timeline render's plan
@@ -2168,6 +2174,11 @@ impl Renderer {
                         if let Some(why) = blocker(side) {
                             return self.gpu_stack_declines(why);
                         }
+                        // What is below a transition's side is the CPU
+                        // stacking loop's for now (#1746).
+                        if crate::resolve::reads_below(side) {
+                            return self.gpu_stack_declines("clip below");
+                        }
                         // A side seen through a matte is matted before the
                         // sides mix (step 2); one that is a matte, a stencil
                         // or an adjustment is not a picture to mix.
@@ -2188,6 +2199,11 @@ impl Renderer {
         for (_, item) in &items {
             if let Item::Clip { c, .. } = item {
                 let is_source = c.consumed_as_matte || sources.contains(&c.id);
+                // A matte's source is laid before anything is stacked: what
+                // is below it isn't there yet.
+                if is_source && crate::resolve::reads_below(c) {
+                    return self.gpu_stack_declines("clip below");
+                }
                 if is_source && c.matte_source.is_some() {
                     return self.gpu_stack_declines("a matte source with a matte of its own");
                 }
@@ -2263,7 +2279,9 @@ impl Renderer {
         for (_, item) in &items {
             match item {
                 Item::Clip { c, slot } => {
-                    if matches!(c.kind, ClipKind::AdjustmentLayer) {
+                    // One reading what is below it is laid as the stack
+                    // reaches it, over what is there (#2758).
+                    if matches!(c.kind, ClipKind::AdjustmentLayer) || crate::resolve::reads_below(c) {
                         continue;
                     }
                     match self.place_layer(*slot, c, time, fps, width, height, src, &transforms, &mut stats) {
@@ -2396,6 +2414,24 @@ impl Renderer {
                     if c.consumed_as_matte || c.matte_stencil.is_some() {
                         continue;
                     }
+                    // Over what is below it: the composite so far, kept for
+                    // its run to read, then the clip laid as any is.
+                    if crate::resolve::reads_below(c) {
+                        self.stack_below = self.executor.gpu_pipeline_or_init().and_then(|g| g.stack_acc_as_picture());
+                        let laid = self.place_layer(*slot, c, time, fps, width, height, src, &transforms, &mut stats);
+                        // Not read (no frame here, or declined): given back.
+                        if let (Some(picture), Some(g)) = (self.stack_below.take(), self.executor.gpu_pipeline_or_init()) {
+                            g.release_picture(picture);
+                        }
+                        self.executor.clear_side_pictures_on_gpu();
+                        match laid {
+                            Ok(Some(p)) => {
+                                placed.insert(*slot, p);
+                            }
+                            Ok(None) => {}
+                            Err(why) => return self.gpu_stack_declines(why),
+                        }
+                    }
                     let Some(p) = placed.get(slot) else { continue };
                     let opacity = p.opacity * track.opacity;
                     if opacity <= 0.001 {
@@ -2519,6 +2555,11 @@ impl Renderer {
         // Read at the render's size: a gap is in its pixels.
         let split = fx.iter().rev().find_map(|e| e.split_blend(height));
         self.title_light(c, &mut fx);
+        if crate::resolve::reads_below(c) {
+            // Where the stack places it, as it places any layer.
+            let place = transforms.get(&c.id).map(|xf| transform_effect(*xf, tilt(c, &fx, eval_clip_time(c, time))));
+            self.put_below_on_gpu(c, &fx, place)?;
+        }
         // A clip the camera's shutter blurs this frame (one that really
         // moves while it is open, #1922): its effects before the move run
         // on its picture as any layer's do, the picture is placed at each
@@ -4537,6 +4578,37 @@ impl Renderer {
             },
         };
         self.executor.put_side_picture(klipp_nodes::side_picture::SideKey::Below, got);
+    }
+
+    /// What is below `c` on the GPU stack (#2758), for its Clip Below: the
+    /// composite so far ([`Self::stack_below`]) handed to its run as it is,
+    /// for a clip placed where it stands (`place`, as the stack places it).
+    /// As on the CPU (`put_below`), a clip pinned to a surface has none.
+    /// One moved or tilted, whose below is seen through its placement, is
+    /// the CPU stacking loop's for now.
+    fn put_below_on_gpu(&mut self, c: &Clip, fx: &[BuiltinEffect], place: Option<BuiltinEffect>) -> Result<(), &'static str> {
+        use klipp_nodes::side_picture::{SideKey, SideMissing};
+        // The effects its picture runs too: a move there is its placement
+        // on the CPU route, what is below seen through it.
+        let picture: Vec<BuiltinEffect> = c.picture_effects().map(|es| es.into_iter().filter(|e| e.enabled).map(|e| e.effect).collect()).unwrap_or_default();
+        let fx: Vec<&BuiltinEffect> = fx.iter().chain(&picture).collect();
+        if self.pins.contains_key(&c.id) || fx.iter().any(|e| matches!(e, BuiltinEffect::CornerPin { .. })) {
+            self.executor.put_side_picture(SideKey::Below, Err(SideMissing::Unsupported("the clip is pinned to a surface".into())));
+            return Ok(());
+        }
+        let placed_still = |e: &BuiltinEffect| match *e {
+            BuiltinEffect::Transform { position_x, position_y, scale_x, scale_y, rotation, rotation_x, rotation_y, perspective, .. } => {
+                position_x == 0.0 && position_y == 0.0 && scale_x == 1.0 && scale_y == 1.0 && rotation == 0.0 && rotation_x == 0.0 && rotation_y == 0.0 && perspective == 0.0
+            }
+            _ => true,
+        };
+        if !fx.iter().copied().chain(place.as_ref()).all(placed_still) {
+            return Err("clip below, moved or tilted");
+        }
+        let Some(picture) = self.stack_below.take() else { return Err("what is below couldn't be kept") };
+        self.executor.put_side_picture(SideKey::Below, Err(SideMissing::Unavailable));
+        self.executor.put_side_picture_on_gpu(SideKey::Below, picture);
+        Ok(())
     }
 
     /// Splice `fx` into `clip`'s next grade run as plan nodes (step 10b)
