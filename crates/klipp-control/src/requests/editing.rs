@@ -489,6 +489,23 @@ pub(crate) fn respond(
             Ok(v)
         }
 
+        ControlCommand::MeasureWater { clip_id } => {
+            if in_batch {
+                return Err("measure_water runs in the background; send it on its own".into());
+            }
+            let id = existing_clip_id(ctx, &clip_id)?;
+            {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let clip = seq.tracks.iter().find_map(|t| t.find_clip(id)).ok_or_else(|| format!("no clip with id {clip_id}"))?;
+                if klipp_render::water::reflection_of(clip).is_none() {
+                    return Err("the clip has no reflection: add one with the effect op (kind calm_water) first".into());
+                }
+            }
+            let mut v = send(AppCommand::MeasureWater { clip_id: id })?;
+            v["text"] = json!("Measuring the water under the reflection in the background, from the footage below it: a second or two. klipp_list_clips shows its water once stored; where the reflection takes its tint and darkness from the water, they follow.");
+            Ok(v)
+        }
+
         ControlCommand::SurfaceKey { clip_id, surface, corners, at_secs } => {
             if in_batch {
                 return Err("surface_key solves the track again in the background; send it on its own".into());

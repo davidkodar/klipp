@@ -9141,6 +9141,21 @@ impl TimelinePanel {
                                 }
                             });
                         }
+                        // A reflection's water measured again (#2795): said
+                        // outdated when the footage under it, its range or its
+                        // waterline changed since.
+                        if let Some((_, klipp_effects::BuiltinEffect::Reflection { water_key, .. })) = klipp_render::water::reflection_of(&clip) {
+                            let now = klipp_render::water::footprint_key(state.sequence(), clip_id);
+                            let label = match (water_key, now) {
+                                (0, _) => "Measure the Water",
+                                (k, Some(n)) if k != n => "Re-analyze the Water (outdated)",
+                                _ => "Re-analyze the Water",
+                            };
+                            if ui.button(label).on_hover_text("Measure the water's colour and brightness under the reflection again, from the footage below it").clicked() {
+                                cmds.push(AppCommand::MeasureWater { clip_id });
+                                ui.close_menu();
+                            }
+                        }
                         // The clip faded into the tracks below across the
                         // frame (#2704); its handles then in the viewer.
                         let faded = clip.grade().opacity_gradient().is_some();

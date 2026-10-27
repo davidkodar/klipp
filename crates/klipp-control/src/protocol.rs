@@ -415,6 +415,8 @@ pub enum ControlCommand {
         #[serde(default)]
         direction: Option<String>,
     },
+    /// Measure the water under a clip's reflection again (#2795).
+    MeasureWater { clip_id: String },
     /// Correct a tracked surface on one frame (#2754): `corners` are where
     /// it is at `at_secs` (fractions of the frame, as `track_surface`
     /// takes them). That frame is held as given and the track either side

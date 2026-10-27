@@ -505,7 +505,8 @@ impl KlippApp {
                 | AppEvent::MulticamSyncReady { .. }
                 | AppEvent::DenoiserProfileLearned { .. }
                 | AppEvent::DenoiserProfileFailed { .. }
-                | AppEvent::NormalizeMeasured { .. } => {}
+                | AppEvent::NormalizeMeasured { .. }
+                | AppEvent::WaterMeasured { .. } => {}
             }
         }
 

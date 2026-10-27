@@ -40,6 +40,8 @@ mod export_refuses_a_missing_analysis;
 mod frame_blend_reads_the_stream;
 #[path = "../frame_colour_tags.rs"]
 mod frame_colour_tags;
+#[path = "../water_under_a_reflection.rs"]
+mod water_under_a_reflection;
 #[path = "../gif_export.rs"]
 mod gif_export;
 #[path = "../gradient_grain_export.rs"]

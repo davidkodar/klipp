@@ -370,6 +370,14 @@ exist until the plan runs.
   (true hides the layer's own pixels below the line, letters dipping
   into the water) and `seed`. For example `{op: effect, clip_id: TITLE,
   kind: calm_water, params: {waterline: 0.62, tint: "#1d3b4f"}}`.
+  On water (`calm_water`, `rippled_water`) the tint and darkness come
+  from the water itself: the water under the reflection is measured once
+  from the footage below it, and the tint and darkness follow it
+  (`tint_auto`, `darken_auto`, both on). klipp_list_clips shows the clip's
+  `water` (its colour, and `outdated` when the footage, range or waterline
+  has changed since). `klipp_measure_water {clip_id}` measures it again; it
+  is never redone on its own. Giving `tint` or `darken` by hand, set
+  `tint_auto`/`darken_auto` to 0 so a later measurement keeps them.
   A key is `chroma_key` (`green_screen`, `blue_screen`) on one clip, the
   app's Chroma Key: `color` `#rrggbb` (green, or blue for `blue_screen`),
   `tolerance` (0.2), `softness` (0.1) and `spill` (0.6), each 0 to 1; a

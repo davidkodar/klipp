@@ -44,8 +44,12 @@ pub const SURFACES: &[(&str, &str, &str)] = &[
 /// The reflection on the surface `name` (see [`SURFACES`]), its waterline
 /// at `waterline`.
 pub fn surface(name: &str, waterline: f32) -> Option<crate::BuiltinEffect> {
+    // Water takes its tint and darkness from the water measured under it
+    // (#2795); the other surfaces keep theirs.
     let e = |ripple_amount, ripple_size, ripple_speed, breakup, smear, fade, opacity, darken, contact, blend, tint, tint_amount, submerge| crate::BuiltinEffect::Reflection {
-        waterline, gap: 0.0, ripple_amount, ripple_size, ripple_speed, breakup, smear, fade, opacity, darken, contact, blend, tint, tint_amount, submerge, ripple_from: FROM_NOISE, seed: 0, time: 0.0,
+        waterline, gap: 0.0, ripple_amount, ripple_size, ripple_speed, breakup, smear, fade, opacity, darken, contact, blend, tint, tint_amount,
+        tint_auto: submerge, darken_auto: submerge, water: [0, 0, 0], water_key: 0,
+        submerge, ripple_from: FROM_NOISE, seed: 0, time: 0.0,
     };
     Some(match name {
         "calm_water" => e(10.0, 60.0, 0.6, 0.6, 0.5, 0.45, 0.85, 0.45, 0.6, CALM_BLEND, [25, 85, 100], 0.2, true),
@@ -55,6 +59,15 @@ pub fn surface(name: &str, waterline: f32) -> Option<crate::BuiltinEffect> {
         "glass" => e(0.0, 60.0, 0.0, 0.0, 0.0, 0.35, 0.3, 0.0, 0.0, SCREEN, [0, 0, 0], 0.0, false),
         _ => return None,
     })
+}
+
+/// How much darker a reflection on water of colour `water` (sRGB) is
+/// (#2795): more on dark water, which gives back little, less on bright;
+/// never past 0.15 to 0.7, so glints or a black frame can't take it to
+/// either end.
+pub fn auto_darken(water: [u8; 3]) -> f32 {
+    let l = (0.2126 * water[0] as f32 + 0.7152 * water[1] as f32 + 0.0722 * water[2] as f32) / 255.0;
+    (0.2 + 0.5 * (1.0 - l)).clamp(0.15, 0.7)
 }
 
 /// The effect's numbers as both computations take them, in pixels of the

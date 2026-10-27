@@ -685,6 +685,26 @@ pub enum BuiltinEffect {
         tint: [u8; 3],
         /// How far toward the tint, 0 to 1.
         tint_amount: f32,
+        /// Whether the tint is the water's own colour, measured under the
+        /// reflection (#2795): a measurement landing sets `tint` to it.
+        /// Off, `tint` is the user's.
+        #[serde(default)]
+        tint_auto: bool,
+        /// Whether how much darker it is follows the water's brightness
+        /// (#2795): a measurement landing sets `darken` from it, within
+        /// bounds ([`reflection::auto_darken`]). Off, `darken` is the
+        /// user's, starting from what it last was.
+        #[serde(default)]
+        darken_auto: bool,
+        /// The water's colour as last measured under the reflection, sRGB
+        /// (#2795); what it was measured for is `water_key`.
+        #[serde(default)]
+        water: [u8; 3],
+        /// Which footage, range and waterline `water` was measured for
+        /// (#2795), a 24-bit fingerprint; 0 never measured. One that no
+        /// longer matches is outdated until measured again on request.
+        #[serde(default)]
+        water_key: u32,
         /// Whether the layer's own pixels below the line are hidden, as
         /// letters dipping into water.
         submerge: bool,

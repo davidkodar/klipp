@@ -473,6 +473,10 @@ impl KlippApp {
                 self.correct_surface(*clip_id, *surface, *corners, *at_secs);
                 true
             }
+            AppCommand::MeasureWater { clip_id } => {
+                self.start_water_measure(*clip_id);
+                true
+            }
             AppCommand::OpenSurfaceTool { clip_id, surface } => {
                 self.open_surface_tool(*clip_id, *surface);
                 true

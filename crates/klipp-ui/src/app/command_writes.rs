@@ -258,6 +258,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::TrackSurface { .. }
         | AppCommand::CorrectSurface { .. }
         | AppCommand::OpenSurfaceTool { .. }
+        | AppCommand::MeasureWater { .. }
         | AppCommand::SnapSurface { .. }
         | AppCommand::AnalyzeTrackPoint { .. }
         | AppCommand::CancelTrackAnalysis { .. }
