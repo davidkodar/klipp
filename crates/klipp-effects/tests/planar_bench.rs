@@ -6,7 +6,9 @@
 //! is one, the GPU.
 //!
 //! The clips are fetched outside the repository: run
-//! `scripts/planar-bench.sh`, which checks them and runs this.
+//! `scripts/planar-bench.sh`, which checks them and runs this. A `local`
+//! clip, which has no address, runs when its file is where the list says
+//! and matches its sha256, and is reported as skipped otherwise.
 
 use klipp_effects::gpu::planar::PlanarGpu;
 use klipp_effects::planar::{track, Options, State, Tracked};
@@ -22,6 +24,9 @@ type Points = Vec<(f64, f64)>;
 
 struct Clip {
     name: String,
+    /// A clip kept only on this computer, where it is and its sha256:
+    /// one with no address to fetch it from.
+    local: Option<(PathBuf, String)>,
     quad: [(f64, f64); 4],
     exclude: Vec<Points>,
     /// Each frame checked and where the points are on it; the first is
@@ -30,6 +35,8 @@ struct Clip {
     /// The most mean error, and the most on the last frame checked,
     /// pixels.
     limit: (f64, f64),
+    /// What the tracker can't do on it yet, when it can't.
+    known: Option<String>,
 }
 
 fn points(words: &[&str]) -> Points {
@@ -47,11 +54,20 @@ fn clips(text: &str) -> Vec<Clip> {
     for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
         let words: Vec<&str> = line.split_whitespace().collect();
         match words[0] {
-            "clip" => out.push(Clip { name: words[1].into(), quad: [(0.0, 0.0); 4], exclude: Vec::new(), at: Vec::new(), limit: (0.0, 0.0) }),
+            "clip" => out.push(Clip { name: words[1].into(), local: None, quad: [(0.0, 0.0); 4], exclude: Vec::new(), at: Vec::new(), limit: (0.0, 0.0), known: None }),
+            "local" => {
+                let path = words[3..].join(" ");
+                let path = match path.strip_prefix("~/") {
+                    Some(rest) => PathBuf::from(std::env::var_os("HOME").expect("HOME")).join(rest),
+                    None => PathBuf::from(path),
+                };
+                out.push(Clip { name: words[1].into(), local: Some((path, words[2].into())), quad: [(0.0, 0.0); 4], exclude: Vec::new(), at: Vec::new(), limit: (0.0, 0.0), known: None });
+            }
             "quad" => out.last_mut().expect("a clip").quad = points(&words[1..]).try_into().expect("four corners"),
             "exclude" => out.last_mut().expect("a clip").exclude.push(points(&words[1..])),
             "at" => out.last_mut().expect("a clip").at.push((words[1].parse().expect("frame"), points(&words[2..]))),
             "limit" => out.last_mut().expect("a clip").limit = (words[1].parse().expect("mean"), words[2].parse().expect("drift")),
+            "known" => out.last_mut().expect("a clip").known = Some(words[1..].join(" ")),
             other => panic!("unknown line {other}"),
         }
     }
@@ -144,6 +160,11 @@ fn run(clip: &Clip, path: &Path, on_gpu: Option<&mut PlanarGpu>) -> Vec<Tracked>
     }
 }
 
+/// Whether the file at `path` has the sha256 `sha`.
+fn matches(path: &Path, sha: &str) -> bool {
+    Command::new("sha256sum").arg(path).output().is_ok_and(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).split_whitespace().next() == Some(sha))
+}
+
 fn clip_dir() -> PathBuf {
     std::env::var_os("KLIPP_PLANAR_BENCH").map(PathBuf::from).unwrap_or_else(|| {
         let cache = std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").expect("HOME")).join(".cache"));
@@ -163,7 +184,16 @@ fn the_tracker_holds_real_surfaces() {
     }
     let mut over = Vec::new();
     for clip in &clips {
-        let path = dir.join(format!("{}.mp4", clip.name));
+        let path = match &clip.local {
+            Some((path, sha)) => {
+                if !matches(path, sha) {
+                    eprintln!("{}: skipped, {} is not here or is not the clip annotated", clip.name, path.display());
+                    continue;
+                }
+                path.clone()
+            }
+            None => dir.join(format!("{}.mp4", clip.name)),
+        };
         assert!(path.exists(), "{} is not fetched: run scripts/planar-bench.sh", path.display());
         let mut runs = vec![("cpu", run(clip, &path, None))];
         if let Some(g) = gpu.as_mut() {
@@ -176,8 +206,12 @@ fn the_tracker_holds_real_surfaces() {
             let lost = tracked.iter().filter(|t| t.state == State::Lost).count();
             let each: Vec<String> = e.iter().map(|(f, px, s)| format!("{f}:{px:.2}{}", if s.is_some_and(|s| s != State::Good) { "*" } else { "" })).collect();
             eprintln!("{} {on}: mean {mean:.2} px, drift {drift:.2} px, {lost} lost of {}; {}", clip.name, tracked.len(), each.join(" "));
-            if !(mean <= clip.limit.0 && drift <= clip.limit.1) {
-                over.push(format!("{} {on}: mean {mean:.2} (limit {}), drift {drift:.2} (limit {})", clip.name, clip.limit.0, clip.limit.1));
+            let held = mean <= clip.limit.0 && drift <= clip.limit.1;
+            match (&clip.known, held) {
+                (None, false) => over.push(format!("{} {on}: mean {mean:.2} (limit {}), drift {drift:.2} (limit {})", clip.name, clip.limit.0, clip.limit.1)),
+                (Some(known), false) => eprintln!("{} {on}: KNOWN, {known}", clip.name),
+                (Some(_), true) => over.push(format!("{} {on}: now held within its limit: take its `known` line off", clip.name)),
+                (None, true) => {}
             }
         }
     }

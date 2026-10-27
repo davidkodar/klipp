@@ -89,6 +89,7 @@ struct TLevel {
 pub struct GpuTemplate {
     frame: Frame,
     levels: Vec<TLevel>,
+    model: planar::Model,
 }
 
 fn pipeline(device: &wgpu::Device, label: &str, source: &str) -> wgpu::ComputePipeline {
@@ -275,7 +276,7 @@ impl Backend for PlanarGpu {
             })
             .collect();
         self.queue.submit(Some(enc.finish()));
-        GpuTemplate { frame, levels }
+        GpuTemplate { frame, levels, model: opts.model }
     }
 
     fn region(&self, tpl: &GpuTemplate) -> Frame {
@@ -308,6 +309,7 @@ impl Backend for PlanarGpu {
             start[..9].copy_from_slice(&to_f32(&gl));
             start[9] = 1.0;
             start[13] = 1.0;
+            start[21] = if tpl.model == planar::Model::Similarity { 1.0 } else { 0.0 };
             self.queue.write_buffer(&state, 0, bytemuck::cast_slice(&start));
             self.queue.write_buffer(&trust, 0, bytemuck::cast_slice(&vec![1.0f32; t.n as usize * 2]));
             let p = &self.pipes;

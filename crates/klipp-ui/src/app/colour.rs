@@ -415,6 +415,9 @@ impl KlippApp {
             let quad_px = [px(quad[0]), px(quad[1]), px(quad[2]), px(quad[3])];
             let pivot_px = px(pivot);
             let opts = TrackOptions::default();
+            // On the GPU when there is one (its own passes on the shared
+            // device), else the CPU, which follows the same.
+            let mut gpu = klipp_effects::gpu::planar::PlanarGpu::new();
             let forward: Vec<usize> = (reference + 1..=last).collect();
             let backward: Vec<usize> = (first..reference).rev().collect();
             let share = (forward.len() as f32 / (forward.len() + backward.len()).max(1) as f32).max(0.01);
@@ -422,15 +425,15 @@ impl KlippApp {
             let nothing = || {
                 let _ = event_tx.send(klipp_core::AppEvent::TrackingFailed {
                     clip_id,
-                    error: "nothing in the window to follow: draw it over something with detail".into(),
+                    error: "the window could not be followed from this frame: draw it over something with detail or a clear outline".into(),
                 });
             };
             let tried = !(forward.is_empty() && backward.is_empty());
             if perspective {
                 // Each frame's map from the reference, carrying the
                 // window's corners and pivot, back in frame fractions.
-                let ahead = track_window_perspective(&reference_frame, quad_px, &forward, &mut |f| decode(f), &opts, &|p| report(p * share));
-                let behind = track_window_perspective(&reference_frame, quad_px, &backward, &mut |f| decode(f), &opts, &|p| report(share + p * (1.0 - share)));
+                let ahead = track_window_perspective(gpu.as_mut(), &reference_frame, quad_px, &forward, &mut |f| decode(f), &|p| report(p * share));
+                let behind = track_window_perspective(gpu.as_mut(), &reference_frame, quad_px, &backward, &mut |f| decode(f), &|p| report(share + p * (1.0 - share)));
                 if ahead.is_empty() && behind.is_empty() && tried {
                     nothing();
                     return;
@@ -445,8 +448,8 @@ impl KlippApp {
                 let _ = event_tx.send(klipp_core::AppEvent::TrackingComplete { clip_id, point_index, positions, start_frame, motion: Vec::new(), corners });
                 return;
             }
-            let ahead = track_window(&reference_frame, quad_px, pivot_px, &forward, &mut |f| decode(f), &opts, &|p| report(p * share));
-            let behind = track_window(&reference_frame, quad_px, pivot_px, &backward, &mut |f| decode(f), &opts, &|p| report(share + p * (1.0 - share)));
+            let ahead = track_window(gpu.as_mut(), &reference_frame, quad_px, pivot_px, &forward, &mut |f| decode(f), &opts, &|p| report(p * share));
+            let behind = track_window(gpu.as_mut(), &reference_frame, quad_px, pivot_px, &backward, &mut |f| decode(f), &opts, &|p| report(share + p * (1.0 - share)));
             if ahead.is_empty() && behind.is_empty() && tried {
                 nothing();
                 return;
