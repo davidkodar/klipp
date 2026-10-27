@@ -1014,6 +1014,9 @@ pub(crate) fn respond(
                 let more = if names.len() > show { format!(" (+{} more)", names.len() - show) } else { String::new() };
                 text.push_str(&format!("  {label} ({}): {sample}{more}
 ", names.len()));
+                if *dir == "cinematic" {
+                    text.push_str("    These convert a camera's log or flat profile (DJI D-Cinelike, a normal profile, Gyroflow's legal range) to normal; on footage shot normally they lift the blacks and wash it out.\n");
+                }
                 cats.insert(dir.to_string(), json!({ "label": label, "count": names.len(), "names": names }));
             }
             Ok(json!({ "text": text, "categories": cats, "total": looks.len(), "next": "Apply one with look {clip_id, name}. Pass a category name here to see all of its looks." }))

@@ -299,7 +299,8 @@ exist until the plan runs.
   Every knob is 0 at neutral, except `saturation` and `contrast`, whose
   neutral is 1. `exposure` is in stops; `temperature` and `tint` are the
   white balance, in mireds of assumed light (a unit moves a grey about
-  0.2 b*: +25 a clear warm, +50 strong); `lift`, `gamma`, `gain` move the shadows, mids and
+  0.2 b*: +25 a clear warm, +50 strong; `tint` + is light assumed more
+  magenta, so the picture goes green, and − turns it magenta); `lift`, `gamma`, `gain` move the shadows, mids and
   highlights; `reset` takes the clip to neutral first. Match shots to
   each other before making any of them look better.
 - `effect {clip_id, kind, amount?}`: a finishing effect on a picture

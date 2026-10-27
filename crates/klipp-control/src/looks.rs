@@ -11,13 +11,16 @@ pub(crate) fn bundled_luts_dir() -> Option<std::path::PathBuf> {
 }
 
 pub(crate) const LOOK_CATEGORIES: &[(&str, &str)] = &[
-    ("cinematic", "Cinematic"),
     ("film-bw", "Film B&W"),
     ("film-slide", "Film Slide"),
     ("film-negative", "Film Negative"),
     ("film-print", "Film Print"),
     ("film-instant", "Film Instant"),
     ("fuji-xtrans", "Fuji X-Trans"),
+    // A camera's log or flat profile to normal: on normal footage they
+    // lift its blacks (#2769). The folder keeps its old name, which
+    // saved grades point into.
+    ("cinematic", "Camera conversion (log footage)"),
 ];
 
 /// One bundled look: its category, its display name (the file stem), path.

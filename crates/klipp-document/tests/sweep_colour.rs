@@ -14,9 +14,6 @@ use sweep_common::*;
 const KNOWN: &[(&str, u32)] = &[
     ("grade tint +25 is magenta", 2769),
     ("grade tint -25 is green", 2769),
-    ("qualify skin temperature", 2769),
-    ("qualify temperature in mireds", 2769),
-    ("look a normal picture through the cinematic looks", 2769),
     ("grade shadows +0.3", 2768),
     ("grade highlights -0.3", 2768),
 ];
@@ -168,7 +165,7 @@ fn sweep_colour() {
 
     // Qualifiers: what they key moves, the rest stays.
     for (item, op, keyed, other) in [
-        ("qualify skin temperature", json!({"op": "qualify", "target": "skin", "temperature": 0.5}), skin as fn(&[f32]) -> [f32; 3], sky as fn(&[f32]) -> [f32; 3]),
+        ("qualify skin temperature +25", json!({"op": "qualify", "target": "skin", "temperature": 25.0}), skin as fn(&[f32]) -> [f32; 3], sky as fn(&[f32]) -> [f32; 3]),
         ("qualify foliage hue_shift 40", json!({"op": "qualify", "target": "foliage", "hue_shift": 40.0}), leaves, sky),
         ("qualify sky saturation 1.6", json!({"op": "qualify", "target": "sky", "saturation": 1.6}), sky, skin),
     ] {
@@ -177,7 +174,7 @@ fn sweep_colour() {
             sweep.check(item, format!("keyed moved {m:.3}, the rest {o:.3}"), m > 0.01 && o < 0.01);
         }
     }
-    // The qualifier's temperature on the grade's scale (mireds).
+    // The qualifier's temperature on the grade's scale, mireds: warmer.
     if let Some(f) = after(&mut sweep, "qualify temperature in mireds", json!({"op": "qualify", "target": "skin", "temperature": 25.0})) {
         let d = warmth(skin(&f)) - warmth(skin(&plain));
         sweep.check("qualify temperature in mireds", format!("skin red - blue {d:+.3}"), d > 0.01);
@@ -210,13 +207,6 @@ fn sweep_colour() {
             let (d, c) = (mean_diff(&plain, &f), contrast(&f) / base_contrast);
             sweep.check(&item, format!("{}: change {d:.3}, contrast x{c:.2}", lut.file_name().unwrap().to_string_lossy()), d > 0.01 && c > 0.6);
         }
-    }
-    // The cinematic looks are for a normal picture: a camera's log
-    // conversion among them washes one out (its blacks lifted).
-    let normal = luts.join("cinematic/NORMAL -1_0 BASE.cube");
-    if let Some(f) = after(&mut sweep, "look a normal picture through the cinematic looks", json!({"op": "look", "lut_path": normal.canonicalize().unwrap_or(normal.clone()), "opacity": 1.0})) {
-        let b = luma(shadow(&f)) - luma(shadow(&plain));
-        sweep.check("look a normal picture through the cinematic looks", format!("NORMAL -1_0 BASE: blacks {b:+.3}"), b.abs() < 0.08);
     }
     sweep.finish();
 }

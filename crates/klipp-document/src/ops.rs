@@ -9081,7 +9081,9 @@ fn qualify(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, a
         ("qual_exposure", a.exposure, -3.0, 3.0),
         ("qual_saturation", a.saturation, 0.0, 3.0),
         ("qual_hue_shift", a.hue_shift, -180.0, 180.0),
-        ("qual_temperature", a.temperature, -1.0, 1.0),
+        // Mireds, as the grade's: the correction's temperature is the
+        // same knob, and -1 to 1 was a fiftieth of a visible step (#2769).
+        ("qual_temperature", a.temperature, -50.0, 50.0),
     ];
     for (name, v, lo, hi) in knobs {
         if let Some(v) = v {

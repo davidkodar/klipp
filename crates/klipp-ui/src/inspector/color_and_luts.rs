@@ -205,13 +205,16 @@ pub fn show_color_and_luts(
         let luts_dir = find_bundled_luts_dir();
         if let Some(ref base) = luts_dir {
             let categories = [
-                ("cinematic", "Cinematic"),
                 ("film-bw", "Film B&W"),
                 ("film-slide", "Film Slide"),
                 ("film-negative", "Film Negative"),
                 ("film-print", "Film Print"),
                 ("film-instant", "Film Instant"),
                 ("fuji-xtrans", "Fuji X-Trans"),
+                // A camera's log or flat profile to normal: on normal footage they
+                // lift its blacks (#2769). The folder keeps its old name, which
+                // saved grades point into.
+                ("cinematic", "Camera conversion (log footage)"),
             ];
             for (dir_name, label) in &categories {
                 let cat_dir = base.join(dir_name);
