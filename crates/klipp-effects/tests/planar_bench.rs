@@ -37,6 +37,10 @@ struct Clip {
     limit: (f64, f64),
     /// What the tracker can't do on it yet, when it can't.
     known: Option<String>,
+    /// From this frame on the surface may be lost (#2857): a frame checked
+    /// there that the tracker reports lost, or stopped at after a loss,
+    /// is reported, not drifted, and left out of the error.
+    loss_from: Option<usize>,
 }
 
 fn points(words: &[&str]) -> Points {
@@ -54,20 +58,21 @@ fn clips(text: &str) -> Vec<Clip> {
     for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
         let words: Vec<&str> = line.split_whitespace().collect();
         match words[0] {
-            "clip" => out.push(Clip { name: words[1].into(), local: None, quad: [(0.0, 0.0); 4], exclude: Vec::new(), at: Vec::new(), limit: (0.0, 0.0), known: None }),
+            "clip" => out.push(Clip { name: words[1].into(), local: None, quad: [(0.0, 0.0); 4], exclude: Vec::new(), at: Vec::new(), limit: (0.0, 0.0), known: None, loss_from: None }),
             "local" => {
                 let path = words[3..].join(" ");
                 let path = match path.strip_prefix("~/") {
                     Some(rest) => PathBuf::from(std::env::var_os("HOME").expect("HOME")).join(rest),
                     None => PathBuf::from(path),
                 };
-                out.push(Clip { name: words[1].into(), local: Some((path, words[2].into())), quad: [(0.0, 0.0); 4], exclude: Vec::new(), at: Vec::new(), limit: (0.0, 0.0), known: None });
+                out.push(Clip { name: words[1].into(), local: Some((path, words[2].into())), quad: [(0.0, 0.0); 4], exclude: Vec::new(), at: Vec::new(), limit: (0.0, 0.0), known: None, loss_from: None });
             }
             "quad" => out.last_mut().expect("a clip").quad = points(&words[1..]).try_into().expect("four corners"),
             "exclude" => out.last_mut().expect("a clip").exclude.push(points(&words[1..])),
             "at" => out.last_mut().expect("a clip").at.push((words[1].parse().expect("frame"), points(&words[2..]))),
             "limit" => out.last_mut().expect("a clip").limit = (words[1].parse().expect("mean"), words[2].parse().expect("drift")),
             "known" => out.last_mut().expect("a clip").known = Some(words[1..].join(" ")),
+            "loss_from" => out.last_mut().expect("a clip").loss_from = Some(words[1].parse().expect("frame")),
             other => panic!("unknown line {other}"),
         }
     }
@@ -200,11 +205,17 @@ fn the_tracker_holds_real_surfaces() {
             runs.push(("gpu", run(clip, &path, Some(g))));
         }
         for (on, tracked) in runs {
-            let e = errors(clip, &tracked);
-            let mean = e.iter().map(|e| e.1).sum::<f64>() / e.len() as f64;
-            let drift = e.last().expect("frames checked").1;
+            let all = errors(clip, &tracked);
+            // A frame past `loss_from` reported lost is not drift.
+            let reported = |(f, _, s): &&(usize, f64, Option<State>)| clip.loss_from.is_some_and(|l| *f >= l) && !matches!(s, Some(State::Good | State::Low));
+            let e: Vec<&(usize, f64, Option<State>)> = all.iter().filter(|x| !reported(x)).collect();
+            let mean = if e.is_empty() { f64::INFINITY } else { e.iter().map(|e| e.1).sum::<f64>() / e.len() as f64 };
+            let drift = e.last().map_or(f64::INFINITY, |e| e.1);
             let lost = tracked.iter().filter(|t| t.state == State::Lost).count();
-            let each: Vec<String> = e.iter().map(|(f, px, s)| format!("{f}:{px:.2}{}", if s.is_some_and(|s| s != State::Good) { "*" } else { "" })).collect();
+            let each: Vec<String> = all.iter().map(|x| {
+                let (f, px, s) = x;
+                if reported(&x) { format!("{f}:reported-lost") } else { format!("{f}:{px:.2}{}", if s.is_some_and(|s| s != State::Good) { "*" } else { "" }) }
+            }).collect();
             eprintln!("{} {on}: mean {mean:.2} px, drift {drift:.2} px, {lost} lost of {}; {}", clip.name, tracked.len(), each.join(" "));
             let held = mean <= clip.limit.0 && drift <= clip.limit.1;
             match (&clip.known, held) {

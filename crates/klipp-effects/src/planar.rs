@@ -636,15 +636,37 @@ fn zncc(tpl: &Template, pyr: &Pyramid, g: &Homography, l: usize) -> f64 {
 /// How sure a frame's fit is, from how alike the reference and the frame
 /// are (`zncc`), how far the round trip missed (`round_trip`, pixels) on
 /// a region `size` pixels across in this frame, and whether the region
-/// holds the map at all (`conditioning`). A miss counts against the
-/// region's size: a few pixels on a surface filling the frame is a
-/// fraction of one on a small one.
-fn confidence(zncc: f64, round_trip: f64, size: f64, conditioning: f64) -> f32 {
+/// holds the map at all (`conditioning`), against what it held when the
+/// track began (`base`). A miss counts against the region's size: a few
+/// pixels on a surface filling the frame is a fraction of one on a small
+/// one.
+///
+/// A region holding a small part of what it held at first (#2857) has
+/// turned to where it is plain: calm water seen from a drone turning away
+/// matches anywhere along it, alike everywhere, so the fit stays where it
+/// was while the surface moves on. Held 0.6 as well or better is held
+/// (the real-footage bench's held surfaces never go under 0.73); down to
+/// 0.3 of it the fit is trusted less and less, and below that not at
+/// all, so the track holds its last good place and says the surface is
+/// lost rather than following a fit that can't place it. A fit the frame
+/// confirms (alike all but exactly, a clean round trip) is held whatever
+/// its conditioning; one found again after a loss (`refound`) has no
+/// round trip to confirm it.
+fn confidence(zncc: f64, round_trip: f64, size: f64, conditioning: f64, base: f64, refound: bool) -> f32 {
     let alike = ((zncc - 0.4) / 0.45).clamp(0.0, 1.0);
     let scale = (size / 200.0).max(1.0);
     let returns = (1.0 - (round_trip / scale - 0.5) / 3.0).clamp(0.0, 1.0);
-    let held = if conditioning < 1e-7 { 0.3 } else { 1.0 };
-    (alike * returns * held) as f32
+    let floor = if conditioning < 1e-7 { 0.3 } else { 1.0 };
+    let kept = if base > 0.0 { ((conditioning / base - 0.3) / 0.3).clamp(0.0, 1.0) } else { 1.0 };
+    // A fit the frame confirms, alike all but exactly and back where it
+    // came from, is held however the map is conditioned: a textured
+    // surface turning away in perspective holds its perspective terms
+    // less and less, and is still followed to the pixel. One found again
+    // after a loss has no frame before to go back to, so nothing confirms
+    // it but its likeness, which plain water has everywhere.
+    let confirmed = if refound { 0.0 } else { ((zncc - 0.9) / 0.07).clamp(0.0, 1.0) * returns };
+    let kept = kept + (1.0 - kept) * confirmed;
+    (alike * returns * floor * kept) as f32
 }
 
 /// The state a confidence makes.
@@ -765,6 +787,9 @@ pub(crate) fn track_on<B: Backend>(
     let mut motion = Homography::identity();
     let mut failing = 0usize;
     let mut lost_for = 0usize;
+    // How well the region held the map on the first frame fitted: what
+    // later fits are held against (#2857).
+    let mut base: Option<f64> = None;
     let top = levels - 1;
     let map_quad = |h: &Homography| quad.map(|p| h.transform(p.0, p.1));
     for (k, &f) in frames.iter().enumerate() {
@@ -815,11 +840,15 @@ pub(crate) fn track_on<B: Backend>(
                     None => f64::INFINITY,
                 }
             }
-            // Found again after a loss: no frame before to go back to.
-            None => if alike > 0.75 { 0.5 } else { f64::INFINITY },
+            // Found again after a loss: no frame before to go back to, so
+            // only a surface alike all but exactly is taken as found
+            // (#2857). Plain water is alike to itself 0.9 over anywhere
+            // along it; a surface that comes back matches near 1.
+            None => if alike > 0.95 { 0.5 } else { f64::INFINITY },
         };
         let size = here.iter().map(|p| (p.0 - here[0].0).hypot(p.1 - here[0].1)).fold(0.0, f64::max);
-        let confidence = confidence(alike, round_trip, size, conditioning);
+        let base = *base.get_or_insert(conditioning);
+        let confidence = confidence(alike, round_trip, size, conditioning, base, moved.is_none());
         let state = state_of(confidence);
         if state == State::Lost {
             failing += 1;
