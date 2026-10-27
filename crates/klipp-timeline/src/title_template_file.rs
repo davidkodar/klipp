@@ -4,7 +4,7 @@
 //! control socket and the assistant, through it).
 
 use crate::TitleData;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 /// File extension of a saved title template.
@@ -20,7 +20,7 @@ fn format_one() -> u32 {
 }
 
 /// One saved title template: its name, its category, the title.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TemplateFile {
     pub name: String,
     pub category: String,

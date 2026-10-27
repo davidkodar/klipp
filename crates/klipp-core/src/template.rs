@@ -99,6 +99,24 @@ fn linked() -> bool {
     true
 }
 
+/// `s` as one folder or file name that stays where it is joined (#2757):
+/// letters and digits lower-cased, every other character a dash, runs
+/// of dashes one, none at either end; "item" when nothing is left. No
+/// dot, slash or separator survives, so text from a shared file can
+/// never name a parent folder.
+pub fn safe_name(s: &str) -> String {
+    let mut out = String::new();
+    for c in s.trim().chars() {
+        if c.is_alphanumeric() {
+            out.extend(c.to_lowercase());
+        } else if !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    let out = out.trim_matches('-').to_string();
+    if out.is_empty() { "item".into() } else { out }
+}
+
 /// What a hand does to one link of a placed template (#2757).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

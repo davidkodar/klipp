@@ -1191,7 +1191,20 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
                 }
                 v
             }
-            None => json!({ "method": "title_templates" }),
+            // Template packs (#2757).
+            None => match args.get("pack") {
+                Some(p) if p.get("import").and_then(|v| v.as_bool()) == Some(true) => {
+                    json!({ "method": "import_template_pack", "path": arg_str(p, "path")?, "replace": p.get("replace").and_then(|v| v.as_bool()).unwrap_or(false) })
+                }
+                Some(p) => {
+                    let mut v = json!({ "method": "export_template_pack", "path": arg_str(p, "path")?, "name": arg_str(p, "name")? });
+                    for k in ["templates", "licences"] {
+                        if let Some(x) = p.get(k) { v[k] = x.clone(); }
+                    }
+                    v
+                }
+                None => json!({ "method": "title_templates" }),
+            },
         },
         "klipp_graph" | "klipp_graph_read" => {
             let mut v = args.clone();
@@ -2489,8 +2502,8 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({ "clip_id": { "type": "string", "description": "the clip to move into sync (e.g. the external audio)" }, "reference_clip_id": { "type": "string", "description": "the clip to sync to (e.g. the camera)" }, "max_offset_secs": { "type": "number" } }),
              vec!["clip_id", "reference_clip_id"]),
         tool("klipp_title_templates",
-             "Title templates and their fields, for the template op; save {clip_id, name, ...} saves a title as one. Guide: topic title_templates.",
-             json!({ "save": { "type": "object" } }), vec![]),
+             "Title templates for the template op; save keeps one; pack shares a .klipppack. Guide: topic title_templates.",
+             json!({ "save": { "type": "object" }, "pack": { "type": "object" } }), vec![]),
         tool("klipp_fonts",
              "The font families a title can name, and Klipp's catalogue to fetch. Details: klipp_guide topic fonts.",
              json!({ "query": { "type": "string" }, "fetch": { "type": "string", "description": "a catalogue family to fetch" } }), vec![]),
@@ -3117,6 +3130,26 @@ mod wait_tests {
         assert!(text.contains("klipp_operation_status") && text.contains("write-42"), "{text}");
         assert!(!text.contains("Applied as one undo step"), "{text}");
         assert!(!text.contains("look at the cut"), "a queued write must not advance the agent: {text}");
+    }
+
+    /// #2757: template packs are exported and imported through the
+    /// title templates tool, each to its own socket method.
+    #[test]
+    fn template_packs_reach_the_socket() {
+        let licences = json!({ "photo.png": "CC0" });
+        assert_eq!(
+            tool_to_command("klipp_title_templates", &json!({ "pack": { "path": "/tmp/a.klipppack", "name": "Mine", "templates": ["Card"], "licences": licences.clone() } })).unwrap(),
+            json!({ "method": "export_template_pack", "path": "/tmp/a.klipppack", "name": "Mine", "templates": ["Card"], "licences": licences })
+        );
+        assert_eq!(
+            tool_to_command("klipp_title_templates", &json!({ "pack": { "import": true, "path": "/tmp/a.klipppack" } })).unwrap(),
+            json!({ "method": "import_template_pack", "path": "/tmp/a.klipppack", "replace": false })
+        );
+        assert!(tool_to_command("klipp_title_templates", &json!({ "pack": { "name": "Mine" } })).is_err(), "a path is needed");
+        // The control socket reads both as its commands.
+        for m in [json!({ "method": "export_template_pack", "path": "/x.klipppack", "name": "Mine" }), json!({ "method": "import_template_pack", "path": "/x.klipppack" })] {
+            serde_json::from_value::<klipp_control::protocol::ControlCommand>(m.clone()).unwrap_or_else(|e| panic!("{m}: {e}"));
+        }
     }
 
     /// #618: project templates are listed, saved, and started from.

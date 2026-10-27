@@ -60,6 +60,7 @@ pub mod path_util;
 mod save;
 mod unique_ids;
 pub mod template;
+pub mod template_pack;
 pub mod workspace;
 
 pub use grade_stills::{adopt_still, adopt_temp_stills, delete_grade_still_file, is_temp_still, load_grade_stills, save_freeze_frame_png, save_grade_stills, temp_still_roots, GradeStillData, GradeStillMeta, StillAdoption, StillSource};
