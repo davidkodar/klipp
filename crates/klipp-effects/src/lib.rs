@@ -261,6 +261,10 @@ pub enum SpillMethod {
     Hawk,
 }
 
+fn half() -> f32 {
+    0.5
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum BuiltinEffect {
@@ -275,6 +279,20 @@ pub enum BuiltinEffect {
         bottom: f32,
         /// Feather in pixels (0.0 = hard edge)
         feather: f32,
+        /// A shape to cover (#2757): width over height, 0 for none. Set,
+        /// the picture is cropped to that shape around the focus and
+        /// scaled to fill the largest rectangle of that shape the frame
+        /// holds, whatever the source's own shape; a Transform after it
+        /// then places that rectangle. Worked out from the source's size
+        /// as each frame is drawn ([`cover_shape`]).
+        #[serde(default)]
+        aspect: f32,
+        /// Where the crop to `aspect` is centred, as a fraction of the
+        /// picture (0.5 the middle): what a subject's framing can move.
+        #[serde(default = "half")]
+        focus_x: f32,
+        #[serde(default = "half")]
+        focus_y: f32,
     },
     Transform {
         /// Horizontal offset in pixels from center
@@ -1556,6 +1574,100 @@ impl BuiltinEffect {
     }
 }
 
+/// The crop and placement that make a `src`-sized picture cover the shape
+/// `aspect` (width over height) in a `frame`-sized render (#2757).
+///
+/// The picture is first fitted to the frame as every source is
+/// ([`gpu::fit_rect`]). The most of it that has the shape is kept, around
+/// `focus` (fractions of the picture, the middle at 0.5), and is scaled
+/// and centred onto the largest rectangle of that shape the frame holds.
+/// So whatever the source's own shape, the same rectangle comes out, and
+/// a Transform after it places that rectangle where a layout wants it.
+/// `feather` is the crop's, as given.
+pub fn cover_shape(src: (u32, u32), frame: (u32, u32), aspect: f32, focus: (f32, f32), feather: f32) -> [BuiltinEffect; 2] {
+    let (fw, fh) = (frame.0.max(1) as f32, frame.1.max(1) as f32);
+    let (dw, dh, xo, yo) = gpu::fit_rect(src.0.max(1), src.1.max(1), frame.0.max(1), frame.1.max(1));
+    let (dw, dh, xo, yo) = (dw as f32, dh as f32, xo as f32, yo as f32);
+    let a = if aspect.is_finite() && aspect > 0.0 { aspect } else { dw / dh };
+    // The most of the fitted picture that has the shape.
+    let (kw, kh) = if dw / dh > a { (dh * a, dh) } else { (dw, dw / a) };
+    let off = |focus: f32, whole: f32, kept: f32| (focus.clamp(0.0, 1.0) * whole - kept / 2.0).clamp(0.0, (whole - kept).max(0.0));
+    let (x0, y0) = (xo + off(focus.0, dw, kw), yo + off(focus.1, dh, kh));
+    let crop = BuiltinEffect::Crop {
+        left: x0 / fw,
+        right: ((fw - x0 - kw) / fw).max(0.0),
+        top: y0 / fh,
+        bottom: ((fh - y0 - kh) / fh).max(0.0),
+        feather,
+        aspect: 0.0,
+        focus_x: 0.5,
+        focus_y: 0.5,
+    };
+    // The largest rectangle of the shape in the frame, and the kept part
+    // scaled onto it, its centre brought to the frame's.
+    let rw = if a > fw / fh { fw } else { fh * a };
+    let scale = rw / kw;
+    let (dx, dy) = (x0 + kw / 2.0 - fw / 2.0, y0 + kh / 2.0 - fh / 2.0);
+    let place = BuiltinEffect::Transform {
+        position_x: -dx * scale,
+        position_y: -dy * scale,
+        scale_x: scale,
+        scale_y: scale,
+        rotation: 0.0,
+        anchor_x: 0.5,
+        anchor_y: 0.5,
+        rotation_x: 0.0,
+        rotation_y: 0.0,
+        perspective: 0.0,
+        focal_ref: None,
+    };
+    [crop, place]
+}
+
+/// Each Crop in `fx` given a shape to cover made the crop and placement
+/// [`cover_shape`] gives, for a `src`-sized source in a `frame`-sized
+/// render: what the renderer does once it knows the source's size, on
+/// the GPU and the CPU alike, so both draw it with the effects they
+/// already have. A clip is placed by one Transform, so the cover's
+/// placement is folded into the Transform after the crop (applied first,
+/// then that Transform's own move, scale and turn), or added where there
+/// is none. Returns where effects were added, in order, for lists kept
+/// beside `fx`.
+pub fn resolve_cover_shapes(fx: &mut Vec<BuiltinEffect>, src: (u32, u32), frame: (u32, u32)) -> Vec<usize> {
+    let mut added = Vec::new();
+    let mut i = 0;
+    while i < fx.len() {
+        if let BuiltinEffect::Crop { aspect, focus_x, focus_y, feather, .. } = fx[i] {
+            if aspect > 0.0 {
+                let [crop, place] = cover_shape(src, frame, aspect, (focus_x, focus_y), feather);
+                fx[i] = crop;
+                let BuiltinEffect::Transform { position_x: cx, position_y: cy, scale_x: cs, .. } = place else { unreachable!() };
+                match fx[i + 1..].iter().position(|e| matches!(e, BuiltinEffect::Transform { .. })) {
+                    Some(k) => {
+                        if let BuiltinEffect::Transform { position_x, position_y, scale_x, scale_y, rotation, .. } = &mut fx[i + 1 + k] {
+                            // The cover's offset, scaled and turned as that
+                            // Transform scales and turns what it is given.
+                            let (sin, cos) = rotation.to_radians().sin_cos();
+                            let (ox, oy) = (cx * *scale_x, cy * *scale_y);
+                            *position_x += ox * cos - oy * sin;
+                            *position_y += ox * sin + oy * cos;
+                            *scale_x *= cs;
+                            *scale_y *= cs;
+                        }
+                    }
+                    None => {
+                        fx.insert(i + 1, place);
+                        added.push(i + 1);
+                        i += 1;
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+    added
+}
+
 /// Returns true when the effect is at its default / identity values
 /// and therefore a no-op. Lets callers strip such entries before
 /// dispatching to GPU/CPU pipelines, which saves the
@@ -1583,8 +1695,8 @@ pub fn is_identity_effect(effect: &BuiltinEffect) -> bool {
         BuiltinEffect::Sharpen { amount } => amount.abs() < f32::EPSILON,
         // As the effect itself skips it (#1314).
         BuiltinEffect::Gamma { gamma } => (gamma - 1.0).abs() < f32::EPSILON,
-        BuiltinEffect::Crop { left, right, top, bottom, feather } => {
-            *left == 0.0 && *right == 0.0 && *top == 0.0 && *bottom == 0.0 && *feather == 0.0
+        BuiltinEffect::Crop { left, right, top, bottom, feather, aspect, .. } => {
+            *left == 0.0 && *right == 0.0 && *top == 0.0 && *bottom == 0.0 && *feather == 0.0 && *aspect <= 0.0
         }
         BuiltinEffect::Transform {
             position_x, position_y, scale_x, scale_y,
@@ -1622,6 +1734,52 @@ pub fn is_identity_effect(effect: &BuiltinEffect) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    /// A clip is placed by one Transform: the cover's own placement is
+    /// folded into the one after the crop, not added beside it.
+    #[test]
+    fn a_cover_is_folded_into_the_clips_placement() {
+        let user = BuiltinEffect::Transform { position_x: -96.0, position_y: 0.0, scale_x: 0.5, scale_y: 0.5, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None };
+        let crop = BuiltinEffect::Crop { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0, aspect: 1.0, focus_x: 1.0, focus_y: 0.5 };
+        let mut fx = vec![crop, user];
+        resolve_cover_shapes(&mut fx, (320, 180), (384, 216));
+        assert_eq!(fx.iter().filter(|e| matches!(e, BuiltinEffect::Transform { .. })).count(), 1, "one placement");
+        let [_, place] = cover_shape((320, 180), (384, 216), 1.0, (1.0, 0.5), 0.0);
+        let (BuiltinEffect::Transform { position_x: cx, scale_x: cs, .. }, BuiltinEffect::Transform { position_x, scale_x, .. }) = (place, &fx[1]) else { panic!() };
+        assert!((scale_x - 0.5 * cs).abs() < 1e-6 && (position_x - (-96.0 + 0.5 * cx)).abs() < 1e-4);
+    }
+
+    /// #2757: whatever the source's shape, a cover to a shape comes out as
+    /// the largest rectangle of that shape in the frame, centred: the kept
+    /// part has the shape, lies inside the fitted picture, and is scaled
+    /// onto that rectangle. A focus off the middle keeps the crop inside
+    /// the picture.
+    #[test]
+    fn a_cover_shape_is_the_same_rectangle_from_any_source() {
+        for frame in [(1920u32, 1080u32), (1080, 1920), (1080, 1080)] {
+            let (fw, fh) = (frame.0 as f32, frame.1 as f32);
+            for src in [(1920u32, 1080u32), (1080, 1920), (640, 480)] {
+                for aspect in [960.0 / 1080.0, 1080.0 / 960.0, 1.0, 16.0 / 9.0] {
+                    for focus in [(0.5, 0.5), (0.0, 0.0), (1.0, 0.3)] {
+                        let [crop, place] = cover_shape(src, frame, aspect, focus, 0.0);
+                        let BuiltinEffect::Crop { left, right, top, bottom, .. } = crop else { panic!() };
+                        let BuiltinEffect::Transform { position_x, position_y, scale_x, .. } = place else { panic!() };
+                        let (kw, kh) = ((1.0 - left - right) * fw, (1.0 - top - bottom) * fh);
+                        assert!((kw / kh - aspect).abs() < 0.01, "{src:?} in {frame:?} at {aspect}: kept {kw}x{kh}");
+                        let (dw, dh, xo, yo) = gpu::fit_rect(src.0, src.1, frame.0, frame.1);
+                        assert!(left * fw >= xo as f32 - 0.5 && left * fw + kw <= (xo + dw) as f32 + 0.5, "inside the picture across");
+                        assert!(top * fh >= yo as f32 - 0.5 && top * fh + kh <= (yo + dh) as f32 + 0.5, "inside the picture down");
+                        let rw = if aspect > fw / fh { fw } else { fh * aspect };
+                        assert!((kw * scale_x - rw).abs() < 0.5, "scaled onto the frame's own rectangle");
+                        // Its centre brought to the frame's.
+                        let (cx, cy) = (left * fw + kw / 2.0 - fw / 2.0, top * fh + kh / 2.0 - fh / 2.0);
+                        assert!((cx * scale_x + position_x).abs() < 0.5 && (cy * scale_x + position_y).abs() < 0.5);
+                    }
+                }
+            }
+        }
+    }
+
     use super::*;
 
     /// Test helper: u8-in, u8-out bridge around the new linear-f32
@@ -1654,7 +1812,7 @@ mod tests {
         assert!(is_identity_effect(&BuiltinEffect::GaussianBlur { radius: 0.4 }));
         assert!(is_identity_effect(&BuiltinEffect::Sharpen { amount: 0.0 }));
         assert!(is_identity_effect(&BuiltinEffect::Crop {
-            left: 0.0, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0,
+            left: 0.0, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0, aspect: 0.0, focus_x: 0.5, focus_y: 0.5
         }));
         assert!(is_identity_effect(&BuiltinEffect::Transform {
             position_x: 0.0, position_y: 0.0,
@@ -1670,7 +1828,7 @@ mod tests {
         assert!(!is_identity_effect(&BuiltinEffect::GaussianBlur { radius: 5.0 }));
         assert!(!is_identity_effect(&BuiltinEffect::Sharpen { amount: 0.3 }));
         assert!(!is_identity_effect(&BuiltinEffect::Crop {
-            left: 0.1, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0,
+            left: 0.1, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0, aspect: 0.0, focus_x: 0.5, focus_y: 0.5
         }));
         assert!(!is_identity_effect(&BuiltinEffect::Transform {
             position_x: 10.0, position_y: 0.0,
@@ -1758,7 +1916,7 @@ mod tests {
         let h = 4u32;
         let rgba = [180, 90, 45, 255].repeat((w * h) as usize);
         let result = apply_effects(
-            &[BuiltinEffect::Crop { left: 0.5, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0 }],
+            &[BuiltinEffect::Crop { left: 0.5, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0, aspect: 0.0, focus_x: 0.5, focus_y: 0.5}],
             rgba, w, h,
         );
         assert_eq!(result.len(), (w * h * 4) as usize);
@@ -1786,7 +1944,7 @@ mod tests {
         let h = 4u32;
         let rgba = vec![128; (w * h * 4) as usize];
         let result = apply_effects(
-            &[BuiltinEffect::Crop { left: 0.25, right: 0.25, top: 0.25, bottom: 0.25, feather: 0.0 }],
+            &[BuiltinEffect::Crop { left: 0.25, right: 0.25, top: 0.25, bottom: 0.25, feather: 0.0, aspect: 0.0, focus_x: 0.5, focus_y: 0.5}],
             rgba, w, h,
         );
         // Crop does not resize; output buffer has same dimensions
@@ -2042,7 +2200,7 @@ mod tests {
             BuiltinEffect::Opacity { value: 0.5 },
             BuiltinEffect::GaussianBlur { radius: 2.0 },
             BuiltinEffect::Sharpen { amount: 1.0 },
-            BuiltinEffect::Crop { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0 },
+            BuiltinEffect::Crop { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0, aspect: 0.0, focus_x: 0.5, focus_y: 0.5},
             BuiltinEffect::Invert { mix: 1.0 },
             BuiltinEffect::Vibrance { amount: 0.5 },
             BuiltinEffect::HSVAdjust { hue_shift: 45.0, saturation: 1.5, value: 0.8 },
@@ -2059,8 +2217,8 @@ mod tests {
         let half = |e: BuiltinEffect| e.at_render_scale(0.5);
         assert_eq!(half(BuiltinEffect::GaussianBlur { radius: 20.0 }), BuiltinEffect::GaussianBlur { radius: 10.0 });
         assert_eq!(
-            half(BuiltinEffect::Crop { left: 0.25, right: 0.0, top: 0.0, bottom: 0.0, feather: 8.0 }),
-            BuiltinEffect::Crop { left: 0.25, right: 0.0, top: 0.0, bottom: 0.0, feather: 4.0 }
+            half(BuiltinEffect::Crop { left: 0.25, right: 0.0, top: 0.0, bottom: 0.0, feather: 8.0, aspect: 0.0, focus_x: 0.5, focus_y: 0.5}),
+            BuiltinEffect::Crop { left: 0.25, right: 0.0, top: 0.0, bottom: 0.0, feather: 4.0, aspect: 0.0, focus_x: 0.5, focus_y: 0.5}
         );
         assert_eq!(half(BuiltinEffect::Erode { radius: 1 }), BuiltinEffect::Erode { radius: 1 }, "never rounded away");
         assert_eq!(half(BuiltinEffect::Dilate { radius: 6 }), BuiltinEffect::Dilate { radius: 3 });

@@ -79,6 +79,11 @@ pub(super) static TYPES: &[EffectType] = &[
                 ParamDesc::float("top", "Top", 0.0, (0.0, 1.0), Unit::Normalised),
                 ParamDesc::float("bottom", "Bottom", 0.0, (0.0, 1.0), Unit::Normalised),
                 ParamDesc::float("feather", "Feather", 0.0, (0.0, 200.0), Unit::CanvasPx),
+                // A shape to cover, width over height (0 none): the
+                // picture cropped to it and scaled to fill it (#2757).
+                ParamDesc::float("aspect", "Cover shape", 0.0, (0.0, 4.0), Unit::Ratio),
+                ParamDesc::float("focus_x", "Focus X", 0.5, (0.0, 1.0), Unit::Normalised),
+                ParamDesc::float("focus_y", "Focus Y", 0.5, (0.0, 1.0), Unit::Normalised),
             ],
             Spatial::PerPixel,
             false,
@@ -89,7 +94,7 @@ pub(super) static TYPES: &[EffectType] = &[
             right: 0.0,
             top: 0.0,
             bottom: 0.0,
-            feather: 0.0,
+            feather: 0.0, aspect: 0.0, focus_x: 0.5, focus_y: 0.5
         },
     },
     EffectType {

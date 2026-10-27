@@ -358,7 +358,7 @@ fn builtin_effect_default(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
         // No setting of it fills nothing; this is where it starts.
         BuiltinEffect::FillBars { .. } => BuiltinEffect::FillBars { blur: 0.05, zoom: 1.0, darken: 0.25 },
         BuiltinEffect::Sharpen { .. } => BuiltinEffect::Sharpen { amount: 0.0 },
-        BuiltinEffect::Crop { .. } => BuiltinEffect::Crop { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0 },
+        BuiltinEffect::Crop { .. } => BuiltinEffect::Crop { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0, aspect: 0.0, focus_x: 0.5, focus_y: 0.5},
         BuiltinEffect::Transform { .. } => BuiltinEffect::Transform {
             position_x: 0.0, position_y: 0.0, scale_x: 1.0, scale_y: 1.0,
             rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0,

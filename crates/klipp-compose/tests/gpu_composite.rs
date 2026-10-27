@@ -1411,7 +1411,7 @@ fn scene_over_base(transfer: klipp_color::hdr::HdrTransfer, size: (u32, u32), gr
     }
     t = TestClip::of(t)
         .effects([
-            BuiltinEffect::Crop { left: 0.1, right: 0.2, top: 0.05, bottom: 0.15, feather: 0.0 },
+            BuiltinEffect::Crop { left: 0.1, right: 0.2, top: 0.05, bottom: 0.15, feather: 0.0, aspect: 0.0, focus_x: 0.5, focus_y: 0.5},
             BuiltinEffect::Transform {
                 position_x: 14.0,
                 position_y: -6.0,
@@ -2198,7 +2198,7 @@ fn a_moving_clip_is_smeared_on_the_stack_as_the_cpu_smears_it() {
             (vec![card, parent], false)
         })),
         ("tilting", Box::new(move || (vec![TestClip::of(media()).lane("scale", 0.0, 0.4).lane("tilt_y", 0.0, 0.0).lane("tilt_y", 2.0, 60.0).build()], false))),
-        ("cropped", Box::new(move || (vec![fast(media()).effect(klipp_effects::BuiltinEffect::Crop { left: 0.2, right: 0.1, top: 0.15, bottom: 0.0, feather: 0.0 }).build()], false))),
+        ("cropped", Box::new(move || (vec![fast(media()).effect(klipp_effects::BuiltinEffect::Crop { left: 0.2, right: 0.1, top: 0.15, bottom: 0.0, feather: 0.0, aspect: 0.0, focus_x: 0.5, focus_y: 0.5}).build()], false))),
         ("two transforms", Box::new(move || {
             let turn = |deg: f32| klipp_effects::BuiltinEffect::Transform {
                 position_x: 0.0, position_y: 0.0, scale_x: 1.0, scale_y: 1.0, rotation: deg,

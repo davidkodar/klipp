@@ -457,7 +457,7 @@ fn builtin_preview_params(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
         klipp_effects::BuiltinEffect::FillBars { .. } => effect.clone(),
         klipp_effects::BuiltinEffect::Crop { .. } => {
             klipp_effects::BuiltinEffect::Crop {
-                left: 0.15, right: 0.15, top: 0.15, bottom: 0.15, feather: 0.05,
+                left: 0.15, right: 0.15, top: 0.15, bottom: 0.15, feather: 0.05, aspect: 0.0, focus_x: 0.5, focus_y: 0.5
             }
         }
         klipp_effects::BuiltinEffect::Transform { .. } => {
@@ -1223,7 +1223,7 @@ fn builtin_proxy_for(n: &str, plugin_name: &str) -> Option<klipp_effects::Builti
     }
     if n.contains("crop") && !n.contains("copyrectangle") {
         return Some(klipp_effects::BuiltinEffect::Crop {
-            left: 0.12, right: 0.12, top: 0.12, bottom: 0.12, feather: 0.04,
+            left: 0.12, right: 0.12, top: 0.12, bottom: 0.12, feather: 0.04, aspect: 0.0, focus_x: 0.5, focus_y: 0.5
         });
     }
     if n.contains("transform") || n.contains("card3d") || n.contains("cornerpin") || n.contains("lensdistortion") || n.contains("idistort") {

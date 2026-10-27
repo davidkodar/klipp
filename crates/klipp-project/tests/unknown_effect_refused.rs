@@ -23,7 +23,7 @@ fn saved_with_two_effects(tag: &str) -> (std::path::PathBuf, String) {
     let scene = Sequence::new_default();
     let mut outer = Sequence::new_default();
     let mut clip = Clip::sequence(scene.id, tc(0.0), tc(4.0));
-    clip.set_effect_list(clip.builtin_effects().iter().cloned().chain(std::iter::once(BuiltinEffect::Crop { left: 0.1, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0 })).collect(), clip.builtin_effects_enabled().to_vec());
+    clip.set_effect_list(clip.builtin_effects().iter().cloned().chain(std::iter::once(BuiltinEffect::Crop { left: 0.1, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0, aspect: 0.0, focus_x: 0.5, focus_y: 0.5})).collect(), clip.builtin_effects_enabled().to_vec());
     clip.set_effect_list(clip.builtin_effects().iter().cloned().chain(std::iter::once(BuiltinEffect::GaussianBlur { radius: 3.0 })).collect(), clip.builtin_effects_enabled().to_vec());
     let clip_id = clip.id.to_string();
     outer.tracks[0].clips = vec![clip];

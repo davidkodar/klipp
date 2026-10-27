@@ -138,6 +138,8 @@ mod title_loops_placed_gpu;
 mod title_metal_gpu;
 #[path = "../title_contrast_protect.rs"]
 mod title_contrast_protect;
+#[path = "../crop_cover_shape.rs"]
+mod crop_cover_shape;
 #[path = "../template_placed_gpu.rs"]
 mod template_placed_gpu;
 #[path = "../animated_caption_gpu.rs"]

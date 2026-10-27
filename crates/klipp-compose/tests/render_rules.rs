@@ -2133,7 +2133,7 @@ fn a_still_title_renders_the_same_with_its_motion_blur_on() {
             anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None,
         };
         card = TestClip::of(card).effects(if crop {
-            vec![BuiltinEffect::Crop { left: 0.0, right: 0.6, top: 0.0, bottom: 0.0, feather: 0.0 }, transform]
+            vec![BuiltinEffect::Crop { left: 0.0, right: 0.6, top: 0.0, bottom: 0.0, feather: 0.0, aspect: 0.0, focus_x: 0.5, focus_y: 0.5}, transform]
         } else {
             vec![transform]
         }).build();
