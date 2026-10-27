@@ -16,8 +16,14 @@ const HSV: &str = "klipp.fx.hsv_adjust";
 const LEVELS: &str = "klipp.fx.levels";
 const LUT: &str = "klipp.fx.lut_3d";
 const CST: &str = "klipp.fx.colour_space_transform";
+const GRADIENT_MAP: &str = "klipp.fx.gradient_map";
 
 pub(super) static PARAMS: &[ParamEntry] = &[
+    // Its ramp's three colours and how much of it shows (#2758).
+    at(GRADIENT_MAP, "shadow", P::shown_as(Widget::ColourRgb)),
+    at(GRADIENT_MAP, "mid", P::shown_as(Widget::ColourRgb)),
+    at(GRADIENT_MAP, "highlight", P::shown_as(Widget::ColourRgb)),
+    at(GRADIENT_MAP, "mix", P::scrub(0.005, 2)),
     at(OPACITY, "value", P::scrub(0.005, 2)),
     // Mode first, as today, then the colour and the duration.
     at(COLOR_FADE, "mode", P::shown_as(Widget::Combo).labels(&["Fade From", "Fade To"]).order(0)),

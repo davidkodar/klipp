@@ -254,6 +254,7 @@ pub struct GpuEffectsPipeline {
     lens_distortion_pipeline: wgpu::ComputePipeline,
     displace_pipeline: wgpu::ComputePipeline,
     warp_pipeline: wgpu::ComputePipeline,
+    gradient_map_pipeline: wgpu::ComputePipeline,
     reflection_pipeline: wgpu::ComputePipeline,
     dilate_pipeline: wgpu::ComputePipeline,
     erode_pipeline: wgpu::ComputePipeline,
@@ -1140,6 +1141,7 @@ impl GpuEffectsPipeline {
         let lens_distortion_pipeline = create_pipeline(&device, &pipeline_layout, "lens_distortion", SHADER_LENS_DISTORTION);
         let displace_pipeline = create_pipeline(&device, &pipeline_layout, "displace", SHADER_DISPLACE);
         let warp_pipeline = create_pipeline(&device, &pipeline_layout, "warp", SHADER_WARP);
+        let gradient_map_pipeline = create_pipeline(&device, &pipeline_layout, "gradient_map", SHADER_GRADIENT_MAP);
         let reflection_pipeline = create_pipeline(&device, &pipeline_layout, "reflection", SHADER_REFLECTION);
         let dilate_pipeline = create_pipeline(&device, &pipeline_layout, "dilate", SHADER_DILATE);
         let erode_pipeline = create_pipeline(&device, &pipeline_layout, "erode", SHADER_ERODE);
@@ -1775,6 +1777,7 @@ impl GpuEffectsPipeline {
             lens_distortion_pipeline,
             displace_pipeline,
             warp_pipeline,
+            gradient_map_pipeline,
             reflection_pipeline,
             dilate_pipeline,
             erode_pipeline,
@@ -9858,6 +9861,29 @@ pub(crate) struct WarpParams {
 }
 // 16 fields x 4 bytes = 64 bytes
 
+/// [`crate::gradient_map`]'s pass (#2758), in the shader's order.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub(crate) struct GradientMapParams {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) shadow_r: f32,
+    pub(crate) shadow_g: f32,
+    pub(crate) shadow_b: f32,
+    pub(crate) mid_r: f32,
+    pub(crate) mid_g: f32,
+    pub(crate) mid_b: f32,
+    pub(crate) highlight_r: f32,
+    pub(crate) highlight_g: f32,
+    pub(crate) highlight_b: f32,
+    pub(crate) mix: f32,
+    pub(crate) luma_yr: f32,
+    pub(crate) luma_yg: f32,
+    pub(crate) luma_yb: f32,
+    pub(crate) _pad: u32,
+}
+// 16 fields x 4 bytes = 64 bytes
+
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct DilateErodeParams {
@@ -17705,6 +17731,9 @@ const SHADER_DISPLACE: &str = concat!(shader_pixel_storage_wgsl!(), crate::displ
 
 /// [`crate::warp`]'s pass (#2758): the shared warps, the Warp's own
 /// choice among them, and the displace sampler.
+/// [`crate::gradient_map`]'s pass (#2758).
+const SHADER_GRADIENT_MAP: &str = concat!(shader_pixel_storage_wgsl!(), crate::gradient_map::shader_wgsl!());
+
 const SHADER_WARP: &str = concat!(shader_pixel_storage_wgsl!(), crate::warp::functions_wgsl!(), crate::warp::shader_wgsl!(), crate::displace::sample_wgsl!());
 
 const SHADER_REFLECTION: &str = concat!(shader_pixel_storage_wgsl!(), crate::displace::noise_wgsl!(), crate::reflection::shader_wgsl!());
@@ -20155,6 +20184,7 @@ pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
         ("SHADER_LENS_DISTORTION", SHADER_LENS_DISTORTION),
         ("SHADER_DISPLACE", SHADER_DISPLACE),
         ("SHADER_WARP", SHADER_WARP),
+        ("SHADER_GRADIENT_MAP", SHADER_GRADIENT_MAP),
         ("SHADER_REFLECTION", SHADER_REFLECTION),
         ("SHADER_DILATE", SHADER_DILATE),
         ("SHADER_ERODE", SHADER_ERODE),

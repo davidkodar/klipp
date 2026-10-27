@@ -90,6 +90,7 @@ pub fn slots_needed(effect: &BuiltinEffect) -> Option<usize> {
         | BuiltinEffect::LensDistortion { .. }
         | BuiltinEffect::Displace { .. }
         | BuiltinEffect::Warp { .. }
+        | BuiltinEffect::GradientMap { .. }
         | BuiltinEffect::Reflection { .. }
         | BuiltinEffect::Letterbox { .. }
         | BuiltinEffect::Dilate { .. }
@@ -140,7 +141,8 @@ pub fn converts_inside(effect: &BuiltinEffect) -> Option<ColourDomain> {
         | BuiltinEffect::Gamma { .. }
         | BuiltinEffect::HSVAdjust { .. }
         | BuiltinEffect::Levels { .. }
-        | BuiltinEffect::Equalize { .. } => Some(ColourDomain::DisplayEncoded),
+        | BuiltinEffect::Equalize { .. }
+        | BuiltinEffect::GradientMap { .. } => Some(ColourDomain::DisplayEncoded),
         _ => None,
     }
 }
@@ -419,6 +421,23 @@ impl GpuEffectsPipeline {
                     scale: *scale,
                 });
                 (&self.lens_distortion_pipeline, slot)
+            }
+            BuiltinEffect::GradientMap { shadow, mid, highlight, mix } => {
+                if mix.abs() < f32::EPSILON {
+                    return Recorded::Identity;
+                }
+                use crate::gradient_map::colour;
+                let (s, m, h) = (colour(*shadow), colour(*mid), colour(*highlight));
+                let slot = rec.slots.claim(q, &crate::gpu::GradientMapParams {
+                    width, height,
+                    shadow_r: s[0], shadow_g: s[1], shadow_b: s[2],
+                    mid_r: m[0], mid_g: m[1], mid_b: m[2],
+                    highlight_r: h[0], highlight_g: h[1], highlight_b: h[2],
+                    mix: *mix,
+                    luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2],
+                    _pad: 0,
+                });
+                (&self.gradient_map_pipeline, slot)
             }
             BuiltinEffect::Warp { .. } => {
                 let Some(s) = effect.warp_settings().filter(|s| !crate::warp::is_identity(s)) else {

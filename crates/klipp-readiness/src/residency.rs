@@ -91,6 +91,7 @@ pub fn effect(effect: &E) -> Capability {
         | E::CornerPin { .. }
         | E::SurfacePin { .. }
         | E::Warp { .. }
+        | E::GradientMap { .. }
         | E::Lut3D { .. }
         | E::ColourSpaceTransform { .. }
         | E::PictureTransform { .. }
