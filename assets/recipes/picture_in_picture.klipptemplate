@@ -1,0 +1,207 @@
+{
+  "format_version": 2,
+  "id": "9c4e1a7b-2d58-4f30-b6e1-7a2f9d0c3e85",
+  "name": "Picture in picture",
+  "category": "Layout",
+  "written_by": "built-in",
+  "kind": "recipe",
+  "composition_id": "00000000-0000-0000-0000-000000000000",
+  "parameters": {
+    "size": {
+      "label": "Size",
+      "default": {
+        "type": "Number",
+        "value": 0.35
+      },
+      "range": {
+        "min": 0.05,
+        "max": 1.0
+      }
+    },
+    "across": {
+      "label": "Across",
+      "default": {
+        "type": "Number",
+        "value": 0.8
+      },
+      "range": {
+        "min": 0.0,
+        "max": 1.0
+      }
+    },
+    "down": {
+      "label": "Down",
+      "default": {
+        "type": "Number",
+        "value": 0.2
+      },
+      "range": {
+        "min": 0.0,
+        "max": 1.0
+      }
+    },
+    "opacity": {
+      "label": "Opacity",
+      "default": {
+        "type": "Number",
+        "value": 1.0
+      },
+      "range": {
+        "min": 0.0,
+        "max": 1.0
+      }
+    }
+  },
+  "slots": {
+    "picture": {
+      "label": "Picture",
+      "kind": "media"
+    }
+  },
+  "bindings": [
+    {
+      "parameter": "picture",
+      "property": "node:1.media"
+    },
+    {
+      "parameter": "size",
+      "property": "node:3.scale_x",
+      "link": {
+        "to": [
+          0.05,
+          1.0
+        ]
+      }
+    },
+    {
+      "parameter": "size",
+      "property": "node:3.scale_y",
+      "link": {
+        "to": [
+          0.05,
+          1.0
+        ]
+      }
+    },
+    {
+      "parameter": "across",
+      "property": "node:3.position_x",
+      "link": {
+        "to": [
+          -0.5,
+          0.5
+        ],
+        "per": "width"
+      }
+    },
+    {
+      "parameter": "down",
+      "property": "node:3.position_y",
+      "link": {
+        "to": [
+          -0.5,
+          0.5
+        ],
+        "per": "height"
+      }
+    },
+    {
+      "parameter": "opacity",
+      "property": "node:0.opacity"
+    }
+  ],
+  "graph": {
+    "ops": [
+      {
+        "op": "add",
+        "after": {
+          "anchor": "end"
+        },
+        "type": "klipp.fx.merge",
+        "label": "Picture in picture",
+        "params": {
+          "blend_mode": "Normal"
+        }
+      },
+      {
+        "op": "add_beside",
+        "at": {
+          "anchor": "source"
+        },
+        "type": "klipp.fx.media_source",
+        "label": "Picture"
+      },
+      {
+        "op": "connect",
+        "from": {
+          "anchor": "source"
+        },
+        "from_port": "out",
+        "to": {
+          "new": 1
+        },
+        "to_port": "in"
+      },
+      {
+        "op": "add_beside",
+        "at": {
+          "anchor": "source"
+        },
+        "type": "klipp.fx.transform",
+        "label": "Size and place"
+      },
+      {
+        "op": "connect",
+        "from": {
+          "new": 1
+        },
+        "from_port": "out",
+        "to": {
+          "new": 3
+        },
+        "to_port": "in"
+      },
+      {
+        "op": "connect",
+        "from": {
+          "new": 3
+        },
+        "from_port": "out",
+        "to": {
+          "new": 0
+        },
+        "to_port": "fg"
+      }
+    ],
+    "checks": [
+      {
+        "at": [
+          0.8,
+          0.2
+        ],
+        "channel": "red",
+        "min": 0.8,
+        "says": "the picture shows where Across and Down put it"
+      },
+      {
+        "at": [
+          0.8,
+          0.2
+        ],
+        "channel": "green",
+        "max": 0.2,
+        "says": "the picture covers the clip there"
+      },
+      {
+        "at": [
+          0.2,
+          0.8
+        ],
+        "channel": "red",
+        "min": 0.5,
+        "max": 0.65,
+        "says": "the clip shows elsewhere"
+      }
+    ]
+  }
+}

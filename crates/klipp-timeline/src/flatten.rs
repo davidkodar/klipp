@@ -46,9 +46,10 @@ enum Target<'a> {
     Slot(usize),
 }
 
-/// A graph node's parameter, `node:<path>.<param>`: the Composite page's
-/// (#2758), not placed by a template yet.
-const NODE_TARGETS_LATER: &str = "is a graph node's parameter, which the Composite page (#2758) binds; a template cannot set it yet";
+/// A graph node's parameter, `node:<op>.<param>`: a recipe's (#2758),
+/// set when the recipe is built into a clip's picture. A composition has
+/// no graph ops to name.
+const NODE_TARGETS_LATER: &str = "is a recipe's node parameter (a recipe sets it when it is placed); a composition template cannot bind one";
 
 fn binding_parts(property: &str) -> Result<Target<'_>, String> {
     if property.starts_with("node:") {

@@ -369,6 +369,10 @@ fn stored(value: &ParamValue) -> Result<Value, String> {
         ParamValue::Enum(e) => serde_json::json!(e),
         ParamValue::Text(t) => serde_json::json!(t),
         ParamValue::Point2(p) => serde_json::json!(p),
+        // An effect's colour: its sRGB bytes, as the entry stores it (#2758).
+        ParamValue::Color { rgb, space } if space == klipp_graph_lift::effect_params::SRGB => {
+            serde_json::json!(rgb.map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8))
+        }
         ParamValue::Color { .. } | ParamValue::Matrix3(_) => return Err("that value is set through the effect's own editor".into()),
         ParamValue::Float64(_)
         | ParamValue::Point2F64(_)
