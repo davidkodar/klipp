@@ -13,7 +13,9 @@
 # line and fitted by one homography per line (under 1.6 px off).
 # `limit` is the most mean point error over all lines and the most at the
 # last one (drift), in pixels: about twice what the tracker made of it
-# when the clip was added.
+# when the clip was added. `known` marks a clip the tracker can't hold
+# yet: reported, not failed, until it holds within its limit, and then
+# failed until the line is taken off.
 
 clip bar-neon-sign c4abafc284ceccd391d4a2c3c3f41861cc6893b500cda59e9330464f9690960d https://cdn.coverr.co/videos/coverr-bar-neon-sign-1956/1080p.mp4?download=true
 # A lit sign on a wall, the camera held by hand at dusk.
@@ -49,3 +51,19 @@ at 240 889.05,486.73 960.89,515.71 1042.78,535.69 1076.35,539.88 1131.11,541.36 
 at 300 900.03,486.67 964.67,514.1 1039.31,532.66 1069.9,536.24 1120.39,537.22 1247,562.76 1015.18,520.81
 at 360 901.36,477.44 956.15,505.26 1020.79,524.68 1047.27,528.71 1092.37,530.81 1203.93,558.77 998.62,512.28
 limit 1.5 2
+
+# Local only: the user's own copy of a free-licence clip (Pixabay 20542),
+# which has no address to fetch it from; run when the file is there and
+# its sha256 matches, reported as skipped otherwise. A drone over plain
+# water at dawn, hovering and then drawing back and turning; the points
+# are a buoy and the shoreline, the area the water round the buoy.
+local sea-mirror-dawn b6b7ddead24ec0dd4e4aa2a080d521ba7a44782f810a18a964a0aaa8ac6b84a5 ~/Videos/Klipp Scenario Films/gold-logo/media/sea-mirror-dawn.mp4
+quad 250,265 1200,265 1280,560 150,560
+at 0 981,277 515,243 545,245 430,247
+at 90 982.62,275.39 517.56,242.15 547.73,244.07 432.61,246.03
+at 180 978.68,275.27 519.96,242.58 550,244.36 435.2,246.63
+at 270 793.99,275.97 502.52,242 533.01,243.81 417.74,246.31
+at 360 553.83,280.05 479.08,242.63 509.74,244.4 393.91,246.46
+at 450 396.57,279.97 464.14,242.56 494.46,244.62 378.84,245.78
+limit 3 6
+known the water is lost as the drone turns away, from about frame 200
