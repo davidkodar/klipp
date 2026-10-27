@@ -122,6 +122,11 @@ pub fn fetch_family(family: &str) {
 /// the first rather than fetching again.
 static FETCHING: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
 
+/// Whether the catalogue family `name` is being fetched now.
+pub fn fetching(name: &str) -> bool {
+    FETCHING.lock().is_ok_and(|f| f.contains(&name))
+}
+
 /// Fetches `family` on a thread of its own, once at a time; the titles
 /// are drawn again when it lands (`catalogue::fetches`).
 fn fetch_in_background(family: &'static klipp_title::catalogue::CatalogueFamily) {
@@ -239,6 +244,9 @@ pub fn show_dialog(ctx: &egui::Context, state: &mut AppState, theme: &crate::the
                 }
                 if let Some(f) = picked.toggle_favourite {
                     cmds.push(AppCommand::ToggleFavouriteFont { family: f });
+                }
+                if let Some(f) = picked.preview {
+                    fetch_family(&f);
                 }
             });
             ui.horizontal(|ui| {

@@ -1973,6 +1973,11 @@ fn show_title_pinned_core_textbox(
         if let Some(family) = choice.toggle_favourite {
             cmds.push(AppCommand::ToggleFavouriteFont { family });
         }
+        // Fetched to preview, not chosen: it moves up into the list in
+        // its own face once it is here (#2732).
+        if let Some(family) = &choice.preview {
+            crate::missing_fonts::fetch_family(family);
+        }
         // A font this computer lacks draws in a fallback: say so, with
         // a way to replace it everywhere it is used (#1720).
         if !font_is_mixed && !crate::missing_fonts::installed(&display_font) {
