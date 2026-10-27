@@ -1,6 +1,8 @@
 //! A composition template placed as one clip (#2757) draws on the GPU
 //! stack what its composition draws with the same value set by hand: the
-//! template's parameter put on the copied composition, no fallback. A
+//! template's parameter put on the copied composition. Its scene is still
+//! composed on the CPU (the precomposition gap on main, at most two
+//! fallbacks), until the stack composes precompositions itself. A
 //! missing GPU is reported as unverified; with `KLIPP_TEST_REQUIRE_GPU=1`
 //! it fails.
 
@@ -80,5 +82,9 @@ fn a_placed_template_draws_its_composition_with_the_value_set() {
     assert!(worst <= 2, "the placed template differs from its composition by {worst} levels");
     let blue = placed_px.chunks(4).filter(|p| p[2] > 150 && p[0] < 100).count();
     assert!(blue > 1000, "the card is drawn: {blue} pixels of its backing");
-    eprintln!("fallbacks: {fallbacks}");
+    // The stack has no precomposition path yet: any precomposition's
+    // scene is composed on the CPU and uploaded (composition.layer and
+    // title.cpu_composition), templates or not. The next part of #2757
+    // composes it on the GPU and takes this to 0.
+    assert!(fallbacks <= 2, "only the known precomposition fallbacks: {fallbacks}");
 }
