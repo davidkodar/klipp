@@ -72,6 +72,10 @@ pub(crate) fn prepare(wire: &[GraphWireOp], mut docs: Documents) -> Result<Prepa
                     let node = resolve(&docs, &path).map_err(|e| e.to_string())?;
                     graph_model::parameter_op(node, path, key, value)?
                 }
+                GraphWireOp::Modify { key, modifiers, .. } => {
+                    let node = resolve(&docs, &path).map_err(|e| e.to_string())?;
+                    graph_model::modifiers_op(node, path, key, modifiers)?
+                }
                 GraphWireOp::Enable { enabled, .. } => GraphOp::SetEnabled { path, enabled: *enabled },
                 GraphWireOp::Mix { mix, .. } => {
                     if mix.is_some_and(|m| !m.is_finite() || !(0.0..=1.0).contains(&m)) { return Err("mix must be finite and between 0 and 1, or null".into()); }

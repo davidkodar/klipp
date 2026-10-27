@@ -113,6 +113,9 @@ pub enum GraphWireOp {
     Mix { path: GraphPath, #[serde(deserialize_with = "nullable")] mix: Option<f32> },
     MaskChannel { path: GraphPath, #[serde(deserialize_with = "nullable")] channel: Option<String> },
     MoveAfter { path: GraphPath, after: GraphId },
+    /// The behaviours on a parameter (#2758): a wiggle, an oscillation, a
+    /// ramp…, as a clip's behaviours store them; none takes them off.
+    Modify { path: GraphPath, key: String, modifiers: Vec<Value> },
 }
 
 impl GraphWireOp {
@@ -121,7 +124,7 @@ impl GraphWireOp {
             Self::Add { after, .. } => after,
             Self::AddBeside { at, .. } => at,
             Self::Publish { path, .. } | Self::Unpublish { path, .. } | Self::Remove { path } | Self::Set { path, .. } | Self::Enable { path, .. }
-            | Self::Mix { path, .. } | Self::MaskChannel { path, .. } | Self::MoveAfter { path, .. } => path,
+            | Self::Mix { path, .. } | Self::MaskChannel { path, .. } | Self::MoveAfter { path, .. } | Self::Modify { path, .. } => path,
             Self::Connect { to, .. } | Self::Disconnect { to, .. } => to,
         }
     }

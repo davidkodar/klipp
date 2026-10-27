@@ -385,3 +385,67 @@ fn a_clean_plate_replaces_the_background_and_keeps_the_subject() {
     let why = klipp_control::recipes::on_clip(&before, plain.id, recipe, &values).expect_err("refused");
     assert!(why.contains("past the clip's end"), "says why: {why}");
 }
+
+/// A recipe that shakes (#2758): a Transform after the chain whose
+/// position a wiggle drives, its amplitude a control, put on by the
+/// recipe's `modify` op.
+fn shaking() -> klipp_timeline::composition_template::CompositionTemplate {
+    let recipe: klipp_timeline::composition_template::CompositionTemplate = serde_json::from_value(serde_json::json!({
+        "format_version": 2, "id": "3b8e1f2a-9c4d-4a71-b6e5-0d2f7a9c1e84", "name": "Shaking", "kind": "recipe",
+        "composition_id": "00000000-0000-0000-0000-000000000000",
+        "parameters": { "shake": { "label": "Shake", "default": { "type": "Number", "value": 30.0 }, "range": { "min": 0.0, "max": 200.0 } } },
+        "bindings": [{ "parameter": "shake", "property": "node:0.position_x~amplitude" }],
+        "graph": { "ops": [
+            { "op": "add", "after": { "anchor": "end" }, "type": "klipp.fx.picture_transform" },
+            { "op": "modify", "path": { "new": 0 }, "key": "position_x", "modifiers": [{ "type": "wiggle", "amplitude": 0.0, "frequency": 3.0 }] }
+        ] }
+    })).unwrap();
+    recipe.validate().unwrap();
+    recipe
+}
+
+/// `seq` on the GPU display stack at `secs`, nothing fallen back.
+fn stack_at(seq: &Sequence, secs: f64, name: &str) -> Option<Vec<u8>> {
+    let mut gpu = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+    gpu.set_gpu_enabled(true);
+    let frame = klipp_effects::residency::frame("test", 1.0);
+    let drawn = gpu.render_display_u8_on_gpu(seq, tc(secs), W, H, &mut Shot, RenderOptions::default());
+    drop(frame);
+    let Some((bytes, _)) = drawn else {
+        assert!(!required(), "{name}: the stack declined: {:?}", gpu.last_decline());
+        eprintln!("UNVERIFIED: {name}: the stack declined ({:?})", gpu.last_decline());
+        return None;
+    };
+    let fell = klipp_effects::residency::last_frame();
+    assert_eq!(fell.fallback_count(), 0, "{name}: nothing falls back: {:?}", fell.events);
+    Some(bytes)
+}
+
+/// A behaviour a recipe puts on a parameter (#2758) moves the picture
+/// over time, by as much as its control says: the shaken frame differs
+/// from one moment to the next, and the CPU draws it as the stack does;
+/// with the control at 0 it is the clip, still.
+#[test]
+fn a_behaviour_a_recipe_puts_on_moves_the_picture_over_time() {
+    let recipe = shaking();
+    let plain = shot_clip();
+    let placed = |shake: f64| {
+        let before = sequence(plain.clone());
+        let values = BTreeMap::from([("shake".to_string(), TemplateValue::Number(shake))]);
+        let (ops, _) = klipp_control::recipes::on_clip(&before, plain.id, &recipe, &values).unwrap_or_else(|e| panic!("{e}"));
+        let mut c = plain.clone();
+        c.apply_picture_ops(&ops).unwrap_or_else(|e| panic!("{e}"));
+        sequence(c)
+    };
+    let shaken = placed(30.0);
+    let Some(a) = stack_at(&shaken, 1.0, "shaken") else { return };
+    let Some(b) = stack_at(&shaken, 1.4, "shaken later") else { return };
+    assert!(worst(&a, &b) > 40, "it moves from one moment to the next: {} levels apart", worst(&a, &b));
+    assert!(worst(&cpu(&shaken, ViewChannel::Picture), &a) <= 1, "the CPU draws it as the stack does");
+    let still = placed(0.0);
+    let Some(alone) = stack_at(&sequence(plain.clone()), 1.0, "the clip") else { return };
+    for secs in [1.0, 1.4] {
+        let Some(s) = stack_at(&still, secs, "no shake") else { return };
+        assert!(worst(&s, &alone) <= 1, "no shake at {secs} s: the clip, {} levels off", worst(&s, &alone));
+    }
+}
