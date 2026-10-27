@@ -58,8 +58,11 @@ fn truthy(node: Node<'_, '_>, name: &str) -> Option<bool> {
 /// thousand-and-first slower rate (24 is 23.976).
 fn rate_of(node: Node<'_, '_>) -> Option<Fps> {
     let rate = child(node, "rate")?;
-    let timebase = int(rate, "timebase").filter(|t| *t > 0)? as u32;
-    Some(if truthy(rate, "ntsc").unwrap_or(false) { Fps::new(timebase * 1000, 1001) } else { Fps::new(timebase, 1) })
+    // A timebase a frame rate can be, so neither cast nor product wraps;
+    // the rate then goes through the importers' one check.
+    let timebase = int(rate, "timebase").filter(|t| (1..=1000).contains(t))? as u32;
+    let (num, den) = if truthy(rate, "ntsc").unwrap_or(false) { (timebase * 1000, 1001) } else { (timebase, 1) };
+    Some(crate::path_util::sanitize_fps(num, den))
 }
 
 fn frames(n: i64, fps: Fps) -> RationalTime {
@@ -428,6 +431,20 @@ pub fn parse_xmeml(xml: &str) -> Result<ImportResult, String> {
 
 #[cfg(test)]
 mod tests {
+
+    /// A timebase past any frame rate gives no rate rather than a wrapped
+    /// one; a real one reads as before.
+    #[test]
+    fn a_timebase_past_any_frame_rate_gives_no_rate() {
+        let rate = |xml: &str| {
+            let doc = crate::path_util::parse_xml_safe(xml).unwrap();
+            rate_of(doc.root_element())
+        };
+        assert!(rate("<x><rate><timebase>4294967296</timebase></rate></x>").is_none());
+        assert!(rate("<x><rate><timebase>5000000</timebase><ntsc>TRUE</ntsc></rate></x>").is_none());
+        assert_eq!(rate("<x><rate><timebase>24</timebase><ntsc>TRUE</ntsc></rate></x>"), Some(Fps::new(24000, 1001)));
+    }
+
     use super::*;
 
     fn at(seq: &Sequence, n: i64) -> RationalTime {

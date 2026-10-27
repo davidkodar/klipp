@@ -460,7 +460,9 @@ pub fn parse_csp(text: &str) -> Result<LutData, LutError> {
         return Err(LutError::InvalidSize(size));
     }
     let expected = size * size * size;
-    let mut data = Vec::with_capacity(expected * 3);
+    // Room for what the text can hold (a value is two bytes at least),
+    // not for what its header claims.
+    let mut data = Vec::with_capacity((expected * 3).min(text.len() / 2 + 3));
     // The size may be written three times.
     let mut first = vec![next_f32()?, next_f32()?];
     if first.iter().all(|&v| v as usize == size && v.fract() == 0.0) {
@@ -794,6 +796,15 @@ pub fn write_cube(
 
 #[cfg(test)]
 mod tests {
+
+    /// A CSP whose header claims a 256-cube and holds a handful of values
+    /// is refused without first reserving room for the whole cube.
+    #[test]
+    fn a_csp_claiming_more_than_it_holds_is_refused() {
+        let text = "CSPLUTV100\n3D\n\n2\n0 1\n0 1\n2\n0 1\n0 1\n2\n0 1\n0 1\n\n256 256 256\n0 0 0\n";
+        assert!(parse_csp(text).is_err());
+    }
+
 
     /// A LUT that inverts each channel, on a 5-point grid.
     fn invert(size: usize) -> LutData {

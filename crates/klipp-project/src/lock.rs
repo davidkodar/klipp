@@ -154,7 +154,8 @@ fn lock_path(project: &Path) -> PathBuf {
 /// cannot be read as one — a lock nobody can interpret protects nothing,
 /// and treating it as held would leave the project unopenable.
 pub fn read(project: &Path) -> Option<LockInfo> {
-    let text = std::fs::read_to_string(lock_path(project)).ok()?;
+    // A lock file is a few hundred bytes: anything past 64 KiB is not one.
+    let text = crate::path_util::read_to_string_capped(&lock_path(project), 64 * 1024).ok()?;
     serde_json::from_str(&text).ok()
 }
 
@@ -466,6 +467,17 @@ pub fn describe_secs(secs: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// A lock file past 64 KiB is not read: no lock, not a huge read.
+    #[test]
+    fn an_outsized_lock_file_is_not_read() {
+        let dir = std::env::temp_dir().join(format!("klipp-lock-big-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(lock_path(&dir), vec![b' '; 100 * 1024]).unwrap();
+        assert!(read(&dir).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::*;
 
     fn project(name: &str) -> PathBuf {
