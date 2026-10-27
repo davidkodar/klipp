@@ -16,7 +16,7 @@ pub(crate) fn resolve_plan(ctx: &ControlContext, ops: &[klipp_document::ops::Op]
     // changes a clip's own grade, and must not copy its group's into it.
     let seq = seq.with_own_grades();
     let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
-    let ops = &with_recipes(&with_compositions(&with_templates(ops, template_dir().as_deref()), composition_dir().as_deref(), &project_sequence_ids(ctx, &seq)), composition_dir().as_deref());
+    let ops = &with_recipes(&with_compositions(&with_templates(ops, template_dir().as_deref()), composition_dir().as_deref(), &project_sequence_ids(ctx, &seq)), composition_dir().as_deref(), &pool);
     let plan = klipp_document::ops::resolve_with(&seq, &pool, ops, &AnalysedTranscripts).map_err(|r| format!("{r} (step {} refused; nothing applied)", r.step + 1))?;
     Ok((plan, revision))
 }
@@ -34,7 +34,7 @@ pub(crate) fn resolve_plan_seeing(ctx: &ControlContext, ops: &[klipp_document::o
     let seq = seq.with_own_grades();
     let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
     let others = ctx.others.read().map_err(|_| "sequences lock poisoned")?.clone();
-    let ops = &with_recipes(&with_compositions(&with_templates(ops, template_dir().as_deref()), composition_dir().as_deref(), &project_sequence_ids(ctx, &seq)), composition_dir().as_deref());
+    let ops = &with_recipes(&with_compositions(&with_templates(ops, template_dir().as_deref()), composition_dir().as_deref(), &project_sequence_ids(ctx, &seq)), composition_dir().as_deref(), &pool);
     let plan = klipp_document::ops::resolve_in(&seq, &others, &pool, ops, &AnalysedTranscripts).map_err(|r| format!("{r} (step {} refused; nothing applied)", r.step + 1))?;
     Ok((plan, revision))
 }
@@ -63,21 +63,27 @@ fn project_sequence_ids(ctx: &ControlContext, open: &klipp_timeline::Sequence) -
 /// the recipe of its name, Klipp's own or one saved in `dir`, with the
 /// op's slots and controls. One whose name names none is left without,
 /// which the document refuses.
-pub(crate) fn with_recipes(ops: &[klipp_document::ops::Op], dir: Option<&std::path::Path>) -> Vec<klipp_document::ops::Op> {
-    use klipp_document::ops::{Op, RecipeBuilder};
+pub(crate) fn with_recipes(ops: &[klipp_document::ops::Op], dir: Option<&std::path::Path>, pool: &klipp_media::MediaPool) -> Vec<klipp_document::ops::Op> {
+    use klipp_document::ops::{Op, RecipeBuild, RecipeBuilder};
     if !ops.iter().any(|op| matches!(op, Op::Recipe { .. })) {
         return ops.to_vec();
     }
     let recipes = crate::recipes::all(dir.map(std::path::Path::to_path_buf));
+    // Where each media file's subject mattes are, for what the reply says
+    // of a recipe reading one (#2758).
+    let media = std::sync::Arc::new(crate::recipes::media_files(pool));
     ops.iter()
         .cloned()
         .map(|mut op| {
             if let Op::Recipe { name, slots, controls, build, .. } = &mut op {
                 *build = crate::recipes::named(&recipes, name).ok().cloned().map(|recipe| {
                     let (slots, controls) = (slots.clone(), controls.clone());
+                    let media = media.clone();
                     RecipeBuilder(std::sync::Arc::new(move |seq: &klipp_timeline::Sequence, clip: klipp_core::ClipId| {
                         let values = crate::recipes::values(&recipe, &slots, &controls)?;
-                        crate::recipes::on_clip(seq, clip, &recipe, &values)
+                        let (ops, placed) = crate::recipes::on_clip(seq, clip, &recipe, &values)?;
+                        let note = crate::recipes::subject_note(seq, clip, &recipe, &values, &media);
+                        Ok(RecipeBuild { ops, placed, note })
                     }))
                 });
             }
