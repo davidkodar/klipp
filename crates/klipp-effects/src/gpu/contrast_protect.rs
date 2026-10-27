@@ -80,7 +80,7 @@ struct Params {
     "
 const TARGET: f32 = 4.5;
 const LIGHT_TEXT: f32 = 0.179;
-const HALO_FULL: f32 = 0.08;
+const HALO_FULL: f32 = 0.04;
 
 fn luma(c: vec3<f32>) -> f32 {
     return clamp(dot(c, p.luma_opacity.xyz), 0.0, 1.0);
