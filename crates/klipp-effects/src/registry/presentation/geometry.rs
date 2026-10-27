@@ -29,6 +29,10 @@ pub(super) static PARAMS: &[ParamEntry] = &[
     at(CROP, "top", P::scrub(0.005, 3)),
     at(CROP, "bottom", P::scrub(0.005, 3)),
     at(CROP, "feather", P::scrub(0.5, 1)),
+    // A shape to cover, width over height, and where it is centred (#2757).
+    at(CROP, "aspect", P::scrub(0.01, 3)),
+    at(CROP, "focus_x", P::scrub(0.005, 3)),
+    at(CROP, "focus_y", P::scrub(0.005, 3)),
     at(TRANSFORM, "position_x", P::scrub(1.0, 0).label("Pos X")),
     at(TRANSFORM, "position_y", P::scrub(1.0, 0).label("Pos Y")),
     at(TRANSFORM, "scale_x", P::scrub(0.01, 2).label("Scale X").suffix(Suffix::Text("×"))),

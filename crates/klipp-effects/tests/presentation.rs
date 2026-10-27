@@ -155,6 +155,10 @@ const MEANT: &[(&str, &str, &str)] = &[
     ("klipp.fx.sharpen", "amount", "reset"),
     // IC5: Noise's monochrome is a switch, not a 0-to-1 slider.
     ("klipp.fx.noise_generator", "monochrome", "widget"),
+    // #2757: a Crop's shape to cover and its focus are rows of their own.
+    ("klipp.fx.crop", "aspect", "row"),
+    ("klipp.fx.crop", "focus_x", "row"),
+    ("klipp.fx.crop", "focus_y", "row"),
 ];
 
 /// `p`'s value as the recorded effect stores it: a switch as 0 or 1, a

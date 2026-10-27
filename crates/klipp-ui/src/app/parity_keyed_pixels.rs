@@ -25,7 +25,7 @@
 use super::parity_effect_keys::{eligible, variant};
 use super::parity_harness::Run;
 use super::parity_manifest::{catalog, CatalogEntry, CatalogValue, CoverageKey, Interaction, Manifest, Report, Surface};
-use super::parity_numeric::{known_defect, number, pixel_fixture, routes_for, size_for, stored, type_value, RowLabel};
+use super::parity_numeric::{known_defect, number, routes_for, size_for, stored, type_value, RowLabel};
 use super::parity_pixels::{frames_at, Routes};
 use crate::inspector::generated::row;
 use klipp_core::{Interpolation, Keyframe, Timecode};
@@ -77,7 +77,7 @@ fn case(entry: &CatalogEntry, interpolation: Interpolation, picks: &mut Picks) -
     let (routes, _) = routes_for(entry.type_id);
     let size = size_for(ty.tag);
     let effect = super::parity_numeric::editable(ty, pres)?;
-    let (mut clip, index) = pixel_fixture(ty, &effect, Surface::EffectsStack)?;
+    let (mut clip, index) = super::parity_numeric::pixel_fixture_for_row(ty, &effect, Surface::EffectsStack, desc.key)?;
     let label = RowLabel { text: pres.label.unwrap_or(desc.label), group: pres.group };
     let encoding = klipp_grade_model::Encoding::from_u8(klipp_core::grade_encoding().effective(klipp_engine::video_decoder::working_colorspace()).as_u8());
     let (lo, hi) = row::shown_range(desc, pres, encoding);
