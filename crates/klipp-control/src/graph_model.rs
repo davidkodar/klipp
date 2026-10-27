@@ -82,7 +82,9 @@ pub(crate) fn parameter(node: &Node, key: &str, value: &Value) -> Result<ParamVa
     // `luma_key.low`) is written by the grade's own override (#2758),
     // which takes a number or a switch.
     let grade_keyed = p.key != p.field && node.type_id.as_str() == types::LEGACY_NODE && p.index.is_none() && klipp_nodes::NodeParams::default().apply_override(p.key, 1.0);
-    if !grade_keyed && ((p.key != p.field && !aliased) || p.index.is_some() || p.field.contains('.')) {
+    // A difference key's clean frame (#2758): seconds into its clip's media.
+    let clean_frame = node.type_id.as_str() == types::LEGACY_NODE && p.field == "difference_key.plate_frame";
+    if !grade_keyed && !clean_frame && ((p.key != p.field && !aliased) || p.index.is_some() || p.field.contains('.')) {
         return Err(format!("{key} needs a saved-field adapter before it can be set through graph operations"));
     }
     let wrong = || format!("{key} expects {:?}", p.kind);
@@ -135,6 +137,12 @@ pub(crate) fn parameter(node: &Node, key: &str, value: &Value) -> Result<ParamVa
         ParamKind::Other if node.type_id.as_str() == types::LEGACY_EFFECT && value.is_string() && effect_stores_text(node, p.field) => {
             Ok(ParamValue::Text(value.as_str().unwrap_or_default().into()))
         }
+        // A source time from 0; past the media's end the render refuses
+        // it, said, as it knows the media's length.
+        ParamKind::Other if clean_frame => match value.as_f64() {
+            Some(secs) if secs.is_finite() && secs >= 0.0 && (secs as f32).is_finite() => Ok(ParamValue::Float(secs as f32)),
+            _ => Err(format!("{key} takes the source seconds of a frame of the clip's own media, a number from 0")),
+        },
         ParamKind::Colour | ParamKind::Other => Err(format!("{key} requires its native editor until its value has a typed graph representation")),
     }
 }
@@ -178,6 +186,18 @@ fn frei0r_payload(node: &Node, key: &str, value: &Value) -> Result<Option<Value>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A difference key's clean frame (#2758) takes source seconds from 0,
+    /// and nothing else, said.
+    #[test]
+    fn a_clean_frame_takes_seconds_from_zero() {
+        let key = new_node("klipp.grade.difference_key", uuid::Uuid::new_v4(), None).unwrap();
+        assert_eq!(parameter(&key, "difference_key.plate_frame", &json!(2.5)).unwrap(), ParamValue::Float(2.5));
+        for bad in [json!(-1), json!("2"), json!(null), json!(1e300)] {
+            let why = parameter(&key, "difference_key.plate_frame", &bad).unwrap_err();
+            assert!(why.contains("source seconds"), "{bad}: {why}");
+        }
+    }
 
     #[test]
     fn scalar_values_are_typed_and_soft_slider_ranges_are_not_hard_limits() {

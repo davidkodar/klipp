@@ -32,7 +32,7 @@ pub fn generate_difference_key_matte(
 ) -> Vec<f32> {
     let pixel_count = (width * height) as usize;
 
-    if !settings.enabled || settings.plate_path.is_none() {
+    if !settings.enabled || !settings.has_plate() {
         // Disabled OR no plate chosen → empty matte (nothing
         // selected). Same passthrough shape as ExternalMatte's
         // missing-image fallback so a freshly-added node doesn't
@@ -137,6 +137,7 @@ mod tests {
         DifferenceKeySettings {
             enabled: true,
             plate_path: Some(PathBuf::from("/tmp/test_plate.png")),
+            plate_frame: None,
             tolerance,
             soft,
             invert,
@@ -327,6 +328,7 @@ mod tests {
         let original = DifferenceKeySettings {
             enabled: true,
             plate_path: Some(PathBuf::from("/tmp/clean_plate.png")),
+            plate_frame: Some(2.5),
             tolerance: 0.123,
             soft: 0.034,
             invert: true,
@@ -336,6 +338,7 @@ mod tests {
         let round_trip: DifferenceKeySettings = serde_json::from_str(&json).unwrap();
         assert_eq!(round_trip.enabled, original.enabled);
         assert_eq!(round_trip.plate_path, original.plate_path);
+        assert_eq!(round_trip.plate_frame, original.plate_frame);
         assert!((round_trip.tolerance - original.tolerance).abs() < 1e-6);
         assert!((round_trip.soft - original.soft).abs() < 1e-6);
         assert_eq!(round_trip.invert, original.invert);

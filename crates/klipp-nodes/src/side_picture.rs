@@ -31,6 +31,10 @@ pub enum SideKey {
     /// The picture the clip's grade reads, for a key that reads it in a run
     /// apart from that grade (#1265).
     GradeInput,
+    /// A frame of the clip's own media picked as a difference key's clean
+    /// plate (#2758): the media's pool id and the frame's source seconds'
+    /// bits.
+    Plate { media: String, secs_bits: u64 },
 }
 
 impl SideKey {
@@ -51,6 +55,7 @@ impl SideKey {
             Self::Title { .. } => crate::decline::effect_name(&klipp_effects::BuiltinEffect::TitleSource { title: String::new() }),
             Self::Below => crate::decline::effect_name(&klipp_effects::BuiltinEffect::ClipBelow {}),
             Self::GradeInput => "Grade input".into(),
+            Self::Plate { .. } => "Clean plate".into(),
         }
     }
 }

@@ -1016,6 +1016,9 @@ pub struct Renderer {
     /// The first of each clip's stack layers its title sources are drawn
     /// in this frame (#2758), after the layers of the stack.
     side_title_slots: HashMap<ClipId, usize>,
+    /// Clean frames read for difference keys (#2758), by their key and
+    /// the size they were read at; a few kept.
+    clean_frames: HashMap<(klipp_nodes::side_picture::SideKey, u32, u32), Arc<Vec<f32>>>,
     /// This stack frame's grade time by part, as its layers run (#2107).
     grade_split: GradeSplit,
     /// The subject matte sequences piece transitions read (#985 phase 3):
@@ -1219,6 +1222,7 @@ impl Renderer {
             still_layers: HashMap::new(),
             precomp_scenes: HashMap::new(),
             side_title_slots: HashMap::new(),
+            clean_frames: HashMap::new(),
             precomp_ready: std::collections::HashSet::new(),
             grade_split: GradeSplit::default(),
             subject_mattes: HashMap::new(),
@@ -4599,6 +4603,49 @@ impl Renderer {
                 Arc::new(frame)
             });
             self.executor.put_side_picture(klipp_nodes::side_picture::SideKey::Media { item: media, offset_bits: offset.to_bits() }, got);
+        }
+        self.put_clean_frames(clip, width, height, src);
+    }
+
+    /// The frames `clip`'s difference keys pick from its own media as
+    /// their clean plates (#2758), for its run: each checked against the
+    /// media before anything is decoded, read once at the render size by
+    /// the media reader (as a media source's frame is, not the clip's own
+    /// decoder) and kept. One refused gives the key no plate, said why.
+    fn put_clean_frames(&mut self, clip: &Clip, width: u32, height: u32, src: &mut dyn FrameSource) {
+        use klipp_nodes::side_picture::{SideKey, SideMissing};
+        let picked = crate::resolve::plate_frames(clip);
+        if picked.is_empty() {
+            return;
+        }
+        let media = clip.media_id().map(|m| m.0.to_string());
+        let range = src.media_range(clip);
+        for secs in picked {
+            let key = SideKey::Plate { media: media.clone().unwrap_or_default(), secs_bits: secs.to_bits() };
+            let got = match (&media, crate::resolve::clean_frame_refused(secs, range)) {
+                (None, _) => Err(SideMissing::Unsupported("the clip has no media to pick a clean frame from".into())),
+                (_, Some(why)) => Err(SideMissing::Unsupported(why)),
+                (Some(media), None) => match self.clean_frames.get(&(key.clone(), width, height)) {
+                    Some(frame) => Ok(Arc::clone(frame)),
+                    None => {
+                        let transfer = src.media_transfer(media);
+                        let read = src.media_frame(media, secs, self.working, width, height).map(|mut frame| {
+                            if let Some(t) = transfer {
+                                self.display_render(&mut frame, t);
+                            }
+                            Arc::new(frame)
+                        });
+                        if let Ok(frame) = &read {
+                            if self.clean_frames.len() >= 4 {
+                                self.clean_frames.clear();
+                            }
+                            self.clean_frames.insert((key.clone(), width, height), Arc::clone(frame));
+                        }
+                        read
+                    }
+                },
+            };
+            self.executor.put_side_picture(key, got);
         }
     }
 

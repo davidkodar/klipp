@@ -3330,10 +3330,12 @@ impl NodeInspectorPanel {
         // Clean-plate file picker.
         ui.horizontal(|ui| {
             ui.add_space(8.0);
-            let label = match &dk.plate_path {
-                Some(p) => p.file_name().map(|f| f.to_string_lossy().to_string())
+            let label = match (&dk.plate_path, dk.plate_frame) {
+                // Picked from the clip's own frames (#2758), over the file.
+                (_, Some(secs)) => format!("the clip's frame at {secs:.2} s"),
+                (Some(p), None) => p.file_name().map(|f| f.to_string_lossy().to_string())
                     .unwrap_or_else(|| p.to_string_lossy().to_string()),
-                None => "(no plate selected)".to_string(),
+                (None, None) => "(no plate selected)".to_string(),
             };
             ui.label(egui::RichText::new(label).small().color(theme.text_dim));
         });

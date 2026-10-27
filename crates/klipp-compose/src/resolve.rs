@@ -587,6 +587,44 @@ pub fn has_grade_compound(clip: &Clip) -> bool {
 }
 
 /// A media source's item id as the pool keys it.
+/// The source times `clip`'s enabled difference keys pick from its own
+/// media as their clean plates (#2758), in its grade and beside its
+/// chain, each once.
+pub fn plate_frames(clip: &Clip) -> Vec<f64> {
+    let picked = |p: &klipp_nodes::NodeParams| p.difference_key.as_ref().filter(|d| d.enabled).and_then(|d| d.plate_frame);
+    use klipp_timeline::GradeAccess;
+    let mut found: Vec<f64> = clip.grade().nodes.iter().filter(|n| n.kind == klipp_nodes::NodeKind::DifferenceKey && n.enabled).filter_map(|n| picked(&n.params)).collect();
+    if let Ok(lifted) = clip.picture_v2() {
+        for n in lifted.picture.graph.nodes.iter().filter(|n| n.enabled) {
+            let Some(payload) = n.legacy.as_ref().map(|l| &l.payload) else { continue };
+            if payload.get("kind").and_then(serde_json::Value::as_str) != Some("DifferenceKey") {
+                continue;
+            }
+            if let Some(secs) = payload.get("params").and_then(|p| serde_json::from_value::<klipp_nodes::NodeParams>(p.clone()).ok()).as_ref().and_then(picked) {
+                found.push(secs);
+            }
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    found.retain(|s| seen.insert(s.to_bits()));
+    found
+}
+
+/// Why a clean frame picked at `secs` (#2758) can't be read, before
+/// anything is decoded: a time that isn't one, or one outside the media's
+/// `range` of source seconds (when the source knows it; else before 0).
+/// `None` when it can. Never moved to the nearest frame.
+pub fn clean_frame_refused(secs: f64, range: Option<(f64, f64)>) -> Option<String> {
+    if !secs.is_finite() {
+        return Some(format!("its clean frame's time ({secs}) isn't a time"));
+    }
+    let (start, end) = range.unwrap_or((0.0, f64::INFINITY));
+    (!(start..end).contains(&secs)).then(|| match range {
+        Some(_) => format!("its clean frame at {secs:.3} s is outside the media ({start:.3} to {end:.3} s)"),
+        None => format!("its clean frame at {secs:.3} s is before the media's start"),
+    })
+}
+
 pub fn media_id(media: &str) -> Option<klipp_core::MediaId> {
     media.parse().ok().map(klipp_core::MediaId)
 }

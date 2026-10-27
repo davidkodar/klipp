@@ -106,7 +106,7 @@ const TAKEN_BUT_UNUSED: &[&str] = &["qual_exposure", "qual_saturation", "qual_hu
 /// write every grade choice the way the old panel's `SetNodeParam` did
 /// (M3 step 18), but that no description makes keyframable: a choice
 /// described, set by hand, never keyed.
-const SET_NOT_KEYED: &[&str] = &["difference_key.match_space", "matte_channel", "matte_combine_op"];
+const SET_NOT_KEYED: &[&str] = &["difference_key.match_space", "matte_channel", "matte_combine_op", "matte_subject"];
 
 /// Every name `apply_override` takes, read from its match arms: the plain
 /// names, the qualifier's and luma key's prefixed ones, and the warper's

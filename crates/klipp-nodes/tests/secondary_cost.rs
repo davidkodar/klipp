@@ -244,6 +244,7 @@ fn difference_key_secondary() -> NodeGraph {
                 difference_key: Some(klipp_core::DifferenceKeySettings {
                     enabled: true,
                     plate_path: Some(plate),
+                    plate_frame: None,
                     tolerance: 0.02,
                     soft: 0.12,
                     invert: false,

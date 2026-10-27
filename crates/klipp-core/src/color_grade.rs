@@ -326,6 +326,13 @@ pub struct DifferenceKeySettings {
     /// image.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plate_path: Option<std::path::PathBuf>,
+    /// The clean plate as a frame of the clip's own media (#2758): its
+    /// time in source seconds, the media's own, so a trim leaves it where
+    /// it is. Set, it is the plate, before `plate_path`. A time that
+    /// isn't finite or lies outside the media gives no plate, said; it is
+    /// never moved to the nearest frame.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plate_frame: Option<f64>,
     /// Distance threshold in normalised colour space (0–1). Pixels
     /// whose match-space distance from the plate is >= `tolerance`
     /// enter the matte at full strength; pixels with distance 0
@@ -343,11 +350,19 @@ pub struct DifferenceKeySettings {
     pub match_space: DifferenceKeyMatchSpace,
 }
 
+impl DifferenceKeySettings {
+    /// Whether a plate is chosen: a frame of the clip's, or a file.
+    pub fn has_plate(&self) -> bool {
+        self.plate_frame.is_some() || self.plate_path.is_some()
+    }
+}
+
 impl Default for DifferenceKeySettings {
     fn default() -> Self {
         Self {
             enabled: false,
             plate_path: None,
+            plate_frame: None,
             tolerance: 0.05,
             soft: 0.02,
             invert: false,

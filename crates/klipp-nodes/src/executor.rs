@@ -302,6 +302,9 @@ pub struct GraphExecutor {
     /// once. Only loads that succeed are cached, so a missing file is
     /// tried again every frame, and it warned every frame (#1020).
     unreadable_images: HashSet<PathBuf>,
+    /// Picked clean plates the render couldn't give, each said once
+    /// (#2758).
+    refused_plates: HashSet<String>,
     /// The manifests of the matte sequences (#239) external mattes read,
     /// by folder: read once, not every frame.
     matte_sequences: HashMap<PathBuf, (crate::matte_sequence::Manifest, Vec<i64>)>,
@@ -929,6 +932,7 @@ impl GraphExecutor {
             curve_lut_cache: HashMap::new(),
             matte_image_cache: HashMap::new(),
             unreadable_images: HashSet::new(),
+            refused_plates: HashSet::new(),
             matte_sequences: HashMap::new(),
             clip_subject_mattes: [None, None],
             clip_media_last: None,
@@ -1075,6 +1079,7 @@ impl GraphExecutor {
             curve_lut_cache: HashMap::new(),
             matte_image_cache: HashMap::new(),
             unreadable_images: HashSet::new(),
+            refused_plates: HashSet::new(),
             matte_sequences: HashMap::new(),
             clip_subject_mattes: [None, None],
             clip_media_last: None,
@@ -3941,14 +3946,13 @@ impl GraphExecutor {
     /// The difference key's plate on the GPU, resized to the frame; `false`
     /// when it won't load.
     fn difference_plate_on_gpu(&mut self, dk: &klipp_core::DifferenceKeySettings, width: u32, height: u32) -> bool {
-        let Some(path) = dk.plate_path.clone() else { return false };
-        let key = Self::plate_gpu_key(&path, width, height);
+        let Some(key) = self.plate_key(dk, width, height) else { return false };
         // Resident already: skip the resize entirely, not just the upload.
         // This is the steady state during playback.
         if self.gpu.as_ref().is_some_and(|g| g.has_difference_key_plate(key)) {
             return true;
         }
-        let Some(plate) = self.resized_plate(&path, width, height) else { return false };
+        let Some(plate) = self.plate_pixels(dk, width, height) else { return false };
         match self.gpu.as_mut() {
             Some(gpu) => {
                 gpu.upload_difference_key_plate(&plate, key);
@@ -4354,7 +4358,7 @@ fn gpu_key(kind: &NodeKind, params: &NodeParams) -> Option<klipp_effects::gpu::G
             invert: q.invert,
         }),
         NodeKind::LumaKey => params.luma_key.as_ref().filter(|k| k.enabled).map(|k| GpuKey::LumaKey { low: k.low, high: k.high, soft: k.soft, invert: k.invert }),
-        NodeKind::DifferenceKey => params.difference_key.as_ref().filter(|d| d.enabled && d.plate_path.is_some()).map(|d| GpuKey::DifferenceKey {
+        NodeKind::DifferenceKey => params.difference_key.as_ref().filter(|d| d.enabled && d.has_plate()).map(|d| GpuKey::DifferenceKey {
             tolerance: d.tolerance,
             soft: d.soft,
             invert: d.invert,
@@ -4779,6 +4783,54 @@ impl GraphExecutor {
     /// 33 MB to decide whether to upload 33 MB defeats the purpose, and
     /// the path plus size is exactly what `resized_plate` keys on, so
     /// the two caches agree on what "the same plate" means.
+    /// The key a difference key's plate is kept on the GPU by: its picked
+    /// frame's media and time (#2758), else its file's path. `None` with
+    /// no plate, or a picked frame the render didn't hand the run.
+    fn plate_key(&self, dk: &klipp_core::DifferenceKeySettings, width: u32, height: u32) -> Option<(u64, u32, u32)> {
+        use std::hash::{Hash, Hasher};
+        match dk.plate_frame {
+            Some(secs) => {
+                let (media, _) = self.picked_plate(secs)?;
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                ("plate frame", media, secs.to_bits()).hash(&mut h);
+                Some((h.finish(), width, height))
+            }
+            None => dk.plate_path.as_deref().map(|p| Self::plate_gpu_key(p, width, height)),
+        }
+    }
+
+    /// A difference key's plate at `width` × `height`: the clip's own
+    /// frame picked as its clean plate (#2758), as the render handed it to
+    /// the run, else its file resized. `None` with no plate, or one that
+    /// isn't there (a picked frame's reason said once).
+    fn plate_pixels(&mut self, dk: &klipp_core::DifferenceKeySettings, width: u32, height: u32) -> Option<Arc<Vec<f32>>> {
+        let Some(secs) = dk.plate_frame else {
+            let path = dk.plate_path.clone()?;
+            return self.resized_plate(&path, width, height);
+        };
+        let got = match self.picked_plate(secs) {
+            Some((_, Ok(frame))) if frame.len() == width as usize * height as usize * 4 => Ok(Arc::clone(frame)),
+            Some((_, Ok(_))) => Err(format!("its clean frame at {secs} s isn't at the frame's size")),
+            Some((_, Err(why))) => Err(format!("its clean frame at {secs} s: {why:?}")),
+            None => Err(format!("its clean frame at {secs} s wasn't read for this run")),
+        };
+        got.map_err(|why| {
+            if self.refused_plates.insert(why.clone()) {
+                tracing::warn!("DifferenceKey: {why}");
+            }
+        })
+        .ok()
+    }
+
+    /// The frame the render handed the run for a plate picked at `secs`
+    /// (#2758), and its media.
+    fn picked_plate(&self, secs: f64) -> Option<(&String, &Result<Arc<Vec<f32>>, crate::side_picture::SideMissing>)> {
+        self.side_pictures.iter().find_map(|(k, v)| match k {
+            crate::side_picture::SideKey::Plate { media, secs_bits } if *secs_bits == secs.to_bits() => Some((media, v)),
+            _ => None,
+        })
+    }
+
     fn plate_gpu_key(path: &std::path::Path, width: u32, height: u32) -> (u64, u32, u32) {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -6467,11 +6519,7 @@ impl GraphExecutor {
                 if !dk.enabled {
                     return full_matte(pixel_count);
                 }
-                let Some(path) = dk.plate_path.as_ref() else {
-                    return full_matte(pixel_count);
-                };
-
-                let Some(plate_resized) = self.resized_plate(path, width, height) else {
+                let Some(plate_resized) = self.plate_pixels(dk, width, height) else {
                     return full_matte(pixel_count);
                 };
 
