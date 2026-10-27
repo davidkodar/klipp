@@ -1024,6 +1024,7 @@ pub(crate) fn level_over_bed(seq: &klipp_timeline::Sequence, pool: &klipp_media:
 /// How far grade_to_target may move each knob from where a shot
 /// started (#742). Gentle by default: chasing a look's chroma on vivid
 /// phone footage took saturation to 1.3x and turned a sky olive.
+#[derive(Clone)]
 pub(crate) struct GradeLimits {
     pub(crate) name: &'static str,
     pub(crate) exposure: f32,
@@ -1067,6 +1068,7 @@ impl GradeLimits {
             tint: within("tint", now.tint + step.tint, start.tint - self.tint, start.tint + self.tint).clamp(-50.0, 50.0),
             saturation: within("saturation", now.saturation * (1.0 + step.saturation), start.saturation / self.saturation, start.saturation * self.saturation).clamp(0.0, 4.0),
             held_for_highlights: step.held_for_highlights,
+            held_for_blacks: step.held_for_blacks,
         };
         (out, held)
     }

@@ -705,7 +705,24 @@ pub(crate) fn respond(
                     seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid).map(corrector_now).unwrap_or_default()
                 };
                 let start_m = m.clone();
+                // A flat source under a starting grade is stretched as far
+                // as the frame's darkest parts allow, not the strength's
+                // lift limit (`primaries_toward` holds it at the crush).
+                let stretching = look.stretch_flat && look.black_l.is_some_and(|b| klipp_color::measure::floor_is_the_scene(&start_m, b));
+                let mut limits = limits.clone();
+                if stretching {
+                    limits.lift = limits.lift.max(klipp_color::measure::STRETCH_LIFT);
+                }
                 let mut held_at_limit: Vec<&'static str> = Vec::new();
+                // Set when a round's colour moves turned colours an eye
+                // knows: the rounds after it move the tone alone.
+                let mut cast_left: Option<String> = None;
+                let tone_only = |mut s: klipp_color::measure::PrimaryStep| {
+                    s.temperature = 0.0;
+                    s.tint = 0.0;
+                    s.saturation = 0.0;
+                    s
+                };
                 // The first step as it would be taken, inside the limits:
                 // what a dry run shows.
                 let (first_step, first_held) = limits.clamp(&start_knobs, &start_knobs, &step);
@@ -767,6 +784,17 @@ pub(crate) fn respond(
                         // clip left with its 4 (#516).
                         m = m_before_round;
                         done_rounds -= 1;
+                        // The colour moves turned them, and the tone has
+                        // moves of its own to make: those are tried alone,
+                        // and the cast is left, said why (a flat green
+                        // aerial's black point is not held up by its leaves).
+                        let coloured = step.temperature.abs() > 0.5 || step.tint.abs() > 0.5 || step.saturation.abs() > 0.03;
+                        let toned = step.exposure.abs() > 0.03 || step.lift.abs() > 0.01 || step.gain.abs() > 0.01;
+                        if let (Some(why), true, true, None) = (&turned, coloured, toned, &cast_left) {
+                            cast_left = Some(format!("the colour was left as it is: correcting it turned colours an eye knows — {why}"));
+                            step = tone_only(step);
+                            continue;
+                        }
                         stalled = Some(match turned {
                             Some(why) => format!("stopped after {done_rounds} round(s): the next one turned colours an eye knows — {why} — so it was put back. The look's numbers are not worth that; hold the shot there, or reach the rest with a secondary that leaves those colours out"),
                             None => format!(
@@ -779,6 +807,9 @@ pub(crate) fn respond(
                         break;
                     }
                     step = klipp_color::measure::primaries_toward(&m, &look);
+                    if cast_left.is_some() {
+                        step = tone_only(step);
+                    }
                 }
                 // Short of the target because brighter would blow the
                 // highlights: said, with what does reach it (#501).
@@ -788,6 +819,15 @@ pub(crate) fn respond(
                 if stalled.is_none() && !held_at_limit.is_empty() {
                     stalled = Some(format!("held at the {} limit for {}", limits.name, held_at_limit.join(", ")));
                 }
+                // A flat source stretched by a starting grade: what it did
+                // to the black and the range, and why it stopped there.
+                let stretched = stretching.then(|| {
+                    format!(
+                        "the source is flat (its own darkest L* {:.0}): black point L* {:.0} to {:.0}, contrast range {:.0} to {:.0}, {:.1}% of the frame at black{}",
+                        start_m.source.map_or(start_m.l_p1, |s| s.l_p1), start_m.l_p1, m.l_p1, start_m.contrast_range, m.contrast_range, m.clip_lo_pct,
+                        if step.held_for_blacks { "; held there, as further would take more of the frame to black" } else { "" },
+                    )
+                });
                 let after = colour_report(&m, &look, *mid);
                 let short = quoted(&name.chars().take(28).collect::<String>());
                 // The dry run says the step, not only the problems.
@@ -805,14 +845,9 @@ pub(crate) fn respond(
                     after.len(),
                     if done_rounds > 0 { format!(" ({done_rounds} round(s))") } else { String::new() },
                     if after.is_empty() { "; on target".to_string() } else { format!("; left: {}", after.iter().map(|f| f.2.clone()).collect::<Vec<_>>().join(", ")) },
-                    match (&drift, &stalled) {
-                        (Some(d), Some(s)) => format!("; {d}; {s}"),
-                        (Some(d), None) => format!("; {d}"),
-                        (None, Some(s)) => format!("; {s}"),
-                        (None, None) => String::new(),
-                    },
+                    [&drift, &stretched, &cast_left, &stalled].into_iter().flatten().map(|s| format!("; {s}")).collect::<String>(),
                 ));
-                per_shot.push(json!({ "clip_id": id, "secs": mid, "look": look.name, "before": before.iter().map(|f| json!({ "severity": f.0, "what": f.2, "fix": f.3 })).collect::<Vec<_>>(), "after": after.iter().map(|f| json!({ "severity": f.0, "what": f.2, "fix": f.3 })).collect::<Vec<_>>(), "rounds": done_rounds, "next_step": step, "first_step": first_step, "held_at_limit": held_at_limit, "stalled": stalled, "drift": drift, "frames_read": reads.len(), "lab": m }));
+                per_shot.push(json!({ "clip_id": id, "secs": mid, "look": look.name, "before": before.iter().map(|f| json!({ "severity": f.0, "what": f.2, "fix": f.3 })).collect::<Vec<_>>(), "after": after.iter().map(|f| json!({ "severity": f.0, "what": f.2, "fix": f.3 })).collect::<Vec<_>>(), "rounds": done_rounds, "next_step": step, "first_step": first_step, "held_at_limit": held_at_limit, "stretched": stretched, "cast_left": cast_left, "stalled": stalled, "drift": drift, "frames_read": reads.len(), "lab": m }));
             }
             // Shots of one file are one scene: one grade on them all keeps
             // them alike at every cut, where a primary each drifts apart
