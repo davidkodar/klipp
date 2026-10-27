@@ -78,6 +78,19 @@ const MEANT: &[(&str, &str, &str)] = &[
     // Frei0r's plug-in editor comes in M3 step 6; until then its row is a
     // read-only placeholder (today it draws nothing without a plug-in).
     ("klipp.fx.frei0r", "type_id", "row"),
+    // #2763: Glow's threshold, where its light starts, is a row of its own.
+    ("klipp.fx.glow", "threshold", "row"),
+    // #2831: Old Film's age sets its look, and each of its marks has a row
+    // of its own.
+    ("klipp.fx.old_film", "age", "row"),
+    ("klipp.fx.old_film", "amount", "row"),
+    ("klipp.fx.old_film", "stains", "row"),
+    ("klipp.fx.old_film", "frame_lines", "row"),
+    ("klipp.fx.old_film", "leaks", "row"),
+    ("klipp.fx.old_film", "burn", "row"),
+    ("klipp.fx.old_film", "mono", "row"),
+    // #2831: its dust is sparse debris, named so.
+    ("klipp.fx.old_film", "dust", "label"),
 ];
 
 fn meant(t: &str, p: &str, what: &str) -> bool {
