@@ -21,6 +21,21 @@ use crate::Sequence;
 
 /// File extension for composition templates.
 pub const EXTENSION: &str = "klipptemplate";
+/// The most a template file may be (#2758): over any made here (a recipe
+/// is a few kilobytes; a composition carries whole sequences, titles with
+/// their runs, animators and effect stacks, and its format variants), so
+/// a file past it is not one, and isn't read.
+pub const MAX_FILE_BYTES: u64 = 16 << 20;
+/// The most of each a template holds; see [`CompositionTemplate::validate`].
+pub const MAX_PARAMETERS: usize = 64;
+pub const MAX_BINDINGS: usize = 256;
+pub const MAX_SLOTS: usize = 16;
+pub const MAX_SEQUENCES: usize = 64;
+/// A recipe's graph: as many ops as one graph batch takes.
+pub const MAX_RECIPE_OPS: usize = 64;
+pub const MAX_RECIPE_CHECKS: usize = 32;
+/// The longest name, label or property, bytes.
+pub const MAX_TEXT: usize = 256;
 /// The format this build writes and reads: 2 carries the composition.
 pub const FORMAT_VERSION: u32 = 2;
 
@@ -406,6 +421,7 @@ pub enum SlotKind {
 
 impl CompositionTemplate {
     pub fn validate(&self) -> Result<(), String> {
+        self.within_limits()?;
         if self.format_version > FORMAT_VERSION {
             return Err(format!("written by a newer Klipp (format {}, this one reads {FORMAT_VERSION})", self.format_version));
         }
@@ -448,6 +464,35 @@ impl CompositionTemplate {
                     "binding for '{}' has no property",
                     binding.parameter
                 ));
+            }
+        }
+        Ok(())
+    }
+
+    /// A template file is read from a folder anyone can drop one into
+    /// (#2758): one asking for more than any made here holds is refused
+    /// before anything is built from it.
+    fn within_limits(&self) -> Result<(), String> {
+        let count = |what: &str, n: usize, most: usize| if n > most { Err(format!("a template holds at most {most} {what}, not {n}")) } else { Ok(()) };
+        count("parameters", self.parameters.len(), MAX_PARAMETERS)?;
+        count("bindings", self.bindings.len(), MAX_BINDINGS)?;
+        count("slots", self.slots.len(), MAX_SLOTS)?;
+        count("sequences", self.sequences.len(), MAX_SEQUENCES)?;
+        if let Some(g) = &self.graph {
+            count("graph ops", g.ops.len(), MAX_RECIPE_OPS)?;
+            count("checks", g.checks.len(), MAX_RECIPE_CHECKS)?;
+            count("check values", g.check_with.len(), MAX_PARAMETERS)?;
+        }
+        let texts = [self.name.as_str(), self.category.as_str(), self.written_by.as_str()]
+            .into_iter()
+            .chain(self.parameters.iter().flat_map(|(k, p)| [k.as_str(), p.label.as_str()]))
+            .chain(self.parameters.values().flat_map(|p| p.choices.iter().map(String::as_str)))
+            .chain(self.slots.iter().flat_map(|(k, s)| [k.as_str(), s.label.as_str()]))
+            .chain(self.bindings.iter().flat_map(|b| [b.parameter.as_str(), b.property.as_str()]))
+            .chain(self.graph.iter().flat_map(|g| g.checks.iter().map(|c| c.says.as_str()).chain(g.check_with.keys().map(String::as_str))));
+        for t in texts {
+            if t.len() > MAX_TEXT || t.chars().any(char::is_control) {
+                return Err(format!("a name or label of {} bytes, or with control characters, is refused", t.len()));
             }
         }
         Ok(())
@@ -779,8 +824,7 @@ impl CompositionTemplateStore {
                 if path.extension().and_then(|extension| extension.to_str()) != Some(EXTENSION) {
                     continue;
                 }
-                match std::fs::read_to_string(&path)
-                    .map_err(|error| error.to_string())
+                match read_capped(&path)
                     .and_then(|json| {
                         serde_json::from_str::<CompositionTemplate>(&json)
                             .map_err(|error| error.to_string())
@@ -859,6 +903,28 @@ impl CompositionTemplateStore {
             .sort_by_key(|(path, item)| (item.name.to_lowercase(), path.clone()));
         Ok(())
     }
+}
+
+/// A template file's text (#2758): a regular file, not a link to one
+/// elsewhere or a device, of at most [`MAX_FILE_BYTES`], read no further
+/// than that whatever it grows to meanwhile.
+fn read_capped(path: &Path) -> Result<String, String> {
+    use std::io::Read;
+    let meta = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+    if !meta.file_type().is_file() {
+        return Err("not a regular file".into());
+    }
+    if meta.len() > MAX_FILE_BYTES {
+        return Err(format!("{} bytes, over the {MAX_FILE_BYTES} a template may be", meta.len()));
+    }
+    let mut text = String::new();
+    std::fs::File::open(path)
+        .and_then(|f| f.take(MAX_FILE_BYTES + 1).read_to_string(&mut text))
+        .map_err(|e| e.to_string())?;
+    if text.len() as u64 > MAX_FILE_BYTES {
+        return Err(format!("over the {MAX_FILE_BYTES} bytes a template may be"));
+    }
+    Ok(text)
 }
 
 fn safe_stem(name: &str) -> String {
@@ -1120,5 +1186,54 @@ mod tests {
         assert_eq!(ops[1]["params"]["media"], "m");
         // Across at its end: half the frame's width right, in its pixels.
         assert_eq!(ops[3]["params"]["position_x"], 500.0);
+    }
+
+    /// A template folder is somewhere anyone can drop a file (#2758): what
+    /// isn't a template made here is skipped or refused, said, never read
+    /// whole or built from. An oversized file, a link to a file elsewhere
+    /// and JSON nested past reason are skipped; a recipe with more ops
+    /// than a graph batch takes, a name past its length or with control
+    /// characters is refused; a name shaped like a path saves inside the
+    /// folder all the same.
+    #[test]
+    fn a_hostile_template_file_is_skipped_or_refused() {
+        let dir = std::env::temp_dir().join(format!("klipp-hostile-templates-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let good = builtin_recipes().into_iter().next().expect("a built-in");
+        let json = serde_json::to_string(&good).unwrap();
+        // Over the cap: padded past it with spaces, still valid JSON.
+        let mut big = json.clone();
+        big.push_str(&" ".repeat(MAX_FILE_BYTES as usize));
+        std::fs::write(dir.join(format!("big.{EXTENSION}")), &big).unwrap();
+        // A link to a template outside the folder.
+        let outside = std::env::temp_dir().join(format!("klipp-outside-{}.{EXTENSION}", Uuid::new_v4()));
+        std::fs::write(&outside, &json).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, dir.join(format!("link.{EXTENSION}"))).unwrap();
+        // Nested past reason.
+        std::fs::write(dir.join(format!("deep.{EXTENSION}")), "[".repeat(100_000)).unwrap();
+        let store = CompositionTemplateStore::load(Some(dir.clone()));
+        assert_eq!(store.recipes().count() + store.templates().count(), 0, "none of them is read");
+
+        let mut many = good.clone();
+        many.graph.as_mut().unwrap().ops = vec![serde_json::json!({"op": "add", "after": {"anchor": "end"}, "type": "klipp.fx.invert"}); MAX_RECIPE_OPS + 1];
+        assert!(many.validate().unwrap_err().contains("graph ops"));
+        let mut long = good.clone();
+        long.name = "x".repeat(MAX_TEXT + 1);
+        assert!(long.validate().is_err());
+        let mut control = good.clone();
+        control.name = "Green\u{0}screen".into();
+        assert!(control.validate().is_err());
+
+        // A name shaped like a path is saved in the folder, by a plain stem.
+        let mut store = CompositionTemplateStore::load(Some(dir.clone()));
+        let mut away = good.clone();
+        away.id = Uuid::new_v4();
+        away.name = "../../escaped".into();
+        store.save(away).unwrap();
+        assert!(!dir.parent().unwrap().join("escaped.klipptemplate").exists());
+        assert!(std::fs::read_dir(&dir).unwrap().flatten().any(|e| e.file_name().to_string_lossy().ends_with(&format!("escaped.{EXTENSION}"))), "saved inside the folder");
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_file(&outside).ok();
     }
 }
