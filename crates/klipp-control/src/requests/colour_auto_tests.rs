@@ -29,26 +29,38 @@ fn mangled(w: u32, h: u32) -> Vec<f32> {
         .collect()
 }
 
-struct Shot;
+/// The shot's picture: the mangled chart, or a frame of real footage
+/// (linear, `W` × `H`).
+#[derive(Clone, Default)]
+struct Shot(Option<Arc<Vec<f32>>>);
 
 impl klipp_compose::FrameSource for Shot {
     fn frame(&mut self, _c: &klipp_timeline::Clip, _secs: f64, w: u32, h: u32) -> Option<klipp_compose::SourceFrame> {
-        Some(klipp_compose::SourceFrame { pixels: klipp_compose::SourcePixels::Linear(Arc::new(mangled(w, h))), width: w, height: h, pts: None })
+        let pixels = self.0.clone().unwrap_or_else(|| Arc::new(mangled(w, h)));
+        Some(klipp_compose::SourceFrame { pixels: klipp_compose::SourcePixels::Linear(pixels), width: w, height: h, pts: None })
     }
 }
 
 /// The sequence at `at`, as the viewer shows it: display bytes.
-fn drawn(seq: &klipp_timeline::Sequence, at: klipp_core::RationalTime) -> Vec<u8> {
+fn drawn(seq: &klipp_timeline::Sequence, at: klipp_core::RationalTime, shot: &Shot) -> Vec<u8> {
     let mut r = klipp_compose::Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
     r.set_gpu_enabled(false);
-    let (linear, _) = r.render_inspected(seq, at, W, H, &mut Shot, klipp_compose::RenderOptions::default(), klipp_compose::Inspect::default());
+    let (linear, _) = r.render_inspected(seq, at, W, H, &mut shot.clone(), klipp_compose::RenderOptions::default(), klipp_compose::Inspect::default());
     klipp_color::display::display_transform_ws_to(&linear, klipp_color::display::ToneMapOp::None, klipp_core::WorkingColorspace::Rec709Linear, klipp_core::SdrTransfer::Srgb)
 }
 
 fn context() -> (ControlContext, klipp_core::ClipId) {
+    context_of(None, Shot::default())
+}
+
+/// The host over `shot`, its media item at `file` when given (where the
+/// file's own frame is read), else at a path that is not there.
+fn context_of(file: Option<std::path::PathBuf>, shot: Shot) -> (ControlContext, klipp_core::ClipId) {
     let root = std::env::temp_dir().join(format!("klipp-auto-colour-{}", uuid::Uuid::new_v4()));
     let mut pool = klipp_media::MediaPool::new();
-    let media = pool.add(klipp_media::MediaItem::synthetic_for_test(root.join("shot.mp4"), None));
+    let mut item = klipp_media::MediaItem::synthetic_for_test(file.unwrap_or_else(|| root.join("shot.mp4")), None);
+    item.resolution = klipp_core::Resolution { width: W, height: H };
+    let media = pool.add(item);
     let mut sequence = klipp_timeline::Sequence::new_default();
     sequence.resolution = klipp_core::Resolution { width: W, height: H };
     sequence.tracks.retain(|t| t.kind == klipp_timeline::TrackKind::Video);
@@ -83,7 +95,7 @@ fn context() -> (ControlContext, klipp_core::ClipId) {
                     host_shared.bump_revision();
                 }
                 if let AppCommand::SeekTo(at) = command {
-                    let rgba = drawn(&host_seq.snapshot(), at);
+                    let rgba = drawn(&host_seq.snapshot(), at, &shot);
                     let mut frame = frame_buffer.lock().unwrap();
                     frame.write_frame(rgba, W, H);
                     frame.set_presented(at, true);
@@ -119,7 +131,7 @@ fn near_neutral(m: &klipp_color::measure::FrameMeasure) -> bool {
 fn auto_colour_brings_a_dark_warm_flat_shot_near_neutral() {
     let (ctx, id) = context();
     let at = klipp_core::Timecode::from_frames(48, 24);
-    let measure = |ctx: &ControlContext| klipp_color::measure::measure_frame(&drawn(&ctx.sequence.snapshot(), at), W, H, &[]);
+    let measure = |ctx: &ControlContext| klipp_color::measure::measure_frame(&drawn(&ctx.sequence.snapshot(), at, &Shot::default()), W, H, &[]);
     let before = measure(&ctx);
     assert!(!near_neutral(&before) && before.l_p50 < 30.0 && before.cast_b > 4.0 && before.contrast_range < 45.0, "made dark, warm and flat: {before:?}");
     let op: klipp_document::ops::Op = serde_json::from_value(serde_json::json!({ "op": "auto_colour", "clips": [id.0.to_string()], "strength": "bold" })).unwrap();
@@ -135,4 +147,37 @@ fn auto_colour_brings_a_dark_warm_flat_shot_near_neutral() {
     let other: klipp_document::ops::Op = serde_json::from_value(serde_json::json!({ "op": "slip", "clip_id": id.0.to_string(), "secs": 0.1 })).unwrap();
     let why = crate::handle(&ctx, ControlCommand::Apply { ops: vec![op, other], expected_revision: None, expected_project_identity: None, label: None, detail: false }, &mut None).unwrap_err();
     assert!(why.contains("alone"), "{why}");
+}
+
+/// Flat footage, as shot (a hazy aerial with no true black): auto colour
+/// stretches it toward the starting grade, its black point down and its
+/// range up to the look's, with no more than half a percent of the frame
+/// taken to black or white, and says what it did. Its green cast is left:
+/// correcting it turns the leaves, and the tone is graded without it. Read from the showcase's own file; where
+/// that is not on this machine the case says so and passes.
+#[test]
+fn auto_colour_stretches_flat_footage_within_a_clipping_bound() {
+    let file = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join("Videos/Klipp Showcase/originals/video/flat-01-coastal-town-aerial.mp4");
+    if !file.exists() {
+        eprintln!("UNVERIFIED: {} is not on this machine", file.display());
+        return;
+    }
+    // The frame the clip shows at 2 s of the timeline: 2 s of the file.
+    let (rgba, w, h) = crate::frames::decode_frame_rgba_sized(&file, 2.0, W, H).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!((w, h), (W, H));
+    let shot = Shot(Some(Arc::new(klipp_effects::srgb_u8_to_linear_f32_rgba(&rgba))));
+    let (ctx, id) = context_of(Some(file), shot.clone());
+    let at = klipp_core::Timecode::from_frames(48, 24);
+    let measure = |ctx: &ControlContext| klipp_color::measure::measure_frame(&drawn(&ctx.sequence.snapshot(), at, &shot), W, H, &[]);
+    let before = measure(&ctx);
+    assert!(before.l_p1 > 15.0, "flat as shot: its darkest is L* {:.1}", before.l_p1);
+    let op: klipp_document::ops::Op = serde_json::from_value(serde_json::json!({ "op": "auto_colour", "clips": [id.0.to_string()] })).unwrap();
+    let reply = crate::handle(&ctx, ControlCommand::Apply { ops: vec![op], expected_revision: None, expected_project_identity: None, label: None, detail: false }, &mut None).unwrap_or_else(|e| panic!("{e}"));
+    let after = measure(&ctx);
+    let said = reply["text"].as_str().unwrap_or_default();
+    eprintln!("flat footage: black L* {:.1} -> {:.1}, range {:.1} -> {:.1}, at black {:.2}% -> {:.2}%, at white {:.2}% -> {:.2}%\n{said}", before.l_p1, after.l_p1, before.contrast_range, after.contrast_range, before.clip_lo_pct, after.clip_lo_pct, before.clip_hi_pct, after.clip_hi_pct);
+    assert!(after.l_p1 < before.l_p1 - 5.0, "the black point down: L* {:.1} to {:.1}; {said}", before.l_p1, after.l_p1);
+    assert!(after.contrast_range > before.contrast_range + 3.0, "the range toward 65: {:.1} to {:.1}; {said}", before.contrast_range, after.contrast_range);
+    assert!(after.clip_lo_pct <= 0.5 && after.clip_hi_pct <= before.clip_hi_pct.max(0.5), "clipping bounded: black {:.2}%, white {:.2}%", after.clip_lo_pct, after.clip_hi_pct);
+    assert!(said.contains("the source is flat") && said.contains("black point L*"), "says what it did: {said}");
 }

@@ -1471,7 +1471,25 @@ pub struct LookTarget {
     /// may turn them neon or the picture garish.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protect: Option<Vec<String>>,
+    /// A starting grade (auto colour's): a source whose own darkest is
+    /// above the black target is taken as flat and stretched down toward
+    /// it, as far as [`STRETCH_CRUSH_PCT`] of the frame at black allows,
+    /// not left as a scene with nothing dark in it (#1896).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stretch_flat: bool,
 }
+
+/// How much of the frame a starting grade's stretch may take to black:
+/// it stops short of the crushed-black warning (half a percent).
+pub const STRETCH_CRUSH_PCT: f32 = 0.4;
+
+/// How far a starting grade may lower a flat source's lift in all, about
+/// 25 L* at the bottom: what bounds the stretch is
+/// [`STRETCH_CRUSH_PCT`], not the strength's own lift limit.
+pub const STRETCH_LIFT: f32 = 0.3;
+
+/// The most a stretch lowers the lift in one round.
+pub const STRETCH_STEP: f32 = 0.08;
 
 impl LookTarget {
     /// The named looks: numbers, not LUTs.
@@ -1501,7 +1519,7 @@ impl LookTarget {
             // median, contrast and neutrals, as broadcast_neutral sets them;
             // saturation left to the scene, which a starting grade does not
             // choose (pushed, a warm room's walls read as skin and turned).
-            "starting" => LookTarget { black_l: Some(4.0), white_l: Some(95.0), mid_l: Some(48.0), contrast_range: Some(65.0), cast_a: Some(0.0), cast_b: Some(0.0), skin_l: Some(62.0), ..base("starting") },
+            "starting" => LookTarget { black_l: Some(4.0), white_l: Some(95.0), mid_l: Some(48.0), contrast_range: Some(65.0), cast_a: Some(0.0), cast_b: Some(0.0), skin_l: Some(62.0), stretch_flat: true, ..base("starting") },
             _ => return None,
         })
     }
@@ -1564,6 +1582,7 @@ impl LookTarget {
             },
             screencast: false,
             protect: None,
+            stretch_flat: false,
         })
     }
 }
@@ -2029,6 +2048,10 @@ pub struct PrimaryStep {
     /// clip a large part of the frame (see `HIGHLIGHT_HEADROOM_L`).
     #[serde(default)]
     pub held_for_highlights: bool,
+    /// A flat source's black point was held short of the target because
+    /// more would take [`STRETCH_CRUSH_PCT`] of the frame to black.
+    #[serde(default)]
+    pub held_for_blacks: bool,
 }
 
 /// How bright the frame's 95th percentile may be taken, in L*, when a
@@ -2056,9 +2079,24 @@ pub fn primaries_toward(m: &FrameMeasure, t: &LookTarget) -> PrimaryStep {
     let clipping = m.clip_hi_pct > 1.0 || m.gamut_clip_pct > GAMUT_WARN;
     if !t.screencast {
         // L* at the bottom: about 0.012 lift per L*. Not toward a target
-        // the scene has nothing dark enough to reach (#1896).
-        if let Some(b) = t.black_l.filter(|b| !floor_is_the_scene(m, *b)) {
+        // the scene has nothing dark enough to reach (#1896), unless the
+        // look stretches a flat source, and then only while little of
+        // the frame is at black.
+        // A flat source is one short of the look's range: once stretched
+        // to it, its floor is the scene's again.
+        let flat = t.stretch_flat && t.contrast_range.is_none_or(|c| m.contrast_range < c);
+        if let Some(b) = t.black_l.filter(|b| flat || !floor_is_the_scene(m, *b)) {
             s.lift = ((b - m.l_p1) * 0.012 * DAMP).clamp(-0.3, 0.3);
+            if flat && floor_is_the_scene(m, b) {
+                // A flat floor comes down a step at a time, the exposure
+                // bringing the middle back up between: all at once it
+                // takes the whole picture down with it.
+                s.lift = s.lift.max(-STRETCH_STEP);
+            }
+            if flat && s.lift < 0.0 && m.clip_lo_pct >= STRETCH_CRUSH_PCT {
+                s.lift = 0.0;
+                s.held_for_blacks = true;
+            }
         }
         if let Some(wv) = t.white_l {
             s.gain = ((wv - m.l_p99) * 0.010 * DAMP).clamp(-0.3, 0.3);
@@ -2962,6 +3000,24 @@ mod taste_tests {
     /// is proposed. A grade that
     /// lifts the same scene further, or a frame read with no source, is
     /// still judged on its floor; clipping is judged either way.
+    /// A starting grade stretches a flat source's floor down, a step at
+    /// a time, where the unbriefed look leaves it as the scene's: it stops
+    /// once the frame is near the crush, and once its range is the look's.
+    #[test]
+    fn a_starting_grade_stretches_a_flat_floor_within_the_crush() {
+        let start = LookTarget::preset("starting").unwrap();
+        assert!(start.stretch_flat && !LookTarget::unbriefed().stretch_flat);
+        let flat = FrameMeasure { l_p1: 29.0, l_p50: 49.0, l_p99: 92.0, contrast_range: 58.0, chroma_mean: 12.0, source: Some(SourceReading { l_p1: 29.0, ..Default::default() }), ..FrameMeasure::default() };
+        assert_eq!(primaries_toward(&flat, &LookTarget::unbriefed()).lift, 0.0, "unbriefed: the scene's own floor");
+        let s = primaries_toward(&flat, &start);
+        assert!((s.lift + STRETCH_STEP).abs() < 1e-6 && !s.held_for_blacks, "down one step: {s:?}");
+        let near_crush = FrameMeasure { clip_lo_pct: STRETCH_CRUSH_PCT, ..flat.clone() };
+        let s = primaries_toward(&near_crush, &start);
+        assert!(s.lift == 0.0 && s.held_for_blacks, "held at the crush: {s:?}");
+        let stretched = FrameMeasure { contrast_range: 66.0, ..flat };
+        assert_eq!(primaries_toward(&stretched, &start).lift, 0.0, "at the look's range, no longer flat");
+    }
+
     #[test]
     fn a_bright_scene_s_own_floor_is_not_blamed_on_the_grade() {
         let t = LookTarget::unbriefed();

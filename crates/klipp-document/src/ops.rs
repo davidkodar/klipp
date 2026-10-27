@@ -2220,8 +2220,9 @@ pub enum Op {
     /// end. Its linked sound or picture goes with it; with `ripple` (the
     /// default) what follows closes up, so the words after stay in sync,
     /// else the pauses are left as gaps. `smooth_cut` puts a smooth cut on
-    /// each join (ripple only). One undo. Refused on a retimed clip, and
-    /// on one whose sound has no measured silences (analyze it first).
+    /// each join (ripple only). One undo. Refused on a retimed clip, on one
+    /// whose media has no sound, and on one whose sound has no measured
+    /// silences (analyze it first).
     RemoveSilences {
         clip_id: ClipRef,
         #[serde(default)]
@@ -13255,6 +13256,9 @@ fn remove_silences_ops(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, tra
         return Err(refuse(i, format!("{} is retimed, so its file's pauses don't land on its frames", clip_name(seq, pool, clip)), "take the pauses out before the retime"));
     }
     let item = pool.get(media_id).ok_or_else(|| refuse(i, format!("no media item {}", media_id.0), "media ids are in list_media"))?;
+    if !item.has_audio {
+        return Err(refuse(i, format!("{}'s media has no sound", clip_name(seq, pool, clip)), "take the pauses out of a clip whose file carries sound"));
+    }
     let silences = transcripts.silences(item);
     if silences.is_empty() {
         return Err(refuse(i, format!("{}'s sound has no measured silences", clip_name(seq, pool, clip)), "analyze its media (audio) first; a clip with no pauses has none to take out"));
@@ -14933,6 +14937,13 @@ mod tests {
         assert!(resolve_with(&seq, &pool, &[bad], &Paused).is_err());
         let why = resolve_with(&seq, &pool, &[op(true, false)], &NoTranscripts).unwrap_err().why;
         assert!(why.contains("no measured silences"), "{why}");
+        // Media with no sound in it is said to be so, not sent to analysis.
+        let mut silent = pool.clone();
+        for m in silent.all_mut() {
+            m.has_audio = false;
+        }
+        let why = resolve_with(&seq, &silent, &[op(true, false)], &Paused).unwrap_err().why;
+        assert!(why.contains("media has no sound") && !why.contains("analy"), "{why}");
         let mut fast = seq.clone();
         fast.tracks[0].clips[0].speed = 2.0;
         assert!(resolve_with(&fast, &pool, &[op(true, false)], &Paused).unwrap_err().why.contains("retimed"));
