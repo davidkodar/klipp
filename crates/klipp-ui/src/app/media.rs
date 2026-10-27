@@ -1715,12 +1715,15 @@ impl KlippApp {
 
 impl KlippApp {
     fn relink_media(&mut self, media_id: MediaId, new_path: &Path) {
+        let cache_dir = self.proxy_cache_dir();
         let Some(item) = self.state.media_pool.get_mut(&media_id) else { return };
         let changed = item.path != new_path;
         item.path = new_path.to_path_buf();
         item.offline = !new_path.exists();
         if changed {
-            if let Some(proxy) = item.proxy_path.take() {
+            // The old proxy goes when it is the one Klipp made; a path
+            // stored as anything else is forgotten, the file left alone.
+            if let Some(proxy) = item.proxy_path.take().and_then(|p| super::proxies::own_proxy(&p, &cache_dir, media_id)) {
                 let _ = std::fs::remove_file(&proxy);
                 let _ = std::fs::remove_file(partial_proxy_path(&proxy));
             }
