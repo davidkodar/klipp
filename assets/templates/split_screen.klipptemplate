@@ -20,7 +20,7 @@
   "bindings": [
     {
       "parameter": "slot_1",
-      "property": "clip:0.media"
+      "property": "clip:2.media"
     },
     {
       "parameter": "slot_2",
@@ -57,7 +57,7 @@
       },
       "tracks": [
         {
-          "id": "015305a0-03fd-4b13-8b6e-d7e35719e352",
+          "id": "f57379ea-6c07-45c7-b69b-f898e68134fa",
           "name": "T 3",
           "kind": "Text",
           "clips": [
@@ -206,7 +206,7 @@
               "node_graph": {
                 "nodes": [
                   {
-                    "id": "78a013a1-df16-4444-a7eb-bf08d139310b",
+                    "id": "81dcb833-1111-4110-ab4d-1aa4baf3bb36",
                     "kind": "Source",
                     "label": "Source",
                     "enabled": true,
@@ -218,7 +218,7 @@
                     "input_links": []
                   },
                   {
-                    "id": "5fb8a1a6-1bf9-49e0-ba2b-64de90a062e7",
+                    "id": "69d64fa4-7aac-4a0c-b8d2-dffc75b56ef7",
                     "kind": "Corrector",
                     "label": "Corrector",
                     "enabled": true,
@@ -230,7 +230,7 @@
                     "input_links": []
                   },
                   {
-                    "id": "668ed485-e836-4c8a-b73c-05d4ffe0aee3",
+                    "id": "61b602e8-80c5-4c30-a9c7-3d0adc34b424",
                     "kind": "Output",
                     "label": "Output",
                     "enabled": true,
@@ -244,30 +244,30 @@
                 ],
                 "edges": [
                   {
-                    "from_node": "78a013a1-df16-4444-a7eb-bf08d139310b",
+                    "from_node": "81dcb833-1111-4110-ab4d-1aa4baf3bb36",
                     "from_port": 0,
-                    "to_node": "5fb8a1a6-1bf9-49e0-ba2b-64de90a062e7",
+                    "to_node": "69d64fa4-7aac-4a0c-b8d2-dffc75b56ef7",
                     "to_port": 0
                   },
                   {
-                    "from_node": "5fb8a1a6-1bf9-49e0-ba2b-64de90a062e7",
+                    "from_node": "69d64fa4-7aac-4a0c-b8d2-dffc75b56ef7",
                     "from_port": 0,
-                    "to_node": "668ed485-e836-4c8a-b73c-05d4ffe0aee3",
+                    "to_node": "61b602e8-80c5-4c30-a9c7-3d0adc34b424",
                     "to_port": 0
                   }
                 ],
-                "output_node_id": "668ed485-e836-4c8a-b73c-05d4ffe0aee3",
+                "output_node_id": "61b602e8-80c5-4c30-a9c7-3d0adc34b424",
                 "node_positions": {
-                  "5fb8a1a6-1bf9-49e0-ba2b-64de90a062e7": {
+                  "81dcb833-1111-4110-ab4d-1aa4baf3bb36": {
+                    "x": 0.0,
+                    "y": 0.0
+                  },
+                  "69d64fa4-7aac-4a0c-b8d2-dffc75b56ef7": {
                     "x": 220.0,
                     "y": 0.0
                   },
-                  "668ed485-e836-4c8a-b73c-05d4ffe0aee3": {
+                  "61b602e8-80c5-4c30-a9c7-3d0adc34b424": {
                     "x": 440.0,
-                    "y": 0.0
-                  },
-                  "78a013a1-df16-4444-a7eb-bf08d139310b": {
-                    "x": 0.0,
                     "y": 0.0
                   }
                 }
@@ -333,7 +333,7 @@
           "record_armed": false
         },
         {
-          "id": "8541244e-70c4-4878-b543-82c7e4571f58",
+          "id": "cb7d1b98-b4a4-496b-ab0b-3634ae61399d",
           "name": "V 2",
           "kind": "Video",
           "clips": [
@@ -362,7 +362,7 @@
               "node_graph": {
                 "nodes": [
                   {
-                    "id": "068d33b0-faa9-47e1-bcab-6a53649a9b64",
+                    "id": "7263a380-c677-45f1-bedd-fdae79495286",
                     "kind": "Source",
                     "label": "Source",
                     "enabled": true,
@@ -374,7 +374,7 @@
                     "input_links": []
                   },
                   {
-                    "id": "f6dbae64-4465-4e5a-9da8-c13fcf7a3e1a",
+                    "id": "a846d76e-9789-4fd2-9d10-a7a6184374ac",
                     "kind": "Corrector",
                     "label": "Corrector",
                     "enabled": true,
@@ -386,7 +386,7 @@
                     "input_links": []
                   },
                   {
-                    "id": "bebd7754-72c7-4d64-b849-d36afc01bf41",
+                    "id": "866000c1-9bfc-499c-b0dd-7fd6f81952ef",
                     "kind": "Output",
                     "label": "Output",
                     "enabled": true,
@@ -400,30 +400,30 @@
                 ],
                 "edges": [
                   {
-                    "from_node": "068d33b0-faa9-47e1-bcab-6a53649a9b64",
+                    "from_node": "7263a380-c677-45f1-bedd-fdae79495286",
                     "from_port": 0,
-                    "to_node": "f6dbae64-4465-4e5a-9da8-c13fcf7a3e1a",
+                    "to_node": "a846d76e-9789-4fd2-9d10-a7a6184374ac",
                     "to_port": 0
                   },
                   {
-                    "from_node": "f6dbae64-4465-4e5a-9da8-c13fcf7a3e1a",
+                    "from_node": "a846d76e-9789-4fd2-9d10-a7a6184374ac",
                     "from_port": 0,
-                    "to_node": "bebd7754-72c7-4d64-b849-d36afc01bf41",
+                    "to_node": "866000c1-9bfc-499c-b0dd-7fd6f81952ef",
                     "to_port": 0
                   }
                 ],
-                "output_node_id": "bebd7754-72c7-4d64-b849-d36afc01bf41",
+                "output_node_id": "866000c1-9bfc-499c-b0dd-7fd6f81952ef",
                 "node_positions": {
-                  "f6dbae64-4465-4e5a-9da8-c13fcf7a3e1a": {
+                  "7263a380-c677-45f1-bedd-fdae79495286": {
+                    "x": 0.0,
+                    "y": 0.0
+                  },
+                  "a846d76e-9789-4fd2-9d10-a7a6184374ac": {
                     "x": 220.0,
                     "y": 0.0
                   },
-                  "bebd7754-72c7-4d64-b849-d36afc01bf41": {
+                  "866000c1-9bfc-499c-b0dd-7fd6f81952ef": {
                     "x": 440.0,
-                    "y": 0.0
-                  },
-                  "068d33b0-faa9-47e1-bcab-6a53649a9b64": {
-                    "x": 0.0,
                     "y": 0.0
                   }
                 }
@@ -515,7 +515,7 @@
           "record_armed": false
         },
         {
-          "id": "81123e6e-1b60-408c-8d02-31d716aae151",
+          "id": "7b9fbe84-3cdb-4514-b2a7-b74254e14b14",
           "name": "V 1",
           "kind": "Video",
           "clips": [
@@ -544,7 +544,7 @@
               "node_graph": {
                 "nodes": [
                   {
-                    "id": "0354c670-d9a1-4bfd-8c7f-883840dce6fe",
+                    "id": "9b33bd35-cf4f-44d7-af1b-20d25384a73e",
                     "kind": "Source",
                     "label": "Source",
                     "enabled": true,
@@ -556,7 +556,7 @@
                     "input_links": []
                   },
                   {
-                    "id": "e03b5fe0-cf23-45d7-a77d-be5a0963ad49",
+                    "id": "dbeab883-8e1e-4414-8727-433dd384f99b",
                     "kind": "Corrector",
                     "label": "Corrector",
                     "enabled": true,
@@ -568,7 +568,7 @@
                     "input_links": []
                   },
                   {
-                    "id": "bf0d863c-e558-46bb-9732-38b8dcd60267",
+                    "id": "dd19e598-c744-40ed-a078-93e61d05c90c",
                     "kind": "Output",
                     "label": "Output",
                     "enabled": true,
@@ -582,30 +582,30 @@
                 ],
                 "edges": [
                   {
-                    "from_node": "0354c670-d9a1-4bfd-8c7f-883840dce6fe",
+                    "from_node": "9b33bd35-cf4f-44d7-af1b-20d25384a73e",
                     "from_port": 0,
-                    "to_node": "e03b5fe0-cf23-45d7-a77d-be5a0963ad49",
+                    "to_node": "dbeab883-8e1e-4414-8727-433dd384f99b",
                     "to_port": 0
                   },
                   {
-                    "from_node": "e03b5fe0-cf23-45d7-a77d-be5a0963ad49",
+                    "from_node": "dbeab883-8e1e-4414-8727-433dd384f99b",
                     "from_port": 0,
-                    "to_node": "bf0d863c-e558-46bb-9732-38b8dcd60267",
+                    "to_node": "dd19e598-c744-40ed-a078-93e61d05c90c",
                     "to_port": 0
                   }
                 ],
-                "output_node_id": "bf0d863c-e558-46bb-9732-38b8dcd60267",
+                "output_node_id": "dd19e598-c744-40ed-a078-93e61d05c90c",
                 "node_positions": {
-                  "e03b5fe0-cf23-45d7-a77d-be5a0963ad49": {
+                  "9b33bd35-cf4f-44d7-af1b-20d25384a73e": {
+                    "x": 0.0,
+                    "y": 0.0
+                  },
+                  "dbeab883-8e1e-4414-8727-433dd384f99b": {
                     "x": 220.0,
                     "y": 0.0
                   },
-                  "bf0d863c-e558-46bb-9732-38b8dcd60267": {
+                  "dd19e598-c744-40ed-a078-93e61d05c90c": {
                     "x": 440.0,
-                    "y": 0.0
-                  },
-                  "0354c670-d9a1-4bfd-8c7f-883840dce6fe": {
-                    "x": 0.0,
                     "y": 0.0
                   }
                 }
@@ -720,7 +720,7 @@
       },
       "tracks": [
         {
-          "id": "8bb0e784-14b2-45b5-b439-1c691fea9f00",
+          "id": "1409fe52-cf1a-4fcc-971a-a99a1d44b29a",
           "name": "T 3",
           "kind": "Text",
           "clips": [
@@ -869,7 +869,7 @@
               "node_graph": {
                 "nodes": [
                   {
-                    "id": "6ad1db63-955c-4354-bc22-fb66a4637749",
+                    "id": "e8432f02-1c27-4e2f-afa8-148f5012bef4",
                     "kind": "Source",
                     "label": "Source",
                     "enabled": true,
@@ -881,7 +881,7 @@
                     "input_links": []
                   },
                   {
-                    "id": "e7a436fa-5738-4825-a62e-056e9f41a3dd",
+                    "id": "3bfca824-3792-471e-b367-e3741ec05d44",
                     "kind": "Corrector",
                     "label": "Corrector",
                     "enabled": true,
@@ -893,7 +893,7 @@
                     "input_links": []
                   },
                   {
-                    "id": "74f57874-46d7-47f1-af24-865ab54832a0",
+                    "id": "d14c2bb0-6660-4f40-a056-5a0f8fe67694",
                     "kind": "Output",
                     "label": "Output",
                     "enabled": true,
@@ -907,30 +907,30 @@
                 ],
                 "edges": [
                   {
-                    "from_node": "6ad1db63-955c-4354-bc22-fb66a4637749",
+                    "from_node": "e8432f02-1c27-4e2f-afa8-148f5012bef4",
                     "from_port": 0,
-                    "to_node": "e7a436fa-5738-4825-a62e-056e9f41a3dd",
+                    "to_node": "3bfca824-3792-471e-b367-e3741ec05d44",
                     "to_port": 0
                   },
                   {
-                    "from_node": "e7a436fa-5738-4825-a62e-056e9f41a3dd",
+                    "from_node": "3bfca824-3792-471e-b367-e3741ec05d44",
                     "from_port": 0,
-                    "to_node": "74f57874-46d7-47f1-af24-865ab54832a0",
+                    "to_node": "d14c2bb0-6660-4f40-a056-5a0f8fe67694",
                     "to_port": 0
                   }
                 ],
-                "output_node_id": "74f57874-46d7-47f1-af24-865ab54832a0",
+                "output_node_id": "d14c2bb0-6660-4f40-a056-5a0f8fe67694",
                 "node_positions": {
-                  "74f57874-46d7-47f1-af24-865ab54832a0": {
+                  "e8432f02-1c27-4e2f-afa8-148f5012bef4": {
+                    "x": 0.0,
+                    "y": 0.0
+                  },
+                  "d14c2bb0-6660-4f40-a056-5a0f8fe67694": {
                     "x": 440.0,
                     "y": 0.0
                   },
-                  "e7a436fa-5738-4825-a62e-056e9f41a3dd": {
+                  "3bfca824-3792-471e-b367-e3741ec05d44": {
                     "x": 220.0,
-                    "y": 0.0
-                  },
-                  "6ad1db63-955c-4354-bc22-fb66a4637749": {
-                    "x": 0.0,
                     "y": 0.0
                   }
                 }
@@ -996,7 +996,7 @@
           "record_armed": false
         },
         {
-          "id": "74dca940-3b11-4697-8082-d16236a4bfc3",
+          "id": "469e8337-455b-465e-858f-6202d607f4fc",
           "name": "V 2",
           "kind": "Video",
           "clips": [
@@ -1025,7 +1025,7 @@
               "node_graph": {
                 "nodes": [
                   {
-                    "id": "d15f872b-41fe-4294-8e90-a35a953bf3c8",
+                    "id": "253015ea-5385-4c98-b41b-e54437fe1a0e",
                     "kind": "Source",
                     "label": "Source",
                     "enabled": true,
@@ -1037,7 +1037,7 @@
                     "input_links": []
                   },
                   {
-                    "id": "f17094b2-9fc6-4a36-b9e7-ffb7daea7de4",
+                    "id": "a9938c9c-24cf-4a9a-8bc2-eb9cf0ac7c6f",
                     "kind": "Corrector",
                     "label": "Corrector",
                     "enabled": true,
@@ -1049,7 +1049,7 @@
                     "input_links": []
                   },
                   {
-                    "id": "576db66a-dfec-457b-8b05-4583429feccc",
+                    "id": "e466da46-8fa9-485a-a595-ac12bdb680d8",
                     "kind": "Output",
                     "label": "Output",
                     "enabled": true,
@@ -1063,30 +1063,30 @@
                 ],
                 "edges": [
                   {
-                    "from_node": "d15f872b-41fe-4294-8e90-a35a953bf3c8",
+                    "from_node": "253015ea-5385-4c98-b41b-e54437fe1a0e",
                     "from_port": 0,
-                    "to_node": "f17094b2-9fc6-4a36-b9e7-ffb7daea7de4",
+                    "to_node": "a9938c9c-24cf-4a9a-8bc2-eb9cf0ac7c6f",
                     "to_port": 0
                   },
                   {
-                    "from_node": "f17094b2-9fc6-4a36-b9e7-ffb7daea7de4",
+                    "from_node": "a9938c9c-24cf-4a9a-8bc2-eb9cf0ac7c6f",
                     "from_port": 0,
-                    "to_node": "576db66a-dfec-457b-8b05-4583429feccc",
+                    "to_node": "e466da46-8fa9-485a-a595-ac12bdb680d8",
                     "to_port": 0
                   }
                 ],
-                "output_node_id": "576db66a-dfec-457b-8b05-4583429feccc",
+                "output_node_id": "e466da46-8fa9-485a-a595-ac12bdb680d8",
                 "node_positions": {
-                  "576db66a-dfec-457b-8b05-4583429feccc": {
-                    "x": 440.0,
-                    "y": 0.0
-                  },
-                  "d15f872b-41fe-4294-8e90-a35a953bf3c8": {
+                  "253015ea-5385-4c98-b41b-e54437fe1a0e": {
                     "x": 0.0,
                     "y": 0.0
                   },
-                  "f17094b2-9fc6-4a36-b9e7-ffb7daea7de4": {
+                  "a9938c9c-24cf-4a9a-8bc2-eb9cf0ac7c6f": {
                     "x": 220.0,
+                    "y": 0.0
+                  },
+                  "e466da46-8fa9-485a-a595-ac12bdb680d8": {
+                    "x": 440.0,
                     "y": 0.0
                   }
                 }
@@ -1178,7 +1178,7 @@
           "record_armed": false
         },
         {
-          "id": "cc9f3af9-9cae-4b14-9e1a-54a049ff4983",
+          "id": "a18b6469-f677-46c8-affa-ec9c84db77b3",
           "name": "V 1",
           "kind": "Video",
           "clips": [
@@ -1207,7 +1207,7 @@
               "node_graph": {
                 "nodes": [
                   {
-                    "id": "ef328ec7-2a4b-4349-be38-de44c263e104",
+                    "id": "60a8eae8-da9a-4ff2-a6b9-b2347f283277",
                     "kind": "Source",
                     "label": "Source",
                     "enabled": true,
@@ -1219,7 +1219,7 @@
                     "input_links": []
                   },
                   {
-                    "id": "3cc7ab93-6819-4974-9263-de7397dbc811",
+                    "id": "300e7733-a589-4f23-a8d4-6cffb33712d6",
                     "kind": "Corrector",
                     "label": "Corrector",
                     "enabled": true,
@@ -1231,7 +1231,7 @@
                     "input_links": []
                   },
                   {
-                    "id": "8f899f61-190a-4953-9972-ca85d7fbbe1c",
+                    "id": "c147149a-4330-4733-b80c-227ca4d6d767",
                     "kind": "Output",
                     "label": "Output",
                     "enabled": true,
@@ -1245,29 +1245,29 @@
                 ],
                 "edges": [
                   {
-                    "from_node": "ef328ec7-2a4b-4349-be38-de44c263e104",
+                    "from_node": "60a8eae8-da9a-4ff2-a6b9-b2347f283277",
                     "from_port": 0,
-                    "to_node": "3cc7ab93-6819-4974-9263-de7397dbc811",
+                    "to_node": "300e7733-a589-4f23-a8d4-6cffb33712d6",
                     "to_port": 0
                   },
                   {
-                    "from_node": "3cc7ab93-6819-4974-9263-de7397dbc811",
+                    "from_node": "300e7733-a589-4f23-a8d4-6cffb33712d6",
                     "from_port": 0,
-                    "to_node": "8f899f61-190a-4953-9972-ca85d7fbbe1c",
+                    "to_node": "c147149a-4330-4733-b80c-227ca4d6d767",
                     "to_port": 0
                   }
                 ],
-                "output_node_id": "8f899f61-190a-4953-9972-ca85d7fbbe1c",
+                "output_node_id": "c147149a-4330-4733-b80c-227ca4d6d767",
                 "node_positions": {
-                  "3cc7ab93-6819-4974-9263-de7397dbc811": {
-                    "x": 220.0,
-                    "y": 0.0
-                  },
-                  "ef328ec7-2a4b-4349-be38-de44c263e104": {
+                  "60a8eae8-da9a-4ff2-a6b9-b2347f283277": {
                     "x": 0.0,
                     "y": 0.0
                   },
-                  "8f899f61-190a-4953-9972-ca85d7fbbe1c": {
+                  "300e7733-a589-4f23-a8d4-6cffb33712d6": {
+                    "x": 220.0,
+                    "y": 0.0
+                  },
+                  "c147149a-4330-4733-b80c-227ca4d6d767": {
                     "x": 440.0,
                     "y": 0.0
                   }
@@ -1383,7 +1383,7 @@
       },
       "tracks": [
         {
-          "id": "fd036f20-eadd-48cb-ab2b-7bb4a5013761",
+          "id": "c3c4d07b-a166-4a26-a46a-d615878649d3",
           "name": "T 3",
           "kind": "Text",
           "clips": [
@@ -1532,7 +1532,7 @@
               "node_graph": {
                 "nodes": [
                   {
-                    "id": "a811678a-6871-425b-a2bd-c652fb2bc90a",
+                    "id": "9c41e471-d261-4645-b018-59b7f105e1a0",
                     "kind": "Source",
                     "label": "Source",
                     "enabled": true,
@@ -1544,7 +1544,7 @@
                     "input_links": []
                   },
                   {
-                    "id": "108e462f-4df1-49ba-b086-714a7c4fec50",
+                    "id": "62d834c2-2bff-4e52-a19a-58efbb17c083",
                     "kind": "Corrector",
                     "label": "Corrector",
                     "enabled": true,
@@ -1556,7 +1556,7 @@
                     "input_links": []
                   },
                   {
-                    "id": "14c02655-90f1-4ce0-b234-a303b203acb8",
+                    "id": "0b6abed6-9c5d-424d-99ac-460b46d6d7f8",
                     "kind": "Output",
                     "label": "Output",
                     "enabled": true,
@@ -1570,30 +1570,30 @@
                 ],
                 "edges": [
                   {
-                    "from_node": "a811678a-6871-425b-a2bd-c652fb2bc90a",
+                    "from_node": "9c41e471-d261-4645-b018-59b7f105e1a0",
                     "from_port": 0,
-                    "to_node": "108e462f-4df1-49ba-b086-714a7c4fec50",
+                    "to_node": "62d834c2-2bff-4e52-a19a-58efbb17c083",
                     "to_port": 0
                   },
                   {
-                    "from_node": "108e462f-4df1-49ba-b086-714a7c4fec50",
+                    "from_node": "62d834c2-2bff-4e52-a19a-58efbb17c083",
                     "from_port": 0,
-                    "to_node": "14c02655-90f1-4ce0-b234-a303b203acb8",
+                    "to_node": "0b6abed6-9c5d-424d-99ac-460b46d6d7f8",
                     "to_port": 0
                   }
                 ],
-                "output_node_id": "14c02655-90f1-4ce0-b234-a303b203acb8",
+                "output_node_id": "0b6abed6-9c5d-424d-99ac-460b46d6d7f8",
                 "node_positions": {
-                  "108e462f-4df1-49ba-b086-714a7c4fec50": {
-                    "x": 220.0,
-                    "y": 0.0
-                  },
-                  "14c02655-90f1-4ce0-b234-a303b203acb8": {
+                  "0b6abed6-9c5d-424d-99ac-460b46d6d7f8": {
                     "x": 440.0,
                     "y": 0.0
                   },
-                  "a811678a-6871-425b-a2bd-c652fb2bc90a": {
+                  "9c41e471-d261-4645-b018-59b7f105e1a0": {
                     "x": 0.0,
+                    "y": 0.0
+                  },
+                  "62d834c2-2bff-4e52-a19a-58efbb17c083": {
+                    "x": 220.0,
                     "y": 0.0
                   }
                 }
@@ -1659,7 +1659,7 @@
           "record_armed": false
         },
         {
-          "id": "4af43424-7e15-48cf-945e-58db579fd1fd",
+          "id": "35011da1-cb01-4e7a-a3a4-a84c2fbe6996",
           "name": "V 2",
           "kind": "Video",
           "clips": [
@@ -1688,7 +1688,7 @@
               "node_graph": {
                 "nodes": [
                   {
-                    "id": "151cb9e1-2d1b-46a8-9faa-e1b994946de9",
+                    "id": "f9c50642-9b39-4ecc-9951-6c2e44553b88",
                     "kind": "Source",
                     "label": "Source",
                     "enabled": true,
@@ -1700,7 +1700,7 @@
                     "input_links": []
                   },
                   {
-                    "id": "fa138fd4-b6a5-4fbc-a27f-8235d2a6a4bc",
+                    "id": "eac39b6b-6895-4900-8f9c-c95250a70362",
                     "kind": "Corrector",
                     "label": "Corrector",
                     "enabled": true,
@@ -1712,7 +1712,7 @@
                     "input_links": []
                   },
                   {
-                    "id": "0e3579f0-b61a-482a-93a0-7c6804ab3bc4",
+                    "id": "38a432d1-609b-4113-ba29-9bc686fa1863",
                     "kind": "Output",
                     "label": "Output",
                     "enabled": true,
@@ -1726,30 +1726,30 @@
                 ],
                 "edges": [
                   {
-                    "from_node": "151cb9e1-2d1b-46a8-9faa-e1b994946de9",
+                    "from_node": "f9c50642-9b39-4ecc-9951-6c2e44553b88",
                     "from_port": 0,
-                    "to_node": "fa138fd4-b6a5-4fbc-a27f-8235d2a6a4bc",
+                    "to_node": "eac39b6b-6895-4900-8f9c-c95250a70362",
                     "to_port": 0
                   },
                   {
-                    "from_node": "fa138fd4-b6a5-4fbc-a27f-8235d2a6a4bc",
+                    "from_node": "eac39b6b-6895-4900-8f9c-c95250a70362",
                     "from_port": 0,
-                    "to_node": "0e3579f0-b61a-482a-93a0-7c6804ab3bc4",
+                    "to_node": "38a432d1-609b-4113-ba29-9bc686fa1863",
                     "to_port": 0
                   }
                 ],
-                "output_node_id": "0e3579f0-b61a-482a-93a0-7c6804ab3bc4",
+                "output_node_id": "38a432d1-609b-4113-ba29-9bc686fa1863",
                 "node_positions": {
-                  "151cb9e1-2d1b-46a8-9faa-e1b994946de9": {
-                    "x": 0.0,
-                    "y": 0.0
-                  },
-                  "fa138fd4-b6a5-4fbc-a27f-8235d2a6a4bc": {
+                  "eac39b6b-6895-4900-8f9c-c95250a70362": {
                     "x": 220.0,
                     "y": 0.0
                   },
-                  "0e3579f0-b61a-482a-93a0-7c6804ab3bc4": {
+                  "38a432d1-609b-4113-ba29-9bc686fa1863": {
                     "x": 440.0,
+                    "y": 0.0
+                  },
+                  "f9c50642-9b39-4ecc-9951-6c2e44553b88": {
+                    "x": 0.0,
                     "y": 0.0
                   }
                 }
@@ -1841,7 +1841,7 @@
           "record_armed": false
         },
         {
-          "id": "4d986f4e-646d-48f0-85ba-c13a8f693752",
+          "id": "3293c6e3-40b5-4f98-94c3-996d025e640e",
           "name": "V 1",
           "kind": "Video",
           "clips": [
@@ -1870,7 +1870,7 @@
               "node_graph": {
                 "nodes": [
                   {
-                    "id": "94ad1310-8d0f-4aed-8541-6a0c8f988a62",
+                    "id": "6f500041-eddc-4e63-8770-0871e40ed8c6",
                     "kind": "Source",
                     "label": "Source",
                     "enabled": true,
@@ -1882,7 +1882,7 @@
                     "input_links": []
                   },
                   {
-                    "id": "eef6569e-f266-4b23-868b-bddb1473c2dc",
+                    "id": "7f602180-38b1-49e0-b9af-cad3ba63f55c",
                     "kind": "Corrector",
                     "label": "Corrector",
                     "enabled": true,
@@ -1894,7 +1894,7 @@
                     "input_links": []
                   },
                   {
-                    "id": "b157799a-d9d0-4719-b24d-2acba9fe922f",
+                    "id": "fff36af9-3209-4ede-8898-2bf856f0f09e",
                     "kind": "Output",
                     "label": "Output",
                     "enabled": true,
@@ -1908,29 +1908,29 @@
                 ],
                 "edges": [
                   {
-                    "from_node": "94ad1310-8d0f-4aed-8541-6a0c8f988a62",
+                    "from_node": "6f500041-eddc-4e63-8770-0871e40ed8c6",
                     "from_port": 0,
-                    "to_node": "eef6569e-f266-4b23-868b-bddb1473c2dc",
+                    "to_node": "7f602180-38b1-49e0-b9af-cad3ba63f55c",
                     "to_port": 0
                   },
                   {
-                    "from_node": "eef6569e-f266-4b23-868b-bddb1473c2dc",
+                    "from_node": "7f602180-38b1-49e0-b9af-cad3ba63f55c",
                     "from_port": 0,
-                    "to_node": "b157799a-d9d0-4719-b24d-2acba9fe922f",
+                    "to_node": "fff36af9-3209-4ede-8898-2bf856f0f09e",
                     "to_port": 0
                   }
                 ],
-                "output_node_id": "b157799a-d9d0-4719-b24d-2acba9fe922f",
+                "output_node_id": "fff36af9-3209-4ede-8898-2bf856f0f09e",
                 "node_positions": {
-                  "94ad1310-8d0f-4aed-8541-6a0c8f988a62": {
+                  "6f500041-eddc-4e63-8770-0871e40ed8c6": {
                     "x": 0.0,
                     "y": 0.0
                   },
-                  "eef6569e-f266-4b23-868b-bddb1473c2dc": {
+                  "7f602180-38b1-49e0-b9af-cad3ba63f55c": {
                     "x": 220.0,
                     "y": 0.0
                   },
-                  "b157799a-d9d0-4719-b24d-2acba9fe922f": {
+                  "fff36af9-3209-4ede-8898-2bf856f0f09e": {
                     "x": 440.0,
                     "y": 0.0
                   }

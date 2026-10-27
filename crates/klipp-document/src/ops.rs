@@ -13620,6 +13620,30 @@ mod tests {
         assert!(why(serde_json::json!({ "Headline": 3 })).contains("can't take"));
     }
 
+    /// #2757: a built-in template placed in a tall sequence is its tall
+    /// layout, in a square one its square layout, in a wide one the main;
+    /// the sequences it lacks are copied in with it.
+    #[test]
+    fn a_template_is_placed_in_its_layout_for_the_frame() {
+        let split = klipp_timeline::composition_template::builtin_templates().into_iter().find(|t| t.name == "Split Screen").unwrap();
+        for (w, h, want) in [(1920, 1080, split.composition_id), (1080, 1920, split.formats["tall"]), (1080, 1080, split.formats["square"])] {
+            let (mut seq, pool, ..) = fixture();
+            seq.resolution = klipp_core::Resolution { width: w, height: h };
+            let missing = klipp_timeline::composition_template::missing_sequences(&split, std::slice::from_ref(&seq));
+            let op = Op::Template { name: "Split Screen".into(), at: Anchor::Secs(1.0), secs: 3.0, track: None, fields: Default::default(), data: None, composition: Some(Box::new(PlacedComposition { template: split.clone(), missing })) };
+            let plan = resolve(&seq, &pool, &[op]).unwrap();
+            let mut seqs = vec![seq.clone()];
+            let mut p = pool.clone();
+            let mut fps = seq.fps;
+            let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+            view.apply_forward(&plan.steps[0].edit);
+            let placed = view.sequences[0].all_clips().find_map(|c| match &c.kind { ClipKind::TemplatePrecomposition { sequence_id, .. } => Some(*sequence_id), _ => None }).expect("placed");
+            assert_eq!(placed.0, want, "{w}x{h}");
+            let layout = view.sequences.iter().find(|s| s.id == placed).expect("its layout copied in");
+            assert_eq!((layout.resolution.width, layout.resolution.height), (w, h));
+        }
+    }
+
     /// #2757: a template's media slot is filled by the template op with a
     /// media item from the pool, by its label; an id the pool has not got
     /// is refused, as is a slot kind a template does not fill.

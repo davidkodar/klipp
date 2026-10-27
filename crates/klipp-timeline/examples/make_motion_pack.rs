@@ -84,6 +84,12 @@ fn scene(name: &str, w: u32, h: u32, tracks: Vec<(TrackKind, Vec<Clip>)>) -> Seq
     s
 }
 
+/// Where the clip made as `name` is in `layout`, as `clip:<n>` counts:
+/// every clip, track by track from the top.
+fn clip_index(layout: &Sequence, name: &str) -> usize {
+    layout.tracks.iter().flat_map(|t| &t.clips).position(|c| c.id == ClipId(id(name))).unwrap_or_else(|| panic!("{name} is in the layout"))
+}
+
 /// A template from its layout per frame: the wide one the main.
 fn template(name: &str, category: &str, layouts: Vec<Sequence>, parameters: Vec<(&str, TemplateParameter)>, slots: Vec<(&str, &str)>, bindings: Vec<TemplateBinding>) -> CompositionTemplate {
     let mut t = CompositionTemplate::new(name, layouts[0].id.0);
@@ -118,6 +124,10 @@ fn split_screen() -> CompositionTemplate {
         ])
     });
     let line = TemplateParameter { label: "Line".into(), default: TemplateValue::Number(1.0), range: Some(NumberRange { min: Some(0.0), max: Some(1.0) }), choices: Vec::new() };
+    // A slot is bound by its clip's place in the layout, counted from the
+    // top track down: found, not assumed.
+    let first = clip_index(&layouts[0], "split.wide.a.clip");
+    let second = clip_index(&layouts[0], "split.wide.b.clip");
     template(
         "Split Screen",
         "Layouts",
@@ -125,8 +135,8 @@ fn split_screen() -> CompositionTemplate {
         vec![("line", line)],
         vec![("slot_1", "First"), ("slot_2", "Second")],
         vec![
-            TemplateBinding { parameter: "slot_1".into(), property: "clip:0.media".into(), link: None },
-            TemplateBinding { parameter: "slot_2".into(), property: "clip:1.media".into(), link: None },
+            TemplateBinding { parameter: "slot_1".into(), property: format!("clip:{first}.media"), link: None },
+            TemplateBinding { parameter: "slot_2".into(), property: format!("clip:{second}.media"), link: None },
             TemplateBinding { parameter: "line".into(), property: "object:0.opacity".into(), link: Some(LinkMap { to: [0.0, 1.0], curve: klipp_core::LinkCurve::Linear, per: None }) },
         ],
     )
