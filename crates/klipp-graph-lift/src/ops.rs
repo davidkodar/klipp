@@ -166,6 +166,13 @@ fn grade_param(params: &Value, key: &str, value: &ParamValue) -> Option<Value> {
     if number.is_some_and(|n| typed.apply_override(key, n)) {
         return written(params, &before, &typed);
     }
+    // A difference key's clean frame (#2758), the source seconds of a frame
+    // of the clip's own: unset until picked, so not a saved field to write
+    // into; its shortest decimal, as a save writes it.
+    if let ("difference_key.plate_frame", Some(secs)) = (key, number) {
+        typed.difference_key.get_or_insert_with(Default::default).plate_frame = Some(secs.to_string().parse().ok()?);
+        return written(params, &before, &typed);
+    }
     // A setting that is a structure or a list (a mask stack, a key's
     // settings), written whole as its JSON (#1746): what a node beside a
     // picture's chain, outside its grade, is edited by. A plain string
@@ -1062,6 +1069,21 @@ mod tests {
     use super::*;
     use klipp_effects::registry::ParamKind;
     use klipp_nodes::NodeParams;
+
+    /// A difference key's clean frame (#2758) is written into its settings,
+    /// made when unset, as its shortest decimal; the rest kept.
+    #[test]
+    fn a_clean_frame_is_written_into_the_key() {
+        let unset = serde_json::json!({});
+        let got = grade_param(&unset, "difference_key.plate_frame", &ParamValue::Float(2.4)).expect("written");
+        let typed: NodeParams = serde_json::from_value(got.clone()).unwrap();
+        assert_eq!(typed.difference_key.as_ref().and_then(|d| d.plate_frame), Some(2.4));
+        assert_eq!(got["difference_key"]["plate_frame"], serde_json::json!(2.4));
+        let keyed = serde_json::json!({ "difference_key": { "enabled": true, "tolerance": 0.2, "soft": 0.02, "invert": true } });
+        let got: NodeParams = serde_json::from_value(grade_param(&keyed, "difference_key.plate_frame", &ParamValue::Float(0.5)).unwrap()).unwrap();
+        let dk = got.difference_key.unwrap();
+        assert_eq!((dk.plate_frame, dk.tolerance, dk.invert), (Some(0.5), 0.2, true));
+    }
 
     /// Every grade choice in the catalog, at every index, writes through
     /// the generated row's path (`grade_param`, a choice by its index) the

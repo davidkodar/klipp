@@ -207,7 +207,7 @@ fn matte_armed(graph: &NodeGraph, n: &crate::graph::Node) -> u8 {
         }
         NodeKind::LumaKey => u8::from(p.luma_key.as_ref().is_some_and(|k| k.enabled)),
         NodeKind::Mask => u8::from(p.masks.as_ref().is_some_and(|ms| ms.masks.iter().any(|m| m.enabled))),
-        NodeKind::DifferenceKey => u8::from(p.difference_key.as_ref().is_some_and(|d| d.enabled && d.plate_path.is_some())),
+        NodeKind::DifferenceKey => u8::from(p.difference_key.as_ref().is_some_and(|d| d.enabled && d.has_plate())),
         _ => 0,
     }
 }

@@ -118,6 +118,8 @@ const SHOWN_NOW: &[(&str, &str, &str)] = &[
     ("klipp.grade.qualifier", "qual_lum_soft", "the HSL mode's, #895"),
     // The matte finesse's denoise (#901), new.
     ("klipp.grade.qualifier", "qual_denoise", "the matte's denoise, #901"),
+    // A tracked subject an external matte reads (#2758), new.
+    ("klipp.grade.external_matte", "matte_subject", "the tracked subject, #2758"),
 ];
 
 /// What the variant's stored values switch on.

@@ -150,6 +150,7 @@ fn producer(p: Producer, source: NodeId, files: &Files) -> (Vec<Node>, Vec<Edge>
                 difference_key: Some(klipp_core::DifferenceKeySettings {
                     enabled: true,
                     plate_path: Some(files.plate.clone()),
+                    plate_frame: None,
                     tolerance: 0.1,
                     soft: 0.3,
                     invert: false,

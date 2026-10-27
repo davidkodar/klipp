@@ -129,6 +129,8 @@ pub(super) fn acting_sample(ty: &EffectType) -> BuiltinEffect {
         "merge" => BuiltinEffect::Merge { blend_mode: klipp_effects::BlendMode::Screen, opacity: 0.5 },
         // The item the harness's sources hold, a little on.
         "media_source" => BuiltinEffect::MediaSource { media: super::parity_pixels::MEDIA_ITEM.into(), offset: 0.25 },
+        // On the screen its fixture's clip carries (`fixture_on`).
+        "surface_pin" => BuiltinEffect::SurfacePin { surface: PARITY_SCREEN.into(), inset: 0.0, on_source: [[0.0; 2]; 4], source: [0; 2] },
         _ => (ty.sample)(),
     }
 }
@@ -157,8 +159,28 @@ pub(super) fn editable(ty: &EffectType, pres: &Presentation) -> Result<BuiltinEf
     Ok(effect)
 }
 
+/// The surface a surface pin's fixture clip carries, by name.
+const PARITY_SCREEN: &str = "Parity screen";
+
 pub(super) fn fixture_on(effect: &BuiltinEffect, surface: Surface) -> klipp_timeline::Clip {
     let mut clip = fixture(effect);
+    if matches!(effect, BuiltinEffect::SurfacePin { .. }) {
+        // A screen leaning in the shot, still, on a picture of any size
+        // (no size: the frame's), so the pin and its inset show.
+        let screen = [[0.2, 0.15], [0.8, 0.2], [0.75, 0.85], [0.25, 0.8]];
+        let key = |secs| klipp_timeline::SurfaceKey::at_corners(secs, &screen, &screen).expect("a quad");
+        clip.surfaces.push(klipp_timeline::Surface {
+            id: uuid::Uuid::new_v4(),
+            name: PARITY_SCREEN.into(),
+            corners: screen,
+            reference_secs: 0.0,
+            keys: vec![key(0.0), key(3600.0)],
+            source_size: [0, 0],
+            media_fps: 0.0,
+            track_area: None,
+            exclude: Vec::new(),
+        });
+    }
     if matches!(effect, BuiltinEffect::Opacity { .. }) && surface == Surface::EffectsStack {
         // The final enabled Opacity becomes the clip anchor. The first
         // remains a card and must be exercised independently.

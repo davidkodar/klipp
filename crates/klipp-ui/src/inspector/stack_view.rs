@@ -580,7 +580,9 @@ fn row_card(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip
                 tolerance: crate::inspector::keyframe_selection::frame_tolerance(state.sequence()),
                 clip_start: clip.timeline_in,
             };
-            crate::inspector::side_matte::show(ui, theme, clip, graph, &chip.source, frame, cmds);
+            let fps = f64::from(state.sequence().fps.num) / f64::from(state.sequence().fps.den.max(1));
+            let source_secs = clip.source_secs_at(clip_time_secs, fps);
+            crate::inspector::side_matte::show(ui, theme, clip, graph, &chip.source, frame, source_secs, cmds);
         }
     }
     if let Some(n) = node.filter(|_| !row.mask_chips.is_empty()) {
