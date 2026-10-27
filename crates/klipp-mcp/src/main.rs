@@ -1160,7 +1160,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             if let Some(x) = args.get("max_offset_secs").and_then(|v| v.as_f64()) { v["max_offset_secs"] = json!(x); }
             v
         }
-        "klipp_fonts" => json!({ "method": "fonts", "query": args.get("query").and_then(|v| v.as_str()) }),
+        "klipp_fonts" => json!({ "method": "fonts", "query": args.get("query").and_then(|v| v.as_str()), "fetch": args.get("fetch").and_then(|v| v.as_str()) }),
         "klipp_title_templates" => json!({ "method": "title_templates" }),
         "klipp_graph" | "klipp_graph_read" => {
             let mut v = args.clone();
@@ -2442,8 +2442,8 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "Title templates, built-in by category and saved, and their fields by label, for the template op.",
              json!({}), vec![]),
         tool("klipp_fonts",
-             "The font families a title can name. Details: klipp_guide topic fonts.",
-             json!({ "query": { "type": "string" } }), vec![]),
+             "The font families a title can name, and Klipp's catalogue to fetch. Details: klipp_guide topic fonts.",
+             json!({ "query": { "type": "string" }, "fetch": { "type": "string", "description": "a catalogue family to fetch" } }), vec![]),
         tool("klipp_graph",
              "Atomic graph edit, one undo step; read graph_read/node_types first. Guide: klipp_guide topic graph.",
              json!({"ops":graph_schema::ops_schema(),"label":{"type":"string"},"expected_revision":{"type":"integer","minimum":0},"expected_project_identity":{"type":"integer","minimum":0}}), vec!["ops"]),

@@ -1252,6 +1252,29 @@ fn show_clip_video(
                             });
                         }
                     });
+
+                    // How the slow part's frames are drawn, as retime's
+                    // interpolation (#2773).
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("In-between frames").size(10.0).color(theme.text_dim));
+                        let current = match clip.frame_blend_mode() {
+                            Some(2) => "Flow",
+                            Some(1) => "Blend",
+                            _ => "Sample",
+                        };
+                        egui::ComboBox::from_id_salt(("video:ramp_interpolation", clip_id)).selected_text(current).show_ui(ui, |ui| {
+                            for (label, how, tip) in [
+                                ("Sample", "sample", "Repeat the nearest frame"),
+                                ("Blend", "blend", "Cross-fade the frames either side"),
+                                ("Flow", "flow", "Follow the motion between them: smooth slow motion"),
+                            ] {
+                                if ui.selectable_label(current == label, label).on_hover_text(tip).clicked() && current != label {
+                                    cmds.push(AppCommand::SetClipInterpolation { clip_id, interpolation: how.into() });
+                                }
+                            }
+                        });
+                    });
                 }
             });
     });

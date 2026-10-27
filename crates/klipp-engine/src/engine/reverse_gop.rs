@@ -191,6 +191,15 @@ impl ReverseGop {
         Some(f)
     }
 
+    /// The held frame after the one [`Self::frame`] shows at `secs`: the
+    /// one a frame blend draws toward (#2772). Played back, it was shown
+    /// just before, and is kept for a step forward.
+    pub fn frame_after(&mut self, secs: f64) -> Option<HeldFrame> {
+        self.pump();
+        let i = self.frames.partition_point(|f| f.pts.unwrap_or(0.0) <= secs + self.half());
+        self.frames.get(i).cloned()
+    }
+
     /// Whether the frame for the time last asked for is held, or nothing
     /// waits for it: the clip is only coming up.
     pub fn ready(&self) -> bool {

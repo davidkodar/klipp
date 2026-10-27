@@ -997,6 +997,8 @@ impl KlippApp {
                 self.mark_saved();
                 // Fonts the titles name that are not installed (#1720).
                 let missing = self.state.missing_fonts(&crate::missing_fonts::installed);
+                // The catalogue's families are fetched, not asked about (#2732).
+                let missing = crate::missing_fonts::fetch_from_catalogue(missing);
                 self.state.missing_fonts_dialog = (!missing.is_empty()).then(|| crate::missing_fonts::MissingFontsDialog { fonts: missing, chosen: Default::default() });
                 self.state.selected_clip = None;
                 // Preserve existing thumbnail and last_saved when re-opening

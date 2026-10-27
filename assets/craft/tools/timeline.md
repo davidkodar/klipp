@@ -154,6 +154,8 @@ Left out, max_width gives the viewer's frame, at most 1280 wide; the viewer deco
 
 The font families a title or a brief's type style can name: those bundled with Klipp, always there, and those installed on this machine. Any other name falls back to Inter; set_brief, plan and apply warn when one is named. The text names the bundled families and counts the installed ones, which are listed in installed; query (a word, e.g. "serif" or "mono") lists only the families whose name holds it.
 
+Klipp's catalogue holds about thirty more open-licence families (OFL, Apache), fetched on request: engraved and high-contrast serifs (Cinzel, Bodoni Moda, Playfair Display), condensed news sans (Oswald, Roboto Condensed, Barlow Condensed), rounded and friendly sans (Nunito, Fredoka), scripts and handwriting (Great Vibes, Caveat, Permanent Marker), monospace (IBM Plex Mono) and Noto Sans for Japanese, Korean, Chinese, Arabic, Hebrew and Devanagari. catalogue lists each with its tags: style (what it is), mood (what it suits) and scripts (the writing it covers), its size and whether it is fetched. query matches them by name or by every word being a tag, so "condensed news sans", "wedding script" or "japanese" picks families. fetch: name downloads one (checked against its SHA-256, its licence kept beside it, in the user's data folder); then a title is set in it by its name. A plan that names a catalogue family not fetched yet says so, with the fetch to make. A project opened whose titles name catalogue families fetches them in the background.
+
 ## klipp_screenshot
 
 Capture what the viewer is currently showing, as a PNG. Returns the file path, and inlines the image when it is small enough. This is how to actually see the result of a grade rather than infer it.
