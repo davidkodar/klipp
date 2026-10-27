@@ -367,8 +367,11 @@ exist until the plan runs.
   default, `screen`, `soft_light` or `overlay`: how it mixes with the
   picture under it),
   `tint` (`#rrggbb`, the water's colour) with `tint_amount`, `submerge`
-  (true hides the layer's own pixels below the line, letters dipping
-  into the water) and `seed`. For example `{op: effect, clip_id: TITLE,
+  (how far the layer's own pixels below the line are under the water,
+  0 to 1: 1 hides them, letters dipping into the water; on water 0.7,
+  a little of them showing through, rippled and coloured like the
+  water; elsewhere 0, over their reflection) and `seed`. The reflection
+  starts whole at the line and breaks up further down. For example `{op: effect, clip_id: TITLE,
   kind: calm_water, params: {waterline: 0.62, tint: "#1d3b4f"}}`.
   On water (`calm_water`, `rippled_water`) the tint and darkness come
   from the water itself: the water under the reflection is measured once

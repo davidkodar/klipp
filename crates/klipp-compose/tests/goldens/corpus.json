@@ -1,6 +1,6 @@
 {
-  "recorded_on": "77312290",
-  "reason": "new Reflection effect (#2707)",
+  "recorded_on": "c428151f",
+  "reason": "#2795: reflection whole at the waterline",
   "frames": [
   {"case":"effect/Opacity","kind":"rgba","len":9216,"offset":0,"path":"cpu","t":"0.5"},
   {"case":"effect/Opacity","kind":"rgba","len":9216,"offset":9216,"path":"CpuWithGpu","t":"0.5"},

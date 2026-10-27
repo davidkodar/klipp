@@ -705,9 +705,11 @@ pub enum BuiltinEffect {
         /// longer matches is outdated until measured again on request.
         #[serde(default)]
         water_key: u32,
-        /// Whether the layer's own pixels below the line are hidden, as
-        /// letters dipping into water.
-        submerge: bool,
+        /// How far the layer's own pixels below the line are under the
+        /// water, 0 over it to 1 hidden, as letters dipping into water
+        /// (#2795). Saved before as a yes or no, read as 1 or 0.
+        #[serde(deserialize_with = "amount_or_yes_no")]
+        submerge: f32,
         /// Where the ripple comes from: 0 its noise, the only source so
         /// far.
         ripple_from: u32,
@@ -1092,6 +1094,20 @@ pub enum BuiltinEffect {
     GradeCompound {},
 }
 
+/// An amount from 0 to 1 saved before as a yes or no: yes is 1, no 0.
+fn amount_or_yes_no<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Held {
+        Amount(f32),
+        YesNo(bool),
+    }
+    Ok(match Held::deserialize(d)? {
+        Held::Amount(v) => v,
+        Held::YesNo(b) => f32::from(u8::from(b)),
+    })
+}
+
 /// Whether `effect` draws a picture the render hands its run (another
 /// media item's, or what is below the clip): the executor's side
 /// picture node draws it, never this crate's kernels.
@@ -1424,7 +1440,7 @@ impl BuiltinEffect {
             opacity: *opacity,
             tint: tint.map(reflection::linear),
             tint_amount: *tint_amount,
-            submerge: u32::from(*submerge),
+            submerge: *submerge,
             seed: *seed,
             time: *time,
             darken: *darken,
@@ -1482,7 +1498,7 @@ pub fn is_identity_effect(effect: &BuiltinEffect) -> bool {
         BuiltinEffect::Flicker { amount, hold, .. } => amount.abs() < f32::EPSILON || *hold >= 1.0,
         BuiltinEffect::Displace { amount, .. } => amount.abs() < f32::EPSILON,
         // A reflection nobody sees, which hides nothing either.
-        BuiltinEffect::Reflection { opacity, submerge, .. } => *opacity <= 0.0 && !*submerge,
+        BuiltinEffect::Reflection { opacity, submerge, .. } => *opacity <= 0.0 && *submerge <= 0.0,
         // No particles, or none to see (#1141).
         BuiltinEffect::Particles { amount, opacity, size, .. } => *amount < 1.0 || *opacity <= 0.0 || *size <= 0.0,
         BuiltinEffect::Merge { opacity, .. } => *opacity <= 0.0,

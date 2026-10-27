@@ -3,8 +3,9 @@
 //! one as far above it, moved sideways by a ripple of horizontal bands
 //! that breaks into strips and gaps further from the line, smeared down
 //! more the further it is, fading out, and tinted toward the surface's
-//! colour. `submerge` hides the layer's own pixels below the line, so
-//! letters dipping into the water show only their reflection there.
+//! colour. `submerge` sinks the layer's own pixels below the line: at 1
+//! letters dipping into the water show only their reflection there, in
+//! between they show through it, rippled and coloured like the water.
 //!
 //! The ripple is [`crate::displace`]'s noise, so the two move alike. The
 //! GPU runs [`shader_wgsl`], the CPU [`cpu`], the same computation.
@@ -46,10 +47,11 @@ pub const SURFACES: &[(&str, &str, &str)] = &[
 pub fn surface(name: &str, waterline: f32) -> Option<crate::BuiltinEffect> {
     // Water takes its tint and darkness from the water measured under it
     // (#2795); the other surfaces keep theirs.
-    let e = |ripple_amount, ripple_size, ripple_speed, breakup, smear, fade, opacity, darken, contact, blend, tint, tint_amount, submerge| crate::BuiltinEffect::Reflection {
+    // Letters dipping into water still show a little under it.
+    let e = |ripple_amount, ripple_size, ripple_speed, breakup, smear, fade, opacity, darken, contact, blend, tint, tint_amount, water: bool| crate::BuiltinEffect::Reflection {
         waterline, gap: 0.0, ripple_amount, ripple_size, ripple_speed, breakup, smear, fade, opacity, darken, contact, blend, tint, tint_amount,
-        tint_auto: submerge, darken_auto: submerge, water: [0, 0, 0], water_key: 0,
-        submerge, ripple_from: FROM_NOISE, seed: 0, time: 0.0,
+        tint_auto: water, darken_auto: water, water: [0, 0, 0], water_key: 0,
+        submerge: if water { SUBMERGE } else { 0.0 }, ripple_from: FROM_NOISE, seed: 0, time: 0.0,
     };
     Some(match name {
         "calm_water" => e(10.0, 60.0, 0.6, 0.6, 0.5, 0.45, 0.85, 0.45, 0.6, CALM_BLEND, [25, 85, 100], 0.2, true),
@@ -60,6 +62,10 @@ pub fn surface(name: &str, waterline: f32) -> Option<crate::BuiltinEffect> {
         _ => return None,
     })
 }
+
+/// How far under the water a layer dipping into it is by default
+/// (#2795): mostly hidden, a little of it showing through.
+pub const SUBMERGE: f32 = 0.7;
 
 /// How much darker a reflection on water of colour `water` (sRGB) is
 /// (#2795): more on dark water, which gives back little, less on bright;
@@ -89,7 +95,9 @@ pub struct Params {
     /// The tint, linear light.
     pub tint: [f32; 3],
     pub tint_amount: f32,
-    pub submerge: u32,
+    /// How far the layer's own pixels below the line are under the
+    /// water, 0 over it to 1 hidden.
+    pub submerge: f32,
     pub seed: u32,
     pub time: f32,
     /// How much darker than the layer it is, 0 to 1: water reflects
@@ -133,7 +141,10 @@ fn field(p: &Params, x: f32, d: f32) -> (f32, f32, f32) {
     // more the more it breaks up.
     let glint = fbm(V3 { x: x / (size * 0.3), y: d / (size * 0.05), z: t * 1.7 }, p.seed.wrapping_add(5));
     let keep = keep * clamp(1.0 + glint * 0.8 * p.breakup, 0.0, 1.0);
-    (dx, dy, keep)
+    // Whole at the line, so the reflection starts as the layer and
+    // breaks up with distance (#2795).
+    let near = clamp(d / max(p.height as f32 * 0.15, 1.0), 0.0, 1.0);
+    (dx, dy, mix(1.0, keep, near))
 }
 
 /// The reflected colour: darker than the layer, as water reflects
@@ -216,17 +227,23 @@ pub fn pixel(p: &Params, at: &dyn Fn(i32, i32) -> [f32; 4], x: f32, y: f32) -> [
         }
     }
     out[3] = a;
-    if p.submerge != 0 || own[3] <= 0.0 {
+    // The layer's own pixel over its reflection, under the water as far
+    // as `submerge`: rippled and coloured like the water, and fainter.
+    let k = clamp(p.submerge, 0.0, 1.0);
+    let s = sample(at, x + dx * 0.5 * k, y);
+    let own_a = s[3] * (1.0 - k);
+    if own_a <= 0.0 {
         return out;
     }
-    // The layer's own pixel over its reflection.
-    let alpha = own[3] + out[3] * (1.0 - own[3]);
+    let lit = [s[0] / s[3], s[1] / s[3], s[2] / s[3]];
+    let wet = colour(p, lit);
+    let alpha = own_a + out[3] * (1.0 - own_a);
     if alpha <= 1e-6 {
         return [0.0; 4];
     }
     let mut over = [0.0f32; 4];
     for c in 0..3 {
-        over[c] = (own[c] * own[3] + out[c] * out[3] * (1.0 - own[3])) / alpha;
+        over[c] = (mix(lit[c], wet[c], k) * own_a + out[c] * out[3] * (1.0 - own_a)) / alpha;
     }
     over[3] = alpha;
     over
@@ -271,7 +288,7 @@ struct Params {
     tint_g: f32,
     tint_b: f32,
     tint_amount: f32,
-    submerge: u32,
+    submerge: f32,
     seed: u32,
     time: f32,
     darken: f32,
@@ -323,7 +340,8 @@ fn reflected(x: f32, y: f32) -> vec4<f32> {
     let b = dn_fbm(vec3<f32>(x / (size * 3.0), d / (size * 0.12) + bend, t * 0.6), params.seed + 2u);
     let thr = -0.7 + 1.5 * params.breakup * clamp(d / (size * 1.5), 0.0, 1.0);
     let glint = dn_fbm(vec3<f32>(x / (size * 0.3), d / (size * 0.05), t * 1.7), params.seed + 5u);
-    let keep = smoothstep(thr - 0.16, thr + 0.16, b) * clamp(1.0 + glint * 0.8 * params.breakup, 0.0, 1.0);
+    let near = clamp(d / max(f32(params.height) * 0.15, 1.0), 0.0, 1.0);
+    let keep = mix(1.0, smoothstep(thr - 0.16, thr + 0.16, b) * clamp(1.0 + glint * 0.8 * params.breakup, 0.0, 1.0), near);
     let stretch = 1.0 + params.smear * 2.5 * clamp(d / (size * 2.0), 0.0, 1.0);
     let r = params.smear * d * 0.5;
     let sx = x + dx;
@@ -349,10 +367,20 @@ fn reflected(x: f32, y: f32) -> vec4<f32> {
         let shade = 1.0 - 0.6 * clamp(params.contact, 0.0, 1.0) * resting * (1.0 - smoothstep(0.0, band, d + wobble));
         out = vec4<f32>(mix(dark, tint * k, params.tint_amount) * shade, out.a);
     }
-    if params.submerge != 0u || own.a <= 0.0 { return out; }
-    let alpha = own.a + out.a * (1.0 - own.a);
+    let sink = clamp(params.submerge, 0.0, 1.0);
+    let s = sample(x + dx * 0.5 * sink, y);
+    let own_a = s.a * (1.0 - sink);
+    if own_a <= 0.0 { return out; }
+    let lit = s.rgb / s.a;
+    let lw = vec3<f32>(0.2126, 0.7152, 0.0722);
+    let tint = vec3<f32>(params.tint_r, params.tint_g, params.tint_b);
+    let darken = clamp(params.darken, 0.0, 1.0);
+    let l = dot(lit, lw);
+    let dark = max(vec3<f32>(l) + (lit - vec3<f32>(l)) * (1.0 + 0.6 * darken), vec3<f32>(0.0)) * (1.0 - darken);
+    let wet = mix(dark, tint * (dot(dark, lw) / max(dot(tint, lw), 1e-4)), params.tint_amount);
+    let alpha = own_a + out.a * (1.0 - own_a);
     if alpha <= 1e-6 { return vec4<f32>(0.0); }
-    return vec4<f32>((own.rgb * own.a + out.rgb * out.a * (1.0 - own.a)) / alpha, alpha);
+    return vec4<f32>((mix(lit, wet, sink) * own_a + out.rgb * out.a * (1.0 - own_a)) / alpha, alpha);
 }
 
 @compute @workgroup_size(256)
@@ -386,7 +414,7 @@ mod tests {
             opacity: 1.0,
             tint: [0.0; 3],
             tint_amount: 0.0,
-            submerge: 1,
+            submerge: 1.0,
             seed: 0,
             time: 0.0,
             darken: 0.0,
@@ -428,7 +456,7 @@ mod tests {
         assert!(alpha(&p, 21) > alpha(&p, 26) && alpha(&p, 26) > alpha(&p, 30), "falls off");
         assert_eq!(alpha(&p, 39), 0.0, "gone far below");
         // Not submerged, the opaque layer covers its reflection.
-        let p = Params { submerge: 0, fade: 0.8, ..params(w, h) };
+        let p = Params { submerge: 0.0, fade: 0.8, ..params(w, h) };
         assert_eq!(alpha(&p, 39), 1.0);
         assert_eq!(cpu(&px, &p)[(30 * w * 4) as usize], px[(30 * w * 4) as usize]);
     }
@@ -452,6 +480,51 @@ mod tests {
         assert!(near_kept > far_kept * 1.5, "more gaps further down: {near_kept} vs {far_kept}");
         let later = Params { time: 0.5, ..p };
         assert_ne!(field(&p, 50.0, 60.0).0, field(&later, 50.0, 60.0).0, "moves in time");
+    }
+
+    /// Next to the line the reflection is the layer whole, however much
+    /// it breaks up further down (#2795).
+    #[test]
+    fn it_breaks_up_only_away_from_the_line() {
+        let p = Params { ripple_amount: 10.0, ripple_size: 30.0, breakup: 1.0, ..params(400, 400) };
+        let kept = |d: f32| (0..400).map(|x| field(&p, x as f32, d).2).sum::<f32>() / 400.0;
+        let near = (1..=12).map(|d| kept(d as f32)).sum::<f32>() / 12.0;
+        assert!(near > 0.9, "near the line {near} of it is kept");
+        assert!(kept(200.0) < near * 0.7, "further down it breaks up: {}", kept(200.0));
+    }
+
+    /// Part under the water, the layer's own pixels below the line show
+    /// through their reflection, fainter and coloured like the water:
+    /// between showing whole and hidden.
+    #[test]
+    fn partly_submerged_the_layer_shows_faintly_below_the_line() {
+        let (w, h) = (4, 40);
+        // A red layer over the line's lower half, dimmed by the water.
+        let px: Vec<f32> = (0..w * h).flat_map(|_| [1.0, 0.0, 0.0, 1.0]).collect();
+        let at = |sink: f32| {
+            let p = Params { submerge: sink, opacity: 0.0, darken: 0.5, ..params(w, h) };
+            cpu(&px, &p)[(30 * w * 4) as usize..(30 * w * 4 + 4) as usize].to_vec()
+        };
+        assert_eq!(at(0.0), vec![1.0, 0.0, 0.0, 1.0], "over the water it is itself");
+        assert_eq!(at(1.0)[3], 0.0, "under it, hidden");
+        let part = at(SUBMERGE);
+        assert!((part[3] - (1.0 - SUBMERGE)).abs() < 1e-5, "showing as much as it is above: {part:?}");
+        assert!(part[0] < 0.75, "and darker, like the water: {part:?}");
+    }
+
+    /// A reflection saved when `submerge` was a yes or no reads it as
+    /// all the way under or over the water.
+    #[test]
+    fn a_saved_yes_or_no_submerge_reads_as_one_or_zero() {
+        let saved = |v: &str| {
+            let mut e = serde_json::to_value(surface("glass", 0.6).unwrap()).unwrap();
+            e["submerge"] = serde_json::from_str(v).unwrap();
+            match serde_json::from_value(e).unwrap() {
+                crate::BuiltinEffect::Reflection { submerge, .. } => submerge,
+                _ => unreachable!(),
+            }
+        };
+        assert_eq!((saved("true"), saved("false"), saved("0.4")), (1.0, 0.0, 0.4));
     }
 
     /// With a gap the layer floats: its reflection starts as much lower,
