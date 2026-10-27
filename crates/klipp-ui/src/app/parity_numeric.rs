@@ -376,6 +376,15 @@ const PIXEL_CONTEXT: &[(&str, &[(&str, &str)], bool)] = &[
     ("fill_bars", &[], true),
 ];
 
+/// A row whose pixels move only with another field set, by (tag, row):
+/// those fields over the type's [`PIXEL_CONTEXT`]. A Crop's focus moves
+/// the crop only when it covers a shape (#2757): a tall shape for the
+/// focus across, a wide one for the focus down.
+const ROW_CONTEXT: &[(&str, &str, &[(&str, &str)])] = &[
+    ("crop", "focus_x", &[("aspect", "0.5")]),
+    ("crop", "focus_y", &[("aspect", "3.0")]),
+];
+
 /// The effect types drawn at the delivery size: their strength is scaled
 /// to the frame, so the oracle's small frame rounds it away (a gate weave
 /// of a few pixels at 1920 wide is under one at 320).
@@ -399,9 +408,15 @@ pub(super) fn size_for(tag: &str) -> (u32, u32) {
 /// in its list: `effect` with the [`PIXEL_CONTEXT`] for its tag, after a
 /// shrinking Transform where the context asks for one.
 pub(super) fn pixel_fixture(ty: &EffectType, effect: &BuiltinEffect, surface: Surface) -> Result<(klipp_timeline::Clip, usize), String> {
+    pixel_fixture_for_row(ty, effect, surface, "")
+}
+
+/// [`pixel_fixture`] for the row `row`, with its [`ROW_CONTEXT`] too.
+pub(super) fn pixel_fixture_for_row(ty: &EffectType, effect: &BuiltinEffect, surface: Surface, row: &str) -> Result<(klipp_timeline::Clip, usize), String> {
     let context = PIXEL_CONTEXT.iter().find(|(tag, _, _)| *tag == ty.tag);
     let mut entry = serde_json::to_value(effect).map_err(|e| e.to_string())?;
-    for (field, value) in context.map_or(&[][..], |(_, fields, _)| *fields) {
+    let for_row = ROW_CONTEXT.iter().filter(|(tag, key, _)| *tag == ty.tag && *key == row).flat_map(|(_, _, fields)| fields.iter());
+    for (field, value) in context.map_or(&[][..], |(_, fields, _)| *fields).iter().chain(for_row) {
         entry[*field] = serde_json::from_str(value).map_err(|e| format!("{}.{field}: {e}", ty.tag))?;
     }
     let effect: BuiltinEffect = serde_json::from_value(entry).map_err(|e| format!("{}: {e}", ty.tag))?;
@@ -450,7 +465,7 @@ fn retime_control(clip: &klipp_timeline::Clip, size: (u32, u32)) -> Result<(), S
 fn pixel_case(routes: super::parity_pixels::Routes, ty: &EffectType, surface: Surface, effect: &BuiltinEffect, desc: &ParamDesc, label: RowLabel, value_at: impl Fn(f32) -> (String, Value)) -> Result<(), String> {
     use super::parity_pixels::cpu_frames_differ;
     let size = size_for(ty.tag);
-    let (clip, index) = pixel_fixture(ty, effect, surface)?;
+    let (clip, index) = pixel_fixture_for_row(ty, effect, surface, desc.key)?;
     if ty.tag == "speed_ramp" {
         retime_control(&clip, size)?;
     }
