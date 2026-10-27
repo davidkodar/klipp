@@ -14,6 +14,10 @@ pub(super) fn connect(path: &Path, timeout: Duration) -> io::Result<UnixStream> 
         let _ = sender.send(UnixStream::connect(path));
     })?;
     match receiver.recv_timeout(timeout) {
+        // Only to a Klipp of this user: a socket another user put where
+        // this one looks is refused before anything is sent.
+        Ok(Ok(stream)) if !klipp_control::peer_is_same_user(&stream) => Err(io::Error::new(
+            io::ErrorKind::PermissionDenied, "the control socket belongs to another user")),
         Ok(result) => result,
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(io::Error::new(
             io::ErrorKind::TimedOut, "control socket connect timed out")),
