@@ -55,7 +55,11 @@ fn every_built_in_template_applies_in_one_drag_and_its_fields_edit() {
 /// keeps its text readable over the picture (#2734).
 #[test]
 fn a_new_title_protects_its_contrast() {
-    let tpl = &TITLES[0];
+    // A template on a backing of its own reads on it and keeps no halo
+    // (#2840): the one checked here is one without.
+    let backed = |t: &klipp_timeline::title_library::TitleTemplate| t.data().protect == klipp_timeline::ContrastProtect::Off;
+    assert!(TITLES.iter().any(backed), "some template has a backing, and keeps no halo");
+    let tpl = TITLES.iter().find(|t| !backed(t)).expect("a template without a backing");
     let mut state = AppState { pending_title_data: Some(Entry::Builtin(tpl).data()), ..Default::default() };
     let frames = state.sequence().fps.rate() * 5;
     let at = state.playhead;

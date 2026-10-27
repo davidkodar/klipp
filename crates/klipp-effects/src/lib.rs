@@ -266,6 +266,14 @@ fn half() -> f32 {
     0.5
 }
 
+fn is_half(v: &f32) -> bool {
+    *v == 0.5
+}
+
+fn is_zero(v: &f32) -> bool {
+    *v == 0.0
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum BuiltinEffect {
@@ -286,13 +294,15 @@ pub enum BuiltinEffect {
         /// holds, whatever the source's own shape; a Transform after it
         /// then places that rectangle. Worked out from the source's size
         /// as each frame is drawn ([`cover_shape`]).
-        #[serde(default)]
+        // Left out at their defaults, so a crop without a shape saves as
+        // it always did.
+        #[serde(default, skip_serializing_if = "is_zero")]
         aspect: f32,
         /// Where the crop to `aspect` is centred, as a fraction of the
         /// picture (0.5 the middle): what a subject's framing can move.
-        #[serde(default = "half")]
+        #[serde(default = "half", skip_serializing_if = "is_half")]
         focus_x: f32,
-        #[serde(default = "half")]
+        #[serde(default = "half", skip_serializing_if = "is_half")]
         focus_y: f32,
     },
     Transform {
@@ -1746,6 +1756,20 @@ pub fn is_identity_effect(effect: &BuiltinEffect) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    /// A crop without a shape to cover saves as it always did: no shape
+    /// or focus keys, so saved projects don't change; one with them
+    /// keeps them.
+    #[test]
+    fn a_crop_without_a_shape_saves_as_before() {
+        let plain = BuiltinEffect::Crop { left: 0.1, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0, aspect: 0.0, focus_x: 0.5, focus_y: 0.5 };
+        let json = serde_json::to_value(&plain).unwrap();
+        assert!(json.get("aspect").is_none() && json.get("focus_x").is_none() && json.get("focus_y").is_none(), "{json}");
+        let shaped = BuiltinEffect::Crop { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0, aspect: 1.0, focus_x: 0.3, focus_y: 0.5 };
+        let json = serde_json::to_value(&shaped).unwrap();
+        assert!(json.get("aspect").is_some() && json.get("focus_x").is_some() && json.get("focus_y").is_none(), "{json}");
+        assert_eq!(serde_json::from_value::<BuiltinEffect>(json).unwrap(), shaped);
+    }
 
     /// A clip is placed by one Transform: the cover's own placement is
     /// folded into the one after the crop, not added beside it.
