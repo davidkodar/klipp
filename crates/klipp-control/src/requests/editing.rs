@@ -807,6 +807,32 @@ pub(crate) fn respond(
             Ok(crate::plans::title_templates(crate::plans::template_dir().as_deref()))
         }
 
+        ControlCommand::SaveTemplate { clip_id, name, category, fields, replace } => {
+            if in_batch {
+                return Err("saving a template is not part of a batch: send it on its own".into());
+            }
+            let id = existing_clip_id(ctx, &clip_id)?;
+            let (td, secs) = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let c = seq.all_clips().find(|c| c.id == id).ok_or("that clip is gone")?;
+                match &c.kind {
+                    klipp_timeline::ClipKind::Title(td) => (td.clone(), (c.timeline_out - c.timeline_in).to_secs_f64() as f32),
+                    _ => return Err("only a title saves as a template: name a title's clip_id".into()),
+                }
+            };
+            let data = klipp_timeline::template_for_save(&td, secs, fields.as_deref())?;
+            let dir = crate::plans::template_dir().ok_or("there is no config folder to save templates in")?;
+            let category = category.filter(|c| !c.trim().is_empty()).unwrap_or_else(|| "My Templates".into());
+            let path = klipp_timeline::save_template(&dir, &name, &category, &data, replace).map_err(|e| if e.contains("saved already") { format!("{e}: give replace true to save over it, or another name") } else { e })?;
+            // The Titles browser shows it beside the others.
+            let _ = send(AppCommand::ReloadTitleTemplates);
+            let kept: Vec<&str> = data.published.iter().map(|f| f.label.as_str()).collect();
+            Ok(json!({
+                "text": format!("saved \"{}\" in {category}, keeping {} editable; the template op places it by that name", name.trim(), if kept.is_empty() { "nothing".to_string() } else { kept.join(", ") }),
+                "path": path.display().to_string(),
+            }))
+        }
+
         ControlCommand::Fonts { fetch: Some(name), .. } => {
             if in_batch {
                 return Err("a font fetch is not part of a batch: send it on its own".into());

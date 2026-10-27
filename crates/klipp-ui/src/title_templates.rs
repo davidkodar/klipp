@@ -22,6 +22,10 @@ pub struct UserTitleTemplate {
     /// The Klipp version that wrote the file.
     #[serde(default)]
     pub written_by: String,
+    /// The file's format (#2757): one newer than this Klipp reads is left
+    /// out with a warning.
+    #[serde(default = "format_one")]
+    pub format: u32,
     pub data: TitleData,
     /// Bumped each time this session saves the template, so a browser
     /// card never shows the preview of what the name used to hold.
@@ -102,6 +106,7 @@ impl TitleTemplateStore {
             name: name.to_string(),
             category: category.to_string(),
             written_by: env!("CARGO_PKG_VERSION").to_string(),
+            format: klipp_timeline::TEMPLATE_FORMAT,
             data,
             revision: self.saves,
         };
@@ -173,9 +178,16 @@ impl TitleTemplateStore {
     }
 }
 
+fn format_one() -> u32 {
+    1
+}
+
 fn read_template(path: &Path) -> Result<UserTitleTemplate, String> {
     let json = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
     let mut t: UserTitleTemplate = serde_json::from_str(&json).map_err(|e| e.to_string())?;
+    if t.format > klipp_timeline::TEMPLATE_FORMAT {
+        return Err(format!("written by a newer Klipp (format {}, this one reads {})", t.format, klipp_timeline::TEMPLATE_FORMAT));
+    }
     t.data.migrate_legacy_animation();
     Ok(t)
 }
@@ -197,11 +209,17 @@ pub enum TemplateDialog {
 }
 
 impl TemplateDialog {
-    /// Save `data`, named after its own text.
-    pub fn save(data: TitleData) -> Self {
+    /// Save `data`, a title `clip_secs` long, named after its own text:
+    /// its default fields ticked, then the optional ones (#2757), its
+    /// Duration ticked and each font and picture not.
+    pub fn save(data: TitleData, clip_secs: f32) -> Self {
         let text = data.primary_text().map(|tb| tb.text.trim().to_string()).unwrap_or_default();
         let name = if text.is_empty() || text.chars().count() > 40 { "My Title".to_string() } else { text };
-        let fields = data.default_fields().into_iter().map(|f| (f, true)).collect();
+        let mut fields: Vec<_> = data.default_fields().into_iter().map(|f| (f, true)).collect();
+        fields.extend(data.optional_fields(clip_secs).into_iter().map(|f| {
+            let on = matches!(f.kind, klipp_timeline::FieldKind::Duration { .. });
+            (f, on)
+        }));
         Self::Save { data: Box::new(data), name, category: "Lower Thirds".to_string(), fields }
     }
 }
@@ -372,8 +390,8 @@ mod tests {
         let dir = scratch();
         let mut store = TitleTemplateStore::load(Some(dir.clone()));
         let data = title("Jane Doe");
-        let TemplateDialog::Save { fields, .. } = TemplateDialog::save(data.clone()) else { panic!("a save dialog") };
-        assert_eq!(fields.iter().map(|(f, on)| (f.label.as_str(), *on)).collect::<Vec<_>>(), [("Text 1", true), ("Text 1 colour", true)], "ticked by default");
+        let TemplateDialog::Save { fields, .. } = TemplateDialog::save(data.clone(), 4.0) else { panic!("a save dialog") };
+        assert_eq!(fields.iter().map(|(f, on)| (f.label.as_str(), *on)).collect::<Vec<_>>(), [("Text 1", true), ("Text 1 colour", true), ("Text 1 font", false)], "the defaults ticked, a font offered");
         let mut fields = fields;
         fields[1].1 = false;
         store.save("Guest", "Lower Thirds", with_published(data, &fields)).unwrap();

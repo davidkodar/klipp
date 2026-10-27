@@ -1182,7 +1182,17 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             v
         }
         "klipp_fonts" => json!({ "method": "fonts", "query": args.get("query").and_then(|v| v.as_str()), "fetch": args.get("fetch").and_then(|v| v.as_str()) }),
-        "klipp_title_templates" => json!({ "method": "title_templates" }),
+        "klipp_title_templates" => match args.get("save") {
+            // Saving a title as a template (#2757).
+            Some(save) => {
+                let mut v = json!({ "method": "save_template", "clip_id": arg_str(save, "clip_id")?, "name": arg_str(save, "name")? });
+                for k in ["category", "fields", "replace"] {
+                    if let Some(x) = save.get(k) { v[k] = x.clone(); }
+                }
+                v
+            }
+            None => json!({ "method": "title_templates" }),
+        },
         "klipp_graph" | "klipp_graph_read" => {
             let mut v = args.clone();
             if !v.is_object() { return Err("graph arguments must be an object".into()); }
@@ -2473,8 +2483,8 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({ "clip_id": { "type": "string", "description": "the clip to move into sync (e.g. the external audio)" }, "reference_clip_id": { "type": "string", "description": "the clip to sync to (e.g. the camera)" }, "max_offset_secs": { "type": "number" } }),
              vec!["clip_id", "reference_clip_id"]),
         tool("klipp_title_templates",
-             "Title templates, built-in by category and saved, and their fields by label, for the template op.",
-             json!({}), vec![]),
+             "Title templates and their fields, for the template op; save {clip_id, name, ...} saves a title as one. Guide: topic title_templates.",
+             json!({ "save": { "type": "object" } }), vec![]),
         tool("klipp_fonts",
              "The font families a title can name, and Klipp's catalogue to fetch. Details: klipp_guide topic fonts.",
              json!({ "query": { "type": "string" }, "fetch": { "type": "string", "description": "a catalogue family to fetch" } }), vec![]),

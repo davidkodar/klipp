@@ -203,6 +203,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SetAppendBringsAudio(..)
         | AppCommand::RefineFilmstrip { .. }
         | AppCommand::SaveTitleTemplate { .. }
+        | AppCommand::ReloadTitleTemplates
         | AppCommand::SelectTitleObject { .. }
         | AppCommand::TitlePathError { .. }
         | AppCommand::SetTitleFadeDuration { .. }

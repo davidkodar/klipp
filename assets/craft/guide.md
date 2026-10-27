@@ -769,7 +769,10 @@ exist until the plan runs.
 - `template {name, at, secs?, track?, fields?}`: a saved title template
   by `name`, at `at` for `secs`, on a text track (one is made on top if
   none fits). `fields` sets its published fields by label: a text as its
-  words, a colour as #rrggbb, the speed as a number (1 as made).
+  words, a colour as #rrggbb, the speed as a number (1 as made), a font
+  by its family's name, a picture by its file, and Duration in seconds:
+  a template with a Duration lays its motion over `secs` unless one is
+  given. `klipp_title_templates` with `save` saves a title as a template.
   A built-in is laid out for the sequence's frame: on 9:16 a lower
   third or caption sits above the bottom fifth and clear of the right
   edge's buttons, a corner mark goes to the top, and a centred opener
