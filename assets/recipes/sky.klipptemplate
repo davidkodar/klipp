@@ -1,0 +1,166 @@
+{
+  "format_version": 2,
+  "id": "e2f8c6a3-71d4-4b59-9e0a-5c3b7d1f8a26",
+  "name": "Sky",
+  "category": "Keying",
+  "written_by": "built-in",
+  "kind": "recipe",
+  "composition_id": "00000000-0000-0000-0000-000000000000",
+  "parameters": {
+    "brightest": {
+      "label": "Sky brightness",
+      "default": {
+        "type": "Number",
+        "value": 0.7
+      },
+      "range": {
+        "min": 0.0,
+        "max": 1.0
+      }
+    },
+    "softness": {
+      "label": "Softness",
+      "default": {
+        "type": "Number",
+        "value": 0.1
+      },
+      "range": {
+        "min": 0.0,
+        "max": 0.5
+      }
+    }
+  },
+  "slots": {
+    "sky": {
+      "label": "Sky",
+      "kind": "media"
+    }
+  },
+  "bindings": [
+    {
+      "parameter": "sky",
+      "property": "node:1.media"
+    },
+    {
+      "parameter": "brightest",
+      "property": "node:3.luma_key_low"
+    },
+    {
+      "parameter": "softness",
+      "property": "node:3.luma_key_soft"
+    }
+  ],
+  "graph": {
+    "ops": [
+      {
+        "op": "add",
+        "after": {
+          "anchor": "end"
+        },
+        "type": "klipp.fx.merge",
+        "label": "Sky",
+        "params": {
+          "blend_mode": "Normal"
+        }
+      },
+      {
+        "op": "add_beside",
+        "at": {
+          "anchor": "source"
+        },
+        "type": "klipp.fx.media_source",
+        "label": "Sky picture"
+      },
+      {
+        "op": "connect",
+        "from": {
+          "anchor": "source"
+        },
+        "from_port": "out",
+        "to": {
+          "new": 1
+        },
+        "to_port": "in"
+      },
+      {
+        "op": "add_beside",
+        "at": {
+          "anchor": "source"
+        },
+        "type": "klipp.grade.luma_key",
+        "label": "Sky matte",
+        "params": {
+          "luma_key_enabled": true,
+          "luma_key_high": 1.0
+        }
+      },
+      {
+        "op": "connect",
+        "from": {
+          "anchor": "source"
+        },
+        "from_port": "out",
+        "to": {
+          "new": 3
+        },
+        "to_port": "in"
+      },
+      {
+        "op": "connect",
+        "from": {
+          "new": 1
+        },
+        "from_port": "out",
+        "to": {
+          "new": 0
+        },
+        "to_port": "fg"
+      },
+      {
+        "op": "connect",
+        "from": {
+          "new": 3
+        },
+        "from_port": "out",
+        "to": {
+          "new": 0
+        },
+        "to_port": "mask"
+      }
+    ],
+    "checks": [
+      {
+        "at": [
+          0.5,
+          0.5
+        ],
+        "channel": "red",
+        "min": 0.8,
+        "says": "the sky shows where the picture is brightest"
+      },
+      {
+        "at": [
+          0.5,
+          0.5
+        ],
+        "channel": "green",
+        "max": 0.25,
+        "says": "the sky covers the bright part"
+      },
+      {
+        "at": [
+          0.1,
+          0.1
+        ],
+        "channel": "red",
+        "min": 0.55,
+        "max": 0.62,
+        "says": "the rest of the picture stays"
+      }
+    ],
+    "check_with": {
+      "brightest": 0.62,
+      "softness": 0.02
+    }
+  }
+}

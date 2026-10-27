@@ -7370,6 +7370,52 @@ impl GpuEffectsPipeline {
         mix: crate::mask_mix::MaskMix,
         mask: Option<EffectMatte<'_>>,
     ) -> Option<ChainEffects> {
+        // One effect recorded as a single dispatch writes the other chain
+        // buffer and leaves its input where it is: the mix reads it there
+        // and writes over it (#1254). Several effects, or one of several
+        // passes, may write over the input, and a copy of it is kept.
+        let in_place = matches!(effects, [one] if Self::single_dispatch(one));
+        self.chain_run_mixed(in_place, in_is_a, width, height, mix, mask, |gpu| gpu.chain_run_effects(effects, in_is_a, width, height))
+    }
+
+    /// A merge on the chain (`apply_merge_chain`) mixed back over the
+    /// picture it lays over by `mix` and the coverage `mask` gives
+    /// (#2758): the merge's picture laid only where the mask is, as a
+    /// masked effect's result is. The merge is one dispatch into the other
+    /// chain buffer, its input left where it is.
+    #[allow(clippy::too_many_arguments)]
+    pub fn chain_merge_mixed(
+        &mut self,
+        in_is_a: bool,
+        width: u32,
+        height: u32,
+        opacity: f32,
+        mode: u32,
+        other: &KeptPicture,
+        mix: crate::mask_mix::MaskMix,
+        mask: Option<EffectMatte<'_>>,
+    ) -> Option<ChainEffects> {
+        self.chain_run_mixed(true, in_is_a, width, height, mix, mask, |gpu| {
+            gpu.apply_merge_chain(in_is_a, width, height, opacity, mode, other);
+            ChainEffects { in_a: !in_is_a, breaks: 0, complete: !gpu.is_device_lost() }
+        })
+    }
+
+    /// `body` run on the chain, mixed back over the picture it started
+    /// from by `mix` and `mask`, as [`Self::chain_run_effects_mixed`]
+    /// says; `in_place` when `body` is one dispatch that leaves its input
+    /// where it is, so no copy of it is kept.
+    #[allow(clippy::too_many_arguments)]
+    fn chain_run_mixed(
+        &mut self,
+        in_place: bool,
+        in_is_a: bool,
+        width: u32,
+        height: u32,
+        mix: crate::mask_mix::MaskMix,
+        mask: Option<EffectMatte<'_>>,
+        body: impl FnOnce(&mut Self) -> ChainEffects,
+    ) -> Option<ChainEffects> {
         if self.is_device_lost() || self.chain_encoder.is_none() {
             return None;
         }
@@ -7383,11 +7429,6 @@ impl GpuEffectsPipeline {
                 mapped_at_creation: false,
             })
         };
-        // One effect recorded as a single dispatch writes the other chain
-        // buffer and leaves its input where it is: the mix reads it there
-        // and writes over it (#1254). Several effects, or one of several
-        // passes, may write over the input, and a copy of it is kept.
-        let in_place = matches!(effects, [one] if Self::single_dispatch(one));
         let device = &self.device;
         let kept = if in_place { None } else { Some(self.slot_pool.lease(image, |k| make(device, k)).ok()?) };
         let keyed = matches!(mask, Some(EffectMatte::Keyed(_)));
@@ -7429,7 +7470,7 @@ impl GpuEffectsPipeline {
             let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
             enc.copy_buffer_to_buffer(src.expect("chain buffers"), 0, self.slot_pool.buffer(kept), 0, bytes);
         }
-        let mut run = self.chain_run_effects(effects, in_is_a, width, height);
+        let mut run = body(self);
         // A break runs the effect in passes of its own, which this didn't
         // keep its input from: the run is said incomplete, and the caller
         // takes another route, as for a mix that wasn't recorded.
