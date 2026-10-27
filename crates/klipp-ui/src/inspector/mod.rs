@@ -673,6 +673,69 @@ fn show_template_controls(
         if changed {
             cmds.push(AppCommand::SetTemplateOverride { clip_id: clip.id, parameter: name.clone(), value });
         }
+        template_link_rows(ui, theme, clip.id, template_instance, template, name, &parameter.label, cmds);
+    }
+}
+
+/// What a control drives (#2757), one row a target: its name, its value
+/// (a drag sets it by hand, the control kept working through an offset),
+/// a badge naming the control or "unlinked" (the row greyed), the offset
+/// beside the value, and Unlink / Relink / Reset offset.
+#[allow(clippy::too_many_arguments)]
+fn template_link_rows(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    clip_id: klipp_core::ClipId,
+    instance: &klipp_core::TemplateInstance,
+    template: &crate::parameterized_templates::CompositionTemplate,
+    parameter: &str,
+    control_label: &str,
+    cmds: &mut Vec<AppCommand>,
+) {
+    let links: Vec<&klipp_core::TemplateLink> = instance.links.iter().filter(|l| l.parameter == parameter).collect();
+    if links.is_empty() {
+        return;
+    }
+    let names = template.composition().map(klipp_timeline::composition_template::number_targets).unwrap_or_default();
+    let control = instance.control(parameter);
+    for link in links {
+        let label = names.iter().find(|(_, p)| *p == link.property).map_or(link.property.as_str(), |(l, _)| l.as_str());
+        let colour = if link.linked { theme.text_primary } else { theme.text_dim };
+        let set = |action| AppCommand::SetTemplateLink { clip_id, property: link.property.clone(), action };
+        ui.horizontal(|ui| {
+            ui.add_space(14.0);
+            ui.label(egui::RichText::new(label).color(colour).size(11.0));
+            let mut value = link.effective(control);
+            if ui.add(egui::DragValue::new(&mut value).speed(0.01).max_decimals(2)).changed() {
+                cmds.push(set(klipp_core::LinkAction::Set(value)));
+            }
+            let (badge, tip) = link_badge(link, control_label);
+            ui.label(egui::RichText::new(badge).color(if link.linked { theme.text_accent } else { theme.text_dim }).size(10.0)).on_hover_text(tip);
+            if link.linked {
+                if ui.small_button("Unlink").on_hover_text("Keep this value whatever the control does").clicked() {
+                    cmds.push(set(klipp_core::LinkAction::Unlink));
+                }
+                if link.offset != 0.0 && ui.small_button("Reset").on_hover_text("Drop the offset: follow the control exactly").clicked() {
+                    cmds.push(set(klipp_core::LinkAction::ResetOffset));
+                }
+            } else if ui.small_button("Relink").on_hover_text("Follow the control again from this value: nothing jumps").clicked() {
+                cmds.push(set(klipp_core::LinkAction::Relink));
+            }
+        });
+    }
+}
+
+/// The badge beside a target's value, and its hover text: the control it
+/// follows and the offset a hand edit left ("Grow +0.12"), or "unlinked".
+fn link_badge(link: &klipp_core::TemplateLink, control: &str) -> (String, String) {
+    if !link.linked {
+        return ("unlinked".into(), format!("Not following {control}: Relink to follow it again"));
+    }
+    let curve = link.curve.name().replace('_', " ");
+    if link.offset.abs() < 1e-9 {
+        (format!("⇄ {control}"), format!("Follows {control}, {} to {}, {curve}", link.to[0], link.to[1]))
+    } else {
+        (format!("⇄ {control} {:+.2}", link.offset), format!("Follows {control}, {} to {}, {curve}, offset {:+.2} from a hand edit", link.to[0], link.to[1], link.offset))
     }
 }
 
@@ -9235,5 +9298,52 @@ mod fits_its_column_tests {
                 assert!(right <= edge + 1.0, "a layered title's {tab:?} tab at {width}: drawn to {right}, the column ends at {edge}: {over:#?}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod template_link_rows_tests {
+    use super::*;
+
+    /// The words a frame of `ui` paints.
+    fn painted(ctx: &egui::Context, mut ui: impl FnMut(&mut egui::Ui)) -> Vec<String> {
+        let out = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |u| ui(u));
+        });
+        out.shapes.iter().filter_map(|c| match &c.shape { egui::Shape::Text(t) => Some(t.galley.text().to_string()), _ => None }).collect()
+    }
+
+    /// #2757: a placed template's card lists each target under its
+    /// control, named as the save offers it, with the badge naming the
+    /// control and a hand edit's offset, Unlink and Reset; an unlinked
+    /// target says so and offers Relink.
+    #[test]
+    fn the_card_shows_each_targets_link_and_offset() {
+        use klipp_timeline::composition_template::{add_controls, instance_for, template_from_scene, CompositionTemplateStore, ControlSpec};
+        let mut scene = klipp_timeline::Sequence::new_default();
+        let title = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Launch".into(), ..Default::default() });
+        scene.tracks[0].clips.push(klipp_timeline::Clip { kind: klipp_timeline::ClipKind::Title(title), ..klipp_timeline::Clip::gap(klipp_core::RationalTime::from_secs_f64(0.0, 24), klipp_core::RationalTime::from_secs_f64(3.0, 24)) });
+        let mut template = template_from_scene(&scene, &[], "Card", None).unwrap();
+        let controls: Vec<ControlSpec> = serde_json::from_value(serde_json::json!([{ "label": "Grow", "drives": [
+            { "target": "Text 1 size", "to": [40, 80] }, { "target": "Text 1 opacity", "to": [0, 1] }] }])).unwrap();
+        add_controls(&mut template, &scene, &controls).unwrap();
+        let dir = std::env::temp_dir().join(format!("klipp-link-rows-{}", uuid::Uuid::new_v4()));
+        let mut state = AppState { composition_templates: CompositionTemplateStore::load(Some(dir.clone())), ..Default::default() };
+        state.composition_templates.save(template.clone()).unwrap();
+        let mut instance = instance_for(&template);
+        instance.act_on_link("object:0.size", klipp_core::LinkAction::Set(50.0)).unwrap();
+        instance.act_on_link("object:0.opacity", klipp_core::LinkAction::Unlink).unwrap();
+        let mut clip = klipp_timeline::Clip::precomposition(scene.id, klipp_core::RationalTime::from_secs_f64(0.0, 24), klipp_core::RationalTime::from_secs_f64(3.0, 24));
+        clip.kind = klipp_timeline::ClipKind::TemplatePrecomposition { sequence_id: scene.id, template_instance: instance };
+        let theme = KlippTheme::default();
+        let mut cmds = Vec::new();
+        let words = painted(&egui::Context::default(), |ui| show_template_controls(ui, &state, &theme, &clip, &mut cmds));
+        let _ = std::fs::remove_dir_all(&dir);
+        let has = |w: &str| words.iter().any(|x| x == w);
+        assert!(has("Grow") && has("Text 1 size") && has("Text 1 opacity"), "{words:?}");
+        assert!(has("⇄ Grow +10.00"), "size 50 by hand at 0 (mapped 40): offset +10: {words:?}");
+        assert!(has("unlinked") && has("Relink"), "{words:?}");
+        assert!(has("Unlink") && has("Reset"), "{words:?}");
+        assert!(cmds.is_empty(), "drawing alone changes nothing");
     }
 }

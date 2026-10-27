@@ -2631,6 +2631,9 @@ pub enum AppCommand {
     InsertCompositionTemplate { template_id: uuid::Uuid },
     /// Change one exposed value on an inserted composition template.
     SetTemplateOverride { clip_id: ClipId, parameter: String, value: TemplateValue },
+    /// One link of a placed template's control (#2757), by the property
+    /// it drives: unlinked, relinked, its offset reset, or set by hand.
+    SetTemplateLink { clip_id: ClipId, property: String, action: crate::LinkAction },
     /// Save a composition as a reusable, locally installed template.
     SaveCompositionTemplate { sequence_id: uuid::Uuid, name: String },
     /// Open the dialog that saves a title clip as a user template in
