@@ -114,6 +114,14 @@ pub fn sections<'a>(families: &'a [String], favourites: &[String], recents: &[St
     [("Favourites", starred), ("Recent", recent), ("All fonts", rest)].into_iter().filter(|(_, f)| !f.is_empty()).collect()
 }
 
+/// The families of Klipp's catalogue (#2732) not among `families`, each
+/// whose name or tags have every word of `search`: offered to fetch,
+/// in the catalogue's order.
+pub fn from_catalogue(families: &[String], search: &str) -> Vec<&'static klipp_title::catalogue::CatalogueFamily> {
+    let here = |name: &str| families.iter().any(|f| f.eq_ignore_ascii_case(name));
+    klipp_title::catalogue::families().iter().filter(|f| !here(&f.name) && f.matches(search)).collect()
+}
+
 /// The picker: a field naming the `current` family that opens the list
 /// under it. `sample` is the title's words for the previews.
 #[allow(clippy::too_many_arguments)]
@@ -194,6 +202,25 @@ pub fn picker(
                                     }
                                 }
                             });
+                        }
+                    }
+                }
+                // Families Klipp can fetch: named, with what they suit, as
+                // their face is not here to show them in (#2734).
+                let more = from_catalogue(families, &mem.search);
+                if !more.is_empty() {
+                    ui.label(egui::RichText::new("From Klipp\u{2019}s catalogue").size(crate::theme::type_scale::CAPTION).color(theme.text_dim));
+                    for family in more {
+                        let row = ui.allocate_response(egui::vec2(ui.available_width(), PREVIEW_H as f32), egui::Sense::click());
+                        if row.hovered() {
+                            ui.painter().rect_filled(row.rect, 3.0, theme.bg_hover);
+                        }
+                        let tags: Vec<&str> = family.style.iter().chain(&family.mood).map(String::as_str).take(3).collect();
+                        ui.painter().text(row.rect.left_center() + egui::vec2(22.0, 0.0), egui::Align2::LEFT_CENTER, &family.name, egui::FontId::proportional(13.0), theme.text_secondary);
+                        ui.painter().text(row.rect.right_center() - egui::vec2(4.0, 0.0), egui::Align2::RIGHT_CENTER, tags.join(" \u{b7} "), egui::FontId::proportional(10.0), theme.text_dim);
+                        let row = row.on_hover_text(format!("Fetched when chosen ({}); the title shows it once it is here", family.licence));
+                        if row.clicked() {
+                            out.family = Some(family.name.clone());
                         }
                     }
                 }
@@ -292,6 +319,20 @@ mod tests {
         let s = sections(&f, &[], &[], "BASK");
         assert_eq!(s, [("All fonts", vec!["Libre Baskerville"])]);
         assert!(sections(&f, &["Gone".into()], &[], "").iter().all(|(_, l)| !l.contains(&"Gone")), "a starred font not installed is not listed");
+    }
+
+    /// The catalogue's families not here are offered, found by a tag as
+    /// well as by name, and one here is not offered again (#2734).
+    #[test]
+    fn the_catalogue_offers_what_is_not_here_by_name_or_tag() {
+        let names = |l: Vec<&klipp_title::catalogue::CatalogueFamily>| l.into_iter().map(|f| f.name.clone()).collect::<Vec<_>>();
+        let all = names(from_catalogue(&families(), ""));
+        assert!(all.len() >= 30 && all.contains(&"Playfair Display".to_string()), "{all:?}");
+        let here = vec!["Playfair Display".to_string()];
+        assert!(!names(from_catalogue(&here, "")).contains(&"Playfair Display".to_string()), "a family here is not offered again");
+        let script = names(from_catalogue(&families(), "script"));
+        assert!(script.contains(&"Great Vibes".to_string()) && !script.contains(&"Oswald".to_string()), "{script:?}");
+        assert_eq!(names(from_catalogue(&families(), "great vibes")), ["Great Vibes"]);
     }
 
     /// The previews are each family in its own face: two faces draw the

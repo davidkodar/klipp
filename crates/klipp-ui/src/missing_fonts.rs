@@ -108,6 +108,16 @@ pub fn fetch_from_catalogue(missing: Vec<MissingFont>) -> Vec<MissingFont> {
     rest
 }
 
+/// `family` fetched when Klipp's catalogue has it and it is not here
+/// (#2734): a font chosen from the catalogue's section of the picker.
+pub fn fetch_family(family: &str) {
+    if let Some(f) = klipp_title::catalogue::family(family).filter(|f| !klipp_title::catalogue::is_fetched(f)) {
+        if !installed(family) {
+            fetch_in_background(f);
+        }
+    }
+}
+
 /// The catalogue families being fetched now, so a second ask waits on
 /// the first rather than fetching again.
 static FETCHING: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
@@ -224,6 +234,7 @@ pub fn show_dialog(ctx: &egui::Context, state: &mut AppState, theme: &crate::the
                     crate::inspector::font_picker::picker(ui, theme, ("missing_font", &font.family), chosen.as_deref().unwrap_or("Choose a font\u{2026}"), &font.family, &state.available_fonts, &state.favourite_fonts, &state.recent_fonts, &state.font_previews)
                 }).inner;
                 if let Some(f) = picked.family {
+                    fetch_family(&f);
                     dialog.chosen.insert(font.family.clone(), f);
                 }
                 if let Some(f) = picked.toggle_favourite {

@@ -182,6 +182,13 @@ impl KlippApp {
             return;
         }
         self.fonts_seen = fetches;
+        // A family fetched joins the picker's list as one here (#2734).
+        for f in klipp_title::catalogue::families() {
+            if klipp_title::catalogue::is_fetched(f) && !self.state.available_fonts.contains(&f.name) {
+                self.state.available_fonts.push(f.name.clone());
+            }
+        }
+        self.state.available_fonts.sort_by_key(|f| f.to_lowercase());
         self.sync_and_refresh_frame();
         if let Some(id) = self.state.selected_clip.filter(|id| self.state.sequence().all_clips().any(|c| c.id == *id && c.title_data().is_some())) {
             self.render_title_to_viewer(id);
