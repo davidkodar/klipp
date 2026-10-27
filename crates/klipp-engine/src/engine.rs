@@ -2315,6 +2315,111 @@ impl PlaybackEngine {
         }
     }
 
+    /// The clips whose effects still ring at `tc`, playback starting there
+    /// (a play, a seek, a play after a pause): each one's sound opened as a
+    /// tail, put back twice its tail before the clip's end, its fades on
+    /// and its effects run through to `tc` without being heard, so it
+    /// plays on from there as the export has it (#2793). Started inside a
+    /// tail, playback was silent where the export rang.
+    fn open_ringing_tails(&mut self, tc: Timecode) {
+        let heard = tc.to_secs_f64();
+        struct Tail {
+            key: usize,
+            media: MediaId,
+            path: std::path::PathBuf,
+            from_source: f64,
+            discard: usize,
+            effects: Vec<klipp_core::AudioEffectInstance>,
+            keyframes: std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
+            sound: ClipSound,
+            source_in: f64,
+            duration: f64,
+            clip: (klipp_core::ClipId, Timecode, f64),
+        }
+        let tails: Vec<Tail> = {
+            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+            let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());
+            let fps = seq.fps.as_f64();
+            let mut tails = Vec::new();
+            for (ti, track) in seq.tracks.iter().enumerate() {
+                for clip in &track.clips {
+                    let out = clip.timeline_out.to_secs_f64();
+                    if out > heard || heard >= out + klipp_audio::dsp::MAX_TAIL_SECS as f64 {
+                        continue;
+                    }
+                    // A clip playback would ring: its own sound at 1x, from a
+                    // conformed file, not handed on to a crossfade or to the
+                    // next clip of the same sound.
+                    if !clip.enabled || !clip.plays_its_sound() || clip.is_varispeed() || klipp_timeline::crossfade::extent(track, clip).tail_secs > 0.0 {
+                        continue;
+                    }
+                    let Some(media) = clip.media_id() else { continue };
+                    let Some(path) = pool.get(&media).filter(|i| i.has_audio).and_then(|i| i.audio_cache.as_ref()).map(|c| c.pcm_path.clone()).filter(|p| p.exists()) else { continue };
+                    if track.kind == klipp_timeline::TrackKind::Video
+                        && clip.linked_clip_id.is_some_and(|l| seq.tracks.iter().any(|t| t.kind == klipp_timeline::TrackKind::Audio && t.clips.iter().any(|c| c.id == l)))
+                    {
+                        continue;
+                    }
+                    let (effects, keyframes) = (clip.audio_effects.clone(), clip.audio_effect_keyframes.clone());
+                    if !klipp_audio::dsp::AudioEffectChain::may_ring(&effects, !keyframes.is_empty(), 48_000)
+                        || carried_on(track, clip, media, audio_chain_fingerprint_for(&effects, &keyframes))
+                    {
+                        continue;
+                    }
+                    let chain = klipp_audio::dsp::AudioEffectChain::from_instances(&effects, 48_000);
+                    let tail = (chain.tail_frames(48_000) + chain.total_latency_samples(48_000) as usize) as f64 / 48_000.0;
+                    if heard >= out + tail {
+                        continue;
+                    }
+                    // Twice the tail back: what came before has fallen to
+                    // under -160 dB by the playhead.
+                    let from = clip.timeline_in.to_secs_f64().max(out - 2.0 * tail);
+                    tails.push(Tail {
+                        key: ti,
+                        media,
+                        path,
+                        from_source: klipp_compose::render::source_secs(clip, RationalTime::from_secs_f64(from, 48_000), fps),
+                        discard: ((heard - from) * 48_000.0).round() as usize,
+                        effects,
+                        keyframes,
+                        sound: clip_sound_at(&seq, clip, out, fps),
+                        source_in: clip.source_in.to_secs_f64(),
+                        duration: clip.duration().to_secs_f64(),
+                        clip: (clip.id, clip.timeline_out, out),
+                    });
+                }
+            }
+            tails
+        };
+        for t in tails {
+            let before = self.audio_sources.len();
+            self.open_audio_source(t.key, t.media, &t.path, t.from_source, t.effects, t.keyframes);
+            if self.audio_sources.len() == before {
+                continue;
+            }
+            let Some(mut a) = self.audio_sources.pop() else { continue };
+            if a.source.ring().is_none() {
+                a.source.stop_detached();
+                if let Some(mt) = &self.mix_thread {
+                    mt.remove_staging_of(&a.mix);
+                }
+                continue;
+            }
+            let s = &t.sound;
+            a.source.set_fade(t.source_in, t.duration, s.fade_in as f64, s.fade_out as f64, fade_curve_to_u32(s.fade_in_curve), fade_curve_to_u32(s.fade_out_curve), s.gain);
+            if let Some(ring) = a.source.ring() {
+                ring.set_stops(true);
+            }
+            a.mix.set(s.volume * s.gain, s.pan, channel_config_to_u32(s.channel_config));
+            a.source.discard(t.discard);
+            a.clip = Some(t.clip);
+            // Its pre-roll runs now, while the rest are made ready.
+            a.source.resume();
+            debug!("audio tail on track {} opened {:.3}s into its ring", t.key, heard - t.clip.2);
+            self.audio_tails.push(a);
+        }
+    }
+
     /// Stop every ringing source at once: a seek or a pause.
     fn drop_audio_tails(&mut self) {
         for mut t in std::mem::take(&mut self.audio_tails) {
@@ -4479,6 +4584,7 @@ impl PlaybackEngine {
                 track_idx, audio_effects.len(), audio_effect_keyframes.len());
             self.open_audio_source(track_idx, media_id, &path, source_secs, audio_effects, audio_effect_keyframes);
         }
+        self.open_ringing_tails(tc);
         // Apply per-clip volume from sequence data
         self.sync_clip_volumes();
 
@@ -4676,54 +4782,11 @@ impl PlaybackEngine {
                     if let (Some(ring), Some(track)) = (active.source.ring(), seq.tracks.get(key_track(active.track_index))) {
                         ring.set_stops(sounding.extent.tail_secs > 0.0 || !carried_on(track, audio_clip, active.media_id, active.audio_chain_fingerprint));
                     }
-                    // Compute clip-relative time for keyframe evaluation
-                    let clip_time_secs = (heard_at - audio_clip.timeline_in.to_secs_f64()).max(0.0);
-
-                    let audio_eval_ctx = klipp_core::EvalContext {
-                        clip_time_secs,
-                        clip_duration_secs: (audio_clip.source_out.to_secs_f64() - audio_clip.source_in.to_secs_f64()),
-                        timeline_time_secs: heard_at,
-                        fps: self.fps.as_f64(),
-                        seed: audio_clip.id.0.as_u64_pair().0,
-                    };
-
-                    let mut clip_volume = eval_with_modifiers(&audio_clip.volume_keyframes, audio_clip.param_modifiers(), &klipp_core::ParamId::Volume, clip_time_secs, audio_clip.volume, &audio_eval_ctx);
-                    let mut clip_pan = eval_with_modifiers(&audio_clip.pan_keyframes, audio_clip.param_modifiers(), &klipp_core::ParamId::Pan, clip_time_secs, audio_clip.pan, &audio_eval_ctx);
-                    let mut clip_gain = eval_with_modifiers(&audio_clip.gain_keyframes, audio_clip.param_modifiers(), &klipp_core::ParamId::Gain, clip_time_secs, audio_clip.gain, &audio_eval_ctx);
-                    let mut fade_in = audio_clip.fade_in_secs;
-                    let mut fade_out = audio_clip.fade_out_secs;
-                    let mut fi_curve = audio_clip.fade_in_curve;
-                    let mut fo_curve = audio_clip.fade_out_curve;
-                    let mut ch_config = audio_clip.channel_config;
+                    let ClipSound { volume: clip_volume, pan: clip_pan, gain: clip_gain, fade_in, fade_out, fade_in_curve: fi_curve, fade_out_curve: fo_curve, channel_config: ch_config } = clip_sound_at(&seq, audio_clip, heard_at, self.fps.as_f64());
                     let source_in_secs = audio_clip.source_in.to_secs_f64();
                     let clip_dur_secs = audio_clip.duration().to_secs_f64();
                     // Read at the clip's speed, backward when reversed (#642).
                     active.source.set_varispeed(audio_clip.speed, source_in_secs, audio_clip.source_out.to_secs_f64(), audio_clip.keep_pitch);
-
-                    // If linked to a video clip, use the video clip's audio params
-                    if let Some(linked_id) = audio_clip.linked_clip_id {
-                        for t in &seq.tracks {
-                            if let Some(video_clip) = t.clips.iter().find(|c| c.id == linked_id) {
-                                let linked_clip_time = (heard_at - video_clip.timeline_in.to_secs_f64()).max(0.0);
-                                let linked_eval_ctx = klipp_core::EvalContext {
-                                    clip_time_secs: linked_clip_time,
-                                    clip_duration_secs: (video_clip.source_out.to_secs_f64() - video_clip.source_in.to_secs_f64()),
-                                    timeline_time_secs: heard_at,
-                                    fps: self.fps.as_f64(),
-                                    seed: video_clip.id.0.as_u64_pair().0,
-                                };
-                                clip_volume = eval_with_modifiers(&video_clip.volume_keyframes, video_clip.param_modifiers(), &klipp_core::ParamId::Volume, linked_clip_time, video_clip.volume, &linked_eval_ctx);
-                                clip_pan = eval_with_modifiers(&video_clip.pan_keyframes, video_clip.param_modifiers(), &klipp_core::ParamId::Pan, linked_clip_time, video_clip.pan, &linked_eval_ctx);
-                                clip_gain = eval_with_modifiers(&video_clip.gain_keyframes, video_clip.param_modifiers(), &klipp_core::ParamId::Gain, linked_clip_time, video_clip.gain, &linked_eval_ctx);
-                                fade_in = video_clip.fade_in_secs;
-                                fade_out = video_clip.fade_out_secs;
-                                fi_curve = video_clip.fade_in_curve;
-                                fo_curve = video_clip.fade_out_curve;
-                                ch_config = video_clip.channel_config;
-                                break;
-                            }
-                        }
-                    }
 
                     // Set fade params on the audio source
                     // When contiguous_audio is true, offset source_in backward so the
@@ -5025,6 +5088,49 @@ fn envelope_of(seq: &klipp_timeline::Sequence, sounding: &klipp_timeline::crossf
         fade_out_curve: out_curve,
         gain,
     }
+}
+
+/// A clip's sound settings at `heard_at` seconds on the timeline: its
+/// volume, pan and gain from their keyframes, its fades and channel
+/// layout; a linked picture's where its sound is linked to one. What a
+/// playing source takes each tick, and a ringing tail opened after its
+/// clip has ended, at its out point (#2793).
+struct ClipSound {
+    volume: f32,
+    pan: f32,
+    gain: f32,
+    fade_in: f32,
+    fade_out: f32,
+    fade_in_curve: klipp_timeline::FadeCurve,
+    fade_out_curve: klipp_timeline::FadeCurve,
+    channel_config: klipp_timeline::ChannelConfig,
+}
+
+fn clip_sound_at(seq: &klipp_timeline::Sequence, audio_clip: &klipp_timeline::Clip, heard_at: f64, fps: f64) -> ClipSound {
+    let at = |clip: &klipp_timeline::Clip| {
+        let clip_time = (heard_at - clip.timeline_in.to_secs_f64()).max(0.0);
+        let ctx = klipp_core::EvalContext {
+            clip_time_secs: clip_time,
+            clip_duration_secs: clip.source_out.to_secs_f64() - clip.source_in.to_secs_f64(),
+            timeline_time_secs: heard_at,
+            fps,
+            seed: clip.id.0.as_u64_pair().0,
+        };
+        let eval = |kfs: &[klipp_core::Keyframe], param: klipp_core::ParamId, base: f32| eval_with_modifiers(kfs, clip.param_modifiers(), &param, clip_time, base, &ctx);
+        ClipSound {
+            volume: eval(&clip.volume_keyframes, klipp_core::ParamId::Volume, clip.volume),
+            pan: eval(&clip.pan_keyframes, klipp_core::ParamId::Pan, clip.pan),
+            gain: eval(&clip.gain_keyframes, klipp_core::ParamId::Gain, clip.gain),
+            fade_in: clip.fade_in_secs,
+            fade_out: clip.fade_out_secs,
+            fade_in_curve: clip.fade_in_curve,
+            fade_out_curve: clip.fade_out_curve,
+            channel_config: clip.channel_config,
+        }
+    };
+    // If linked to a video clip, the video clip's audio params.
+    let linked = audio_clip.linked_clip_id.and_then(|id| seq.tracks.iter().flat_map(|t| &t.clips).find(|c| c.id == id));
+    at(linked.unwrap_or(audio_clip))
 }
 
 /// Pure helper: hash the audio-relevant fields of a single clip.
@@ -5449,6 +5555,7 @@ impl PlaybackEngine {
             mt.flush();
         }
         self.drop_audio_tails();
+        self.open_ringing_tails(tc);
 
         // Compute per-track seek positions from the timeline
         let seek_positions: Vec<(usize, f64)> = {
