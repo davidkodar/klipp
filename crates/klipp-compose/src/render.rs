@@ -7040,8 +7040,9 @@ pub(crate) fn frame_inputs(
         }
         // A flicker jumps by the clip's time (#989).
         BuiltinEffect::Flicker { time, .. } => *time = t as f32,
-        // A displacement moves by the clip's time (#2702).
-        BuiltinEffect::Displace { time, .. } => *time = t as f32,
+        // A displacement moves by the clip's time (#2702), a warp too
+        // (#2758).
+        BuiltinEffect::Displace { time, .. } | BuiltinEffect::Warp { time, .. } => *time = t as f32,
         // A reflection ripples by the clip's time (#2707).
         BuiltinEffect::Reflection { time, .. } => *time = t as f32,
         // Particles move by the clip's time (#1141).

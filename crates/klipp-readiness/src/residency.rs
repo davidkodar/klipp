@@ -90,6 +90,7 @@ pub fn effect(effect: &E) -> Capability {
         | E::Vhs { .. }
         | E::CornerPin { .. }
         | E::SurfacePin { .. }
+        | E::Warp { .. }
         | E::Lut3D { .. }
         | E::ColourSpaceTransform { .. }
         | E::PictureTransform { .. }

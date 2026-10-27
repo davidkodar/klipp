@@ -114,7 +114,7 @@ fn every_effect() -> Vec<E> {
             | E::Levels { .. } | E::Equalize { .. } | E::Letterbox { .. } | E::ChromaticAberration { .. }
             | E::FilmGrain { .. } | E::TiltShift { .. } | E::OldFilm { .. } | E::Vhs { .. }
             | E::RollingShutterCorrection { .. } | E::TemporalDenoise { .. } | E::Deflicker { .. }
-            | E::VideoStabilization { .. } | E::SpeedRamp { .. } | E::Frei0r { .. } | E::CornerPin { .. } | E::SurfacePin { .. }
+            | E::VideoStabilization { .. } | E::SpeedRamp { .. } | E::Frei0r { .. } | E::CornerPin { .. } | E::SurfacePin { .. } | E::Warp { .. }
             | E::Lut3D { .. } | E::ColourSpaceTransform { .. } | E::PictureTransform { .. } | E::Flicker { .. } | E::BinocularVignette { .. } | E::Particles { .. } | E::Merge { .. } | E::Generator { .. } | E::MediaSource { .. } | E::TitleSource { .. } | E::ClipBelow {} | E::GradeCompound {} => {}
         }
     }

@@ -139,6 +139,8 @@ fn visible(pres: &Presentation, on: &[&str]) -> bool {
     match pres.visible_if {
         None => true,
         Some(klipp_effects::registry::presentation::Cond::ParamIs { key, value }) => (value != 0.0) == on.contains(&key),
+        // Grade switches only; a choice's options aren't a grade row's.
+        Some(c @ klipp_effects::registry::presentation::Cond::ParamIn { .. }) => on.contains(&c.key()),
     }
 }
 

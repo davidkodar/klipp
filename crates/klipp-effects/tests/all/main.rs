@@ -109,3 +109,6 @@ mod resident_alpha_masks;
 
 #[path = "../resident_title_styles.rs"]
 mod resident_title_styles;
+
+#[path = "../shared_warps.rs"]
+mod shared_warps;

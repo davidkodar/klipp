@@ -182,6 +182,34 @@ pub enum Cond {
     /// The parameter `key` holds `value`: 1 or 0 for a switch, the index
     /// for a choice.
     ParamIs { key: &'static str, value: f32 },
+    /// The parameter `key` holds one of `values`: a choice's rows shown
+    /// for some of its options (a Warp's shapes, #2758).
+    ParamIn { key: &'static str, values: &'static [f32] },
+}
+
+impl Cond {
+    /// The parameter the condition reads.
+    pub fn key(&self) -> &'static str {
+        match *self {
+            Cond::ParamIs { key, .. } | Cond::ParamIn { key, .. } => key,
+        }
+    }
+
+    /// Whether a stored `value` of it meets the condition.
+    pub fn holds_for(&self, value: f32) -> bool {
+        match *self {
+            Cond::ParamIs { value: v, .. } => v == value,
+            Cond::ParamIn { values, .. } => values.contains(&value),
+        }
+    }
+
+    /// A value that meets it: what a check that shows the row sets.
+    pub fn a_value_meeting_it(&self) -> f32 {
+        match *self {
+            Cond::ParamIs { value, .. } => value,
+            Cond::ParamIn { values, .. } => values.first().copied().unwrap_or_default(),
+        }
+    }
 }
 
 /// How a node type is shown, beyond its rows.

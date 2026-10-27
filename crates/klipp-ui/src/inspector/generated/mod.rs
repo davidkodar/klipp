@@ -30,16 +30,12 @@ pub struct NodeRows<'a> {
 /// ones, so a keyed switch doesn't make rows come and go). An unset value
 /// reads as its default, as the node does.
 pub fn holds(rows: &NodeRows, cond: &Cond) -> bool {
-    match cond {
-        Cond::ParamIs { key, value } => {
-            let Some(p) = rows.params.iter().find(|p| p.key == *key) else { return false };
-            let stored = (rows.stored)(p);
-            if stored.is_null() {
-                return p.default == *value;
-            }
-            row::number(&stored).or_else(|| row::choice_index(p, &stored).map(|i| i as f32)) == Some(*value)
-        }
+    let Some(p) = rows.params.iter().find(|p| p.key == cond.key()) else { return false };
+    let stored = (rows.stored)(p);
+    if stored.is_null() {
+        return cond.holds_for(p.default);
     }
+    row::number(&stored).or_else(|| row::choice_index(p, &stored).map(|i| i as f32)).is_some_and(|v| cond.holds_for(v))
 }
 
 /// The parameters shown, in the order they're drawn: by presentation
