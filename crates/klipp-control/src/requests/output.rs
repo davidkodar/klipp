@@ -786,13 +786,17 @@ pub(crate) fn respond(
                 .map(|n| klipp_core::ViewChannel::from_name(n.trim()).ok_or_else(|| format!("{n:?} is not a channel; give red, green, blue, alpha or luma")))
                 .transpose()?;
             let node = node.map(|p| p.resolve(&Default::default())).transpose()?;
-            // The viewer shows a node of a clip's grade alone; any other
-            // would come back as the whole frame, so it is refused here.
+            // The viewer shows a node of a clip's grade, or of its chain
+            // past the grade (#2879), alone; any other (a node beside the
+            // chain) would come back as the whole frame, so it is refused.
             if let Some(n) = &node {
-                let clip = n.root_clip().ok_or("node must be a node of a clip's grade, by its path as graph_read gives it")?;
+                let clip = n.root_clip().ok_or("node must be a node of a clip's picture, by its path as graph_read gives it")?;
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-                seq.grade_node_at(klipp_core::ClipId(clip), n)
-                    .map_err(|e| format!("node can't be shown alone: {e}; frame_at shows a node of a clip's grade (an effect after the grade, not yet)"))?;
+                let graded = seq.grade_node_at(klipp_core::ClipId(clip), n).is_ok();
+                let chained = n.nodes.len() == 1 && n.node().is_some_and(|id| seq.all_clips().find(|c| c.id.0 == clip).is_some_and(|c| c.clone().cut_chain_at(id)));
+                if !graded && !chained {
+                    return Err("node can't be shown alone: frame_at shows a node of a clip's grade or of its chain, not one beside the chain".into());
+                }
             }
             // One at a time: there is one playhead, and two grabs at once
             // seek it out from under each other and the second fails.
