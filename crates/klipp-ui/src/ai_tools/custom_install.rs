@@ -202,8 +202,9 @@ pub fn validate_form(
     if form.url.trim().is_empty() {
         return Err("URL is required".into());
     }
-    if !(form.url.starts_with("https://") || form.url.starts_with("http://")) {
-        return Err("URL must start with https:// or http://".into());
+    // Over https only, as the built-in models are fetched.
+    if !form.url.trim().starts_with("https://") {
+        return Err("URL must start with https://".into());
     }
     if form.display_name.trim().is_empty() {
         return Err("Display name is required".into());
@@ -231,6 +232,14 @@ pub fn validate_form(
 
 #[cfg(test)]
 mod tests {
+
+    /// A model is fetched over https only.
+    #[test]
+    fn a_plain_http_url_is_refused() {
+        let form = CustomInstallForm { url: "http://example.com/m.onnx".into(), display_name: "M".into(), id: "m".into(), ..Default::default() };
+        assert!(validate_form(&form, &[]).unwrap_err().contains("https://"));
+    }
+
     use super::*;
 
     fn fresh_form() -> CustomInstallForm {
