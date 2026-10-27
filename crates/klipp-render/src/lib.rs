@@ -63,6 +63,7 @@ mod frame_source;
 pub mod gif_filter;
 pub mod pre_analysis;
 pub mod banding;
+pub mod water;
 pub mod pixel_check;
 pub mod still;
 #[cfg(test)]

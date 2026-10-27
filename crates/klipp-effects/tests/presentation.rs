@@ -272,6 +272,10 @@ const HIDDEN: &[(&str, &str)] = &[
     ("klipp.fx.reflection", "time"),
     // One source so far; the picture below is to come (#2707).
     ("klipp.fx.reflection", "ripple_from"),
+    // The water as measured under it, and for what (#2795): Re-analyze
+    // in the clip's menu measures it.
+    ("klipp.fx.reflection", "water"),
+    ("klipp.fx.reflection", "water_key"),
     // Set by a title's roll from its focus band, in the Title tab.
     ("klipp.fx.focus_blur", "radius"),
     ("klipp.fx.focus_blur", "vertical"),

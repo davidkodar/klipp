@@ -49,7 +49,7 @@ fn media() -> Clip {
 fn reflection(blend: u32) -> BuiltinEffect {
     BuiltinEffect::Reflection {
         waterline: 0.5, gap: 0.0, ripple_amount: 0.0, ripple_size: 60.0, ripple_speed: 0.0, breakup: 0.0, smear: 0.0, fade: 0.0, opacity: 1.0, darken: 0.0, contact: 0.0,
-        blend, tint: [0, 0, 0], tint_amount: 0.0, submerge: false, ripple_from: 0, seed: 0, time: 0.0,
+        blend, tint: [0, 0, 0], tint_amount: 0.0, tint_auto: false, darken_auto: false, water: [0, 0, 0], water_key: 0, submerge: false, ripple_from: 0, seed: 0, time: 0.0,
     }
 }
 
@@ -179,7 +179,7 @@ fn it_reflects_a_media_clip_a_generator_and_a_title() {
 fn the_split_takes_the_gap_at_the_renders_size() {
     let fx = BuiltinEffect::Reflection {
         waterline: 0.25, gap: 16.0, ripple_amount: 0.0, ripple_size: 60.0, ripple_speed: 0.0, breakup: 0.0, smear: 0.0, fade: 0.0, opacity: 1.0, darken: 0.0, contact: 0.0,
-        blend: klipp_effects::reflection::SCREEN, tint: [0, 0, 0], tint_amount: 0.0, submerge: false, ripple_from: 0, seed: 0, time: 0.0,
+        blend: klipp_effects::reflection::SCREEN, tint: [0, 0, 0], tint_amount: 0.0, tint_auto: false, darken_auto: false, water: [0, 0, 0], water_key: 0, submerge: false, ripple_from: 0, seed: 0, time: 0.0,
     };
     let top = klipp_timeline::test_clip::TestClip::of(media()).effects([fx]).build();
     let below = media();

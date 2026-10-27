@@ -528,6 +528,9 @@ impl KlippApp {
                 AppEvent::NormalizeMeasured { clip_id, effect_index, key, lufs } => {
                     self.normalize_measured(clip_id, effect_index, key, lufs);
                 }
+                AppEvent::WaterMeasured { clip_id, key, water } => {
+                    self.water_measured(clip_id, key, water);
+                }
                 AppEvent::DenoiserProfileFailed { error } => {
                     tracing::warn!("Denoiser profile learning failed: {}", error);
                     self.state.toast.show(format!("Could not learn noise profile: {error}"));

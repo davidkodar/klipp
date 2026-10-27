@@ -335,6 +335,7 @@ pub(crate) fn list_clips(seq: &klipp_timeline::Sequence, pool: &klipp_media::Med
                 v["text"] = json!(td.text());
             }
             surfaces_json(c, fps, &mut v);
+            water_json(seq, c, &mut v);
             sound_json(seq, c, true, &mut v);
             return v;
         }
@@ -376,6 +377,7 @@ pub(crate) fn list_clips(seq: &klipp_timeline::Sequence, pool: &klipp_media::Med
             v["effects"] = json!(fx);
         }
         surfaces_json(c, fps, &mut v);
+        water_json(seq, c, &mut v);
         sound_json(seq, c, false, &mut v);
         v
     };
@@ -508,6 +510,22 @@ pub(crate) fn sound_json(seq: &klipp_timeline::Sequence, c: &klipp_timeline::Cli
 /// covers, which is where a pin follows it, and the stretches followed
 /// uncertainly (`low`) or not at all (`lost`, the last good place held)
 /// with the mean confidence and the times of corrections set by hand
+/// A clip's reflection's water (#2795), on its readout: the colour
+/// measured under it, whether the tint and darkness follow it, and whether
+/// the measurement is for footage, a range or a waterline that has since
+/// changed (then measure_water measures it again).
+pub(crate) fn water_json(seq: &klipp_timeline::Sequence, c: &klipp_timeline::Clip, v: &mut serde_json::Value) {
+    let Some((_, klipp_effects::BuiltinEffect::Reflection { water, water_key, tint_auto, darken_auto, .. })) = klipp_render::water::reflection_of(c) else { return };
+    let now = klipp_render::water::footprint_key(seq, c.id);
+    v["water"] = json!({
+        "measured": water_key != 0,
+        "srgb": (water_key != 0).then_some(water),
+        "outdated": water_key != 0 && now != Some(water_key),
+        "tint_from_water": tint_auto,
+        "darken_from_water": darken_auto,
+    });
+}
+
 /// (#2754).
 pub(crate) fn surfaces_json(c: &klipp_timeline::Clip, fps: f64, v: &mut serde_json::Value) {
     let on_timeline = |src: f64| ((c.timeline_in.to_secs_f64() + c.elapsed_for_source_secs(src, fps)) * 1000.0).round() / 1000.0;

@@ -3814,6 +3814,9 @@ pub enum AppCommand {
     /// The viewer's surface tool on a clip (#684 phase 2): four corners to
     /// set on the surface, then Track. With `surface`, they start where
     /// that surface is at the playhead, to correct and track it again.
+    /// Measure the water under the clip's reflection again (#2795): its
+    /// Re-analyze, for a measurement that is outdated or looks wrong.
+    MeasureWater { clip_id: ClipId },
     OpenSurfaceTool { clip_id: ClipId, surface: Option<uuid::Uuid> },
     /// Find the four corners of the flat surface round `click` (fractions
     /// of the frame as shown) in the clip's picture at timeline second
@@ -4775,6 +4778,9 @@ pub enum AppEvent {
     /// clip's integrated loudness into the effect at `effect_index`
     /// (`None`: silent), for the `key` it was measured for.
     NormalizeMeasured { clip_id: ClipId, effect_index: usize, key: u64, lufs: Option<f32> },
+    /// The water under a clip's reflection, measured for footprint `key`
+    /// (#2795), sRGB; `None` when none could be.
+    WaterMeasured { clip_id: ClipId, key: u32, water: Option<[u8; 3]> },
 }
 
 /// Target for generating keyframes from tracked point data.

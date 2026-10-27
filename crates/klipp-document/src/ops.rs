@@ -6773,8 +6773,11 @@ pub fn named_picture_effect(kind: &str, amount: Option<f32>) -> Result<(klipp_ef
             let kind = kind.to_lowercase();
             let surface = match kind.as_str() { "reflection" | "water_reflection" => "calm_water", other => other };
             match klipp_effects::reflection::surface(surface, 0.6) {
-                Some(E::Reflection { waterline, gap, ripple_amount, ripple_size, ripple_speed, breakup, smear, fade, opacity, darken, contact, blend, tint, tint_amount, submerge, ripple_from, seed, time }) => {
-                    E::Reflection { waterline, gap, ripple_amount, ripple_size, ripple_speed, breakup, smear, fade, opacity: (opacity * a * 2.0).min(1.0), darken, contact, blend, tint, tint_amount, submerge, ripple_from, seed, time }
+                Some(mut e @ E::Reflection { .. }) => {
+                    if let E::Reflection { opacity, .. } = &mut e {
+                        *opacity = (*opacity * a * 2.0).min(1.0);
+                    }
+                    e
                 }
                 _ => unreachable!("every surface named here is a reflection"),
             }
@@ -6895,6 +6898,15 @@ pub fn with_params(fx: klipp_effects::BuiltinEffect, params: &std::collections::
             (Some(k), Some(Value::Array(items))) if k < items.len() => items[k] = new,
             (None, Some(slot)) => *slot = new,
             _ => return Err((format!("{tag}'s {key} could not be set"), "set it in the clip's node view".into())),
+        }
+    }
+    // A tint or darkness given for a reflection is the user's (#2795): a
+    // water measurement doesn't replace it, unless told to follow it.
+    for (given, auto) in [("tint", "tint_auto"), ("darken", "darken_auto")] {
+        if params.contains_key(given) && !params.contains_key(auto) {
+            if let Some(slot) = entry.get_mut(auto) {
+                *slot = Value::Bool(false);
+            }
         }
     }
     serde_json::from_value(entry).map_err(|e| (format!("{tag} does not take those settings: {e}"), format!("give {}", settable())))
@@ -13990,6 +14002,24 @@ mod tests {
         .unwrap();
         let none = resolve(&seq, &pool, &nothing).unwrap_err();
         assert!(none.why.contains("made or changed no clip"), "{}", none.why);
+    }
+
+    /// #2795: a reflection's tint or darkness given is kept from the water
+    /// measurement; left out, both follow the water.
+    #[test]
+    fn a_tint_given_to_a_reflection_is_the_users() {
+        let calm = klipp_effects::reflection::surface("calm_water", 0.6).unwrap();
+        let given = |params: serde_json::Value| {
+            let map: std::collections::BTreeMap<String, serde_json::Value> = serde_json::from_value(params).unwrap();
+            match with_params(calm.clone(), &map).unwrap() {
+                klipp_effects::BuiltinEffect::Reflection { tint, tint_auto, darken_auto, .. } => (tint, tint_auto, darken_auto),
+                _ => unreachable!(),
+            }
+        };
+        assert_eq!(given(serde_json::json!({})), ([25, 85, 100], true, true));
+        assert_eq!(given(serde_json::json!({"tint": "#1d3b4f"})), ([0x1d, 0x3b, 0x4f], false, true));
+        assert!(!given(serde_json::json!({"darken": 0.3})).2);
+        assert!(given(serde_json::json!({"tint": "#1d3b4f", "tint_auto": true})).1, "told to follow the water");
     }
 
     /// #684: a picture pinned to a tracked surface goes on the track

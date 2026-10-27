@@ -810,6 +810,7 @@ fn handle(
             | ControlCommand::DetectSceneCuts { .. }
             | ControlCommand::TrackSurface { .. }
             | ControlCommand::SurfaceKey { .. }
+            | ControlCommand::MeasureWater { .. }
             | ControlCommand::SelectClip { .. }
             | ControlCommand::Plan { .. }
             | ControlCommand::Apply { .. }

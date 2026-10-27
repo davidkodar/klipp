@@ -643,6 +643,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             }
             v
         }
+        "klipp_measure_water" => json!({ "method": "measure_water", "clip_id": arg_str(args, "clip_id")? }),
         "klipp_surface_key" => {
             let mut v = json!({
                 "method": "surface_key",
@@ -2108,6 +2109,10 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                  "track_corners": { "type": "array", "description": "Corners of a larger area of the plane to follow" },
                  "exclude": { "type": "array", "description": "Polygons [[x,y],...] to leave out; [] clears" },
              }),
+             vec!["clip_id"]),
+        tool("klipp_measure_water",
+             "Measure the water under a clip's reflection again, from the footage below it; its tint and darkness follow where set to. Details: klipp_guide topic measure_water.",
+             json!({ "clip_id": { "type": "string" } }),
              vec!["clip_id"]),
         tool("klipp_surface_key",
              "Correct a tracked surface on one frame: hold it at these corners there and solve the track either side again, keeping the rest. Details: klipp_guide topic surface_key.",
