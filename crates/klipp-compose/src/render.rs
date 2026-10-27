@@ -4461,15 +4461,14 @@ impl Renderer {
                 g.nodes.iter().any(|n| n.id == *node).then_some(())?;
                 (g, *node, *port)
             }
-            MaskSource::Side { node, port, input: reads } => {
+            MaskSource::Side { node, lead, port, input: reads } => {
                 let mut g = if *reads == SideInput::Graded { clip.grade_to_run().into_owned() } else { self.passthrough.clone() };
                 let feed = match reads {
                     SideInput::Graded => g.input_of(g.output_node_id, 0)?,
                     // This run's Source is the picture the grade reads.
                     SideInput::Source | SideInput::GradeInput => g.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Source)?.id,
                 };
-                g.nodes.push((**node).clone());
-                g.edges.push(klipp_nodes::Edge { from_node: feed, from_port: 0, to_node: node.id, to_port: 0 });
+                crate::resolve::wire_side(&mut g, feed, lead, node);
                 (g, node.id, *port)
             }
             MaskSource::Unavailable(_) => return None,
@@ -4660,9 +4659,12 @@ impl Renderer {
                 // over, #1746) is authored as the chain's are.
                 for b in blends.iter_mut().flatten() {
                     for side in [&mut b.mask, &mut b.fg].into_iter().flatten() {
-                        if let crate::resolve::MaskSource::Side { node, .. } = side {
-                            self.authored_colours(&mut node.params.effects);
-                            self.at_render_scale(&mut node.params.effects);
+                        if let crate::resolve::MaskSource::Side { node, lead, .. } = side {
+                            // Its branch's too (#2758).
+                            for n in lead.iter_mut().chain(std::iter::once(&mut **node)) {
+                                self.authored_colours(&mut n.params.effects);
+                                self.at_render_scale(&mut n.params.effects);
+                            }
                         }
                     }
                 }
@@ -6399,12 +6401,12 @@ fn mattes_in_the_plan(clip: &Clip, blends: &[Option<crate::resolve::Blend>]) -> 
                 (n, *port, reads)
             }
             // Beside the chain, reading the clip's source as the grade does.
-            MaskSource::Side { node, port, input } => ((**node).clone(), *port, *input == SideInput::Source),
-            MaskSource::Unavailable(_) => return None,
+            MaskSource::Side { node, port, input, lead } if lead.is_empty() => ((**node).clone(), *port, *input == SideInput::Source),
+            MaskSource::Side { .. } | MaskSource::Unavailable(_) => return None,
         };
         match node.kind {
-            NodeKind::Mask => Some(MaskSource::Side { node: Box::new(node), port, input: SideInput::Source }),
-            k if is_key(k) && reads_the_grades_input => Some(MaskSource::Side { node: Box::new(node), port, input: SideInput::GradeInput }),
+            NodeKind::Mask => Some(MaskSource::Side { node: Box::new(node), lead: Vec::new(), port, input: SideInput::Source }),
+            k if is_key(k) && reads_the_grades_input => Some(MaskSource::Side { node: Box::new(node), lead: Vec::new(), port, input: SideInput::GradeInput }),
             _ => None,
         }
     };
@@ -6620,12 +6622,9 @@ fn splice_blended(
             unavailable.push(format!("its {what} comes from the grade's {p}, which isn't in this run"));
             None
         }
-        MaskSource::Side { node: side, port, input } => match (input, source, graded) {
+        MaskSource::Side { node: side, lead, port, input } => match (input, source, graded) {
             (SideInput::Source, Some(from), _) | (SideInput::Graded, _, Some(from)) => {
-                if !graph.nodes.iter().any(|n| n.id == side.id) {
-                    graph.nodes.push((**side).clone());
-                    graph.edges.push(klipp_nodes::Edge { from_node: from, from_port: 0, to_node: side.id, to_port: 0 });
-                }
+                crate::resolve::wire_side(graph, from, lead, side);
                 Some((side.id, *port))
             }
             // The picture the grade reads, handed to the run (#1265): a side
@@ -6645,10 +6644,7 @@ fn splice_blended(
                     });
                     graph.edges.push(klipp_nodes::Edge { from_node: from, from_port: 0, to_node: picture, to_port: 0 });
                 }
-                if !graph.nodes.iter().any(|n| n.id == side.id) {
-                    graph.nodes.push((**side).clone());
-                    graph.edges.push(klipp_nodes::Edge { from_node: picture, from_port: 0, to_node: side.id, to_port: 0 });
-                }
+                crate::resolve::wire_side(graph, picture, lead, side);
                 Some((side.id, *port))
             }
             _ => {

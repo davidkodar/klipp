@@ -216,7 +216,7 @@ fn rewiring_a_reroute_checks_what_reads_it() {
     .unwrap_or_else(|e| panic!("{e}"));
     let before = c.picture_v2().unwrap();
     let why = c.apply_picture_ops(&[GraphOp::Connect { from: at(blur.id), from_port: "out".into(), to: at(route.id), to_port: "in".into() }]).unwrap_err();
-    assert!(why.contains(&key.id.to_string()) && why.contains("can read the clip's source or its grade's picture"), "{why}");
+    assert!(why.contains(&key.id.to_string()) && why.contains("can read the clip's source, its grade's picture or a node beside the chain"), "{why}");
     assert_eq!(c.picture_v2().unwrap(), before, "the picture is as it was");
     c.apply_picture_ops(&[GraphOp::Connect { from: at(source), from_port: "out".into(), to: at(route.id), to_port: "in".into() }]).unwrap_or_else(|e| panic!("back to the source: {e}"));
 }

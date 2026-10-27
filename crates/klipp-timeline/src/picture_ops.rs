@@ -168,12 +168,15 @@ fn side_wiring_refusal(p: &ClipPicture, op: &GraphOp) -> Option<String> {
         return None;
     }
     let source = from.nodes.last().and_then(|id| through_reroutes(p, *id));
+    // The clip's source, its grade's picture, or another node beside the
+    // chain (#2758): a branch of effects whose end a merge lays over.
+    // Never the chain past the grade, nor the node itself.
     let fed_by_the_clip = from.nodes.len() == 1
         && from_port.as_str() == "out"
-        && source.is_some_and(|n| matches!(n.type_id.as_str(), lt::SOURCE | lt::GROUP));
+        && source.is_some_and(|n| matches!(n.type_id.as_str(), lt::SOURCE | lt::GROUP) || (!in_chain(n.id) && n.id != target.id));
     let refusal = |reader: NodeId, port: &str| {
         format!(
-            "{reader}'s {port} can read the clip's source or its grade's picture; {} isn't one it can be given",
+            "{reader}'s {port} can read the clip's source, its grade's picture or a node beside the chain; {} isn't one it can be given",
             source.map_or_else(|| "that".to_owned(), |n| format!("{} {}", n.id, from_port.as_str())),
         )
     };

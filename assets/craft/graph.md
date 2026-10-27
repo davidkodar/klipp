@@ -58,6 +58,14 @@ Add `expected_revision` and `expected_project_identity` from the latest read to
 guard the call. Send it alone, not alongside another write. One successful batch
 is one undo step, including its initial parameters and connections.
 
+A merge lays the end of a branch beside the chain over the clip: at the clip's
+top level, `add_beside` a source (a media item, a generator, the clip below),
+then `add_beside` each effect after it, connecting each one's `in` to the
+node before; connect the last one's `out` to the merge's `fg`. A green screen
+is a media item, a chroma key and a transform, merged over the clip. A node
+beside the chain reads the clip's source, its grade's picture or another node
+beside the chain, never the chain past the grade (refused, named).
+
 ## Publish a group output
 
 Expose a direct child's output on its enclosing clip group, then connect from
