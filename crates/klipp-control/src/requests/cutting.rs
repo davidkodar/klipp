@@ -36,15 +36,15 @@ pub(crate) fn respond(
             let keep: Vec<&Select> = selects.iter().filter(|s| !s.filler).collect();
             let kept_secs: f64 = keep.iter().map(|s| s.out_secs - s.in_secs).sum();
             let mut text = if by_picture {
-                format!("{}: too little speech to cut by ({} words over {:.1} s), so {} selects by picture, one a shot{}. Look at each (contact_sheet, find_shots) and keep what shows the brief.\n", item.filename, words.len(), dur, selects.len(), if report.shots.is_none() { "; its shots are not found yet, so the whole take is one: analyze it" } else { "" })
+                format!("{}: too little speech to cut by ({} words over {:.1} s), so {} selects by picture, one a shot{}. Look at each (contact_sheet, find_shots) and keep what shows the brief.\n", quoted(&item.filename), words.len(), dur, selects.len(), if report.shots.is_none() { "; its shots are not found yet, so the whole take is one: analyze it" } else { "" })
             } else {
-                format!("{}: {} selects to keep out of {} runs, {:.1} s of {:.1} s ({:.0}%). Place each keep range, in order, closing the gaps.\n", item.filename, keep.len(), selects.len(), kept_secs, dur, if dur > 0.0 { 100.0 * kept_secs / dur } else { 0.0 })
+                format!("{}: {} selects to keep out of {} runs, {:.1} s of {:.1} s ({:.0}%). Place each keep range, in order, closing the gaps.\n", quoted(&item.filename), keep.len(), selects.len(), kept_secs, dur, if dur > 0.0 { 100.0 * kept_secs / dur } else { 0.0 })
             };
             for s in &selects {
                 let mark = if s.filler { "drop" } else { "keep" };
                 let mut line = s.text.clone();
                 if line.chars().count() > 80 { line = line.chars().take(79).collect::<String>() + "…"; }
-                text.push_str(&format!("  [{mark}] {:.2}-{:.2} s  \"{}\"\n", s.in_secs, s.out_secs, line));
+                text.push_str(&format!("  [{mark}] {:.2}-{:.2} s  {}\n", s.in_secs, s.out_secs, quoted(&line)));
             }
             let (text, cut) = cut_to_budget_with(&text, 12_000, "narrow with a larger min_gap_secs");
             Ok(json!({
@@ -78,14 +78,14 @@ pub(crate) fn respond(
             let ask = klipp_analysis::shorts::Ask { target_secs: target, min_secs: (target * 0.5).max(8.0), max_secs: (target * 2.0).min(90.0), count, include, exclude };
             let found = klipp_analysis::shorts::find(&t.words, &ask);
             let mut text = if found.is_empty() {
-                format!("{}: no moment of {:.0}-{:.0} s stands on its own here{}.\n", item.filename, ask.min_secs, ask.max_secs, if ask.include.is_empty() && ask.exclude.is_empty() { "" } else { " with those topics" })
+                format!("{}: no moment of {:.0}-{:.0} s stands on its own here{}.\n", quoted(&item.filename), ask.min_secs, ask.max_secs, if ask.include.is_empty() && ask.exclude.is_empty() { "" } else { " with those topics" })
             } else {
-                format!("{}: {} moments for shorts, best first. Read each, re-rank by what it says, then make_shorts with the ones to keep.\n", item.filename, found.len())
+                format!("{}: {} moments for shorts, best first. Read each, re-rank by what it says, then make_shorts with the ones to keep.\n", quoted(&item.filename), found.len())
             };
             for (k, m) in found.iter().enumerate() {
                 let mut hook = m.hook.clone();
                 if hook.chars().count() > 90 { hook = hook.chars().take(89).collect::<String>() + "…"; }
-                text.push_str(&format!("  {}. {:.2}-{:.2} s ({:.0} s), score {:.2}: \"{}\"{}\n", k + 1, m.from_secs, m.to_secs, m.to_secs - m.from_secs, m.score, hook, if m.reasons.is_empty() { String::new() } else { format!(" — {}", m.reasons.join(", ")) }));
+                text.push_str(&format!("  {}. {:.2}-{:.2} s ({:.0} s), score {:.2}: {}{}\n", k + 1, m.from_secs, m.to_secs, m.to_secs - m.from_secs, m.score, quoted(&hook), if m.reasons.is_empty() { String::new() } else { format!(" — {}", m.reasons.join(", ")) }));
             }
             let (text, cut) = cut_to_budget_with(&text, 12_000, "ask for fewer");
             Ok(json!({

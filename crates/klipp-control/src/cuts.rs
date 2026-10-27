@@ -236,7 +236,8 @@ pub fn style_profile_response(
     guide.push_str("Match the energy with your own or licensed music, not the reference's track.");
 
     let text = format!(
-        "Style of {filename}:\ndetected cuts — {} shots, mean {:.1} s, {:.0} per minute ({pace} cut cadence){}\nlook — {}\nwhole-file luma change (includes cuts) — {}\nwithin-shot luma change — {}\n\n{guide}",
+        "Style of {}:\ndetected cuts — {} shots, mean {:.1} s, {:.0} per minute ({pace} cut cadence){}\nlook — {}\nwhole-file luma change (includes cuts) — {}\nwithin-shot luma change — {}\n\n{guide}",
+        quoted(filename),
         cuts["shot_count"].as_i64().unwrap_or(0),
         mean_shot,
         cuts["cuts_per_min"].as_f64().unwrap_or(0.0),
@@ -331,7 +332,7 @@ pub fn cut_points(
         let in_word = words.iter().find(|(s, e, _)| t > *s + 1e-3 && t < *e - 1e-3);
         let in_silence = silences.iter().any(|(s, e)| t >= *s && t <= *e);
         let (verdict, why) = if let Some((_, _, w)) = in_word {
-            ("mid-word", format!("the cut lands inside the word \"{w}\" — it would clip the sound"))
+            ("mid-word", format!("the cut lands inside the word {} — it would clip the sound", quoted(w)))
         } else if in_silence {
             ("clean", "the cut lands in a pause".into())
         } else if segments.iter().any(|(s, e, _)| t > *s && t < *e) {

@@ -45,8 +45,8 @@ pub(crate) fn timeline_text(
     let dur = seq.total_duration();
     let _ = writeln!(
         out,
-        "Sequence \"{}\"  {}x{}  {:.3} fps  duration {:.2} s ({} f)  revision {}",
-        seq.name, seq.resolution.width, seq.resolution.height, fps, dur.to_secs_f64(), frames(dur), revision,
+        "Sequence {}  {}x{}  {:.3} fps  duration {:.2} s ({} f)  revision {}",
+        quoted(&seq.name), seq.resolution.width, seq.resolution.height, fps, dur.to_secs_f64(), frames(dur), revision,
     );
     if let Some(p) = playhead_secs {
         let _ = writeln!(out, "Playhead {:.2} s ({} f)", p, (p * fps).round() as i64);
@@ -75,7 +75,7 @@ pub(crate) fn timeline_text(
         if view.track.is_some_and(|w| w != i) {
             continue;
         }
-        let mut head = format!("\n[{i}] {:?} \"{}\"", t.kind, t.name);
+        let mut head = format!("\n[{i}] {:?} {}", t.kind, quoted(&t.name));
         if (t.opacity - 1.0).abs() > 1e-6 {
             let _ = write!(head, "  opacity {:.2}", t.opacity);
         }
@@ -93,7 +93,7 @@ pub(crate) fn timeline_text(
             if fx.track_grade().is_some_and(|g| !g.is_identity()) {
                 said.push("grade".into());
             }
-            said.extend(fx.audio.iter().map(|e| if e.enabled { e.effect_type.clone() } else { format!("{} (bypassed)", e.effect_type) }));
+            said.extend(fx.audio.iter().map(|e| if e.enabled { word(&e.effect_type) } else { format!("{} (bypassed)", word(&e.effect_type)) }));
             let _ = write!(head, "  track effects: {}", said.join(", "));
         }
         if t.clips.is_empty() {
@@ -104,7 +104,7 @@ pub(crate) fn timeline_text(
             let what = match &c.kind {
                 klipp_timeline::ClipKind::Media { media_id } => match pool.get(media_id) {
                     Some(m) => {
-                        let mut line = format!("media {}  src {:.2}-{:.2} s", m.filename, c.source_in.to_secs_f64(), c.source_out.to_secs_f64());
+                        let mut line = format!("media {}  src {:.2}-{:.2} s", quoted(&m.filename), c.source_in.to_secs_f64(), c.source_out.to_secs_f64());
                         // What analysis knows about this part of the file.
                         let known = klipp_analysis::report::MediaAnalysis::load(&m.path)
                             .clip_summary_with(c.source_in.to_secs_f64(), c.source_out.to_secs_f64(), t.kind != klipp_timeline::TrackKind::Audio);
@@ -119,7 +119,7 @@ pub(crate) fn timeline_text(
                     let text = td.text();
                     let one_line: String = text.lines().collect::<Vec<_>>().join(" / ");
                     let shown: String = one_line.chars().take(60).collect();
-                    format!("title \"{}{}\"", shown, if one_line.chars().count() > 60 { "…" } else { "" })
+                    format!("title {}", quoted(&format!("{}{}", shown, if one_line.chars().count() > 60 { "…" } else { "" })))
                 }
                 klipp_timeline::ClipKind::Generator(g) => format!("generator {:?}", g).chars().take(48).collect(),
                 klipp_timeline::ClipKind::AdjustmentLayer => "adjustment layer".to_string(),
@@ -138,7 +138,7 @@ pub(crate) fn timeline_text(
             let mut line = format!("  [{}]  {what}", range(c.timeline_in, c.timeline_out));
             // Its own name and colour on the timeline (#920).
             if let Some(name) = c.name.as_deref().filter(|n| !n.trim().is_empty()) {
-                let _ = write!(line, "  named \"{name}\"");
+                let _ = write!(line, "  named {}", quoted(name));
             }
             if c.colour_label != 0 {
                 let _ = write!(line, "  colour {}", klipp_media::ColorLabel::from_u8(c.colour_label).label().to_lowercase());
@@ -153,7 +153,7 @@ pub(crate) fn timeline_text(
             // Its recipes and their live controls (#2758).
             if let Ok(lifted) = c.picture_v2().as_ref().map(|l| &l.picture.graph.ui.frames) {
                 for r in lifted.iter().filter_map(|f| serde_json::from_value::<klipp_core::RecipeInstance>(f.get("recipe")?.clone()).ok()) {
-                    let _ = write!(line, "  recipe \"{}\"", r.name);
+                    let _ = write!(line, "  recipe {}", quoted(&r.name));
                     write_links(&mut line, &r.instance);
                 }
             }
@@ -182,7 +182,7 @@ pub(crate) fn timeline_text(
             }
             // The grade group it grades inside (#237).
             if let Some(g) = c.grade_group.and_then(|g| seq.grade_group(g)) {
-                let _ = write!(line, " in group \"{}\"", g.name);
+                let _ = write!(line, " in group {}", quoted(&g.name));
             }
             // Read from the clip's picture (M4 step 12d).
             let effects = c.picture_effects().unwrap_or_default();
@@ -257,12 +257,12 @@ pub(crate) fn timeline_text(
                 Some(d) => format!("{:.2}-{:.2} s", m.position.to_secs_f64(), (m.position + d).to_secs_f64()),
                 None => format!("{:.2} s", m.position.to_secs_f64()),
             };
-            let mut line = format!("  {at}  \"{}\"  {:?}", m.label, m.color);
+            let mut line = format!("  {at}  {}  {:?}", quoted(&m.label), m.color);
             if !matches!(m.kind, klipp_core::MarkerKind::None) {
                 let _ = write!(line, "  {}", marker_kind_name(m.kind));
             }
             if !m.comment.is_empty() {
-                let _ = write!(line, "  note \"{}\"", m.comment.replace('\n', " "));
+                let _ = write!(line, "  note {}", quoted(&m.comment));
             }
             let _ = write!(line, "  id {}", m.id.0);
             let _ = writeln!(out, "{line}");
@@ -297,7 +297,7 @@ pub(crate) fn list_clips(seq: &klipp_timeline::Sequence, pool: &klipp_media::Med
         Some(_) => false,
     };
     if f.track.is_some() && !seq.tracks.iter().enumerate().any(|(i, t)| want_track(i, t)) {
-        let names: Vec<String> = seq.tracks.iter().enumerate().map(|(i, t)| format!("{i} \"{}\"", t.name)).collect();
+        let names: Vec<String> = seq.tracks.iter().enumerate().map(|(i, t)| format!("{i} {}", quoted(&t.name))).collect();
         return Err(format!("no track {}; the tracks are {}", f.track.as_ref().map(|v| v.to_string()).unwrap_or_default(), names.join(", ")));
     }
     let want_clip = |c: &klipp_timeline::Clip| {
@@ -609,10 +609,10 @@ fn write_links(out: &mut String, inst: &klipp_core::TemplateInstance) {
         if !seen.contains(&l.parameter.as_str()) {
             seen.push(&l.parameter);
             let v = match inst.overrides.get(&l.parameter) { Some(klipp_core::TemplateValue::Number(n)) => *n, _ => l.from[0] };
-            let _ = write!(out, "  control {} = {v}:", l.parameter);
+            let _ = write!(out, "  control {} = {v}:", quoted(&l.parameter));
         }
         let state = if !l.linked { format!(" unlinked at {}", l.frozen) } else if l.offset != 0.0 { format!(" offset {:+}", l.offset) } else { String::new() };
-        let _ = write!(out, " {} {}..{} {}{state};", l.property, l.to[0], l.to[1], l.curve.name());
+        let _ = write!(out, " {} {}..{} {}{state};", word(&l.property), l.to[0], l.to[1], l.curve.name());
     }
 }
 

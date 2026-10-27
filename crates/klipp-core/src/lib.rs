@@ -68,6 +68,7 @@ pub mod media_marker;
 pub mod span;
 pub mod startup_timer;
 pub mod piece_transition;
+pub mod quote;
 pub mod time;
 pub mod transition_registry;
 pub mod types;

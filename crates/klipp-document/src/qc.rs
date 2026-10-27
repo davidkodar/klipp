@@ -3,6 +3,7 @@
 //! changes anything; every finding says where, what, and what would
 //! put it right.
 
+use klipp_core::quote::{quoted, word};
 use klipp_media::MediaPool;
 use klipp_timeline::{Clip, ClipKind, Sequence, TitleObjectContent, TrackKind};
 use serde::Serialize;
@@ -115,11 +116,11 @@ fn visible_title_text(td: &klipp_timeline::TitleData) -> impl Iterator<Item = &s
 
 fn clip_label(pool: &MediaPool, c: &Clip) -> String {
     if let Some(name) = c.name.as_deref().filter(|n| !n.trim().is_empty()) {
-        return format!("\"{name}\"");
+        return quoted(name);
     }
     match &c.kind {
-        ClipKind::Media { media_id } => pool.get(media_id).map(|m| m.filename.clone()).unwrap_or_else(|| "a missing file".into()),
-        ClipKind::Title(td) => visible_title_text(td).next().map(|text| format!("title \"{}\"", text.lines().next().unwrap_or(""))).unwrap_or_else(|| "graphics".into()),
+        ClipKind::Media { media_id } => pool.get(media_id).map(|m| quoted(&m.filename)).unwrap_or_else(|| "a missing file".into()),
+        ClipKind::Title(td) => visible_title_text(td).next().map(|text| format!("title {}", quoted(text.lines().next().unwrap_or("")))).unwrap_or_else(|| "graphics".into()),
         ClipKind::Generator(_) => "a generator".into(),
         _ => "a clip".into(),
     }
@@ -350,7 +351,7 @@ pub fn note_missing_global_lut(report: &mut Report, lut: Option<&std::path::Path
         severity: Severity::Error,
         rule: "missing_lut",
         at_secs: None,
-        what: format!("the project's LUT {} is missing", lut.display()),
+        what: format!("the project's LUT {} is missing", quoted(&lut.display().to_string())),
         hint: "Relink it in Project Doctor, or clear it, before delivering".into(),
     });
     report.errors += 1;
@@ -503,7 +504,7 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
             if let ClipKind::Media { media_id } = &c.kind {
                 match pool.get(media_id) {
                     None => add(Severity::Error, "offline", Some(secs(c.timeline_in)), "a clip's media is not in the pool".into(), "Remove the clip or import its file"),
-                    Some(m) if m.offline => add(Severity::Error, "offline", Some(secs(c.timeline_in)), format!("{} is offline", m.filename), "Relink the file before delivering"),
+                    Some(m) if m.offline => add(Severity::Error, "offline", Some(secs(c.timeline_in)), format!("{} is offline", quoted(&m.filename)), "Relink the file before delivering"),
                     _ => {}
                 }
             }
@@ -537,7 +538,7 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
                 Severity::Error,
                 "past_end",
                 Some(secs(c.timeline_in)),
-                format!("{} starts at {src_in:.2} s of a {file_end:.2} s file: it has no picture", m.filename),
+                format!("{} starts at {src_in:.2} s of a {file_end:.2} s file: it has no picture", quoted(&m.filename)),
                 "Slip the clip back inside the file, or remove it",
             );
         } else if src_out > file_end + frame * 1.5 {
@@ -546,7 +547,7 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
                 Severity::Warning,
                 "held_end",
                 Some(held_from),
-                format!("{} runs {:.2} s past the end of its file: its last frame is held from {held_from:.2} s", m.filename, src_out - file_end),
+                format!("{} runs {:.2} s past the end of its file: its last frame is held from {held_from:.2} s", quoted(&m.filename), src_out - file_end),
                 "Trim the clip to the file's end, or cover the hold",
             );
         }
@@ -746,7 +747,7 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
             for s in found.iter().filter(|s| s.end_secs > s_in && s.start_secs < s_out) {
                 let from = t_in + (s.start_secs - s_in).max(0.0);
                 let to = t_in + (s.end_secs.min(s_out) - s_in);
-                add(Severity::Error, "sensitive_on_screen", Some(from), format!("{} shows what looks like a {} ({}) from {from:.2} to {to:.2} s, at {:.0}% across and {:.0}% down the frame", clip_label(pool, c), s.kind, s.masked, s.x * 100.0, s.y * 100.0), "Redact it: the redact op with this clip, from, to and the box (auto_redact does every finding at once), or cut it out");
+                add(Severity::Error, "sensitive_on_screen", Some(from), format!("{} shows what looks like a {} ({}) from {from:.2} to {to:.2} s, at {:.0}% across and {:.0}% down the frame", clip_label(pool, c), word(&s.kind), quoted(&s.masked), s.x * 100.0, s.y * 100.0), "Redact it: the redact op with this clip, from, to and the box (auto_redact does every finding at once), or cut it out");
             }
         }
     }
@@ -950,7 +951,7 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
                 let file_end = Some(secs(item.duration)).filter(|d| *d > 0.0).unwrap_or(f64::INFINITY);
                 if let Some(w) = inside.iter().find(|w| w.start_secs + INTO < edge && w.end_secs.min(file_end) - INTO > edge) {
                     let to = if name == "starts" { w.start_secs } else { w.end_secs.min(file_end) };
-                    add(Severity::Warning, "word_cut", Some(at), format!("the sound {name} inside the word \"{}\"", w.text.trim()), &format!("Trim that edge to {to:.2} s of the file, the word's own edge, plus a beat"));
+                    add(Severity::Warning, "word_cut", Some(at), format!("the sound {name} inside the word {}", quoted(w.text.trim())), &format!("Trim that edge to {to:.2} s of the file, the word's own edge, plus a beat"));
                 }
             }
         }
@@ -994,7 +995,7 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
             for member in &brief.cast {
                 let named = titles.iter().any(|c| matches!(&c.kind, ClipKind::Title(td) if td.objects.iter().any(|o| matches!(&o.content, TitleObjectContent::TextBox(tb) if tb.text.trim().eq_ignore_ascii_case(member.name.trim())))));
                 if !named {
-                    add(Severity::Note, "cast_unnamed", None, format!("{} is in the cast and is never named on screen", member.name), "A lower third on their first appearance, if they appear");
+                    add(Severity::Note, "cast_unnamed", None, format!("{} is in the cast and is never named on screen", quoted(&member.name)), "A lower third on their first appearance, if they appear");
                 }
             }
             if brief.music && !has_music {
@@ -1013,9 +1014,9 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
                             let total: f64 = plan.segments.iter().filter(|s| crate::edit_plan::covers_feature(s, &fe.title)).map(|s| s.duration_secs()).sum();
                             let montage = plan.segments.iter().any(|s| crate::edit_plan::is_montage(s) && crate::edit_plan::covers_feature(s, &fe.title));
                             if total <= 0.0 {
-                                add(Severity::Warning, "feature_unplanned", None, format!("the brief's feature \"{}\"{} is in no segment of the edit plan", fe.title, if fe.rank > 0 { format!(" (rank {})", fe.rank) } else { String::new() }), "Give it a segment, or take it out of the brief");
+                                add(Severity::Warning, "feature_unplanned", None, format!("the brief's feature {}{} is in no segment of the edit plan", quoted(&fe.title), if fe.rank > 0 { format!(" (rank {})", fe.rank) } else { String::new() }), "Give it a segment, or take it out of the brief");
                             } else if total + 1e-6 < if montage { 0.3 } else { FEATURE_MIN_SECS } {
-                                add(Severity::Warning, "feature_short", None, format!("the brief's feature \"{}\" gets {total:.1} s in the edit plan", fe.title), if montage { "Hold a montage feature for at least a third of a second" } else { "Three seconds at least for a feature to register: hold its reveal" });
+                                add(Severity::Warning, "feature_short", None, format!("the brief's feature {} gets {total:.1} s in the edit plan", quoted(&fe.title)), if montage { "Hold a montage feature for at least a third of a second" } else { "Three seconds at least for a feature to register: hold its reveal" });
                             }
                         }
                     }
@@ -1529,7 +1530,7 @@ mod tests {
         let r = check(&seq, &pool, &Leaky(screen));
         let f = r.findings.iter().find(|f| f.rule == "sensitive_on_screen").unwrap_or_else(|| panic!("{}", r.text()));
         assert_eq!((f.severity, f.at_secs), (Severity::Error, Some(4.0)));
-        assert!(f.what.contains("key (sk-…9z) from 4.00 to 6.00 s") && f.what.contains("20% across"), "{}", f.what);
+        assert!(f.what.contains("key (\"sk-…9z\") from 4.00 to 6.00 s") && f.what.contains("20% across"), "{}", f.what);
         let (seq, pool, screen) = screencast(&[(0.0, 4.0, 0.0), (4.0, 9.0, 20.0)]);
         assert!(!rules(&check(&seq, &pool, &Leaky(screen))).contains(&"sensitive_on_screen"));
     }

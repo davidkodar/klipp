@@ -178,7 +178,7 @@ pub(crate) fn respond(
             );
             if !apply {
                 return Ok(json!({
-                    "text": format!("The look of {source}: {describe}. Nearest preset: {}. Run it with apply true to make it the target every colour judgement is held to.", nearest.as_ref().map(|(n, d)| format!("{n} ({d:.0} away)")).unwrap_or_else(|| "none".into())),
+                    "text": format!("The look of {}: {describe}. Nearest preset: {}. Run it with apply true to make it the target every colour judgement is held to.", quoted(&source), nearest.as_ref().map(|(n, d)| format!("{n} ({d:.0} away)")).unwrap_or_else(|| "none".into())),
                     "look_target": target,
                     "source": source,
                     "nearest_preset": nearest.as_ref().map(|(n, _)| n.clone()),
@@ -188,7 +188,7 @@ pub(crate) fn respond(
             let mut brief = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?.brief.clone().unwrap_or_default();
             brief.look = Some(target.clone());
             let mut v = handle(ctx, ControlCommand::SetBrief { brief }, &mut None)?;
-            v["text"] = json!(format!("Every colour judgement is now held to the look of {source}: {describe}. check, grade_to_target and match_scenes all read it from the brief."));
+            v["text"] = json!(format!("Every colour judgement is now held to the look of {}: {describe}. check, grade_to_target and match_scenes all read it from the brief.", quoted(&source)));
             v["look_target"] = serde_json::to_value(&target).unwrap_or(serde_json::Value::Null);
             v["source"] = json!(source);
             v["applied"] = json!(true);
@@ -275,7 +275,7 @@ pub(crate) fn respond(
                         score(a).total_cmp(&score(b))
                     })
                     .expect("a scene has members");
-                let hero_name: String = shots[hero].3.chars().take(24).collect();
+                let hero_name = quoted(&shots[hero].3.chars().take(24).collect::<String>());
                 lines.push(format!(
                     "Scene {} — {} shot(s), hero {hero_name} at {:.2} s",
                     s_i + 1,
@@ -333,7 +333,8 @@ pub(crate) fn respond(
                         format!("OFF, ΔE {after:.1} — the cut reads as a change")
                     };
                     lines.push(format!(
-                        "  {name} at {:.2} s: {verdict}{}",
+                        "  {} at {:.2} s: {verdict}{}",
+                        quoted(&name),
                         read[i].1,
                         if done > 0 { format!(" (was {before:.1}, {done} round(s))") } else { String::new() },
                     ));
@@ -357,7 +358,7 @@ pub(crate) fn respond(
                 let d = match_distance(&w[0].2, &w[1].2);
                 let same_scene = scenes.iter().any(|s| s.contains(&w[0].0) && s.contains(&w[1].0));
                 if d > MATCH_WARN {
-                    let (a, b): (String, String) = (shots[w[0].0].3.chars().take(18).collect(), shots[w[1].0].3.chars().take(18).collect());
+                    let (a, b) = (quoted(&shots[w[0].0].3.chars().take(18).collect::<String>()), quoted(&shots[w[1].0].3.chars().take(18).collect::<String>()));
                     // A join between two scenes is often meant to look
                     // different — a cut to another location should.
                     // But an interview on two cameras, or one where a
@@ -403,12 +404,12 @@ pub(crate) fn respond(
             let mut lines = Vec::new();
             let mut out = Vec::new();
             for c in &clips {
-                let name: String = c.media_id().and_then(|m| pool.get(&m)).map(|it| it.filename.clone()).unwrap_or_else(|| "clip".into()).chars().take(28).collect();
+                let name = quoted(&c.media_id().and_then(|m| pool.get(&m)).map(|it| it.filename.clone()).unwrap_or_else(|| "clip".into()).chars().take(28).collect::<String>());
                 let chain = c.own_grade().chain();
                 let faults = c.own_grade().chain_out_of_order();
                 let shown: Vec<String> = chain.iter()
                     .filter(|l| !matches!(l.stage, klipp_nodes::GradeStage::Plumbing) || l.kind == klipp_nodes::NodeKind::Source)
-                    .map(|l| format!("{} [{}]{}{}", l.label, l.stage.label(), if l.gated { ", gated by a key" } else { "" }, if l.enabled { "" } else { ", bypassed" }))
+                    .map(|l| format!("{} [{}]{}{}", quoted(&l.label), l.stage.label(), if l.gated { ", gated by a key" } else { "" }, if l.enabled { "" } else { ", bypassed" }))
                     .collect();
                 lines.push(format!("{name}: {}", if shown.is_empty() { "no grade".to_string() } else { shown.join(" → ") }));
                 for f in &faults {
@@ -540,7 +541,7 @@ pub(crate) fn respond(
                 let id = klipp_core::ClipId(clip_id.parse().map_err(|e| format!("clip_id is not a uuid: {e}"))?);
                 let clip = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == id).ok_or_else(|| format!("no clip {clip_id}"))?;
                 let item = clip.media_id().and_then(|m| pool.get(&m));
-                let name = item.map(|it| it.filename.clone()).unwrap_or_else(|| "the clip".into());
+                let name = item.map(|it| quoted(&it.filename)).unwrap_or_else(|| "the clip".into());
                 let (t_in, t_out) = (clip.timeline_in.to_secs_f64(), clip.timeline_out.to_secs_f64());
                 let (s_in, s_out) = (clip.source_in.to_secs_f64(), clip.source_out.to_secs_f64());
                 let biggest = item
@@ -680,7 +681,7 @@ pub(crate) fn respond(
                 let mid = &mid_t;
                 // Log with no input transform is not a grading problem.
                 if klipp_color::measure::looks_like_log(&m) && !force {
-                    let short: String = name.chars().take(28).collect();
+                    let short = quoted(&name.chars().take(28).collect::<String>());
                     lines.push(format!("{short} at {mid:.2} s: left alone — it looks like camera log with no input transform (5–95 range {:.0}, chroma {:.0}). Set the clip's log format so the transform runs, then grade; grade_to_target with force true grades it as it is.", m.contrast_range, m.chroma_mean));
                     per_shot.push(json!({ "clip_id": id, "secs": mid, "skipped": "looks like camera log with no input transform", "lab": m }));
                     continue;
@@ -788,7 +789,7 @@ pub(crate) fn respond(
                     stalled = Some(format!("held at the {} limit for {}", limits.name, held_at_limit.join(", ")));
                 }
                 let after = colour_report(&m, &look, *mid);
-                let short: String = name.chars().take(28).collect();
+                let short = quoted(&name.chars().take(28).collect::<String>());
                 // The dry run says the step, not only the problems.
                 let first = if apply {
                     String::new()
@@ -799,7 +800,7 @@ pub(crate) fn respond(
                 };
                 lines.push(format!(
                     "{short} at {mid:.2} s [{}]: {} before, {} after{}{first}{}{}",
-                    look.name,
+                    quoted(&look.name),
                     before.len(),
                     after.len(),
                     if done_rounds > 0 { format!(" ({done_rounds} round(s))") } else { String::new() },
@@ -838,7 +839,7 @@ pub(crate) fn respond(
                 lines.push(format!(
                     "{} shots come from {}: one scene. Grade them together (grade_group with these clips, then grade on the group) and keep per-shot moves small; a primary each, chasing the target alone, pulls them apart at the cuts.",
                     g["clips"].as_array().map_or(0, |a| a.len()),
-                    g["file"].as_str().unwrap_or(""),
+                    quoted(g["file"].as_str().unwrap_or("")),
                 ));
             }
             // A preset is a guess at what the piece wants; a reference

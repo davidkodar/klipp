@@ -350,7 +350,7 @@ pub(crate) fn respond(
                 let secs: f64 = pieces.iter().map(|(a, b)| b - a).sum();
                 made.push(json!({ "name": name, "pieces": pieces.len(), "secs": secs }));
             }
-            let text = made.iter().map(|m| format!("  {} ({} piece(s), {:.1} s)", m["name"].as_str().unwrap_or_default(), m["pieces"], m["secs"].as_f64().unwrap_or_default())).collect::<Vec<_>>().join("\n");
+            let text = made.iter().map(|m| format!("  {} ({} piece(s), {:.1} s)", quoted(m["name"].as_str().unwrap_or_default()), m["pieces"], m["secs"].as_f64().unwrap_or_default())).collect::<Vec<_>>().join("\n");
             Ok(json!({
                 "text": format!("{} short(s) made, each a sequence of its own at 1080x1920, {lufs} LUFS:\n{text}", made.len()),
                 "shorts": made,

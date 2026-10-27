@@ -267,53 +267,56 @@ impl Brief {
         self.target_secs.map(|t| (t * 0.05).max(2.0))
     }
 
-    /// The brief as a few lines of text.
+    /// The brief as a few lines of text, what was written into it
+    /// quoted.
     pub fn text(&self) -> String {
+        use klipp_core::quote::{quoted, word};
         let mut out = Vec::new();
         let mut line = |label: &str, v: String| {
             if !v.trim().is_empty() {
                 out.push(format!("{label}: {v}"));
             }
         };
-        line("Title", self.title.clone());
-        line("About", self.about.clone());
-        line("Tone", self.tone.clone());
-        line("Platform", self.platform.clone());
+        let q = |s: &str| if s.trim().is_empty() { String::new() } else { quoted(s) };
+        line("Title", q(&self.title));
+        line("About", q(&self.about));
+        line("Tone", q(&self.tone));
+        line("Platform", q(&self.platform));
         line("Length", self.target_secs.map(|s| format!("{s:.0} s")).unwrap_or_default());
         line("Picture", match (self.width, self.height) { (Some(w), Some(h)) => format!("{w}x{h}"), _ => String::new() });
         line("Loudness", self.loudness_lufs.map(|l| format!("{l:.0} LUFS")).unwrap_or_default());
         line("Captions", if self.captions { "yes".into() } else { String::new() });
         line("Music", if self.music { "yes".into() } else { String::new() });
         for c in &self.cast {
-            let mut who = c.name.clone();
+            let mut who = quoted(&c.name);
             if !c.role.is_empty() {
-                who.push_str(&format!(", {}", c.role));
+                who.push_str(&format!(", {}", quoted(&c.role)));
             }
             if !c.described.is_empty() {
-                who.push_str(&format!(" ({})", c.described));
+                who.push_str(&format!(" ({})", quoted(&c.described)));
             }
             out.push(format!("Cast: {who}"));
         }
         if let Some(look) = &self.look {
-            out.push(format!("Look: {}{}", if look.name.is_empty() { "custom" } else { look.name.as_str() }, look.mid_l.map(|m| format!(" (mid L* {m:.0}, contrast {:.0}, chroma {:.0})", look.contrast_range.unwrap_or(0.0), look.chroma_mean.unwrap_or(0.0))).unwrap_or_default()));
+            out.push(format!("Look: {}{}", if look.name.is_empty() { "custom".to_string() } else { quoted(&look.name) }, look.mid_l.map(|m| format!(" (mid L* {m:.0}, contrast {:.0}, chroma {:.0})", look.contrast_range.unwrap_or(0.0), look.chroma_mean.unwrap_or(0.0))).unwrap_or_default()));
         }
         if !self.type_styles.is_empty() {
             let looks: Vec<String> = self.type_styles.iter().map(|s| {
                 let mut bits = Vec::new();
-                if let Some(f) = &s.font { bits.push(f.clone()); }
+                if let Some(f) = &s.font { bits.push(quoted(f)); }
                 if let Some(z) = s.size { bits.push(format!("{z:.0} px")); }
-                if let Some(c) = &s.color { bits.push(c.clone()); }
-                if let Some(a) = &s.animate { bits.push(a.clone()); }
+                if let Some(c) = &s.color { bits.push(word(c)); }
+                if let Some(a) = &s.animate { bits.push(word(a)); }
                 if let Some(m) = &s.enter { bits.push(m.approval_text(false)); }
                 if let Some(m) = &s.exit { bits.push(m.approval_text(true)); }
-                if bits.is_empty() { s.name.clone() } else { format!("{} ({})", s.name, bits.join(", ")) }
+                if bits.is_empty() { quoted(&s.name) } else { format!("{} ({})", quoted(&s.name), bits.join(", ")) }
             }).collect();
             out.push(format!("Type styles: {}", looks.join("; ")));
         }
         for f in self.ranked_features() {
-            let mut what = f.title.clone();
+            let mut what = quoted(&f.title);
             if !f.description.trim().is_empty() {
-                what.push_str(&format!(" — {}", f.description));
+                what.push_str(&format!(" — {}", quoted(&f.description)));
             }
             if f.rank > 0 {
                 out.push(format!("Feature {}: {what}", f.rank));
@@ -322,19 +325,19 @@ impl Brief {
             }
         }
         if !self.arc.trim().is_empty() {
-            out.push(format!("Arc: {}", self.arc));
+            out.push(format!("Arc: {}", quoted(&self.arc)));
         }
         if !self.cta.trim().is_empty() {
-            out.push(format!("Call to action: {}", self.cta));
+            out.push(format!("Call to action: {}", quoted(&self.cta)));
         }
         if !self.brand_colors.is_empty() {
-            out.push(format!("Colours: {}", self.brand_colors.join(", ")));
+            out.push(format!("Colours: {}", self.brand_colors.iter().map(|c| word(c)).collect::<Vec<_>>().join(", ")));
         }
         if !self.vocabulary.is_empty() {
-            out.push(format!("Spelt: {}", self.vocabulary.join(", ")));
+            out.push(format!("Spelt: {}", self.vocabulary.iter().map(|v| quoted(v)).collect::<Vec<_>>().join(", ")));
         }
         if !self.notes.trim().is_empty() {
-            out.push(format!("Notes: {}", self.notes));
+            out.push(format!("Notes: {}", quoted(&self.notes)));
         }
         out.join("\n")
     }
@@ -404,15 +407,16 @@ impl TitleMotionSpec {
     pub fn approval_text(&self, exit: bool) -> String {
         let side = if exit { "exit" } else { "enter" };
         if self.kind.eq_ignore_ascii_case("none") { return format!("{side}: disabled"); }
-        let mut bits = vec![format!("{side}: {}", self.kind)];
+        use klipp_core::quote::word;
+        let mut bits = vec![format!("{side}: {}", word(&self.kind))];
         if let Some(v) = self.duration_secs { bits.push(format!("duration {v} s")); }
         if let Some(v) = self.delay_secs {
             bits.push(if exit { format!("exits {v} s early") } else { format!("delay {v} s") });
         }
-        if let Some(v) = &self.stagger { bits.push(format!("by {v}")); }
+        if let Some(v) = &self.stagger { bits.push(format!("by {}", word(v))); }
         else if matches!(self.kind.to_lowercase().as_str(), "typewriter" | "type") { bits.push("by char".into()); }
         if let Some(v) = self.stagger_secs { bits.push(format!("stagger {v} s")); }
-        if let Some(v) = &self.easing { bits.push(format!("easing {v}")); }
+        if let Some(v) = &self.easing { bits.push(format!("easing {}", word(v))); }
         if let Some(v) = self.distance { bits.push(format!("distance {v}")); }
         bits.join(", ")
     }
