@@ -66,6 +66,8 @@ mod masked_grade_seeded;
 mod media_source_render;
 #[path = "../merge_on_the_stack.rs"]
 mod merge_on_the_stack;
+#[path = "../merge_branch.rs"]
+mod merge_branch;
 #[path = "../merge_render.rs"]
 mod merge_render;
 #[path = "../ofx_runs_after_the_grade.rs"]

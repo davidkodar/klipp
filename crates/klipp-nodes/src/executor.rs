@@ -424,6 +424,10 @@ pub struct GraphExecutor {
     /// A frame-blend node's frames, read once for the node this run
     /// (#2854): what its chain dispatch binds.
     run_blend: Option<RunBlend>,
+    /// Side pictures the renderer handed over on the GPU for the next run
+    /// (#2758): what is below a clip on the stack. Its pool slots are
+    /// given back with the run's.
+    gpu_side_pictures: HashMap<crate::side_picture::SideKey, klipp_effects::gpu::KeptPicture>,
     /// Whether a frame blend may draw on the chain at all (#2854), on
     /// unless turned off (`set_blend_on_chain`).
     blend_chain_allowed: bool,
@@ -939,6 +943,7 @@ impl GraphExecutor {
             run_denoise_on_chain: 0,
             last_denoise_on_chain: 0,
             run_blend: None,
+            gpu_side_pictures: HashMap::new(),
             blend_chain_allowed: true,
             run_blend_on_chain: 0,
             last_blend_on_chain: 0,
@@ -1084,6 +1089,7 @@ impl GraphExecutor {
             run_denoise_on_chain: 0,
             last_denoise_on_chain: 0,
             run_blend: None,
+            gpu_side_pictures: HashMap::new(),
             blend_chain_allowed: true,
             run_blend_on_chain: 0,
             last_blend_on_chain: 0,
@@ -1198,6 +1204,27 @@ impl GraphExecutor {
     /// `picture` under `key`, beside the run's others.
     pub fn put_side_picture(&mut self, key: crate::side_picture::SideKey, picture: Result<std::sync::Arc<Vec<f32>>, crate::side_picture::SideMissing>) {
         std::sync::Arc::make_mut(&mut self.side_pictures).insert(key, picture);
+    }
+
+    /// The side picture `key` names, on the GPU already (#2758), for the
+    /// next run: what is below a clip on the GPU stack. A merge laying it
+    /// over reads it as it is; any other reader reads it back. Given back
+    /// with the run's pool slots, or replaced.
+    pub fn put_side_picture_on_gpu(&mut self, key: crate::side_picture::SideKey, picture: klipp_effects::gpu::KeptPicture) {
+        if let (Some(old), Some(gpu)) = (self.gpu_side_pictures.insert(key, picture), self.gpu.as_mut()) {
+            gpu.release_picture(old);
+        }
+    }
+
+    /// Give back side pictures handed over on the GPU that no run read
+    /// (#2758): the clip they were for drew no frame.
+    pub fn clear_side_pictures_on_gpu(&mut self) {
+        let left: Vec<_> = self.gpu_side_pictures.drain().map(|(_, p)| p).collect();
+        if let Some(gpu) = self.gpu.as_mut() {
+            for p in left {
+                gpu.release_picture(p);
+            }
+        }
     }
 
     /// The pictures [`Self::set_side_pictures`] set.
@@ -2722,6 +2749,22 @@ impl GraphExecutor {
                 && Some(node_id) != self.solo_node
                 && !thumb_needs_cpu;
 
+            // A side picture handed over on the GPU (#2758), what is below a
+            // clip on the stack, read only by a merge laying it over: that
+            // merge's picture as it is, nothing read back or sent up, and
+            // the chain left as it was.
+            if node.kind == NodeKind::SidePicture && !bypass && !self.gpu_side_pictures.is_empty() {
+                let key = node.params.side_picture.clone().or_else(|| node.params.effects.iter().find_map(crate::side_picture::SideKey::of));
+                let readers: Vec<&Edge> = graph.edges.iter().filter(|e| e.from_node == node_id).collect();
+                let by_a_merge = matches!(readers.as_slice(), [e] if e.to_port == 1 && node_by_id.get(&e.to_node).is_some_and(|n| n.kind == NodeKind::Blend && n.params.merge.is_some()));
+                if let Some(picture) = key.filter(|_| by_a_merge && Some(node_id) != self.solo_node && !thumb_needs_cpu).and_then(|k| self.gpu_side_pictures.remove(&k)) {
+                    self.keep_as(&mut composite, Some((node_id, picture)));
+                    node_outputs.insert(node_id, Arc::new(Vec::new()));
+                    per_node_ms.push((format!("{node_kind_name}#on_gpu"), t_node.elapsed().as_secs_f64() * 1000.0));
+                    continue;
+                }
+            }
+
             // Bypass tunnel: a bypass node whose primary input IS the
             // current chain tail doesn't touch pixels, so we can rename
             // the tail to this node and keep the chain GPU-resident.
@@ -3589,6 +3632,8 @@ impl GraphExecutor {
         // The run's pool slots are free again (step 9c); the most it held
         // at once is reported (D10, L7).
         let peak_slots = self.gpu.as_mut().map_or(0, |gpu| gpu.end_slot_run());
+        // Their slots went back with the run's.
+        self.gpu_side_pictures.clear();
         self.last_run_chain_stats = ChainStats {
             // A key drawn on the chain is a dispatch on it too.
             extends: chain_extend_count + std::mem::take(&mut self.run_key_draws),

@@ -7120,6 +7120,24 @@ impl GpuEffectsPipeline {
         Some(KeyedMatte(id))
     }
 
+    /// The stack's composite so far in a pool slot of its own (#2758):
+    /// what is below a layer that reads it, copied out before that layer is
+    /// placed, for its run to read as its side picture. Held until that
+    /// run's slots are given back. `None` without a stack or a slot.
+    pub fn stack_acc_as_picture(&mut self) -> Option<KeptPicture> {
+        if self.is_device_lost() || !self.stack_ensure_acc() {
+            return None;
+        }
+        let (width, height) = self.stack_dims;
+        let acc = self.stack_acc.clone()?;
+        let device = &self.device;
+        let id = self.slot_pool.lease(SlotKey { width, height, usage: SlotUsage::Image }, |k| slot_buffer(device, k)).ok()?;
+        let mut enc = self.encoder(Some("stack_acc_as_picture"));
+        enc.copy_buffer_to_buffer(&acc, 0, self.slot_pool.buffer(id), 0, u64::from(width) * u64::from(height) * 16);
+        self.submit(enc);
+        Some(KeptPicture(id))
+    }
+
     /// Keep the chain's picture (in `buf_a` when `in_is_a`) in a pool slot
     /// of its own, copied in the chain's encoder, so it is ordered against
     /// the passes around it. `None` when there is no chain or the pool's

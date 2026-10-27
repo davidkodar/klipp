@@ -164,6 +164,16 @@ impl KlippApp {
         let clip_id = root.and_then(|root| match root { Root::Clip { clip } => Some(ClipId(clip)), _ => None });
         let grade = clip_id.and_then(|id| self.state.sequence().all_clips().find(|c| c.id == id)).and_then(|c| c.picture_v2().ok()).and_then(|p| p.picture.graph.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_format::lifted::types::GROUP).and_then(|n| n.group.as_ref().map(|g| (n.id, g.graph.output))));
         let in_grade = grade.is_some_and(|(id, _)| self.state.graph_dock_path.first() == Some(&id));
+        // On the Composite page the grade is one node: opened, it is the
+        // Colour page's, on that clip (#2758).
+        let composite = self.state.active_workspace == crate::state::Workspace::Composite;
+        if composite && in_grade {
+            self.state.active_workspace = crate::state::Workspace::Color;
+            if let Some(id) = clip_id {
+                self.state.selected_clip = Some(id);
+            }
+        }
+        self.node_graph_v2_panel.composite_menu = composite;
         ui.painter().rect_filled(rect, 0.0, theme.bg_panel);
         let (pick, header_height) = dock_header(ui, rect, in_grade, grade.is_some(), self.layout.node_graph_placement);
         match pick {

@@ -471,6 +471,9 @@ pub struct KlippApp {
     /// borrow, and restoring over it would undo the user's choice
     /// without telling them.
     browser_before_workspace: Option<bool>,
+    /// Whether the graph dock was open before the Composite page opened it
+    /// (#2758), put back on leaving.
+    dock_before_composite: Option<bool>,
     node_browser_borrow: crate::layout_state::NodeBrowserBorrow,
     nodes_were_on_right: bool,
     /// The workspace `reconcile_workspace` last saw.

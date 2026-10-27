@@ -18889,7 +18889,9 @@ mod find_matte_candidate_above_tests {
     #[test]
     fn three_track_layout_picks_first_overlap_only() {
         let mut state = AppState::default();
-        state.sequences[0].add_video_track("V2".to_string());
+        // Named as the app adds a track: a letter-and-number name keeps
+        // its style through renumbering since #2814.
+        state.sequences[0].add_video_track("Video 2".to_string());
         // Insert text track at idx 0 (= mirrors keyboard-shortcut
         // title path; matches user-reported layout).
         state.sequences[0].tracks.insert(

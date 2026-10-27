@@ -424,6 +424,9 @@ pub struct NodeGraphV2Panel {
     /// with its halo, chip and Clear solo (#1743); the app sets it before
     /// each draw, as it hands the grade canvas its solo.
     pub picture_solo: Option<NodeId>,
+    /// Group the picture canvas's add menu for the Composite page
+    /// (#2758); the app sets it before each draw.
+    pub composite_menu: bool,
     /// The node the add menu replaces when it is open for "Replace
     /// with…" (#1745): a pick swaps that node rather than adding one.
     replace_target: Option<NodeId>,
@@ -551,6 +554,7 @@ impl Default for NodeGraphV2Panel {
             thumb_histograms: std::collections::HashMap::new(),
             grade_keys: true,
             picture_solo: None,
+            composite_menu: false,
             replace_target: None,
             snap_to_grid: false,
             recents_changed: false,
@@ -709,6 +713,7 @@ impl NodeGraphV2Panel {
             self.last_picture_level = Some(level.clone());
         }
         let mut graph = picture::PictureCanvas::new(&lifted.picture.graph, level.clone(), *selected_node)?;
+        graph.composite_menu = self.composite_menu;
         graph.keyboard_enabled = keyboard_enabled;
         let mut labels = Vec::new();
         let mut body = &lifted.picture.graph;

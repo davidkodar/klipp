@@ -742,6 +742,8 @@ pub enum Workspace {
     #[default]
     Edit,
     Color,
+    /// Layering a clip's pictures on its node graph (#2758).
+    Composite,
     Export,
 }
 
@@ -757,7 +759,7 @@ impl Workspace {
     /// and [`browser_borrow_for`] puts back what was there on the way
     /// out.
     pub fn borrows_the_browser(self) -> bool {
-        matches!(self, Workspace::Color | Workspace::Export)
+        matches!(self, Workspace::Color | Workspace::Composite | Workspace::Export)
     }
 }
 
@@ -4530,7 +4532,7 @@ impl AppState {
     pub fn viewers_side_by_side(&self) -> bool {
         match self.active_workspace {
             Workspace::Edit => self.dual_viewers,
-            Workspace::Color => self.color_dual_viewers,
+            Workspace::Color | Workspace::Composite => self.color_dual_viewers,
             Workspace::Export => self.export_dual_viewers,
         }
     }
@@ -4539,7 +4541,7 @@ impl AppState {
     pub fn toggle_viewer_layout(&mut self) {
         let flag = match self.active_workspace {
             Workspace::Edit => &mut self.dual_viewers,
-            Workspace::Color => &mut self.color_dual_viewers,
+            Workspace::Color | Workspace::Composite => &mut self.color_dual_viewers,
             Workspace::Export => &mut self.export_dual_viewers,
         };
         *flag = !*flag;
