@@ -74,6 +74,10 @@ What was on the screen of a screen recording and when: every line OCR read, fold
 
 Cut a long take down to its selects: the runs of speech between the real pauses, each with the time it runs from and to and what is said, marked keep or drop (a run that is only filler — um, uh — or too short to use is a drop). Use it to build a tight cut from a loose recording: place each keep range in order and close the gaps. min_gap_secs sets the pause that starts a new select (0.6 by default). A take with next to no speech (under a tenth of a take of half a minute or more), or whose word times collapsed, is cut by its picture instead: one select a shot, `by` "picture" in the reply. A read; changes nothing.
 
+## klipp_find_moments
+
+The moments of a long talk, podcast, stream or vlog that stand on their own as short clips, best first, never overlapping. Each starts on a sentence after a real pause and ends on one, about `length` seconds long (30 by default; from half to twice it), with its hook (the first line a viewer hears), its full text, a score from 0 to 1 and why: a question or a strong first line, a number up front, whether it opens mid-thought, a turn that lands its point, a laugh, its pace. `count` sets how many (5); `include` keeps only moments holding one of those words, `exclude` leaves out any holding one. It reads the transcript, so analyze the file first. The ranking reads words, not meaning: read each moment's text and rank again by what it says before keeping any. A read; changes nothing.
+
 ## klipp_style_profile
 
 A reference video's editing style as facts, to build a clip in its feel from other footage: its cut cadence (shots, their lengths, cuts a minute, on the beat or not), its tempo, its look off the scopes (blacks, whites, contrast, saturation, warmth), its motion and detected holds. Cut cadence is not animation pacing: look at changes within shots before choosing hold lengths, as motion statistics name no animation events. Read only. Match the feel with your own footage and your own or licensed music, never the reference's track. Import and analyse the reference first.

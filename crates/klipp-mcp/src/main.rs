@@ -1106,6 +1106,15 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             if let Some(x) = args.get("min_gap_secs").and_then(|v| v.as_f64()) { v["min_gap_secs"] = json!(x); }
             v
         }
+        "klipp_find_moments" => {
+            let mut v = json!({ "method": "find_moments", "media_id": arg_str(args, "media_id")? });
+            if let Some(x) = args.get("length").and_then(|v| v.as_f64()) { v["length"] = json!(x); }
+            if let Some(x) = args.get("count").and_then(|v| v.as_u64()) { v["count"] = json!(x); }
+            for key in ["include", "exclude"] {
+                if let Some(x) = args.get(key).filter(|v| v.is_array()) { v[key] = x.clone(); }
+            }
+            v
+        }
         "klipp_beats" => {
             let mut v = json!({ "method": "beats", "media_id": arg_str(args, "media_id")? });
             for key in ["target_secs", "at_secs"] {
@@ -1856,7 +1865,7 @@ fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
             return Ok(with_next(out));
         }
     }
-    if name == "klipp_generator" || name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_edit_plan" || name == "klipp_build_edit_plan" || name == "klipp_screen_text" || name == "klipp_auto_redact" || name == "klipp_auto_sfx" || name == "klipp_review" || name == "klipp_grade_to_target" || name == "klipp_measure_region" || name == "klipp_colour_selfcheck" || name == "klipp_grade_chain" || name == "klipp_match_scenes" || name == "klipp_adopt_look" || name == "klipp_audio_spectrum" || name == "klipp_skin_balance" || name == "klipp_transcript" || name == "klipp_cut_points" || name == "klipp_selects" || name == "klipp_style_profile" || name == "klipp_looks" || name == "klipp_frame_stats" {
+    if name == "klipp_generator" || name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_edit_plan" || name == "klipp_build_edit_plan" || name == "klipp_screen_text" || name == "klipp_auto_redact" || name == "klipp_auto_sfx" || name == "klipp_review" || name == "klipp_grade_to_target" || name == "klipp_measure_region" || name == "klipp_colour_selfcheck" || name == "klipp_grade_chain" || name == "klipp_match_scenes" || name == "klipp_adopt_look" || name == "klipp_audio_spectrum" || name == "klipp_skin_balance" || name == "klipp_transcript" || name == "klipp_cut_points" || name == "klipp_selects" || name == "klipp_find_moments" || name == "klipp_style_profile" || name == "klipp_looks" || name == "klipp_frame_stats" {
         if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
             let mut text = text.to_string();
             // Text-only clients need the same review handles as structured
@@ -2410,6 +2419,10 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
         tool("klipp_selects",
              "A long take's selects: the runs of speech between pauses with their text, each marked keep or drop. Reads only. Details: klipp_guide topic selects.",
              json!({ "media_id": { "type": "string" }, "min_gap_secs": { "type": "number", "description": "the pause length that splits one select from the next, seconds" } }),
+             vec!["media_id"]),
+        tool("klipp_find_moments",
+             "The moments of a long talk, podcast, stream or vlog that stand on their own as short clips, best first, each with its hook line, score and why. Reads only. Details: klipp_guide topic find_moments.",
+             json!({ "media_id": { "type": "string" }, "length": { "type": "number", "description": "the length aimed for, seconds (10 to 90, 30 by default)" }, "count": { "type": "integer", "minimum": 1, "maximum": 20 }, "include": { "type": "array", "items": { "type": "string" }, "description": "topic words one of which each moment must hold" }, "exclude": { "type": "array", "items": { "type": "string" }, "description": "topic words no moment may hold" } }),
              vec!["media_id"]),
         tool("klipp_beats",
              "A clip's tempo and beat grid, and for music its sections and energy; with target_secs, place ops that fit it to a length. Reads only. Details: klipp_guide topic beats.",

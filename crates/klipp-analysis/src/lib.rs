@@ -32,6 +32,7 @@ pub mod music_structure;
 pub mod hold;
 pub mod motion;
 pub mod moments;
+pub mod shorts;
 pub mod providers;
 pub mod report;
 pub mod sheet;

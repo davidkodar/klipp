@@ -55,6 +55,46 @@ pub(crate) fn respond(
             }))
         }
 
+        ControlCommand::FindMoments { media_id, length, count, include, exclude } => {
+            if in_batch {
+                return read_in_batch("find_moments");
+            }
+            let id = klipp_core::MediaId(media_id.parse().map_err(|e| format!("media_id is not a uuid: {e}"))?);
+            let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+            let item = pool.get(&id).ok_or_else(|| format!("no media item {}", id.0))?;
+            let report = klipp_analysis::report::MediaAnalysis::load(&item.path);
+            let Some(t) = report.transcript.as_ref() else {
+                let state = klipp_analysis::service::status(id).map(|s| format!("{:?}", s.state).to_lowercase()).unwrap_or_else(|| "not asked for".into());
+                return Err(format!("{} has no transcript yet (analysis: {state}); analyze it first", item.filename));
+            };
+            let target = length.unwrap_or(30.0);
+            if !(10.0..=90.0).contains(&target) {
+                return Err(format!("a length of {target} s: give length from 10 to 90 seconds"));
+            }
+            let count = count.unwrap_or(5);
+            if !(1..=20).contains(&count) {
+                return Err(format!("a count of {count}: give count from 1 to 20"));
+            }
+            let ask = klipp_analysis::shorts::Ask { target_secs: target, min_secs: (target * 0.5).max(8.0), max_secs: (target * 2.0).min(90.0), count, include, exclude };
+            let found = klipp_analysis::shorts::find(&t.words, &ask);
+            let mut text = if found.is_empty() {
+                format!("{}: no moment of {:.0}-{:.0} s stands on its own here{}.\n", item.filename, ask.min_secs, ask.max_secs, if ask.include.is_empty() && ask.exclude.is_empty() { "" } else { " with those topics" })
+            } else {
+                format!("{}: {} moments for shorts, best first. Read each, re-rank by what it says, then make_shorts with the ones to keep.\n", item.filename, found.len())
+            };
+            for (k, m) in found.iter().enumerate() {
+                let mut hook = m.hook.clone();
+                if hook.chars().count() > 90 { hook = hook.chars().take(89).collect::<String>() + "…"; }
+                text.push_str(&format!("  {}. {:.2}-{:.2} s ({:.0} s), score {:.2}: \"{}\"{}\n", k + 1, m.from_secs, m.to_secs, m.to_secs - m.from_secs, m.score, hook, if m.reasons.is_empty() { String::new() } else { format!(" — {}", m.reasons.join(", ")) }));
+            }
+            let (text, cut) = cut_to_budget_with(&text, 12_000, "ask for fewer");
+            Ok(json!({
+                "text": text, "cut": cut, "media_id": media_id, "filename": item.filename,
+                "moments": found,
+                "next": "Look at a moment with klipp_contact_sheet or klipp_frame_at over its range; the full text of each is in moments[].text.",
+            }))
+        }
+
         ControlCommand::SearchMusic { query, limit, commercial_only, instrumental, edits_only, licences, listen } => {
             let listen = listen.unwrap_or(Listen::First(0));
             if in_batch {
