@@ -578,7 +578,7 @@ impl KlippApp {
                         self.state.toast.show("The selected composition is missing");
                         return true;
                     };
-                    match crate::parameterized_templates::save_composition_as_template(&mut self.state.composition_templates, &sequence, name.clone()) {
+                    match crate::parameterized_templates::save_composition_as_template(&mut self.state.composition_templates, &sequence, &self.state.sequences, name.clone()) {
                         Ok(true) => self.state.toast.show(format!("Updated the template '{name}'")),
                         Ok(false) => self.state.toast.show(format!("Saved '{name}' as a template")),
                         Err(error) => self.state.toast.show(format!("Could not save template: {error}")),

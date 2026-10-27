@@ -128,17 +128,15 @@ impl KlippApp {
                 };
                 let sequence_idx = self.state.active_sequence_idx;
                 let sequence_id = klipp_core::SequenceId(template.composition_id);
-                let Some(duration) = self
-                    .state
-                    .sequences
-                    .iter()
-                    .find(|sequence| sequence.id == sequence_id)
-                    .map(|sequence| sequence.total_duration())
-                else {
+                // The template carries its composition (#2757): the one in
+                // the project when it has it, else the template's, copied in.
+                let template_sequence = self.state.sequences.iter().find(|candidate| candidate.id == sequence_id).cloned()
+                    .or_else(|| template.composition().cloned());
+                let Some(duration) = template_sequence.as_ref().map(|sequence| sequence.total_duration()) else {
                     self.state.toast.show("The template's composition is missing");
                     return true;
                 };
-                let template_sequence = self.state.sequences.iter().find(|candidate| candidate.id == sequence_id).cloned();
+                let copied = klipp_timeline::composition_template::missing_sequences(&template, &self.state.sequences);
                 if self.state.sequences[sequence_idx].id == sequence_id {
                     self.state.toast.show("A template cannot be inserted into its own composition");
                     return true;
@@ -193,12 +191,13 @@ impl KlippApp {
                     template_instance: instance,
                 };
                 let clip_id = clip.id;
-                seq.tracks[track_index].clips.push(clip.clone());
-                seq.tracks[track_index].sort_clips();
-                self.state.push_history(klipp_document::history::EditCommand::LegacyAppendClip {
-                    clip,
-                    track_index,
-                });
+                // The sequences it needs and the clip, one step.
+                let mut edits = Vec::new();
+                if !copied.is_empty() {
+                    edits.push(klipp_document::history::EditCommand::AddSequences { sequences: copied });
+                }
+                edits.push(klipp_document::history::EditCommand::LegacyAppendClip { clip, track_index });
+                self.apply_edits_as_one(&edits, &format!("Insert Template \"{}\"", template.name));
                 self.state.selected_clip = Some(clip_id);
                 self.state.selected_clips.clear();
                 self.state.dirty = true;

@@ -8,7 +8,6 @@
 //! also means old projects continue to load unchanged.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -21,8 +20,7 @@ use klipp_timeline::{
 };
 
 /// File extension for user-authored composition templates.
-pub const EXTENSION: &str = "klipptemplate";
-pub const FORMAT_VERSION: u32 = 1;
+pub use klipp_timeline::composition_template::{EXTENSION, FORMAT_VERSION};
 
 /// How a template gets its visible content.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -236,138 +234,15 @@ fn manifest(
 /// UI without making the timeline depend on this crate.
 pub use klipp_core::TemplateValue;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct NumberRange {
-    pub min: Option<f64>,
-    pub max: Option<f64>,
-}
-
-/// A parameter declaration and its default value.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TemplateParameter {
-    pub label: String,
-    pub default: TemplateValue,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub range: Option<NumberRange>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub choices: Vec<String>,
-}
-
-impl TemplateParameter {
-    pub fn validate(&self, value: &TemplateValue) -> Result<(), String> {
-        let same_kind = matches!(
-            (&self.default, value),
-            (TemplateValue::Text(_), TemplateValue::Text(_))
-                | (TemplateValue::Color(_), TemplateValue::Color(_))
-                | (TemplateValue::Number(_), TemplateValue::Number(_))
-                | (TemplateValue::Bool(_), TemplateValue::Bool(_))
-                | (TemplateValue::Enum(_), TemplateValue::Enum(_))
-        );
-        if !same_kind {
-            return Err(format!("value for '{}' has the wrong type", self.label));
-        }
-        if let TemplateValue::Number(number) = value {
-            // NaN and infinity have no JSON form: serde writes `null`,
-            // and the saved template would never load again.
-            if !number.is_finite() {
-                return Err(format!("value for '{}' is not a number", self.label));
-            }
-            if let Some(range) = &self.range {
-                if range.min.is_some_and(|min| *number < min)
-                    || range.max.is_some_and(|max| *number > max)
-                {
-                    return Err(format!("value for '{}' is outside its range", self.label));
-                }
-            }
-        }
-        if let TemplateValue::Enum(choice) = value {
-            if !self.choices.is_empty() && !self.choices.iter().any(|item| item == choice) {
-                return Err(format!("unknown choice '{choice}' for '{}'", self.label));
-            }
-        }
-        Ok(())
-    }
-}
-
-/// A binding from an exposed parameter to a property in the ordinary
-/// composition.  The property path is intentionally opaque to this layer;
-/// the document resolver owns its interpretation and can evolve it without
-/// changing the on-disk template registry.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TemplateBinding {
-    pub parameter: String,
-    pub property: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CompositionTemplate {
-    pub format_version: u32,
-    pub id: Uuid,
-    pub name: String,
-    #[serde(default)]
-    pub category: String,
-    /// The sequence/precomposition that supplies the actual layers.
-    pub composition_id: Uuid,
-    #[serde(default)]
-    pub parameters: BTreeMap<String, TemplateParameter>,
-    #[serde(default)]
-    pub bindings: Vec<TemplateBinding>,
-    #[serde(default)]
-    pub written_by: String,
-}
-
-impl CompositionTemplate {
-    pub fn validate(&self) -> Result<(), String> {
-        if self.format_version == 0 || self.format_version > FORMAT_VERSION {
-            return Err(format!(
-                "unsupported template format {}",
-                self.format_version
-            ));
-        }
-        if self.name.trim().is_empty() {
-            return Err("a template needs a name".into());
-        }
-        for (name, parameter) in &self.parameters {
-            parameter
-                .validate(&parameter.default)
-                .map_err(|error| format!("parameter '{name}': {error}"))?;
-        }
-        for binding in &self.bindings {
-            if !self.parameters.contains_key(&binding.parameter) {
-                return Err(format!(
-                    "binding references unknown parameter '{}'",
-                    binding.parameter
-                ));
-            }
-            if binding.property.trim().is_empty() {
-                return Err(format!(
-                    "binding for '{}' has no property",
-                    binding.parameter
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    pub fn new(name: impl Into<String>, composition_id: Uuid) -> Self {
-        Self {
-            format_version: FORMAT_VERSION,
-            id: Uuid::new_v4(),
-            name: name.into(),
-            category: String::new(),
-            composition_id,
-            parameters: BTreeMap::new(),
-            bindings: Vec::new(),
-            written_by: env!("CARGO_PKG_VERSION").to_string(),
-        }
-    }
-}
+pub use klipp_timeline::composition_template::{CompositionTemplate, CompositionTemplateStore, NumberRange, TemplateBinding, TemplateParameter};
 
 /// Build a starter template from a composition. The first text object becomes
 /// an exposed `text` parameter; more elaborate parameter authoring remains a
 /// later slice, while the saved composition is already reusable and editable.
-pub fn template_from_sequence(sequence: &klipp_timeline::Sequence, name: impl Into<String>) -> CompositionTemplate {
+pub fn template_from_sequence(sequence: &klipp_timeline::Sequence, all: &[klipp_timeline::Sequence], name: impl Into<String>) -> CompositionTemplate {
     let mut template = CompositionTemplate::new(name, sequence.id.0);
+    // The composition and what it nests go with it (#2757).
+    template.sequences = klipp_timeline::composition_template::composition_sequences(sequence, all);
     if let Some(title) = sequence.tracks.iter().flat_map(|track| &track.clips).find_map(|clip| match &clip.kind {
         klipp_timeline::ClipKind::Title(title) => Some(title),
         _ => None,
@@ -395,9 +270,10 @@ pub fn template_from_sequence(sequence: &klipp_timeline::Sequence, name: impl In
 pub fn save_composition_as_template(
     store: &mut CompositionTemplateStore,
     sequence: &klipp_timeline::Sequence,
+    all: &[klipp_timeline::Sequence],
     name: impl Into<String>,
 ) -> Result<bool, String> {
-    let mut template = template_from_sequence(sequence, name);
+    let mut template = template_from_sequence(sequence, all, name);
     let existing = store.templates().find(|existing| existing.composition_id == sequence.id.0).map(|existing| existing.id);
     if let Some(id) = existing {
         template.id = id;
@@ -734,123 +610,21 @@ impl TemplateInstanceExt for TemplateInstance {
     }
 }
 
-#[derive(Debug, Default)]
-pub struct CompositionTemplateStore {
-    dir: Option<PathBuf>,
-    entries: Vec<(PathBuf, CompositionTemplate)>,
-}
-
-impl CompositionTemplateStore {
-    pub fn load_default() -> Self {
-        Self::load(dirs::config_dir().map(|dir| dir.join("klipp").join("templates")))
-    }
-
-    pub fn load(dir: Option<PathBuf>) -> Self {
-        let mut entries = Vec::new();
-        if let Some(Ok(read)) = dir.as_deref().map(std::fs::read_dir) {
-            for path in read.flatten().map(|entry| entry.path()) {
-                if path.extension().and_then(|extension| extension.to_str()) != Some(EXTENSION) {
-                    continue;
-                }
-                match std::fs::read_to_string(&path)
-                    .map_err(|error| error.to_string())
-                    .and_then(|json| {
-                        serde_json::from_str::<CompositionTemplate>(&json)
-                            .map_err(|error| error.to_string())
-                    }) {
-                    Ok(template) if template.validate().is_ok() => {
-                        // One id is one template: a second file carrying
-                        // it is a copy, and saving would rewrite the
-                        // first while dropping both from the list.
-                        if entries
-                            .iter()
-                            .any(|(_, existing): &(PathBuf, CompositionTemplate)| {
-                                existing.id == template.id
-                            })
-                        {
-                            tracing::warn!("Skipping template '{}': its id is already loaded from another file", path.display());
-                        } else {
-                            entries.push((path, template));
-                        }
-                    }
-                    Ok(template) => tracing::warn!(
-                        "Skipping invalid template '{}': {}",
-                        path.display(),
-                        template.validate().unwrap_err()
-                    ),
-                    Err(error) => tracing::warn!("Skipping template '{}': {error}", path.display()),
-                }
-            }
-        }
-        entries.sort_by_key(|(path, template)| (template.name.to_lowercase(), path.clone()));
-        Self { dir, entries }
-    }
-
-    pub fn templates(&self) -> impl Iterator<Item = &CompositionTemplate> {
-        self.entries.iter().map(|(_, template)| template)
-    }
-
-    pub fn save(&mut self, template: CompositionTemplate) -> Result<(), String> {
-        template.validate()?;
-        let dir = self
-            .dir
-            .as_ref()
-            .ok_or("no template directory configured")?;
-        std::fs::create_dir_all(dir).map_err(|error| error.to_string())?;
-        let path = self
-            .entries
-            .iter()
-            .find(|(_, existing)| existing.id == template.id)
-            .map(|(path, _)| path.clone())
-            .unwrap_or_else(|| {
-                // A new template named like another gets a file of its
-                // own rather than the other's.
-                let stem = safe_stem(&template.name);
-                let taken = |p: &PathBuf| self.entries.iter().any(|(existing, _)| existing == p);
-                let mut candidate = dir.join(format!("{stem}.{EXTENSION}"));
-                let mut n = 2;
-                while taken(&candidate) || candidate.exists() {
-                    candidate = dir.join(format!("{stem}-{n}.{EXTENSION}"));
-                    n += 1;
-                }
-                candidate
-            });
-        let json = serde_json::to_string_pretty(&template).map_err(|error| error.to_string())?;
-        std::fs::write(&path, json).map_err(|error| error.to_string())?;
-        self.entries
-            .retain(|(_, existing)| existing.id != template.id);
-        self.entries.push((path, template));
-        self.entries
-            .sort_by_key(|(path, item)| (item.name.to_lowercase(), path.clone()));
-        Ok(())
-    }
-}
-
-fn safe_stem(name: &str) -> String {
-    let stem: String = name
-        .chars()
-        .map(|character| {
-            if character.is_alphanumeric() || character == '-' || character == '_' {
-                character
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    if stem.is_empty() {
-        "template".into()
-    } else {
-        stem
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// A template of `name` carrying an empty composition of its own.
+    fn carried(name: &str) -> CompositionTemplate {
+        let seq = klipp_timeline::Sequence::new_default();
+        let mut t = CompositionTemplate::new(name, seq.id.0);
+        t.sequences = vec![seq];
+        t
+    }
+
     #[test]
     fn instance_uses_defaults_and_validates_overrides() {
-        let mut template = CompositionTemplate::new("Terminal card", Uuid::new_v4());
+        let mut template = carried("Terminal card");
         template.parameters.insert(
             "text".into(),
             TemplateParameter {
@@ -900,7 +674,7 @@ mod tests {
         );
         clip.kind = klipp_timeline::ClipKind::Title(terminal_card_composition());
         sequence.tracks[0].clips.push(clip);
-        let template = template_from_sequence(&sequence, "Card");
+        let template = template_from_sequence(&sequence, &[], "Card");
         assert_eq!(template.composition_id, sequence.id.0);
         assert!(template.parameters.contains_key("text"));
         assert_eq!(template.bindings[0].property, "object:1.text");
@@ -916,7 +690,7 @@ mod tests {
             klipp_core::Timecode::from_frames(0, 24),
             klipp_core::Timecode::from_frames(24, 24),
         ));
-        let template = template_from_sequence(&sequence, "Plain");
+        let template = template_from_sequence(&sequence, &[], "Plain");
         assert_eq!(template.composition_id, sequence.id.0);
         assert!(template.parameters.is_empty());
         assert!(template.bindings.is_empty());
@@ -936,9 +710,9 @@ mod tests {
         clip.kind = klipp_timeline::ClipKind::Title(terminal_card_composition());
         card.tracks[0].clips.push(clip);
 
-        assert!(!save_composition_as_template(&mut store, &card, "Card").unwrap(), "the first save is new");
+        assert!(!save_composition_as_template(&mut store, &card, &[], "Card").unwrap(), "the first save is new");
         let first_id = store.templates().next().unwrap().id;
-        assert!(save_composition_as_template(&mut store, &card, "Card, renamed").unwrap(), "the second replaces");
+        assert!(save_composition_as_template(&mut store, &card, &[], "Card, renamed").unwrap(), "the second replaces");
         assert_eq!(store.templates().count(), 1, "one template for one composition");
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "and one file");
         let only = store.templates().next().unwrap();
@@ -947,7 +721,7 @@ mod tests {
         assert_eq!(only.composition_id, card.id.0);
 
         let other = klipp_timeline::Sequence::new_default();
-        assert!(!save_composition_as_template(&mut store, &other, "Other").unwrap());
+        assert!(!save_composition_as_template(&mut store, &other, &[], "Other").unwrap());
         assert_eq!(store.templates().count(), 2, "another composition is another template");
         let reloaded = CompositionTemplateStore::load(Some(dir.clone()));
         assert_eq!(reloaded.templates().count(), 2);
@@ -956,7 +730,7 @@ mod tests {
 
     #[test]
     fn invalid_binding_is_rejected() {
-        let mut template = CompositionTemplate::new("Card", Uuid::new_v4());
+        let mut template = carried("Card");
         template.bindings.push(TemplateBinding {
             parameter: "missing".into(),
             property: "layer.text".into(),
@@ -966,7 +740,7 @@ mod tests {
 
     #[test]
     fn template_round_trips() {
-        let mut template = CompositionTemplate::new("Terminal card", Uuid::new_v4());
+        let mut template = carried("Terminal card");
         template.parameters.insert(
             "accent".into(),
             TemplateParameter {
@@ -978,7 +752,7 @@ mod tests {
         );
         let json = serde_json::to_string(&template).unwrap();
         let loaded: CompositionTemplate = serde_json::from_str(&json).unwrap();
-        assert_eq!(loaded, template);
+        assert_eq!(serde_json::to_string(&loaded).unwrap(), json);
     }
 
     #[test]
@@ -1082,14 +856,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let mut store = CompositionTemplateStore::load(Some(dir.clone()));
         store
-            .save(CompositionTemplate::new("Card", Uuid::new_v4()))
+            .save(carried("Card"))
             .unwrap();
         store
-            .save(CompositionTemplate::new("Card", Uuid::new_v4()))
+            .save(carried("Card"))
             .unwrap();
-        let paths: std::collections::BTreeSet<_> =
-            store.entries.iter().map(|(p, _)| p.clone()).collect();
-        assert_eq!(paths.len(), 2, "{paths:?}");
+        assert_eq!(store.templates().count(), 2);
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2);
         let reloaded = CompositionTemplateStore::load(Some(dir.clone()));
         assert_eq!(reloaded.templates().count(), 2);

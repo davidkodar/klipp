@@ -773,6 +773,11 @@ exist until the plan runs.
   by its family's name, a picture by its file, and Duration in seconds:
   a template with a Duration lays its motion over `secs` unless one is
   given. `klipp_title_templates` with `save` saves a title as a template.
+  A composition template (a stack of clips saved as one, listed under
+  `compositions`) places the same way, as one clip on a free video track
+  (one is made on top if none has room); `fields` sets its parameters
+  by name or label. The sequences it is made of are copied into the
+  project when it has not got them.
   A built-in is laid out for the sequence's frame: on 9:16 a lower
   third or caption sits above the bottom fifth and clear of the right
   edge's buttons, a corner mark goes to the top, and a centred opener

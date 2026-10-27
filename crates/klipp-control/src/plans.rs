@@ -16,7 +16,7 @@ pub(crate) fn resolve_plan(ctx: &ControlContext, ops: &[klipp_document::ops::Op]
     // changes a clip's own grade, and must not copy its group's into it.
     let seq = seq.with_own_grades();
     let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
-    let ops = &with_templates(ops, template_dir().as_deref());
+    let ops = &with_compositions(&with_templates(ops, template_dir().as_deref()), composition_dir().as_deref(), &project_sequence_ids(ctx, &seq));
     let plan = klipp_document::ops::resolve_with(&seq, &pool, ops, &AnalysedTranscripts).map_err(|r| format!("{r} (step {} refused; nothing applied)", r.step + 1))?;
     Ok((plan, revision))
 }
@@ -34,7 +34,7 @@ pub(crate) fn resolve_plan_seeing(ctx: &ControlContext, ops: &[klipp_document::o
     let seq = seq.with_own_grades();
     let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
     let others = ctx.others.read().map_err(|_| "sequences lock poisoned")?.clone();
-    let ops = &with_templates(ops, template_dir().as_deref());
+    let ops = &with_compositions(&with_templates(ops, template_dir().as_deref()), composition_dir().as_deref(), &project_sequence_ids(ctx, &seq));
     let plan = klipp_document::ops::resolve_in(&seq, &others, &pool, ops, &AnalysedTranscripts).map_err(|r| format!("{r} (step {} refused; nothing applied)", r.step + 1))?;
     Ok((plan, revision))
 }
@@ -42,6 +42,44 @@ pub(crate) fn resolve_plan_seeing(ctx: &ControlContext, ops: &[klipp_document::o
 /// The user's title template folder (#1139).
 pub(crate) fn template_dir() -> Option<std::path::PathBuf> {
     dirs::config_dir().map(|c| klipp_timeline::template_dir(&c))
+}
+
+/// The user's composition template folder (#225, #2757).
+pub(crate) fn composition_dir() -> Option<std::path::PathBuf> {
+    dirs::config_dir().map(|c| klipp_timeline::composition_template::CompositionTemplateStore::default_dir(&c))
+}
+
+/// The ids of every sequence in the project: the open one and the others
+/// as the UI last published them.
+fn project_sequence_ids(ctx: &ControlContext, open: &klipp_timeline::Sequence) -> Vec<klipp_core::SequenceId> {
+    let mut ids = vec![open.id];
+    if let Ok(others) = ctx.others.read() {
+        ids.extend(others.iter().map(|o| o.sequence.id));
+    }
+    ids
+}
+
+/// `ops` with each `template` op no title template answered given the
+/// composition template of its name in `dir` (#2757), with the sequences
+/// of it the project (`have`, by id) lacks, which placing it copies in.
+pub(crate) fn with_compositions(ops: &[klipp_document::ops::Op], dir: Option<&std::path::Path>, have: &[klipp_core::SequenceId]) -> Vec<klipp_document::ops::Op> {
+    use klipp_document::ops::{Op, PlacedComposition};
+    if !ops.iter().any(|op| matches!(op, Op::Template { data: None, .. })) {
+        return ops.to_vec();
+    }
+    let store = klipp_timeline::composition_template::CompositionTemplateStore::load(dir.map(std::path::Path::to_path_buf));
+    ops.iter()
+        .cloned()
+        .map(|mut op| {
+            if let Op::Template { name, data: None, composition, .. } = &mut op {
+                *composition = store.templates().find(|t| t.name.eq_ignore_ascii_case(name.trim())).map(|t| {
+                    let missing = t.sequences.iter().filter(|s| !have.contains(&s.id)).cloned().collect();
+                    Box::new(PlacedComposition { template: t.clone(), missing })
+                });
+            }
+            op
+        })
+        .collect()
 }
 
 /// `ops` with each `template` op given the template its name names (#1139):
@@ -95,7 +133,7 @@ fn listed_fields(td: &klipp_timeline::TitleData) -> Vec<serde_json::Value> {
 /// answers: the built-in library by category (#1724), and those saved in
 /// `dir` (#1139), each with the fields it keeps editable and their values
 /// as made. A saved one of a built-in's name is the one placed.
-pub(crate) fn title_templates(dir: Option<&std::path::Path>) -> serde_json::Value {
+pub(crate) fn title_templates(dir: Option<&std::path::Path>, compositions: Option<&std::path::Path>) -> serde_json::Value {
     use klipp_timeline::title_library::{CATEGORIES, TITLES};
     let saved = dir.map(klipp_timeline::read_templates).unwrap_or_default();
     let list: Vec<serde_json::Value> = saved
@@ -115,8 +153,22 @@ pub(crate) fn title_templates(dir: Option<&std::path::Path>) -> serde_json::Valu
         0 => " None saved.".to_string(),
         n => format!(" {n} saved: {}.", saved.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", ")),
     });
-    text.push_str(" Place one with the template op by name, setting its fields by label.");
-    json!({ "text": text, "builtin": builtin, "templates": list })
+    // Composition templates (#2757): a stack of clips placed as one,
+    // their parameters set by name or label.
+    let store = klipp_timeline::composition_template::CompositionTemplateStore::load(compositions.map(std::path::Path::to_path_buf));
+    let composed: Vec<serde_json::Value> = store
+        .templates()
+        .map(|t| {
+            let parameters: Vec<serde_json::Value> = t.parameters.iter().map(|(name, p)| json!({ "name": name, "label": p.label, "default": p.default, "choices": p.choices })).collect();
+            let secs = t.composition().map(|s| s.total_duration().to_secs_f64()).unwrap_or(0.0);
+            json!({ "name": t.name, "category": t.category, "secs": secs, "parameters": parameters })
+        })
+        .collect();
+    if !composed.is_empty() {
+        text.push_str(&format!(" {} composition templates (a stack of clips placed as one): {}.", composed.len(), store.templates().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", ")));
+    }
+    text.push_str(" Place one with the template op by name, setting its fields (a composition's parameters) by label.");
+    json!({ "text": text, "builtin": builtin, "templates": list, "compositions": composed })
 }
 
 /// Exact clip changes predicted by resolved cut edits. The UI applies the
@@ -563,14 +615,14 @@ mod template_tests {
         let dir = std::env::temp_dir().join(format!("klipp-control-templates-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let td = saved(&dir);
-        let listed = title_templates(Some(&dir));
+        let listed = title_templates(Some(&dir), None);
         assert_eq!(listed["templates"][0]["name"], "Guest");
         assert_eq!(listed["templates"][0]["fields"][0], json!({ "label": "Text 1", "kind": "text", "value": "Jane Doe" }));
         assert_eq!(listed["templates"][0]["fields"][1]["kind"], "colour");
         assert!(listed["text"].as_str().unwrap().contains("1 saved: Guest"), "{listed}");
-        assert!(title_templates(None)["text"].as_str().unwrap().contains("None saved"));
+        assert!(title_templates(None, None)["text"].as_str().unwrap().contains("None saved"));
 
-        let op = |name: &str| klipp_document::ops::Op::Template { name: name.into(), at: klipp_document::ops::Anchor::Secs(0.0), secs: 3.0, track: None, fields: Default::default(), data: None };
+        let op = |name: &str| klipp_document::ops::Op::Template { name: name.into(), at: klipp_document::ops::Anchor::Secs(0.0), secs: 3.0, track: None, fields: Default::default(), data: None, composition: None };
         let filled = with_templates(&[op("guest"), op("Nobody")], Some(&dir));
         let data = |op: &klipp_document::ops::Op| match op {
             klipp_document::ops::Op::Template { data, .. } => data.as_deref().cloned(),
@@ -588,7 +640,7 @@ mod template_tests {
     /// from it; a saved template of the same name wins (#1724).
     #[test]
     fn built_in_templates_are_listed_and_placed_by_name() {
-        let listed = title_templates(None);
+        let listed = title_templates(None, None);
         let builtin = listed["builtin"].as_array().unwrap();
         assert_eq!(builtin.len(), klipp_timeline::title_library::TITLES.len());
         let bar = builtin.iter().find(|t| t["name"] == "Name Bar").unwrap();
@@ -597,7 +649,7 @@ mod template_tests {
         assert_eq!(labels, ["Name", "Role", "Accent", "Size", "Speed"]);
         assert!(listed["text"].as_str().unwrap().contains("Lower Thirds: Name Bar"), "{}", listed["text"]);
 
-        let op = |name: &str| klipp_document::ops::Op::Template { name: name.into(), at: klipp_document::ops::Anchor::Secs(0.0), secs: 3.0, track: None, fields: Default::default(), data: None };
+        let op = |name: &str| klipp_document::ops::Op::Template { name: name.into(), at: klipp_document::ops::Anchor::Secs(0.0), secs: 3.0, track: None, fields: Default::default(), data: None, composition: None };
         let filled = with_templates(&[op("name bar")], None);
         let klipp_document::ops::Op::Template { data: Some(td), .. } = &filled[0] else { panic!("a built-in by name") };
         assert_eq!(td.template.as_deref(), Some("Name Bar"));
