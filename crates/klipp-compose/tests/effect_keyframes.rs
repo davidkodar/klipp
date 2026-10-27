@@ -78,7 +78,7 @@ fn every_effect() -> Vec<E> {
         E::ChromaticAberration { red_shift: 2.0, blue_shift: -2.0, center_x: 0.5, center_y: 0.5 },
         E::FilmGrain { amount: 0.3, size: 1.0, color: 0, shadows: 0.5, seed: 0 },
         E::TiltShift { center: 0.5, width: 0.2, softness: 0.3, radius: 6.0 },
-        E::OldFilm { flicker: 0.3, scratches: 0.3, dust: 0.3, weave: 0.3, sepia: 0.3, seed: 0 },
+        E::OldFilm { flicker: 0.3, scratches: 0.3, dust: 0.3, weave: 0.3, sepia: 0.3, seed: 0, amount: 1.0, age: 0.0, mono: 0.0, stains: 0.0, frame_lines: 0.0, leaks: 0.0, burn: 0.0 },
         E::Vhs { tracking: 0.3, bleed: 0.3, noise: 0.3, scanlines: 0.3, seed: 0 },
         E::RollingShutterCorrection { strength: 0.5, readout_ratio: 0.5 },
         E::TemporalDenoise { strength: 0.5, threshold: 0.02 },

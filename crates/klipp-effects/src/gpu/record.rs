@@ -637,12 +637,9 @@ impl GpuEffectsPipeline {
                 });
                 (&self.noise_generator_pipeline, slot)
             }
-            BuiltinEffect::OldFilm { flicker, scratches, dust, weave, sepia, seed } => {
-                let slot = rec.slots.claim(q, &OldFilmParams {
-                    width, height,
-                    flicker: *flicker, scratches: *scratches, dust: *dust, weave: *weave, sepia: *sepia, seed: *seed,
-                    luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad: 0,
-                });
+            BuiltinEffect::OldFilm { .. } => {
+                let Some(params) = effect.old_film_params(width, height, self.luma_coefs) else { return Recorded::Identity };
+                let slot = rec.slots.claim(q, &params);
                 (&self.old_film_pipeline, slot)
             }
             BuiltinEffect::Vhs { tracking, bleed, noise, scanlines, seed } => {

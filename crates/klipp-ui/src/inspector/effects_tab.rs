@@ -468,7 +468,7 @@ fn builtin_effect_default(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
         },
         BuiltinEffect::FocusBlur { .. } => BuiltinEffect::FocusBlur { radius: 8.0, vertical: true, band: 0.3 },
         BuiltinEffect::OldFilm { .. } => BuiltinEffect::OldFilm {
-            flicker: 0.4, scratches: 0.5, dust: 0.5, weave: 0.5, sepia: 0.6, seed: 0,
+            flicker: 0.4, scratches: 0.5, dust: 0.5, weave: 0.5, sepia: 0.6, seed: 0, amount: 1.0, age: 0.0, mono: 0.0, stains: 0.0, frame_lines: 0.0, leaks: 0.0, burn: 0.0,
         },
         BuiltinEffect::Vhs { .. } => BuiltinEffect::Vhs {
             tracking: 0.5, bleed: 0.5, noise: 0.4, scanlines: 0.5, seed: 0,

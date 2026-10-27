@@ -230,12 +230,19 @@ impl BuiltinEffect {
                 real(f, "softness", softness);
                 real(f, "radius", radius);
             }
-            E::OldFilm { flicker, scratches, dust, weave, sepia, .. } => {
+            E::OldFilm { flicker, scratches, dust, weave, sepia, amount, age, mono, stains, frame_lines, leaks, burn, .. } => {
                 real(f, "flicker", flicker);
                 real(f, "scratches", scratches);
                 real(f, "dust", dust);
                 real(f, "weave", weave);
                 real(f, "sepia", sepia);
+                real(f, "amount", amount);
+                real(f, "age", age);
+                real(f, "mono", mono);
+                real(f, "stains", stains);
+                real(f, "frame_lines", frame_lines);
+                real(f, "leaks", leaks);
+                real(f, "burn", burn);
             }
             E::Vhs { tracking, bleed, noise, scanlines, .. } => {
                 real(f, "tracking", tracking);
