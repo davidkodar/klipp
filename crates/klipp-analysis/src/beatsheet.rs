@@ -219,12 +219,14 @@ fn mask_filter(rect: [f32; 4]) -> String {
 /// on an ffmpeg failure (the caller degrades gracefully).
 pub fn detect_frozen(ffmpeg: &std::path::Path, path: &std::path::Path, codec: &str, duration_secs: f64, mask: Option<[f32; 4]>, with_grid: bool) -> (Vec<(f64, f64)>, Vec<u8>) {
     let masked = mask.map(mask_filter).unwrap_or_default();
+    // A list of other inputs is not media: nothing to read.
+    let Ok(input) = klipp_media::input_args(path) else { return (Vec::new(), Vec::new()) };
     for plan in crate::decode_plans(ffmpeg) {
         let scaled = crate::scale_filter(ffmpeg, plan, SCALE_W, -2);
         let mut cmd = std::process::Command::new(ffmpeg);
         cmd.args(["-hide_banner", "-nostats", "-loglevel", "info"]);
         cmd.args(crate::decode_input_args(ffmpeg, plan, codec));
-        cmd.arg("-i").arg(path).args(["-an", "-sn"]);
+        cmd.args(&input).args(["-an", "-sn"]);
         if with_grid {
             let graph = format!(
                 "[0:v:0]fps={SAMPLE_FPS},{scaled},{masked}split[fz][act];[fz]freezedetect=n={FREEZE_NOISE}:d={FREEZE_MIN_SECS},nullsink;[act]fps={GRID_FPS},format=gray,tblend=all_mode=difference,scale={GRID_W}:{GRID_H}:flags=area[acto]"

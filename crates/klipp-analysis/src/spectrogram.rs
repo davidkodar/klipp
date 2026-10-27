@@ -109,7 +109,7 @@ pub fn of_file(
     if from > 0.0 {
         cmd.args(["-ss", &format!("{from}")]);
     }
-    cmd.arg("-i").arg(path);
+    cmd.args(klipp_media::input_args(path)?);
     if let Some(to) = to {
         let len = (to - from).max(0.01);
         cmd.args(["-t", &format!("{len}")]);

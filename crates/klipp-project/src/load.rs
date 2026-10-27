@@ -497,11 +497,16 @@ fn load_project_as(dir: &Path, form: crate::FileForm, strict: bool) -> Result<Lo
                 path = absolute.to_path_buf();
             }
         }
-        let offline = kind == MediaItemKind::File && !path.exists();
+        // A file that lists other inputs (a playlist, a concat list) is
+        // not media, whatever its name: offline, never handed to ffmpeg.
+        let listed = kind == MediaItemKind::File && path.exists() && klipp_media::is_input_list(&path);
+        let offline = kind == MediaItemKind::File && (!path.exists() || listed);
         // The file's own fingerprint where it is there, else as stored, for
         // a relink to tell the same content (#2790).
         let fingerprint = if kind != MediaItemKind::File { None } else if offline { item_json.fingerprint } else { klipp_media::relink::fingerprint(&path) };
-        if offline {
+        if listed {
+            warn!("Media file is a playlist or a list of other files, not media; marking offline: {:?}", path);
+        } else if offline {
             warn!("Media file not found, marking offline: {:?}", path);
         }
         let mut media_item = MediaItem {

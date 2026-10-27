@@ -216,11 +216,12 @@ pub fn decode_mono_pcm(ffmpeg: &std::path::Path, path: &std::path::Path, sample_
     // review).
     let input = path.to_string_lossy().into_owned();
     if input.starts_with("http://") || input.starts_with("https://") {
-        args.push("-rw_timeout".into());
-        args.push("15000000".into());
+        // A preview Klipp fetches on purpose: the network protocols it
+        // needs and no others.
+        args.extend(["-rw_timeout".into(), "15000000".into(), "-protocol_whitelist".into(), "https,http,tls,tcp".into(), "-i".into(), input]);
+    } else {
+        args.extend(klipp_media::input_args_lossy(path)?);
     }
-    args.push("-i".into());
-    args.push(input);
     if max_secs > 0.0 {
         args.push("-t".into());
         args.push(format!("{max_secs}"));

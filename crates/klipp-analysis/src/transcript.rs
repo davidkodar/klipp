@@ -290,7 +290,7 @@ pub fn group_words(tokens: &[Token]) -> Vec<Word> {
 /// Decode the file's sound to what whisper eats: 16 kHz mono f32.
 fn decode_audio(ffmpeg: &std::path::Path, path: &std::path::Path) -> Result<Vec<f32>, String> {
     let mut cmd = std::process::Command::new(ffmpeg);
-    cmd.args(["-hide_banner", "-nostats", "-loglevel", "error", "-i"]).arg(path).args(["-vn", "-sn", "-ac", "1", "-ar", "16000", "-f", "f32le", "-"]);
+    cmd.args(["-hide_banner", "-nostats", "-loglevel", "error"]).args(klipp_media::input_args(path)?).args(["-vn", "-sn", "-ac", "1", "-ar", "16000", "-f", "f32le", "-"]);
     let out = crate::hold::output(&mut cmd).map_err(|e| format!("could not run {}: {e}", ffmpeg.display()))?;
     if !out.status.success() {
         return Err(format!("ffmpeg could not decode the sound: {}", String::from_utf8_lossy(&out.stderr).trim()));

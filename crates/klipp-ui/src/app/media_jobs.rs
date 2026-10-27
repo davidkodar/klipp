@@ -948,7 +948,15 @@ impl KlippApp {
                     status
                 };
 
-                let src = source_path.to_str().unwrap_or("");
+                // Media only, as `klipp_media::input_args` gives it: a
+                // list of other inputs is given to ffmpeg as nothing, so
+                // the encode fails without opening anything.
+                let src = if klipp_media::is_input_list(&source_path) {
+                    tracing::warn!("skim: {} is a list of other inputs, not media; not encoded", source_path.display());
+                    ""
+                } else {
+                    source_path.to_str().unwrap_or("")
+                };
 
                 // ─── Crash-safe segment-based encode ───────────────
                 // Encode in 30-second chunks into a `<skim>.parts/`
@@ -1064,7 +1072,7 @@ impl KlippApp {
                     run_ffmpeg(&[
                         "-y",
                         "-ss", &start_ss,
-                        "-i", src,
+                        "-protocol_whitelist", "file,pipe", "-i", src,
                         "-c:v", "libx264", "-g", "15", "-crf", &qp_str,
                         "-preset", "ultrafast",
                         "-an", "-vf", &cpu_vf_sdr,
@@ -1089,8 +1097,7 @@ impl KlippApp {
                     args.extend(chain.input_args.iter().cloned());
                     args.push("-ss".into());
                     args.push(start_ss.clone());
-                    args.push("-i".into());
-                    args.push(src.into());
+                    args.extend(["-protocol_whitelist".into(), "file,pipe".into(), "-i".into(), src.into()]);
                     args.push("-c:v".into());
                     args.push(chain.encoder.clone());
                     // GOP 15. `-g 1` (every frame a keyframe) gave
@@ -1142,7 +1149,7 @@ impl KlippApp {
                         "-y", "-hwaccel", "cuda",
                         "-hwaccel_output_format", "cuda",
                         "-ss", &start_ss,
-                        "-i", src,
+                        "-protocol_whitelist", "file,pipe", "-i", src,
                         "-c:v", "h264_nvenc", "-g", "15", "-preset", "p1",
                         "-rc", "constqp", "-qp", &qp_str,
                         "-an", "-vf", &nvenc_vf,
@@ -1170,7 +1177,7 @@ impl KlippApp {
                             run_ffmpeg(&[
                                 "-y",
                                 "-ss", &start_ss,
-                                "-i", src,
+                                "-protocol_whitelist", "file,pipe", "-i", src,
                                 "-c:v", "libx264", "-g", "15", "-crf", &qp_str,
                                 "-preset", "ultrafast",
                                 "-an", "-vf", &cpu_vf_sdr,

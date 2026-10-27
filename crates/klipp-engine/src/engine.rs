@@ -12151,6 +12151,8 @@ fn detect_rotation(format_ctx: &ffmpeg_next::format::context::Input, stream_inde
 /// Detect rotation from a file path using ffprobe (catches display matrix side data
 /// which ffmpeg-next doesn't expose directly). Falls back to 0 on error.
 pub fn detect_rotation_from_path(path: &std::path::Path) -> i32 {
+    // Media only, as klipp_media gives it to ffmpeg.
+    let Ok(input) = klipp_media::input_args(path) else { return 0 };
     // First try ffprobe for side_data rotation (most reliable for modern files)
     if let Ok(output) = std::process::Command::new("ffprobe")
         .args([
@@ -12159,7 +12161,7 @@ pub fn detect_rotation_from_path(path: &std::path::Path) -> i32 {
             "-show_entries", "stream_side_data=rotation",
             "-of", "csv=p=0",
         ])
-        .arg(path)
+        .args(&input)
         .output()
     {
         let stdout = String::from_utf8_lossy(&output.stdout);

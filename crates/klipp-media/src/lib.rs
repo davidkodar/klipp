@@ -75,6 +75,22 @@ pub fn open_input<P: AsRef<std::path::Path> + ?Sized>(path: &P) -> Result<ffmpeg
     ffmpeg_next::format::input_with_dictionary(&path, options)
 }
 
+/// The arguments that give ffmpeg's command line `path` as an input, the
+/// one way Klipp does for media: local files and pipes only
+/// (`-protocol_whitelist file,pipe -i <path>`), and refused for a list of
+/// other inputs ([`is_input_list`]).
+pub fn input_args(path: &std::path::Path) -> Result<Vec<std::ffi::OsString>, String> {
+    if is_input_list(path) {
+        return Err(format!("{} is a playlist or a list of other files, which Klipp does not open", path.display()));
+    }
+    Ok(vec!["-protocol_whitelist".into(), "file,pipe".into(), "-i".into(), path.as_os_str().to_owned()])
+}
+
+/// [`input_args`] as strings, for argument lists built as `String`s.
+pub fn input_args_lossy(path: &std::path::Path) -> Result<Vec<String>, String> {
+    Ok(input_args(path)?.into_iter().map(|a| a.to_string_lossy().into_owned()).collect())
+}
+
 /// Whether `path` can be imported: ffmpeg opens it and finds a picture or
 /// a sound in it, as the import's own first step does (#654). The error
 /// says why not, in ffmpeg's words ("moov atom not found", "Invalid data

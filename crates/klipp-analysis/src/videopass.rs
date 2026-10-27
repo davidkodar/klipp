@@ -102,7 +102,7 @@ fn run_with(ctx: &crate::AnalysisCtx, item: &klipp_media::MediaItem, plan: crate
     let mut cmd = std::process::Command::new(&ctx.ffmpeg);
     cmd.args(["-hide_banner", "-nostats", "-loglevel", "info"]);
     cmd.args(crate::decode_input_args(&ctx.ffmpeg, plan, &item.video_codec));
-    cmd.arg("-i").arg(&item.path).args(["-an", "-sn", "-filter_complex", &graph]);
+    cmd.args(klipp_media::input_args(&item.path)?).args(["-an", "-sn", "-filter_complex", &graph]);
     cmd.args(["-map", "[acto]", "-f", "rawvideo", "-pix_fmt", "gray", "-"]);
     let out = crate::hold::output(&mut cmd).map_err(|e| format!("could not run {}: {e}", ctx.ffmpeg.display()))?;
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
