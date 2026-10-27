@@ -272,8 +272,8 @@ pub(crate) fn decode_frame_rgba(path: &std::path::Path, secs: f64) -> Result<(Ve
 /// it is shown, so a reading of it compares with the timeline's.
 pub(crate) fn decode_frame_rgba_sized(path: &std::path::Path, secs: f64, w: u32, h: u32) -> Result<(Vec<u8>, u32, u32), String> {
     let out = std::process::Command::new("ffmpeg")
-        .args(["-hide_banner", "-nostats", "-ss", &format!("{secs}"), "-i"])
-        .arg(path)
+        .args(["-hide_banner", "-nostats", "-ss", &format!("{secs}")])
+        .args(klipp_media::input_args(path)?)
         .args(["-frames:v", "1", "-vf", &format!("scale={w}:{h}"), "-f", "rawvideo", "-pix_fmt", "rgba", "-"])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())

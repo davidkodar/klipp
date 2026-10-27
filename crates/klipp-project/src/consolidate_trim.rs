@@ -290,7 +290,8 @@ pub fn can_cut(item: &MediaItem) -> bool {
 
 /// Seconds from ffprobe's text.
 fn probe_secs(path: &Path, args: &[&str]) -> Vec<f64> {
-    let out = Command::new("ffprobe").args(["-v", "error"]).args(args).arg(path).output();
+    let Ok(input) = klipp_media::input_args(path) else { return Vec::new() };
+    let out = Command::new("ffprobe").args(["-v", "error"]).args(args).args(&input).output();
     let Ok(out) = out else { return Vec::new() };
     String::from_utf8_lossy(&out.stdout).lines().filter_map(|l| l.trim().trim_end_matches(',').parse::<f64>().ok()).collect()
 }
@@ -317,8 +318,8 @@ fn keyframe_before(path: &Path, video_start: f64, at: f64) -> Option<f64> {
 /// the container's start), small and grey, for comparing two files.
 fn frame_at(path: &Path, at: f64) -> Option<Vec<u8>> {
     let out = Command::new("ffmpeg")
-        .args(["-nostdin", "-v", "error", "-ss", &format!("{at:.6}"), "-i"])
-        .arg(path)
+        .args(["-nostdin", "-v", "error", "-ss", &format!("{at:.6}")])
+        .args(klipp_media::input_args(path).ok()?)
         .args(["-frames:v", "1", "-vf", "scale=64:36", "-pix_fmt", "gray", "-f", "rawvideo", "-"])
         .output()
         .ok()?;
@@ -343,7 +344,7 @@ pub fn cut(item: &MediaItem, range: Range, dst: &Path) -> Result<Segment, String
     // keyframe so the seek lands on it, not the one before.
     let seek = video_start - format_start + start + 0.0001;
     let mut cmd = Command::new("ffmpeg");
-    cmd.args(["-nostdin", "-v", "error", "-y", "-ss", &format!("{seek:.6}"), "-i"]).arg(src);
+    cmd.args(["-nostdin", "-v", "error", "-y", "-ss", &format!("{seek:.6}")]).args(klipp_media::input_args(src)?);
     if !to_end {
         cmd.args(["-t", &format!("{duration:.6}")]);
     }

@@ -296,11 +296,11 @@ impl crate::Analyser for AudioAnalyser {
         item.has_audio && item.duration.to_secs_f64() > 0.0
     }
     fn run(&self, item: &klipp_media::MediaItem, ctx: &crate::AnalysisCtx) -> Result<serde_json::Value, String> {
-        let args = vec![
+        let input = klipp_media::input_args_lossy(&item.path)?;
+        let args: Vec<String> = [
             "-hide_banner".to_string(),
             "-nostats".to_string(),
-            "-i".to_string(),
-            item.path.to_string_lossy().into_owned(),
+        ].into_iter().chain(input.iter().cloned()).chain([
             "-vn".to_string(),
             "-sn".to_string(),
             "-af".to_string(),
@@ -308,16 +308,15 @@ impl crate::Analyser for AudioAnalyser {
             "-f".to_string(),
             "null".to_string(),
             "-".to_string(),
-        ];
+        ]).collect();
         let stderr = crate::ffmpeg_stderr(&ctx.ffmpeg, &args)?;
         let mut env = parse(&stderr, item.duration.to_secs_f64());
         // A second, quick pass measures the spectral bands, so wind,
         // rumble, hum and hiss can be told apart from the numbers.
-        let band_args = vec![
+        let band_args: Vec<String> = [
             "-hide_banner".to_string(),
             "-nostats".to_string(),
-            "-i".to_string(),
-            item.path.to_string_lossy().into_owned(),
+        ].into_iter().chain(input.iter().cloned()).chain([
             "-vn".to_string(),
             "-sn".to_string(),
             "-filter_complex".to_string(),
@@ -325,7 +324,7 @@ impl crate::Analyser for AudioAnalyser {
             "-f".to_string(),
             "null".to_string(),
             "-".to_string(),
-        ];
+        ]).collect();
         if let Ok(bs) = crate::ffmpeg_stderr(&ctx.ffmpeg, &band_args) {
             let (rms, noise, low, hum, high, sub) = parse_bands(&bs);
             env.sub_db = sub;

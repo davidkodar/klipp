@@ -97,7 +97,7 @@ pub fn conform_audio_to_paths(
     let start = std::time::Instant::now();
 
     // Open input
-    let mut format_ctx = ffmpeg_next::format::input(media_path)
+    let mut format_ctx = crate::open_input(media_path)
         .map_err(|e| ConformError::FfmpegOpen(e.to_string()))?;
 
     let audio_stream = format_ctx

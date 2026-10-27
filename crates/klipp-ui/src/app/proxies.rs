@@ -79,7 +79,7 @@ impl KlippApp {
                 -> Result<(), String> {
                 // Ends with the app, killed or not (#1361).
                 let mut cmd = klipp_jobs::ends_with_app("ffmpeg");
-                cmd.arg("-nostdin").arg("-i").arg(&source_path);
+                cmd.arg("-nostdin").args(klipp_media::input_args(&source_path)?);
                 for a in args { cmd.arg(a); }
                 cmd.arg("-progress").arg("pipe:1")
                    .arg("-y").arg(&proxy_out)

@@ -942,8 +942,7 @@ fn audition_source(media_id: Option<String>, clip_id: Option<String>, sequence: 
 fn source_rate_wav(path: &std::path::Path, from: f64, to: f64) -> Result<Vec<u8>, String> {
     let out = std::process::Command::new("ffmpeg")
         .args(["-hide_banner", "-nostats", "-loglevel", "error", "-ss", &format!("{from:.3}"), "-t", &format!("{:.3}", (to - from).max(0.0))])
-        .arg("-i")
-        .arg(path)
+        .args(klipp_media::input_args(path)?)
         .args(["-vn", "-c:a", "pcm_s16le", "-f", "wav", "pipe:1"])
         .output()
         .map_err(|e| format!("could not run ffmpeg: {e}"))?;

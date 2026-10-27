@@ -390,6 +390,9 @@ mod queue_tests {
         let mut empty = MediaItem::synthetic_for_test("/tmp/klipp-2490-empty.bin".into(), None);
         empty.video_codec.clear();
         empty.has_audio = false;
+        // No picture, so no frame size either: the visual search wants
+        // any item with one when its model is installed.
+        empty.resolution = klipp_core::Resolution { width: 0, height: 0 };
         assert!(why_nothing_runs(&empty).contains("neither picture nor sound"));
         let st = request(&empty);
         assert_eq!(st.state, State::Done);

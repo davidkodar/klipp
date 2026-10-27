@@ -430,7 +430,7 @@ fn grab_batch(ffmpeg: &Path, item: &klipp_media::MediaItem, times: &[f64], width
             if !item.is_still {
                 cmd.arg("-ss").arg(format!("{t:.3}"));
             }
-            cmd.arg("-i").arg(media);
+            cmd.args(klipp_media::input_args(media)?);
         }
         let scale = scale_filter(ffmpeg, plan, width, height);
         let mut graph = String::new();

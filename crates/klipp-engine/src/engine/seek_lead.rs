@@ -31,7 +31,7 @@ pub(crate) fn lead_for(secs: f64, keyframe: f64, fps: f64) -> f64 {
 /// The time of the video keyframe at or before `secs` in `path`, from its
 /// index: a seek no later than `secs`, and the first video packet after it.
 pub(crate) fn keyframe_before(path: &Path, secs: f64) -> Option<f64> {
-    let mut input = ffmpeg_next::format::input(path).ok()?;
+    let mut input = klipp_media::open_input(path).ok()?;
     let (index, time_base) = {
         let s = input.streams().best(ffmpeg_next::media::Type::Video)?;
         (s.index(), s.time_base())
