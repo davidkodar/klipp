@@ -26,7 +26,7 @@ pub(crate) fn offline_media(ctx: &ControlContext) -> Option<serde_json::Value> {
     };
     let mut names: Vec<&str> = offline.iter().map(|(_, name)| name.as_str()).collect();
     names.sort_unstable();
-    let shown = names.iter().take(5).copied().collect::<Vec<_>>().join(", ");
+    let shown = names.iter().take(5).map(|n| quoted(n)).collect::<Vec<_>>().join(", ");
     let more = if names.len() > 5 { format!(" and {} more", names.len() - 5) } else { String::new() };
     let text = format!(
         "{} media file(s) are offline (moved or missing), {used} of them used in the project's sequences: {shown}{more}. relink_media with folder finds them there by content, name, reel, timecode and length.",

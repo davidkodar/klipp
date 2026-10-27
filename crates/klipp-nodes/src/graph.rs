@@ -1881,29 +1881,30 @@ impl NodeGraph {
         let mut said = Vec::new();
         for pair in meaningful.windows(2) {
             let (a, b) = (pair[0], pair[1]);
+            let (a_label, b_label) = (klipp_core::quote::quoted(&a.label), klipp_core::quote::quoted(&b.label));
             if b.stage < a.stage {
                 said.push(match (a.stage, b.stage) {
                     (crate::GradeStage::Look, crate::GradeStage::Balance) => format!(
                         "the balance ({}) sits after the look ({}) — the balance is then correcting the look's own cast, and the loop will never settle",
-                        b.label, a.label
+                        b_label, a_label
                     ),
                     (crate::GradeStage::Look, crate::GradeStage::Secondary) => format!(
                         "the secondary ({}) keys off the look ({}) rather than the balanced picture — move the look last or the key drifts with it",
-                        b.label, a.label
+                        b_label, a_label
                     ),
                     (crate::GradeStage::Secondary, crate::GradeStage::Balance) => format!(
                         "the balance ({}) sits after the secondary ({}) — the key was pulled on an uncorrected picture and will drift as the balance moves under it",
-                        b.label, a.label
+                        b_label, a_label
                     ),
                     (_, crate::GradeStage::Input) => format!(
                         "the input transform ({}) is not first — everything before it grades the camera's own encoding, where the numbers mean nothing",
-                        b.label
+                        b_label
                     ),
                     _ => format!(
                         "{} ({}) comes after {} ({}); the order is input, balance, secondary, look, output",
-                        b.label,
+                        b_label,
                         b.stage.label(),
-                        a.label,
+                        a_label,
                         a.stage.label()
                     ),
                 });

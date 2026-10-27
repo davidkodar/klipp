@@ -71,7 +71,7 @@ pub(crate) fn respond(
                 "review_secs": started.elapsed().as_secs_f64(),
                 "loudness": job.loudness,
                 "check": check,
-                "text": format!("Draft rendered in {render_secs:.1} s at {w}x{h}, reviewed in {:.1} s; {frames} frames on the sheet at {}. {}", started.elapsed().as_secs_f64(), sheet_out.display(), check["text"].as_str().unwrap_or("")),
+                "text": format!("Draft rendered in {render_secs:.1} s at {w}x{h}, reviewed in {:.1} s; {frames} frames on the sheet at {}. {}", started.elapsed().as_secs_f64(), quoted(&sheet_out.display().to_string()), check["text"].as_str().unwrap_or("")),
                 "next": "Read the sheet for the shape of the cut, and the check for what to fix; frame_at for any frame that needs a closer look.",
             }))
         }

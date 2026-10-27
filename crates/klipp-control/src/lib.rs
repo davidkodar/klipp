@@ -48,6 +48,8 @@ mod operations;
 mod cut_prep;
 mod jobs;
 mod json_path;
+/// Project and media text inside a reply's words: one quoted value.
+pub(crate) use klipp_core::quote::{quoted, word};
 
 use envelope::*;
 use grading::*;
@@ -526,7 +528,7 @@ mod timeline_view_tests {
         let klipp_document::history::EditCommand::PictureEdit { edit, .. } = &plan.steps[0].edit else { panic!("a picture step") };
         seq.tracks[0].clips[0].restore_picture(&edit.after);
         let text = timeline_text(&seq, &pool, None, 1, TimelineView::default());
-        assert!(text.contains("recipe \"Green screen\"  control tolerance = 0.2: node:0.tolerance 0..1 linear;"), "{text}");
+        assert!(text.contains("recipe \"Green screen\"  control \"tolerance\" = 0.2: node:0.tolerance 0..1 linear;"), "{text}");
     }
 }
 

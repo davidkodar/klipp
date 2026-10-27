@@ -52,6 +52,7 @@ fn strict_motion_spec<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<k
 
 
 use crate::history::{EditCommand, LinkedMovePartner};
+use klipp_core::quote::quoted;
 use klipp_core::{ClipId, Fps, MediaId, Timecode};
 use klipp_media::MediaPool;
 use klipp_timeline::{Clip, ClipKind, GradeAccess, Sequence, TrackKind};
@@ -3324,11 +3325,11 @@ fn short_name(filename: &str) -> String {
     const KEEP: usize = 22;
     let n = filename.chars().count();
     if n <= KEEP + 8 {
-        return filename.to_string();
+        return quoted(filename);
     }
     let ext = filename.rsplit_once('.').map(|(_, e)| e).filter(|e| e.len() <= 5).unwrap_or("");
     let head: String = filename.chars().take(KEEP).collect();
-    format!("{}…{}{ext}", head.trim_end(), if ext.is_empty() { "" } else { "." })
+    quoted(&format!("{}…{}{ext}", head.trim_end(), if ext.is_empty() { "" } else { "." }))
 }
 
 /// Clip names as a list with repeats counted: twelve shots of one file
@@ -3346,10 +3347,10 @@ fn folded_names(names: impl Iterator<Item = String>) -> String {
 }
 
 fn clip_name(seq: &Sequence, pool: &MediaPool, clip: &Clip) -> String {
-    let own = clip.name.as_deref().filter(|n| !n.trim().is_empty()).map(|n| format!("\"{n}\""));
+    let own = clip.name.as_deref().filter(|n| !n.trim().is_empty()).map(quoted);
     own.unwrap_or_else(|| match &clip.kind {
         ClipKind::Media { media_id } => pool.get(media_id).map(|m| short_name(&m.filename)).unwrap_or_else(|| "media".into()),
-        ClipKind::Title(td) => format!("title \"{}\"", td.text().lines().next().unwrap_or("").chars().take(24).collect::<String>()),
+        ClipKind::Title(td) => format!("title {}", quoted(&td.text().lines().next().unwrap_or("").chars().take(24).collect::<String>())),
         ClipKind::Generator(_) => "generator".into(),
         ClipKind::AdjustmentLayer => "adjustment layer".into(),
         ClipKind::Gap => "gap".into(),
@@ -3973,7 +3974,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 EditCommand::SetClipGradeGroups { changes },
                 EditCommand::SetGradeGroups { old: seq.grade_groups.clone(), new: groups },
             ]);
-            Ok((format!("remove grade group \"{}\"; its clips keep their own grades", g.name), edit, touched))
+            Ok((format!("remove grade group {}; its clips keep their own grades", quoted(&g.name)), edit, touched))
         }
         Op::Qualify { clip_id, target, hue, hue_width, sat_low, sat_high, lum_low, lum_high, invert, exposure, saturation, hue_shift, temperature, remove, window, window_feather, rgb, keep, take_out } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
@@ -4189,7 +4190,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             if td.template.is_none() {
                 td.template = Some(format!("user:{name}"));
             }
-            place_title(seq, fps, i, at, *held, track.as_ref(), td, &format!("template \"{name}\""), "")
+            place_title(seq, fps, i, at, *held, track.as_ref(), td, &format!("template {}", quoted(name)), "")
         }
         Op::LowerThird { name, role, at, secs: hold, track, side, x, y, backing, in_picture } => {
             let at = resolve_anchor(seq, fps, at, i)?;
@@ -4221,8 +4222,8 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             ops.push(recipe_frame(clip, placed).map_err(|why| refuse(i, why, "report it"))?);
             let edit = clip.clone().apply_picture_ops(&ops).map_err(|why| refuse(i, format!("the recipe \"{name}\" doesn't fit this clip's picture: {why}"), "report it"))?;
             let what = match note {
-                Some(note) => format!("{name} on the clip; {note}"),
-                None => format!("{name} on the clip"),
+                Some(note) => format!("{} on the clip; {note}", quoted(name)),
+                None => format!("{} on the clip", quoted(name)),
             };
             Ok((what, EditCommand::PictureEdit { clip_id: clip.id, description: "Recipe", edit: Box::new(edit) }, vec![clip.id]))
         }
@@ -4242,7 +4243,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             });
             let track = klipp_timeline::Track::new(&name, want);
             let index = if at_top { 0 } else { seq.tracks.len() };
-            let what = format!("add {} track \"{name}\" as track {index}{}", kind.to_lowercase(), if at_top && !seq.tracks.is_empty() { "; every other track's index moves down by one" } else { "" });
+            let what = format!("add {} track {} as track {index}{}", kind.to_lowercase(), quoted(&name), if at_top && !seq.tracks.is_empty() { "; every other track's index moves down by one" } else { "" });
             Ok((what, EditCommand::AddTrack { index, track }, Vec::new()))
         }
 
@@ -4809,7 +4810,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let before = clip_name(seq, pool, clip);
             let mut said = Vec::new();
             if new.name != old.name {
-                said.push(match &new.name { Some(n) => format!("named \"{n}\""), None => "back to its media's name".to_string() });
+                said.push(match &new.name { Some(n) => format!("named {}", quoted(n)), None => "back to its media's name".to_string() });
             }
             if new.colour != old.colour {
                 said.push(format!("coloured {}", klipp_media::ColorLabel::from_u8(new.colour).label().to_lowercase()));
@@ -5114,7 +5115,7 @@ struct MatteAsk<'a> {
 /// whole, as one undo step.
 fn matte(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, clip: &Clip, ask: MatteAsk) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     let named = |c: &Clip| match &c.kind {
-        ClipKind::Title(td) => format!("the title \"{}\"", td.text().lines().collect::<Vec<_>>().join(" / ")),
+        ClipKind::Title(td) => format!("the title {}", quoted(&td.text())),
         _ => clip_name(seq, pool, c),
     };
     let find = |id: ClipId| seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == id);
@@ -5352,7 +5353,7 @@ fn set_track(seq: &Sequence, i: usize, track: &TrackRef, visible: Option<bool>, 
         what.push(if l { "locked" } else { "unlocked" }.to_string());
     }
     let edit = EditCommand::SetTrack { description: "Track", track_index: ti, old: Box::new(t.clone()), new: Box::new(new) };
-    Ok((format!("track {ti} \"{}\" {}", t.name, what.join(", ")), edit, Vec::new()))
+    Ok((format!("track {ti} {} {}", quoted(&t.name), what.join(", ")), edit, Vec::new()))
 }
 
 /// [`Op::TrackAutomation`]: the track with its mode, or one control's
@@ -5419,7 +5420,7 @@ fn track_automation(
         return Err(refuse(i, "a param without keys", "give keys [{at, db}] or [{at, pan}] for it"));
     }
     let edit = EditCommand::SetTrack { description: "Track Automation", track_index: ti, old: Box::new(t.clone()), new: Box::new(new) };
-    Ok((format!("track {ti} \"{}\" {}", t.name, what.join(", ")), edit, Vec::new()))
+    Ok((format!("track {ti} {} {}", quoted(&t.name), what.join(", ")), edit, Vec::new()))
 }
 
 fn remove_track(seq: &Sequence, i: usize, track: &TrackRef, with_clips: bool) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
@@ -5457,8 +5458,8 @@ fn remove_track(seq: &Sequence, i: usize, track: &TrackRef, with_clips: bool) ->
     let freed = edits.len();
     edits.push(EditCommand::RemoveTrack { index: ti, track: t.clone() });
     let what = format!(
-        "track {ti} \"{}\" removed{}{}; every track below moves up by one",
-        t.name,
+        "track {ti} {} removed{}{}; every track below moves up by one",
+        quoted(&t.name),
         if n > 0 { format!(" with its {n} clip{}", if n == 1 { "" } else { "s" }) } else { String::new() },
         if freed > 0 { format!(", {freed} clip{} elsewhere unlinked from them", if freed == 1 { "" } else { "s" }) } else { String::new() },
     );
@@ -6641,9 +6642,9 @@ fn captions(
     }
     // Every cue, to be read: what they say is the point of them, and a
     // caller that cannot see them cannot proofread them.
-    let listing: String = cues.iter().map(|(c, _)| format!("\n     {:7.2}-{:<7.2} {}", c.start, c.end, c.text.replace('\n', " / "))).collect();
+    let listing: String = cues.iter().map(|(c, _)| format!("\n     {:7.2}-{:<7.2} {}", c.start, c.end, quoted(&c.text))).collect();
     let what = format!(
-        "captions: {} cues from {:.2} to {:.2} s on {}subtitle track {ti}, at most {max_lines} lines of {max_chars}{}; a \" / \" below marks a line break (set_text takes a real newline); correct one with set_text:{listing}",
+        "captions: {} cues from {:.2} to {:.2} s on {}subtitle track {ti}, at most {max_lines} lines of {max_chars}{}; each cue's text is quoted below, \\n marking a line break (set_text takes a real newline); correct one with set_text:{listing}",
         cues.len(),
         cues.first().map(|(c, _)| c.start).unwrap_or(0.0),
         cues.last().map(|(c, _)| c.end).unwrap_or(0.0),
@@ -6903,7 +6904,7 @@ fn link_edit(i: usize, old: &klipp_core::TemplateInstance, control: Option<&str>
                 return Err(refuse(i, format!("control \"{c}\" goes from {lo} to {hi}, not {v}"), "give a value in its range"));
             }
             new.overrides.insert(name.to_string(), klipp_core::TemplateValue::Number(v));
-            (format!("set control {name} to {v}"), name.to_string())
+            (format!("set control {} to {v}", quoted(name)), name.to_string())
         }
         (None, Some(t)) => {
             let t = t.trim();
@@ -7004,7 +7005,7 @@ fn place_composition(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, at: T
     let id = clip.id;
     edits.push(EditCommand::LegacyAppendClip { clip, track_index });
     let copied = if placed.missing.is_empty() { String::new() } else { format!(", its {} sequence{} copied into the project", placed.missing.len(), if placed.missing.len() == 1 { "" } else { "s" }) };
-    Ok((format!("template \"{}\" at {:.2}-{:.2} s on track {track_index}{copied}", t.name, secs(tl_in), secs(tl_out)), EditCommand::Batch(edits), vec![id]))
+    Ok((format!("template {} at {:.2}-{:.2} s on track {track_index}{copied}", quoted(&t.name), secs(tl_in), secs(tl_out)), EditCommand::Batch(edits), vec![id]))
 }
 
 /// New words for a title or a caption: the clip's first text box takes
@@ -7027,9 +7028,9 @@ fn set_text(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, 
     }) else {
         return Err(refuse(i, format!("{} has no text in it", clip_name(seq, pool, clip)), "name a clip with a text box"));
     };
-    let was = tb.text.replace('\n', " / ");
+    let was = quoted(&tb.text);
     tb.text = text.to_string();
-    let what = format!("the text at {:.2}-{:.2} s on track {ti} reads \"{}\" (was \"{was}\")", secs(clip.timeline_in), secs(clip.timeline_out), text.replace('\n', " / "));
+    let what = format!("the text at {:.2}-{:.2} s on track {ti} reads {} (was {was})", secs(clip.timeline_in), secs(clip.timeline_out), quoted(text));
     let edit = EditCommand::EditTitle { clip_id: clip.id, description: "Edit Title Text", old_data: old.clone(), new_data: new };
     Ok((what, edit, vec![clip.id]))
 }
@@ -7158,7 +7159,7 @@ fn pin(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, media
         None => format!("track {}", video.1),
     };
     let tracked = if s.keys.is_empty() { ", where it stays until the surface is tracked" } else { ", following it" };
-    let what = format!("pin {} to the surface \"{}\" of {host} from {:.2} to {:.2} s on {where_}{tracked}", short_name(&item.filename), s.name, secs(a), secs(b));
+    let what = format!("pin {} to the surface {} of {host} from {:.2} to {:.2} s on {where_}{tracked}", short_name(&item.filename), quoted(&s.name), secs(a), secs(b));
     Ok((what, EditCommand::LinkedImport { video: Some(video), audio: None, created_video_track_at: created, created_audio_track_at: None, autoset: None }, ids))
 }
 
@@ -7238,7 +7239,7 @@ fn pin_layer(seq: &Sequence, pool: &MediaPool, i: usize, clip: &Clip, pinned: &C
     new.surface_pin = Some(klipp_timeline::SurfacePin { host: clip.id, surface: s.id, picture_size, fit, inset, on_loss: look.on_loss, light: look.light, shade: look.shade, texture: look.texture });
     new.blend_mode = look.blend;
     let tracked = if s.keys.is_empty() { ", where it stays until the surface is tracked" } else { ", following it" };
-    let what = format!("pin {layer} to the surface \"{}\" of {host}{tracked}", s.name);
+    let what = format!("pin {layer} to the surface {} of {host}{tracked}", quoted(&s.name));
     Ok((what, EditCommand::ReplaceClip { description: "Pin to Surface", old: Box::new(pinned.clone()), new: Box::new(new) }, vec![pinned.id]))
 }
 
@@ -7664,7 +7665,7 @@ impl TrackSpan {
             }
         }
         let t = &seq.tracks[ti];
-        let name = if t.name.trim().is_empty() { format!("track {ti}") } else { format!("track {ti} \"{}\"", t.name) };
+        let name = if t.name.trim().is_empty() { format!("track {ti}") } else { format!("track {ti} {}", quoted(&t.name)) };
         Ok(Self { ti, from, to, name })
     }
 
@@ -8004,7 +8005,7 @@ fn effect_on_many(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id:
         GradeOn::Group { group, .. } => {
             let g = find_grade_group(seq, i, group)?;
             (
-                format!("group \"{}\"", g.name),
+                format!("group {}", quoted(&g.name)),
                 seq.tracks.iter().enumerate().flat_map(|(ti, t)| t.clips.iter().filter(move |c| c.grade_group == Some(g.id) && is_picture(t, c)).map(move |c| (ti, c))).collect(),
             )
         }
@@ -9452,7 +9453,7 @@ fn grade_target(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id: O
             Ok(GradeTarget {
                 id: g.stage_clip_id(stage),
                 graph: stored(g.stage(stage)),
-                name: format!("the {which} grade of group \"{}\"", g.name),
+                name: format!("the {which} grade of group {}", quoted(&g.name)),
                 touched: seq.all_clips().filter(|c| c.grade_group == Some(g.id)).map(|c| c.id).collect(),
             })
         }
@@ -9505,7 +9506,7 @@ fn grade_group(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, name: &str,
         if changes.is_empty() {
             return Err(refuse(i, format!("none of {names} is in \"{}\"", g.name), "name clips that are in the group"));
         }
-        return Ok((format!("{names} out of grade group \"{}\"", g.name), EditCommand::SetClipGradeGroups { changes }, touched));
+        return Ok((format!("{names} out of grade group {}", quoted(&g.name)), EditCommand::SetClipGradeGroups { changes }, touched));
     }
     let mut groups = seq.grade_groups.clone();
     let made = !groups.iter().any(|g| g.name.eq_ignore_ascii_case(name));
@@ -9534,7 +9535,7 @@ fn grade_group(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, name: &str,
     if changes.is_empty() && !groups_changed {
         return Err(refuse(i, if names.is_empty() { format!("\"{group_name}\" is already so") } else { format!("{names} already in \"{group_name}\"") }, "nothing to change"));
     }
-    let mut what = if names.is_empty() { format!("grade group \"{group_name}\"") } else { format!("{names} in grade group \"{group_name}\"{}", if made { " (new)" } else { "" }) };
+    let mut what = if names.is_empty() { format!("grade group {}", quoted(&group_name)) } else { format!("{names} in grade group {}{}", quoted(&group_name), if made { " (new)" } else { "" }) };
     if !said.is_empty() {
         what = format!("{what}, {}", said.join(", "));
     }
@@ -12621,7 +12622,7 @@ fn title_op(seq: &Sequence, fps: Fps, i: usize, at: Timecode, a: TitleArgs) -> R
 
     let short: String = text.chars().take(24).collect();
     let note = moved.map(|z| format!(", moved to the {z} to keep clear of {kept_from}")).unwrap_or_default();
-    place_title(seq, fps, i, at, a.secs, a.track, td, &format!("title \"{short}\""), &note)
+    place_title(seq, fps, i, at, a.secs, a.track, td, &format!("title {}", quoted(&short)), &note)
 }
 
 /// A connector (#1926): a title holding only an open path from one point
@@ -12815,8 +12816,9 @@ fn lower_third(
     let clip = title_clip(lower_third_title(name, role, place), tl_in, tl_out, fps);
     let id = clip.id;
     let what = format!(
-        "lower third \"{name}\"{} at {:.2}-{:.2} s on {}",
-        role.map(|r| format!(", \"{r}\"")).unwrap_or_default(),
+        "lower third {}{} at {:.2}-{:.2} s on {}",
+        quoted(name),
+        role.map(|r| format!(", {}", quoted(r))).unwrap_or_default(),
         secs(tl_in),
         secs(tl_out),
         match existing {
@@ -13167,11 +13169,11 @@ fn edit_from_selects(seq: &Sequence, fps: Fps, i: usize, selects: &mut SelectsCa
         selects.read.push((source.sequence.id, source.content));
     }
     let what = format!(
-        "{} {} clip{} from \"{}\" ({from_secs:.2}-{to_secs:.2} s) at {:.2} s",
+        "{} {} clip{} from {} ({from_secs:.2}-{to_secs:.2} s) at {:.2} s",
         if overwrite { "overwrote" } else { "inserted" },
         pasted.ids.len(),
         if pasted.ids.len() == 1 { "" } else { "s" },
-        source.sequence.name,
+        quoted(&source.sequence.name),
         secs(at),
     );
     Ok((what, EditCommand::Named { label: label.to_string(), edit: Box::new(EditCommand::Batch(edits)) }, pasted.ids))
@@ -15807,9 +15809,9 @@ mod tests {
         let folded = plan.text_folded();
         let lines: Vec<&str> = folded.lines().collect();
         assert_eq!(lines.len(), 10, "two sounds, the fold, the last, the picture, again, and the length:\n{folded}");
-        assert!(lines[0].starts_with("1-3. place whoosh.wav on track 2 at 0.00 s") && lines[0].contains("; volume -6.0 dB (was 0.0), fade in 0.05 s, fade out 0.20 s; role sfx"), "{folded}");
+        assert!(lines[0].starts_with("1-3. place \"whoosh.wav\" on track 2 at 0.00 s") && lines[0].contains("; volume -6.0 dB (was 0.0), fade in 0.05 s, fade out 0.20 s; role sfx"), "{folded}");
         assert!(lines[2].contains("7 more like these (steps 7-27): track 2 at "), "{folded}");
-        assert!(lines[4].starts_with("31. place a.mov"), "the step on two clips is its own line: {folded}");
+        assert!(lines[4].starts_with("31. place \"a.mov\""), "the step on two clips is its own line: {folded}");
         for step in plan.steps.iter().filter(|s| matches!(s.op, Op::Place { media_id, .. } if media_id == sfx)) {
             let c = &step.after[0];
             let (range, at) = (format!("{:.2}-{:.2}", c.timeline_in_secs, c.timeline_out_secs), format!("at {:.2} s", c.timeline_in_secs));
@@ -15871,8 +15873,8 @@ mod tests {
         assert_eq!(lines.len(), 5, "two, the fold, the last, the length:\n{folded}");
         assert!(lines[0].starts_with("1. ") && lines[1].starts_with("2. ") && lines[2].contains("6 more like these") && lines[3].starts_with("9. "), "{folded}");
         assert_eq!(plan.text().lines().count(), 10, "in full when asked");
-        assert_eq!(short_name("Omarchy Is Not Afraid Of AI Code [CLFeu9AcfKk].webm"), "Omarchy Is Not Afraid…webm".replace("…webm", "….webm"));
-        assert_eq!(short_name("a.mov"), "a.mov");
+        assert_eq!(short_name("Omarchy Is Not Afraid Of AI Code [CLFeu9AcfKk].webm"), "\"Omarchy Is Not Afraid….webm\"");
+        assert_eq!(short_name("a.mov"), "\"a.mov\"");
     }
 
     #[test]
@@ -16177,7 +16179,7 @@ mod tests {
         let plan = resolve_with(&seq, &pool, &again, &Spoken).unwrap();
         assert!(plan.steps[1].what.contains("in place of the 3 that were there"), "{}", plan.steps[1].what);
         // And every cue is there to be read.
-        assert!(plan.steps[1].what.contains("Nobody is afraid of / the machine."), "{}", plan.steps[1].what);
+        assert!(plan.steps[1].what.contains("\"Nobody is afraid of\\nthe machine.\""), "{}", plan.steps[1].what);
         let mut seqs = vec![seq.clone()];
         let mut p = pool.clone();
         let mut fps = seq.fps;
@@ -19140,7 +19142,7 @@ mod tests {
         assert!((plan.steps[2].after[0].timeline_out_secs - 3.0).abs() < 1e-9);
         assert!((plan.steps[2].after[0].source_out_secs - 3.0).abs() < 1e-9, "the source moves with the edge");
         let text = plan.text();
-        assert!(text.contains("1. place a.mov on track 0 at 8.00 s"), "{text}");
+        assert!(text.contains("1. place \"a.mov\" on track 0 at 8.00 s"), "{text}");
         assert!(text.contains("2. split"), "{text}");
         // The given sequence is untouched.
         assert_eq!(seq.tracks[0].clips.len(), 2);

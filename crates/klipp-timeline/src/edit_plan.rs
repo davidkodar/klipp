@@ -278,12 +278,12 @@ impl PlanLayer {
                 if let Some(p) = placement {
                     out.push_str(&format!(" at {:.2},{:.2} sized {:.2}", p.x, p.y, p.width));
                 }
-                let motion = |m: &LayerMotion, way: &str| format!(", {} {way} {:.2} s", m.kind, m.duration_secs());
+                let motion = |m: &LayerMotion, way: &str| format!(", {} {way} {:.2} s", klipp_core::quote::word(&m.kind), m.duration_secs());
                 if let Some(m) = enter { out.push_str(&motion(m, "in")); }
                 if let Some(m) = exit { out.push_str(&motion(m, "out")); }
                 out
             }
-            Self::Title { title, .. } => format!("title \"{}\"", title.text),
+            Self::Title { title, .. } => format!("title {}", klipp_core::quote::quoted(&title.text)),
             Self::Connector { from, to, reveal_secs, .. } => format!("connector {:.2},{:.2} to {:.2},{:.2}, drawn on over {:.2} s", from[0], from[1], to[0], to[1], reveal_secs.unwrap_or(0.6)),
         }
     }
@@ -410,6 +410,7 @@ impl EditPlan {
     /// where it lands, what it is, and what goes on it; then the total,
     /// against `target_secs` when the brief has one.
     pub fn text(&self, target_secs: Option<f64>) -> String {
+        use klipp_core::quote::{quoted, word};
         let mut out = Vec::new();
         out.push(if self.approved { "Edit plan (approved)".to_string() } else { "Edit plan (awaiting approval)".to_string() });
         let mut at = 0.0;
@@ -417,10 +418,10 @@ impl EditPlan {
             let d = s.duration_secs();
             let mut line = format!("{:>2}. {}  ({:.1} s)  src {:.2}-{:.2}", i + 1, clock(at), d, s.source_in_secs, s.source_out_secs);
             if !s.feature.trim().is_empty() {
-                line.push_str(&format!("  [{}]", s.feature));
+                line.push_str(&format!("  [{}]", quoted(&s.feature)));
             }
             if let Some(t) = &s.transition {
-                line.push_str(&format!("  join: {t}"));
+                line.push_str(&format!("  join: {}", word(t)));
             }
             if let Some(z) = &s.zoom {
                 line.push_str(&format!("  zoom {:.2}->{:.2}", z.from, z.to));
@@ -434,17 +435,17 @@ impl EditPlan {
                 }
             }
             if let Some(b) = &s.background {
-                line.push_str(&format!("  over {}", b.generator));
+                line.push_str(&format!("  over {}", word(&b.generator)));
             }
             if !s.section.trim().is_empty() {
-                line.push_str(&format!("  [{} section]", s.section.trim()));
+                line.push_str(&format!("  [{} section]", quoted(s.section.trim())));
             }
             out.push(line);
             if !s.note.trim().is_empty() {
-                out.push(format!("      {}", s.note.trim()));
+                out.push(format!("      note {}", quoted(s.note.trim())));
             }
             if let Some(t) = &s.title {
-                let style = if t.style.trim().is_empty() { "heading" } else { t.style.trim() };
+                let style = if t.style.trim().is_empty() { "heading".to_string() } else { word(t.style.trim()) };
                 let mut extras = Vec::new();
                 match t.full_frame {
                     Some(true) => extras.push("full-frame: covers the shot".into()),
@@ -457,8 +458,8 @@ impl EditPlan {
 
                 if let Some(a) = &t.animate {
                     extras.push(match &t.stagger {
-                        Some(st) => format!("{a} by {st}"),
-                        None => a.clone(),
+                        Some(st) => format!("{} by {}", word(a), word(st)),
+                        None => word(a),
                     });
                 }
                 if let Some(m) = &t.enter { extras.push(m.approval_text(false)); }
@@ -483,7 +484,7 @@ impl EditPlan {
                     extras.push("gradient".into());
                 }
                 let extras = if extras.is_empty() { String::new() } else { format!("  {}", extras.join(", ")) };
-                out.push(format!("      title ({style}): \"{}\"{extras}", t.text));
+                out.push(format!("      title ({style}): {}{extras}", quoted(&t.text)));
             }
             if let Some(x) = &s.sfx {
                 out.push(format!("      sfx {} at +{:.2} s", x.media_id.0, x.at_secs.unwrap_or(0.0)));
@@ -509,7 +510,7 @@ impl EditPlan {
             None => out.push(format!("Runs {:.1} s", self.duration_secs())),
         }
         if !self.notes.trim().is_empty() {
-            out.push(format!("Notes: {}", self.notes.trim()));
+            out.push(format!("Notes: {}", quoted(self.notes.trim())));
         }
         out.join("\n")
     }

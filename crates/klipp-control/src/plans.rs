@@ -665,7 +665,7 @@ pub(crate) fn font_warnings<'a>(fonts: impl Iterator<Item = &'a str>) -> Vec<Str
         .map(|f| match klipp_title::catalogue::family(&f) {
             // In the catalogue: one fetch away (#2732).
             Some(c) => format!("font \"{}\" is in Klipp's font catalogue but not fetched yet: titles in it fall back to {} until it is. Fetch it with klipp_fonts {{fetch: \"{}\"}} ({:.1} MB).", c.name, klipp_title::bundled::DEFAULT_FAMILY, c.name, c.files.iter().map(|x| x.size).sum::<u64>() as f64 / 1e6),
-            None => format!("font \"{f}\" is neither bundled nor installed: titles in it fall back to {}. klipp_fonts lists the fonts there are, and the catalogue's to fetch.", klipp_title::bundled::DEFAULT_FAMILY),
+            None => format!("font {} is neither bundled nor installed: titles in it fall back to {}. klipp_fonts lists the fonts there are, and the catalogue's to fetch.", quoted(&f), klipp_title::bundled::DEFAULT_FAMILY),
         })
         .collect()
 }

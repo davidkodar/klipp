@@ -148,7 +148,8 @@ impl TemplateInstance {
             .ok_or_else(|| format!("no control drives \"{property}\""))?;
         let control = self.control(&self.links[at].parameter);
         let link = &mut self.links[at];
-        let parameter = link.parameter.clone();
+        let parameter = crate::quote::quoted(&link.parameter);
+        let property = crate::quote::word(property);
         Ok(match action {
             LinkAction::Unlink => {
                 link.unlink(control);

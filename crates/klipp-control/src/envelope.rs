@@ -129,8 +129,8 @@ pub(crate) fn status_text(f: &StatusFacts) -> String {
     out.push_str(").\n");
     let name = f.project.and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().to_string());
     out.push_str(&match (name, f.unsaved) {
-        (Some(n), false) => format!("Project: \u{201c}{n}\u{201d}, all changes saved.\n"),
-        (Some(n), true) => format!("Project: \u{201c}{n}\u{201d}, with unsaved changes.\n"),
+        (Some(n), false) => format!("Project: {}, all changes saved.\n", quoted(&n)),
+        (Some(n), true) => format!("Project: {}, with unsaved changes.\n", quoted(&n)),
         (None, false) => "Project: a new project, not saved yet.\n".to_string(),
         (None, true) => "Project: a new project with changes, not saved yet.\n".to_string(),
     });
@@ -148,8 +148,8 @@ pub(crate) fn status_text(f: &StatusFacts) -> String {
         format!("{clips} clip{}, {} long", if clips == 1 { "" } else { "s" }, clock(seq.total_duration().to_secs_f64()))
     };
     out.push_str(&format!(
-        "Timeline: \u{201c}{}\u{201d}, {}\u{00d7}{} at {fps} fps, {pictures} picture and {sounds} sound track{}, {contents}.\n",
-        seq.name,
+        "Timeline: {}, {}\u{00d7}{} at {fps} fps, {pictures} picture and {sounds} sound track{}, {contents}.\n",
+        quoted(&seq.name),
         seq.resolution.width,
         seq.resolution.height,
         if sounds == 1 { "" } else { "s" },

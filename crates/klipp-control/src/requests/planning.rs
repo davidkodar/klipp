@@ -167,7 +167,7 @@ pub(crate) fn respond(
             let mut v = send_full_envelope(ctx, Vec::new(), vec![edit], true, None, Some("Set Edit Plan".into()))?;
             v["text"] = json!(text);
             if !missing.is_empty() {
-                v["note"] = json!(format!("the brief's features not in the plan: {}", missing.join(", ")));
+                v["note"] = json!(format!("the brief's features not in the plan: {}", missing.iter().map(|f| quoted(f)).collect::<Vec<_>>().join(", ")));
             }
             if !snapped.is_empty() {
                 v["snapped"] = json!(snapped);
@@ -330,7 +330,7 @@ pub(crate) fn respond(
                     .collect();
                 let analysed_any = pool.all().any(|m| klipp_analysis::service::status(m.id).is_some_and(|s| matches!(s.state, klipp_analysis::service::State::Done)));
                 if !lacking.is_empty() {
-                    v["note"] = json!(format!("the spellings changed and these transcripts were made without them: {}; run analyze to have them transcribed again before captions or a transcript search", lacking.join(", ")));
+                    v["note"] = json!(format!("the spellings changed and these transcripts were made without them: {}; run analyze to have them transcribed again before captions or a transcript search", lacking.iter().map(|f| quoted(f)).collect::<Vec<_>>().join(", ")));
                 } else if analysed_any {
                     v["note"] = json!("the transcripts made so far already carry these spellings; a file analysed from now on gets them too");
                 }
@@ -588,12 +588,12 @@ pub(crate) fn respond(
             let mut accepted_lines: Vec<String> = Vec::new();
             let mut keep = |i: usize, severity: &str, at: Option<f64>, what: &str, hint: &mut String| -> bool {
                 if let Some(r) = accepted_at.get(&i) {
-                    accepted_lines.push(format!("\n[accepted {severity}]{}  {what}. Why: {} (revision {})", at.map(|t| format!(" {t:.2} s")).unwrap_or_default(), r.rationale, r.revision));
+                    accepted_lines.push(format!("\n[accepted {severity}]{}  {what}. Why: {} (revision {})", at.map(|t| format!(" {t:.2} s")).unwrap_or_default(), quoted(&r.rationale), r.revision));
                     accepted.push(json!({ "id": all_ids[i], "severity": severity, "at_secs": at, "what": what, "rationale": r.rationale, "revision": r.revision }));
                     return false;
                 }
                 if let Some(r) = to_fix_at.get(&i) {
-                    hint.push_str(&format!(" (to fix: {})", r.rationale));
+                    hint.push_str(&format!(" (to fix: {})", quoted(&r.rationale)));
                 }
                 true
             };
@@ -611,7 +611,7 @@ pub(crate) fn respond(
                 .filter_map(|(i, mut f)| keep(n_craft + i, &f.0.clone(), Some(f.1), &f.2.clone(), &mut f.3).then_some(f)).collect();
             let (audio_findings, sound_ids): (Vec<SoundFinding>, Vec<String>) = std::mem::take(&mut audio_findings).into_iter().zip(sound_ids).enumerate()
                 .filter_map(|(i, (mut f, id))| {
-                    let what = format!("{}: {}", f.media, f.what);
+                    let what = format!("{}: {}", quoted(&f.media), f.what);
                     keep(n_craft + n_colour + i, f.severity, Some(f.at), &what, &mut f.hint).then_some((f, id))
                 })
                 .unzip();
@@ -666,7 +666,7 @@ pub(crate) fn respond(
                 // A group that leaves the look on purpose is said once, not
                 // as a taste finding on every shot of it (#793).
                 for name in &departing {
-                    text.push_str(&format!("\n[note] grade group \"{name}\" leaves the look on purpose: its shots are judged for faults only (clipping, crushed blacks, faces, noise), not for its colour or contrast"));
+                    text.push_str(&format!("\n[note] grade group {} leaves the look on purpose: its shots are judged for faults only (clipping, crushed blacks, faces, noise), not for its colour or contrast", quoted(name)));
                 }
                 // A shot that could not be read is not one that passed.
                 if !unread.is_empty() {
@@ -676,7 +676,7 @@ pub(crate) fn respond(
             if !audio_findings.is_empty() {
                 text.push_str("\n\nSound:");
                 for f in audio_findings.iter().filter(|f| shown(f.severity)) {
-                    text.push_str(&format!("\n[{}] {}: {}. {}", f.severity, f.media, f.what, f.hint));
+                    text.push_str(&format!("\n[{}] {}: {}. {}", f.severity, quoted(&f.media), f.what, f.hint));
                 }
             }
             if !accepted_lines.is_empty() {
@@ -689,7 +689,7 @@ pub(crate) fn respond(
                 text.push_str("\n\nReviews that no longer hold — what they judged has changed or is gone, so the finding, if it is still there, is counted again:");
                 for r in &lapsed {
                     let decision = match r.decision { klipp_timeline::ReviewDecision::Accepted => "accepted", klipp_timeline::ReviewDecision::ToFix => "to fix" };
-                    text.push_str(&format!("\n[lapsed, was {decision}]{}  {}: {}", r.at_secs.map(|t| format!(" {t:.2} s")).unwrap_or_default(), r.finding_id, r.rationale));
+                    text.push_str(&format!("\n[lapsed, was {decision}]{}  {}: {}", r.at_secs.map(|t| format!(" {t:.2} s")).unwrap_or_default(), word(&r.finding_id), quoted(&r.rationale)));
                 }
             }
             // A finding still counted carries its review, a to-fix one's,
@@ -724,10 +724,10 @@ pub(crate) fn respond(
                 return Ok(v);
             };
             let (next_undo, next_redo) = labels();
-            let mut text = format!("{} \u{201c}{step}\u{201d}.", if undo { "Undid" } else { "Redid" });
+            let mut text = format!("{} {}.", if undo { "Undid" } else { "Redid" }, quoted(&step));
             match (&next_undo, &next_redo) {
-                (Some(u), _) if undo => text.push_str(&format!(" Next undo would take back \u{201c}{u}\u{201d}.")),
-                (_, Some(r)) if !undo => text.push_str(&format!(" Next redo would put back \u{201c}{r}\u{201d}.")),
+                (Some(u), _) if undo => text.push_str(&format!(" Next undo would take back {}.", quoted(u))),
+                (_, Some(r)) if !undo => text.push_str(&format!(" Next redo would put back {}.", quoted(r))),
                 _ if undo => text.push_str(" Nothing more to undo."),
                 _ => text.push_str(" Nothing more to redo."),
             }
@@ -762,8 +762,8 @@ pub(crate) fn respond(
             };
             let mut new: Vec<klipp_timeline::FindingReview> = old.iter().filter(|r| r.finding_id != finding_id).cloned().collect();
             let text = match &review {
-                Some(r) if r.decision == klipp_timeline::ReviewDecision::Accepted => format!("Accepted {finding_id} on purpose: {rationale}. Check lists it apart from the faults until what it judged changes."),
-                Some(_) => format!("Marked {finding_id} to fix{}.", if rationale.is_empty() { String::new() } else { format!(": {rationale}") }),
+                Some(r) if r.decision == klipp_timeline::ReviewDecision::Accepted => format!("Accepted {finding_id} on purpose: {}. Check lists it apart from the faults until what it judged changes.", quoted(&rationale)),
+                Some(_) => format!("Marked {finding_id} to fix{}.", if rationale.is_empty() { String::new() } else { format!(": {}", quoted(&rationale)) }),
                 None if new.len() == old.len() => return Err(format!("{finding_id} has no review to clear")),
                 None => format!("Cleared the review of {finding_id}."),
             };
