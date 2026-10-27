@@ -248,9 +248,32 @@ function with a plain array, inside the same `ofx_guard!`.
 
 `klipp-project` draws a hard line between trusted and untrusted input.
 
+**A file from elsewhere is untrusted, even in Klipp's own format.** A
+`.klipp` project, a project or title template, a composition template,
+a recipe or a `.klipppack` may have been written by anyone, so what it
+names is checked like any import:
+
+* **File names** taken from it are joined only through
+  `path_util::inside(root, parts)` (each part one plain path component)
+  or made with `klipp_core::safe_name`, and only regular files are
+  copied, never links.
+* **Sizes**: every archive entry is read through a bounded reader
+  against a per-entry and a total cap, and an archive's file count is
+  capped; text files are read with `read_to_string_capped`.
+* **Plug-ins** (LADSPA, frei0r, CLAP, LV2) are loaded only from the
+  lists their scans of the plug-in folders found: an effect id names a
+  plug-in, it never chooses a library.
+* **Paths Klipp derives** (proxies, analysis and disk caches) are made
+  from ids and hashes. A stored one is checked against the shape Klipp
+  makes before anything is copied from it, and Klipp deletes or
+  overwrites only the files it would make itself.
+* **Times and counts** read from a file (subtitle cues, EDL channels)
+  are checked to be finite and in range before they become clips or
+  tracks.
+
 | Source | Trust | Path resolver |
 |---|---|---|
-| Our own `.klipp` load | trusted (we wrote it via `save::save_project`) | `path_util::resolve_media_path` — no traversal check |
+| A `.klipp` project | untrusted (the format is ours, the file may not be) | `path_util::resolve_media_path` for media paths, which may be absolute; derived paths as above |
 | MLT / Kdenlive import | untrusted | `path_util::safe_resolve` — rejects a relative path whose `..` escapes the project folder |
 | OTIO import (and AAF, through OTIO) | untrusted | `path_util::safe_resolve` |
 | FCPXML import | untrusted | `file://` URL decoded, then `path_util::normalize_path` (the format's paths are absolute) |
