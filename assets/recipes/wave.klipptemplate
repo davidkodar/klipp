@@ -1,0 +1,115 @@
+{
+  "format_version": 2,
+  "id": "8b6e1d3f-4c2a-4f95-a7d0-e3c9b5f2a816",
+  "name": "Wave",
+  "category": "Distort",
+  "written_by": "built-in",
+  "kind": "recipe",
+  "composition_id": "00000000-0000-0000-0000-000000000000",
+  "parameters": {
+    "amplitude": {
+      "label": "Amplitude",
+      "default": {
+        "type": "Number",
+        "value": 40.0
+      },
+      "range": {
+        "min": 0.0,
+        "max": 400.0
+      }
+    },
+    "wavelength": {
+      "label": "Wavelength",
+      "default": {
+        "type": "Number",
+        "value": 0.25
+      },
+      "range": {
+        "min": 0.02,
+        "max": 2.0
+      }
+    },
+    "speed": {
+      "label": "Speed",
+      "default": {
+        "type": "Number",
+        "value": 1.0
+      },
+      "range": {
+        "min": 0.0,
+        "max": 20.0
+      }
+    },
+    "direction": {
+      "label": "Direction",
+      "default": {
+        "type": "Enum",
+        "value": "across"
+      },
+      "choices": [
+        "across",
+        "up_down",
+        "both"
+      ]
+    }
+  },
+  "slots": {},
+  "bindings": [
+    {
+      "parameter": "amplitude",
+      "property": "node:0.amplitude"
+    },
+    {
+      "parameter": "wavelength",
+      "property": "node:0.wavelength"
+    },
+    {
+      "parameter": "speed",
+      "property": "node:0.speed"
+    },
+    {
+      "parameter": "direction",
+      "property": "node:0.direction"
+    }
+  ],
+  "graph": {
+    "ops": [
+      {
+        "op": "add",
+        "after": {
+          "anchor": "end"
+        },
+        "type": "klipp.fx.warp",
+        "params": {
+          "mode": "wave"
+        },
+        "label": "Wave"
+      }
+    ],
+    "checks": [
+      {
+        "at": [
+          0.2,
+          0.5625
+        ],
+        "channel": "green",
+        "min": 0.6,
+        "max": 1.0,
+        "says": "the patch's left edge, bent out on a crest"
+      },
+      {
+        "at": [
+          0.72,
+          0.4375
+        ],
+        "channel": "green",
+        "min": 0.6,
+        "max": 1.0,
+        "says": "its right edge, bent out on a trough"
+      }
+    ],
+    "check_with": {
+      "amplitude": 200.0
+    }
+  }
+}

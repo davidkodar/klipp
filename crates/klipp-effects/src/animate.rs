@@ -312,6 +312,7 @@ impl BuiltinEffect {
                 }
             }
             E::SurfacePin { inset, .. } => real(f, "inset", inset),
+            E::GradientMap { mix, .. } => real(f, "mix", mix),
             E::Warp { amplitude, wavelength, speed, angle, strength, radius, center_x, center_y, band, .. } => {
                 real(f, "amplitude", amplitude);
                 real(f, "wavelength", wavelength);

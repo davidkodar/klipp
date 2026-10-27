@@ -1,0 +1,245 @@
+{
+  "format_version": 2,
+  "id": "2e7c4a19-5b3d-4f80-9a61-c8d2e4f17b03",
+  "name": "Colour hold",
+  "category": "Colour",
+  "written_by": "built-in",
+  "kind": "recipe",
+  "composition_id": "00000000-0000-0000-0000-000000000000",
+  "parameters": {
+    "colour": {
+      "label": "Colour kept",
+      "default": {
+        "type": "Color",
+        "value": [
+          0.85,
+          0.12,
+          0.1,
+          1.0
+        ]
+      }
+    },
+    "range": {
+      "label": "Range",
+      "default": {
+        "type": "Number",
+        "value": 30.0
+      },
+      "range": {
+        "min": 2.0,
+        "max": 180.0
+      }
+    },
+    "softness": {
+      "label": "Softness",
+      "default": {
+        "type": "Number",
+        "value": 15.0
+      },
+      "range": {
+        "min": 0.0,
+        "max": 90.0
+      }
+    },
+    "amount": {
+      "label": "Amount",
+      "default": {
+        "type": "Number",
+        "value": 1.0
+      },
+      "range": {
+        "min": 0.0,
+        "max": 1.0
+      }
+    }
+  },
+  "slots": {},
+  "bindings": [
+    {
+      "parameter": "colour",
+      "property": "node:1.qual_hue_center",
+      "take": "hue"
+    },
+    {
+      "parameter": "range",
+      "property": "node:1.qual_hue_width"
+    },
+    {
+      "parameter": "softness",
+      "property": "node:1.qual_hue_soft"
+    },
+    {
+      "parameter": "amount",
+      "property": "node:0.red_red",
+      "link": {
+        "to": [
+          1.0,
+          0.2126
+        ]
+      }
+    },
+    {
+      "parameter": "amount",
+      "property": "node:0.red_green",
+      "link": {
+        "to": [
+          0.0,
+          0.7152
+        ]
+      }
+    },
+    {
+      "parameter": "amount",
+      "property": "node:0.red_blue",
+      "link": {
+        "to": [
+          0.0,
+          0.0722
+        ]
+      }
+    },
+    {
+      "parameter": "amount",
+      "property": "node:0.green_red",
+      "link": {
+        "to": [
+          0.0,
+          0.2126
+        ]
+      }
+    },
+    {
+      "parameter": "amount",
+      "property": "node:0.green_green",
+      "link": {
+        "to": [
+          1.0,
+          0.7152
+        ]
+      }
+    },
+    {
+      "parameter": "amount",
+      "property": "node:0.green_blue",
+      "link": {
+        "to": [
+          0.0,
+          0.0722
+        ]
+      }
+    },
+    {
+      "parameter": "amount",
+      "property": "node:0.blue_red",
+      "link": {
+        "to": [
+          0.0,
+          0.2126
+        ]
+      }
+    },
+    {
+      "parameter": "amount",
+      "property": "node:0.blue_green",
+      "link": {
+        "to": [
+          0.0,
+          0.7152
+        ]
+      }
+    },
+    {
+      "parameter": "amount",
+      "property": "node:0.blue_blue",
+      "link": {
+        "to": [
+          1.0,
+          0.0722
+        ]
+      }
+    }
+  ],
+  "graph": {
+    "ops": [
+      {
+        "op": "add",
+        "after": {
+          "anchor": "end"
+        },
+        "type": "klipp.fx.channel_mixer",
+        "label": "Everything else grey",
+        "params": {
+          "red_red": 0.2126,
+          "red_green": 0.7152,
+          "red_blue": 0.0722,
+          "green_red": 0.2126,
+          "green_green": 0.7152,
+          "green_blue": 0.0722,
+          "blue_red": 0.2126,
+          "blue_green": 0.7152,
+          "blue_blue": 0.0722
+        }
+      },
+      {
+        "op": "add_beside",
+        "at": {
+          "anchor": "source"
+        },
+        "type": "klipp.grade.qualifier",
+        "label": "The colour kept",
+        "params": {
+          "qual_enabled": true,
+          "qual_invert": true,
+          "qual_sat_low": 0.15,
+          "qual_sat_high": 1.0,
+          "qual_lum_low": 0.03,
+          "qual_lum_high": 0.97
+        }
+      },
+      {
+        "op": "connect",
+        "from": {
+          "anchor": "source"
+        },
+        "from_port": "out",
+        "to": {
+          "new": 1
+        },
+        "to_port": "in"
+      },
+      {
+        "op": "connect",
+        "from": {
+          "new": 1
+        },
+        "from_port": "out",
+        "to": {
+          "new": 0
+        },
+        "to_port": "mask"
+      }
+    ],
+    "checks": [
+      {
+        "at": [
+          0.5,
+          0.5
+        ],
+        "channel": "red",
+        "min": 0.7,
+        "max": 0.82,
+        "says": "the patch, not the colour kept, gone grey at its own brightness"
+      },
+      {
+        "at": [
+          0.12,
+          0.15
+        ],
+        "channel": "red",
+        "min": 0.55,
+        "max": 0.62,
+        "says": "the grey background, as it was"
+      }
+    ]
+  }
+}

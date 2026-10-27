@@ -135,9 +135,9 @@ fn split_screen() -> CompositionTemplate {
         vec![("line", line)],
         vec![("slot_1", "First"), ("slot_2", "Second")],
         vec![
-            TemplateBinding { parameter: "slot_1".into(), property: format!("clip:{first}.media"), link: None },
-            TemplateBinding { parameter: "slot_2".into(), property: format!("clip:{second}.media"), link: None },
-            TemplateBinding { parameter: "line".into(), property: "object:0.opacity".into(), link: Some(LinkMap { to: [0.0, 1.0], curve: klipp_core::LinkCurve::Linear, per: None }) },
+            TemplateBinding { parameter: "slot_1".into(), property: format!("clip:{first}.media"), link: None, take: None },
+            TemplateBinding { parameter: "slot_2".into(), property: format!("clip:{second}.media"), link: None, take: None },
+            TemplateBinding { parameter: "line".into(), property: "object:0.opacity".into(), link: Some(LinkMap { to: [0.0, 1.0], curve: klipp_core::LinkCurve::Linear, per: None }), take: None },
         ],
     )
 }

@@ -125,6 +125,8 @@ fn cases() -> Vec<(&'static str, BuiltinEffect)> {
         ("Mirror", Mirror { horizontal: 1, vertical: 0 }),
         ("LensDistortion", LensDistortion { distortion: 0.3, scale: 1.0 }),
         ("Displace", Displace { amount: 6.0, size: 24.0, speed: 1.0, direction: 0, seed: 3, time: 0.4 }),
+        // A ramp of three colours, mostly over the picture (#2758).
+        ("GradientMap", GradientMap { shadow: [20, 24, 60], mid: [190, 90, 70], highlight: [255, 236, 190], mix: 0.8 }),
         // Each of the Warp's shapes (#2758), moving.
         ("Warp wave", Warp { mode: 0, amplitude: 60.0, wavelength: 0.3, speed: 1.0, direction: 2, angle: 0.0, strength: 0.0, radius: 0.5, center_x: 0.5, center_y: 0.5, band: 0.04, time: 0.3 }),
         ("Warp twirl", Warp { mode: 1, amplitude: 0.0, wavelength: 0.2, speed: 0.0, direction: 0, angle: 200.0, strength: 0.0, radius: 0.6, center_x: 0.45, center_y: 0.55, band: 0.04, time: 0.0 }),

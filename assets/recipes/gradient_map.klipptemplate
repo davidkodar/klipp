@@ -1,0 +1,111 @@
+{
+  "format_version": 2,
+  "id": "5f2b8c64-3a9d-4e17-b6c1-0d8e4a7f2c95",
+  "name": "Gradient map",
+  "category": "Colour",
+  "written_by": "built-in",
+  "kind": "recipe",
+  "composition_id": "00000000-0000-0000-0000-000000000000",
+  "parameters": {
+    "shadows": {
+      "label": "Shadows",
+      "default": {
+        "type": "Color",
+        "value": [
+          0.08,
+          0.09,
+          0.24,
+          1.0
+        ]
+      }
+    },
+    "midtones": {
+      "label": "Midtones",
+      "default": {
+        "type": "Color",
+        "value": [
+          0.75,
+          0.35,
+          0.27,
+          1.0
+        ]
+      }
+    },
+    "highlights": {
+      "label": "Highlights",
+      "default": {
+        "type": "Color",
+        "value": [
+          1.0,
+          0.93,
+          0.75,
+          1.0
+        ]
+      }
+    },
+    "mix": {
+      "label": "Mix",
+      "default": {
+        "type": "Number",
+        "value": 1.0
+      },
+      "range": {
+        "min": 0.0,
+        "max": 1.0
+      }
+    }
+  },
+  "slots": {},
+  "bindings": [
+    {
+      "parameter": "shadows",
+      "property": "node:0.shadow"
+    },
+    {
+      "parameter": "midtones",
+      "property": "node:0.mid"
+    },
+    {
+      "parameter": "highlights",
+      "property": "node:0.highlight"
+    },
+    {
+      "parameter": "mix",
+      "property": "node:0.mix"
+    }
+  ],
+  "graph": {
+    "ops": [
+      {
+        "op": "add",
+        "after": {
+          "anchor": "end"
+        },
+        "type": "klipp.fx.gradient_map",
+        "label": "Gradient map"
+      }
+    ],
+    "checks": [
+      {
+        "at": [
+          0.12,
+          0.15
+        ],
+        "channel": "red",
+        "min": 0.75,
+        "max": 0.82,
+        "says": "the grey, on the ramp's warm middle"
+      },
+      {
+        "at": [
+          0.12,
+          0.15
+        ],
+        "channel": "blue",
+        "min": 0.31,
+        "max": 0.39,
+        "says": "its blue, low as the ramp's"
+      }
+    ]
+  }
+}

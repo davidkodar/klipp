@@ -2208,6 +2208,29 @@ pub enum Op {
         #[serde(default)]
         ripple: bool,
     },
+    /// The pauses in what a clip says taken out: wherever its file's
+    /// sound was measured silent for at least `min_silence` seconds,
+    /// inside `from`..`to` when given, all but `padding` seconds at each
+    /// end. Its linked sound or picture goes with it; with `ripple` (the
+    /// default) what follows closes up, so the words after stay in sync,
+    /// else the pauses are left as gaps. `smooth_cut` puts a smooth cut on
+    /// each join (ripple only). One undo. Refused on a retimed clip, and
+    /// on one whose sound has no measured silences (analyze it first).
+    RemoveSilences {
+        clip_id: ClipRef,
+        #[serde(default)]
+        from: Option<Anchor>,
+        #[serde(default)]
+        to: Option<Anchor>,
+        #[serde(default = "default_min_silence")]
+        min_silence: f64,
+        #[serde(default = "default_silence_padding")]
+        padding: f64,
+        #[serde(default = "default_true")]
+        ripple: bool,
+        #[serde(default)]
+        smooth_cut: bool,
+    },
     /// The `clips` each made `frames` long (#988): a rapid-fire montage of
     /// clips of a few frames each. `keep` says which end stays put: the
     /// start (the out point is trimmed, the default), the end, or the
@@ -2285,7 +2308,7 @@ pub const OP_NAMES: &[&str] = &[
     "slip", "slide", "pin", "role", "match", "matte", "format", "stabilize", "reframe", "zoom", "pan", "follow", "refit", "highlight",
     "ramp", "freeze", "grade_group", "remove_grade_group", "look", "qualify", "zones", "retime", "replace", "track_audio", "clip_audio", "clean_audio",
     "transition", "style", "title", "compose", "camera", "crop", "generator", "depth", "label", "motion_blur",
-    "strobe", "set_length", "over_edits", "template", "template_link", "recipe", "edit_from_selects", "opacity_mask",
+    "strobe", "remove_silences", "set_length", "over_edits", "template", "template_link", "recipe", "edit_from_selects", "opacity_mask",
 ];
 
 pub use klipp_timeline::ShadowSpec;
@@ -2959,6 +2982,16 @@ impl Transcripts for NoTranscripts {
     }
 }
 
+/// The shortest pause remove_silences takes out, seconds.
+fn default_min_silence() -> f64 {
+    0.5
+}
+
+/// What remove_silences leaves of a pause at each end, seconds.
+fn default_silence_padding() -> f64 {
+    0.15
+}
+
 fn default_true() -> bool {
     true
 }
@@ -3539,6 +3572,10 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
         Op::Strobe { clip_id, piece_frames, from, to, on, off, ripple } => {
             let (ops, what) = strobe_ops(seq, fps, i, clip_id, *piece_frames, from.as_ref(), to.as_ref(), *on, *off, *ripple)?;
             as_one_step(seq, pool, i, transcripts, &ops, "Strobe", what)
+        }
+        Op::RemoveSilences { clip_id, from, to, min_silence, padding, ripple, smooth_cut } => {
+            let (ops, what) = remove_silences_ops(seq, pool, fps, i, transcripts, clip_id, from.as_ref(), to.as_ref(), *min_silence, *padding, *ripple, *smooth_cut)?;
+            as_one_step(seq, pool, i, transcripts, &ops, "Remove Silences", what)
         }
         Op::SetLength { clips, frames, keep, ripple } => {
             let (ops, what) = set_length_ops(seq, fps, i, clips, *frames, *keep, *ripple)?;
@@ -13159,6 +13196,104 @@ fn strobe_ops(seq: &Sequence, fps: Fps, i: usize, clip_ref: &ClipRef, piece: i64
     Ok((ops, what))
 }
 
+/// The splits and removals that take the measured pauses out of a clip,
+/// with a smooth cut on each join when asked, and what that is in words.
+/// Each pause keeps `padding` at its ends, rounded to whole frames inward
+/// so the padding is never short; removals run from the last back, so a
+/// ripple never moves a pause still to go.
+#[allow(clippy::too_many_arguments)]
+fn remove_silences_ops(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, transcripts: &dyn Transcripts, clip_ref: &ClipRef, from: Option<&Anchor>, to: Option<&Anchor>, min_silence: f64, padding: f64, ripple: bool, smooth_cut: bool) -> Result<(Vec<Op>, String), Refusal> {
+    if !min_silence.is_finite() || !(0.05..=60.0).contains(&min_silence) || !padding.is_finite() || !(0.0..=5.0).contains(&padding) {
+        return Err(refuse(i, "a pause's length and its padding are seconds", "give min_silence from 0.05 to 60 and padding from 0 to 5"));
+    }
+    if smooth_cut && !ripple {
+        return Err(refuse(i, "a smooth cut joins two shots, and without ripple the pauses are left as gaps", "ask for ripple, or no smooth cut"));
+    }
+    let (ti, _, clip) = resolve_clip(seq, fps, clip_ref, i)?;
+    if seq.tracks[ti].locked {
+        return Err(refuse(i, format!("track {ti} is locked"), "unlock it first"));
+    }
+    let ClipKind::Media { media_id } = &clip.kind else {
+        return Err(refuse(i, format!("{} is not a clip from a file", clip_name(seq, pool, clip)), "take the pauses out of a clip with sound"));
+    };
+    if (clip.speed - 1.0).abs() > 1e-6 || !clip.speed_keyframes.is_empty() || clip.hold.is_some() || clip.is_reversed() {
+        return Err(refuse(i, format!("{} is retimed, so its file's pauses don't land on its frames", clip_name(seq, pool, clip)), "take the pauses out before the retime"));
+    }
+    let item = pool.get(media_id).ok_or_else(|| refuse(i, format!("no media item {}", media_id.0), "media ids are in list_media"))?;
+    let silences = transcripts.silences(item);
+    if silences.is_empty() {
+        return Err(refuse(i, format!("{}'s sound has no measured silences", clip_name(seq, pool, clip)), "analyze its media (audio) first; a clip with no pauses has none to take out"));
+    }
+    let rate = fps.as_f64();
+    let frame = |t: Timecode| (secs(t) * rate).round() as i64;
+    let (clip_in, clip_out) = (frame(clip.timeline_in), frame(clip.timeline_out));
+    let a = match from {
+        Some(x) => frame(resolve_anchor(seq, fps, x, i)?).max(clip_in),
+        None => clip_in,
+    };
+    let b = match to {
+        Some(x) => frame(resolve_anchor(seq, fps, x, i)?).min(clip_out),
+        None => clip_out,
+    };
+    if b <= a {
+        return Err(refuse(i, "the stretch to tighten is not inside the clip", "give from and to within the clip, from before to"));
+    }
+    // A file second as a timeline frame, rounded inward (up for a
+    // pause's start, down for its end).
+    let (src_in, tl_in) = (secs(clip.source_in), secs(clip.timeline_in));
+    let at = |s: f64| (s - src_in + tl_in) * rate;
+    let mut pauses: Vec<(i64, i64)> = silences
+        .iter()
+        .filter(|(s, e)| e - s >= min_silence)
+        .map(|&(s, e)| ((at(s + padding) - 1e-6).ceil() as i64, (at(e - padding) + 1e-6).floor() as i64))
+        .map(|(s, e)| (s.max(a), e.min(b)))
+        .filter(|(s, e)| e > s)
+        .collect();
+    pauses.sort_unstable();
+    pauses.dedup();
+    if pauses.is_empty() {
+        return Err(refuse(i, format!("no pause of {min_silence} s or more in {}", clip_name(seq, pool, clip)), "give a shorter min_silence, or a clip with pauses"));
+    }
+    let place = |f: i64, half: f64| ClipRef::At { track: ti, secs: (f as f64 + half) / rate };
+    let mut ops = Vec::new();
+    for &(s, e) in &pauses {
+        if s > clip_in {
+            ops.push(Op::Split { clip_id: place(s, -0.5), at: Anchor::Frame(s) });
+        }
+        if e < clip_out {
+            ops.push(Op::Split { clip_id: place(e, -0.5), at: Anchor::Frame(e) });
+        }
+    }
+    // A pause's first frame, and a join's last frame before it: on a frame,
+    // so no rounding lands on the clip next to it.
+    ops.extend(pauses.iter().rev().map(|&(s, _)| Op::Remove { clip_id: place(s, 0.0), ripple, linked: true }));
+    // Each join where it lands once the pauses before it are gone, from
+    // the last back: a smooth cut overlaps the clips at its join, which
+    // would move what a later one finds there.
+    if smooth_cut {
+        let total: i64 = pauses.iter().map(|(s, e)| e - s).sum();
+        let mut gone = 0;
+        let mut joins = Vec::new();
+        for &(s, e) in &pauses {
+            joins.push(s - gone);
+            gone += e - s;
+        }
+        let end = clip_out - total;
+        ops.extend(joins.into_iter().rev().filter(|&j| j > clip_in && j < end).map(|j| Op::Transition { clip_id: place(j - 1, 0.0), kind: "smooth_cut".into(), secs: default_transition_secs(), remove: false, pieces: None, color: None }));
+    }
+    let removed: i64 = pauses.iter().map(|(s, e)| e - s).sum();
+    let what = format!(
+        "take {} pause{} out of {}, {:.2} s in all{}{}",
+        pauses.len(),
+        if pauses.len() == 1 { "" } else { "s" },
+        clip_name(seq, pool, clip),
+        removed as f64 / rate,
+        if ripple { ", what follows closed up" } else { ", the gaps left" },
+        if smooth_cut { ", a smooth cut on each join" } else { "" }
+    );
+    Ok((ops, what))
+}
+
 /// The trims that make each clip `frames` long (#988), and what that is in
 /// words. Each trim is anchored on the clip's own start or end as it
 /// stands when the trim runs, so a ripple before it moves it right.
@@ -13637,7 +13772,7 @@ mod tests {
         card.tracks[0].clips.push(Clip { kind: ClipKind::Title(title), ..Clip::gap(tc(0.0), tc(3.0)) });
         let mut t = CompositionTemplate::new("Card", card.id.0);
         t.parameters.insert("text".into(), TemplateParameter { label: "Headline".into(), default: klipp_core::TemplateValue::Text("Launch".into()), range: None, choices: vec![] });
-        t.bindings.push(TemplateBinding { parameter: "text".into(), property: "object:0.text".into(), link: None });
+        t.bindings.push(TemplateBinding { parameter: "text".into(), property: "object:0.text".into(), link: None, take: None });
         t.sequences = vec![card.clone()];
         let placed = PlacedComposition { template: t, missing: vec![card.clone()] };
         let op = |fields: serde_json::Value| Op::Template { name: "Card".into(), at: Anchor::Secs(1.0), secs: 3.0, track: None, fields: serde_json::from_value(fields).unwrap(), data: None, composition: Some(Box::new(placed.clone())) };
@@ -13697,7 +13832,7 @@ mod tests {
         card.tracks[0].clips.push(Clip::media(MediaId::new(), tc(0.0), tc(3.0), tc(0.0), tc(3.0)));
         let mut t = CompositionTemplate::new("Photo card", card.id.0);
         t.slots.insert("slot_1".into(), TemplateSlot { label: "Photo".into(), kind: SlotKind::Media });
-        t.bindings.push(TemplateBinding { parameter: "slot_1".into(), property: "clip:0.media".into(), link: None });
+        t.bindings.push(TemplateBinding { parameter: "slot_1".into(), property: "clip:0.media".into(), link: None, take: None });
         t.sequences = vec![card.clone()];
         let op = |t: &CompositionTemplate, fields: serde_json::Value| Op::Template { name: "Photo card".into(), at: Anchor::Secs(1.0), secs: 3.0, track: None, fields: serde_json::from_value(fields).unwrap(), data: None, composition: Some(Box::new(PlacedComposition { template: t.clone(), missing: vec![card.clone()] })) };
         let plan = resolve(&seq, &pool, &[op(&t, serde_json::json!({ "Photo": media.0.to_string() }))]).unwrap();
@@ -14676,6 +14811,94 @@ mod tests {
             };
             Some([say(0.5, "Nobody is afraid of the machine."), say(4.4, "What changed it for me was agents, and that is the long and the short of it."), say(9.0, "Never used.")].concat())
         }
+    }
+
+    /// A talking clip with three measured pauses (file seconds): 1.5 s,
+    /// 0.4 s and 1.2 s long, between words.
+    struct Paused;
+
+    impl Transcripts for Paused {
+        fn words(&self, _item: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>> {
+            let w = |a: f64, b: f64| SpokenWord { start_secs: a, end_secs: b, text: " word".into(), confidence: 1.0 };
+            Some(vec![w(0.1, 0.9), w(2.6, 3.9), w(4.45, 5.9), w(7.3, 7.9)])
+        }
+        fn silences(&self, _item: &klipp_media::MediaItem) -> Vec<(f64, f64)> {
+            vec![(1.0, 2.5), (4.0, 4.4), (6.0, 7.2)]
+        }
+    }
+
+    /// Remove silences takes out exactly the measured pauses of at least
+    /// the minimum, each but its padding (to whole frames, inward), from
+    /// the picture and its linked sound together; the short pause stays;
+    /// what follows closes up, so every word is whole and lands its old
+    /// time less what was taken before it. One undo puts it back; a smooth
+    /// cut goes on each join when asked; a retimed clip, one with nothing
+    /// measured and nonsense lengths are refused.
+    #[test]
+    fn remove_silences_takes_out_the_measured_pauses_and_keeps_the_words_in_sync() {
+        let mut seq = Sequence::new_default();
+        seq.fps = Fps::new(25, 1);
+        let mut pool = MediaPool::new();
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/talk.mov".into(), None);
+        item.duration = tc(8.0);
+        item.has_audio = true;
+        let media = pool.add(item);
+        let mut v = Clip::media(media, tc(0.0), tc(8.0), tc(0.0), tc(8.0));
+        let mut a = Clip::media(media, tc(0.0), tc(8.0), tc(0.0), tc(8.0));
+        (v.linked_clip_id, a.linked_clip_id) = (Some(a.id), Some(v.id));
+        let id = v.id;
+        let mut vt = Track::new("V1", TrackKind::Video);
+        vt.clips = vec![v];
+        let mut at = Track::new("A1", TrackKind::Audio);
+        at.clips = vec![a];
+        seq.tracks = vec![vt, at];
+        let op = |ripple, smooth_cut| Op::RemoveSilences { clip_id: ClipRef::Id(id), from: None, to: None, min_silence: 0.5, padding: 0.15, ripple, smooth_cut };
+        let plan = resolve_with(&seq, &pool, &[op(true, false)], &Paused).unwrap_or_else(|r| panic!("{r:?}"));
+        assert_eq!(plan.steps.len(), 1, "one undo");
+        let mut seqs = vec![seq.clone()];
+        let (mut p, mut fps) = (pool.clone(), seq.fps);
+        crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps }.apply_forward(&plan.steps[0].edit);
+        let after = &seqs[0];
+        // Frames of 1/25 s: 1.15 → frame 29 (1.16), 2.35 → 58 (2.32); 6.15 →
+        // 154 (6.16), 7.05 → 176 (7.04): 29 + 22 frames taken.
+        let pieces = |t: usize| after.tracks[t].clips.iter().map(|c| (secs(c.source_in), secs(c.source_out), secs(c.timeline_in), secs(c.timeline_out))).collect::<Vec<_>>();
+        let near = |a: f64, b: f64| (a - b).abs() < 1e-6;
+        let want = [(0.0, 1.16, 0.0, 1.16), (2.32, 6.16, 1.16, 5.0), (7.04, 8.0, 5.0, 5.96)];
+        for t in 0..2 {
+            let got = pieces(t);
+            assert_eq!(got.len(), 3, "track {t}: {got:?}");
+            for (g, w) in got.iter().zip(want) {
+                assert!(near(g.0, w.0) && near(g.1, w.1) && near(g.2, w.2) && near(g.3, w.3), "track {t}: {g:?}, want {w:?}");
+            }
+        }
+        assert!(near(secs(after.total_duration()), 5.96), "8 s less 2.04 s");
+        // The 0.4 s pause, under the minimum, is still there whole.
+        assert!(pieces(0)[1].0 <= 4.0 && pieces(0)[1].1 >= 4.4, "the short pause kept");
+        // Every word whole, at its old time less what was taken before it.
+        for w in Paused.words(pool.get(&media).unwrap()).unwrap() {
+            let piece = pieces(0).into_iter().find(|p| p.0 <= w.start_secs && w.end_secs <= p.1).unwrap_or_else(|| panic!("the word at {} is cut", w.start_secs));
+            let taken = if w.start_secs > 7.0 { 2.04 } else if w.start_secs > 2.0 { 1.16 } else { 0.0 };
+            assert!(near(piece.2 + (w.start_secs - piece.0), w.start_secs - taken), "the word at {} lands {} s earlier", w.start_secs, taken);
+        }
+        // One undo puts the clip back whole.
+        crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps }.apply_inverse(&plan.steps[0].edit);
+        assert_eq!(seqs[0].tracks[0].clips.len(), 1);
+        assert!(near(secs(seqs[0].total_duration()), 8.0));
+        // A smooth cut on each of the two joins.
+        let smooth = resolve_with(&seq, &pool, &[op(true, true)], &Paused).unwrap_or_else(|r| panic!("{r:?}"));
+        let mut s2 = vec![seq.clone()];
+        crate::apply::DocumentView { sequences: &mut s2, active: 0, media_pool: &mut p, fps: &mut fps }.apply_forward(&smooth.steps[0].edit);
+        let smooth_joins = s2[0].tracks[0].transitions.iter().filter(|t| t.kind == klipp_core::TransitionKind::SmoothCut).count();
+        assert_eq!(smooth_joins, 2, "a smooth cut on each join");
+        // Refused: a smooth cut without ripple, nonsense lengths, nothing measured, a retimed clip.
+        assert!(resolve_with(&seq, &pool, &[op(false, true)], &Paused).is_err());
+        let bad = Op::RemoveSilences { clip_id: ClipRef::Id(id), from: None, to: None, min_silence: f64::NAN, padding: 0.15, ripple: true, smooth_cut: false };
+        assert!(resolve_with(&seq, &pool, &[bad], &Paused).is_err());
+        let why = resolve_with(&seq, &pool, &[op(true, false)], &NoTranscripts).unwrap_err().why;
+        assert!(why.contains("no measured silences"), "{why}");
+        let mut fast = seq.clone();
+        fast.tracks[0].clips[0].speed = 2.0;
+        assert!(resolve_with(&fast, &pool, &[op(true, false)], &Paused).unwrap_err().why.contains("retimed"));
     }
 
     #[test]

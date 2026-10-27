@@ -756,6 +756,9 @@ exist until the plan runs.
   sliver is left. With `ripple` the gaps close up; without, they stay
   black. The linked sound is cut with it; one undo step. `check` reads
   it as one strobe, a note, not its gaps and pieces as black and flashes.
+- `remove_silences {clip_id, from?, to?, min_silence?, padding?, ripple?, smooth_cut?}`:
+  the measured pauses taken out of a clip (its file's sound analysed),
+  each but its padding; one undo.
 - `set_length {clips, frames, keep?, ripple?}`: each clip made `frames`
   long, keeping its `start` (the default), `end` or `centre`; with
   `ripple` what follows closes up or makes room. A rapid-fire montage is
