@@ -305,6 +305,73 @@ The PNGs themselves are RGBA8 at the project's preview resolution.
 `load_grade_stills` caps the number of entries at `MAX_STILLS` so a
 malformed `stills.json` can't DoS the project loader.
 
+## Template files
+
+Templates live outside projects, in the user's config folder, one JSON
+file each. The structs are in `klipp-timeline` and `klipp-core`.
+
+### `.klipptitle` — a title template
+
+`{name, category, written_by, format: 1, data}`, `data` being the
+title (`TitleData`) with its published fields. A file of a newer
+`format` is left out, not guessed at.
+
+### `.klipptemplate` — a composition template or a recipe
+
+`CompositionTemplate`, `format_version: 2` (format 1 only named its
+composition and is refused with a hint to save it again):
+
+* `id`, `name`, `category`, `written_by`.
+* `kind` — `composition` (the default, left out) or `recipe`.
+* `composition_id` and `sequences` — a composition carries its
+  sequence and every sequence it nests, so it inserts into any project.
+* `graph` — a recipe's `{ops, checks}` instead: graph ops addressed
+  from anchors or `{"new": k}`, and the harness's checks.
+* `parameters` — by name: `{label, default, range?, choices}`, the
+  default a `TemplateValue` (`Text`, `Color`, `Number`, `Bool`, `Enum`).
+* `slots` — by name: `{label, kind}`, kind `media`, `clip`, `title`,
+  `subject_matte` or `colour`.
+* `bindings` — `{parameter, property, link?}`: a parameter or slot to a
+  property path (`object:<i>.text|color|font|picture|size|opacity|…`,
+  `clip:<n>.media`, `node:<op>.<param>`). With `link: {to: [a, b],
+  curve}` the parameter is a macro control: its range maps onto `to`
+  on `linear`, `ease_in`, `ease_out` or `ease_in_out`.
+
+### The placed instance
+
+A placed composition is a clip of kind `TemplatePrecomposition
+{sequence_id, template_instance}`; a placed recipe keeps a
+`RecipeInstance {name, instance, nodes}` on the node frame round its
+nodes. `TemplateInstance` is:
+
+* `template_id`, `bindings` (plain ones, by parameter), `overrides`
+  (each parameter's value; a control's value is a `Number`),
+  `media_slots` (slot name → media id).
+* `links` — one per controlled property: `{parameter, property, from,
+  to, curve, offset, linked, frozen}`. While `linked`, the property is
+  the control's value mapped from `from` to `to` on the curve, plus
+  `offset` (what a hand edit left). Unlinked, it is `frozen`, the
+  value it had. Relinking sets the offset that keeps that value.
+
+### `.klipppack` — a template pack
+
+A zip (stored):
+
+* `pack.json` — `{format: 1, name, written_by, titles, templates,
+  fonts, pictures}`: `titles` are `.klipptitle` contents, `templates`
+  `.klipptemplate` contents (compositions and recipes), whole. `fonts`
+  lists each family used: `{family, catalogue: true}`, fetched by name
+  where the pack is used, or `{family, files, licence}` carried in it.
+  `pictures` lists `{file, licence}`.
+* `assets/pictures/<n>-<name>` and `<file>.licence.txt` — each picture
+  a template draws; the templates' image paths point here.
+* `assets/fonts/<family>/` — a carried font's files and `LICENCE.txt`.
+
+Import writes the templates to the user's folders, the pictures to
+`template_assets/<pack>/` (repointing the templates at them) and
+carried fonts to `<fonts>/packs/<family>/`. Code:
+`crates/klipp-project/src/template_pack.rs`.
+
 ## Versioning & forward-compatibility
 
 * `version` is a single string ("1" today). Bumped on incompatible
