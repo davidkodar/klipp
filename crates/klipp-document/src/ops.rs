@@ -1147,6 +1147,22 @@ pub enum Op {
         #[serde(default)]
         value: Option<f64>,
     },
+    /// A recipe (#2758) built into `clip_id`'s picture: a node group from
+    /// its file, its slots filled and its controls set from `slots` and
+    /// `controls` (by name or label), as one undo step. title_templates
+    /// lists the recipes with their slots and controls.
+    Recipe {
+        clip_id: ClipRef,
+        name: String,
+        #[serde(default)]
+        slots: std::collections::BTreeMap<String, serde_json::Value>,
+        #[serde(default)]
+        controls: std::collections::BTreeMap<String, serde_json::Value>,
+        /// What builds it into a clip, bound by whoever resolves the op
+        /// (the socket, which reads the recipe files): never sent.
+        #[serde(skip)]
+        build: Option<RecipeBuilder>,
+    },
     /// A lower third: `name`, and `role` under it, bottom left inside
     /// title-safe, for `secs` from `at`, fading in and out. It goes on a
     /// text track where it fits (one is made on top if none does).
@@ -2261,7 +2277,7 @@ pub const OP_NAMES: &[&str] = &[
     "slip", "slide", "pin", "role", "match", "matte", "format", "stabilize", "reframe", "zoom", "pan", "follow", "refit", "highlight",
     "ramp", "freeze", "grade_group", "remove_grade_group", "look", "qualify", "zones", "retime", "replace", "track_audio", "clip_audio", "clean_audio",
     "transition", "style", "title", "compose", "camera", "crop", "generator", "depth", "label", "motion_blur",
-    "strobe", "set_length", "over_edits", "template", "template_link", "edit_from_selects", "opacity_mask",
+    "strobe", "set_length", "over_edits", "template", "template_link", "recipe", "edit_from_selects", "opacity_mask",
 ];
 
 pub use klipp_timeline::ShadowSpec;
@@ -4112,6 +4128,13 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
         Op::TemplateLink { clip_id, control, target, action, value } => {
             let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             template_link(i, clip, control.as_deref(), target.as_deref(), action.as_deref(), *value)
+        }
+        Op::Recipe { clip_id, name, build, .. } => {
+            let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            let build = build.as_ref().ok_or_else(|| refuse(i, format!("there is no recipe \"{name}\""), "title_templates lists the recipes"))?;
+            let ops = (build.0)(seq, clip.id).map_err(|why| refuse(i, why, "title_templates lists each recipe's slots and controls"))?;
+            let edit = clip.clone().apply_picture_ops(&ops).map_err(|why| refuse(i, format!("the recipe \"{name}\" doesn't fit this clip's picture: {why}"), "report it"))?;
+            Ok((format!("{name} on the clip"), EditCommand::PictureEdit { clip_id: clip.id, description: "Recipe", edit: Box::new(edit) }, vec![clip.id]))
         }
         Op::AddTrack { kind, name } => {
             let want = track_kind(kind).ok_or_else(|| refuse(i, format!("\"{kind}\" is not a track kind"), "use video, audio, text or subtitle"))?;
@@ -6620,6 +6643,23 @@ fn caption_animation(a: &AnimateSpec, i: usize) -> Result<klipp_timeline::Captio
 pub struct PlacedComposition {
     pub template: klipp_timeline::composition_template::CompositionTemplate,
     pub missing: Vec<Sequence>,
+}
+
+/// What builds a recipe into a clip's picture (#2758): the graph ops
+/// for the clip it is given, in the sequence as it stands.
+#[derive(Clone)]
+pub struct RecipeBuilder(pub std::sync::Arc<dyn Fn(&Sequence, ClipId) -> Result<Vec<klipp_graph_lift::ops::GraphOp>, String> + Send + Sync>);
+
+impl std::fmt::Debug for RecipeBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RecipeBuilder")
+    }
+}
+
+impl PartialEq for RecipeBuilder {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
 }
 
 impl PartialEq for PlacedComposition {

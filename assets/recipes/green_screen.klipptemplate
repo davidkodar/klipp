@@ -1,0 +1,103 @@
+{
+  "format_version": 2,
+  "id": "5b0f2d3e-8a41-4c6e-9f27-1d3c5e7a9b02",
+  "name": "Green screen",
+  "category": "Keying",
+  "written_by": "built-in",
+  "kind": "recipe",
+  "composition_id": "00000000-0000-0000-0000-000000000000",
+  "parameters": {
+    "tolerance": {
+      "label": "Tolerance",
+      "default": {
+        "type": "Number",
+        "value": 0.2
+      },
+      "range": {
+        "min": 0.0,
+        "max": 1.0
+      }
+    },
+    "softness": {
+      "label": "Softness",
+      "default": {
+        "type": "Number",
+        "value": 0.1
+      },
+      "range": {
+        "min": 0.0,
+        "max": 1.0
+      }
+    },
+    "spill": {
+      "label": "Spill",
+      "default": {
+        "type": "Number",
+        "value": 0.6
+      },
+      "range": {
+        "min": 0.0,
+        "max": 1.0
+      }
+    }
+  },
+  "slots": {
+    "screen": {
+      "label": "Screen colour",
+      "kind": "colour"
+    }
+  },
+  "bindings": [
+    {
+      "parameter": "screen",
+      "property": "node:0.key_color"
+    },
+    {
+      "parameter": "tolerance",
+      "property": "node:0.tolerance"
+    },
+    {
+      "parameter": "softness",
+      "property": "node:0.spill"
+    },
+    {
+      "parameter": "spill",
+      "property": "node:0.spill_strength"
+    }
+  ],
+  "graph": {
+    "ops": [
+      {
+        "op": "add",
+        "after": {
+          "anchor": "end"
+        },
+        "type": "klipp.fx.chroma_key",
+        "label": "Green screen",
+        "params": {
+          "spill_method": "channel_clamp"
+        }
+      }
+    ],
+    "checks": [
+      {
+        "at": [
+          0.5,
+          0.5
+        ],
+        "channel": "alpha",
+        "max": 0.02,
+        "says": "the screen is keyed clear"
+      },
+      {
+        "at": [
+          0.1,
+          0.1
+        ],
+        "channel": "alpha",
+        "min": 0.98,
+        "says": "round the screen stays opaque"
+      }
+    ]
+  }
+}

@@ -29,6 +29,7 @@ pub mod graph_wire;
 mod graph_model;
 mod graph_masks;
 mod graph_prepare;
+pub mod recipes;
 mod graph_read;
 mod graph_request;
 mod envelope;

@@ -75,7 +75,10 @@ pub(crate) fn parameter(node: &Node, key: &str, value: &Value) -> Result<ParamVa
     let p = desc.params.iter().find(|p| p.key == key && !p.derived).ok_or_else(|| format!("unknown or derived parameter {key}"))?;
     // The graph engine currently writes a flat saved field. Refuse aliases,
     // nested fields and array components instead of reporting a silent no-op.
-    if p.key != p.field || p.index.is_some() || p.field.contains('.') {
+    // A keyframe alias (a chroma key's `spill` for its `soft_edge`) is
+    // written to its field by the effect's own setter.
+    let aliased = p.key != p.field && node.type_id.as_str() == types::LEGACY_EFFECT;
+    if (p.key != p.field && !aliased) || p.index.is_some() || p.field.contains('.') {
         return Err(format!("{key} needs a saved-field adapter before it can be set through graph operations"));
     }
     let wrong = || format!("{key} expects {:?}", p.kind);
@@ -108,10 +111,38 @@ pub(crate) fn parameter(node: &Node, key: &str, value: &Value) -> Result<ParamVa
             if stored.is_some_and(Value::is_string) { Ok(ParamValue::Text(choice.into())) }
             else { Ok(ParamValue::Enum(at as u32)) }
         }
+        // An effect's colour (#2758), sRGB from 0 to 1 as the effect holds
+        // it: `[r, g, b]`, `[r, g, b, a]` (its alpha unused) or `#rrggbb`.
+        ParamKind::Colour if node.type_id.as_str() == types::LEGACY_EFFECT => {
+            let hex = value.as_str().and_then(|s| s.strip_prefix('#')).filter(|h| h.len() == 6);
+            let rgb: Vec<f32> = match hex {
+                Some(h) => (0..3).map(|i| u8::from_str_radix(&h[2 * i..2 * i + 2], 16).map(|b| b as f32 / 255.0)).collect::<Result<_, _>>().map_err(|_| wrong())?,
+                None => value.as_array().ok_or_else(wrong)?.iter().map(|c| c.as_f64().map(|c| c as f32)).collect::<Option<_>>().ok_or_else(wrong)?,
+            };
+            match rgb.as_slice() {
+                [r, g, b] | [r, g, b, _] if [r, g, b].iter().all(|c| (0.0..=1.0).contains(*c)) => {
+                    Ok(ParamValue::Color { rgb: [*r, *g, *b], space: klipp_graph_lift::effect_params::SRGB.into() })
+                }
+                _ => Err(format!("{key} takes [r, g, b] from 0 to 1, or \"#rrggbb\"")),
+            }
+        }
+        // An effect's text, as a media source's media id (#2758): a field
+        // the effect stores as text takes text.
+        ParamKind::Other if node.type_id.as_str() == types::LEGACY_EFFECT && value.is_string() && effect_stores_text(node, p.field) => {
+            Ok(ParamValue::Text(value.as_str().unwrap_or_default().into()))
+        }
         ParamKind::Colour | ParamKind::Other => Err(format!("{key} requires its native editor until its value has a typed graph representation")),
     }
 }
 
+
+/// Whether the effect node `node` stores `field` as text.
+fn effect_stores_text(node: &Node, field: &str) -> bool {
+    klipp_graph_lift::effect_params::tag(node)
+        .and_then(klipp_effects::registry::effect_type)
+        .and_then(|t| serde_json::to_value((t.sample)()).ok())
+        .is_some_and(|sample| sample.get(field).is_some_and(Value::is_string))
+}
 
 /// A frei0r effect's entry with its plug-in (`type_id`, "frei0r:<path>:<name>")
 /// or its values (`params`, `[{"Double": 0.5}, ...]` in the plug-in's
@@ -160,10 +191,14 @@ mod tests {
         assert!(parameter(&radial, "mode", &json!("not a mode")).is_err());
     }
 
+    /// An effect's keyframe alias (a chroma key's `spill`) is taken: the
+    /// effect's own setter writes it to its field (`soft_edge`), which
+    /// `recipes::tests::the_recipe_op_is_one_picture_step` reads back. A
+    /// grade node's alias is still refused.
     #[test]
-    fn aliases_do_not_report_success_for_an_ignored_saved_key() {
+    fn an_effects_alias_is_taken_for_its_field() {
         let node = new_node("klipp.fx.chroma_key", uuid::Uuid::new_v4(), None).unwrap();
-        assert!(parameter(&node, "spill", &json!(0.2)).unwrap_err().contains("saved-field adapter"));
+        assert_eq!(parameter(&node, "spill", &json!(0.2)).unwrap(), ParamValue::Float(0.2));
     }
 
     /// A frei0r node added by its registry id takes its plug-in and its

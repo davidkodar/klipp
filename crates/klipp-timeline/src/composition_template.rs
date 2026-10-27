@@ -99,6 +99,19 @@ pub struct LinkMap {
     pub to: [f64; 2],
     #[serde(default)]
     pub curve: klipp_core::LinkCurve,
+    /// A recipe's link onto a size in pixels (#2758): `to` is a fraction
+    /// of the frame's width or height, made pixels for the sequence the
+    /// recipe is placed in, so it places the same at any size.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub per: Option<FrameSide>,
+}
+
+/// A side of the frame a recipe's link is measured against (#2758).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FrameSide {
+    Width,
+    Height,
 }
 
 /// The instance a placed `template` starts as (#2757): plain bindings by
@@ -147,6 +160,187 @@ pub struct CompositionTemplate {
     /// The same slots a Composite recipe declares (#2758).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub slots: BTreeMap<String, TemplateSlot>,
+    /// A composition placed as a clip, or a recipe built into a clip's
+    /// picture (#2758).
+    #[serde(default, skip_serializing_if = "TemplateKind::is_composition")]
+    pub kind: TemplateKind,
+    /// A recipe's graph (#2758): what placing it adds to the clip's
+    /// picture. `None` for a composition.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph: Option<RecipeGraph>,
+}
+
+/// What a template file holds (#2758): a composition, placed as a clip
+/// of its own, or a recipe, a node group with slots and controls built
+/// into a clip's picture. One file format, one store, one listing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TemplateKind {
+    #[default]
+    Composition,
+    Recipe,
+}
+
+impl TemplateKind {
+    pub fn is_composition(&self) -> bool {
+        *self == TemplateKind::Composition
+    }
+}
+
+/// A recipe's graph (#2758): the graph ops a `klipp_graph` batch takes
+/// (add, add_beside, connect, set...), with each path either
+/// `{"anchor": <name>}`, a node of the clip's picture named for what it is
+/// ([`ANCHORS`]), or `{"new": k}`, the node op `k` added. A binding
+/// `node:<k>.<param>` sets parameter `param` of the node op `k` adds.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecipeGraph {
+    pub ops: Vec<serde_json::Value>,
+    /// What the recipe harness measures of it (#2758), on its test shot.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checks: Vec<RecipeCheck>,
+}
+
+/// One measured check of a recipe (#2758), as data: the frame the recipe
+/// harness draws with the recipe placed on its test shot (a grey frame,
+/// a green patch over its middle fifth to four fifths, `[0.3, 0.7]` both
+/// ways; a media slot holds a red picture, a colour slot the patch's
+/// green), read at `at` (fractions of the frame) in `channel`, from 0 to
+/// 1, lies within `[min, max]`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecipeCheck {
+    pub at: [f32; 2],
+    #[serde(default)]
+    pub channel: klipp_core::ViewChannel,
+    #[serde(default)]
+    pub min: f32,
+    #[serde(default = "one")]
+    pub max: f32,
+    /// What it shows, said when it fails.
+    pub says: String,
+}
+
+fn one() -> f32 {
+    1.0
+}
+
+/// The nodes of a clip's picture a recipe attaches to (#2758): its
+/// source, its grade, its display step, and the end of its chain (what
+/// feeds the placement, or the output).
+pub const ANCHORS: [&str; 4] = ["source", "grade", "display", "end"];
+
+/// The fields of a graph op that are paths: a recipe's anchors and new
+/// nodes are resolved there.
+const PATH_FIELDS: [&str; 5] = ["after", "at", "from", "to", "path"];
+
+/// `node:<k>.<param>` (#2758): the op `k` and its parameter.
+pub fn node_binding(property: &str) -> Option<(usize, &str)> {
+    let (k, param) = property.strip_prefix("node:")?.split_once('.')?;
+    let k = k.parse().ok()?;
+    (!param.is_empty()).then_some((k, param))
+}
+
+/// The anchors of `clip`'s picture (#2758), by name: the node ids down
+/// to each.
+pub fn recipe_anchors(clip: &crate::Clip) -> Result<BTreeMap<&'static str, Uuid>, String> {
+    use klipp_graph_format::lifted::types as lt;
+    let lifted = clip.picture_v2().map_err(|e| e.to_string())?;
+    let graph = &lifted.picture.graph;
+    let of = |t: &str| graph.nodes.iter().find(|n| n.type_id.as_str() == t).map(|n| n.id);
+    let feeding = |node: Uuid| graph.edges.iter().filter(|e| e.to.0 == node).min_by_key(|e| e.to.1.as_str() != "in").map(|e| e.from.0);
+    let mut end = feeding(graph.output);
+    if let Some(n) = end.filter(|n| graph.nodes.iter().any(|x| x.id == *n && x.type_id.as_str() == lt::PLACEMENT)) {
+        end = feeding(n);
+    }
+    let mut anchors = BTreeMap::new();
+    for (name, id) in [("source", of(lt::SOURCE)), ("grade", of(lt::GROUP)), ("display", of(lt::SCENE_TO_DISPLAY)), ("end", end)] {
+        if let Some(id) = id {
+            anchors.insert(name, id);
+        }
+    }
+    Ok(anchors)
+}
+
+/// A template value as a graph op's parameter takes it.
+fn param_value(value: &TemplateValue) -> serde_json::Value {
+    match value {
+        TemplateValue::Text(t) | TemplateValue::Enum(t) => serde_json::Value::from(t.clone()),
+        TemplateValue::Color(c) => serde_json::json!(c),
+        TemplateValue::Number(n) => serde_json::json!(n),
+        TemplateValue::Bool(b) => serde_json::Value::from(*b),
+    }
+}
+
+impl CompositionTemplate {
+    /// The graph ops that build this recipe into the picture of clip
+    /// `clip` (#2758): its anchors resolved against `anchors`
+    /// ([`recipe_anchors`]), each new node's path rooted at the clip, and
+    /// each binding's value set on its node: the value given in `values`
+    /// by parameter or slot name, else the parameter's default; a
+    /// control's link maps its number onto the node's range. A slot left
+    /// unfilled is refused, by name. A link measured `per` a side of the
+    /// frame is made pixels of `frame`, the sequence's size.
+    pub fn recipe_ops(&self, clip: Uuid, anchors: &BTreeMap<&str, Uuid>, values: &BTreeMap<String, TemplateValue>, frame: klipp_core::Resolution) -> Result<Vec<serde_json::Value>, String> {
+        let graph = self.graph.as_ref().filter(|_| self.kind == TemplateKind::Recipe).ok_or_else(|| format!("\"{}\" is not a recipe", self.name))?;
+        for name in values.keys() {
+            if !self.parameters.contains_key(name) && !self.slots.contains_key(name) {
+                return Err(format!("\"{}\" has no control or slot \"{name}\"", self.name));
+            }
+        }
+        let mut ops = graph.ops.clone();
+        let root = serde_json::json!({ "clip": clip });
+        for op in &mut ops {
+            let Some(fields) = op.as_object_mut() else { return Err("a recipe op is an object".into()) };
+            for field in PATH_FIELDS {
+                let Some(at) = fields.get_mut(field) else { continue };
+                // move_after's `after` is a node id, not a path.
+                if field == "after" && at.get("anchor").is_none() && at.get("new").is_none() {
+                    continue;
+                }
+                let node = if let Some(name) = at.get("anchor").and_then(|a| a.as_str()) {
+                    let id = anchors.get(name).ok_or_else(|| format!("the clip's picture has no {name} to attach to"))?;
+                    serde_json::json!(id)
+                } else if let Some(k) = at.get("new") {
+                    serde_json::json!({ "new": k })
+                } else {
+                    return Err(format!("a recipe's {field} is an anchor or a new node"));
+                };
+                *at = serde_json::json!({ "root": root, "nodes": [node] });
+            }
+        }
+        for b in &self.bindings {
+            let (k, param) = node_binding(&b.property).ok_or_else(|| format!("a recipe binds node:<op>.<param>, not '{}'", b.property))?;
+            let value = match (values.get(&b.parameter), self.parameters.get(&b.parameter), self.slots.get(&b.parameter)) {
+                (Some(v), Some(p), _) => {
+                    p.validate(v).map_err(|e| format!("control '{}': {e}", b.parameter))?;
+                    v.clone()
+                }
+                (Some(v), None, Some(_)) => v.clone(),
+                (None, Some(p), _) => p.default.clone(),
+                (None, None, Some(slot)) => return Err(format!("fill the slot '{}' ({})", b.parameter, slot.label)),
+                _ => return Err(format!("binding references unknown parameter '{}'", b.parameter)),
+            };
+            let value = match (&b.link, &value) {
+                (Some(link), TemplateValue::Number(n)) => {
+                    let range = self.parameters.get(&b.parameter).and_then(|p| p.range.as_ref());
+                    let from = [range.and_then(|r| r.min).unwrap_or(0.0), range.and_then(|r| r.max).unwrap_or(1.0)];
+                    let side = match link.per {
+                        Some(FrameSide::Width) => frame.width as f64,
+                        Some(FrameSide::Height) => frame.height as f64,
+                        None => 1.0,
+                    };
+                    let to = [link.to[0] * side, link.to[1] * side];
+                    let mapped = klipp_core::TemplateLink { parameter: b.parameter.clone(), property: b.property.clone(), from, to, curve: link.curve, offset: 0.0, linked: true, frozen: 0.0 };
+                    TemplateValue::Number(mapped.effective(*n))
+                }
+                (Some(_), _) => return Err(format!("control '{}' drives a link, so it is a number", b.parameter)),
+                (None, v) => v.clone(),
+            };
+            let op = ops.get_mut(k).and_then(|o| o.as_object_mut()).ok_or_else(|| format!("'{}' names op {k}, which the recipe lacks", b.property))?;
+            let params = op.entry("params").or_insert_with(|| serde_json::json!({}));
+            params[param] = param_value(&value);
+        }
+        Ok(ops)
+    }
 }
 
 /// One slot of a template or a recipe (#2757, #2758): what the user calls
@@ -182,8 +376,21 @@ impl CompositionTemplate {
         if self.format_version < FORMAT_VERSION {
             return Err(format!("format {} only named its composition: open the project it was made in and save it again", self.format_version));
         }
-        if self.composition().is_none() {
-            return Err("the template does not carry its composition".into());
+        match self.kind {
+            TemplateKind::Composition if self.composition().is_none() => {
+                return Err("the template does not carry its composition".into());
+            }
+            TemplateKind::Recipe => {
+                let graph = self.graph.as_ref().filter(|g| !g.ops.is_empty()).ok_or("a recipe carries the graph it builds")?;
+                for b in &self.bindings {
+                    let (k, _) = node_binding(&b.property).ok_or_else(|| format!("a recipe binds node:<op>.<param>, not '{}'", b.property))?;
+                    let adds = graph.ops.get(k).and_then(|o| o.get("op")).and_then(|o| o.as_str()).is_some_and(|o| matches!(o, "add" | "add_beside"));
+                    if !adds {
+                        return Err(format!("'{}' names op {k}, which adds no node", b.property));
+                    }
+                }
+            }
+            TemplateKind::Composition => {}
         }
         if self.name.trim().is_empty() {
             return Err("a template needs a name".into());
@@ -222,6 +429,8 @@ impl CompositionTemplate {
             written_by: env!("CARGO_PKG_VERSION").to_string(),
             sequences: Vec::new(),
             slots: BTreeMap::new(),
+            kind: TemplateKind::Composition,
+            graph: None,
         }
     }
 }
@@ -394,7 +603,7 @@ pub fn add_controls(t: &mut CompositionTemplate, scene: &Sequence, controls: &[C
             if !d.to.iter().all(|v| v.is_finite()) {
                 return Err(format!("control \"{label}\" drives \"{}\" to a range that is not two numbers", d.target));
             }
-            t.bindings.push(TemplateBinding { parameter: name.clone(), property, link: Some(LinkMap { to: d.to, curve: d.curve }) });
+            t.bindings.push(TemplateBinding { parameter: name.clone(), property, link: Some(LinkMap { to: d.to, curve: d.curve, per: None }) });
         }
         t.parameters.insert(name, TemplateParameter { label: label.to_string(), default: TemplateValue::Number(default), range: Some(NumberRange { min: Some(min), max: Some(max) }), choices: Vec::new() });
     }
@@ -487,6 +696,26 @@ pub fn composition_sequences(root: &Sequence, all: &[Sequence]) -> Vec<Sequence>
     out
 }
 
+/// The recipes Klipp ships (#2758), as files in `assets/recipes`: each a
+/// recipe like a saved one, read and checked as one is.
+pub fn builtin_recipes() -> Vec<CompositionTemplate> {
+    const FILES: [&str; 2] = [
+        include_str!("../../../assets/recipes/green_screen.klipptemplate"),
+        include_str!("../../../assets/recipes/picture_in_picture.klipptemplate"),
+    ];
+    FILES
+        .iter()
+        .filter_map(|json| match serde_json::from_str::<CompositionTemplate>(json).map_err(|e| e.to_string()).and_then(|t| t.validate().map(|()| t)) {
+            Ok(t) => Some(t),
+            Err(why) => {
+                tracing::error!("a built-in recipe doesn't read: {why}");
+                debug_assert!(false, "a built-in recipe doesn't read: {why}");
+                None
+            }
+        })
+        .collect()
+}
+
 /// The sequences of `template` that `project` lacks, by id, in the order
 /// the template carries them: what inserting it copies in.
 pub fn missing_sequences(template: &CompositionTemplate, project: &[Sequence]) -> Vec<Sequence> {
@@ -546,8 +775,16 @@ impl CompositionTemplateStore {
         Self { dir, entries }
     }
 
+    /// The compositions: what is placed as a clip of its own. A recipe
+    /// is never one (#2758).
     pub fn templates(&self) -> impl Iterator<Item = &CompositionTemplate> {
-        self.entries.iter().map(|(_, template)| template)
+        self.entries.iter().map(|(_, template)| template).filter(|t| t.kind == TemplateKind::Composition)
+    }
+
+    /// The recipes saved here (#2758); [`builtin_recipes`] are the ones
+    /// Klipp ships.
+    pub fn recipes(&self) -> impl Iterator<Item = &CompositionTemplate> {
+        self.entries.iter().map(|(_, template)| template).filter(|t| t.kind == TemplateKind::Recipe)
     }
 
     pub fn save(&mut self, template: CompositionTemplate) -> Result<(), String> {
@@ -801,6 +1038,49 @@ mod tests {
 
         instance.links[0].property = "node:grade/lift.gain".into();
         let err = crate::flatten::validate_template_instance(&instance, &scene).unwrap_err();
-        assert!(err.contains("Composite page") && err.contains("#2758"), "{err}");
+        assert!(err.contains("recipe's node parameter") && err.contains("composition template cannot bind one"), "{err}");
+    }
+
+    /// A recipe (#2758) is a template file of its own kind: the store
+    /// lists it apart from the compositions, it validates without a
+    /// composition but with its graph, its bindings name an op that adds a
+    /// node, and placing it resolves its anchors and new nodes to paths on
+    /// the clip, with a slot left unfilled refused by name.
+    #[test]
+    fn a_recipe_is_a_template_of_its_own_kind() {
+        let recipes = builtin_recipes();
+        let r = recipes.iter().find(|r| r.name == "Picture in picture").expect("a built-in");
+        assert!(r.validate().is_ok());
+        assert_eq!(node_binding("node:3.scale_x"), Some((3, "scale_x")));
+        assert_eq!(node_binding("node:x.scale_x"), None);
+        assert_eq!(node_binding("node:3."), None);
+
+        let mut bad = r.clone();
+        bad.bindings[0].property = "node:2.media".into();
+        assert!(bad.validate().unwrap_err().contains("adds no node"), "op 2 connects");
+        let mut bare = r.clone();
+        bare.graph = None;
+        assert!(bare.validate().is_err(), "a recipe carries its graph");
+
+        let dir = std::env::temp_dir().join(format!("klipp-recipe-kind-{}", Uuid::new_v4()));
+        let mut store = CompositionTemplateStore::load(Some(dir.clone()));
+        store.save(r.clone()).unwrap();
+        let read = CompositionTemplateStore::load(Some(dir.clone()));
+        assert_eq!(read.templates().count(), 0, "a recipe is never placed as a composition");
+        assert_eq!(read.recipes().map(|t| t.id).collect::<Vec<_>>(), vec![r.id]);
+        std::fs::remove_dir_all(&dir).ok();
+
+        let clip = Uuid::new_v4();
+        let anchors = BTreeMap::from([("source", Uuid::new_v4()), ("end", Uuid::new_v4())]);
+        let frame = klipp_core::Resolution { width: 1000, height: 500 };
+        let why = r.recipe_ops(clip, &anchors, &BTreeMap::new(), frame).unwrap_err();
+        assert!(why.contains("fill the slot 'picture'"), "{why}");
+        let values = BTreeMap::from([("picture".to_string(), TemplateValue::Text("m".into())), ("across".to_string(), TemplateValue::Number(1.0))]);
+        let ops = r.recipe_ops(clip, &anchors, &values, frame).unwrap();
+        assert_eq!(ops[0]["after"], serde_json::json!({ "root": { "clip": clip }, "nodes": [anchors["end"]] }));
+        assert_eq!(ops[2]["to"], serde_json::json!({ "root": { "clip": clip }, "nodes": [{ "new": 1 }] }));
+        assert_eq!(ops[1]["params"]["media"], "m");
+        // Across at its end: half the frame's width right, in its pixels.
+        assert_eq!(ops[3]["params"]["position_x"], 500.0);
     }
 }
