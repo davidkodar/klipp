@@ -101,7 +101,7 @@ impl AudioDecoder {
     ) -> Result<(Self, AudioConsumer), AudioDecoderError> {
         // Validate that file has an audio stream
         {
-            let ctx = ffmpeg_next::format::input(path)
+            let ctx = klipp_media::open_input(path)
                 .map_err(|e| AudioDecoderError::Open(e.to_string()))?;
             ctx.streams()
                 .best(ffmpeg_next::media::Type::Audio)
@@ -222,7 +222,7 @@ fn audio_decode_thread(
     // state into denormal range and stall the FPU ~50–100×.
     klipp_audio::flush_denormals_to_zero();
 
-    let mut format_ctx = match ffmpeg_next::format::input(&path) {
+    let mut format_ctx = match klipp_media::open_input(&path) {
         Ok(ctx) => ctx,
         Err(e) => {
             warn!("audio_decode_thread: failed to open {:?}: {e}", path);

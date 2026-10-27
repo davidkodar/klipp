@@ -64,7 +64,7 @@ impl<T: Clone> SeekableFrameReader<T> {
     where
         F: FnOnce(&ffmpeg_next::format::context::Input, usize) -> ConvertFnTo<T>,
     {
-        let format_ctx = ffmpeg_next::format::input(path).ok()?;
+        let format_ctx = crate::open_input(path).ok()?;
         let (decoder, stream_index) = open_sw_decoder(&format_ctx).ok()?;
         let convert = make_convert(&format_ctx, stream_index);
         let frame_duration = format_ctx
@@ -825,7 +825,7 @@ impl BackwardFrameReader<Vec<f32>> {
         log_format: Option<klipp_core::LogFormat>,
         working: klipp_core::WorkingColorspace,
     ) -> Option<Self> {
-        let format_ctx = ffmpeg_next::format::input(path).ok()?;
+        let format_ctx = crate::open_input(path).ok()?;
         let (decoder, stream_index) = open_sw_decoder(&format_ctx).ok()?;
         let convert = linear_convert(&format_ctx, stream_index, log_format, working);
         let stream = format_ctx.stream(stream_index)?;

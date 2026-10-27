@@ -45,6 +45,36 @@ pub mod waveform;
 pub mod frame_reader;
 pub mod yuv_samples;
 
+/// Whether the file at `path` is a list of other inputs rather than media:
+/// an HLS or M3U playlist, an ffconcat list, an SDP session or a DASH
+/// manifest. ffmpeg would follow one to other files or the network, so
+/// Klipp opens none of them as media.
+pub fn is_input_list(path: &std::path::Path) -> bool {
+    use std::io::Read;
+    let mut head = [0u8; 1024];
+    let n = std::fs::File::open(path).and_then(|mut f| f.read(&mut head)).unwrap_or(0);
+    let text = String::from_utf8_lossy(&head[..n]);
+    let text = text.trim_start_matches('\u{feff}').trim_start();
+    let lower = text.to_ascii_lowercase();
+    lower.starts_with("#extm3u") || lower.starts_with("ffconcat") || lower.starts_with("v=0") || lower.starts_with("[playlist]")
+        || (lower.starts_with("<?xml") || lower.starts_with("<mpd")) && lower.contains("<mpd")
+        || path.extension().and_then(|e| e.to_str()).is_some_and(|e| ["m3u", "m3u8", "ffconcat", "sdp", "mpd", "pls"].contains(&e.to_ascii_lowercase().as_str()))
+}
+
+/// Opens `path` as media for ffmpeg, the one way Klipp does: local files
+/// and pipes only (`protocol_whitelist`), never a list of other inputs
+/// ([`is_input_list`]), so a file cannot send ffmpeg to other files or
+/// the network.
+pub fn open_input<P: AsRef<std::path::Path> + ?Sized>(path: &P) -> Result<ffmpeg_next::format::context::Input, ffmpeg_next::Error> {
+    let path = path.as_ref();
+    if is_input_list(path) {
+        return Err(ffmpeg_next::Error::InvalidData);
+    }
+    let mut options = ffmpeg_next::Dictionary::new();
+    options.set("protocol_whitelist", "file,pipe");
+    ffmpeg_next::format::input_with_dictionary(&path, options)
+}
+
 /// Whether `path` can be imported: ffmpeg opens it and finds a picture or
 /// a sound in it, as the import's own first step does (#654). The error
 /// says why not, in ffmpeg's words ("moov atom not found", "Invalid data
@@ -52,7 +82,10 @@ pub mod yuv_samples;
 pub fn readable(path: &std::path::Path) -> Result<(), String> {
     // ffmpeg's own words, or its error's name where it has none: its
     // Display is blank for some codes.
-    let input = ffmpeg_next::format::input(path).map_err(|e| {
+    if is_input_list(path) {
+        return Err("it is a playlist or a list of other files, which Klipp does not import".into());
+    }
+    let input = open_input(path).map_err(|e| {
         let said = e.to_string();
         if said.trim().is_empty() { format!("{e:?}") } else { said }
     })?;
@@ -83,7 +116,7 @@ pub fn picture_stream(input: &ffmpeg_next::format::context::Input) -> Option<usi
 
 /// The size of the file's cover art, if it carries one (#1892).
 pub fn artwork_size(path: &std::path::Path) -> Option<(u32, u32)> {
-    let input = ffmpeg_next::format::input(path).ok()?;
+    let input = crate::open_input(path).ok()?;
     let art = input.streams().find(is_artwork)?;
     let video = ffmpeg_next::codec::context::Context::from_parameters(art.parameters()).ok()?.decoder().video().ok()?;
     (video.width() > 0 && video.height() > 0).then(|| (video.width(), video.height()))
@@ -100,6 +133,41 @@ pub use klipp_core::{RuleOp, SmartBin, SmartRule};
 
 #[cfg(test)]
 mod readable_tests {
+    /// A file that lists other inputs is never opened as media: an HLS
+    /// playlist (also one named like a video) and an ffconcat list
+    /// pointing at a file outside their folder and at a network address
+    /// are refused, by `open_input` and by the import's check. Only local
+    /// files and pipes are opened: the same real file through ffmpeg's
+    /// `concat:` protocol is refused while the file itself opens.
+    #[test]
+    fn lists_of_other_inputs_and_other_protocols_are_never_opened() {
+        let dir = std::env::temp_dir().join(format!("klipp-input-lists-{}", std::process::id()));
+        let (outside, lists) = (dir.join("outside"), dir.join("lists"));
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::create_dir_all(&lists).unwrap();
+        let secret = outside.join("secret.mp4");
+        let made = std::process::Command::new("ffmpeg")
+            .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=gray:s=64x64:r=25:d=0.4", "-c:v", "libx264", "-pix_fmt", "yuv420p"])
+            .arg(&secret)
+            .status()
+            .is_ok_and(|s| s.success());
+        let hls = format!("#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\nfile://{}\n#EXTINF:1,\nhttp://127.0.0.1:9/x.ts\n#EXT-X-ENDLIST\n", secret.display());
+        let concat = format!("ffconcat version 1.0\nfile '{}'\nfile 'http://127.0.0.1:9/x.mp4'\n", secret.display());
+        for (name, body) in [("list.m3u8", &hls), ("looks-like-a.mp4", &hls), ("list.ffconcat", &concat), ("list.mov", &concat)] {
+            let p = lists.join(name);
+            std::fs::write(&p, body).unwrap();
+            assert!(super::is_input_list(&p), "{name}");
+            assert!(super::open_input(&p).is_err(), "{name}: not opened");
+            assert!(super::readable(&p).unwrap_err().contains("playlist"), "{name}: not imported");
+        }
+        if made {
+            assert!(super::open_input(&secret).is_ok(), "a local file opens");
+            assert!(super::open_input(&format!("concat:{}", secret.display())).is_err(), "another protocol does not");
+        }
+        assert!(super::open_input("http://127.0.0.1:9/x.mp4").is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// #654: a real file opens; a truncated one, random bytes and text do
     /// not, and each says why.
     #[test]

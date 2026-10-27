@@ -395,7 +395,7 @@ pub fn generate_audio_peaks(
         return Ok(Vec::new());
     }
 
-    let mut format_ctx = ffmpeg_next::format::input(path)
+    let mut format_ctx = klipp_media::open_input(path)
         .map_err(|e| format!("ffmpeg open: {e}"))?;
 
     let audio_stream = format_ctx
@@ -543,7 +543,7 @@ pub struct MediaHeader {
 /// Read just the format header via ffmpeg. Errors are returned as strings
 /// so the caller can show them in the UI.
 pub fn probe_media_header(path: &std::path::Path) -> Result<MediaHeader, String> {
-    let format_ctx = ffmpeg_next::format::input(path)
+    let format_ctx = klipp_media::open_input(path)
         .map_err(|e| format!("ffmpeg open: {e}"))?;
 
     let mut info = MediaHeader::default();

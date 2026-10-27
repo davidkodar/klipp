@@ -10638,7 +10638,7 @@ impl PlaybackEngine {
     fn load_file(&mut self, path: PathBuf, media_id: MediaId) {
         info!("Loading media: {:?}", path);
 
-        match ffmpeg_next::format::input(&path) {
+        match klipp_media::open_input(&path) {
             Ok(format_ctx) => {
                 let duration_secs = format_ctx.duration() as f64 / f64::from(ffmpeg_next::ffi::AV_TIME_BASE);
 
@@ -11500,7 +11500,7 @@ fn picture_stream_index(ictx: &ffmpeg_next::format::context::Input) -> Option<us
 /// denominator) — callers fall back to 24 fps so step / playback keeps
 /// working.
 fn probe_source_fps(path: &std::path::Path) -> Option<f64> {
-    let ictx = ffmpeg_next::format::input(path).ok()?;
+    let ictx = klipp_media::open_input(path).ok()?;
     let stream = ictx.streams().best(ffmpeg_next::media::Type::Video)?;
     let rate = stream.rate();
     if rate.denominator() == 0 {
@@ -11595,7 +11595,7 @@ fn coalesce_commands(commands: Vec<AppCommand>) -> Vec<AppCommand> {
 /// and a scan from the start finds where it ends. The scan reads only what
 /// the file holds, so it is cheap exactly when it runs.
 fn truncated_end_secs(path: &std::path::Path, header_secs: f64) -> Option<f64> {
-    let mut ictx = ffmpeg_next::format::input(path).ok()?;
+    let mut ictx = klipp_media::open_input(path).ok()?;
     let time_bases: Vec<f64> = ictx.streams().map(|s| f64::from(s.time_base())).collect();
     let secs_of = |stream: usize, ts: i64| ts as f64 * time_bases.get(stream).copied().unwrap_or(0.0);
     let near_end = (header_secs - 3.0).max(0.0);
@@ -11615,7 +11615,7 @@ fn truncated_end_secs(path: &std::path::Path, header_secs: f64) -> Option<f64> {
             return None;
         }
     }
-    let mut ictx = ffmpeg_next::format::input(path).ok()?;
+    let mut ictx = klipp_media::open_input(path).ok()?;
     let mut end = 0.0f64;
     for (stream, packet) in ictx.packets() {
         if let Some(pts) = packet.pts() {
@@ -12346,7 +12346,7 @@ pub fn generate_thumbnail(
     path: &std::path::Path,
     seek_secs: f64,
 ) -> Result<(Vec<u8>, u32, u32), String> {
-    let mut format_ctx = ffmpeg_next::format::input(path)
+    let mut format_ctx = klipp_media::open_input(path)
         .map_err(|e| format!("ffmpeg open: {e}"))?;
 
     let (mut decoder, stream_index) = open_sw_decoder(&format_ctx)?;
@@ -12393,7 +12393,7 @@ pub fn generate_thumbnail_at_size(
     seek_secs: f64,
     max_width: u32,
 ) -> Result<(Vec<u8>, u32, u32), String> {
-    let mut format_ctx = ffmpeg_next::format::input(path)
+    let mut format_ctx = klipp_media::open_input(path)
         .map_err(|e| format!("ffmpeg open: {e}"))?;
 
     let (mut decoder, stream_index) = open_sw_decoder(&format_ctx)?;
@@ -12473,7 +12473,7 @@ pub fn generate_thumbnail_at_size_with_rotation(
     max_width: u32,
     rotation: i32,
 ) -> Result<(Vec<u8>, u32, u32), String> {
-    let mut format_ctx = ffmpeg_next::format::input(path)
+    let mut format_ctx = klipp_media::open_input(path)
         .map_err(|e| format!("ffmpeg open: {e}"))?;
     let (mut decoder, stream_index) = open_sw_decoder(&format_ctx)?;
 
@@ -12685,7 +12685,7 @@ pub fn generate_filmstrip_range(
 ) -> Result<FilmstripOutcome, String> {
     let start_secs = start_secs.max(0.0);
     let duration_secs = end_secs;
-    let mut format_ctx = ffmpeg_next::format::input(path)
+    let mut format_ctx = klipp_media::open_input(path)
         .map_err(|e| format!("ffmpeg open: {e}"))?;
 
     let (mut decoder, stream_index, is_hw) = open_gpu_decoder(&format_ctx)?;
@@ -12923,7 +12923,7 @@ impl SequentialFrameDecoder {
     /// so the longest visible (rotation-aware) edge is at most `max_width`
     /// pixels. Uses GPU decode when available.
     pub fn open(path: &std::path::Path, max_width: u32) -> Result<Self, String> {
-        let format_ctx = ffmpeg_next::format::input(path)
+        let format_ctx = klipp_media::open_input(path)
             .map_err(|e| format!("ffmpeg open: {e}"))?;
         let (decoder, stream_index, is_hw) = open_gpu_decoder(&format_ctx)?;
         let rotation = {

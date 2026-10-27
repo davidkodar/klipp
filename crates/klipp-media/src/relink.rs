@@ -657,7 +657,7 @@ pub fn needs_headers(criteria: Criteria) -> bool {
 pub fn read_facts(path: &Path) -> Option<Facts> {
     let mut facts = Facts::default();
     if !klipp_core::media_extensions::path_is_image(path) {
-        let ctx = ffmpeg_next::format::input(path).ok()?;
+        let ctx = crate::open_input(path).ok()?;
         let dur = ctx.duration();
         if dur > 0 {
             facts.duration_secs = Some(dur as f64 / 1_000_000.0);

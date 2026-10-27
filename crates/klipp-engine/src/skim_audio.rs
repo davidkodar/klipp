@@ -252,7 +252,7 @@ pub fn decode_audio_to_pcm(source_path: &std::path::Path) -> Option<Arc<Vec<f32>
     }
 
     // Cache miss — decode from source.
-    let mut format_ctx = match ffmpeg_next::format::input(source_path) {
+    let mut format_ctx = match klipp_media::open_input(source_path) {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!("decode_audio_to_pcm: open failed for {:?}: {}", source_path, e);
