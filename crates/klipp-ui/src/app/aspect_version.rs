@@ -112,9 +112,10 @@ impl KlippApp {
 }
 
 /// Version `index` made again from its master's cut (#2724): the
-/// master's tracks, each media clip still there taking the version's
-/// framing (its transform keys and its reframe); those clips, and the
-/// master's cut. `None` when it is no version or its master is gone.
+/// master's tracks, each media clip still there keeping the picture it
+/// has in the version (its framing there, and its look); those clips,
+/// and the master's cut. `None` when it is no version or its master is
+/// gone.
 pub(crate) fn rebuilt_tracks(sequences: &[klipp_timeline::Sequence], index: usize) -> Option<(Vec<klipp_timeline::Track>, Vec<klipp_core::ClipId>, u64)> {
     let version = sequences.get(index)?;
     let of = version.version_of?.master;
@@ -124,25 +125,7 @@ pub(crate) fn rebuilt_tracks(sequences: &[klipp_timeline::Sequence], index: usiz
     let mut kept = Vec::new();
     for clip in tracks.iter_mut().flat_map(|t| t.clips.iter_mut()) {
         let Some(was) = old.get(&clip.id).filter(|_| matches!(clip.kind, klipp_timeline::ClipKind::Media { .. })) else { continue };
-        let framing = klipp_document::history::KeyframeSnapshot::from_clip(was);
-        let mut keys = klipp_document::history::KeyframeSnapshot::from_clip(clip);
-        keys.transform_pos_x_keyframes = framing.transform_pos_x_keyframes;
-        keys.transform_pos_y_keyframes = framing.transform_pos_y_keyframes;
-        keys.transform_scale_keyframes = framing.transform_scale_keyframes;
-        keys.transform_scale_y_keyframes = framing.transform_scale_y_keyframes;
-        keys.transform_rotation_keyframes = framing.transform_rotation_keyframes;
-        keys.transform_tilt_x_keyframes = framing.transform_tilt_x_keyframes;
-        keys.transform_tilt_y_keyframes = framing.transform_tilt_y_keyframes;
-        keys.apply_to_clip(clip);
-        // Its reframe, the version's, in place of the master's.
-        let is_reframe = |e: &klipp_effects::BuiltinEffect| matches!(e, klipp_effects::BuiltinEffect::Transform { .. });
-        let reframe = was.builtin_effects().iter().find(|e| is_reframe(e)).cloned();
-        let (mut effects, mut enabled): (Vec<_>, Vec<_>) = clip.builtin_effects().iter().cloned().zip(clip.builtin_effects_enabled().iter().copied()).filter(|(e, _)| !is_reframe(e)).unzip();
-        if let Some(r) = reframe {
-            effects.insert(0, r);
-            enabled.insert(0, true);
-        }
-        clip.set_effect_list(effects, enabled);
+        clip.restore_picture(&was.picture);
         kept.push(clip.id);
     }
     Some((tracks, kept, master.cut_stamp()))
@@ -450,9 +433,8 @@ mod tests {
         state.sequences[0].tracks[0].clips.push(klipp_timeline::Clip::media(media, at(0.0), at(4.0), at(0.0), at(4.0)));
         let v = add_version(&mut state, 0, (1080, 1920), "Cut 9:16").unwrap();
         // Reframed by hand in the version.
-        let mut keys = klipp_document::history::KeyframeSnapshot::from_clip(&state.sequences[v].tracks[0].clips[0]);
-        klipp_core::keyframe::upsert_keyframe(&mut keys.transform_scale_keyframes, 0.0, 2.5);
-        keys.apply_to_clip(&mut state.sequences[v].tracks[0].clips[0]);
+        let framed = klipp_timeline::test_clip::TestClip::of(state.sequences[v].tracks[0].clips[0].clone()).lane("scale", 0.0, 2.5).build();
+        state.sequences[v].tracks[0].clips[0] = framed;
         // The master trimmed, and a shot added.
         state.sequences[0].tracks[0].clips[0].timeline_out = at(3.0);
         state.sequences[0].tracks[0].clips.push(klipp_timeline::Clip::media(media, at(3.0), at(6.0), at(5.0), at(8.0)));
@@ -461,8 +443,9 @@ mod tests {
         let clips = &tracks[0].clips;
         assert_eq!((clips.len(), clips[0].timeline_out), (2, at(3.0)), "the new cut");
         assert_eq!(kept, vec![clips[0].id], "the clip still there kept");
-        assert_eq!(clips[0].transform_scale_keyframes().iter().map(|k| k.value).collect::<Vec<_>>(), vec![2.5], "with its framing");
-        assert!(clips[1].transform_scale_keyframes().is_empty(), "the new one left for the refit");
+        let scale = |c: &klipp_timeline::Clip| klipp_timeline::frame_glide::lane(c, "scale").iter().map(|k| k.value).collect::<Vec<_>>();
+        assert_eq!(scale(&clips[0]), vec![2.5], "with its framing");
+        assert!(scale(&clips[1]).is_empty(), "the new one left for the refit");
         assert_eq!(cut, state.sequences[0].cut_stamp());
         assert!(rebuilt_tracks(&state.sequences, 0).is_none(), "the master is no version");
     }

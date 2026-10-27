@@ -135,7 +135,7 @@ mod tests {
         let pictures: Vec<&klipp_timeline::Clip> = built.tracks.iter().filter(|t| t.kind == TrackKind::Video).flat_map(|t| &t.clips).filter(|c| matches!(c.kind, klipp_timeline::ClipKind::Media { .. })).collect();
         assert_eq!(pictures.len(), 2, "two pieces");
         assert!(pictures[0].timeline_in.to_secs_f64().abs() < 1e-6 && (pictures[1].timeline_in.to_secs_f64() - pictures[0].timeline_out.to_secs_f64()).abs() < 0.04, "end to end");
-        let scale = |c: &klipp_timeline::Clip| c.transform_scale_keyframes().iter().map(|k| k.value).fold(0.0f32, f32::max);
+        let scale = |c: &klipp_timeline::Clip| klipp_timeline::frame_glide::lane(c, "scale").iter().map(|k| k.value).fold(0.0f32, f32::max);
         // 1920x1080 fitted into 1080x1920 fills at 1920/607.5 ≈ 3.16; the
         // second pushed in further.
         assert_eq!((built.resolution.width, built.resolution.height), (1080, 1920), "upright");
