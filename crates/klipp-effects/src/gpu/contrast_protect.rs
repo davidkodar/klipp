@@ -94,7 +94,8 @@ fn small_at(x: i32, y: i32) -> vec4<f32> {
 
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
-    let i = gid_flat.x + gid_flat.y * nwg.x * 256u;
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
+    let i = gid.x;
     if p.op == 4u {
         if i >= p.width * p.height { return; }
         let x = i % p.width; let y = i / p.width;
