@@ -206,6 +206,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SaveTitleTemplate { .. }
         | AppCommand::ReloadTitleTemplates
         | AppCommand::SaveSelectionAsTemplate
+        | AppCommand::SaveNodesAsRecipe { .. }
         | AppCommand::SelectTitleObject { .. }
         | AppCommand::TitlePathError { .. }
         | AppCommand::SetTitleFadeDuration { .. }

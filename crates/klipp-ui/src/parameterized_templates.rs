@@ -620,6 +620,109 @@ impl TemplateInstanceExt for TemplateInstance {
     }
 }
 
+/// Nodes of a clip's picture saved together as a recipe (#2757 step 6):
+/// the clip, the nodes, the recipe's name and category, and which of the
+/// nodes' numbers become its controls, each ticked or not.
+#[derive(Debug, Clone)]
+pub struct RecipeSaveDialog {
+    pub clip: klipp_timeline::Clip,
+    pub nodes: Vec<uuid::Uuid>,
+    pub name: String,
+    pub category: String,
+    /// A control's label, the node and parameter it drives, the range it
+    /// moves across, and whether it is published.
+    pub picks: Vec<(String, uuid::Uuid, &'static str, [f64; 2], bool)>,
+}
+
+impl RecipeSaveDialog {
+    /// For `nodes` of `clip`: every number of theirs that moves over time
+    /// offered as a control, none ticked.
+    pub fn new(clip: klipp_timeline::Clip, nodes: Vec<uuid::Uuid>) -> Self {
+        let mut picks = Vec::new();
+        if let Ok(lifted) = clip.picture_v2() {
+            for n in lifted.picture.graph.nodes.iter().filter(|n| nodes.contains(&n.id)) {
+                let desc = match klipp_graph_lift::effect_params::tag(n) {
+                    Some(tag) => klipp_effects::registry::effect_type(tag).map(|t| &t.desc),
+                    None => klipp_timeline::grade_node_for_run(n).ok().and_then(|r| klipp_nodes::registry::node_type(r.kind)).map(|t| &t.desc),
+                };
+                let Some(desc) = desc else { continue };
+                let name = if n.label.is_empty() { desc.name.to_string() } else { n.label.clone() };
+                for p in desc.params.iter().filter(|p| p.keyframable && matches!(p.kind, klipp_effects::registry::ParamKind::Float)) {
+                    let (lo, hi) = p.soft.or(p.range).unwrap_or((0.0, 1.0));
+                    picks.push((format!("{name} {}", p.label), n.id, p.key, [f64::from(lo), f64::from(hi)], false));
+                }
+            }
+        }
+        Self { clip, nodes, name: "My Recipe".into(), category: "My Recipes".into(), picks }
+    }
+
+    /// The ticked numbers as the recipe's controls: each across its range,
+    /// driving its parameter across the same.
+    pub fn controls(&self) -> Vec<klipp_timeline::composition_template::ControlSpec> {
+        use klipp_timeline::composition_template::{ControlSpec, DriveSpec};
+        self.picks
+            .iter()
+            .filter(|p| p.4)
+            .map(|(label, node, key, range, _)| ControlSpec { label: label.clone(), min: Some(range[0]), max: Some(range[1]), default: None, drives: vec![DriveSpec { target: format!("node:{node}.{key}"), to: *range, curve: Default::default() }] })
+            .collect()
+    }
+}
+
+/// The dialog that saves nodes of a clip's picture as a recipe (#2757
+/// step 6), under the user's own.
+pub fn show_recipe_save_dialog(ctx: &egui::Context, state: &mut crate::state::AppState) {
+    let Some(dialog) = state.recipe_save_dialog.as_mut() else { return };
+    let (mut open, mut close) = (true, false);
+    let mut save = false;
+    egui::Window::new("Save as Recipe")
+        .collapsible(false)
+        .resizable(false)
+        .open(&mut open)
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .show(ctx, |ui| {
+            ui.set_min_width(300.0);
+            ui.horizontal(|ui| {
+                ui.label("Name:");
+                ui.text_edit_singleline(&mut dialog.name).request_focus();
+            });
+            ui.horizontal(|ui| {
+                ui.label("Category:");
+                ui.text_edit_singleline(&mut dialog.category);
+            });
+            if !dialog.picks.is_empty() {
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new("Controls it has once it is placed").strong());
+                egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
+                    for (label, .., on) in dialog.picks.iter_mut() {
+                        ui.checkbox(on, label.as_str());
+                    }
+                });
+            }
+            ui.add_space(8.0);
+            save = crate::title_templates::dialog_buttons(ui, "Save", !dialog.name.trim().is_empty(), &mut close);
+        });
+    if save {
+        let made = klipp_timeline::composition_template::recipe_from_nodes(&dialog.clip, &dialog.nodes, &dialog.name, Some(dialog.category.trim().to_string()), &dialog.controls()).and_then(|mut r| {
+            // Saved over a recipe of the same name, as a template is.
+            if let Some(existing) = state.composition_templates.recipes().find(|e| e.name.eq_ignore_ascii_case(r.name.trim())) {
+                r.id = existing.id;
+            }
+            let name = r.name.clone();
+            state.composition_templates.save(r).map(|_| name)
+        });
+        match made {
+            Ok(name) => {
+                state.toast.show(format!("Saved recipe \"{name}\""));
+                close = true;
+            }
+            Err(e) => state.toast.show(format!("Recipe not saved: {e}")),
+        }
+    }
+    if close || !open {
+        state.recipe_save_dialog = None;
+    }
+}
+
 /// Clips saved together as a composition template (#2757): their scene,
 /// its name and category, and what it exposes, each by label, ticked or
 /// not, a media slot marked.

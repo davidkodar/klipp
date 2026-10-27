@@ -371,6 +371,178 @@ pub fn recipe_anchors(clip: &crate::Clip) -> Result<BTreeMap<&'static str, Uuid>
     Ok(anchors)
 }
 
+/// A recipe of the nodes `nodes` of `clip`'s picture (#2757 step 6), each
+/// as it is, its whole stored entry carried: the ones on the chain added
+/// in their order after the clip's source, grade or display step that
+/// comes before them (else the chain's end), the ones beside it beside the
+/// source; the wires among them kept, and the ones from the source, grade
+/// or display step kept as those anchors; a node's mix, mask channel and
+/// switch, and each behaviour on a parameter (a modify op; its keys are
+/// not kept). `controls` publish numbers of them, each drive's target
+/// `node:<id>.<param>`. Refused, named: a node the picture's structure
+/// needs, a node of a kind a recipe can't hold yet, chain nodes not next
+/// to each other, and a wire to or from a node left out.
+pub fn recipe_from_nodes(clip: &crate::Clip, nodes: &[uuid::Uuid], name: &str, category: Option<String>, controls: &[ControlSpec]) -> Result<CompositionTemplate, String> {
+    use klipp_graph_format::lifted::types as lt;
+    use klipp_graph_format::types;
+    if nodes.is_empty() {
+        return Err("name the nodes to save".into());
+    }
+    let lifted = clip.picture_v2().map_err(|e| e.to_string())?;
+    let graph = &lifted.picture.graph;
+    let node = |id: &uuid::Uuid| graph.nodes.iter().find(|n| n.id == *id);
+    let label = |id: &uuid::Uuid| node(id).map(|n| if n.label.is_empty() { klipp_graph_lift::effect_params::tag(n).unwrap_or(n.type_id.as_str()).to_string() } else { n.label.clone() }).unwrap_or_else(|| id.to_string());
+    let mut saved: Vec<uuid::Uuid> = Vec::new();
+    for id in nodes {
+        let n = node(id).ok_or_else(|| format!("{id} is not a node at the top of the clip's picture"))?;
+        if [lt::SOURCE, lt::GROUP, lt::SCENE_TO_DISPLAY, lt::PLACEMENT, lt::OUTPUT].contains(&n.type_id.as_str()) || n.id == graph.output {
+            return Err(format!("{} is part of every clip's picture, not a node to save", label(id)));
+        }
+        if !saved.contains(id) {
+            saved.push(*id);
+        }
+    }
+    // The chain, source to output, as the renderer walks it.
+    let mut chain = vec![graph.output];
+    while let Some(e) = graph.edges.iter().find(|e| e.to == (*chain.last().unwrap(), "in".into())) {
+        if chain.len() > graph.nodes.len() {
+            return Err("the picture's chain loops".into());
+        }
+        chain.push(e.from.0);
+    }
+    chain.reverse();
+    let on_chain: Vec<uuid::Uuid> = chain.iter().copied().filter(|id| saved.contains(id)).collect();
+    let at: Vec<usize> = on_chain.iter().map(|id| chain.iter().position(|c| c == id).unwrap()).collect();
+    if at.windows(2).any(|w| w[1] != w[0] + 1) {
+        return Err("the chain's nodes saved together have to follow each other on it".into());
+    }
+    let anchors = recipe_anchors(clip)?;
+    let anchor_of = |id: uuid::Uuid| anchors.iter().find(|(n, a)| **a == id && **n != "end").map(|(n, _)| *n);
+    let order: Vec<uuid::Uuid> = on_chain.iter().copied().chain(saved.iter().copied().filter(|id| !on_chain.contains(id))).collect();
+    let k = |id: &uuid::Uuid| order.iter().position(|o| o == id);
+    let mut ops: Vec<serde_json::Value> = Vec::new();
+    for (i, id) in order.iter().enumerate() {
+        let n = node(id).expect("checked above");
+        let (type_id, entry) = match n.type_id.as_str() {
+            types::LEGACY_EFFECT => {
+                let tag = klipp_graph_lift::effect_params::tag(n).ok_or_else(|| format!("{} has no effect type", label(id)))?;
+                let t = klipp_effects::registry::effect_type(tag).ok_or_else(|| format!("{tag} is not an effect this Klipp has"))?;
+                (t.desc.id.to_string(), klipp_graph_lift::effect_params::entry_of(n)?)
+            }
+            types::LEGACY_NODE => {
+                // A grade node's stored entry: its kind, label and settings.
+                let entry = n.legacy.as_ref().map(|l| l.payload.clone()).ok_or_else(|| format!("{} has no entry", label(id)))?;
+                let kind = serde_json::from_value(entry["kind"].clone()).map_err(|e| format!("{}: {e}", label(id)))?;
+                let t = klipp_nodes::registry::node_type(kind).ok_or_else(|| format!("{} is not a node a recipe can add", label(id)))?;
+                (t.desc.id.to_string(), entry)
+            }
+            other => return Err(format!("{} is a {other} node, which a recipe can't hold yet", label(id))),
+        };
+        let mut op = if on_chain.contains(id) {
+            let after = if i == 0 { chain.get(at[0].wrapping_sub(1)).and_then(|p| anchor_of(*p)).map_or(serde_json::json!({ "anchor": "end" }), |a| serde_json::json!({ "anchor": a })) } else { serde_json::json!({ "new": i - 1 }) };
+            serde_json::json!({ "op": "add", "after": after, "type": type_id, "entry": entry })
+        } else {
+            serde_json::json!({ "op": "add_beside", "at": { "anchor": "source" }, "type": type_id, "entry": entry })
+        };
+        if !n.label.is_empty() {
+            op["label"] = serde_json::json!(n.label);
+        }
+        ops.push(op);
+    }
+    // The wires: into a saved node from another, or from an anchor; a
+    // chain node's own input from the node before it is its place.
+    for e in &graph.edges {
+        let (from, to) = (e.from.0, e.to.0);
+        let (from_saved, to_saved) = (saved.contains(&from), saved.contains(&to));
+        let chain_link = e.to.1.as_str() == "in" && chain.windows(2).any(|w| w[0] == from && w[1] == to);
+        if chain_link && (to_saved || from_saved) {
+            continue;
+        }
+        if !to_saved && from_saved {
+            return Err(format!("{} reads {}, which isn't saved: include it, or leave {} out", label(&to), label(&from), label(&from)));
+        }
+        if !to_saved {
+            continue;
+        }
+        let source = match (k(&from), anchor_of(from)) {
+            (Some(i), _) => serde_json::json!({ "new": i }),
+            (None, Some(a)) => serde_json::json!({ "anchor": a }),
+            (None, None) => return Err(format!("{} reads {}, which isn't saved: include it", label(&to), label(&from))),
+        };
+        ops.push(serde_json::json!({ "op": "connect", "from": source, "from_port": e.from.1.as_str(), "to": { "new": k(&to).unwrap() }, "to_port": e.to.1.as_str() }));
+    }
+    // Each node's mix, mask channel, switch and behaviours.
+    for (i, id) in order.iter().enumerate() {
+        let n = node(id).expect("checked above");
+        if let Some(mix) = n.mix {
+            ops.push(serde_json::json!({ "op": "mix", "path": { "new": i }, "mix": mix }));
+        }
+        if let Some(klipp_graph_format::ParamValue::Text(channel)) = n.params.get(&klipp_graph_format::ParamKey::from("mask.channel")) {
+            ops.push(serde_json::json!({ "op": "mask_channel", "path": { "new": i }, "channel": channel }));
+        }
+        if !n.enabled {
+            ops.push(serde_json::json!({ "op": "enable", "path": { "new": i }, "enabled": false }));
+        }
+        for (key, anim) in &n.anim {
+            if let Some(stack) = anim.modifiers.as_ref().and_then(|m| m.get("modifiers")).filter(|m| m.as_array().is_some_and(|a| !a.is_empty())) {
+                ops.push(serde_json::json!({ "op": "modify", "path": { "new": i }, "key": key.as_str(), "modifiers": stack }));
+            }
+        }
+    }
+    let mut t = CompositionTemplate::new(name.trim(), Uuid::nil());
+    t.kind = TemplateKind::Recipe;
+    t.category = category.unwrap_or_default();
+    // Each control a number across its range, driving its targets; at
+    // rest, where its first target is now, so the recipe places as the
+    // nodes were saved.
+    for c in controls {
+        let control = control_name(&c.label);
+        let (min, max) = (c.min.unwrap_or(0.0), c.max.unwrap_or(1.0));
+        let at_rest = c.default.or_else(|| {
+            let d = c.drives.first()?;
+            let (target, param) = d.target.strip_prefix("node:")?.split_once('.')?;
+            let now = node_number(node(&target.parse().ok()?)?, param)?;
+            let span = d.to[1] - d.to[0];
+            (span.abs() > f64::EPSILON).then(|| (min + (now - d.to[0]) / span * (max - min)).clamp(min.min(max), min.max(max)))
+        });
+        let parameter: TemplateParameter = serde_json::from_value(serde_json::json!({ "label": c.label, "default": { "type": "Number", "value": at_rest.unwrap_or(min) }, "range": { "min": min, "max": max } })).map_err(|e| e.to_string())?;
+        t.parameters.insert(control.clone(), parameter);
+        for d in &c.drives {
+            let (target, param) = d.target.strip_prefix("node:").and_then(|r| r.split_once('.')).ok_or_else(|| format!("control \"{}\" drives node:<id>.<param>, not '{}'", c.label, d.target))?;
+            let id: uuid::Uuid = target.parse().map_err(|_| format!("control \"{}\": {target} is not a node id", c.label))?;
+            let i = k(&id).ok_or_else(|| format!("control \"{}\" drives {}, which isn't saved", c.label, label(&id)))?;
+            t.bindings.push(TemplateBinding { parameter: control.clone(), property: format!("node:{i}.{param}"), link: Some(LinkMap { to: d.to, curve: d.curve, per: None }), take: None });
+        }
+    }
+    t.graph = Some(serde_json::from_value(serde_json::json!({ "ops": ops })).map_err(|e| e.to_string())?);
+    t.validate()?;
+    Ok(t)
+}
+
+/// The number parameter `key` of node `n` holds now (#2757 step 6): an
+/// effect's from its values, a grade node's from its settings, by the
+/// catalogue's field for it. `None` for one that isn't a number.
+pub fn node_number(n: &klipp_graph_format::Node, key: &str) -> Option<f64> {
+    use klipp_graph_format::types;
+    let (desc, values) = match n.type_id.as_str() {
+        types::LEGACY_EFFECT => {
+            let t = klipp_effects::registry::effect_type(klipp_graph_lift::effect_params::tag(n)?)?;
+            (&t.desc, klipp_graph_lift::effect_params::entry_of(n).ok()?)
+        }
+        types::LEGACY_NODE => {
+            let run = crate::grade_node_for_run(n).ok()?;
+            (&klipp_nodes::registry::node_type(run.kind)?.desc, serde_json::to_value(&run.params).ok()?)
+        }
+        _ => return None,
+    };
+    let p = desc.params.iter().find(|p| p.key == key)?;
+    let mut v = values.pointer(&format!("/{}", p.field.replace('.', "/")))?;
+    if let Some(i) = p.index {
+        v = v.get(i)?;
+    }
+    v.as_f64()
+}
+
 /// A template value as a graph op's parameter takes it.
 fn param_value(value: &TemplateValue) -> serde_json::Value {
     match value {

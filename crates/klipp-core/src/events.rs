@@ -2642,6 +2642,9 @@ pub enum AppCommand {
     /// Save the selected clips together as a composition template: opens
     /// its dialog (#2757).
     SaveSelectionAsTemplate,
+    /// Save nodes of a clip's picture together as a recipe: opens its
+    /// dialog (#2757 step 6).
+    SaveNodesAsRecipe { clip_id: ClipId, node_ids: Vec<uuid::Uuid> },
     /// Read the saved title templates again: one saved over the control
     /// socket joins the Titles browser (#2757).
     ReloadTitleTemplates,

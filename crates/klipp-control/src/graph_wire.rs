@@ -101,8 +101,10 @@ impl GraphPath {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum GraphWireOp {
-    Add { after: GraphPath, r#type: String, #[serde(default)] params: BTreeMap<String, Value>, label: Option<String> },
-    AddBeside { at: GraphPath, r#type: String, #[serde(default)] params: BTreeMap<String, Value>, label: Option<String> },
+    /// `entry`, when given, is the node's whole stored entry (a saved
+    /// recipe's node as it was, #2757): checked to read as that node's.
+    Add { after: GraphPath, r#type: String, #[serde(default)] params: BTreeMap<String, Value>, label: Option<String>, #[serde(default, skip_serializing_if = "Option::is_none")] entry: Option<Value> },
+    AddBeside { at: GraphPath, r#type: String, #[serde(default)] params: BTreeMap<String, Value>, label: Option<String>, #[serde(default, skip_serializing_if = "Option::is_none")] entry: Option<Value> },
     Remove { path: GraphPath },
     Connect { from: GraphPath, from_port: String, to: GraphPath, to_port: String },
     Disconnect { to: GraphPath, port: String },

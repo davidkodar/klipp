@@ -23,6 +23,7 @@ const ALLOWED: &[(&str, usize, &str)] = &[
     ("klipp-graph-lift/src/delift.rs", 1, "a grade compound's params, to put its subgraph back (#1391)"),
     ("klipp-graph-lift/src/placed.rs", 3, "12b-0's bridge on the stored record (deleted in 12f): an entry's tag, a plug-in's flag and values"),
     ("klipp-timeline/src/clip_anim.rs", 3, "a grade node's kind, label and parameters, for its tracks in the curve editor (#891)"),
+    ("klipp-timeline/src/composition_template.rs", 1, "a grade node's stored entry, saved whole into a recipe (#2757 step 6)"),
     ("klipp-timeline/src/picture_reads.rs", 1, "an OFX node's stored entry, which is the plug-in's (M4 step 12a)"),
     ("klipp-graph-lift/src/to_v1.rs", 6, "after the delift's into_stored: the stored form"),
     ("klipp-graph-lift/src/ops.rs", 10, "grade nodes, the stored form, and the in-memory test of an effect node"),

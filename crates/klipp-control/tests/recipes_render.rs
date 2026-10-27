@@ -487,3 +487,56 @@ fn colour_hold_keeps_the_colour_picked_and_greys_the_rest() {
     }
 }
 
+
+/// Nodes saved as a recipe (#2757 step 6): the nodes a recipe put on one
+/// clip, saved together with a published control, placed on another clip
+/// draw that clip as the original was drawn, within a level on the GPU
+/// stack with nothing falling back; the control at another value moves its
+/// node and the picture. A selection that leaves out a node it is wired to
+/// is refused, named.
+#[test]
+fn nodes_saved_as_a_recipe_place_like_the_original_and_their_control_moves_them() {
+    use klipp_timeline::composition_template::{recipe_from_nodes, ControlSpec, DriveSpec};
+    let recipes = builtin_recipes();
+    let pip = recipes.iter().find(|r| r.name == "Picture in picture").expect("the recipe");
+    let first = shot_clip();
+    let original = placed_with(pip, &first);
+    let clip = original.tracks[0].clips[0].clone();
+    let before: Vec<uuid::Uuid> = first.picture_v2().unwrap().picture.graph.nodes.iter().map(|n| n.id).collect();
+    let graph = clip.picture_v2().unwrap().picture.graph.clone();
+    let made: Vec<uuid::Uuid> = graph.nodes.iter().map(|n| n.id).filter(|id| !before.contains(id)).collect();
+    let merge = graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("merge")).unwrap().id;
+    let control = ControlSpec { label: "Picture opacity".into(), min: Some(0.0), max: Some(1.0), default: None, drives: vec![DriveSpec { target: format!("node:{merge}.opacity"), to: [0.0, 1.0], curve: Default::default() }] };
+    let saved = recipe_from_nodes(&clip, &made, "Saved picture in picture", None, std::slice::from_ref(&control)).unwrap_or_else(|e| panic!("{e}"));
+    // Through a file and back, as the store keeps it.
+    let saved: klipp_timeline::composition_template::CompositionTemplate = serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
+    saved.validate().unwrap();
+
+    let other = shot_clip();
+    let place = |values: BTreeMap<String, TemplateValue>| {
+        let seq = sequence(other.clone());
+        let (ops, _) = klipp_control::recipes::on_clip(&seq, other.id, &saved, &values).unwrap_or_else(|e| panic!("{e}"));
+        let mut c = other.clone();
+        c.apply_picture_ops(&ops).unwrap_or_else(|e| panic!("{e}"));
+        c
+    };
+    let copy = place(BTreeMap::new());
+    let Some(want) = stack(&original, ViewChannel::Picture, "the original") else { return };
+    let Some(got) = stack(&sequence(copy), ViewChannel::Picture, "the saved recipe placed") else { return };
+    assert!(worst(&want, &got) <= 1, "placed on another clip, it draws as the original: {} levels apart", worst(&want, &got));
+    let Some(plain) = stack(&sequence(other.clone()), ViewChannel::Picture, "the other clip") else { return };
+    assert!(worst(&got, &plain) > 100, "and it does something");
+
+    // The control moves its node and the picture.
+    let faded = place(BTreeMap::from([("picture_opacity".to_string(), TemplateValue::Number(0.4))]));
+    let g = faded.picture_v2().unwrap().picture.graph.clone();
+    let m = g.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("merge")).unwrap();
+    let opacity = klipp_graph_lift::effect_params::entry_of(m).unwrap()["opacity"].as_f64().unwrap();
+    assert!((opacity - 0.4).abs() < 1e-6, "the merge's opacity is the control's: {opacity}");
+    let Some(dim) = stack(&sequence(faded), ViewChannel::Picture, "the control moved") else { return };
+    assert!(worst(&dim, &got) > 40, "the picture moves with it");
+
+    // The merge alone leaves out the picture it lays over the clip.
+    let why = recipe_from_nodes(&clip, &[merge], "Half", None, &[]).unwrap_err();
+    assert!(why.contains("isn't saved"), "{why}");
+}

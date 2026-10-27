@@ -819,7 +819,17 @@ pub(crate) fn respond(
             Ok(crate::plans::title_templates(crate::plans::template_dir().as_deref(), crate::plans::composition_dir().as_deref()))
         }
 
-        ControlCommand::SaveTemplate { clip_ids: Some(ids), clip_id: None, name, category, fields, controls, replace } => {
+        ControlCommand::SaveTemplate { clip_id, clip_ids: None, nodes: Some(nodes), name, category, controls, replace, .. } => {
+            if in_batch {
+                return Err("saving a recipe is not part of a batch: send it on its own".into());
+            }
+            let clip_id = clip_id.ok_or("give clip_id, the clip whose picture holds the nodes")?;
+            let reply = save_node_recipe(ctx, &clip_id, &nodes, &name, category, &controls, replace)?;
+            let _ = send(AppCommand::ReloadTitleTemplates);
+            Ok(reply)
+        }
+        ControlCommand::SaveTemplate { nodes: Some(_), clip_ids: Some(_), .. } => Err("nodes are of one clip's picture: give clip_id, not clip_ids".into()),
+        ControlCommand::SaveTemplate { clip_ids: Some(ids), clip_id: None, nodes: None, name, category, fields, controls, replace } => {
             if in_batch {
                 return Err("saving a template is not part of a batch: send it on its own".into());
             }
@@ -1121,11 +1131,11 @@ mod node_types_tests {
         assert_eq!(all["publication"]["available"], true);
         assert_eq!(invert["mixable"], false);
         assert_eq!(invert["inputs"], serde_json::json!([{ "key": "in", "type": "Image", "optional": false }]));
-        // 38 effects (the 3D LUT and the colour-space transform among
+        // 39 effects (the 3D LUT and the colour-space transform among
         // them, #1746; the flicker and the binocular vignette, #989; the
-        // displace, #2702) and the 8 gateable grade corrections (M3 step
-        // 17a).
-        assert_eq!(types.iter().filter(|t| t["mixable"] == true).count(), 46);
+        // displace, #2702; the warp, #2758) and the 8 gateable grade
+        // corrections (M3 step 17a).
+        assert_eq!(types.iter().filter(|t| t["mixable"] == true).count(), 47);
         assert_eq!(find("lut_3d")["mixable"], true);
         assert_eq!(find("colour_space_transform")["mixable"], true);
         assert_eq!(find("flicker")["mixable"], true);
@@ -1219,6 +1229,32 @@ fn save_composition_template(ctx: &ControlContext, ids: &[String], name: &str, c
     }).chain(template.slots.values().map(|s| format!("{} (slot)", s.label))).collect();
     store.save(template)?;
     Ok(json!({ "text": format!("saved {} clip{} as the template \"{}\", exposing {}; the template op places it as one clip", ids.len(), if ids.len() == 1 { "" } else { "s" }, name.trim(), if exposed.is_empty() { "nothing".into() } else { exposed.join(", ") }) }))
+}
+
+/// Nodes of a clip's picture saved as a recipe under the user's own
+/// (#2757 step 6): [`klipp_timeline::composition_template::recipe_from_nodes`], into the same
+/// store the recipe op reads; a name saved already kept unless `replace`.
+#[allow(clippy::too_many_arguments)]
+fn save_node_recipe(ctx: &ControlContext, clip_id: &str, nodes: &[String], name: &str, category: Option<String>, controls: &[klipp_timeline::composition_template::ControlSpec], replace: bool) -> Result<serde_json::Value, String> {
+    use klipp_timeline::composition_template::CompositionTemplateStore;
+    let id = existing_clip_id(ctx, clip_id)?;
+    let nodes: Vec<uuid::Uuid> = nodes.iter().map(|n| n.parse().map_err(|_| format!("{n} is not a node id"))).collect::<Result<_, _>>()?;
+    let clip = {
+        let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+        let clip = seq.all_clips().find(|c| c.id == id).cloned();
+        clip.ok_or("no such clip on the open sequence")?
+    };
+    let mut recipe = klipp_timeline::composition_template::recipe_from_nodes(&clip, &nodes, name, category.filter(|c| !c.trim().is_empty()).or(Some("My Recipes".into())), controls)?;
+    let mut store = CompositionTemplateStore::load(crate::plans::composition_dir());
+    if let Some(existing) = store.recipes().find(|t| t.name.eq_ignore_ascii_case(name.trim())) {
+        if !replace {
+            return Err(format!("a recipe called \"{}\" is saved already: give replace true to save over it, or another name", name.trim()));
+        }
+        recipe.id = existing.id;
+    }
+    let controls: Vec<String> = recipe.parameters.values().map(|p| p.label.clone()).collect();
+    store.save(recipe)?;
+    Ok(json!({ "text": format!("saved {} node{} as the recipe \"{}\"{}; the recipe op places it on any clip", nodes.len(), if nodes.len() == 1 { "" } else { "s" }, name.trim(), if controls.is_empty() { String::new() } else { format!(", with the controls {}", controls.join(", ")) }) }))
 }
 
 /// The fonts a template pack needs to know of (#2757), from the machine's
