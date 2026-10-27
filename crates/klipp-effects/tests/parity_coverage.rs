@@ -119,6 +119,7 @@ const EFFECTS: &[(&str, Cover)] = &[
     ("GradeCompound", Exempt("a marker: the plan runs the grade compound as the executor's compound node, held in klipp-compose's grade_compound_render")),
     ("ClipBelow", Exempt("its kernels pass the picture: the executor draws what the render composited below, held in klipp-compose's clip_below_render")),
     ("MediaSource", Exempt("its kernels pass the picture: the executor reads another media item's frame, held in klipp-compose's media_source_render")),
+    ("SurfacePin", Exempt("it records and applies as the corner pin it is in the frame (corner_pin::surface_as_pin), whose parity is checked; its fit held in klipp-compose's surface_pin_node on both routes")),
     ("TitleSource", Exempt("its kernels pass the picture: the renderer draws the title as a title clip's and the executor reads it, held in klipp-compose's title_source_render")),
     ("Merge", Exempt("its own kernels pass the picture: the plan's layer mixer draws it with its foreground, held in klipp-compose's merge_render")),
 ];

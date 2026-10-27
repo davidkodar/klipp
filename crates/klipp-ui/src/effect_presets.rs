@@ -562,6 +562,7 @@ pub fn builtin_effect_key(effect: &klipp_effects::BuiltinEffect) -> &'static str
         klipp_effects::BuiltinEffect::ChromaKey { .. } => "chroma_key",
         klipp_effects::BuiltinEffect::LumaKey { .. } => "luma_key",
         klipp_effects::BuiltinEffect::CornerPin { .. } => "corner_pin",
+        klipp_effects::BuiltinEffect::SurfacePin { .. } => "surface_pin",
         klipp_effects::BuiltinEffect::Lut3D { .. } => "lut_3d",
         klipp_effects::BuiltinEffect::ColourSpaceTransform { .. } => "colour_space_transform",
         klipp_effects::BuiltinEffect::PictureTransform { .. } => "picture_transform",

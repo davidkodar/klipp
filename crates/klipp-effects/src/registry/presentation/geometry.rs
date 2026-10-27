@@ -19,6 +19,7 @@ const DISPLACE: &str = "klipp.fx.displace";
 const REFLECTION: &str = "klipp.fx.reflection";
 const LETTERBOX: &str = "klipp.fx.letterbox";
 const PIN: &str = "klipp.fx.corner_pin";
+const SURFACE_PIN: &str = "klipp.fx.surface_pin";
 const PICTURE_XF: &str = "klipp.fx.picture_transform";
 
 pub(super) static PARAMS: &[ParamEntry] = &[
@@ -94,6 +95,9 @@ pub(super) static PARAMS: &[ParamEntry] = &[
     at(PIN, "br_y", P::scrub(0.002, 3).label("Bottom Right Y")),
     at(PIN, "bl_x", P::scrub(0.002, 3).label("Bottom Left X")),
     at(PIN, "bl_y", P::scrub(0.002, 3).label("Bottom Left Y")),
+    // Named where the pin is made (the recipe's surface slot): not a row.
+    at(SURFACE_PIN, "surface", P::hidden()),
+    at(SURFACE_PIN, "inset", P::scrub(0.005, 3)),
     at(PICTURE_XF, "position_x", P::scrub(1.0, 1)),
     at(PICTURE_XF, "position_y", P::scrub(1.0, 1)),
     at(PICTURE_XF, "scale_x", P::scrub(0.01, 2)),

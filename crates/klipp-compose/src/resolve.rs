@@ -272,7 +272,11 @@ fn walk(clip: &Clip, picture: &ClipPicture, time: Timecode, fps: f64, resolved: 
         frame_inputs(clip, &mut effect, t, fps, pin, &mut pinned);
         fx.push(effect);
         nodes.push(node.id);
-        blends.push(blend_of(picture, node, t, &ctx));
+        let mut blend = blend_of(picture, node, t, &ctx);
+        if let Some(b) = blend.as_mut() {
+            side_surfaces(clip, b, t, fps);
+        }
+        blends.push(blend);
     }
     let xf = resolved.unwrap_or_else(|| eval::evaluate_clip_own_transform(clip, t, &ctx));
     let fixed = placement.as_ref().and_then(|(_, f)| f.clone());
@@ -428,6 +432,21 @@ fn blend_of(picture: &ClipPicture, node: &Node, t: f64, ctx: &klipp_core::EvalCo
         None => mask_source(picture, &e.from.0, e.from.1.as_str(), t, ctx),
     });
     Some(Blend { blend, mask, fg, compound: None })
+}
+
+/// The surface pins on `blend`'s branches given their corners at `t`
+/// ([`crate::render::surface_inputs`]): a branch's nodes are read alone,
+/// without the clip whose surfaces they follow.
+fn side_surfaces(clip: &Clip, blend: &mut Blend, t: f64, fps: f64) {
+    for source in [&mut blend.mask, &mut blend.fg].into_iter().flatten() {
+        if let MaskSource::Side { node, lead, .. } = source {
+            for n in lead.iter_mut().chain(std::iter::once(node.as_mut())) {
+                for e in &mut n.params.effects {
+                    crate::render::surface_inputs(clip, e, t, fps);
+                }
+            }
+        }
+    }
 }
 
 /// The most nodes a branch beside the chain runs before its last (#2758).

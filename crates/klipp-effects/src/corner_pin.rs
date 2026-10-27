@@ -55,6 +55,30 @@ pub fn seen_through(transform: &BuiltinEffect, width: u32, height: u32) -> Optio
     Some(with_corners([back(0.0, 0.0), back(wf, 0.0), back(wf, hf), back(0.0, hf)]))
 }
 
+/// Where a picture `size` fitted into `frame` lies: its left, top, width
+/// and height in the frame's pixels, centred, as the renderer fits a
+/// clip's picture. A size with no area fills the frame.
+pub fn fitted(size: [u32; 2], frame: [u32; 2]) -> [f64; 4] {
+    let (fw, fh) = (frame[0].max(1) as f64, frame[1].max(1) as f64);
+    if size[0] == 0 || size[1] == 0 {
+        return [0.0, 0.0, fw, fh];
+    }
+    let (w, h) = (size[0] as f64, size[1] as f64);
+    let scale = (fw / w).min(fh / h);
+    let (dw, dh) = ((w * scale).round().clamp(1.0, fw), (h * scale).round().clamp(1.0, fh));
+    [((fw - dw) / 2.0).floor(), ((fh - dh) / 2.0).floor(), dw, dh]
+}
+
+/// A surface pin as the corner pin it is in a `width` × `height` frame:
+/// its corners on the clip's picture carried to the frame by the fit
+/// that places the picture there. `None` for another effect.
+pub fn surface_as_pin(effect: &BuiltinEffect, width: u32, height: u32) -> Option<BuiltinEffect> {
+    let BuiltinEffect::SurfacePin { on_source, source, .. } = effect else { return None };
+    let [x0, y0, dw, dh] = fitted(*source, [width, height]);
+    let (fw, fh) = (width.max(1) as f64, height.max(1) as f64);
+    Some(with_corners(on_source.map(|c| [((x0 + c[0] as f64 * dw) / fw) as f32, ((y0 + c[1] as f64 * dh) / fh) as f32])))
+}
+
 /// Whether the corners are the picture's own, to within a hair.
 pub fn is_still(corners: &[[f32; 2]; 4]) -> bool {
     corners.iter().zip(&STILL).all(|(c, s)| (c[0] - s[0]).abs() < 1e-6 && (c[1] - s[1]).abs() < 1e-6)

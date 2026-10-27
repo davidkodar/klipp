@@ -308,6 +308,7 @@ impl BuiltinEffect {
                     real(f, names[1], &mut corner[1]);
                 }
             }
+            E::SurfacePin { inset, .. } => real(f, "inset", inset),
             E::Transform { .. }
             | E::ColorFade { .. }
             | E::FocusBlur { .. }
