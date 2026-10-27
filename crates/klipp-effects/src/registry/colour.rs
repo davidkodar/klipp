@@ -203,6 +203,24 @@ pub(super) static TYPES: &[EffectType] = &[
         tag: "vibrance",
         sample: || BuiltinEffect::Vibrance { amount: 0.0 },
     },
+    // The picture's brightness along a ramp of three colours (#2758),
+    // read as it looks: on the display encoding.
+    EffectType {
+        desc: colour(
+            "klipp.fx.gradient_map",
+            "Gradient Map",
+            &[
+                ParamDesc { kind: ParamKind::Colour, range: None, soft: None, unit: Unit::None, keyframable: false, ..ParamDesc::float("shadow", "Shadows", f32::NAN, (0.0, 1.0), Unit::None) },
+                ParamDesc { kind: ParamKind::Colour, range: None, soft: None, unit: Unit::None, keyframable: false, ..ParamDesc::float("mid", "Midtones", f32::NAN, (0.0, 1.0), Unit::None) },
+                ParamDesc { kind: ParamKind::Colour, range: None, soft: None, unit: Unit::None, keyframable: false, ..ParamDesc::float("highlight", "Highlights", f32::NAN, (0.0, 1.0), Unit::None) },
+                ParamDesc::float("mix", "Mix", 1.0, (0.0, 1.0), Unit::Ratio),
+            ],
+            ColourDomain::DisplayEncoded,
+            Spatial::PerPixel,
+        ),
+        tag: "gradient_map",
+        sample: || BuiltinEffect::GradientMap { shadow: [20, 24, 60], mid: [190, 90, 70], highlight: [255, 236, 190], mix: 1.0 },
+    },
     EffectType {
         desc: mixable(colour(
             "klipp.fx.levels",

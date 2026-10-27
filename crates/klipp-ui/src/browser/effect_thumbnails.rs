@@ -479,6 +479,8 @@ fn builtin_preview_params(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
         klipp_effects::BuiltinEffect::Generator { .. } => klipp_effects::BuiltinEffect::Generator {
             shape: 1, color_a: [30, 60, 160, 255], color_b: [250, 200, 120, 255], angle: 30.0, center_x: 0.5, center_y: 0.5, radius: 0.5,
         },
+        // Its own ramp, dusk blue to warm cream: the card shows a map.
+        klipp_effects::BuiltinEffect::GradientMap { .. } => klipp_effects::registry::effect_type("gradient_map").map_or_else(|| effect.clone(), |t| (t.sample)()),
         // A twirl, what a bend looks like at a glance.
         klipp_effects::BuiltinEffect::Warp { .. } => klipp_effects::BuiltinEffect::Warp {
             mode: klipp_effects::warp::TWIRL, amplitude: 20.0, wavelength: 0.2, speed: 1.0, direction: 0, angle: 220.0, strength: 0.5, radius: 0.6, center_x: 0.5, center_y: 0.5, band: 0.04, time: 0.0,

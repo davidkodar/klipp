@@ -42,6 +42,7 @@ pub mod deflicker;
 pub mod dither;
 pub mod displace;
 pub mod warp;
+pub mod gradient_map;
 pub mod planar;
 pub mod old_film;
 pub mod reflection;
@@ -660,6 +661,16 @@ pub enum BuiltinEffect {
         seed: u32,
         #[serde(default)]
         time: f32,
+    },
+    /// Gradient Map (#2758): the picture's brightness laid along a ramp
+    /// of three colours (sRGB), shadows to `shadow`, the middle to `mid`,
+    /// highlights to `highlight`, mixed over it by `mix`. See
+    /// [`gradient_map`].
+    GradientMap {
+        shadow: [u8; 3],
+        mid: [u8; 3],
+        highlight: [u8; 3],
+        mix: f32,
     },
     /// Warp (#2758): the picture bent by one of [`warp`]'s shapes, each
     /// pixel taken from where the shape moves it: a wave, a twirl, a
@@ -1711,6 +1722,7 @@ pub fn is_identity_effect(effect: &BuiltinEffect) -> bool {
         }
         BuiltinEffect::CornerPin { tl, tr, br, bl } => corner_pin::is_still(&[*tl, *tr, *br, *bl]),
         BuiltinEffect::Warp { .. } => effect.warp_settings().is_none_or(|s| warp::is_identity(&s)),
+        BuiltinEffect::GradientMap { mix, .. } => mix.abs() < f32::EPSILON,
         BuiltinEffect::Lut3D { opacity, .. } => *opacity <= 0.0,
         BuiltinEffect::PictureTransform { .. } => effect.picture_transform_as_transform().is_some_and(|t| is_identity_effect(&t)),
         // A flicker of nothing, or one whose every jump holds (#989).

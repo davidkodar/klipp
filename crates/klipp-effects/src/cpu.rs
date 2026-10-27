@@ -483,6 +483,14 @@ pub(crate) fn apply(
         },
         // The twin of `SHADER_PARTICLES` (#1141).
         Particles { .. } => crate::particles::apply(effect, p, w, h),
+        // The twin of `gradient_map::shader_wgsl` (#2758).
+        GradientMap { shadow, mid, highlight, mix } => {
+            if mix.abs() < f32::EPSILON {
+                return p;
+            }
+            use crate::gradient_map::{colour, cpu};
+            cpu(p, colour(shadow), colour(mid), colour(highlight), mix, yw)
+        }
         // The twin of the Warp's shader (#2758).
         Warp { .. } => match effect.warp_settings() {
             Some(s) if !crate::warp::is_identity(&s) => crate::warp::cpu(&p, w, h, &s),
