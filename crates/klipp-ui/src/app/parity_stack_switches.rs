@@ -72,12 +72,17 @@ fn eyes() -> Vec<(CatalogEntry, &'static EffectType)> {
 /// the clip's speed curve, and the effect keeps only its frame blending.
 const RAMP_PIXELS: &str = "known defect #1409: retiming comes from the clip's speed curve, so a Speed Ramp switched off draws the same frame";
 
+/// A Title Source draws its title as the foreground a Merge beside the
+/// chain lays over; in the stack's list alone it is a clear picture.
+const TITLE_SOURCE_PIXELS: &str = "draws only through a Merge beside the chain (#2758), drawn on both routes in klipp-compose's title_source_render; alone in the list it is a clear picture";
+
 /// Why a card's eye earns no Pixels key, when it can't: switching it can't
 /// change the frame, or the frame differs between the CPU and the GPU
 /// stack before any edit (pinned with its issue until the routes agree).
 fn eye_pixels_pinned(tag: &str) -> Option<&'static str> {
     match tag {
         "speed_ramp" => Some(RAMP_PIXELS),
+        "title_source" => Some(TITLE_SOURCE_PIXELS),
         _ => None,
     }
 }
@@ -344,6 +349,11 @@ fn hidden_case(ty: &EffectType, desc: &klipp_effects::registry::ParamDesc) -> Re
             serde_json::Value::Number(n) => serde_json::json!(n.as_f64().unwrap_or(0.0) * 0.5 + 0.13),
             // An unset reference (the Transform's focal anchor): a glyph's.
             serde_json::Value::Null if desc.field == "focal_ref" => serde_json::json!({ "kind": "glyph", "title_clip_id": uuid::Uuid::from_u128(7), "char_index": 3, "fallback_xy": [0.4, 0.6] }),
+            // A name or a stored text (a surface, a title): another.
+            serde_json::Value::String(t) => serde_json::Value::String(format!("{t}kept")),
+            // A colour or a list of numbers (a reflection's water): each
+            // moved by 7, inside a byte.
+            serde_json::Value::Array(a) if a.iter().all(|v| v.is_u64()) => a.iter().map(|v| serde_json::json!((v.as_u64().unwrap_or(0) + 7) % 256)).collect(),
             other => return Err(format!("{}: no value apart from {other} to set", desc.field)),
         };
     }
@@ -383,10 +393,13 @@ fn hidden_case(ty: &EffectType, desc: &klipp_effects::registry::ParamDesc) -> Re
             s.apply(&AppCommand::SetParamAt { addr, key: other.key.into(), value: klipp_graph_format::ParamValue::Float(lo + (hi - lo) * 0.37) });
             other.key
         }
-        None => {
+        None if ty.desc.mixable => {
             s.apply(&AppCommand::SetMixAt { addr, mix: Some(0.5) });
             "its mix"
         }
+        // Nothing else on the card to edit (a Title Source holds only its
+        // title): opening it, which wrote nothing, is the case.
+        None => return if field(&s) == kept { Ok(()) } else { Err(format!("{} changed on opening", desc.field)) },
     };
     if !s.unapplied.is_empty() {
         return Err(format!("editing {edited}: unapplied {:?}", s.unapplied));
