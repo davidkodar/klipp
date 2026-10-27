@@ -121,7 +121,8 @@ fn ratio(a: f32, b: f32) -> f32 {
 
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
-    let i = gid_flat.x + gid_flat.y * nwg.x * 256u;
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
+    let i = gid.x;
     let cells = p.small_w * p.small_h;
     let pixels = p.width * p.height;
     if p.op <= 1u {
