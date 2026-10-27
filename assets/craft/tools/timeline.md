@@ -38,9 +38,9 @@ Preview a native generator clip; apply true places it as one undo step. Give at_
 - `"ColorBars"`, `"ColorBars100"`: the seven SMPTE bars, at 75 % or 100 %.
 - `"ColorBarsSmpte"`: the full SMPTE pattern, the 75 % bars over the castellations and the −I / white / +Q / PLUGE row, for setting a monitor's black and white.
 - `"Countdown"`: a leader counting down the seconds.
-- `{Timer:{mode,initial_seconds,format,text_color,background_color}}`: a clock, mode CountUp or CountDown from initial_seconds, format Seconds, MmSs, HhMmSs or HhMmSsMs.
-- `{Slate:{project,scene,take,director,camera,date,framerate,notes,text_color,background_color}}`: a production slate, each field text.
-- `{StillFrame:{png_path,width,height}}`: a still from a PNG file (absolute path) of that size.
+- `{Timer:{mode,initial_seconds,format,text_color,background_color}}`: a clock, mode CountUp or CountDown from initial_seconds, format Seconds, MmSs, HhMmSs or HhMmSsMs; its digits fit the frame's width in any aspect.
+- `{Slate:{project,scene,take,director,camera,date,framerate,notes,text_color,background_color}}`: a production slate, each field text, laid out in label and value columns that fill the frame in any aspect; empty fields are left out.
+- `{StillFrame:{png_path,width,height}}`: a still from a PNG file (absolute path) of that size, fitted inside the frame at its own aspect, the rest clear.
 
 Omit track to use/create a bottom Background video track. Overlaps and locked tracks are refused.
 
