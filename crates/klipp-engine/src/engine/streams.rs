@@ -435,6 +435,29 @@ impl Drop for ClipStream {
     }
 }
 
+/// `wants` with each frame of a file wanted once: the clips that show the
+/// same frame of the same file as an earlier one, by that one's clip, and
+/// the wants left, one a frame. The one kept is on screen when any of
+/// them is. A reversed clip keeps its own reader, which reads a window
+/// back from its time.
+fn sharing(wants: &[Want]) -> (Vec<Want>, HashMap<ClipId, ClipId>) {
+    // Within a tenth of a millisecond: a frame is tens of them, and a
+    // scene's time worked out through each level lands a hair apart.
+    const SAME: f64 = 1e-4;
+    let mut kept: Vec<Want> = Vec::with_capacity(wants.len());
+    let mut shared = HashMap::new();
+    for w in wants {
+        let same = |k: &Want| !w.reversed && !k.reversed && k.clip != w.clip && k.media == w.media && k.rotation == w.rotation && (k.source_secs - w.source_secs).abs() < SAME;
+        if let Some(k) = kept.iter_mut().find(|k| same(k)) {
+            k.ahead &= w.ahead;
+            shared.insert(w.clip, k.clip);
+        } else if !kept.iter().any(|k| k.clip == w.clip) {
+            kept.push(w.clone());
+        }
+    }
+    (kept, shared)
+}
+
 /// The viewer's decoders for everything but the primary track's clip.
 pub(crate) struct ClipStreams {
     streams: HashMap<ClipId, ClipStream>,
@@ -474,6 +497,12 @@ pub(crate) struct ClipStreams {
     gpu_headroom: fn() -> f64,
     /// Media sources' readers (#1746), kept across frames.
     pub(crate) media: klipp_media::frame_reader::MediaReaders,
+    /// Clips that show the same frame of the same file as another, by the
+    /// clip whose stream they read: a scene placed in several places at
+    /// once, every level of a nest of templates over the same shots,
+    /// decoded once instead of once a clip, each decoder's frames taking
+    /// hundreds of megabytes on the GPU.
+    shared: HashMap<ClipId, ClipId>,
     /// OFX plug-ins' neighbour readers (#2013), by file and log format,
     /// kept across frames: the one read longest ago closed first.
     neighbours: Vec<(PathBuf, Option<klipp_core::LogFormat>, std::sync::Arc<std::sync::Mutex<klipp_media::frame_reader::SeekableFrameReader>>)>,
@@ -481,7 +510,7 @@ pub(crate) struct ClipStreams {
 
 impl ClipStreams {
     pub fn new() -> Self {
-        Self { streams: HashMap::new(), opening: HashMap::new(), reversed: HashMap::new(), rates: HashMap::new(), bytes: HashMap::new(), free_memory: crate::decode_budget::free_memory, vram: HashMap::new(), free_vram: crate::decode_budget::free_vram, reads: HashMap::new(), queue_frames: crate::video_decoder::frame_queue_size, capacity: crate::decode_budget::stream_capacity, gpu_headroom: crate::decode_budget::gpu_headroom, media: klipp_media::frame_reader::MediaReaders::new(klipp_compose::MEDIA_READERS), neighbours: Vec::new() }
+        Self { streams: HashMap::new(), opening: HashMap::new(), reversed: HashMap::new(), rates: HashMap::new(), bytes: HashMap::new(), free_memory: crate::decode_budget::free_memory, vram: HashMap::new(), free_vram: crate::decode_budget::free_vram, reads: HashMap::new(), queue_frames: crate::video_decoder::frame_queue_size, capacity: crate::decode_budget::stream_capacity, gpu_headroom: crate::decode_budget::gpu_headroom, media: klipp_media::frame_reader::MediaReaders::new(klipp_compose::MEDIA_READERS), shared: HashMap::new(), neighbours: Vec::new() }
     }
 
     /// The reader of `path`'s frames at any time for an OFX plug-in's
@@ -520,6 +549,9 @@ impl ClipStreams {
     /// decode in software. Layers come bottom first and those opened ahead
     /// last, so those go to software first, then the top-most layers.
     pub fn sync(&mut self, wants: &[Want], frame_secs: f64, resolve: &dyn Fn(&Want) -> Option<(PathBuf, i32, Cost)>) {
+        let (wants, shared) = sharing(wants);
+        self.shared = shared;
+        let wants = &wants[..];
         crate::decode_budget::sample();
         self.hand_on(wants, frame_secs, resolve);
         self.streams.retain(|id, _| wants.iter().any(|w| w.clip == *id && !w.reversed));
@@ -825,7 +857,13 @@ impl ClipStreams {
         }
     }
 
+    /// The clip whose stream `clip` reads: its own, or the one it shares.
+    fn reader(&self, clip: ClipId) -> ClipId {
+        self.shared.get(&clip).copied().unwrap_or(clip)
+    }
+
     pub fn has(&self, clip: ClipId) -> bool {
+        let clip = self.reader(clip);
         self.streams.contains_key(&clip) || self.opening.contains_key(&clip) || self.reversed.contains_key(&clip)
     }
 
@@ -870,18 +908,18 @@ impl ClipStreams {
     }
 
     pub fn frame(&self, clip: ClipId) -> Option<&HeldFrame> {
-        self.streams.get(&clip)?.held.as_ref()
+        self.streams.get(&self.reader(clip))?.held.as_ref()
     }
 
     /// The frame `clip`'s stream held before its current one, as it played
     /// on (#1988).
     pub fn previous_frame(&self, clip: ClipId) -> Option<&HeldFrame> {
-        self.streams.get(&clip)?.previous.as_ref()
+        self.streams.get(&self.reader(clip))?.previous.as_ref()
     }
 
     /// A copy of the frame after `clip`'s held one, if it is decoded.
     pub fn next_frame(&self, clip: ClipId) -> Option<HeldFrame> {
-        let s = self.streams.get(&clip)?;
+        let s = self.streams.get(&self.reader(clip))?;
         let q = s.dec().frame_queue().lock().unwrap_or_else(|e| e.into_inner());
         q.front().filter(|f| !f.is_eof).map(HeldFrame::copy_of)
     }
@@ -936,6 +974,7 @@ impl ClipStreams {
     }
 
     pub fn clear(&mut self) {
+        self.shared.clear();
         self.streams.clear();
         self.opening.clear();
         self.rates.clear();
@@ -957,6 +996,27 @@ impl ClipStreams {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Clips at the same frame of the same file read one stream, the one
+    /// kept on screen if any of them is; another time, another file,
+    /// another rotation or a clip read backward keeps its own.
+    #[test]
+    fn clips_at_one_frame_of_a_file_share_a_stream() {
+        let media = MediaId::new();
+        let want = |secs: f64, ahead: bool| Want { clip: ClipId::new(), media, rotation: 0, source_secs: secs, ahead, reversed: false };
+        let first = want(2.5, true);
+        let same = Want { source_secs: 2.5 + 2e-5, ..want(0.0, false) };
+        let later = want(2.54, false);
+        let other_file = Want { media: MediaId::new(), ..want(2.5, false) };
+        let turned = Want { rotation: 90, ..want(2.5, false) };
+        let backward = Want { reversed: true, ..want(2.5, false) };
+        let (kept, shared) = sharing(&[first.clone(), same.clone(), later.clone(), other_file.clone(), turned.clone(), backward.clone()]);
+        assert_eq!(shared, HashMap::from([(same.clip, first.clip)]));
+        let kept: Vec<ClipId> = kept.iter().map(|w| w.clip).collect();
+        assert_eq!(kept, [first.clip, later.clip, other_file.clip, turned.clip, backward.clip]);
+        let (kept, _) = sharing(&[first.clone(), same]);
+        assert!(!kept[0].ahead, "on screen, as the clip sharing it is");
+    }
 
     /// A clone shares the conversions made after it was taken (#2352):
     /// the parked frame is handed to each slider step as a clone, and one
@@ -1066,7 +1126,13 @@ mod tests {
         let (disk, fast) = (MediaId::new(), MediaId::new());
         let drive = |m: MediaId| if m == disk { Drive { device: 1, kind: DriveKind::Hdd } } else { Drive { device: 2, kind: DriveKind::Nvme } };
         let resolve = |w: &Want| Some((path.clone(), 0, Cost { read_bytes: 40e6, drive: Some(drive(w.media)), ..Default::default() }));
-        let want = |media: MediaId, ahead: bool| Want { clip: ClipId::new(), media, rotation: 0, source_secs: 0.0, reversed: false, ahead };
+        // Each at a time of its own: clips at one frame of a file share a
+        // stream.
+        let at = std::cell::Cell::new(0.0);
+        let want = |media: MediaId, ahead: bool| {
+            at.set(at.get() + 0.5);
+            Want { clip: ClipId::new(), media, rotation: 0, source_secs: at.get(), reversed: false, ahead }
+        };
         let (a1, a2, a3) = (want(disk, true), want(disk, true), want(disk, true));
         // Each 40 of the disk's 96: two fit, the third doesn't.
         let other = want(fast, true);
