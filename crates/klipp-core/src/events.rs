@@ -4376,6 +4376,14 @@ pub enum AppCommand {
     /// Open the Fit Music to Length dialog for a music clip (#2210).
     OpenMusicFitDialog { clip_id: crate::ClipId },
 
+    /// Open the Make Shorts dialog for a media file (#2720).
+    OpenShortsDialog { media_id: crate::MediaId },
+    /// Fill the open sequence with a short: `pieces` of `media_id` (file
+    /// seconds) end to end, upright, framed on the speaker, every other
+    /// piece pushed in, captioned, `hook` as a title when given, its
+    /// sound brought to -14 LUFS (#2720).
+    FillShort { media_id: crate::MediaId, pieces: Vec<(f64, f64)>, hook: Option<String> },
+
     /// Read `clip_id`'s track and fit it to about `target_secs` by whole
     /// bars, off the UI thread; [`AppCommand::MusicFitPlanned`] brings the
     /// plan, or why there is none, back to the dialog.
