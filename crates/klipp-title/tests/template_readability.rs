@@ -5,17 +5,17 @@
 //! inside title-safe (5 % in from each edge); and the smallest text's size
 //! (in pixels of a 1080-line frame). Each is composited with its contrast
 //! protection, as the compositor lays it. Report: `target/sweep/templates.txt`.
+//! `KLIPP_TEMPLATES_SHEET=<dir>` writes contact sheets there, a page of
+//! templates each, every one in the three formats over the bright frame.
 
 use klipp_testing::sweep::Sweep;
-use klipp_timeline::title_library::TITLES;
+use klipp_timeline::title_library::{Format, TALL_BAND_TOP, TALL_STRIP_LEFT, TITLES};
 use klipp_timeline::{TitleData, TitleObjectContent};
 use klipp_title::TitleRenderer;
 
 /// Items known to fail, and the issue that holds each: generated from the
 /// sweep's first run, each to come off as #2734's work fixes it.
 const KNOWN: &[(&str, u32)] = &[
-    ("Clean Line 9:16 bright", 2734),
-    ("Accent Block 9:16 bright", 2734),
     ("Documentary 16:9 bright", 2734),
     ("Documentary 9:16 bright", 2734),
     ("Documentary 1:1 bright", 2734),
@@ -34,12 +34,8 @@ const KNOWN: &[(&str, u32)] = &[
     ("Cast 16:9 bright", 2734),
     ("Cast 9:16 bright", 2734),
     ("Cast 1:1 bright", 2734),
-    ("Thanks for Watching 9:16 bright", 2734),
     ("Question 16:9 bright", 2734),
-    ("Question 9:16 bright", 2734),
     ("Question 1:1 bright", 2734),
-    ("Slate 9:16 title-safe", 2734),
-    ("Slate 1:1 title-safe", 2734),
 ];
 
 /// Readable: a ratio of at least this between a text's glyphs and what
@@ -47,6 +43,10 @@ const KNOWN: &[(&str, u32)] = &[
 const CONTRAST: f32 = 3.0;
 /// The smallest text, in pixels of a 1080-line frame.
 const MIN_SIZE: f32 = klipp_timeline::title_library::MIN_TEXT_SIZE;
+
+/// How far a text's distance from the next may stray from the design's,
+/// as a factor, in the title's type size.
+const SPACING: f32 = 1.25;
 
 const FORMATS: &[(&str, u32, u32)] = &[("16:9", 960, 540), ("9:16", 540, 960), ("1:1", 540, 540)];
 
@@ -112,6 +112,54 @@ fn protected(fg: &[u8], bg: &[u8], w: u32, h: u32, mode: u32) -> Vec<u8> {
     klipp_effects::linear_f32_rgba_to_srgb_u8(&acc)
 }
 
+/// The side of a contact sheet's cell, in pixels.
+const CELL: u32 = 300;
+
+/// Contact sheets of the templates, a row each and a cell per format.
+struct Sheet {
+    rows: Vec<(String, Vec<Vec<u8>>)>,
+}
+
+impl Sheet {
+    /// `px` (`w` × `h`) shrunk into a cell, centred on grey.
+    fn cell(px: &[u8], w: u32, h: u32) -> Vec<u8> {
+        let k = (CELL as f32 / w.max(h) as f32).min(1.0);
+        let (cw, ch) = ((w as f32 * k) as u32, (h as f32 * k) as u32);
+        let (ox, oy) = ((CELL - cw) / 2, (CELL - ch) / 2);
+        let mut out = [60u8, 60, 60, 255].repeat((CELL * CELL) as usize);
+        for y in 0..ch {
+            for x in 0..cw {
+                let (sx, sy) = (((x as f32 + 0.5) / k) as u32, ((y as f32 + 0.5) / k) as u32);
+                let i = ((sy.min(h - 1) * w + sx.min(w - 1)) * 4) as usize;
+                let o = (((oy + y) * CELL + ox + x) * 4) as usize;
+                out[o..o + 4].copy_from_slice(&px[i..i + 4]);
+            }
+        }
+        out
+    }
+
+    /// Pages of 12 rows into `dir`.
+    fn write(&self, dir: &std::path::Path) {
+        std::fs::create_dir_all(dir).expect("the sheet folder");
+        for (page, rows) in self.rows.chunks(12).enumerate() {
+            let cols = rows.iter().map(|r| r.1.len()).max().unwrap_or(1) as u32;
+            let (w, h) = (cols * (CELL + 4), rows.len() as u32 * (CELL + 4));
+            let mut img = [20u8, 20, 20, 255].repeat((w * h) as usize);
+            for (r, (_, cells)) in rows.iter().enumerate() {
+                for (c, cell) in cells.iter().enumerate() {
+                    for y in 0..CELL {
+                        let o = (((r as u32 * (CELL + 4) + y) * w + c as u32 * (CELL + 4)) * 4) as usize;
+                        img[o..o + (CELL * 4) as usize].copy_from_slice(&cell[(y * CELL * 4) as usize..((y + 1) * CELL * 4) as usize]);
+                    }
+                }
+            }
+            let names: Vec<&str> = rows.iter().map(|r| r.0.as_str()).collect();
+            image::save_buffer(dir.join(format!("templates-{:02}.png", page + 1)), &img, w, h, image::ColorType::Rgba8).expect("the sheet is written");
+            std::fs::write(dir.join(format!("templates-{:02}.txt", page + 1)), names.join("\n")).expect("the sheet's names");
+        }
+    }
+}
+
 /// `mask` grown by `r` pixels (a square), separably.
 fn dilate(mask: &[bool], w: usize, h: usize, r: usize) -> Vec<bool> {
     let mut row = vec![false; w * h];
@@ -142,7 +190,11 @@ fn only_text(td: &TitleData, k: usize) -> TitleData {
 fn sweep_templates() {
     let mut sweep = Sweep::new("templates", KNOWN);
     let mut renderer = TitleRenderer::new();
+    let sheet_dir = std::env::var_os("KLIPP_TEMPLATES_SHEET").map(std::path::PathBuf::from);
+    let mut sheet = Sheet { rows: Vec::new() };
     for template in TITLES {
+        let mut cells = Vec::new();
+        let mut design: Option<Vec<f32>> = None;
         let td = template.data();
         let texts: Vec<usize> = td.objects.iter().enumerate().filter(|(_, o)| matches!(o.content, TitleObjectContent::TextBox(_))).map(|(i, _)| i).collect();
         let smallest = td.objects.iter().filter_map(|o| match &o.content {
@@ -151,6 +203,8 @@ fn sweep_templates() {
         }).fold(f32::MAX, f32::min);
         sweep.check(&format!("{} smallest text", template.name), format!("{smallest:.0} px of 1080"), smallest >= MIN_SIZE);
         for &(format, w, h) in FORMATS {
+            // Laid out for the frame, as the app and the template op make it.
+            let td = template.data_for(w, h);
             let full = renderer.render(&td, w, h);
             let (wu, hu) = (w as usize, h as usize);
             let r = ((w.min(h) as f32) * 0.012).max(3.0) as usize;
@@ -162,8 +216,45 @@ fn sweep_templates() {
                 x < mx || x >= wu - mx || y < my || y >= hu - my
             }).count();
             sweep.check(&format!("{} {format} title-safe", template.name), format!("{outside} glyph pixels outside"), outside == 0);
+            if Format::of(w, h) == Format::Tall {
+                // Clear of what the platforms cover on a phone: the band
+                // at the bottom and the buttons down the right.
+                let (band, strip) = ((hu as f32 * TALL_BAND_TOP) as usize, (wu as f32 * TALL_STRIP_LEFT) as usize);
+                let covered = layers.iter().flat_map(|m| m.iter().enumerate()).filter(|(i, on)| **on && {
+                    let (x, y) = (i % wu, i / wu);
+                    y >= band || (y >= hu / 2 && x >= strip)
+                }).count();
+                sweep.check(&format!("{} {format} clear of buttons", template.name), format!("{covered} glyph pixels covered"), covered == 0);
+            }
+            // The layout keeps its shape: each text's distance from the
+            // next, in the title's type size, is the design's (16:9, the
+            // first format) whatever the frame.
+            let centres: Vec<(f32, f32)> = layers.iter().filter_map(|m| {
+                let on: Vec<usize> = m.iter().enumerate().filter(|(_, g)| **g).map(|(i, _)| i).collect();
+                (!on.is_empty()).then(|| {
+                    let (x0, x1) = on.iter().fold((usize::MAX, 0), |(lo, hi), i| (lo.min(i % wu), hi.max(i % wu)));
+                    let (y0, y1) = (on[0] / wu, on[on.len() - 1] / wu);
+                    ((x0 + x1) as f32 / 2.0, (y0 + y1) as f32 / 2.0)
+                })
+            }).collect();
+            let type_px = texts.first().and_then(|&k| match &td.objects[k].content {
+                TitleObjectContent::TextBox(tb) => Some(tb.font_size * w.min(h) as f32 / 1080.0),
+                _ => None,
+            }).unwrap_or(1.0);
+            let gaps: Vec<f32> = centres.windows(2).map(|p| (p[1].0 - p[0].0).hypot(p[1].1 - p[0].1) / type_px).collect();
+            match &design {
+                None => design = Some(gaps),
+                Some(want) if !gaps.is_empty() => {
+                    let worst = gaps.iter().zip(want).map(|(g, d)| (g / d.max(1e-3)).max(d / g.max(1e-3))).fold(1.0f32, f32::max);
+                    sweep.check(&format!("{} {format} keeps its spacing", template.name), format!("{worst:.2}x the design's"), worst <= SPACING);
+                }
+                _ => {}
+            }
             for (bg_name, bg) in backgrounds(w, h) {
                 let comp = over(&full, &protected(&full, &bg, w, h, td.protect.code()));
+                if sheet_dir.is_some() && bg_name == "bright" {
+                    cells.push(Sheet::cell(&comp, w, h));
+                }
                 let mut worst = f32::MAX;
                 for glyphs in &layers {
                     if !glyphs.iter().any(|g| *g) {
@@ -191,6 +282,10 @@ fn sweep_templates() {
                 sweep.check(&format!("{} {format} {bg_name}", template.name), format!("contrast {worst:.2}:1"), worst >= CONTRAST);
             }
         }
+        sheet.rows.push((template.name.to_string(), cells));
+    }
+    if let Some(dir) = &sheet_dir {
+        sheet.write(dir);
     }
     sweep.finish();
 }

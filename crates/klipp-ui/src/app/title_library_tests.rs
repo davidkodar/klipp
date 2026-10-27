@@ -62,3 +62,21 @@ fn a_new_title_protects_its_contrast() {
     let td = super::titles::default_title_data(&crate::prefs::TitlePrefs::default());
     assert_eq!(td.protect, klipp_timeline::ContrastProtect::Auto);
 }
+
+/// A built-in dropped on a 9:16 sequence is laid out for it (#2734): its
+/// name comes up out of the band at the bottom that phones cover.
+#[test]
+fn a_template_dropped_on_a_tall_sequence_is_laid_out_for_it() {
+    let tpl = TITLES.iter().find(|t| t.name == "Name Bar").unwrap();
+    let mut state = AppState { pending_title_data: Some(Entry::Builtin(tpl).data()), ..Default::default() };
+    let i = state.active_sequence_idx;
+    state.sequences[i].resolution = klipp_core::Resolution { width: 1080, height: 1920 };
+    let frames = state.sequence().fps.rate() * 5;
+    let at = state.playhead;
+    let track = free_text_track(&mut state, at, frames);
+    let (id, _) = add_title_clip(&mut state, track, at, frames);
+    let td = title(&state, id);
+    let y = td.objects.iter().find(|o| o.name == "Name").unwrap().transform.center.y;
+    assert!(y < klipp_timeline::title_library::TALL_BAND_TOP - 0.05, "the name at {y}");
+    assert_eq!(td.template.as_deref(), Some("Name Bar"), "still marked as made from it");
+}
