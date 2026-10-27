@@ -15,7 +15,6 @@ use klipp_timeline::{Clip, ClipKind, ObjectTransform, Sequence, Shape, ShapeKind
 use uuid::Uuid;
 
 const SECS: f64 = 5.0;
-const SOURCE_ASPECT: f32 = 16.0 / 9.0;
 
 fn tc(s: f64) -> klipp_core::Timecode {
     RationalTime::from_secs_f64(s, 24)
@@ -30,16 +29,17 @@ fn id(name: &str) -> Uuid {
 const FRAMES: [(&str, u32, u32); 3] = [("wide", 1920, 1080), ("tall", 1080, 1920), ("square", 1080, 1080)];
 
 /// A media slot filling the box `(x, y, w, h)` (pixels) of a `fw` × `fh`
-/// frame, as a 16:9 picture would: scaled to cover it and cropped to it.
+/// frame whatever the footage's shape: cropped to cover the box's shape
+/// (the renderer works it out from the source), then that cover, the
+/// largest rectangle of the shape in the frame, placed on the box.
 fn slot_clip(name: &str, fw: u32, fh: u32, b: (f32, f32, f32, f32)) -> Clip {
     let (fw, fh) = (fw as f32, fh as f32);
-    // The picture as it fits the frame, then covering the box.
-    let (pw, ph) = if fw / fh > SOURCE_ASPECT { (fh * SOURCE_ASPECT, fh) } else { (fw, fw / SOURCE_ASPECT) };
-    let scale = (b.2 / pw).max(b.3 / ph);
-    let (sw, sh) = (pw * scale, ph * scale);
+    let aspect = b.2 / b.3;
+    let cover_w = if aspect > fw / fh { fw } else { fh * aspect };
+    let scale = b.2 / cover_w;
     let mut c = Clip::media(MediaId(id(name)), tc(0.0), tc(SECS), tc(0.0), tc(SECS));
     c.id = ClipId(id(&format!("{name}.clip")));
-    c.push_effect(BuiltinEffect::Crop { left: (sw - b.2) / 2.0 / sw, right: (sw - b.2) / 2.0 / sw, top: (sh - b.3) / 2.0 / sh, bottom: (sh - b.3) / 2.0 / sh, feather: 0.0 });
+    c.push_effect(BuiltinEffect::Crop { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0, aspect, focus_x: 0.5, focus_y: 0.5 });
     c.push_effect(BuiltinEffect::Transform {
         position_x: b.0 + b.2 / 2.0 - fw / 2.0,
         position_y: b.1 + b.3 / 2.0 - fh / 2.0,

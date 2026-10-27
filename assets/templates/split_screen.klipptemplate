@@ -57,7 +57,7 @@
       },
       "tracks": [
         {
-          "id": "f57379ea-6c07-45c7-b69b-f898e68134fa",
+          "id": "1a760c65-f8c5-4661-923d-572d06025013",
           "name": "T 3",
           "kind": "Text",
           "clips": [
@@ -206,7 +206,7 @@
               "node_graph": {
                 "nodes": [
                   {
-                    "id": "81dcb833-1111-4110-ab4d-1aa4baf3bb36",
+                    "id": "fa86f5e6-e5c0-4989-b98a-7f2e53e62795",
                     "kind": "Source",
                     "label": "Source",
                     "enabled": true,
@@ -218,7 +218,7 @@
                     "input_links": []
                   },
                   {
-                    "id": "69d64fa4-7aac-4a0c-b8d2-dffc75b56ef7",
+                    "id": "404864d2-260d-4283-a8be-990bc3245b19",
                     "kind": "Corrector",
                     "label": "Corrector",
                     "enabled": true,
@@ -230,7 +230,7 @@
                     "input_links": []
                   },
                   {
-                    "id": "61b602e8-80c5-4c30-a9c7-3d0adc34b424",
+                    "id": "3b62d083-65d2-4539-8c7b-05ac786472b1",
                     "kind": "Output",
                     "label": "Output",
                     "enabled": true,
@@ -244,30 +244,30 @@
                 ],
                 "edges": [
                   {
-                    "from_node": "81dcb833-1111-4110-ab4d-1aa4baf3bb36",
+                    "from_node": "fa86f5e6-e5c0-4989-b98a-7f2e53e62795",
                     "from_port": 0,
-                    "to_node": "69d64fa4-7aac-4a0c-b8d2-dffc75b56ef7",
+                    "to_node": "404864d2-260d-4283-a8be-990bc3245b19",
                     "to_port": 0
                   },
                   {
-                    "from_node": "69d64fa4-7aac-4a0c-b8d2-dffc75b56ef7",
+                    "from_node": "404864d2-260d-4283-a8be-990bc3245b19",
                     "from_port": 0,
-                    "to_node": "61b602e8-80c5-4c30-a9c7-3d0adc34b424",
+                    "to_node": "3b62d083-65d2-4539-8c7b-05ac786472b1",
                     "to_port": 0
                   }
                 ],
-                "output_node_id": "61b602e8-80c5-4c30-a9c7-3d0adc34b424",
+                "output_node_id": "3b62d083-65d2-4539-8c7b-05ac786472b1",
                 "node_positions": {
-                  "81dcb833-1111-4110-ab4d-1aa4baf3bb36": {
-                    "x": 0.0,
-                    "y": 0.0
-                  },
-                  "69d64fa4-7aac-4a0c-b8d2-dffc75b56ef7": {
+                  "404864d2-260d-4283-a8be-990bc3245b19": {
                     "x": 220.0,
                     "y": 0.0
                   },
-                  "61b602e8-80c5-4c30-a9c7-3d0adc34b424": {
+                  "3b62d083-65d2-4539-8c7b-05ac786472b1": {
                     "x": 440.0,
+                    "y": 0.0
+                  },
+                  "fa86f5e6-e5c0-4989-b98a-7f2e53e62795": {
+                    "x": 0.0,
                     "y": 0.0
                   }
                 }
@@ -333,7 +333,7 @@
           "record_armed": false
         },
         {
-          "id": "cb7d1b98-b4a4-496b-ab0b-3634ae61399d",
+          "id": "9a8eb40a-fb79-4bd1-9adf-4edf4331fa56",
           "name": "V 2",
           "kind": "Video",
           "clips": [
@@ -362,7 +362,7 @@
               "node_graph": {
                 "nodes": [
                   {
-                    "id": "7263a380-c677-45f1-bedd-fdae79495286",
+                    "id": "b4a00819-99d5-4cd2-8009-4c07c7fd74c8",
                     "kind": "Source",
                     "label": "Source",
                     "enabled": true,
@@ -374,7 +374,7 @@
                     "input_links": []
                   },
                   {
-                    "id": "a846d76e-9789-4fd2-9d10-a7a6184374ac",
+                    "id": "4a08fa0f-4be1-419e-9161-1d46a05ca99a",
                     "kind": "Corrector",
                     "label": "Corrector",
                     "enabled": true,
@@ -386,7 +386,7 @@
                     "input_links": []
                   },
                   {
-                    "id": "866000c1-9bfc-499c-b0dd-7fd6f81952ef",
+                    "id": "7ecba7a7-78b6-4a60-b949-ac2a7be1f896",
                     "kind": "Output",
                     "label": "Output",
                     "enabled": true,
@@ -400,29 +400,29 @@
                 ],
                 "edges": [
                   {
-                    "from_node": "7263a380-c677-45f1-bedd-fdae79495286",
+                    "from_node": "b4a00819-99d5-4cd2-8009-4c07c7fd74c8",
                     "from_port": 0,
-                    "to_node": "a846d76e-9789-4fd2-9d10-a7a6184374ac",
+                    "to_node": "4a08fa0f-4be1-419e-9161-1d46a05ca99a",
                     "to_port": 0
                   },
                   {
-                    "from_node": "a846d76e-9789-4fd2-9d10-a7a6184374ac",
+                    "from_node": "4a08fa0f-4be1-419e-9161-1d46a05ca99a",
                     "from_port": 0,
-                    "to_node": "866000c1-9bfc-499c-b0dd-7fd6f81952ef",
+                    "to_node": "7ecba7a7-78b6-4a60-b949-ac2a7be1f896",
                     "to_port": 0
                   }
                 ],
-                "output_node_id": "866000c1-9bfc-499c-b0dd-7fd6f81952ef",
+                "output_node_id": "7ecba7a7-78b6-4a60-b949-ac2a7be1f896",
                 "node_positions": {
-                  "7263a380-c677-45f1-bedd-fdae79495286": {
+                  "b4a00819-99d5-4cd2-8009-4c07c7fd74c8": {
                     "x": 0.0,
                     "y": 0.0
                   },
-                  "a846d76e-9789-4fd2-9d10-a7a6184374ac": {
+                  "4a08fa0f-4be1-419e-9161-1d46a05ca99a": {
                     "x": 220.0,
                     "y": 0.0
                   },
-                  "866000c1-9bfc-499c-b0dd-7fd6f81952ef": {
+                  "7ecba7a7-78b6-4a60-b949-ac2a7be1f896": {
                     "x": 440.0,
                     "y": 0.0
                   }
@@ -432,11 +432,14 @@
               "builtin_effects": [
                 {
                   "type": "crop",
-                  "left": 0.25,
-                  "right": 0.25,
+                  "left": 0.0,
+                  "right": 0.0,
                   "top": 0.0,
                   "bottom": 0.0,
-                  "feather": 0.0
+                  "feather": 0.0,
+                  "aspect": 0.8888889,
+                  "focus_x": 0.5,
+                  "focus_y": 0.5
                 },
                 {
                   "type": "transform",
@@ -515,7 +518,7 @@
           "record_armed": false
         },
         {
-          "id": "7b9fbe84-3cdb-4514-b2a7-b74254e14b14",
+          "id": "c3699b39-2517-418d-8c7f-6b73a4166fff",
           "name": "V 1",
           "kind": "Video",
           "clips": [
@@ -544,7 +547,7 @@
               "node_graph": {
                 "nodes": [
                   {
-                    "id": "9b33bd35-cf4f-44d7-af1b-20d25384a73e",
+                    "id": "04de875c-941d-4437-b7a1-7768d9af1c1d",
                     "kind": "Source",
                     "label": "Source",
                     "enabled": true,
@@ -556,7 +559,7 @@
                     "input_links": []
                   },
                   {
-                    "id": "dbeab883-8e1e-4414-8727-433dd384f99b",
+                    "id": "6efc7635-9555-4fd9-a6f3-0ce1ed291a95",
                     "kind": "Corrector",
                     "label": "Corrector",
                     "enabled": true,
@@ -568,7 +571,7 @@
                     "input_links": []
                   },
                   {
-                    "id": "dd19e598-c744-40ed-a078-93e61d05c90c",
+                    "id": "e0031f86-a229-41a8-a051-2db0ac1a879e",
                     "kind": "Output",
                     "label": "Output",
                     "enabled": true,
@@ -582,30 +585,30 @@
                 ],
                 "edges": [
                   {
-                    "from_node": "9b33bd35-cf4f-44d7-af1b-20d25384a73e",
+                    "from_node": "04de875c-941d-4437-b7a1-7768d9af1c1d",
                     "from_port": 0,
-                    "to_node": "dbeab883-8e1e-4414-8727-433dd384f99b",
+                    "to_node": "6efc7635-9555-4fd9-a6f3-0ce1ed291a95",
                     "to_port": 0
                   },
                   {
-                    "from_node": "dbeab883-8e1e-4414-8727-433dd384f99b",
+                    "from_node": "6efc7635-9555-4fd9-a6f3-0ce1ed291a95",
                     "from_port": 0,
-                    "to_node": "dd19e598-c744-40ed-a078-93e61d05c90c",
+                    "to_node": "e0031f86-a229-41a8-a051-2db0ac1a879e",
                     "to_port": 0
                   }
                 ],
-                "output_node_id": "dd19e598-c744-40ed-a078-93e61d05c90c",
+                "output_node_id": "e0031f86-a229-41a8-a051-2db0ac1a879e",
                 "node_positions": {
-                  "9b33bd35-cf4f-44d7-af1b-20d25384a73e": {
-                    "x": 0.0,
-                    "y": 0.0
-                  },
-                  "dbeab883-8e1e-4414-8727-433dd384f99b": {
+                  "6efc7635-9555-4fd9-a6f3-0ce1ed291a95": {
                     "x": 220.0,
                     "y": 0.0
                   },
-                  "dd19e598-c744-40ed-a078-93e61d05c90c": {
+                  "e0031f86-a229-41a8-a051-2db0ac1a879e": {
                     "x": 440.0,
+                    "y": 0.0
+                  },
+                  "04de875c-941d-4437-b7a1-7768d9af1c1d": {
+                    "x": 0.0,
                     "y": 0.0
                   }
                 }
@@ -614,11 +617,14 @@
               "builtin_effects": [
                 {
                   "type": "crop",
-                  "left": 0.25,
-                  "right": 0.25,
+                  "left": 0.0,
+                  "right": 0.0,
                   "top": 0.0,
                   "bottom": 0.0,
-                  "feather": 0.0
+                  "feather": 0.0,
+                  "aspect": 0.8888889,
+                  "focus_x": 0.5,
+                  "focus_y": 0.5
                 },
                 {
                   "type": "transform",
@@ -720,7 +726,7 @@
       },
       "tracks": [
         {
-          "id": "1409fe52-cf1a-4fcc-971a-a99a1d44b29a",
+          "id": "a276cf4c-cfe2-400c-9d73-30d6999d55cc",
           "name": "T 3",
           "kind": "Text",
           "clips": [
@@ -869,7 +875,7 @@
               "node_graph": {
                 "nodes": [
                   {
-                    "id": "e8432f02-1c27-4e2f-afa8-148f5012bef4",
+                    "id": "4e33e505-841f-46b2-ab13-1027ea610c50",
                     "kind": "Source",
                     "label": "Source",
                     "enabled": true,
@@ -881,7 +887,7 @@
                     "input_links": []
                   },
                   {
-                    "id": "3bfca824-3792-471e-b367-e3741ec05d44",
+                    "id": "54d64491-e72d-44ce-a030-ad0bd3c1d2a7",
                     "kind": "Corrector",
                     "label": "Corrector",
                     "enabled": true,
@@ -893,7 +899,7 @@
                     "input_links": []
                   },
                   {
-                    "id": "d14c2bb0-6660-4f40-a056-5a0f8fe67694",
+                    "id": "a2fb916f-af07-40a8-baf3-b9160773c257",
                     "kind": "Output",
                     "label": "Output",
                     "enabled": true,
@@ -907,30 +913,30 @@
                 ],
                 "edges": [
                   {
-                    "from_node": "e8432f02-1c27-4e2f-afa8-148f5012bef4",
+                    "from_node": "4e33e505-841f-46b2-ab13-1027ea610c50",
                     "from_port": 0,
-                    "to_node": "3bfca824-3792-471e-b367-e3741ec05d44",
+                    "to_node": "54d64491-e72d-44ce-a030-ad0bd3c1d2a7",
                     "to_port": 0
                   },
                   {
-                    "from_node": "3bfca824-3792-471e-b367-e3741ec05d44",
+                    "from_node": "54d64491-e72d-44ce-a030-ad0bd3c1d2a7",
                     "from_port": 0,
-                    "to_node": "d14c2bb0-6660-4f40-a056-5a0f8fe67694",
+                    "to_node": "a2fb916f-af07-40a8-baf3-b9160773c257",
                     "to_port": 0
                   }
                 ],
-                "output_node_id": "d14c2bb0-6660-4f40-a056-5a0f8fe67694",
+                "output_node_id": "a2fb916f-af07-40a8-baf3-b9160773c257",
                 "node_positions": {
-                  "e8432f02-1c27-4e2f-afa8-148f5012bef4": {
-                    "x": 0.0,
+                  "54d64491-e72d-44ce-a030-ad0bd3c1d2a7": {
+                    "x": 220.0,
                     "y": 0.0
                   },
-                  "d14c2bb0-6660-4f40-a056-5a0f8fe67694": {
+                  "a2fb916f-af07-40a8-baf3-b9160773c257": {
                     "x": 440.0,
                     "y": 0.0
                   },
-                  "3bfca824-3792-471e-b367-e3741ec05d44": {
-                    "x": 220.0,
+                  "4e33e505-841f-46b2-ab13-1027ea610c50": {
+                    "x": 0.0,
                     "y": 0.0
                   }
                 }
@@ -996,7 +1002,7 @@
           "record_armed": false
         },
         {
-          "id": "469e8337-455b-465e-858f-6202d607f4fc",
+          "id": "fc2d20c2-05d3-4ed1-9838-db022e73e7af",
           "name": "V 2",
           "kind": "Video",
           "clips": [
@@ -1025,7 +1031,7 @@
               "node_graph": {
                 "nodes": [
                   {
-                    "id": "253015ea-5385-4c98-b41b-e54437fe1a0e",
+                    "id": "850c8ef0-56ef-4946-ba45-f90e4ea48bb5",
                     "kind": "Source",
                     "label": "Source",
                     "enabled": true,
@@ -1037,7 +1043,7 @@
                     "input_links": []
                   },
                   {
-                    "id": "a9938c9c-24cf-4a9a-8bc2-eb9cf0ac7c6f",
+                    "id": "2953bea1-ebd4-4d91-ae21-be6d99f83579",
                     "kind": "Corrector",
                     "label": "Corrector",
                     "enabled": true,
@@ -1049,7 +1055,7 @@
                     "input_links": []
                   },
                   {
-                    "id": "e466da46-8fa9-485a-a595-ac12bdb680d8",
+                    "id": "3b4035c7-8473-45a4-b8d2-c8e1b21bdf37",
                     "kind": "Output",
                     "label": "Output",
                     "enabled": true,
@@ -1063,29 +1069,29 @@
                 ],
                 "edges": [
                   {
-                    "from_node": "253015ea-5385-4c98-b41b-e54437fe1a0e",
+                    "from_node": "850c8ef0-56ef-4946-ba45-f90e4ea48bb5",
                     "from_port": 0,
-                    "to_node": "a9938c9c-24cf-4a9a-8bc2-eb9cf0ac7c6f",
+                    "to_node": "2953bea1-ebd4-4d91-ae21-be6d99f83579",
                     "to_port": 0
                   },
                   {
-                    "from_node": "a9938c9c-24cf-4a9a-8bc2-eb9cf0ac7c6f",
+                    "from_node": "2953bea1-ebd4-4d91-ae21-be6d99f83579",
                     "from_port": 0,
-                    "to_node": "e466da46-8fa9-485a-a595-ac12bdb680d8",
+                    "to_node": "3b4035c7-8473-45a4-b8d2-c8e1b21bdf37",
                     "to_port": 0
                   }
                 ],
-                "output_node_id": "e466da46-8fa9-485a-a595-ac12bdb680d8",
+                "output_node_id": "3b4035c7-8473-45a4-b8d2-c8e1b21bdf37",
                 "node_positions": {
-                  "253015ea-5385-4c98-b41b-e54437fe1a0e": {
+                  "850c8ef0-56ef-4946-ba45-f90e4ea48bb5": {
                     "x": 0.0,
                     "y": 0.0
                   },
-                  "a9938c9c-24cf-4a9a-8bc2-eb9cf0ac7c6f": {
+                  "2953bea1-ebd4-4d91-ae21-be6d99f83579": {
                     "x": 220.0,
                     "y": 0.0
                   },
-                  "e466da46-8fa9-485a-a595-ac12bdb680d8": {
+                  "3b4035c7-8473-45a4-b8d2-c8e1b21bdf37": {
                     "x": 440.0,
                     "y": 0.0
                   }
@@ -1095,18 +1101,21 @@
               "builtin_effects": [
                 {
                   "type": "crop",
-                  "left": 0.18359374,
-                  "right": 0.18359374,
+                  "left": 0.0,
+                  "right": 0.0,
                   "top": 0.0,
                   "bottom": 0.0,
-                  "feather": 0.0
+                  "feather": 0.0,
+                  "aspect": 1.125,
+                  "focus_x": 0.5,
+                  "focus_y": 0.5
                 },
                 {
                   "type": "transform",
                   "position_x": 0.0,
                   "position_y": 480.0,
-                  "scale_x": 1.5802469,
-                  "scale_y": 1.5802469,
+                  "scale_x": 1.0,
+                  "scale_y": 1.0,
                   "rotation": 0.0,
                   "anchor_x": 0.5,
                   "anchor_y": 0.5,
@@ -1178,7 +1187,7 @@
           "record_armed": false
         },
         {
-          "id": "a18b6469-f677-46c8-affa-ec9c84db77b3",
+          "id": "a906ca17-2925-45e0-9727-c00145829cb9",
           "name": "V 1",
           "kind": "Video",
           "clips": [
@@ -1207,7 +1216,7 @@
               "node_graph": {
                 "nodes": [
                   {
-                    "id": "60a8eae8-da9a-4ff2-a6b9-b2347f283277",
+                    "id": "27c0d4e9-d5e7-401c-8290-060d88447796",
                     "kind": "Source",
                     "label": "Source",
                     "enabled": true,
@@ -1219,7 +1228,7 @@
                     "input_links": []
                   },
                   {
-                    "id": "300e7733-a589-4f23-a8d4-6cffb33712d6",
+                    "id": "80268964-34ba-45dc-979a-5fa95a1a7fa9",
                     "kind": "Corrector",
                     "label": "Corrector",
                     "enabled": true,
@@ -1231,7 +1240,7 @@
                     "input_links": []
                   },
                   {
-                    "id": "c147149a-4330-4733-b80c-227ca4d6d767",
+                    "id": "e7f80eb5-2735-461f-979d-c0a8c9d9f74b",
                     "kind": "Output",
                     "label": "Output",
                     "enabled": true,
@@ -1245,30 +1254,30 @@
                 ],
                 "edges": [
                   {
-                    "from_node": "60a8eae8-da9a-4ff2-a6b9-b2347f283277",
+                    "from_node": "27c0d4e9-d5e7-401c-8290-060d88447796",
                     "from_port": 0,
-                    "to_node": "300e7733-a589-4f23-a8d4-6cffb33712d6",
+                    "to_node": "80268964-34ba-45dc-979a-5fa95a1a7fa9",
                     "to_port": 0
                   },
                   {
-                    "from_node": "300e7733-a589-4f23-a8d4-6cffb33712d6",
+                    "from_node": "80268964-34ba-45dc-979a-5fa95a1a7fa9",
                     "from_port": 0,
-                    "to_node": "c147149a-4330-4733-b80c-227ca4d6d767",
+                    "to_node": "e7f80eb5-2735-461f-979d-c0a8c9d9f74b",
                     "to_port": 0
                   }
                 ],
-                "output_node_id": "c147149a-4330-4733-b80c-227ca4d6d767",
+                "output_node_id": "e7f80eb5-2735-461f-979d-c0a8c9d9f74b",
                 "node_positions": {
-                  "60a8eae8-da9a-4ff2-a6b9-b2347f283277": {
+                  "27c0d4e9-d5e7-401c-8290-060d88447796": {
                     "x": 0.0,
                     "y": 0.0
                   },
-                  "300e7733-a589-4f23-a8d4-6cffb33712d6": {
-                    "x": 220.0,
+                  "e7f80eb5-2735-461f-979d-c0a8c9d9f74b": {
+                    "x": 440.0,
                     "y": 0.0
                   },
-                  "c147149a-4330-4733-b80c-227ca4d6d767": {
-                    "x": 440.0,
+                  "80268964-34ba-45dc-979a-5fa95a1a7fa9": {
+                    "x": 220.0,
                     "y": 0.0
                   }
                 }
@@ -1277,18 +1286,21 @@
               "builtin_effects": [
                 {
                   "type": "crop",
-                  "left": 0.18359374,
-                  "right": 0.18359374,
+                  "left": 0.0,
+                  "right": 0.0,
                   "top": 0.0,
                   "bottom": 0.0,
-                  "feather": 0.0
+                  "feather": 0.0,
+                  "aspect": 1.125,
+                  "focus_x": 0.5,
+                  "focus_y": 0.5
                 },
                 {
                   "type": "transform",
                   "position_x": 0.0,
                   "position_y": -480.0,
-                  "scale_x": 1.5802469,
-                  "scale_y": 1.5802469,
+                  "scale_x": 1.0,
+                  "scale_y": 1.0,
                   "rotation": 0.0,
                   "anchor_x": 0.5,
                   "anchor_y": 0.5,
@@ -1383,7 +1395,7 @@
       },
       "tracks": [
         {
-          "id": "c3c4d07b-a166-4a26-a46a-d615878649d3",
+          "id": "025f7c64-bfa3-4cec-94ee-290dadf456fc",
           "name": "T 3",
           "kind": "Text",
           "clips": [
@@ -1532,7 +1544,7 @@
               "node_graph": {
                 "nodes": [
                   {
-                    "id": "9c41e471-d261-4645-b018-59b7f105e1a0",
+                    "id": "3e40db37-88bb-41a5-a347-3c686c1553b8",
                     "kind": "Source",
                     "label": "Source",
                     "enabled": true,
@@ -1544,7 +1556,7 @@
                     "input_links": []
                   },
                   {
-                    "id": "62d834c2-2bff-4e52-a19a-58efbb17c083",
+                    "id": "cd11fca3-acc1-47d5-ba73-27a43a8f1ad8",
                     "kind": "Corrector",
                     "label": "Corrector",
                     "enabled": true,
@@ -1556,7 +1568,7 @@
                     "input_links": []
                   },
                   {
-                    "id": "0b6abed6-9c5d-424d-99ac-460b46d6d7f8",
+                    "id": "9bbda2d9-96c2-4f7f-9133-931a088f16ea",
                     "kind": "Output",
                     "label": "Output",
                     "enabled": true,
@@ -1570,30 +1582,30 @@
                 ],
                 "edges": [
                   {
-                    "from_node": "9c41e471-d261-4645-b018-59b7f105e1a0",
+                    "from_node": "3e40db37-88bb-41a5-a347-3c686c1553b8",
                     "from_port": 0,
-                    "to_node": "62d834c2-2bff-4e52-a19a-58efbb17c083",
+                    "to_node": "cd11fca3-acc1-47d5-ba73-27a43a8f1ad8",
                     "to_port": 0
                   },
                   {
-                    "from_node": "62d834c2-2bff-4e52-a19a-58efbb17c083",
+                    "from_node": "cd11fca3-acc1-47d5-ba73-27a43a8f1ad8",
                     "from_port": 0,
-                    "to_node": "0b6abed6-9c5d-424d-99ac-460b46d6d7f8",
+                    "to_node": "9bbda2d9-96c2-4f7f-9133-931a088f16ea",
                     "to_port": 0
                   }
                 ],
-                "output_node_id": "0b6abed6-9c5d-424d-99ac-460b46d6d7f8",
+                "output_node_id": "9bbda2d9-96c2-4f7f-9133-931a088f16ea",
                 "node_positions": {
-                  "0b6abed6-9c5d-424d-99ac-460b46d6d7f8": {
+                  "cd11fca3-acc1-47d5-ba73-27a43a8f1ad8": {
+                    "x": 220.0,
+                    "y": 0.0
+                  },
+                  "9bbda2d9-96c2-4f7f-9133-931a088f16ea": {
                     "x": 440.0,
                     "y": 0.0
                   },
-                  "9c41e471-d261-4645-b018-59b7f105e1a0": {
+                  "3e40db37-88bb-41a5-a347-3c686c1553b8": {
                     "x": 0.0,
-                    "y": 0.0
-                  },
-                  "62d834c2-2bff-4e52-a19a-58efbb17c083": {
-                    "x": 220.0,
                     "y": 0.0
                   }
                 }
@@ -1659,7 +1671,7 @@
           "record_armed": false
         },
         {
-          "id": "35011da1-cb01-4e7a-a3a4-a84c2fbe6996",
+          "id": "71e93b78-ca6a-4a17-9450-f7e7c15ad692",
           "name": "V 2",
           "kind": "Video",
           "clips": [
@@ -1688,7 +1700,7 @@
               "node_graph": {
                 "nodes": [
                   {
-                    "id": "f9c50642-9b39-4ecc-9951-6c2e44553b88",
+                    "id": "e6d7661a-f517-4ee2-8101-70445720917f",
                     "kind": "Source",
                     "label": "Source",
                     "enabled": true,
@@ -1700,7 +1712,7 @@
                     "input_links": []
                   },
                   {
-                    "id": "eac39b6b-6895-4900-8f9c-c95250a70362",
+                    "id": "98779246-8e0b-4cbe-a8b4-5edc9202a953",
                     "kind": "Corrector",
                     "label": "Corrector",
                     "enabled": true,
@@ -1712,7 +1724,7 @@
                     "input_links": []
                   },
                   {
-                    "id": "38a432d1-609b-4113-ba29-9bc686fa1863",
+                    "id": "126a13bb-4097-4212-aa87-b70219373a66",
                     "kind": "Output",
                     "label": "Output",
                     "enabled": true,
@@ -1726,30 +1738,30 @@
                 ],
                 "edges": [
                   {
-                    "from_node": "f9c50642-9b39-4ecc-9951-6c2e44553b88",
+                    "from_node": "e6d7661a-f517-4ee2-8101-70445720917f",
                     "from_port": 0,
-                    "to_node": "eac39b6b-6895-4900-8f9c-c95250a70362",
+                    "to_node": "98779246-8e0b-4cbe-a8b4-5edc9202a953",
                     "to_port": 0
                   },
                   {
-                    "from_node": "eac39b6b-6895-4900-8f9c-c95250a70362",
+                    "from_node": "98779246-8e0b-4cbe-a8b4-5edc9202a953",
                     "from_port": 0,
-                    "to_node": "38a432d1-609b-4113-ba29-9bc686fa1863",
+                    "to_node": "126a13bb-4097-4212-aa87-b70219373a66",
                     "to_port": 0
                   }
                 ],
-                "output_node_id": "38a432d1-609b-4113-ba29-9bc686fa1863",
+                "output_node_id": "126a13bb-4097-4212-aa87-b70219373a66",
                 "node_positions": {
-                  "eac39b6b-6895-4900-8f9c-c95250a70362": {
-                    "x": 220.0,
-                    "y": 0.0
-                  },
-                  "38a432d1-609b-4113-ba29-9bc686fa1863": {
+                  "126a13bb-4097-4212-aa87-b70219373a66": {
                     "x": 440.0,
                     "y": 0.0
                   },
-                  "f9c50642-9b39-4ecc-9951-6c2e44553b88": {
+                  "e6d7661a-f517-4ee2-8101-70445720917f": {
                     "x": 0.0,
+                    "y": 0.0
+                  },
+                  "98779246-8e0b-4cbe-a8b4-5edc9202a953": {
+                    "x": 220.0,
                     "y": 0.0
                   }
                 }
@@ -1758,18 +1770,21 @@
               "builtin_effects": [
                 {
                   "type": "crop",
-                  "left": 0.359375,
-                  "right": 0.359375,
+                  "left": 0.0,
+                  "right": 0.0,
                   "top": 0.0,
                   "bottom": 0.0,
-                  "feather": 0.0
+                  "feather": 0.0,
+                  "aspect": 0.5,
+                  "focus_x": 0.5,
+                  "focus_y": 0.5
                 },
                 {
                   "type": "transform",
                   "position_x": 270.0,
                   "position_y": 0.0,
-                  "scale_x": 1.7777778,
-                  "scale_y": 1.7777778,
+                  "scale_x": 1.0,
+                  "scale_y": 1.0,
                   "rotation": 0.0,
                   "anchor_x": 0.5,
                   "anchor_y": 0.5,
@@ -1841,7 +1856,7 @@
           "record_armed": false
         },
         {
-          "id": "3293c6e3-40b5-4f98-94c3-996d025e640e",
+          "id": "7766dffe-ee19-4e89-9f45-0ba27a58c4f5",
           "name": "V 1",
           "kind": "Video",
           "clips": [
@@ -1870,7 +1885,7 @@
               "node_graph": {
                 "nodes": [
                   {
-                    "id": "6f500041-eddc-4e63-8770-0871e40ed8c6",
+                    "id": "15cb3eb6-6e5c-426e-bca2-044e9403dc55",
                     "kind": "Source",
                     "label": "Source",
                     "enabled": true,
@@ -1882,7 +1897,7 @@
                     "input_links": []
                   },
                   {
-                    "id": "7f602180-38b1-49e0-b9af-cad3ba63f55c",
+                    "id": "5853f15d-c874-49d4-be4b-a52d0e167e8d",
                     "kind": "Corrector",
                     "label": "Corrector",
                     "enabled": true,
@@ -1894,7 +1909,7 @@
                     "input_links": []
                   },
                   {
-                    "id": "fff36af9-3209-4ede-8898-2bf856f0f09e",
+                    "id": "7bfe0782-c584-4740-b7c0-21689efc0235",
                     "kind": "Output",
                     "label": "Output",
                     "enabled": true,
@@ -1908,30 +1923,30 @@
                 ],
                 "edges": [
                   {
-                    "from_node": "6f500041-eddc-4e63-8770-0871e40ed8c6",
+                    "from_node": "15cb3eb6-6e5c-426e-bca2-044e9403dc55",
                     "from_port": 0,
-                    "to_node": "7f602180-38b1-49e0-b9af-cad3ba63f55c",
+                    "to_node": "5853f15d-c874-49d4-be4b-a52d0e167e8d",
                     "to_port": 0
                   },
                   {
-                    "from_node": "7f602180-38b1-49e0-b9af-cad3ba63f55c",
+                    "from_node": "5853f15d-c874-49d4-be4b-a52d0e167e8d",
                     "from_port": 0,
-                    "to_node": "fff36af9-3209-4ede-8898-2bf856f0f09e",
+                    "to_node": "7bfe0782-c584-4740-b7c0-21689efc0235",
                     "to_port": 0
                   }
                 ],
-                "output_node_id": "fff36af9-3209-4ede-8898-2bf856f0f09e",
+                "output_node_id": "7bfe0782-c584-4740-b7c0-21689efc0235",
                 "node_positions": {
-                  "6f500041-eddc-4e63-8770-0871e40ed8c6": {
-                    "x": 0.0,
-                    "y": 0.0
-                  },
-                  "7f602180-38b1-49e0-b9af-cad3ba63f55c": {
+                  "5853f15d-c874-49d4-be4b-a52d0e167e8d": {
                     "x": 220.0,
                     "y": 0.0
                   },
-                  "fff36af9-3209-4ede-8898-2bf856f0f09e": {
+                  "7bfe0782-c584-4740-b7c0-21689efc0235": {
                     "x": 440.0,
+                    "y": 0.0
+                  },
+                  "15cb3eb6-6e5c-426e-bca2-044e9403dc55": {
+                    "x": 0.0,
                     "y": 0.0
                   }
                 }
@@ -1940,18 +1955,21 @@
               "builtin_effects": [
                 {
                   "type": "crop",
-                  "left": 0.359375,
-                  "right": 0.359375,
+                  "left": 0.0,
+                  "right": 0.0,
                   "top": 0.0,
                   "bottom": 0.0,
-                  "feather": 0.0
+                  "feather": 0.0,
+                  "aspect": 0.5,
+                  "focus_x": 0.5,
+                  "focus_y": 0.5
                 },
                 {
                   "type": "transform",
                   "position_x": -270.0,
                   "position_y": 0.0,
-                  "scale_x": 1.7777778,
-                  "scale_y": 1.7777778,
+                  "scale_x": 1.0,
+                  "scale_y": 1.0,
                   "rotation": 0.0,
                   "anchor_x": 0.5,
                   "anchor_y": 0.5,
