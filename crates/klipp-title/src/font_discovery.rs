@@ -318,7 +318,17 @@ pub(crate) fn font_directories() -> Vec<String> {
         "/usr/share/fonts".to_string(),
         "/usr/local/share/fonts".to_string(),
         format!("{home}/.local/share/fonts"),
+        // The catalogue's fetched families (#2732).
+        crate::catalogue::fonts_dir().to_string_lossy().into_owned(),
     ]
+}
+
+/// The fonts in one folder and the folders under it, by family: a
+/// fetched catalogue family's faces (#2732).
+pub fn scan_folder(dir: &Path) -> BTreeMap<String, Vec<FontInfo>> {
+    let mut fonts = BTreeMap::new();
+    scan_directory(dir, &mut fonts);
+    fonts
 }
 
 fn scan_directory(dir: &Path, fonts: &mut BTreeMap<String, Vec<FontInfo>>) {

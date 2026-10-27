@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 klipp-core = { path = "../klipp-core" }
 klipp-timeline = { path = "../klipp-timeline" }
+klipp-ml = { path = "../klipp-ml" }
 # Half floats for the raster the renderer hands on (#190).
 half = { workspace = true }
 fontdue = "0.9"
@@ -36,6 +37,12 @@ tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 dirs = { workspace = true }
+toml = { workspace = true }
+ureq = { workspace = true }
+
+[dev-dependencies]
+sha2 = { workspace = true }
+hex = { workspace = true }
 
 [lints]
 workspace = true

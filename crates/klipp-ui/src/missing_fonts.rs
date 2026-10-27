@@ -88,9 +88,26 @@ pub fn replace_in(td: &mut TitleData, from: &str, to: &str) -> bool {
     changed
 }
 
-/// Whether a family is here, as the title renderer finds it.
+/// Whether a family is here, as the title renderer finds it: installed,
+/// or a catalogue family fetched (#2732).
 pub fn installed(family: &str) -> bool {
-    klipp_title::font_discovery::font_installed(&klipp_title::font_discovery::discover_system_fonts(), family)
+    klipp_title::font_discovery::font_installed(&klipp_title::font_discovery::discover_system_fonts(), family) || klipp_title::catalogue::fetched(family)
+}
+
+/// The fonts in `missing` that Klipp's catalogue has, taken out of it and
+/// fetched in the background (#2732): a project set in a catalogue family
+/// opens with it rather than asking for a replacement. A fetch that fails
+/// is logged; the titles keep the fallback until the font is there.
+pub fn fetch_from_catalogue(missing: Vec<MissingFont>) -> Vec<MissingFont> {
+    let (fetch, rest): (Vec<MissingFont>, Vec<MissingFont>) = missing.into_iter().partition(|m| klipp_title::catalogue::family(&m.family).is_some());
+    for m in fetch {
+        let Some(family) = klipp_title::catalogue::family(&m.family) else { continue };
+        let _ = std::thread::Builder::new().name("klipp-font-fetch".into()).spawn(move || match klipp_title::catalogue::fetch(family) {
+            Ok(dir) => tracing::info!("font {} fetched into {}", family.name, dir.display()),
+            Err(e) => tracing::warn!("font {} could not be fetched: {e}", family.name),
+        });
+    }
+    rest
 }
 
 impl AppState {

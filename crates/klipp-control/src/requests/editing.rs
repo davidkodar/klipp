@@ -7,26 +7,71 @@ use crate::*;
 #[path = "normalize_tests.rs"]
 mod normalize_tests;
 
+/// The catalogue's families as the fonts reply lists them (#2732): name,
+/// tags, size and whether fetched.
+fn catalogue_json(families: &[&klipp_title::catalogue::CatalogueFamily]) -> Vec<serde_json::Value> {
+    families
+        .iter()
+        .map(|f| json!({ "name": f.name, "style": f.style, "mood": f.mood, "scripts": f.scripts, "licence": f.licence, "mb": (f.files.iter().map(|x| x.size).sum::<u64>() as f64 / 1e5).round() / 10.0, "fetched": klipp_title::catalogue::is_fetched(f) }))
+        .collect()
+}
+
 /// The fonts reply (#2492): each family once, in the JSON; the text
 /// names the bundled ones and how many are installed, or with `query`
-/// every family whose name holds it, either way.
+/// every family whose name holds it, either way. Klipp's catalogue
+/// (#2732) is listed too, by name or by what a family is (a query of
+/// tags: "condensed news sans", "japanese", "wedding script").
 pub(crate) fn fonts_reply(bundled: Vec<String>, installed: Vec<String>, query: Option<&str>) -> serde_json::Value {
     let fallback = klipp_title::bundled::DEFAULT_FAMILY;
     let Some(q) = query.map(|q| q.trim().to_lowercase()).filter(|q| !q.is_empty()) else {
+        let catalogue: Vec<_> = klipp_title::catalogue::families().iter().collect();
+        let names: Vec<&str> = catalogue.iter().map(|f| f.name.as_str()).collect();
         let text = format!(
-            "Bundled with Klipp, always there: {}.\n{} families installed on this machine: in installed, or ask with query for those whose name holds a word.\nA title or type style takes any of these by its family name; anything else falls back to {fallback}.",
+            "Bundled with Klipp, always there: {}.\n{} families installed on this machine: in installed, or ask with query for those whose name holds a word.\nIn Klipp's catalogue, open-licence families fetched on request (fetch: name): {}. A query of what a family is finds them: condensed news sans, engraved serif, rounded, script, mono, japanese, arabic.\nA title or type style takes any of these by its family name; anything else falls back to {fallback}.",
             bundled.join(", "),
             installed.len(),
+            names.join(", "),
         );
-        return json!({ "text": text, "bundled": bundled, "installed": installed, "fallback": fallback });
+        return json!({ "text": text, "bundled": bundled, "installed": installed, "catalogue": catalogue_json(&catalogue), "fallback": fallback });
     };
     let hit = |names: Vec<String>| -> Vec<String> { names.into_iter().filter(|n| n.to_lowercase().contains(&q)).collect() };
     let (bundled, installed) = (hit(bundled), hit(installed));
-    let text = match (bundled.is_empty(), installed.is_empty()) {
-        (true, true) => format!("No family's name holds \"{q}\"; anything a title names that isn't here falls back to {fallback}."),
-        _ => format!("Families whose name holds \"{q}\": bundled {}; installed {}.", if bundled.is_empty() { "none".into() } else { bundled.join(", ") }, if installed.is_empty() { "none".into() } else { installed.join(", ") }),
+    let catalogue = klipp_title::catalogue::query(&q);
+    let names: Vec<&str> = catalogue.iter().map(|f| f.name.as_str()).collect();
+    let text = match (bundled.is_empty(), installed.is_empty(), catalogue.is_empty()) {
+        (true, true, true) => format!("No family's name holds \"{q}\", and none in the catalogue is that; anything a title names that isn't here falls back to {fallback}."),
+        _ => format!(
+            "Families for \"{q}\": bundled {}; installed {}; in the catalogue, fetched on request {}.",
+            if bundled.is_empty() { "none".into() } else { bundled.join(", ") },
+            if installed.is_empty() { "none".into() } else { installed.join(", ") },
+            if names.is_empty() { "none".into() } else { names.join(", ") },
+        ),
     };
-    json!({ "text": text, "bundled": bundled, "installed": installed, "fallback": fallback, "query": q })
+    json!({ "text": text, "bundled": bundled, "installed": installed, "catalogue": catalogue_json(&catalogue), "fallback": fallback, "query": q })
+}
+
+/// Fetch the catalogue family `name` (#2732): checked by its hashes, kept
+/// with its licence in the user's data folder; a title names it then as
+/// any font. Refused for a name the catalogue has not, with the nearest.
+fn fetch_font(name: &str) -> Result<serde_json::Value, String> {
+    let Some(family) = klipp_title::catalogue::family(name) else {
+        let near: Vec<&str> = klipp_title::catalogue::query(name).iter().map(|f| f.name.as_str()).collect();
+        return Err(format!(
+            "\"{name}\" is not in Klipp's font catalogue{}; klipp_fonts lists it, and a query of what you want (condensed news sans, script) finds families",
+            if near.is_empty() { String::new() } else { format!(" (by that: {})", near.join(", ")) }
+        ));
+    };
+    let was = klipp_title::catalogue::is_fetched(family);
+    let dir = klipp_title::catalogue::fetch(family)?;
+    let text = format!(
+        "{} {} ({} licence, kept beside it in {}). Set a title in it by its name: font \"{}\".",
+        family.name,
+        if was { "was already fetched" } else { "is fetched" },
+        family.licence,
+        dir.display(),
+        family.name,
+    );
+    Ok(json!({ "text": text, "family": family.name, "fetched": true, "path": dir, "licence": family.licence }))
 }
 
 #[cfg(test)]
@@ -47,6 +92,28 @@ mod fonts_reply_tests {
         assert!(found["text"].as_str().unwrap().contains("Noto Serif Display"));
         let none = fonts_reply(names(&["Inter"]), names(&[]), Some("gothic"));
         assert!(none["text"].as_str().unwrap().starts_with("No family's name holds"));
+    }
+
+    /// #2732: the catalogue is listed, found by what a family is, its
+    /// fetch named where a plan asks for one not fetched yet, and a name
+    /// it has not refused with the nearest.
+    #[test]
+    fn the_catalogue_is_listed_found_and_fetched_by_name() {
+        let all = fonts_reply(vec!["Inter".into()], vec![], None);
+        assert!(all["catalogue"].as_array().unwrap().len() >= 30, "{all}");
+        assert!(all["text"].as_str().unwrap().contains("Cinzel"));
+        let news = fonts_reply(vec![], vec![], Some("condensed news sans"));
+        let found: Vec<&str> = news["catalogue"].as_array().unwrap().iter().filter_map(|f| f["name"].as_str()).collect();
+        assert!(found.contains(&"Oswald") && found.contains(&"Roboto Condensed"), "{found:?}");
+        assert!(news["text"].as_str().unwrap().contains("Oswald"));
+        if !klipp_title::catalogue::fetched("Great Vibes") {
+            let w = crate::plans::font_warnings(["Great Vibes"].into_iter());
+            assert!(w[0].contains("catalogue") && w[0].contains("fetch: \"Great Vibes\""), "{w:?}");
+        }
+        let w = crate::plans::font_warnings(["No Such Face"].into_iter());
+        assert!(w[0].contains("neither bundled nor installed"), "{w:?}");
+        let err = super::fetch_font("wedding script").unwrap_err();
+        assert!(err.contains("not in Klipp's font catalogue") && err.contains("Great Vibes"), "{err}");
     }
 }
 
@@ -657,7 +724,14 @@ pub(crate) fn respond(
             Ok(crate::plans::title_templates(crate::plans::template_dir().as_deref()))
         }
 
-        ControlCommand::Fonts { query } => {
+        ControlCommand::Fonts { fetch: Some(name), .. } => {
+            if in_batch {
+                return Err("a font fetch is not part of a batch: send it on its own".into());
+            }
+            fetch_font(&name)
+        }
+
+        ControlCommand::Fonts { query, fetch: None } => {
             if in_batch {
                 return read_in_batch("fonts");
             }
