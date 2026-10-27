@@ -784,6 +784,16 @@ exist until the plan runs.
   edge's buttons, a corner mark goes to the top, and a centred opener
   is set larger; 1:1 does the same, lighter. Its spacing stays as
   designed. `klipp_title_templates` lists the templates and their fields.
+- `template_link {clip_id, control?, target?, action?, value?}`: a placed
+  template's macro control. `control` (by name or label) with `value`
+  moves it, and every number it drives follows its range and curve.
+  `target` (`object:<i>.<number>`, as the timeline view lists it) with
+  `value` sets that number by hand: the control keeps working, the
+  difference kept as an offset. `action` unlink keeps the number where it
+  is, relink follows the control again from there (the offset kept, so
+  nothing jumps), reset_offset snaps it back to the control. One undo
+  step. A graph node's parameter (`node:...`) is the Composite page's,
+  not a template's yet.
 - `join {clip_id, side?}`: a split undone later, or a scene cut found
   where the shot did not change: the clip and the piece of the same shot
   on its `side` ("next", the default, or "previous") made one again, its

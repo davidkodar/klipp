@@ -807,11 +807,11 @@ pub(crate) fn respond(
             Ok(crate::plans::title_templates(crate::plans::template_dir().as_deref(), crate::plans::composition_dir().as_deref()))
         }
 
-        ControlCommand::SaveTemplate { clip_ids: Some(ids), clip_id: None, name, category, fields, replace } => {
+        ControlCommand::SaveTemplate { clip_ids: Some(ids), clip_id: None, name, category, fields, controls, replace } => {
             if in_batch {
                 return Err("saving a template is not part of a batch: send it on its own".into());
             }
-            let reply = save_composition_template(ctx, &ids, &name, category, fields, replace)?;
+            let reply = save_composition_template(ctx, &ids, &name, category, fields, &controls, replace)?;
             // The Templates tab shows it beside the others.
             let _ = send(AppCommand::ReloadTitleTemplates);
             Ok(reply)
@@ -821,7 +821,9 @@ pub(crate) fn respond(
 
         ControlCommand::SaveTemplate { clip_id: None, clip_ids: None, .. } => Err("give clip_id (a title) or clip_ids (clips saved together)".into()),
 
-        ControlCommand::SaveTemplate { clip_id: Some(clip_id), clip_ids: None, name, category, fields, replace } => {
+        ControlCommand::SaveTemplate { clip_id: Some(_), clip_ids: None, controls, .. } if !controls.is_empty() => Err("controls are for clips saved together: give clip_ids".into()),
+
+        ControlCommand::SaveTemplate { clip_id: Some(clip_id), clip_ids: None, name, category, fields, replace, .. } => {
             if in_batch {
                 return Err("saving a template is not part of a batch: send it on its own".into());
             }
@@ -1162,7 +1164,8 @@ fn wait_for_surface_snap(ctx: &ControlContext, request_id: uuid::Uuid) -> Option
 /// Clips `ids` of the open sequence saved together as the composition
 /// template `name` (#2757): a scene of their own, carried in the file,
 /// exposing `fields` by label (texts and media slots when none are named).
-fn save_composition_template(ctx: &ControlContext, ids: &[String], name: &str, category: Option<String>, fields: Option<Vec<String>>, replace: bool) -> Result<serde_json::Value, String> {
+#[allow(clippy::too_many_arguments)]
+fn save_composition_template(ctx: &ControlContext, ids: &[String], name: &str, category: Option<String>, fields: Option<Vec<String>>, controls: &[klipp_timeline::composition_template::ControlSpec], replace: bool) -> Result<serde_json::Value, String> {
     use klipp_timeline::composition_template::{template_from_scene, scene_from_clips, CompositionTemplateStore};
     let ids: Vec<klipp_core::ClipId> = ids.iter().map(|s| existing_clip_id(ctx, s)).collect::<Result<_, _>>()?;
     let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?.with_own_grades().into_owned();
@@ -1172,6 +1175,7 @@ fn save_composition_template(ctx: &ControlContext, ids: &[String], name: &str, c
     let mut scene = scene_from_clips(&seq, &ids).ok_or("none of those clips is on the open sequence")?;
     scene.name = name.trim().to_string();
     let mut template = template_from_scene(&scene, &all, name, fields.as_deref())?;
+    klipp_timeline::composition_template::add_controls(&mut template, &scene, controls)?;
     template.category = category.filter(|c| !c.trim().is_empty()).unwrap_or_else(|| "My Templates".into());
     let mut store = CompositionTemplateStore::load(crate::plans::composition_dir());
     if let Some(existing) = store.templates().find(|t| t.name.eq_ignore_ascii_case(name.trim())) {
@@ -1180,7 +1184,10 @@ fn save_composition_template(ctx: &ControlContext, ids: &[String], name: &str, c
         }
         template.id = existing.id;
     }
-    let exposed: Vec<String> = template.parameters.values().map(|p| p.label.clone()).chain(template.slots.values().map(|s| format!("{} (slot)", s.label))).collect();
+    let exposed: Vec<String> = template.parameters.iter().map(|(n, p)| {
+        let drives: Vec<&str> = template.bindings.iter().filter(|b| &b.parameter == n && b.link.is_some()).map(|b| b.property.as_str()).collect();
+        if drives.is_empty() { p.label.clone() } else { format!("{} (control driving {})", p.label, drives.join(", ")) }
+    }).chain(template.slots.values().map(|s| format!("{} (slot)", s.label))).collect();
     store.save(template)?;
     Ok(json!({ "text": format!("saved {} clip{} as the template \"{}\", exposing {}; the template op places it as one clip", ids.len(), if ids.len() == 1 { "" } else { "s" }, name.trim(), if exposed.is_empty() { "nothing".into() } else { exposed.join(", ") }) }))
 }

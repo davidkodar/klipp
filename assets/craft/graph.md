@@ -128,6 +128,12 @@ Read back the changed nodes and edges, then inspect `klipp_frame_at` at a useful
 time. For a mask, verify both inside and outside the window. Saved values and a
 successful write do not by themselves prove the rendered picture is correct.
 
+To see what one node does, compare its input with its output: read
+`klipp_frame_at`, switch the node off with `klipp_toggle_node`, read it again,
+and switch it back on. In the app, a node's menu has Compare input and output
+(A/B), which wipes the viewer between the two. `frame_at`'s `channel: "alpha"`
+shows a key's or a merge's coverage directly.
+
 ## The rules of klipp_graph, in short
 
 Edit one clip graph atomically as one undo step; send alone. Read graph_read and node_types first. Paths contain a root and node IDs; {new:k} refers to the node made by earlier op k. Values follow catalog kinds; choices use labels. Created nodes return full paths. A clip's graph keeps an effect's mix, its mask (channel and connection) and its label; the timeline grade and a grade group's stages keep a correction's mix and mask channel, and a track's grade refuses them. Placed kinds are refused; clip groups support publish/unpublish; unsupported parameter shapes are refused with the failing op_index. Revision and project identity guard commit. add_beside inserts unwired; connect required inputs in the same batch. Mask shapes use the masks JSON described by node_types.

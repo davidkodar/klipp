@@ -81,10 +81,45 @@ impl TemplateParameter {
 /// composition.  The property path is intentionally opaque to this layer;
 /// the document resolver owns its interpretation and can evolve it without
 /// changing the on-disk template registry.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TemplateBinding {
     pub parameter: String,
     pub property: String,
+    /// A control's link (macro, #2757): the number parameter mapped from
+    /// its range onto `to` along `curve`, one of the several properties it
+    /// may drive. `None` for a plain binding, which sets the property to
+    /// the parameter's value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<LinkMap>,
+}
+
+/// How a control drives one property (#2757).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LinkMap {
+    pub to: [f64; 2],
+    #[serde(default)]
+    pub curve: klipp_core::LinkCurve,
+}
+
+/// The instance a placed `template` starts as (#2757): plain bindings by
+/// parameter, each control's links with its range, and each control's
+/// default, so the resolver, which never sees the template, knows where
+/// the control stands.
+pub fn instance_for(template: &CompositionTemplate) -> klipp_core::TemplateInstance {
+    let mut instance = klipp_core::TemplateInstance { template_id: template.id, bindings: BTreeMap::new(), overrides: BTreeMap::new(), media_slots: BTreeMap::new(), links: Vec::new() };
+    for b in &template.bindings {
+        match (&b.link, template.parameters.get(&b.parameter)) {
+            (Some(map), Some(p)) => {
+                let from = [p.range.as_ref().and_then(|r| r.min).unwrap_or(0.0), p.range.as_ref().and_then(|r| r.max).unwrap_or(1.0)];
+                instance.links.push(klipp_core::TemplateLink { parameter: b.parameter.clone(), property: b.property.clone(), from, to: map.to, curve: map.curve, offset: 0.0, linked: true, frozen: 0.0 });
+                instance.overrides.entry(b.parameter.clone()).or_insert_with(|| p.default.clone());
+            }
+            _ => {
+                instance.bindings.insert(b.parameter.clone(), b.property.clone());
+            }
+        }
+    }
+    instance
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -269,6 +304,103 @@ pub fn candidates(scene: &Sequence) -> Vec<Candidate> {
     out
 }
 
+/// The numbers a control can drive in `scene` (#2757), by label and
+/// property: each title layer's size, tracking and line spacing (text),
+/// opacity, position, rotation and motion lengths. Named after the
+/// layer, the way `candidates` names it ("Text 1 size").
+pub fn number_targets(scene: &Sequence) -> Vec<(String, String)> {
+    use crate::TitleObjectContent;
+    let mut out = Vec::new();
+    let (mut texts, mut i) = (0usize, 0usize);
+    for o in scene.tracks.iter().flat_map(|t| &t.clips).filter_map(|c| c.title_data()).flat_map(|t| t.objects.iter()) {
+        let fallback = match &o.content {
+            TitleObjectContent::TextBox(_) => { texts += 1; format!("Text {texts}") }
+            TitleObjectContent::Shape(_) => format!("Shape {}", i + 1),
+            TitleObjectContent::Image(img) => img.stem(),
+        };
+        let label = if o.name.trim().is_empty() { fallback } else { o.name.trim().to_string() };
+        let mut paths = Vec::new();
+        if matches!(o.content, TitleObjectContent::TextBox(_)) {
+            paths.extend([("size", "size"), ("tracking", "tracking"), ("line spacing", "line_spacing")]);
+        }
+        paths.extend([("opacity", "opacity"), ("x", "x"), ("y", "y"), ("rotation", "rotation")]);
+        if o.fx().motion.enter.is_some() { paths.push(("entrance length", "motion.enter.duration_secs")); }
+        if o.fx().motion.exit.is_some() { paths.push(("exit length", "motion.exit.duration_secs")); }
+        out.extend(paths.into_iter().map(|(name, path)| (format!("{label} {name}"), format!("object:{i}.{path}"))));
+        i += 1;
+    }
+    out
+}
+
+/// A macro control a template is saved with (#2757): a slider from `min`
+/// to `max` (0 to 1 when left out) starting at `default`, driving each
+/// target, named by its `number_targets` label, across `to` on `curve`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ControlSpec {
+    pub label: String,
+    #[serde(default)]
+    pub min: Option<f64>,
+    #[serde(default)]
+    pub max: Option<f64>,
+    #[serde(default)]
+    pub default: Option<f64>,
+    pub drives: Vec<DriveSpec>,
+}
+
+/// One target of a `ControlSpec`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DriveSpec {
+    pub target: String,
+    pub to: [f64; 2],
+    #[serde(default)]
+    pub curve: klipp_core::LinkCurve,
+}
+
+/// The name a control labelled `label` is saved by (#2757): its words in
+/// lower case joined by `_`, so ops can name it either way.
+pub fn control_name(label: &str) -> String {
+    label.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_lowercase).collect::<Vec<_>>().join("_")
+}
+
+/// Adds `controls` to `t`, a template of `scene` (#2757). A target no
+/// layer has, a range that is not a range, or a label taken is refused,
+/// naming the control and the target.
+pub fn add_controls(t: &mut CompositionTemplate, scene: &Sequence, controls: &[ControlSpec]) -> Result<(), String> {
+    let targets = number_targets(scene);
+    for c in controls {
+        let label = c.label.trim();
+        if label.is_empty() {
+            return Err("a control needs a label".into());
+        }
+        if t.parameters.values().any(|p| p.label.eq_ignore_ascii_case(label)) {
+            return Err(format!("control \"{label}\": the template already has a field of that name"));
+        }
+        let (min, max) = (c.min.unwrap_or(0.0), c.max.unwrap_or(1.0));
+        let default = c.default.unwrap_or(min);
+        if !(min.is_finite() && max.is_finite() && min < max) || !(min..=max).contains(&default) {
+            return Err(format!("control \"{label}\": min must be below max, with the default between them"));
+        }
+        if c.drives.is_empty() {
+            return Err(format!("control \"{label}\" drives nothing: give drives with a target each"));
+        }
+        let name = control_name(label);
+        if t.parameters.contains_key(&name) {
+            return Err(format!("control \"{label}\": the template already has a field or control called that"));
+        }
+        for d in &c.drives {
+            let property = targets.iter().find(|(l, p)| l.eq_ignore_ascii_case(d.target.trim()) || p == d.target.trim()).map(|(_, p)| p.clone()).ok_or_else(|| {
+                format!("control \"{label}\" drives \"{}\", which the clips do not have: they have {}", d.target, targets.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>().join(", "))
+            })?;
+            if !d.to.iter().all(|v| v.is_finite()) {
+                return Err(format!("control \"{label}\" drives \"{}\" to a range that is not two numbers", d.target));
+            }
+            t.bindings.push(TemplateBinding { parameter: name.clone(), property, link: Some(LinkMap { to: d.to, curve: d.curve }) });
+        }
+        t.parameters.insert(name, TemplateParameter { label: label.to_string(), default: TemplateValue::Number(default), range: Some(NumberRange { min: Some(min), max: Some(max) }), choices: Vec::new() });
+    }
+    Ok(())
+}
+
 /// The clips `ids` of `seq` as a scene of their own (#2757): their tracks
 /// kept in order, their times from the first one's start, the timeline
 /// untouched. `None` when none is there.
@@ -319,7 +451,7 @@ pub fn template_from_scene(scene: &Sequence, all: &[Sequence], name: &str, chose
                 t.slots.insert(c.name.clone(), TemplateSlot { label: c.label.clone(), kind: SlotKind::Media });
             }
         }
-        t.bindings.push(TemplateBinding { parameter: c.name.clone(), property: c.property.clone() });
+        t.bindings.push(TemplateBinding { parameter: c.name.clone(), property: c.property.clone(), link: None });
     }
     let mut with_scene: Vec<Sequence> = all.to_vec();
     with_scene.push(scene.clone());
@@ -595,6 +727,7 @@ mod tests {
                 bindings: template.bindings.iter().map(|b| (b.parameter.clone(), b.property.clone())).collect(),
                 overrides: overrides.into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
                 media_slots: media.map(|m| ("slot_1".to_string(), m.0.to_string())).into_iter().collect(),
+                links: Vec::new(),
             };
             let mut clip = Clip::precomposition(scene.id, tc(0.0), tc(3.0));
             clip.kind = ClipKind::TemplatePrecomposition { sequence_id: scene.id, template_instance: instance };
@@ -612,5 +745,62 @@ mod tests {
         let title = filled.all_clips().find_map(|c| c.title_data().cloned()).unwrap();
         assert!(matches!(&title.objects[0].content, crate::TitleObjectContent::TextBox(tb) if tb.font_name == "Anton"));
         assert!(matches!(&title.objects[1].content, crate::TitleObjectContent::Shape(s) if s.fill == Some([0, 0, 255, 255])));
+    }
+
+    /// #2757: a control drives each target along its range and curve;
+    /// a hand edit becomes an offset the control keeps adding; unlink
+    /// freezes, relink does not jump, reset snaps back. The template file
+    /// and the placed instance keep all of it; a node target is refused,
+    /// naming the Composite page.
+    #[test]
+    fn a_macro_control_drives_its_targets_and_keeps_hand_edits() {
+        let (seq, t, p) = card_and_photo();
+        let scene = scene_from_clips(&seq, &[t, p]).unwrap();
+        let mut template = template_from_scene(&scene, &[], "Card", None).unwrap();
+        let controls: Vec<ControlSpec> = serde_json::from_value(serde_json::json!([{ "label": "Grow", "drives": [
+            { "target": "Text 1 size", "to": [40.0, 80.0] },
+            { "target": "text 1 opacity", "to": [0.0, 1.0], "curve": "ease_in" },
+        ] }])).unwrap();
+        add_controls(&mut template, &scene, &controls).unwrap();
+        // The template file keeps the control and its links.
+        let back: CompositionTemplate = serde_json::from_str(&serde_json::to_string(&template).unwrap()).unwrap();
+        assert_eq!(back.bindings, template.bindings);
+        assert_eq!(back.parameters["grow"].label, "Grow");
+        let refused = add_controls(&mut template.clone(), &scene, &serde_json::from_value::<Vec<ControlSpec>>(serde_json::json!([{ "label": "Spin", "drives": [{ "target": "Logo size", "to": [0, 1] }] }])).unwrap()).unwrap_err();
+        assert!(refused.contains("\"Spin\" drives \"Logo size\"") && refused.contains("Text 1 size"), "{refused}");
+
+        let read = |instance: &klipp_core::TemplateInstance| {
+            let mut clip = Clip::precomposition(scene.id, tc(0.0), tc(3.0));
+            clip.kind = ClipKind::TemplatePrecomposition { sequence_id: scene.id, template_instance: instance.clone() };
+            let mut outer = Sequence::new_default();
+            outer.tracks[0].clips.push(clip);
+            let flat = crate::flatten::flatten_sequence(&outer, &[outer.clone(), scene.clone()]);
+            let inner = flat.all_clips().find_map(|c| c.precomp.clone()).expect("the scene");
+            (crate::flatten::linked_value(&inner, "object:0.size").unwrap(), crate::flatten::linked_value(&inner, "object:0.opacity").unwrap())
+        };
+        let mut instance = instance_for(&template);
+        // Survives the project file as clip data.
+        assert_eq!(serde_json::from_str::<klipp_core::TemplateInstance>(&serde_json::to_string(&instance).unwrap()).unwrap(), instance);
+        let at = |instance: &mut klipp_core::TemplateInstance, v: f64| { instance.overrides.insert("grow".into(), klipp_core::TemplateValue::Number(v)); read(instance) };
+        let close = |a: (f64, f64), b: (f64, f64)| (a.0 - b.0).abs() < 1e-4 && (a.1 - b.1).abs() < 1e-4;
+        assert!(close(at(&mut instance, 0.0), (40.0, 0.0)), "the bottom of each range");
+        assert!(close(at(&mut instance, 0.5), (60.0, 0.25)), "linear halfway; ease in a quarter: {:?}", read(&instance));
+        assert!(close(at(&mut instance, 1.0), (80.0, 1.0)), "the top of each range");
+        // A hand edit at 1: size 90 is an offset of +10 the control keeps.
+        instance.links[0].set_value(1.0, 90.0);
+        assert!(close(at(&mut instance, 0.5), (70.0, 0.25)), "the offset rides on the control");
+        // Unlinked at 0.5 it stays at 70 wherever the control goes.
+        instance.links[0].unlink(0.5);
+        assert!(close(at(&mut instance, 0.0), (70.0, 0.0)), "frozen");
+        // Relinked at 0: no jump, then it follows with offset +30.
+        instance.links[0].relink(0.0);
+        assert!(close(read(&instance), (70.0, 0.0)), "relinking does not jump");
+        assert!(close(at(&mut instance, 1.0), (110.0, 1.0)));
+        instance.links[0].reset_offset();
+        assert!(close(read(&instance), (80.0, 1.0)), "reset snaps to the control");
+
+        instance.links[0].property = "node:grade/lift.gain".into();
+        let err = crate::flatten::validate_template_instance(&instance, &scene).unwrap_err();
+        assert!(err.contains("Composite page") && err.contains("#2758"), "{err}");
     }
 }

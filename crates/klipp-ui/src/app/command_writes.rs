@@ -145,6 +145,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::ExportMetadataSheet { .. }
         | AppCommand::ShowRelinkDialog
         | AppCommand::SetNodeSolo { .. }
+        | AppCommand::SetViewChannel { .. }
         | AppCommand::SetNodeViewBookmark { .. }
         | AppCommand::JumpNodeViewBookmark { .. }
         | AppCommand::CopyColorNodes { .. }

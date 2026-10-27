@@ -83,7 +83,7 @@ pub use time::{Fps, RationalTime, TimeRange, Timecode, TimecodeDisplay};
 pub use modifier::{EvalContext, Extrapolation, Modifier, ModifierBlend, ModifierStack, ParamId, Waveform, evaluate_param};
 pub use snap::{GridInterval, SnapConfig, SnapTargetKind};
 pub use ofx_value::OfxValue;
-pub use types::{AudioEffectInstance, BlendMode, ChannelConfig, ClipRole, ColorSpace, DEFAULT_GENERATOR_GRAIN, RoleProposal, RoleSource, FadeCurve, FocalRef, FourPointGradient, GeneratorData, LogFormat, PixelFormat, Resolution, TimerFormat, TimerMode, TrackPoint, TransitionAlignment, TransitionUserParams};
+pub use types::{AudioEffectInstance, BlendMode, ChannelConfig, ClipRole, ColorSpace, DEFAULT_GENERATOR_GRAIN, RoleProposal, RoleSource, FadeCurve, FocalRef, FourPointGradient, GeneratorData, LogFormat, PixelFormat, Resolution, TimerFormat, TimerMode, TrackPoint, TransitionAlignment, TransitionUserParams, ViewChannel};
 pub use transition_registry::{TransitionKind, TransitionSpec, TRANSITION_SPECS, spec_for_kind, spec_for_kind_id, spec_for_string_key};
 pub use config::{
     ChannelMask, GpuPreference, HistogramDisplayMode, HistogramLevels, HistogramSettings,
@@ -102,4 +102,4 @@ pub use span::ClipSpan;
 
 pub mod vector_path;
 pub mod template;
-pub use template::{TemplateInstance, TemplateValue};
+pub use template::{LinkCurve, TemplateInstance, TemplateLink, TemplateValue};

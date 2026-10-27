@@ -831,6 +831,8 @@ impl PlaybackEngine {
     fn render_cache_key(&mut self, seq: &Sequence, primary: Option<ClipId>, size: (u32, u32)) -> Option<crate::render_cache::RenderCacheKey> {
         if self.in_node_param_edit
             || self.solo.is_some()
+            // The cache holds the picture, not a channel of it.
+            || self.view_channel != klipp_core::ViewChannel::Picture
             || self.matte_preview
             // The cache holds display bytes of the SDR picture; HDR
             // monitoring shows another picture entirely.
@@ -946,6 +948,7 @@ impl PlaybackEngine {
                 .hdr_monitor
                 .renders_hdr()
                 .then_some(klipp_color::hdr::DEFAULT_MASTERING_MAX_LUMA_CD_M2),
+            view_channel: self.view_channel,
             ..Default::default()
         };
         let shown = self.renderer.render_display_on_gpu(seq, time, width, height, &mut src, opts, out);
@@ -1002,6 +1005,7 @@ impl PlaybackEngine {
                 .hdr_monitor
                 .renders_hdr()
                 .then_some(klipp_color::hdr::DEFAULT_MASTERING_MAX_LUMA_CD_M2),
+            view_channel: self.view_channel,
             ..Default::default()
         };
         let (out, found) = self.renderer.render_inspected(seq, time, w, h, &mut src, opts, inspect);
@@ -1238,16 +1242,29 @@ impl PlaybackEngine {
         // path below takes the frame.
         if !progress && inspect_is_plain(&inspect)
             && (self.gpu_composite_allowed() || (self.titled_drag_on_stack() && Self::titles_over_clip(&seq, self.playhead))) {
-            let target = self.gpu_viewer_target(w, h);
-            let want_bytes = target.is_none() || self.state != PlaybackState::Playing;
+            // The A/B wipe of a node splits two pictures as bytes, both
+            // drawn here (#2758): no zero-copy while it is on.
+            let comparing = self.compare_effect_active;
+            let target = if comparing { None } else { self.gpu_viewer_target(w, h) };
+            let want_bytes = comparing || target.is_none() || self.state != PlaybackState::Playing;
             let out = klipp_compose::DisplayDelivery { texture: target.as_deref(), bytes: want_bytes };
+            let previous = if comparing { self.previous_primary.clone() } else { None };
             let t = Instant::now();
             let stacked = self.render_composite_on_gpu(&seq, primary_ref, w, h, out);
+            // The nodes the stack didn't draw as asked, named against
+            // this frame as the timeline path names its own (step 10).
+            let declines: Vec<klipp_nodes::Decline> = self.renderer.frame_declines().iter().filter(|d| d.shown()).cloned().collect();
+            // The wipe's other half, the compared node bypassed, on the
+            // stack too; declined, the whole frame takes the full path.
+            let stacked = match stacked {
+                Some(shown) if comparing => self.compared_on_stack(&seq, primary_ref, w, h, previous).map(|alt| {
+                    self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner()).compare_effect_data = alt;
+                    shown
+                }),
+                stacked => stacked,
+            };
             self.frame_phases.render_ms = ms(t);
             if let Some((bytes, stats)) = stacked {
-                // The nodes the stack didn't draw as asked, named against
-                // this frame as the timeline path names its own (step 10).
-                let declines: Vec<klipp_nodes::Decline> = self.renderer.frame_declines().iter().filter(|d| d.shown()).cloned().collect();
                 match bytes {
                     Some(bytes) => {
                         self.note_composite_path(if target.is_some() { "GPU stack, bytes for a reader" } else { "GPU stack" });
@@ -1319,6 +1336,31 @@ impl PlaybackEngine {
         true
     }
 
+    /// The A/B wipe's left half on the GPU stack (#2758): this frame with
+    /// the compared node of its clip bypassed, so the node's input shows
+    /// beside its output. Empty when the clip doesn't hold the node (the
+    /// UI shows no split); `None` when the stack declines it.
+    fn compared_on_stack(
+        &mut self,
+        seq: &Sequence,
+        primary: Option<(ClipId, &HeldFrame)>,
+        w: u32,
+        h: u32,
+        previous: Option<(ClipId, HeldFrame)>,
+    ) -> Option<Vec<u8>> {
+        let (Some(id), Some(node)) = (self.compare_effect_clip_id, self.compare_effect_node.clone()) else { return Some(Vec::new()) };
+        let mut alt = seq.clone();
+        if !alt.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).filter(|c| c.id == id).any(|c| c.toggle_picture_node(&node)) {
+            return Some(Vec::new());
+        }
+        // The frame before this one, as the shown half had it: a slowed
+        // clip's blend reads it.
+        let shown = std::mem::replace(&mut self.previous_primary, previous);
+        let drawn = self.render_composite_on_gpu(&alt, primary, w, h, klipp_compose::DisplayDelivery { texture: None, bytes: true });
+        self.previous_primary = shown;
+        Some(drawn?.0.unwrap_or_default())
+    }
+
     /// The split views' left halves: this frame with stabilisation off, or
     /// with the compared effect toggled, and the ungraded "before".
     fn show_split_views(
@@ -1348,8 +1390,8 @@ impl PlaybackEngine {
         };
 
         let compare = if self.compare_effect_active {
-            let node = self.compare_effect_node;
-            alt_render(self, &|c: &mut Clip| node.is_some_and(|n| c.toggle_effect_node(n)), self.compare_effect_clip_id)
+            let node = self.compare_effect_node.clone();
+            alt_render(self, &|c: &mut Clip| node.as_ref().is_some_and(|n| c.toggle_picture_node(n)), self.compare_effect_clip_id)
         } else {
             Vec::new()
         };

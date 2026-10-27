@@ -234,6 +234,7 @@ const SHADERS: &[(&str, Cover)] = &[
     ("SHADER_CLARITY_APPLY", GRADE),
     ("SHADER_BLEND_LAYER", Test(STACK, "every_blend_mode_matches_the_cpu_stack")),
     ("SHADER_PREMULTIPLY", Test(STACK, "the_finish_premultiplies_like_the_cpu_stack")),
+    ("SHADER_VIEW_CHANNEL", Test(STACK, "the_channel_view_finishes_like_the_cpu_stack")),
     ("SHADER_ALPHA_FORM", Test("klipp-compose/tests/golden_corpus.rs", "every_path_draws_the_corpus_alike")),
     ("SHADER_SPRITE_ROWS", Test(STACK, "a_sprite_decodes_as_the_cpu_bridge_does")),
     ("SHADER_MATTE_EXTRACT", Test(COMPOSITE, "a_luma_matte_with_feather_and_choke_matches")),

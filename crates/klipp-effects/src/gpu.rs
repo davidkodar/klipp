@@ -508,6 +508,8 @@ pub struct GpuEffectsPipeline {
     stack_dims: (u32, u32),
     blend_layer_pipeline: wgpu::ComputePipeline,
     premultiply_pipeline: wgpu::ComputePipeline,
+    /// The viewer's channel view of the finished stack (#2758).
+    view_channel_pipeline: wgpu::ComputePipeline,
     alpha_form_pipeline: wgpu::ComputePipeline,
     sprite_rows_pipeline: wgpu::ComputePipeline,
     sprite_rows_f16_pipeline: wgpu::ComputePipeline,
@@ -1639,6 +1641,7 @@ impl GpuEffectsPipeline {
         let u8_to_texture_pipeline = create_pipeline(&device, &u8_to_texture_pl, "u8_to_texture", SHADER_U8_TO_TEXTURE);
         let blend_layer_pipeline = create_pipeline(&device, &pipeline_layout, "blend_layer", SHADER_BLEND_LAYER);
         let premultiply_pipeline = create_pipeline(&device, &pipeline_layout, "premultiply", SHADER_PREMULTIPLY);
+        let view_channel_pipeline = create_pipeline(&device, &pipeline_layout, "view_channel", SHADER_VIEW_CHANNEL);
         let alpha_form_pipeline = create_pipeline(&device, &pipeline_layout, "alpha_form", SHADER_ALPHA_FORM);
         let sprite_rows_pipeline = create_pipeline(&device, &pipeline_layout, "sprite_rows", SHADER_SPRITE_ROWS);
         let sprite_rows_f16_pipeline = create_pipeline(&device, &pipeline_layout, "sprite_rows_f16", SHADER_SPRITE_ROWS_F16);
@@ -1890,6 +1893,7 @@ impl GpuEffectsPipeline {
             stack_dims: (0, 0),
             blend_layer_pipeline,
             premultiply_pipeline,
+            view_channel_pipeline,
             alpha_form_pipeline,
             sprite_rows_pipeline,
             sprite_rows_f16_pipeline,
@@ -6826,6 +6830,21 @@ impl GpuEffectsPipeline {
         true
     }
 
+    /// The stack finished for the viewer's channel view (#2758):
+    /// `stack_finish_into_chain(false)` with `channel` (as
+    /// `composite::view_channel` takes it) shown in grey.
+    pub fn stack_finish_viewing(&mut self, channel: u32, luma: [f32; 3]) -> bool {
+        if self.is_device_lost() || !self.stack_acc_touched {
+            return false;
+        }
+        let (width, height) = self.stack_dims;
+        let acc = self.stack_acc.clone().unwrap();
+        self.write_params(&ViewChannelParams { width, height, channel, _pad0: 0, luma: [luma[0], luma[1], luma[2], 0.0] });
+        let wg = (self.stack_pixel_count() as u32).div_ceil(WORKGROUP_SIZE);
+        self.stack_pass(&self.view_channel_pipeline, &acc, self.buf_a.as_ref().unwrap(), wg, "stack_view_channel");
+        true
+    }
+
     /// The finished stack (`stack_finish_into_chain` with `keep_alpha`)
     /// kept in a buffer of its own (#2757): a precomposition's scene,
     /// composed before its parent's stack, which seeds the parent's layer
@@ -8515,6 +8534,16 @@ struct ColorFadeParams {
     _pad: u32,
     /// Linear RGB and alpha.
     color: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct ViewChannelParams {
+    width: u32,
+    height: u32,
+    channel: u32,
+    _pad0: u32,
+    luma: [f32; 4],
 }
 
 #[repr(C)]
@@ -12283,6 +12312,42 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
     let p = unpack(input[idx]);
     let a = clamp(p.w, 0.0, 1.0);
     output[idx] = pack(vec4<f32>(p.xyz * a, 1.0));
+}
+"
+);
+
+// The viewer's channel view of the finished stack (#2758), flattened as
+// the premultiply is: the picture, one of red, green, blue in grey, the
+// alpha before the flatten, or the luma by the working space's row. The
+// CPU twin is `composite::view_channel`.
+const SHADER_VIEW_CHANNEL: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    "
+struct Params { width: u32, height: u32, channel: u32, _pad0: u32, luma: vec4<f32> }
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let p = unpack(input[idx]);
+    let a = clamp(p.w, 0.0, 1.0);
+    let rgb = p.xyz * a;
+    var v = 0.0;
+    switch params.channel {
+        case 1u: { v = rgb.x; }
+        case 2u: { v = rgb.y; }
+        case 3u: { v = rgb.z; }
+        case 4u: { v = a; }
+        case 5u: { v = dot(rgb, params.luma.xyz); }
+        default: {
+            output[idx] = pack(vec4<f32>(rgb, 1.0));
+            return;
+        }
+    }
+    output[idx] = pack(vec4<f32>(v, v, v, 1.0));
 }
 "
 );
@@ -20082,6 +20147,7 @@ pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
         ("SHADER_BLEND_LAYER", SHADER_BLEND_LAYER),
         ("SHADER_MERGE_OVER", SHADER_MERGE_OVER),
         ("SHADER_PREMULTIPLY", SHADER_PREMULTIPLY),
+        ("SHADER_VIEW_CHANNEL", SHADER_VIEW_CHANNEL),
         ("SHADER_ALPHA_FORM", SHADER_ALPHA_FORM),
         ("SHADER_SPRITE_ROWS", SHADER_SPRITE_ROWS),
         ("SHADER_MATTE_EXTRACT", SHADER_MATTE_EXTRACT),

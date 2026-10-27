@@ -257,7 +257,7 @@ pub fn template_from_sequence(sequence: &klipp_timeline::Sequence, all: &[klipp_
                 range: None,
                 choices: Vec::new(),
             });
-            template.bindings.push(TemplateBinding { parameter: "text".into(), property: format!("object:{index}.text") });
+            template.bindings.push(TemplateBinding { parameter: "text".into(), property: format!("object:{index}.text"), link: None });
         }
     }
     template
@@ -512,22 +512,27 @@ pub fn terminal_card_template(composition_id: Uuid) -> CompositionTemplate {
         TemplateBinding {
             parameter: "command_text".into(),
             property: "object:1.text".into(),
+         link: None
         },
         TemplateBinding {
             parameter: "accent".into(),
             property: "object:0.fill_and_glow".into(),
+         link: None
         },
         TemplateBinding {
             parameter: "typing_speed".into(),
             property: "object:1.motion.enter.duration_secs".into(),
+         link: None
         },
         TemplateBinding {
             parameter: "entry_direction".into(),
             property: "object:0.motion.enter.direction".into(),
+         link: None
         },
         TemplateBinding {
             parameter: "float_amount".into(),
             property: "object:0.float.keyframes".into(),
+         link: None
         },
     ];
     template
@@ -729,6 +734,7 @@ mod tests {
             bindings: BTreeMap::new(),
             overrides: BTreeMap::new(),
             media_slots: BTreeMap::new(),
+            links: Vec::new(),
         };
         assert_eq!(
             instance.value(&template, "text"),
@@ -811,6 +817,7 @@ mod tests {
         template.bindings.push(TemplateBinding {
             parameter: "missing".into(),
             property: "layer.text".into(),
+         link: None
         });
         assert!(template.validate().is_err());
     }

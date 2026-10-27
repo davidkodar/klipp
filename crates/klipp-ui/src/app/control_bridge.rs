@@ -290,13 +290,19 @@ impl KlippApp {
         } else if s.stabilization_compare_active {
             Some(format!("stabilisation split: left {pct}% unstabilised"))
         } else if s.split_compare_node.is_some() {
-            Some(format!("effect split: left {pct}% with the effect toggled"))
+            Some(format!("node A/B split: left {pct}% shows the node's input (the node bypassed), right its output"))
         } else {
             None
         };
         if let Ok(mut shown) = s.control_shared.viewer_compare.lock() {
             if *shown != compare {
                 *shown = compare;
+            }
+        }
+        let viewing = klipp_core::events::ViewerShows { channel: s.view_channel, solo: s.solo_at.clone() };
+        if let Ok(mut shown) = s.control_shared.viewing.lock() {
+            if *shown != viewing {
+                *shown = viewing;
             }
         }
     }

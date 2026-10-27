@@ -1241,6 +1241,10 @@ pub enum ControlCommand {
         category: Option<String>,
         #[serde(default)]
         fields: Option<Vec<String>>,
+        /// Macro controls of clips saved together (#2757): each a slider
+        /// driving numbers of their layers, named by label.
+        #[serde(default)]
+        controls: Vec<klipp_timeline::composition_template::ControlSpec>,
         #[serde(default)]
         replace: bool,
     },
@@ -1783,6 +1787,14 @@ pub enum ControlCommand {
         max_width: Option<u32>,
         #[serde(default)]
         timeout_ms: Option<u64>,
+        /// One channel of the picture in grey (#2758): red, green, blue,
+        /// alpha or luma. Left out, the picture the viewer shows.
+        #[serde(default)]
+        channel: Option<String>,
+        /// A node of a clip's picture to show in place of the finished
+        /// frame (#2758), by its path as graph_read gives it.
+        #[serde(default)]
+        node: Option<crate::graph_wire::GraphPath>,
     },
     /// Tail of the app's debug log.
     LogTail {

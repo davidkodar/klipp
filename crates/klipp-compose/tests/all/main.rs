@@ -8,6 +8,10 @@
 // per file here.
 #![allow(clippy::duplicate_mod)]
 
+#[path = "../ab_wipe.rs"]
+mod ab_wipe;
+#[path = "../channel_view.rs"]
+mod channel_view;
 #[path = "../clip_below_render.rs"]
 mod clip_below_render;
 #[path = "../colour_effects_render.rs"]

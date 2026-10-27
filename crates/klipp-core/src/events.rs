@@ -2102,6 +2102,9 @@ pub enum AppCommand {
     /// clip's picture and its output (M3 step 16a); one the clip's run
     /// doesn't hold is said to be unavailable, never shown as the output.
     SetNodeSolo { at: Option<klipp_graph_format::path::NodeOutput> },
+    /// Show one channel of the viewed picture in grey, or the picture
+    /// again (#2758). The viewer's alone: exports never read it.
+    SetViewChannel { channel: crate::ViewChannel },
     /// Set node-graph view bookmark slot `slot` (0..8 corresponding
     /// to hotkeys 1..9) to the panel's current pan + zoom. Routed to
     /// the panel directly in the dispatcher because the bookmark
@@ -5326,6 +5329,18 @@ pub struct ControlShared {
     pub viewer_compare: std::sync::Mutex<Option<String>>,
     /// Proxies as the UI last saw them (#2478).
     pub proxies: std::sync::Mutex<ProxyStatus>,
+    /// What the viewer shows of the picture, as the UI last saw it
+    /// (#2758): a frame read that views a channel or a node puts this
+    /// back afterwards.
+    pub viewing: std::sync::Mutex<ViewerShows>,
+}
+
+/// The viewer's channel and the node it shows in place of the finished
+/// picture, if any (#2758).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ViewerShows {
+    pub channel: crate::ViewChannel,
+    pub solo: Option<klipp_graph_format::path::NodeOutput>,
 }
 
 /// Proxies as a client sees them (#2478): whether playback reads them,

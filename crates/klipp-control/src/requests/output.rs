@@ -778,9 +778,21 @@ pub(crate) fn respond(
             Ok(json!({ "text": text, "path": out.to_string_lossy(), "width": sw, "height": sh, "tiles": listed, "inline": inline }))
         }
 
-        ControlCommand::FrameAt { secs, path, max_width, timeout_ms } => {
+        ControlCommand::FrameAt { secs, path, max_width, timeout_ms, channel, node } => {
             if in_batch {
                 return read_in_batch("frame_at");
+            }
+            let channel = channel
+                .map(|n| klipp_core::ViewChannel::from_name(n.trim()).ok_or_else(|| format!("{n:?} is not a channel; give red, green, blue, alpha or luma")))
+                .transpose()?;
+            let node = node.map(|p| p.resolve(&Default::default())).transpose()?;
+            // The viewer shows a node of a clip's grade alone; any other
+            // would come back as the whole frame, so it is refused here.
+            if let Some(n) = &node {
+                let clip = n.root_clip().ok_or("node must be a node of a clip's grade, by its path as graph_read gives it")?;
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                seq.grade_node_at(klipp_core::ClipId(clip), n)
+                    .map_err(|e| format!("node can't be shown alone: {e}; frame_at shows a node of a clip's grade (an effect after the grade, not yet)"))?;
             }
             // One at a time: there is one playhead, and two grabs at once
             // seek it out from under each other and the second fails.
@@ -806,7 +818,27 @@ pub(crate) fn respond(
             // Paused first: a frame of a time cannot be taken from a viewer
             // that is moving, and a grab during playback used to wait out
             // its whole timeout while the playhead ran on past the target.
-            send_envelope(ctx, vec![AppCommand::Pause, AppCommand::SeekTo(target)], false)?;
+            // A channel or a node viewed for this read alone (#2758): set
+            // before the seek, so the frame waited for is drawn with them,
+            // and the viewer's own put back whatever happens below.
+            let viewed = (channel.is_some() || node.is_some()).then(|| {
+                let shows = ctx.shared.viewing.lock().map(|v| v.clone()).unwrap_or_default();
+                let want = [
+                    AppCommand::SetViewChannel { channel: channel.unwrap_or(shows.channel) },
+                    AppCommand::SetNodeSolo { at: node.clone().map(klipp_graph_format::path::NodeOutput::out).or_else(|| shows.solo.clone()) },
+                ];
+                (shows, want)
+            });
+            let mut first = vec![AppCommand::Pause];
+            let _put_back = match viewed {
+                Some((shows, want)) => {
+                    first.extend(want);
+                    Some(PutBackViewing { ctx, shows })
+                }
+                None => None,
+            };
+            first.push(AppCommand::SeekTo(target));
+            send_envelope(ctx, first, false)?;
             // The frame this asks for: rendered after the seek, at the
             // time asked for, with every clip under the playhead in it.
             // A frame's generation alone said none of that: a late
@@ -856,7 +888,8 @@ pub(crate) fn respond(
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
                 (seq.resolution.width.max(2), seq.resolution.height.max(2))
             };
-            if let Some((w, h)) = full_size_for(max_width, viewer_width, (seq_w, seq_h)) {
+            // A channel or a node is the viewer's to draw: at its size.
+            if let Some((w, h)) = full_size_for(max_width, viewer_width, (seq_w, seq_h)).filter(|_| _put_back.is_none()) {
                 restore_transport(ctx, held);
                 let still = full_size_frame(ctx, secs, w, h)?;
                 if let Some(p) = path.as_deref().filter(|p| !std::path::Path::new(p).is_absolute()) {
@@ -880,6 +913,12 @@ pub(crate) fn respond(
             let mut v = shot?;
             v["secs"] = json!(secs);
             v["frame"] = json!((secs * fps.as_f64()).round() as i64);
+            if let Some(c) = channel {
+                v["channel"] = json!(c.name());
+            }
+            if let Some(n) = &node {
+                v["node"] = json!(crate::graph_wire::GraphPath::from(n.clone()));
+            }
             Ok(v)
         }
 
@@ -1204,6 +1243,22 @@ fn full_size_for(max_width: Option<u32>, viewer_width: u32, (seq_w, seq_h): (u32
 /// The timeline's frame at `secs` drawn from the files at `width` x
 /// `height`, with the project's colour set-up and the viewer's LUT
 /// (#2491).
+/// What the viewer showed before a frame read viewed a channel or a node
+/// of its own (#2758), put back when the read ends, however it ends.
+struct PutBackViewing<'a> {
+    ctx: &'a ControlContext,
+    shows: klipp_core::events::ViewerShows,
+}
+
+impl Drop for PutBackViewing<'_> {
+    fn drop(&mut self) {
+        let back = vec![AppCommand::SetViewChannel { channel: self.shows.channel }, AppCommand::SetNodeSolo { at: self.shows.solo.take() }];
+        if let Err(e) = send_envelope(self.ctx, back, false) {
+            tracing::warn!("frame_at could not put the viewer's channel and node back: {e}");
+        }
+    }
+}
+
 fn full_size_frame(ctx: &ControlContext, secs: f64, width: u32, height: u32) -> Result<klipp_render::still::Still, String> {
     let seq: klipp_timeline::Sequence = (*ctx.sequence.read().map_err(|_| "sequence lock poisoned")?).clone();
     let mut all: Vec<klipp_timeline::Sequence> = ctx.others.read().map_err(|_| "sequences lock poisoned")?.iter().map(|s| (*s.sequence).clone()).collect();

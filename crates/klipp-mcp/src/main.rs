@@ -1186,7 +1186,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             // Saving a title as a template (#2757).
             Some(save) => {
                 let mut v = json!({ "method": "save_template", "name": arg_str(save, "name")? });
-                for k in ["clip_id", "clip_ids", "category", "fields", "replace"] {
+                for k in ["clip_id", "clip_ids", "category", "fields", "controls", "replace"] {
                     if let Some(x) = save.get(k) { v[k] = x.clone(); }
                 }
                 v
@@ -1440,6 +1440,12 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             }
             if let Some(t) = args.get("timeout_ms").and_then(|v| v.as_u64()) {
                 v["timeout_ms"] = json!(t);
+            }
+            // A channel in grey, or a node in place of the frame (#2758).
+            for key in ["channel", "node"] {
+                if let Some(x) = args.get(key) {
+                    v[key] = x.clone();
+                }
             }
             v
         }
@@ -2668,12 +2674,14 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                  "inline": { "type": "boolean", "description": "Also return the picture in the reply; by default only when no path is given" },
              }), vec![]),
         tool("klipp_frame_at",
-             "The timeline's frame at a time, as a PNG, the playhead left where it was. Details: klipp_guide topic frame_at.",
+             "The timeline's frame at a time as a PNG, the playhead kept. Details: klipp_guide topic frame_at.",
              json!({
                  "secs": { "type": "number" },
-                 "max_width": { "type": "integer", "description": "Width, up to the timeline's (default 1280)" },
+                 "max_width": { "type": "integer", "description": "default 1280" },
                  "path": { "type": "string", "description": "Absolute PNG path; temp dir when omitted" },
                  "timeout_ms": { "type": "integer" },
+                 "channel": { "type": "string" },
+                 "node": { "type": "object" },
              }),
              vec!["secs"]),
         tool("klipp_scope",

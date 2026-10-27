@@ -424,6 +424,9 @@ pub struct NodeGraphV2Panel {
     /// with its halo, chip and Clear solo (#1743); the app sets it before
     /// each draw, as it hands the grade canvas its solo.
     pub picture_solo: Option<NodeId>,
+    /// The node whose input and output the viewer wipes between (#2758),
+    /// for the node menu's A/B item; the app sets it before each draw.
+    pub compared_node: Option<NodeId>,
     /// Group the picture canvas's add menu for the Composite page
     /// (#2758); the app sets it before each draw.
     pub composite_menu: bool,
@@ -554,6 +557,7 @@ impl Default for NodeGraphV2Panel {
             thumb_histograms: std::collections::HashMap::new(),
             grade_keys: true,
             picture_solo: None,
+            compared_node: None,
             composite_menu: false,
             replace_target: None,
             snap_to_grid: false,
@@ -4742,6 +4746,14 @@ impl NodeGraphV2Panel {
                             cmds.push(AppCommand::SetNodeSolo { at: new_target.and_then(|n| graph.thumbnail_output(clip_id, n, descent)) });
                             close = true;
                         }
+                        // The viewer wiped between the node's input (left)
+                        // and its output (#2758).
+                        let compared = self.compared_node == Some(node_id);
+                        let label = if compared { "End the A/B compare" } else { "Compare input and output (A/B)" };
+                        if menu_item(ui, label, "").clicked() {
+                            cmds.push(ab_toggle(graph, clip_id, node_id, compared, descent));
+                            close = true;
+                        }
                     }
                     let in_set = selected_set.contains(&node_id);
                     // Editing the node, or the selection it is part of
@@ -5079,6 +5091,15 @@ fn view_eye_rect(node: egui::Rect, zoom: f32) -> egui::Rect {
 fn view_toggle(graph: &impl CanvasGraph, clip_id: ClipId, node: NodeId, is_output: bool, viewed: Option<NodeId>, descent: &[NodeId]) -> AppCommand {
     let back = is_output || viewed == Some(node);
     AppCommand::SetNodeSolo { at: if back { None } else { graph.thumbnail_output(clip_id, node, descent) } }
+}
+
+/// The command that wipes the viewer between `node`'s input and its
+/// output (#2758), or ends the wipe when it is the one compared.
+fn ab_toggle(graph: &impl CanvasGraph, clip_id: ClipId, node: NodeId, compared: bool, descent: &[NodeId]) -> AppCommand {
+    match graph.thumbnail_output(clip_id, node, descent).filter(|_| !compared) {
+        Some(at) => AppCommand::SetSplitCompareNode { clip_id: Some(clip_id), path: Some(at.path) },
+        None => AppCommand::SetSplitCompareNode { clip_id: None, path: None },
+    }
 }
 
 /// The eye on a node's header: open and lit while the node is viewed,

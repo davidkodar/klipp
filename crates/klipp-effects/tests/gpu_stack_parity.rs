@@ -129,6 +129,32 @@ fn the_finish_premultiplies_like_the_cpu_stack() {
     assert!(worst <= 1.0, "premultiply differs by {worst:.2} levels");
 }
 
+/// The viewer's channel view (#2758) finishes the stack as its CPU twin
+/// does, in every channel: the picture, red, green, blue, the alpha
+/// before the flatten, and luma by an ACEScg row (not Rec.709's, so the
+/// row is seen to be the one passed).
+#[test]
+fn the_channel_view_finishes_like_the_cpu_stack() {
+    let Some(mut gpu) = pipeline() else { return };
+    let layer = frame(0.9);
+    let luma = [0.272_228_72, 0.674_081_77, 0.053_689_52];
+    for channel in 0..=5u32 {
+        let mut cpu = layer.clone();
+        klipp_effects::composite::view_channel(&mut cpu, channel, luma);
+        assert!(gpu.stack_begin(W, H, 1));
+        assert!(gpu.stack_layer_from_linear(0, &layer));
+        assert!(gpu.stack_blend(0, 1.0, 0));
+        assert!(gpu.stack_finish_viewing(channel, luma));
+        let got = gpu.stack_download_linear();
+        let worst = worst_level(&cpu, &got);
+        assert!(worst <= 1.0, "channel {channel} differs by {worst:.2} levels");
+        if channel == 4 {
+            // Alpha reads the coverage, in grey, flattened opaque.
+            assert!(got.chunks_exact(4).zip(layer.chunks_exact(4)).all(|(g, l)| (g[0] - l[3]).abs() < 2e-3 && g[3] == 1.0));
+        }
+    }
+}
+
 /// A resident sprite placed by the GPU is the sprite shifted and faded
 /// on the CPU and decoded as rows: the same layer, and no second upload
 /// for the second placement.

@@ -951,6 +951,31 @@ fn scale_rgba(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Vec
 // the viewer or encoder resolves them at the final stage. The
 // sRGB u8 versions stay in place until Phase 10 retires them.
 
+/// The viewer's channel view (#2758) of a straight composite, flattened
+/// over black as the finish does: `channel` 0 is the picture, 1 to 3
+/// its red, green or blue in grey, 4 its alpha (coverage, before the
+/// flatten) and 5 its luma by `luma`, the working space's own row. The
+/// CPU twin of `GpuEffectsPipeline::stack_finish_viewing`.
+pub fn view_channel(px: &mut [f32], channel: u32, luma: [f32; 3]) {
+    px.par_chunks_exact_mut(4).for_each(|p| {
+        let a = p[3].clamp(0.0, 1.0);
+        let rgb = [p[0] * a, p[1] * a, p[2] * a];
+        let v = match channel {
+            1 => rgb[0],
+            2 => rgb[1],
+            3 => rgb[2],
+            4 => a,
+            5 => rgb[0] * luma[0] + rgb[1] * luma[1] + rgb[2] * luma[2],
+            _ => {
+                p[..3].copy_from_slice(&rgb);
+                p[3] = 1.0;
+                return;
+            }
+        };
+        p.copy_from_slice(&[v, v, v, 1.0]);
+    });
+}
+
 /// Blend a source linear-f32 RGBA layer onto a destination linear
 /// buffer using the specified blend mode.
 ///

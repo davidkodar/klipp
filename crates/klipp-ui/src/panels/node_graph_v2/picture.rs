@@ -542,8 +542,9 @@ impl<'a> CanvasGraph for PictureCanvas<'a> {
             }
             AppCommand::SetNodeSolo { at } => Some(AppCommand::SetNodeSolo { at: match at { Some(at) => Some(self.output(at.path.node()?)?), None => None } }),
             AppCommand::SetVisibleNodeThumbs { request, clip_id, at } => Some(AppCommand::SetVisibleNodeThumbs { request, clip_id, at: at.iter().filter_map(|at| self.output(at.path.node()?)).collect() }),
-            // Already by path (#1753).
+            // Already by path (#1753; the A/B wipe, #2758).
             label @ AppCommand::SetNodeColourLabel { .. } => Some(label),
+            compare @ AppCommand::SetSplitCompareNode { .. } => Some(compare),
             // Grade-only clipboard and versions have no picture writer
             // yet. The workspace integration hides those actions.
             _ => None,
@@ -1302,6 +1303,7 @@ mod tests {
             // As the graph dock hands it the engine's solo, and how the
             // nodes fared on the frame shown.
             self.panel.picture_solo = self.state.solo_node;
+            self.panel.compared_node = self.state.split_compare_node.as_ref().map(|(_, p)| p).and_then(|p| p.node());
             self.panel.node_feedback = self.state.node_feedback(self.clip);
             self.panel.node_labels = crate::app::node_labels::canvas_labels(&self.state.sequences[0]);
             let mut cmds = Vec::new();
@@ -1501,6 +1503,24 @@ mod tests {
         d.click(at, egui::PointerButton::Primary);
         assert_eq!(d.state.solo_node, None, "the chip's ✕ clears it: {:?}", d.sent);
         assert!(!d.texts.iter().any(|(s, _)| s.contains("Viewing:")));
+    }
+
+    /// A node's menu wipes the viewer between its input and its output
+    /// (#2758): the compare is set on that node by its path, the menu then
+    /// offers to end it, and ending it clears the compare.
+    #[test]
+    fn a_node_menu_compares_its_input_and_output() {
+        let mut d = Dock::new();
+        let graph = d.graph();
+        let model = PictureCanvas::new(&graph, root(&d.clip()), None).unwrap();
+        let blur = model.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n.node) == Some("gaussian_blur")).unwrap();
+        let (label, id) = (blur.label.clone(), blur.id());
+        d.menu(&label, "Compare input and output (A/B)");
+        let compared = d.state.split_compare_node.clone();
+        assert_eq!(compared.as_ref().map(|(c, p)| (*c, p.node())), Some((d.clip, Some(id))), "{:?}", d.sent);
+        d.settle();
+        d.menu(&label, "End the A/B compare");
+        assert_eq!(d.state.split_compare_node, None, "{:?}", d.sent);
     }
 
     /// The eye on a node's header views it in the program viewer, as

@@ -913,6 +913,23 @@ pub struct RenderOptions {
     /// light, 1.0 = SDR white at 203 nits (see the rules above). `None`
     /// renders the SDR picture.
     pub hdr_peak_nits: Option<f32>,
+    /// What the viewer shows of the finished frame (#2758): the picture,
+    /// or one channel of it in grey. Only the viewer sets it; a
+    /// precomposition's scene is always the picture.
+    pub view_channel: klipp_core::ViewChannel,
+}
+
+/// `channel` as the channel view's CPU twin and shader take it.
+fn channel_code(channel: klipp_core::ViewChannel) -> u32 {
+    use klipp_core::ViewChannel as V;
+    match channel {
+        V::Picture => 0,
+        V::Red => 1,
+        V::Green => 2,
+        V::Blue => 3,
+        V::Alpha => 4,
+        V::Luma => 5,
+    }
 }
 
 /// The resources rendering needs, owned per thread: the viewer has one,
@@ -2516,7 +2533,11 @@ impl Renderer {
         }
         let t = Instant::now();
         let gpu = self.executor.gpu_pipeline_or_init()?;
-        if !gpu.stack_finish_into_chain(opts.keep_alpha) {
+        let finished = match channel_code(opts.view_channel) {
+            0 => gpu.stack_finish_into_chain(opts.keep_alpha),
+            c => gpu.stack_finish_viewing(c, klipp_color::linear::luma_coefs(self.working)),
+        };
+        if !finished {
             return self.gpu_stack_declines("the composite could not be finished");
         }
         stats.composite_ms += ms_since(t);
@@ -3634,7 +3655,7 @@ impl Renderer {
         let inspect = std::mem::take(&mut self.inspect);
         let (px_scale, hdr_peak, title_nits) = (self.px_scale, self.hdr_peak, self.title_nits);
         let (decline, declined_after_work, started) = (self.frame_decline, self.gpu_export_declined_after_work, self.stack_work_started);
-        let composed = self.composite_on_gpu(scene, at, width, height, src, RenderOptions { keep_alpha: true, ..opts }).is_some();
+        let composed = self.composite_on_gpu(scene, at, width, height, src, RenderOptions { keep_alpha: true, view_channel: klipp_core::ViewChannel::Picture, ..opts }).is_some();
         (self.px_scale, self.hdr_peak, self.title_nits) = (px_scale, hdr_peak, title_nits);
         (self.frame_decline, self.gpu_export_declined_after_work, self.stack_work_started) = (decline, declined_after_work, started);
         self.inspect = inspect;
@@ -3944,7 +3965,11 @@ impl Renderer {
             self.found.stats.lut_ms += ms_since(t);
         }
 
-        if !opts.keep_alpha {
+        if opts.view_channel != klipp_core::ViewChannel::Picture {
+            let t = Instant::now();
+            klipp_effects::composite::view_channel(&mut acc, channel_code(opts.view_channel), klipp_color::linear::luma_coefs(self.working));
+            composite_ms += ms_since(t);
+        } else if !opts.keep_alpha {
             use rayon::prelude::*;
             let t = Instant::now();
             acc.par_chunks_exact_mut(4).for_each(|px| {
@@ -4843,7 +4868,7 @@ impl Renderer {
         // its scale behind, and every blur and matte feather above it
         // was sized for the wrong sequence.
         let px_scale = self.px_scale;
-        let surface = self.render_stack(scene, at, width, height, src, RenderOptions { keep_alpha: true, hdr_peak_nits: self.hdr_peak });
+        let surface = self.render_stack(scene, at, width, height, src, RenderOptions { keep_alpha: true, hdr_peak_nits: self.hdr_peak, ..Default::default() });
         self.px_scale = px_scale;
         self.inspect = inspect;
         self.global_lut = lut;
