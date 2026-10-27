@@ -1,0 +1,128 @@
+{
+  "format_version": 2,
+  "id": "c71e5a20-4b9d-4e83-a6f1-2d8b3c9e0f14",
+  "name": "Matted glow",
+  "category": "Light",
+  "written_by": "built-in",
+  "kind": "recipe",
+  "composition_id": "00000000-0000-0000-0000-000000000000",
+  "parameters": {
+    "intensity": {
+      "label": "Intensity",
+      "default": {
+        "type": "Number",
+        "value": 0.8
+      },
+      "range": {
+        "min": 0.0,
+        "max": 1.0
+      }
+    },
+    "radius": {
+      "label": "Radius",
+      "default": {
+        "type": "Number",
+        "value": 12.0
+      },
+      "range": {
+        "min": 1.0,
+        "max": 60.0
+      }
+    }
+  },
+  "bindings": [
+    {
+      "parameter": "intensity",
+      "property": "node:0.intensity"
+    },
+    {
+      "parameter": "radius",
+      "property": "node:0.radius"
+    }
+  ],
+  "graph": {
+    "ops": [
+      {
+        "op": "add",
+        "after": {
+          "anchor": "end"
+        },
+        "type": "klipp.fx.glow",
+        "label": "Matted glow",
+        "params": {
+          "threshold": 0.0
+        }
+      },
+      {
+        "op": "add_beside",
+        "at": {
+          "anchor": "source"
+        },
+        "type": "klipp.grade.mask",
+        "label": "Glow window",
+        "params": {
+          "masks": {
+            "masks": [
+              {
+                "shape": {
+                  "Circle": {
+                    "center_x": 0.5,
+                    "center_y": 0.5,
+                    "radius": 0.25
+                  }
+                },
+                "feather": 0.1,
+                "opacity": 1,
+                "invert": false,
+                "enabled": true
+              }
+            ]
+          }
+        }
+      },
+      {
+        "op": "connect",
+        "from": {
+          "anchor": "source"
+        },
+        "from_port": "out",
+        "to": {
+          "new": 1
+        },
+        "to_port": "in"
+      },
+      {
+        "op": "connect",
+        "from": {
+          "new": 1
+        },
+        "from_port": "out",
+        "to": {
+          "new": 0
+        },
+        "to_port": "mask"
+      }
+    ],
+    "checks": [
+      {
+        "at": [
+          0.05,
+          0.1
+        ],
+        "channel": "luma",
+        "min": 0.56,
+        "max": 0.61,
+        "says": "outside the window the clip is as it was"
+      },
+      {
+        "at": [
+          0.5,
+          0.5
+        ],
+        "channel": "luma",
+        "min": 0.82,
+        "says": "inside the window the glow brightens it"
+      }
+    ]
+  }
+}

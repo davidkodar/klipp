@@ -730,9 +730,10 @@ pub fn composition_sequences(root: &Sequence, all: &[Sequence]) -> Vec<Sequence>
 /// The recipes Klipp ships (#2758), as files in `assets/recipes`: each a
 /// recipe like a saved one, read and checked as one is.
 pub fn builtin_recipes() -> Vec<CompositionTemplate> {
-    const FILES: [&str; 2] = [
+    const FILES: [&str; 3] = [
         include_str!("../../../assets/recipes/green_screen.klipptemplate"),
         include_str!("../../../assets/recipes/picture_in_picture.klipptemplate"),
+        include_str!("../../../assets/recipes/matted_glow.klipptemplate"),
     ];
     FILES
         .iter()
