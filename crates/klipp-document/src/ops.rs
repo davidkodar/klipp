@@ -13956,7 +13956,7 @@ mod tests {
         let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
         view.apply_forward(&plan.steps[0].edit);
         let clip = view.sequences[0].all_clips().find(|c| c.id == a).unwrap();
-        assert!(clip.builtin_effects().iter().any(|e| matches!(e, klipp_effects::BuiltinEffect::Crop { aspect, focus_x, .. } if (*aspect - 0.5625).abs() < 1e-6 && (*focus_x - 0.3).abs() < 1e-6)));
+        assert!(clip.picture_effects().unwrap_or_default().iter().any(|e| matches!(&e.effect, klipp_effects::BuiltinEffect::Crop { aspect, focus_x, .. } if (*aspect - 0.5625).abs() < 1e-6 && (*focus_x - 0.3).abs() < 1e-6)));
         assert!(op(serde_json::json!({ "cover": 1.0, "left": 0.2 })).unwrap_err().contains("not both"));
         assert!(op(serde_json::json!({ "cover": 50.0 })).unwrap_err().contains("width over height"));
         assert!(op(serde_json::json!({ "cover": 1.0, "focus": [1.5, 0.5] })).unwrap_err().contains("outside the picture"));

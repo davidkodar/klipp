@@ -228,7 +228,7 @@ mod tests {
         assert_eq!(*clip_id, id);
         let mut after = seq.all_clips().find(|c| c.id == id).unwrap().clone();
         after.restore_picture(&edit.after);
-        let key = after.builtin_effects().iter().find_map(|e| match e {
+        let key = after.picture_effects().unwrap_or_default().iter().find_map(|e| match &e.effect {
             klipp_effects::BuiltinEffect::ChromaKey { key_color, tolerance, soft_edge, .. } => Some((*key_color, *tolerance, *soft_edge)),
             _ => None,
         });
