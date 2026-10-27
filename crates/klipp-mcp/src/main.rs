@@ -1186,7 +1186,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             // Saving a title as a template (#2757).
             Some(save) => {
                 let mut v = json!({ "method": "save_template", "name": arg_str(save, "name")? });
-                for k in ["clip_id", "clip_ids", "category", "fields", "controls", "replace"] {
+                for k in ["clip_id", "clip_ids", "nodes", "category", "fields", "controls", "replace"] {
                     if let Some(x) = save.get(k) { v[k] = x.clone(); }
                 }
                 v

@@ -4830,6 +4830,12 @@ impl NodeGraphV2Panel {
                     // restriction would be violated.
                     // A frame is the canvas's own, on the picture as on
                     // the grade (#1743); a compound is the grade's.
+                    // The selected nodes of a picture saved as a recipe,
+                    // placed on any clip after (#2757 step 6).
+                    if !is_structural && in_set && !graph.grade_tools() && ui.button(format!("Save {} as Recipe\u{2026}", if selected_set.len() == 1 { "Node".to_string() } else { format!("{} Nodes", selected_set.len()) })).on_hover_text("Save these nodes as a recipe: the recipe op or the Recipes list puts them on any clip, its chosen numbers as controls").clicked() {
+                        cmds.push(AppCommand::SaveNodesAsRecipe { clip_id, node_ids: selected_set.iter().copied().collect() });
+                        close = true;
+                    }
                     if !is_structural && in_set && selected_set.len() >= 2 {
                         let label = format!(
                             "Group {} into Compound",

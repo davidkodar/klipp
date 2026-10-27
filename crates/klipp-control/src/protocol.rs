@@ -1246,6 +1246,11 @@ pub enum ControlCommand {
         /// they can expose, by label.
         #[serde(default)]
         clip_ids: Option<Vec<String>>,
+        /// Nodes of `clip_id`'s picture saved together as a recipe
+        /// (#2757 step 6), by id; `controls` publish their numbers, each
+        /// drive's target `node:<id>.<param>`.
+        #[serde(default)]
+        nodes: Option<Vec<String>>,
         name: String,
         #[serde(default)]
         category: Option<String>,
