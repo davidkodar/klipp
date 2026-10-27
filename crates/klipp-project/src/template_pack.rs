@@ -193,19 +193,7 @@ fn safe_file(name: &str) -> String {
     }
 }
 
-/// `root` joined with `parts`, refused unless it stays inside `root`:
-/// every part one plain path component.
-fn inside(root: &Path, parts: &[&str]) -> Result<PathBuf, String> {
-    let mut path = root.to_path_buf();
-    for part in parts {
-        let mut c = Path::new(part).components();
-        match (c.next(), c.next()) {
-            (Some(std::path::Component::Normal(_)), None) => path.push(part),
-            _ => return Err(format!("the pack names a path outside its folder: {part:?}")),
-        }
-    }
-    Ok(path)
-}
+use crate::path_util::inside;
 
 /// Reads one entry of the pack, at most [`MAX_ENTRY_BYTES`] (or `cap`)
 /// and within what is left of [`MAX_PACK_BYTES`]; `None` when the pack

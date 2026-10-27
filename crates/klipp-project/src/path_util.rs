@@ -1,5 +1,21 @@
 use std::path::{Component, Path, PathBuf};
 
+/// `root` joined with `parts`, refused unless it stays inside `root`:
+/// every part one plain path component, so a name read from someone
+/// else's file (a template, a pack) can never reach a parent folder or
+/// an absolute path.
+pub fn inside(root: &Path, parts: &[&str]) -> Result<PathBuf, String> {
+    let mut path = root.to_path_buf();
+    for part in parts {
+        let mut c = Path::new(part).components();
+        match (c.next(), c.next()) {
+            (Some(Component::Normal(_)), None) => path.push(part),
+            _ => return Err(format!("{part:?} is not a plain file name")),
+        }
+    }
+    Ok(path)
+}
+
 /// Convert an absolute runtime path to a relative path for on-disk storage.
 ///
 /// Relative to the project directory (the `.klipp/` folder).
