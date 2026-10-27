@@ -850,6 +850,16 @@ pub enum ControlCommand {
     GradeToTarget {
         #[serde(default)]
         clip_id: Option<String>,
+        /// Several clips, graded as one pass and one undo step (auto
+        /// colour on a selection, #2758); with `clip_id`, both.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        clips: Vec<String>,
+        /// The look to grade toward where the piece has no brief, by
+        /// preset name (auto colour's starting grade, #2758): exposure,
+        /// contrast and white balance, which the unbriefed target leaves
+        /// to the scene. A brief's or a grade group's look still wins.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        look_if_unbriefed: Option<String>,
         #[serde(default)]
         apply: bool,
         #[serde(default)]
