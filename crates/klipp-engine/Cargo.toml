@@ -83,6 +83,10 @@ name = "reversed_plays_on_the_gpu"
 path = "tests/reversed_plays_on_the_gpu.rs"
 
 [[test]]
+name = "wipes_play_on_the_gpu"
+path = "tests/wipes_play_on_the_gpu.rs"
+
+[[test]]
 name = "a_cut_from_a_still_is_opened_ahead"
 path = "tests/a_cut_from_a_still_is_opened_ahead.rs"
 
