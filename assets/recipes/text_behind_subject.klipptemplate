@@ -1,0 +1,125 @@
+{
+  "format_version": 2,
+  "id": "3d9b7c51-0e2a-4f86-b1d4-6a8c2e5f7091",
+  "name": "Text behind subject",
+  "category": "Titles",
+  "written_by": "built-in",
+  "kind": "recipe",
+  "composition_id": "00000000-0000-0000-0000-000000000000",
+  "parameters": {
+    "opacity": {
+      "label": "Text opacity",
+      "default": {
+        "type": "Number",
+        "value": 1.0
+      },
+      "range": {
+        "min": 0.0,
+        "max": 1.0
+      }
+    }
+  },
+  "slots": {
+    "title": {
+      "label": "Title",
+      "kind": "title"
+    },
+    "subject": {
+      "label": "Subject",
+      "kind": "subject_matte"
+    }
+  },
+  "bindings": [
+    {
+      "parameter": "title",
+      "property": "node:1.title"
+    },
+    {
+      "parameter": "subject",
+      "property": "node:4.matte_subject"
+    },
+    {
+      "parameter": "opacity",
+      "property": "node:0.opacity"
+    }
+  ],
+  "graph": {
+    "ops": [
+      {
+        "op": "add",
+        "after": {
+          "anchor": "end"
+        },
+        "type": "klipp.fx.merge",
+        "label": "Title behind the subject",
+        "params": {
+          "blend_mode": "Normal"
+        }
+      },
+      {
+        "op": "add_beside",
+        "at": {
+          "anchor": "source"
+        },
+        "type": "klipp.fx.title_source",
+        "label": "Title"
+      },
+      {
+        "op": "connect",
+        "from": {
+          "anchor": "source"
+        },
+        "from_port": "out",
+        "to": {
+          "new": 1
+        },
+        "to_port": "in"
+      },
+      {
+        "op": "connect",
+        "from": {
+          "new": 1
+        },
+        "from_port": "out",
+        "to": {
+          "new": 0
+        },
+        "to_port": "fg"
+      },
+      {
+        "op": "add_beside",
+        "at": {
+          "anchor": "source"
+        },
+        "type": "klipp.grade.external_matte",
+        "label": "Everything but the subject",
+        "params": {
+          "matte_invert": true
+        }
+      },
+      {
+        "op": "connect",
+        "from": {
+          "new": 4
+        },
+        "from_port": "out",
+        "to": {
+          "new": 0
+        },
+        "to_port": "mask"
+      }
+    ],
+    "checks": [
+      {
+        "at": [
+          0.7,
+          0.5
+        ],
+        "channel": "red",
+        "min": 0.55,
+        "max": 0.62,
+        "says": "on the subject the clip shows, in front of the text"
+      }
+    ]
+  }
+}

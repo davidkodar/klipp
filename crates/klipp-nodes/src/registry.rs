@@ -343,6 +343,10 @@ static P_EXTERNAL_MATTE: &[ParamDesc] = &[
     ParamDesc { field: "matte_image_path", index: None, key: "matte_image_path", label: "Image", kind: ParamKind::Other, default: f32::NAN, range: None, soft: None, unit: Unit::None, scaling: Scaling::None, keyframable: false, derived: false },
     ParamDesc { field: "matte_channel", index: None, key: "matte_channel", label: "Channel", kind: ParamKind::Choice(&["Alpha", "Luminance", "Red", "Green", "Blue"]), default: 1.0, range: None, soft: None, unit: Unit::None, scaling: Scaling::None, keyframable: false, derived: false },
     ParamDesc { field: "matte_invert", index: None, key: "matte_invert", label: "Invert", kind: ParamKind::Bool, default: 0.0, range: None, soft: None, unit: Unit::None, scaling: Scaling::None, keyframable: false, derived: false },
+    // A tracked subject's matte of the clip's media in place of an image
+    // (#1881); settable by graph ops, so a recipe reads the matte the
+    // media already has (#2758).
+    ParamDesc { field: "matte_subject", index: None, key: "matte_subject", label: "Tracked subject", kind: ParamKind::Choice(&["None", "Subject", "Foreground"]), default: 0.0, range: None, soft: None, unit: Unit::None, scaling: Scaling::None, keyframable: false, derived: false },
 ];
 static P_DIFFERENCE_KEY: &[ParamDesc] = &[
     ParamDesc { field: "difference_key.enabled", index: None, key: "difference_key.enabled", label: "Enabled", kind: ParamKind::Bool, default: 0.0, range: None, soft: None, unit: Unit::None, scaling: Scaling::None, keyframable: false, derived: false },

@@ -718,6 +718,10 @@ impl NodeParams {
                 use crate::MatteChannel::*;
                 self.matte_channel = Some([Alpha, Luminance, Red, Green, Blue].get(value as usize).copied().unwrap_or_default());
             }
+            // 0 none (the image), 1 the subject, 2 the foreground (#2758).
+            "matte_subject" => {
+                self.matte_subject = [None, Some(crate::SubjectMatte::Subject), Some(crate::SubjectMatte::Foreground)].get(value as usize).copied().flatten();
+            }
             "matte_combine_op" => {
                 self.matte_combine_op = Some(crate::MatteCombineOp::ALL.get(value as usize).copied().unwrap_or_default());
             }

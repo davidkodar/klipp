@@ -295,6 +295,7 @@ const NODES: &[ParamEntry] = &[
     at("klipp.grade.external_matte", "matte_image_path", editor("matte_file")),
     at("klipp.grade.external_matte", "matte_channel", combo().label("Source")),
     at("klipp.grade.external_matte", "matte_invert", toggle()),
+    at("klipp.grade.external_matte", "matte_subject", combo().label("Tracked subject")),
     at(DIFF_KEY, "difference_key.enabled", toggle().order(0)),
     at(DIFF_KEY, "difference_key.plate_path", editor("plate_file").label("Plate").order(1).visible_if(on("difference_key.enabled"))),
     at(DIFF_KEY, "difference_key.match_space", combo().label("Match").order(2).visible_if(on("difference_key.enabled"))),
