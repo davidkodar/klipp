@@ -6974,7 +6974,7 @@ pub fn list_effects(
 
 /// What one frame gives an animated effect (R16): the film effects' seed,
 /// a flicker's and particles' time, the deflicker gain, a pinned clip's first corner pin, a colour fade's
-/// progress.
+/// progress, a surface pin's corners.
 pub(crate) fn frame_inputs(
     clip: &Clip,
     effect: &mut BuiltinEffect,
@@ -6983,6 +6983,7 @@ pub(crate) fn frame_inputs(
     pin: Option<klipp_timeline::surface::Quad>,
     pinned: &mut bool,
 ) {
+    surface_inputs(clip, effect, t, fps);
     match effect {
         // The animated film effects take a fresh pattern per frame: the
         // seed is the timeline frame number, so a still export and a scrub
@@ -7026,6 +7027,22 @@ pub(crate) fn frame_inputs(
             };
         }
         _ => {}
+    }
+}
+
+/// A surface pin's corners at `t`, timeline seconds into `clip`: the
+/// clip's surface it names (by id, else by name) as the clip's picture
+/// shows it then, its inset taken, in fractions of that picture, with
+/// the picture's size. On a surface the clip lacks, or one not tracked,
+/// they stay unset and the pin draws nothing.
+pub(crate) fn surface_inputs(clip: &Clip, effect: &mut BuiltinEffect, t: f64, fps: f64) {
+    let BuiltinEffect::SurfacePin { surface, inset, on_source, source } = effect else { return };
+    (*on_source, *source) = ([[0.0; 2]; 4], [0; 2]);
+    let named = clip.surfaces.iter().find(|s| s.id.to_string() == *surface).or_else(|| clip.surfaces.iter().find(|s| s.name == *surface));
+    let Some(s) = named.filter(|s| !s.keys.is_empty()) else { return };
+    let shown = s.corners_shown_at(clip.source_secs_at(t.max(0.0), fps));
+    if let Some(q) = klipp_timeline::surface::pin_target(&shown, None, None, klipp_timeline::PinFit::Stretch, *inset) {
+        (*on_source, *source) = (q, s.source_size);
     }
 }
 

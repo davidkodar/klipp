@@ -369,6 +369,8 @@ fn builtin_effect_default(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
         },
         BuiltinEffect::LumaKey { .. } => BuiltinEffect::LumaKey { low: 0.0, high: 0.1, soft: 0.05, invert: false },
         BuiltinEffect::CornerPin { .. } => klipp_effects::corner_pin::still(),
+        // The surface stays: a reset is its edges.
+        BuiltinEffect::SurfacePin { surface, .. } => BuiltinEffect::SurfacePin { surface: surface.clone(), inset: 0.0, on_source: [[0.0; 2]; 4], source: [0; 2] },
         // The file stays: a reset is the look at full strength.
         BuiltinEffect::Lut3D { path, .. } => BuiltinEffect::Lut3D { path: path.clone(), opacity: 1.0, tetrahedral: true, prepared: None },
         BuiltinEffect::PictureTransform { .. } => BuiltinEffect::PictureTransform {

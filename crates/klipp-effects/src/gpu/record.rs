@@ -108,6 +108,7 @@ pub fn slots_needed(effect: &BuiltinEffect) -> Option<usize> {
         | BuiltinEffect::OldFilm { .. }
         | BuiltinEffect::Vhs { .. }
         | BuiltinEffect::CornerPin { .. }
+        | BuiltinEffect::SurfacePin { .. }
         | BuiltinEffect::AnamorphicStreak { .. }
         | BuiltinEffect::ChromaticAberration { .. }
         | BuiltinEffect::LensFlare { .. }
@@ -169,6 +170,10 @@ impl GpuEffectsPipeline {
         // A flicker records as the plain effect it is now (#989).
         if let Some(plain) = crate::flicker::as_plain(effect) {
             return self.record_effect(&plain, src, dst, scratch, width, height, rec);
+        }
+        // A surface pin, as the corner pin it is in this frame.
+        if let Some(pin) = crate::corner_pin::surface_as_pin(effect, width, height) {
+            return self.record_effect(&pin, src, dst, scratch, width, height, rec);
         }
         // Each arm checks its identity before its slots, so an effect that
         // records nothing never asks for a refill.

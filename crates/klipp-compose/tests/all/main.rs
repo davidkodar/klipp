@@ -104,6 +104,8 @@ mod speed_ramp_retime;
 mod stack_effects_plan;
 #[path = "../surface_pin.rs"]
 mod surface_pin;
+#[path = "../surface_pin_node.rs"]
+mod surface_pin_node;
 #[path = "../temporal_denoise_at_the_source.rs"]
 mod temporal_denoise_at_the_source;
 #[path = "../temporal_denoise_gpu.rs"]

@@ -456,14 +456,7 @@ pub type Placement = (f32, f32, f32, f32, f32, f32, f32);
 /// renderer fits it: one scale to fit, centred. Pixels: x, y, width,
 /// height.
 fn fitted(size: [u32; 2], frame: [u32; 2]) -> [f64; 4] {
-    let (fw, fh) = (frame[0].max(1) as f64, frame[1].max(1) as f64);
-    if size[0] == 0 || size[1] == 0 {
-        return [0.0, 0.0, fw, fh];
-    }
-    let (w, h) = (size[0] as f64, size[1] as f64);
-    let scale = (fw / w).min(fh / h);
-    let (dw, dh) = ((w * scale).round().clamp(1.0, fw), (h * scale).round().clamp(1.0, fh));
-    [((fw - dw) / 2.0).floor(), ((fh - dh) / 2.0).floor(), dw, dh]
+    klipp_effects::corner_pin::fitted(size, frame)
 }
 
 /// A quad in fractions of a clip's own picture (`source`, as shown) as

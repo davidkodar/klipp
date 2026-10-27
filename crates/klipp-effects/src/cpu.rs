@@ -468,6 +468,11 @@ pub(crate) fn apply(
             }
             p
         }
+        // A surface pin is the corner pin it is in this frame.
+        SurfacePin { .. } => match crate::corner_pin::surface_as_pin(effect, w, h) {
+            Some(pin) => apply(&pin, p, w, h, yw),
+            None => p,
+        },
         // A flicker is the plain effect it is at its time (#989).
         Flicker { .. } => match crate::flicker::as_plain(effect) {
             Some(plain) => apply(&plain, p, w, h, yw),

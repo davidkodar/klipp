@@ -965,6 +965,25 @@ pub enum BuiltinEffect {
     /// picture, so it scales and moves with the layer.
     CornerPin { tl: [f32; 2], tr: [f32; 2], br: [f32; 2], bl: [f32; 2] },
 
+    /// The picture pinned onto a surface tracked in the clip (a sign, a
+    /// screen): a corner pin whose corners follow the surface `surface`
+    /// (its name or id) as the frame shows it, `inset` of its width and
+    /// height in from each edge (a screen's bezel). **The compositor sets
+    /// `on_source`**, the surface's corners at the clip's time in
+    /// fractions of the clip's picture with the inset taken, and
+    /// `source`, that picture's size; the kernels fit them into the frame
+    /// as the renderer fits the clip ([`corner_pin::surface_as_pin`]).
+    /// Unset, or on a surface the clip lacks, it draws nothing.
+    SurfacePin {
+        surface: String,
+        #[serde(default)]
+        inset: f32,
+        #[serde(skip)]
+        on_source: [[f32; 2]; 4],
+        #[serde(skip)]
+        source: [u32; 2],
+    },
+
     /// A 3D LUT file over the picture, as the grade's Lut3D node applies
     /// it: looked up on the picture's sRGB encoding, between the primaries
     /// the file is tagged with, mixed by `opacity` in linear light.

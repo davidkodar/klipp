@@ -375,6 +375,22 @@ pub(super) static TYPES: &[EffectType] = &[
     },
     EffectType {
         desc: geometry(
+            "klipp.fx.surface_pin",
+            "Surface Pin",
+            &[
+                // The surface the clip carries, by name or id: set where
+                // the pin is made, not a row.
+                ParamDesc { kind: ParamKind::Other, soft: None, ..ParamDesc::float("surface", "Surface", f32::NAN, (0.0, 0.0), Unit::None).fixed() },
+                ParamDesc::float("inset", "Inset", 0.0, (0.0, 0.45), Unit::Ratio),
+            ],
+            Spatial::Geometric,
+            false,
+        ),
+        tag: "surface_pin",
+        sample: || BuiltinEffect::SurfacePin { surface: String::new(), inset: 0.0, on_source: [[0.0; 2]; 4], source: [0; 2] },
+    },
+    EffectType {
+        desc: geometry(
             "klipp.fx.picture_transform",
             "Picture Transform",
             &[
