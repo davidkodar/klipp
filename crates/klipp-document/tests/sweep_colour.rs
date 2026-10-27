@@ -14,8 +14,6 @@ use sweep_common::*;
 const KNOWN: &[(&str, u32)] = &[
     ("grade tint +25 is magenta", 2769),
     ("grade tint -25 is green", 2769),
-    ("grade shadows +0.3", 2768),
-    ("grade highlights -0.3", 2768),
 ];
 
 /// A region's mean colour as shown: `x` and `y` ranges as frame fractions.

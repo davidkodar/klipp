@@ -301,7 +301,10 @@ exist until the plan runs.
   white balance, in mireds of assumed light (a unit moves a grey about
   0.2 b*: +25 a clear warm, +50 strong; `tint` + is light assumed more
   magenta, so the picture goes green, and − turns it magenta); `lift`, `gamma`, `gain` move the shadows, mids and
-  highlights; `reset` takes the clip to neutral first. Match shots to
+  highlights; `shadows` (-1 to 1) lifts or sinks the quarter tones,
+  black and mid grey held, and `highlights` (-1 to 1) the tones from mid
+  grey up, most at white: ±0.3 is a moderate move, ±1 a strong
+  recovery or lift; `reset` takes the clip to neutral first. Match shots to
   each other before making any of them look better.
 - `effect {clip_id, kind, amount?}`: a finishing effect on a picture
   clip, native generator or title (on a title it works on the drawn
