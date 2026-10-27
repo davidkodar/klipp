@@ -2257,6 +2257,26 @@ impl KlippApp {
                 self.state.dirty = true;
                 true
             }
+            AppCommand::SetTitleContrastProtect { clip_id, mode } => {
+                let old = self.snapshot_title(*clip_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            td.protect = match mode {
+                                1 => klipp_timeline::ContrastProtect::Auto,
+                                2 => klipp_timeline::ContrastProtect::Always,
+                                _ => klipp_timeline::ContrastProtect::Off,
+                            };
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Readability", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
             AppCommand::SetTitleGradient { clip_id, enabled, top_color, bottom_color } => {
                 let old = self.snapshot_title(*clip_id);
                 let target_oid = self.title_text_target_id(*clip_id);
@@ -3613,6 +3633,7 @@ pub(super) fn title_edit_clip_id(cmd: &AppCommand) -> Option<klipp_core::ClipId>
         | C::SetTitleVerticalAlign { clip_id, .. }
         | C::SetTitlePosition { clip_id, .. }
         | C::SetTitleBackground { clip_id, .. }
+        | C::SetTitleContrastProtect { clip_id, .. }
         | C::SetTitleShadow { clip_id, .. }
         | C::SetTitleGradient { clip_id, .. }
         | C::SetTitleGradientStops { clip_id, .. }
@@ -3858,7 +3879,8 @@ pub(super) fn free_text_track(state: &mut AppState, timeline_in: klipp_core::Tim
 /// its text in the default font (none set keeps the title's own), size,
 /// colour and alignment.
 pub(super) fn default_title_data(prefs: &crate::prefs::TitlePrefs) -> klipp_timeline::TitleData {
-    let mut td = klipp_timeline::TitleData::default();
+    // A new title keeps its text readable over the picture (#2734).
+    let mut td = klipp_timeline::TitleData { protect: klipp_timeline::ContrastProtect::Auto, ..Default::default() };
     if let Some(tb) = td.primary_text_mut() {
         if !prefs.default_font.trim().is_empty() {
             tb.font_name = prefs.default_font.trim().to_string();

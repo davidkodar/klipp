@@ -156,7 +156,7 @@ fn saved_clip_kind(objects: Vec<(TitleObjectContent, LayerFx)>) -> serde_json::V
     let dir = std::env::temp_dir().join(format!("klipp_old_reader_{}_{call}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let mut td = TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: TitleBackground::None, style: None, published: Vec::new(), template: None };
+    let mut td = TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: TitleBackground::None, style: None, published: Vec::new(), template: None, protect: Default::default() };
     for (content, fx) in objects {
         let id = td.add_object(content, default_text_transform());
         td.object_mut(id).unwrap().fx = Some(fx);

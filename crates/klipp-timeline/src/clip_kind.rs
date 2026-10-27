@@ -1576,6 +1576,36 @@ pub struct TitleData {
     /// to every title made from it. `None` for a title made from none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template: Option<String>,
+    /// Keep the text readable over whatever is under it (#2734): with
+    /// `Auto` the picture behind and round the glyphs is darkened (or, for
+    /// dark text, lightened) as far as its brightness and busyness ask;
+    /// `Always` does so even where it would not need to. `Off` for a
+    /// title saved before it, so its look does not change; a new title
+    /// takes `Auto`.
+    #[serde(default, skip_serializing_if = "ContrastProtect::is_off")]
+    pub protect: ContrastProtect,
+}
+
+/// How a title keeps its text readable over the picture (#2734): see
+/// [`TitleData::protect`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ContrastProtect {
+    #[default]
+    Off,
+    Auto,
+    Always,
+}
+
+impl ContrastProtect {
+    pub fn is_off(&self) -> bool {
+        *self == ContrastProtect::Off
+    }
+
+    /// As the compositor's passes take it: 0 off, 1 auto, 2 always.
+    pub fn code(self) -> u32 {
+        self as u32
+    }
 }
 
 /// What `TitleData::migrate_legacy_animation` did.
@@ -1719,6 +1749,7 @@ impl TitleData {
             style: None,
             published: Vec::new(),
             template: None,
+            protect: ContrastProtect::Off,
         };
         td.add_object(TitleObjectContent::TextBox(text_box), default_text_transform());
         td

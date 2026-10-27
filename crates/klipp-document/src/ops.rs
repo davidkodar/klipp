@@ -314,6 +314,12 @@ pub struct Typeset {
     /// a preset, or `"none"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub material: Option<MaterialSpec>,
+    /// Keeps the text readable over the picture (#2734): "auto" darkens
+    /// or lightens the picture round the text only as far as it needs,
+    /// "always" lays that halo whatever is behind, "off" leaves the
+    /// picture. The whole title takes it; a new title is "auto".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protect: Option<klipp_timeline::ContrastProtect>,
 }
 /// "A name or an object" specs read so that an object's own error (an
 /// unknown field, a value of the wrong kind) is the reply's, not "did
@@ -8629,7 +8635,7 @@ fn highlight(seq: &Sequence, fps: Fps, i: usize, at: Timecode, hold: f64, region
     if !stroke.is_finite() || !(1.0..=40.0).contains(&stroke) {
         return Err(refuse(i, format!("stroke {stroke} is out of range"), "give a stroke width 1 to 40"));
     }
-    let mut td = TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: klipp_timeline::TitleBackground::None, style: None, published: Vec::new(), template: None };
+    let mut td = TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: klipp_timeline::TitleBackground::None, style: None, published: Vec::new(), template: None, protect: Default::default() };
     let boxed = |cx: f32, cy: f32, bw: f32, bh: f32| ObjectTransform { center: TitlePosition { x: cx, y: cy }, size: TitlePosition { x: bw, y: bh }, ..klipp_timeline::default_text_transform() };
     match kind.to_lowercase().as_str() {
         "box" | "ring" => {
@@ -10367,6 +10373,9 @@ fn restyle(td: &klipp_timeline::TitleData, look: &Look, secs: f64) -> Result<kli
     use klipp_timeline::{FontStyle, TextGlow, TextOutline, TitleBackground, TitleObjectContent};
     let motion = look.motion.as_ref().map(|m| m.fit(secs)).transpose()?;
     let mut new = td.clone();
+    if let Some(p) = look.typeset.protect {
+        new.protect = p;
+    }
     let first_centre = new.objects.iter().find(|o| matches!(o.content, TitleObjectContent::TextBox(_))).map(|o| (o.transform.center.x, o.transform.center.y));
     // Sizes keep their proportions: a lower third's role stays smaller than its name.
     let first_size = new.objects.iter().find_map(|o| match &o.content { TitleObjectContent::TextBox(tb) => Some(tb.font_size), _ => None }).unwrap_or(1.0).max(1.0);
@@ -10508,7 +10517,7 @@ fn style(
     look: &Look,
 ) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     if *look == Look::default() {
-        return Err(refuse(i, "nothing to change", "give a look field (size, color, font, bold, align, x, y, backing, outline, shadow, glow, gradient, glitch, chromatic), a typesetting field (weight, axes, features, last_line, valign, fit, paragraph, underline, runs), a motion (animate, enter, exit, loop, animators, keys), on_path, blend, mask or three_d"));
+        return Err(refuse(i, "nothing to change", "give a look field (size, color, font, bold, align, x, y, backing, outline, shadow, glow, gradient, glitch, chromatic), a typesetting field (weight, axes, features, last_line, valign, fit, paragraph, underline, runs), a motion (animate, enter, exit, loop, animators, keys), on_path, blend, mask, three_d or protect"));
     }
     for (name, v, lo, hi) in [
         ("size", look.size, 6.0, 1000.0),
@@ -10585,6 +10594,7 @@ fn style(
     if look.motion.is_some() { said.push("new motion".into()); }
     if let Some(l) = &look.loop_effect { said.push(if matches!(l.to_lowercase().as_str(), "none" | "off") { "no loop".into() } else { format!("loop {l}") }); }
     if look.edge_fade.is_some() { said.push("edge fade".into()); }
+    if let Some(p) = look.typeset.protect { said.push(format!("contrast protection {}", protect_name(p))); }
     let first = targets.first().map(|(_, c)| secs(c.timeline_in)).unwrap_or(0.0);
     let last = targets.last().map(|(_, c)| secs(c.timeline_out)).unwrap_or(0.0);
     let what = format!("restyle {} title{} from {first:.2} to {last:.2} s: {}", edits.len(), if edits.len() == 1 { "" } else { "s" }, said.join(", "));
@@ -10699,6 +10709,8 @@ fn lower_third_title(name: &str, role: Option<&str>, place: LowerThirdPlace) -> 
         style: None,
         published: Vec::new(),
         template: None,
+        // A new lower third keeps itself readable (#2734).
+        protect: klipp_timeline::ContrastProtect::Auto,
     };
     let name_box = TextBox {
         text: name.to_string(),
@@ -10784,6 +10796,8 @@ struct Typesetting {
     /// A metal asked for (#2706): `Some(None)` off, else what to make of
     /// each text's own.
     material: Option<Option<MaterialAsk>>,
+    /// The title's contrast protection (#2734).
+    protect: Option<klipp_timeline::ContrastProtect>,
 }
 
 /// A [`MaterialSpec`] checked: a preset to start from (else the text's
@@ -11700,7 +11714,17 @@ fn typesetting(t: &Typeset, i: usize) -> Result<Typesetting, Refusal> {
         mask: t.mask.as_ref().map(|m| layer_mask(m, i)).transpose()?,
         three_d: t.three_d.as_ref().map(|d| three_d_ask(d, i)).transpose()?,
         material: t.material.as_ref().map(|m| material_ask(m, i)).transpose()?,
+        protect: t.protect,
     })
+}
+
+/// A contrast protection as the ops name it.
+fn protect_name(p: klipp_timeline::ContrastProtect) -> &'static str {
+    match p {
+        klipp_timeline::ContrastProtect::Off => "off",
+        klipp_timeline::ContrastProtect::Auto => "auto",
+        klipp_timeline::ContrastProtect::Always => "always",
+    }
 }
 
 /// `t` set on a text box: its runs found in the box's text, in place of
@@ -11915,6 +11939,8 @@ fn title_op(seq: &Sequence, fps: Fps, i: usize, at: Timecode, a: TitleArgs) -> R
 
     let mut td = TitleData::single_text(tb);
     td.objects[0].fx = Some(fx);
+    // A new title keeps its text readable over the picture (#2734).
+    td.protect = a.typeset.protect.unwrap_or(klipp_timeline::ContrastProtect::Auto);
     // A new title's one layer: its blend; a mask needs another layer.
     let alone = td.objects.clone();
     set_blend_and_mask(&mut td.objects[0], &a.typeset, &alone).map_err(|e| refuse(i, e, "mask a title's text once its clip has another layer to mask with"))?;
@@ -12955,6 +12981,27 @@ mod tests {
         let focus = klipp_core::title_motion::FocusBand { band: 0.4, edge_opacity: 0.1, blur: 6.0 };
         assert!(matches!(&td.primary_fx().loops[..], [klipp_timeline::TitleLoop::Scroll { shape, .. }] if shape.focus == Some(focus)));
         assert_eq!(td.primary_fx().edge_fade, klipp_core::title_motion::EdgeFade { top: 0.2, bottom: 0.15, ..klipp_core::title_motion::EdgeFade::NONE });
+    }
+
+    /// #2734: a new title keeps its text readable over the picture
+    /// unless told otherwise, and `style` changes that on a title.
+    #[test]
+    fn a_new_title_protects_its_contrast_and_style_changes_it() {
+        let (seq, pool, _, _, _) = fixture();
+        let made = |extra: serde_json::Value| {
+            let mut v = serde_json::json!({"op": "title", "text": "Over the sea", "at": {"secs": 1.0}, "secs": 3.0});
+            v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            let plan = resolve(&seq, &pool, &[serde_json::from_value(v).unwrap()]).unwrap();
+            let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!() };
+            clip.title_data().unwrap().clone()
+        };
+        assert_eq!(made(serde_json::json!({})).protect, klipp_timeline::ContrastProtect::Auto);
+        let always = made(serde_json::json!({"protect": "always"}));
+        assert_eq!(always.protect, klipp_timeline::ContrastProtect::Always);
+        let off: Typeset = serde_json::from_value(serde_json::json!({"protect": "off"})).unwrap();
+        let look = Look { typeset: typesetting(&off, 0).unwrap(), ..Default::default() };
+        assert_eq!(restyle(&always, &look, 3.0).unwrap().protect, klipp_timeline::ContrastProtect::Off);
+        assert!(serde_json::from_value::<Typeset>(serde_json::json!({"protect": "sometimes"})).is_err(), "an unknown mode is refused");
     }
 
     /// #460: a heading at the top of a vertical frame stays whole inside

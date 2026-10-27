@@ -12,7 +12,7 @@ const W: u32 = 320;
 const H: u32 = 180;
 
 fn empty() -> TitleData {
-    TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: TitleBackground::None, style: None, published: Vec::new(), template: None }
+    TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: TitleBackground::None, style: None, published: Vec::new(), template: None, protect: Default::default() }
 }
 
 /// A rectangle filled with `fill`, its centre and size as fractions of

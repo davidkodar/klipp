@@ -5531,6 +5531,22 @@ fn show_title_editor(
     }
     ui.add_space(8.0);
 
+    // Readability (#2734): the picture darkened or lightened round the text.
+    let protect = td.protect.code() as u8;
+    ui.horizontal(|ui| {
+        ui.label("Readability");
+        for (val, label, tip) in [
+            (0, "Off", "Leave the picture behind the text as it is"),
+            (1, "Auto", "Darken or lighten the picture round the text only where it would be hard to read"),
+            (2, "Always", "A soft halo behind the text whatever is under it"),
+        ] {
+            if ui.selectable_label(protect == val, label).on_hover_text(tip).clicked() && protect != val {
+                cmds.push(AppCommand::SetTitleContrastProtect { clip_id, mode: val });
+            }
+        }
+    });
+    ui.add_space(8.0);
+
             ui.add_space(8.0);
         }
     }

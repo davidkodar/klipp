@@ -47,3 +47,18 @@ fn every_built_in_template_applies_in_one_drag_and_its_fields_edit() {
         assert!(drawn(&mut r, &title(&state, id)) > 50, "{}: still drawn after its fields changed", tpl.name);
     }
 }
+
+/// A title the app makes, from a template or the Text tool's default,
+/// keeps its text readable over the picture (#2734).
+#[test]
+fn a_new_title_protects_its_contrast() {
+    let tpl = &TITLES[0];
+    let mut state = AppState { pending_title_data: Some(Entry::Builtin(tpl).data()), ..Default::default() };
+    let frames = state.sequence().fps.rate() * 5;
+    let at = state.playhead;
+    let track = free_text_track(&mut state, at, frames);
+    let (id, _) = add_title_clip(&mut state, track, at, frames);
+    assert_eq!(title(&state, id).protect, klipp_timeline::ContrastProtect::Auto, "{}", tpl.name);
+    let td = super::titles::default_title_data(&crate::prefs::TitlePrefs::default());
+    assert_eq!(td.protect, klipp_timeline::ContrastProtect::Auto);
+}

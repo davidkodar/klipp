@@ -94,7 +94,7 @@ fn chip_title(subject: &ChipSubject, fx: &LayerFx, adjust: impl FnOnce(&mut Text
         f.loops.clear();
         let mut scratch = TextBox::default();
         adjust(&mut scratch, &mut f);
-        let mut td = TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: klipp_timeline::TitleBackground::None, style: None, published: Vec::new(), template: None };
+        let mut td = TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: klipp_timeline::TitleBackground::None, style: None, published: Vec::new(), template: None, protect: Default::default() };
         let mut xf = klipp_timeline::default_text_transform();
         xf.size = klipp_timeline::TitlePosition { x: 0.6, y: 0.6 };
         let id = td.add_object(content.clone(), xf);

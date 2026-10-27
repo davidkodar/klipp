@@ -1416,7 +1416,7 @@ fn a_scene_that_contains_itself_renders_nothing_and_returns() {
 #[test]
 fn a_moving_shape_is_smeared_by_the_motion_blur_on_its_layer() {
     let shot = |blur: Option<klipp_timeline::MotionBlur>, precomp: bool| {
-        let mut td = klipp_timeline::TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: klipp_timeline::TitleBackground::None, style: None, published: Vec::new(), template: None };
+        let mut td = klipp_timeline::TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: klipp_timeline::TitleBackground::None, style: None, published: Vec::new(), template: None, protect: Default::default() };
         let mut xf = klipp_timeline::default_text_transform();
         xf.size = klipp_timeline::TitlePosition { x: 0.25, y: 0.5 };
         let id = td.add_object(
@@ -2117,7 +2117,7 @@ fn an_adjustment_layer_and_a_clip_agree_on_an_effect_colour() {
 #[test]
 fn a_still_title_renders_the_same_with_its_motion_blur_on() {
     let shot = |blur: bool, crop: bool, camera_x: Option<f32>| {
-        let mut td = klipp_timeline::TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: klipp_timeline::TitleBackground::None, style: None, published: Vec::new(), template: None };
+        let mut td = klipp_timeline::TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: klipp_timeline::TitleBackground::None, style: None, published: Vec::new(), template: None, protect: Default::default() };
         let mut xf = klipp_timeline::default_text_transform();
         xf.size = klipp_timeline::TitlePosition { x: 0.25, y: 0.5 };
         let id = td.add_object(

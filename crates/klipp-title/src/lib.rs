@@ -8404,7 +8404,7 @@ mod tests {
         use klipp_core::title_motion::{Motion, MotionKind, StaggerUnit, TitleLoop};
         let (w, h) = (480u32, 270u32);
         let title = |moving: bool| {
-            let mut td = TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: TitleBackground::None, style: None, published: Vec::new(), template: None };
+            let mut td = TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: TitleBackground::None, style: None, published: Vec::new(), template: None, protect: Default::default() };
             let mut top = klipp_timeline::default_text_transform();
             top.center = klipp_timeline::TitlePosition { x: 0.5, y: 0.15 };
             // More letters than are posed one by one: rastered.
@@ -8617,6 +8617,7 @@ mod tests {
             style: None,
             published: Vec::new(),
             template: None,
+            protect: Default::default(),
         };
         let _shape_id = td.add_object(
             TitleObjectContent::Shape(klipp_timeline::Shape {

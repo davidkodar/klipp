@@ -3514,6 +3514,7 @@ dependencies = [
  "hex",
  "image",
  "klipp-core",
+ "klipp-effects",
  "klipp-linebreak",
  "klipp-ml",
  "klipp-testing",

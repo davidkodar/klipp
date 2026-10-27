@@ -124,7 +124,7 @@ fn words(td: &mut TitleData, text: &str, size: f32, centre: (f32, f32), fx: Laye
 }
 
 fn empty() -> TitleData {
-    TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: TitleBackground::None, style: None, published: Vec::new(), template: None }
+    TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: TitleBackground::None, style: None, published: Vec::new(), template: None, protect: Default::default() }
 }
 
 /// Titles of several layers, as people build them past the templates.
