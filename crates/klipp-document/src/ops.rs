@@ -1116,8 +1116,10 @@ pub enum Op {
     Template {
         name: String,
         at: Anchor,
-        #[serde(default = "default_title_secs")]
-        secs: f64,
+        /// How long it holds; left out, 3 s for a title template and its
+        /// own length for a composition template.
+        #[serde(default)]
+        secs: Option<f64>,
         #[serde(default)]
         track: Option<TrackRef>,
         #[serde(default)]
@@ -1127,6 +1129,11 @@ pub enum Op {
         /// before Klipp's.
         #[serde(default)]
         source: Option<String>,
+        /// Which kind of template the name means, `title` or
+        /// `composition`; left out, the one kind that has it (a name both
+        /// have is refused).
+        #[serde(default)]
+        kind: Option<String>,
         /// The template as its file holds it, read by whoever resolves the
         /// op (the socket): never sent.
         #[serde(skip)]
@@ -4156,6 +4163,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
         }
         Op::Template { name, at, secs: held, track, fields, data, .. } => {
             use klipp_core::TitleFieldValue as V;
+            let held = &held.unwrap_or_else(default_title_secs);
             let at = resolve_anchor(seq, fps, at, i)?;
             let td = data.as_deref().cloned().ok_or_else(|| refuse(i, format!("there is no title template \"{name}\""), "title_templates lists the built-in and saved templates"))?;
             // A built-in laid out for the sequence's frame (#2734).
@@ -6936,13 +6944,16 @@ fn label_name(label: &str) -> String {
 /// the sequences it needs copied in first; its parameters set from
 /// `fields` by name or label. One step.
 #[allow(clippy::too_many_arguments)]
-fn place_composition(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, at: Timecode, held: f64, track: Option<&TrackRef>, fields: &std::collections::BTreeMap<String, serde_json::Value>, placed: &PlacedComposition) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+fn place_composition(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, at: Timecode, held: Option<f64>, track: Option<&TrackRef>, fields: &std::collections::BTreeMap<String, serde_json::Value>, placed: &PlacedComposition) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     let t = &placed.template;
     // Its layout for this sequence's frame (#2757): tall, square or wide.
     let composition = t.composition_for(seq.resolution.width, seq.resolution.height).ok_or_else(|| refuse(i, format!("the template \"{}\" does not carry its composition", t.name), "save it again from the project it was made in"))?;
     if composition.id == seq.id || placed.missing.iter().any(|s| s.id == seq.id) {
         return Err(refuse(i, "a template cannot be placed in its own composition", "switch to another sequence"));
     }
+    // Left out, the length it was made for: its whole entrance, hold and
+    // exit.
+    let held = held.unwrap_or_else(|| composition.total_duration().to_secs_f64());
     if !held.is_finite() || held < 0.2 {
         return Err(refuse(i, format!("{held} s is too short"), "hold it at least a fraction of a second"));
     }
@@ -13613,10 +13624,11 @@ mod tests {
         let op = |fields: serde_json::Value, data: Option<&klipp_timeline::TitleData>| Op::Template {
             name: "Guest".into(),
             at: Anchor::Secs(1.0),
-            secs: 2.0,
+            secs: Some(2.0),
             track: None,
             fields: serde_json::from_value(fields).unwrap(),
             source: None,
+            kind: None,
             data: data.map(|d| Box::new(d.clone())),
             composition: None,
         };
@@ -13760,7 +13772,7 @@ mod tests {
             let op: Op = serde_json::from_value(serde_json::json!({"op": "template", "name": "Name Bar", "at": {"secs": 1.0}, "secs": 3.0})).unwrap();
             let Op::Template { name, at, secs, track, fields, .. } = op else { unreachable!() };
             let data = klipp_timeline::title_library::builtin("Name Bar").map(|t| Box::new(t.data()));
-            let plan = resolve(seq, &pool, &[Op::Template { name, at, secs, track, fields, source: None, data, composition: None }]).unwrap();
+            let plan = resolve(seq, &pool, &[Op::Template { name, at, secs, track, fields, source: None, kind: None, data, composition: None }]).unwrap();
             let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!("a title clip") };
             let td = clip.title_data().unwrap();
             let k = td.field_named("Name").expect("the name");
@@ -13784,7 +13796,7 @@ mod tests {
         td.objects[0].fx_mut().motion.enter = Some(klipp_core::title_motion::Motion::new(klipp_core::title_motion::MotionKind::Rise).duration(0.5));
         let td = klipp_timeline::template_for_save(&td, 2.0, None).unwrap();
         let enter = |secs: f64, fields: serde_json::Value| {
-            let op = Op::Template { name: "Hi".into(), at: Anchor::Secs(1.0), secs, track: None, fields: serde_json::from_value(fields).unwrap(), source: None, data: Some(Box::new(td.clone())), composition: None };
+            let op = Op::Template { name: "Hi".into(), at: Anchor::Secs(1.0), secs: Some(secs), track: None, fields: serde_json::from_value(fields).unwrap(), source: None, kind: None, data: Some(Box::new(td.clone())), composition: None };
             let plan = resolve(&seq, &pool, &[op]).unwrap();
             let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!("a title clip") };
             clip.title_data().unwrap().objects[0].fx().motion.enter.unwrap().duration_secs
@@ -13811,7 +13823,7 @@ mod tests {
         t.bindings.push(TemplateBinding { parameter: "text".into(), property: "object:0.text".into(), link: None, take: None });
         t.sequences = vec![card.clone()];
         let placed = PlacedComposition { template: t, missing: vec![card.clone()] };
-        let op = |fields: serde_json::Value| Op::Template { name: "Card".into(), at: Anchor::Secs(1.0), secs: 3.0, track: None, fields: serde_json::from_value(fields).unwrap(), source: None, data: None, composition: Some(Box::new(placed.clone())) };
+        let op = |fields: serde_json::Value| Op::Template { name: "Card".into(), at: Anchor::Secs(1.0), secs: Some(3.0), track: None, fields: serde_json::from_value(fields).unwrap(), source: None, kind: None, data: None, composition: Some(Box::new(placed.clone())) };
         let plan = resolve(&seq, &pool, &[op(serde_json::json!({ "Headline": "Ship it" }))]).unwrap();
         assert!(plan.steps[0].what.contains("copied into the project"), "{}", plan.steps[0].what);
         let mut seqs = vec![seq.clone()];
@@ -13843,7 +13855,7 @@ mod tests {
             let (mut seq, pool, ..) = fixture();
             seq.resolution = klipp_core::Resolution { width: w, height: h };
             let missing = klipp_timeline::composition_template::missing_sequences(&split, std::slice::from_ref(&seq));
-            let op = Op::Template { name: "Split Screen".into(), at: Anchor::Secs(1.0), secs: 3.0, track: None, fields: Default::default(), source: None, data: None, composition: Some(Box::new(PlacedComposition { template: split.clone(), missing })) };
+            let op = Op::Template { name: "Split Screen".into(), at: Anchor::Secs(1.0), secs: Some(3.0), track: None, fields: Default::default(), source: None, kind: None, data: None, composition: Some(Box::new(PlacedComposition { template: split.clone(), missing })) };
             let plan = resolve(&seq, &pool, &[op]).unwrap();
             let mut seqs = vec![seq.clone()];
             let mut p = pool.clone();
@@ -13855,6 +13867,38 @@ mod tests {
             let layout = view.sequences.iter().find(|s| s.id == placed).expect("its layout copied in");
             assert_eq!((layout.resolution.width, layout.resolution.height), (w, h));
         }
+    }
+
+    /// #2757: a composition template placed with no `secs` holds for the
+    /// length it was made for, its whole entrance, hold and exit (Stinger
+    /// its 1.21 s), not a title's 3 s; `secs` given still wins.
+    #[test]
+    fn a_composition_placed_without_secs_holds_its_own_length() {
+        let builtins = klipp_timeline::composition_template::builtin_templates();
+        for t in &builtins {
+            for (w, h) in [(1920, 1080), (1080, 1920), (1080, 1080)] {
+                let (mut seq, pool, ..) = fixture();
+                seq.resolution = klipp_core::Resolution { width: w, height: h };
+                let own = t.composition_for(w, h).unwrap().total_duration().to_secs_f64();
+                let missing = klipp_timeline::composition_template::missing_sequences(t, std::slice::from_ref(&seq));
+                let length = |secs: Option<f64>| {
+                    let op = Op::Template { name: t.name.clone(), at: Anchor::Secs(1.0), secs, track: None, fields: Default::default(), source: None, kind: None, data: None, composition: Some(Box::new(PlacedComposition { template: t.clone(), missing: missing.clone() })) };
+                    let plan = resolve(&seq, &pool, &[op]).unwrap_or_else(|r| panic!("{}: {}", t.name, r.why));
+                    let mut seqs = vec![seq.clone()];
+                    let (mut p, mut fps) = (pool.clone(), seq.fps);
+                    let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+                    view.apply_forward(&plan.steps[0].edit);
+                    let c = view.sequences[0].all_clips().find(|c| matches!(c.kind, ClipKind::TemplatePrecomposition { .. })).expect("placed").clone();
+                    c.timeline_out.to_secs_f64() - c.timeline_in.to_secs_f64()
+                };
+                let frame = 1.0 / seq.fps.as_f64();
+                let placed = length(None);
+                assert!((placed - own).abs() <= frame, "{} {w}x{h}: placed {placed:.3} s, made {own:.3} s", t.name);
+                assert!((length(Some(2.0)) - 2.0).abs() <= frame, "{}: secs given wins", t.name);
+            }
+        }
+        let stinger = builtins.iter().find(|t| t.name == "Stinger").unwrap();
+        assert!((stinger.composition_for(1920, 1080).unwrap().total_duration().to_secs_f64() - 1.21).abs() < 0.03, "the Stinger is about 1.21 s");
     }
 
     /// #2757: a template's media slot is filled by the template op with a
@@ -13870,7 +13914,7 @@ mod tests {
         t.slots.insert("slot_1".into(), TemplateSlot { label: "Photo".into(), kind: SlotKind::Media });
         t.bindings.push(TemplateBinding { parameter: "slot_1".into(), property: "clip:0.media".into(), link: None, take: None });
         t.sequences = vec![card.clone()];
-        let op = |t: &CompositionTemplate, fields: serde_json::Value| Op::Template { name: "Photo card".into(), at: Anchor::Secs(1.0), secs: 3.0, track: None, fields: serde_json::from_value(fields).unwrap(), source: None, data: None, composition: Some(Box::new(PlacedComposition { template: t.clone(), missing: vec![card.clone()] })) };
+        let op = |t: &CompositionTemplate, fields: serde_json::Value| Op::Template { name: "Photo card".into(), at: Anchor::Secs(1.0), secs: Some(3.0), track: None, fields: serde_json::from_value(fields).unwrap(), source: None, kind: None, data: None, composition: Some(Box::new(PlacedComposition { template: t.clone(), missing: vec![card.clone()] })) };
         let plan = resolve(&seq, &pool, &[op(&t, serde_json::json!({ "Photo": media.0.to_string() }))]).unwrap();
         let EditCommand::Batch(edits) = &plan.steps[0].edit else { panic!("a batch") };
         let instance = edits.iter().find_map(|e| match e {
@@ -13900,7 +13944,7 @@ mod tests {
         let controls: Vec<ControlSpec> = serde_json::from_value(serde_json::json!([{ "label": "Grow", "default": 0.25, "drives": [{ "target": "Text 1 size", "to": [40, 80] }] }])).unwrap();
         add_controls(&mut t, &card, &controls).unwrap();
         t.sequences = vec![card.clone()];
-        let op = Op::Template { name: "Card".into(), at: Anchor::Secs(1.0), secs: 3.0, track: None, fields: serde_json::from_value(serde_json::json!({ "Grow": 0.5 })).unwrap(), source: None, data: None, composition: Some(Box::new(PlacedComposition { template: t, missing: vec![card.clone()] })) };
+        let op = Op::Template { name: "Card".into(), at: Anchor::Secs(1.0), secs: Some(3.0), track: None, fields: serde_json::from_value(serde_json::json!({ "Grow": 0.5 })).unwrap(), source: None, kind: None, data: None, composition: Some(Box::new(PlacedComposition { template: t, missing: vec![card.clone()] })) };
         let plan = resolve(&seq, &pool, &[op]).unwrap();
         let mut seqs = vec![seq.clone()];
         let mut p = pool.clone();
@@ -14653,10 +14697,11 @@ mod tests {
         let handle = |value: &str| Op::Template {
             name: "Handle".into(),
             at: Anchor::Secs(1.0),
-            secs: 3.0,
+            secs: Some(3.0),
             track: None,
             fields: [("Handle".to_string(), serde_json::json!(value))].into_iter().collect(),
             source: None,
+            kind: None,
             data: klipp_timeline::title_library::builtin("Handle").map(|t| Box::new(t.data())),
             composition: None,
         };
