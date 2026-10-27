@@ -243,6 +243,12 @@ fn edit_case(effect: &BuiltinEffect, desc: &ParamDesc, want: Value, drive: impl 
 /// ramp's own settings, so no switch or menu of it moves the frame.
 const SPEED_RAMP_PIXELS: &str = "known defect #1409: the lift drops the ramp, so Speed Ramp's switches and menus move nothing";
 
+/// Switches that say what a measurement may set, not how the picture is
+/// drawn: a reflection's tint and darkness follow the water only when it
+/// is measured (#2795), so flipping one moves no pixel by design.
+const POLICY_SWITCHES: &[(&str, &str)] = &[("reflection", "tint_auto"), ("reflection", "darken_auto")];
+const POLICY_PIXELS: &str = "by design (#2795): whether the water's measurement sets the tint and darkness, which it does when measured, not when switched";
+
 /// A stack row's switch flipped or another item picked, on the effect's
 /// pixel fixture (`parity_numeric::pixel_fixture`) through the card: of
 /// the row's other values, the first that moves the frame, with the CPU's
@@ -309,6 +315,7 @@ pub(super) fn require(manifest: &mut Manifest) {
     let discrete = |w: Widget| matches!(w, Widget::Toggle | Widget::Combo);
     // Applied once `want` is done with the manifest.
     let mut pinned = Vec::new();
+    let mut policies = Vec::new();
     // A placed kind's card too (Speed Ramp's switches and menus): its rows
     // are drawn on the stack and sent through the clip's effect list.
     for ty in effect_types() {
@@ -319,6 +326,9 @@ pub(super) fn require(manifest: &mut Manifest) {
                     want(ty.desc.id, desc.key, Surface::EffectsStack, variant);
                     if ty.tag == "speed_ramp" {
                         pinned.push(CoverageKey::new(ty.desc.id, desc.key, Surface::EffectsStack, variant, Interaction::Pixels));
+                    }
+                    if POLICY_SWITCHES.contains(&(ty.tag, desc.key)) {
+                        policies.push(CoverageKey::new(ty.desc.id, desc.key, Surface::EffectsStack, variant, Interaction::Pixels));
                     }
                 }
             }
@@ -346,6 +356,9 @@ pub(super) fn require(manifest: &mut Manifest) {
     }
     for key in pinned {
         manifest.exclude_key(key, SPEED_RAMP_PIXELS);
+    }
+    for key in policies {
+        manifest.exclude_key(key, POLICY_PIXELS);
     }
 }
 
@@ -397,7 +410,7 @@ pub(super) fn run(report: &mut Report) {
             });
             // Drawn: the switch flipped or another item picked changes the
             // frame, the CPU's the GPU's (Speed Ramp's pinned, #1409).
-            if ty.tag != "speed_ramp" {
+            if ty.tag != "speed_ramp" && !POLICY_SWITCHES.contains(&(ty.tag, desc.key)) {
                 let name = format!("{id} {} drawn", desc.key);
                 let drawn = || stack_drawn(ty, desc, &pres, &effect);
                 match super::parity_numeric::routes_for(id) {

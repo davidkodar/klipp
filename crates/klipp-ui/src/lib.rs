@@ -105,6 +105,7 @@ pub mod title_templates;
 pub mod credits_dialog;
 pub mod music_fit_dialog;
 pub mod normalize_dialog;
+pub mod shorts_dialog;
 pub mod visual_search_dialog;
 pub mod missing_fonts;
 pub mod import_report;

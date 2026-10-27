@@ -288,6 +288,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::NormalizeClips { .. }
         // The fit dialog's own steps; Apply is the edit.
         | AppCommand::OpenMusicFitDialog { .. }
+        | AppCommand::OpenShortsDialog { .. }
         // A review copy and list are files, not edits (#2214).
         | AppCommand::ExportReviewCopy { .. }
         | AppCommand::ExportReviewList { .. }
@@ -825,6 +826,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::BeginSequenceCameraDrag { .. }
         | AppCommand::EndSequenceCameraDrag { .. }
         | AppCommand::SetClipSpeed { .. }
+        | AppCommand::FillShort { .. }
         | AppCommand::SetClipInterpolation { .. }
         | AppCommand::FreezeFrame { .. }
         | AppCommand::AddSpeedKeyframe { .. }
