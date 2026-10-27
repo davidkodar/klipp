@@ -324,7 +324,7 @@ mod surface_area_tests {
             name: "Sign".into(),
             corners,
             reference_secs: 0.0,
-            keys: vec![klipp_timeline::SurfaceKey { source_secs: 1.0, map: klipp_timeline::surface::map_between(&corners, &shifted).unwrap(), confidence: Some(1.0), state: Default::default() }],
+            keys: vec![klipp_timeline::SurfaceKey { light: None, source_secs: 1.0, map: klipp_timeline::surface::map_between(&corners, &shifted).unwrap(), confidence: Some(1.0), state: Default::default() }],
             source_size: [w, h],
             media_fps: 30.0,
             track_area: Some([[0.2, 0.2], [0.8, 0.2], [0.8, 0.8], [0.2, 0.8]]),

@@ -316,6 +316,9 @@ impl KlippApp {
             let to_px = klipp_effects::homography::Homography { h: [[gw, 0.0, 0.0], [0.0, gh, 0.0], [0.0, 0.0, 1.0]] };
             let to_frac = klipp_effects::homography::Homography { h: [[1.0 / gw, 0.0, 0.0], [0.0, 1.0 / gh, 0.0], [0.0, 0.0, 1.0]] };
             let still = klipp_effects::planar::Tracked { frame: reference, h: klipp_effects::homography::Homography::identity(), confidence: 1.0, state: klipp_effects::planar::State::Good, round_trip_px: 0.0 };
+            // How light the surface is on each frame (#2751), where the map
+            // puts its corners.
+            let pin_px = corners.map(|c| (c[0] as f64 * gw, c[1] as f64 * gh));
             let keys = behind
                 .into_iter()
                 .rev()
@@ -328,7 +331,8 @@ impl KlippApp {
                         klipp_effects::planar::State::Low => 1,
                         klipp_effects::planar::State::Lost => 2,
                     };
-                    (t.frame as f64 / media_fps, [m[0][0], m[0][1], m[0][2], m[1][0], m[1][1], m[1][2], m[2][0], m[2][1], m[2][2]], t.confidence, state)
+                    let light = decode(t.frame).and_then(|f| klipp_effects::planar::region_light(&f, &pin_px.map(|p| t.h.transform(p.0, p.1))));
+                    (t.frame as f64 / media_fps, [m[0][0], m[0][1], m[0][2], m[1][0], m[1][1], m[1][2], m[2][0], m[2][1], m[2][2]], t.confidence, state, light)
                 })
                 .collect();
             let held_secs = (first as f64 / media_fps, last as f64 / media_fps);
@@ -391,6 +395,7 @@ impl KlippApp {
         let scale = (SURFACE_TRACK_SIDE as f64 / shown_w).min(1.0);
         let pixels = ((w * scale) * (h * scale)) as usize;
         let area = existing.track_area.unwrap_or(existing.corners);
+        let pin_corners = existing.corners;
         let exclude = existing.exclude.clone();
         let path = item.path.clone();
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -446,6 +451,9 @@ impl KlippApp {
             if !going() {
                 return fail("cancelled".into());
             }
+            // The pin's corners, in the reference frame's pixels: how light
+            // the surface is, measured on each frame where they are (#2751).
+            let pin_px = pin_corners.map(|c| (c[0] as f64 * gw, c[1] as f64 * gh));
             let key = |t: &klipp_effects::planar::Tracked| {
                 let m = to_frac.multiply(&t.h).multiply(&to_px).h;
                 let state = match t.state {
@@ -453,7 +461,8 @@ impl KlippApp {
                     State::Low => 1,
                     State::Lost => 2,
                 };
-                (t.frame as f64 / media_fps, [m[0][0], m[0][1], m[0][2], m[1][0], m[1][1], m[1][2], m[2][0], m[2][1], m[2][2]], t.confidence, state)
+                let light = decode(t.frame).and_then(|f| klipp_effects::planar::region_light(&f, &pin_px.map(|p| t.h.transform(p.0, p.1))));
+                (t.frame as f64 / media_fps, [m[0][0], m[0][1], m[0][2], m[1][0], m[1][1], m[1][2], m[2][0], m[2][1], m[2][2]], t.confidence, state, light)
             };
             // Each span's bounds: its anchor, or the edge of the frames
             // read (open where that is the clip's end).
@@ -472,7 +481,7 @@ impl KlippApp {
     /// set by hand and the spans either side re-solved; says what was
     /// re-solved and where it is still uncertain or lost.
     #[allow(clippy::type_complexity)]
-    pub(super) fn apply_surface_correction(&mut self, clip_id: klipp_core::ClipId, surface: uuid::Uuid, source_secs: f64, corners: [[f32; 2]; 4], spans: Vec<(Option<f64>, Option<f64>, Vec<(f64, [f64; 9], f32, u8)>)>) {
+    pub(super) fn apply_surface_correction(&mut self, clip_id: klipp_core::ClipId, surface: uuid::Uuid, source_secs: f64, corners: [[f32; 2]; 4], spans: Vec<(Option<f64>, Option<f64>, Vec<(f64, [f64; 9], f32, u8, Option<f32>)>)>) {
         let seq = &self.state.sequences[self.state.active_sequence_idx];
         let fps = seq.fps.as_f64();
         let Some(old) = seq.all_clips().find(|c| c.id == clip_id).cloned() else {
@@ -513,12 +522,12 @@ impl KlippApp {
 }
 
 /// A key as a tracking job sends it, `(file seconds, map, confidence,
-/// state)` with the state 0 good, 1 uncertain, 2 lost.
-pub(super) fn surface_key_of((source_secs, map, confidence, state): (f64, [f64; 9], f32, u8)) -> klipp_timeline::SurfaceKey {
+/// state, light)` with the state 0 good, 1 uncertain, 2 lost.
+pub(super) fn surface_key_of((source_secs, map, confidence, state, light): (f64, [f64; 9], f32, u8, Option<f32>)) -> klipp_timeline::SurfaceKey {
     let state = match state {
         0 => klipp_timeline::TrackState::Good,
         1 => klipp_timeline::TrackState::Low,
         _ => klipp_timeline::TrackState::Lost,
     };
-    klipp_timeline::SurfaceKey { source_secs, map, confidence: Some(confidence), state }
+    klipp_timeline::SurfaceKey { source_secs, map, confidence: Some(confidence), state, light }
 }

@@ -1018,6 +1018,9 @@ pub struct Renderer {
     /// How much of each pinned clip shows where its surface's track is
     /// lost (#2751), with `pins`: absent is all of it.
     pin_presence: HashMap<ClipId, f32>,
+    /// What each pinned clip taking its surface's light is multiplied by
+    /// this frame (#2751), with `pins`: absent is 1.
+    pin_light: HashMap<ClipId, f32>,
     working: WorkingColorspace,
     grade_encoding: klipp_core::GradeEncoding,
     /// The frame's motion from its analyses, for the CPU kernels'
@@ -1135,6 +1138,7 @@ impl Renderer {
             title_shutter: HashMap::new(),
             pins: HashMap::new(),
             pin_presence: HashMap::new(),
+            pin_light: HashMap::new(),
             px_scale: 1.0,
             working: WorkingColorspace::default(),
             grade_encoding: klipp_core::grade_encoding(),
@@ -1757,8 +1761,12 @@ impl Renderer {
             Some(cam) => eval::apply_camera(resolved, cam, width, height),
             None => resolved,
         };
-        let (fx, opacity) = clip_effects(clip, time, fps, Some(resolved), eval::surface_pin_corners(clip, seq, time, fps, &|_| None));
+        let (mut fx, opacity) = clip_effects(clip, time, fps, Some(resolved), eval::surface_pin_corners(clip, seq, time, fps, &|_| None));
         let opacity = opacity * eval::surface_pin_presence(clip, seq, time, fps);
+        let light = eval::surface_pin_light(clip, seq, time, fps);
+        if (light - 1.0).abs() > 1e-4 {
+            fx.insert(0, eval::light_gain_effect(light));
+        }
         if has_active_effects(&fx) || (opacity - 1.0).abs() > 1e-6 {
             return Single::ForTheStack;
         }
@@ -2434,6 +2442,7 @@ impl Renderer {
         self.note_switched_off(c);
         self.note_subject_mattes(c, src);
         let (mut fx, opacity) = clip_effects(c, time, fps, transforms.get(&c.id).copied(), self.pins.get(&c.id).copied());
+        self.take_light(c.id, &mut fx);
         let opacity = opacity * self.pin_presence.get(&c.id).copied().unwrap_or(1.0);
         self.authored_colours(&mut fx);
         self.at_render_scale(&mut fx);
@@ -3409,6 +3418,7 @@ impl Renderer {
         self.note_switched_off(c);
         let clip_time = eval_clip_time(c, time);
         let (mut fx, _) = clip_effects(c, time, fps, transforms.get(&c.id).copied(), self.pins.get(&c.id).copied());
+        self.take_light(c.id, &mut fx);
         self.authored_colours(&mut fx);
         self.at_render_scale(&mut fx);
         let temporal = fx.iter().any(|e| matches!(e, BuiltinEffect::RollingShutterCorrection { .. } | BuiltinEffect::VideoStabilization { .. }));
@@ -3866,6 +3876,7 @@ impl Renderer {
             self.found.ungraded = Some(before);
         }
         let (mut fx, opacity) = clip_effects(clip, time, fps, transforms.get(&clip.id).copied(), self.pins.get(&clip.id).copied());
+        self.take_light(clip.id, &mut fx);
         let opacity = opacity * self.pin_presence.get(&clip.id).copied().unwrap_or(1.0);
         // Measured alone, the clip is its own picture (#2475): a fill in
         // its bars, a shadow or a glow drawn around it is not its footage,
@@ -4444,6 +4455,13 @@ impl Renderer {
                     blends.insert(0, None);
                     nodes.insert(0, None);
                 }
+                // Its surface's light, first too (#2751), as on the list
+                // route.
+                if let Some(gain) = self.pin_light.get(&clip.id) {
+                    fx.insert(0, eval::light_gain_effect(*gain));
+                    blends.insert(0, None);
+                    nodes.insert(0, None);
+                }
                 if at_move != PlanPart::Whole {
                     let placement = clip.picture_v2().ok().and_then(|p| crate::resolve::placement_node_of(&p.picture));
                     let cut = placement.and_then(|id| nodes.iter().position(|n| *n == Some(id)));
@@ -4774,7 +4792,8 @@ impl Renderer {
     fn placed_matte(&self, clip: &Clip, values: &[f32], mw: u32, mh: u32, time: Timecode, fps: f64, width: u32, height: u32, transforms: &HashMap<ClipId, ResolvedTransform>) -> Option<Vec<f32>> {
         let rgba: Vec<f32> = values.iter().flat_map(|m| [*m, *m, *m, 1.0]).collect();
         let fitted = fit_linear(rgba, mw, mh, width, height)?;
-        let (fx, _) = clip_effects(clip, time, fps, transforms.get(&clip.id).copied(), self.pins.get(&clip.id).copied());
+        let (mut fx, _) = clip_effects(clip, time, fps, transforms.get(&clip.id).copied(), self.pins.get(&clip.id).copied());
+        self.take_light(clip.id, &mut fx);
         let mut place: Vec<BuiltinEffect> = fx
             .into_iter()
             .filter(|e| matches!(e, BuiltinEffect::Transform { .. } | BuiltinEffect::PictureTransform { .. } | BuiltinEffect::Crop { .. } | BuiltinEffect::CornerPin { .. } | BuiltinEffect::Mirror { .. }))
@@ -5476,6 +5495,7 @@ impl Renderer {
     fn resolve_pins<'c>(&mut self, seq: &Sequence, clips: impl Iterator<Item = &'c Clip>, time: Timecode, fps: f64, transforms: &HashMap<ClipId, ResolvedTransform>) {
         self.pins.clear();
         self.pin_presence.clear();
+        self.pin_light.clear();
         for c in clips {
             if let Some(q) = eval::surface_pin_corners(c, seq, time, fps, &|host| transforms.get(&host.id).copied()) {
                 self.pins.insert(c.id, q);
@@ -5483,6 +5503,10 @@ impl Renderer {
             let shown = eval::surface_pin_presence(c, seq, time, fps);
             if shown < 1.0 {
                 self.pin_presence.insert(c.id, shown);
+            }
+            let light = eval::surface_pin_light(c, seq, time, fps);
+            if (light - 1.0).abs() > 1e-4 {
+                self.pin_light.insert(c.id, light);
             }
         }
     }
@@ -5868,6 +5892,7 @@ impl Renderer {
         let graded = self.grade(clip, GradeInput::Cpu(below), clip_time, fps, width, height, None);
         let graded = self.ofx_nodes(clip, graded, clip_time, fps, clip_time, width, height, None);
         let (mut fx, _) = clip_effects(clip, time, fps, transforms.get(&clip.id).copied(), self.pins.get(&clip.id).copied());
+        self.take_light(clip.id, &mut fx);
         // Its effect colours are authored in BT.709, as a clip's are, and
         // converted into the working space the same way (#995): left as
         // they were, an adjustment layer and a clip with the same effect
@@ -6537,6 +6562,16 @@ pub fn clip_effects(
         Err(e) => {
             tracing::warn!("clip {}: effects from its picture: {e}; its list stands in", clip.id.0);
             list_effects(clip, time, fps, resolved, pin)
+        }
+    }
+}
+
+impl Renderer {
+    /// A pinned clip taking its surface's light (#2751): its gain this
+    /// frame first in its chain, before its corner pin and the rest.
+    fn take_light(&self, clip: ClipId, fx: &mut Vec<BuiltinEffect>) {
+        if let Some(gain) = self.pin_light.get(&clip) {
+            fx.insert(0, eval::light_gain_effect(*gain));
         }
     }
 }

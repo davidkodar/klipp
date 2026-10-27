@@ -71,7 +71,7 @@ fn scene_losing(text: &str, lost_from: Option<f64>, on_loss: klipp_timeline::Pin
     let td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: text.into(), font_size: 300.0, ..Default::default() });
     let [tl, tr, br, bl] = quad(0.1);
     let mut title = TestClip::of(Clip { kind: ClipKind::Title(td), ..Clip::gap(tc(0.0), tc(4.0)) }).effect(E::CornerPin { tl, tr, br, bl }).build();
-    title.surface_pin = Some(SurfacePin { host: host.id, surface: id, picture_size: None, fit: Default::default(), inset: 0.0, on_loss });
+    title.surface_pin = Some(SurfacePin { host: host.id, surface: id, picture_size: None, fit: Default::default(), inset: 0.0, on_loss, light: 0.0 });
     let mut video = Track::new("V1", TrackKind::Video);
     video.clips = vec![host];
     let mut words = Track::new("T1", TrackKind::Text);
@@ -178,5 +178,36 @@ fn a_pinned_title_hides_fades_or_holds_where_its_track_is_lost() {
     let fade = scene_losing("Klipp", Some(2.0), PinLoss::Fade { secs: 1.0 });
     let (at_loss, half, after) = (peak(&frame(&fade, 1.9)), peak(&frame(&fade, 2.5)), peak(&frame(&fade, 3.5)));
     assert!(at_loss > 200 && half > 40 && half < at_loss - 30 && after < 8, "fading: {at_loss} then {half} then {after}");
+}
+
+/// #2751: a pinned title taking its surface's light is darker where the
+/// surface is darker than on its reference frame, by the light measured
+/// on each frame, on the GPU stack as on the CPU path; one not taking it
+/// stays as it is.
+#[test]
+fn a_pinned_title_taking_the_light_darkens_with_its_surface() {
+    let lit = |light: f32| {
+        let mut seq = scene("Klipp");
+        // The surface half as light (as encoded) from 2 s on.
+        let host = seq.tracks[1].clips.first_mut().unwrap();
+        let s = &mut host.surfaces[0];
+        let (from, to) = (s.keys[0], s.keys[1]);
+        s.keys = (0..=8)
+            .map(|k| {
+                let t = k as f64 * 0.5;
+                let base = if t < 4.0 { from } else { to };
+                SurfaceKey { source_secs: t, light: Some(if t < 2.0 { 0.8 } else { 0.4 }), ..base }
+            })
+            .collect();
+        let pinned = seq.tracks[0].clips.first_mut().unwrap();
+        pinned.surface_pin.as_mut().unwrap().light = light;
+        seq
+    };
+    let taking = lit(1.0);
+    let (bright, dark) = (peak(&frame(&taking, 1.0)) as u32, peak(&frame(&taking, 3.0)) as u32);
+    assert!(dark < bright * 3 / 4 && dark > bright / 5, "darker with its surface: {bright} then {dark}");
+    let not = lit(0.0);
+    let (a, b) = (peak(&frame(&not, 1.0)), peak(&frame(&not, 3.0)));
+    assert!(a.abs_diff(b) <= 2, "not taking it: {a} and {b}");
 }
 

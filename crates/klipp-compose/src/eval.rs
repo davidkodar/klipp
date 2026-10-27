@@ -213,30 +213,50 @@ pub fn surface_pin_corners(
     klipp_timeline::surface::pin_frame_corners(&target, pin.picture_size, frame)
 }
 
+/// The clip carrying pinned `clip`'s surface at `time`, and the surface:
+/// the one the pin names under `time`, else any carrying it under
+/// `time`, else the named one wherever it is.
+fn pin_host<'s>(clip: &klipp_timeline::Clip, seq: &'s klipp_timeline::Sequence, time: klipp_core::Timecode) -> Option<(&'s klipp_timeline::Clip, &'s klipp_timeline::Surface)> {
+    let pin = clip.surface_pin?;
+    let carries = |c: &&klipp_timeline::Clip| c.surfaces.iter().any(|s| s.id == pin.surface);
+    let under = |c: &&klipp_timeline::Clip| c.timeline_in <= time && time < c.timeline_out;
+    let clips = || seq.tracks.iter().flat_map(|t| t.clips.iter());
+    let host = clips()
+        .find(|c| c.id == pin.host && carries(c) && under(c))
+        .or_else(|| clips().find(|c| carries(c) && under(c)))
+        .or_else(|| clips().find(|c| c.id == pin.host && carries(c)))?;
+    Some((host, host.surfaces.iter().find(|s| s.id == pin.surface)?))
+}
+
 /// How much of pinned `clip` shows at `time` (#2751): all of it while
 /// its surface is followed, and where the track is lost what its pin's
 /// `on_loss` says: still all (hold), none (hide), or less and less over
 /// the fade. 1 for a clip not pinned.
 pub fn surface_pin_presence(clip: &klipp_timeline::Clip, seq: &klipp_timeline::Sequence, time: klipp_core::Timecode, fps: f64) -> f32 {
-    let Some(pin) = clip.surface_pin else { return 1.0 };
-    if pin.on_loss == klipp_timeline::PinLoss::Hold {
-        return 1.0;
-    }
-    let carries = |c: &&klipp_timeline::Clip| c.surfaces.iter().any(|s| s.id == pin.surface);
-    let under = |c: &&klipp_timeline::Clip| c.timeline_in <= time && time < c.timeline_out;
-    let clips = || seq.tracks.iter().flat_map(|t| t.clips.iter());
-    let Some(host) = clips()
-        .find(|c| c.id == pin.host && carries(c) && under(c))
-        .or_else(|| clips().find(|c| carries(c) && under(c)))
-        .or_else(|| clips().find(|c| c.id == pin.host && carries(c)))
-    else {
-        return 1.0;
-    };
-    let Some(surface) = host.surfaces.iter().find(|s| s.id == pin.surface) else { return 1.0 };
+    let Some(pin) = clip.surface_pin.filter(|p| p.on_loss != klipp_timeline::PinLoss::Hold) else { return 1.0 };
+    let Some((host, surface)) = pin_host(clip, seq, time) else { return 1.0 };
     let elapsed = (time - host.timeline_in).to_secs_f64();
     // File seconds lost, as the timeline runs them.
     let lost = surface.lost_for(host.source_secs_at(elapsed, fps)).map(|secs| secs / host.speed.abs().max(1e-6));
     pin.on_loss.presence(lost)
+}
+
+/// What pinned `clip`'s picture is multiplied by at `time` to take its
+/// surface's light (#2751): the surface's light there against its
+/// reference frame, to the pin's `light` power (0 none, 1 all of it). 1
+/// for a clip not pinned, taking none, or on a surface tracked before
+/// its light was measured.
+pub fn surface_pin_light(clip: &klipp_timeline::Clip, seq: &klipp_timeline::Sequence, time: klipp_core::Timecode, fps: f64) -> f32 {
+    let Some(pin) = clip.surface_pin.filter(|p| p.light > 0.0) else { return 1.0 };
+    let Some((host, surface)) = pin_host(clip, seq, time) else { return 1.0 };
+    let elapsed = (time - host.timeline_in).to_secs_f64();
+    surface.light_ratio(host.source_secs_at(elapsed, fps)).map_or(1.0, |r| r.powf(pin.light.clamp(0.0, 1.0)))
+}
+
+/// The effect a light gain of `gain` is in a clip's chain: each channel
+/// multiplied by it, on the GPU as the clip's other effects are.
+pub fn light_gain_effect(gain: f32) -> klipp_effects::BuiltinEffect {
+    klipp_effects::BuiltinEffect::ChannelMixer { red_red: gain, red_green: 0.0, red_blue: 0.0, green_red: 0.0, green_green: gain, green_blue: 0.0, blue_red: 0.0, blue_green: 0.0, blue_blue: gain }
 }
 
 /// Evaluate a single clip's *own* transform — keyframes + modifiers
