@@ -50,7 +50,7 @@ ofx_effects 30
 opacity_keyframes 26
 own_effects 1
 ParamId::Effect 49
-param_modifiers 57
+param_modifiers 52
 PictureView 16
 push_effect 81
 refresh_effect_ids 3
