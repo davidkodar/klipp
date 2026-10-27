@@ -5,7 +5,7 @@
 #
 #   scripts/sweep.sh            every part
 #   scripts/sweep.sh colour     one part (audio, picture, transitions,
-#                               colour, round_trips, export)
+#                               colour, round_trips, export, templates)
 #
 # Each part writes its table to target/sweep/<part>.txt; this prints
 # each part's one-line summary. A part fails on anything new it finds,
@@ -32,11 +32,12 @@ run() {
 
 failed=0
 want=${1:-all}
-for part in audio picture transitions colour round_trips export; do
+for part in audio picture transitions colour round_trips export templates; do
     [ "$want" = all ] || [ "$want" = "$part" ] || continue
     case $part in
         audio) run audio -p klipp-audio --test sweep_audio ;;
         export) run export -p klipp-render --test all sweep_export ;;
+        templates) run templates -p klipp-title --test template_readability ;;
         *) run "$part" -p klipp-document --test "sweep_$part" ;;
     esac
 done

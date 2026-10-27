@@ -3514,6 +3514,7 @@ dependencies = [
  "image",
  "klipp-core",
  "klipp-linebreak",
+ "klipp-testing",
  "klipp-timeline",
  "rayon",
  "read-fonts",

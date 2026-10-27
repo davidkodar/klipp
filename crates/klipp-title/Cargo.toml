@@ -37,5 +37,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 dirs = { workspace = true }
 
+[dev-dependencies]
+klipp-testing = { workspace = true }
+
 [lints]
 workspace = true
