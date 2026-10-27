@@ -755,7 +755,7 @@ impl PlaybackEngine {
 
     /// What the grade tools want from this frame. They follow the clip
     /// the grade panel is on when it is on screen, else the primary clip.
-    fn inspect_request(&self, seq: &Sequence, primary: Option<ClipId>) -> Inspect {
+    pub(super) fn inspect_request(&self, seq: &Sequence, primary: Option<ClipId>, solo_cut: bool) -> Inspect {
         let find = |id: ClipId| seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == id);
         // The timeline grade is inspected by its stand-in's id, which no
         // track holds: its render grades the composite under that id.
@@ -791,7 +791,8 @@ impl PlaybackEngine {
             // An eyedropper read borrows the tap for one render.
             scope_tap: self.node_sample.as_ref().map(|s| s.tap.clone()),
             matte_view: matte_view.and_then(at),
-            solo: self.solo.clone(),
+            // A solo past the grade is drawn by cutting the chain instead.
+            solo: self.solo.clone().filter(|_| !solo_cut),
             ungraded: self.bypass_color_grade,
             matte_of: self.inspector_matte_preview_target,
             only: self.measure_only_clip,
@@ -1102,7 +1103,11 @@ impl PlaybackEngine {
             self.held_tail = Some((id, p.clone(), self.playhead.value));
         }
         let t = Instant::now();
-        let seq = klipp_compose::frame_snapshot(&snapshot, self.playhead);
+        let mut seq = klipp_compose::frame_snapshot(&snapshot, self.playhead);
+        // A node of a clip's chain past its grade viewed (#2879): the frame
+        // is drawn with the chain cut there, on the GPU stack as any frame
+        // is, rather than inspected.
+        let solo_cut = self.solo.as_ref().is_some_and(|at| cut_for_solo(&mut seq, at));
         self.frame_phases.frame_snapshot_ms = ms(t);
         let seq_size = (seq.resolution.width, seq.resolution.height);
         let (w, h) = match &primary {
@@ -1228,7 +1233,7 @@ impl PlaybackEngine {
             }
         }
 
-        let inspect = self.inspect_request(&seq, primary_clip);
+        let inspect = self.inspect_request(&seq, primary_clip, solo_cut);
         let inspected = inspect.clip;
         let primary_ref = primary_clip.zip(primary.as_ref());
 
@@ -2084,4 +2089,17 @@ mod upcoming_tests {
         assert_eq!(wanted(primary_track(true, false, 0)), 0, "playing one: the pieces are the primary's");
         assert!(wanted(primary_track(false, false, 0)) > 0, "no decoder, no preroll: the next pieces open ahead");
     }
+}
+
+/// Whether `at`, a solo, names a node on the chain of a clip's picture
+/// past its grade (#2879), which a grade's inspection can't show: `seq`
+/// then holds that clip with its chain cut at the node
+/// (`Clip::cut_chain_at`). False, and `seq` as it was, for a grade's own
+/// node, which the inspection shows, or a node no chain holds.
+pub(crate) fn cut_for_solo(seq: &mut Sequence, at: &klipp_compose::InspectAt) -> bool {
+    let (Some(clip), Some(node)) = (at.path.root_clip().map(ClipId), at.path.node()) else { return false };
+    if at.path.nodes.len() != 1 || seq.grade_node_at(clip, &at.path).is_ok() {
+        return false;
+    }
+    seq.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).find(|c| c.id == clip).is_some_and(|c| c.cut_chain_at(node))
 }
