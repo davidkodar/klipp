@@ -124,6 +124,10 @@ pub struct NodeFrame {
     /// when a node is removed from the graph, its id is dropped from every
     /// frame's set; frames that end up empty are pruned.
     pub contained_node_ids: std::collections::BTreeSet<NodeId>,
+    /// The recipe whose nodes the frame holds (#2758), with its live
+    /// controls; `None` for a frame drawn by hand.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipe: Option<klipp_core::RecipeInstance>,
 }
 
 pub type NodeFrameId = uuid::Uuid;
@@ -2307,6 +2311,7 @@ mod append_tests {
             description: String::new(),
             color_rgba: 0,
             contained_node_ids: members.iter().copied().collect(),
+            recipe: None,
         };
         g.frames = vec![frame("Input", &[it]), frame("Both", &[it, corrector]), frame("Empty", &[])];
         g.strip_input_transforms();
@@ -2336,6 +2341,7 @@ mod append_tests {
             description: String::new(),
             color_rgba: 0,
             contained_node_ids: [corrector].into_iter().collect(),
+            recipe: None,
         });
         let note_x = 220.0;
         g.sticky_notes.push(NodeStickyNote {

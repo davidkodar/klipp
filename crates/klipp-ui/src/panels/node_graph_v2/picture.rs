@@ -461,7 +461,7 @@ impl<'a> CanvasGraph for PictureCanvas<'a> {
             AppCommand::CreateNodeFrame { node_ids, label, color_rgba, .. } => self.annotate("Add frame", |frames, _| {
                 let contained: std::collections::BTreeSet<NodeId> = node_ids.into_iter().filter(|id| self.nodes.iter().any(|n| n.node.id == *id)).collect();
                 if !contained.is_empty() {
-                    frames.push(NodeFrame { id: klipp_nodes::NodeFrameId::new_v4(), label, description: String::new(), color_rgba, contained_node_ids: contained });
+                    frames.push(NodeFrame { id: klipp_nodes::NodeFrameId::new_v4(), label, description: String::new(), color_rgba, contained_node_ids: contained, recipe: None });
                 }
             }),
             AppCommand::RenameNodeFrame { frame_id, label, .. } => self.annotate("Rename frame", |frames, _| {

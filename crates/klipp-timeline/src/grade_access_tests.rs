@@ -163,6 +163,7 @@ fn a_removed_node_takes_its_wires_place_and_empty_frames() {
         description: String::new(),
         color_rgba: 0,
         contained_node_ids: [id].into_iter().collect(),
+        recipe: None,
     });
     let mut look = Look { id: uuid::Uuid::new_v4(), name: "Warm".into(), node_graph: g };
     look.remove_grade_node(id);

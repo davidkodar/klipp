@@ -394,6 +394,7 @@ mod tests {
                     description: String::new(),
                     color_rgba: 0,
                     contained_node_ids: members.into_iter().collect(),
+                    recipe: None,
                 }];
             });
             let mut p: Vec<&ParamId> = params.iter().collect();

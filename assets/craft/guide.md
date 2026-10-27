@@ -792,13 +792,16 @@ exist until the plan runs.
   difference kept as an offset. `action` unlink keeps the number where it
   is, relink follows the control again from there (the offset kept, so
   nothing jumps), reset_offset snaps it back to the control. One undo
-  step. A graph node's parameter (`node:...`) is a recipe's, set by the
-  `recipe` op.
+  step. On a clip holding a recipe it moves the recipe's controls the
+  same way, its targets named `node:<step>.<param>` as the timeline view
+  lists them.
 - `recipe {clip_id, name, slots?, controls?}`: a recipe built into the
   clip's picture, as ordinary nodes the graph shows and edits (green
   screen, picture in picture...). `slots` fills what it needs by name or
   label: a media slot a media id, a colour slot `#rrggbb`; `controls` sets
-  its numbers. One undo step; `klipp_graph_read` shows the nodes.
+  its numbers. One undo step; `klipp_graph_read` shows the nodes, in a
+  frame named for the recipe. Its controls stay live: `template_link`
+  moves them later, and the timeline view lists them on the clip.
   `klipp_title_templates` lists the recipes with their slots and controls.
 - `join {clip_id, side?}`: a split undone later, or a scene cut found
   where the shot did not change: the clip and the piece of the same shot

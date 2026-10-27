@@ -525,7 +525,7 @@ mod tests {
         }
         let edge = |from_node, to_node, to_port| Edge { from_node, from_port: 0, to_node, to_port };
         g.edges = vec![edge(source, b, 0), edge(b, l, 0), edge(b, k, 0), edge(l, m, 0), edge(m, output, 0)];
-        g.frames.push(klipp_nodes::NodeFrame { id: uuid::Uuid::new_v4(), label: "Primaries".into(), description: "base and lift".into(), color_rgba: 0x3366_99ff, contained_node_ids: [b, l].into_iter().collect() });
+        g.frames.push(klipp_nodes::NodeFrame { id: uuid::Uuid::new_v4(), label: "Primaries".into(), description: "base and lift".into(), color_rgba: 0x3366_99ff, contained_node_ids: [b, l].into_iter().collect(), recipe: None });
         g.sticky_notes.push(klipp_nodes::NodeStickyNote { id: uuid::Uuid::new_v4(), pos: NodePos { x: 40.0, y: -120.0 }, width: 240.0, text: "warm the highlights later".into(), color_rgba: 0xffee_88ff });
         for (i, id) in [source, b, l, k, m, output].into_iter().enumerate() {
             g.node_positions.insert(id, NodePos { x: 220.0 * i as f32, y: if id == k { 140.0 } else { 0.0 } });

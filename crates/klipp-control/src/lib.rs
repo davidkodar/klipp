@@ -482,6 +482,25 @@ mod timeline_view_tests {
         assert!(!late.contains(&first) && late.contains(&second), "{late}");
         assert!(!late.contains("[1] Audio") && late.contains("Showing track 0 only, what plays from 2.50 s on."), "{late}");
     }
+
+    /// #2758: a clip's placed recipe is on its line, with its controls
+    /// and what each drives, as a placed template's are.
+    #[test]
+    fn the_timeline_shows_a_clips_recipe_and_its_controls() {
+        use klipp_document::ops::{resolve, ClipRef, Op};
+        let tc = |s: f64| klipp_core::Timecode::from_secs_f64(s, 24);
+        let mut seq = klipp_timeline::Sequence::new_default();
+        let clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0));
+        let id = clip.id;
+        seq.tracks[0].clips = vec![clip];
+        let pool = klipp_media::MediaPool::new();
+        let op = Op::Recipe { clip_id: ClipRef::Id(id), name: "Green screen".into(), slots: [("screen".to_string(), serde_json::json!("#00ff00"))].into(), controls: Default::default(), build: None };
+        let plan = resolve(&seq, &pool, &crate::plans::with_recipes(&[op], None)).unwrap_or_else(|r| panic!("{r:?}"));
+        let klipp_document::history::EditCommand::PictureEdit { edit, .. } = &plan.steps[0].edit else { panic!("a picture step") };
+        seq.tracks[0].clips[0].restore_picture(&edit.after);
+        let text = timeline_text(&seq, &pool, None, 1, TimelineView::default());
+        assert!(text.contains("recipe \"Green screen\"  control tolerance = 0.2: node:0.tolerance 0..1 linear;"), "{text}");
+    }
 }
 
 #[cfg(test)]
