@@ -11,6 +11,7 @@
 # from its picture, and the two tests that do so read the list back. All go
 # in 12f with the lists.
 # Raised for #891: Clip::grade_nodes reads a grade node's kind and key tracks from its legacy record (LEGACY_NODE) to list grade tracks in the curve editor.
+# Raised for #2758/#2757 (reviewed): graph_model.rs tells legacy effect and node params apart by type id (LEGACY_EFFECT 4, LEGACY_NODE 3) for colour, text, alias and clean-plate writes; graph_prepare.rs writes a saved node's whole entry with SetPayload; resolve.rs reads the entry of a Transform beside the chain (LEGACY_TRANSFORM, legacy); composition_template.rs's recipe_from_nodes reads legacy-typed nodes' entries (LEGACY_EFFECT 2, LEGACY_NODE 2, legacy); crop_cover_shape.rs builds its fixture with push_effect (2).
 builtin_effects 110
 builtin_effects_enabled 39
 ClipPictureFields 18
@@ -42,7 +43,7 @@ effect_param_keyframes 2
 effects_state 5
 insert_effect 10
 insert_effect_with_id 2
-LEGACY_EFFECT 82
+LEGACY_EFFECT 88
 LEGACY_OFX 44
 move_builtin_effect 15
 move_effect 10
@@ -52,7 +53,7 @@ own_effects 1
 ParamId::Effect 49
 param_modifiers 52
 PictureView 16
-push_effect 81
+push_effect 83
 refresh_effect_ids 3
 remove_builtin_effect 11
 remove_effect 10
@@ -97,14 +98,14 @@ LegacyFlags 20
 ClipRecordV2 31
 LegacyClipAnim 15
 MissingLegacy 5
-SetPayload 24
+SetPayload 25
 SetPayloadAt 17
-legacy 167
+legacy 169
 legacy_flags 44
-LEGACY_NODE 55
+LEGACY_NODE 60
 LEGACY_GRADE 24
 LEGACY_OPACITY 25
-LEGACY_TRANSFORM 17
+LEGACY_TRANSFORM 18
 LEGACY_SPEED_RAMP 15
 LEGACY_TEMPORAL_DENOISE 9
 STRUCTURAL 2

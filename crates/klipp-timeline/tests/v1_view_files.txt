@@ -8,6 +8,8 @@ klipp-compose/src/inspect.rs
 klipp-compose/src/render.rs
 klipp-compose/src/resolve.rs
 klipp-compose/tests/analysis_nodes_read_the_source_frame.rs
+# A test fixture: it builds the clip's crop and transform with push_effect, as the compose tests above do.
+klipp-compose/tests/crop_cover_shape.rs
 klipp-compose/tests/disabled_transform.rs
 klipp-compose/tests/effect_keyframes.rs
 klipp-compose/tests/effect_node_anim.rs
@@ -100,6 +102,8 @@ klipp-render/src/snapshot.rs
 klipp-render/tests/frame_blend_reads_the_stream.rs
 klipp-render/tests/integration.rs
 klipp-timeline/src/clip_anim.rs
+# Save as Recipe (#2757): recipe_from_nodes reads a legacy-typed node's payload into the recipe's entry.
+klipp-timeline/src/composition_template.rs
 klipp-timeline/src/effect_slots.rs
 klipp-timeline/src/effect_slots_tests.rs
 klipp-timeline/src/flatten.rs
