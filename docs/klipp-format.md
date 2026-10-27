@@ -332,7 +332,8 @@ composition and is refused with a hint to save it again):
 * `parameters` — by name: `{label, default, range?, choices}`, the
   default a `TemplateValue` (`Text`, `Color`, `Number`, `Bool`, `Enum`).
 * `slots` — by name: `{label, kind}`, kind `media`, `clip`, `title`,
-  `subject_matte` or `colour`.
+  `subject_matte`, `colour` or `surface` (a surface tracked in the clip,
+  by name or id).
 * `bindings` — `{parameter, property, link?}`: a parameter or slot to a
   property path (`object:<i>.text|color|font|picture|size|opacity|…`,
   `clip:<n>.media`, `node:<op>.<param>`). With `link: {to: [a, b],

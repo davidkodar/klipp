@@ -1,0 +1,147 @@
+{
+  "format_version": 2,
+  "id": "8e4f2a17-6c3b-4d95-a0e1-2b7c9f5d3e68",
+  "name": "Screen replacement",
+  "category": "Compositing",
+  "written_by": "built-in",
+  "kind": "recipe",
+  "composition_id": "00000000-0000-0000-0000-000000000000",
+  "parameters": {
+    "inset": {
+      "label": "Inset",
+      "default": {
+        "type": "Number",
+        "value": 0.0
+      },
+      "range": {
+        "min": 0.0,
+        "max": 0.45
+      }
+    },
+    "opacity": {
+      "label": "Opacity",
+      "default": {
+        "type": "Number",
+        "value": 1.0
+      },
+      "range": {
+        "min": 0.0,
+        "max": 1.0
+      }
+    }
+  },
+  "slots": {
+    "picture": {
+      "label": "Picture",
+      "kind": "media"
+    },
+    "surface": {
+      "label": "Surface",
+      "kind": "surface"
+    }
+  },
+  "bindings": [
+    {
+      "parameter": "picture",
+      "property": "node:1.media"
+    },
+    {
+      "parameter": "surface",
+      "property": "node:3.surface"
+    },
+    {
+      "parameter": "inset",
+      "property": "node:3.inset"
+    },
+    {
+      "parameter": "opacity",
+      "property": "node:0.opacity"
+    }
+  ],
+  "graph": {
+    "ops": [
+      {
+        "op": "add",
+        "after": {
+          "anchor": "end"
+        },
+        "type": "klipp.fx.merge",
+        "label": "Picture on the surface",
+        "params": {
+          "blend_mode": "Normal"
+        }
+      },
+      {
+        "op": "add_beside",
+        "at": {
+          "anchor": "source"
+        },
+        "type": "klipp.fx.media_source",
+        "label": "Picture"
+      },
+      {
+        "op": "connect",
+        "from": {
+          "anchor": "source"
+        },
+        "from_port": "out",
+        "to": {
+          "new": 1
+        },
+        "to_port": "in"
+      },
+      {
+        "op": "add_beside",
+        "at": {
+          "anchor": "source"
+        },
+        "type": "klipp.fx.surface_pin",
+        "label": "On the surface"
+      },
+      {
+        "op": "connect",
+        "from": {
+          "new": 1
+        },
+        "from_port": "out",
+        "to": {
+          "new": 3
+        },
+        "to_port": "in"
+      },
+      {
+        "op": "connect",
+        "from": {
+          "new": 3
+        },
+        "from_port": "out",
+        "to": {
+          "new": 0
+        },
+        "to_port": "fg"
+      }
+    ],
+    "checks": [
+      {
+        "at": [
+          0.15,
+          0.45
+        ],
+        "channel": "red",
+        "min": 0.9,
+        "max": 1.0,
+        "says": "the picture on the surface"
+      },
+      {
+        "at": [
+          0.9,
+          0.45
+        ],
+        "channel": "red",
+        "min": 0.55,
+        "max": 0.62,
+        "says": "the clip as it was off the surface"
+      }
+    ]
+  }
+}
