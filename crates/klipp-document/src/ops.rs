@@ -174,8 +174,20 @@ fn bind_step_refs(op: &Op, i: usize, made: &[Option<ClipId>]) -> Result<Op, Refu
     if !v.to_string().contains("\"@") {
         return Ok(op.clone());
     }
+    let as_given = v.clone();
     walk(&mut v, None, i, made)?;
-    serde_json::from_value(v).map_err(|e| refuse(i, format!("the op could not be read back: {e}"), "name clips by id"))
+    // Nothing bound (an "@" in a text, a handle like "@harbourfilms"):
+    // the op as it came, with what it carries but never sends.
+    if v == as_given {
+        return Ok(op.clone());
+    }
+    let mut bound: Op = serde_json::from_value(v).map_err(|e| refuse(i, format!("the op could not be read back: {e}"), "name clips by id"))?;
+    // A template's file is read by whoever resolves the op and is never
+    // sent: read back without it, the template was "not there" (#2733).
+    if let (Op::Template { data: kept, .. }, Op::Template { data, .. }) = (op, &mut bound) {
+        *data = kept.clone();
+    }
+    Ok(bound)
 }
 
 /// Which neighbour a [`Op::Join`] closes the edit with.
@@ -13494,6 +13506,27 @@ mod tests {
         run(&mut sequences, &mut pool, &[Op::Transition { clip_id: ClipRef::Id(ia), kind: "dissolve".into(), secs: 1.0, remove: false, pieces: None, color: None }]);
         run(&mut sequences, &mut pool, &[remove(ia)]);
         assert_eq!((count(&sequences[0]), dangling(&sequences[0])), (0, 0));
+    }
+
+    /// #2733: a template's text with an "@" in it (a handle) is text:
+    /// the template is placed with it, as without; a real "@N" in a field
+    /// that names a clip is still a step reference.
+    #[test]
+    fn a_handle_in_a_template_field_is_text() {
+        let (seq, pool, _, _, _) = fixture();
+        let handle = |value: &str| Op::Template {
+            name: "Handle".into(),
+            at: Anchor::Secs(1.0),
+            secs: 3.0,
+            track: None,
+            fields: [("Handle".to_string(), serde_json::json!(value))].into_iter().collect(),
+            data: klipp_timeline::title_library::builtin("Handle").map(|t| Box::new(t.data())),
+        };
+        for value in ["harbourfilms", "@harbourfilms", "@yourhandle", "@0"] {
+            let plan = resolve(&seq, &pool, &[handle(value)]).unwrap_or_else(|r| panic!("{value}: {}", r.why));
+            let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!("{value}: a title") };
+            assert!(format!("{:?}", clip.title_data()).contains(value), "{value}: the handle is the title's text");
+        }
     }
 
     fn fixture() -> (Sequence, MediaPool, MediaId, ClipId, ClipId) {
