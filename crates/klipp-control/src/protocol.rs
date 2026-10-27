@@ -1188,6 +1188,9 @@ pub enum ControlCommand {
     Fonts {
         #[serde(default)]
         query: Option<String>,
+        /// A catalogue family to fetch (#2732).
+        #[serde(default)]
+        fetch: Option<String>,
     },
     /// The title templates, built-in (#1724) and saved (#1139), each with
     /// the fields it keeps editable: what a `template` op places and sets.

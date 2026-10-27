@@ -1,0 +1,578 @@
+# Fonts Klipp fetches on request (#2732): open-licence families, each file
+# by its address in the google/fonts repository (pinned to one commit), its
+# size and SHA-256. No font is kept in the repository: a fetched one goes to
+# the user's data folder with its licence beside it.
+#
+# style: what it is (serif, display, condensed, grotesque, rounded, script,
+# handwritten, mono, ...); mood: what it suits; scripts: the writing
+# systems it covers (latin when left out).
+
+[[family]]
+name = "Cinzel"
+style = ["serif", "display", "capitals"]
+mood = ["classic", "engraved", "epic", "elegant"]
+scripts = ["latin"]
+licence = "OFL-1.1"
+licence_url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/cinzel/OFL.txt"
+licence_sha256 = "f2b3029aba64c378bf0963b62945eee15e564fe4330b934c8f2eb058282b5e83"
+licence_size = 4383
+[[family.file]]
+name = "Cinzel[wght].ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/cinzel/Cinzel%5Bwght%5D.ttf"
+sha256 = "f4d83d34d1f6c741193e4acf4b3dff9531e5a67b6aa65228d00a7db72a4e0f34"
+size = 125468
+
+[[family]]
+name = "Playfair Display"
+style = ["serif", "display"]
+mood = ["elegant", "editorial", "fashion"]
+scripts = ["latin"]
+licence = "OFL-1.1"
+licence_url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/playfairdisplay/OFL.txt"
+licence_sha256 = "566be814f8e96e93dfa16101331557eb6b5467e9e03f627c0910fe93ca12300e"
+licence_size = 4449
+[[family.file]]
+name = "PlayfairDisplay-Italic[wght].ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/playfairdisplay/PlayfairDisplay-Italic%5Bwght%5D.ttf"
+sha256 = "a5e26dc5e2e77fb2803a0bf02fd4f81ee136ec8dea863ccdb0c59a263b21378b"
+size = 278688
+[[family.file]]
+name = "PlayfairDisplay[wght].ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/playfairdisplay/PlayfairDisplay%5Bwght%5D.ttf"
+sha256 = "c40f2293766a503bc70cce9e512ef844a4ccb7cbcde792fe2ea31d191917d8d6"
+size = 300724
+
+[[family]]
+name = "Bodoni Moda"
+style = ["serif", "display", "didone"]
+mood = ["luxury", "fashion", "high-contrast"]
+scripts = ["latin"]
+licence = "OFL-1.1"
+licence_url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/bodonimoda/OFL.txt"
+licence_sha256 = "931dfe2e0cd3c9443295f5c1d754b8a8403bf060df50c1d5900267ade83d0046"
+licence_size = 4400
+[[family.file]]
+name = "BodoniModa-Italic[opsz,wght].ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/bodonimoda/BodoniModa-Italic%5Bopsz%2Cwght%5D.ttf"
+sha256 = "dfff1619f8f6871c6372f8855b67211f9a73b4e93d45aca868cd8f46a48622de"
+size = 176300
+[[family.file]]
+name = "BodoniModa[opsz,wght].ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/bodonimoda/BodoniModa%5Bopsz%2Cwght%5D.ttf"
+sha256 = "550f5e34ee0a828d7941b1fe9bc58b34e5260d3f33a61532e6d0a0114e79a5cf"
+size = 162104
+
+[[family]]
+name = "Cormorant Garamond"
+style = ["serif", "display"]
+mood = ["elegant", "literary", "wedding"]
+scripts = ["latin"]
+licence = "OFL-1.1"
+licence_url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/cormorantgaramond/OFL.txt"
+licence_sha256 = "60700d351cac4650c51f3f9db318d2a420f8b45052dba2715eb5fec41f0f6956"
+licence_size = 4387
+[[family.file]]
+name = "CormorantGaramond-Italic[wght].ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/cormorantgaramond/CormorantGaramond-Italic%5Bwght%5D.ttf"
+sha256 = "0f48ea6abb2084537854f7174c470991a463b13036309e3b50a81511611c530d"
+size = 715644
+[[family.file]]
+name = "CormorantGaramond[wght].ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/cormorantgaramond/CormorantGaramond%5Bwght%5D.ttf"
+sha256 = "b20b7d9626dd956b2c5e558692ad328b1f19e3275e2782db4fa07670d83f35e0"
+size = 1195560
+
+[[family]]
+name = "EB Garamond"
+style = ["serif", "text"]
+mood = ["classic", "literary", "bookish"]
+scripts = ["latin"]
+licence = "OFL-1.1"
+licence_url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/ebgaramond/OFL.txt"
+licence_sha256 = "0985066662eb755ed3683ae5482a81a9195b49ce3f7e165cc2388b3dbece7dd7"
+licence_size = 4398
+[[family.file]]
+name = "EBGaramond-Italic[wght].ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/ebgaramond/EBGaramond-Italic%5Bwght%5D.ttf"
+sha256 = "bba2c4499c93c9612b90b9825d32b07da52fce2fe57562a1eb6b833553f93c4e"
+size = 754468
+[[family.file]]
+name = "EBGaramond[wght].ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/ebgaramond/EBGaramond%5Bwght%5D.ttf"
+sha256 = "ef9512f92f6d579e5dc75af59a5a4b1b8b47d2eda89e00b954d44520e5369027"
+size = 851176
+
+[[family]]
+name = "DM Serif Display"
+style = ["serif", "display"]
+mood = ["bold", "editorial", "warm"]
+scripts = ["latin"]
+licence = "OFL-1.1"
+licence_url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/dmserifdisplay/OFL.txt"
+licence_sha256 = "a3e5cdd67d4571dd0a24fcc968de0efde7ae97ef752daf0906e4767619dd7231"
+licence_size = 4605
+[[family.file]]
+name = "DMSerifDisplay-Italic.ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/dmserifdisplay/DMSerifDisplay-Italic.ttf"
+sha256 = "df74c0ac387baeaeb0fe4f2324e1668e6a3ed8c09cd9796fe162c71753e19e45"
+size = 71208
+[[family.file]]
+name = "DMSerifDisplay-Regular.ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/dmserifdisplay/DMSerifDisplay-Regular.ttf"
+sha256 = "8cc3643535edf039aa5d95440a8542735e9197e4f4b8d9303e980fefbf5ab616"
+size = 76580
+
+[[family]]
+name = "Oswald"
+style = ["sans", "condensed", "grotesque"]
+mood = ["news", "bold", "sport"]
+scripts = ["latin"]
+licence = "OFL-1.1"
+licence_url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/oswald/OFL.txt"
+licence_sha256 = "0fd731a904b729a4e02eaf5e8ebd06783edd9abe400e8882760160230675b652"
+licence_size = 4483
+[[family.file]]
+name = "Oswald[wght].ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/oswald/Oswald%5Bwght%5D.ttf"
+sha256 = "5b38c246e255a12f5712d640d56bcced0472466fc68983d2d0410ec0457c2817"
+size = 172088
+
+[[family]]
+name = "Barlow Condensed"
+style = ["sans", "condensed"]
+mood = ["news", "technical", "clean"]
+scripts = ["latin"]
+licence = "OFL-1.1"
+licence_url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/barlowcondensed/OFL.txt"
+licence_sha256 = "186d750eb496a4c17a76385f82be6aea2ac1cf2de074a811d63786cf374ea73f"
+licence_size = 4377
+[[family.file]]
+name = "BarlowCondensed-Bold.ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/barlowcondensed/BarlowCondensed-Bold.ttf"
+sha256 = "e476562ec9c1e16cf16475895b511f08c804f438cc9a9f80a44ea50a0eeb5b65"
+size = 109912
+[[family.file]]
+name = "BarlowCondensed-BoldItalic.ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/barlowcondensed/BarlowCondensed-BoldItalic.ttf"
+sha256 = "d8694f65cd70c3e5e600ead37657aab0adb5f63b275d0c1f6f4a7046de222145"
+size = 112196
+[[family.file]]
+name = "BarlowCondensed-Italic.ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/barlowcondensed/BarlowCondensed-Italic.ttf"
+sha256 = "063615da0a64f318397de2afac330dfbfbbf4cdb562a9987cb72bfdcbd37ba7c"
+size = 109856
+[[family.file]]
+name = "BarlowCondensed-Regular.ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/barlowcondensed/BarlowCondensed-Regular.ttf"
+sha256 = "583cec5da3b84bc4dc7c9c72e2a565c94d34e431518b19d7e250b7830ad5f996"
+size = 102480
+
+[[family]]
+name = "Roboto Condensed"
+style = ["sans", "condensed"]
+mood = ["news", "neutral", "lower-third"]
+scripts = ["latin"]
+licence = "OFL-1.1"
+licence_url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/robotocondensed/OFL.txt"
+licence_sha256 = "0e4cc6ece88573545be2ed25835363662a6182ba4a4c1b5c8feda52add30e8a6"
+licence_size = 4393
+[[family.file]]
+name = "RobotoCondensed-Italic[wght].ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/robotocondensed/RobotoCondensed-Italic%5Bwght%5D.ttf"
+sha256 = "78f643b1923008b00dfc9b371a2ecd4d80a017722925f1a3fac9940be56d1b7d"
+size = 388124
+[[family.file]]
+name = "RobotoCondensed[wght].ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/robotocondensed/RobotoCondensed%5Bwght%5D.ttf"
+sha256 = "dace262afcee68a5276f200d8026c57221735c0118ab5fda8c2c0d3dc409a8d0"
+size = 371616
+
+[[family]]
+name = "Antonio"
+style = ["sans", "condensed", "display"]
+mood = ["poster", "bold", "cinematic"]
+scripts = ["latin"]
+licence = "OFL-1.1"
+licence_url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/antonio/OFL.txt"
+licence_sha256 = "ae9a754b006df720bb6721e7b78c04990df734f87195c6033140fceab60bebf6"
+licence_size = 4484
+[[family.file]]
+name = "Antonio[wght].ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/antonio/Antonio%5Bwght%5D.ttf"
+sha256 = "9e95a2258ecdf3e45c72c5bbea1c4cd350e8f7bebc87c9dba53b29b1890b8903"
+size = 74104
+
+[[family]]
+name = "Anton"
+style = ["sans", "condensed", "display"]
+mood = ["impact", "headline", "bold"]
+scripts = ["latin"]
+licence = "OFL-1.1"
+licence_url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/anton/OFL.txt"
+licence_sha256 = "ee67e6ee22790b7929f1a3769ca2801d565c64b5a9096942c1adf5596de9c9e4"
+licence_size = 4484
+[[family.file]]
+name = "Anton-Regular.ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/anton/Anton-Regular.ttf"
+sha256 = "a4ba3a92350ebb031da0cb47630ac49eb265082ca1bc0450442f4a83ab947cab"
+size = 170812
+
+[[family]]
+name = "Work Sans"
+style = ["sans", "grotesque"]
+mood = ["modern", "neutral", "clean"]
+scripts = ["latin"]
+licence = "OFL-1.1"
+licence_url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/worksans/OFL.txt"
+licence_sha256 = "749aca05078664ce682dce1b1b10096ac397cb088c1a6df4e1bb56f0092a9272"
+licence_size = 4396
+[[family.file]]
+name = "WorkSans-Italic[wght].ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/worksans/WorkSans-Italic%5Bwght%5D.ttf"
+sha256 = "0a9f935ea490d3477fc97e40248f356c29bce11a1973939056c4316b122341ec"
+size = 336756
+[[family.file]]
+name = "WorkSans[wght].ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/worksans/WorkSans%5Bwght%5D.ttf"
+sha256 = "f50f61f2ba738e239442d40bf1069adb195c224b6a5a73a581fc2f3ed62a9f63"
+size = 361072
+
+[[family]]
+name = "Manrope"
+style = ["sans", "grotesque"]
+mood = ["modern", "tech", "clean"]
+scripts = ["latin"]
+licence = "OFL-1.1"
+licence_url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/manrope/OFL.txt"
+licence_sha256 = "58172e0c0fac2cda8a37b348164bb55e44b0e69051e557e92b1d3f6910141f7b"
+licence_size = 4387
+[[family.file]]
+name = "Manrope[wght].ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/manrope/Manrope%5Bwght%5D.ttf"
+sha256 = "3ae11c49db0455a3cc33e37d380f20fdb8c7f8b41dc07625c177e3d87a9d6ae6"
+size = 164700
+
+[[family]]
+name = "IBM Plex Sans"
+style = ["sans", "grotesque"]
+mood = ["corporate", "technical", "neutral"]
+scripts = ["latin"]
+licence = "OFL-1.1"
+licence_url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/ibmplexsans/OFL.txt"
+licence_sha256 = "7e6b2818edbd8f6a01ae80641cc8f16a51080d08fb4e532be3a0b6f74adb07da"
+licence_size = 4456
+[[family.file]]
+name = "IBMPlexSans-Italic[wdth,wght].ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/ibmplexsans/IBMPlexSans-Italic%5Bwdth%2Cwght%5D.ttf"
+sha256 = "0b94c5e981993764db32bf9c610ecc60cbd34ad77ec2f10ba03c64ab75124d8e"
+size = 599624
+[[family.file]]
+name = "IBMPlexSans[wdth,wght].ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/ibmplexsans/IBMPlexSans%5Bwdth%2Cwght%5D.ttf"
+sha256 = "3b031aa4216174205bd8471f88a49b91f093169e9e87bd5262242bc5967fe2e3"
+size = 537244
+
+[[family]]
+name = "Space Grotesk"
+style = ["sans", "grotesque"]
+mood = ["tech", "quirky", "modern"]
+scripts = ["latin"]
+licence = "OFL-1.1"
+licence_url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/spacegrotesk/OFL.txt"
+licence_sha256 = "564ce565c371c5e5bbf286006565a7c9aa55a9f56e7ca58d56e05d649dd61a72"
+licence_size = 4495
+[[family.file]]
+name = "SpaceGrotesk[wght].ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/spacegrotesk/SpaceGrotesk%5Bwght%5D.ttf"
+sha256 = "acad6de1fc93436f5c0f1f4137751ef04f1aea3063e7036535970ffcfbd79f72"
+size = 136676
+
+[[family]]
+name = "Nunito"
+style = ["sans", "rounded"]
+mood = ["friendly", "soft", "creator"]
+scripts = ["latin"]
+licence = "OFL-1.1"
+licence_url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/nunito/OFL.txt"
+licence_sha256 = "580df76c95a1ec5ab878ceb25bb3d85c6a076804e9c970c8c6972aea775fdf65"
+licence_size = 4385
+[[family.file]]
+name = "Nunito-Italic[wght].ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/nunito/Nunito-Italic%5Bwght%5D.ttf"
+sha256 = "b520cc871868b0acfca1beda875df7f4a44ebce914f8a89f83977fc9c09529c8"
+size = 281832
+[[family.file]]
+name = "Nunito[wght].ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/nunito/Nunito%5Bwght%5D.ttf"
+sha256 = "bb55a5ca5c2042335b3991af27c4d0705d0ef41cac6164ac737fd8f2a1e85207"
+size = 276932
+
+[[family]]
+name = "Quicksand"
+style = ["sans", "rounded"]
+mood = ["friendly", "light", "playful"]
+scripts = ["latin"]
+licence = "OFL-1.1"
+licence_url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/quicksand/OFL.txt"
+licence_sha256 = "14d28541780d90f6577bb7abcc6f005bf6969614294e75c82abb8758a696ad46"
+licence_size = 4445
+[[family.file]]
+name = "Quicksand[wght].ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/quicksand/Quicksand%5Bwght%5D.ttf"
+sha256 = "39c9b64223561f56aaff6062a6f04063c4fc86809ad6768722c06614d977e1cc"
+size = 124824
+
+[[family]]
+name = "Fredoka"
+style = ["sans", "rounded", "display"]
+mood = ["playful", "kids", "creator"]
+scripts = ["latin"]
+licence = "OFL-1.1"
+licence_url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/fredoka/OFL.txt"
+licence_sha256 = "5c9e7eee5c6b25f4b05b8d53b2e470ea4962f9ced742d044a98f7d95d1375bab"
+licence_size = 4388
+[[family.file]]
+name = "Fredoka[wdth,wght].ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/fredoka/Fredoka%5Bwdth%2Cwght%5D.ttf"
+sha256 = "2ba02e68b152868aef9ba28e24b3648c7d457fe6f25c761f2c2c53fb61a73fc8"
+size = 159184
+
+[[family]]
+name = "Baloo 2"
+style = ["sans", "rounded", "display"]
+mood = ["playful", "friendly", "bold"]
+scripts = ["latin"]
+licence = "OFL-1.1"
+licence_url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/baloo2/OFL.txt"
+licence_sha256 = "ad09b05dc8bc678c9daf7c4c5f7ef1f55e5726127f4330b2e98e40b9dffcb860"
+licence_size = 4384
+[[family.file]]
+name = "Baloo2[wght].ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/baloo2/Baloo2%5Bwght%5D.ttf"
+sha256 = "d47a6852548059b1db49a1319d06d499d546c3fa2237cf9eee9c43c8abb025c2"
+size = 683200
+
+[[family]]
+name = "Pacifico"
+style = ["script", "display"]
+mood = ["retro", "surf", "playful"]
+scripts = ["latin"]
+licence = "OFL-1.1"
+licence_url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/pacifico/OFL.txt"
+licence_sha256 = "a47e5daeda73568969395c656823102678f2eefb0d7d7ecb47aac4cc17e42204"
+licence_size = 4389
+[[family.file]]
+name = "Pacifico-Regular.ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/pacifico/Pacifico-Regular.ttf"
+sha256 = "5b6c0d5334a7bf77dea52b975c5a0c408878c0f7115ed5b6fb151f634b7bf701"
+size = 329380
+
+[[family]]
+name = "Caveat"
+style = ["handwritten", "script"]
+mood = ["casual", "notes", "personal"]
+scripts = ["latin"]
+licence = "OFL-1.1"
+licence_url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/caveat/OFL.txt"
+licence_sha256 = "1f9d81d094273d82f3898a1ee8b598a717d050ecbf5ff7bede105b704880157b"
+licence_size = 4385
+[[family.file]]
+name = "Caveat[wght].ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/caveat/Caveat%5Bwght%5D.ttf"
+sha256 = "0bdb6b660482d31531b3945849fba5916b3ef8695da7024a9e6b9ee3c4157988"
+size = 403648
+
+[[family]]
+name = "Dancing Script"
+style = ["script"]
+mood = ["elegant", "wedding", "romantic"]
+scripts = ["latin"]
+licence = "OFL-1.1"
+licence_url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/dancingscript/OFL.txt"
+licence_sha256 = "6f090277c00af96651ce6dbcc38ff1591047a3bffef486e80b6a32e8276a8201"
+licence_size = 4443
+[[family.file]]
+name = "DancingScript[wght].ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/dancingscript/DancingScript%5Bwght%5D.ttf"
+sha256 = "21808625578fe8d8cd10cb684be546dca077b27cd03a53a2f1ec11dc743c924c"
+size = 133636
+
+[[family]]
+name = "Great Vibes"
+style = ["script"]
+mood = ["formal", "wedding", "elegant"]
+scripts = ["latin"]
+licence = "OFL-1.1"
+licence_url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/greatvibes/OFL.txt"
+licence_sha256 = "61093a21f5e63dedf54222b3c09997e54c0fe43e3851d21386e02ddcbc246d49"
+licence_size = 4399
+[[family.file]]
+name = "GreatVibes-Regular.ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/greatvibes/GreatVibes-Regular.ttf"
+sha256 = "8d509802186f1b51572531ecf313e8098f9a5bfdfaca93f0c9b34467f9982d15"
+size = 457588
+
+[[family]]
+name = "Permanent Marker"
+style = ["handwritten", "display"]
+mood = ["marker", "bold", "casual"]
+scripts = ["latin"]
+licence = "Apache-2.0"
+licence_url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/apache/permanentmarker/LICENSE.txt"
+licence_sha256 = "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+licence_size = 11358
+[[family.file]]
+name = "PermanentMarker-Regular.ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/apache/permanentmarker/PermanentMarker-Regular.ttf"
+sha256 = "28f82c8a7943cb8e9d599f8554da1d4fc75dbcf69b9885ad6c0611d20c6946c5"
+size = 74632
+
+[[family]]
+name = "IBM Plex Mono"
+style = ["mono"]
+mood = ["code", "technical", "timecode"]
+scripts = ["latin"]
+licence = "OFL-1.1"
+licence_url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/ibmplexmono/OFL.txt"
+licence_sha256 = "7e6b2818edbd8f6a01ae80641cc8f16a51080d08fb4e532be3a0b6f74adb07da"
+licence_size = 4456
+[[family.file]]
+name = "IBMPlexMono-Bold.ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/ibmplexmono/IBMPlexMono-Bold.ttf"
+sha256 = "ac27abd6450a64dd94467580a02fe6235156d5b92f2926ebbc8e7489df64e0be"
+size = 137784
+[[family.file]]
+name = "IBMPlexMono-BoldItalic.ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/ibmplexmono/IBMPlexMono-BoldItalic.ttf"
+sha256 = "af4e05a761e98c1adf064c48a6352c9bec1a6ad70982cd2a544149323391f98e"
+size = 144512
+[[family.file]]
+name = "IBMPlexMono-Italic.ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/ibmplexmono/IBMPlexMono-Italic.ttf"
+sha256 = "3362fc791b0652193328b862c1c5f23a789bc7288b1617fa63302f88689a2a34"
+size = 143920
+[[family.file]]
+name = "IBMPlexMono-Regular.ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/ibmplexmono/IBMPlexMono-Regular.ttf"
+sha256 = "6a3412f058c7d8dfd9170c41e85ade48e5156ecb89356110ca57a0a27734af46"
+size = 135580
+
+[[family]]
+name = "Space Mono"
+style = ["mono", "display"]
+mood = ["retro", "tech", "code"]
+scripts = ["latin"]
+licence = "OFL-1.1"
+licence_url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/spacemono/OFL.txt"
+licence_sha256 = "8e4ee42b2553e1e01504e61cb0d46d148cd8c9e5eacaa3622a7df2d4f2955b9f"
+licence_size = 4392
+[[family.file]]
+name = "SpaceMono-Bold.ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/spacemono/SpaceMono-Bold.ttf"
+sha256 = "405e73d41afb7e5906efce206a326af5c956f38e255f35421c260e861e599c59"
+size = 98232
+[[family.file]]
+name = "SpaceMono-BoldItalic.ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/spacemono/SpaceMono-BoldItalic.ttf"
+sha256 = "cdcc95eddee312879a9728494e595f591cb159f3f276d79bc58673dec7e57138"
+size = 111904
+[[family.file]]
+name = "SpaceMono-Italic.ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/spacemono/SpaceMono-Italic.ttf"
+sha256 = "eca264c8690a91fe837d19a6badf2d88961610c4c8aafcb196526192a9f258c5"
+size = 121396
+[[family.file]]
+name = "SpaceMono-Regular.ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/spacemono/SpaceMono-Regular.ttf"
+sha256 = "95837e182baeeada83368f7748db28357f0a1b75c6b84ff7065b5edf933c8e18"
+size = 99356
+
+[[family]]
+name = "Noto Sans JP"
+style = ["sans"]
+mood = ["neutral"]
+scripts = ["latin", "japanese"]
+licence = "OFL-1.1"
+licence_url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/notosansjp/OFL.txt"
+licence_sha256 = "1c05c68c34f9708415aada51f17e1b0092d2cea709bf4a94cd38114f9e73d7d9"
+licence_size = 4388
+[[family.file]]
+name = "NotoSansJP[wght].ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/notosansjp/NotoSansJP%5Bwght%5D.ttf"
+sha256 = "c2f3b4d463500a2ddcd3849cded1fceeb9fd6d1c32e6cbecd568453ba50fc68f"
+size = 9589900
+
+[[family]]
+name = "Noto Sans KR"
+style = ["sans"]
+mood = ["neutral"]
+scripts = ["latin", "korean"]
+licence = "OFL-1.1"
+licence_url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/notosanskr/OFL.txt"
+licence_sha256 = "1c05c68c34f9708415aada51f17e1b0092d2cea709bf4a94cd38114f9e73d7d9"
+licence_size = 4388
+[[family.file]]
+name = "NotoSansKR[wght].ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/notosanskr/NotoSansKR%5Bwght%5D.ttf"
+sha256 = "194018e6b2b293a7964f037b25c0249ce1418bc9ab3c971060a03aa57861e252"
+size = 10414588
+
+[[family]]
+name = "Noto Sans SC"
+style = ["sans"]
+mood = ["neutral"]
+scripts = ["latin", "chinese"]
+licence = "OFL-1.1"
+licence_url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/notosanssc/OFL.txt"
+licence_sha256 = "1c05c68c34f9708415aada51f17e1b0092d2cea709bf4a94cd38114f9e73d7d9"
+licence_size = 4388
+[[family.file]]
+name = "NotoSansSC[wght].ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf"
+sha256 = "a3041811a78c361b1de50f953c805e0244951c21c5bd412f7232ef0d899af0da"
+size = 17772300
+
+[[family]]
+name = "Noto Sans Arabic"
+style = ["sans"]
+mood = ["neutral"]
+scripts = ["arabic"]
+licence = "OFL-1.1"
+licence_url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/notosansarabic/OFL.txt"
+licence_sha256 = "07fc70bfeb985cc1a87a8587d0a0c80bab11c86c9dc3fd95b6f0cb332f983e96"
+licence_size = 4382
+[[family.file]]
+name = "NotoSansArabic[wdth,wght].ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/notosansarabic/NotoSansArabic%5Bwdth%2Cwght%5D.ttf"
+sha256 = "63111b5b2e074dd48cc67692e0a2726d86ee94c1c37fe8598257b7b4e87e869e"
+size = 844676
+
+[[family]]
+name = "Noto Sans Hebrew"
+style = ["sans"]
+mood = ["neutral"]
+scripts = ["hebrew"]
+licence = "OFL-1.1"
+licence_url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/notosanshebrew/OFL.txt"
+licence_sha256 = "9b9fe028b5ba74d231659a1bbaf0ed09b11e759d1ca6a070999e16d151616b47"
+licence_size = 4382
+[[family.file]]
+name = "NotoSansHebrew[wdth,wght].ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/notosanshebrew/NotoSansHebrew%5Bwdth%2Cwght%5D.ttf"
+sha256 = "7ef36a2c3593758cdb622e1bdef4f84523e92fbc3ccc667438dd80ff54c2de88"
+size = 112640
+
+[[family]]
+name = "Noto Sans Devanagari"
+style = ["sans"]
+mood = ["neutral"]
+scripts = ["devanagari"]
+licence = "OFL-1.1"
+licence_url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/notosansdevanagari/OFL.txt"
+licence_sha256 = "a216f6f8d85c7228093e0ee5e258d9d377e6671f68acb4db1930b29583d0f331"
+licence_size = 4386
+[[family.file]]
+name = "NotoSansDevanagari[wdth,wght].ttf"
+url = "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/notosansdevanagari/NotoSansDevanagari%5Bwdth%2Cwght%5D.ttf"
+sha256 = "14ec4af41f27482216d1c2229f417ff9b1425e1babb014e57d1d40d03229853e"
+size = 641944

@@ -70,6 +70,7 @@ use klipp_core::title_motion::{FocusBand, RampAxis, ScreenFade};
 use std::collections::HashMap;
 
 pub mod bundled;
+pub mod catalogue;
 pub mod font_discovery;
 
 /// Embedded fallback font — Noto Sans Regular (OFL license).
@@ -797,7 +798,10 @@ impl TitleRenderer {
             return key;
         }
 
-        if let Some(infos) = self.font_registry.get(family) {
+        // Installed on the machine, else a catalogue family fetched since
+        // the font scan ran (#2732).
+        let fetched = if self.font_registry.contains_key(family) { None } else { catalogue::fetched_faces(family) };
+        if let Some(infos) = self.font_registry.get(family).or(fetched.as_ref()) {
 
             // Try exact style match first, then fall back to Regular, then first available
             let info = infos
@@ -842,7 +846,7 @@ impl TitleRenderer {
         let picked = if !bundled.is_empty() {
             let traits: Vec<_> = bundled.iter().map(|b| variable::face_traits(b).unwrap_or_else(unread)).collect();
             variable::nearest_face(&traits, wanted, italic).map(|i| (std::borrow::Cow::Borrowed(bundled[i]), traits[i].clone()))
-        } else if let Some(infos) = self.font_registry.get(family) {
+        } else if let Some(infos) = self.font_registry.get(family).cloned().or_else(|| catalogue::fetched_faces(family)) {
             let traits: Vec<_> = infos.iter().map(|i| i.traits()).collect();
             variable::nearest_face(&traits, wanted, italic)
                 .and_then(|i| std::fs::read(&infos[i].path).ok().map(|data| (std::borrow::Cow::Owned(data), traits[i].clone())))
