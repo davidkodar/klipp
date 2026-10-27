@@ -1,8 +1,9 @@
-//! Reusable project compositions inside Library → Titles & Graphics.
+//! Reusable compositions inside Library → Titles & Graphics.
 //!
-//! These entries reference sequences in their source project; they are not
-//! portable asset packages. The composition and inspector support stays the
-//! same as before, without advertising unfinished built-in catalogue entries.
+//! Each carries its composition (#2757): inserted into a project without
+//! it, the sequences it is made of are copied in. The composition and
+//! inspector support stays the same as before, without advertising
+//! unfinished built-in catalogue entries.
 
 use crate::state::AppState;
 use crate::theme::KlippTheme;
@@ -18,10 +19,10 @@ pub fn show(
     crate::browser::browser_search_field(ui, theme, search, "Search project graphics…", state);
     ui.add_space(6.0);
     ui.label(
-        egui::RichText::new("Reuse a sequence as a graphic in another sequence of this project.")
+        egui::RichText::new("Reuse a sequence as a graphic in another sequence, in this project or any other.")
             .color(theme.text_secondary),
     );
-    if ui.button("Save active sequence as graphic").on_hover_text("Keeps a reference to this sequence. Its source project must be open to insert it; changes to the source sequence update its instances.").clicked() {
+    if ui.button("Save active sequence as graphic").on_hover_text("Keeps this sequence and what it nests, so it inserts into any project; in this project, changes to the sequence update its instances.").clicked() {
         let sequence = state.sequence();
         let name = if sequence.name.trim().is_empty() { "My graphic".to_string() } else { sequence.name.clone() };
         commands.push(klipp_core::AppCommand::SaveCompositionTemplate { sequence_id: sequence.id.0, name });
@@ -63,7 +64,7 @@ pub fn show(
                                     .color(theme.text_dim),
                             );
                         }
-                        let unavailable = insertion_unavailable(state, template.composition_id);
+                        let unavailable = insertion_unavailable(state, template);
                         if let Some(reason) = unavailable {
                             ui.label(egui::RichText::new(reason).small().color(theme.text_dim));
                         } else if !template.parameters.is_empty() {
@@ -94,13 +95,15 @@ pub fn show(
     commands
 }
 
-fn insertion_unavailable(state: &AppState, composition_id: uuid::Uuid) -> Option<&'static str> {
+fn insertion_unavailable(state: &AppState, template: &klipp_timeline::composition_template::CompositionTemplate) -> Option<&'static str> {
+    // The project's copy when it has one, else the one the template carries.
     let Some(sequence) = state
         .sequences
         .iter()
-        .find(|sequence| sequence.id.0 == composition_id)
+        .find(|sequence| sequence.id.0 == template.composition_id)
+        .or_else(|| template.composition())
     else {
-        return Some("Open the source project to use this graphic.");
+        return Some("This graphic does not carry its composition: save it again.");
     };
     if sequence.id == state.sequence().id {
         Some("Switch to another sequence to insert this graphic.")
@@ -184,38 +187,31 @@ mod tests {
                 matches!(commands.as_slice(), [AppCommand::SaveCompositionTemplate { sequence_id, name }]
                 if *sequence_id == state.sequence().id.0 && name == &state.sequence().name)
             );
-            state
-                .composition_templates
-                .save(CompositionTemplate::new(
-                    "Existing graphic",
-                    state.sequence().id.0,
-                ))
-                .unwrap();
+            let mut existing = CompositionTemplate::new("Existing graphic", state.sequence().id.0);
+            existing.sequences = vec![state.sequence().clone()];
+            state.composition_templates.save(existing).unwrap();
         }
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    /// A graphic inserts from the composition it carries into a project
+    /// without it (#2757), not into its own composition, and not while
+    /// that is empty.
     #[test]
-    fn insertion_requires_a_nonempty_source_in_another_sequence() {
-        let mut state = AppState::default();
-        assert!(insertion_unavailable(&state, uuid::Uuid::new_v4())
-            .unwrap()
-            .contains("source project"));
-        assert!(insertion_unavailable(&state, state.sequence().id.0)
-            .unwrap()
-            .contains("another sequence"));
+    fn insertion_requires_a_nonempty_composition_in_another_sequence() {
+        let state = AppState::default();
+        let carrying = |source: &Sequence| {
+            let mut t = CompositionTemplate::new("Graphic", source.id.0);
+            t.sequences = vec![source.clone()];
+            t
+        };
+        assert!(insertion_unavailable(&state, &CompositionTemplate::new("Bare", uuid::Uuid::new_v4())).unwrap().contains("save it again"));
+        assert!(insertion_unavailable(&state, &carrying(state.sequence())).unwrap().contains("another sequence"));
         let mut source = Sequence::new_default();
-        let id = source.id.0;
-        state.sequences.push(source.clone());
-        assert!(insertion_unavailable(&state, id)
-            .unwrap()
-            .contains("Add content"));
+        assert!(insertion_unavailable(&state, &carrying(&source)).unwrap().contains("Add content"));
         let zero = RationalTime::from_frames(0, 24);
         let end = RationalTime::from_frames(48, 24);
-        source.tracks[0]
-            .clips
-            .push(Clip::media(MediaId::new(), zero, end, zero, end));
-        state.sequences[1] = source;
-        assert!(insertion_unavailable(&state, id).is_none());
+        source.tracks[0].clips.push(Clip::media(MediaId::new(), zero, end, zero, end));
+        assert!(insertion_unavailable(&state, &carrying(&source)).is_none(), "carried from another project: insertable here");
     }
 }

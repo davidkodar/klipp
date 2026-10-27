@@ -254,6 +254,9 @@ pub enum EditCommand {
     /// Clips put into, moved between or taken out of grade groups, each
     /// as (clip, group before, group after) (#237).
     SetClipGradeGroups { changes: Vec<(ClipId, Option<klipp_core::GradeGroupId>, Option<klipp_core::GradeGroupId>)> },
+    /// Sequences a composition template needs, copied into the project
+    /// when it is inserted (#2757): appended, and taken away on undo.
+    AddSequences { sequences: Vec<klipp_timeline::Sequence> },
     /// Replace the persisted values of an inserted composition template.
     SetTemplateInstance { clip_id: ClipId, parameter: String, old: Box<klipp_core::TemplateInstance>, new: Box<klipp_core::TemplateInstance> },
     /// Title clip added (with optional track creation for undo)
@@ -913,6 +916,7 @@ impl EditCommand {
             EditCommand::SetGradeGroups { .. } => "Grade Groups",
             EditCommand::SetClipGradeGroups { .. } => "Grade Group",
             EditCommand::SetTemplateInstance { .. } => "Template Parameter",
+            EditCommand::AddSequences { .. } => "Add Sequence",
             EditCommand::LegacyAppendClip { .. } => "Append Clip",
             EditCommand::LinkedImport { .. } => "Add to Timeline",
             EditCommand::LegacyRemoveClip { .. } | EditCommand::LegacyRippleRemove { .. } => "Remove Clip",

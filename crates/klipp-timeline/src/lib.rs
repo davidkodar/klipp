@@ -79,6 +79,7 @@ pub mod title_library;
 pub mod title_box;
 mod credits;
 pub mod caption_motion;
+pub mod composition_template;
 pub use caption_motion::{animated_caption, CaptionAnimation, CaptionMotion, CaptionPlace};
 pub use klipp_core::text3d;
 pub use klipp_core::text3d::{Bevel, BevelProfile, Camera3d, Light3d, Text3d, Text3dKeys};

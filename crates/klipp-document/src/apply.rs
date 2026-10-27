@@ -210,6 +210,17 @@ impl DocumentView<'_> {
                 effects.project_colour = Some(old.clone());
                 effects.sync_sequence = true;
             }
+            EditCommand::AddSequences { sequences } => {
+                // Taken away from the end, past the active sequence: one
+                // the user has opened since stays, as the active index is
+                // not this view's to move.
+                for s in sequences.iter().rev() {
+                    if let Some(i) = self.sequences.iter().position(|have| have.id == s.id).filter(|i| *i > self.active) {
+                        self.sequences.remove(i);
+                    }
+                }
+                effects.sync_sequence = true;
+            }
             EditCommand::Batch(commands) => {
                 for c in commands.iter().rev() {
                     effects.merge(self.apply_inverse(c));
@@ -945,6 +956,15 @@ impl DocumentView<'_> {
                 }
             }
             EditCommand::Named { edit, .. } => effects.merge(self.apply_forward(edit)),
+            EditCommand::AddSequences { sequences } => {
+                // Appended, so the active sequence keeps its place.
+                for s in sequences {
+                    if !self.sequences.iter().any(|have| have.id == s.id) {
+                        self.sequences.push(s.clone());
+                    }
+                }
+                effects.sync_sequence = true;
+            }
             EditCommand::AddTrack { index, track } => {
                 let seq = &mut self.sequences[self.active];
                 let idx = (*index).min(seq.tracks.len());

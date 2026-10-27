@@ -184,8 +184,9 @@ fn bind_step_refs(op: &Op, i: usize, made: &[Option<ClipId>]) -> Result<Op, Refu
     let mut bound: Op = serde_json::from_value(v).map_err(|e| refuse(i, format!("the op could not be read back: {e}"), "name clips by id"))?;
     // A template's file is read by whoever resolves the op and is never
     // sent: read back without it, the template was "not there" (#2733).
-    if let (Op::Template { data: kept, .. }, Op::Template { data, .. }) = (op, &mut bound) {
+    if let (Op::Template { data: kept, composition: kept_composition, .. }, Op::Template { data, composition, .. }) = (op, &mut bound) {
         *data = kept.clone();
+        *composition = kept_composition.clone();
     }
     Ok(bound)
 }
@@ -1124,6 +1125,11 @@ pub enum Op {
         /// op (the socket): never sent.
         #[serde(skip)]
         data: Option<Box<klipp_timeline::TitleData>>,
+        /// A composition template of that name (#2757), read by whoever
+        /// resolves the op, with the sequences of it the project lacks:
+        /// never sent.
+        #[serde(skip)]
+        composition: Option<Box<PlacedComposition>>,
     },
     /// A lower third: `name`, and `role` under it, bottom left inside
     /// title-safe, for `secs` from `at`, fading in and out. It goes on a
@@ -4033,7 +4039,11 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             }
             Ok((what, edit, ids))
         }
-        Op::Template { name, at, secs: held, track, fields, data } => {
+        Op::Template { at, secs: held, track, fields, data: None, composition: Some(placed), .. } => {
+            let at = resolve_anchor(seq, fps, at, i)?;
+            place_composition(seq, fps, i, at, *held, track.as_ref(), fields, placed)
+        }
+        Op::Template { name, at, secs: held, track, fields, data, .. } => {
             use klipp_core::TitleFieldValue as V;
             let at = resolve_anchor(seq, fps, at, i)?;
             let td = data.as_deref().cloned().ok_or_else(|| refuse(i, format!("there is no title template \"{name}\""), "title_templates lists the built-in and saved templates"))?;
@@ -6581,6 +6591,104 @@ fn caption_animation(a: &AnimateSpec, i: usize) -> Result<klipp_timeline::Captio
     out.emphasis = a.emphasis.clone().unwrap_or_default();
     out.font = a.font.clone().filter(|f| !f.trim().is_empty());
     Ok(out)
+}
+
+/// A composition template as the socket finds it for the template op
+/// (#2757): the template, and the sequences of it the project lacks,
+/// which placing it copies in.
+#[derive(Debug, Clone)]
+pub struct PlacedComposition {
+    pub template: klipp_timeline::composition_template::CompositionTemplate,
+    pub missing: Vec<Sequence>,
+}
+
+impl PartialEq for PlacedComposition {
+    fn eq(&self, other: &Self) -> bool {
+        self.template.id == other.template.id && self.missing.iter().map(|s| s.id).eq(other.missing.iter().map(|s| s.id))
+    }
+}
+
+/// `value` as parameter `p` of a composition template takes it (#2757):
+/// by the kind of its default, a colour as #rrggbb.
+fn template_value(p: &klipp_timeline::composition_template::TemplateParameter, value: &serde_json::Value) -> Option<klipp_core::TemplateValue> {
+    use klipp_core::TemplateValue as T;
+    Some(match (&p.default, value) {
+        (T::Text(_), serde_json::Value::String(s)) => T::Text(s.clone()),
+        (T::Enum(_), serde_json::Value::String(s)) => T::Enum(s.clone()),
+        (T::Number(_), serde_json::Value::Number(n)) => T::Number(n.as_f64()?),
+        (T::Bool(_), serde_json::Value::Bool(b)) => T::Bool(*b),
+        (T::Color(_), serde_json::Value::String(s)) => {
+            let c = parse_color(s)?;
+            T::Color(c.map(|v| v as f32 / 255.0))
+        }
+        _ => return None,
+    })
+}
+
+/// A composition template placed as one clip at `at` for `held` seconds
+/// (#2757): on `track`, else a free video track, else a new one on top;
+/// the sequences it needs copied in first; its parameters set from
+/// `fields` by name or label. One step.
+#[allow(clippy::too_many_arguments)]
+fn place_composition(seq: &Sequence, fps: Fps, i: usize, at: Timecode, held: f64, track: Option<&TrackRef>, fields: &std::collections::BTreeMap<String, serde_json::Value>, placed: &PlacedComposition) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    let t = &placed.template;
+    let composition = t.composition().ok_or_else(|| refuse(i, format!("the template \"{}\" does not carry its composition", t.name), "save it again from the project it was made in"))?;
+    if composition.id == seq.id || placed.missing.iter().any(|s| s.id == seq.id) {
+        return Err(refuse(i, "a template cannot be placed in its own composition", "switch to another sequence"));
+    }
+    if !held.is_finite() || held < 0.2 {
+        return Err(refuse(i, format!("{held} s is too short"), "hold it at least a fraction of a second"));
+    }
+    let tl_in = at;
+    let tl_out = snap(secs(at) + held, fps).max(tl_in + one_frame(fps));
+    let mut overrides = std::collections::BTreeMap::new();
+    for (key, v) in fields {
+        let (pname, p) = t.parameters.iter().find(|(n, p)| n.eq_ignore_ascii_case(key.trim()) || p.label.eq_ignore_ascii_case(key.trim())).ok_or_else(|| {
+            let names: Vec<&str> = t.parameters.values().map(|p| p.label.as_str()).collect();
+            refuse(i, format!("\"{}\" has no parameter \"{key}\"", t.name), if names.is_empty() { "it has no parameters".to_string() } else { format!("its parameters are {}", names.join(", ")) })
+        })?;
+        let value = template_value(p, v).ok_or_else(|| refuse(i, format!("\"{key}\" can't take {v}"), "give a text or a choice as words, a colour as #rrggbb, a number or true/false"))?;
+        p.validate(&value).map_err(|e| refuse(i, e, "title_templates lists each template's parameters"))?;
+        overrides.insert(pname.clone(), value);
+    }
+    let instance = klipp_core::TemplateInstance {
+        template_id: t.id,
+        bindings: t.bindings.iter().map(|b| (b.parameter.clone(), b.property.clone())).collect(),
+        overrides,
+        media_slots: Default::default(),
+    };
+    klipp_timeline::flatten::validate_template_instance(&instance, composition).map_err(|e| refuse(i, e, "save the template again"))?;
+    let mut edits = Vec::new();
+    if !placed.missing.is_empty() {
+        edits.push(EditCommand::AddSequences { sequences: placed.missing.clone() });
+    }
+    let free = |ti: usize| {
+        let tr = &seq.tracks[ti];
+        tr.kind == TrackKind::Video && !tr.locked && !tr.clips.iter().any(|c| c.timeline_in < tl_out && c.timeline_out > tl_in)
+    };
+    let track_index = match track {
+        Some(r) => {
+            let ti = resolve_track(seq, r, i)?;
+            if !free(ti) {
+                return Err(refuse(i, format!("track {ti} is not a free video track there"), "name an unlocked video track with room, or leave track out"));
+            }
+            ti
+        }
+        None => match (0..seq.tracks.len()).find(|&ti| free(ti)) {
+            Some(ti) => ti,
+            None => {
+                let n = seq.tracks.iter().filter(|t| t.kind == TrackKind::Video).count() + 1;
+                edits.push(EditCommand::AddTrack { index: 0, track: klipp_timeline::Track::new(&format!("Video {n}"), TrackKind::Video) });
+                0
+            }
+        },
+    };
+    let mut clip = Clip::precomposition(composition.id, tl_in, tl_out);
+    clip.kind = ClipKind::TemplatePrecomposition { sequence_id: composition.id, template_instance: instance };
+    let id = clip.id;
+    edits.push(EditCommand::LegacyAppendClip { clip, track_index });
+    let copied = if placed.missing.is_empty() { String::new() } else { format!(", its {} sequence{} copied into the project", placed.missing.len(), if placed.missing.len() == 1 { "" } else { "s" }) };
+    Ok((format!("template \"{}\" at {:.2}-{:.2} s on track {track_index}{copied}", t.name, secs(tl_in), secs(tl_out)), EditCommand::Batch(edits), vec![id]))
 }
 
 /// New words for a title or a caption: the clip's first text box takes
@@ -13027,6 +13135,7 @@ mod tests {
             track: None,
             fields: serde_json::from_value(fields).unwrap(),
             data: data.map(|d| Box::new(d.clone())),
+            composition: None,
         };
         let plan = resolve(&seq, &pool, &[op(serde_json::json!({ "text 1": "John Roe", "Text 1 colour": "#ff8800", "Speed": 2.0 }), Some(&td))]).unwrap();
         assert!(plan.steps[0].what.starts_with("template \"Guest\" at 1.00-3.00 s"), "{}", plan.steps[0].what);
@@ -13168,7 +13277,7 @@ mod tests {
             let op: Op = serde_json::from_value(serde_json::json!({"op": "template", "name": "Name Bar", "at": {"secs": 1.0}, "secs": 3.0})).unwrap();
             let Op::Template { name, at, secs, track, fields, .. } = op else { unreachable!() };
             let data = klipp_timeline::title_library::builtin("Name Bar").map(|t| Box::new(t.data()));
-            let plan = resolve(seq, &pool, &[Op::Template { name, at, secs, track, fields, data }]).unwrap();
+            let plan = resolve(seq, &pool, &[Op::Template { name, at, secs, track, fields, data, composition: None }]).unwrap();
             let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!("a title clip") };
             let td = clip.title_data().unwrap();
             let k = td.field_named("Name").expect("the name");
@@ -13192,7 +13301,7 @@ mod tests {
         td.objects[0].fx_mut().motion.enter = Some(klipp_core::title_motion::Motion::new(klipp_core::title_motion::MotionKind::Rise).duration(0.5));
         let td = klipp_timeline::template_for_save(&td, 2.0, None).unwrap();
         let enter = |secs: f64, fields: serde_json::Value| {
-            let op = Op::Template { name: "Hi".into(), at: Anchor::Secs(1.0), secs, track: None, fields: serde_json::from_value(fields).unwrap(), data: Some(Box::new(td.clone())) };
+            let op = Op::Template { name: "Hi".into(), at: Anchor::Secs(1.0), secs, track: None, fields: serde_json::from_value(fields).unwrap(), data: Some(Box::new(td.clone())), composition: None };
             let plan = resolve(&seq, &pool, &[op]).unwrap();
             let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!("a title clip") };
             clip.title_data().unwrap().objects[0].fx().motion.enter.unwrap().duration_secs
@@ -13200,6 +13309,45 @@ mod tests {
         assert!((enter(2.0, serde_json::json!({})) - 0.5).abs() < 1e-6, "placed for as long as made: as made");
         assert!((enter(4.0, serde_json::json!({})) - 1.0).abs() < 1e-6, "twice as long: twice as slow");
         assert!((enter(4.0, serde_json::json!({ "Duration": 1.0 })) - 0.25).abs() < 1e-6, "a Duration given wins");
+    }
+
+    /// #2757: a composition template placed by the template op in a
+    /// project without its composition: the sequence copied in and the
+    /// clip laid as one, its parameter set, in one step that undo takes
+    /// back whole; a parameter it has not, or a value of the wrong kind,
+    /// refused.
+    #[test]
+    fn a_composition_template_places_into_a_project_without_it() {
+        use klipp_timeline::composition_template::{CompositionTemplate, TemplateBinding, TemplateParameter};
+        let (seq, pool, ..) = fixture();
+        let mut card = Sequence::new_default();
+        let title = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Launch".into(), ..Default::default() });
+        card.tracks[0].clips.push(Clip { kind: ClipKind::Title(title), ..Clip::gap(tc(0.0), tc(3.0)) });
+        let mut t = CompositionTemplate::new("Card", card.id.0);
+        t.parameters.insert("text".into(), TemplateParameter { label: "Headline".into(), default: klipp_core::TemplateValue::Text("Launch".into()), range: None, choices: vec![] });
+        t.bindings.push(TemplateBinding { parameter: "text".into(), property: "object:0.text".into() });
+        t.sequences = vec![card.clone()];
+        let placed = PlacedComposition { template: t, missing: vec![card.clone()] };
+        let op = |fields: serde_json::Value| Op::Template { name: "Card".into(), at: Anchor::Secs(1.0), secs: 3.0, track: None, fields: serde_json::from_value(fields).unwrap(), data: None, composition: Some(Box::new(placed.clone())) };
+        let plan = resolve(&seq, &pool, &[op(serde_json::json!({ "Headline": "Ship it" }))]).unwrap();
+        assert!(plan.steps[0].what.contains("copied into the project"), "{}", plan.steps[0].what);
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&plan.steps[0].edit);
+        assert_eq!(view.sequences.len(), 2, "the composition copied in");
+        let clip = view.sequences[0].all_clips().find(|c| matches!(c.kind, ClipKind::TemplatePrecomposition { .. })).expect("placed as one clip").clone();
+        let ClipKind::TemplatePrecomposition { sequence_id, template_instance } = &clip.kind else { unreachable!() };
+        assert_eq!(*sequence_id, card.id);
+        assert_eq!(template_instance.overrides.get("text"), Some(&klipp_core::TemplateValue::Text("Ship it".into())));
+        view.apply_inverse(&plan.steps[0].edit);
+        assert_eq!(view.sequences.len(), 1, "undo takes the copy back");
+        assert!(!view.sequences[0].all_clips().any(|c| c.id == clip.id));
+
+        let why = |fields: serde_json::Value| resolve(&seq, &pool, &[op(fields)]).unwrap_err().to_string();
+        assert!(why(serde_json::json!({ "Logo": "x" })).contains("its parameters are Headline"));
+        assert!(why(serde_json::json!({ "Headline": 3 })).contains("can't take"));
     }
 
     /// #460: a heading at the top of a vertical frame stays whole inside
@@ -13896,6 +14044,7 @@ mod tests {
             track: None,
             fields: [("Handle".to_string(), serde_json::json!(value))].into_iter().collect(),
             data: klipp_timeline::title_library::builtin("Handle").map(|t| Box::new(t.data())),
+            composition: None,
         };
         for value in ["harbourfilms", "@harbourfilms", "@yourhandle", "@0"] {
             let plan = resolve(&seq, &pool, &[handle(value)]).unwrap_or_else(|r| panic!("{value}: {}", r.why));
