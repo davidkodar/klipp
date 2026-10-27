@@ -1950,6 +1950,13 @@ fn show_context_menu(
         cmds.push(AppCommand::TranscribeClip { media_id });
         ui.close_menu();
     }
+    if !offline && menu_item(ui, "Make Shorts\u{2026}", "")
+        .on_hover_text("Find the moments that stand on their own as vertical shorts, review them, and build each as a sequence of its own.")
+        .clicked()
+    {
+        cmds.push(AppCommand::OpenShortsDialog { media_id });
+        ui.close_menu();
+    }
     // Relink — only shown for offline items, sits at the top so it's
     // the first action a user sees when reaching for a missing clip.
     if offline {

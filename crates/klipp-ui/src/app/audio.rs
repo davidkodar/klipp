@@ -791,6 +791,17 @@ impl KlippApp {
                     self.normalize_clips(clip_ids, *settings);
                     true
                 }
+                AppCommand::OpenShortsDialog { media_id } => {
+                    match self.state.media_pool.get(media_id) {
+                        Some(item) => self.state.shorts_dialog = Some(crate::shorts_dialog::ShortsDialog::new(*media_id, item.filename.clone())),
+                        None => self.state.toast.show("That media is no longer in the pool"),
+                    }
+                    true
+                }
+                AppCommand::FillShort { media_id, pieces, hook } => {
+                    self.fill_short(*media_id, pieces, hook.as_deref());
+                    true
+                }
                 AppCommand::OpenMusicFitDialog { clip_id } => {
                     match crate::music_fit_dialog::MusicFitDialog::new(self.state.sequence(), *clip_id) {
                         Some(d) => self.state.music_fit_dialog = Some(d),
@@ -928,6 +939,30 @@ impl KlippApp {
             out.push(AppCommand::ShowToast { text });
             out
         });
+    }
+
+    /// The open sequence filled with a short of `pieces` of `media_id`
+    /// (#2720), then its sound brought to -14 LUFS by the file's measured
+    /// loudness, never past -1 dBTP: the gain set here, at once, since
+    /// the next short's sequence opens straight after.
+    fn fill_short(&mut self, media_id: klipp_core::MediaId, pieces: &[(f64, f64)], hook: Option<&str>) {
+        let ops = klipp_document::shorts::short_ops(media_id, pieces, hook, 1.15);
+        self.transcript_source.sync(self.state.analysis_generation);
+        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let plan = match klipp_document::ops::resolve_with(seq, &self.state.media_pool, &ops, &self.transcript_source) {
+            Ok(plan) => plan,
+            Err(r) => {
+                self.state.toast.show(format!("Short not made: {} {}", r.why, r.hint));
+                return;
+            }
+        };
+        let edits: Vec<klipp_document::history::EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
+        self.apply_edits_as_one(&edits, "Make Short");
+        let audio = self.state.media_pool.get(&media_id).and_then(|m| klipp_analysis::report::MediaAnalysis::load(&m.path).audio);
+        let Some(gain_db) = audio.and_then(|a| Some((-14.0 - a.integrated_lufs?).min(-1.0 - a.true_peak_dbtp.unwrap_or(-1.0)))) else { return };
+        let gain = 10f32.powf(gain_db / 20.0);
+        let sounds: Vec<(klipp_core::ClipId, f32)> = self.state.sequence().tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Audio).flat_map(|t| &t.clips).map(|c| (c.id, gain)).collect();
+        self.apply_clip_gains(&sounds);
     }
 
     /// Read a music clip's track and plan its fit off the UI thread, from
