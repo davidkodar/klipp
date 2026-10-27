@@ -185,7 +185,7 @@ pub fn fetched_faces(name: &str) -> Option<Vec<FontInfo>> {
 /// Where a template pack puts a font it carries (#2757): `packs/<family>`
 /// under `root`, beside the fetched catalogue families.
 pub fn pack_font_dir_in(root: &Path, family: &str) -> PathBuf {
-    root.join("packs").join(family.trim().to_lowercase().replace(' ', "-"))
+    root.join("packs").join(klipp_core::safe_name(family))
 }
 
 /// The faces a template pack carried in for `name` under `root`.

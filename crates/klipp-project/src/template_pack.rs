@@ -177,9 +177,55 @@ fn repath(titles: &mut [TemplateFile], templates: &mut [CompositionTemplate], ma
     }
 }
 
-fn slug(s: &str) -> String {
-    let s: String = s.trim().to_lowercase().chars().map(|c| if c.is_alphanumeric() || c == '.' || c == '-' { c } else { '-' }).collect();
-    if s.is_empty() { "pack".into() } else { s }
+/// The most one entry of a pack may hold: a picture or a font.
+pub const MAX_ENTRY_BYTES: u64 = 100 * 1024 * 1024;
+
+/// The most a whole pack may unpack to.
+pub const MAX_PACK_BYTES: u64 = 500 * 1024 * 1024;
+
+/// A file name from a shared file, safe to join: its stem and extension
+/// each a [`klipp_core::safe_name`].
+fn safe_file(name: &str) -> String {
+    let leaf = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    match leaf.rsplit_once('.') {
+        Some((stem, ext)) if !stem.trim_matches('.').is_empty() => format!("{}.{}", klipp_core::safe_name(stem), klipp_core::safe_name(ext)),
+        _ => klipp_core::safe_name(leaf),
+    }
+}
+
+/// `root` joined with `parts`, refused unless it stays inside `root`:
+/// every part one plain path component.
+fn inside(root: &Path, parts: &[&str]) -> Result<PathBuf, String> {
+    let mut path = root.to_path_buf();
+    for part in parts {
+        let mut c = Path::new(part).components();
+        match (c.next(), c.next()) {
+            (Some(std::path::Component::Normal(_)), None) => path.push(part),
+            _ => return Err(format!("the pack names a path outside its folder: {part:?}")),
+        }
+    }
+    Ok(path)
+}
+
+/// Reads one entry of the pack, at most [`MAX_ENTRY_BYTES`] (or `cap`)
+/// and within what is left of [`MAX_PACK_BYTES`]; `None` when the pack
+/// has no such entry.
+fn read_entry(zip: &mut zip::ZipArchive<std::fs::File>, path: &str, cap: u64, left: &mut u64) -> Result<Option<Vec<u8>>, String> {
+    let entry = match zip.by_name(path) {
+        Ok(e) => e,
+        Err(_) => return Ok(None),
+    };
+    let limit = cap.min(*left);
+    if entry.size() > limit {
+        return Err(format!("{path} is {} MB unpacked, more than a pack may hold ({} MB)", entry.size() / (1024 * 1024), limit / (1024 * 1024)));
+    }
+    let mut bytes = Vec::new();
+    entry.take(limit + 1).read_to_end(&mut bytes).map_err(|e| format!("{path}: {e}"))?;
+    if bytes.len() as u64 > limit {
+        return Err(format!("{path} unpacks past what a pack may hold ({} MB)", limit / (1024 * 1024)));
+    }
+    *left -= bytes.len() as u64;
+    Ok(Some(bytes))
 }
 
 /// A picture's licence: given by its path or file name in `licences`, or
@@ -225,7 +271,7 @@ pub fn export_pack(out: &Path, name: &str, mut titles: Vec<TemplateFile>, mut te
     for (n, p) in pictures.iter().enumerate() {
         let path = Path::new(p);
         let bytes = std::fs::read(path).map_err(|e| format!("picture {}: {e}", path.display()))?;
-        let file = format!("assets/pictures/{}-{}", n + 1, slug(path.file_name().and_then(|n| n.to_str()).unwrap_or("picture")));
+        let file = format!("assets/pictures/{}-{}", n + 1, safe_file(path.file_name().and_then(|n| n.to_str()).unwrap_or("picture")));
         let licence = format!("{file}.licence.txt");
         put(&mut zip, &file, &bytes)?;
         put(&mut zip, &licence, picture_licence(path, licences).unwrap_or_default().as_bytes())?;
@@ -240,11 +286,11 @@ pub fn export_pack(out: &Path, name: &str, mut titles: Vec<TemplateFile>, mut te
             named.push(family.clone());
             manifest_fonts.push(PackFont { family: family.clone(), catalogue: true, files: Vec::new(), licence: None });
         } else if let Some((files, licence)) = fonts.carry(family) {
-            let dir = format!("assets/fonts/{}", slug(family));
+            let dir = format!("assets/fonts/{}", klipp_core::safe_name(family));
             let mut packed = Vec::new();
             for f in &files {
                 let bytes = std::fs::read(f).map_err(|e| format!("font {}: {e}", f.display()))?;
-                let at = format!("{dir}/{}", f.file_name().and_then(|n| n.to_str()).unwrap_or("font"));
+                let at = format!("{dir}/{}", safe_file(f.file_name().and_then(|n| n.to_str()).unwrap_or("font")));
                 put(&mut zip, &at, &bytes)?;
                 packed.push(at);
             }
@@ -278,38 +324,41 @@ pub fn export_pack(out: &Path, name: &str, mut titles: Vec<TemplateFile>, mut te
 /// kept as it is unless `replace`. Pictures go to a folder of the pack's
 /// own, carried fonts beside the catalogue's.
 pub fn import_pack(pack: &Path, to: &PackTargets, fonts: &dyn FontLookup, replace: bool) -> Result<(String, ImportReport), String> {
+    import_pack_within(pack, to, fonts, replace, MAX_ENTRY_BYTES, MAX_PACK_BYTES)
+}
+
+/// [`import_pack`] with its caps given: `entry` bytes a file, `total`
+/// the pack.
+fn import_pack_within(pack: &Path, to: &PackTargets, fonts: &dyn FontLookup, replace: bool, entry: u64, total: u64) -> Result<(String, ImportReport), String> {
     let file = std::fs::File::open(pack).map_err(|e| format!("{}: {e}", pack.display()))?;
     let mut zip = zip::ZipArchive::new(file).map_err(|e| format!("not a template pack: {e}"))?;
-    let read = |zip: &mut zip::ZipArchive<std::fs::File>, path: &str| -> Option<Vec<u8>> {
-        let mut entry = zip.by_name(path).ok()?;
-        let mut bytes = Vec::new();
-        entry.read_to_end(&mut bytes).ok()?;
-        Some(bytes)
-    };
-    let json = read(&mut zip, "pack.json").ok_or("not a template pack: it has no pack.json")?;
+    // A pack is someone else's file: every entry read within its caps,
+    // every path written built from safe names and checked to stay in
+    // its folder.
+    let mut left = total;
+    let json = read_entry(&mut zip, "pack.json", entry, &mut left)?.ok_or("not a template pack: it has no pack.json")?;
     let mut manifest: PackManifest = serde_json::from_slice(&json).map_err(|e| format!("pack.json does not read: {e}"))?;
     if manifest.format > PACK_FORMAT {
         return Err(format!("made by a newer Klipp (pack format {}, this one reads {PACK_FORMAT})", manifest.format));
     }
     let mut report = ImportReport::default();
     // Pictures, into a folder of the pack's own.
-    let folder = to.assets.join(slug(&manifest.name));
+    let pack_folder = klipp_core::safe_name(&manifest.name);
     let mut map = BTreeMap::new();
     for p in &manifest.pictures {
-        // Only the pack's own assets folder: never a path out of it.
-        let safe = p.file.starts_with("assets/pictures/") && !p.file.contains("..");
-        match read(&mut zip, &p.file).filter(|_| safe) {
+        let leaf = safe_file(&p.file);
+        let bytes = if p.file.starts_with("assets/pictures/") { read_entry(&mut zip, &p.file, entry, &mut left)? } else { None };
+        match bytes {
             Some(bytes) => {
-                std::fs::create_dir_all(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
-                let name = Path::new(&p.file).file_name().and_then(|n| n.to_str()).unwrap_or("picture").to_string();
-                let at = folder.join(&name);
+                let at = inside(&to.assets, &[&pack_folder, &leaf])?;
+                std::fs::create_dir_all(at.parent().unwrap_or(&to.assets)).map_err(|e| format!("{}: {e}", to.assets.display()))?;
                 std::fs::write(&at, bytes).map_err(|e| format!("{}: {e}", at.display()))?;
-                if let Some(licence) = read(&mut zip, &p.licence) {
-                    let _ = std::fs::write(folder.join(format!("{name}.licence.txt")), licence);
+                if let Some(licence) = read_entry(&mut zip, &p.licence, entry, &mut left)? {
+                    std::fs::write(inside(&to.assets, &[&pack_folder, &format!("{leaf}.licence.txt")])?, licence).map_err(|e| e.to_string())?;
                 }
                 map.insert(p.file.clone(), at.to_string_lossy().into_owned());
             }
-            None => report.fallbacks.push(format!("picture {} is not in the pack: its layer is left empty", p.file)),
+            None => report.fallbacks.push(format!("picture {leaf} is not in the pack: its layer is left empty")),
         }
     }
     repath(&mut manifest.titles, &mut manifest.templates, &map);
@@ -318,13 +367,13 @@ pub fn import_pack(pack: &Path, to: &PackTargets, fonts: &dyn FontLookup, replac
         if fonts.available(&f.family) {
             continue;
         }
-        let dir = to.fonts.join("packs").join(f.family.trim().to_lowercase().replace(' ', "-"));
-        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let family = klipp_core::safe_name(&f.family);
         let mut any = false;
-        for path in f.files.iter().chain(f.licence.iter()).filter(|p| p.starts_with("assets/fonts/") && !p.contains("..")) {
-            if let Some(bytes) = read(&mut zip, path) {
-                let name = Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or("font");
-                std::fs::write(dir.join(name), bytes).map_err(|e| format!("{}: {e}", dir.display()))?;
+        for path in f.files.iter().chain(f.licence.iter()).filter(|p| p.starts_with("assets/fonts/")) {
+            if let Some(bytes) = read_entry(&mut zip, path, entry, &mut left)? {
+                let at = inside(&to.fonts, &["packs", &family, &safe_file(path)])?;
+                std::fs::create_dir_all(at.parent().unwrap_or(&to.fonts)).map_err(|e| format!("{}: {e}", to.fonts.display()))?;
+                std::fs::write(&at, bytes).map_err(|e| format!("{}: {e}", at.display()))?;
                 any |= f.files.contains(path);
             }
         }
@@ -454,8 +503,8 @@ mod tests {
         let installed = to.assets.join("mine").join("1-photo.png");
         assert_eq!(std::fs::read(&installed).unwrap(), b"PNG-BYTES");
         assert_eq!(std::fs::read_to_string(to.assets.join("mine").join("1-photo.png.licence.txt")).unwrap(), "CC0, the author");
-        assert_eq!(std::fs::read(to.fonts.join("packs/house-sans/HouseSans.ttf")).unwrap(), b"FONT-BYTES");
-        assert!(to.fonts.join("packs/house-sans/LICENCE.txt").is_file());
+        assert_eq!(std::fs::read(to.fonts.join("packs/house-sans/housesans.ttf")).unwrap(), b"FONT-BYTES");
+        assert!(to.fonts.join("packs/house-sans/licence.txt").is_file());
 
         // The templates as made, the picture's path now the installed one.
         let titles = klipp_timeline::read_templates(&to.titles);
@@ -509,5 +558,67 @@ mod tests {
         assert!(report.text("Broken").contains("missing: picture"));
         assert!(import_pack(&write(9), &to, &fonts, false).unwrap_err().contains("newer Klipp"));
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A hostile pack (#2757): a name of dots, a font family and picture
+    /// and font paths that climb out with "../". Everything lands inside
+    /// the targets, under safe names, and nothing beside them; an entry
+    /// past the cap is refused, named, before it is unpacked.
+    #[test]
+    fn a_hostile_pack_stays_inside_its_folders() {
+        use zip::write::{SimpleFileOptions, ZipWriter};
+        let sandbox = dir("hostile");
+        let path = sandbox.join("evil.klipppack");
+        let mut zip = ZipWriter::new(std::fs::File::create(&path).unwrap());
+        let o = SimpleFileOptions::default();
+        let evil_picture = "assets/pictures/../../../../evil.png";
+        let evil_font = "assets/fonts/../../../evil.ttf";
+        let manifest = PackManifest {
+            format: 1,
+            name: "..".into(),
+            written_by: String::new(),
+            titles: vec![TemplateFile { name: "../../Card".into(), category: String::new(), data: title(&["../../x"], Some(Path::new(evil_picture))), format: 1 }],
+            templates: Vec::new(),
+            fonts: vec![PackFont { family: "../../x".into(), catalogue: false, files: vec![evil_font.into()], licence: Some("assets/fonts/../../LICENCE".into()) }],
+            pictures: vec![PackPicture { file: evil_picture.into(), licence: "assets/pictures/../../../evil.txt".into() }],
+        };
+        for (name, bytes) in [("pack.json", serde_json::to_vec(&manifest).unwrap()), (evil_picture, b"PIC".to_vec()), (evil_font, b"FONT".to_vec()), ("assets/fonts/../../LICENCE", b"L".to_vec()), ("assets/pictures/../../../evil.txt", b"L".to_vec()), ("assets/pictures/big.png", vec![0u8; 3000])] {
+            zip.start_file(name, o).unwrap();
+            zip.write_all(&bytes).unwrap();
+        }
+        zip.finish().unwrap();
+        let root = sandbox.join("targets");
+        let to = PackTargets { titles: root.join("titles"), templates: root.join("templates"), assets: root.join("assets"), fonts: root.join("fonts") };
+        let fonts = Fonts { house: None, fonts: to.fonts.clone() };
+        let (_, report) = import_pack(&path, &to, &fonts, false).unwrap();
+        assert_eq!(report.fonts_added, ["../../x"]);
+        // Everything written is under the targets, at safe names.
+        let mut written = Vec::new();
+        fn walk(d: &Path, out: &mut Vec<PathBuf>) {
+            for e in std::fs::read_dir(d).into_iter().flatten().flatten() {
+                if e.path().is_dir() { walk(&e.path(), out) } else { out.push(e.path()) }
+            }
+        }
+        walk(&sandbox, &mut written);
+        let outside: Vec<&PathBuf> = written.iter().filter(|p| !p.starts_with(&root) && **p != path).collect();
+        assert!(outside.is_empty(), "written outside the targets: {outside:?}");
+        assert!(to.assets.join("item").join("evil.png").is_file(), "the pack's folder named safely: {written:?}");
+        assert!(to.fonts.join("packs").join("x").join("evil.ttf").is_file(), "{written:?}");
+        assert!(written.iter().all(|p| p.components().all(|c| c.as_os_str() != "..")));
+
+        // An entry past the cap is refused before it is unpacked.
+        let big = PackManifest { pictures: vec![PackPicture { file: "assets/pictures/big.png".into(), licence: String::new() }], fonts: Vec::new(), titles: Vec::new(), ..manifest };
+        let path = sandbox.join("big.klipppack");
+        let mut zip = ZipWriter::new(std::fs::File::create(&path).unwrap());
+        for (name, bytes) in [("pack.json", serde_json::to_vec(&big).unwrap()), ("assets/pictures/big.png", vec![0u8; 3000])] {
+            zip.start_file(name, o).unwrap();
+            zip.write_all(&bytes).unwrap();
+        }
+        zip.finish().unwrap();
+        let err = import_pack_within(&path, &to, &fonts, false, 2048, 1 << 20).unwrap_err();
+        assert!(err.contains("assets/pictures/big.png") && err.contains("more than a pack may hold"), "{err}");
+        let err = import_pack_within(&path, &to, &fonts, false, 1 << 20, 2048).unwrap_err();
+        assert!(err.contains("more than a pack may hold"), "the whole pack's cap too: {err}");
+        let _ = std::fs::remove_dir_all(&sandbox);
     }
 }
