@@ -100,3 +100,31 @@ fn a_reversed_clip_exports_last_frame_first() {
         assert_eq!(got, want, "speed {speed}: lumas {lumas:?}, want levels {:?}", want.iter().map(|n| level(*n)).collect::<Vec<_>>());
     }
 }
+
+/// #2772: reversed at half speed with its in-between frames blended or
+/// followed by their motion, every exported frame is a new picture: the
+/// ones between two source frames lie between their levels, as forward,
+/// rather than repeating the frame before.
+#[test]
+fn a_reversed_slowed_clip_draws_its_in_between_frames() {
+    let Some(src) = ramp_source() else {
+        eprintln!("skipping: ffmpeg could not write the source");
+        return;
+    };
+    let tc = |f| RationalTime::from_frames(f, 25);
+    for blend_mode in [1, 2] {
+        let id = MediaId::new();
+        let mut clip = klipp_timeline::Clip::media(id, tc(0), tc(12), tc(2), tc(8));
+        clip.speed = -0.5;
+        let clip = klipp_timeline::test_clip::TestClip::of(clip).effects([klipp_effects::BuiltinEffect::SpeedRamp { speed: 1.0, blend_mode }]).build();
+        let out = tmp(&format!("reversed-blend-{blend_mode}.mp4"));
+        export(clip, (id, MediaFile { path: src.clone(), log_format: None, source_rotation: 0, ..Default::default() }), 12, &out);
+        let lumas = frame_lumas(&out);
+        assert_eq!(lumas.len(), 12);
+        // The last frame shows source frame 2, the first of the range,
+        // with nothing before it to blend toward; every other step moves.
+        let repeats = lumas.windows(2).filter(|w| (w[0] - w[1]).abs() < 4.0).count();
+        assert!(repeats <= 1, "blend mode {blend_mode}: {repeats} repeated frames in {lumas:?}");
+        assert!(lumas.windows(2).all(|w| w[1] <= w[0] + 1.0), "blend mode {blend_mode}: it walks back: {lumas:?}");
+    }
+}

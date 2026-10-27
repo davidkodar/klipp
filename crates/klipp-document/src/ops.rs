@@ -1523,13 +1523,21 @@ pub enum Op {
     },
     /// A speed ramp over the clip: from `from`× to `to`× (0.1 to 8) over
     /// `secs` from the clip's start (the whole clip when left out), then
-    /// holding `to`. The clip's length on the timeline follows.
+    /// holding `to`. The clip's length on the timeline follows: with
+    /// `ripple` the clips after it move by the change, without it a ramp
+    /// that would run over the next clip is refused (#2772).
+    /// `interpolation` is [`Op::Retime`]'s, for the slow part's frames
+    /// (#2773).
     Ramp {
         clip_id: ClipRef,
         from: f64,
         to: f64,
         #[serde(default)]
         secs: Option<f64>,
+        #[serde(default)]
+        ripple: bool,
+        #[serde(default)]
+        interpolation: Option<String>,
     },
     /// Put `clips` in the grade group `group`, made if there is none by
     /// that name, taking each out of any group it was in (#237); with
@@ -3766,9 +3774,13 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let at = resolve_anchor(seq, fps, at, i)?;
             highlight(seq, fps, i, at, *hold, [*x, *y, *w, *h], kind, color.as_deref(), *stroke, track.as_ref())
         }
-        Op::Ramp { clip_id, from, to, secs: over } => {
-            let (ti, ci, clip) = resolve_clip(seq, fps, clip_id, i)?;
-            ramp(seq, pool, fps, i, ti, ci, clip, *from, *to, *over)
+        Op::Ramp { clip_id, from, to, secs: over, ripple, interpolation } => {
+            let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            let (what, edit, touched) = ramp(seq, pool, fps, i, ti, clip, *from, *to, *over, *ripple)?;
+            match interpolation.as_deref().map(|how| interpolation_edit(seq, pool, i, clip, how)).transpose()?.flatten() {
+                Some((how, frames)) => Ok((format!("{what}; {how}"), EditCommand::Batch(vec![edit, frames]), touched)),
+                None => Ok((what, edit, touched)),
+            }
         }
         Op::Look { clip_id, on: Some(GradeOn::Track { track, from, to, itself: true }), lut_path, name, opacity, remove } => {
             let (ti, target) = track_grade_target(seq, fps, i, track, from.as_ref(), to.as_ref(), clip_id.as_ref())?;
@@ -8461,7 +8473,7 @@ fn reach(scale: f32, dim: f32) -> f32 {
 /// of timeline, then `to`; the clip's end on the timeline follows the
 /// integral so the whole stretch of the file is still played.
 #[allow(clippy::too_many_arguments)]
-fn ramp(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, ci: usize, clip: &Clip, from: f64, to: f64, over: Option<f64>) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+fn ramp(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, clip: &Clip, from: f64, to: f64, over: Option<f64>, ripple: bool) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     if seq.tracks[ti].locked {
         return Err(refuse(i, format!("track {ti} is locked"), "unlock it first"));
     }
@@ -8491,22 +8503,28 @@ fn ramp(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, ci: usi
     if new_out <= clip.timeline_in + one_frame(fps) {
         return Err(refuse(i, "the clip would be shorter than a frame", "use slower speeds"));
     }
-    let runs_into = seq.tracks[ti].clips.get(ci + 1).filter(|n| new_out > n.timeline_in).map(|n| clip_name(seq, pool, n));
+    let Rippled { moves, ids: moved, later, delta, partners } = ripple_after(seq, pool, fps, i, &[(ti, clip, new_out)], ripple, "ramp")?;
     let old_state = crate::history::KeyframeSnapshot::from_clip(clip);
     let mut new_state = old_state.clone();
     new_state.speed_keyframes = kfs;
     let what = format!(
-        "ramp {} from {from:.2}x to {to:.2}x over {over:.2} s (now {:.2}-{:.2} s){}",
+        "ramp {} from {from:.2}x to {to:.2}x over {over:.2} s (now {:.2}-{:.2} s){}{}",
         clip_name(seq, pool, clip),
         secs(clip.timeline_in),
         secs(new_out),
-        runs_into.map(|n| format!("; it now overlaps {n} — move or ripple to close it")).unwrap_or_default(),
+        if later > 0 { format!("; {later} later clip(s) moved {:+.2} s", secs(delta)) } else { String::new() },
+        if partners == 0 { String::new() } else { format!(", {partners} linked to them on other tracks with them") },
     );
-    let edit = EditCommand::Batch(vec![
-        EditCommand::EditKeyframes { clip_id: clip.id, linked_clip_id: None, description: "Speed Ramp", old_state, new_state, old_linked_state: None, new_linked_state: None },
-        EditCommand::SetClipSpeed { clip_id: clip.id, old_speed: clip.speed, new_speed: clip.speed, old_timeline_out: clip.timeline_out, new_timeline_out: new_out },
-    ]);
-    Ok((what, edit, vec![clip.id]))
+    let edit = EditCommand::Batch(
+        [
+            EditCommand::EditKeyframes { clip_id: clip.id, linked_clip_id: None, description: "Speed Ramp", old_state, new_state, old_linked_state: None, new_linked_state: None },
+            EditCommand::SetClipSpeed { clip_id: clip.id, old_speed: clip.speed, new_speed: clip.speed, old_timeline_out: clip.timeline_out, new_timeline_out: new_out },
+        ]
+        .into_iter()
+        .chain(moves)
+        .collect(),
+    );
+    Ok((what, edit, std::iter::once(clip.id).chain(moved).collect()))
 }
 
 /// A highlight: shapes on a title clip over the region, faded in and out.
@@ -9348,6 +9366,16 @@ fn interpolation_edit(seq: &Sequence, pool: &MediaPool, i: usize, clip: &Clip, h
     Ok(Some((format!("{what} on {}", clip_name(seq, pool, clip)), edit)))
 }
 
+/// How `clip_id`'s in-between frames are drawn, `how` as the retime op's
+/// `interpolation`, for the ramp's inspector (#2773): `None` when that is
+/// what it already does.
+pub fn interpolation_at(seq: &Sequence, pool: &MediaPool, clip_id: ClipId, how: &str) -> Result<Option<(String, EditCommand)>, Refusal> {
+    let Some((_, _, clip)) = find_clip(seq, clip_id) else {
+        return Err(refuse(0, "no such clip", "name a clip on the timeline"));
+    };
+    interpolation_edit(seq, pool, 0, clip, how)
+}
+
 /// A clip's speed set to `speed` — negative plays it reversed — for the
 /// retime op and the Speed dialog alike: what [`Op::Retime`] resolves to.
 /// No sequence is changed until the returned command is applied.
@@ -9463,45 +9491,32 @@ fn replace_media(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip: &Cl
 /// `ripple`; without it, a clip grown into the next one is refused: laid
 /// over it, it hid that clip and its grade in the viewer and the export
 /// (#639).
-fn retime(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id: ClipId, speed: f64, ripple: bool) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
-    let Some((ti, _, clip)) = find_clip(seq, clip_id) else {
-        return Err(refuse(i, "no such clip", "name a clip on the timeline"));
-    };
-    if !matches!(clip.kind, ClipKind::Media { .. }) {
-        return Err(refuse(i, format!("{} cannot be retimed", clip_name(seq, pool, clip)), "retime a media clip"));
-    }
-    let (lo, hi) = (klipp_timeline::SPEED_MIN, klipp_timeline::SPEED_MAX);
-    if !speed.is_finite() || !(lo..=hi).contains(&speed.abs()) {
-        return Err(refuse(i, format!("a speed of {speed}"), format!("give speed between {lo} and {hi}, negative to play the clip reversed")));
-    }
-    // The clip, and the clip it is linked to.
-    let mut members: Vec<(usize, &Clip)> = vec![(ti, clip)];
-    if let Some((pti, _, p)) = clip.linked_clip_id.and_then(|lid| find_clip(seq, lid)).filter(|(_, _, p)| matches!(p.kind, ClipKind::Media { .. })) {
-        members.push((pti, p));
-    }
-    // The speed changes, then the clips after them moved.
-    let mut speeds = Vec::new();
+/// What [`ripple_after`] moves.
+struct Rippled {
+    moves: Vec<EditCommand>,
+    ids: Vec<ClipId>,
+    /// How many later clips moved, and by how much.
+    later: usize,
+    delta: Timecode,
+    /// How many clips linked to them moved with them.
+    partners: usize,
+}
+
+/// The clips after `members` (each a clip, its track and its new end)
+/// moved by their change in length with `ripple`, and the clips linked
+/// to them on other tracks with them (#2473); without it, a member that
+/// would run over the next clip on its track is refused (`verb` names
+/// the op in the refusals). `members` is never empty.
+fn ripple_after(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, members: &[(usize, &Clip, Timecode)], ripple: bool, verb: &str) -> Result<Rippled, Refusal> {
     let mut moves = Vec::new();
     let mut ids = Vec::new();
     let mut moved_later = 0;
     let mut rippled: Vec<(&Clip, Timecode)> = Vec::new();
     let mut deltas: Vec<Timecode> = Vec::new();
-    let mut new_out_of_clip = clip.timeline_out;
-    for &(mti, m) in &members {
-        if seq.tracks[mti].locked {
-            return Err(refuse(i, format!("track {mti} is locked"), "unlock it first"));
-        }
-        let new_len_secs = secs(m.source_out - m.source_in) / speed.abs();
-        let new_out = m.timeline_in + snap(new_len_secs, fps);
-        if new_out <= m.timeline_in + one_frame(fps) {
-            return Err(refuse(i, "the clip would be shorter than a frame", "use a smaller speed"));
-        }
-        if m.id == clip.id {
-            new_out_of_clip = new_out;
-        }
+    for &(mti, m, new_out) in members {
         let delta = new_out - m.timeline_out;
         deltas.push(delta);
-        let later: Vec<&Clip> = seq.tracks[mti].clips.iter().filter(|c| c.id != m.id && !members.iter().any(|(_, x)| x.id == c.id) && c.timeline_in >= m.timeline_out).collect();
+        let later: Vec<&Clip> = seq.tracks[mti].clips.iter().filter(|c| c.id != m.id && !members.iter().any(|(_, x, _)| x.id == c.id) && c.timeline_in >= m.timeline_out).collect();
         if ripple {
             for c in &later {
                 moves.push(EditCommand::LegacyMoveClip {
@@ -9520,28 +9535,20 @@ fn retime(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id: ClipId,
             return Err(refuse(
                 i,
                 format!("{} would run over {} at {:.2} s on track {mti}", clip_name(seq, pool, m), clip_name(seq, pool, n), secs(n.timeline_in)),
-                "retime with ripple to move the clips after it, or make room first",
+                format!("{verb} with ripple to move the clips after it, or make room first"),
             ));
         }
-        speeds.push(EditCommand::SetClipSpeed {
-            clip_id: m.id,
-            old_speed: m.speed,
-            new_speed: speed,
-            old_timeline_out: m.timeline_out,
-            new_timeline_out: new_out,
-        });
-        ids.push(m.id);
     }
     // A picture and sound of different lengths (a J or L cut) change by
     // different amounts: rippled, their tracks would move apart.
     if ripple && moved_later > 0 && deltas.windows(2).any(|d| (secs(d[0]) - secs(d[1])).abs() > secs(one_frame(fps)) * 0.5) {
-        return Err(refuse(i, "the clip and its linked sound are different lengths (a J or L cut), so a ripple would move their tracks apart", "retime without ripple, after making room, or line the two up first"));
+        return Err(refuse(i, "the clip and its linked sound are different lengths (a J or L cut), so a ripple would move their tracks apart", format!("{verb} without ripple, after making room, or line the two up first")));
     }
     // A later clip's linked sound (or picture) on a track that does not
     // ripple goes with it: left behind, the pair played out of step by
     // the change (#2473). One that would land on a clip staying put is
     // refused rather than laid over it.
-    let moving: std::collections::HashSet<ClipId> = members.iter().map(|(_, m)| m.id).chain(rippled.iter().map(|(c, _)| c.id)).collect();
+    let moving: std::collections::HashSet<ClipId> = members.iter().map(|(_, m, _)| m.id).chain(rippled.iter().map(|(c, _)| c.id)).collect();
     let mut partners: Vec<(usize, &Clip, Timecode)> = Vec::new();
     for &(c, delta) in &rippled {
         let Some((pti, _, p)) = c.linked_clip_id.and_then(|lid| find_clip(seq, lid)) else { continue };
@@ -9551,7 +9558,7 @@ fn retime(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id: ClipId,
     }
     for &(pti, p, delta) in &partners {
         if seq.tracks[pti].locked {
-            return Err(refuse(i, format!("the sound linked to a later clip is on locked track {pti}"), "unlock it first, or retime without ripple"));
+            return Err(refuse(i, format!("the sound linked to a later clip is on locked track {pti}"), format!("unlock it first, or {verb} without ripple")));
         }
         let (new_in, new_out) = (p.timeline_in + delta, p.timeline_out + delta);
         let staying = |c: &&Clip| c.id != p.id && !moving.contains(&c.id) && !partners.iter().any(|(_, q, _)| q.id == c.id);
@@ -9559,7 +9566,7 @@ fn retime(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id: ClipId,
             return Err(refuse(
                 i,
                 format!("{}, linked to a later clip, would run over {} at {:.2} s on track {pti}", clip_name(seq, pool, p), clip_name(seq, pool, n), secs(n.timeline_in)),
-                "retime without ripple, or make room on that track first",
+                format!("{verb} without ripple, or make room on that track first"),
             ));
         }
         moves.push(EditCommand::LegacyMoveClip {
@@ -9572,6 +9579,49 @@ fn retime(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id: ClipId,
         });
         ids.push(p.id);
     }
+    Ok(Rippled { moves, ids, later: moved_later, delta: deltas[0], partners: partners.len() })
+}
+
+fn retime(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id: ClipId, speed: f64, ripple: bool) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    let Some((ti, _, clip)) = find_clip(seq, clip_id) else {
+        return Err(refuse(i, "no such clip", "name a clip on the timeline"));
+    };
+    if !matches!(clip.kind, ClipKind::Media { .. }) {
+        return Err(refuse(i, format!("{} cannot be retimed", clip_name(seq, pool, clip)), "retime a media clip"));
+    }
+    let (lo, hi) = (klipp_timeline::SPEED_MIN, klipp_timeline::SPEED_MAX);
+    if !speed.is_finite() || !(lo..=hi).contains(&speed.abs()) {
+        return Err(refuse(i, format!("a speed of {speed}"), format!("give speed between {lo} and {hi}, negative to play the clip reversed")));
+    }
+    // The clip, and the clip it is linked to.
+    let mut members: Vec<(usize, &Clip)> = vec![(ti, clip)];
+    if let Some((pti, _, p)) = clip.linked_clip_id.and_then(|lid| find_clip(seq, lid)).filter(|(_, _, p)| matches!(p.kind, ClipKind::Media { .. })) {
+        members.push((pti, p));
+    }
+    // The speed changes, then the clips after them moved.
+    let mut speeds = Vec::new();
+    let mut ends = Vec::new();
+    for &(mti, m) in &members {
+        if seq.tracks[mti].locked {
+            return Err(refuse(i, format!("track {mti} is locked"), "unlock it first"));
+        }
+        let new_len_secs = secs(m.source_out - m.source_in) / speed.abs();
+        let new_out = m.timeline_in + snap(new_len_secs, fps);
+        if new_out <= m.timeline_in + one_frame(fps) {
+            return Err(refuse(i, "the clip would be shorter than a frame", "use a smaller speed"));
+        }
+        ends.push((mti, m, new_out));
+        speeds.push(EditCommand::SetClipSpeed {
+            clip_id: m.id,
+            old_speed: m.speed,
+            new_speed: speed,
+            old_timeline_out: m.timeline_out,
+            new_timeline_out: new_out,
+        });
+    }
+    let new_out_of_clip = ends[0].2;
+    let Rippled { moves, ids: moved, later: moved_later, delta, partners } = ripple_after(seq, pool, fps, i, &ends, ripple, "retime")?;
+    let ids: Vec<ClipId> = members.iter().map(|(_, m)| m.id).chain(moved).collect();
     let what = format!(
         "retime {} to {:.2}x{} (now {:.2}-{:.2} s){}{}{}",
         clip_name(seq, pool, clip),
@@ -9580,8 +9630,8 @@ fn retime(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id: ClipId,
         secs(clip.timeline_in),
         secs(new_out_of_clip),
         if members.len() > 1 { ", its linked sound with it" } else { "" },
-        if moved_later > 0 { format!("; {moved_later} later clip(s) moved {:+.2} s", secs(deltas[0])) } else { String::new() },
-        if partners.is_empty() { String::new() } else { format!(", {} linked to them on other tracks with them", partners.len()) },
+        if moved_later > 0 { format!("; {moved_later} later clip(s) moved {:+.2} s", secs(delta)) } else { String::new() },
+        if partners == 0 { String::new() } else { format!(", {partners} linked to them on other tracks with them") },
     );
     let mut edits: Vec<EditCommand> = speeds.into_iter().chain(moves).collect();
     let edit = if edits.len() == 1 { edits.remove(0) } else { EditCommand::Batch(edits) };
@@ -13032,7 +13082,7 @@ mod tests {
         assert_eq!(td.objects.len(), 1);
         assert!(resolve(&seq, &pool, &[Op::Highlight { at: Anchor::Secs(1.0), secs: 2.0, x: 0.3, y: 0.3, w: 0.2, h: 0.1, kind: "arrow".into(), color: None, stroke: None, track: None }]).is_err());
 
-        let plan = resolve(&seq, &pool, &[Op::Ramp { clip_id: ClipRef::Id(a), from: 1.0, to: 2.0, secs: None }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::Ramp { clip_id: ClipRef::Id(a), from: 1.0, to: 2.0, secs: None, ripple: false, interpolation: None }]).unwrap();
         let EditCommand::Batch(edits) = &plan.steps[0].edit else { panic!("a batch") };
         let EditCommand::SetClipSpeed { new_timeline_out, .. } = &edits[1] else { panic!() };
         // Four seconds of source at 1x rising to 2x over its mean-speed length lands near 2.7 s.
@@ -16388,6 +16438,38 @@ mod tests {
         blocked.tracks[1].clips.push(Clip::media(media, tc(9.0), tc(10.0), tc(0.0), tc(1.0)));
         let refused = resolve(&blocked, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 0.5, fit: false, ripple: true, interpolation: None }]).unwrap_err();
         assert!(refused.why.contains("linked to a later clip, would run over"), "{}", refused.why);
+    }
+
+    /// #2772: a ramp that would grow into the next clip is refused as a
+    /// retime is; with ripple the clips after it, and the sound linked to
+    /// them, move by its change in length, and undo puts them back.
+    /// #2773: its interpolation draws the slow part's frames.
+    #[test]
+    fn a_ramp_ripples_or_is_refused_and_takes_an_interpolation() {
+        let (seq, pool, _, a, b) = fixture();
+        let ab = seq.tracks[1].clips[1].id;
+        let ramp = |ripple: bool, interpolation: Option<&str>| Op::Ramp { clip_id: ClipRef::Id(a), from: 1.0, to: 0.3, secs: Some(2.0), ripple, interpolation: interpolation.map(Into::into) };
+        let refused = resolve(&seq, &pool, &[ramp(false, None)]).unwrap_err();
+        assert!(refused.why.contains("would run over") && refused.hint.contains("ramp with ripple"), "{refused:?}");
+        let plan = resolve(&seq, &pool, &[ramp(true, None)]).unwrap();
+        assert!(plan.steps[0].what.contains("1 later clip(s) moved"), "{}", plan.steps[0].what);
+        let mut seqs = vec![seq.clone()];
+        let (mut p, mut f) = (pool.clone(), seq.fps);
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut f };
+        view.apply_forward(&plan.steps[0].edit);
+        let at = |view: &crate::apply::DocumentView, id: ClipId| find_clip(&view.sequences[0], id).map(|(_, _, c)| (c.timeline_in, c.timeline_out)).unwrap();
+        let (_, ramped_out) = at(&view, a);
+        assert!(ramped_out > tc(8.0), "the ramp grew the clip: {ramped_out:?}");
+        assert_eq!(at(&view, b).0, ramped_out, "the next clip moved on to its end");
+        assert_eq!(at(&view, ab).0, ramped_out, "and its sound with it");
+        view.apply_inverse(&plan.steps[0].edit);
+        assert_eq!(serde_json::to_value(&view.sequences[0]).unwrap(), serde_json::to_value(&seq).unwrap(), "undo restores it");
+        let flowed = resolve(&seq, &pool, &[ramp(true, Some("flow"))]).unwrap();
+        assert!(flowed.steps[0].what.contains("follow the motion"), "{}", flowed.steps[0].what);
+        view.apply_forward(&flowed.steps[0].edit);
+        let clip = find_clip(&view.sequences[0], a).unwrap().2;
+        assert_eq!(clip.frame_blend_mode(), Some(2), "the slow part's frames follow the motion");
+        assert!(!clip.speed_keyframes.is_empty(), "and it is ramped");
     }
 
     /// #2485: an installed plug-in goes on a clip's sound or a track by

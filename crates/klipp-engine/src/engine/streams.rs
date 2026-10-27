@@ -841,6 +841,20 @@ impl ClipStreams {
     }
 
 
+    /// The frame after the one [`Self::reversed_frame`] shows at
+    /// `source_secs`, for a frame blend (#2772).
+    pub fn reversed_frame_after(&mut self, clip: &klipp_timeline::Clip, source_secs: f64, width: u32, height: u32) -> Option<klipp_compose::SourceFrame> {
+        match self.reversed.get_mut(&clip.id)? {
+            Reversed::Gop(g) => g.frame_after(source_secs).map(|f| klipp_compose::SourceFrame { pixels: f.source_pixels(), width: f.width, height: f.height, pts: f.pts }),
+            Reversed::Cpu { reader, rotation } => {
+                let step = reader.frame_duration();
+                let (_, _, _, shown) = reader.decode_upright(source_secs, (width, height), *rotation)?;
+                let (pixels, w, h, pts) = reader.decode_upright(shown + step, (width, height), *rotation)?;
+                (pts > shown + step * 0.5).then(|| klipp_compose::SourceFrame { pixels: SourcePixels::Linear(Arc::new(pixels)), width: w, height: h, pts: Some(pts) })
+            }
+        }
+    }
+
     pub fn frame(&self, clip: ClipId) -> Option<&HeldFrame> {
         self.streams.get(&clip)?.held.as_ref()
     }

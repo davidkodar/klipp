@@ -398,8 +398,17 @@ impl FrameSource for ExportFrameSource<'_> {
         out
     }
 
-    /// The decoder's next frame, already pulled by `frame`'s seek.
-    fn frame_after(&mut self, clip: &Clip, _source_secs: f64, _width: u32, _height: u32) -> Option<SourceFrame> {
+    /// The decoder's next frame, already pulled by `frame`'s seek; a
+    /// reversed clip's, the one after the frame shown, read from the
+    /// window its reader holds (#2772).
+    fn frame_after(&mut self, clip: &Clip, source_secs: f64, width: u32, height: u32) -> Option<SourceFrame> {
+        if clip.is_reversed() {
+            let (reader, rotation) = self.reversed.get_mut(&clip.id)?;
+            let step = reader.frame_duration();
+            let (_, _, _, shown) = reader.decode_upright(source_secs, (width, height), *rotation)?;
+            let (pixels, w, h, pts) = reader.decode_upright(shown + step, (width, height), *rotation)?;
+            return (pts > shown + step * 0.5).then(|| SourceFrame { pixels: SourcePixels::Linear(Arc::new(pixels)), width: w, height: h, pts: Some(pts) });
+        }
         let Self { streams, gpu, .. } = self;
         let stream = streams.get_mut(&clip.id)?;
         if stream.next.is_none() {

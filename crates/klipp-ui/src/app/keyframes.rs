@@ -361,6 +361,18 @@ impl KlippApp {
                     }
                     true
                 }
+                AppCommand::SetClipInterpolation { clip_id, interpolation } => {
+                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    match klipp_document::ops::interpolation_at(seq, &self.state.media_pool, *clip_id, interpolation) {
+                        Ok(Some((what, edit))) => {
+                            tracing::info!("{what}");
+                            self.apply_edits_as_one(&[edit], "In-between Frames");
+                        }
+                        Ok(None) => {}
+                        Err(r) => self.state.toast.show(format!("In-between frames unchanged: {}. {}", r.why, r.hint)),
+                    }
+                    true
+                }
                 AppCommand::AddSpeedKeyframe { clip_id, time_secs, speed } => {
                     let seq = &mut self.state.sequences[self.state.active_sequence_idx];
                     if let Some((ti, ci)) = seq.find_clip(*clip_id) {
