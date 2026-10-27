@@ -1,10 +1,11 @@
 //! Video stabilization — Phase 1: Trajectory analysis and smoothing.
 //!
-//! Analyzes frame-to-frame motion using affine-only RANSAC (3-point, 6 DOF),
-//! accumulates absolute trajectory, and applies Gaussian kernel smoothing to
-//! produce per-frame correction transforms.
+//! Analyzes frame-to-frame motion by aligning each frame to the one before
+//! with the planar tracker held to a similarity (#2754), accumulates
+//! absolute trajectory, and applies Gaussian kernel smoothing to produce
+//! per-frame correction transforms.
 
-use crate::rolling_shutter::{self, Homography, Match};
+use crate::rolling_shutter::{self, Homography};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -77,173 +78,6 @@ fn trajectory_jitter_rms(traj: &[MotionParams]) -> f64 {
         sumsq += dx * dx + dy * dy;
     }
     (sumsq / (traj.len() - 1) as f64).sqrt()
-}
-
-// ---------------------------------------------------------------------------
-// LCG RNG (reuses the same algorithm as rolling_shutter)
-// ---------------------------------------------------------------------------
-
-fn lcg_next(state: &mut u64) -> u64 {
-    rolling_shutter::lcg_next(state)
-}
-
-// ---------------------------------------------------------------------------
-// Affine fitting
-// ---------------------------------------------------------------------------
-
-/// Fit an affine transform from exactly 3 point correspondences.
-///
-/// Solves:
-///   dx = a*sx + b*sy + tx
-///   dy = c*sx + d*sy + ty
-///
-/// Returns a Homography with h[2] = [0, 0, 1].
-fn fit_affine_3pt(matches: &[Match]) -> Option<Homography> {
-    debug_assert!(matches.len() >= 3);
-
-    // Build 6x6 system:
-    // [sx0  sy0  1  0    0    0] [a ]   [dx0]
-    // [0    0    0  sx0  sy0  1] [b ]   [dy0]
-    // [sx1  sy1  1  0    0    0] [tx] = [dx1]
-    // [0    0    0  sx1  sy1  1] [c ]   [dy1]
-    // [sx2  sy2  1  0    0    0] [d ]   [dx2]
-    // [0    0    0  sx2  sy2  1] [ty]   [dy2]
-    let mut a = [[0.0f64; 6]; 6];
-    let mut b = [0.0f64; 6];
-
-    for (i, m) in matches[..3].iter().enumerate() {
-        let r0 = i * 2;
-        let r1 = r0 + 1;
-
-        a[r0] = [m.src_x, m.src_y, 1.0, 0.0, 0.0, 0.0];
-        b[r0] = m.dst_x;
-
-        a[r1] = [0.0, 0.0, 0.0, m.src_x, m.src_y, 1.0];
-        b[r1] = m.dst_y;
-    }
-
-    crate::homography::solve(&mut a, &mut b).map(|x| Homography {
-        h: [
-            [x[0], x[1], x[2]], // a, b, tx
-            [x[3], x[4], x[5]], // c, d, ty
-            [0.0, 0.0, 1.0],
-        ],
-    })
-}
-
-/// Fit an affine transform from N correspondences via least squares.
-///
-/// Builds the 2N x 6 matrix A and 2N x 1 vector b, then solves the
-/// normal equations A^T*A*x = A^T*b via the 6x6 solver.
-fn fit_affine_lstsq(matches: &[Match]) -> Option<Homography> {
-    let n = matches.len();
-    if n < 3 {
-        return None;
-    }
-    if n == 3 {
-        return fit_affine_3pt(matches);
-    }
-
-    // Accumulate A^T*A (6x6) and A^T*b (6x1) directly.
-    let mut ata = [[0.0f64; 6]; 6];
-    let mut atb = [0.0f64; 6];
-
-    for m in matches {
-        let (sx, sy) = (m.src_x, m.src_y);
-        let (dx, dy) = (m.dst_x, m.dst_y);
-
-        let row0 = [sx, sy, 1.0, 0.0, 0.0, 0.0];
-        let row1 = [0.0, 0.0, 0.0, sx, sy, 1.0];
-
-        for i in 0..6 {
-            for j in 0..6 {
-                ata[i][j] += row0[i] * row0[j] + row1[i] * row1[j];
-            }
-            atb[i] += row0[i] * dx + row1[i] * dy;
-        }
-    }
-
-    crate::homography::solve(&mut ata, &mut atb).map(|x| Homography {
-        h: [
-            [x[0], x[1], x[2]],
-            [x[3], x[4], x[5]],
-            [0.0, 0.0, 1.0],
-        ],
-    })
-}
-
-// ---------------------------------------------------------------------------
-// RANSAC affine
-// ---------------------------------------------------------------------------
-
-/// Affine-only RANSAC: picks 3 random correspondences, fits a 6-DOF affine,
-/// counts inliers, refits with all inliers of the best model.
-pub fn ransac_affine(
-    matches: &[Match],
-    iterations: u32,
-    inlier_threshold: f64,
-    min_inliers: usize,
-) -> Option<Homography> {
-    if matches.len() < 3 {
-        return None;
-    }
-
-    let n = matches.len();
-    let mut rng_state: u64 = 0xDEAD_BEEF_CAFE_1234;
-    let mut best_inlier_count = 0usize;
-    let mut best_inliers: Vec<bool> = vec![false; n];
-    let threshold_sq = inlier_threshold * inlier_threshold;
-
-    for _ in 0..iterations {
-        // Pick 3 distinct random indices.
-        let mut indices = [0usize; 3];
-        let mut i = 0;
-        while i < 3 {
-            let idx = (lcg_next(&mut rng_state) % n as u64) as usize;
-            if indices[..i].contains(&idx) {
-                continue;
-            }
-            indices[i] = idx;
-            i += 1;
-        }
-
-        let sample = [matches[indices[0]], matches[indices[1]], matches[indices[2]]];
-        let model = match fit_affine_3pt(&sample) {
-            Some(m) => m,
-            None => continue,
-        };
-
-        // Count inliers.
-        let mut inlier_count = 0usize;
-        let mut current_inliers = vec![false; n];
-        for (k, m) in matches.iter().enumerate() {
-            let (px, py) = model.transform(m.src_x, m.src_y);
-            let dx = px - m.dst_x;
-            let dy = py - m.dst_y;
-            if dx * dx + dy * dy < threshold_sq {
-                current_inliers[k] = true;
-                inlier_count += 1;
-            }
-        }
-
-        if inlier_count > best_inlier_count {
-            best_inlier_count = inlier_count;
-            best_inliers = current_inliers;
-        }
-    }
-
-    if best_inlier_count < min_inliers {
-        return None;
-    }
-
-    // Refit with all inliers of the best model.
-    let inlier_matches: Vec<Match> = matches
-        .iter()
-        .zip(best_inliers.iter())
-        .filter_map(|(m, &is_inlier)| if is_inlier { Some(*m) } else { None })
-        .collect();
-
-    fit_affine_lstsq(&inlier_matches)
 }
 
 // ---------------------------------------------------------------------------
@@ -466,7 +300,7 @@ pub fn smooth_trajectory(
 // Full clip analysis
 // ---------------------------------------------------------------------------
 
-/// Analyze a clip's motion trajectory.
+/// Analyze a clip's motion trajectory, on the GPU when there is one.
 ///
 /// `decode_frame` callback: given a time in seconds, returns (rgba, width, height)
 /// or None if the frame could not be decoded.
@@ -478,45 +312,53 @@ pub fn analyze_clip(
     decode_frame: &mut dyn FnMut(f64) -> Option<(Vec<u8>, u32, u32)>,
     progress_callback: &dyn Fn(f32) -> bool,
 ) -> Result<StabilizationData, String> {
+    analyze_clip_on(crate::gpu::planar::PlanarGpu::new().as_mut(), fps, frame_count, decode_frame, progress_callback)
+}
+
+/// [`analyze_clip`] on `gpu`, or the CPU without one (#2754): each frame
+/// aligned to the one before by the planar tracker over the whole
+/// picture, held to a move, turn and size, so what passes through the
+/// shot weighs little against the scene it crosses. A frame that can't
+/// be aligned is taken as still.
+pub fn analyze_clip_on(
+    mut gpu: Option<&mut crate::gpu::planar::PlanarGpu>,
+    fps: f64,
+    frame_count: usize,
+    decode_frame: &mut dyn FnMut(f64) -> Option<(Vec<u8>, u32, u32)>,
+    progress_callback: &dyn Fn(f32) -> bool,
+) -> Result<StabilizationData, String> {
+    use crate::planar::{Model, Options, State};
+    use crate::window_track::GrayFrame;
     if frame_count < 2 {
         return Err("need at least 2 frames".to_string());
     }
-
-    // Decode frame 0.
-    let (rgba0, w0, h0) = decode_frame(0.0).ok_or("failed to decode frame 0")?;
-    let (gray0, gw, gh) = rolling_shutter::to_gray_half(&rgba0, w0, h0);
-    let corners0 = rolling_shutter::fast9_detect(&gray0, gw, gh, 20, 500);
-
-    let mut prev_gray = gray0;
-    let mut prev_corners = corners0;
+    let grey = |time: f64, f: usize, decode_frame: &mut dyn FnMut(f64) -> Option<(Vec<u8>, u32, u32)>| -> Result<GrayFrame, String> {
+        let (rgba, w, h) = decode_frame(time).ok_or_else(|| format!("failed to decode frame {f}"))?;
+        let (data, width, height) = rolling_shutter::to_gray_half(&rgba, w, h);
+        Ok(GrayFrame { data, width: width as usize, height: height as usize })
+    };
+    let opts = Options { model: Model::Similarity, lost_after: 1, reacquire_for: 0, ..Options::default() };
+    let mut prev = grey(0.0, 0, decode_frame)?;
     let mut frame_transforms = Vec::with_capacity(frame_count - 1);
 
     for f in 1..frame_count {
-        let time = f as f64 / fps;
-        let (rgba, w, h) = decode_frame(time).ok_or_else(|| format!("failed to decode frame {f}"))?;
-        let (gray, gw_cur, gh_cur) = rolling_shutter::to_gray_half(&rgba, w, h);
-        let corners = rolling_shutter::fast9_detect(&gray, gw_cur, gh_cur, 20, 500);
-
-        // Match patches between previous and current frame.
-        let matches = rolling_shutter::match_patches(
-            &prev_gray,
-            &prev_corners,
-            &gray,
-            &corners,
-            gw_cur,
-            gh_cur,
-            4, // patch_half
-            16, // search_radius
-        );
-
-        // RANSAC affine — if it fails, use identity (static frame). In
-        // the frame's units, as it is kept.
-        let to = units(w as f64, h as f64);
-        let transform = match (ransac_affine(&matches, 200, 2.0, 15), to.inverse()) {
-            (Some(t), Some(back)) => to.multiply(&t).multiply(&back),
+        let cur = grey(f as f64 / fps, f, decode_frame)?;
+        let (w, h) = (cur.width as f64, cur.height as f64);
+        // The whole picture but a tenth round the edge, where what comes
+        // into view has nothing to match.
+        let quad = [(0.1 * w, 0.1 * h), (0.9 * w, 0.1 * h), (0.9 * w, 0.9 * h), (0.1 * w, 0.9 * h)];
+        let mut next = Some(cur.clone());
+        let mut give = |_: usize| next.take();
+        let tracked = match gpu.as_deref_mut() {
+            Some(g) => g.track(&prev, quad, &[], &[f], &mut give, &opts, &|_| true),
+            None => crate::planar::track(&prev, quad, &[], &[f], &mut give, &opts, &|_| true),
+        };
+        // In the frame's units, as it is kept.
+        let to = units(w, h);
+        let transform = match (tracked.first().filter(|t| t.state != State::Lost), to.inverse()) {
+            (Some(t), Some(back)) => to.multiply(&t.h).multiply(&back),
             _ => Homography::identity(),
         };
-
         frame_transforms.push(transform);
 
         // Progress callback.
@@ -524,9 +366,7 @@ pub fn analyze_clip(
         if !progress_callback(progress) {
             return Err("cancelled".to_string());
         }
-
-        prev_gray = gray;
-        prev_corners = corners;
+        prev = cur;
     }
 
     // Accumulate trajectory.
@@ -723,74 +563,6 @@ mod tests {
     }
 
     #[test]
-    fn test_fit_affine_identity() {
-        // 3 points that map to themselves -> identity affine
-        let matches = [
-            Match { src_x: 10.0, src_y: 20.0, dst_x: 10.0, dst_y: 20.0 },
-            Match { src_x: 50.0, src_y: 30.0, dst_x: 50.0, dst_y: 30.0 },
-            Match { src_x: 30.0, src_y: 80.0, dst_x: 30.0, dst_y: 80.0 },
-        ];
-        let h = fit_affine_3pt(&matches).unwrap();
-        assert!(approx_eq(h.h[0][0], 1.0, 1e-9), "a should be 1.0");
-        assert!(approx_eq(h.h[0][1], 0.0, 1e-9), "b should be 0.0");
-        assert!(approx_eq(h.h[0][2], 0.0, 1e-9), "tx should be 0.0");
-        assert!(approx_eq(h.h[1][0], 0.0, 1e-9), "c should be 0.0");
-        assert!(approx_eq(h.h[1][1], 1.0, 1e-9), "d should be 1.0");
-        assert!(approx_eq(h.h[1][2], 0.0, 1e-9), "ty should be 0.0");
-        assert!(approx_eq(h.h[2][2], 1.0, 1e-9));
-    }
-
-    #[test]
-    fn test_fit_affine_translation() {
-        // 3 points shifted by (10, 20)
-        let matches = [
-            Match { src_x: 10.0, src_y: 20.0, dst_x: 20.0, dst_y: 40.0 },
-            Match { src_x: 50.0, src_y: 30.0, dst_x: 60.0, dst_y: 50.0 },
-            Match { src_x: 30.0, src_y: 80.0, dst_x: 40.0, dst_y: 100.0 },
-        ];
-        let h = fit_affine_3pt(&matches).unwrap();
-        assert!(approx_eq(h.h[0][0], 1.0, 1e-9), "a should be 1.0");
-        assert!(approx_eq(h.h[0][1], 0.0, 1e-9), "b should be 0.0");
-        assert!(approx_eq(h.h[0][2], 10.0, 1e-9), "tx should be 10.0, got {}", h.h[0][2]);
-        assert!(approx_eq(h.h[1][0], 0.0, 1e-9), "c should be 0.0");
-        assert!(approx_eq(h.h[1][1], 1.0, 1e-9), "d should be 1.0");
-        assert!(approx_eq(h.h[1][2], 20.0, 1e-9), "ty should be 20.0, got {}", h.h[1][2]);
-    }
-
-    #[test]
-    fn test_ransac_affine_with_outliers() {
-        // 20 inliers (known translation of +5, +3) on a 2D grid (non-collinear)
-        let mut matches = Vec::new();
-        for i in 0..5 {
-            for j in 0..4 {
-                let x = 10.0 + i as f64 * 30.0 + j as f64 * 3.0;
-                let y = 15.0 + j as f64 * 40.0 + i as f64 * 2.0;
-                matches.push(Match {
-                    src_x: x,
-                    src_y: y,
-                    dst_x: x + 5.0,
-                    dst_y: y + 3.0,
-                });
-            }
-        }
-        // Outliers with wildly wrong destinations.
-        for i in 0..5 {
-            matches.push(Match {
-                src_x: 200.0 + i as f64 * 10.0,
-                src_y: 200.0 + i as f64 * 10.0,
-                dst_x: 999.0,
-                dst_y: 999.0,
-            });
-        }
-
-        let h = ransac_affine(&matches, 200, 2.0, 15).unwrap();
-        // Should recover translation (5, 3).
-        assert!(approx_eq(h.h[0][0], 1.0, 0.05), "a ~ 1.0, got {}", h.h[0][0]);
-        assert!(approx_eq(h.h[0][2], 5.0, 0.5), "tx ~ 5.0, got {}", h.h[0][2]);
-        assert!(approx_eq(h.h[1][2], 3.0, 0.5), "ty ~ 3.0, got {}", h.h[1][2]);
-    }
-
-    #[test]
     fn test_accumulate_identity() {
         let transforms = vec![Homography::identity(); 5];
         let acc = accumulate_trajectory(&transforms);
@@ -937,8 +709,8 @@ mod tests {
 
         for _ in 0..(n - 1) {
             // Base translation + noise.
-            let noise_x = ((lcg_next(&mut rng) % 200) as f64 - 100.0) / 20.0; // +/- 5px
-            let noise_y = ((lcg_next(&mut rng) % 200) as f64 - 100.0) / 20.0;
+            let noise_x = ((rolling_shutter::lcg_next(&mut rng) % 200) as f64 - 100.0) / 20.0; // +/- 5px
+            let noise_y = ((rolling_shutter::lcg_next(&mut rng) % 200) as f64 - 100.0) / 20.0;
             transforms.push(Homography {
                 h: [
                     [1.0, 0.0, 2.0 + noise_x],
@@ -1045,27 +817,5 @@ mod tests {
                 assert!(approx_eq(result.h[i][j], t.h[i][j], 1e-12));
             }
         }
-    }
-
-    #[test]
-    fn test_lstsq_overdetermined() {
-        // 6 points with known translation (7, -3) on a 2D grid (non-collinear).
-        let mut matches = Vec::new();
-        for i in 0..3 {
-            for j in 0..2 {
-                let x = 10.0 + i as f64 * 50.0 + j as f64 * 7.0;
-                let y = 20.0 + j as f64 * 60.0 + i as f64 * 3.0;
-                matches.push(Match {
-                    src_x: x,
-                    src_y: y,
-                    dst_x: x + 7.0,
-                    dst_y: y - 3.0,
-                });
-            }
-        }
-        let h = fit_affine_lstsq(&matches).unwrap();
-        assert!(approx_eq(h.h[0][0], 1.0, 1e-8));
-        assert!(approx_eq(h.h[0][2], 7.0, 1e-8));
-        assert!(approx_eq(h.h[1][2], -3.0, 1e-8));
     }
 }

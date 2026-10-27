@@ -68,7 +68,8 @@ pub fn algorithm(kind: AssetKind) -> u32 {
     match kind {
         AssetKind::Deflicker => 1,
         // 2: in the frame's units, centred, its height 1 (#2771).
-        AssetKind::Stabilisation => 2,
+        // 3: each frame aligned by the planar tracker (#2754).
+        AssetKind::Stabilisation => 3,
         AssetKind::RollingShutter => 1,
     }
 }
