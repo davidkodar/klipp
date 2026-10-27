@@ -10,6 +10,10 @@ Several write tools applied together in one frame and recorded as ONE undo step:
 
 Cancel the named render or one queued analysis job. Running analysis, import and sync cannot be interrupted safely; a subject matte pass (`<media id>:subject_matte`, from klipp_track_subject) can, and keeps the frames it made. A queued UI cancellation has its own operation_id; confirm its outcome before saying the job stopped.
 
+## klipp_rebuild_version
+
+Make a version at another aspect again from its master's cut (#2724), when the master was edited after the version was made: a delivery names such a version under `stale`. The master's tracks are copied in; each clip still in the cut keeps the framing it was given in the version (its pan keys and reframe), and the clips new to it are reframed to follow their subjects once their framing analysis is done. sequence_id names the version, the open sequence when left out. One undo step; refused for a sequence that is no version, or one already at its master's cut.
+
 ## klipp_export
 
 Render the active sequence to an absolute path: defaults, or an export preset by name, codec (h264, hevc, prores...), bit_depth 10, bitrate_kbps; the extension gives the container (mp4, mov, mkv, webm). hdr hlg or pq delivers HDR (BT.2020): in hevc (best), h264 or ProRes, at 10 bits (set for you), with peak_nits 1000/2000/4000 for PQ; the reply says the transfer, peak and any codec warning. Refused while a clip's media is offline or onto a project media file. Asynchronous: klipp_export_status with wait true returns when the file is done.

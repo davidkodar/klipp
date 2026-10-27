@@ -1449,6 +1449,10 @@ pub enum AppCommand {
     /// reframed to follow its subject once the files' framing analysis is
     /// done, and its titles kept in title-safe (#2211).
     NewAspectVersion { sequence_idx: usize, width: u32, height: u32, name: String },
+    /// A version made again from its master's cut (#2724): the master's
+    /// tracks copied in, each clip still there keeping the framing given
+    /// it in the version, the rest reframed; one undo step.
+    RebuildVersion { sequence_idx: usize },
     SetActiveSequence { sequence_idx: usize },
     /// Make a sequence the one shown as `SetActiveSequence` does, keeping
     /// the selection the timeline taking over brings (a stacked timeline,

@@ -86,6 +86,9 @@ pub(super) fn range_for_export(dialog: &mut ExportDialogState, seq: &klipp_timel
 }
 
 pub(super) struct ExportDialogState {
+    /// Which of the delivery formats are ticked (#2724), as
+    /// `DELIVERY_TEMPLATES` lists them.
+    pub(super) deliver: [bool; 4],
     pub(super) output_path: String,
     pub(super) format: ExportFormat,
     pub(super) video_codec: ExportVideoCodec,
@@ -183,6 +186,7 @@ pub(super) struct ExportDialogState {
 impl Default for ExportDialogState {
     fn default() -> Self {
         Self {
+            deliver: [false; 4],
             output_path: String::new(),
             format: ExportFormat::Mp4,
             video_codec: ExportVideoCodec::H264,
@@ -2127,6 +2131,11 @@ impl KlippApp {
                 ui.label(egui::RichText::new(format!("\u{26A0} {problem}")).size(11.0).color(ui.visuals().warn_fg_color));
             });
             ui.add_space(4.0);
+        }
+        // Every format at once (#2724), each from its version.
+        if self.deliver_section(ui, cmds) {
+            self.state.show_export_dialog = false;
+            return;
         }
         let path_given = !self.export_dialog.output_path.trim().is_empty();
         // An empty timeline has nothing to export (#655).

@@ -1509,6 +1509,10 @@ pub enum Op {
         /// shot reads as a cut; 1.1 to 1.3, none by default.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         punch: Option<f32>,
+        /// Clips left as they are framed (#2724): a version rebuilt from
+        /// its master keeps the framing given to the clips still there.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        keep: Vec<ClipId>,
     },
     /// A highlight over the picture at `at` for `secs`: `kind` "box" (a
     /// rounded stroke round the region), "ring" (a capsule) or "spot"
@@ -3713,7 +3717,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let keys = follow_keys(&spots, secs(clip.timeline_out) - secs(clip.timeline_in), *scale, *hold_secs);
             pan(seq, pool, i, ti, clip, &keys, "follow", false)
         }
-        Op::Refit { markers, punch } => refit(seq, pool, transcripts, i, *markers, *punch),
+        Op::Refit { markers, punch, keep } => refit(seq, pool, transcripts, i, *markers, *punch, keep),
         Op::Graphics { at, secs: held, track } => {
             let at = resolve_anchor(seq, fps, at, i)?;
             if !held.is_finite() || *held < 0.2 || *held > 86400.0 {
@@ -8288,7 +8292,8 @@ pub fn keep_reframes(seq: &mut Sequence, pool: &MediaPool, from: klipp_core::Res
 
 /// [`Op::Refit`]: every picture and title fitted to the frame the
 /// sequence now has (#2211), as one undoable step.
-fn refit(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, i: usize, markers: bool, punch: Option<f32>) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+#[allow(clippy::too_many_arguments)]
+fn refit(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, i: usize, markers: bool, punch: Option<f32>, keep: &[ClipId]) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     if let Some(p) = punch.filter(|p| !p.is_finite() || !(1.0..=1.5).contains(p)) {
         return Err(refuse(i, format!("a punch of {p}"), "give punch from 1 to 1.5, how much further every other picture is pushed in"));
     }
@@ -8322,6 +8327,9 @@ fn refit(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, i: usi
                 continue;
             }
             let ClipKind::Media { media_id } = &clip.kind else { continue };
+            if keep.contains(&clip.id) {
+                continue;
+            }
             let Some(item) = pool.get(media_id).filter(|m| m.resolution.width > 0 && m.resolution.height > 0) else { continue };
             // A card is a crop or an inset smaller than the frame. A pan made
             // for the old frame is not one: is_card would judge its reach
@@ -14941,7 +14949,7 @@ mod tests {
         let wide = caption(seq.tracks.last().unwrap().clips[1].title_data().unwrap());
         assert_eq!((wide.0, wide.1), (40.0, 0.88));
         seq.resolution = tall;
-        let plan = resolve_with(&seq, &pool, &[Op::Refit { markers: false, punch: None }], &Spoken).unwrap();
+        let plan = resolve_with(&seq, &pool, &[Op::Refit { markers: false, punch: None, keep: Vec::new() }], &Spoken).unwrap();
         let EditCommand::Named { edit, .. } = &plan.steps[0].edit else { panic!("a named batch") };
         let EditCommand::Batch(edits) = edit.as_ref() else { panic!("a batch") };
         let refit: Vec<_> = edits.iter().filter_map(|e| match e { EditCommand::EditTitle { description: "Refit Caption", new_data, .. } => Some(caption(new_data)), _ => None }).collect();
@@ -18931,7 +18939,7 @@ mod tests {
         }
         let (mut seq, pool, _, a, b) = fixture();
         seq.resolution = klipp_core::Resolution { width: 1080, height: 1920 };
-        let plan = resolve_with(&seq, &pool, &[Op::Refit { markers: true, punch: None }], &Faces).unwrap();
+        let plan = resolve_with(&seq, &pool, &[Op::Refit { markers: true, punch: None, keep: Vec::new() }], &Faces).unwrap();
         let what = &plan.steps[0].what;
         assert!(what.contains("1 pictures follow") && what.contains("1 centred for review") && what.contains("no one found"), "{what}");
         let EditCommand::Named { label, edit } = &plan.steps[0].edit else { panic!("one named step") };
@@ -18961,10 +18969,16 @@ mod tests {
         view.apply_inverse(&plan.steps[0].edit);
         assert_eq!(serde_json::to_value(&seqs[0]).unwrap(), serde_json::to_value(&seq).unwrap(), "one undo takes it all back");
         // Without markers, the review is still named but nothing is marked.
-        let plan = resolve_with(&seq, &pool, &[Op::Refit { markers: false, punch: None }], &Faces).unwrap();
+        let plan = resolve_with(&seq, &pool, &[Op::Refit { markers: false, punch: None, keep: Vec::new() }], &Faces).unwrap();
         let EditCommand::Named { edit, .. } = &plan.steps[0].edit else { panic!() };
         let EditCommand::Batch(edits) = edit.as_ref() else { panic!() };
         assert!(!edits.iter().any(|e| matches!(e, EditCommand::SetMarkers { .. })));
+        // #2724: a clip kept is left as it is framed.
+        let plan = resolve_with(&seq, &pool, &[Op::Refit { markers: false, punch: None, keep: vec![a] }], &Faces).unwrap();
+        let EditCommand::Named { edit, .. } = &plan.steps[0].edit else { panic!() };
+        let EditCommand::Batch(edits) = edit.as_ref() else { panic!() };
+        let keyed: Vec<ClipId> = edits.iter().filter_map(|e| match e { EditCommand::EditKeyframes { clip_id, .. } => Some(*clip_id), _ => None }).collect();
+        assert_eq!(keyed, vec![b], "the kept clip left alone");
     }
 
     /// #2458: a planned edit whose write through a picture-truth clip's
@@ -19178,7 +19192,7 @@ mod tests {
         let (what, _) = step(&mut seqs, Op::Format { width: 1080, height: 1920, fps: None });
         assert!(what.contains("1 reframe(s) kept"), "{what}");
         assert!((point(&seqs[0], a) - wide).abs() < 1e-3, "the format keeps it on its picture");
-        let (what, _) = step(&mut seqs, Op::Refit { markers: false, punch: None });
+        let (what, _) = step(&mut seqs, Op::Refit { markers: false, punch: None, keep: Vec::new() });
         assert!(what.contains("1 keep their reframe"), "{what}");
         assert!((point(&seqs[0], a) - wide).abs() < 1e-3, "the refit keeps it there: {}", point(&seqs[0], a));
         assert!((point(&seqs[0], b) - 0.5).abs() < 1e-3, "the other is centred");
@@ -19207,7 +19221,7 @@ mod tests {
         }
         let (mut seq, pool, _, a, b) = fixture();
         seq.resolution = klipp_core::Resolution { width: 1080, height: 1920 };
-        let plan = resolve_with(&seq, &pool, &[Op::Refit { markers: false, punch: None }], &Screen).unwrap();
+        let plan = resolve_with(&seq, &pool, &[Op::Refit { markers: false, punch: None, keep: Vec::new() }], &Screen).unwrap();
         let what = &plan.steps[0].what;
         assert!(what.contains("2 screen recordings follow what changes on screen") && what.contains("0 pictures follow their subject"), "{what}");
         let EditCommand::Named { edit, .. } = &plan.steps[0].edit else { panic!() };
@@ -19238,7 +19252,7 @@ mod tests {
         let (mut p, mut fps) = (pool.clone(), seq.fps);
         crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps }.apply_forward(&plan.steps[0].edit);
         seqs[0].resolution = klipp_core::Resolution { width: 1080, height: 1920 };
-        let plan = resolve(&seqs[0], &p, &[Op::Refit { markers: true, punch: None }]).unwrap();
+        let plan = resolve(&seqs[0], &p, &[Op::Refit { markers: true, punch: None, keep: Vec::new() }]).unwrap();
         let EditCommand::Named { edit, .. } = &plan.steps[0].edit else { panic!() };
         let EditCommand::Batch(edits) = edit.as_ref() else { panic!() };
         let refit = edits.iter().find_map(|e| match e { EditCommand::EditKeyframes { clip_id, new_state, .. } if *clip_id == a => Some(new_state), _ => None }).expect("the panned picture is refit");

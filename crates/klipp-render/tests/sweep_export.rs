@@ -13,11 +13,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex};
 
 /// Items known to fail, and the issue that holds each.
-const KNOWN: &[(&str, u32)] = &[
-    // Fitted whole and said so (#2784); filled by a version in its shape (#2724).
-    ("Instagram Square fills the frame", 2724),
-    ("Instagram Vertical fills the frame", 2724),
-];
+const KNOWN: &[(&str, u32)] = &[];
 
 const FRAMES: u64 = 25;
 const SIZE: (u32, u32) = (320, 180);
@@ -34,6 +30,32 @@ fn sources() -> Option<(PathBuf, PathBuf)> {
     let picture = run(&["-f", "lavfi", "-i", &format!("testsrc2=s={}x{}:r=25:d=1", SIZE.0, SIZE.1), "-c:v", "libx264", "-pix_fmt", "yuv420p"], &video);
     let sound = run(&["-f", "lavfi", "-i", "aevalsrc=0.07*sin(2*PI*220*t)+0.05*sin(2*PI*880*t)+0.01*(random(0)*2-1):s=48000:d=1.2", "-ac", "2", "-c:a", "pcm_f32le"], &audio);
     (picture && sound).then_some((video, audio))
+}
+
+/// The timeline as delivered at `shape` (#2724): the sequence itself at
+/// its own, else its version in that shape, its short side kept and the
+/// picture pushed in to fill it, as the version's refit leaves it.
+fn snapshot_in(video_path: &Path, audio_path: &Path, shape: Option<Resolution>) -> SequenceSnapshot {
+    let (w, h) = match shape {
+        Some(r) if (r.width as u64 * SIZE.1 as u64).abs_diff(r.height as u64 * SIZE.0 as u64) > r.width.max(r.height) as u64 => {
+            let short = SIZE.0.min(SIZE.1) as f64;
+            let even = |v: f64| ((v / 2.0).round() as u32).max(1) * 2;
+            if r.width <= r.height { (even(short), even(short * r.height as f64 / r.width as f64)) } else { (even(short * r.width as f64 / r.height as f64), even(short)) }
+        }
+        _ => SIZE,
+    };
+    let mut s = snapshot(video_path, audio_path);
+    if (w, h) != SIZE {
+        let fitted = ((w as f32).min(h as f32 * SIZE.0 as f32 / SIZE.1 as f32), (h as f32).min(w as f32 * SIZE.1 as f32 / SIZE.0 as f32));
+        let fill = (w as f32 / fitted.0).max(h as f32 / fitted.1);
+        let clip = s.video.sequence.tracks[0].clips[0].clone();
+        s.video.sequence.tracks[0].clips[0] = klipp_timeline::test_clip::TestClip::of(clip)
+            .effects([klipp_effects::BuiltinEffect::Transform { position_x: 0.0, position_y: 0.0, scale_x: fill, scale_y: fill, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None }])
+            .build();
+        s.video.sequence.resolution = Resolution { width: w, height: h };
+        (s.width, s.height) = (w, h);
+    }
+    s
 }
 
 fn snapshot(video_path: &Path, audio_path: &Path) -> SequenceSnapshot {
@@ -197,7 +219,9 @@ fn sweep_export() {
                     .map(|p| {
                         let out = tmp(&format!("{}.{}", p.id, p.settings.format.extension()));
                         let _ = std::fs::remove_file(&out);
-                        let (snapshot, settings) = (snapshot(&video, &audio), settings_of(&p.settings, &out));
+                        // A preset of another shape is delivered from the
+                        // version in its shape (#2724).
+                        let (snapshot, settings) = (snapshot_in(&video, &audio, p.settings.resolution), settings_of(&p.settings, &out));
                         s.spawn(move || (p.clone(), out, export(snapshot, settings)))
                     })
                     .collect();

@@ -1119,6 +1119,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             }
             v
         }
+        "klipp_rebuild_version" => json!({ "method": "rebuild_version", "sequence_id": args.get("sequence_id") }),
         "klipp_make_shorts" => {
             let mut v = json!({ "method": "make_shorts", "media_id": arg_str(args, "media_id")?, "moments": args.get("moments").cloned().ok_or("missing required argument: moments")? });
             for key in ["platform", "tighten", "hook_title"] {
@@ -2436,6 +2437,10 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "A long talk's moments that stand alone as shorts, ranked, each with its hook and why. Reads only. Details: klipp_guide topic find_moments.",
              json!({ "media_id": { "type": "string" }, "length": { "type": "number", "description": "seconds aimed for (30)" }, "count": { "type": "integer" }, "include": { "type": "array", "items": { "type": "string" } }, "exclude": { "type": "array", "items": { "type": "string" } } }),
              vec!["media_id"]),
+        tool("klipp_rebuild_version",
+             "Make an aspect version again from its master's newer cut, keeping its clips' framing. Details: klipp_guide topic rebuild_version.",
+             json!({ "sequence_id": { "type": "string" } }),
+             vec![]),
         tool("klipp_make_shorts",
              "A vertical short in a sequence of its own for each kept moment of klipp_find_moments. Details: klipp_guide topic make_shorts.",
              json!({ "media_id": { "type": "string" }, "moments": { "type": "array", "items": { "type": "object" }, "description": "[{from_secs, to_secs, hook?}]" }, "platform": { "type": "string" }, "tighten": { "type": "boolean" }, "hook_title": { "type": "boolean" } }),

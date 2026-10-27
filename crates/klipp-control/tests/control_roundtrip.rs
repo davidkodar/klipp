@@ -4585,3 +4585,25 @@ fn a_delivery_refuses_what_it_cannot_write() {
         assert!(reply["error"].as_str().unwrap_or_default().contains(why), "{why}: {reply}");
     }
 }
+
+/// #2724: rebuild_version makes a version again only when it is one and
+/// its master's cut has moved on; otherwise it says why not.
+#[test]
+fn rebuild_version_only_rebuilds_a_stale_version() {
+    let mut h = harness();
+    {
+        let mut p = h.shared.project.lock().unwrap();
+        let version = |stale| Some(klipp_core::VersionSummary { of: "a".into(), stale });
+        p.sequences = vec![
+            klipp_core::SequenceSummary { id: "a".into(), name: "Main".into(), clips: 3, used_in: None, version: None, width: 1920, height: 1080 },
+            klipp_core::SequenceSummary { id: "b".into(), name: "Main 9:16".into(), clips: 3, used_in: None, version: version(false), width: 1080, height: 1920 },
+            klipp_core::SequenceSummary { id: "c".into(), name: "Main 1:1".into(), clips: 3, used_in: None, version: version(true), width: 1080, height: 1080 },
+        ];
+        p.active_sequence = 0;
+    }
+    for (id, why) in [("a", "is no version"), ("b", "already has its master's cut")] {
+        let reply = h.call(json!({ "method": "rebuild_version", "sequence_id": id }));
+        assert!(reply["error"].as_str().unwrap_or_default().contains(why), "{id}: {reply}");
+    }
+    h.ok(json!({ "method": "rebuild_version", "sequence_id": "c" }));
+}
