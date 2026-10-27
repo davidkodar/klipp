@@ -733,11 +733,10 @@ impl Sequence {
             .map(|(i, _)| i)
             .collect();
         for (num_from_bottom, &idx) in video_indices.iter().rev().enumerate() {
-            let new_name = format!("Video {}", num_from_bottom + 1);
             let track = &mut self.tracks[idx];
             // Only rename if it has a default-pattern name
             if is_default_track_name(&track.name, "Video", 'V') {
-                track.name = new_name;
+                track.name = renumbered(&track.name, "Video", 'V', num_from_bottom as u32 + 1);
             }
         }
         // Audio: top-down
@@ -745,7 +744,7 @@ impl Sequence {
         for track in &mut self.tracks {
             if track.kind == TrackKind::Audio {
                 if is_default_track_name(&track.name, "Audio", 'A') {
-                    track.name = format!("Audio {}", audio_num);
+                    track.name = renumbered(&track.name, "Audio", 'A', audio_num);
                 }
                 audio_num += 1;
             }
@@ -755,7 +754,7 @@ impl Sequence {
         for track in &mut self.tracks {
             if track.kind == TrackKind::Text {
                 if is_default_track_name(&track.name, "Text", 'T') {
-                    track.name = format!("Text {}", text_num);
+                    track.name = renumbered(&track.name, "Text", 'T', text_num);
                 }
                 text_num += 1;
             }
@@ -4719,6 +4718,13 @@ mod tests {
     }
 }
 
+/// A numbered default renumbered `n` in the style it had: "V1" stays a
+/// letter and a number, "Video 1" a word. Turned into the word form, a
+/// track added and taken off again came back with another name (#2802).
+fn renumbered(name: &str, word: &str, letter: char, n: u32) -> String {
+    if name.starts_with(word) { format!("{word} {n}") } else { format!("{letter}{n}") }
+}
+
 /// Whether `name` is a numbered default a renumbering may replace:
 /// `"<word> <n>"` or `"<letter><n>"`. A name the user gave, even one that
 /// begins with the same letter ("Ambience", "Voice-over"), is not: by
@@ -4732,7 +4738,9 @@ fn is_default_track_name(name: &str, word: &str, letter: char) -> bool {
 mod track_name_tests {
     use super::*;
 
-    /// #497: renumbering renames only the numbered defaults.
+    /// #497: renumbering renames only the numbered defaults, and (#2802)
+    /// each in the style it had, a letter or a word, so a track added and
+    /// taken off again leaves the names as they were.
     #[test]
     fn a_track_the_user_named_keeps_its_name() {
         let mut seq = Sequence::new_default();
@@ -4740,6 +4748,6 @@ mod track_name_tests {
         seq.tracks = names.iter().map(|(n, k)| Track::new(n, *k)).collect();
         seq.renumber_tracks();
         let got: Vec<&str> = seq.tracks.iter().map(|t| t.name.as_str()).collect();
-        assert_eq!(got, ["Video 2", "Vlog", "Ambience", "Audio 2", "Audio 3", "Text 1", "Titles"]);
+        assert_eq!(got, ["V2", "Vlog", "Ambience", "A2", "Audio 3", "Text 1", "Titles"]);
     }
 }

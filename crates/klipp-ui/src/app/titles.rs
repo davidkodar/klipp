@@ -3955,11 +3955,14 @@ pub(super) fn add_title_clip(
         track.clips.push(clip.clone());
         track.clips.sort_by_key(|c| c.timeline_in.value);
     }
+    // The track made for it, by its id, for a redo to make it again (#2802).
+    let track_id = created_track.then(|| state.sequences[state.active_sequence_idx].tracks.get(ti).map(|t| t.id)).flatten();
     state.active_history_mut().push(crate::history::HistoryEntry {
         command: crate::history::EditCommand::AddTitleClip {
             clip,
             track_index: ti,
             created_track,
+            track_id,
         },
     });
     state.dirty = true;

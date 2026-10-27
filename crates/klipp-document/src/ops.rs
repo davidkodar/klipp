@@ -8569,7 +8569,7 @@ fn highlight(seq: &Sequence, fps: Fps, i: usize, at: Timecode, hold: f64, region
     clip.apply_picture_ops(&[fade_in_out]).map_err(|e| refuse(i, format!("the highlight couldn't take its fade: {e}"), "report it"))?;
     let id = clip.id;
     let what = format!("{kind} highlight at {x:.2},{y:.2} ({w:.2}\u{00d7}{h:.2}) {:.2}-{:.2} s on {}", secs(tl_in), secs(tl_out), match existing { Some(ti) => format!("track {ti}"), None => "a new text track 0".to_string() });
-    let edit = EditCommand::AddTitleClip { clip, track_index: existing.unwrap_or(0), created_track: existing.is_none() };
+    let edit = EditCommand::AddTitleClip { clip, track_index: existing.unwrap_or(0), created_track: existing.is_none(), track_id: existing.is_none().then(klipp_core::TrackId::new) };
     Ok((what, edit, vec![id]))
 }
 
@@ -11936,7 +11936,7 @@ fn place_title_inner(seq: &Sequence, fps: Fps, i: usize, at: Timecode, secs_held
             None => "a new text track 0; every other track's index moves down by one".to_string(),
         },
     );
-    let edit = EditCommand::AddTitleClip { clip, track_index: existing.unwrap_or(0), created_track: existing.is_none() };
+    let edit = EditCommand::AddTitleClip { clip, track_index: existing.unwrap_or(0), created_track: existing.is_none(), track_id: existing.is_none().then(klipp_core::TrackId::new) };
     Ok((what, edit, vec![id]))
 }
 
@@ -12014,7 +12014,7 @@ fn lower_third(
             None => "a new text track 0; every other track's index moves down by one".to_string(),
         },
     );
-    let edit = EditCommand::AddTitleClip { clip, track_index: existing.unwrap_or(0), created_track: existing.is_none() };
+    let edit = EditCommand::AddTitleClip { clip, track_index: existing.unwrap_or(0), created_track: existing.is_none(), track_id: existing.is_none().then(klipp_core::TrackId::new) };
     Ok((what, edit, vec![id]))
 }
 
@@ -13086,7 +13086,7 @@ mod tests {
         let mut ids = Vec::new();
         for (size, at) in [(None, 1.0), (Some(40.0), 5.0)] {
             let plan = resolve(&seq, &pool, &[op(size, at)]).unwrap();
-            let EditCommand::AddTitleClip { clip, track_index, created_track } = plan.steps[plan.steps.len() - 1].edit.clone() else { panic!("a title is a clip") };
+            let EditCommand::AddTitleClip { clip, track_index, created_track, .. } = plan.steps[plan.steps.len() - 1].edit.clone() else { panic!("a title is a clip") };
             assert_eq!(clip.title_data().and_then(|t| t.style.as_deref()), Some("kicker"), "it records the style it follows");
             if created_track {
                 seq.tracks.insert(track_index, Track::new("Text 1", TrackKind::Text));

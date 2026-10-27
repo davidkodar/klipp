@@ -262,6 +262,10 @@ pub enum EditCommand {
         track_index: usize,
         /// If true, undo also removes the track that was auto-created
         created_track: bool,
+        /// The id that track has, fixed when the edit is made, so a redo
+        /// makes the same track and what refers to it by id still finds
+        /// it (#2802); `None` when no track is made.
+        track_id: Option<klipp_core::TrackId>,
     },
     LegacyRemoveClip {
         clip: Clip,

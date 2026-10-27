@@ -327,7 +327,7 @@ impl DocumentView<'_> {
                 seq.fps = old.1;
                 *self.fps = old.1;
             }
-            EditCommand::AddTitleClip { clip, track_index, created_track } => {
+            EditCommand::AddTitleClip { clip, track_index, created_track, .. } => {
                 let seq = &mut self.sequences[self.active];
                 if *created_track {
                     // Remove the entire auto-created track
@@ -1057,12 +1057,17 @@ impl DocumentView<'_> {
                 seq.fps = new.1;
                 *self.fps = new.1;
             }
-            EditCommand::AddTitleClip { clip, track_index, created_track } => {
+            EditCommand::AddTitleClip { clip, track_index, created_track, track_id } => {
                 let seq = &mut self.sequences[self.active];
                 if *created_track {
                     // Re-create the track
                     let track_num = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Text).count() + 1;
                     let mut track = klipp_timeline::Track::new(&format!("Text {track_num}"), klipp_timeline::TrackKind::Text);
+                    // The id the edit was made with: made anew on each
+                    // redo, the track was another to what named it (#2802).
+                    if let Some(id) = track_id {
+                        track.id = *id;
+                    }
                     track.clips.push(clip.clone());
                     let idx = (*track_index).min(seq.tracks.len());
                     seq.tracks.insert(idx, track);
