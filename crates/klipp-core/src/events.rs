@@ -1504,6 +1504,11 @@ pub enum AppCommand {
     // Export
     ShowExportDialog,
     ExportSequence { settings: ExportSettings },
+    /// One delivery of several formats (#2724): for each output, the open
+    /// sequence's version at its aspect (the sequence itself when it is
+    /// at it, made and reframed when there is none), exported with its
+    /// settings, each a job of the queue.
+    ExportDelivery { outputs: Vec<DeliveryOutput> },
     CancelExport,
     /// Cancel exactly this render, even if another render became active.
     CancelExportJob { job_id: String },
@@ -5438,6 +5443,30 @@ pub struct SequenceSummary {
     /// can't be removed while it is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub used_in: Option<String>,
+    /// What it is a version of at another aspect (#2724): the master's
+    /// id, its size, and whether the master's cut has changed since.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<VersionSummary>,
+    /// Its picture size.
+    #[serde(default)]
+    pub width: u32,
+    #[serde(default)]
+    pub height: u32,
+}
+
+/// One output of a delivery (#2724): the aspect, as width and height
+/// parts, and how it is written.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeliveryOutput {
+    pub aspect: (u32, u32),
+    pub settings: ExportSettings,
+}
+
+/// A version's master and whether it is older than the master's cut.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VersionSummary {
+    pub of: String,
+    pub stale: bool,
 }
 
 impl Default for ProjectStatus {

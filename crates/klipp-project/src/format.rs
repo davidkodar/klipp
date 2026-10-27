@@ -169,6 +169,9 @@ pub struct SequenceJson {
     /// which is every sequence once reframed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub awaiting_refit: bool,
+    /// What it is a version of, at another aspect (#2724).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version_of: Option<klipp_timeline::VersionOf>,
     /// The move over the whole sequence. Absent when there is no camera,
     /// which is every project saved before there could be one.
     #[serde(default, skip_serializing_if = "klipp_timeline::Camera::is_default")]

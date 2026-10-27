@@ -397,8 +397,9 @@ struct DirSig {
     mtime_secs: Option<u64>,
 }
 
-/// 2: each face's weight, slope and axes (#1504).
-const CACHE_SCHEMA_VERSION: u32 = 2;
+/// 2: each face's weight, slope and axes (#1504). 3: a variable font's
+/// family read without its axes' tag (#2734).
+const CACHE_SCHEMA_VERSION: u32 = 3;
 
 fn cache_path() -> Option<PathBuf> {
     let base = dirs::cache_dir()?.join("klipp");
@@ -463,6 +464,12 @@ fn save_disk_cache(
 // ---------------------------------------------------------------------------
 
 fn parse_font_name(filename: &str) -> (String, String) {
+    // A variable font names its axes last, "WorkSans-Italic[wght]": the
+    // family and style are what comes before them (#2734).
+    let filename = match filename.find('[') {
+        Some(i) if filename.ends_with(']') => &filename[..i],
+        _ => filename,
+    };
     // Try splitting on '-' first (e.g., "NotoSans-Regular", "Roboto-BoldItalic")
     if let Some(idx) = filename.rfind('-') {
         let family_raw = filename[..idx].replace('_', " ");
@@ -547,6 +554,15 @@ mod tests {
         let (family, style) = parse_font_name("Roboto-BoldItalic");
         assert_eq!(family, "Roboto");
         assert_eq!(style, "Bold Italic");
+    }
+
+    /// #2734: a variable font's file names its axes after its family and
+    /// style; the upright and the italic are one family.
+    #[test]
+    fn parse_variable_names() {
+        assert_eq!(parse_font_name("WorkSans[wght]"), ("Work Sans".to_string(), "Regular".to_string()));
+        assert_eq!(parse_font_name("WorkSans-Italic[wght]"), ("Work Sans".to_string(), "Italic".to_string()));
+        assert_eq!(parse_font_name("BodoniModa-Italic[opsz,wght]"), ("Bodoni Moda".to_string(), "Italic".to_string()));
     }
 
     #[test]

@@ -1038,6 +1038,10 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             json!({ "method": "batch", "commands": commands })
         }
         "klipp_export" => {
+            // A delivery of several formats (#2724) names a file for each.
+            if let Some(outputs) = args.get("outputs").filter(|o| o.as_array().is_some_and(|a| !a.is_empty())) {
+                return Ok(json!({ "method": "export", "outputs": outputs }));
+            }
             let mut v = json!({ "method": "export", "path": arg_str(args, "path")? });
             for key in ["width", "height", "crf", "bit_depth", "bitrate_kbps"] {
                 if let Some(n) = args.get(key).and_then(|v| v.as_u64()) {
@@ -2384,7 +2388,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                  "path": { "type": "string", "description": "Absolute output path" },
                  "width": { "type": "integer" }, "height": { "type": "integer" },
                  "fps": { "type": "number" },
-                 "crf": { "type": "integer", "description": "Quality, lower is better (default 23)" },
+                 "crf": { "type": "integer", "description": "lower is better (23)" },
                  "target_lufs": { "type": "number", "description": "Loudness target: -14 web, -23 broadcast; default the brief's" },
                  "true_peak_dbtp": { "type": "number", "description": "True-peak ceiling, -10 to 0 (default -1)" },
                  "burn_captions": { "type": "boolean", "description": "Captions burnt in (default on); titles always are; the reply says which" },
@@ -2395,8 +2399,9 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                  "encoder_speed": { "type": "string", "enum": klipp_control::ENCODER_SPEEDS },
                  "codec": { "type": "string" }, "audio_codec": { "type": "string" },
                  "bit_depth": { "type": "integer" }, "bitrate_kbps": { "type": "integer" },
+                 "outputs": { "type": "array" },
              }),
-             vec!["path"]),
+             vec![]),
         tool("klipp_export_status",
              "Every render job: status, progress, error, loudness and where its time went; wait true waits for one or all. Details: klipp_guide topic export_status.",
              json!({ "wait": { "type": "boolean" }, "job_id": { "type": "string" }, "timeout_ms": { "type": "integer", "description": "Maximum wait, default one hour" } }), vec![]),

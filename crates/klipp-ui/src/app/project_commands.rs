@@ -80,6 +80,7 @@ impl KlippApp {
             edit_plan: None,
             reviews: Vec::new(),
             awaiting_refit: false,
+            version_of: None,
         };
         // The same reset closing a project does. Resetting only the
         // UI's copy left the engine on the last project: its
@@ -701,6 +702,7 @@ impl KlippApp {
                     edit_plan: None,
                     reviews: Vec::new(),
                     awaiting_refit: false,
+                    version_of: None,
                 };
                 self.state.sequences.push(seq);
                 self.state.dirty = true;

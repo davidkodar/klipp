@@ -190,6 +190,18 @@ impl ControlCommand {
     }
 }
 
+/// One output of a delivery (#2724): its aspect ("16:9", "9:16", "1:1"
+/// or "4:5"), the file it is written to, and its preset and loudness.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct DeliveryAsk {
+    pub format: String,
+    pub path: String,
+    #[serde(default)]
+    pub preset: Option<String>,
+    #[serde(default)]
+    pub target_lufs: Option<f32>,
+}
+
 /// A moment to make a short of: where it runs in the file, and the line
 /// it opens on, its name and hook title.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -1014,6 +1026,7 @@ pub enum ControlCommand {
     /// offline or the path is one of the project's media files.
     /// Asynchronous: poll `export_status` for the job.
     Export {
+        #[serde(default)]
         path: String,
         #[serde(default)]
         width: Option<u32>,
@@ -1085,6 +1098,11 @@ pub enum ControlCommand {
         /// overrides the preset's.
         #[serde(default)]
         encoder_speed: Option<String>,
+        /// Several formats in one delivery (#2724), each from the open
+        /// sequence's version at its aspect: with these, `path` and the
+        /// fields above are left out.
+        #[serde(default)]
+        outputs: Vec<DeliveryAsk>,
     },
     /// Every render job the app knows: status, progress, result.
     ExportStatus {

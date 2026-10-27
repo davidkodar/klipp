@@ -476,3 +476,15 @@ fn a_freeze_frame_keeps_its_held_frame() {
     assert_eq!(back.tracks[0].clips[0].hold, Some(tc(30)), "the held frame was lost");
     assert_eq!(back.tracks[0].clips[1].hold, None, "a playing clip holds nothing");
 }
+
+/// #2724: a version keeps what it is a version of, and the master's cut
+/// it was made at.
+#[test]
+fn a_version_keeps_its_master_and_cut() {
+    let mut seq = Sequence::new_default();
+    seq.tracks[0].clips = vec![media_clip(0, 48)];
+    let master = klipp_core::SequenceId::new();
+    seq.version_of = Some(klipp_timeline::VersionOf { master, cut: 12345 });
+    let back = round_trip("version", seq);
+    assert_eq!(back.version_of, Some(klipp_timeline::VersionOf { master, cut: 12345 }));
+}
