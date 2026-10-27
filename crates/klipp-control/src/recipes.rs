@@ -126,7 +126,11 @@ pub fn on_clip(seq: &Sequence, clip: ClipId, recipe: &CompositionTemplate, value
         values.insert(name.clone(), TemplateValue::Text(surface.id.to_string()));
     }
     let values = &values;
-    let wire = wire_ops(recipe, clip, &anchors, values, seq.resolution)?;
+    // Measured on this sequence and this clip: its seconds made its media's.
+    let fps = f64::from(seq.fps.num) / f64::from(seq.fps.den.max(1));
+    let source_at = |t: f64| c.source_secs_at(t, fps);
+    let placing = ct::Placing { frame: seq.resolution, length: (c.timeline_out - c.timeline_in).to_secs_f64(), source_at: &source_at };
+    let wire = wire_ops(recipe, clip, &anchors, values, &placing)?;
     let docs = crate::graph_model::documents(seq, Root::Clip { clip: clip.0 })?;
     let prepared = crate::graph_prepare::prepare(&wire, docs).map_err(|(at, why)| match at {
         Some(i) => format!("\"{}\" step {i}: {why}", recipe.name),
@@ -134,7 +138,7 @@ pub fn on_clip(seq: &Sequence, clip: ClipId, recipe: &CompositionTemplate, value
     })?;
     // The node each op made, which its controls set later (#2758).
     let nodes = prepared.created.iter().filter_map(|(k, path)| Some((*k, path.node()?))).collect();
-    let placed = RecipeInstance { name: recipe.name.clone(), instance: recipe.recipe_instance(values, seq.resolution), nodes };
+    let placed = RecipeInstance { name: recipe.name.clone(), instance: recipe.recipe_instance(values, &placing), nodes };
     Ok((prepared.ops, placed))
 }
 
@@ -172,8 +176,8 @@ pub(crate) fn subject_note(seq: &Sequence, clip: ClipId, recipe: &CompositionTem
 }
 
 /// The recipe's graph ops for clip `clip`, as the wire takes them.
-pub(crate) fn wire_ops(recipe: &CompositionTemplate, clip: ClipId, anchors: &BTreeMap<&str, uuid::Uuid>, values: &BTreeMap<String, TemplateValue>, frame: klipp_core::Resolution) -> Result<Vec<GraphWireOp>, String> {
-    let ops = recipe.recipe_ops(clip.0, anchors, values, frame)?;
+pub(crate) fn wire_ops(recipe: &CompositionTemplate, clip: ClipId, anchors: &BTreeMap<&str, uuid::Uuid>, values: &BTreeMap<String, TemplateValue>, placed: &ct::Placing) -> Result<Vec<GraphWireOp>, String> {
+    let ops = recipe.recipe_ops(clip.0, anchors, values, placed)?;
     ops.into_iter().enumerate().map(|(i, op)| serde_json::from_value(op).map_err(|e| format!("\"{}\" step {i}: {e}", recipe.name))).collect()
 }
 
@@ -186,7 +190,7 @@ mod tests {
     #[test]
     fn every_built_in_recipe_reads_and_lists() {
         let recipes = ct::builtin_recipes();
-        assert_eq!(recipes.len(), 6, "every file in assets/recipes reads");
+        assert_eq!(recipes.len(), 7, "every file in assets/recipes reads");
         for r in &recipes {
             assert_eq!(r.kind, ct::TemplateKind::Recipe, "{}", r.name);
             let v = listed(r);

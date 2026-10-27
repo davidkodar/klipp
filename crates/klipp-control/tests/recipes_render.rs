@@ -25,14 +25,28 @@ const GREEN: [f32; 3] = [0.02, 0.75, 0.02];
 /// patch.
 const SCREEN: klipp_timeline::surface::Quad = [[0.05, 0.15], [0.25, 0.2], [0.24, 0.8], [0.06, 0.75]];
 
-/// The test shot: grey, a green patch over its middle; a media slot's
-/// picture is red.
+/// The test shot's media, which the media reader reads too (a clean
+/// frame, #2758).
+const SHOT_MEDIA: &str = "9d3f6b28-4a1e-4c75-8e02-6b9a3d7f1c54";
+
+/// The test shot: grey, from half a second on a green patch over its
+/// middle (before, its clean frame); a media slot's picture is red.
 struct Shot;
+
+/// The test shot at source `secs`.
+fn shot(secs: f64, w: u32, h: u32) -> Vec<f32> {
+    (0..w * h)
+        .flat_map(|i| {
+            let (fx, fy) = ((i % w) as f32 / w as f32, (i / w) as f32 / h as f32);
+            if secs >= 0.5 && (0.3..0.7).contains(&fx) && (0.3..0.7).contains(&fy) { [GREEN[0], GREEN[1], GREEN[2], 1.0] } else { [GREY, GREY, GREY, 1.0] }
+        })
+        .collect()
+}
 
 /// The test shot's clip, carrying the screen as a tracked surface named
 /// "Screen".
 fn shot_clip() -> Clip {
-    let mut c = Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(2.0)) };
+    let mut c = Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId(SHOT_MEDIA.parse().unwrap()) }, ..Clip::gap(tc(0.0), tc(2.0)) };
     let key = |secs| klipp_timeline::SurfaceKey::at_corners(secs, &SCREEN, &SCREEN).unwrap();
     c.surfaces.push(klipp_timeline::Surface {
         id: klipp_core::ClipId::new().0,
@@ -88,21 +102,16 @@ impl FrameSource for Shot {
         Some(subject_dir())
     }
 
-    fn frame(&mut self, _c: &Clip, _secs: f64, w: u32, h: u32) -> Option<SourceFrame> {
-        let v = (0..w * h)
-            .flat_map(|i| {
-                let (fx, fy) = ((i % w) as f32 / w as f32, (i / w) as f32 / h as f32);
-                if (0.3..0.7).contains(&fx) && (0.3..0.7).contains(&fy) { [GREEN[0], GREEN[1], GREEN[2], 1.0] } else { [GREY, GREY, GREY, 1.0] }
-            })
-            .collect();
-        Some(SourceFrame { pixels: SourcePixels::Linear(Arc::new(v)), width: w, height: h, pts: None })
+    fn frame(&mut self, _c: &Clip, secs: f64, w: u32, h: u32) -> Option<SourceFrame> {
+        Some(SourceFrame { pixels: SourcePixels::Linear(Arc::new(shot(secs, w, h))), width: w, height: h, pts: None })
     }
 
-    fn media_frame(&mut self, media: &str, _secs: f64, _working: WorkingColorspace, w: u32, h: u32) -> Result<Vec<f32>, SideMissing> {
-        if media != PICTURE {
-            return Err(SideMissing::File(format!("{media}.mov")));
+    fn media_frame(&mut self, media: &str, secs: f64, _working: WorkingColorspace, w: u32, h: u32) -> Result<Vec<f32>, SideMissing> {
+        match media {
+            PICTURE => Ok((0..w * h).flat_map(|_| [0.9, 0.03, 0.03, 1.0]).collect()),
+            SHOT_MEDIA => Ok(shot(secs, w, h)),
+            _ => Err(SideMissing::File(format!("{media}.mov"))),
         }
-        Ok((0..w * h).flat_map(|_| [0.9, 0.03, 0.03, 1.0]).collect())
     }
 }
 
@@ -336,4 +345,43 @@ fn a_screen_replacement_lies_on_the_tracked_screen_only() {
     values.insert("surface".into(), TemplateValue::Text("Billboard".into()));
     let why = klipp_control::recipes::on_clip(&before, plain.id, recipe, &values).expect_err("refused");
     assert!(why.contains("\"Billboard\"") && why.contains("\"Screen\""), "says what it has: {why}");
+}
+
+/// Replace background (clean plate): keyed against the shot's own clean
+/// frame at 0 s, the new background lies wherever the shot is as it was
+/// then, and the subject stays in front, every pixel a pixel's width clear
+/// of the patch's edges; on the GPU stack with nothing falling back. A
+/// clean frame past the clip's end is refused, said.
+#[test]
+fn a_clean_plate_replaces_the_background_and_keeps_the_subject() {
+    let recipes = builtin_recipes();
+    let recipe = recipes.iter().find(|r| r.name == "Replace background (clean plate)").expect("the recipe");
+    let plain = shot_clip();
+    let Some(shown) = stack(&placed_with(recipe, &plain), ViewChannel::Picture, "clean plate") else { return };
+    let Some(alone) = stack(&sequence(plain.clone()), ViewChannel::Picture, "the clip alone") else { return };
+    let on_patch = |x: f32, y: f32| (0.3..0.7).contains(&x) && (0.3..0.7).contains(&y);
+    let (mut subject, mut background) = (0u8, u8::MAX);
+    for y in 0..H {
+        for x in 0..W {
+            let (fx, fy) = ((x as f32 + 0.5) / W as f32, (y as f32 + 0.5) / H as f32);
+            let near = [(1.5, 0.0), (-1.5, 0.0), (0.0, 1.5), (0.0, -1.5)].iter().any(|(dx, dy)| on_patch(fx + dx / W as f32, fy + dy / H as f32) != on_patch(fx, fy));
+            if near {
+                continue;
+            }
+            let i = ((y * W + x) * 4) as usize;
+            if on_patch(fx, fy) {
+                subject = subject.max((0..3).map(|c| shown[i + c].abs_diff(alone[i + c])).max().unwrap());
+            } else {
+                background = background.min(shown[i]);
+            }
+        }
+    }
+    assert!(subject <= 1, "the subject as the clip shows it: {subject} levels off");
+    assert!(background >= 240, "the new background behind it: its least red is {background}");
+
+    let before = sequence(plain.clone());
+    let mut values: BTreeMap<String, TemplateValue> = recipe.slots.iter().map(|(n, s)| (n.clone(), filled(s.kind))).collect();
+    values.insert("clean_frame".into(), TemplateValue::Number(5.0));
+    let why = klipp_control::recipes::on_clip(&before, plain.id, recipe, &values).expect_err("refused");
+    assert!(why.contains("past the clip's end"), "says why: {why}");
 }
