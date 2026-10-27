@@ -6796,6 +6796,29 @@ impl GpuEffectsPipeline {
         true
     }
 
+    /// The finished stack (`stack_finish_into_chain` with `keep_alpha`)
+    /// kept in a buffer of its own (#2757): a precomposition's scene,
+    /// composed before its parent's stack, which seeds the parent's layer
+    /// from it. `reuse` is the buffer kept for the clip last frame, taken
+    /// again when it is the frame's size. Recorded in the frame's encoder,
+    /// so it lands before the next stack's passes.
+    pub fn stack_keep_chain(&mut self, reuse: Option<std::sync::Arc<wgpu::Buffer>>) -> Option<std::sync::Arc<wgpu::Buffer>> {
+        if self.is_device_lost() {
+            return None;
+        }
+        let bytes = self.stack_pixel_count() * 16;
+        let kept = match reuse.filter(|b| b.size() == bytes) {
+            Some(b) => b,
+            None => std::sync::Arc::new(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("kept_scene"),
+                size: bytes,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })),
+        };
+        self.stack_copy(self.buf_a.as_ref()?, &kept, "stack_keep_scene").then_some(kept)
+    }
+
     /// The finished stack as linear working-space pixels, for tests and
     /// the CPU twin comparison. Call after `stack_finish_into_chain`.
     pub fn stack_download_linear(&self) -> Vec<f32> {
