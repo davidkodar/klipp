@@ -3615,6 +3615,10 @@ pub enum AppCommand {
     /// With `ripple` the clips after it on their tracks move by the change
     /// in length; without it, one it would grow into refuses it (#639).
     SetClipSpeed { clip_id: ClipId, speed: f64, ripple: bool },
+    /// How a slowed or ramped clip's in-between frames are drawn: "sample"
+    /// repeats the nearest, "blend" cross-fades, "flow" follows the motion
+    /// (#2773), as the retime and ramp ops' `interpolation`.
+    SetClipInterpolation { clip_id: ClipId, interpolation: String },
 
     // Speed keyframes (variable speed ramp)
     /// Add a speed keyframe to a clip at the given time.

@@ -853,9 +853,13 @@ exist until the plan runs.
   draw attention to a region. `x,y` are its centre and `w,h` its size
   as frame fractions; `kind` is `box`, `ring` or `spot` (dim outside).
   The highlight fades in and out.
-- `ramp {clip_id, from, to, secs?}`: ramp speed from `from` times to
-  `to` times over timeline seconds, then hold the new speed; the clip's
-  length follows. The ramp's sound is silent.
+- `ramp {clip_id, from, to, secs?, ripple?, interpolation?}`: ramp speed
+  from `from` times to `to` times over timeline seconds, then hold the
+  new speed; the clip's length follows. `ripple: true` moves the clips
+  after it by the change, as `retime` does; without it a ramp that would
+  grow into the next clip is refused. `interpolation` (`sample`, `blend`
+  or `flow`, as for `retime`) draws the slow part's in-between frames:
+  `flow` for smooth slow motion. The ramp's sound is silent.
 - `compose {clip_id, poses:[{secs? | from_end_secs?, x?, y?, width?, height?, rotation_deg?, tilt_x_deg?, tilt_y_deg?, opacity?, ease?}]}`:
   set the clip transform for picture-in-picture, split screens or grids.
   One pose holds; more animate. Unlike `reframe`, `pan` and `zoom`,

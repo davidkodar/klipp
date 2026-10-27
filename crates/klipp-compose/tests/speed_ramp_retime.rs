@@ -78,7 +78,8 @@ fn speed_ramp_retimes_once() {
 
 /// #2479: a clip set to blend or follow its in-between frames does so at
 /// full speed too, where a file of a lower frame rate than the timeline's
-/// is conformed; not sped up, reversed, or with nothing set.
+/// is conformed, and reversed too (#2772); not sped up, or with nothing
+/// set.
 #[test]
 fn a_blending_clip_conforms_at_full_speed() {
     use klipp_compose::frame_blends;
@@ -88,7 +89,9 @@ fn a_blending_clip_conforms_at_full_speed() {
     };
     assert!(frame_blends(&blend(1.0), tc(1.0), Some(0.8 * FPS), FPS), "at full speed from a lower frame rate");
     assert!(frame_blends(&blend(0.5), tc(1.0), None, FPS), "slowed");
+    assert!(frame_blends(&blend(-0.5), tc(1.0), None, FPS), "slowed and reversed");
     assert!(!frame_blends(&blend(2.0), tc(1.0), Some(0.8 * FPS), FPS), "sped up");
+    assert!(!frame_blends(&blend(-2.0), tc(1.0), Some(0.8 * FPS), FPS), "sped up and reversed");
     let plain = Clip::media(MediaId::new(), tc(0.0), tc(4.0), tc(0.0), tc(4.0));
     assert!(!frame_blends(&plain, tc(1.0), Some(0.8 * FPS), FPS), "nothing set");
 }

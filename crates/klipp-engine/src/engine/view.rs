@@ -393,7 +393,11 @@ impl FrameSource for ViewerSource<'_> {
         self.held(clip.id).map(source_frame)
     }
 
-    fn frame_after(&mut self, clip: &Clip, _source_secs: f64, _width: u32, _height: u32) -> Option<SourceFrame> {
+    fn frame_after(&mut self, clip: &Clip, source_secs: f64, width: u32, height: u32) -> Option<SourceFrame> {
+        // Read backward, the frame after is one already decoded (#2772).
+        if clip.is_reversed() {
+            return self.streams.reversed_frame_after(clip, source_secs, width, height);
+        }
         let next = match self.primary {
             Some((id, f)) if id == clip.id => {
                 let q = self.primary_queue?.lock().unwrap_or_else(|e| e.into_inner());
