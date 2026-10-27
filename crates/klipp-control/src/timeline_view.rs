@@ -126,6 +126,22 @@ pub(crate) fn timeline_text(
                 klipp_timeline::ClipKind::Gap => "gap".to_string(),
                 klipp_timeline::ClipKind::Sequence { .. } => "nested sequence".to_string(),
                 klipp_timeline::ClipKind::Precomposition { .. } => "precomposition".to_string(),
+                // Its controls (#2757): each one's value and what it drives,
+                // with the offset or "unlinked at" a hand edit left.
+                klipp_timeline::ClipKind::TemplatePrecomposition { template_instance: inst, .. } if !inst.links.is_empty() => {
+                    let mut out = "template precomposition".to_string();
+                    let mut seen: Vec<&str> = Vec::new();
+                    for l in &inst.links {
+                        if !seen.contains(&l.parameter.as_str()) {
+                            seen.push(&l.parameter);
+                            let v = match inst.overrides.get(&l.parameter) { Some(klipp_core::TemplateValue::Number(n)) => *n, _ => l.from[0] };
+                            let _ = write!(out, "  control {} = {v}:", l.parameter);
+                        }
+                        let state = if !l.linked { format!(" unlinked at {}", l.frozen) } else if l.offset != 0.0 { format!(" offset {:+}", l.offset) } else { String::new() };
+                        let _ = write!(out, " {} {}..{} {}{state};", l.property, l.to[0], l.to[1], l.curve.name());
+                    }
+                    out
+                }
                 klipp_timeline::ClipKind::TemplatePrecomposition { .. } => "template precomposition".to_string(),
             };
             let mut line = format!("  [{}]  {what}", range(c.timeline_in, c.timeline_out));

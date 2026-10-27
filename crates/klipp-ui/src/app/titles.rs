@@ -180,17 +180,7 @@ impl KlippApp {
                 // A template is composed in isolation and placed as one
                 // picture: a precomposition, not a flattened compound.
                 let mut clip = klipp_timeline::Clip::precomposition(sequence_id, timeline_in, timeline_out);
-                let bindings = template
-                    .bindings
-                    .iter()
-                    .map(|binding| (binding.parameter.clone(), binding.property.clone()))
-                    .collect();
-                let instance = crate::parameterized_templates::TemplateInstance {
-                    template_id: *template_id,
-                    bindings,
-                    overrides: std::collections::BTreeMap::new(),
-                    media_slots: std::collections::BTreeMap::new(),
-                };
+                let instance = klipp_timeline::composition_template::instance_for(&template);
                 let Some(template_sequence) = template_sequence.as_ref() else {
                     self.state.toast.show("Template composition is missing");
                     return false;

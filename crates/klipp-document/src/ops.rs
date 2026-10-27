@@ -1131,6 +1131,22 @@ pub enum Op {
         #[serde(skip)]
         composition: Option<Box<PlacedComposition>>,
     },
+    /// A placed template's macro control (#2757): `control` (by name or
+    /// label) set to `value`; or one `target` it drives (`object:<i>.<number>`)
+    /// unlinked (keeping its value), relinked (from where it is, nothing
+    /// jumps), its offset reset, or set to `value` by hand (an offset
+    /// while linked). One undo step.
+    TemplateLink {
+        clip_id: ClipRef,
+        #[serde(default)]
+        control: Option<String>,
+        #[serde(default)]
+        target: Option<String>,
+        #[serde(default)]
+        action: Option<String>,
+        #[serde(default)]
+        value: Option<f64>,
+    },
     /// A lower third: `name`, and `role` under it, bottom left inside
     /// title-safe, for `secs` from `at`, fading in and out. It goes on a
     /// text track where it fits (one is made on top if none does).
@@ -2245,7 +2261,7 @@ pub const OP_NAMES: &[&str] = &[
     "slip", "slide", "pin", "role", "match", "matte", "format", "stabilize", "reframe", "zoom", "pan", "follow", "refit", "highlight",
     "ramp", "freeze", "grade_group", "remove_grade_group", "look", "qualify", "zones", "retime", "replace", "track_audio", "clip_audio", "clean_audio",
     "transition", "style", "title", "compose", "camera", "crop", "generator", "depth", "label", "motion_blur",
-    "strobe", "set_length", "over_edits", "template", "edit_from_selects", "opacity_mask",
+    "strobe", "set_length", "over_edits", "template", "template_link", "edit_from_selects", "opacity_mask",
 ];
 
 pub use klipp_timeline::ShadowSpec;
@@ -4092,6 +4108,10 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
         Op::SetText { clip_id, text } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             set_text(seq, pool, i, ti, clip, text)
+        }
+        Op::TemplateLink { clip_id, control, target, action, value } => {
+            let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            template_link(i, clip, control.as_deref(), target.as_deref(), action.as_deref(), *value)
         }
         Op::AddTrack { kind, name } => {
             let want = track_kind(kind).ok_or_else(|| refuse(i, format!("\"{kind}\" is not a track kind"), "use video, audio, text or subtitle"))?;
@@ -6627,6 +6647,79 @@ fn template_value(p: &klipp_timeline::composition_template::TemplateParameter, v
 
 /// A composition template placed as one clip at `at` for `held` seconds
 /// (#2757): on `track`, else a free video track, else a new one on top;
+/// Where a placed template's control `parameter` stands (#2757): its
+/// value, or the start of its range when none was set.
+fn control_at(instance: &klipp_core::TemplateInstance, parameter: &str) -> f64 {
+    match instance.overrides.get(parameter) {
+        Some(klipp_core::TemplateValue::Number(n)) => *n,
+        _ => instance.links.iter().find(|l| l.parameter == parameter).map_or(0.0, |l| l.from[0]),
+    }
+}
+
+/// The `template_link` op (#2757) on `clip`: one `SetTemplateInstance`.
+fn template_link(i: usize, clip: &Clip, control: Option<&str>, target: Option<&str>, action: Option<&str>, value: Option<f64>) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    let ClipKind::TemplatePrecomposition { template_instance: old, .. } = &clip.kind else {
+        return Err(refuse(i, "that clip is not a placed template", "the template op places one; the timeline view marks them"));
+    };
+    let mut new = old.clone();
+    let controls: Vec<&str> = {
+        let mut c: Vec<&str> = old.links.iter().map(|l| l.parameter.as_str()).collect();
+        c.dedup();
+        c
+    };
+    if controls.is_empty() {
+        return Err(refuse(i, "that template has no controls", "save clips with controls to make one"));
+    }
+    if value.is_some_and(|v| !v.is_finite()) {
+        return Err(refuse(i, "the value is not a number", "give a number"));
+    }
+    let (what, parameter) = match (control, target) {
+        (Some(_), Some(_)) => return Err(refuse(i, "give a control or a target, not both", "a control sets every target it drives; a target is one of them")),
+        (None, None) => return Err(refuse(i, "give a control to set, or a target to act on", format!("its controls are {}", controls.join(", ")))),
+        (Some(c), None) => {
+            let name = controls.iter().find(|n| n.eq_ignore_ascii_case(c.trim()) || n.eq_ignore_ascii_case(&label_name(c))).ok_or_else(|| refuse(i, format!("the template has no control \"{c}\""), format!("its controls are {}", controls.join(", "))))?;
+            if action.is_some() {
+                return Err(refuse(i, format!("control \"{c}\" takes a value, not an action"), "unlink, relink and reset_offset act on one target"));
+            }
+            let v = value.ok_or_else(|| refuse(i, format!("control \"{c}\" needs a value"), "give value"))?;
+            let (lo, hi) = old.links.iter().find(|l| l.parameter == *name).map(|l| (l.from[0].min(l.from[1]), l.from[0].max(l.from[1]))).unwrap_or((0.0, 1.0));
+            if !(lo..=hi).contains(&v) {
+                return Err(refuse(i, format!("control \"{c}\" goes from {lo} to {hi}, not {v}"), "give a value in its range"));
+            }
+            new.overrides.insert(name.to_string(), klipp_core::TemplateValue::Number(v));
+            (format!("set control {name} to {v}"), name.to_string())
+        }
+        (None, Some(t)) => {
+            let at = new.links.iter().position(|l| l.property == t.trim()).ok_or_else(|| {
+                refuse(i, format!("no control drives \"{t}\""), format!("its controls drive {}", old.links.iter().map(|l| l.property.as_str()).collect::<Vec<_>>().join(", ")))
+            })?;
+            let parameter = new.links[at].parameter.clone();
+            let c = control_at(&new, &parameter);
+            let link = &mut new.links[at];
+            let what = match (action.map(str::trim), value) {
+                (Some("unlink"), None) => { link.unlink(c); format!("unlink {t} from {parameter}, kept at {:.3}", link.frozen) }
+                (Some("relink"), None) => { link.relink(c); format!("relink {t} to {parameter}, offset {:+.3} kept", link.offset) }
+                (Some("reset_offset"), None) => { link.reset_offset(); format!("reset {t}'s offset: it follows {parameter}") }
+                (None, Some(v)) => {
+                    link.set_value(c, v);
+                    if link.linked { format!("set {t} to {v}: offset {:+.3} on {parameter}", link.offset) } else { format!("set {t} to {v} (unlinked)") }
+                }
+                (Some(a), None) => return Err(refuse(i, format!("\"{a}\" is not an action on a target"), "use unlink, relink or reset_offset")),
+                (_, None) => return Err(refuse(i, format!("\"{t}\" needs an action or a value"), "use action unlink, relink or reset_offset, or a value")),
+                (Some(_), Some(_)) => return Err(refuse(i, "give an action or a value, not both", "a value sets it by hand")),
+            };
+            (what, parameter)
+        }
+    };
+    Ok((what, EditCommand::SetTemplateInstance { clip_id: clip.id, parameter, old: Box::new(old.clone()), new: Box::new(new) }, Vec::new()))
+}
+
+/// A control's label as the name its template saves it by (#2757):
+/// "Water Movement" is `water_movement`.
+fn label_name(label: &str) -> String {
+    klipp_timeline::composition_template::control_name(label)
+}
+
 /// the sequences it needs copied in first; its parameters set from
 /// `fields` by name or label. One step.
 #[allow(clippy::too_many_arguments)]
@@ -6663,12 +6756,10 @@ fn place_composition(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, at: T
         p.validate(&value).map_err(|e| refuse(i, e, "title_templates lists each template's parameters"))?;
         overrides.insert(pname.clone(), value);
     }
-    let instance = klipp_core::TemplateInstance {
-        template_id: t.id,
-        bindings: t.bindings.iter().map(|b| (b.parameter.clone(), b.property.clone())).collect(),
-        overrides,
-        media_slots,
-    };
+    // Plain bindings, and each control's links from where it starts.
+    let mut instance = klipp_timeline::composition_template::instance_for(t);
+    instance.overrides.extend(overrides);
+    instance.media_slots = media_slots;
     klipp_timeline::flatten::validate_template_instance(&instance, composition).map_err(|e| refuse(i, e, "save the template again"))?;
     let mut edits = Vec::new();
     if !placed.missing.is_empty() {
@@ -13337,7 +13428,7 @@ mod tests {
         card.tracks[0].clips.push(Clip { kind: ClipKind::Title(title), ..Clip::gap(tc(0.0), tc(3.0)) });
         let mut t = CompositionTemplate::new("Card", card.id.0);
         t.parameters.insert("text".into(), TemplateParameter { label: "Headline".into(), default: klipp_core::TemplateValue::Text("Launch".into()), range: None, choices: vec![] });
-        t.bindings.push(TemplateBinding { parameter: "text".into(), property: "object:0.text".into() });
+        t.bindings.push(TemplateBinding { parameter: "text".into(), property: "object:0.text".into(), link: None });
         t.sequences = vec![card.clone()];
         let placed = PlacedComposition { template: t, missing: vec![card.clone()] };
         let op = |fields: serde_json::Value| Op::Template { name: "Card".into(), at: Anchor::Secs(1.0), secs: 3.0, track: None, fields: serde_json::from_value(fields).unwrap(), data: None, composition: Some(Box::new(placed.clone())) };
@@ -13373,7 +13464,7 @@ mod tests {
         card.tracks[0].clips.push(Clip::media(MediaId::new(), tc(0.0), tc(3.0), tc(0.0), tc(3.0)));
         let mut t = CompositionTemplate::new("Photo card", card.id.0);
         t.slots.insert("slot_1".into(), TemplateSlot { label: "Photo".into(), kind: SlotKind::Media });
-        t.bindings.push(TemplateBinding { parameter: "slot_1".into(), property: "clip:0.media".into() });
+        t.bindings.push(TemplateBinding { parameter: "slot_1".into(), property: "clip:0.media".into(), link: None });
         t.sequences = vec![card.clone()];
         let op = |t: &CompositionTemplate, fields: serde_json::Value| Op::Template { name: "Photo card".into(), at: Anchor::Secs(1.0), secs: 3.0, track: None, fields: serde_json::from_value(fields).unwrap(), data: None, composition: Some(Box::new(PlacedComposition { template: t.clone(), missing: vec![card.clone()] })) };
         let plan = resolve(&seq, &pool, &[op(&t, serde_json::json!({ "Photo": media.0.to_string() }))]).unwrap();
@@ -13388,6 +13479,59 @@ mod tests {
         let mut matte = t.clone();
         matte.slots.get_mut("slot_1").unwrap().kind = SlotKind::SubjectMatte;
         assert!(why(&matte, serde_json::json!({ "Photo": media.0.to_string() })).contains("does not fill yet"));
+    }
+
+    /// #2757: the template op sets a macro control like a field; the
+    /// template_link op moves it, sets a target by hand (an offset),
+    /// unlinks and relinks it without a jump, each one undo step; refusals
+    /// name the control or the target.
+    #[test]
+    fn a_template_links_ops_drive_and_undo_its_controls() {
+        use klipp_timeline::composition_template::{add_controls, CompositionTemplate, ControlSpec};
+        let (seq, pool, ..) = fixture();
+        let mut card = Sequence::new_default();
+        let title = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Launch".into(), ..Default::default() });
+        card.tracks[0].clips.push(Clip { kind: ClipKind::Title(title), ..Clip::gap(tc(0.0), tc(3.0)) });
+        let mut t = CompositionTemplate::new("Card", card.id.0);
+        let controls: Vec<ControlSpec> = serde_json::from_value(serde_json::json!([{ "label": "Grow", "default": 0.25, "drives": [{ "target": "Text 1 size", "to": [40, 80] }] }])).unwrap();
+        add_controls(&mut t, &card, &controls).unwrap();
+        t.sequences = vec![card.clone()];
+        let op = Op::Template { name: "Card".into(), at: Anchor::Secs(1.0), secs: 3.0, track: None, fields: serde_json::from_value(serde_json::json!({ "Grow": 0.5 })).unwrap(), data: None, composition: Some(Box::new(PlacedComposition { template: t, missing: vec![card.clone()] })) };
+        let plan = resolve(&seq, &pool, &[op]).unwrap();
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&plan.steps[0].edit);
+        let instance = |s: &Sequence| s.all_clips().find_map(|c| match &c.kind { ClipKind::TemplatePrecomposition { template_instance, .. } => Some((c.id, template_instance.clone())), _ => None }).unwrap();
+        let (id, placed) = instance(&view.sequences[0]);
+        assert_eq!(placed.overrides.get("grow"), Some(&klipp_core::TemplateValue::Number(0.5)), "set like a field");
+        assert_eq!(placed.links.len(), 1);
+        let link = |s: &Sequence, v: serde_json::Value| -> Result<Plan, String> {
+            let mut o = serde_json::json!({ "op": "template_link", "clip_id": id.0.to_string() });
+            o.as_object_mut().unwrap().extend(v.as_object().unwrap().clone());
+            resolve(s, &pool, &[serde_json::from_value(o).unwrap()]).map_err(|e| e.to_string())
+        };
+        // Size 70 by hand at control 0.5 (mapped 60): an offset of +10.
+        let by_hand = link(&view.sequences[0], serde_json::json!({ "target": "object:0.size", "value": 70.0 })).unwrap();
+        assert!(by_hand.steps[0].what.contains("offset +10"), "{}", by_hand.steps[0].what);
+        view.apply_forward(&by_hand.steps[0].edit);
+        assert!((instance(&view.sequences[0]).1.links[0].offset - 10.0).abs() < 1e-9);
+        view.apply_inverse(&by_hand.steps[0].edit);
+        assert_eq!(instance(&view.sequences[0]).1, placed, "one undo step takes it back");
+        let moved = link(&view.sequences[0], serde_json::json!({ "control": "Grow", "value": 1.0 })).unwrap();
+        view.apply_forward(&moved.steps[0].edit);
+        let unlinked = link(&view.sequences[0], serde_json::json!({ "target": "object:0.size", "action": "unlink" })).unwrap();
+        assert!(unlinked.steps[0].what.contains("kept at 80"), "{}", unlinked.steps[0].what);
+        view.apply_forward(&unlinked.steps[0].edit);
+        view.apply_forward(&link(&view.sequences[0], serde_json::json!({ "control": "grow", "value": 0.0 })).unwrap().steps[0].edit);
+        let relinked = link(&view.sequences[0], serde_json::json!({ "target": "object:0.size", "action": "relink" })).unwrap();
+        assert!(relinked.steps[0].what.contains("offset +40"), "relinked at 0 from 80: {}", relinked.steps[0].what);
+
+        assert!(link(&view.sequences[0], serde_json::json!({ "control": "Spin", "value": 1 })).unwrap_err().contains("its controls are grow"));
+        assert!(link(&view.sequences[0], serde_json::json!({ "control": "Grow", "value": 2 })).unwrap_err().contains("goes from 0 to 1"));
+        assert!(link(&view.sequences[0], serde_json::json!({ "target": "object:3.size", "action": "unlink" })).unwrap_err().contains("its controls drive object:0.size"));
+        assert!(link(&view.sequences[0], serde_json::json!({ "target": "object:0.size", "action": "spin" })).unwrap_err().contains("unlink, relink or reset_offset"));
     }
 
     /// #460: a heading at the top of a vertical frame stays whole inside
