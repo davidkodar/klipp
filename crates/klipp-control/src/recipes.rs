@@ -74,6 +74,9 @@ pub fn values(recipe: &CompositionTemplate, slots: &BTreeMap<String, Value>, con
                 Some("foreground") => TemplateValue::Text("Foreground".into()),
                 _ => return Err(format!("slot \"{}\" takes \"subject\" (one detected subject) or \"foreground\" (everything in front)", s.label)),
             },
+            // One of the clip's tracked surfaces, found when the clip is
+            // known (`on_clip`).
+            SlotKind::Surface => TemplateValue::Text(v.as_str().ok_or_else(|| format!("slot \"{}\" takes the name or id of a surface tracked in the clip", s.label))?.trim().to_string()),
             SlotKind::Media | SlotKind::Clip => TemplateValue::Text(v.as_str().ok_or_else(|| format!("slot \"{}\" takes an id", s.label))?.to_string()),
         };
         out.insert(name.clone(), value);
@@ -110,6 +113,17 @@ pub fn on_clip(seq: &Sequence, clip: ClipId, recipe: &CompositionTemplate, value
         let (start, end) = (c.timeline_in.to_secs_f64(), c.timeline_out.to_secs_f64());
         let title = klipp_document::ops::title_from_fields(seq, &fields, start, end - start).map_err(|e| format!("slot \"{}\": {e}", slot.label))?;
         values.insert(name.clone(), TemplateValue::Text(serde_json::to_string(&title).map_err(|e| e.to_string())?));
+    }
+    // A surface slot's surface, by name or id, kept by its id.
+    for (name, slot) in recipe.slots.iter().filter(|(_, s)| s.kind == SlotKind::Surface) {
+        let Some(TemplateValue::Text(given)) = values.get(name) else { continue };
+        let found = c.surfaces.iter().find(|s| s.id.to_string() == *given).or_else(|| c.surfaces.iter().find(|s| s.name.eq_ignore_ascii_case(given)));
+        let Some(surface) = found else {
+            let have: Vec<String> = c.surfaces.iter().map(|s| format!("\"{}\"", s.name)).collect();
+            let have = if have.is_empty() { "none yet: track_surface tracks one".to_string() } else { have.join(", ") };
+            return Err(format!("slot \"{}\": the clip has no surface \"{given}\"; it has {have}", slot.label));
+        };
+        values.insert(name.clone(), TemplateValue::Text(surface.id.to_string()));
     }
     let values = &values;
     let wire = wire_ops(recipe, clip, &anchors, values, seq.resolution)?;
@@ -172,7 +186,7 @@ mod tests {
     #[test]
     fn every_built_in_recipe_reads_and_lists() {
         let recipes = ct::builtin_recipes();
-        assert_eq!(recipes.len(), 5, "every file in assets/recipes reads");
+        assert_eq!(recipes.len(), 6, "every file in assets/recipes reads");
         for r in &recipes {
             assert_eq!(r.kind, ct::TemplateKind::Recipe, "{}", r.name);
             let v = listed(r);

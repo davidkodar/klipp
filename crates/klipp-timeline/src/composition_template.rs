@@ -417,6 +417,9 @@ pub enum SlotKind {
     SubjectMatte,
     /// A colour.
     Colour,
+    /// A surface tracked in the clip the recipe is placed on (a sign, a
+    /// screen): its name or id.
+    Surface,
 }
 
 impl CompositionTemplate {
@@ -780,12 +783,13 @@ pub fn composition_sequences(root: &Sequence, all: &[Sequence]) -> Vec<Sequence>
 /// The recipes Klipp ships (#2758), as files in `assets/recipes`: each a
 /// recipe like a saved one, read and checked as one is.
 pub fn builtin_recipes() -> Vec<CompositionTemplate> {
-    const FILES: [&str; 5] = [
+    const FILES: [&str; 6] = [
         include_str!("../../../assets/recipes/green_screen.klipptemplate"),
         include_str!("../../../assets/recipes/picture_in_picture.klipptemplate"),
         include_str!("../../../assets/recipes/matted_glow.klipptemplate"),
         include_str!("../../../assets/recipes/sky.klipptemplate"),
         include_str!("../../../assets/recipes/text_behind_subject.klipptemplate"),
+        include_str!("../../../assets/recipes/screen_replacement.klipptemplate"),
     ];
     FILES
         .iter()

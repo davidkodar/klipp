@@ -21,9 +21,43 @@ const PICTURE: &str = "2f6a9c13-5e8b-4d07-a1c4-8b3e6f9d2a50";
 const GREY: f32 = 0.3;
 const GREEN: [f32; 3] = [0.02, 0.75, 0.02];
 
+/// The screen tracked on the test shot, still, on its grey left of the
+/// patch.
+const SCREEN: klipp_timeline::surface::Quad = [[0.05, 0.15], [0.25, 0.2], [0.24, 0.8], [0.06, 0.75]];
+
 /// The test shot: grey, a green patch over its middle; a media slot's
 /// picture is red.
 struct Shot;
+
+/// The test shot's clip, carrying the screen as a tracked surface named
+/// "Screen".
+fn shot_clip() -> Clip {
+    let mut c = Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(2.0)) };
+    let key = |secs| klipp_timeline::SurfaceKey::at_corners(secs, &SCREEN, &SCREEN).unwrap();
+    c.surfaces.push(klipp_timeline::Surface {
+        id: klipp_core::ClipId::new().0,
+        name: "Screen".into(),
+        corners: SCREEN,
+        reference_secs: 0.0,
+        keys: vec![key(0.0), key(10.0)],
+        source_size: [W, H],
+        media_fps: 0.0,
+        track_area: None,
+        exclude: Vec::new(),
+    });
+    c
+}
+
+/// Whether (x, y) is inside the screen, `margin` (fractions of the
+/// frame) clear of its edges either way: `Some(inside)`, `None` near one.
+fn in_screen(x: f32, y: f32, margin: f32) -> Option<bool> {
+    let side = |a: [f32; 2], b: [f32; 2]| {
+        let (ex, ey) = (b[0] - a[0], b[1] - a[1]);
+        (ex * (y - a[1]) - ey * (x - a[0])) / ex.hypot(ey)
+    };
+    let d = (0..4).map(|i| side(SCREEN[i], SCREEN[(i + 1) % 4])).fold(f32::INFINITY, f32::min);
+    (d.abs() > margin).then_some(d > 0.0)
+}
 
 /// Whether (x, y), fractions of the frame, is on the test shot's subject:
 /// the known mask its subject matte holds.
@@ -129,6 +163,7 @@ fn filled(kind: SlotKind) -> TemplateValue {
         // A title the size of the shot, as the title op makes it.
         SlotKind::Title => TemplateValue::Text(serde_json::json!({ "text": "BEHIND", "size": 600 }).to_string()),
         SlotKind::SubjectMatte => TemplateValue::Text("Subject".into()),
+        SlotKind::Surface => TemplateValue::Text("Screen".into()),
         other => panic!("the harness has no {other:?} to fill a slot with yet"),
     }
 }
@@ -141,7 +176,7 @@ fn every_built_in_recipe_draws_on_the_gpu_and_passes_its_checks() {
         let name = recipe.name.as_str();
         let checks = &recipe.graph.as_ref().unwrap().checks;
         assert!(!checks.is_empty(), "{name} says what it does: give it checks");
-        let plain = Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(2.0)) };
+        let plain = shot_clip();
         let before = sequence(plain.clone());
         let mut values: BTreeMap<String, TemplateValue> = recipe.slots.iter().map(|(n, s)| (n.clone(), filled(s.kind))).collect();
         // The controls its checks are measured with, where its file names
@@ -263,4 +298,42 @@ fn text_behind_a_subject_shows_only_off_the_subject() {
     assert!(text_on > 50 && text_off > 50, "the title crosses the subject's edge: {text_on} of its pixels on it, {text_off} off");
     assert!(on <= 1, "on the subject the clip alone shows: {on} levels from it");
     assert!(off <= 1, "off the subject the title shows: {off} levels from it unmasked");
+}
+
+/// Screen replacement: the picture on the clip's tracked screen, the clip
+/// as it was everywhere else, over every pixel a pixel's width clear of
+/// the screen's edges; on the GPU stack with nothing falling back. A
+/// surface the clip doesn't carry is refused, naming those it does.
+#[test]
+fn a_screen_replacement_lies_on_the_tracked_screen_only() {
+    let recipes = builtin_recipes();
+    let recipe = recipes.iter().find(|r| r.name == "Screen replacement").expect("the recipe");
+    let plain = shot_clip();
+    let Some(shown) = stack(&placed_with(recipe, &plain), ViewChannel::Picture, "screen replacement") else { return };
+    let Some(alone) = stack(&sequence(plain.clone()), ViewChannel::Picture, "the clip alone") else { return };
+    let (mut red_in, mut off) = (u8::MAX, 0u8);
+    let (mut inside, mut outside) = (0usize, 0usize);
+    for y in 0..H {
+        for x in 0..W {
+            let (fx, fy) = ((x as f32 + 0.5) / W as f32, (y as f32 + 0.5) / H as f32);
+            let Some(on) = in_screen(fx, fy, 1.5 / H as f32) else { continue };
+            let i = ((y * W + x) * 4) as usize;
+            if on {
+                red_in = red_in.min(shown[i]);
+                inside += 1;
+            } else {
+                off = off.max((0..3).map(|c| shown[i + c].abs_diff(alone[i + c])).max().unwrap());
+                outside += 1;
+            }
+        }
+    }
+    assert!(inside > 300 && outside > 300, "{inside} pixels on the screen, {outside} off it");
+    assert!(red_in >= 240, "the red picture fills the screen: its reddest-least pixel reads {red_in}");
+    assert!(off <= 1, "off the screen the clip alone shows: {off} levels from it");
+
+    let before = sequence(plain.clone());
+    let mut values: BTreeMap<String, TemplateValue> = recipe.slots.iter().map(|(n, s)| (n.clone(), filled(s.kind))).collect();
+    values.insert("surface".into(), TemplateValue::Text("Billboard".into()));
+    let why = klipp_control::recipes::on_clip(&before, plain.id, recipe, &values).expect_err("refused");
+    assert!(why.contains("\"Billboard\"") && why.contains("\"Screen\""), "says what it has: {why}");
 }
