@@ -16,7 +16,7 @@ pub(crate) fn resolve_plan(ctx: &ControlContext, ops: &[klipp_document::ops::Op]
     // changes a clip's own grade, and must not copy its group's into it.
     let seq = seq.with_own_grades();
     let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
-    let ops = &with_recipes(&with_compositions(&with_templates(ops, template_dir().as_deref()), composition_dir().as_deref(), &project_sequence_ids(ctx, &seq)), composition_dir().as_deref(), &pool);
+    let ops = &with_recipes(&with_compositions(&with_templates(ops, template_dir().as_deref()), composition_dir().as_deref(), &project_sequence_ids(ctx, &seq))?, composition_dir().as_deref(), &pool);
     let plan = klipp_document::ops::resolve_with(&seq, &pool, ops, &AnalysedTranscripts).map_err(|r| format!("{r} (step {} refused; nothing applied)", r.step + 1))?;
     Ok((plan, revision))
 }
@@ -34,7 +34,7 @@ pub(crate) fn resolve_plan_seeing(ctx: &ControlContext, ops: &[klipp_document::o
     let seq = seq.with_own_grades();
     let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
     let others = ctx.others.read().map_err(|_| "sequences lock poisoned")?.clone();
-    let ops = &with_recipes(&with_compositions(&with_templates(ops, template_dir().as_deref()), composition_dir().as_deref(), &project_sequence_ids(ctx, &seq)), composition_dir().as_deref(), &pool);
+    let ops = &with_recipes(&with_compositions(&with_templates(ops, template_dir().as_deref()), composition_dir().as_deref(), &project_sequence_ids(ctx, &seq))?, composition_dir().as_deref(), &pool);
     let plan = klipp_document::ops::resolve_in(&seq, &others, &pool, ops, &AnalysedTranscripts).map_err(|r| format!("{r} (step {} refused; nothing applied)", r.step + 1))?;
     Ok((plan, revision))
 }
@@ -133,24 +133,40 @@ pub(crate) fn with_recipes(ops: &[klipp_document::ops::Op], dir: Option<&std::pa
 /// `ops` with each `template` op no title template answered given the
 /// composition template of its name in `dir` (#2757), with the sequences
 /// of it the project (`have`, by id) lacks, which placing it copies in.
-pub(crate) fn with_compositions(ops: &[klipp_document::ops::Op], dir: Option<&std::path::Path>, have: &[klipp_core::SequenceId]) -> Vec<klipp_document::ops::Op> {
+/// A name both kinds have is refused unless `kind` says which, as is a
+/// `kind` neither, or a composition asked for by a name none has.
+pub(crate) fn with_compositions(ops: &[klipp_document::ops::Op], dir: Option<&std::path::Path>, have: &[klipp_core::SequenceId]) -> Result<Vec<klipp_document::ops::Op>, String> {
     use klipp_document::ops::{Op, PlacedComposition};
-    if !ops.iter().any(|op| matches!(op, Op::Template { data: None, .. })) {
-        return ops.to_vec();
+    if !ops.iter().any(|op| matches!(op, Op::Template { .. })) {
+        return Ok(ops.to_vec());
     }
     let store = template_store(dir);
-    ops.iter()
-        .cloned()
-        .map(|mut op| {
-            if let Op::Template { name, source, data: None, composition, .. } = &mut op {
-                *composition = store.find(name, op_source(source).as_ref()).filter(|t| t.kind == klipp_timeline::composition_template::TemplateKind::Composition).map(|t| {
-                    let missing = t.sequences.iter().filter(|s| !have.contains(&s.id)).cloned().collect();
-                    Box::new(PlacedComposition { template: t.clone(), missing })
-                });
+    let refused = |n: usize, why: String| format!("{why} (step {} refused; nothing applied)", n + 1);
+    let mut out = ops.to_vec();
+    for (n, op) in out.iter_mut().enumerate() {
+        let Op::Template { name, source, kind, data, composition, .. } = op else { continue };
+        let kind = match kind.as_deref().map(str::trim) {
+            None => None,
+            Some(k) if k.eq_ignore_ascii_case("title") => Some(false),
+            Some(k) if k.eq_ignore_ascii_case("composition") => Some(true),
+            Some(k) => return Err(refused(n, format!("kind \"{k}\" is neither \"title\" nor \"composition\""))),
+        };
+        let found = match kind {
+            Some(false) => None,
+            _ => store.find(name, op_source(source).as_ref()).filter(|t| t.kind == klipp_timeline::composition_template::TemplateKind::Composition),
+        };
+        match (kind, data.is_some(), found) {
+            (None, true, Some(_)) => return Err(refused(n, format!("\"{name}\" is both a title template and a composition template; give kind \"title\" or \"composition\""))),
+            (Some(true), _, None) => return Err(refused(n, format!("there is no composition template \"{name}\"; title_templates lists them under compositions"))),
+            (_, false, Some(t)) | (Some(true), _, Some(t)) => {
+                let missing = t.sequences.iter().filter(|s| !have.contains(&s.id)).cloned().collect();
+                *data = None;
+                *composition = Some(Box::new(PlacedComposition { template: t.clone(), missing }));
             }
-            op
-        })
-        .collect()
+            _ => {}
+        }
+    }
+    Ok(out)
 }
 
 /// `ops` with each `template` op given the template its name names (#1139):
@@ -167,7 +183,11 @@ pub(crate) fn with_templates(ops: &[klipp_document::ops::Op], dir: Option<&std::
     ops.iter()
         .cloned()
         .map(|mut op| {
-            if let Op::Template { name, source, data, .. } = &mut op {
+            if let Op::Template { name, source, kind, data, .. } = &mut op {
+                // Asked for as a composition, no title answers it.
+                if kind.as_deref().is_some_and(|k| k.trim().eq_ignore_ascii_case("composition")) {
+                    return op;
+                }
                 let source = op_source(source);
                 let mine = match source {
                     Some(klipp_timeline::template_places::Source::Builtin) => None,
@@ -718,7 +738,7 @@ mod template_tests {
         assert!(listed["text"].as_str().unwrap().contains("1 saved: Guest"), "{listed}");
         assert!(title_templates(None, None)["text"].as_str().unwrap().contains("None saved"));
 
-        let op = |name: &str| klipp_document::ops::Op::Template { name: name.into(), at: klipp_document::ops::Anchor::Secs(0.0), secs: 3.0, track: None, fields: Default::default(), source: None, data: None, composition: None };
+        let op = |name: &str| klipp_document::ops::Op::Template { name: name.into(), at: klipp_document::ops::Anchor::Secs(0.0), secs: Some(3.0), track: None, fields: Default::default(), source: None, kind: None, data: None, composition: None };
         let filled = with_templates(&[op("guest"), op("Nobody")], Some(&dir));
         let data = |op: &klipp_document::ops::Op| match op {
             klipp_document::ops::Op::Template { data, .. } => data.as_deref().cloned(),
@@ -745,7 +765,7 @@ mod template_tests {
         assert_eq!(labels, ["Name", "Role", "Accent", "Size", "Speed"]);
         assert!(listed["text"].as_str().unwrap().contains("Lower Thirds: Name Bar"), "{}", listed["text"]);
 
-        let op = |name: &str| klipp_document::ops::Op::Template { name: name.into(), at: klipp_document::ops::Anchor::Secs(0.0), secs: 3.0, track: None, fields: Default::default(), source: None, data: None, composition: None };
+        let op = |name: &str| klipp_document::ops::Op::Template { name: name.into(), at: klipp_document::ops::Anchor::Secs(0.0), secs: Some(3.0), track: None, fields: Default::default(), source: None, kind: None, data: None, composition: None };
         let filled = with_templates(&[op("name bar")], None);
         let klipp_document::ops::Op::Template { data: Some(td), .. } = &filled[0] else { panic!("a built-in by name") };
         assert_eq!(td.template.as_deref(), Some("Name Bar"));
@@ -758,6 +778,41 @@ mod template_tests {
         let filled = with_templates(&[op("Name Bar")], Some(&dir));
         let klipp_document::ops::Op::Template { data: Some(td), .. } = &filled[0] else { panic!() };
         assert_eq!(td.template.as_deref(), Some("user:Name Bar"), "the saved one wins");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A name that is both a title template and a composition template is
+    /// refused naming both, unless `kind` says which; each kind is then
+    /// placed by it. No built-in composition shares a title's name.
+    #[test]
+    fn a_name_both_kinds_have_is_refused_unless_kind_says_which() {
+        use klipp_document::ops::Op;
+        let titles: std::collections::HashSet<String> = klipp_timeline::title_library::TITLES.iter().map(|t| t.name.to_lowercase()).collect();
+        for t in klipp_timeline::composition_template::builtin_templates() {
+            assert!(!titles.contains(&t.name.to_lowercase()), "the built-in composition \"{}\" has a title's name", t.name);
+        }
+        let dir = std::env::temp_dir().join(format!("klipp-control-kinds-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut bar = klipp_timeline::composition_template::builtin_templates().into_iter().find(|t| t.name == "Split Screen").unwrap();
+        bar.name = "Name Bar".into();
+        bar.id = uuid::Uuid::new_v4();
+        klipp_timeline::composition_template::CompositionTemplateStore::load(Some(dir.clone())).save(bar).unwrap();
+        let op = |name: &str, kind: Option<&str>| Op::Template { name: name.into(), at: klipp_document::ops::Anchor::Secs(0.0), secs: None, track: None, fields: Default::default(), source: None, kind: kind.map(Into::into), data: None, composition: None };
+        let resolved = |op: Op| with_compositions(&with_templates(&[op], None), Some(&dir), &[]);
+        let which = |r: Result<Vec<Op>, String>| match r.unwrap().remove(0) {
+            Op::Template { data, composition, .. } => (data.is_some(), composition.map(|c| c.template.name)),
+            _ => unreachable!(),
+        };
+        let why = resolved(op("Name Bar", None)).unwrap_err();
+        assert!(why.contains("both a title template and a composition template") && why.contains("kind") && why.contains("step 1"), "{why}");
+        assert_eq!(which(resolved(op("Name Bar", Some("title")))), (true, None));
+        assert_eq!(which(resolved(op("Name Bar", Some("composition")))), (false, Some("Name Bar".into())));
+        assert!(resolved(op("Name Bar", Some("clip"))).unwrap_err().contains("neither"));
+        assert!(resolved(op("Nobody", Some("composition"))).unwrap_err().contains("no composition template"));
+        // The built-ins: Hook is the title, Hook Card the composition.
+        assert_eq!(which(resolved(op("Hook", None))), (true, None));
+        assert_eq!(which(resolved(op("Hook Card", None))), (false, Some("Hook Card".into())));
+        assert_eq!(which(resolved(op("End Screen", Some("composition")))), (false, Some("End Screen".into())));
         std::fs::remove_dir_all(dir).ok();
     }
 }

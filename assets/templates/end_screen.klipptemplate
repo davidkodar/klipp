@@ -1,9 +1,9 @@
 {
   "format_version": 2,
-  "id": "3a8d382c-f9c3-5621-9744-45010bb22fab",
-  "name": "End Card",
+  "id": "1fcd9b53-6951-5272-92a5-5bb025b184ba",
+  "name": "End Screen",
   "category": "Social",
-  "composition_id": "0254f487-bcdd-502e-b977-c4d72a286b13",
+  "composition_id": "739851d4-3b9d-5bf3-9b04-0f0b7279d4e7",
   "parameters": {
     "handle": {
       "label": "Handle",
@@ -66,8 +66,8 @@
   "written_by": "",
   "sequences": [
     {
-      "id": "0254f487-bcdd-502e-b977-c4d72a286b13",
-      "name": "End Card wide",
+      "id": "739851d4-3b9d-5bf3-9b04-0f0b7279d4e7",
+      "name": "End Screen wide",
       "fps": {
         "num": 24,
         "den": 1
@@ -82,7 +82,7 @@
       },
       "tracks": [
         {
-          "id": "92991128-dbf7-4016-b797-02f44b47976d",
+          "id": "e0d80412-ba1c-486a-96e4-06903dcf898b",
           "name": "T 1",
           "kind": "Text",
           "clips": [
@@ -598,7 +598,7 @@
               "node_graph": {
                 "nodes": [
                   {
-                    "id": "6f94cabd-dc9f-4e94-b4ae-95e198e7b482",
+                    "id": "b3295602-b98d-439d-99ae-ce70010e4ab0",
                     "kind": "Source",
                     "label": "Source",
                     "enabled": true,
@@ -610,7 +610,7 @@
                     "input_links": []
                   },
                   {
-                    "id": "582be844-cf14-4718-95cb-887b14433f74",
+                    "id": "2e85883e-9c7e-4c7b-8295-f2dd1a04de20",
                     "kind": "Corrector",
                     "label": "Corrector",
                     "enabled": true,
@@ -622,7 +622,7 @@
                     "input_links": []
                   },
                   {
-                    "id": "c9456d67-6412-4b7e-973c-c5be623dd161",
+                    "id": "afa91070-a0cf-45c1-8cbb-974afda7a17f",
                     "kind": "Output",
                     "label": "Output",
                     "enabled": true,
@@ -636,30 +636,30 @@
                 ],
                 "edges": [
                   {
-                    "from_node": "6f94cabd-dc9f-4e94-b4ae-95e198e7b482",
+                    "from_node": "b3295602-b98d-439d-99ae-ce70010e4ab0",
                     "from_port": 0,
-                    "to_node": "582be844-cf14-4718-95cb-887b14433f74",
+                    "to_node": "2e85883e-9c7e-4c7b-8295-f2dd1a04de20",
                     "to_port": 0
                   },
                   {
-                    "from_node": "582be844-cf14-4718-95cb-887b14433f74",
+                    "from_node": "2e85883e-9c7e-4c7b-8295-f2dd1a04de20",
                     "from_port": 0,
-                    "to_node": "c9456d67-6412-4b7e-973c-c5be623dd161",
+                    "to_node": "afa91070-a0cf-45c1-8cbb-974afda7a17f",
                     "to_port": 0
                   }
                 ],
-                "output_node_id": "c9456d67-6412-4b7e-973c-c5be623dd161",
+                "output_node_id": "afa91070-a0cf-45c1-8cbb-974afda7a17f",
                 "node_positions": {
-                  "582be844-cf14-4718-95cb-887b14433f74": {
+                  "b3295602-b98d-439d-99ae-ce70010e4ab0": {
+                    "x": 0.0,
+                    "y": 0.0
+                  },
+                  "2e85883e-9c7e-4c7b-8295-f2dd1a04de20": {
                     "x": 220.0,
                     "y": 0.0
                   },
-                  "c9456d67-6412-4b7e-973c-c5be623dd161": {
+                  "afa91070-a0cf-45c1-8cbb-974afda7a17f": {
                     "x": 440.0,
-                    "y": 0.0
-                  },
-                  "6f94cabd-dc9f-4e94-b4ae-95e198e7b482": {
-                    "x": 0.0,
                     "y": 0.0
                   }
                 }
@@ -732,8 +732,8 @@
       "drop_frame": false
     },
     {
-      "id": "97980d2c-b3ab-5934-afc0-3c5ffff2f4ff",
-      "name": "End Card tall",
+      "id": "3b1f5d61-c685-5ffb-b318-e21d502737d9",
+      "name": "End Screen tall",
       "fps": {
         "num": 24,
         "den": 1
@@ -748,7 +748,7 @@
       },
       "tracks": [
         {
-          "id": "d7b35b4f-72a5-4c4b-b233-38c7eb1d031f",
+          "id": "3829a790-5dd2-4b16-9880-46d3dbb1220c",
           "name": "T 1",
           "kind": "Text",
           "clips": [
@@ -1264,7 +1264,7 @@
               "node_graph": {
                 "nodes": [
                   {
-                    "id": "860795ec-37a7-4bbc-91b5-f8cb9a7835d8",
+                    "id": "c8cab806-a0b8-41ca-b8fb-c61ce8c7a127",
                     "kind": "Source",
                     "label": "Source",
                     "enabled": true,
@@ -1276,7 +1276,7 @@
                     "input_links": []
                   },
                   {
-                    "id": "401cd8f9-cdcb-43e9-a211-9326a06af847",
+                    "id": "8fbe5858-8c11-48f7-870d-4320870f042d",
                     "kind": "Corrector",
                     "label": "Corrector",
                     "enabled": true,
@@ -1288,7 +1288,7 @@
                     "input_links": []
                   },
                   {
-                    "id": "f8c4798d-601c-4ff8-9791-1166587b33c9",
+                    "id": "1182d1cd-7a3d-49da-9269-38ad85372252",
                     "kind": "Output",
                     "label": "Output",
                     "enabled": true,
@@ -1302,29 +1302,29 @@
                 ],
                 "edges": [
                   {
-                    "from_node": "860795ec-37a7-4bbc-91b5-f8cb9a7835d8",
+                    "from_node": "c8cab806-a0b8-41ca-b8fb-c61ce8c7a127",
                     "from_port": 0,
-                    "to_node": "401cd8f9-cdcb-43e9-a211-9326a06af847",
+                    "to_node": "8fbe5858-8c11-48f7-870d-4320870f042d",
                     "to_port": 0
                   },
                   {
-                    "from_node": "401cd8f9-cdcb-43e9-a211-9326a06af847",
+                    "from_node": "8fbe5858-8c11-48f7-870d-4320870f042d",
                     "from_port": 0,
-                    "to_node": "f8c4798d-601c-4ff8-9791-1166587b33c9",
+                    "to_node": "1182d1cd-7a3d-49da-9269-38ad85372252",
                     "to_port": 0
                   }
                 ],
-                "output_node_id": "f8c4798d-601c-4ff8-9791-1166587b33c9",
+                "output_node_id": "1182d1cd-7a3d-49da-9269-38ad85372252",
                 "node_positions": {
-                  "f8c4798d-601c-4ff8-9791-1166587b33c9": {
-                    "x": 440.0,
-                    "y": 0.0
-                  },
-                  "860795ec-37a7-4bbc-91b5-f8cb9a7835d8": {
+                  "c8cab806-a0b8-41ca-b8fb-c61ce8c7a127": {
                     "x": 0.0,
                     "y": 0.0
                   },
-                  "401cd8f9-cdcb-43e9-a211-9326a06af847": {
+                  "1182d1cd-7a3d-49da-9269-38ad85372252": {
+                    "x": 440.0,
+                    "y": 0.0
+                  },
+                  "8fbe5858-8c11-48f7-870d-4320870f042d": {
                     "x": 220.0,
                     "y": 0.0
                   }
@@ -1398,8 +1398,8 @@
       "drop_frame": false
     },
     {
-      "id": "aedbfe79-f48a-50ba-9660-ee6fe385d8f5",
-      "name": "End Card square",
+      "id": "38eb9fed-dd4b-5264-bd2a-c6d4614e7c8b",
+      "name": "End Screen square",
       "fps": {
         "num": 24,
         "den": 1
@@ -1414,7 +1414,7 @@
       },
       "tracks": [
         {
-          "id": "1f74ca38-a339-4b11-b6fd-07ed8fb2b3c2",
+          "id": "c2dd3c2a-fd14-42bc-b970-e807cef0be35",
           "name": "T 1",
           "kind": "Text",
           "clips": [
@@ -1930,7 +1930,7 @@
               "node_graph": {
                 "nodes": [
                   {
-                    "id": "0030a993-9450-45fe-ad6d-d8e762379322",
+                    "id": "f29cfbe5-f723-43f1-8558-fd3de2307ddf",
                     "kind": "Source",
                     "label": "Source",
                     "enabled": true,
@@ -1942,7 +1942,7 @@
                     "input_links": []
                   },
                   {
-                    "id": "9e50bea0-90de-4844-af66-2fb620bf1e8b",
+                    "id": "4e2877f5-bb9e-47a4-87bf-e84dd5bfce0b",
                     "kind": "Corrector",
                     "label": "Corrector",
                     "enabled": true,
@@ -1954,7 +1954,7 @@
                     "input_links": []
                   },
                   {
-                    "id": "2bee3187-3ac8-40d2-ae63-6f1ad1349bd5",
+                    "id": "cbbde965-5205-49e9-a1cb-23fb69bc704c",
                     "kind": "Output",
                     "label": "Output",
                     "enabled": true,
@@ -1968,29 +1968,29 @@
                 ],
                 "edges": [
                   {
-                    "from_node": "0030a993-9450-45fe-ad6d-d8e762379322",
+                    "from_node": "f29cfbe5-f723-43f1-8558-fd3de2307ddf",
                     "from_port": 0,
-                    "to_node": "9e50bea0-90de-4844-af66-2fb620bf1e8b",
+                    "to_node": "4e2877f5-bb9e-47a4-87bf-e84dd5bfce0b",
                     "to_port": 0
                   },
                   {
-                    "from_node": "9e50bea0-90de-4844-af66-2fb620bf1e8b",
+                    "from_node": "4e2877f5-bb9e-47a4-87bf-e84dd5bfce0b",
                     "from_port": 0,
-                    "to_node": "2bee3187-3ac8-40d2-ae63-6f1ad1349bd5",
+                    "to_node": "cbbde965-5205-49e9-a1cb-23fb69bc704c",
                     "to_port": 0
                   }
                 ],
-                "output_node_id": "2bee3187-3ac8-40d2-ae63-6f1ad1349bd5",
+                "output_node_id": "cbbde965-5205-49e9-a1cb-23fb69bc704c",
                 "node_positions": {
-                  "0030a993-9450-45fe-ad6d-d8e762379322": {
-                    "x": 0.0,
-                    "y": 0.0
-                  },
-                  "2bee3187-3ac8-40d2-ae63-6f1ad1349bd5": {
+                  "cbbde965-5205-49e9-a1cb-23fb69bc704c": {
                     "x": 440.0,
                     "y": 0.0
                   },
-                  "9e50bea0-90de-4844-af66-2fb620bf1e8b": {
+                  "f29cfbe5-f723-43f1-8558-fd3de2307ddf": {
+                    "x": 0.0,
+                    "y": 0.0
+                  },
+                  "4e2877f5-bb9e-47a4-87bf-e84dd5bfce0b": {
                     "x": 220.0,
                     "y": 0.0
                   }
@@ -2065,7 +2065,7 @@
     }
   ],
   "formats": {
-    "square": "aedbfe79-f48a-50ba-9660-ee6fe385d8f5",
-    "tall": "97980d2c-b3ab-5934-afc0-3c5ffff2f4ff"
+    "square": "38eb9fed-dd4b-5264-bd2a-c6d4614e7c8b",
+    "tall": "3b1f5d61-c685-5ffb-b318-e21d502737d9"
   }
 }

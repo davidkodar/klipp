@@ -323,13 +323,13 @@ fn hook_title() -> TitleData {
 }
 
 fn hook() -> CompositionTemplate {
-    let layouts = FRAMES.map(|(key, w, h)| scene(&format!("Hook {key}"), w, h, vec![
+    let layouts = FRAMES.map(|(key, w, h)| scene(&format!("Hook Card {key}"), w, h, vec![
         (TrackKind::Video, vec![slot_clip(&format!("hook.{key}.picture"), w, h, (0.0, 0.0, w as f32, h as f32))]),
         (TrackKind::Text, vec![titled(&format!("hook.{key}"), laid(hook_title, "Social", (0.5, 0.5), w, h), 0.0, SECS)]),
     ]));
     let picture = clip_index(&layouts[0], "hook.wide.picture.clip");
     let (dim, line) = (object_index(&layouts[0], "hook.wide", 0), object_index(&layouts[0], "hook.wide", 1));
-    template("Hook", "Social", layouts.into_iter().collect(),
+    template("Hook Card", "Social", layouts.into_iter().collect(),
         vec![("line", text_param("Hook line", "Wait for the last one")), ("dim", control("Dim", 0.7))],
         vec![("slot_1", "Picture")],
         vec![plain("slot_1", format!("clip:{picture}.media")), plain("line", format!("object:{line}.text")),
@@ -352,9 +352,9 @@ fn end_card_title() -> TitleData {
 }
 
 fn end_card() -> CompositionTemplate {
-    let layouts = FRAMES.map(|(key, w, h)| scene(&format!("End Card {key}"), w, h, vec![(TrackKind::Text, vec![titled("end", laid(end_card_title, "Utility", (0.5, 0.5), w, h), 0.0, SECS)])]));
+    let layouts = FRAMES.map(|(key, w, h)| scene(&format!("End Screen {key}"), w, h, vec![(TrackKind::Text, vec![titled("end", laid(end_card_title, "Utility", (0.5, 0.5), w, h), 0.0, SECS)])]));
     let (pic, message, handle) = (object_index(&layouts[0], "end", 1), object_index(&layouts[0], "end", 2), object_index(&layouts[0], "end", 3));
-    template("End Card", "Social", layouts.into_iter().collect(),
+    template("End Screen", "Social", layouts.into_iter().collect(),
         vec![("photo", text_param("Photo", "")), ("message", text_param("Message", "Thanks for watching")), ("handle", text_param("Handle", "@yourhandle")), ("size", control("Size", 0.5))],
         vec![],
         vec![plain("photo", format!("object:{pic}.picture")), plain("message", format!("object:{message}.text")), plain("handle", format!("object:{handle}.text")),
@@ -470,8 +470,8 @@ fn main() {
         ("number_card", number_card()),
         ("countdown", countdown()),
         ("top_five", top_five()),
-        ("hook", hook()),
-        ("end_card", end_card()),
+        ("hook_card", hook()),
+        ("end_screen", end_card()),
         ("photo_lower_third", lower_third("Photo Lower Third", "photo_lt", photo_lower_third_title, (2, 3, 4))),
         ("banner_lower_third", lower_third("Banner Lower Third", "banner_lt", banner_lower_third_title, (1, 3, 4))),
         ("collage", collage()),

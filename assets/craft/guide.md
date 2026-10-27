@@ -778,7 +778,7 @@ exist until the plan runs.
   (the default), `start` or `end` on the cut; `every_clip` uses each
   clip's start. A cut where a copy would overlap a clip already there is
   skipped and counted in the reply; one undo step.
-- `template {name, at, secs?, track?, fields?, source?}`: a saved title template
+- `template {name, at, secs?, track?, fields?, source?, kind?}`: a saved title template
   by `name`, at `at` for `secs`, on a text track (one is made on top if
   none fits). `fields` sets its published fields by label: a text as its
   words, a colour as #rrggbb, the speed as a number (1 as made), a font
@@ -799,6 +799,10 @@ exist until the plan runs.
   A name may be in more than one source (built in, the user's own, an
   installed pack): the user's own is placed first, then a pack's, then
   Klipp's; `source` (`builtin`, `mine`, `pack:<name>`) names which.
+  A name that is both a title template and a composition template is
+  refused until `kind` (`title` or `composition`) says which. Left
+  without `secs`, a title holds 3 s and a composition its own length
+  (its whole entrance, hold and exit).
 - `template_link {clip_id, control?, target?, action?, value?}`: a placed
   template's macro control. `control` (by name or label) with `value`
   moves it, and every number it drives follows its range and curve.
