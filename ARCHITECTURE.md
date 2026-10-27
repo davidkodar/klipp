@@ -333,6 +333,66 @@ The control layer runs inside the app process. It reads the shared
 write to the UI's command router (not the engine's channel), so an
 agent's edit is applied, recorded and undone exactly as a hand edit is.
 
+### Picture graph, templates and recipes
+
+One picture model serves the edit, the Composite page, templates and
+recipes.
+
+* **The clip's picture graph** (`klipp-nodes`) is what every picture
+  clip renders through: source, corrections, effects and keys as
+  nodes, evaluated on the GPU stack with the CPU as reference. The
+  **Composite page** (#2758, a workspace in `klipp-ui`) is a wide
+  view of that same graph; it adds no second model.
+
+* **Precompositions** are sequences placed as one clip. The renderer
+  composes the inner sequence on the GPU stack and seeds the clip's
+  layer from it (`precomp_scenes` in `klipp-compose/src/render.rs`),
+  with no CPU fallback.
+
+* **Composition templates** (`klipp-timeline/src/composition_template.rs`)
+  are a precomposition plus what the user may change: parameters,
+  slots (media to fill) and bindings from each to a property path
+  (`object:<i>.<prop>`, `clip:<n>.media`). A placed template is a
+  `TemplatePrecomposition` clip carrying a `TemplateInstance`;
+  `flatten::apply_template_instance` writes its values into a copy of
+  the sequence when the timeline is flattened, so the renderer only
+  ever sees ordinary clips. `flatten::binding_parts` is the one parser
+  of property paths. **Macro controls** are bindings with a link: a
+  range, a curve and, on the placed instance, an offset and a linked
+  flag, so a hand edit is kept as an offset (`TemplateLink` in
+  `klipp-core/src/template.rs`).
+
+* **Recipes** are the same file format with `kind: recipe`: instead of
+  a sequence they carry `graph.ops`, the graph ops `klipp_graph` takes,
+  addressed from named anchors (`source`, `grade`, `display`, `end`).
+  The `recipe` op builds them into a clip's own graph as one undo step
+  (`klipp-control/src/recipes.rs`), its controls bound to node
+  parameters (`node:<op>.<param>`). Built-in recipes are files in
+  `assets/recipes/`.
+
+**The rule: compound effects are data.** A look, a key-and-glow, a
+picture-in-picture or a motion card is a recipe or a template file,
+never a new op or a per-effect code path. Code is written only for a
+building block the graph lacks, a node, added once, on the GPU first
+(with its CPU reference and parity test), and then usable by every
+recipe. So: a new *look or arrangement* is a new file in
+`assets/recipes/` (or a template); a new *kind of pixel operation* is a
+new node in `klipp-nodes` / `klipp-effects`. The recipe harness
+(`klipp-control/tests/recipes_render.rs`) places every built-in recipe
+on a test shot through the `recipe` op's route, draws it on the GPU
+stack with no fallback, compares it with the CPU and runs the checks
+the file itself declares (`graph.checks`): a new recipe needs no new
+test code.
+
+**Planned, not done.** The same rule is to reach what is still code:
+compound one-click features move to recipe files (#2886); named presets
+and the built-in delivery specs move to files under
+`assets/presets/<kind>/*.toml`, with a user folder beside them (#2887);
+effects, transitions and nodes are declared once, with menus and MCP
+lists generated from that (#2888); shaders move to `.wgsl` files and
+`gpu.rs` is split by area (#2890). Each conversion names what it fixes
+or enables; none is done for its own sake.
+
 ---
 
 ## Build / test / run
