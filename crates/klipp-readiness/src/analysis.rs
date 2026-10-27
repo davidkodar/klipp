@@ -71,15 +71,15 @@ const KINDS: [Kind; 3] = [
         edited: || BuiltinEffect::VideoStabilization { smoothing: 0.9, crop_ratio: 0.0, zoom: false },
         data: |frames, seed| {
             use klipp_effects::stabilization::{MotionParams, StabilizationData};
-            // Frame i sits at the inverse of a shift that changes frame to
-            // frame.
-            let shift = |i: usize| Homography { h: [[1.0, 0.0, 1.0 + (i % 4) as f64 + seed], [0.0, 1.0, 0.5 * (i % 3) as f64], [0.0, 0.0, 1.0]] };
+            // A camera shaking sideways, in frame heights, so the
+            // smoothing's window shapes the corrections (an edit of it
+            // changes them) and the seed moves them.
+            let camera = |i: usize| MotionParams { tx: 0.012 * (i % 4) as f64 + 0.004 * seed, ty: 0.0, rotation: 0.0, scale: 1.0 };
+            let trajectory: Vec<MotionParams> = (0..frames).map(camera).collect();
             let data = StabilizationData {
                 frame_transforms: vec![Homography::identity(); frames.saturating_sub(1)],
-                accumulated: (0..frames).map(|i| shift(i).inverse().expect("a shift can be undone")).collect(),
-                // A shaking path, so the smoothing's window shapes the
-                // corrections (an edit of it changes them).
-                trajectory: (0..frames).map(|i| MotionParams { tx: 3.0 * (i % 4) as f64, ty: 0.0, rotation: 0.0, scale: 1.0 }).collect(),
+                accumulated: trajectory.iter().map(klipp_effects::stabilization::recompose_homography).collect(),
+                trajectory,
                 fps: FPS as f64,
                 frame_count: frames,
             };
@@ -208,7 +208,7 @@ fn store_of(kind: &Kind, items: &[&klipp_media::MediaItem], frames: usize) -> Me
 /// is without one, or past it.
 fn expected(effect: &BuiltinEffect, raw: Option<&serde_json::Value>, source_secs: f64) -> Vec<f32> {
     let frame = picture(shown(source_secs));
-    let Some(at) = raw.and_then(|r| klipp_effects::node_analysis::derive(effect, r)).map(|a| a.at(effect, source_secs, H)) else { return frame };
+    let Some(at) = raw.and_then(|r| klipp_effects::node_analysis::derive(effect, r)).map(|a| a.at(effect, source_secs, W, H)) else { return frame };
     let mut effect = effect.clone();
     match (&mut effect, at.gain) {
         (BuiltinEffect::Deflicker { gain, .. }, Some(g)) => *gain = g,

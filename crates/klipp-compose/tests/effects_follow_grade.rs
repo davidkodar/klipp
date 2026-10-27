@@ -288,7 +288,7 @@ fn animated_effects_and_a_fixed_placement_from_the_picture_draw_the_legacy_frame
 fn a_graded_clip_with_stabilisation_keeps_its_correction() {
     let _goldens = scope("effects_follow_grade.a_graded_clip_with_stabilisation_keeps_its_correction");
     let seq = graded(vec![E::VideoStabilization { smoothing: 0.5, crop_ratio: 0.05, zoom: true }, E::Gamma { gamma: 1.2 }]);
-    let shifted = || analysed_by(renderer(false), vec![analysis::stabilised_by(3.5, -1.5, 96)]);
+    let shifted = || analysed_by(renderer(false), vec![analysis::stabilised_by(0.04, -0.02, 96)]);
     let (new, followed) = draw(&mut shifted(), &seq, 1.0, &mut Moving);
     let legacy = legacy_f32(|| draw(&mut shifted(), &seq, 1.0, &mut Moving).0);
     assert!(matches_f32(&new, &legacy), "the correction is drawn on both routes");
@@ -340,7 +340,7 @@ fn temporal_effects_take_the_plan_route() {
 fn a_stabilised_clip_leaves_no_motion_for_the_next() {
     let seq = graded(vec![E::VideoStabilization { smoothing: 0.5, crop_ratio: 0.05, zoom: true }, E::Gamma { gamma: 1.2 }]);
     let plain = graded(vec![E::Gamma { gamma: 1.2 }]);
-    let new = || analysed_by(renderer(false), vec![analysis::stabilised_by(3.5, -1.5, 96)]);
+    let new = || analysed_by(renderer(false), vec![analysis::stabilised_by(0.04, -0.02, 96)]);
     let mut r = new();
     r.render(&seq, tc(1.0), W, H, &mut Moving, RenderOptions::default());
     let after = r.render(&plain, tc(1.0), W, H, &mut Chart, RenderOptions::default());
@@ -368,12 +368,10 @@ fn analysed_by(mut r: Renderer, analyses: Vec<(klipp_analysis::assets::AssetKind
     r
 }
 
-/// The analyses [`analysed`]'s clips read: a drifting trajectory, motion
+/// The analyses [`analysed`]'s clips read: a shaking camera, motion
 /// shearing the rows, light that flickers every frame.
 fn the_analyses() -> Vec<(klipp_analysis::assets::AssetKind, serde_json::Value)> {
-    use klipp_effects::homography::Homography;
-    let drift: Vec<_> = (0..48).map(|i| Homography { h: [[1.0, 0.0, 0.2 * i as f64 - 4.0], [0.0, 1.0, 2.5 - 0.1 * i as f64], [0.0, 0.0, 1.0]] }).collect();
-    vec![analysis::stabilised(&drift), analysis::sheared(48), analysis::flickering(48)]
+    vec![analysis::stabilised_by(0.03, -0.02, 48), analysis::sheared(48), analysis::flickering(48)]
 }
 
 /// The three analysis-driven effects on a graded clip: each drawn from a

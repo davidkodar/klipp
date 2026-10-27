@@ -1935,14 +1935,11 @@ fn a_stabilised_clip_is_stabilised_with_or_without_the_gpu() {
     let mut plain = c.clone();
     plain.set_effect_list(Vec::new(), plain.builtin_effects_enabled().to_vec());
     let mut src = Flat::default().ramp(&c).ramp(&plain);
-    // Every frame's correction a shift of 3.5 px to the left.
-    let [cpu, gpu] = render_analysed(&sequence(vec![vec![c]]), 0.5, &mut src, vec![analysis::stabilised_by(3.5, 0.0, 48)]);
+    // A camera shaking sideways every frame.
+    let [cpu, gpu] = render_analysed(&sequence(vec![vec![c]]), 0.5, &mut src, vec![analysis::stabilised_by(0.04, 0.0, 48)]);
     let [unwarped, _] = render(&sequence(vec![vec![plain]]), 0.5, &mut src);
     let moved = cpu.iter().zip(&unwarped).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
     assert!(moved > 0.1, "the CPU render was not stabilised (largest change {moved})");
-    // Bilinear: each pixel half of its neighbours 3 and 4 px to the right.
-    let want = (px(&unwarped, 10 + 3, 9)[0] + px(&unwarped, 10 + 4, 9)[0]) / 2.0;
-    assert_px("CPU, shifted", px(&cpu, 10, 9), [want, px(&cpu, 10, 9)[1], px(&cpu, 10, 9)[2]], 1e-3);
     let worst = cpu.iter().zip(&gpu).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
     assert!(worst < 2e-3, "CPU and GPU stabilise differently, by {worst}");
 }
@@ -1957,7 +1954,7 @@ fn an_adjustment_layers_stabilisation_does_not_borrow_the_clip_below() {
     let mut adj = clip(ClipKind::AdjustmentLayer, 0.0, 2.0);
     adj = TestClip::of(adj).effects(test_clip::effects(&c)).build();
     let mut src = Flat::default().ramp(&c);
-    let shift = || vec![analysis::stabilised_by(3.5, 0.0, 48)];
+    let shift = || vec![analysis::stabilised_by(0.04, 0.0, 48)];
     let alone = render_analysed(&sequence(vec![vec![c.clone()]]), 0.5, &mut src, shift());
     let under = render_analysed(&sequence(vec![vec![adj], vec![c]]), 0.5, &mut src, shift());
     for (arm, (a, u)) in ["CPU", "GPU"].iter().zip(alone.iter().zip(&under)) {

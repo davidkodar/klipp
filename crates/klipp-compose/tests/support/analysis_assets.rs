@@ -27,26 +27,24 @@ pub fn store(analyses: Vec<(AssetKind, serde_json::Value)>) -> Box<MemoryStore> 
     Box::new(s)
 }
 
-/// Stabilisation data whose frame `i`'s correction is `corrections[i]`:
-/// the trajectory to reach is still (identity throughout, which smoothing
-/// keeps) and frame `i` sits at the inverse of its correction, so the
-/// correction that brings it back is exactly the one given.
-pub fn stabilised(corrections: &[Homography]) -> (AssetKind, serde_json::Value) {
-    use klipp_effects::stabilization::{MotionParams, StabilizationData};
-    let n = corrections.len();
-    let data = StabilizationData {
-        frame_transforms: vec![Homography::identity(); n.saturating_sub(1)],
-        accumulated: corrections.iter().map(|c| c.inverse().expect("a correction that can be undone")).collect(),
-        trajectory: vec![MotionParams { tx: 0.0, ty: 0.0, rotation: 0.0, scale: 1.0 }; n],
-        fps: 24.0,
-        frame_count: n,
-    };
+/// Stabilisation data whose frame `i`'s camera is `cameras[i]`, in the
+/// frame's units (centred, its height 1): what the frame is corrected
+/// from, toward its smoothed path.
+pub fn stabilised(cameras: &[Homography]) -> (AssetKind, serde_json::Value) {
+    use klipp_effects::stabilization::{accumulate_trajectory, decompose_homography, StabilizationData};
+    let n = cameras.len();
+    let frame_transforms: Vec<Homography> = cameras.windows(2).map(|w| w[1].multiply(&w[0].inverse().expect("a camera that can be undone"))).collect();
+    let accumulated = if n == 0 { Vec::new() } else { accumulate_trajectory(&frame_transforms).iter().map(|a| a.multiply(&cameras[0])).collect() };
+    let data = StabilizationData { trajectory: accumulated.iter().map(decompose_homography).collect(), accumulated, frame_transforms, fps: 24.0, frame_count: n };
     (AssetKind::Stabilisation, serde_json::to_value(data).expect("serialises"))
 }
 
-/// [`stabilised`] by the shift (`tx`, `ty`) at every one of `frames`.
+/// [`stabilised`] by a camera shaking every frame, to (`tx`, `ty`) frame
+/// heights and back over `frames`: each even frame is corrected by about
+/// (`tx`, `ty`), each odd one by about the opposite.
 pub fn stabilised_by(tx: f64, ty: f64, frames: usize) -> (AssetKind, serde_json::Value) {
-    stabilised(&vec![Homography { h: [[1.0, 0.0, tx], [0.0, 1.0, ty], [0.0, 0.0, 1.0]] }; frames])
+    let at = |i: usize| if i.is_multiple_of(2) { 1.0 } else { -1.0 };
+    stabilised(&(0..frames).map(|i| Homography { h: [[1.0, 0.0, at(i) * tx], [0.0, 1.0, at(i) * ty], [0.0, 0.0, 1.0]] }).collect::<Vec<_>>())
 }
 
 /// Deflicker data: each frame's light, alternating bright and dim, so its
