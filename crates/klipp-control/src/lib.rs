@@ -798,6 +798,7 @@ fn handle(
         cmd @ (ControlCommand::NewProject { .. }
             | ControlCommand::ProjectTemplates { .. }
             | ControlCommand::NewSequence { .. }
+            | ControlCommand::MakeShorts { .. }
             | ControlCommand::RenameSequence { .. }
             | ControlCommand::SwitchSequence { .. }
             | ControlCommand::DuplicateSequence { .. }
