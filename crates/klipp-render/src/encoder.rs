@@ -1656,7 +1656,11 @@ impl Encoder {
         while self.audio_buffer.len() >= floats_per_frame {
             // Fill the pre-allocated frame
             if let Some(ref mut frame) = self.audio_frame {
-                if is_planar {
+                if let Some(resampler) = self.audio_resampler.as_mut() {
+                    // Another format than float (24-bit PCM is 32-bit
+                    // integers): converted, not its bytes copied (#2783).
+                    convert_into(resampler, &self.audio_buffer[..floats_per_frame], frame_size, frame)?;
+                } else if is_planar {
                     // Write both planes via raw pointers to ensure we hit the
                     // actual AVFrame data planes (not ffmpeg-next's wrapper which
                     // may return incorrect slice lengths for plane 1).
@@ -1819,6 +1823,11 @@ impl Encoder {
                     ffmpeg_next::ChannelLayout::STEREO,
                 );
                 match enc_fmt {
+                    _ if self.audio_resampler.is_some() => {
+                        if let Some(resampler) = self.audio_resampler.as_mut() {
+                            convert_into(resampler, &self.audio_buffer, frame_size, &mut frame)?;
+                        }
+                    }
                     ffmpeg_next::format::Sample::F32(ffmpeg_next::format::sample::Type::Planar) => {
                         unsafe {
                             let ptr = frame.as_mut_ptr();
@@ -2152,6 +2161,20 @@ impl Encoder {
 // ═══════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════
+
+
+/// `samples` (packed stereo floats, `frames` of them) into `out`, an
+/// encoder frame of another format, through `resampler` (#2783).
+fn convert_into(resampler: &mut ffmpeg_next::software::resampling::Context, samples: &[f32], frames: usize, out: &mut ffmpeg_next::frame::Audio) -> Result<(), RenderError> {
+    let mut src = ffmpeg_next::frame::Audio::new(ffmpeg_next::format::Sample::F32(ffmpeg_next::format::sample::Type::Packed), frames, ffmpeg_next::ChannelLayout::STEREO);
+    src.set_rate(resampler.input().rate);
+    let bytes: &[u8] = bytemuck::cast_slice(samples);
+    let dst = src.data_mut(0);
+    let n = bytes.len().min(dst.len());
+    dst[..n].copy_from_slice(&bytes[..n]);
+    resampler.run(&src, out).map_err(|e| RenderError::Encode(format!("audio conversion: {e}")))?;
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {
