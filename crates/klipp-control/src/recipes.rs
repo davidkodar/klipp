@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use klipp_core::{ClipId, TemplateValue};
+use klipp_core::{ClipId, RecipeInstance, TemplateValue};
 use klipp_graph_format::path::Root;
 use klipp_graph_lift::ops::GraphOp;
 use klipp_timeline::composition_template::{self as ct, CompositionTemplate, SlotKind};
@@ -89,15 +89,19 @@ fn colour(v: &Value) -> Result<[f32; 4], String> {
 /// picture of clip `clip` of `seq`, prepared as the graph op prepares
 /// one: the ops one undo step applies. The same route places it in the
 /// app and in the recipe harness.
-pub fn on_clip(seq: &Sequence, clip: ClipId, recipe: &CompositionTemplate, values: &BTreeMap<String, TemplateValue>) -> Result<Vec<GraphOp>, String> {
+pub fn on_clip(seq: &Sequence, clip: ClipId, recipe: &CompositionTemplate, values: &BTreeMap<String, TemplateValue>) -> Result<(Vec<GraphOp>, RecipeInstance), String> {
     let c = seq.all_clips().find(|c| c.id == clip).ok_or("no such clip on the open sequence")?;
     let anchors = ct::recipe_anchors(c)?;
     let wire = wire_ops(recipe, clip, &anchors, values, seq.resolution)?;
     let docs = crate::graph_model::documents(seq, Root::Clip { clip: clip.0 })?;
-    crate::graph_prepare::prepare(&wire, docs).map(|p| p.ops).map_err(|(at, why)| match at {
+    let prepared = crate::graph_prepare::prepare(&wire, docs).map_err(|(at, why)| match at {
         Some(i) => format!("\"{}\" step {i}: {why}", recipe.name),
         None => format!("\"{}\": {why}", recipe.name),
-    })
+    })?;
+    // The node each op made, which its controls set later (#2758).
+    let nodes = prepared.created.iter().filter_map(|(k, path)| Some((*k, path.node()?))).collect();
+    let placed = RecipeInstance { name: recipe.name.clone(), instance: recipe.recipe_instance(values, seq.resolution), nodes };
+    Ok((prepared.ops, placed))
 }
 
 /// The recipe's graph ops for clip `clip`, as the wire takes them.
@@ -164,6 +168,62 @@ mod tests {
         let why = refused(&[op("sky", json!({}), json!({}))]);
         assert!(why.contains("there is no recipe") && why.contains("sky"), "{why}");
         assert!(refused(&[op("Green screen", json!({}), json!({}))]).contains("fill the slot 'screen'"));
+    }
+
+    /// A placed recipe's controls stay live (#2758): its frame holds the
+    /// nodes it made and its instance, and template_link moves a control
+    /// in one picture step, every number it drives following (Size sets
+    /// both scales), a plain number control (Tolerance)
+    /// too; a target set by hand keeps its offset when the control moves.
+    #[test]
+    fn a_placed_recipes_controls_stay_live() {
+        use klipp_document::history::EditCommand;
+        use klipp_document::ops::{resolve, ClipRef, Op};
+        let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let mut seq = Sequence::new_default();
+        seq.resolution = klipp_core::Resolution { width: 1000, height: 500 };
+        let clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0));
+        let id = clip.id;
+        let mut track = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+        track.clips = vec![clip];
+        seq.tracks = vec![track];
+        let pool = klipp_media::MediaPool::new();
+        let link = |control: Option<&str>, target: Option<&str>, value: f64| Op::TemplateLink { clip_id: ClipRef::Id(id), control: control.map(Into::into), target: target.map(Into::into), action: None, value: Some(value) };
+        let place = |name: &str, slots: Value| Op::Recipe { clip_id: ClipRef::Id(id), name: name.into(), slots: serde_json::from_value(slots).unwrap(), controls: BTreeMap::new(), build: None };
+        let ops = [
+            place("Picture in picture", json!({"picture": "m1"})),
+            place("Green screen", json!({"screen": "#05be05"})),
+            link(Some("Size"), None, 0.5),
+            link(Some("tolerance"), None, 0.4),
+            link(None, Some("node:3.scale_y"), 0.9),
+            link(Some("Size"), None, 1.0),
+        ];
+        let plan = resolve(&seq, &pool, &crate::plans::with_recipes(&ops, None)).unwrap_or_else(|r| panic!("{r:?}"));
+        assert_eq!(plan.steps.len(), 6, "each one step");
+        let mut c = seq.all_clips().find(|c| c.id == id).unwrap().clone();
+        let mut at = Vec::new();
+        for step in &plan.steps {
+            let EditCommand::PictureEdit { edit, .. } = &step.edit else { panic!("a picture step: {:?}", step.edit) };
+            c.restore_picture(&edit.after);
+            // Read off the picture's nodes: the branch's Transform is
+            // in no effect list.
+            let graph = c.picture_v2().unwrap().picture.graph.clone();
+            let entry = |tag: &str| graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some(tag)).and_then(|n| klipp_graph_lift::effect_params::entry_of(n).ok());
+            let f = |v: &Value, k: &str| v[k].as_f64().unwrap() as f32;
+            let scale = entry("transform").map(|e| (f(&e, "scale_x"), f(&e, "scale_y")));
+            let tol = entry("chroma_key").map(|e| f(&e, "tolerance"));
+            at.push((scale, tol));
+        }
+        let close = |a: Option<(f32, f32)>, b: (f32, f32)| a.is_some_and(|a| (a.0 - b.0).abs() < 1e-4 && (a.1 - b.1).abs() < 1e-4);
+        assert!(close(at[0].0, (0.35, 0.35)), "placed at its default: {:?}", at[0]);
+        assert!(close(at[2].0, (0.5, 0.5)), "Size 0.5 moves both scales: {:?}", at[2]);
+        assert_eq!(at[3].1, Some(0.4), "a plain number control is live too");
+        assert!(close(at[4].0, (0.5, 0.9)), "scale_y set by hand: {:?}", at[4]);
+        // Size at 1: x follows; y keeps its hand offset (+0.4).
+        assert!(close(at[5].0, (1.0, 1.4)), "the hand offset kept: {:?}", at[5]);
+        let frames = &c.picture_v2().unwrap().picture.graph.ui.frames;
+        let names: Vec<&str> = frames.iter().filter_map(|f| f["recipe"]["name"].as_str()).collect();
+        assert_eq!(names, ["Picture in picture", "Green screen"], "a frame for each, holding its controls");
     }
 
     /// Values are taken by name or label, colours as hex or a list, and

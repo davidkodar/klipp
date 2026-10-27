@@ -31,6 +31,17 @@ pub struct TemplateInstance {
     pub links: Vec<TemplateLink>,
 }
 
+/// A recipe placed on a clip's picture (#2758): which recipe, the
+/// instance its controls drive (`node:<op>.<param>` links), and the node
+/// each of its ops made, by op. Kept on the node frame round those
+/// nodes, so its controls stay live and an undo takes it with them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecipeInstance {
+    pub name: String,
+    pub instance: TemplateInstance,
+    pub nodes: BTreeMap<usize, Uuid>,
+}
+
 /// How a control's value goes over to what it drives (#2757).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

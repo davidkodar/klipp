@@ -130,16 +130,7 @@ pub(crate) fn timeline_text(
                 // with the offset or "unlinked at" a hand edit left.
                 klipp_timeline::ClipKind::TemplatePrecomposition { template_instance: inst, .. } if !inst.links.is_empty() => {
                     let mut out = "template precomposition".to_string();
-                    let mut seen: Vec<&str> = Vec::new();
-                    for l in &inst.links {
-                        if !seen.contains(&l.parameter.as_str()) {
-                            seen.push(&l.parameter);
-                            let v = match inst.overrides.get(&l.parameter) { Some(klipp_core::TemplateValue::Number(n)) => *n, _ => l.from[0] };
-                            let _ = write!(out, "  control {} = {v}:", l.parameter);
-                        }
-                        let state = if !l.linked { format!(" unlinked at {}", l.frozen) } else if l.offset != 0.0 { format!(" offset {:+}", l.offset) } else { String::new() };
-                        let _ = write!(out, " {} {}..{} {}{state};", l.property, l.to[0], l.to[1], l.curve.name());
-                    }
+                    write_links(&mut out, inst);
                     out
                 }
                 klipp_timeline::ClipKind::TemplatePrecomposition { .. } => "template precomposition".to_string(),
@@ -158,6 +149,13 @@ pub(crate) fn timeline_text(
             }
             if !c.enabled {
                 line.push_str("  DISABLED");
+            }
+            // Its recipes and their live controls (#2758).
+            if let Ok(lifted) = c.picture_v2().as_ref().map(|l| &l.picture.graph.ui.frames) {
+                for r in lifted.iter().filter_map(|f| serde_json::from_value::<klipp_core::RecipeInstance>(f.get("recipe")?.clone()).ok()) {
+                    let _ = write!(line, "  recipe \"{}\"", r.name);
+                    write_links(&mut line, &r.instance);
+                }
             }
             if (c.speed - 1.0).abs() > 1e-6 {
                 let _ = write!(line, "  speed {:.2}", c.speed);
@@ -601,6 +599,23 @@ pub(crate) fn log_format_json(m: &klipp_media::MediaItem) -> serde_json::Value {
     })
 }
 
+/// A placed template's or recipe's controls (#2757, #2758): each with its
+/// value, and each target it drives, its range and curve, and whether set
+/// by hand or unlinked.
+fn write_links(out: &mut String, inst: &klipp_core::TemplateInstance) {
+    use std::fmt::Write as _;
+    let mut seen: Vec<&str> = Vec::new();
+    for l in &inst.links {
+        if !seen.contains(&l.parameter.as_str()) {
+            seen.push(&l.parameter);
+            let v = match inst.overrides.get(&l.parameter) { Some(klipp_core::TemplateValue::Number(n)) => *n, _ => l.from[0] };
+            let _ = write!(out, "  control {} = {v}:", l.parameter);
+        }
+        let state = if !l.linked { format!(" unlinked at {}", l.frozen) } else if l.offset != 0.0 { format!(" offset {:+}", l.offset) } else { String::new() };
+        let _ = write!(out, " {} {}..{} {}{state};", l.property, l.to[0], l.to[1], l.curve.name());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -648,3 +663,4 @@ mod tests {
         }
     }
 }
+

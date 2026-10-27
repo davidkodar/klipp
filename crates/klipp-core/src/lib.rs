@@ -102,4 +102,4 @@ pub use span::ClipSpan;
 
 pub mod vector_path;
 pub mod template;
-pub use template::{LinkCurve, TemplateInstance, TemplateLink, TemplateValue};
+pub use template::{LinkCurve, RecipeInstance, TemplateInstance, TemplateLink, TemplateValue};

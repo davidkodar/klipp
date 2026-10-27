@@ -4127,12 +4127,20 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
         }
         Op::TemplateLink { clip_id, control, target, action, value } => {
             let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            if !matches!(clip.kind, ClipKind::TemplatePrecomposition { .. }) {
+                if let Some(done) = recipe_link(i, clip, control.as_deref(), target.as_deref(), action.as_deref(), *value)? {
+                    return Ok(done);
+                }
+            }
             template_link(i, clip, control.as_deref(), target.as_deref(), action.as_deref(), *value)
         }
         Op::Recipe { clip_id, name, build, .. } => {
             let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             let build = build.as_ref().ok_or_else(|| refuse(i, format!("there is no recipe \"{name}\""), "title_templates lists the recipes"))?;
-            let ops = (build.0)(seq, clip.id).map_err(|why| refuse(i, why, "title_templates lists each recipe's slots and controls"))?;
+            let (mut ops, placed) = (build.0)(seq, clip.id).map_err(|why| refuse(i, why, "title_templates lists each recipe's slots and controls"))?;
+            // A frame round the nodes it made, which keeps its controls
+            // live (#2758).
+            ops.push(recipe_frame(clip, placed).map_err(|why| refuse(i, why, "report it"))?);
             let edit = clip.clone().apply_picture_ops(&ops).map_err(|why| refuse(i, format!("the recipe \"{name}\" doesn't fit this clip's picture: {why}"), "report it"))?;
             Ok((format!("{name} on the clip"), EditCommand::PictureEdit { clip_id: clip.id, description: "Recipe", edit: Box::new(edit) }, vec![clip.id]))
         }
@@ -6648,7 +6656,7 @@ pub struct PlacedComposition {
 /// What builds a recipe into a clip's picture (#2758): the graph ops
 /// for the clip it is given, in the sequence as it stands.
 #[derive(Clone)]
-pub struct RecipeBuilder(pub std::sync::Arc<dyn Fn(&Sequence, ClipId) -> Result<Vec<klipp_graph_lift::ops::GraphOp>, String> + Send + Sync>);
+pub struct RecipeBuilder(pub std::sync::Arc<dyn Fn(&Sequence, ClipId) -> Result<(Vec<klipp_graph_lift::ops::GraphOp>, klipp_core::RecipeInstance), String> + Send + Sync>);
 
 impl std::fmt::Debug for RecipeBuilder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -6699,8 +6707,79 @@ fn control_at(instance: &klipp_core::TemplateInstance, parameter: &str) -> f64 {
 /// The `template_link` op (#2757) on `clip`: one `SetTemplateInstance`.
 fn template_link(i: usize, clip: &Clip, control: Option<&str>, target: Option<&str>, action: Option<&str>, value: Option<f64>) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     let ClipKind::TemplatePrecomposition { template_instance: old, .. } = &clip.kind else {
-        return Err(refuse(i, "that clip is not a placed template", "the template op places one; the timeline view marks them"));
+        return Err(refuse(i, "that clip is not a placed template, nor holds a recipe", "the template op places a template, the recipe op a recipe; the timeline view marks both"));
     };
+    let (what, parameter, new) = link_edit(i, old, control, target, action, value)?;
+    Ok((what, EditCommand::SetTemplateInstance { clip_id: clip.id, parameter, old: Box::new(old.clone()), new: Box::new(new) }, Vec::new()))
+}
+
+/// The frame a placed recipe keeps (#2758): round the nodes it made,
+/// named for it, holding its live controls; set with the picture's other
+/// frames and notes, which stay as they are.
+fn recipe_frame(clip: &Clip, placed: klipp_core::RecipeInstance) -> Result<klipp_graph_lift::ops::GraphOp, String> {
+    let lifted = clip.picture_v2().map_err(|e| e.to_string())?;
+    let graph = &lifted.picture.graph;
+    let frame = klipp_nodes::NodeFrame {
+        id: klipp_nodes::NodeFrameId::new_v4(),
+        label: placed.name.clone(),
+        description: String::new(),
+        color_rgba: 0x3a7d_8cff,
+        contained_node_ids: placed.nodes.values().copied().collect(),
+        recipe: Some(placed),
+    };
+    let mut frames = graph.ui.frames.clone();
+    frames.push(serde_json::to_value(frame).map_err(|e| e.to_string())?);
+    let path = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: clip.id.0 }, [graph.output]);
+    Ok(klipp_graph_lift::ops::GraphOp::SetAnnotations { path, frames, sticky_notes: graph.ui.sticky_notes.clone() })
+}
+
+/// A placed recipe's control (#2758), as `template_link` moves a
+/// template's: the control set, or one target (`node:<op>.<param>`)
+/// unlinked, relinked, reset or set by hand, and every number the control
+/// drives set on the node its op made, with the frame's instance, as one
+/// picture step. `None` when no recipe on the clip has that control or
+/// target.
+fn recipe_link(i: usize, clip: &Clip, control: Option<&str>, target: Option<&str>, action: Option<&str>, value: Option<f64>) -> Result<Option<(String, EditCommand, Vec<ClipId>)>, Refusal> {
+    use klipp_graph_format::path::{NodePath, Root};
+    use klipp_graph_lift::ops::GraphOp;
+    let Ok(lifted) = clip.picture_v2() else { return Ok(None) };
+    let graph = &lifted.picture.graph;
+    let mut frames: Vec<klipp_nodes::NodeFrame> = graph.ui.frames.iter().filter_map(|f| serde_json::from_value(f.clone()).ok()).collect();
+    if frames.len() != graph.ui.frames.len() {
+        return Ok(None);
+    }
+    let wants = |r: &klipp_core::RecipeInstance| {
+        let links = &r.instance.links;
+        control.is_some_and(|c| links.iter().any(|l| l.parameter.eq_ignore_ascii_case(c.trim()) || l.parameter == label_name(c)))
+            || target.is_some_and(|t| links.iter().any(|l| l.property == t.trim()))
+    };
+    let Some(at) = frames.iter().position(|f| f.recipe.as_ref().is_some_and(wants)) else { return Ok(None) };
+    let placed = frames[at].recipe.clone().expect("a recipe frame");
+    let (what, parameter, new) = link_edit(i, &placed.instance, control, target, action, value)?;
+    let c = control_at(&new, &parameter);
+    let mut ops = Vec::new();
+    for l in new.links.iter().filter(|l| l.parameter == parameter) {
+        let (k, param) = klipp_timeline::composition_template::node_binding(&l.property).ok_or_else(|| refuse(i, format!("'{}' is not a recipe's node parameter", l.property), "report it"))?;
+        let node = placed.nodes.get(&k).copied().ok_or_else(|| refuse(i, format!("the node \"{}\"'s step {k} made is gone", placed.name), "place the recipe again"))?;
+        let n = graph.nodes.iter().find(|n| n.id == node).ok_or_else(|| refuse(i, format!("a node of \"{}\" was removed", placed.name), "place the recipe again"))?;
+        let whole = klipp_graph_lift::effect_params::tag(n)
+            .and_then(klipp_effects::registry::effect_type)
+            .and_then(|t| t.desc.params.iter().find(|d| d.key == param).map(|d| d.kind == klipp_effects::registry::ParamKind::Whole))
+            .unwrap_or(false);
+        let v = l.effective(c);
+        let value = if whole { klipp_graph_format::ParamValue::Int(v.round() as i32) } else { klipp_graph_format::ParamValue::Float(v as f32) };
+        ops.push(GraphOp::SetParam { path: NodePath::new(Root::Clip { clip: clip.id.0 }, [node]), key: param.into(), value });
+    }
+    frames[at].recipe = Some(klipp_core::RecipeInstance { instance: new, ..placed });
+    let frames = frames.iter().map(serde_json::to_value).collect::<Result<Vec<_>, _>>().map_err(|e| refuse(i, e.to_string(), "report it"))?;
+    ops.push(GraphOp::SetAnnotations { path: NodePath::new(Root::Clip { clip: clip.id.0 }, [graph.output]), frames, sticky_notes: graph.ui.sticky_notes.clone() });
+    let edit = clip.clone().apply_picture_ops(&ops).map_err(|why| refuse(i, format!("the recipe's control couldn't be set: {why}"), "report it"))?;
+    Ok(Some((what, EditCommand::PictureEdit { clip_id: clip.id, description: "Recipe control", edit: Box::new(edit) }, Vec::new())))
+}
+
+/// `old` with `control` set to `value`, or `target` acted on (#2757):
+/// what was done, the control it was, and the instance after.
+fn link_edit(i: usize, old: &klipp_core::TemplateInstance, control: Option<&str>, target: Option<&str>, action: Option<&str>, value: Option<f64>) -> Result<(String, String, klipp_core::TemplateInstance), Refusal> {
     let mut new = old.clone();
     let controls: Vec<&str> = {
         let mut c: Vec<&str> = old.links.iter().map(|l| l.parameter.as_str()).collect();
@@ -6751,7 +6830,7 @@ fn template_link(i: usize, clip: &Clip, control: Option<&str>, target: Option<&s
             (what, parameter)
         }
     };
-    Ok((what, EditCommand::SetTemplateInstance { clip_id: clip.id, parameter, old: Box::new(old.clone()), new: Box::new(new) }, Vec::new()))
+    Ok((what, parameter, new))
 }
 
 /// A control's label as the name its template saves it by (#2757):
