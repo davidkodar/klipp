@@ -1360,6 +1360,13 @@ pub enum Op {
         /// frame. Needs a surface tracked since the light was measured.
         #[serde(default)]
         light: Option<f32>,
+        /// How much its brightness follows the surface's light and shade
+        /// across it, 0 to 1 (#2751); none by default.
+        #[serde(default)]
+        shade: Option<f32>,
+        /// How much of the surface's texture shows through it, 0 to 1.
+        #[serde(default)]
+        texture: Option<f32>,
         /// How it blends onto the surface: normal (the default), multiply,
         /// screen, overlay or soft_light.
         #[serde(default)]
@@ -3567,11 +3574,11 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let to = match to { Some(a) => Some(resolve_anchor(seq, fps, a, i)?), None => None };
             redact(seq, pool, fps, i, ti, clip, from, to, [*x, *y, *w, *h], kind, *amount)
         }
-        Op::Pin { clip_id, media_id, layer, surface, from, to, fit, inset, on_loss, fade_secs, light, blend, template } => {
+        Op::Pin { clip_id, media_id, layer, surface, from, to, fit, inset, on_loss, fade_secs, light, shade, texture, blend, template } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             // A template's look, under what was given.
-            let (fit, inset, on_loss, light, blend) = match template.as_deref().map(str::trim).map(str::to_lowercase).as_deref() {
-                None | Some("") => (fit.clone(), *inset, on_loss.clone(), *light, blend.clone()),
+            let (fit, inset, on_loss, light, shade, texture, blend) = match template.as_deref().map(str::trim).map(str::to_lowercase).as_deref() {
+                None | Some("") => (fit.clone(), *inset, on_loss.clone(), *light, *shade, *texture, blend.clone()),
                 Some(name) => {
                     let Some(t) = PIN_TEMPLATES.iter().find(|t| t.name == name || t.aliases.contains(&name)) else {
                         return Err(refuse(i, format!("\"{name}\" is not a pin template"), format!("use {}", PIN_TEMPLATES.iter().map(|t| t.name).collect::<Vec<_>>().join(", "))));
@@ -3581,6 +3588,8 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                         inset.or(Some(t.inset)),
                         on_loss.clone().or(Some(t.on_loss.to_string())),
                         light.or(Some(t.light)),
+                        shade.or(Some(t.shade)),
+                        texture.or(Some(t.texture)),
                         blend.clone().or(Some(t.blend.to_string())),
                     )
                 }
@@ -3611,9 +3620,11 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 Some("fade") | Some("fade_out") => klipp_timeline::PinLoss::Fade { secs: fade },
                 Some(other) => return Err(refuse(i, format!("\"{other}\" is not what a pin does where its track is lost"), "use hold, hide or fade")),
             };
-            let light = light.unwrap_or(0.0);
-            if !light.is_finite() || !(0.0..=1.0).contains(&light) {
-                return Err(refuse(i, format!("light {light} is out of range"), "give light 0 to 1"));
+            let (light, shade, texture) = (light.unwrap_or(0.0), shade.unwrap_or(0.0), texture.unwrap_or(0.0));
+            for (name, v) in [("light", light), ("shade", shade), ("texture", texture)] {
+                if !v.is_finite() || !(0.0..=1.0).contains(&v) {
+                    return Err(refuse(i, format!("{name} {v} is out of range"), format!("give {name} 0 to 1")));
+                }
             }
             let blend = match blend.as_deref().map(str::trim).map(str::to_lowercase).as_deref() {
                 None | Some("") | Some("normal") => klipp_core::BlendMode::Normal,
@@ -3623,7 +3634,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 Some("soft_light") | Some("softlight") | Some("soft light") => klipp_core::BlendMode::SoftLight,
                 Some(other) => return Err(refuse(i, format!("\"{other}\" is not a blend for a pin"), "use normal, multiply, screen, overlay or soft_light")),
             };
-            let look = PinLook { on_loss, light, blend };
+            let look = PinLook { on_loss, light, shade, texture, blend };
             match (media_id, layer) {
                 (Some(media_id), _) => pin(seq, pool, i, ti, clip, *media_id, surface.as_deref(), from, to, fit, inset, look),
                 (None, Some(layer)) => {
@@ -6702,7 +6713,7 @@ fn pin(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, media
     let target = klipp_timeline::surface::pin_target(&on_frame, s.aspect(), picture_size, fit, inset).unwrap_or(on_frame);
     let [tl, tr, br, bl] = klipp_timeline::surface::pin_frame_corners(&target, picture_size, frame).unwrap_or(target);
     add_plain_effects(&mut picture, &[klipp_effects::BuiltinEffect::CornerPin { tl, tr, br, bl }]).map_err(|e| refuse(i, format!("the picture couldn't take its corner pin: {e}"), "report it"))?;
-    picture.surface_pin = Some(klipp_timeline::SurfacePin { host: clip.id, surface: s.id, picture_size, fit, inset, on_loss: look.on_loss, light: look.light });
+    picture.surface_pin = Some(klipp_timeline::SurfacePin { host: clip.id, surface: s.id, picture_size, fit, inset, on_loss: look.on_loss, light: look.light, shade: look.shade, texture: look.texture });
     picture.blend_mode = look.blend;
     let above = (0..ti).rev().find(|k| seq.tracks[*k].kind == TrackKind::Video && !seq.tracks[*k].locked && overlapping(seq, *k, a, b, None).is_none());
     let (video, created) = match above {
@@ -6726,6 +6737,8 @@ struct PinTemplate {
     fit: &'static str,
     inset: f32,
     light: f32,
+    shade: f32,
+    texture: f32,
     blend: &'static str,
     on_loss: &'static str,
 }
@@ -6735,12 +6748,12 @@ struct PinTemplate {
 const PIN_TEMPLATES: [PinTemplate; 3] = [
     // On the surface itself: its shape kept inside a margin, as dark as
     // the wall is, gone gently with it.
-    PinTemplate { name: "text_on_wall", aliases: &["text_on_a_wall", "wall"], fit: "fit", inset: 0.05, light: 1.0, blend: "normal", on_loss: "fade" },
+    PinTemplate { name: "text_on_wall", aliases: &["text_on_a_wall", "wall"], fit: "fit", inset: 0.05, light: 1.0, shade: 0.8, texture: 0.5, blend: "normal", on_loss: "fade" },
     // A screen gives its own light: onto the four corners inside the
     // bezel, never darkened, and nothing where the screen isn't seen.
-    PinTemplate { name: "screen", aliases: &["screen_replacement", "phone", "monitor"], fit: "stretch", inset: 0.02, light: 0.0, blend: "normal", on_loss: "hide" },
+    PinTemplate { name: "screen", aliases: &["screen_replacement", "phone", "monitor"], fit: "stretch", inset: 0.02, light: 0.0, shade: 0.0, texture: 0.0, blend: "normal", on_loss: "hide" },
     // A board in the scene's light, a little of it held back so it reads.
-    PinTemplate { name: "sign", aliases: &["billboard", "poster"], fit: "fit", inset: 0.0, light: 0.8, blend: "normal", on_loss: "fade" },
+    PinTemplate { name: "sign", aliases: &["billboard", "poster"], fit: "fit", inset: 0.0, light: 0.8, shade: 0.5, texture: 0.15, blend: "normal", on_loss: "fade" },
 ];
 
 /// What a pin does beyond where it goes (#2751): where the track is
@@ -6749,6 +6762,8 @@ const PIN_TEMPLATES: [PinTemplate; 3] = [
 struct PinLook {
     on_loss: klipp_timeline::PinLoss,
     light: f32,
+    shade: f32,
+    texture: f32,
     blend: klipp_core::BlendMode,
 }
 
@@ -6788,7 +6803,7 @@ fn pin_layer(seq: &Sequence, pool: &MediaPool, i: usize, clip: &Clip, pinned: &C
     // Its corner pin replaced, not stacked, when it was pinned before.
     let (_, mut new) = effects_edit_and_after(pinned, |e| matches!(e, klipp_effects::BuiltinEffect::CornerPin { .. }), Some((klipp_effects::BuiltinEffect::CornerPin { tl, tr, br, bl }, Place::Last)))
         .map_err(|e| refuse(i, format!("{layer} couldn't take its corner pin: {e}"), "report it"))?;
-    new.surface_pin = Some(klipp_timeline::SurfacePin { host: clip.id, surface: s.id, picture_size, fit, inset, on_loss: look.on_loss, light: look.light });
+    new.surface_pin = Some(klipp_timeline::SurfacePin { host: clip.id, surface: s.id, picture_size, fit, inset, on_loss: look.on_loss, light: look.light, shade: look.shade, texture: look.texture });
     new.blend_mode = look.blend;
     let tracked = if s.keys.is_empty() { ", where it stays until the surface is tracked" } else { ", following it" };
     let what = format!("pin {layer} to the surface \"{}\" of {host}{tracked}", s.name);
@@ -14397,7 +14412,7 @@ mod tests {
         let mut logo = klipp_media::MediaItem::synthetic_for_test("/tmp/logo.png".into(), None);
         logo.is_still = true;
         let logo = pool.add(logo);
-        let pin_op = |surface: Option<&str>| Op::Pin { clip_id: ClipRef::Id(a), media_id: Some(logo), layer: None, surface: surface.map(str::to_string), from: Some(Anchor::Secs(1.0)), to: None, fit: None, inset: None, on_loss: None, fade_secs: None, light: None, blend: None, template: None };
+        let pin_op = |surface: Option<&str>| Op::Pin { clip_id: ClipRef::Id(a), media_id: Some(logo), layer: None, surface: surface.map(str::to_string), from: Some(Anchor::Secs(1.0)), to: None, fit: None, inset: None, on_loss: None, fade_secs: None, light: None, shade: None, texture: None, blend: None, template: None };
         assert!(resolve(&seq, &pool, &[pin_op(None)]).unwrap_err().hint.contains("track_surface"), "nothing tracked yet");
 
         // A 16:9 surface (0.3 of a 1920 frame across, 0.3 of 1080 down).
@@ -14411,7 +14426,7 @@ mod tests {
         let EditCommand::LinkedImport { video: Some((picture, 0)), created_video_track_at: Some(0), .. } = &step.edit else { panic!("{:?}", step.edit) };
         assert_eq!((secs(picture.timeline_in), secs(picture.timeline_out)), (1.0, 4.0));
         // The logo is 1920x1080 as the test media is: the surface's shape, so it stretches straight onto the corners.
-        assert_eq!(picture.surface_pin, Some(klipp_timeline::SurfacePin { host: a, surface: id, picture_size: Some([1920, 1080]), fit: klipp_timeline::PinFit::Stretch, inset: 0.0, on_loss: Default::default(), light: 0.0 }));
+        assert_eq!(picture.surface_pin, Some(klipp_timeline::SurfacePin { host: a, surface: id, picture_size: Some([1920, 1080]), fit: klipp_timeline::PinFit::Stretch, inset: 0.0, on_loss: Default::default(), light: 0.0, shade: 0.0, texture: 0.0 }));
         assert!(matches!(klipp_timeline::test_clip::effects(picture).as_slice(), [klipp_effects::BuiltinEffect::CornerPin { tl, br, .. }] if *tl == corners[0] && *br == corners[2]), "{:?}", klipp_timeline::test_clip::effects(picture));
 
         // A square picture keeps its shape: it fits, inside the surface.
@@ -14420,7 +14435,7 @@ mod tests {
         square.resolution = klipp_core::Resolution { width: 800, height: 800 };
         let square = pool.add(square);
         let fitted = |fit: Option<&str>, inset: Option<f32>| {
-            let op = Op::Pin { clip_id: ClipRef::Id(a), media_id: Some(square), layer: None, surface: None, from: None, to: None, fit: fit.map(str::to_string), inset, on_loss: None, fade_secs: None, light: None, blend: None, template: None };
+            let op = Op::Pin { clip_id: ClipRef::Id(a), media_id: Some(square), layer: None, surface: None, from: None, to: None, fit: fit.map(str::to_string), inset, on_loss: None, fade_secs: None, light: None, shade: None, texture: None, blend: None, template: None };
             let plan = resolve(&seq, &pool, &[op]).unwrap();
             let EditCommand::LinkedImport { video: Some((picture, _)), .. } = &plan.steps[0].edit else { panic!() };
             picture.surface_pin.unwrap()
@@ -14428,7 +14443,7 @@ mod tests {
         assert_eq!(fitted(None, None).fit, klipp_timeline::PinFit::Fit);
         assert_eq!(fitted(Some("stretch"), Some(0.02)).fit, klipp_timeline::PinFit::Stretch);
         assert_eq!(fitted(None, Some(0.02)).inset, 0.02);
-        let bad = |fit: &str, inset: f32| resolve(&seq, &pool, &[Op::Pin { clip_id: ClipRef::Id(a), media_id: Some(square), layer: None, surface: None, from: None, to: None, fit: Some(fit.into()), inset: Some(inset), on_loss: None, fade_secs: None, light: None, blend: None, template: None }]).unwrap_err().why;
+        let bad = |fit: &str, inset: f32| resolve(&seq, &pool, &[Op::Pin { clip_id: ClipRef::Id(a), media_id: Some(square), layer: None, surface: None, from: None, to: None, fit: Some(fit.into()), inset: Some(inset), on_loss: None, fade_secs: None, light: None, shade: None, texture: None, blend: None, template: None }]).unwrap_err().why;
         assert!(bad("squash", 0.0).contains("not a fit"));
         assert!(bad("fit", 0.6).contains("out of range"));
 
@@ -14473,7 +14488,7 @@ mod tests {
         let find = |seq: &Sequence| seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == tid).cloned().expect("the title");
         let t = find(&pinned);
         assert_eq!((secs(t.timeline_in), secs(t.timeline_out)), (1.0, 3.0), "where it was");
-        assert_eq!(t.surface_pin, Some(klipp_timeline::SurfacePin { host: a, surface: id, picture_size: None, fit: klipp_timeline::PinFit::Stretch, inset: 0.0, on_loss: Default::default(), light: 0.0 }));
+        assert_eq!(t.surface_pin, Some(klipp_timeline::SurfacePin { host: a, surface: id, picture_size: None, fit: klipp_timeline::PinFit::Stretch, inset: 0.0, on_loss: Default::default(), light: 0.0, shade: 0.0, texture: 0.0 }));
         assert!(matches!(klipp_timeline::test_clip::effects(&t).as_slice(), [klipp_effects::BuiltinEffect::CornerPin { tl, br, .. }] if *tl == corners[0] && *br == corners[2]), "{:?}", klipp_timeline::test_clip::effects(&t));
         // Pinned again: one corner pin still.
         let again = run(&pinned, &resolve(&pinned, &pool, &ops).unwrap());
@@ -14512,6 +14527,16 @@ mod tests {
         assert_eq!(look(serde_json::json!({"light": 0.8, "blend": "soft_light"})).unwrap(), (0.8, klipp_core::BlendMode::SoftLight));
         assert!(look(serde_json::json!({"light": 1.5})).unwrap_err().why.contains("out of range"));
         assert!(look(serde_json::json!({"blend": "dissolve"})).unwrap_err().hint.contains("multiply"));
+        // Its shade across the surface and its texture (#2751).
+        let shaded = |extra: serde_json::Value| {
+            let mut op = serde_json::json!({"op": "pin", "clip_id": a.to_string(), "layer": tid.to_string(), "surface": "wall"});
+            op.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            let ops: Vec<Op> = serde_json::from_value(serde_json::json!([op])).unwrap();
+            resolve(&seq, &pool, &ops).map(|plan| find(&run(&seq, &plan)).surface_pin.map(|p| (p.shade, p.texture)).unwrap())
+        };
+        assert_eq!(shaded(serde_json::json!({"shade": 0.7, "texture": 0.4})).unwrap(), (0.7, 0.4));
+        assert_eq!(shaded(serde_json::json!({"template": "text_on_wall"})).unwrap(), (0.8, 0.5), "the wall template takes them");
+        assert!(shaded(serde_json::json!({"texture": 2.0})).unwrap_err().why.contains("texture 2 is out of range"));
         // The ready looks: each sets its look, a field given stands.
         let templated = |extra: serde_json::Value| {
             let mut op = serde_json::json!({"op": "pin", "clip_id": a.to_string(), "layer": tid.to_string(), "surface": "wall"});

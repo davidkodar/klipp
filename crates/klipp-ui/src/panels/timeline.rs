@@ -9073,7 +9073,7 @@ impl TimelinePanel {
                         // (#2751), pinned again with that, the rest kept.
                         if let Some(pin) = clip.surface_pin {
                             use klipp_timeline::PinLoss;
-                            let repin = |on_loss: PinLoss, light: f32| klipp_document::ops::Op::Pin {
+                            let repin = |on_loss: PinLoss, light: f32, (shade, texture): (f32, f32)| klipp_document::ops::Op::Pin {
                                 clip_id: klipp_document::ops::ClipRef::Id(pin.host),
                                 media_id: None,
                                 layer: Some(klipp_document::ops::ClipRef::Id(clip_id)),
@@ -9086,6 +9086,8 @@ impl TimelinePanel {
                                 fade_secs: match on_loss { PinLoss::Fade { secs } => Some(secs), _ => None },
                                 template: None,
                                 light: Some(light),
+                                shade: Some(shade),
+                                texture: Some(texture),
                                 blend: Some(match clip.blend_mode {
                                     klipp_core::BlendMode::Multiply => "multiply",
                                     klipp_core::BlendMode::Screen => "screen",
@@ -9102,14 +9104,21 @@ impl TimelinePanel {
                                 ] {
                                     let on = std::mem::discriminant(&pin.on_loss) == std::mem::discriminant(&on_loss);
                                     if ui.selectable_label(on, label).on_hover_text(hint).clicked() {
-                                        state.pending_doc_ops.push(crate::state::DocOpsRequest { label: format!("Pin: {label} If Lost"), ops: vec![repin(on_loss, pin.light)], independent: false });
+                                        state.pending_doc_ops.push(crate::state::DocOpsRequest { label: format!("Pin: {label} If Lost"), ops: vec![repin(on_loss, pin.light, (pin.shade, pin.texture))], independent: false });
                                         ui.close_menu();
                                     }
                                 }
                             });
                             let lit = pin.light > 0.0;
                             if ui.selectable_label(lit, "Take the Surface's Light").on_hover_text("Darker or lighter as the surface is than where it was pinned (a surface tracked since this was measured)").clicked() {
-                                state.pending_doc_ops.push(crate::state::DocOpsRequest { label: "Pin: Take the Surface's Light".into(), ops: vec![repin(pin.on_loss, if lit { 0.0 } else { 1.0 })], independent: false });
+                                state.pending_doc_ops.push(crate::state::DocOpsRequest { label: "Pin: Take the Surface's Light".into(), ops: vec![repin(pin.on_loss, if lit { 0.0 } else { 1.0 }, (pin.shade, pin.texture))], independent: false });
+                                ui.close_menu();
+                            }
+                            // Its shade across the surface and its grain
+                            // through the layer (#2751).
+                            let shaded = pin.shade > 0.0 || pin.texture > 0.0;
+                            if ui.selectable_label(shaded, "Take the Surface's Shade and Texture").on_hover_text("Darker where the surface is in shade and lighter where it is lit, its grain showing through").clicked() {
+                                state.pending_doc_ops.push(crate::state::DocOpsRequest { label: "Pin: Take the Surface's Shade and Texture".into(), ops: vec![repin(pin.on_loss, pin.light, if shaded { (0.0, 0.0) } else { (0.8, 0.5) })], independent: false });
                                 ui.close_menu();
                             }
                         }
@@ -9138,6 +9147,8 @@ impl TimelinePanel {
                                                     on_loss: None,
                                                     fade_secs: None,
                                                     light: None,
+                                                    shade: None,
+                                                    texture: None,
                                                     blend: None,
                                                     template: template.map(str::to_string),
                                                 };

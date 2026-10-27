@@ -803,7 +803,7 @@ exist until the plan runs.
   It is refused through a retimed clip.
 - `format {width, height, fps?}`: set the sequence's picture size and
   optionally its rate. Fit the picture rather than stretching it.
-- `pin {clip_id, media_id | layer, surface?, from?, to?, fit?, inset?, on_loss?, fade_secs?, light?, blend?, template?}`:
+- `pin {clip_id, media_id | layer, surface?, from?, to?, fit?, inset?, on_loss?, fade_secs?, light?, shade?, texture?, blend?, template?}`:
   a picture, video or still, onto a surface tracked in the clip (a phone
   screen, a sign, a monitor): it goes on a video track above, following
   the surface as the shot moves, from `from` to `to` (the clip's edges
@@ -818,10 +818,16 @@ exist until the plan runs.
   the surface is than on its reference frame (paint on a wall going
   into shade): 1 for something on the surface, lower for something in
   front of it. It needs a surface tracked since the light was measured;
-  track an older one again. `blend` is `normal`, `multiply` (ink on
+  track an older one again. `shade` 0 to 1 makes it follow the light
+  across the surface in the frame: darker where the surface is in
+  shade, lighter where it is lit, against the surface's own average
+  under it. `texture` 0 to 1 lets the surface's grain (brick, plaster,
+  paper) show through it. Both are read from the picture under the layer
+  each frame. `blend` is `normal`, `multiply` (ink on
   paper), `screen`, `overlay` or `soft_light`. `template` sets these at
   once, any given standing over it: `text_on_wall` (fitted inside a
-  margin, takes the light, fades out where lost), `screen` (stretched
+  margin, takes the light, its shade and some of its texture, fades out
+  where lost), `screen` (stretched
   inside a bezel, in its own light, hidden where lost) or `sign` (fitted,
   most of the light, fades out). Start from one and change only what
   looks wrong. `surface` is the id or name `klipp_track_surface` gave;

@@ -2361,6 +2361,13 @@ impl Renderer {
                     if !self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_contrast_protect(*slot, opacity, protect, luma)) {
                         return self.gpu_stack_declines("a title's contrast protection failed");
                     }
+                    // A pinned layer taking its surface's shade and texture
+                    // from what is under it (#2751).
+                    if let Some(pin) = c.surface_pin.filter(|p| p.shade > 0.0 || p.texture > 0.0) {
+                        if !self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_take_surface(*slot, pin.shade, pin.texture, luma)) {
+                            return self.gpu_stack_declines("a pinned layer's surface light failed");
+                        }
+                    }
                     let (y0, y1) = p.rows;
                     let mode = c.blend_mode as u32;
                     // A reflection's rows blend by its own mode (#2707).
@@ -3727,6 +3734,11 @@ impl Renderer {
             if let (TrackItem::Clip(c), Some(a)) = (item, acc.as_mut()) {
                 klipp_effects::protect::protect_backdrop(a, &layer.pixels, width, height, layer.opacity, contrast_protect(c),
                     klipp_color::linear::luma_coefs(self.working));
+                // A pinned layer taking its surface's shade and texture
+                // from what is under it (#2751).
+                if let Some(pin) = c.surface_pin.filter(|p| p.shade > 0.0 || p.texture > 0.0) {
+                    klipp_effects::surface_light::take_surface(&mut layer.pixels, a, width, height, pin.shade, pin.texture, klipp_color::linear::luma_coefs(self.working));
+                }
             }
             match &mut acc {
                 None if layer.blend == BlendMode::Normal && layer.opacity >= 1.0 && layer.split.is_none() => acc = Some(layer.pixels),
