@@ -181,6 +181,15 @@ pub trait FrameSource {
     /// The frame after the one [`frame`](Self::frame) returns for
     /// `source_secs`, for frame blending. Asked only after `frame`, for
     /// the same time. `None` (the default) shows the one frame unblended.
+    /// [`Self::frame_after`]'s frame where the source holds it on the GPU
+    /// at `width` × `height`, in `working` (#2854): its presentation time
+    /// and its pixels as a frame blend on the chain binds them. `None`
+    /// (the default) where it hasn't it there: the blend reads
+    /// [`Self::frame_after`] then.
+    fn frame_after_on_gpu(&mut self, _clip: &Clip, _source_secs: f64, _working: WorkingColorspace, _width: u32, _height: u32) -> Option<(f64, Arc<dyn klipp_nodes::frame_context::GpuFramePixels>)> {
+        None
+    }
+
     fn frame_after(&mut self, _clip: &Clip, _source_secs: f64, _width: u32, _height: u32) -> Option<SourceFrame> {
         None
     }
@@ -508,6 +517,17 @@ impl klipp_nodes::frame_context::SourceProvider for ClipSources<'_> {
             return Neighbour::Missing(Missing::Unavailable);
         }
         Neighbour::Frame(LinearFrame { rgba, width, height, source_secs: pts, pts: Some(pts) })
+    }
+
+    /// [`Self::next`] where the source holds it on the GPU (#2854): only
+    /// a display-referred frame's, as the frame shown was.
+    fn next_on_gpu(&mut self, source_secs: f64) -> klipp_nodes::frame_context::Neighbour<klipp_nodes::frame_context::GpuLinearFrame> {
+        use klipp_nodes::frame_context::{GpuLinearFrame, Missing, Neighbour};
+        let Some((_, None, width, height)) = self.current else { return Neighbour::Missing(Missing::Unavailable) };
+        match self.src.frame_after_on_gpu(self.clip, source_secs, self.working, width, height) {
+            Some((pts, pixels)) => Neighbour::Frame(GpuLinearFrame { pixels, width, height, source_secs: pts }),
+            None => Neighbour::Missing(Missing::Unavailable),
+        }
     }
 }
 
@@ -2080,7 +2100,7 @@ impl Renderer {
         let stack = stack(seq, time);
 
         // What a clip needs that the stack does not have.
-        let blocker = |c: &Clip, media_fps: Option<f64>| -> Option<&'static str> {
+        let blocker = |c: &Clip| -> Option<&'static str> {
             if c.has_enabled_plugins() {
                 Some("OFX plugin")
             } else if has_frei0r_node(c) {
@@ -2095,8 +2115,6 @@ impl Renderer {
                 // A grade in the chain runs in the timeline render's plan
                 // for now (#1746).
                 Some("grade compound")
-            } else if frame_blends(c, time, media_fps, fps) {
-                Some("frame blending")
             } else if title_motion_blur(c).is_some() && !title_blur_on_stack(c, time, fps) {
                 Some("title motion blur")
             } else if temporal_denoise_of(c, time, fps).is_some() {
@@ -2120,7 +2138,7 @@ impl Renderer {
             match item {
                 TrackItem::Clip(c) => {
                     let _clip_residency = residency::clip(c.id.0);
-                    if let Some(why) = blocker(c, src.media_fps(c)) {
+                    if let Some(why) = blocker(c) {
                         return self.gpu_stack_declines(why);
                     }
                     if let Some(b) = &c.matte_source {
@@ -2139,7 +2157,7 @@ impl Renderer {
                         return self.gpu_stack_declines("smooth cut");
                     }
                     for side in [a, b] {
-                        if let Some(why) = blocker(side, src.media_fps(side)) {
+                        if let Some(why) = blocker(side) {
                             return self.gpu_stack_declines(why);
                         }
                         // A side seen through a matte is matted before the
@@ -2509,6 +2527,16 @@ impl Renderer {
         let placed = match &c.kind {
             ClipKind::Media { .. } => {
                 let at = source_secs(c, time, fps);
+                // A slowed clip's frames blended at the head of its grade's
+                // run, on the chain (#2854): read half a media frame early,
+                // as the composite reads them, so the frame read is the one
+                // at or before the time and the blend has the next to go to.
+                let blending = frame_blends(c, time, src.media_fps(c), fps);
+                let read_at = match src.media_fps(c).filter(|r| *r > 0.0) {
+                    Some(rate) if blending => at - 0.5 / rate,
+                    _ => at,
+                };
+                let mut source_pts = None;
                 // A still image's picture, fitted to the frame, kept on the
                 // GPU while its file, the size and the working space stand
                 // (#2092): not read from the source again, nor uploaded, but
@@ -2525,7 +2553,8 @@ impl Renderer {
                         (SourcePixels::Gpu(seed), false, (width, height))
                     }
                     None => {
-                        let Some(f) = src.frame(c, at, width, height) else { return Ok(None) };
+                        let Some(f) = src.frame(c, read_at, width, height) else { return Ok(None) };
+                        source_pts = f.pts;
                         // A source of another size is fitted into the frame, as on
                         // the CPU: on the GPU when the source can seed at another
                         // size, else fitted here and sent up. It used to be
@@ -2562,7 +2591,7 @@ impl Renderer {
                 match pixels {
                     // An ungraded layer with effects takes the branch below:
                     // its effects run as a plan (step 11d).
-                    SourcePixels::Gpu(g) if c.grade_is_identity() && !has_active_effects(&fx) => {
+                    SourcePixels::Gpu(g) if c.grade_is_identity() && !has_active_effects(&fx) && !blending => {
                         if g.seed(&mut self.executor, width, height) {
                             self.executor.take_seeded_input_as_output()
                                 && self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_chain(slot, true))
@@ -2580,7 +2609,7 @@ impl Renderer {
                         effects_done = self.splice_effects(c, &fx, time, fps, transforms, at_move, stats);
                         self.grade_split.splice_ms += ms_since(t);
                         self.executor.request_output_on_gpu();
-                        let pixels = self.grade_on_stack(c, GradeInput::Gpu(g), time, clip_time, fps, width, height, src);
+                        let pixels = self.grade_on_stack(c, GradeInput::Gpu(g), time, clip_time, fps, width, height, src, blending.then_some(source_pts));
                         stats.grade_ms += ms_since(t);
                         if effects_done && !self.finish_spliced() {
                             return Err("an effect could not be recorded");
@@ -2603,7 +2632,7 @@ impl Renderer {
                             return Err("CPU source has no pixels");
                         }
                         let t = Instant::now();
-                        let run_on_gpu = !c.grade_is_identity() || has_active_effects(&fx);
+                        let run_on_gpu = !c.grade_is_identity() || has_active_effects(&fx) || blending;
                         let pixels = if !run_on_gpu {
                             unshare(p)
                         } else {
@@ -2612,7 +2641,7 @@ impl Renderer {
                             // GPU: retain that result rather than downloading it
                             // only to upload it into the stack again (#2077).
                             self.executor.request_output_on_gpu();
-                            let pixels = self.grade_on_stack(c, GradeInput::Cpu(p), time, clip_time, fps, width, height, src);
+                            let pixels = self.grade_on_stack(c, GradeInput::Cpu(p), time, clip_time, fps, width, height, src, blending.then_some(source_pts));
                             if effects_done && !self.finish_spliced() {
                                 return Err("an effect could not be recorded");
                             }
@@ -2644,6 +2673,11 @@ impl Renderer {
                     // Only an SDR delivery in a Rec.709 project gets here:
                     // the stack declines the others before any layer.
                     SourcePixels::SceneReferred { codes, transfer, source_to_working } => {
+                        // Its next frame's codes aren't the chain's to
+                        // blend toward: the composite blends it.
+                        if blending {
+                            return Err("frame blending of a scene-referred source");
+                        }
                         let t = Instant::now();
                         let input = if other_size || codes.len() != (width as usize) * (height as usize) {
                             // Decoded and fitted on the CPU, as the CPU
@@ -2657,7 +2691,7 @@ impl Renderer {
                         effects_done = self.splice_effects(c, &fx, time, fps, transforms, at_move, stats);
                         self.run_display = Some(self.scene_to_display(transfer));
                         self.executor.request_output_on_gpu();
-                        let pixels = self.grade_on_stack(c, input, time, clip_time, fps, width, height, src);
+                        let pixels = self.grade_on_stack(c, input, time, clip_time, fps, width, height, src, None);
                         stats.grade_ms += ms_since(t);
                         // The grade's run took the display step only if it
                         // ran: a failed run gives back its input, scene light
@@ -2803,7 +2837,7 @@ impl Renderer {
             effects_done = self.splice_effects(c, &fx, time, fps, transforms, at_move, stats);
             self.executor.request_output_on_gpu();
             let started = Instant::now();
-            let pixels = self.grade_on_stack(c, GradeInput::Gpu(seed), time, drawn_time(c, time), fps, width, height, src);
+            let pixels = self.grade_on_stack(c, GradeInput::Gpu(seed), time, drawn_time(c, time), fps, width, height, src, None);
             stats.grade_ms += ms_since(started);
             if !self.grade_ran || !pixels.is_empty() || (effects_done && !self.finish_spliced()) {
                 // A grade the chain cannot run (a lone key node runs per
@@ -4927,17 +4961,28 @@ impl Renderer {
     /// running at no strength. The stack takes no temporal effect: its
     /// source is lent for its range alone.
     #[allow(clippy::too_many_arguments)]
-    fn grade_on_stack(&mut self, clip: &Clip, input: GradeInput, time: Timecode, clip_time: f64, fps: f64, width: u32, height: u32, src: &mut dyn FrameSource) -> Vec<f32> {
+    /// `blend`: the clip frame-blends here (#2854), with the presentation
+    /// time of the frame read: its blend runs at the head of the run, on
+    /// the chain, toward the media's next frame.
+    #[allow(clippy::too_many_arguments)]
+    fn grade_on_stack(&mut self, clip: &Clip, input: GradeInput, time: Timecode, clip_time: f64, fps: f64, width: u32, height: u32, src: &mut dyn FrameSource, blend: Option<Option<f64>>) -> Vec<f32> {
         let t = Instant::now();
         let analyses = self.analyses_of(clip, src);
         self.grade_split.analyses_ms += ms_since(t);
         self.clip_analysis = Some((clip.id, analyses));
         let at = source_secs(clip, time, fps);
+        if blend.is_some() {
+            self.run_source_nodes = source_nodes(clip, true, None, None);
+        }
         // The clip's source, for its range: a node with no analysis for a
         // time inside the media declines as missing, past it as a fallback.
         let mut sources = ClipSources::new(src, clip, self.working);
+        if blend.is_some() {
+            sources = sources.with_current(at, None, width, height);
+        }
         let mut bounded = klipp_nodes::frame_context::BoundedSources::new(&mut sources, width, height);
-        let pixels = self.in_context(clip, clip_time, fps, at, None, &mut bounded, |r, ctx| r.grade(clip, input, clip_time, fps, width, height, Some(ctx)));
+        let pixels = self.in_context(clip, clip_time, fps, at, blend.flatten(), &mut bounded, |r, ctx| r.grade(clip, input, clip_time, fps, width, height, Some(ctx)));
+        self.run_source_nodes.clear();
         self.clip_analysis = None;
         pixels
     }

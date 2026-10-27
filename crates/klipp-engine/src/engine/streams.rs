@@ -99,6 +99,10 @@ impl klipp_nodes::frame_context::GpuFramePixels for GpuHeld {
     fn srgb8(&self) -> bool {
         true
     }
+
+    fn source_size(&self) -> Option<(u32, u32)> {
+        Some((self.frame.width, self.frame.height))
+    }
 }
 
 impl HeldFrame {
@@ -852,6 +856,16 @@ impl ClipStreams {
                 let (pixels, w, h, pts) = reader.decode_upright(shown + step, (width, height), *rotation)?;
                 (pts > shown + step * 0.5).then(|| klipp_compose::SourceFrame { pixels: SourcePixels::Linear(Arc::new(pixels)), width: w, height: h, pts: Some(pts) })
             }
+        }
+    }
+
+    /// [`Self::reversed_frame_after`]'s frame where the window holds it on
+    /// the GPU (#2854): its time and its pixels as the chain binds them,
+    /// fitting them to the render there when they are another size.
+    pub fn reversed_frame_after_on_gpu(&mut self, clip: &klipp_timeline::Clip, source_secs: f64) -> Option<(f64, Arc<dyn klipp_nodes::frame_context::GpuFramePixels>)> {
+        match self.reversed.get_mut(&clip.id)? {
+            Reversed::Gop(g) => g.frame_after(source_secs).and_then(|f| Some((f.pts?, f.gpu_neighbour()?))),
+            Reversed::Cpu { .. } => None,
         }
     }
 

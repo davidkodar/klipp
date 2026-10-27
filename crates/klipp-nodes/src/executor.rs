@@ -421,6 +421,16 @@ pub struct GraphExecutor {
     /// (#1988).
     run_denoise_on_chain: u32,
     last_denoise_on_chain: u32,
+    /// A frame-blend node's frames, read once for the node this run
+    /// (#2854): what its chain dispatch binds.
+    run_blend: Option<RunBlend>,
+    /// Whether a frame blend may draw on the chain at all (#2854), on
+    /// unless turned off (`set_blend_on_chain`).
+    blend_chain_allowed: bool,
+    /// Frame-blend nodes drawn on the chain this run, and last run's
+    /// (#2854).
+    run_blend_on_chain: u32,
+    last_blend_on_chain: u32,
     /// The run's declines so far (step 10), and the last run's.
     run_declines: Vec<crate::Decline>,
     /// The pictures the render handed the run beside its source (#1746).
@@ -928,6 +938,10 @@ impl GraphExecutor {
             node_denoise_on_chain: true,
             run_denoise_on_chain: 0,
             last_denoise_on_chain: 0,
+            run_blend: None,
+            blend_chain_allowed: true,
+            run_blend_on_chain: 0,
+            last_blend_on_chain: 0,
             run_declines: Vec::new(),
             side_pictures: Default::default(),
             last_run_declines: Vec::new(),
@@ -1069,6 +1083,10 @@ impl GraphExecutor {
             node_denoise_on_chain: true,
             run_denoise_on_chain: 0,
             last_denoise_on_chain: 0,
+            run_blend: None,
+            blend_chain_allowed: true,
+            run_blend_on_chain: 0,
+            last_blend_on_chain: 0,
             run_declines: Vec::new(),
             side_pictures: Default::default(),
             last_run_declines: Vec::new(),
@@ -1735,6 +1753,18 @@ impl GraphExecutor {
         self.last_denoise_on_chain
     }
 
+    /// Whether a frame blend may draw on the GPU chain (#2854), on unless
+    /// turned off; off, it takes the CPU route, as before: what a test
+    /// compares the chain against.
+    pub fn set_blend_on_chain(&mut self, on: bool) {
+        self.blend_chain_allowed = on;
+    }
+
+    /// Frame-blend nodes the last run drew on the chain (#2854).
+    pub fn last_blend_on_chain(&self) -> u32 {
+        self.last_blend_on_chain
+    }
+
     /// Neighbours the last run uploaded from the CPU for the chain
     /// (#1988); one the source had on the GPU isn't one.
     pub fn last_neighbour_uploads(&self) -> u32 {
@@ -2202,6 +2232,8 @@ impl GraphExecutor {
         self.node_denoise_on_chain = true;
         self.run_denoise = None;
         self.run_denoise_on_chain = 0;
+        self.run_blend = None;
+        self.run_blend_on_chain = 0;
         self.run_neighbour_uploads = 0;
         // A run that errors leaves no declines of an earlier run behind.
         self.run_declines.clear();
@@ -2875,6 +2907,11 @@ impl GraphExecutor {
             if !bypass && self.gpu.is_some() && matches!(node.kind, NodeKind::Effect | NodeKind::EffectSegment) && self.denoise_on_chain(params) {
                 self.read_denoise_for_chain(node_id, params, ctx.as_deref_mut());
             }
+            // A frame blend that may draw on the chain (#2854): its frames
+            // read now, once.
+            if !bypass && self.gpu.is_some() && matches!(node.kind, NodeKind::Effect | NodeKind::EffectSegment) && self.blend_on_chain(params) {
+                self.read_blend_for_chain(node_id, params, ctx.as_deref_mut());
+            }
 
             // ── GPU chain fast-path ────────────────────────────────────
             // Does this node extend an active chain? If so, dispatch on
@@ -3515,6 +3552,8 @@ impl GraphExecutor {
         self.run_denoise_kept = None;
         self.run_denoise = None;
         self.last_denoise_on_chain = std::mem::take(&mut self.run_denoise_on_chain);
+        self.run_blend = None;
+        self.last_blend_on_chain = std::mem::take(&mut self.run_blend_on_chain);
         self.last_neighbour_uploads = std::mem::take(&mut self.run_neighbour_uploads);
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
         // Only when it is printed: it builds a map and formats every entry.
@@ -3588,11 +3627,22 @@ impl GraphExecutor {
         Ok((result, tapped_vec, node_thumbs))
     }
 
+    /// Whether a frame-blend node with `params` draws on the chain
+    /// (#2854): a cross-fade or a flow alone, unmixed, in a run that has a
+    /// frame context, and not a node the parked frame is to hold.
     /// Whether a source-boundary node with `params` draws on the chain
-    /// (#1988): temporal noise reduction alone (a frame blend stays on the
-    /// CPU), unmixed, in a run that has a frame context to read the
+    /// (#1988): temporal noise reduction alone (a frame blend is
+    /// `blend_on_chain`'s), unmixed, in a run that has a frame context to read the
     /// neighbours from, and not a node the parked frame is to hold (whose
     /// output must be pixels). A mixed or masked one keeps the CPU route.
+    fn blend_on_chain(&self, params: &NodeParams) -> bool {
+        self.blend_chain_allowed
+            && self.run_has_sources
+            && self.node_denoise_on_chain
+            && params.effect_blend.is_none()
+            && matches!(params.effects.as_slice(), [klipp_effects::BuiltinEffect::SpeedRamp { blend_mode: 1 | 2, .. }])
+    }
+
     fn denoise_on_chain(&self, params: &NodeParams) -> bool {
         self.denoise_chain_allowed
             && self.run_has_sources
@@ -3619,7 +3669,8 @@ impl GraphExecutor {
                 !params.effects.is_empty()
                     && !klipp_effects::has_frei0r(&params.effects)
                     && (!params.effects.iter().any(klipp_effects::registry::needs_source_neighbours)
-                        || self.denoise_on_chain(params))
+                        || self.denoise_on_chain(params)
+                        || self.blend_on_chain(params))
             }
             NodeKind::SceneToDisplay => params.scene_to_display.is_some(),
             // Its picture is the render's, on the CPU: a node reading it
@@ -4016,6 +4067,21 @@ fn gpu_wait_diagnostic() -> bool {
 struct RunDenoise {
     node: NodeId,
     neighbours: Vec<NeighbourPixels>,
+}
+
+/// A frame-blend node's frames, read for this run (#2854): the source
+/// frame to start from when it isn't the one decoded, the frame toward,
+/// how far, by which means, and the pair's times.
+struct RunBlend {
+    node: NodeId,
+    effect: klipp_effects::BuiltinEffect,
+    from: Option<NeighbourPixels>,
+    /// `None`: nothing to blend toward, the frame as it is.
+    to: Option<NeighbourPixels>,
+    weight: f32,
+    flow: bool,
+    pts: (f64, f64),
+    clip: klipp_core::ClipId,
 }
 
 /// A neighbour buffer the chain binds (#1988): the source's own, or one
@@ -4656,6 +4722,9 @@ impl GraphExecutor {
             }
             if self.denoise_on_chain(params) {
                 return self.denoise_chain(node_id, params, width, height, in_is_a);
+            }
+            if self.blend_on_chain(params) {
+                return self.blend_chain(node_id, width, height, in_is_a);
             }
             // An analysis node's motion goes up just before it records, and
             // a warp without an analysis clears it, so it passes the frame
@@ -5511,6 +5580,148 @@ impl GraphExecutor {
         }
         self.decline_neighbours(node_id, effect, &missed);
         neighbours
+    }
+
+    /// The media's next frame after the one at `pts` (#2854): on the GPU
+    /// where the source holds it there, else read on the CPU; with its
+    /// presentation time.
+    fn next_for_chain(ctx: &mut crate::frame_context::FrameContext<'_>, pts: f64) -> Result<(NeighbourPixels, f64), crate::frame_context::Missing> {
+        use crate::frame_context::{Missing, Neighbour};
+        match ctx.sources.next_on_gpu(pts) {
+            Neighbour::Frame(f) => return Ok((NeighbourPixels::Gpu(f.pixels), f.source_secs)),
+            Neighbour::Missing(Missing::Unavailable) => {}
+            Neighbour::Missing(m) => return Err(m),
+        }
+        match ctx.sources.next(pts) {
+            Neighbour::Frame(f) => f.pts.map(|p| (NeighbourPixels::Cpu(f.rgba), p)).ok_or(Missing::Unavailable),
+            Neighbour::Missing(m) => Err(m),
+        }
+    }
+
+    /// Before a frame-blend node that may go on the chain (#2854): its
+    /// frames read, as `at_the_source` reads them: the frame shown mixed
+    /// toward the media's next one by where the source time falls between
+    /// their presentation times. A source that gave the frame before the
+    /// one at the time has that one start the blend instead.
+    fn read_blend_for_chain(&mut self, node_id: NodeId, params: &NodeParams, ctx: Option<&mut crate::frame_context::FrameContext<'_>>) {
+        self.run_blend = None;
+        let Some(ctx) = ctx else { return };
+        let Some(effect) = params.effects.first().cloned() else { return };
+        let klipp_effects::BuiltinEffect::SpeedRamp { blend_mode, .. } = effect else { return };
+        source_node_budget(node_id, &params.effects, ctx);
+        let mut read = RunBlend { node: node_id, effect, from: None, to: None, weight: 0.0, flow: blend_mode == 2, pts: (0.0, 0.0), clip: ctx.clip };
+        let Some(mut pts) = ctx.source_pts else {
+            self.run_blend = Some(read);
+            return;
+        };
+        let mut next = Self::next_for_chain(ctx, pts);
+        if let Ok((on, on_pts)) = &next {
+            if *on_pts > pts + 1e-6 && *on_pts <= ctx.source_secs + 1e-9 {
+                read.from = Some(on.clone());
+                pts = *on_pts;
+                next = Self::next_for_chain(ctx, pts);
+            }
+        }
+        match next {
+            Ok((to, to_pts)) if to_pts > pts + 1e-6 => {
+                read.weight = (((ctx.source_secs - pts) / (to_pts - pts)).clamp(0.0, 1.0)) as f32;
+                read.pts = (pts, to_pts);
+                if read.weight > 1e-4 {
+                    read.to = Some(to);
+                }
+            }
+            Ok(_) => {}
+            // Only a frame between two of the media's needs the next.
+            Err(m) if ctx.source_secs > pts + 1e-6 => self.decline_neighbours(node_id, &read.effect, &[m]),
+            Err(_) => {}
+        }
+        self.run_blend = Some(read);
+    }
+
+    /// A frame blend on the chain (#2854): the frames `read_blend_for_chain`
+    /// read bound as buffers (one on the GPU already as it is, one on the
+    /// CPU uploaded), and the frame it starts from (the chain's picture, or
+    /// the one read in its place) cross-faded or followed by its motion
+    /// toward the next, into the chain's other buffer. The
+    /// slot flips it made (2, the picture where it was, for none), or
+    /// `None` when its frames weren't read for it or won't go up: the CPU
+    /// route draws it then.
+    fn blend_chain(&mut self, node_id: NodeId, width: u32, height: u32, in_is_a: bool) -> Option<u32> {
+        let read = self.run_blend.take().filter(|r| r.node == node_id)?;
+        let pixels = (width as usize) * (height as usize) * 4;
+        let gpu = self.gpu.as_ref()?;
+        let mut uploads = 0u32;
+        let mut held = |n: &NeighbourPixels| -> Option<HeldNeighbour> {
+            Some(match n {
+                // Fitted to the render where the stream decoded it smaller,
+                // as the frame shown is.
+                NeighbourPixels::Gpu(g) if g.srgb8() => {
+                    let (sw, sh) = g.source_size().unwrap_or((width, height));
+                    HeldNeighbour::Uploaded(gpu.neighbour_fit_from_u8(g.buffer(), sw, sh, width, height)?)
+                }
+                NeighbourPixels::Gpu(g) => HeldNeighbour::Source(Arc::clone(g)),
+                NeighbourPixels::Cpu(p) if p.len() == pixels => {
+                    uploads += 1;
+                    HeldNeighbour::Uploaded(gpu.upload_neighbour(p)?)
+                }
+                NeighbourPixels::Cpu(_) => return None,
+            })
+        };
+        let from = match &read.from {
+            Some(n) => Some(held(n)?),
+            None => None,
+        };
+        let to = match &read.to {
+            Some(n) => Some(held(n)?),
+            None => None,
+        };
+        self.run_neighbour_uploads += uploads;
+        let luma = klipp_color::linear::luma_coefs(self.working_colorspace);
+        let gpu = self.gpu.as_mut()?;
+        let from_buf = from.as_ref().map(HeldNeighbour::buffer);
+        let flips = match &to {
+            // Nothing to blend toward: the frame it starts from as it is.
+            None => match from_buf {
+                None => 2,
+                Some(f) => {
+                    if !gpu.apply_mix_toward_chain(in_is_a, width, height, Some(f), 0.0, f) {
+                        return None;
+                    }
+                    1
+                }
+            },
+            Some(to) if read.flow => {
+                let key = klipp_effects::gpu::FlowKey { clip: read.clip.0.as_u128(), from_secs: read.pts.0, to_secs: read.pts.1 };
+                match gpu.apply_flow_chain(in_is_a, width, height, from_buf, to.buffer(), key, read.weight, luma) {
+                    Some(unreliable) => {
+                        if let Some(share) = unreliable.filter(|u| *u > klipp_effects::flow::UNRELIABLE_FRACTION) {
+                            klipp_effects::residency::record("frame_blend.optical_flow", "the motion couldn't be followed: the frame cross-faded", klipp_effects::residency::Work::Fallback);
+                            self.decline(node_id, NodeKind::Effect, crate::DeclineOutcome::Fallback, crate::decline::effect_name(&read.effect), "its motion couldn't be followed, so the frames cross-faded", format!("{:.0}% of the frame couldn't be followed", share * 100.0));
+                        }
+                        1
+                    }
+                    // The draw wasn't recorded: cross-faded instead, as
+                    // the CPU route does then.
+                    None => {
+                        klipp_effects::residency::record("frame_blend.optical_flow", "the GPU's draw failed: the frames cross-faded", klipp_effects::residency::Work::Fallback);
+                        let gpu = self.gpu.as_mut()?;
+                        if !gpu.apply_mix_toward_chain(in_is_a, width, height, from.as_ref().map(HeldNeighbour::buffer), read.weight, to.buffer()) {
+                            return None;
+                        }
+                        1
+                    }
+                }
+            }
+            Some(to) => {
+                if !gpu.apply_mix_toward_chain(in_is_a, width, height, from_buf, read.weight, to.buffer()) {
+                    return None;
+                }
+                1
+            }
+        };
+        self.run_neighbour_bufs.extend(from.into_iter().chain(to));
+        self.run_blend_on_chain += 1;
+        Some(flips)
     }
 
     /// Before a temporal-denoise node that may go on the chain (#1988):

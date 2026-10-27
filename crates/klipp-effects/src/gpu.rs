@@ -5164,6 +5164,51 @@ impl GpuEffectsPipeline {
         Some(std::sync::Arc::new(buf))
     }
 
+    /// [`Self::neighbour_from_u8`] from bytes of another size, `src_w` ×
+    /// `src_h`, fitted into `width` × `height` as the chain's seed fits a
+    /// frame shown (#2854): a viewer stream decoding below the render's
+    /// size.
+    pub fn neighbour_fit_from_u8(&self, input_u8: &wgpu::Buffer, src_w: u32, src_h: u32, width: u32, height: u32) -> Option<std::sync::Arc<wgpu::Buffer>> {
+        if (src_w, src_h) == (width, height) {
+            return self.neighbour_from_u8(input_u8, width, height);
+        }
+        let pixels = u64::from(width) * u64::from(height);
+        if self.is_device_lost() || pixels == 0 || src_w == 0 || src_h == 0 || input_u8.size() < u64::from(src_w) * u64::from(src_h) * 4 {
+            return None;
+        }
+        let out = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("neighbour_fit_from_u8"),
+            size: pixels * 16,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let (dst_w, dst_h, x_off, y_off) = fit_rect(src_w, src_h, width, height);
+        let params = wgpu::util::DeviceExt::create_buffer_init(self.device.as_ref(), &wgpu::util::BufferInitDescriptor {
+            label: Some("neighbour_fit_from_u8_params"),
+            contents: bytemuck::bytes_of(&BridgeU8FitParams { src_w, src_h, out_w: width, out_h: height, dst_w, dst_h, x_off, y_off }),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("neighbour_fit_from_u8_bg"),
+            layout: &self.huesat_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: input_u8.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: out.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: params.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: self.srgb8_lut.as_entire_binding() },
+            ],
+        });
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("neighbour_fit_from_u8") });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            pass.set_pipeline(&self.bridge_u8_fit_pipeline);
+            pass.set_bind_group(0, &bg, &[]);
+            dispatch_flat(&mut pass, (pixels as u32).div_ceil(WORKGROUP_SIZE));
+        }
+        self.queue.submit(Some(encoder.finish()));
+        Some(std::sync::Arc::new(out))
+    }
+
     /// A neighbour frame the GPU holds as sRGB bytes (a viewer stream's
     /// decoded frame), decoded to linear into a buffer of its own for a
     /// temporal denoise to bind (#1988): nothing read back or uploaded.
@@ -5207,6 +5252,58 @@ impl GpuEffectsPipeline {
         }
         self.queue.submit(std::iter::once(encoder.finish()));
         Some(std::sync::Arc::new(out))
+    }
+
+    /// A slowed clip's in-between frame on the chain (#2854): the chain's
+    /// picture, or `from` in its place (another source frame on the GPU),
+    /// cross-faded `mix` of the way toward `toward` (linear RGBA, `width`
+    /// × `height`, a source frame on the GPU), into the chain's other
+    /// buffer, one dispatch. `false` when it couldn't be recorded.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_mix_toward_chain(&mut self, in_is_a: bool, width: u32, height: u32, from: Option<&wgpu::Buffer>, mix: f32, toward: &wgpu::Buffer) -> bool {
+        let bytes = u64::from(width) * u64::from(height) * 16;
+        if self.is_device_lost() || self.chain_encoder.is_none() || toward.size() < bytes || from.is_some_and(|f| f.size() < bytes) {
+            return false;
+        }
+        let slot = self.next_params_slot();
+        self.write_chain_params(slot, &GpuGradeMixParams { width, height, mix, _pad: 0 });
+        let (input, output) = match (self.buf_a.as_ref(), self.buf_b.as_ref()) {
+            (Some(a), Some(b)) if in_is_a => (from.unwrap_or(a), b),
+            (Some(a), Some(b)) => (from.unwrap_or(b), a),
+            _ => return false,
+        };
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("chain_bg_mix_toward"),
+            layout: &self.huesat_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.chain_params.buffer(slot).as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: toward.as_entire_binding() },
+            ],
+        });
+        let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
+        Self::record_compute_dispatch(enc, &self.blend_mix_pipeline, &bind_group, (width * height).div_ceil(WORKGROUP_SIZE));
+        true
+    }
+
+    /// A slowed clip's in-between frame on the chain by optical flow
+    /// (#2854): from the chain's picture, or `from` in its place, toward
+    /// `toward` (linear RGBA,
+    /// `width` × `height`, the media's next frame on the GPU) at `t`, the
+    /// pair `key` names estimated once and kept. `None` when it couldn't
+    /// be recorded; else the share of the pair that couldn't be followed,
+    /// once it is known (the draw cross-fades such a frame itself).
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_flow_chain(&mut self, in_is_a: bool, width: u32, height: u32, from: Option<&wgpu::Buffer>, toward: &wgpu::Buffer, key: FlowKey, t: f32, luma: [f32; 3]) -> Option<Option<f32>> {
+        let (a, b) = (self.buf_a.take(), self.buf_b.take());
+        let made = match (&a, &b) {
+            (Some(a), Some(b)) if in_is_a => self.record_flow_on_chain(key, from.unwrap_or(a), toward, b, width, height, t, luma),
+            (Some(a), Some(b)) => self.record_flow_on_chain(key, from.unwrap_or(b), toward, a, width, height, t, luma),
+            _ => None,
+        };
+        (self.buf_a, self.buf_b) = (a, b);
+        made
     }
 
     /// Dispatch-only temporal noise reduction (#1988): the chain's picture
