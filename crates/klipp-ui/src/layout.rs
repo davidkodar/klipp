@@ -117,7 +117,11 @@ pub(crate) fn compute_layout(
     // strip stay gated to Color since they're Color-specific tooling.
     let in_color_ws = state.show_color_panel;
     let show_scopes_bar = state.scopes_docked();
+    // The Composite page's graph is a wide canvas under the viewer
+    // (#2758), wherever the dock goes elsewhere.
+    let composite = state.active_workspace == crate::state::Workspace::Composite;
     let nodes_on_right = state.graph_is_visible()
+        && !composite
         && layout.node_graph_placement == crate::layout_state::NodeGraphPlacement::Right
         && center_w >= 640.0;
     let show_nodes_bar = state.graph_is_visible() && !nodes_on_right;
@@ -132,7 +136,7 @@ pub(crate) fn compute_layout(
     let fixed_h = toggle_bar_h + theme::RESIZER_THICKNESS;
     let flexible_h = (center_total - fixed_h).max(200.0);
     let bottom_panel_h: f32 = if has_bottom_panels {
-        let viewer_ratio = layout.color_viewer_height_ratio.clamp(0.15, 0.90);
+        let viewer_ratio = if composite { layout.composite_viewer_height_ratio } else { layout.color_viewer_height_ratio }.clamp(0.15, 0.90);
         (flexible_h * (1.0 - viewer_ratio)).clamp(60.0, flexible_h * 0.85)
     } else {
         0.0
@@ -577,6 +581,26 @@ mod tests {
 mod side_node_tests {
     use super::*;
     use crate::layout_state::NodeGraphPlacement;
+
+    /// The Composite page (#2758): its graph a wide canvas under the
+    /// viewer, the width of the center column, taking the page's share of
+    /// its height, never at the side even when the dock is placed there.
+    #[test]
+    fn the_composite_page_lays_its_graph_wide_under_the_viewer() {
+        let full = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1920.0, 1080.0));
+        let layout = LayoutState { node_graph_placement: NodeGraphPlacement::Right, ..Default::default() };
+        let state = AppState { graph_dock_open: true, active_workspace: crate::state::Workspace::Composite, ..Default::default() };
+        let r = compute_layout(full, &layout, &state);
+        let center_w = r.right_resizer_rect.left() - r.left_resizer_rect.right();
+        assert!(!r.nodes_on_right, "under the viewer");
+        assert!((r.nodes_rect.width() - center_w).abs() < 1.0, "the column's width: {} of {center_w}", r.nodes_rect.width());
+        assert!(r.nodes_rect.top() >= r.viewer_rect.bottom(), "under the viewer: {:?} {:?}", r.nodes_rect, r.viewer_rect);
+        let share = r.nodes_rect.height() / (r.statusbar_rect.top() - r.toolbar_rect.bottom());
+        assert!(share > 0.4, "a large canvas: {share:.2} of the height");
+        // The same window on Edit with the dock open: a smaller one.
+        let edit = compute_layout(full, &layout, &AppState { graph_dock_open: true, ..Default::default() });
+        assert!(edit.nodes_on_right || edit.nodes_rect.height() < r.nodes_rect.height());
+    }
 
     #[test]
     fn side_nodes_keep_viewers_scopes_and_inspector_separate() {

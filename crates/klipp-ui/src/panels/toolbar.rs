@@ -134,16 +134,16 @@ impl ToolbarPanel {
         // ═══════════════════════════════════════════
         // WORKSPACE TABS — centred in toolbar, where the menus leave room
         // ═══════════════════════════════════════════
-        // A segmented control: three labels in one field, the active one
+        // A segmented control: the labels in one field, the active one
         // lit, sized to its titles so none is ever clipped.
-        let workspaces = [(Workspace::Edit, "Edit"), (Workspace::Color, "Colour"), (Workspace::Export, "Export")];
+        let workspaces = [(Workspace::Edit, "Edit"), (Workspace::Color, "Colour"), (Workspace::Composite, "Composite"), (Workspace::Export, "Export")];
         let ws_font = egui::FontId::proportional(crate::theme::type_scale::CONTROL);
         let labels: Vec<&str> = workspaces.iter().map(|w| w.1).collect();
         let ws_size = crate::widgets::segmented::segmented_size(ui, &labels, &ws_font, crate::theme::control::REGULAR);
         let active = workspaces.iter().position(|w| w.0 == state.active_workspace).unwrap_or(0);
         let picked = match switcher_place(toolbar_rect, left_end + 10.0, right_edge, ws_size) {
             SwitcherPlace::Tabs(ws_rect) => crate::widgets::segmented::segmented_in(ui, ws_rect, &labels, active, theme, ws_font),
-            // Too narrow for the three: the one shown, the others a click away.
+            // Too narrow for them all: the one shown, the others a click away.
             SwitcherPlace::Menu(rect) => {
                 let mut chosen = active;
                 ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
@@ -1199,7 +1199,7 @@ impl ToolbarPanel {
             // the third one plainly wrong — clicking "Audio Mixing" put
             // you in Export — and the other two disagree with the tabs
             // for no reason a user can see.
-            for (ws, label) in &[(Workspace::Edit, "Edit"), (Workspace::Color, "Colour"), (Workspace::Export, "Export")] {
+            for (ws, label) in &[(Workspace::Edit, "Edit"), (Workspace::Color, "Colour"), (Workspace::Composite, "Composite"), (Workspace::Export, "Export")] {
                 if menu_toggle(ui, label, "", state.active_workspace == *ws).clicked() { state.active_workspace = *ws; ui.close_menu(); }
             }
             ui.separator();

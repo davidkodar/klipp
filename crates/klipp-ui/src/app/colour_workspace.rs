@@ -62,8 +62,9 @@ impl KlippApp {
                 theme.bg_void,
             );
             if delta != 0.0 {
-                let new_ratio = self.layout.color_viewer_height_ratio + delta / flexible_h;
-                self.layout.color_viewer_height_ratio = new_ratio.clamp(0.15, 0.90);
+                // The Composite page keeps its own split (#2758).
+                let ratio = if self.state.active_workspace == crate::state::Workspace::Composite { &mut self.layout.composite_viewer_height_ratio } else { &mut self.layout.color_viewer_height_ratio };
+                *ratio = (*ratio + delta / flexible_h).clamp(0.15, 0.90);
                 self.layout_dirty = true;
             }
         }

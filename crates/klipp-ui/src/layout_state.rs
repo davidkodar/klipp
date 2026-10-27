@@ -88,6 +88,10 @@ pub struct LayoutState {
     /// Fraction of center height allocated to viewer (vs node graph below). 0.0-1.0.
     #[serde(default = "default_color_viewer_ratio")]
     pub color_viewer_height_ratio: f32,
+    /// The Composite page's share of the center height for the viewer,
+    /// the node graph under it taking the rest (#2758).
+    #[serde(default = "default_composite_viewer_ratio")]
+    pub composite_viewer_height_ratio: f32,
     /// Right-side inspector width in color workspace.
     #[serde(default = "default_color_inspector_width")]
     pub color_inspector_width: f32,
@@ -125,6 +129,7 @@ fn default_color_timeline_h() -> f32 { 112.0 }
 fn default_color_panel_height() -> f32 { 200.0 }
 fn default_audio_mixer_height() -> f32 { crate::theme::AUDIO_MIXER_DEFAULT_H }
 fn default_color_viewer_ratio() -> f32 { 0.66 }
+fn default_composite_viewer_ratio() -> f32 { 0.45 }
 fn default_color_inspector_width() -> f32 { 300.0 }
 
 fn default_inspector_keys_w() -> f32 {
@@ -151,6 +156,7 @@ impl Default for LayoutState {
             color_panel_height: default_color_panel_height(),
             audio_mixer_height: default_audio_mixer_height(),
             color_viewer_height_ratio: default_color_viewer_ratio(),
+            composite_viewer_height_ratio: default_composite_viewer_ratio(),
             color_inspector_width: default_color_inspector_width(),
             node_graph_placement: NodeGraphPlacement::Below,
             node_width_ratio: default_node_width_ratio(),
