@@ -818,6 +818,7 @@ fn handle(
             | ControlCommand::Apply { .. }
             | ControlCommand::Fonts { .. }
             | ControlCommand::TitleTemplates
+            | ControlCommand::SaveTemplate { .. }
             | ControlCommand::NodeTypes { .. }
             | ControlCommand::GraphRead { .. }
             | ControlCommand::GraphOps { .. }

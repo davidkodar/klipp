@@ -84,6 +84,9 @@ fn listed_fields(td: &klipp_timeline::TitleData) -> Vec<serde_json::Value> {
             V::Colour([r, g, b, a]) => json!({ "label": f.label, "kind": "colour", "value": format!("#{r:02x}{g:02x}{b:02x}{a:02x}") }),
             V::Speed(x) => json!({ "label": f.label, "kind": "speed", "value": x }),
             V::Size(x) => json!({ "label": f.label, "kind": "size", "value": x }),
+            V::Font(s) => json!({ "label": f.label, "kind": "font", "value": s }),
+            V::Duration(x) => json!({ "label": f.label, "kind": "duration", "value": x }),
+            V::Picture(s) => json!({ "label": f.label, "kind": "picture", "value": s }),
         })
         .collect()
 }
