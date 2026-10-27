@@ -208,7 +208,7 @@ exist until the plan runs.
   that control's keys (empty clears them). They stay put when clips
   move: a fade-out across several clips is one track lane, where
   `volume` keys a single clip.
-- `captions {track?, from?, to?, max_chars?, max_lines?, replace?}`: captions for
+- `captions {track?, from?, to?, max_chars?, max_lines?, replace?, animate?}`: captions for
   what is heard on the timeline, from the transcripts. Each word lands
   where its clip puts it; a cue closes at a sentence, a pause or a cut;
   two lines of 42 characters unless you say otherwise, fewer on a tall
@@ -219,6 +219,19 @@ exist until the plan runs.
   last, once the speech is where it will stay: a trim afterwards does
   not move them, and `replace: true` makes them again. They say what the transcript says, mishearings and
   all: read them, and correct a cue with `set_text`.
+  `animate {style?, words_per_screen?, active_color?, amount?, position?, emphasis?, emphasis_color?, font?, outline?}`
+  makes animated captions for short-form video: one line of a few words
+  at a time (`words_per_screen` 1 to 5, 3 when left out), the word being
+  spoken shown by `style`: `pop` (it grows, the default), `highlight`
+  (it takes `active_color`, #ffd60a when left out), `karaoke` (the words
+  said so far take it), `bounce` (it jumps) or `typewriter` (each word
+  appears as it is said). `amount` 0 to 3 sets how far a pop grows or a
+  bounce lifts; `position` is `lower` (on a 9:16 frame, above the band
+  and clear of the buttons phones cover) or `centre`; `emphasis` lists
+  words set in `emphasis_color` wherever they are said; `font` and
+  `outline` (pixels of a 1080-line frame) set the type. Each is an
+  animator keyed at the words' times, so `replace: true` after a
+  corrected transcript times them again.
 - `audio {clip_id, volume_db?, gain_db?, pan?, fade_in?, fade_out?}`:
   a clip's sound. Volume and pre-fader gain in decibels, pan from -1
   (left) to 1, fades in seconds; what you leave out stays as it is.

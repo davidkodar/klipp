@@ -3462,11 +3462,17 @@ pub struct CaptionsForm {
     pub in_out_only: bool,
     /// Make them again over captions already there.
     pub replace: bool,
+    /// Animated captions (#2710): the style, `None` for plain ones, the
+    /// words on screen at a time and the spoken word's colour.
+    pub animated: Option<klipp_timeline::CaptionMotion>,
+    pub words_per_screen: u8,
+    pub active_color: [u8; 4],
 }
 
 impl Default for CaptionsForm {
     fn default() -> Self {
-        Self { max_chars: 42, max_lines: 2, in_out_only: false, replace: false }
+        let anim = klipp_timeline::CaptionAnimation::default();
+        Self { max_chars: 42, max_lines: 2, in_out_only: false, replace: false, animated: None, words_per_screen: anim.words_per_screen, active_color: anim.active_color }
     }
 }
 

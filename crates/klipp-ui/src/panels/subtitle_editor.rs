@@ -136,11 +136,37 @@ fn captions_form(ui: &mut egui::Ui, state: &mut AppState) {
     }
     let mut make = false;
     ui.group(|ui| {
+        // Plain captions, or a few words at a time with the spoken word
+        // shown (#2710).
         ui.horizontal_wrapped(|ui| {
-            ui.label("Characters per line");
-            ui.add(egui::DragValue::new(&mut form.max_chars).range(8..=80));
-            ui.label("Lines");
-            ui.add(egui::DragValue::new(&mut form.max_lines).range(1..=3));
+            ui.label("Style");
+            egui::ComboBox::from_id_salt("captions_style")
+                .selected_text(form.animated.map_or("Plain", |m| m.label()))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut form.animated, None, "Plain");
+                    for m in klipp_timeline::CaptionMotion::ALL {
+                        ui.selectable_value(&mut form.animated, Some(m), m.label());
+                    }
+                });
+            if form.animated.is_some() {
+                ui.label("Words on screen");
+                ui.add(egui::DragValue::new(&mut form.words_per_screen).range(1..=5));
+                ui.label("Spoken word");
+                let [r, g, b, a] = form.active_color;
+                let mut c = egui::Color32::from_rgba_unmultiplied(r, g, b, a);
+                if ui.color_edit_button_srgba(&mut c).changed() {
+                    form.active_color = c.to_array();
+                }
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            // An animated caption is one line of a few words.
+            ui.add_enabled_ui(form.animated.is_none(), |ui| {
+                ui.label("Characters per line");
+                ui.add(egui::DragValue::new(&mut form.max_chars).range(8..=80));
+                ui.label("Lines");
+                ui.add(egui::DragValue::new(&mut form.max_lines).range(1..=3));
+            });
             ui.add_enabled(has_range, egui::Checkbox::new(&mut form.in_out_only, "In to out only"))
                 .on_disabled_hover_text("Set in and out points on the timeline first");
             ui.checkbox(&mut form.replace, "Replace captions already there")
@@ -163,7 +189,13 @@ fn captions_form(ui: &mut egui::Ui, state: &mut AppState) {
     } else {
         (None, None)
     };
-    let op = Op::Captions { track, from, to, max_chars: form.max_chars, max_lines: form.max_lines, replace: form.replace };
+    let animate = form.animated.map(|m| klipp_document::ops::AnimateSpec {
+        style: Some(m.name().to_string()),
+        words_per_screen: Some(form.words_per_screen),
+        active_color: Some(format!("#{:02x}{:02x}{:02x}", form.active_color[0], form.active_color[1], form.active_color[2])),
+        ..Default::default()
+    });
+    let op = Op::Captions { track, from, to, max_chars: form.max_chars, max_lines: form.max_lines, replace: form.replace, animate };
     state.pending_doc_ops.push(crate::state::DocOpsRequest { label: "Captions from transcript".to_string(), ops: vec![op], independent: false });
     state.subtitle_editor.captions_form = None;
 }

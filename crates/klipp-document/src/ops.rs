@@ -1047,6 +1047,10 @@ pub enum Op {
         /// the way and the op is refused.
         #[serde(default)]
         replace: bool,
+        /// Animated captions (#2710): a few words at a time, the word
+        /// being spoken shown by `style`. Left out, plain captions.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        animate: Option<AnimateSpec>,
     },
     /// A clip's sound: its volume and pre-fader gain in decibels, its
     /// pan (-1 left to 1 right), a fade in and out in seconds. What is
@@ -3485,10 +3489,11 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             as_one_step(seq, pool, i, transcripts, &ops, "Set Length", what)
         }
         Op::OverEdits { clip_id, tracks, from, to, align, every_clip } => over_edits(seq, fps, i, clip_id, tracks, from.as_ref(), to.as_ref(), *align, *every_clip),
-        Op::Captions { track, from, to, max_chars, max_lines, replace } => {
+        Op::Captions { track, from, to, max_chars, max_lines, replace, animate } => {
             let from = from.as_ref().map(|a| resolve_anchor(seq, fps, a, i)).transpose()?;
             let to = to.as_ref().map(|a| resolve_anchor(seq, fps, a, i)).transpose()?;
-            captions(seq, pool, fps, i, transcripts, track.as_ref(), from, to, (*max_chars).max(8), (*max_lines).max(1), *replace)
+            let animate = animate.as_ref().map(|a| caption_animation(a, i)).transpose()?;
+            captions(seq, pool, fps, i, transcripts, track.as_ref(), from, to, (*max_chars).max(8), (*max_lines).max(1), *replace, animate.as_ref())
         }
         Op::Audio { clip_id, track, from, to, volume_db, gain_db, pan, fade_in, fade_out } => match (clip_id, track) {
             (Some(clip_id), None) => {
@@ -6361,6 +6366,7 @@ fn captions(
     max_chars: usize,
     max_lines: usize,
     replace: bool,
+    animate: Option<&klipp_timeline::CaptionAnimation>,
 ) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     let (from_s, to_s) = (from.map(secs).unwrap_or(0.0), to.map(secs).unwrap_or(f64::MAX));
     if to_s <= from_s {
@@ -6381,7 +6387,19 @@ fn captions(
         None => seq.tracks.iter().find(|t| t.kind == TrackKind::Subtitle).and_then(|t| t.caption_style.as_ref()).map(|s| s.size),
     };
     let max_chars = max_chars.min(caption_line_chars(seq.resolution, style_size.unwrap_or(caption_look(seq.resolution).0)).saturating_sub(WRAP_SLACK).max(8));
-    let cues = cues_from_words(&words, max_chars, max_lines, sound_ends);
+    // Plain cues, or animated screens of a few words each (#2710).
+    let cues: Vec<(Cue, Option<klipp_timeline::TitleData>)> = match animate {
+        None => cues_from_words(&words, max_chars, max_lines, sound_ends).into_iter().map(|c| (c, None)).collect(),
+        Some(anim) => {
+            use klipp_timeline::caption_motion::{animated_caption, screens, TimedWord};
+            let timed: Vec<TimedWord> = words.iter().map(|w| TimedWord { text: w.text.trim().to_string(), start: w.start, end: w.end }).filter(|w| !w.text.is_empty()).collect();
+            screens(&timed, anim.words_per_screen, sound_ends).into_iter().map(|s| {
+                let td = animated_caption(&s, anim, seq.resolution.width, seq.resolution.height);
+                let text = s.words.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" ");
+                (Cue { start: s.start, end: s.end, text }, Some(td))
+            }).collect()
+        }
+    };
     // The track: the one named, else the first subtitle track, else a new one at the bottom.
     let existing = match track {
         Some(t) => Some(resolve_track(seq, t, i)?),
@@ -6418,7 +6436,7 @@ fn captions(
     }
     let mut ids = Vec::new();
     let mut last_out: Option<Timecode> = None;
-    for cue in &cues {
+    for (cue, animated) in &cues {
         let mut tl_in = snap(cue.start, fps);
         if let Some(prev) = last_out {
             if tl_in < prev {
@@ -6434,11 +6452,17 @@ fn captions(
                 return Err(r);
             }
         }
-        // A track with a caption style gives its new captions that look (#70).
-        let td = caption_title(&cue.text, seq.resolution);
-        let td = match seq.tracks.get(ti).and_then(|t| t.caption_style.as_ref()) {
-            Some(s) => apply_caption_style(&td, s),
-            None => td,
+        // A track with a caption style gives its new captions that look
+        // (#70); an animated caption has its own.
+        let td = match animated {
+            Some(td) => td.clone(),
+            None => {
+                let td = caption_title(&cue.text, seq.resolution);
+                match seq.tracks.get(ti).and_then(|t| t.caption_style.as_ref()) {
+                    Some(s) => apply_caption_style(&td, s),
+                    None => td,
+                }
+            }
         };
         let clip = title_clip(td, tl_in, tl_out, fps);
         ids.push(clip.id);
@@ -6447,18 +6471,94 @@ fn captions(
     }
     // Every cue, to be read: what they say is the point of them, and a
     // caller that cannot see them cannot proofread them.
-    let listing: String = cues.iter().map(|c| format!("\n     {:7.2}-{:<7.2} {}", c.start, c.end, c.text.replace('\n', " / "))).collect();
+    let listing: String = cues.iter().map(|(c, _)| format!("\n     {:7.2}-{:<7.2} {}", c.start, c.end, c.text.replace('\n', " / "))).collect();
     let what = format!(
         "captions: {} cues from {:.2} to {:.2} s on {}subtitle track {ti}, at most {max_lines} lines of {max_chars}{}; a \" / \" below marks a line break (set_text takes a real newline); correct one with set_text:{listing}",
         cues.len(),
-        cues.first().map(|c| c.start).unwrap_or(0.0),
-        cues.last().map(|c| c.end).unwrap_or(0.0),
+        cues.first().map(|(c, _)| c.start).unwrap_or(0.0),
+        cues.last().map(|(c, _)| c.end).unwrap_or(0.0),
         if existing.is_none() { "a new " } else { "" },
         if going.is_empty() { String::new() } else { format!(", in place of the {} that were there", going.len()) },
     );
     // The plan reports the first and last cue, not hundreds.
     let touched: Vec<ClipId> = ids.first().into_iter().chain(ids.last().filter(|_| ids.len() > 1)).copied().collect();
     Ok((what, EditCommand::Batch(edits), touched))
+}
+
+/// Animated captions as the captions op asks for them (#2710): colours
+/// as #rrggbb, the style and place by name.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AnimateSpec {
+    /// pop, highlight, karaoke, bounce or typewriter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<String>,
+    /// 1 to 5 words on screen at a time; 3 when left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub words_per_screen: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_color: Option<String>,
+    /// How far a pop grows or a bounce lifts, 0 to 3; 1 as designed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount: Option<f32>,
+    /// lower or centre.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<String>,
+    /// Words set in `emphasis_color` wherever they are said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emphasis: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emphasis_color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font: Option<String>,
+    /// The outline's width in pixels of a 1080-line frame; 0 for none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outline: Option<f32>,
+}
+
+/// `a` checked and made the caption look it names.
+fn caption_animation(a: &AnimateSpec, i: usize) -> Result<klipp_timeline::CaptionAnimation, Refusal> {
+    use klipp_timeline::{CaptionAnimation, CaptionMotion, CaptionPlace};
+    let mut out = CaptionAnimation::default();
+    if let Some(name) = &a.style {
+        out.style = CaptionMotion::ALL.into_iter().find(|m| m.name().eq_ignore_ascii_case(name.trim()))
+            .ok_or_else(|| refuse(i, format!("\"{name}\" is not a caption style"), "use pop, highlight, karaoke, bounce or typewriter"))?;
+    }
+    if let Some(n) = a.words_per_screen {
+        if !(1..=5).contains(&n) {
+            return Err(refuse(i, format!("{n} words on screen is out of range"), "give 1 to 5 words per screen"));
+        }
+        out.words_per_screen = n;
+    }
+    let colour = |c: &str| parse_color(c).ok_or_else(|| refuse(i, format!("\"{c}\" is not a colour"), "write a colour as #rrggbb"));
+    if let Some(c) = &a.active_color {
+        out.active_color = colour(c)?;
+    }
+    if let Some(c) = &a.emphasis_color {
+        out.emphasis_color = colour(c)?;
+    }
+    if let Some(v) = a.amount {
+        if !v.is_finite() || !(0.0..=3.0).contains(&v) {
+            return Err(refuse(i, format!("amount {v} is out of range"), "give an amount from 0 to 3, 1 as designed"));
+        }
+        out.amount = v;
+    }
+    if let Some(p) = &a.position {
+        out.position = match p.trim().to_lowercase().as_str() {
+            "lower" | "bottom" => CaptionPlace::Lower,
+            "centre" | "center" | "middle" => CaptionPlace::Centre,
+            _ => return Err(refuse(i, format!("\"{p}\" is not a caption position"), "use lower or centre")),
+        };
+    }
+    if let Some(v) = a.outline {
+        if !v.is_finite() || !(0.0..=40.0).contains(&v) {
+            return Err(refuse(i, format!("outline {v} is out of range"), "give an outline from 0 to 40"));
+        }
+        out.outline = v;
+    }
+    out.emphasis = a.emphasis.clone().unwrap_or_default();
+    out.font = a.font.clone().filter(|f| !f.trim().is_empty());
+    Ok(out)
 }
 
 /// New words for a title or a caption: the clip's first text box takes
@@ -14920,6 +15020,34 @@ mod tests {
         assert_eq!(cues.last().unwrap().text, "morning.", "{cues:?}");
     }
 
+    /// #2710: animated captions are a few words at a time, the word being
+    /// spoken picked out at its own time by an animator over the words;
+    /// a style or a count out of range is refused.
+    #[test]
+    fn animated_captions_mark_each_word_at_its_time() {
+        let (seq, pool, _, _, _) = fixture();
+        let op = |animate: serde_json::Value| -> Op { serde_json::from_value(serde_json::json!({"op": "captions", "animate": animate})).unwrap() };
+        let plan = resolve_with(&seq, &pool, &[op(serde_json::json!({"style": "highlight", "words_per_screen": 3, "active_color": "#ff0000"}))], &Spoken).unwrap();
+        let first = plan_caption(&plan, 0);
+        let klipp_timeline::TitleObjectContent::TextBox(tb) = &first.objects[0].content else { panic!("a text box") };
+        assert_eq!(tb.text, "Nobody is afraid", "three words a screen");
+        let a = &first.objects[0].fx().animators[0];
+        assert_eq!(a.props.colour, Some([255, 0, 0, 255]));
+        assert_eq!(a.selector.unit, klipp_core::title_motion::SelectUnit::Word);
+        // The second word, "is", 0.2 s after the first, is the one picked
+        // from then: a third to two thirds of the words.
+        let k = a.selector.start_keyframes.iter().find(|k| (k.time_secs - 0.2).abs() < 1e-6).expect("a key at the second word");
+        let e = a.selector.end_keyframes.iter().find(|k| (k.time_secs - 0.2).abs() < 1e-6).unwrap();
+        assert!((k.value - 1.0 / 3.0).abs() < 1e-6 && (e.value - 2.0 / 3.0).abs() < 1e-6, "{} {}", k.value, e.value);
+        assert_eq!(plan_caption(&plan, 1).primary_text().map(|t| t.text.clone()).as_deref(), Some("of the machine."));
+
+        let why = |a: serde_json::Value| resolve_with(&seq, &pool, &[op(a)], &Spoken).unwrap_err().to_string();
+        assert!(why(serde_json::json!({"style": "box"})).contains("pop, highlight, karaoke, bounce or typewriter"));
+        assert!(why(serde_json::json!({"words_per_screen": 9})).contains("1 to 5"));
+        assert!(why(serde_json::json!({"active_color": "gold"})).contains("#rrggbb"));
+        assert!(serde_json::from_value::<Op>(serde_json::json!({"op": "captions", "animate": {"speed": 2}})).is_err(), "an unknown field is refused");
+    }
+
     #[test]
     fn captions_suit_a_tall_frame() {
         let caption = |td: &klipp_timeline::TitleData| {
@@ -14932,14 +15060,14 @@ mod tests {
 
         let (mut seq, pool, _, _, _) = fixture();
         seq.resolution = tall;
-        let plan = resolve_with(&seq, &pool, &[Op::Captions { track: None, from: None, to: None, max_chars: 42, max_lines: 2, replace: false }], &Spoken).unwrap();
+        let plan = resolve_with(&seq, &pool, &[Op::Captions { track: None, from: None, to: None, max_chars: 42, max_lines: 2, replace: false, animate: None }], &Spoken).unwrap();
         let (size, y, text) = caption(&plan_caption(&plan, 1));
         assert!(size > 40.0 && (0.6..0.8).contains(&y), "larger, in the lower third: {size} at {y}");
         assert!(text.lines().all(|l| l.chars().count() <= fits), "lines fit across: {text:?}");
 
         // Made wide, then the frame turned tall: refit gives them the look.
         let (mut seq, pool, _, _, _) = fixture();
-        let plan = resolve_with(&seq, &pool, &[Op::Captions { track: None, from: None, to: None, max_chars: 42, max_lines: 2, replace: false }], &Spoken).unwrap();
+        let plan = resolve_with(&seq, &pool, &[Op::Captions { track: None, from: None, to: None, max_chars: 42, max_lines: 2, replace: false, animate: None }], &Spoken).unwrap();
         let mut seqs = vec![seq.clone()];
         let mut p = pool.clone();
         let mut fps = seq.fps;
@@ -14965,7 +15093,7 @@ mod tests {
         subs.caption_style = Some(klipp_timeline::CaptionStyle { size: 60.0, color: [255, 0, 0, 255], y: 0.5, shadow: true, ..Default::default() });
         seq.tracks.push(subs);
         let ti = seq.tracks.len() - 1;
-        let plan = resolve_with(&seq, &pool, &[Op::Captions { track: Some(TrackRef::Index(ti)), from: None, to: None, max_chars: 30, max_lines: 2, replace: false }], &Spoken).unwrap();
+        let plan = resolve_with(&seq, &pool, &[Op::Captions { track: Some(TrackRef::Index(ti)), from: None, to: None, max_chars: 30, max_lines: 2, replace: false, animate: None }], &Spoken).unwrap();
         let mut seqs = vec![seq.clone()];
         let mut p = pool.clone();
         let mut fps = seq.fps;
@@ -15083,7 +15211,7 @@ mod tests {
         assert_eq!(of(broll_media), "", "a muted picture and a muted track are not heard");
         assert!(heard.iter().filter(|w| w.media_id == song).all(|w| w.role == klipp_core::ClipRole::Music));
 
-        let plan = resolve_with(&seq, &pool, &[Op::Captions { track: None, from: None, to: None, max_chars: 42, max_lines: 2, replace: false }], &Heard).unwrap();
+        let plan = resolve_with(&seq, &pool, &[Op::Captions { track: None, from: None, to: None, max_chars: 42, max_lines: 2, replace: false, animate: None }], &Heard).unwrap();
         let mut seqs = vec![seq.clone()];
         let mut p = pool.clone();
         let mut fps = seq.fps;
@@ -15103,10 +15231,10 @@ mod tests {
     fn captions_follow_the_sound_and_break_at_cuts_and_sentences() {
         let (seq, pool, _, _, _) = fixture();
         // Without transcripts there is nothing to caption, and it says what would help.
-        let err = resolve(&seq, &pool, &[Op::Captions { track: None, from: None, to: None, max_chars: 42, max_lines: 2, replace: false }]).unwrap_err();
+        let err = resolve(&seq, &pool, &[Op::Captions { track: None, from: None, to: None, max_chars: 42, max_lines: 2, replace: false, animate: None }]).unwrap_err();
         assert!(err.hint.contains("analyze"), "{err}");
 
-        let plan = resolve_with(&seq, &pool, &[Op::Captions { track: None, from: None, to: None, max_chars: 30, max_lines: 2, replace: false }], &Spoken).unwrap();
+        let plan = resolve_with(&seq, &pool, &[Op::Captions { track: None, from: None, to: None, max_chars: 30, max_lines: 2, replace: false, animate: None }], &Spoken).unwrap();
         assert!(plan.steps[0].what.starts_with("captions: 3 cues"), "{}", plan.steps[0].what);
         assert_eq!(plan.duration_secs, 8.0, "captions do not lengthen the piece");
         let mut seqs = vec![seq.clone()];
@@ -15132,12 +15260,12 @@ mod tests {
         assert_eq!(view.sequences[0].tracks.len(), 2);
 
         // A second time onto the same track is refused where cues are already.
-        let twice = [Op::Captions { track: None, from: None, to: None, max_chars: 30, max_lines: 2, replace: false }, Op::Captions { track: None, from: None, to: None, max_chars: 30, max_lines: 2, replace: false }];
+        let twice = [Op::Captions { track: None, from: None, to: None, max_chars: 30, max_lines: 2, replace: false, animate: None }, Op::Captions { track: None, from: None, to: None, max_chars: 30, max_lines: 2, replace: false, animate: None }];
         let err = resolve_with(&seq, &pool, &twice, &Spoken).unwrap_err();
         assert_eq!(err.step, 1);
         assert!(err.why.contains("overlap") && err.hint.contains("replace true"), "{err}");
         // Made again in place of the first ones, when asked: the same three, not six.
-        let again = [twice[0].clone(), Op::Captions { track: None, from: None, to: None, max_chars: 30, max_lines: 2, replace: true }];
+        let again = [twice[0].clone(), Op::Captions { track: None, from: None, to: None, max_chars: 30, max_lines: 2, replace: true, animate: None }];
         let plan = resolve_with(&seq, &pool, &again, &Spoken).unwrap();
         assert!(plan.steps[1].what.contains("in place of the 3 that were there"), "{}", plan.steps[1].what);
         // And every cue is there to be read.
