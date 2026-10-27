@@ -7002,7 +7002,7 @@ fn title_rasters_each_frame(title: &klipp_timeline::TitleData, text: &klipp_time
     // when its glyphs could be posed one by one.
     let posed_glyphs = |o: &klipp_timeline::TitleObject| text.three_d.as_ref().is_none_or(|t| !t.enabled)
         && o.fx().motion.enter.is_none_or(|m| !m.kind.blurs()) && o.fx().motion.exit.is_none_or(|m| !m.kind.blurs())
-        && !o.fx().animators.iter().any(|a| a.enabled && (a.props.blur != 0.0 || a.props.colour.is_some()));
+        && !o.fx().animators.iter().any(|a| a.enabled && (a.props.blur != 0.0 || a.props.paints()));
     pose.color.is_some_and(|c| c != text.color) || pose.text.is_some()
         || title.objects.iter().any(|o| {
         let fx = o.fx();

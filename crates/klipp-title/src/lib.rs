@@ -95,6 +95,9 @@ pub fn frame_scale(width: u32, height: u32) -> f32 {
 
 /// Result of the layout phase — alpha mask + bounding box info.
 pub struct TitleLayout {
+    /// The spoken word's box, in frame pixels (left, top, right, bottom),
+    /// and its colour (#2710): drawn as a backing is.
+    pub word_backing: Option<([i32; 4], [u8; 4])>,
     /// Single-channel alpha mask of rasterized text.
     pub alpha_mask: Vec<u8>,
     /// Mask width (may be smaller than output width — covers text + effect padding).
@@ -144,7 +147,7 @@ pub struct TitleLayout {
 
 impl TitleLayout {
     fn bounds_only(bounds: [f32; 4], glyph_count: usize, scale: f32) -> Self {
-        Self {alpha_mask:Vec::new(),mask_w:0,mask_h:0,mask_x0:0,mask_y0:0,
+        Self {word_backing:None,alpha_mask:Vec::new(),mask_w:0,mask_h:0,mask_x0:0,mask_y0:0,
             text_left:bounds[0],text_top:bounds[1],text_right:bounds[2],text_bottom:bounds[3],glyph_count,scale,
             glyph_colors:Vec::new(),glyph_coverages:Vec::new(),glyph_index:Vec::new(),glyph_boxes:Vec::new(),glyph_parents:Vec::new(),pad:0,
             colour_glyphs:Vec::new(),path_units:None,tracking_origins:Vec::new()}
@@ -1292,7 +1295,7 @@ impl TitleRenderer {
             layout.glyphs().to_vec()
         };
         if glyphs_owned.is_empty() {
-            return TitleLayout {
+            return TitleLayout { word_backing: None,
                 alpha_mask: Vec::new(),
                 mask_w: 0, mask_h: 0,
                 mask_x0: 0, mask_y0: 0,
@@ -1513,7 +1516,7 @@ impl TitleRenderer {
         let mask_h = mask_y1.saturating_sub(mask_y0);
 
         if mask_w == 0 || mask_h == 0 {
-            return TitleLayout {
+            return TitleLayout { word_backing: None,
                 alpha_mask: Vec::new(),
                 mask_w: 0, mask_h: 0,
                 mask_x0: 0, mask_y0: 0,
@@ -1548,12 +1551,14 @@ impl TitleRenderer {
             let resolved_colors=resolve_glyph_colors(title,glyphs,&tb.style_runs);
             let mut posed=glyphs.to_vec();
             let mut draw_poses=Vec::new();
-            let coloured=title.primary_fx().animators.iter().any(|a|a.enabled && a.props.colour.is_some());
+            let coloured=title.primary_fx().animators.iter().any(|a|a.enabled && a.props.paints());
             let fx=title.primary_fx();
             let enter_units=motion_units(glyphs,fx.motion.enter.map(|m|m.stagger).unwrap_or_default());
             let exit_units=motion_units(glyphs,fx.motion.exit.map(|m|m.stagger).unwrap_or_default());
             let parents:Vec<_>=glyphs.iter().map(|g|g.parent).collect();
             let animated=self.gpu_motion.map(|(time,_)|klipp_core::title_motion::animator_poses(&fx.animators,&parents,font_px,time as f64)).unwrap_or_default();
+            // Each glyph drawn, for the spoken word's box (#2710).
+            let mut placed:Vec<(usize,[i32;4],f32)>=Vec::new();
             for (i,(g,rest_g)) in posed.iter_mut().zip(glyphs).enumerate() {
                 // Spaces still count for selector indices but have no coverage
                 // to expand, blur or rotate.
@@ -1591,7 +1596,10 @@ impl TitleRenderer {
                 let origin=[(rest_g.x+offset_x+dx) as i32-(g.width as i32-rest_g.width as i32)/2,
                     (rest_g.y+offset_y+dy) as i32-(g.height as i32-rest_g.height as i32)/2];
                 g.x=origin[0] as f32-offset_x;g.y=origin[1] as f32-offset_y;
-                if g.width>0 && g.height>0 {draw_poses.push((origin,alpha,clip,source_size,sigma,radians,colour));}
+                if g.width>0 && g.height>0 {
+                    draw_poses.push((origin,alpha,clip,source_size,sigma,radians,colour));
+                    placed.push((i,[origin[0],origin[1],origin[0]+g.width as i32,origin[1]+g.height as i32],alpha));
+                }
             }
             // Glyphs posed only by a move, a fade or a mask's clip are their
             // bitmaps placed, as the CPU rasteriser draws them; a blurred,
@@ -1687,6 +1695,12 @@ impl TitleRenderer {
                     let y1=((text_max_y+offset_y+pad) as i32).min(height as i32).max(0) as u32;
                     if x1>x0 && y1>y0 {source.backing=Some(([x0,y0,x1-x0,y1-y0],color));}
                 }
+                // The spoken word's box, as the CPU paints it (#2710).
+                if let (Some((r,colour)),TitleBackground::None)=(word_box(&parents,&animated,&placed,font_px),&title.background) {
+                    let (x0,y0)=(r[0].clamp(0,width as i32) as u32,r[1].clamp(0,height as i32) as u32);
+                    let (x1,y1)=(r[2].clamp(0,width as i32) as u32,r[3].clamp(0,height as i32) as u32);
+                    if x1>x0 && y1>y0 {source.backing=Some(([x0,y0,x1-x0,y1-y0],colour));}
+                }
                 source.write_cutoff=if tb.write_on<1.0 {((text_min_x+offset_x)+text_w*tb.write_on.clamp(0.0,1.0)) as i32} else {i32::MAX};
                 if tb.underline || tb.strikethrough {
                     let thickness=(font_px*0.06).max(1.0).round() as i32;
@@ -1705,7 +1719,7 @@ impl TitleRenderer {
                     (text_min_x + offset_x + (text_max_x-text_min_x)*progress).floor() as i32
                 };
             }
-            return TitleLayout {
+            return TitleLayout { word_backing: None,
                 alpha_mask: Vec::new(), mask_w: mask_w as u32, mask_h: mask_h as u32, mask_x0: mask_x0 as u32, mask_y0: mask_y0 as u32,
                 text_top: text_min_y+offset_y, text_bottom:text_max_y+offset_y,
                 text_left:text_min_x+offset_x, text_right:text_max_x+offset_x,
@@ -1733,6 +1747,7 @@ impl TitleRenderer {
         let mut colour_glyphs = Vec::new();
         // Each posed glyph's coverage where an animator colours it.
         let mut animated_fills: Vec<(GlyphColorInfo, Vec<u8>)> = Vec::new();
+        let mut word_backing = None;
         match time_secs {
             Some(t) if fx.motion.is_active() || self.loop_wave.is_some() || animates => {
                 rasterize_to_mask_motion(
@@ -1743,6 +1758,7 @@ impl TitleRenderer {
                     &mut colour_glyphs,
                     &mut animated_fills,
                     &if animates { resolve_glyph_colors(title, glyphs, &tb.style_runs) } else { Vec::new() },
+                    &mut word_backing,
                 );
             }
             _ => {
@@ -1905,6 +1921,7 @@ impl TitleRenderer {
             colour_glyphs,
             path_units: None,
             tracking_origins: tracking_origins.into_iter().map(|p| [p[0], p[1] + offset_y]).collect(),
+            word_backing,
         }
     }
 
@@ -1996,7 +2013,7 @@ impl TitleRenderer {
         let mut path_blur=vec![0.0f32;glyphs.len()];
         let mut path_clip=vec![[i32::MIN,i32::MAX];glyphs.len()];
         let mut posed_glyphs=glyphs.to_vec();
-        let coloured=!three_d && fx.animators.iter().any(|a|a.enabled && a.props.colour.is_some());
+        let coloured=!three_d && fx.animators.iter().any(|a|a.enabled && a.props.paints());
         let base_colours=resolve_glyph_colors(title,glyphs,&tb.style_runs);
         let mut path_colours=base_colours.clone();
         {
@@ -2149,7 +2166,7 @@ impl TitleRenderer {
         let crop_h = crop_y1.saturating_sub(crop_y0);
 
         if crop_w == 0 || crop_h == 0 {
-            return TitleLayout {
+            return TitleLayout { word_backing: None,
                 alpha_mask: Vec::new(),
                 mask_w: 0, mask_h: 0,
                 mask_x0: 0, mask_y0: 0,
@@ -2201,7 +2218,7 @@ impl TitleRenderer {
                 }
             }
             *self.gpu_layout_capture.borrow_mut()=source;
-            return TitleLayout {alpha_mask:Vec::new(),mask_w:roi[2],mask_h:roi[3],mask_x0:roi[0],mask_y0:roi[1],
+            return TitleLayout { word_backing: None,alpha_mask:Vec::new(),mask_w:roi[2],mask_h:roi[3],mask_x0:roi[0],mask_y0:roi[1],
                 text_top:text_min_y,text_bottom:text_max_y,text_left:text_min_x,text_right:text_max_x,glyph_count:glyphs.len(),scale,
                 glyph_colors:Vec::new(),glyph_coverages:Vec::new(),glyph_index:Vec::new(),glyph_boxes:Vec::new(),glyph_parents:Vec::new(),pad:max_pad,
                 colour_glyphs:Vec::new(),path_units:None,tracking_origins:Vec::new()};
@@ -2224,6 +2241,7 @@ impl TitleRenderer {
         }
 
         TitleLayout {
+            word_backing: None,
             alpha_mask: cropped,
             mask_w: crop_w as u32,
             mask_h: crop_h as u32,
@@ -2282,6 +2300,10 @@ impl TitleRenderer {
                 y0 = y0.min(((layout.text_top - pad) as i32).max(0) as usize);
                 y1 = y1.max((((layout.text_bottom + pad) as i32).max(0) as usize).min(h));
             }
+            if let (Some((rect, _)), TitleBackground::None) = (layout.word_backing, &title.background) {
+                y0 = y0.min(rect[1].max(0) as usize);
+                y1 = y1.max((rect[3].max(0) as usize).min(h));
+            }
             (y0, y1)
         };
         COMPOSE_SCRATCH.with_borrow_mut(|scratch| {
@@ -2335,6 +2357,18 @@ impl TitleRenderer {
         let alpha_mask = &layout.alpha_mask;
 
         paint_backing(buf, title, [layout.text_left, layout.text_top, layout.text_right, layout.text_bottom], width, height, scale);
+        // The spoken word's box, where the title has no backing of its
+        // own, as the GPU draws it there (#2710).
+        if let (Some((rect, colour)), TitleBackground::None) = (layout.word_backing, &title.background) {
+            let w = width as usize;
+            let (x0, x1) = (rect[0].clamp(0, width as i32) as usize, rect[2].clamp(0, width as i32) as usize);
+            let (y0, y1) = (rect[1].clamp(0, height as i32) as usize, rect[3].clamp(0, height as i32) as usize);
+            for row in y0..y1 {
+                for col in x0..x1 {
+                    blend_pixel(buf, (row * w + col) * 4, &colour);
+                }
+            }
+        }
 
         // Determine if GPU acceleration should be used (> 250K pixels in mask)
         let use_gpu = gpu.is_some() && (mask_w * mask_h > 250_000);
@@ -2865,7 +2899,7 @@ impl TitleRenderer {
         // resting render where they only move, turn, scale or fade it;
         // a blur or a colour is rastered, for that layer alone (#1510).
         let animates = |o: &TitleObject| o.visible && matches!(o.content, TitleObjectContent::TextBox(_)) && o.fx().animators.iter().any(|a| a.enabled);
-        let animators_raster = |o: &TitleObject| o.fx().animators.iter().any(|a| a.enabled && (a.props.blur != 0.0 || a.props.colour.is_some()));
+        let animators_raster = |o: &TitleObject| o.fx().animators.iter().any(|a| a.enabled && (a.props.blur != 0.0 || a.props.paints()));
         let any_animating = title.objects.iter().any(animates);
         // One visible layer carrying the only pose: the cached resting
         // render, shifted and faded, is the frame.
@@ -7290,6 +7324,7 @@ fn rasterize_to_mask_motion(
     colour: &mut Vec<ColourGlyph>,
     fills: &mut Vec<(GlyphColorInfo, Vec<u8>)>,
     base_colours: &[[u8; 4]],
+    word_backing: &mut Option<([i32; 4], [u8; 4])>,
 ) {
     let enter_units = motion_units(glyphs, motion.enter.map(|m| m.stagger).unwrap_or_default());
     let exit_units = motion_units(glyphs, motion.exit.map(|m| m.stagger).unwrap_or_default());
@@ -7297,7 +7332,10 @@ fn rasterize_to_mask_motion(
     // every glyph in its own posed colour.
     let parents: Vec<char> = glyphs.iter().map(|g| g.parent).collect();
     let animated = klipp_core::title_motion::animator_poses(animators, &parents, base_font_px, time_secs as f64);
-    let colours = animators.iter().any(|a| a.enabled && a.props.colour.is_some());
+    let colours = animators.iter().any(|a| a.enabled && a.props.paints());
+    // Each glyph drawn: its index, posed box in frame pixels and alpha,
+    // for the spoken word's box (#2710).
+    let mut placed: Vec<(usize, [i32; 4], f32)> = Vec::new();
 
     for (i, glyph) in glyphs.iter().enumerate() {
         if glyph.width == 0 || glyph.height == 0 {
@@ -7404,7 +7442,36 @@ fn rasterize_to_mask_motion(
             let info = GlyphColorInfo { mask_x: gx - mask_x0 as i32, mask_y: gy - mask_y0 as i32, width: raw_w, height: raw_h, color: pose.colour_of(base) };
             fills.push((info, f));
         }
+        placed.push((i, [gx, gy, gx + raw_w as i32, gy + raw_h as i32], alpha));
     }
+    *word_backing = word_box(&parents, &animated, &placed, base_font_px);
+}
+
+/// The box behind the word an animator backs most (#2710): round its
+/// posed glyphs (index, box in frame pixels, alpha), padded, at least a
+/// line of the type tall; its colour's alpha by how much it shows. One
+/// box, as a caption's spoken word is one word; drawn as the title's
+/// backing on both paths.
+pub(crate) fn word_box(parents: &[char], poses: &[klipp_core::title_motion::UnitPose], placed: &[(usize, [i32; 4], f32)], font_px: f32) -> Option<([i32; 4], [u8; 4])> {
+    let words = klipp_core::title_motion::units_of(parents, klipp_core::title_motion::StaggerUnit::Word);
+    let mut best: Option<(usize, [u8; 4], f32)> = None;
+    for &(i, _, alpha) in placed {
+        let Some((colour, mix)) = poses.get(i).and_then(|p| p.backing) else { continue };
+        let show = mix * alpha;
+        if show > 0.01 && best.is_none_or(|b| show > b.2) {
+            best = Some((words[i], colour, show));
+        }
+    }
+    let (word, mut colour, show) = best?;
+    let mut r = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
+    for &(_, g, _) in placed.iter().filter(|(i, ..)| words[*i] == word) {
+        r = [r[0].min(g[0]), r[1].min(g[1]), r[2].max(g[2]), r[3].max(g[3])];
+    }
+    let (pad_x, pad_y) = (font_px * 0.15, font_px * 0.12);
+    let mid = (r[1] + r[3]) as f32 * 0.5;
+    let half = ((r[3] - r[1]) as f32 * 0.5).max(font_px * 0.5) + pad_y;
+    colour[3] = (colour[3] as f32 * show.min(1.0)).round() as u8;
+    Some(([(r[0] as f32 - pad_x).floor() as i32, (mid - half).floor() as i32, (r[2] as f32 + pad_x).ceil() as i32, (mid + half).ceil() as i32], colour))
 }
 
 /// A glyph's coverage turned clockwise by `radians` about its centre,

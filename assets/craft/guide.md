@@ -224,7 +224,8 @@ exist until the plan runs.
   at a time (`words_per_screen` 1 to 5, 3 when left out), the word being
   spoken shown by `style`: `pop` (it grows, the default), `highlight`
   (it takes `active_color`, #ffd60a when left out), `karaoke` (the words
-  said so far take it), `bounce` (it jumps) or `typewriter` (each word
+  said so far take it), `bounce` (it jumps), `box` (it sits dark on a
+  box of `active_color`) or `typewriter` (each word
   appears as it is said). `amount` 0 to 3 sets how far a pop grows or a
   bounce lifts; `position` is `lower` (on a 9:16 frame, above the band
   and clear of the buttons phones cover) or `centre`; `emphasis` lists
@@ -657,7 +658,9 @@ exist until the plan runs.
   1, negative picks the units outside); `within` `{unit?, start?, end?}`
   a second range it is limited to. What it does to what it picks
   wholly: `move_x`, `move_y` (font sizes), `scale`, `rotate` (degrees),
-  `opacity`, `blur` (font sizes), `color`. The middle word of "one
+  `opacity`, `blur` (font sizes), `color`, `backing` (a box of that
+  colour behind the word it picks most, as a `box` caption's spoken
+  word has, where the title has no backing of its own). The middle word of "one
   MIDDLE two" turning letter by letter in a random order is `{unit:
   "char", order: "random", seed: 7, rotate: 90, within: {start: 0.25,
   end: 0.75}, start_keys: [{at: 0, value: 0}, {at: 2, value: 1}]}`.

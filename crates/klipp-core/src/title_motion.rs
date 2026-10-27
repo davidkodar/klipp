@@ -704,11 +704,23 @@ pub struct AnimatorProps {
     pub blur: f32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub colour: Option<[u8; 4]>,
+    /// A box of this colour behind each word picked, as far as it is
+    /// picked (#2710): the spoken word of an animated caption.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backing: Option<[u8; 4]>,
+}
+
+impl AnimatorProps {
+    /// Whether it paints: a colour or a backing, which the text's
+    /// raster draws per unit.
+    pub fn paints(&self) -> bool {
+        self.colour.is_some() || self.backing.is_some()
+    }
 }
 
 impl Default for AnimatorProps {
     fn default() -> Self {
-        Self { dx: 0.0, dy: 0.0, scale: 1.0, rotation: 0.0, opacity: 1.0, blur: 0.0, colour: None }
+        Self { dx: 0.0, dy: 0.0, scale: 1.0, rotation: 0.0, opacity: 1.0, blur: 0.0, colour: None, backing: None }
     }
 }
 
@@ -725,11 +737,14 @@ pub struct UnitPose {
     pub alpha: f32,
     pub blur: f32,
     pub colour: Option<([f32; 4], f32)>,
+    /// The box behind the unit (#2710): its sRGB colour and how much of
+    /// it shows, 0 to 1.
+    pub backing: Option<([u8; 4], f32)>,
 }
 
 impl Default for UnitPose {
     fn default() -> Self {
-        Self { dx: 0.0, dy: 0.0, scale: 1.0, rotation: 0.0, alpha: 1.0, blur: 0.0, colour: None }
+        Self { dx: 0.0, dy: 0.0, scale: 1.0, rotation: 0.0, alpha: 1.0, blur: 0.0, colour: None, backing: None }
     }
 }
 
@@ -913,6 +928,12 @@ impl Animator {
                     (t, 1.0 - (1.0 - m) * (1.0 - mix))
                 }
             });
+        }
+        if let Some(b) = p.backing {
+            let mix = w.clamp(0.0, 1.0);
+            if mix > pose.backing.map_or(0.0, |(_, m)| m) {
+                pose.backing = Some((b, mix));
+            }
         }
     }
 }

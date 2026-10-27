@@ -691,6 +691,9 @@ pub struct AnimatorSpec {
     pub blur: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
+    /// A box of this colour behind the word picked most (#2710).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backing: Option<String>,
 }
 
 /// Keys on a text's type and colour (#1511), each in place of the keys
@@ -6501,7 +6504,7 @@ fn captions(
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AnimateSpec {
-    /// pop, highlight, karaoke, bounce or typewriter.
+    /// pop, highlight, karaoke, bounce, box or typewriter.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub style: Option<String>,
     /// 1 to 5 words on screen at a time; 3 when left out.
@@ -6533,7 +6536,7 @@ fn caption_animation(a: &AnimateSpec, i: usize) -> Result<klipp_timeline::Captio
     let mut out = CaptionAnimation::default();
     if let Some(name) = &a.style {
         out.style = CaptionMotion::ALL.into_iter().find(|m| m.name().eq_ignore_ascii_case(name.trim()))
-            .ok_or_else(|| refuse(i, format!("\"{name}\" is not a caption style"), "use pop, highlight, karaoke, bounce or typewriter"))?;
+            .ok_or_else(|| refuse(i, format!("\"{name}\" is not a caption style"), "use pop, highlight, karaoke, bounce, box or typewriter"))?;
     }
     if let Some(n) = a.words_per_screen {
         if !(1..=5).contains(&n) {
@@ -11469,6 +11472,9 @@ fn animator(spec: &AnimatorSpec, i: usize) -> Result<klipp_core::title_motion::A
     if let Some(c) = &spec.color {
         p.colour = Some(parse_color(c).ok_or_else(|| refuse(i, format!("\"{c}\" is not a colour"), "write an animator's color as #rrggbb or #rrggbbaa"))?);
     }
+    if let Some(c) = &spec.backing {
+        p.backing = Some(parse_color(c).ok_or_else(|| refuse(i, format!("\"{c}\" is not a colour"), "write an animator's backing as #rrggbb or #rrggbbaa"))?);
+    }
     Ok(a)
 }
 
@@ -15067,7 +15073,7 @@ mod tests {
         assert_eq!(plan_caption(&plan, 1).primary_text().map(|t| t.text.clone()).as_deref(), Some("of the machine."));
 
         let why = |a: serde_json::Value| resolve_with(&seq, &pool, &[op(a)], &Spoken).unwrap_err().to_string();
-        assert!(why(serde_json::json!({"style": "box"})).contains("pop, highlight, karaoke, bounce or typewriter"));
+        assert!(why(serde_json::json!({"style": "sparkle"})).contains("pop, highlight, karaoke, bounce, box or typewriter"));
         assert!(why(serde_json::json!({"words_per_screen": 9})).contains("1 to 5"));
         assert!(why(serde_json::json!({"active_color": "gold"})).contains("#rrggbb"));
         assert!(serde_json::from_value::<Op>(serde_json::json!({"op": "captions", "animate": {"speed": 2}})).is_err(), "an unknown field is refused");
