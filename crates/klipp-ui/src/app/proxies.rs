@@ -15,12 +15,7 @@ impl KlippApp {
             tracing::info!("Proxy already generating for {:?}, skipping", media_id);
             return;
         }
-        let cache_dir = self.prefs.proxy.proxy_cache_dir.clone().unwrap_or_else(|| {
-            dirs::cache_dir()
-                .unwrap_or_else(|| PathBuf::from("/tmp"))
-                .join("klipp")
-                .join("proxies")
-        });
+        let cache_dir = self.proxy_cache_dir();
         let _ = std::fs::create_dir_all(&cache_dir);
         let proxy_path = cache_dir.join(format!("{}.mp4", media_id));
         if proxy_path.exists() {
@@ -579,6 +574,29 @@ pub(super) fn format_profile_time(secs: f64) -> String {
     format!("{}:{:04.1}", (secs / 60.0).floor() as u64, secs % 60.0)
 }
 
+impl KlippApp {
+    /// The folder Klipp keeps its proxies in: the user's choice, else
+    /// `klipp/proxies` in the cache folder.
+    pub(super) fn proxy_cache_dir(&self) -> PathBuf {
+        self.prefs.proxy.proxy_cache_dir.clone().unwrap_or_else(|| {
+            dirs::cache_dir()
+                .unwrap_or_else(|| PathBuf::from("/tmp"))
+                .join("klipp")
+                .join("proxies")
+        })
+    }
+}
+
+/// The proxy file of `media_id` Klipp may delete, given the path a
+/// project stored for it: only the one Klipp makes, `<media id>.mp4` in
+/// its proxy folder, compared after resolving links. Any other stored
+/// path is forgotten, never removed.
+pub(super) fn own_proxy(stored: &Path, cache_dir: &Path, media_id: klipp_core::MediaId) -> Option<PathBuf> {
+    let made = cache_dir.join(format!("{media_id}.mp4"));
+    let (stored, made) = (std::fs::canonicalize(stored).ok()?, std::fs::canonicalize(&made).ok()?);
+    (stored == made).then_some(made)
+}
+
 /// Where a proxy is written while ffmpeg is still producing it. It is
 /// renamed to the real name once whole, so a file at the real name is a
 /// finished proxy — never one a crash cut short.
@@ -645,7 +663,39 @@ pub(super) fn skim_cache_key_for(item: &klipp_media::MediaItem) -> Option<String
 
 #[cfg(test)]
 mod proxy_completeness_tests {
-    use super::transcode_is_complete;
+
+    /// A relink deletes only the proxy Klipp made: a stored path outside
+    /// the proxy folder, one inside it under another name, or one that
+    /// links to the real proxy from elsewhere is forgotten, and the file
+    /// stays.
+    #[test]
+    fn only_klipps_own_proxy_is_removable() {
+        let root = std::env::temp_dir().join(format!("klipp-proxy-own-{}", uuid::Uuid::new_v4()));
+        let cache = root.join("proxies");
+        std::fs::create_dir_all(&cache).unwrap();
+        let id = klipp_core::MediaId::new();
+        let made = cache.join(format!("{id}.mp4"));
+        std::fs::write(&made, b"proxy").unwrap();
+        let elsewhere = root.join("thesis.docx");
+        std::fs::write(&elsewhere, b"keep").unwrap();
+        let other = cache.join("someone-else.mp4");
+        std::fs::write(&other, b"keep").unwrap();
+        assert_eq!(own_proxy(&made, &cache, id).map(|p| p.file_name().unwrap().to_owned()), Some(std::ffi::OsString::from(format!("{id}.mp4"))));
+        assert!(own_proxy(&elsewhere, &cache, id).is_none(), "a file outside the proxy folder");
+        assert!(own_proxy(&other, &cache, id).is_none(), "another file in the proxy folder");
+        assert!(own_proxy(&cache.join("..").join("thesis.docx"), &cache, id).is_none(), "a path climbing out of it");
+        assert!(own_proxy(&elsewhere, &cache, klipp_core::MediaId::new()).is_none());
+        #[cfg(unix)]
+        {
+            let link = root.join("link.mp4");
+            std::os::unix::fs::symlink(&elsewhere, cache.join(format!("{}.mp4", klipp_core::MediaId::new()))).unwrap();
+            std::os::unix::fs::symlink(&made, &link).unwrap();
+            assert!(own_proxy(&link, &cache, id).is_some(), "the made proxy reached through a link is still it");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    use super::{own_proxy, transcode_is_complete};
 
     #[test]
     fn a_truncated_transcode_is_not_one() {
