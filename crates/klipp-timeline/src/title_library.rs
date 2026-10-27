@@ -777,6 +777,10 @@ pub const TITLES: &[TitleTemplate] = &[
 /// Ordered list of categories for display.
 pub const CATEGORIES: &[&str] = &["Lower Thirds", "Openers", "Captions", "Credits", "Social", "Utility"];
 
+/// The smallest text a template makes, in pixels of a 1080-line frame
+/// (#2734).
+pub const MIN_TEXT_SIZE: f32 = 28.0;
+
 /// The built-in template called `name`, in any case.
 pub fn builtin(name: &str) -> Option<&'static TitleTemplate> {
     let name = name.trim();
@@ -789,6 +793,13 @@ impl TitleTemplate {
     pub fn data(&self) -> TitleData {
         let mut td = self.build();
         td.template = Some(self.name.to_string());
+        // No text smaller than reads on a phone (#2734): a role line or a
+        // label at 20 px of a 1080 frame was a few pixels tall there.
+        for object in &mut td.objects {
+            if let crate::TitleObjectContent::TextBox(tb) = &mut object.content {
+                tb.font_size = tb.font_size.max(MIN_TEXT_SIZE);
+            }
+        }
         td
     }
 }

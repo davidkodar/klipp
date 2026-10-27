@@ -43,6 +43,7 @@ ureq = { workspace = true }
 [dev-dependencies]
 sha2 = { workspace = true }
 hex = { workspace = true }
+klipp-testing = { workspace = true }
 
 [lints]
 workspace = true
