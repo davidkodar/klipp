@@ -31,7 +31,7 @@ pub const RADIUS_SHARE: f32 = 0.03;
 pub const BLUR_ROUNDS: usize = 2;
 
 /// The blurred coverage at which the halo is whole; it eases in below.
-pub const HALO_FULL: f32 = 0.08;
+pub const HALO_FULL: f32 = 0.04;
 
 /// The halo's strength at blurred coverage `a`.
 pub fn halo(a: f32) -> f32 {

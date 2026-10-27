@@ -258,7 +258,7 @@ fn publish(mut td: TitleData, fields: &Fields, anchor: (f32, f32)) -> TitleData 
 
 const WHITE: [u8; 4] = [255, 255, 255, 255];
 const INK: [u8; 4] = [18, 18, 22, 255];
-const MUTED: [u8; 4] = [205, 205, 212, 255];
+const MUTED: [u8; 4] = [225, 225, 230, 255];
 const ACCENT: [u8; 4] = [74, 143, 231, 255];
 const GRO: &str = "Inter";
 const DISPLAY: &str = "Bebas Neue";
@@ -781,7 +781,7 @@ fn lt_stacked() -> TitleData {
 fn op_chapter_number() -> TitleData {
     layers(vec![
         text_at(
-            moved(lifted(face("01", DISPLAY, FontStyle::Regular, 200.0, ACCENT, TextAlignment::Center)),
+            moved(lifted(face("01", DISPLAY, FontStyle::Regular, 200.0, [120, 175, 255, 255], TextAlignment::Center)),
                 TitleMotion::both(enter(MotionKind::MaskRise, 0.7, Easing::OutExpo), fade_out(0.4))),
             0.5, 0.40, 0.5,
         ),

@@ -16,21 +16,7 @@ use klipp_title::TitleRenderer;
 
 /// Items known to fail, and the issue that holds each: generated from the
 /// sweep's first run, each to come off as #2734's work fixes it.
-const KNOWN: &[(&str, u32)] = &[
-    ("Editorial 16:9 bright", 2734),
-    ("Chapter 16:9 bright", 2734),
-    ("Chapter 1:1 bright", 2734),
-    ("Chapter Number 16:9 bright", 2734),
-    ("Chapter Number 9:16 bright", 2734),
-    ("Chapter Number 1:1 bright", 2734),
-    ("Quote 16:9 bright", 2734),
-    ("Quote 9:16 bright", 2734),
-    ("Quote 1:1 bright", 2734),
-    ("Cast 16:9 bright", 2734),
-    ("Cast 1:1 bright", 2734),
-    ("Question 16:9 bright", 2734),
-    ("Question 1:1 bright", 2734),
-];
+const KNOWN: &[(&str, u32)] = &[];
 
 /// Readable: a ratio of at least this between a text's glyphs and what
 /// is round them (WCAG's large-text minimum).
