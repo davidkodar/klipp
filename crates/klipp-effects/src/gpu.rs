@@ -394,6 +394,11 @@ pub struct GpuEffectsPipeline {
     /// (measure, blur) with their cell count.
     contrast_protect_pipeline: wgpu::ComputePipeline,
     contrast_protect_scratch: Option<(wgpu::Buffer, wgpu::Buffer, u64)>,
+    /// A pinned layer taking its surface's light and texture (#2751):
+    /// its grid and blur, its row sums, and a frame of factors, with the
+    /// cell and pixel counts they were made for.
+    surface_light_pipeline: wgpu::ComputePipeline,
+    surface_light_scratch: Option<surface_light::Scratch>,
     title_post_scratch: Option<wgpu::Buffer>,
     title_scene_bounds: Option<wgpu::Buffer>,
     title_outlines: Vec<(u64,wgpu::Buffer)>,
@@ -1393,6 +1398,7 @@ impl GpuEffectsPipeline {
         let title_style_pipeline = create_pipeline(&device, &pipeline_layout, "title_styles", include_str!("gpu/title_styles.wgsl"));
         let title_metal_shot_pipeline = create_pipeline(&device, &pipeline_layout, "title_metal_shot", SHADER_TITLE_METAL_SHOT);
         let contrast_protect_pipeline = create_pipeline(&device, &pipeline_layout, "contrast_protect", contrast_protect::SHADER_CONTRAST_PROTECT);
+        let surface_light_pipeline = create_pipeline(&device, &pipeline_layout, "surface_light", surface_light::SHADER_SURFACE_LIGHT);
 
         // LUT buffer, sized from the same constant the uploads are.
         //
@@ -1834,6 +1840,8 @@ impl GpuEffectsPipeline {
             title_metal_shot_scratch: None,
             contrast_protect_pipeline,
             contrast_protect_scratch: None,
+            surface_light_pipeline,
+            surface_light_scratch: None,
             title_post_scratch: None,
             title_scene_bounds: None,
             title_outlines: Vec::new(),
@@ -10542,6 +10550,7 @@ fn eval_record(rec: MaskRecord, px: f32, py: f32, aspect: f32) -> f32 {
 // produced visibly darker-than-half output.
 mod layer;
 mod contrast_protect;
+mod surface_light;
 mod flow;
 pub mod planar;
 mod planar_wgsl;
@@ -19798,6 +19807,7 @@ pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
         ("SHADER_GLOW_BLEND", SHADER_GLOW_BLEND),
         ("SHADER_TITLE_METAL_SHOT", SHADER_TITLE_METAL_SHOT),
         ("SHADER_CONTRAST_PROTECT", contrast_protect::SHADER_CONTRAST_PROTECT),
+        ("SHADER_SURFACE_LIGHT", surface_light::SHADER_SURFACE_LIGHT),
         ("SHADER_LIGHT_RAYS", SHADER_LIGHT_RAYS),
         ("SHADER_VIGNETTE", SHADER_VIGNETTE),
         ("SHADER_LENS_FLARE", SHADER_LENS_FLARE),

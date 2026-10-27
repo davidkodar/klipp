@@ -35,7 +35,7 @@ fn a_surface_and_its_pin_read_back() {
     let mut host = Clip::sequence(scene.id, tc(0.0), tc(4.0));
     host.surfaces.push(surface.clone());
     let mut pinned = Clip::sequence(scene.id, tc(0.0), tc(4.0));
-    pinned.surface_pin = Some(SurfacePin { host: host.id, surface: surface.id, picture_size: Some([640, 640]), fit: klipp_timeline::PinFit::Fit, inset: 0.02, on_loss: klipp_timeline::PinLoss::Fade { secs: 0.5 }, light: 0.6 });
+    pinned.surface_pin = Some(SurfacePin { host: host.id, surface: surface.id, picture_size: Some([640, 640]), fit: klipp_timeline::PinFit::Fit, inset: 0.02, on_loss: klipp_timeline::PinLoss::Fade { secs: 0.5 }, light: 0.6, shade: 0.7, texture: 0.3 });
     let (host_id, pinned_id) = (host.id, pinned.id);
     outer.tracks[0].clips = vec![host];
     outer.tracks.insert(0, klipp_timeline::Track::new("V2", klipp_timeline::TrackKind::Video));
@@ -45,7 +45,7 @@ fn a_surface_and_its_pin_read_back() {
     let (sequences, ..) = load_project(&dir).unwrap();
     let find = |id| sequences[0].tracks.iter().find_map(|t| t.clips.iter().find(|c| c.id == id)).expect("the clip");
     assert_eq!(find(host_id).surfaces, vec![surface.clone()]);
-    assert_eq!(find(pinned_id).surface_pin, Some(SurfacePin { host: host_id, surface: surface.id, picture_size: Some([640, 640]), fit: klipp_timeline::PinFit::Fit, inset: 0.02, on_loss: klipp_timeline::PinLoss::Fade { secs: 0.5 }, light: 0.6 }));
+    assert_eq!(find(pinned_id).surface_pin, Some(SurfacePin { host: host_id, surface: surface.id, picture_size: Some([640, 640]), fit: klipp_timeline::PinFit::Fit, inset: 0.02, on_loss: klipp_timeline::PinLoss::Fade { secs: 0.5 }, light: 0.6, shade: 0.7, texture: 0.3 }));
     assert!(find(host_id).surface_pin.is_none() && find(pinned_id).surfaces.is_empty());
     let written = std::fs::read_to_string(dir.join("project.json")).unwrap();
     assert_eq!(written.matches("\"surfaces\"").count(), 1, "only the host writes surfaces");

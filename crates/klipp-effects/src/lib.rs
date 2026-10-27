@@ -44,6 +44,7 @@ pub mod displace;
 pub mod planar;
 pub mod old_film;
 pub mod reflection;
+pub mod surface_light;
 pub mod generator_grain;
 pub mod flicker;
 pub mod node_analysis;
