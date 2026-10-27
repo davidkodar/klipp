@@ -561,6 +561,11 @@ pub enum GeneratorData {
     /// `ColorBars` but at full intensity (255 vs 191). Used for
     /// hardware calibration and broadcast peak-luminance verification.
     ColorBars100,
+    /// The full SMPTE pattern (#2775): the seven 75 % bars over two
+    /// thirds of the frame, the reverse-blue castellations under them,
+    /// and the −I / 100 % white / +Q / black row with PLUGE, for
+    /// setting a monitor's black and white.
+    ColorBarsSmpte,
     /// Countdown timer (seconds remaining overlaid on black).
     Countdown,
     /// On-screen timer counting up from clip start (`CountUp`) or down
@@ -650,6 +655,7 @@ impl GeneratorData {
             | GeneratorData::Gradient { .. }
             | GeneratorData::ColorBars
             | GeneratorData::ColorBars100
+            | GeneratorData::ColorBarsSmpte
             | GeneratorData::Slate { .. }
             | GeneratorData::StillFrame { .. }
             | GeneratorData::Polygon { .. }

@@ -61,6 +61,7 @@ pub fn render_generator(
         }
         GeneratorData::ColorBars => render_color_bars(width, height),
         GeneratorData::ColorBars100 => render_color_bars_100(width, height),
+        GeneratorData::ColorBarsSmpte => render_color_bars_smpte(width, height),
         GeneratorData::Countdown => render_countdown(width, height, elapsed_secs, total_secs),
         GeneratorData::Timer { mode, initial_seconds, format, text_color, background_color } => {
             render_timer(width, height, elapsed_secs, *mode, *initial_seconds, *format, *text_color, *background_color)
@@ -242,12 +243,44 @@ pub fn render_polygon(
     width: u32,
     height: u32,
 ) -> Vec<u8> {
-    let n = sides.max(3) as usize;
     let cx = width as f32 * 0.5;
     let cy = height as f32 * 0.5;
     let radius = (width.min(height) as f32) * 0.40;
+    // From CIRCLE_SIDES up, a true circle, its edge smoothed over a
+    // pixel: a 24-gon read as facets at full frame (#2775).
+    if sides >= CIRCLE_SIDES {
+        return render_circle(cx, cy, radius, color, outline_width_px, fill, width, height);
+    }
+    let n = sides.max(3) as usize;
     let verts = polygon_vertices(n, cx, cy, radius);
     rasterise_polygon(&verts, color, outline_width_px, fill, width, height)
+}
+
+/// The side count from which a polygon is drawn as a true circle.
+pub const CIRCLE_SIDES: u32 = 64;
+
+/// A circle centred at `cx, cy`, filled or as a ring `outline_width_px`
+/// wide (both when filled with an outline), its edges anti-aliased by
+/// the pixel's distance to them: smooth at any size.
+#[allow(clippy::too_many_arguments)]
+fn render_circle(cx: f32, cy: f32, radius: f32, color: [u8; 4], outline_width_px: f32, fill: bool, width: u32, height: u32) -> Vec<u8> {
+    let mut buf = vec![0u8; (width as usize) * (height as usize) * 4];
+    let half = outline_width_px.max(0.0) * 0.5;
+    for y in 0..height {
+        for x in 0..width {
+            let d = ((x as f32 + 0.5 - cx).powi(2) + (y as f32 + 0.5 - cy).powi(2)).sqrt();
+            // Coverage: inside the disc, and within the stroke of its edge.
+            let disc = if fill { (radius + 0.5 - d).clamp(0.0, 1.0) } else { 0.0 };
+            let ring = if half > 0.0 { (half + 0.5 - (d - radius).abs()).clamp(0.0, 1.0) } else { 0.0 };
+            let cover = disc.max(ring);
+            if cover > 0.0 {
+                let i = ((y * width + x) * 4) as usize;
+                buf[i..i + 3].copy_from_slice(&color[..3]);
+                buf[i + 3] = (color[3] as f32 * cover).round() as u8;
+            }
+        }
+    }
+    buf
 }
 
 /// N-pointed star centred in the frame. `points < 3` falls back to 3
@@ -775,6 +808,48 @@ pub fn render_color_bars(width: u32, height: u32) -> Vec<u8> {
 /// Used for hardware calibration and broadcast peak-luminance checks.
 pub fn render_color_bars_100(width: u32, height: u32) -> Vec<u8> {
     render_color_bars_at_intensity(width, height, 255)
+}
+
+/// The full SMPTE colour bar pattern (as in SMPTE EG 1, in full-range
+/// 8-bit RGB): the seven 75 % bars over the top two thirds; a twelfth of
+/// castellations under them (blue, black, magenta, black, cyan, black,
+/// white, each under one bar); and in the bottom quarter −I, 100 %
+/// white, +Q and black, each a bar and a quarter wide, then PLUGE's
+/// three narrow steps (below black, black and 4 % above, the first
+/// held at black in full range) and black.
+pub fn render_color_bars_smpte(width: u32, height: u32) -> Vec<u8> {
+    const V: u8 = 191;
+    let bars: [[u8; 3]; 7] = [[V, V, V], [V, V, 0], [0, V, V], [0, V, 0], [V, 0, V], [V, 0, 0], [0, 0, V]];
+    let castle: [[u8; 3]; 7] = [[0, 0, V], [0, 0, 0], [V, 0, V], [0, 0, 0], [0, V, V], [0, 0, 0], [V, V, V]];
+    // The bottom row in sevenths of the width: where each patch ends.
+    let bottom: [(f32, [u8; 3]); 8] = [
+        (1.25, [0, 33, 76]),
+        (2.5, [255, 255, 255]),
+        (3.75, [50, 0, 106]),
+        (5.0, [0, 0, 0]),
+        (5.0 + 1.0 / 3.0, [0, 0, 0]),
+        (5.0 + 2.0 / 3.0, [0, 0, 0]),
+        (6.0, [10, 10, 10]),
+        (7.0, [0, 0, 0]),
+    ];
+    let (w, h) = (width.max(1) as f32, height.max(1) as f32);
+    let mut buf = Vec::with_capacity((width as usize) * (height as usize) * 4);
+    for y in 0..height {
+        let fy = (y as f32 + 0.5) / h;
+        for x in 0..width {
+            let sevenths = (x as f32 + 0.5) / w * 7.0;
+            let bar = (sevenths as usize).min(6);
+            let c = if fy < 2.0 / 3.0 {
+                bars[bar]
+            } else if fy < 0.75 {
+                castle[bar]
+            } else {
+                bottom.iter().find(|(end, _)| sevenths < *end).map_or([0, 0, 0], |(_, c)| *c)
+            };
+            buf.extend_from_slice(&[c[0], c[1], c[2], 255]);
+        }
+    }
+    buf
 }
 
 /// Shared SMPTE-bar rasteriser. `intensity` picks between 75 % (191)
@@ -1406,6 +1481,64 @@ mod tests {
         for pixel in result.chunks_exact(4) {
             assert_eq!(pixel, &[255u8, 0, 255, 255]);
         }
+    }
+
+    // ── Circle and full bars (#2775) ────────────────────────────────
+
+    /// Where the edge of a shape drawn in the middle of a frame lies along
+    /// `deg` from the centre: the first pixel under half coverage.
+    fn edge_at(buf: &[u8], w: u32, h: u32, deg: f32) -> f32 {
+        let (cx, cy) = (w as f32 * 0.5, h as f32 * 0.5);
+        let (s, c) = deg.to_radians().sin_cos();
+        (0..(h / 2)).map(|r| r as f32).find(|r| {
+            let (x, y) = ((cx + c * r) as u32, (cy + s * r) as u32);
+            buf[((y * w + x) * 4 + 3) as usize] < 128
+        }).unwrap_or(0.0)
+    }
+
+    #[test]
+    fn a_circle_is_round_at_full_frame() {
+        let (w, h) = (1920, 1080);
+        let reach = |sides: u32| {
+            let buf = render_polygon(sides, [255; 4], 0.0, true, w, h);
+            let r: Vec<f32> = (0..360).map(|d| edge_at(&buf, w, h, d as f32)).collect();
+            r.iter().cloned().fold(f32::MIN, f32::max) - r.iter().cloned().fold(f32::MAX, f32::min)
+        };
+        // A 24-gon is a few pixels out of round at this size; the circle
+        // within the pixel grid's own step.
+        assert!(reach(24) > 2.5, "the 24-gon's facets: {} px", reach(24));
+        assert!(reach(CIRCLE_SIDES) <= 1.5, "the circle: {} px out of round", reach(CIRCLE_SIDES));
+        // Its edge is smoothed: partly covered pixels round it.
+        let buf = render_polygon(CIRCLE_SIDES, [255; 4], 0.0, true, w, h);
+        assert!(buf.chunks(4).any(|p| p[3] > 0 && p[3] < 255), "an anti-aliased edge");
+        // As a ring, the inside is clear.
+        let ring = render_polygon(CIRCLE_SIDES, [255; 4], 8.0, false, w, h);
+        assert_eq!(ring[((540 * w + 960) * 4 + 3) as usize], 0, "a ring's middle is clear");
+    }
+
+    #[test]
+    fn the_full_smpte_bars_have_their_lower_rows() {
+        let (w, h) = (1400u32, 600u32);
+        let buf = render_color_bars_smpte(w, h);
+        let px = |fx: f32, fy: f32| {
+            let i = (((fy * h as f32) as u32 * w + (fx * w as f32) as u32) * 4) as usize;
+            [buf[i], buf[i + 1], buf[i + 2]]
+        };
+        let bar = |k: f32| (k + 0.5) / 7.0;
+        // The seven 75 % bars on top.
+        assert_eq!(px(bar(0.0), 0.3), [191, 191, 191]);
+        assert_eq!(px(bar(6.0), 0.3), [0, 0, 191]);
+        // The castellations: blue under white, black under yellow, white
+        // under blue.
+        assert_eq!(px(bar(0.0), 0.7), [0, 0, 191]);
+        assert_eq!(px(bar(1.0), 0.7), [0, 0, 0]);
+        assert_eq!(px(bar(6.0), 0.7), [191, 191, 191]);
+        // The bottom row: −I, 100 % white, +Q, then PLUGE's 4 % step.
+        assert_eq!(px(0.5 / 7.0, 0.9), [0, 33, 76]);
+        assert_eq!(px(1.9 / 7.0, 0.9), [255, 255, 255]);
+        assert_eq!(px(3.1 / 7.0, 0.9), [50, 0, 106]);
+        assert_eq!(px(5.8 / 7.0, 0.9), [10, 10, 10]);
+        assert_eq!(px(6.5 / 7.0, 0.9), [0, 0, 0]);
     }
 
     // ── ColorBars100 ────────────────────────────────────────────────

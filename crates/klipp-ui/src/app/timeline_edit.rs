@@ -128,6 +128,7 @@ impl KlippApp {
                         klipp_core::GeneratorData::Gradient { .. } => "Gradient",
                         klipp_core::GeneratorData::ColorBars => "Colour Bars",
                         klipp_core::GeneratorData::ColorBars100 => "Colour Bars 100%",
+                        klipp_core::GeneratorData::ColorBarsSmpte => "SMPTE Colour Bars",
                         klipp_core::GeneratorData::Countdown => "Countdown",
                         klipp_core::GeneratorData::Timer { .. } => "Timer",
                         klipp_core::GeneratorData::Slate { .. } => "Slate",

@@ -8247,6 +8247,12 @@ fn show_generator_editor(
             ui.label(egui::RichText::new("Full-intensity broadcast bars. No editable parameters.").size(10.0).color(theme.text_dim));
         }
 
+        klipp_core::GeneratorData::ColorBarsSmpte => {
+            ui.label(egui::RichText::new("SMPTE Colour Bars").size(11.0).color(theme.text_secondary));
+            ui.add_space(2.0);
+            ui.label(egui::RichText::new("The full pattern: bars, castellations, −I/white/+Q and PLUGE for setting a monitor. No editable parameters.").size(10.0).color(theme.text_dim));
+        }
+
         klipp_core::GeneratorData::Countdown => {
             ui.label(egui::RichText::new("Countdown Timer").size(11.0).color(theme.text_secondary));
             ui.add_space(2.0);

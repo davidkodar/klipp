@@ -51,6 +51,7 @@ fn grain() -> GeneratorData {
 }
 fn color_bars() -> GeneratorData { GeneratorData::ColorBars }
 fn color_bars_100() -> GeneratorData { GeneratorData::ColorBars100 }
+fn color_bars_smpte() -> GeneratorData { GeneratorData::ColorBarsSmpte }
 fn countdown() -> GeneratorData { GeneratorData::Countdown }
 fn timer_count_up() -> GeneratorData {
     GeneratorData::Timer {
@@ -91,7 +92,8 @@ fn polygon() -> GeneratorData {
     GeneratorData::Polygon { sides: 6, color: [255, 255, 255, 255], outline_width_px: 0.0, fill: true }
 }
 fn circle() -> GeneratorData {
-    GeneratorData::Polygon { sides: 24, color: [255, 255, 255, 255], outline_width_px: 0.0, fill: true }
+    // A true circle, smooth at any size (#2775): 24 sides showed facets.
+    GeneratorData::Polygon { sides: klipp_core::generator::CIRCLE_SIDES, color: [255, 255, 255, 255], outline_width_px: 0.0, fill: true }
 }
 fn star() -> GeneratorData {
     GeneratorData::Star { points: 5, inner_radius_pct: 0.40, color: [255, 220, 60, 255], outline_width_px: 0.0, fill: true }
@@ -107,6 +109,7 @@ const GENERATORS: &[GeneratorTemplate] = &[
     GeneratorTemplate { name: "Grain",           category: "Backgrounds", create_data: grain,           animated: true },
     GeneratorTemplate { name: "SMPTE 75% Bars",  category: "Test",        create_data: color_bars,      animated: false },
     GeneratorTemplate { name: "SMPTE 100% Bars", category: "Test",        create_data: color_bars_100,  animated: false },
+    GeneratorTemplate { name: "SMPTE Full Bars", category: "Test",        create_data: color_bars_smpte, animated: false },
     GeneratorTemplate { name: "Countdown",       category: "Timing",      create_data: countdown,       animated: true },
     GeneratorTemplate { name: "Timer Up",        category: "Timing",      create_data: timer_count_up,  animated: true },
     GeneratorTemplate { name: "Timer Down",      category: "Timing",      create_data: timer_count_down, animated: true },
