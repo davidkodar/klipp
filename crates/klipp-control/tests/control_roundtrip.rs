@@ -4484,3 +4484,22 @@ fn opening_a_project_with_a_newer_autosave_offers_it() {
     assert!(refused["error"].as_str().unwrap_or_default().contains("restore or keep"), "{refused}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// #2783: the animated GIF preset exports to the `.gif` path its preset
+/// names, and a `.gif` path alone is a GIF export too.
+#[test]
+fn an_export_to_a_gif_path_is_an_animated_gif() {
+    let mut h = harness();
+    let media = h.media_pool.write().unwrap().add(klipp_media::MediaItem::synthetic_for_test("/tmp/export-gif-fixture.mov".into(), None));
+    for c in h.sequence.write().unwrap().tracks.iter_mut().flat_map(|t| t.clips.iter_mut()) {
+        c.kind = klipp_timeline::ClipKind::Media { media_id: media };
+    }
+    for request in [json!({ "method": "export", "path": "/tmp/klipp-export.gif", "preset": "Animated GIF (480p, 15fps)" }), json!({ "method": "export", "path": "/tmp/klipp-export-plain.gif" })] {
+        let r = h.ok(request.clone());
+        let settings = match h.cmd_rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(klipp_core::AppCommand::ExportSequence { settings }) => settings,
+            other => panic!("{request}: {other:?} ({r})"),
+        };
+        assert_eq!((settings.format, settings.video_codec), (klipp_core::ExportFormat::Gif, klipp_core::ExportVideoCodec::Gif), "{request}");
+    }
+}

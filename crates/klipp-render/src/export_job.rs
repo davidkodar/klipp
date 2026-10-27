@@ -151,6 +151,9 @@ impl ExportJob {
         // how many trials it ran (#1924).
         let t_loudness = std::time::Instant::now();
         let trials = std::cell::Cell::new(0u32);
+        // A mix with no sound has no loudness to bring anywhere (#2794):
+        // what the reply says instead, the silence written as it is.
+        let mut silent_mix: Option<String> = None;
         let mut delivery = if let Some(target_lufs) = self.settings.target_lufs {
             Self::set_stage(&self.render_stage, "Measuring loudness\u{2026}");
             let total_frames = self.total_frames;
@@ -165,6 +168,11 @@ impl ExportJob {
                 analysis.requested_gain_db, analysis.applied_gain_db,
                 analysis.achieved_lufs, analysis.peak_limited,
             );
+            if !(analysis.integrated_lufs > -70.0) {
+                info!("ExportJob {}: the mix is silent; no loudness fitting", self.id);
+                silent_mix = Some(format!("Loudness: the mix is silent, so there is nothing to bring to {target_lufs:.1} LUFS; written silent, the length of the picture"));
+                DeliveryChain::unity()
+            } else {
             if analysis.peak_limited {
                 info!(
                     "ExportJob {}: the peaks would pass the ceiling at {:.1} dB of gain; a limiter holds them",
@@ -270,6 +278,7 @@ impl ExportJob {
                 chain.unverified = Some(format!("the ceiling was not checked through the {} encoder ({why})", codec.label()));
             }
             chain
+            }
         } else {
             DeliveryChain::unity()
         };
@@ -278,7 +287,7 @@ impl ExportJob {
 
         // Sound alone: the same mix and delivery, no picture (#1813).
         if self.settings.format.is_audio_only() {
-            return self.write_audio_only(audio_mixdown, delivery, start_frame, end_frame, loudness);
+            return self.write_audio_only(audio_mixdown, delivery, start_frame, end_frame, loudness, silent_mix);
         }
 
         let mut encoder =
@@ -463,6 +472,9 @@ impl ExportJob {
                 *r = Some(status);
             }
         }
+        if let (Some(note), Ok(mut r)) = (&silent_mix, self.loudness_result.lock()) {
+            *r = Some(note.clone());
+        }
 
         // R-5: atomic publish. The rename is the single observable
         // moment when the output path appears — concurrent readers
@@ -516,7 +528,7 @@ impl ExportJob {
     /// M4A (#1813), then published as the video export is. Without an MP3
     /// encoder the file is WAV, at the same name with `.wav`, and the
     /// export's hardware line says so.
-    fn write_audio_only(&self, mut mixdown: AudioMixdown, mut delivery: DeliveryChain, start_frame: u64, end_frame: u64, loudness: (f64, u32)) -> Result<(), RenderError> {
+    fn write_audio_only(&self, mut mixdown: AudioMixdown, mut delivery: DeliveryChain, start_frame: u64, end_frame: u64, loudness: (f64, u32), silent_mix: Option<String>) -> Result<(), RenderError> {
         let (format, codec, fallback) = crate::audio_only::resolve(self.settings.format, self.settings.audio_codec);
         let output_path = if format == self.settings.format { self.output_path.clone() } else { self.output_path.with_extension(format.extension()) };
         if let Some(note) = &fallback {
@@ -562,6 +574,9 @@ impl ExportJob {
             if let Ok(mut r) = self.loudness_result.lock() {
                 *r = Some(status);
             }
+        }
+        if let (Some(note), Ok(mut r)) = (&silent_mix, self.loudness_result.lock()) {
+            *r = Some(note.clone());
         }
         if let Err(e) = std::fs::rename(&partial_path, &output_path) {
             return Err(RenderError::Publish(format!("{e} (encode complete at {partial_path:?})")));

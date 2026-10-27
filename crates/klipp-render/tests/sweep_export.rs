@@ -14,9 +14,6 @@ use std::sync::{Arc, Mutex};
 
 /// Items known to fail, and the issue that holds each.
 const KNOWN: &[(&str, u32)] = &[
-    ("ProRes 422 loudness", 2783),
-    ("DNxHD 115 loudness", 2783),
-    ("Broadcast master (EBU R128) loudness", 2783),
     ("Instagram Square fills the frame", 2784),
     ("Instagram Vertical fills the frame", 2784),
     ("ProRes 422 ProRes profile", 2784),
@@ -103,7 +100,9 @@ fn settings_of(p: &ExportPresetSettings, out: &Path) -> ExportSettings {
     }
 }
 
-fn export(snapshot: SequenceSnapshot, settings: ExportSettings) -> Result<(), String> {
+/// The export, and what it said of the loudness.
+fn export(snapshot: SequenceSnapshot, settings: ExportSettings) -> Result<Option<String>, String> {
+    let said = Arc::new(Mutex::new(None));
     ExportJob {
         id: uuid::Uuid::new_v4(),
         output_path: settings.output_path.clone(),
@@ -113,13 +112,15 @@ fn export(snapshot: SequenceSnapshot, settings: ExportSettings) -> Result<(), St
         progress: Arc::new(AtomicU64::new(0)),
         hw_info: Default::default(),
         render_stage: Default::default(),
-        loudness_result: Arc::new(Mutex::new(None)),
+        loudness_result: Arc::clone(&said),
         timings: Default::default(),
         total_frames: FRAMES,
         analyser: None,
     }
     .run()
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    let said = said.lock().unwrap().clone();
+    Ok(said)
 }
 
 /// One stream's fields by name, by ffprobe.
@@ -188,7 +189,7 @@ fn sweep_export() {
     let (mix_lufs, _) = ebur128(&audio);
     let presets = builtin_presets();
     // Rendered four at a time.
-    let results: Vec<(ExportPreset, PathBuf, Result<(), String>)> = presets
+    let results: Vec<(ExportPreset, PathBuf, Result<Option<String>, String>)> = presets
         .chunks(4)
         .flat_map(|group| {
             std::thread::scope(|s| {
@@ -246,6 +247,29 @@ fn sweep_export() {
             }
             None => sweep.check(&format!("{name} loudness"), format!("{lufs:.1} LUFS (the mix {mix_lufs:.1})"), (lufs - mix_lufs).abs() <= 1.0),
         }
+    }
+    // A timeline with no sound (#2794): every preset with a loudness
+    // target exports it, with silent sound the length of the picture.
+    for p in presets.iter().filter(|p| p.settings.target_lufs.is_some()) {
+        let (name, s) = (&p.name, &p.settings);
+        let out = tmp(&format!("silent-{}.{}", p.id, s.format.extension()));
+        let _ = std::fs::remove_file(&out);
+        let mut silent = snapshot(&video, &audio);
+        silent.audio_tracks.clear();
+        let said = match export(silent, settings_of(s, &out)) {
+            Ok(said) => said.unwrap_or_default(),
+            Err(why) => {
+                sweep.check(&format!("{name} exports a silent timeline"), format!("refused: {why}"), false);
+                continue;
+            }
+        };
+        sweep.check(&format!("{name} says the mix is silent"), said.clone(), said.contains("silent"));
+        let a = probe(&out, "a:0", "codec_name,duration");
+        let secs: f64 = a.get("duration").and_then(|d| d.parse().ok()).unwrap_or(0.0);
+        let want = FRAMES as f64 / 25.0;
+        sweep.check(&format!("{name} exports a silent timeline"), format!("{} sound of {secs:.2} s (the picture {want:.2} s)", a.get("codec_name").cloned().unwrap_or_default()), (secs - want).abs() < 0.1);
+        let (_, peak) = ebur128(&out);
+        sweep.check(&format!("{name} silent sound is silent"), format!("peak {peak:.1} dBTP"), !(peak > -90.0));
     }
     sweep.finish();
 }

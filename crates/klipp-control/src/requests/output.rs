@@ -138,7 +138,9 @@ pub(crate) fn respond(
                 Some("mp3") => klipp_core::ExportFormat::Mp3,
                 Some("wav") => klipp_core::ExportFormat::Wav,
                 Some("m4a") => klipp_core::ExportFormat::M4a,
-                Some(other) => return Err(format!("unsupported container .{other}; use mp4, mov, mkv or webm, or mp3, wav or m4a for the sound alone")),
+                // An animated GIF, its preset's container (#2783).
+                Some("gif") => klipp_core::ExportFormat::Gif,
+                Some(other) => return Err(format!("unsupported container .{other}; use mp4, mov, mkv or webm, gif for an animated GIF, or mp3, wav or m4a for the sound alone")),
             };
             let mut settings = klipp_core::ExportSettings { output_path: out.clone(), format, ..Default::default() };
             // The default H.264 and AAC do not go in WebM.
