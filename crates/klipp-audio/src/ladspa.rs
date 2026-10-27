@@ -295,6 +295,31 @@ fn ladspa_search_paths() -> Vec<PathBuf> {
 /// are filtered out since they don't fit the current AudioEffectChain
 /// in-place processing model.
 pub fn discover_ladspa_plugins() -> Vec<LadspaPluginInfo> {
+    let out = scan_search_paths();
+    publish_scanned(&out);
+    out
+}
+
+/// The plug-ins the last scan found, by library and label: the only
+/// LADSPA libraries Klipp loads. `None` until a scan has run.
+static SCANNED: std::sync::Mutex<Option<Vec<(PathBuf, String)>>> = std::sync::Mutex::new(None);
+
+fn publish_scanned(plugins: &[LadspaPluginInfo]) {
+    *SCANNED.lock().unwrap_or_else(|e| e.into_inner()) = Some(plugins.iter().map(|p| (p.path.clone(), p.label.clone())).collect());
+}
+
+/// Whether `path` and `label` name a plug-in the scan of the LADSPA
+/// folders found. An effect id is resolved against this list and never
+/// loaded from a path it names on its own; before any scan has run, the
+/// folders are scanned once.
+pub fn is_scanned(path: &Path, label: &str) -> bool {
+    if SCANNED.lock().unwrap_or_else(|e| e.into_inner()).is_none() {
+        publish_scanned(&scan_search_paths());
+    }
+    SCANNED.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|list| list.iter().any(|(p, l)| p == path && l == label))
+}
+
+fn scan_search_paths() -> Vec<LadspaPluginInfo> {
     let mut out = Vec::new();
     let mut seen_ids = std::collections::HashSet::new();
     for dir in ladspa_search_paths() {
@@ -346,6 +371,7 @@ pub fn discover_ladspa_plugins_cached(cache_dir: Option<&Path>) -> Vec<LadspaPlu
                 "LADSPA: loaded {} plugin(s) from disk cache",
                 plugins.len()
             );
+            publish_scanned(&plugins);
             return plugins;
         }
     }
@@ -1027,6 +1053,34 @@ pub fn unit_hint_for_port_name(name: &str) -> ParamUnit {
 
 #[cfg(test)]
 mod tests {
+
+    /// An effect id from a project naming a library outside the LADSPA
+    /// scan is never loaded: a real shared library copied to a folder of
+    /// its own, named by a `ladspa:` id, gives no effect and is not
+    /// mapped into the process. Every plug-in the scan found still is
+    /// known.
+    #[test]
+    fn an_effect_id_loads_only_a_scanned_plug_in() {
+        let lib = ["/usr/lib/libz.so.1", "/usr/lib64/libz.so.1", "/lib/x86_64-linux-gnu/libz.so.1", "/usr/lib/x86_64-linux-gnu/libz.so.1"]
+            .into_iter().map(Path::new).find(|p| p.is_file());
+        let dir = std::env::temp_dir().join(format!("klipp-ladspa-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let evil = dir.join("plugin.so");
+        match lib {
+            Some(l) => { std::fs::copy(l, &evil).unwrap(); }
+            None => std::fs::write(&evil, b"not a library").unwrap(),
+        }
+        let id = format!("ladspa:{}:anything", evil.display());
+        assert!(!is_scanned(&evil, "anything"));
+        assert!(crate::dsp::create_effect(&id, 48_000).is_none(), "left offline");
+        let maps = std::fs::read_to_string("/proc/self/maps").unwrap_or_default();
+        assert!(!maps.contains(&dir.display().to_string()), "the library was never mapped");
+        for p in discover_ladspa_plugins() {
+            assert!(is_scanned(&p.path, &p.label), "{} {}", p.path.display(), p.label);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::*;
 
     #[test]
