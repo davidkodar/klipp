@@ -3151,6 +3151,13 @@ impl PlaybackEngine {
                 self.tick_node_sample();
             }
 
+            // A frame parked with no shot of its own on the picture track,
+            // every track a scene, leaves the engine Idle, not Paused: its
+            // clip streams are waited on all the same, or a frame that
+            // missed them is never redrawn and stays incomplete.
+            if matches!(self.state, PlaybackState::Idle | PlaybackState::Stopped) {
+                self.tick_stream_refresh();
+            }
             if self.state == PlaybackState::Playing {
                 // Playback already produces fresh frames at full res
                 // every tick; the drag-recovery flag isn't needed here.

@@ -932,6 +932,10 @@ fn channel_code(channel: klipp_core::ViewChannel) -> u32 {
     }
 }
 
+/// Kept scenes' buffers held spare (#2757): one done with is taken by the
+/// next scene composed, so a couple is all a nest ever waits on.
+const SPARE_SCENES: usize = 2;
+
 /// The resources rendering needs, owned per thread: the viewer has one,
 /// every export job has its own.
 pub struct Renderer {
@@ -1017,6 +1021,12 @@ pub struct Renderer {
     /// still's too.
     source_sizes: HashMap<ClipId, ((u32, u32), (u32, u32))>,
     precomp_ready: std::collections::HashSet<ClipId>,
+    /// Kept scenes' buffers done with this frame, at most [`SPARE_SCENES`],
+    /// for the next scene
+    /// composed to take: a scene inside another is needed only while that
+    /// one is composed, and a nest of templates kept one of each, a full
+    /// frame of the stack per level per instance.
+    precomp_spare: Vec<Arc<wgpu::Buffer>>,
     /// The first of each clip's stack layers its title sources are drawn
     /// in this frame (#2758), after the layers of the stack.
     side_title_slots: HashMap<ClipId, usize>,
@@ -1225,6 +1235,7 @@ impl Renderer {
             still_generators: HashMap::new(),
             still_layers: HashMap::new(),
             precomp_scenes: HashMap::new(),
+            precomp_spare: Vec::new(),
             source_sizes: HashMap::new(),
             side_title_slots: HashMap::new(),
             clean_frames: HashMap::new(),
@@ -2255,7 +2266,14 @@ impl Renderer {
         // before this frame's own state is worked out, and kept to seed
         // its layer (#2757) ──
         if self.nesting == 0 {
-            self.precomp_ready.clear();
+            // Kept for a clip the last frame did not compose, one removed
+            // or undone: let go, not held until eight others crowd it out.
+            let ready = std::mem::take(&mut self.precomp_ready);
+            for (_, buffer) in self.precomp_scenes.extract_if(|id, _| !ready.contains(id)) {
+                if self.precomp_spare.len() < SPARE_SCENES {
+                    self.precomp_spare.push(buffer);
+                }
+            }
         }
         let scenes: Vec<(ClipId, Arc<Sequence>, Timecode)> = items
             .iter()
@@ -3690,6 +3708,16 @@ impl Renderer {
         let (px_scale, hdr_peak, title_nits) = (self.px_scale, self.hdr_peak, self.title_nits);
         let (decline, declined_after_work, started) = (self.frame_decline, self.gpu_export_declined_after_work, self.stack_work_started);
         let composed = self.composite_on_gpu(scene, at, width, height, src, RenderOptions { keep_alpha: true, view_channel: klipp_core::ViewChannel::Picture, ..opts }).is_some();
+        // The scenes inside this one were composed for it alone: done with
+        // now, their buffers go to the next scene composed.
+        for inner in scene.all_clips().filter(|c| c.precomp.is_some()) {
+            if let Some(buffer) = self.precomp_scenes.remove(&inner.id) {
+                self.precomp_ready.remove(&inner.id);
+                if self.precomp_spare.len() < SPARE_SCENES {
+                    self.precomp_spare.push(buffer);
+                }
+            }
+        }
         (self.px_scale, self.hdr_peak, self.title_nits) = (px_scale, hdr_peak, title_nits);
         (self.frame_decline, self.gpu_export_declined_after_work, self.stack_work_started) = (decline, declined_after_work, started);
         self.inspect = inspect;
@@ -3700,7 +3728,7 @@ impl Renderer {
         if !composed {
             return;
         }
-        let reuse = self.precomp_scenes.remove(&id);
+        let reuse = self.precomp_scenes.remove(&id).or_else(|| self.precomp_spare.pop());
         let kept = self.executor.gpu_pipeline_or_init().and_then(|g| g.stack_keep_chain(reuse));
         if let Some(kept) = kept {
             if self.precomp_scenes.len() >= 8 {
