@@ -338,7 +338,12 @@ composition and is refused with a hint to save it again):
   property path (`object:<i>.text|color|font|picture|size|opacity|…`,
   `clip:<n>.media`, `node:<op>.<param>`). With `link: {to: [a, b],
   curve}` the parameter is a macro control: its range maps onto `to`
-  on `linear`, `ease_in`, `ease_out` or `ease_in_out`.
+  on `linear`, `ease_in`, `ease_out` or `ease_in_out`. A recipe's link
+  may say what `to` is measured against, `per`: `width` or `height`
+  (fractions of the frame, made pixels of the sequence), or `source`
+  (seconds into the clip, made its media's own seconds, so a picked
+  frame stays on its frame through a trim; a time past the clip's end is
+  refused).
 
 ### The placed instance
 

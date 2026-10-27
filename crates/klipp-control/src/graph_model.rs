@@ -84,7 +84,11 @@ pub(crate) fn parameter(node: &Node, key: &str, value: &Value) -> Result<ParamVa
     let grade_keyed = p.key != p.field && node.type_id.as_str() == types::LEGACY_NODE && p.index.is_none() && klipp_nodes::NodeParams::default().apply_override(p.key, 1.0);
     // A difference key's clean frame (#2758): seconds into its clip's media.
     let clean_frame = node.type_id.as_str() == types::LEGACY_NODE && p.field == "difference_key.plate_frame";
-    if !grade_keyed && !clean_frame && ((p.key != p.field && !aliased) || p.index.is_some() || p.field.contains('.')) {
+    // A grade node's setting inside its settings' struct (a difference
+    // key's `difference_key.tolerance`, #2758): a number or a switch the
+    // lift writes into the struct, made at its default when unset.
+    let struct_field = node.type_id.as_str() == types::LEGACY_NODE && p.key == p.field && p.index.is_none() && p.field.matches('.').count() == 1 && matches!(p.kind, ParamKind::Float | ParamKind::Whole | ParamKind::Bool);
+    if !grade_keyed && !clean_frame && !struct_field && ((p.key != p.field && !aliased) || p.index.is_some() || p.field.contains('.')) {
         return Err(format!("{key} needs a saved-field adapter before it can be set through graph operations"));
     }
     let wrong = || format!("{key} expects {:?}", p.kind);
@@ -193,6 +197,9 @@ mod tests {
     fn a_clean_frame_takes_seconds_from_zero() {
         let key = new_node("klipp.grade.difference_key", uuid::Uuid::new_v4(), None).unwrap();
         assert_eq!(parameter(&key, "difference_key.plate_frame", &json!(2.5)).unwrap(), ParamValue::Float(2.5));
+        // Its other settings, inside its struct, as numbers and switches.
+        assert_eq!(parameter(&key, "difference_key.tolerance", &json!(0.2)).unwrap(), ParamValue::Float(0.2));
+        assert_eq!(parameter(&key, "difference_key.invert", &json!(true)).unwrap(), ParamValue::Bool(true));
         for bad in [json!(-1), json!("2"), json!(null), json!(1e300)] {
             let why = parameter(&key, "difference_key.plate_frame", &bad).unwrap_err();
             assert!(why.contains("source seconds"), "{bad}: {why}");
