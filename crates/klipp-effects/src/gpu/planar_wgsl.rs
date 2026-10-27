@@ -14,7 +14,7 @@ pub(super) const BINS: u32 = 1024;
 pub(super) const POINT: u32 = 22;
 /// Floats the alignment's state holds: the map (9), the light (8), the
 /// cut, the conditioning, a failure flag, whether the level has
-/// converged, and spare.
+/// converged, whether the map is held to a similarity, and spare.
 pub(super) const STATE: u32 = 24;
 /// Partial sums of the light fit, per workgroup: the brightness's 4×4
 /// (10) and right side (4), the edges' 2×2 (3) and right side (2), the
@@ -539,6 +539,7 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) l
 @group(0) @binding(1) var<storage, read> partial: array<f32>;
 @group(0) @binding(2) var<storage, read_write> state: array<f32>;
 {SOLVE}
+{SIMILARITY}
 var<workgroup> sums: array<f32, {NORMAL}>;
 @compute @workgroup_size({THREADS})
 fn main(@builtin(local_invocation_index) li: u32) {{
@@ -560,9 +561,17 @@ fn main(@builtin(local_invocation_index) li: u32) {{
         for (var c = r; c < 8u; c++) {{ a[r][c] = s[k]; a[c][r] = s[k]; k++; }}
         b[r] = s[36u + r];
     }}
-    let x = solve(a, b, 8u);
-    if !x.ok {{ state[19] = 1.0; return; }}
-    var d = x.v;
+    var d: array<f32, 8>;
+    if state[21] > 0.5 {{
+        let r = to_similarity(a, b);
+        let x = solve(r.a, r.b, 4u);
+        if !x.ok {{ state[19] = 1.0; return; }}
+        d = from_similarity(x.v);
+    }} else {{
+        let x = solve(a, b, 8u);
+        if !x.ok {{ state[19] = 1.0; return; }}
+        d = x.v;
+    }}
     // A step this small is the CPU's stop: the level is done.
     var moved = 0.0;
     for (var j = 0u; j < 8u; j++) {{ moved += d[j] * d[j]; }}
@@ -591,6 +600,7 @@ fn main(@builtin(local_invocation_index) li: u32) {{
 @group(0) @binding(1) var<storage, read> partial: array<f32>;
 @group(0) @binding(2) var<storage, read_write> state: array<f32>;
 {EIGEN}
+{SIMILARITY}
 @compute @workgroup_size(1)
 fn main() {{
     var s: array<f32, {NORMAL}>;
@@ -603,7 +613,12 @@ fn main() {{
     for (var r = 0u; r < 8u; r++) {{
         for (var c = r; c < 8u; c++) {{ a[r][c] = s[k]; a[c][r] = s[k]; k++; }}
     }}
-    state[18] = conditioning(a);
+    if state[21] > 0.5 {{
+        var b: array<f32, 8>;
+        state[18] = conditioning(to_similarity(a, b).a, 4u);
+    }} else {{
+        state[18] = conditioning(a, 8u);
+    }}
 }}
 "
             ),
@@ -748,28 +763,28 @@ fn adjugate(m: mat3x3<f32>) -> mat3x3<f32> {
 }
 ";
 
-/// The smallest over the largest eigenvalue of a symmetric 8×8, by
-/// Jacobi rotations: `planar::eigenvalues`.
+/// The smallest over the largest eigenvalue of the top-left `n` × `n` of
+/// a symmetric 8×8, by Jacobi rotations: `planar::conditioning`.
 const EIGEN: &str = "
-fn conditioning(a_in: array<array<f32, 8>, 8>) -> f32 {
+fn conditioning(a_in: array<array<f32, 8>, 8>, n: u32) -> f32 {
     var a = a_in;
     for (var sweep = 0; sweep < 30; sweep++) {
         var off = 0.0;
-        for (var i = 0u; i < 8u; i++) { for (var j = 0u; j < 8u; j++) { if i != j { off += a[i][j] * a[i][j]; } } }
+        for (var i = 0u; i < n; i++) { for (var j = 0u; j < n; j++) { if i != j { off += a[i][j] * a[i][j]; } } }
         if off < 1.0e-20 { break; }
-        for (var pp = 0u; pp < 8u; pp++) {
-            for (var q = pp + 1u; q < 8u; q++) {
+        for (var pp = 0u; pp < n; pp++) {
+            for (var q = pp + 1u; q < n; q++) {
                 if abs(a[pp][q]) < 1.0e-30 { continue; }
                 let theta = (a[q][q] - a[pp][pp]) / (2.0 * a[pp][q]);
                 var t = sign(theta) / (abs(theta) + sqrt(theta * theta + 1.0));
                 if theta == 0.0 { t = 1.0; }
                 let c = 1.0 / sqrt(t * t + 1.0);
                 let s = t * c;
-                for (var k = 0u; k < 8u; k++) {
+                for (var k = 0u; k < n; k++) {
                     let akp = a[k][pp]; let akq = a[k][q];
                     a[k][pp] = c * akp - s * akq; a[k][q] = s * akp + c * akq;
                 }
-                for (var k = 0u; k < 8u; k++) {
+                for (var k = 0u; k < n; k++) {
                     let apk = a[pp][k]; let aqk = a[q][k];
                     a[pp][k] = c * apk - s * aqk; a[q][k] = s * apk + c * aqk;
                 }
@@ -778,8 +793,48 @@ fn conditioning(a_in: array<array<f32, 8>, 8>) -> f32 {
     }
     var lo = 3.0e38;
     var hi = 0.0;
-    for (var i = 0u; i < 8u; i++) { lo = min(lo, a[i][i]); hi = max(hi, a[i][i]); }
+    for (var i = 0u; i < n; i++) { lo = min(lo, a[i][i]); hi = max(hi, a[i][i]); }
     if hi <= 0.0 { return 0.0; }
     return max(lo / hi, 0.0);
+}
+";
+
+/// The step's normal equations held to a similarity, in the top-left
+/// 4×4, and a step in its directions as the eight parameters:
+/// `planar::to_similarity`, `planar::from_similarity`.
+const SIMILARITY: &str = "
+fn basis(a: u32, i: u32) -> f32 {
+    if a == 0u || a == 4u { return select(0.0, 1.0, i == 0u); }
+    if a == 1u { return select(0.0, -1.0, i == 1u); }
+    if a == 3u { return select(0.0, 1.0, i == 1u); }
+    if a == 2u { return select(0.0, 1.0, i == 2u); }
+    if a == 5u { return select(0.0, 1.0, i == 3u); }
+    return 0.0;
+}
+
+struct Reduced { a: array<array<f32, 8>, 8>, b: array<f32, 8> }
+
+fn to_similarity(h_in: array<array<f32, 8>, 8>, b_in: array<f32, 8>) -> Reduced {
+    var h = h_in;
+    var b = b_in;
+    var r: Reduced;
+    for (var i = 0u; i < 4u; i++) {
+        for (var a = 0u; a < 8u; a++) {
+            r.b[i] += basis(a, i) * b[a];
+            for (var j = 0u; j < 4u; j++) {
+                for (var c = 0u; c < 8u; c++) { r.a[i][j] += basis(a, i) * h[a][c] * basis(c, j); }
+            }
+        }
+    }
+    return r;
+}
+
+fn from_similarity(q_in: array<f32, 8>) -> array<f32, 8> {
+    var q = q_in;
+    var d: array<f32, 8>;
+    for (var a = 0u; a < 8u; a++) {
+        for (var i = 0u; i < 4u; i++) { d[a] += basis(a, i) * q[i]; }
+    }
+    return d;
 }
 ";

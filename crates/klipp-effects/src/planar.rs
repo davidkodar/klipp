@@ -47,6 +47,18 @@ pub struct Tracked {
     pub round_trip_px: f32,
 }
 
+/// What the region's map may do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Model {
+    /// Any plane projective map: a surface turning away from the camera.
+    #[default]
+    Homography,
+    /// A move, a size and a turn alone: a grade window over a subject,
+    /// whose outline alone would let a projective map's perspective
+    /// wander.
+    Similarity,
+}
+
 /// How the track runs.
 #[derive(Debug, Clone, Copy)]
 pub struct Options {
@@ -67,11 +79,13 @@ pub struct Options {
     pub lost_after: usize,
     /// Frames after a loss the reference is searched for in.
     pub reacquire_for: usize,
+    /// What the map may do.
+    pub model: Model,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Self { margin: 0.08, top_side: 40.0, search: 6, max_points: 24_000, iterations: 25, lost_after: 3, reacquire_for: 48 }
+        Self { margin: 0.08, top_side: 40.0, search: 6, max_points: 24_000, iterations: 25, lost_after: 3, reacquire_for: 48, model: Model::Homography }
     }
 }
 
@@ -209,6 +223,7 @@ struct Point {
 pub(crate) struct Template {
     frame: Frame,
     levels: Vec<Vec<Point>>,
+    model: Model,
 }
 
 /// Whether `p` lies inside the convex quad `q`, either winding.
@@ -317,7 +332,7 @@ impl Template {
                     .collect()
             })
             .collect();
-        Self { frame, levels }
+        Self { frame, levels, model: opts.model }
     }
 }
 
@@ -337,13 +352,58 @@ fn step_map(p: &[f64; 8]) -> Homography {
     Homography { h: [[1.0 + p[0], p[1], p[2]], [p[3], 1.0 + p[4], p[5]], [p[6], p[7], 1.0]] }
 }
 
-/// The eigenvalues of a symmetric 8×8, by Jacobi rotations.
+/// A similarity's directions among the step's eight parameters (the
+/// region's coordinates are the same scale both ways, so a turn is
+/// p₃ = −p₁): grow, turn, across, down.
+const SIMILARITY: [[f64; 4]; 8] = [
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, -1.0, 0.0, 0.0],
+    [0.0, 0.0, 1.0, 0.0],
+    [0.0, 1.0, 0.0, 0.0],
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, 0.0, 0.0, 1.0],
+    [0.0, 0.0, 0.0, 0.0],
+    [0.0, 0.0, 0.0, 0.0],
+];
+
+/// The step's normal equations held to a similarity: in its four
+/// directions.
 #[allow(clippy::needless_range_loop)]
-fn eigenvalues(mut a: [[f64; 8]; 8]) -> [f64; 8] {
+fn to_similarity(hess: &[[f64; 8]; 8], b: &[f64; 8]) -> ([[f64; 4]; 4], [f64; 4]) {
+    let (mut h4, mut b4) = ([[0.0f64; 4]; 4], [0.0f64; 4]);
+    for i in 0..4 {
+        for a in 0..8 {
+            b4[i] += SIMILARITY[a][i] * b[a];
+            for j in 0..4 {
+                for c in 0..8 {
+                    h4[i][j] += SIMILARITY[a][i] * hess[a][c] * SIMILARITY[c][j];
+                }
+            }
+        }
+    }
+    (h4, b4)
+}
+
+/// A step in a similarity's directions as the eight parameters.
+fn from_similarity(q: &[f64; 4]) -> [f64; 8] {
+    std::array::from_fn(|a| (0..4).map(|i| SIMILARITY[a][i] * q[i]).sum())
+}
+
+/// The smallest over the largest eigenvalue of a symmetric matrix: how
+/// well a Hessian holds every direction of the map.
+fn conditioning<const N: usize>(a: [[f64; N]; N]) -> f64 {
+    let ev = eigenvalues(a);
+    let (lo, hi) = (ev.iter().copied().fold(f64::MAX, f64::min), ev.iter().copied().fold(0.0, f64::max));
+    if hi > 0.0 { (lo / hi).max(0.0) } else { 0.0 }
+}
+
+/// The eigenvalues of a symmetric N×N, by Jacobi rotations.
+#[allow(clippy::needless_range_loop)]
+fn eigenvalues<const N: usize>(mut a: [[f64; N]; N]) -> [f64; N] {
     for _ in 0..60 {
         let mut off = 0.0;
-        for i in 0..8 {
-            for j in 0..8 {
+        for i in 0..N {
+            for j in 0..N {
                 if i != j {
                     off += a[i][j] * a[i][j];
                 }
@@ -352,8 +412,8 @@ fn eigenvalues(mut a: [[f64; 8]; 8]) -> [f64; 8] {
         if off < 1e-18 {
             break;
         }
-        for p in 0..8 {
-            for q in p + 1..8 {
+        for p in 0..N {
+            for q in p + 1..N {
                 if a[p][q].abs() < 1e-30 {
                     continue;
                 }
@@ -361,12 +421,12 @@ fn eigenvalues(mut a: [[f64; 8]; 8]) -> [f64; 8] {
                 let t = theta.signum() / (theta.abs() + (theta * theta + 1.0).sqrt());
                 let t = if theta == 0.0 { 1.0 } else { t };
                 let (c, s) = (1.0 / (t * t + 1.0).sqrt(), t / (t * t + 1.0).sqrt());
-                for k in 0..8 {
+                for k in 0..N {
                     let (akp, akq) = (a[k][p], a[k][q]);
                     a[k][p] = c * akp - s * akq;
                     a[k][q] = s * akp + c * akq;
                 }
-                for k in 0..8 {
+                for k in 0..N {
                     let (apk, aqk) = (a[p][k], a[q][k]);
                     a[p][k] = c * apk - s * aqk;
                     a[q][k] = s * apk + c * aqk;
@@ -380,7 +440,7 @@ fn eigenvalues(mut a: [[f64; 8]; 8]) -> [f64; 8] {
 /// Align `points` (one level of a template) to `level` of a frame,
 /// starting from `g` (region coordinates to that level's pixels).
 #[allow(clippy::needless_range_loop)]
-fn align_level(points: &[Point], level: &Level, mut g: Homography, iterations: usize) -> Option<(Homography, f64)> {
+fn align_level(points: &[Point], level: &Level, mut g: Homography, iterations: usize, model: Model) -> Option<(Homography, f64)> {
     let mut conditioning = 0.0;
     // Each pixel's weight in the last step, per channel: all at first.
     let mut trust: Vec<[f64; 2]> = vec![[1.0, 1.0]; points.len()];
@@ -483,11 +543,18 @@ fn align_level(points: &[Point], level: &Level, mut g: Homography, iterations: u
                 hess[i][j] = hess[j][i];
             }
         }
-        let ev = eigenvalues(hess);
-        let (lo, hi) = (ev.iter().copied().fold(f64::MAX, f64::min), ev.iter().copied().fold(0.0, f64::max));
-        conditioning = if hi > 0.0 { (lo / hi).max(0.0) } else { 0.0 };
-        let mut a = hess;
-        let dp = crate::homography::solve(&mut a, &mut b)?;
+        let dp = match model {
+            Model::Homography => {
+                conditioning = self::conditioning(hess);
+                let mut a = hess;
+                crate::homography::solve(&mut a, &mut b)?
+            }
+            Model::Similarity => {
+                let (mut a, mut b) = to_similarity(&hess, &b);
+                conditioning = self::conditioning(a);
+                from_similarity(&crate::homography::solve(&mut a, &mut b)?)
+            }
+        };
         g = g.multiply(&step_map(&dp).inverse()?);
         if dp.iter().map(|v| v * v).sum::<f64>() < 1e-10 {
             break;
@@ -536,7 +603,7 @@ fn align(tpl: &Template, pyr: &Pyramid, mut g: Homography, top: usize, bottom: u
         if l == top && search > 0 {
             gl = search_top(&tpl.levels[l], &pyr.levels[l], gl, search);
         }
-        let (fitted, cond) = align_level(&tpl.levels[l], &pyr.levels[l], gl, iterations)?;
+        let (fitted, cond) = align_level(&tpl.levels[l], &pyr.levels[l], gl, iterations, tpl.model)?;
         conditioning = cond;
         g = from_level(l).multiply(&fitted);
     }

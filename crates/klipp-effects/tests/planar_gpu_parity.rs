@@ -6,7 +6,7 @@
 
 use klipp_effects::gpu::planar::PlanarGpu;
 use klipp_effects::homography::Homography;
-use klipp_effects::planar::{track, Options, State, Tracked};
+use klipp_effects::planar::{track, Model, Options, State, Tracked};
 use klipp_effects::window_track::GrayFrame;
 
 fn texture(x: f64, y: f64) -> f64 {
@@ -106,4 +106,43 @@ fn the_gpu_loses_and_finds_the_surface_as_the_cpu_does() {
     let shift = |k: usize| Homography { h: [[1.0, 0.0, 0.6 * k as f64], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] };
     let (cpu, on_gpu) = both(&mut g, &reference, quad, 16, &|k| if (6..10).contains(&k) { flat.clone() } else { seen(w, h, &shift(k), &texture) });
     agree("lost", &quad, &cpu, &on_gpu, &shift, 0.8);
+}
+
+/// Held to a similarity (a grade window's track), a plain card that
+/// moves, grows and turns over a background that stays is followed on
+/// the GPU as on the CPU.
+#[test]
+fn the_gpu_holds_a_similarity_as_the_cpu_does() {
+    let Some(mut g) = gpu() else { return };
+    let (w, h) = (320, 240);
+    let quad = [(110.0, 85.0), (210.0, 85.0), (210.0, 155.0), (110.0, 155.0)];
+    let truth = |k: usize| {
+        let (s, t) = (1.0 + 0.008 * k as f64, (0.4 * k as f64).to_radians());
+        let (a, b) = (s * t.cos(), s * t.sin());
+        let (cx, cy) = (160.0, 120.0);
+        Homography { h: [[a, -b, cx + 1.1 * k as f64 - a * cx + b * cy], [b, a, cy - 0.6 * k as f64 - b * cx - a * cy], [0.0, 0.0, 1.0]] }
+    };
+    let card = |k: usize| {
+        let back = truth(k).inverse().unwrap();
+        let data = (0..w * h)
+            .map(|i| {
+                let (x, y) = ((i % w) as f64, (i / w) as f64);
+                let mut v = 0.0;
+                for (ox, oy) in [(-0.25, -0.25), (0.25, -0.25), (-0.25, 0.25), (0.25, 0.25)] {
+                    let (rx, ry) = back.transform(x + ox, y + oy);
+                    let on = (rx - 160.0).abs() < 50.0 && (ry - 120.0).abs() < 35.0;
+                    v += if on { 200.0 } else { 70.0 + 10.0 * ((x * 0.02).sin() + (y * 0.03).cos()) } / 4.0;
+                }
+                v as u8
+            })
+            .collect();
+        GrayFrame { data, width: w, height: h }
+    };
+    let opts = Options { model: Model::Similarity, ..Options::default() };
+    let frames: Vec<usize> = (1..=16).collect();
+    let reference = card(0);
+    let cpu = track(&reference, quad, &[], &frames, &mut |k| Some(card(k)), &opts, &|_| true);
+    let on_gpu = g.track(&reference, quad, &[], &frames, &mut |k| Some(card(k)), &opts, &|_| true);
+    assert_eq!(cpu.len(), 16);
+    agree("similarity", &quad, &cpu, &on_gpu, &truth, 1.0);
 }
