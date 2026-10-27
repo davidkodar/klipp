@@ -106,6 +106,35 @@ pub struct TemplateBinding {
     /// the parameter's value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link: Option<LinkMap>,
+    /// What of the control's value the property takes (#2758): `None`
+    /// the value itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub take: Option<Take>,
+}
+
+/// What a binding takes of its control's value (#2758).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Take {
+    /// A colour's hue, degrees, as a qualifier reads the colour picked
+    /// on the picture: what keys a colour by the colour a person picks.
+    Hue,
+}
+
+/// `value` as a binding taking `take` of it sets its property (#2758):
+/// the value itself, or a colour's hue in degrees, read as the
+/// qualifier's picker reads a picked colour. The one place a binding's
+/// value is taken apart.
+pub fn taken(value: &TemplateValue, take: Option<Take>) -> Result<TemplateValue, String> {
+    match (take, value) {
+        (None, v) => Ok(v.clone()),
+        (Some(Take::Hue), TemplateValue::Color(c)) => {
+            // Picked as sRGB; the qualifier reads the picture's linear light.
+            let linear = [c[0], c[1], c[2]].map(|v| klipp_color::transfer::srgb_to_linear(v.clamp(0.0, 1.0)));
+            Ok(TemplateValue::Number(f64::from(klipp_effects::cpu_grade::picture_hsl(linear).h * 360.0)))
+        }
+        (Some(Take::Hue), _) => Err("a hue is taken from a colour".into()),
+    }
 }
 
 /// How a control drives one property (#2757).
@@ -440,6 +469,7 @@ impl CompositionTemplate {
                 (Some(_), _) => return Err(format!("control '{}' drives a link, so it is a number", b.parameter)),
                 (None, v) => v.clone(),
             };
+            let value = taken(&value, b.take).map_err(|e| format!("'{}': {e}", b.property))?;
             // A behaviour's field, on the modify op that puts it there.
             if let Some((_, behaviour_of, field)) = behaviour_binding(&b.property) {
                 let op = ops.iter_mut().find(|o| modifies(o, k, behaviour_of)).ok_or_else(|| format!("'{}' names no behaviour a modify op puts on op {k}'s {behaviour_of}", b.property))?;
@@ -503,6 +533,11 @@ impl CompositionTemplate {
                     let adds = graph.ops.get(k).and_then(|o| o.get("op")).and_then(|o| o.as_str()).is_some_and(|o| matches!(o, "add" | "add_beside"));
                     if !adds {
                         return Err(format!("'{}' names op {k}, which adds no node", b.property));
+                    }
+                    let colour = self.parameters.get(&b.parameter).is_some_and(|p| matches!(p.default, TemplateValue::Color(_)))
+                        || self.slots.get(&b.parameter).is_some_and(|s| s.kind == SlotKind::Colour);
+                    if b.take == Some(Take::Hue) && !colour {
+                        return Err(format!("'{}' takes a hue, so '{}' is a colour", b.property, b.parameter));
                     }
                     if let Some((_, param, _)) = behaviour_binding(&b.property) {
                         if !graph.ops.iter().any(|o| modifies(o, k, param)) {
@@ -777,7 +812,7 @@ pub fn add_controls(t: &mut CompositionTemplate, scene: &Sequence, controls: &[C
             if !d.to.iter().all(|v| v.is_finite()) {
                 return Err(format!("control \"{label}\" drives \"{}\" to a range that is not two numbers", d.target));
             }
-            t.bindings.push(TemplateBinding { parameter: name.clone(), property, link: Some(LinkMap { to: d.to, curve: d.curve, per: None }) });
+            t.bindings.push(TemplateBinding { parameter: name.clone(), property, link: Some(LinkMap { to: d.to, curve: d.curve, per: None }), take: None });
         }
         t.parameters.insert(name, TemplateParameter { label: label.to_string(), default: TemplateValue::Number(default), range: Some(NumberRange { min: Some(min), max: Some(max) }), choices: Vec::new() });
     }
@@ -834,7 +869,7 @@ pub fn template_from_scene(scene: &Sequence, all: &[Sequence], name: &str, chose
                 t.slots.insert(c.name.clone(), TemplateSlot { label: c.label.clone(), kind: SlotKind::Media });
             }
         }
-        t.bindings.push(TemplateBinding { parameter: c.name.clone(), property: c.property.clone(), link: None });
+        t.bindings.push(TemplateBinding { parameter: c.name.clone(), property: c.property.clone(), link: None, take: None });
     }
     let mut with_scene: Vec<Sequence> = all.to_vec();
     with_scene.push(scene.clone());
@@ -1323,6 +1358,44 @@ mod tests {
         assert_eq!(ops[1]["params"]["media"], "m");
         // Across at its end: half the frame's width right, in its pixels.
         assert_eq!(ops[3]["params"]["position_x"], 500.0);
+    }
+
+    /// A colour's hue taken by a binding (#2758): pure red, green and blue
+    /// land at 0, 120 and 240 degrees, a picked colour where the
+    /// qualifier's picker puts it; only a colour gives one. A recipe binding
+    /// it onto a qualifier's hue centre writes that hue, and a hue taken
+    /// from a number control is refused when the recipe is read.
+    #[test]
+    fn a_binding_takes_a_colours_hue_as_the_picker_reads_it() {
+        let hue = |c: [f32; 3]| match taken(&TemplateValue::Color([c[0], c[1], c[2], 1.0]), Some(Take::Hue)).unwrap() {
+            TemplateValue::Number(h) => h,
+            other => panic!("a number: {other:?}"),
+        };
+        assert!(hue([1.0, 0.0, 0.0]).abs() < 0.5 || (hue([1.0, 0.0, 0.0]) - 360.0).abs() < 0.5);
+        assert!((hue([0.0, 1.0, 0.0]) - 120.0).abs() < 0.5);
+        assert!((hue([0.0, 0.0, 1.0]) - 240.0).abs() < 0.5);
+        let orange = [0.9, 0.5, 0.1];
+        let picked = klipp_effects::cpu_grade::picture_hsl(orange.map(klipp_color::transfer::srgb_to_linear)).h * 360.0;
+        assert!((hue(orange) - f64::from(picked)).abs() < 1e-3, "as the picker reads it");
+        assert!(taken(&TemplateValue::Number(3.0), Some(Take::Hue)).is_err());
+
+        let recipe = |default: serde_json::Value| -> CompositionTemplate {
+            serde_json::from_value(serde_json::json!({
+                "format_version": 2, "id": "6d1f3a92-8b4c-4e57-a0d3-2c9e7b1f5a68", "name": "Hold", "kind": "recipe",
+                "composition_id": "00000000-0000-0000-0000-000000000000",
+                "parameters": { "colour": { "label": "Colour", "default": default } },
+                "bindings": [{ "parameter": "colour", "property": "node:0.qual_hue_center", "take": "hue" }],
+                "graph": { "ops": [{ "op": "add_beside", "at": { "anchor": "source" }, "type": "klipp.grade.qualifier" }] }
+            }))
+            .unwrap()
+        };
+        let r = recipe(serde_json::json!({ "type": "Color", "value": [0.0, 0.0, 1.0, 1.0] }));
+        r.validate().unwrap();
+        let anchors = BTreeMap::from([("source", Uuid::new_v4())]);
+        let ops = r.recipe_ops(Uuid::new_v4(), &anchors, &BTreeMap::new(), &Placing::on_frame(klipp_core::Resolution { width: 100, height: 100 })).unwrap();
+        assert!((ops[0]["params"]["qual_hue_center"].as_f64().unwrap() - 240.0).abs() < 0.5, "blue's hue set: {}", ops[0]["params"]);
+        let why = recipe(serde_json::json!({ "type": "Number", "value": 1.0 })).validate().unwrap_err();
+        assert!(why.contains("takes a hue"), "{why}");
     }
 
     /// A template folder is somewhere anyone can drop a file (#2758): what

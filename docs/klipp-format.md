@@ -339,7 +339,9 @@ composition and is refused with a hint to save it again):
   property path (`object:<i>.text|color|font|picture|size|opacity|…`,
   `clip:<n>.media`, `node:<op>.<param>`, or `node:<op>.<param>~<field>`
   for a field of the first behaviour a recipe's `modify` op puts on that
-  parameter, as a wiggle's `amplitude`). With `link: {to: [a, b],
+  parameter, as a wiggle's `amplitude`); `take: "hue"` sets it to a
+  colour control's hue in degrees, as a qualifier reads that colour
+  picked on the picture. With `link: {to: [a, b],
   curve}` the parameter is a macro control: its range maps onto `to`
   on `linear`, `ease_in`, `ease_out` or `ease_in_out`. A recipe's link
   may say what `to` is measured against, `per`: `width` or `height`
