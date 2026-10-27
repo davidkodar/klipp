@@ -2552,11 +2552,11 @@ impl GraphExecutor {
             // If a chain is live, see whether this node can extend it or
             // whether we must flush the tail back to CPU first.
             let primary_input_id = graph.input_of(node_id, 0);
-            let primary_is_chain_tail = chain_tail.is_some() && primary_input_id == chain_tail;
+            let mut primary_is_chain_tail = chain_tail.is_some() && primary_input_id == chain_tail;
             // The chain tail's fan-out must be 1 for the chain to extend
             // past it (more consumers would need a CPU copy anyway, so
             // extending only delays the inevitable download).
-            let chain_tail_fan_out_one = chain_tail
+            let mut chain_tail_fan_out_one = chain_tail
                 .map(|id| {
                     fan_out.get(&id).copied().unwrap_or(0).saturating_sub(served.get(&id).copied().unwrap_or(0)) <= 1
                         // The one tail whose extra consumers the chain
@@ -2609,7 +2609,7 @@ impl GraphExecutor {
             } else {
                 None
             };
-            let composite_route = composite_port1_id.and_then(|src_id| {
+            let mut composite_route = composite_port1_id.and_then(|src_id| {
                 if composite.as_ref().is_some_and(|(id, _)| *id == src_id) {
                     Some(CompositeRoute::Resident)
                 } else if segment_composite_writes == 0 {
@@ -2621,7 +2621,64 @@ impl GraphExecutor {
                     None
                 }
             });
-            let composite_ready = composite_route.is_some() && self.gpu.is_some();
+            let mut composite_ready = composite_route.is_some() && self.gpu.is_some();
+            // A merge's own picture is the chain's (#2758): a picture
+            // beside the chain, a generator a merge lays over, drawn on the
+            // GPU ahead of the picture it goes over. Kept as the
+            // composite's picture and the chain submitted, nothing read
+            // back, for the picture under it to open a chain of its own
+            // below.
+            if chain_tail.is_some()
+                && chain_tail == composite_port1_id
+                && primary_input_id != chain_tail
+                && node.kind == NodeKind::Blend
+                && node.params.merge.is_some()
+                && !bypass
+                && chain_tail_fan_out_one
+            {
+                let tail = chain_tail.expect("checked above");
+                if let Some(picture) = self.gpu.as_mut().and_then(|g| g.keep_picture(chain_slot_a, width, height)) {
+                    if let Some(g) = self.gpu.as_mut() {
+                        g.submit_chain();
+                    }
+                    self.keep_as(&mut composite, Some((tail, picture)));
+                    chain_tail = None;
+                    chain_flush_count += 1;
+                    segment_composite_writes = 0;
+                    composite_route = Some(CompositeRoute::Resident);
+                    composite_ready = true;
+                }
+            }
+            // A merge with no chain alive yet (#2758): a picture beside the
+            // chain laid over a clip with nothing on the GPU before it. Its primary picture goes up as a chain of its
+            // own, nothing drawn on it, for the composite to extend:
+            // otherwise the node ran on the CPU and its picture went up
+            // again for whatever came after.
+            if chain_tail.is_none()
+                && composite_ready
+                && node.kind == NodeKind::Blend
+                && node.params.merge.is_some()
+                && !bypass
+                && Some(node_id) != matte_preview_node
+                && Some(node_id) != matte_tap
+                && Some(node_id) != self.solo_node
+                && !thumb_needs_cpu
+            {
+                if let Some(id) = primary_input_id {
+                    let opened = match node_outputs.get(&id).filter(|a| !a.is_empty()).cloned() {
+                        Some(picture) => self.open_chain(&picture, width, height),
+                        None => self.open_chain(source_frame, width, height),
+                    };
+                    if opened {
+                        chain_tail = Some(id);
+                        chain_slot_a = true;
+                        primary_is_chain_tail = true;
+                        // Readers of the picture yet to run besides this one:
+                        // a reader beside the chain ran before it.
+                        chain_tail_fan_out_one = !graph.edges.iter().any(|e| e.from_node == id && e.to_node != node_id && node_outputs.get(&e.to_node).is_none());
+                    }
+                }
+            }
 
             // A mixed effect's matte goes up from the CPU (step 9c-1): one
             // only on the GPU sends the node the CPU way for now. So a node
@@ -2944,7 +3001,9 @@ impl GraphExecutor {
                         {
                             let other = &composite.as_ref().expect("placed above").1;
                             let gpu = self.gpu.as_mut().expect("gpu checked above");
-                            if node.kind == NodeKind::Blend {
+                            if let (NodeKind::Blend, Some(top)) = (node.kind, params.merge) {
+                                gpu.apply_merge_chain(chain_slot_a, width, height, top.opacity, top.blend_mode as u32, other);
+                            } else if node.kind == NodeKind::Blend {
                                 let mix = params.mix.unwrap_or(0.5).clamp(0.0, 1.0);
                                 gpu.apply_blend_chain(chain_slot_a, width, height, mix, other);
                             } else {
@@ -3934,31 +3993,16 @@ impl GraphExecutor {
         }
     }
 
-    /// Start a new GPU chain: upload `primary_input` to `buf_a`, dispatch
-    /// this first node. Returns `Some(n)` where `n` is the number of
-    /// sub-dispatches issued (≥1 on success — the caller must flip
-    /// `chain_slot_a` exactly `n` times to track which buffer holds the
-    /// output). Returns `None` if the node's GPU dispatch wasn't
-    /// available (caller falls back).
-    #[allow(clippy::too_many_arguments)]
-    fn start_chain(
-        &mut self,
-        node_id: NodeId,
-        kind: &NodeKind,
-        params: &NodeParams,
-        primary_input: &[f32],
-        width: u32,
-        height: u32,
-        frame_number: u64,
-        keep_input_for_composite: bool,
-        keep_input_for_gates: bool,
-        keys_of_input: &mut dyn FnMut(&mut Self),
-    ) -> Option<u32> {
+    /// A chain's input put up and its encoder opened (#2758): the start
+    /// of [`Self::start_chain`] before its node is dispatched, the input
+    /// seeded on the GPU already or uploaded from `primary_input`. `false`
+    /// when there is no chain to open: no GPU, a lost device, or no input.
+    fn open_chain(&mut self, primary_input: &[f32], width: u32, height: u32) -> bool {
         let ms = |t: std::time::Instant| t.elapsed().as_secs_f64() * 1000.0;
         self.chain_start_split.clear();
-        let gpu = self.gpu.as_mut()?;
+        let Some(gpu) = self.gpu.as_mut() else { return false };
         if gpu.is_device_lost() {
-            return None;
+            return false;
         }
         let byte_size = (width as u64) * (height as u64) * 16;
         let t = std::time::Instant::now();
@@ -3987,7 +4031,7 @@ impl GraphExecutor {
                 // `CpuSourceRequired` so the engine can retry with a
                 // readback.
                 self.run_seed_dims = None;
-                return None;
+                return false;
             }
             gpu.upload_chain_input_linear(primary_input);
             self.chain_start_split.push(("uploaded", ms(t)));
@@ -4012,6 +4056,34 @@ impl GraphExecutor {
         let t = std::time::Instant::now();
         gpu.begin_chain();
         self.chain_start_split.push(("begin", ms(t)));
+        true
+    }
+
+    /// Start a new GPU chain: upload `primary_input` to `buf_a`, dispatch
+    /// this first node. Returns `Some(n)` where `n` is the number of
+    /// sub-dispatches issued (≥1 on success — the caller must flip
+    /// `chain_slot_a` exactly `n` times to track which buffer holds the
+    /// output). Returns `None` if the node's GPU dispatch wasn't
+    /// available (caller falls back).
+    #[allow(clippy::too_many_arguments)]
+    fn start_chain(
+        &mut self,
+        node_id: NodeId,
+        kind: &NodeKind,
+        params: &NodeParams,
+        primary_input: &[f32],
+        width: u32,
+        height: u32,
+        frame_number: u64,
+        keep_input_for_composite: bool,
+        keep_input_for_gates: bool,
+        keys_of_input: &mut dyn FnMut(&mut Self),
+    ) -> Option<u32> {
+        let ms = |t: std::time::Instant| t.elapsed().as_secs_f64() * 1000.0;
+        if !self.open_chain(primary_input, width, height) {
+            return None;
+        }
+        let gpu = self.gpu.as_mut()?;
         let t = std::time::Instant::now();
         // The picture just uploaded is some composite's port-1 input,
         // and the dispatch below is about to overwrite the slot holding
@@ -6821,6 +6893,15 @@ impl GraphExecutor {
                 // literal 255 into every pixel, so a Blend anywhere in
                 // a graph destroyed the matte of everything downstream.
                 use rayon::prelude::*;
+                // A merge (#2758): the port-1 picture over this one as a
+                // layer mixer lays a top layer over its base; with
+                // nothing on port 1, the picture as it is.
+                if let Some(top) = params.merge {
+                    return match secondary_input {
+                        Some(fg) => layer_mixer_compose(&[(0, fg), (1, primary_input)], &[top, LayerMixerInput::default()], primary_input.len() / 4),
+                        None => primary_input.to_vec(),
+                    };
+                }
                 let mix = params.mix.unwrap_or(0.5).clamp(0.0, 1.0);
                 let b = secondary_input.unwrap_or(primary_input);
                 let mut out = primary_input.to_vec();
