@@ -1179,7 +1179,7 @@ pub enum Op {
     /// given is set on the clip's primary grade, the rest is left. Every
     /// knob is zero at neutral, save `saturation` and `contrast`, whose
     /// neutral is one. `exposure` is in stops; `temperature` and `tint`
-    /// warm/cool and green/magenta the white balance, in mireds of
+    /// warm/cool and magenta/green the white balance (+ warmer, + magenta), in mireds of
     /// assumed light, -50 to 50 as the app's own sliders read (about 5
     /// Lab b* at 25, 10 at 50 — a tenth of a unit does nothing);
     /// `lift`, `gamma`,

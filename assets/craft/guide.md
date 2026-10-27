@@ -313,8 +313,8 @@ exist until the plan runs.
   Every knob is 0 at neutral, except `saturation` and `contrast`, whose
   neutral is 1. `exposure` is in stops; `temperature` and `tint` are the
   white balance, in mireds of assumed light (a unit moves a grey about
-  0.2 b*: +25 a clear warm, +50 strong; `tint` + is light assumed more
-  magenta, so the picture goes green, and − turns it magenta); `lift`, `gamma`, `gain` move the shadows, mids and
+  0.2 b*: +25 a clear warm, +50 strong; `tint` + turns the picture
+  magenta and − green, as + temperature warms it); `lift`, `gamma`, `gain` move the shadows, mids and
   highlights; `shadows` (-1 to 1) lifts or sinks the quarter tones,
   black and mid grey held, and `highlights` (-1 to 1) the tones from mid
   grey up, most at white: ±0.3 is a moderate move, ±1 a strong
