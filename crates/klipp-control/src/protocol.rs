@@ -850,6 +850,16 @@ pub enum ControlCommand {
     GradeToTarget {
         #[serde(default)]
         clip_id: Option<String>,
+        /// Several clips, graded as one pass and one undo step (auto
+        /// colour on a selection, #2758); with `clip_id`, both.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        clips: Vec<String>,
+        /// The look to grade toward where the piece has no brief, by
+        /// preset name (auto colour's starting grade, #2758): exposure,
+        /// contrast and white balance, which the unbriefed target leaves
+        /// to the scene. A brief's or a grade group's look still wins.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        look_if_unbriefed: Option<String>,
         #[serde(default)]
         apply: bool,
         #[serde(default)]
@@ -1236,6 +1246,11 @@ pub enum ControlCommand {
         /// they can expose, by label.
         #[serde(default)]
         clip_ids: Option<Vec<String>>,
+        /// Nodes of `clip_id`'s picture saved together as a recipe
+        /// (#2757 step 6), by id; `controls` publish their numbers, each
+        /// drive's target `node:<id>.<param>`.
+        #[serde(default)]
+        nodes: Option<Vec<String>>,
         name: String,
         #[serde(default)]
         category: Option<String>,

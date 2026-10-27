@@ -759,6 +759,9 @@ exist until the plan runs.
 - `remove_silences {clip_id, from?, to?, min_silence?, padding?, ripple?, smooth_cut?}`:
   the measured pauses taken out of a clip (its file's sound analysed),
   each but its padding; one undo.
+- `auto_colour {clips, strength?}`: a starting grade for each clip:
+  exposure, white balance and contrast measured and set toward neutral
+  (or the brief's look); sent alone; one undo.
 - `set_length {clips, frames, keep?, ripple?}`: each clip made `frames`
   long, keeping its `start` (the default), `end` or `centre`; with
   `ripple` what follows closes up or makes room. A rapid-fire montage is

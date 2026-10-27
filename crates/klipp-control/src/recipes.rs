@@ -344,6 +344,27 @@ mod tests {
         assert_eq!(amplitudes, [30.0, 50.0], "placed at the control's default, then where it was moved");
     }
 
+    /// A recipe's saved node entry (#2757 step 6) is checked as the node's
+    /// own before it is used: one of another type, and one that doesn't
+    /// read as that node's, are refused, the clip left as it was.
+    #[test]
+    fn a_hostile_saved_entry_is_refused() {
+        let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let mut seq = Sequence::new_default();
+        let clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0));
+        let id = clip.id;
+        seq.tracks[0].clips = vec![clip];
+        for entry in [json!({ "type": "chroma_key" }), json!({ "type": "glow", "radius": "huge" }), json!("not an entry")] {
+            let recipe: CompositionTemplate = serde_json::from_value(json!({
+                "format_version": 2, "id": "1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b", "name": "Hostile", "kind": "recipe",
+                "composition_id": "00000000-0000-0000-0000-000000000000",
+                "graph": { "ops": [{ "op": "add", "after": { "anchor": "end" }, "type": "klipp.fx.glow", "entry": entry }] }
+            }))
+            .unwrap();
+            assert!(on_clip(&seq, id, &recipe, &BTreeMap::new()).is_err(), "{entry} refused");
+        }
+    }
+
     /// Text behind a subject (#2758) whose clip's media has no subject
     /// matte yet: the recipe is placed, and the reply says how many of the
     /// clip's frames have one and that track_subject makes the rest, by

@@ -327,7 +327,9 @@ composition and is refused with a hint to save it again):
   sequence and every sequence it nests, so it inserts into any project.
 * `graph` — a recipe's `{ops, checks, check_with}` instead: graph ops
   addressed from anchors or `{"new": k}` (`modify` among them, putting
-  behaviours on a node's parameter), the harness's checks, and the
+  behaviours on a node's parameter; an `add` may carry `entry`, the
+  node's whole stored entry, as a recipe saved from nodes does, refused
+  unless it reads as that node's), the harness's checks, and the
   control values the checks run with where the test shot needs other
   values than the defaults.
 * `parameters` — by name: `{label, default, range?, choices}`, the

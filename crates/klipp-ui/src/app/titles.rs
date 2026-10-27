@@ -77,6 +77,14 @@ impl KlippApp {
                 }
                 true
             }
+            AppCommand::SaveNodesAsRecipe { clip_id, node_ids } => {
+                let clip = self.state.sequence().all_clips().find(|c| c.id == *clip_id).cloned();
+                match clip {
+                    Some(clip) => self.state.recipe_save_dialog = Some(crate::parameterized_templates::RecipeSaveDialog::new(clip, node_ids.clone())),
+                    None => self.state.toast.show("That clip is gone"),
+                }
+                true
+            }
             AppCommand::ReloadTitleTemplates => {
                 self.state.title_templates = crate::title_templates::TitleTemplateStore::load_default();
                 // And the composition templates, saved the same way (#2757).

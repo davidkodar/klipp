@@ -195,6 +195,7 @@ impl KlippApp {
     pub(super) fn show_modal_dialogs(&mut self, ctx: &egui::Context, cmds: &mut Vec<AppCommand>) {
         crate::title_templates::show_dialog(ctx, &mut self.state);
         crate::parameterized_templates::show_save_dialog(ctx, &mut self.state);
+        crate::parameterized_templates::show_recipe_save_dialog(ctx, &mut self.state);
         cmds.extend(crate::import_report::show_dialog(ctx, &mut self.state));
         cmds.extend(crate::credits_dialog::show_dialog(ctx, &mut self.state));
         cmds.extend(crate::normalize_dialog::show_dialog(ctx, &mut self.state));

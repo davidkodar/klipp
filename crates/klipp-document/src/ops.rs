@@ -2236,6 +2236,19 @@ pub enum Op {
         #[serde(default)]
         smooth_cut: bool,
     },
+    /// A starting grade for each of `clips` (one or a selection): its
+    /// exposure, white balance and contrast measured over three frames of
+    /// the shot and its primaries moved toward neutral (or the brief's
+    /// look) within `strength` (gentle, the default; normal; bold), the
+    /// same measuring grade_to_target does. One undo; it leaves an ordinary
+    /// editable grade. It measures the rendered picture, so it is sent on
+    /// its own; a shot that looks like camera log with no input transform
+    /// is left alone, said.
+    AutoColour {
+        clips: Vec<ClipRef>,
+        #[serde(default)]
+        strength: Option<String>,
+    },
     /// The `clips` each made `frames` long (#988): a rapid-fire montage of
     /// clips of a few frames each. `keep` says which end stays put: the
     /// start (the out point is trimmed, the default), the end, or the
@@ -2313,7 +2326,7 @@ pub const OP_NAMES: &[&str] = &[
     "slip", "slide", "pin", "role", "match", "matte", "format", "stabilize", "reframe", "zoom", "pan", "follow", "refit", "highlight",
     "ramp", "freeze", "grade_group", "remove_grade_group", "look", "qualify", "zones", "retime", "replace", "track_audio", "clip_audio", "clean_audio",
     "transition", "style", "title", "compose", "camera", "crop", "generator", "depth", "label", "motion_blur",
-    "strobe", "remove_silences", "set_length", "over_edits", "template", "template_link", "recipe", "edit_from_selects", "opacity_mask",
+    "strobe", "remove_silences", "auto_colour", "set_length", "over_edits", "template", "template_link", "recipe", "edit_from_selects", "opacity_mask",
 ];
 
 pub use klipp_timeline::ShadowSpec;
@@ -3287,6 +3300,20 @@ fn resolve_clip<'a>(seq: &'a Sequence, fps: Fps, r: &ClipRef, step: usize) -> Re
     }
 }
 
+/// The clips `refs` name in `seq`, each once: what an op measured outside
+/// a plan works on (auto_colour). A step reference (`@N`) names nothing
+/// here.
+pub fn clip_ids_of(seq: &Sequence, refs: &[ClipRef]) -> Result<Vec<ClipId>, Refusal> {
+    let mut ids = Vec::new();
+    for r in refs {
+        let id = clip_ref_id(seq, seq.fps, r, 0)?;
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    Ok(ids)
+}
+
 fn clip_ref_id(seq: &Sequence, fps: Fps, r: &ClipRef, step: usize) -> Result<ClipId, Refusal> {
     resolve_clip(seq, fps, r, step).map(|(_, _, c)| c.id)
 }
@@ -3578,6 +3605,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let (ops, what) = strobe_ops(seq, fps, i, clip_id, *piece_frames, from.as_ref(), to.as_ref(), *on, *off, *ripple)?;
             as_one_step(seq, pool, i, transcripts, &ops, "Strobe", what)
         }
+        Op::AutoColour { .. } => Err(refuse(i, "auto_colour measures the rendered picture, so it can't be planned with other steps", "send it alone in its own apply")),
         Op::RemoveSilences { clip_id, from, to, min_silence, padding, ripple, smooth_cut } => {
             let (ops, what) = remove_silences_ops(seq, pool, fps, i, transcripts, clip_id, from.as_ref(), to.as_ref(), *min_silence, *padding, *ripple, *smooth_cut)?;
             as_one_step(seq, pool, i, transcripts, &ops, "Remove Silences", what)

@@ -25,10 +25,11 @@ pub(crate) fn prepare(wire: &[GraphWireOp], mut docs: Documents) -> Result<Prepa
             let path = item.path().resolve(&result.created)?;
             if path.nodes.is_empty() { return Err("an operation must name a node".into()); }
             let mut initial_params = None;
+            let mut initial_entry: Option<(klipp_graph_format::path::NodePath, serde_json::Value)> = None;
             let mut created = None;
             let mut then_label = None;
             let op = match item {
-                GraphWireOp::Add { r#type, params, label, .. } | GraphWireOp::AddBeside { r#type, params, label, .. } => {
+                GraphWireOp::Add { r#type, params, label, entry, .. } | GraphWireOp::AddBeside { r#type, params, label, entry, .. } => {
                     if params.len() > 64 { return Err("an add takes at most 64 initial parameters".into()); }
                     let id = uuid::Uuid::new_v4();
                     let mut node = graph_model::new_node(r#type, id, label.as_deref())?;
@@ -45,6 +46,7 @@ pub(crate) fn prepare(wire: &[GraphWireOp], mut docs: Documents) -> Result<Prepa
                             then_label = Some((target.clone(), name.clone()));
                         }
                     }
+                    initial_entry = entry.clone().map(|e| (target.clone(), e));
                     initial_params = Some((target.clone(), params));
                     created = Some(target);
                     if beside { GraphOp::AddNodeBeside { at: path, node: Box::new(node) } }
@@ -93,6 +95,13 @@ pub(crate) fn prepare(wire: &[GraphWireOp], mut docs: Documents) -> Result<Prepa
             apply_in_batch(&mut docs, &op, &RegistryCatalog, &pending)?;
             result.ops.push(op);
             result.source_indices.push(index);
+            // A saved node's whole entry, as SetPayload checks one.
+            if let Some((target, payload)) = initial_entry {
+                let op = GraphOp::SetPayload { path: target, payload };
+                apply_in_batch(&mut docs, &op, &RegistryCatalog, &pending)?;
+                result.ops.push(op);
+                result.source_indices.push(index);
+            }
             if let Some((target, params)) = initial_params {
                 for (key, value) in params {
                     let node = resolve(&docs, &target).map_err(|e| e.to_string())?;

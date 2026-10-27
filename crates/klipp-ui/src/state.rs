@@ -2615,6 +2615,8 @@ pub struct AppState {
     pub title_template_dialog: Option<crate::title_templates::TemplateDialog>,
     /// Clips being saved together as a composition template (#2757).
     pub composition_save_dialog: Option<crate::parameterized_templates::CompositionSaveDialog>,
+    /// Nodes of a clip's picture being saved as a recipe (#2757 step 6).
+    pub recipe_save_dialog: Option<crate::parameterized_templates::RecipeSaveDialog>,
     /// The open credits-from-a-list dialog (#1514).
     pub credits_dialog: Option<crate::credits_dialog::CreditsDialog>,
     /// The open Normalize dialog (#1843).
@@ -5008,6 +5010,7 @@ impl Default for AppState {
             composition_templates: crate::parameterized_templates::load_store(),
             title_template_dialog: None,
             composition_save_dialog: None,
+            recipe_save_dialog: None,
             credits_dialog: None,
             normalize_dialog: None,
             shorts_dialog: None,
