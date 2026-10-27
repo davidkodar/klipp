@@ -137,6 +137,10 @@ fn timecode_frame(tc: &str) -> Option<u64> {
     let drop = tc.contains([';', '.']);
     let parts: Vec<u64> = tc.split([':', ';', '.']).map(|p| p.trim().parse().ok()).collect::<Option<_>>()?;
     let [h, m, s, f] = parts[..] else { return None };
+    // A timecode's own ranges, so the frame count cannot overflow.
+    if h > 99 || m > 59 || s > 59 || f > 29 {
+        return None;
+    }
     let n = ((h * 60 + m) * 60 + s) * 30 + f;
     let minutes = h * 60 + m;
     Some(if drop { n - 2 * (minutes - minutes / 10) } else { n })
@@ -681,6 +685,18 @@ pub fn parse_scc(content: &str) -> Result<Vec<SubtitleEntry>, String> {
 
 #[cfg(test)]
 mod tests {
+
+    /// A timecode out of its own ranges is no timecode: no overflow, the
+    /// file refused, not a wrapped or panicking frame count.
+    #[test]
+    fn an_out_of_range_timecode_is_refused() {
+        assert_eq!(timecode_frame("99999999999999999:00:00:00"), None);
+        assert_eq!(timecode_frame("00:61:00:00"), None);
+        assert_eq!(timecode_frame("00:00:00;30"), None);
+        assert_eq!(timecode_frame("01:00:00:00"), Some(108_000));
+        assert!(parse_scc("Scenarist_SCC V1.0\n\n99999999999999999:00:00:00\t9420 9420\n").is_err());
+    }
+
     use super::*;
 
     fn cue(start: f64, end: f64, text: &str) -> SubtitleEntry {
