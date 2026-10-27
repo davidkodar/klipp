@@ -1305,4 +1305,41 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_file(&outside).ok();
     }
+
+    /// #2757: the templates Klipp ships load and check as saved ones do;
+    /// each picks its layout for the frame it is placed in, a frame
+    /// without one getting the main; they list after the user's, one of
+    /// the same name hidden by the user's, and are never written.
+    #[test]
+    fn built_in_templates_load_pick_their_layout_and_are_never_written() {
+        let shipped = builtin_templates();
+        let split = shipped.iter().find(|t| t.name == "Split Screen").expect("the split screen ships");
+        assert_eq!(split.formats.keys().map(String::as_str).collect::<Vec<_>>(), ["square", "tall"]);
+        let id_of = |w, h| split.composition_for(w, h).map(|s| (s.id.0, s.resolution.width, s.resolution.height));
+        assert_eq!(id_of(1920, 1080), Some((split.composition_id, 1920, 1080)));
+        assert_eq!(id_of(3840, 2160).map(|t| t.0), Some(split.composition_id), "any wide frame: the main");
+        assert_eq!(id_of(1080, 1920).map(|t| (t.1, t.2)), Some((1080, 1920)));
+        assert_eq!(id_of(1080, 1080).map(|t| (t.1, t.2)), Some((1080, 1080)));
+        let mut plain = split.clone();
+        plain.formats.clear();
+        assert_eq!(plain.composition_for(1080, 1920).map(|s| s.id.0), Some(split.composition_id), "no tall layout: the main");
+
+        let dir = std::env::temp_dir().join(format!("klipp-builtins-{}", Uuid::new_v4()));
+        let mut store = CompositionTemplateStore::load(Some(dir.clone())).with_builtins();
+        assert!(store.templates().any(|t| t.name == "Split Screen") && store.is_builtin(split.id));
+        // Saved over, it is the user's copy, under a new id, hiding the shipped one.
+        store.save(split.clone()).unwrap();
+        let reread = CompositionTemplateStore::load(Some(dir.clone())).with_builtins();
+        let named: Vec<&CompositionTemplate> = reread.templates().filter(|t| t.name == "Split Screen").collect();
+        assert_eq!(named.len(), 1, "one Split Screen listed");
+        assert!(named[0].id != split.id && !reread.is_builtin(named[0].id), "the user's copy");
+        // A layout that is not carried, or a format not known, is refused.
+        let mut bad = split.clone();
+        bad.formats.insert("tall".into(), Uuid::new_v4());
+        assert!(bad.validate().unwrap_err().contains("tall layout is not carried"));
+        let mut bad = split.clone();
+        bad.formats.insert("portrait".into(), split.composition_id);
+        assert!(bad.validate().unwrap_err().contains("not tall or square"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
