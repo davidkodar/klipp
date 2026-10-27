@@ -198,6 +198,11 @@ pub struct RecipeGraph {
     /// What the recipe harness measures of it (#2758), on its test shot.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub checks: Vec<RecipeCheck>,
+    /// The controls its checks run with, by name, where the test shot
+    /// needs other values than a real picture's defaults (a sky's
+    /// brightness against the shot's plain patch).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub check_with: BTreeMap<String, f64>,
 }
 
 /// One measured check of a recipe (#2758), as data: the frame the recipe
@@ -730,10 +735,11 @@ pub fn composition_sequences(root: &Sequence, all: &[Sequence]) -> Vec<Sequence>
 /// The recipes Klipp ships (#2758), as files in `assets/recipes`: each a
 /// recipe like a saved one, read and checked as one is.
 pub fn builtin_recipes() -> Vec<CompositionTemplate> {
-    const FILES: [&str; 3] = [
+    const FILES: [&str; 4] = [
         include_str!("../../../assets/recipes/green_screen.klipptemplate"),
         include_str!("../../../assets/recipes/picture_in_picture.klipptemplate"),
         include_str!("../../../assets/recipes/matted_glow.klipptemplate"),
+        include_str!("../../../assets/recipes/sky.klipptemplate"),
     ];
     FILES
         .iter()
