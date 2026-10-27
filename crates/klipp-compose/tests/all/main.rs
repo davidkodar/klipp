@@ -122,6 +122,8 @@ mod title_loops_placed_gpu;
 mod title_metal_gpu;
 #[path = "../title_contrast_protect.rs"]
 mod title_contrast_protect;
+#[path = "../animated_caption_gpu.rs"]
+mod animated_caption_gpu;
 #[path = "../title_moving_styles_gpu.rs"]
 mod title_moving_styles_gpu;
 #[path = "../title_routes_f16.rs"]

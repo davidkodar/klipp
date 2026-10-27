@@ -32,7 +32,7 @@ fn word_spans() -> Vec<(u32, u32)> {
     let px = draw(&td, 0.7);
     let inked: Vec<u32> = (0..W).filter(|&x| (0..H).any(|y| px[((y * W + x) * 4 + 3) as usize] > 128)).collect();
     let mut gaps: Vec<(u32, usize)> = inked.windows(2).enumerate().map(|(i, p)| (p[1] - p[0], i)).collect();
-    gaps.sort_by(|a, b| b.0.cmp(&a.0));
+    gaps.sort_by_key(|g| std::cmp::Reverse(g.0));
     let mut cuts: Vec<usize> = gaps[..2].iter().map(|g| g.1).collect();
     cuts.sort();
     vec![(inked[0], inked[cuts[0]]), (inked[cuts[0] + 1], inked[cuts[1]]), (inked[cuts[1] + 1], *inked.last().unwrap())]
