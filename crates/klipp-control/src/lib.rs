@@ -798,6 +798,7 @@ fn handle(
         cmd @ (ControlCommand::NewProject { .. }
             | ControlCommand::ProjectTemplates { .. }
             | ControlCommand::NewSequence { .. }
+            | ControlCommand::MakeShorts { .. }
             | ControlCommand::RenameSequence { .. }
             | ControlCommand::SwitchSequence { .. }
             | ControlCommand::DuplicateSequence { .. }
@@ -825,6 +826,7 @@ fn handle(
         #[cfg(feature = "test-hooks")]
         cmd @ ControlCommand::ShowPanel { .. } => requests::editing::respond(ctx, cmd, collect),
         cmd @ (ControlCommand::Selects { .. }
+            | ControlCommand::FindMoments { .. }
             | ControlCommand::SearchMusic { .. }
             | ControlCommand::SearchSfx { .. }
             | ControlCommand::AddMusic { .. }

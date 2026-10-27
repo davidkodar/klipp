@@ -4529,3 +4529,37 @@ fn an_export_of_another_shape_says_it_is_letterboxed() {
     assert!(export("Instagram Square").as_str().unwrap_or_default().contains("above and below"), "square: a wide picture letterboxed");
     assert!(export("YouTube 1080p").is_null(), "the same shape says nothing");
 }
+
+/// #2720: find_moments reads a transcript; a file without one is refused
+/// with how to get one, and one that isn't there is named.
+#[test]
+fn find_moments_asks_for_a_transcript_first() {
+    let mut h = harness();
+    let item = klipp_media::MediaItem::synthetic_for_test(std::env::temp_dir().join(format!("klipp-no-talk-{}.mov", uuid::Uuid::new_v4())), None);
+    let media = h.media_pool.write().unwrap().add(item);
+    let reply = h.call(json!({ "method": "find_moments", "media_id": media.0.to_string(), "length": 30, "count": 3 }));
+    assert_eq!(reply["ok"], json!(false), "{reply}");
+    assert!(reply["error"].as_str().unwrap_or_default().contains("analyze it first"), "{reply}");
+    let reply = h.call(json!({ "method": "find_moments", "media_id": uuid::Uuid::new_v4().to_string() }));
+    assert!(reply["error"].as_str().unwrap_or_default().contains("no media item"), "{reply}");
+}
+
+/// #2720: make_shorts refuses what it can't build before making any
+/// sequence: no moments, a platform it doesn't know, a file without a
+/// transcript.
+#[test]
+fn make_shorts_refuses_before_building_anything() {
+    let mut h = harness();
+    let item = klipp_media::MediaItem::synthetic_for_test(std::env::temp_dir().join(format!("klipp-no-talk-{}.mov", uuid::Uuid::new_v4())), None);
+    let media = h.media_pool.write().unwrap().add(item).0.to_string();
+    let moment = json!([{ "from_secs": 1.0, "to_secs": 20.0 }]);
+    for (request, why) in [
+        (json!({ "method": "make_shorts", "media_id": media, "moments": [] }), "give 1 to 10"),
+        (json!({ "method": "make_shorts", "media_id": media, "moments": moment, "platform": "vine" }), "not a platform"),
+        (json!({ "method": "make_shorts", "media_id": media, "moments": moment }), "analyze it first"),
+    ] {
+        let reply = h.call(request);
+        assert_eq!(reply["ok"], json!(false), "{reply}");
+        assert!(reply["error"].as_str().unwrap_or_default().contains(why), "{why}: {reply}");
+    }
+}

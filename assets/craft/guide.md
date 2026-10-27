@@ -859,13 +859,15 @@ exist until the plan runs.
   x:0.4, y:0.48, ease:linear}]}`.
 - `follow {clip_id, scale?, hold_secs?}`: make a pan from the beat
   sheet's spots, pushing to each event, holding, then easing out.
-- `refit {markers?}`: after `format` changes the aspect, fit every picture
+- `refit {markers?, punch?}`: after `format` changes the aspect, fit every picture
   and title to the new frame in one step. Each picture fills the frame and
   follows its subject (faces first, then people, from the framing
   analysis, so analyze first) with a held, eased pan; a still holds one
   pose. Titles are kept inside title-safe and shrunk where they no longer
   fit across. Pictures with no clear subject stay centred, are named in
   the reply, and get a range marker each unless `markers` is false.
+  `punch` (1 to 1.5) pushes every other picture on a track in that much
+  further, so two pieces cut from one shot jump like a cut, not a glitch.
 - `highlight {at, secs?, x, y, w, h, kind?, color?, stroke?, track?}`:
   draw attention to a region. `x,y` are its centre and `w,h` its size
   as frame fractions; `kind` is `box`, `ring` or `spot` (dim outside).

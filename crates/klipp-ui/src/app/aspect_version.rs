@@ -99,7 +99,7 @@ impl KlippApp {
             }
             self.state.pending_doc_ops.push(crate::state::DocOpsRequest {
                 label: "Refit to Frame".into(),
-                ops: vec![klipp_document::ops::Op::Refit { markers: true }],
+                ops: vec![klipp_document::ops::Op::Refit { markers: true, punch: None }],
                 independent: false,
             });
         }

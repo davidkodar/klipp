@@ -297,6 +297,67 @@ pub(crate) fn respond(
             send(AppCommand::AddSequenceAndOpen { name, fps_num, fps_den, width, height })
         }
 
+        ControlCommand::MakeShorts { media_id, moments, platform, tighten, hook_title } => {
+            if in_batch {
+                return Err("make_shorts builds sequences of its own: send it on its own".into());
+            }
+            // Every short platform asks for about -14 LUFS (#2720).
+            let lufs = match platform.as_deref().map(str::to_lowercase).as_deref() {
+                None | Some("shorts" | "reels" | "tiktok") => -14.0,
+                Some(other) => return Err(format!("\"{other}\" is not a platform: give shorts, reels or tiktok")),
+            };
+            if moments.is_empty() || moments.len() > 10 {
+                return Err(format!("{} moments: give 1 to 10, from find_moments", moments.len()));
+            }
+            let id = klipp_core::MediaId(media_id.parse().map_err(|e| format!("media_id is not a uuid: {e}"))?);
+            let (item, words) = {
+                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let item = pool.get(&id).ok_or_else(|| format!("no media item {}", id.0))?.clone();
+                let report = klipp_analysis::report::MediaAnalysis::load(&item.path);
+                let Some(t) = report.transcript else {
+                    return Err(format!("{} has no transcript yet: analyze it first", item.filename));
+                };
+                let words: Vec<klipp_document::ops::SpokenWord> = t.words.iter().map(|w| klipp_document::ops::SpokenWord { start_secs: w.start_secs, end_secs: w.end_secs, text: w.text.clone(), confidence: w.confidence }).collect();
+                (item, words)
+            };
+            let dur = item.duration.to_secs_f64();
+            let tighten = tighten.unwrap_or(true);
+            // Each moment's pieces first, so a bad one is refused before
+            // any sequence is made.
+            let mut planned = Vec::new();
+            for (k, m) in moments.iter().enumerate() {
+                if !(m.from_secs >= 0.0 && m.to_secs > m.from_secs && m.to_secs <= dur + 0.5) {
+                    return Err(format!("moment {}: {:.2}-{:.2} s is not inside the file's {dur:.2} s", k + 1, m.from_secs, m.to_secs));
+                }
+                let pieces = klipp_document::shorts::pieces(&words, m.from_secs, m.to_secs, tighten);
+                if pieces.is_empty() {
+                    return Err(format!("moment {}: nothing is said in {:.2}-{:.2} s", k + 1, m.from_secs, m.to_secs));
+                }
+                let hook = m.hook.clone().unwrap_or_else(|| words.iter().filter(|w| w.start_secs >= m.from_secs - 0.05).take(8).map(|w| w.text.trim()).collect::<Vec<_>>().join(" "));
+                planned.push((pieces, hook));
+            }
+            let mut made = Vec::new();
+            for (k, (pieces, hook)) in planned.iter().enumerate() {
+                let short: String = hook.chars().take(40).collect();
+                let name = format!("Short {}: {}", k + 1, short.trim());
+                crate::handle(ctx, ControlCommand::NewSequence { name: name.clone(), width: 1080, height: 1920, fps: item.fps.as_f64() }, &mut None)?;
+                let ops = klipp_document::shorts::short_ops(id, pieces, hook_title.then_some(hook.as_str()), 1.15);
+                crate::handle(ctx, ControlCommand::Apply { ops, expected_revision: None, expected_project_identity: None, label: Some(format!("Make Short {}", k + 1)), detail: false }, &mut None)?;
+                let sounds: Vec<String> = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Audio).flat_map(|t| &t.clips).map(|c| c.id.0.to_string()).collect();
+                if !sounds.is_empty() {
+                    crate::handle(ctx, ControlCommand::NormalizeClips { clip_ids: sounds, mode: klipp_core::normalize::NormalizeMode::Loudness, target: Some(lufs), ceiling_dbtp: Some(-1.0), group: true, apply: Some(true) }, &mut None)?;
+                }
+                let secs: f64 = pieces.iter().map(|(a, b)| b - a).sum();
+                made.push(json!({ "name": name, "pieces": pieces.len(), "secs": secs }));
+            }
+            let text = made.iter().map(|m| format!("  {} ({} piece(s), {:.1} s)", m["name"].as_str().unwrap_or_default(), m["pieces"], m["secs"].as_f64().unwrap_or_default())).collect::<Vec<_>>().join("\n");
+            Ok(json!({
+                "text": format!("{} short(s) made, each a sequence of its own at 1080x1920, {lufs} LUFS:\n{text}", made.len()),
+                "shorts": made,
+                "next": "Open each (klipp_switch_sequence) and look: klipp_frame_at over the cuts, the captions with klipp_timeline, then klipp_check. Pictures with no clear speaker stay centred: reframe them by hand.",
+            }))
+        }
+
         ControlCommand::RenameSequence { name } => {
             let name = name.trim().to_string();
             if name.is_empty() {
