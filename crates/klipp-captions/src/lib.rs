@@ -162,7 +162,7 @@ pub fn parse_ass(content: &str) -> (Vec<AssSubtitleEntry>, std::collections::Has
                         }
                     }
                     let (text, spans, placement) = styled::parse_ass_text(&text_raw, play_res);
-                    if !text.is_empty() && end_s > start_s {
+                    if !text.is_empty() && cue_times_ok(start_s, end_s) {
                         entries.push(AssSubtitleEntry {
                             start_secs: start_s,
                             end_secs: end_s,
@@ -179,6 +179,17 @@ pub fn parse_ass(content: &str) -> (Vec<AssSubtitleEntry>, std::collections::Has
     }
 
     (entries, styles)
+}
+
+/// The longest a subtitle file's cue may start or end at: a million
+/// seconds, past any real programme.
+pub const MAX_CUE_SECS: f64 = 1.0e6;
+
+/// Whether a cue's times can be placed: finite, from zero, ending after
+/// they start, inside [`MAX_CUE_SECS`]. A cue that fails is left out, so
+/// no reader hands on a time a timeline cannot hold.
+pub fn cue_times_ok(start: f64, end: f64) -> bool {
+    start.is_finite() && end.is_finite() && start >= 0.0 && start < end && end < MAX_CUE_SECS
 }
 
 /// ASS time: `H:MM:SS.cc` where cc is centiseconds (NOT milliseconds).
@@ -313,7 +324,7 @@ pub fn parse_srt_vtt(content: &str) -> Vec<SubtitleEntry> {
                     let text = text_lines.join("\n");
                     // Its tags as styled runs (#1515).
                     let (text, spans) = styled::parse_markup(&text);
-                    if !text.is_empty() {
+                    if !text.is_empty() && cue_times_ok(s, e) {
                         subs.push(SubtitleEntry { start_secs: s, end_secs: e, text, spans, placement: Placement::default() });
                     }
                     continue;
@@ -939,5 +950,27 @@ mod language_tests {
     fn a_vtt_without_a_language_is_unchanged() {
         assert!(generate_vtt(&cues()).starts_with("WEBVTT\n\n00:00:01.000 --> "));
         assert_eq!(generate_vtt(&cues()), generate_vtt_in(&cues(), Some("  ")));
+    }
+}
+
+#[cfg(test)]
+mod cue_time_tests {
+    use super::*;
+
+    /// A cue whose times are not finite, run backwards or lie past
+    /// [`MAX_CUE_SECS`] is left out by each reader; a good one beside it
+    /// is kept.
+    #[test]
+    fn cues_with_unplaceable_times_are_left_out() {
+        let srt = "1\ninf:00:00,000 --> 1:00,000\nbad\n\n2\nNaN:00:00,000 --> 00:00:01,000\nbad\n\n3\n1e300:00:00,000 --> 1e301:00:00,000\nbad\n\n4\n00:00:05,000 --> 00:00:02,000\nbad\n\n5\n00:00:01,000 --> 00:00:02,000\ngood\n";
+        let subs = parse_srt_vtt(srt);
+        assert_eq!(subs.iter().map(|s| s.text.as_str()).collect::<Vec<_>>(), ["good"]);
+        let ass = "[Script Info]\nPlayResX: 1920\nPlayResY: 1080\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,inf:00:00.00,0:00:01.00,Default,,0,0,0,,bad\nDialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,good\n";
+        let (entries, _) = parse_ass(ass);
+        assert_eq!(entries.iter().map(|e| e.text.as_str()).collect::<Vec<_>>(), ["good"]);
+        let ttml = r#"<tt xmlns="http://www.w3.org/ns/ttml" xmlns:ttp="http://www.w3.org/ns/ttml#parameter" ttp:frameRate="0"><body><div><p begin="00:00:01:10" end="00:00:02:00">bad</p><p begin="1s" end="2s">good</p></div></body></tt>"#;
+        let subs = ttml::parse_ttml(ttml).unwrap();
+        assert_eq!(subs.iter().map(|s| s.text.as_str()).collect::<Vec<_>>(), ["good"]);
+        assert!(cue_times_ok(0.0, 1.0) && !cue_times_ok(-1.0, 1.0) && !cue_times_ok(1.0, f64::NAN) && !cue_times_ok(0.0, MAX_CUE_SECS));
     }
 }

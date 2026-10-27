@@ -702,11 +702,27 @@ pub fn export_template(path: &Path, to: &Path) -> Result<(), String> {
 /// (#618, part 3), checked before it is kept: one that does not read is
 /// refused and nothing is added. A template of the same name is replaced.
 pub fn import_template(from: &Path, dir: &Path) -> Result<PathBuf, String> {
+    import_template_within(from, dir, MAX_IMPORT_BYTES, MAX_IMPORT_ENTRIES)
+}
+
+/// The most a project template zip may unpack to, media and all.
+pub const MAX_IMPORT_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+
+/// The most files a project template zip may hold.
+pub const MAX_IMPORT_ENTRIES: usize = 10_000;
+
+/// [`import_template`] within `bytes` unpacked and `entries` files.
+fn import_template_within(from: &Path, dir: &Path, bytes: u64, entries: usize) -> Result<PathBuf, String> {
+    use std::io::Read;
     let file = std::fs::File::open(from).map_err(|e| format!("{}: {e}", from.display()))?;
     let mut zip = zip::ZipArchive::new(file).map_err(|e| format!("not a template archive: {e}"))?;
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    if zip.len() > entries {
+        return Err(format!("the template holds {} files, more than the {entries} an import takes", zip.len()));
+    }
     let unpacked = dir.join(format!(".import-{}", uuid::Uuid::new_v4()));
     let result = (|| {
+        let mut left = bytes;
         for i in 0..zip.len() {
             let mut entry = zip.by_index(i).map_err(|e| e.to_string())?;
             // Only paths inside the template: no absolute or `..` names.
@@ -719,8 +735,17 @@ pub fn import_template(from: &Path, dir: &Path) -> Result<PathBuf, String> {
             if let Some(parent) = to.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
+            // Within what the import may unpack, by the size the entry
+            // declares and by what it really gives.
+            if entry.size() > left {
+                return Err(format!("{} unpacks past the {} MB a template import takes", entry.name(), bytes / (1024 * 1024)));
+            }
             let mut out = std::fs::File::create(&to).map_err(|e| e.to_string())?;
-            std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
+            let wrote = std::io::copy(&mut (&mut entry).take(left + 1), &mut out).map_err(|e| e.to_string())?;
+            if wrote > left {
+                return Err(format!("{} unpacks past the {} MB a template import takes", entry.name(), bytes / (1024 * 1024)));
+            }
+            left -= wrote;
         }
         let template = ProjectTemplate::load(&unpacked)?;
         let path = dir.join(format!("{}.{TEMPLATE_EXTENSION}", file_stem(&template.name)));
@@ -904,6 +929,31 @@ mod tests {
     /// is gone shown missing before and offline after. Part 3: the template
     /// goes to another machine as a zip and comes back the same, and can be
     /// renamed.
+    /// A template zip past the import's caps (too many files, or more
+    /// bytes than it may unpack, whatever its entries declare) is refused
+    /// and nothing is added.
+    #[test]
+    fn a_template_zip_past_its_caps_is_refused() {
+        use std::io::Write;
+        use zip::write::{SimpleFileOptions, ZipWriter};
+        let root = std::env::temp_dir().join(format!("klipp-template-caps-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let zip_path = root.join("t.zip");
+        let mut zip = ZipWriter::new(std::fs::File::create(&zip_path).unwrap());
+        for n in 0..3 {
+            zip.start_file(format!("media/{n}.bin"), SimpleFileOptions::default()).unwrap();
+            zip.write_all(&vec![7u8; 4000]).unwrap();
+        }
+        zip.finish().unwrap();
+        let dir = root.join("templates");
+        let err = import_template_within(&zip_path, &dir, 1 << 20, 2).unwrap_err();
+        assert!(err.contains("3 files"), "{err}");
+        let err = import_template_within(&zip_path, &dir, 6000, 100).unwrap_err();
+        assert!(err.contains("unpacks past"), "{err}");
+        assert_eq!(std::fs::read_dir(&dir).map(|d| d.count()).unwrap_or(0), 0, "nothing added, nothing left behind");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn starter_content_is_kept_and_travels() {
         let root = std::env::temp_dir().join(format!("klipp-starter-{}", uuid::Uuid::new_v4()));

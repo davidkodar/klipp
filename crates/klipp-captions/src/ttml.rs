@@ -342,7 +342,7 @@ pub fn parse_ttml(content: &str) -> Result<Vec<SubtitleEntry>, String> {
         // Spans past the trimmed text's start shift with it.
         let lead = text.len() - text.trim_start_matches([' ', '\n']).len();
         let text = text.trim_matches([' ', '\n']).to_string();
-        if text.is_empty() || end <= begin {
+        if text.is_empty() || !crate::cue_times_ok(begin, end) {
             continue;
         }
         let spans = spans
