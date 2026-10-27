@@ -294,9 +294,15 @@ pub(crate) fn respond(
                     _ => json!("the whole timeline"),
                 }
             };
+            // Another shape than the timeline's (#2784): letterboxed, said.
+            let frame_warning = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                settings.shape_warning(seq.resolution.width, seq.resolution.height)
+            };
             // Said, because it cannot be seen from the reply otherwise and
             // decides whether a sidecar file is needed.
             let said = json!({
+                "frame_warning": frame_warning,
                 "range": range,
                 "captions_burnt_in": settings.burn_in_subtitles,
                 // Titles are part of the picture; a title track left out

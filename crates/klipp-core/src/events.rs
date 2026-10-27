@@ -483,6 +483,22 @@ impl ExportSettings {
         (side(w), side(h))
     }
 
+    /// What to say when the export's frame is another shape than the
+    /// timeline's (#2784): the picture is fitted whole, with black bars
+    /// above and below or at the sides, and a version made in that shape
+    /// fills it. `None` when the shapes match (within 1.5%).
+    pub fn shape_warning(&self, seq_w: u32, seq_h: u32) -> Option<String> {
+        let (w, h) = self.output_size(seq_w, seq_h);
+        let (out, timeline) = (w as f64 / h.max(1) as f64, seq_w as f64 / seq_h.max(1) as f64);
+        if seq_w == 0 || seq_h == 0 || (out / timeline - 1.0).abs() <= 0.015 {
+            return None;
+        }
+        let bars = if out < timeline { "above and below" } else { "at the sides" };
+        Some(format!(
+            "The timeline is {seq_w}x{seq_h} and this export {w}x{h}: the picture is fitted whole, with black bars {bars}. To fill the frame, make a version in that shape first (the format op with width {w} and height {h}, refit following the subjects) and export it."
+        ))
+    }
+
     /// The largest side an export is encoded at (#658): 16K, past every
     /// delivery format, where 99999×99999 asked for some 40 GB a frame.
     pub const MAX_SIDE: u32 = 16384;
@@ -4808,6 +4824,24 @@ pub struct ParamChange {
     pub node_id: uuid::Uuid,
     pub param: String,
     pub value: f32,
+}
+
+#[cfg(test)]
+mod shape_warning_tests {
+    use super::*;
+
+    /// #2784: another shape than the timeline's is said, with where the
+    /// bars go; the same shape, or within 1.5%, isn't.
+    #[test]
+    fn another_shape_is_said() {
+        let at = |w, h| ExportSettings { resolution: Some(Resolution { width: w, height: h }), ..Default::default() };
+        assert!(at(1080, 1920).shape_warning(1920, 1080).unwrap().contains("above and below"));
+        assert!(at(1080, 1080).shape_warning(1920, 1080).unwrap().contains("above and below"), "a wide picture in a square: bars above and below");
+        assert!(at(1920, 1080).shape_warning(1080, 1920).unwrap().contains("at the sides"));
+        assert_eq!(at(3840, 2160).shape_warning(1920, 1080), None);
+        assert_eq!(at(1920, 1088).shape_warning(1920, 1080), None, "within 1.5%");
+        assert_eq!(ExportSettings::default().shape_warning(1920, 1080), None, "the timeline's own size");
+    }
 }
 
 #[cfg(test)]

@@ -14,10 +14,9 @@ use std::sync::{Arc, Mutex};
 
 /// Items known to fail, and the issue that holds each.
 const KNOWN: &[(&str, u32)] = &[
-    ("Instagram Square fills the frame", 2784),
-    ("Instagram Vertical fills the frame", 2784),
-    ("ProRes 422 ProRes profile", 2784),
-    ("Broadcast master (EBU R128) ProRes profile", 2784),
+    // Fitted whole and said so (#2784); filled by a version in its shape (#2724).
+    ("Instagram Square fills the frame", 2724),
+    ("Instagram Vertical fills the frame", 2724),
 ];
 
 const FRAMES: u64 = 25;
