@@ -849,7 +849,15 @@ pub(crate) fn track_on<B: Backend>(
         let size = here.iter().map(|p| (p.0 - here[0].0).hypot(p.1 - here[0].1)).fold(0.0, f64::max);
         let base = *base.get_or_insert(conditioning);
         let confidence = confidence(alike, round_trip, size, conditioning, base, moved.is_none());
-        let state = state_of(confidence);
+        // Once the surface is failing, only a confident fit brings it back
+        // (#2858): a weak one beside the line between weak and lost flips
+        // either way on a pixel's difference in the round trip, which the
+        // CPU and the GPU each make in their own arithmetic, and the two
+        // tracks then part. Held as lost, both go on from the same place.
+        let state = match state_of(confidence) {
+            State::Low if failing > 0 => State::Lost,
+            s => s,
+        };
         if state == State::Lost {
             failing += 1;
             out.push(Tracked { frame: f, h: last, confidence, state, round_trip_px: round_trip as f32 });
