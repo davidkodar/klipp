@@ -190,14 +190,17 @@ fn main() -> Result<()> {
         ffmpeg_next::ffi::av_log_set_callback(Some(klipp_engine::ffmpeg_log_to_tracing));
     }
 
-    // Log to klipp-debug.log. The previous launch's log is kept as
-    // klipp-debug.log.1: the watchdog and slow-tick lines that explain
-    // an "app froze, had to restart" are in the log of the run that
-    // froze, and truncating on launch destroyed them the moment the user
-    // did the one thing a frozen app leaves them — restart it.
-    let _ = std::fs::rename("klipp-debug.log", "klipp-debug.log.1");
-    let log_file = std::fs::File::create("klipp-debug.log")
-        .expect("Failed to create klipp-debug.log");
+    // Log to klipp-debug.log, in pieces of 32 MB with three earlier ones
+    // kept, the previous launch's among them (#2988): the watchdog and
+    // slow-tick lines that explain an "app froze, had to restart" are in
+    // the log of the run that froze, and truncating on launch destroyed
+    // them the moment the user did the one thing a frozen app leaves them
+    // — restart it. A write that fails, or a log moved away, is opened
+    // again and said, rather than the rest of the run going unlogged.
+    let log_file = std::sync::Arc::new(
+        klipp_core::debug_log::RotatingLog::start("klipp-debug.log", 32 << 20, 3)
+            .expect("Failed to create klipp-debug.log"),
+    );
 
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -387,8 +390,21 @@ fn main() -> Result<()> {
             let mut last_ui = 0u64;
             let mut last_ui_change = std::time::Instant::now();
             let mut ui_alerted = false;
+            let mut last_alive = std::time::Instant::now();
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(500));
+                // The process's own beat, from this thread (#2988): a log
+                // that stops with no ALIVE after it is a process that
+                // ended; one that keeps them while the threads' ticks stand
+                // still is a freeze the lines below name.
+                if last_alive.elapsed() >= std::time::Duration::from_secs(60) {
+                    last_alive = std::time::Instant::now();
+                    tracing::info!(
+                        "ALIVE engine_tick={} ui_tick={}",
+                        klipp_engine::ENGINE_TICK.load(Ordering::Relaxed),
+                        klipp_engine::UI_TICK.load(Ordering::Relaxed),
+                    );
+                }
 
                 let current_engine = klipp_engine::ENGINE_TICK.load(Ordering::Relaxed);
                 if current_engine != last_engine {
