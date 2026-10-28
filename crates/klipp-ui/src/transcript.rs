@@ -51,6 +51,17 @@ impl TranscriptSource {
     }
 }
 
+#[cfg(test)]
+impl TranscriptSource {
+    /// A source that has `words` for `media`, as if read from its analysis.
+    pub fn with_words(media: MediaId, words: Vec<SpokenWord>) -> Self {
+        let source = Self::default();
+        source.words.borrow_mut().insert(media, Some(words));
+        source.silences.borrow_mut().insert(media, Vec::new());
+        source
+    }
+}
+
 impl Transcripts for TranscriptSource {
     fn words(&self, item: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>> {
         self.read(item);

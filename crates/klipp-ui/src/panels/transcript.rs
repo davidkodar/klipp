@@ -4,7 +4,8 @@
 //! moved to where the clip puts it, from the clips whose sound is heard —
 //! gathered into paragraphs at pauses and cuts. The word being said at
 //! the playhead is marked, and followed while playing. Clicking a word
-//! seeks to it; shift-click selects a run of words, and deleting them
+//! seeks to it; dragging across words, or shift-click, selects a run of
+//! them (#2963), and deleting them
 //! cuts that stretch out of the tracks they are heard on (and the tracks
 //! linked to them) and closes up, as one undo step: music and pictures
 //! on other tracks play on (#2568). The sweeps offer every filler and every long pause as cuts
@@ -32,6 +33,8 @@ pub struct TranscriptPanel {
     untranscribed: Vec<klipp_core::MediaId>,
     /// Selected words: where the selection started, and where it ends.
     selection: Option<(usize, usize)>,
+    /// The word a drag across the words began on, while it lasts (#2963).
+    drag_anchor: Option<usize>,
     follow: bool,
     /// The sweep under review: each proposed cut, and whether it is ticked.
     sweep: Option<Sweep>,
@@ -148,43 +151,68 @@ impl TranscriptPanel {
         let selected = self.selection.map(|(a, b)| (a.min(b), a.max(b)));
         let starts = transcript::paragraph_starts(&self.words);
         let follow = self.follow && state.playback == klipp_engine::PlaybackState::Playing;
-        let shift = ui.input(|i| i.modifiers.shift);
+        // Shift as held, or as the press itself carried it.
+        let shift = ui.input(|i| i.modifiers.shift || i.events.iter().any(|e| matches!(e, egui::Event::PointerButton { pressed: true, modifiers, .. } if modifiers.shift)));
         let mut clicked = None;
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            for (p, &start) in starts.iter().enumerate() {
-                let end = starts.get(p + 1).copied().unwrap_or(self.words.len());
-                ui.label(egui::RichText::new(format_secs(self.words[start].start)).size(10.0).color(theme.text_dim));
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing.x = 4.0;
-                    for i in start..end {
-                        let word = &self.words[i];
-                        let in_selection = selected.is_some_and(|(a, b)| (a..=b).contains(&i));
-                        let mut text = egui::RichText::new(&word.text);
-                        if Some(i) == current {
-                            text = text.color(theme.accent).strong();
-                        }
-                        if transcript::is_filler(&word.text) {
-                            text = text.italics();
-                        }
-                        let r = ui.selectable_label(in_selection, text);
-                        if r.clicked() {
-                            clicked = Some(i);
-                        }
-                        // Correcting a word whisper misheard (#531).
-                        r.context_menu_rows(|ui| {
-                            if ui.button("Correct\u{2026}").clicked() {
-                                self.correcting = Some((i, word.text.clone()));
-                                ui.close_menu();
+        // Where each word was drawn, for a drag across them.
+        let mut drawn: Vec<(usize, egui::Rect)> = Vec::with_capacity(self.words.len());
+        let mut drag_began = false;
+        // A drag over the words selects them (#2963): the words, and the
+        // text's background behind them, take it, so the window moves only
+        // by its title bar.
+        let text = egui::ScrollArea::vertical().auto_shrink([false, false]).drag_to_scroll(false).show(ui, |ui| {
+            ui.scope_builder(egui::UiBuilder::new().sense(egui::Sense::click_and_drag()), |ui| {
+                for (p, &start) in starts.iter().enumerate() {
+                    let end = starts.get(p + 1).copied().unwrap_or(self.words.len());
+                    ui.label(egui::RichText::new(format_secs(self.words[start].start)).size(10.0).color(theme.text_dim));
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        for i in start..end {
+                            let word = &self.words[i];
+                            let in_selection = selected.is_some_and(|(a, b)| (a..=b).contains(&i));
+                            let mut text = egui::RichText::new(&word.text);
+                            if Some(i) == current {
+                                text = text.color(theme.accent).strong();
                             }
-                        });
-                        if follow && Some(i) == current {
-                            r.scroll_to_me(Some(egui::Align::Center));
+                            if transcript::is_filler(&word.text) {
+                                text = text.italics();
+                            }
+                            let r = ui.add(egui::SelectableLabel::new(in_selection, text)).interact(egui::Sense::click_and_drag());
+                            if r.clicked() {
+                                clicked = Some(i);
+                            }
+                            drag_began |= r.drag_started();
+                            drawn.push((i, r.rect));
+                            // Correcting a word whisper misheard (#531).
+                            r.context_menu_rows(|ui| {
+                                if ui.button("Correct\u{2026}").clicked() {
+                                    self.correcting = Some((i, word.text.clone()));
+                                    ui.close_menu();
+                                }
+                            });
+                            if follow && Some(i) == current {
+                                r.scroll_to_me(Some(egui::Align::Center));
+                            }
                         }
-                    }
-                });
-                ui.add_space(6.0);
-            }
+                    });
+                    ui.add_space(6.0);
+                }
+            })
+            .response
         });
+        drag_began |= text.inner.drag_started();
+        let pointer = ui.input(|i| (i.pointer.press_origin(), i.pointer.latest_pos(), i.pointer.primary_down()));
+        if drag_began {
+            self.drag_anchor = pointer.0.and_then(|at| nearest_word(&drawn, at));
+        }
+        match (self.drag_anchor, pointer.1) {
+            (Some(anchor), Some(at)) if pointer.2 || drag_began => {
+                if let Some(over) = nearest_word(&drawn, at) {
+                    self.selection = Some((anchor, over));
+                }
+            }
+            _ => self.drag_anchor = None,
+        }
         self.correction_editor(ui.ctx(), state, cmds);
         if let Some(i) = clicked {
             self.selection = match (shift, self.selection) {
@@ -335,6 +363,14 @@ impl TranscriptPanel {
     }
 }
 
+/// The word drawn at `at`, or the nearest one to it: a drag between words
+/// or past a line's end still selects up to a word.
+fn nearest_word(drawn: &[(usize, egui::Rect)], at: egui::Pos2) -> Option<usize> {
+    drawn.iter().find(|(_, r)| r.contains(at)).or_else(|| {
+        drawn.iter().min_by(|(_, a), (_, b)| a.distance_sq_to_pos(at).total_cmp(&b.distance_sq_to_pos(at)))
+    }).map(|(i, _)| *i)
+}
+
 /// Review a sweep: each cut with a tick, and apply the ticked ones as one
 /// step. `true` when the review is over.
 fn review_sweep(ui: &mut egui::Ui, sweep: &mut Sweep, state: &mut AppState) -> bool {
@@ -435,5 +471,134 @@ mod correction_tests {
         assert!((source_secs - 11.25).abs() < 1e-9, "the word's middle, 1.25 s into the clip, is 11.25 s into its media: {source_secs}");
         assert!(correction_for(&state, &word, "matchy").is_none(), "the same text changes nothing");
         assert!(correction_for(&state, &word, "  ").is_none());
+    }
+}
+
+#[cfg(test)]
+mod range_tests {
+    use super::TranscriptPanel;
+    use crate::state::AppState;
+    use crate::transcript::TranscriptSource;
+    use klipp_core::RationalTime;
+    use klipp_document::ops::SpokenWord;
+    use klipp_timeline::{Clip, TrackKind};
+
+    const SAID: [&str; 8] = ["one", "two", "three", "four", "five", "six", "seven", "eight"];
+
+    /// A 10 s interview, its picture on a video track and its sound linked
+    /// on an audio track, the eight words of `SAID` heard from 1 s, one
+    /// each half second.
+    fn interview() -> (AppState, TranscriptSource) {
+        let t = |s: f64| RationalTime::from_secs_f64(s, 25);
+        let mut state = AppState::default();
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/klipp-transcript-range.mov".into(), None);
+        item.duration = t(10.0);
+        let media = state.media_pool.add(item);
+        let seq = &mut state.sequences[0];
+        let (v, a) = (seq.tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap(), seq.tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap());
+        let mut picture = Clip::media(media, t(0.0), t(10.0), t(0.0), t(10.0));
+        let mut sound = Clip::media(media, t(0.0), t(10.0), t(0.0), t(10.0));
+        picture.linked_clip_id = Some(sound.id);
+        sound.linked_clip_id = Some(picture.id);
+        seq.tracks[v].clips.push(picture);
+        seq.tracks[a].clips.push(sound);
+        let words = SAID.iter().enumerate().map(|(k, w)| SpokenWord { start_secs: 1.0 + 0.5 * k as f64, end_secs: 1.3 + 0.5 * k as f64, text: (*w).into(), confidence: 1.0 }).collect();
+        let source = TranscriptSource::with_words(media, words);
+        (state, source)
+    }
+
+    /// One frame of the panel: the words and buttons it drew, and where.
+    fn frame(ctx: &egui::Context, panel: &mut TranscriptPanel, state: &mut AppState, source: &TranscriptSource, events: Vec<egui::Event>) -> Vec<(String, egui::Pos2)> {
+        let theme = crate::theme::KlippTheme::default();
+        // Held keys as winit reports them: with the events that carry them.
+        let modifiers = events.iter().find_map(|e| match e {
+            egui::Event::PointerButton { modifiers, .. } => Some(*modifiers),
+            _ => None,
+        }).unwrap_or_default();
+        let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 900.0))), events, modifiers, ..Default::default() };
+        let out = ctx.run(input, |ctx| {
+            panel.show(ctx, state, source, &theme);
+        });
+        out.shapes.iter().filter_map(|s| match &s.shape {
+            egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.pos + t.galley.size() / 2.0)),
+            _ => None,
+        }).collect()
+    }
+
+    fn at(texts: &[(String, egui::Pos2)], text: &str) -> egui::Pos2 {
+        texts.iter().find(|(t, _)| t == text).map(|(_, p)| *p).unwrap_or_else(|| panic!("{text} is drawn: {texts:?}"))
+    }
+
+    fn timeline(state: &AppState) -> Vec<Vec<(i64, i64, i64)>> {
+        state.sequence().tracks.iter().map(|t| t.clips.iter().map(|c| (c.timeline_in.value, c.source_in.value, c.source_out.value)).collect()).collect()
+    }
+
+    fn press(pos: egui::Pos2, pressed: bool, shift: bool) -> egui::Event {
+        let modifiers = if shift { egui::Modifiers::SHIFT } else { egui::Modifiers::NONE };
+        egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers }
+    }
+
+    /// #2963: a drag from "two" to "six" selects those five words and
+    /// leaves the window where it was; one Cut takes exactly them out of
+    /// the picture and its sound, as one undo step, "seven" heard next.
+    #[test]
+    fn a_drag_selects_five_words_and_one_cut_takes_them_out() {
+        let (mut state, source) = interview();
+        state.show_transcript_panel = true;
+        let (ctx, mut panel) = (egui::Context::default(), TranscriptPanel::new());
+        frame(&ctx, &mut panel, &mut state, &source, Vec::new());
+        let texts = frame(&ctx, &mut panel, &mut state, &source, Vec::new());
+        let (from, to, title) = (at(&texts, "two"), at(&texts, "six"), at(&texts, "Transcript"));
+        frame(&ctx, &mut panel, &mut state, &source, vec![egui::Event::PointerMoved(from), press(from, true, false)]);
+        for k in 1..=10 {
+            frame(&ctx, &mut panel, &mut state, &source, vec![egui::Event::PointerMoved(from + (to - from) * (k as f32 / 10.0))]);
+        }
+        frame(&ctx, &mut panel, &mut state, &source, vec![press(to, false, false)]);
+        let texts = frame(&ctx, &mut panel, &mut state, &source, vec![egui::Event::PointerGone]);
+        assert_eq!(at(&texts, "Transcript"), title, "the window did not move");
+        assert_eq!(panel.selection.map(|(a, b)| (a.min(b), a.max(b))), Some((1, 5)), "two to six");
+        let cut = at(&texts, "Cut 5 Words");
+
+        let before = timeline(&state);
+        frame(&ctx, &mut panel, &mut state, &source, vec![egui::Event::PointerMoved(cut), press(cut, true, false)]);
+        frame(&ctx, &mut panel, &mut state, &source, vec![press(cut, false, false)]);
+        let requests = std::mem::take(&mut state.pending_doc_ops);
+        assert_eq!(requests.len(), 1, "one cut");
+        let plan = klipp_document::ops::resolve_with(state.sequence(), &state.media_pool, &requests[0].ops, &source).expect("the cut resolves");
+        let edits: Vec<_> = plan.steps.iter().map(|s| s.edit.clone()).collect();
+        let active = state.active_sequence_idx;
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active, media_pool: &mut state.media_pool, fps: &mut state.fps };
+        for e in &edits {
+            view.apply_forward(e);
+        }
+        state.push_edits_as_one(&edits, &requests[0].label);
+
+        let heard: Vec<String> = klipp_document::ops::heard_words(state.sequence(), &state.media_pool, &source).into_iter().map(|w| w.text).collect();
+        assert_eq!(heard, ["one", "seven", "eight"], "exactly the five words are gone");
+        let lengths: Vec<i64> = state.sequence().tracks.iter().flat_map(|t| t.clips.iter().map(|c| c.source_out.value - c.source_in.value)).collect();
+        let kept = lengths.iter().sum::<i64>();
+        assert!(lengths.len() == 4 && kept < 2 * 250, "the picture and the sound are both cut, in two pieces each: {:?}", timeline(&state));
+
+        let entry = state.take_undo().expect("a step to undo");
+        klipp_document::apply::DocumentView { sequences: &mut state.sequences, active, media_pool: &mut state.media_pool, fps: &mut state.fps }.apply_inverse(&entry.command);
+        assert_eq!(timeline(&state), before, "one undo puts it all back");
+    }
+
+    /// Shift-click extends the selection from the word clicked first.
+    #[test]
+    fn shift_click_extends_the_selection() {
+        let (mut state, source) = interview();
+        state.show_transcript_panel = true;
+        let (ctx, mut panel) = (egui::Context::default(), TranscriptPanel::new());
+        frame(&ctx, &mut panel, &mut state, &source, Vec::new());
+        let texts = frame(&ctx, &mut panel, &mut state, &source, Vec::new());
+        let (two, five) = (at(&texts, "two"), at(&texts, "five"));
+        for (pos, shift) in [(two, false), (five, true)] {
+            frame(&ctx, &mut panel, &mut state, &source, vec![egui::Event::PointerMoved(pos), press(pos, true, shift)]);
+            frame(&ctx, &mut panel, &mut state, &source, vec![press(pos, false, shift)]);
+        }
+        assert_eq!(panel.selection, Some((1, 4)));
+        let texts = frame(&ctx, &mut panel, &mut state, &source, Vec::new());
+        at(&texts, "Cut 4 Words");
     }
 }
