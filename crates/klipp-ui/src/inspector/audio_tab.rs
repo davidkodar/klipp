@@ -1326,4 +1326,61 @@ mod clip_audio_tests {
         let cmds = click(&ctx, egui::pos2(360.0 - 8.0 - 14.0 - 5.0, vy), &mut d);
         assert!(cmds.iter().any(|c| matches!(c, AppCommand::AddAudioKeyframe { param: AudioParam::Volume, .. })), "{cmds:?}");
     }
+
+    /// #2962: Volume typed into after a double-click, while something
+    /// drawn before the inspector comes and goes (a status message): the
+    /// field keeps the keys, Ctrl+A selects its text, and Enter sets the
+    /// volume typed on this clip, as the app places the inspector.
+    #[test]
+    fn volume_typed_after_a_double_click_survives_a_layout_shift() {
+        let ctx = egui::Context::default();
+        let state = AppState::default();
+        let clip = clip();
+        let mut duck = DuckSettings::default();
+        let theme = KlippTheme::default();
+        let mut run = |events: Vec<egui::Event>, busy: bool| {
+            let mut cmds = Vec::new();
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(360.0, 2000.0))), events, ..Default::default() };
+            let out = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    if busy {
+                        ui.label("Saving…");
+                    }
+                    let rect = egui::Rect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(360.0, 1900.0));
+                    crate::ui_util::panel_ui(ui, rect, "inspector_panel", |ui| draw(ui, &theme, &mut cmds, &state, &clip, &mut duck));
+                });
+            });
+            let texts: Vec<(String, egui::Pos2)> = out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.pos + t.galley.size() / 2.0)),
+                _ => None,
+            }).collect();
+            (texts, cmds)
+        };
+        let (texts, _) = run(Vec::new(), false);
+        let vy = texts.iter().find(|(t, _)| t == "Volume").unwrap().1.y;
+        let at = texts.iter().find(|(t, p)| t == "1.00" && (p.y - vy).abs() < 4.0).map(|(_, p)| *p).expect("Volume's 1.00");
+        let b = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        for ev in [vec![egui::Event::PointerMoved(at)], vec![b(true)], vec![b(false)], vec![b(true)], vec![b(false)], vec![]] {
+            run(ev, false);
+        }
+        let field = ctx.memory(|m| m.focused()).expect("the double-click gave Volume the keys");
+        // The status message shows: the panels before the inspector drew
+        // one more widget.
+        run(vec![egui::Event::PointerGone], true);
+        run(Vec::new(), true);
+        assert_eq!(ctx.memory(|m| m.focused()), Some(field), "the field keeps the keys through the shift");
+        let ctrl = egui::Modifiers { ctrl: true, command: true, ..Default::default() };
+        let key = |key, modifiers| egui::Event::Key { key, physical_key: Some(key), pressed: true, repeat: false, modifiers };
+        run(vec![key(egui::Key::A, ctrl)], true);
+        let range = egui::TextEdit::load_state(&ctx, field).and_then(|s| s.cursor.char_range()).expect("a selection");
+        assert_eq!((range.primary.index.min(range.secondary.index), range.primary.index.max(range.secondary.index)), (0, "1.00".len()), "Ctrl+A selected the field's text");
+        assert!(ctx.wants_keyboard_input(), "and the field still has the keys, so Select All is not read");
+        run(vec![egui::Event::Text("0.5".into())], false);
+        let (_, cmds) = run(vec![key(egui::Key::Enter, egui::Modifiers::NONE)], false);
+        let set: Vec<_> = cmds.iter().filter_map(|c| match c {
+            AppCommand::UpdateClipAudio { clip_id, volume, .. } => Some((*clip_id, *volume)),
+            _ => None,
+        }).collect();
+        assert_eq!(set, vec![(clip.id, 0.5)], "Enter set the volume typed, on this clip: {cmds:?}");
+    }
 }

@@ -932,7 +932,8 @@ impl KlippApp {
         // the borrow of `self` inside it stays untouched.
         let mut collapse_requested = false;
         let bg_panel = self.theme.bg_panel;
-        crate::ui_util::allocate_clipped_ui(ui, inspector_rect, |ui| {
+        // Its ids its own, whatever the panels before it drew (#2962).
+        crate::ui_util::panel_ui(ui, inspector_rect, "inspector_panel", |ui| {
             ui.set_min_size(inspector_rect.size());
             ui.painter().rect_filled(inspector_rect, 0.0, bg_panel);
             // egui's ScrollArea paints its scrollbar gutter with

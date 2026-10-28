@@ -1084,6 +1084,11 @@ impl KlippApp {
 
         // 2. Handle global keyboard shortcuts
         klipp_engine::ui_stage::mark(klipp_engine::ui_stage::SHORTCUTS);
+        // A field that vanished at the end of the last frame (its panel
+        // laid out anew) holds the single keys too (#2962).
+        let typing_at_start = ctx.memory(|m| m.focused().is_some());
+        let held = self.state.field_keys_held;
+        self.state.field_keys_held = ctx.input(|i| super::shortcuts::field_keys_held(held, self.state.typing_at_frame_end, typing_at_start, i));
         let kb_cmds = self.handle_global_shortcuts(ctx);
         all_cmds.extend(kb_cmds);
 
@@ -1119,6 +1124,7 @@ impl KlippApp {
         let typing_now = ctx.memory(|m| m.focused().is_some());
         let held = self.state.field_keys_held;
         self.state.field_keys_held = ctx.input(|i| super::shortcuts::field_keys_held(held, typing_before, typing_now, i));
+        self.state.typing_at_frame_end = typing_now;
         // The Welcome window and the tour (#2933), over the layout just drawn.
         self.show_first_time_help(ctx);
 

@@ -1,5 +1,27 @@
 //! Shared egui layout helpers.
 
+/// A panel's region, as [`allocate_clipped_ui`], whose widgets' ids are
+/// rooted at `id` (#2962). A child `Ui` counts its widgets' ids on from
+/// whatever its parent drew before it, so a status message or a progress
+/// bar coming or going earlier in the frame gave every widget of a later
+/// panel a new id: a field being typed in vanished mid-word, its value
+/// was dropped and the next keys went to the timeline (Ctrl+A selected
+/// every clip). Here they stay what they were.
+pub fn panel_ui<R>(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    id: impl std::hash::Hash,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    let mut builder = egui::UiBuilder::new().max_rect(rect).layout(*ui.layout()).style(ui.style().clone());
+    if !ui.is_enabled() {
+        builder = builder.disabled();
+    }
+    let mut panel = egui::Ui::new(ui.ctx().clone(), ui.layer_id(), egui::Id::new(id), builder);
+    panel.set_clip_rect(rect.intersect(ui.clip_rect()));
+    add_contents(&mut panel)
+}
+
 /// Allocate a child UI region whose `max_rect` AND `clip_rect` are both set
 /// to the requested rect (intersected with the parent clip rect).
 ///
