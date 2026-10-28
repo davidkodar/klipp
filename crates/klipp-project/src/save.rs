@@ -898,6 +898,7 @@ fn media_item_to_json(item: &MediaItem, project_dir: &Path) -> MediaItemJson {
         audio_role: item.audio_role,
         shot: item.shot.clone(),
         truncated_from_secs: item.truncated_from_secs,
+        dolby_vision_profile: item.dolby_vision_profile,
     }
 }
 

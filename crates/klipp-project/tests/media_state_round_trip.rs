@@ -5,7 +5,7 @@ use klipp_project::{load_project, save_project};
 use klipp_timeline::Sequence;
 use std::path::{Path, PathBuf};
 
-const FIELDS: &[&str] = &["log", "markers", "synced_audio", "span", "screen_text", "shot", "truncated_from_secs"];
+const FIELDS: &[&str] = &["log", "markers", "synced_audio", "span", "screen_text", "shot", "truncated_from_secs", "dolby_vision_profile"];
 
 struct Scratch(PathBuf);
 impl Scratch {
@@ -41,6 +41,7 @@ fn authored_state_and_metadata_survive_offline_reopen_and_resave() {
     original.shot.tags = vec![("video:reel".into(), "A001".into())];
     original.metadata_read = true;
     original.truncated_from_secs = Some(12.125);
+    original.dolby_vision_profile = Some(5);
     let expected = serde_json::to_value(&original).unwrap();
     let mut pool = MediaPool::new();
     pool.add(original.clone());
@@ -68,6 +69,7 @@ fn authored_state_and_metadata_survive_offline_reopen_and_resave() {
     cleared.shot = Default::default();
     cleared.metadata_read = false;
     cleared.truncated_from_secs = None;
+    cleared.dolby_vision_profile = None;
     save_project(&dir.0, &seqs, &pool).unwrap();
     let manifest: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.0.join("media/manifest.json")).unwrap()).unwrap();
     for field in FIELDS { assert!(manifest["items"][0].get(*field).is_none(), "empty {field} was written"); }

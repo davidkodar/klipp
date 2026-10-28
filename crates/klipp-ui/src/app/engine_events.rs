@@ -147,6 +147,7 @@ impl KlippApp {
                         pixel_format,
                         shot,
                         truncated_from_secs,
+                        dolby_vision_profile,
                     } = *payload;
                     let filename = path
                         .file_name()
@@ -220,6 +221,7 @@ impl KlippApp {
                         shot,
                         metadata_read: true,
                         truncated_from_secs,
+                        dolby_vision_profile,
                         detected_log_format: Default::default(),
                         log_format_user_set: false,
                         skim_file: None,
@@ -270,6 +272,12 @@ impl KlippApp {
                             klipp_media::describe_secs(held),
                             klipp_media::describe_secs(claimed),
                         ));
+                    }
+                    // Said once, as it arrives; its info and listing keep saying it.
+                    if previous.is_none() {
+                        if let Some(warning) = klipp_media::dolby_vision::warning(media_item.dolby_vision_profile) {
+                            self.state.toast.show(format!("{}: {warning}", media_item.filename));
+                        }
                     }
                     let span_path = media_item.path.clone();
                     // What is in the footage, found in the background as it

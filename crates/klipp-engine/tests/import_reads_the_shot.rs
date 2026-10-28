@@ -184,3 +184,77 @@ fn a_copy_cut_short_is_as_long_as_it_holds_and_says_what_its_header_claimed() {
     assert_eq!(p.truncated_from_secs, None);
     assert!((p.duration.to_secs_f64() - 10.0).abs() < 0.2);
 }
+
+/// `mp4` (its `moov` last, as ffmpeg writes it) with a Dolby Vision
+/// configuration record of `profile` added to its first `hvc1` sample
+/// entry, as a Dolby Vision camera or encoder writes it, and each box
+/// around it grown to hold it. With `moov` after the media data, no
+/// chunk offset moves.
+fn with_dolby_vision_record(mp4: &[u8], profile: u8) -> Vec<u8> {
+    fn find(b: &[u8], from: usize, to: usize, kind: &[u8; 4]) -> usize {
+        let mut i = from;
+        while i + 8 <= to {
+            let size = u32::from_be_bytes(b[i..i + 4].try_into().unwrap()) as usize;
+            if &b[i + 4..i + 8] == kind {
+                return i;
+            }
+            assert!(size >= 8, "a box of {size} bytes");
+            i += size;
+        }
+        panic!("no {} box", String::from_utf8_lossy(kind));
+    }
+    let size = |b: &[u8], at: usize| u32::from_be_bytes(b[at..at + 4].try_into().unwrap()) as usize;
+    // Each box down to the sample entry, and where its children start:
+    // after `stsd`'s version and count, after `hvc1`'s 78 bytes of fields.
+    let mut path = Vec::new();
+    let (mut from, mut to) = (0, mp4.len());
+    for (kind, header) in [(b"moov", 8), (b"trak", 8), (b"mdia", 8), (b"minf", 8), (b"stbl", 8), (b"stsd", 16), (b"hvc1", 86)] {
+        let at = find(mp4, from, to, kind);
+        path.push(at);
+        (from, to) = (at + header, at + size(mp4, at));
+    }
+    // Version 1.0, then profile (7 bits), level 6 (6 bits), RPU, no
+    // enhancement layer, base layer; compatibility 0; reserved.
+    let flags: u16 = (u16::from(profile) << 9) | (6 << 3) | 0b101;
+    let mut record = vec![1, 0];
+    record.extend_from_slice(&flags.to_be_bytes());
+    record.extend_from_slice(&[0; 20]);
+    let mut dvcc = ((8 + record.len()) as u32).to_be_bytes().to_vec();
+    dvcc.extend_from_slice(b"dvcC");
+    dvcc.extend_from_slice(&record);
+
+    let mut out = mp4.to_vec();
+    let entry_end = path[path.len() - 1] + size(mp4, path[path.len() - 1]);
+    out.splice(entry_end..entry_end, dvcc.iter().copied());
+    for at in path {
+        let grown = (size(&out, at) + dvcc.len()) as u32;
+        out[at..at + 4].copy_from_slice(&grown.to_be_bytes());
+    }
+    out
+}
+
+/// Part of #1224: a file whose picture is Dolby Vision profile 5 is
+/// imported with its profile, so its info and the media listing can say
+/// its colours are wrong; profile 8 is read too, and a plain HEVC file
+/// has none.
+#[test]
+fn a_dolby_vision_profile_is_read_at_import() {
+    let plain = scratch("plain_hevc.mp4");
+    let made = std::process::Command::new("ffmpeg")
+        .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=64x64:r=25:d=1", "-c:v", "libx265", "-x265-params", "log-level=none", "-tag:v", "hvc1", "-pix_fmt", "yuv420p10le"])
+        .arg(&plain)
+        .status()
+        .is_ok_and(|s| s.success());
+    if !made {
+        return;
+    }
+    let bytes = std::fs::read(&plain).unwrap();
+    for profile in [5, 8] {
+        let path = scratch(&format!("dolby_vision_{profile}.mp4"));
+        std::fs::write(&path, with_dolby_vision_record(&bytes, profile)).unwrap();
+        let p = import(&path);
+        assert_eq!(p.dolby_vision_profile, Some(profile), "{}", path.display());
+        assert_eq!((p.resolution.width, p.resolution.height), (64, 64), "the picture still reads");
+    }
+    assert_eq!(import(&plain).dolby_vision_profile, None);
+}

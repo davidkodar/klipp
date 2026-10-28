@@ -549,6 +549,9 @@ fn media_listing(m: &klipp_media::MediaItem, artwork: Option<(u32, u32)>) -> ser
         "audio_channels": m.audio_channels,
         "artwork": artwork.map(|(width, height)| json!({ "width": width, "height": height })),
         "log_format": log_format_json(m),
+        // Part of #1224: a profile 5 picture is shown with wrong colours.
+        "dolby_vision_profile": m.dolby_vision_profile,
+        "warning": klipp_media::dolby_vision::warning(m.dolby_vision_profile),
         "offline": m.offline,
         "tags": m.tags,
         // A library download's file, as its credit records it: preview,
@@ -581,5 +584,23 @@ mod listing_tests {
         assert_eq!(v["kind"], "video");
         assert_eq!((v["width"].as_u64(), v["height"].as_u64()), (Some(shot.resolution.width as u64), Some(shot.resolution.height as u64)));
         assert!(v["artwork"].is_null());
+    }
+
+    /// Part of #1224: a Dolby Vision profile 5 item is listed with its
+    /// profile and the warning that its colours are wrong; profile 8 and
+    /// a file without one are listed with no warning.
+    #[test]
+    fn a_dolby_vision_profile_5_item_is_listed_with_its_warning() {
+        let mut shot = klipp_media::MediaItem::synthetic_for_test("/footage/dv.mp4".into(), None);
+        shot.dolby_vision_profile = Some(5);
+        let v = media_listing(&shot, None);
+        assert_eq!(v["dolby_vision_profile"].as_u64(), Some(5));
+        assert_eq!(v["warning"], klipp_media::dolby_vision::UNSUPPORTED_WARNING);
+        for profile in [Some(8), None] {
+            shot.dolby_vision_profile = profile;
+            let v = media_listing(&shot, None);
+            assert_eq!(v["dolby_vision_profile"].as_u64(), profile.map(u64::from));
+            assert!(v["warning"].is_null(), "{v}");
+        }
     }
 }

@@ -214,3 +214,5 @@ Close the project and return to the project page. Unsaved changes refuse the cal
 ## klipp_list_media
 
 The media pool: each item's media id, path, kind (video, still or audio), duration, fps, resolution and codec, and whether it is offline. A sound has no width, height or fps; it gives sample_rate and audio_channels, and its cover art as artwork, never as a picture size.
+
+dolby_vision_profile is the Dolby Vision profile a file's picture carries, null when it has none. A profile 5 item also has a warning: Klipp does not convert its picture yet, so its colours are wrong; tell the person before using it in a cut. Profile 8 imports as its plain HDR picture and has no warning.
