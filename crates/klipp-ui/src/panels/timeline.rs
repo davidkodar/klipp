@@ -3086,6 +3086,20 @@ impl TimelinePanel {
                     } else {
                         state.dragging_media_group.clone()
                     };
+                    // A picture let go on a text track, which holds titles,
+                    // goes on the video track nearest it (#2966): below,
+                    // else above. It did nothing.
+                    let (track_idx, track_kind) = match track_kind {
+                        TrackKind::Text if group.iter().any(|id| state.media_pool.get(id).is_some_and(|item| crate::drag_drop::media_fits_track(item, TrackKind::Video))) => {
+                            let tracks = &state.sequence().tracks;
+                            let video = (track_idx + 1..tracks.len()).chain((0..track_idx).rev()).find(|&i| tracks[i].kind == TrackKind::Video);
+                            match video {
+                                Some(v) => (v, TrackKind::Video),
+                                None => (track_idx, track_kind),
+                            }
+                        }
+                        _ => (track_idx, track_kind),
+                    };
                     let compatible = group.iter().any(|id| {
                         state.media_pool.get(id).is_some_and(|item| crate::drag_drop::media_fits_track(item, track_kind))
                     });
