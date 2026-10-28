@@ -2892,6 +2892,7 @@ dependencies = [
  "clack-extensions",
  "clack-host",
  "dirs",
+ "flate2",
  "klipp-core",
  "klipp-deepfilter",
  "klipp-load-lock",
@@ -2904,6 +2905,7 @@ dependencies = [
  "realfft",
  "serde",
  "serde_json",
+ "tar",
  "tracing",
 ]
 

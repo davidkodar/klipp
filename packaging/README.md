@@ -112,9 +112,10 @@ on your computer, and Klipp does not offer a way in from the internet yet.
   Installing cuDNN alone does not turn a CPU-only ONNX Runtime into a CUDA one.
   Default builds keep Candle models on CPU; CUDA compilation for those is a
   separate developer option.
-- **Narration:** requires the `piper` executable (Piper TTS) in addition to its
-  downloaded voice. See [issue #113](https://github.com/davidkodar/klipp/issues/113)
-  for the managed-runtime work still pending.
+- **Narration:** the Kokoro voices (the default) need `espeak-ng`, a dependency,
+  and one in-app download. The Piper voices run on a `piper` program if one is
+  installed, else on Piper's official release, which Klipp downloads on request
+  (checksum-pinned in `assets/models.toml`); no package is needed for them.
 - **Screen recording:** requires `gpu-screen-recorder` or `wf-recorder`.
 - **Extra effects:** frei0r and LV2 plugins are optional; see `optdepends` in
   [PKGBUILD](PKGBUILD).

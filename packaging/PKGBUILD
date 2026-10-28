@@ -56,7 +56,6 @@ optdepends=(
   'frei0r-plugins: extra video effects through the frei0r host'
   'lsp-plugins-lv2: a large set of audio effects for the LV2 host'
   'calf: more LV2 audio effects'
-  'piper-tts: the Piper narration voices'
 )
 options=('!lto' '!debug')
 
@@ -121,8 +120,9 @@ package() {
 
   # The commands on PATH: the editor, and the MCP server an agent points at.
   install -dm755 "${pkgdir}/usr/bin"
-  ln -s /usr/lib/klipp/klipp "${pkgdir}/usr/bin/klipp"
-  ln -s /usr/lib/klipp/klipp-mcp "${pkgdir}/usr/bin/klipp-mcp"
+  # Relative links: some installers refuse an absolute one as unsafe.
+  ln -s ../lib/klipp/klipp "${pkgdir}/usr/bin/klipp"
+  ln -s ../lib/klipp/klipp-mcp "${pkgdir}/usr/bin/klipp-mcp"
 
   if [[ $pkgname == klipp ]]; then
     install -Dm755 packaging/klipp-update "${pkgdir}/usr/bin/klipp-update"

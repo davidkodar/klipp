@@ -14,6 +14,9 @@ klipp-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 realfft = "3"
+# The Piper engine's release archive, unpacked on request (#2978).
+flate2 = "1"
+tar = "0.4"
 libloading = { workspace = true }
 # LV2 plugin host. `livi` is a turnkey wrapper over `liblilv-0` (LV2
 # introspection) — handles URID mapping, atom forge, bounded

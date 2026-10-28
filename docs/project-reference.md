@@ -107,7 +107,7 @@ The Vulkan headers and `glslc` are build-time only: the speech model runs on the
 
 Fedora's own `ffmpeg-free` leaves out patent-encumbered codecs, so some camera and phone files will not open with it. The full ffmpeg comes from [RPM Fusion](https://rpmfusion.org/Configuration): enable its free repository, then `sudo dnf swap ffmpeg-free ffmpeg --allowerasing` and `sudo dnf install ffmpeg-devel`; Klipp builds against either.
 
-Two assistant tools shell out to a program if you want them: `narrate` needs `piper-tts`, and `record` needs `gpu-screen-recorder` or `wf-recorder`. Both are optional and everything else works without them.
+One assistant tool shells out to a program if you want it: `record` needs `gpu-screen-recorder` or `wf-recorder`. It is optional and everything else works without it. `narrate` speaks with Kokoro by default; its Piper voices run on the Piper engine, which Klipp downloads on request (Piper's official release, checksum-pinned) unless a `piper` program is already installed.
 
 For NVIDIA GPU acceleration of the ONNX / Candle AI models (recommended, not required — these fall back to CPU):
 
@@ -246,6 +246,7 @@ Models are downloaded on demand, verified by SHA-256 against the bundled manifes
 | PP-OCRv3 det + PP-OCRv4 rec | On-screen text in screen recordings | ~2.4 MB + ~7.7 MB | Apache-2.0 |
 | Piper voices (lighter, under "More voices"): LJSpeech (the fallback where Kokoro cannot run), Kristin, Norman, John, LibriTTS (US); Cori (UK); NST (Swedish) | Scratch narration voices | 63–137 MB each | MIT (Piper); voices public domain or CC0, LibriTTS CC BY 4.0 |
 | Kokoro-82M (8-bit) + 10 voices, one download: Heart (the default), Bella, Nicole, Michael, Fenrir, Puck (US); Emma, Isabella, George, Fable (UK) | Natural-sounding narration (needs `espeak-ng`) | 86 MB + 0.5 MB a voice | Apache-2.0 |
+| Piper engine (official Linux x86_64 release 2023.11.14-2) | Runs the Piper voices, when no `piper` program is installed | 27 MB | MIT |
 | Piper en_US Lessac (medium) | Scratch narration voice, kept for older projects | 63 MB | **Research only, not for commercial use** (Blizzard 2013 Lessac licence) |
 | DeepFilterNet3 | Voice Isolation (speech enhancement) | ~8 MB | MIT OR Apache-2.0 |
 | Silero VAD v5 | Voice activity detection | 885 KB | MIT |

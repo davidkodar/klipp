@@ -2369,7 +2369,8 @@ fn execute_uninstall(
     // with it.
     if let Ok(manifest) = klipp_ml::manifest::load_effective() {
         for extra in klipp_audio::narration::extra_files(c, &manifest, &entry.id) {
-            let _ = std::fs::remove_file(extra);
+            // The Piper engine's is the folder it was unpacked into.
+            let _ = if extra.is_dir() { std::fs::remove_dir_all(extra) } else { std::fs::remove_file(extra) };
         }
         for part in manifest.parts(entry).into_iter().skip(1) {
             let _ = std::fs::remove_file(c.path_for(part));
