@@ -1692,6 +1692,9 @@ pub struct AppState {
     pub tour_step: Option<usize>,
     /// Whether this session has asked whether to welcome yet.
     pub welcome_checked: bool,
+    /// A field was left by Enter (#2943): the editor's single keys wait
+    /// until a click or Escape (`shortcuts::field_keys_held`).
+    pub field_keys_held: bool,
 
     /// Whether the Audio Plugins management dialog is visible.
     pub show_audio_plugins_dialog: bool,
@@ -4721,6 +4724,7 @@ impl Default for AppState {
             show_welcome: false,
             tour_step: None,
             welcome_checked: false,
+            field_keys_held: false,
             show_audio_plugins_dialog: false,
             audio_plugins_dialog: crate::panels::audio_plugins::AudioPluginsDialogState::default(),
             show_system_probe: false,

@@ -253,3 +253,57 @@ fn a_shared_key_is_given_by_the_selection() {
     let _ = ctx.run(egui::RawInput { events, modifiers, ..Default::default() }, |ctx| ctx.input(|i| out = super::shortcuts::shared_key_losers(&state, &own, i)));
     assert!(out.is_empty(), "{out:?}");
 }
+
+/// #2943: while a field has the keys no editing shortcut runs (Ctrl+A is
+/// the field's, not Select All); a field left by Enter keeps the letters
+/// from the editor (B does not arm the Blade) until a click anywhere or
+/// Escape lets them go.
+#[test]
+fn a_field_keeps_the_editors_keys_while_typed_in_and_after_enter() {
+    use super::shortcuts::{field_keys_held, key_scope, KeyScope};
+    let mut state = crate::state::AppState { project_path: Some(crate::project_paths::UNTITLED.into()), active_panel: Some(crate::state::PanelKind::Timeline), ..Default::default() };
+    assert_eq!(key_scope(&state, false), KeyScope::All);
+    assert_eq!(key_scope(&state, true), KeyScope::CtrlOnly, "typing in a field: the Ctrl keys only");
+    assert!(!CTRL_ACTIONS.contains(&"select_all") && action_places("select_all") == [Place::Editor], "Select All is not read while a field types");
+    assert!(action_places("blade_tool") == [Place::Editor]);
+    // A real number field: focused, a value typed, then Enter.
+    let ctx = egui::Context::default();
+    let mut value = 100.0_f32;
+    let id_of = std::cell::Cell::new(egui::Id::NULL);
+    let run = |events: Vec<egui::Event>, value: &mut f32| -> (bool, bool, bool) {
+        let mut out = (false, false, false);
+        let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 200.0))), events, ..Default::default() };
+        let _ = ctx.run(input, |ctx| {
+            let before = ctx.memory(|m| m.focused().is_some());
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let r = ui.add(egui::DragValue::new(value));
+                id_of.set(r.id);
+            });
+            let now = ctx.memory(|m| m.focused().is_some());
+            out = (before, now, false);
+            out.2 = ctx.input(|i| field_keys_held(false, before, now, i));
+        });
+        out
+    };
+    run(Vec::new(), &mut value);
+    ctx.memory_mut(|m| m.request_focus(id_of.get()));
+    run(Vec::new(), &mut value);
+    run(vec![egui::Event::Text("5".into())], &mut value);
+    let key = |key| egui::Event::Key { key, physical_key: Some(key), pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+    let (before, now, held) = run(vec![key(egui::Key::Enter)], &mut value);
+    assert!(before && !now, "Enter left the field");
+    assert!(held, "and holds the single keys");
+    state.field_keys_held = held;
+    assert_eq!(key_scope(&state, false), KeyScope::CtrlOnly, "so B is no Blade");
+    // A click anywhere, or Escape, lets them go.
+    let input = egui::RawInput { events: vec![egui::Event::PointerButton { pos: egui::pos2(300.0, 150.0), button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE }], ..Default::default() };
+    let mut after_click = true;
+    let _ = ctx.run(input, |ctx| after_click = ctx.input(|i| field_keys_held(true, false, false, i)));
+    assert!(!after_click, "a click lets them go");
+    let mut after_escape = true;
+    let _ = ctx.run(egui::RawInput { events: vec![key(egui::Key::Escape)], ..Default::default() }, |ctx| after_escape = ctx.input(|i| field_keys_held(true, false, false, i)));
+    assert!(!after_escape, "Escape too");
+    let mut kept = false;
+    let _ = ctx.run(egui::RawInput { events: vec![egui::Event::Text("b".into())], ..Default::default() }, |ctx| kept = ctx.input(|i| field_keys_held(true, false, false, i)));
+    assert!(kept, "a letter does not");
+}

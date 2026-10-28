@@ -507,6 +507,7 @@ impl TransportBar {
         // modal overlay is open (Quick Look, preferences, dialogs) or no
         // project is (the welcome screen, #2551).
         if state.project_path.is_none()
+            || state.field_keys_held
             || state.editing_timecode
             || ctx.wants_keyboard_input()
             || state.has_modal_open()
