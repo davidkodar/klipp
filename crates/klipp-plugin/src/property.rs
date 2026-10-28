@@ -629,10 +629,12 @@ pub fn populate_host_properties(props: &mut PropertySet) {
     // Host identity
     props.set_string("OfxPropName", 0, "Klipp");
     props.set_string("OfxPropLabel", 0, "Klipp NLE");
-    props.set_int("OfxPropVersion", 0, 0);
-    props.set_int("OfxPropVersion", 1, 1);
-    props.set_int("OfxPropVersion", 2, 0);
-    props.set_string("OfxPropVersionLabel", 0, "0.1.0");
+    // The host's version is Klipp's own, so it never falls behind a release.
+    let part = |s: &str| s.parse::<i32>().unwrap_or(0);
+    props.set_int("OfxPropVersion", 0, part(env!("CARGO_PKG_VERSION_MAJOR")));
+    props.set_int("OfxPropVersion", 1, part(env!("CARGO_PKG_VERSION_MINOR")));
+    props.set_int("OfxPropVersion", 2, part(env!("CARGO_PKG_VERSION_PATCH")));
+    props.set_string("OfxPropVersionLabel", 0, env!("CARGO_PKG_VERSION"));
     props.set_int("OfxPropAPIVersion", 0, 1);
     props.set_int("OfxPropAPIVersion", 1, 5);
 
@@ -775,6 +777,10 @@ mod tests {
         populate_host_properties(&mut ps);
 
         assert_eq!(ps.get_string_lossy("OfxPropName", 0).as_deref(), Some("Klipp"));
+        // Plug-ins are told Klipp's own version, as released.
+        assert_eq!(ps.get_string_lossy("OfxPropVersionLabel", 0).as_deref(), Some(env!("CARGO_PKG_VERSION")));
+        let parts: Vec<i32> = (0..3).map(|i| ps.get_int("OfxPropVersion", i).unwrap()).collect();
+        assert_eq!(parts.iter().map(|p| p.to_string()).collect::<Vec<_>>().join("."), env!("CARGO_PKG_VERSION"));
         assert_eq!(ps.get_int("OfxPropAPIVersion", 0), Some(1));
         assert_eq!(ps.get_int("OfxPropAPIVersion", 1), Some(5));
         assert_eq!(

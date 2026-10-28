@@ -7,13 +7,13 @@
 
 **A native video editor for Linux.**
 
-[Website](https://davidkodar.github.io/klipp/) · [Download 0.1.0](https://github.com/davidkodar/klipp/releases/tag/v0.1.0) · [Discussions](https://github.com/davidkodar/klipp/discussions)
+[Website](https://davidkodar.github.io/klipp/) · [Download 0.2.0](https://github.com/davidkodar/klipp/releases/tag/v0.2.0) · [Discussions](https://github.com/davidkodar/klipp/discussions)
 
 Edit on a magnetic timeline, grade in scene-linear colour, and automate workflows with local AI tools and an MCP-compatible assistant.
 
 **Early release · Vulkan GPU required · Arch package or source · GPL-3.0-only**
 
-Klipp is under active development. Expect rough edges and breaking changes; broad plugin compatibility, reliability hardening, and AMD/Intel GPU validation are ongoing. The first release, [0.1.0](https://github.com/davidkodar/klipp/releases/tag/v0.1.0), is out as a signed Arch package; there are no stability guarantees yet.
+Klipp is under active development. Expect rough edges and breaking changes; broad plugin compatibility, reliability hardening, and AMD/Intel GPU validation are ongoing. The latest release, [0.2.0](https://github.com/davidkodar/klipp/releases/tag/v0.2.0), is out as a signed Arch package; there are no stability guarantees yet.
 
 [![Klipp Edit page with a harbour shot in the viewer, the media pool, and a timeline of titles, video, music, ambience and voice tracks](website/assets/edit.webp)](website/assets/edit.webp)
 
@@ -48,16 +48,16 @@ Klipp is written in Rust as a 42-crate workspace. Pictures are processed on the 
 
 The primary target is **x86_64 Arch Linux and Arch-based distributions with a working Vulkan driver**. A Vulkan 1.1 GPU is required; integrated GPUs are supported in principle, with broader hardware validation ongoing. Other distributions are less tested.
 
-To install it, download `klipp-0.1.0-1-x86_64.pkg.tar.zst`, `SHA256SUMS` and `SHA256SUMS.minisig` from the [release page](https://github.com/davidkodar/klipp/releases/tag/v0.1.0), then check the signature and install:
+To install it, download `klipp-0.2.0-1-x86_64.pkg.tar.zst`, `SHA256SUMS` and `SHA256SUMS.minisig` from the [release page](https://github.com/davidkodar/klipp/releases/tag/v0.2.0), then check the signature and install:
 
 ```bash
 sudo pacman -S --needed minisign
 minisign -Vm SHA256SUMS -P RWTo4I7A4g6VVGz6+mMUh6yQBtX+bdtyftItQmb1Kxf/rtUrNeGAXBvM
 sha256sum -c --ignore-missing SHA256SUMS
-sudo pacman -U klipp-0.1.0-1-x86_64.pkg.tar.zst
+sudo pacman -U klipp-0.2.0-1-x86_64.pkg.tar.zst
 ```
 
-The `minisign` line must end with `Trusted comment: klipp 0.1.0`.
+The `minisign` line must end with `Trusted comment: klipp 0.2.0`.
 
 Later versions install from Klipp itself: Help → About Klipp → Check for updates downloads the new package and installs it only when its signature checks out.
 
