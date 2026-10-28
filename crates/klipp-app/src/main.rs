@@ -514,6 +514,8 @@ fn main() -> Result<()> {
         // the engine makes itself, the adapter's largest buffers (#2341).
         wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
             present_mode: ui_present_mode(),
+            // The engine's APIs (#2990): Vulkan, GL only without it.
+            supported_backends: klipp_effects::gpu_context::backends(),
             device_descriptor: std::sync::Arc::new(|adapter| eframe::egui_wgpu::wgpu::DeviceDescriptor {
                 label: Some("egui wgpu device"),
                 required_features: eframe::egui_wgpu::wgpu::Features::default(),
