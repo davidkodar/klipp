@@ -974,7 +974,7 @@ pub(crate) fn apply(
                 }
             })
         }
-        // The twin of `old_film::shader_wgsl` (#2744).
+        // The twin of `gpu/shaders/temporal/old_film.wgsl` (#2744).
         OldFilm { .. } => match effect.old_film_params(w, h, yw) {
             Some(params) => crate::old_film::cpu(&p, &params),
             None => p,
