@@ -660,7 +660,9 @@ fn side_node(n: &Node, t: f64, ctx: &klipp_core::EvalContext) -> Result<klipp_no
 /// A fixed placement's Transform entry as its effect, animated for the
 /// frame.
 fn decode(node: &Node, payload: &serde_json::Value, t: f64, ctx: &klipp_core::EvalContext) -> Result<BuiltinEffect, String> {
-    let mut effect: BuiltinEffect = serde_json::from_value(payload.clone()).map_err(|e| format!("effect node {}: {e}", node.id))?;
+    let mut payload = payload.clone();
+    klipp_effects::registry::guard_entry(&mut payload, klipp_effects::registry::NotFinite::Default)?;
+    let mut effect: BuiltinEffect = serde_json::from_value(payload).map_err(|e| format!("effect node {}: {e}", node.id))?;
     EffectNodeAnim::of(node)?.animate(&mut effect, t, ctx);
     Ok(effect)
 }

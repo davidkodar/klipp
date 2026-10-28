@@ -293,6 +293,131 @@ impl ParamDesc {
         self.keyframable = false;
         self
     }
+
+    /// The values the effect is safe to render with (#2995), whatever
+    /// writes them: its declared range, else four times the slider's
+    /// reach either side of zero, a slider that starts at zero or above
+    /// starting there. A typed value may go past the slider; a crafted
+    /// one may not make the render run or allocate without bound. `None`
+    /// for a number with neither (a test holds there are none) and for
+    /// the kinds that aren't numbers.
+    pub fn hard(&self) -> Option<(f32, f32)> {
+        if !matches!(self.kind, ParamKind::Float | ParamKind::Whole) {
+            return None;
+        }
+        if let Some(r) = self.range {
+            return Some(r);
+        }
+        // An angle comes round: any turn is safe, and a typed -45° is not
+        // a slider's 0.
+        if self.unit == Unit::Degrees {
+            return Some(ANGLE_RANGE);
+        }
+        let (lo, hi) = self.soft?;
+        Some((if lo < 0.0 { lo * 4.0 } else { lo }, if hi > 0.0 { hi * 4.0 } else { hi }))
+    }
+}
+
+/// The hard range of a clip-local time the compositor sets each frame:
+/// a day either way.
+pub const TIME_RANGE: (f32, f32) = (-86_400.0, 86_400.0);
+
+/// The hard range of an angle: a hundred turns either way.
+pub const ANGLE_RANGE: (f32, f32) = (-36_000.0, 36_000.0);
+
+/// The hard range of a pattern seed: the whole numbers an f32 holds
+/// exactly.
+pub const SEED_RANGE: (f32, f32) = (0.0, 16_777_216.0);
+
+/// A value the guard changed (#2995): the parameter, what was asked for,
+/// and what it is now.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Guarded {
+    pub key: &'static str,
+    pub was: f64,
+    pub now: f32,
+}
+
+/// What the guard does with a number that isn't one (NaN, an infinity,
+/// past f32's reach): refuses it, for an edit that can say why, or puts
+/// the parameter's default in its place, for a file or a render.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotFinite {
+    Refuse,
+    Default,
+}
+
+/// The parameter of effect `tag` a value is written to by `key`: its
+/// keyframe name, or its field.
+fn param_of(tag: &str, key: &str) -> Option<&'static ParamDesc> {
+    let ty = effect_type(tag)?;
+    ty.desc.params.iter().find(|d| d.key == key).or_else(|| ty.desc.params.iter().find(|d| d.field == key && d.index.is_none()))
+}
+
+/// The one guard on a number written to an effect's parameter (#2995),
+/// from any source: inside the parameter's [`ParamDesc::hard`] range,
+/// and finite. `Ok` with the value to store and whether it was changed;
+/// `Err` for a number that isn't one under [`NotFinite::Refuse`]. A key
+/// that names no number of the effect passes as it is.
+pub fn guard_number(tag: &str, key: &str, value: f64, not_finite: NotFinite) -> Result<(f32, Option<Guarded>), String> {
+    let Some(desc) = param_of(tag, key).filter(|d| d.hard().is_some()) else {
+        return Ok((value as f32, None));
+    };
+    let (lo, hi) = desc.hard().expect("filtered above");
+    let as_f32 = value as f32;
+    if !as_f32.is_finite() {
+        return match not_finite {
+            NotFinite::Refuse => Err(format!("{tag}'s {} takes a finite number, not {value}", desc.key)),
+            NotFinite::Default => Ok((desc.default, Some(Guarded { key: desc.key, was: value, now: desc.default }))),
+        };
+    }
+    // A whole number's key may sit between two: the render rounds it.
+    let now = as_f32.clamp(lo, hi);
+    Ok((now, (now != as_f32).then_some(Guarded { key: desc.key, was: value, now })))
+}
+
+/// [`guard_number`] over every number of an effect's saved entry (its
+/// `type` names it), in place: what it changed, or why it was refused. A
+/// number missing, or not a number where one is meant, is left for the
+/// entry's own reading to say.
+pub fn guard_entry(entry: &mut serde_json::Value, not_finite: NotFinite) -> Result<Vec<Guarded>, String> {
+    let Some(tag) = entry.get("type").and_then(|t| t.as_str()).map(str::to_owned) else { return Ok(Vec::new()) };
+    let Some(ty) = effect_type(&tag) else { return Ok(Vec::new()) };
+    let mut changed = Vec::new();
+    for desc in ty.desc.params.iter().filter(|d| d.hard().is_some() && !d.derived) {
+        let slot = match desc.index {
+            Some(i) => entry.get_mut(desc.field).and_then(|a| a.get_mut(i)),
+            None => entry.get_mut(desc.field),
+        };
+        let Some(slot) = slot else { continue };
+        let value = match slot {
+            serde_json::Value::Number(n) => n.as_f64().unwrap_or(f64::INFINITY),
+            // A float field saved as null was not a number (serde writes
+            // NaN and the infinities so).
+            serde_json::Value::Null => f64::NAN,
+            _ => continue,
+        };
+        let (now, guarded) = guard_number(&tag, desc.key, value, not_finite)?;
+        if let Some(g) = guarded {
+            // The field holds a whole number.
+            *slot = if desc.kind == ParamKind::Whole { serde_json::json!(now.round() as i64) } else { serde_json::json!(now) };
+            changed.push(Guarded { now: if desc.kind == ParamKind::Whole { now.round() } else { now }, ..g });
+        }
+    }
+    Ok(changed)
+}
+
+/// [`guard_entry`] on a built effect, for a file's effects read whole:
+/// not-numbers given their defaults. What it changed.
+pub fn guard_effect(effect: &mut crate::BuiltinEffect) -> Vec<Guarded> {
+    let Ok(mut entry) = serde_json::to_value(&*effect) else { return Vec::new() };
+    let changed = guard_entry(&mut entry, NotFinite::Default).unwrap_or_default();
+    if !changed.is_empty() {
+        if let Ok(guarded) = serde_json::from_value(entry) {
+            *effect = guarded;
+        }
+    }
+    changed
 }
 
 /// Which encoding of the picture a node computes on.
@@ -405,6 +530,13 @@ pub struct EffectType {
     /// The effect as a reset leaves it: every parameter at its
     /// [`ParamDesc::default`].
     pub sample: fn() -> BuiltinEffect,
+}
+
+/// The saved tag of `effect`'s variant (`"gaussian_blur"`), if it is
+/// described.
+pub fn tag_of(effect: &BuiltinEffect) -> Option<&'static str> {
+    static TAGS: std::sync::OnceLock<std::collections::HashMap<std::mem::Discriminant<BuiltinEffect>, &'static str>> = std::sync::OnceLock::new();
+    TAGS.get_or_init(|| effect_types().map(|t| (std::mem::discriminant(&(t.sample)()), t.tag)).collect()).get(&std::mem::discriminant(effect)).copied()
 }
 
 /// Every built-in effect described so far.

@@ -89,7 +89,7 @@ pub(super) static TYPES: &[EffectType] = &[
             "klipp.fx.focus_blur",
             "Focus Blur",
             &[
-                unslid(ParamDesc::float("radius", "Radius", 8.0, (0.0, 0.0), Unit::CanvasPx).fixed()),
+                unslid(ParamDesc::float("radius", "Radius", 8.0, (0.0, 0.0), Unit::CanvasPx).fixed().within((0.0, 400.0))),
                 ParamDesc {
                     field: "vertical",
                     index: None,
@@ -104,7 +104,7 @@ pub(super) static TYPES: &[EffectType] = &[
                     keyframable: false,
                     derived: false,
                 },
-                unslid(ParamDesc::float("band", "Band", 0.3, (0.0, 0.0), Unit::Normalised).fixed()),
+                unslid(ParamDesc::float("band", "Band", 0.3, (0.0, 0.0), Unit::Normalised).fixed().within((0.0, 1.0))),
             ],
         )),
         tag: "focus_blur",

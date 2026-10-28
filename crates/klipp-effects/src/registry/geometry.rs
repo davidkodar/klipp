@@ -15,7 +15,7 @@
 
 use super::{
     Alpha, Category, ColourDomain, EffectType, NodeTypeDesc, ParamDesc, ParamKind, Scaling,
-    Spatial, Temporal, Unit, IMAGE_IN, IMAGE_OUT,
+    Spatial, Temporal, Unit, IMAGE_IN, IMAGE_OUT, SEED_RANGE, TIME_RANGE,
 };
 use super::mixable;
 use crate::BuiltinEffect;
@@ -129,7 +129,9 @@ pub(super) static TYPES: &[EffectType] = &[
                 ParamDesc::float("rotation_x", "Tilt X", 0.0, (-80.0, 80.0), Unit::Degrees).fixed(),
                 ParamDesc::float("rotation_y", "Tilt Y", 0.0, (-80.0, 80.0), Unit::Degrees).fixed(),
                 ParamDesc::float("perspective", "Perspective", 0.0, (0.1, 3.0), Unit::Ratio)
-                    .fixed(),
+                    .fixed()
+                    // 0 is flat, no perspective.
+                    .within((0.0, 12.0)),
                 ParamDesc {
                     kind: ParamKind::Other,
                     soft: None,
@@ -243,8 +245,8 @@ pub(super) static TYPES: &[EffectType] = &[
                 ParamDesc::float("size", "Size", 80.0, (4.0, 800.0), Unit::CanvasPx),
                 ParamDesc::float("speed", "Speed", 1.0, (0.0, 10.0), Unit::Ratio),
                 choice("direction", "Direction", 0.0, &["both", "across", "up_down"]),
-                ParamDesc { kind: ParamKind::Whole, ..ParamDesc::float("seed", "Seed", 0.0, (0.0, 10_000.0), Unit::Count).fixed() },
-                ParamDesc { soft: None, ..ParamDesc::float("time", "Time", 0.0, (0.0, 1.0), Unit::Seconds).fixed() },
+                ParamDesc { kind: ParamKind::Whole, ..ParamDesc::float("seed", "Seed", 0.0, (0.0, 10_000.0), Unit::Count).fixed().within(SEED_RANGE) },
+                ParamDesc { soft: None, ..ParamDesc::float("time", "Time", 0.0, (0.0, 1.0), Unit::Seconds).fixed().within(TIME_RANGE) },
             ],
             Spatial::Geometric,
             false,
@@ -278,7 +280,7 @@ pub(super) static TYPES: &[EffectType] = &[
                 ParamDesc::float("center_x", "Centre X", 0.5, (0.0, 1.0), Unit::Normalised),
                 ParamDesc::float("center_y", "Centre Y", 0.5, (0.0, 1.0), Unit::Normalised),
                 ParamDesc::float("band", "Band", 0.04, (0.005, 0.5), Unit::Normalised),
-                ParamDesc { soft: None, ..ParamDesc::float("time", "Time", 0.0, (0.0, 1.0), Unit::Seconds).fixed() },
+                ParamDesc { soft: None, ..ParamDesc::float("time", "Time", 0.0, (0.0, 1.0), Unit::Seconds).fixed().within(TIME_RANGE) },
             ],
             Spatial::Geometric,
             false,
@@ -341,8 +343,8 @@ pub(super) static TYPES: &[EffectType] = &[
                 ParamDesc::float("submerge", "Submerge", crate::reflection::SUBMERGE, (0.0, 1.0), Unit::Ratio),
                 // The picture below as the ripple's source comes later.
                 choice("ripple_from", "Ripple From", 0.0, &["noise"]),
-                ParamDesc { kind: ParamKind::Whole, ..ParamDesc::float("seed", "Seed", 0.0, (0.0, 10_000.0), Unit::Count).fixed() },
-                ParamDesc { soft: None, ..ParamDesc::float("time", "Time", 0.0, (0.0, 1.0), Unit::Seconds).fixed() },
+                ParamDesc { kind: ParamKind::Whole, ..ParamDesc::float("seed", "Seed", 0.0, (0.0, 10_000.0), Unit::Count).fixed().within(SEED_RANGE) },
+                ParamDesc { soft: None, ..ParamDesc::float("time", "Time", 0.0, (0.0, 1.0), Unit::Seconds).fixed().within(TIME_RANGE) },
             ],
             Spatial::Geometric,
             true,

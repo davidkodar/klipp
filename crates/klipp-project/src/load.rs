@@ -113,6 +113,12 @@ fn read_builtin_effects(value: &serde_json::Value, whose: &str) -> Result<Vec<kl
     items
         .iter()
         .map(|item| {
+            // A number past its safe range is held at it, one that isn't
+            // a number given its default (#2995), and the file still opens.
+            let mut item = item.clone();
+            for g in klipp_effects::registry::guard_entry(&mut item, klipp_effects::registry::NotFinite::Default).unwrap_or_default() {
+                tracing::warn!("{whose}: effect value {} held at {} (the file had {})", g.key, g.now, g.was);
+            }
             serde_json::from_value::<klipp_effects::BuiltinEffect>(item.clone()).map_err(|e| {
                 match item.get("type").and_then(serde_json::Value::as_str) {
                     Some(tag) => format!(
@@ -1545,4 +1551,25 @@ fn load_looks_as(dir: &Path, form: crate::FileForm) -> Vec<Look> {
     // jumping around between loads on the same project.
     out.sort_by_key(|a| a.id);
     out
+}
+
+#[cfg(test)]
+mod guard_tests {
+    /// A file's effect values past their range, or not numbers (#2995):
+    /// the project still opens, each held at its range or its default.
+    #[test]
+    fn a_hostile_effect_value_in_a_file_is_held() {
+        let list = serde_json::json!([
+            {"type": "gaussian_blur", "radius": 1e30},
+            {"type": "gaussian_blur", "radius": null},
+            {"type": "gaussian_blur", "radius": -1e30},
+        ]);
+        let fx = super::read_builtin_effects(&list, "clip").expect("the file opens");
+        let hi = klipp_effects::registry::effect_type("gaussian_blur").unwrap().desc.params[0].hard().unwrap().1;
+        let radii: Vec<f32> = fx.iter().map(|e| match e {
+            klipp_effects::BuiltinEffect::GaussianBlur { radius } => *radius,
+            e => panic!("{e:?}"),
+        }).collect();
+        assert_eq!(radii, [hi, 0.0, 0.0]);
+    }
 }
