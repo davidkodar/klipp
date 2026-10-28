@@ -1062,20 +1062,33 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
 /// menu) goes through here so they cannot drift apart again: they
 /// once offered one file per dialog, and Ctrl+I only video.
 pub fn pick_media_files() -> Vec<std::path::PathBuf> {
+    // `pick_files` asks the portal for several files (`multiple`), and
+    // opens where the last import came from (#2964).
+    let picked = media_dialog(&crate::import_folder::start_folder()).pick_files().unwrap_or_default();
+    crate::import_folder::remember(&picked);
+    picked
+}
+
+/// The Import Media picker, opening in `folder`.
+fn media_dialog(folder: &std::path::Path) -> rfd::FileDialog {
     rfd::FileDialog::new()
         .set_title("Import Media")
+        .set_directory(folder)
         .add_filter("All media", &klipp_core::media_extensions::all_media_extensions())
         .add_filter("Video", klipp_core::media_extensions::VIDEO_EXTENSIONS)
         .add_filter("Audio", klipp_core::media_extensions::AUDIO_EXTENSIONS)
         .add_filter("Image", klipp_core::media_extensions::IMAGE_EXTENSIONS)
-        .pick_files()
-        .unwrap_or_default()
 }
 
 /// [`pick_media_files`], as the import commands for what was picked.
 /// Shaped for `file_dialog::spawn`.
 pub fn import_media_commands() -> Vec<AppCommand> {
-    pick_media_files().into_iter().map(|path| AppCommand::ImportMedia { path }).collect()
+    import_commands(pick_media_files())
+}
+
+/// One import for each file picked.
+fn import_commands(picked: Vec<std::path::PathBuf>) -> Vec<AppCommand> {
+    picked.into_iter().map(|path| AppCommand::ImportMedia { path }).collect()
 }
 
 /// Resolve a [`DialogKind`] into `AppCommand`s by surfacing the
@@ -1191,6 +1204,28 @@ fn add_to_selection(state: &mut AppState, cmds: &mut Vec<AppCommand>, name: &str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #2964: the Import Media picker asks for several files at once and
+    /// opens in the folder given (the last import's), and a pick of
+    /// several files is an import of each, in order.
+    #[test]
+    fn the_import_picker_takes_several_files_from_the_last_folder() {
+        let folder = std::path::Path::new("/home/someone/Footage/Trip");
+        let dialog = format!("{:?}", super::media_dialog(folder));
+        assert!(dialog.contains(&format!("starting_directory: Some({:?})", folder)), "{dialog}");
+        assert!(dialog.contains("Import Media"), "{dialog}");
+        let source = include_str!("command_palette.rs");
+        let pick = &source[source.find("pub fn pick_media_files").unwrap()..];
+        let pick = &pick[..pick.find("\n}").unwrap()];
+        assert!(pick.contains(".pick_files()") && !pick.contains(".pick_file()"), "several files, not one: {pick}");
+        let picked: Vec<std::path::PathBuf> = ["a.mov", "b.wav", "c.png"].iter().map(|f| folder.join(f)).collect();
+        let cmds = super::import_commands(picked.clone());
+        let imported: Vec<_> = cmds.iter().filter_map(|c| match c {
+            AppCommand::ImportMedia { path } => Some(path.clone()),
+            _ => None,
+        }).collect();
+        assert_eq!(imported, picked, "every file picked is imported");
+    }
     use crate::state::AppState;
 
     /// High-value commands that MUST appear in the palette. If you

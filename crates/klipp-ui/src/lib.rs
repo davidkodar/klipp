@@ -49,6 +49,7 @@ pub mod project_paths;
 pub mod auto_align;
 pub mod automation_record;
 pub mod audio_plugins_disabled;
+pub mod import_folder;
 pub mod browser;
 pub mod effect_targets;
 pub mod selection;
