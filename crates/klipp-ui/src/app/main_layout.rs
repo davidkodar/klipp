@@ -729,35 +729,24 @@ impl KlippApp {
             // Forget the last position, so returning to Colour follows
             // immediately rather than waiting for the next move.
             self.last_graded_playhead = None;
+            self.state.colour_elsewhere = None;
+            self.colour_go_to = None;
             return;
+        }
+        if let Some(clip) = self.colour_go_to.take() {
+            self.go_to_colour_elsewhere(clip);
         }
         let now = self.state.playhead;
         if self.last_graded_playhead == Some(now) {
             return;
         }
         self.last_graded_playhead = Some(now);
-
-        // The topmost enabled video track that has a clip here — what
-        // the viewer is showing, and so what the grade should address.
-        let Some(seq) = self.state.sequences.get(self.state.active_sequence_idx) else { return };
-        let found = seq
-            .tracks
-            .iter()
-            .filter(|t| matches!(t.kind, klipp_timeline::TrackKind::Video) && t.visible)
-            .find_map(|t| t.clip_at_timecode(now).map(|(_, c)| c.id));
-
-        if let Some(id) = found {
+        // What the viewer shows here, or the selected clip among those
+        // stacked here (#2952); no clip under the playhead leaves the
+        // panel on the last one, so a gap between shots does not throw
+        // away the context you were working in. The playhead stays put.
+        if let Some(id) = self.state.grade_at_playhead() {
             self.graded_positions.insert(id, now);
-        }
-        match found {
-            Some(id) if self.state.selected_clip != Some(id) => {
-                self.state.selected_clip = Some(id);
-                self.state.selected_clips.clear();
-            }
-            // No clip under the playhead: leave the panel on the last
-            // one rather than blanking it, so a gap between shots does
-            // not throw away the context you were working in.
-            _ => {}
         }
     }
 
@@ -1019,22 +1008,22 @@ impl KlippApp {
                     let n = |forward| graded.and_then(|g| crate::graded_thumbs::neighbour(seq, g, forward));
                     (n(false), n(true))
                 };
+                // Which clip is graded, and a selection elsewhere (#2952).
+                let grading_title = self.state.grading_title(clip_id);
+                let elsewhere = stand_in.is_none().then(|| self.state.colour_elsewhere_hint()).flatten();
                 let clip = self.state.sequences[seq_idx].tracks.iter_mut()
                     .find_map(|t| t.find_clip_mut(clip_id));
                 if let Some(clip) = clip {
                     let theme = self.theme.clone();
                     let stand_in_name = stand_in_title.clone();
-                    let title = if let Some(t) = stand_in_title {
-                        t
-                    } else {
-                        clip
-                            .media_id()
-                            .and_then(|m| self.state.media_pool.get(&m))
-                            .map(|m| m.filename.clone())
-                            .unwrap_or_else(|| "Clip".into())
-                    };
+                    let title = stand_in_title.unwrap_or(grading_title);
                     if crate::widgets::inspector_group::panel_title_row(ui, &title, false, &theme) {
                         collapse_requested = true;
+                    }
+                    if let Some(elsewhere) = elsewhere {
+                        if super::colour_target::elsewhere_hint(ui, &theme) {
+                            self.colour_go_to = Some(elsewhere);
+                        }
                     }
 
                     // Versions, stills and looks: the grade's own library,
@@ -1405,11 +1394,28 @@ impl KlippApp {
                 }
                 self.new_inspector.key_column = self.layout.inspector_keys;
                 self.new_inspector.key_column_w = self.layout.inspector_keys_w;
+                // The Colour tab's Basic Correction reads the clip's grade as
+                // the Colour page does, its Corrector reserved the same way
+                // (#2952); a stand-in's grade is the Colour page's alone.
+                self.new_inspector.colour_grade = None;
+                if self.layout.active_inspector_tab == crate::layout_state::InspectorTab::Color {
+                    if let Some(clip_id) = self.state.selected_clip {
+                        let seq = &self.state.sequences[self.state.active_sequence_idx];
+                        if GradeStandIn::of(seq, clip_id).is_none() {
+                            self.new_inspector.colour_grade = seq.all_clips().find(|c| c.id == clip_id)
+                                .and_then(|c| crate::inspector::grade_view::snapshot_for(c, &[], false, &mut self.state.pending_corrector));
+                        }
+                    }
+                }
                 let panel_cmds = self.new_inspector.show(
                     ui, &self.state, &self.prefs, &self.theme,
                     &mut self.layout.active_inspector_tab,
                 );
+                self.new_inspector.colour_grade = None;
                 all_cmds.extend(panel_cmds);
+                if std::mem::take(&mut self.new_inspector.auto_colour) {
+                    self.run_colour_tool(crate::panels::colour_check::ColourAction::AutoColour);
+                }
                 // The Keyframes column, shown or resized there, kept (#2305).
                 if (self.new_inspector.key_column, self.new_inspector.key_column_w) != (self.layout.inspector_keys, self.layout.inspector_keys_w) {
                     self.layout.inspector_keys = self.new_inspector.key_column;

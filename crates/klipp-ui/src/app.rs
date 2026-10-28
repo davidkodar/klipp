@@ -70,6 +70,11 @@ mod inspector_edit_host;
 mod command_writes;
 mod event_writes;
 mod graph_dock;
+pub(crate) mod colour_target;
+#[cfg(test)]
+mod colour_target_tests;
+#[cfg(test)]
+mod colour_tab_tests;
 pub(crate) mod node_labels;
 pub(crate) mod node_thumbnails;
 #[cfg(test)]
@@ -468,6 +473,9 @@ pub struct KlippApp {
     /// page, so selecting a shot again returns to the frame it was
     /// graded on rather than its first frame.
     graded_positions: std::collections::HashMap<klipp_core::ClipId, klipp_core::Timecode>,
+    /// "Go to it" clicked in the Colour page's header (#2952), taken
+    /// at the next frame's follow.
+    colour_go_to: Option<klipp_core::ClipId>,
     /// Browser visibility before a workspace borrowed its width,
     /// restored on leaving.
     ///

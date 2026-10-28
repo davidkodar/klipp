@@ -1059,7 +1059,7 @@ pub fn show(
 /// → 3), else its place among the tracks of its kind, counted as
 /// `Sequence::renumber_tracks` numbers them (video from the bottom, the
 /// rest from the top), so a renamed track keeps the number it had.
-fn badge_number(tracks: &[klipp_timeline::Track], idx: usize) -> u32 {
+pub(crate) fn badge_number(tracks: &[klipp_timeline::Track], idx: usize) -> u32 {
     let track = &tracks[idx];
     track.name.split_whitespace().last()
         .and_then(|s| s.parse::<u32>().ok())

@@ -43,6 +43,9 @@ pub enum ColourAction {
     AdoptLookFromTimeline,
     /// Make the selected media pool file the look's reference.
     AdoptLookFromMedia,
+    /// A starting grade for the selected clip, from the inspector's
+    /// Colour tab: the `auto_colour` op an assistant sends.
+    AutoColour,
 }
 
 impl ColourAction {
@@ -55,6 +58,7 @@ impl ColourAction {
             ColourAction::BalanceSkin => "Balance Skin",
             ColourAction::GradeToLook => "Grade to Look",
             ColourAction::AdoptLookFromTimeline | ColourAction::AdoptLookFromMedia => "Adopt Look",
+            ColourAction::AutoColour => "Auto Colour",
         }
     }
 }

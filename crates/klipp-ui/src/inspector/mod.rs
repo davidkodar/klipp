@@ -85,6 +85,13 @@ pub struct NewInspectorPanel {
     pub key_area: Option<key_column::KeyArea>,
     /// The Animated strip opened past its count (#2296).
     animated_open: bool,
+    /// The selected clip's grade as the Colour page's rows read it, taken
+    /// by the app before the Colour tab draws (#2952): its Basic
+    /// Correction rows are those rows, on the Corrector the Colour page
+    /// edits, or the one its first edit makes.
+    pub(crate) colour_grade: Option<crate::inspector::grade_view::GradeSnapshot>,
+    /// Auto Colour pressed on the Colour tab this frame, for the app to run.
+    pub auto_colour: bool,
 }
 
 impl NewInspectorPanel {
@@ -526,7 +533,7 @@ impl NewInspectorPanel {
                     }
                 }
                 InspectorTab::Color => {
-                    crate::inspector::color_and_luts::show_color_and_luts(ui, state, theme, &mut cmds);
+                    crate::inspector::color_and_luts::show_color_and_luts(ui, state, theme, self.colour_grade.as_ref(), &mut self.auto_colour, &mut cmds);
                 }
                 InspectorTab::Title => {
                     match clip_info {
