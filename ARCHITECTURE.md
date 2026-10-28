@@ -141,7 +141,10 @@ composite. Its rules are listed at the top of `render.rs`. On a usable
 GPU the work runs there (wgpu, with decoded NV12 / P010 frames converted
 by shaders and kept resident); the CPU path is the fallback and the
 reference the GPU is tested against. `docs/rendering-residency.md`
-lists what stays on the GPU.
+lists what stays on the GPU. The effects' compute shaders are `.wgsl`
+files under `crates/klipp-effects/src/gpu/shaders/`, one per shader, the
+pieces several share under `shaders/include/`; the crate's build script
+assembles them (`//#include <name>`) for `gpu_shader!` to take in.
 
 Export freezes the live `Sequence` into a `SequenceSnapshot` and hands
 it to an `ExportJob`. `export_frames` makes each frame with the same
@@ -413,7 +416,8 @@ and the built-in delivery specs move to files under
 `assets/presets/<kind>/*.toml`, with a user folder beside them (#2887);
 effects, transitions and nodes are declared once, with menus and MCP
 lists generated from that (#2888); shaders move to `.wgsl` files and
-`gpu.rs` is split by area (#2890). Each conversion names what it fixes
+`gpu.rs` is split by area (#2890, under way: the folder and its build
+step are in place). Each conversion names what it fixes
 or enables; none is done for its own sake.
 
 ---
