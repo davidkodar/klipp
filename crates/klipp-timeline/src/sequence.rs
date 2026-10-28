@@ -942,6 +942,58 @@ impl Sequence {
         }
     }
 
+    /// The audio track a sound-only source is laid on from `from` to `to`
+    /// (#2940): the one the source is patched to, chosen on purpose; else
+    /// the first unlocked audio track free over the span, of the targeted
+    /// ones when only some are. `None` when none is free: a new track
+    /// takes it, and no sound already there is written over.
+    pub fn sound_source_track(&self, from: Timecode, to: Timecode) -> Option<usize> {
+        let audio = |t: &Track| t.kind == TrackKind::Audio;
+        if let Some(i) = self.tracks.iter().position(|t| audio(t) && t.source_patch) {
+            return Some(i);
+        }
+        let narrowed = self.tracks.iter().filter(|t| audio(t)).any(|t| t.targeted) && self.tracks.iter().filter(|t| audio(t)).any(|t| !t.targeted);
+        let free = |t: &Track| !t.clips.iter().any(|c| !c.kind.is_gap() && c.timeline_in < to && from < c.timeline_out);
+        self.tracks.iter().position(|t| audio(t) && !t.locked && (!narrowed || t.targeted) && free(t))
+    }
+
+    /// [`Self::sound_source_track`], or a new audio track at the bottom
+    /// when none is free: where a sound-only source edit lays its clip.
+    pub fn sound_source_track_or_new(&mut self, from: Timecode, to: Timecode) -> usize {
+        if let Some(i) = self.sound_source_track(from, to) {
+            return i;
+        }
+        let n = self.tracks.iter().filter(|t| t.kind == TrackKind::Audio).count();
+        self.add_audio_track(format!("Audio {}", n + 1));
+        self.tracks.len() - 1
+    }
+
+    /// A click on `track_index`'s badge (#2940): it becomes where source
+    /// edits of its kind go. While every track of the kind is targeted
+    /// (none chosen), it is targeted alone of them; otherwise it is
+    /// targeted, or, targeted already, untargeted. A picture or sound
+    /// track targeted this way has the source patched to it, and loses
+    /// the patch when untargeted.
+    pub fn target_from_badge(&mut self, track_index: usize) {
+        let Some(kind) = self.tracks.get(track_index).map(|t| t.kind) else { return };
+        let of_kind = self.tracks.iter().filter(|t| t.kind == kind).count();
+        let all = self.tracks.iter().filter(|t| t.kind == kind).all(|t| t.targeted);
+        let patches = matches!(kind, TrackKind::Video | TrackKind::Audio);
+        if self.tracks[track_index].targeted && (!all || of_kind == 1) {
+            self.tracks[track_index].targeted = false;
+            self.tracks[track_index].source_patch = false;
+            return;
+        }
+        for (i, t) in self.tracks.iter_mut().enumerate() {
+            if t.kind == kind && (all || i == track_index) {
+                t.targeted = i == track_index;
+            }
+        }
+        if patches {
+            self.patch_source_to(track_index);
+        }
+    }
+
     /// Whether track targeting lets edits act on `track_index` (#915):
     /// it is targeted, or no track is.
     pub fn is_targeted(&self, track_index: usize) -> bool {
@@ -4247,6 +4299,45 @@ mod tests {
         assert_eq!(track.find_clip(id0).unwrap().timeline_in, tc(0));
         assert_eq!(track.find_clip(id1).unwrap().timeline_in, tc(24));
         assert!(track.find_clip(ClipId::new()).is_none());
+    }
+
+    /// #2940: a sound-only source never lands on the dialogue under it
+    /// unless the source is patched there: with nothing chosen it goes to
+    /// the first free audio track, or none (a new one) when all are taken;
+    /// a badge click aims it, alone of its kind while all were targeted.
+    #[test]
+    fn a_sound_only_source_goes_to_a_free_or_chosen_audio_track() {
+        let tc = |s: i64| Timecode::from_secs_f64(s as f64, 24);
+        let sound = |from: i64, to: i64| Clip::media(klipp_core::MediaId::new(), tc(from), tc(to), tc(0), tc(to - from));
+        let mut seq = Sequence::new_default();
+        seq.tracks = vec![Track::new("V1", TrackKind::Video), Track::new("A1", TrackKind::Audio), Track::new("A2", TrackKind::Audio)];
+        seq.tracks[1].clips = vec![sound(0, 10)];
+        assert_eq!(seq.sound_source_track(tc(2), tc(20)), Some(2), "A1 holds the dialogue: the free A2");
+        seq.tracks[2].clips = vec![sound(15, 30)];
+        assert_eq!(seq.sound_source_track(tc(2), tc(20)), None, "no audio track free: a new one");
+        assert_eq!(seq.sound_source_track(tc(10), tc(15)), Some(1), "free on A1 after its clip");
+
+        // A2's badge clicked while every track is targeted: A2 alone of the
+        // audio tracks, and the source patched to it.
+        seq.target_from_badge(2);
+        assert_eq!((seq.tracks[1].targeted, seq.tracks[2].targeted, seq.tracks[0].targeted), (false, true, true));
+        assert!(seq.tracks[2].source_patch);
+        assert_eq!(seq.sound_source_track(tc(2), tc(20)), Some(2), "patched there on purpose: A2, taken or not");
+        // Clicked again: untargeted, the patch gone; nothing chosen.
+        seq.target_from_badge(2);
+        assert!(!seq.tracks[2].targeted && !seq.tracks[2].source_patch);
+        // A1 targeted alone, without a patch (the track menu): only A1 is
+        // aimed at, and it is not free.
+        seq.tracks[1].targeted = true;
+        seq.tracks[2].targeted = false;
+        assert_eq!(seq.sound_source_track(tc(10), tc(14)), Some(1));
+        assert_eq!(seq.sound_source_track(tc(2), tc(20)), None, "never over A1's dialogue unpatched");
+        // A locked track is not free.
+        seq.tracks[1].targeted = true;
+        seq.tracks[2].targeted = true;
+        seq.tracks[2].clips.clear();
+        seq.tracks[2].locked = true;
+        assert_eq!(seq.sound_source_track(tc(2), tc(20)), None);
     }
 
     #[test]
