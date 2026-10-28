@@ -970,6 +970,28 @@ pub fn same_file_as_probed(old: &MediaItem, fresh: &MediaItem) -> bool {
 }
 
 impl MediaItem {
+    /// A file with sound and no picture (a song, a voice note, an effect).
+    pub fn sound_only(&self) -> bool {
+        self.video_codec.is_empty() && !self.is_still && self.has_audio
+    }
+
+    /// The role a clip of this file starts with when placed (#2953), with
+    /// where it came from: for a sound-only file, what its sound was
+    /// surely classified as (proposed), else Music until that analysis
+    /// says otherwise (left unset, so it still may): a sound-only file is
+    /// far more often a song than speech. `None` keeps the clip's default.
+    pub fn starting_role(&self) -> Option<(klipp_core::ClipRole, klipp_core::RoleSource)> {
+        if !self.sound_only() {
+            return None;
+        }
+        Some(match self.audio_role.filter(|p| p.confident) {
+            Some(p) => (p.role, klipp_core::RoleSource::Proposed),
+            None => (klipp_core::ClipRole::Music, klipp_core::RoleSource::Unset),
+        })
+    }
+}
+
+impl MediaItem {
     /// Whether the editor left a marker of this kind on the clip.
     pub fn has_marker(&self, kind: klipp_core::MediaMarkerKind) -> bool {
         self.markers.iter().any(|m| m.kind == kind)

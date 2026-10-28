@@ -33,6 +33,7 @@ impl KlippApp {
                                 if let Some(item) = self.state.media_pool.get(media_id) {
                                     clip.set_input_log_format(item.detected_log_format);
                                     clip.source_rotation = item.source_rotation;
+                                    super::media::starting_role_on(&mut clip, item);
                                 }
                                 let result = klipp_timeline::magnetic::MagneticEditor::append_primary(
                                     &mut self.state.sequences[self.state.active_sequence_idx], clip);
@@ -389,6 +390,7 @@ impl KlippApp {
             let ai = seq.tracks.len() - 1;
             created_audio_track_at = Some(ai);
             let mut clip = klipp_timeline::Clip::media(media_id, start, end, source_in, source_out);
+            super::media::starting_role_on(&mut clip, &item);
             if let Some(vid) = video_clip_id {
                 clip.linked_clip_id = Some(vid);
             }

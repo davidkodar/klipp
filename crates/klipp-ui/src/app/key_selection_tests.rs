@@ -73,7 +73,8 @@ fn apply(state: &mut AppState, cmds: &[AppCommand]) -> Vec<String> {
             AppCommand::EndHistoryBatchAs { label } => state.active_history_mut().end_batch_as(label),
             // What the panels show: no clip changes.
             AppCommand::SelectClip(id) => state.selected_clip = *id,
-            AppCommand::SetVideoRubberBandParam(_) | AppCommand::SequenceUpdated | AppCommand::BrowserSkimAudioStart { .. } => {}
+            // The viewer's: a hover skim shows a frame, it edits nothing (#2957).
+            AppCommand::SetVideoRubberBandParam(_) | AppCommand::SequenceUpdated | AppCommand::BrowserSkimAudioStart { .. } | AppCommand::SkimTimeline { .. } => {}
             _ if super::colour::mask_key_edit(state, cmd, true).is_some() => {}
             _ if super::keyframes::audio_effect_key_write(state, cmd) => {}
             _ if state.path_command(cmd).is_some() => {}

@@ -4381,6 +4381,12 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 // and the sound's own label is not offered again (#2216).
                 clip.role_source = klipp_core::RoleSource::Proposed;
             }
+            // A sound-only file is Music until its sound is heard (#2953).
+            let starting = library.is_none().then(|| item.starting_role()).flatten();
+            if let Some((role, source)) = starting {
+                clip.role = role;
+                clip.role_source = source;
+            }
             // The sound with the picture, linked both ways, on the first
             // audio track — made at the bottom when there is none.
             let bring_audio = *with_audio && item.has_audio && t.kind != TrackKind::Audio;
@@ -4424,7 +4430,11 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let sound_note = match library {
                 Some(klipp_core::ClipRole::Music) => format!("{sound_note}, marked music (from the music library)"),
                 Some(klipp_core::ClipRole::SFX) => format!("{sound_note}, marked sfx (from the effects library)"),
-                _ => sound_note,
+                _ => match starting {
+                    Some((role, klipp_core::RoleSource::Proposed)) => format!("{sound_note}, marked {} (from its sound)", role.label().to_lowercase()),
+                    Some((role, _)) => format!("{sound_note}, marked {} (sound only, until its sound is heard)", role.label().to_lowercase()),
+                    None => sound_note,
+                },
             };
             let format_note = autoset.map(|(_, (r, f))| format!("; the sequence becomes {}x{} at {:.3} fps", r.width, r.height, f.as_f64())).unwrap_or_default();
             // Where the moment really lands, the clip on its grid: on a
@@ -15577,6 +15587,39 @@ mod tests {
         let (role, what) = placed(media);
         assert_eq!(role, klipp_core::ClipRole::Dialogue);
         assert!(!what.contains("marked"), "{what}");
+    }
+
+    /// #2953: a sound-only file is placed as music before its sound is
+    /// heard, the role left unset for that hearing to change; one heard as
+    /// speech is placed as dialogue, proposed; a file with a picture keeps
+    /// the default.
+    #[test]
+    fn a_sound_only_file_is_placed_as_music_until_heard() {
+        let (seq, mut pool, media, _, _) = fixture();
+        let mut sound = |path: &str, heard: Option<klipp_core::ClipRole>| {
+            let mut item = klipp_media::MediaItem::synthetic_for_test(path.into(), None);
+            item.duration = tc(30.0);
+            item.video_codec = String::new();
+            item.audio_role = heard.map(|role| klipp_core::RoleProposal { role, confidence: 0.9, confident: true });
+            pool.add(item)
+        };
+        let (song, voice) = (sound("/tmp/song.mp3", None), sound("/tmp/voice.mp3", Some(klipp_core::ClipRole::Dialogue)));
+        let place = |id: MediaId| Op::Place { media_id: id, track: TrackRef::Index(1), at: Anchor::TrackEnd(TrackRef::Index(1)), source_in: Some(0.0), source_out: Some(1.0), insert: false, with_audio: false, sync_source_secs: None };
+        let placed = |id: MediaId| {
+            let plan = resolve(&seq, &pool, &[place(id)]).unwrap_or_else(|r| panic!("refused: {}", r.why));
+            match &plan.steps[0].edit {
+                EditCommand::LegacyAppendClip { clip, .. } => (clip.role, clip.role_source, plan.steps[0].what.clone()),
+                other => panic!("{other:?}"),
+            }
+        };
+        let (role, source, what) = placed(song);
+        assert_eq!((role, source), (klipp_core::ClipRole::Music, klipp_core::RoleSource::Unset));
+        assert!(what.contains("marked music (sound only"), "{what}");
+        let (role, source, what) = placed(voice);
+        assert_eq!((role, source), (klipp_core::ClipRole::Dialogue, klipp_core::RoleSource::Proposed));
+        assert!(what.contains("marked dialogue (from its sound)"), "{what}");
+        let (role, source, _) = placed(media);
+        assert_eq!((role, source), (klipp_core::ClipRole::Dialogue, klipp_core::RoleSource::Unset), "a file with a picture");
     }
 
     /// #794: an effect on the timeline goes on every picture clip in one

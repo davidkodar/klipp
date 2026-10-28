@@ -98,6 +98,46 @@ mod tests {
         assert!(role_proposals(&seqs[0], &pool).is_empty(), "a locked track is left alone");
     }
 
+    /// #2953: a sound-only file (an MP3 with no picture) placed before its
+    /// sound is heard is Music, unset, so that hearing still decides; heard
+    /// as speech, it is then proposed Dialogue, and one placed after is
+    /// Dialogue from the start. A role set by hand stays through both, and
+    /// a file with a picture keeps the default.
+    #[test]
+    fn a_sound_only_file_starts_as_music_and_its_sound_decides() {
+        let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+        let mut pool = klipp_media::MediaPool::new();
+        let mut mp3 = klipp_media::MediaItem::synthetic_for_test("/tmp/song.mp3".into(), None);
+        mp3.video_codec = String::new();
+        let song = pool.add(mp3);
+        let placed = |pool: &klipp_media::MediaPool, clip: &mut klipp_timeline::Clip| {
+            crate::app::media::input_defaults_on(clip, pool.get(&clip.media_id().unwrap()).unwrap(), None, None);
+        };
+        let mut fresh = klipp_timeline::Clip::media(song, tc(0.0), tc(4.0), tc(0.0), tc(4.0));
+        placed(&pool, &mut fresh);
+        assert_eq!((fresh.role, fresh.role_source), (ClipRole::Music, RoleSource::Unset), "no speech heard yet: music");
+        let mut by_hand = klipp_timeline::Clip::media(song, tc(4.0), tc(8.0), tc(0.0), tc(4.0));
+        (by_hand.role, by_hand.role_source) = (ClipRole::SFX, RoleSource::ByHand);
+        placed(&pool, &mut by_hand);
+        assert_eq!((by_hand.role, by_hand.role_source), (ClipRole::SFX, RoleSource::ByHand), "a hand-set role stays");
+        let picture = pool.add(klipp_media::MediaItem::synthetic_for_test("/tmp/shot.mov".into(), None));
+        let mut shot = klipp_timeline::Clip::media(picture, tc(0.0), tc(4.0), tc(0.0), tc(4.0));
+        placed(&pool, &mut shot);
+        assert_eq!((shot.role, shot.role_source), (ClipRole::Dialogue, RoleSource::Unset), "a file with a picture");
+
+        // Heard as speech: the clip placed before is proposed Dialogue, the
+        // hand-set one is not, and one placed now starts as Dialogue.
+        pool.get_mut(&song).unwrap().audio_role = Some(RoleProposal { role: ClipRole::Dialogue, confidence: 0.9, confident: true });
+        let mut seq = klipp_timeline::Sequence::new_default();
+        let audio = seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Audio).unwrap();
+        let id = fresh.id;
+        seq.tracks[audio].clips = vec![fresh, by_hand];
+        assert_eq!(role_proposals(&seq, &pool), vec![(id, ClipRole::Music, ClipRole::Dialogue)]);
+        let mut voice = klipp_timeline::Clip::media(song, tc(8.0), tc(12.0), tc(0.0), tc(4.0));
+        placed(&pool, &mut voice);
+        assert_eq!((voice.role, voice.role_source), (ClipRole::Dialogue, RoleSource::Proposed));
+    }
+
     /// A role chosen in the inspector or a menu is one undo step (#2229):
     /// undone, the clip has its old role and where that came from back.
     #[test]

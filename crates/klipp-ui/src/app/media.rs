@@ -2120,6 +2120,20 @@ pub(super) fn input_defaults_on(clip: &mut klipp_timeline::Clip, media: &klipp_m
     if let Some(lut) = default_lut.filter(|_| !media.video_codec.is_empty() || media.is_still) {
         crate::panels::colour_management::add_input_lut(clip, lut);
     }
+    starting_role_on(clip, media);
+}
+
+/// The role a clip placed from `media` starts with (#2953): a sound-only
+/// file's is Music, or what its sound was surely classified as; never
+/// over a role set by hand.
+pub(super) fn starting_role_on(clip: &mut klipp_timeline::Clip, media: &klipp_media::MediaItem) {
+    if clip.role_source == klipp_core::RoleSource::ByHand {
+        return;
+    }
+    if let Some((role, source)) = media.starting_role() {
+        clip.role = role;
+        clip.role_source = source;
+    }
 }
 
 #[cfg(test)]
