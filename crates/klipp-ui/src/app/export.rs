@@ -4,67 +4,76 @@
 
 use super::*;
 
-/// Height reserved at the foot of the Export workspace's column for its
-/// action bar. Enough for one row of regular controls plus the rule
-/// above it and breathing room either side.
-/// The summary line above the Export buttons: one row of small text
-/// plus the gap under it.
-pub(super) const EXPORT_SUMMARY_H: f32 = 18.0;
-
-/// The Export panel's pinned foot at a comfortable size. Tall enough
-/// for the summary line *and* the buttons — it was 48, sized for the
-/// buttons alone, and adding the line above them pushed them out of
-/// the reserved strip and under the status bar.
-pub(super) const EXPORT_ACTION_BAR_H: f32 = 48.0 + EXPORT_SUMMARY_H;
-
-/// How tall the Export foot is for a panel of `available_h`, and
-/// whether the summary line fits inside it.
-///
-/// The buttons are the point of that strip: Export is the panel's
-/// reason to exist, and a primary action sliced in half by the status
-/// bar is worse than no summary at all. So when there is not room for
-/// both, the summary goes and the buttons keep their full height —
-/// and the strip is never taller than what it was given, whatever the
-/// window is doing.
-///
-/// Half the panel is the most the foot may take, so a short panel
-/// still shows some of the form above it.
-pub(super) fn export_foot_layout(available_h: f32) -> ExportFoot {
-    let buttons = crate::theme::control::REGULAR;
-    let both = EXPORT_SUMMARY_H + buttons;
-    let cap = (available_h * 0.5).max(0.0);
-    let (bar_h, show_summary) = if cap >= both {
-        // Room for both: the comfortable height, clamped to the cap
-        // and never below what the content needs.
-        (EXPORT_ACTION_BAR_H.min(cap).max(both), true)
-    } else {
-        // Buttons only, whole — unless the panel is smaller than one
-        // row, at which point there is nothing to be done but not
-        // overflow.
-        (buttons.min(available_h.max(0.0)), false)
-    };
-    // Clamped to the strip as well. A panel with no height at all —
-    // mid-resize, or collapsed — has nowhere to put a button, and
-    // claiming otherwise is how content ends up drawn past the edge.
-    let content_h = if show_summary { both } else { buttons }.min(bar_h);
-    // The top pad the drawing uses. Halved, because the content is
-    // centred in the strip — and computed *here* rather than at the
-    // call site, because that is where it went wrong: the padding was
-    // worked out for the button row alone while the summary was drawn
-    // above it, so the two together ran past the bottom of the strip.
-    let pad = ((bar_h - content_h) * 0.5).max(0.0);
-    ExportFoot { bar_h, pad, content_h, show_summary }
+/// A part of the export column (#2941): the form, the notes above the
+/// buttons (the summary, a warning, the export running or done), and the
+/// buttons.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ExportPart {
+    Form,
+    Notes,
+    Buttons,
 }
 
-/// The Export foot's measurements: the strip, the pad above the
-/// content, what the content comes to, and whether the summary is part
-/// of it.
-#[derive(Clone, Copy, Debug)]
-pub(super) struct ExportFoot {
-    pub(super) bar_h: f32,
-    pub(super) pad: f32,
-    pub(super) content_h: f32,
-    pub(super) show_summary: bool,
+/// The export dialog's size in a window of `screen` (#2941): its usual
+/// 560 by 820, narrower and shorter as the window is, with room round it.
+pub(super) fn export_dialog_size(screen: egui::Rect) -> egui::Vec2 {
+    egui::vec2(560.0_f32.min(screen.width() - 40.0).max(280.0), 820.0_f32.min(screen.height() - 90.0).max(200.0))
+}
+
+/// The button row's strip: a regular control and a little room round it.
+pub(super) fn export_buttons_h() -> f32 {
+    crate::theme::control::REGULAR + 12.0
+}
+
+/// Lays an export form out in `rect` (#2941): the buttons pinned to its
+/// foot, whatever the rest holds, with a rule above; the notes above them
+/// in a strip as tall as they were last frame, at most a third of `rect`,
+/// scrolling inside it when longer; and the form above, scrolling in what
+/// is left. Nothing drawn here can push the buttons out of `rect`: the
+/// notes once did, with a strip sized for a summary line that also held
+/// the delivery list.
+pub(super) fn export_column(ui: &mut egui::Ui, rect: egui::Rect, id: &str, theme: &crate::theme::KlippTheme, draw: &mut dyn FnMut(&mut egui::Ui, ExportPart)) {
+    let notes_id = egui::Id::new(("export_notes_h", id));
+    let measured: f32 = ui.ctx().data(|d| d.get_temp(notes_id)).unwrap_or(0.0);
+    let buttons_h = export_buttons_h().min(rect.height().max(0.0));
+    let notes_h = measured.min(rect.height() / 3.0).min((rect.height() - buttons_h).max(0.0)).max(0.0);
+    let buttons = egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - buttons_h), rect.max);
+    let notes = egui::Rect::from_min_max(egui::pos2(rect.left(), buttons.top() - notes_h), egui::pos2(rect.right(), buttons.top()));
+    let form = egui::Rect::from_min_max(rect.min, egui::pos2(rect.right(), notes.top()));
+    if form.height() > 0.0 {
+        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(form), |ui| {
+            egui::ScrollArea::vertical().id_salt((id, "form")).max_height(form.height()).auto_shrink([false, false]).show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                draw(ui, ExportPart::Form);
+            });
+        });
+    }
+    // The foot on the panel's own background, a rule above it, so it
+    // reads as pinned rather than as the end of the form.
+    let foot = egui::Rect::from_min_max(notes.min, rect.max);
+    ui.painter().rect_filled(foot, 0.0, theme.bg_panel);
+    ui.painter().hline(foot.x_range(), foot.top(), egui::Stroke::new(1.0_f32, theme.border));
+    // Drawn every frame, in a strip as tall as they came to last frame
+    // (none on the first), and measured for the next: a scroll area
+    // reports what its content takes, whatever it shows.
+    let used = ui
+        .allocate_new_ui(egui::UiBuilder::new().max_rect(notes), |ui| {
+            egui::ScrollArea::vertical().id_salt((id, "notes")).max_height(notes.height()).auto_shrink([false, false]).show(ui, |ui| {
+                ui.add_space(6.0);
+                let top = ui.cursor().top();
+                draw(ui, ExportPart::Notes);
+                if ui.cursor().top() - top > 0.5 { ui.cursor().top() - top + 12.0 } else { 0.0 }
+            })
+            .inner
+        })
+        .inner;
+    ui.ctx().data_mut(|d| d.insert_temp(notes_id, used));
+    if buttons_h >= crate::theme::control::REGULAR {
+        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(buttons), |ui| {
+            ui.add_space(((buttons.height() - crate::theme::control::REGULAR) / 2.0).max(0.0));
+            draw(ui, ExportPart::Buttons);
+        });
+    }
 }
 
 /// The range an export takes when none was picked in the form: the In
@@ -89,6 +98,9 @@ pub(super) struct ExportDialogState {
     /// Which of the delivery formats are ticked (#2724), as
     /// `DELIVERY_TEMPLATES` lists them.
     pub(super) deliver: [bool; 4],
+    /// The render the last export started, said in the form's foot while
+    /// it runs and once it is done (#2941).
+    pub(super) last_job: Option<uuid::Uuid>,
     pub(super) output_path: String,
     pub(super) format: ExportFormat,
     pub(super) video_codec: ExportVideoCodec,
@@ -187,6 +199,7 @@ impl Default for ExportDialogState {
     fn default() -> Self {
         Self {
             deliver: [false; 4],
+            last_job: None,
             output_path: String::new(),
             format: ExportFormat::Mp4,
             video_codec: ExportVideoCodec::H264,
@@ -299,14 +312,6 @@ pub(super) fn sanitise_filename(label: &str) -> String {
     }
 }
 
-/// Where an export goes when nothing says otherwise: the user's Videos
-/// folder where there is one, as every NLE does, else the home directory.
-/// Where a new export goes: the export preferences' folder while it is
-/// there, else the default (`default_export_dir`).
-pub(super) fn export_folder(prefs: &crate::prefs::ExportPrefs) -> PathBuf {
-    prefs.default_output_dir.clone().filter(|d| d.is_dir()).unwrap_or_else(default_export_dir)
-}
-
 /// The output path the Export dialog opens with, by the export
 /// preferences' overwrite mode, and whether a file already there is
 /// written over without asking. Ask keeps the path and asks at Export;
@@ -328,12 +333,63 @@ pub(super) fn apply_overwrite_mode(mode: crate::prefs::OverwriteMode, path: &str
     }
 }
 
-pub(super) fn default_export_dir() -> PathBuf {
-    dirs::video_dir()
-        .filter(|d| d.is_dir())
-        .or_else(dirs::home_dir)
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
+/// One export's state, as the form's foot says it (#2941): waiting,
+/// running with how far, done with the file to show in its folder or play,
+/// failed with why, or cancelled.
+pub(super) fn export_progress(ui: &mut egui::Ui, job: &klipp_export::RenderJob, theme: &crate::theme::KlippTheme, actions: &mut Vec<crate::panels::render_queue::RenderQueueAction>) {
+    use crate::panels::render_queue::RenderQueueAction as A;
+    use klipp_export::RenderJobStatus as S;
+    let name = job.output_path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    match job.status {
+        S::Queued => {
+            ui.label(egui::RichText::new(format!("{name}: waiting to start\u{2026}")).size(11.0).color(theme.text_dim));
+        }
+        S::Rendering => {
+            let width = (ui.available_width() - 12.0).max(80.0);
+            ui.add(egui::ProgressBar::new(job.progress.clamp(0.0, 1.0)).desired_width(width).text(format!("Exporting {name}\u{2026} {:.0}%", job.progress.clamp(0.0, 1.0) * 100.0)));
+        }
+        S::Complete => {
+            ui.label(egui::RichText::new(format!("Done: {name}")).size(11.0).color(theme.text_primary));
+            if ui.small_button("Show in Folder").clicked() {
+                actions.push(A::ShowInFolder(job.output_path.clone()));
+            }
+            if ui.small_button("Play").clicked() {
+                actions.push(A::Play(job.output_path.clone()));
+            }
+        }
+        S::Failed => {
+            ui.label(egui::RichText::new(format!("Export failed: {}", job.error.as_deref().unwrap_or("see the Render Queue"))).size(11.0).color(ui.visuals().error_fg_color));
+        }
+        S::Cancelled => {
+            ui.label(egui::RichText::new("Export cancelled").size(11.0).color(theme.text_dim));
+        }
+    }
 }
+
+/// Where an export goes when nothing names a file (#2941): the folder the
+/// preferences name while it is there, else the saved project's own folder,
+/// else the Videos folder (made at export when it is not there yet); named
+/// after the saved project, or, for one not saved yet, after the sequence.
+pub(super) fn default_export_path(prefs_dir: Option<&std::path::Path>, project: Option<&std::path::Path>, sequence: &str, ext: &str) -> PathBuf {
+    let saved = project.filter(|p| !crate::project_paths::is_untitled(Some(p)) && p.parent().is_some_and(|d| d.is_dir()));
+    let dir = prefs_dir
+        .filter(|d| d.is_dir())
+        .map(|d| d.to_path_buf())
+        .or_else(|| saved.and_then(|p| p.parent()).map(|d| d.to_path_buf()))
+        .unwrap_or_else(videos_dir);
+    let stem = saved
+        .and_then(|p| p.file_stem())
+        .map(|s| s.to_string_lossy().to_string())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| sanitise_filename(sequence));
+    dir.join(format!("{stem}.{ext}"))
+}
+
+/// The user's Videos folder, where it is not set up yet as `~/Videos`.
+fn videos_dir() -> PathBuf {
+    dirs::video_dir().or_else(|| dirs::home_dir().map(|h| h.join("Videos"))).unwrap_or_else(|| PathBuf::from("/tmp"))
+}
+
 
 /// Build a unique export path under `base_dir` by suffixing `_2`, `_3`, …
 /// when a candidate name has already been used in this batch. Tracks
@@ -1102,7 +1158,10 @@ impl KlippApp {
         let label = settings.output_path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "Render".into());
         match snapshot {
             Ok(snap) => {
-                self.queue_job(settings.output_path.clone(), settings.clone(), label, snap);
+                let id = self.queue_job(settings.output_path.clone(), settings.clone(), label, snap);
+                // Followed in the form's foot, so the page that started
+                // it says it is running and when it is done (#2941).
+                self.export_dialog.last_job = Some(id);
             }
             Err(e) => tracing::error!("Failed to create render snapshot: {e}"),
         }
@@ -1112,13 +1171,21 @@ impl KlippApp {
     /// Puts a render on the queue, and keeps what it renders for the 8-bit
     /// banding check unless that ran for this edit (#2074): checked once
     /// no render runs, never beside one.
-    fn queue_job(&mut self, path: PathBuf, settings: klipp_core::ExportSettings, label: String, snap: klipp_export::RenderSnapshot) {
+    fn queue_job(&mut self, path: PathBuf, settings: klipp_core::ExportSettings, label: String, snap: klipp_export::RenderSnapshot) -> uuid::Uuid {
+        // A folder named in the path and not there yet is made, as the
+        // default one (the Videos folder) may not be (#2941).
+        if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty() && !d.exists()) {
+            if let Err(e) = std::fs::create_dir_all(dir) {
+                tracing::warn!("the export folder {} could not be made: {e}", dir.display());
+            }
+        }
         let key = self.banding_key();
         if settings.video_codec.writes_8bit(settings.bit_depth) {
             self.export_dialog.banding.defer(key, snap.sequence_snapshot.clone());
         }
         let id = self.state.render_queue.add_job(path, settings, label, snap);
         self.export_dialog.banding.queued(id, key);
+        id
     }
 
     /// Marker multi-export: enqueue one render job per segment between
@@ -1193,20 +1260,11 @@ impl KlippApp {
 
     /// An output path before the form is shown, so an export can never
     /// start with an empty name (that wrote `.partial` into the working
-    /// directory). Named after the project, in the Videos folder
-    /// (`XDG_VIDEOS_DIR`), else the home directory.
+    /// directory). Where `default_export_path` says (#2941).
     pub(super) fn prepare_export_defaults(&mut self) {
         if self.export_dialog.output_path.trim().is_empty() {
-            let home = export_folder(&self.prefs.export).to_string_lossy().to_string();
-            let stem = self
-                .state
-                .project_path
-                .as_ref()
-                .and_then(|p| p.file_stem())
-                .map(|s| s.to_string_lossy().to_string())
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| "output".into());
-            self.export_dialog.output_path = format!("{home}/{stem}.{}", self.export_dialog.format.extension());
+            let path = default_export_path(self.prefs.export.default_output_dir.as_deref(), self.state.project_path.as_deref(), &self.state.sequence().name, self.export_dialog.format.extension());
+            self.export_dialog.output_path = path.to_string_lossy().to_string();
         }
         let (path, without_asking) = apply_overwrite_mode(self.prefs.export.overwrite_mode, &self.export_dialog.output_path);
         self.export_dialog.output_path = path;
@@ -1988,17 +2046,13 @@ impl KlippApp {
 
         }); });
 
-                // In the Export workspace these live in a bar pinned
-                // to the foot of the column, so they cannot scroll away
-                // — see `export_action_bar`. The dialog has no such
-                // problem: it sizes itself to its contents.
-                if in_dialog {
-                    ui.add_space(12.0);
-                    // The dialog lays out vertically and is not
-                    // squeezed against a status bar, so the summary
-                    // always fits there.
-                    self.export_action_bar(ui, cmds, true, true);
+                // Every format at once (#2724), each from its version: a
+                // setting of the form, not a button of its foot (#2941).
+                ui.add_space(8.0);
+                if self.deliver_section(ui, cmds) {
+                    self.state.show_export_dialog = false;
                 }
+                let _ = in_dialog;
     }
 
     /// The two things this panel exists to do.
@@ -2098,45 +2152,48 @@ impl KlippApp {
         parts.join("  \u{00b7}  ")
     }
 
-    pub(super) fn export_action_bar(
-        &mut self,
-        ui: &mut egui::Ui,
-        cmds: &mut Vec<AppCommand>,
-        in_dialog: bool,
-        show_summary: bool,
-    ) {
+    /// What is said above the Export buttons (#2941): the summary, a pair
+    /// the container cannot hold, and the last export running, done or
+    /// failed, with its file to show or play.
+    pub(super) fn export_notes(&mut self, ui: &mut egui::Ui) {
         let theme = self.theme.clone();
-        // Said above the buttons rather than in the form, so it is read
-        // on the way to pressing Export rather than scrolled past.
-        let summary = if show_summary { self.export_summary() } else { String::new() };
+        let summary = self.export_summary();
         if !summary.is_empty() {
             ui.horizontal(|ui| {
                 ui.add_space(12.0);
-                ui.label(
-                    egui::RichText::new(summary)
-                        .size(11.0)
-                        .color(theme.text_dim),
-                );
+                ui.label(egui::RichText::new(summary).size(11.0).color(theme.text_dim));
             });
-            ui.add_space(4.0);
         }
         // A pair the container cannot hold (from an older preset) is
         // said here and blocks the render, which would otherwise fail
         // only after the mixdown had run.
-        let (format, video, audio) = (self.export_dialog.format, self.export_dialog.video_codec, self.export_dialog.audio_codec);
-        let container_problem = klipp_core::ExportSettings { format, video_codec: video, audio_codec: audio, ..Default::default() }.container_problem();
-        if let Some(problem) = &container_problem {
+        if let Some(problem) = self.container_problem() {
             ui.horizontal(|ui| {
                 ui.add_space(12.0);
                 ui.label(egui::RichText::new(format!("\u{26A0} {problem}")).size(11.0).color(ui.visuals().warn_fg_color));
             });
-            ui.add_space(4.0);
         }
-        // Every format at once (#2724), each from its version.
-        if self.deliver_section(ui, cmds) {
-            self.state.show_export_dialog = false;
-            return;
+        let mut actions = Vec::new();
+        if let Some(job) = self.export_dialog.last_job.and_then(|id| self.state.render_queue.jobs.iter().find(|j| j.id == id)) {
+            ui.horizontal(|ui| {
+                ui.add_space(12.0);
+                export_progress(ui, job, &theme, &mut actions);
+            });
         }
+        self.apply_render_queue_actions(actions);
+    }
+
+    /// What the chosen container cannot hold of the chosen codecs.
+    fn container_problem(&self) -> Option<String> {
+        let (format, video, audio) = (self.export_dialog.format, self.export_dialog.video_codec, self.export_dialog.audio_codec);
+        klipp_core::ExportSettings { format, video_codec: video, audio_codec: audio, ..Default::default() }.container_problem()
+    }
+
+    /// The two things this panel exists to do: Add to Queue and Export
+    /// (with Cancel in the dialog). One row, pinned by `export_column`.
+    pub(super) fn export_buttons(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, in_dialog: bool) {
+        let theme = self.theme.clone();
+        let container_problem = self.container_problem();
         let path_given = !self.export_dialog.output_path.trim().is_empty();
         // An empty timeline has nothing to export (#655).
         let empty = self.state.sequence().has_nothing_to_export();
@@ -2286,13 +2343,25 @@ impl KlippApp {
         // workspace hosts the same form in its right column.
         if !in_export_ws {
             let mut open = true;
+            // As tall as the window allows, no taller than it needs, with
+            // the buttons pinned to its foot and the form scrolling above
+            // (#2941): sized to its contents, it ran off a short screen.
+            let size = export_dialog_size(ctx.screen_rect());
             egui::Window::new("Export Sequence")
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .fixed_size(size)
                 .open(&mut open)
                 .show(ctx, |ui| {
-                    self.export_settings_contents(ui, &all_presets, &mut cmds, true);
+                    let rect = egui::Rect::from_min_size(ui.cursor().min, size);
+                    let theme = self.theme.clone();
+                    export_column(ui, rect, "export_dialog", &theme, &mut |ui, part| match part {
+                        ExportPart::Form => self.export_settings_contents(ui, &all_presets, &mut cmds, true),
+                        ExportPart::Notes => self.export_notes(ui),
+                        ExportPart::Buttons => self.export_buttons(ui, &mut cmds, true),
+                    });
+                    ui.allocate_rect(rect, egui::Sense::hover());
                 });
             if !open {
                 self.state.show_export_dialog = false;
@@ -2748,85 +2817,168 @@ mod marker_export_tests {
 
 #[cfg(test)]
 mod export_foot_tests {
-    use super::{export_foot_layout, EXPORT_ACTION_BAR_H, EXPORT_SUMMARY_H};
-    use crate::theme::control::REGULAR;
+    use super::{export_column, export_dialog_size, export_progress, ExportPart};
+    use crate::theme::KlippTheme;
 
-    /// The rule: whatever the window is doing, the strip reserved for
-    /// the Export foot is never taller than what it was given, and the
-    /// buttons inside it are never shorter than a button.
-    ///
-    /// This is the one that matters. The summary line was added inside
-    /// a strip sized for the buttons alone, which pushed Export — the
-    /// panel's whole point — down under the status bar and sliced it in
-    /// half. A fix for that height is not a guarantee; this is.
+    /// The rect the Export workspace's column has under its title row, in a
+    /// window of `w` by `h`, and the status bar's top.
+    fn export_panel(w: f32, h: f32) -> (egui::Rect, f32) {
+        let state = crate::state::AppState { active_workspace: crate::state::Workspace::Export, ..Default::default() };
+        let r = crate::layout::compute_layout(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w, h)), &crate::layout_state::LayoutState::default(), &state);
+        let rect = r.inspector_rect;
+        (egui::Rect::from_min_max(egui::pos2(rect.left(), rect.top() + 28.0), rect.max), r.statusbar_rect.top())
+    }
+
+    /// The column drawn in `rect` with a form far taller than it, notes as
+    /// long as they come (the summary, a warning and an export running),
+    /// and the real button row's Export; where Export is drawn after the
+    /// notes have been measured.
+    fn export_drawn_in(screen: egui::Vec2, rect: egui::Rect) -> egui::Rect {
+        let ctx = egui::Context::default();
+        let theme = KlippTheme::default();
+        let mut at = egui::Rect::NOTHING;
+        for frame in 0..3 {
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, screen)), time: Some(frame as f64 * 0.1), ..Default::default() };
+            let out = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                    export_column(ui, rect, "test", &theme, &mut |ui, part| match part {
+                        ExportPart::Form => {
+                            for i in 0..120 {
+                                ui.label(format!("setting {i}"));
+                            }
+                        }
+                        ExportPart::Notes => {
+                            for line in ["1920x1080 · 25 fps · H.264 · about 120 MB", "\u{26A0} this container cannot hold that codec", "Exporting out.mp4\u{2026} 42%", "Deliver to\u{2026}"] {
+                                ui.label(line);
+                            }
+                        }
+                        ExportPart::Buttons => {
+                            ui.horizontal(|ui| {
+                                ui.add_space(12.0);
+                                let _ = ui.button("Add to Queue");
+                                let _ = ui.add(egui::Button::new("Export").min_size(egui::vec2(140.0, crate::theme::control::REGULAR)));
+                            });
+                        }
+                    });
+                });
+            });
+            at = out.shapes.iter().find_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.text() == "Export" => Some(t.galley.rect.translate(t.pos.to_vec2())),
+                _ => None,
+            }).unwrap_or(egui::Rect::NOTHING);
+        }
+        at
+    }
+
+    /// The Export button is inside the visible panel, above the status bar,
+    /// in the Export workspace at 1366×768 and 1280×720 (and the same windows
+    /// at 125%), and in the export dialog in a short window, whatever the
+    /// form and the notes above it hold.
     #[test]
-    fn the_foot_never_overflows_and_the_buttons_are_never_clipped() {
-        let mut heights: Vec<f32> = (0..400).map(|i| i as f32 * 4.0).collect();
-        heights.extend([0.0, 1.0, REGULAR, REGULAR * 2.0, 47.0, 48.0, 1440.0, 4320.0]);
-        for h in heights {
-            let f = export_foot_layout(h);
-            assert!(f.bar_h >= 0.0, "negative strip at {h}");
-            assert!(f.bar_h <= h + 1e-3, "strip {} exceeds the panel's {h}", f.bar_h);
-
-            // What the drawing actually puts in: the pad, then the
-            // content. Both together must sit inside the strip, or the
-            // bottom of the content is under whatever follows it.
-            let laid_out = f.pad + f.content_h;
-            assert!(
-                laid_out <= f.bar_h + 1e-3,
-                "at {h}: pad {} + content {} = {laid_out} overflows the strip {}",
-                f.pad,
-                f.content_h,
-                f.bar_h,
-            );
-
-            // What is drawn, clamped to the strip: a panel too small
-            // for a button cannot be given one.
-            let want = if f.show_summary { EXPORT_SUMMARY_H + REGULAR } else { REGULAR };
-            let want = want.min(f.bar_h);
-            assert!(
-                (f.content_h - want).abs() < 1e-3,
-                "at {h}: content {} does not match what is drawn ({want})",
-                f.content_h,
-            );
-            if h >= REGULAR {
-                assert!(
-                    f.content_h >= REGULAR - 1e-3,
-                    "at {h}: the buttons were squeezed to {}",
-                    f.content_h,
-                );
-            }
+    fn export_is_inside_the_visible_panel_at_small_windows() {
+        for (w, h) in [(1366.0, 768.0), (1280.0, 720.0), (1366.0 / 1.25, 768.0 / 1.25), (1280.0 / 1.25, 720.0 / 1.25)] {
+            let (panel, status_top) = export_panel(w, h);
+            let at = export_drawn_in(egui::vec2(w, h), panel);
+            assert!(at != egui::Rect::NOTHING, "{w}x{h}: Export is drawn");
+            assert!(panel.contains_rect(at) && at.bottom() <= status_top, "{w}x{h}: Export at {at:?} is outside the panel {panel:?} or under the status bar at {status_top}");
+        }
+        for (w, h) in [(1366.0, 768.0), (1280.0, 720.0), (1024.0, 600.0)] {
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w, h));
+            let size = export_dialog_size(screen);
+            let dialog = egui::Rect::from_center_size(screen.center(), size);
+            assert!(screen.contains_rect(dialog), "{w}x{h}: the dialog fits");
+            let at = export_drawn_in(egui::vec2(w, h), dialog);
+            assert!(dialog.contains_rect(at), "{w}x{h}: Export at {at:?} is outside the dialog {dialog:?}");
         }
     }
 
-    /// When the panel is too short for both, the summary gives way and
-    /// the buttons keep their full height — not the other way round.
-    #[test]
-    fn a_short_panel_drops_the_summary_rather_than_the_buttons() {
-        // Half of this is under the two rows but over one.
-        let tight = (EXPORT_SUMMARY_H + REGULAR) * 2.0 - 4.0;
-        let f = export_foot_layout(tight);
-        assert!(!f.show_summary, "the summary was kept in a panel too short for it");
-        assert!(f.content_h >= REGULAR - 1e-3, "the buttons were squeezed: {}", f.content_h);
-        assert!(f.pad + f.content_h <= f.bar_h + 1e-3, "it still overflowed");
+    fn job(status: klipp_export::RenderJobStatus, progress: f32) -> klipp_export::RenderJob {
+        klipp_export::RenderJob {
+            id: uuid::Uuid::new_v4(),
+            label: "out".into(),
+            output_path: std::path::PathBuf::from("/tmp/klipp-export-done/out.mp4"),
+            settings: klipp_core::ExportSettings::default(),
+            status,
+            progress,
+            created_at: std::time::Instant::now(),
+            started_at: None,
+            completed_at: None,
+            error: None,
+            total_frames: 100,
+            frames_done: 42,
+            hw_info: String::new(),
+            timeline_fps: 25.0,
+            render_stage: String::new(),
+            loudness_result: None,
+            timings: Default::default(),
+            width: 1920,
+            height: 1080,
+            export_range: None,
+            sequence_id: klipp_core::SequenceId::new(),
+            heard_media: Vec::new(),
+        }
     }
 
-    /// And a panel with room gets both.
+    /// An export says how far it is while it runs, and once done offers its
+    /// file to show in its folder or to play: each a button that does that.
     #[test]
-    fn a_normal_panel_shows_the_summary() {
-        let f = export_foot_layout(1440.0);
-        assert!(f.show_summary, "a full-height panel hid the summary");
-        assert!((f.bar_h - EXPORT_ACTION_BAR_H).abs() < 1e-3, "got {}", f.bar_h);
+    fn an_export_shows_its_progress_and_when_it_is_done() {
+        use crate::panels::render_queue::RenderQueueAction as A;
+        let ctx = egui::Context::default();
+        let theme = KlippTheme::default();
+        let run = |job: &klipp_export::RenderJob, click: Option<&str>| -> (Vec<String>, Vec<A>) {
+            let mut actions = Vec::new();
+            let mut texts = Vec::new();
+            let frame = |events: Vec<egui::Event>, actions: &mut Vec<A>| {
+                let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 200.0))), events, ..Default::default() };
+                let out = ctx.run(input, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| ui.horizontal(|ui| export_progress(ui, job, &theme, actions)));
+                });
+                out.shapes.iter().filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.galley.rect.translate(t.pos.to_vec2()))),
+                    _ => None,
+                }).collect::<Vec<_>>()
+            };
+            let shown = frame(Vec::new(), &mut actions);
+            texts.extend(shown.iter().map(|(t, _)| t.clone()));
+            if let Some(label) = click {
+                let at = shown.iter().find(|(t, _)| t == label).unwrap_or_else(|| panic!("no {label}: {texts:?}")).1.center();
+                frame(vec![egui::Event::PointerMoved(at)], &mut actions);
+                frame(vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() }], &mut actions);
+                frame(vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() }], &mut actions);
+            }
+            (texts, actions)
+        };
+        let (texts, _) = run(&job(klipp_export::RenderJobStatus::Rendering, 0.42), None);
+        assert!(texts.iter().any(|t| t == "Exporting out.mp4\u{2026} 42%"), "{texts:?}");
+        let done = job(klipp_export::RenderJobStatus::Complete, 1.0);
+        let (texts, actions) = run(&done, Some("Show in Folder"));
+        assert!(texts.iter().any(|t| t == "Done: out.mp4") && texts.iter().any(|t| t == "Play"), "{texts:?}");
+        assert!(matches!(actions.as_slice(), [A::ShowInFolder(p)] if *p == done.output_path), "{}", actions.len());
+        let (_, actions) = run(&done, Some("Play"));
+        assert!(matches!(actions.as_slice(), [A::Play(p)] if *p == done.output_path));
+        let mut failed = job(klipp_export::RenderJobStatus::Failed, 0.3);
+        failed.error = Some("disk full".into());
+        let (texts, _) = run(&failed, None);
+        assert!(texts.iter().any(|t| t == "Export failed: disk full"), "{texts:?}");
     }
 
-    /// The comfortable height has to actually fit what goes in it,
-    /// which is the invariant the original 48 quietly broke.
+    /// The output path field keeps what is typed into it, "/" and all.
     #[test]
-    fn the_declared_height_fits_its_contents() {
-        assert!(
-            EXPORT_ACTION_BAR_H >= EXPORT_SUMMARY_H + REGULAR,
-            "{EXPORT_ACTION_BAR_H} cannot hold {EXPORT_SUMMARY_H} + {REGULAR}",
-        );
+    fn the_path_field_keeps_a_slash() {
+        let ctx = egui::Context::default();
+        let mut path = String::new();
+        let id = egui::Id::new("path");
+        for (i, events) in [vec![], vec![egui::Event::Text("~/Videos/cut.mp4".into())], vec![egui::Event::Text("/".into())]].into_iter().enumerate() {
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 200.0))), time: Some(i as f64), events, ..Default::default() };
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let r = ui.add(egui::TextEdit::singleline(&mut path).id(id));
+                    r.request_focus();
+                });
+            });
+        }
+        assert_eq!(path, "~/Videos/cut.mp4/");
     }
 }
 
@@ -4003,7 +4155,7 @@ fn interchange_written(format: &str, path: &std::path::Path, dropped: &[String])
 #[cfg(test)]
 mod export_prefs_tests {
     use super::*;
-    use crate::prefs::{ExportPrefs, OverwriteMode};
+    use crate::prefs::OverwriteMode;
 
     /// A folder of its own under the temp dir, removed when dropped.
     struct Dir(std::path::PathBuf);
@@ -4023,17 +4175,23 @@ mod export_prefs_tests {
         }
     }
 
-    /// #1816: the Export dialog's folder is the preferences' while it is
-    /// there; unset, or a folder since removed, it is the default.
+    /// #1816, #2941: a new export goes to the preferences' folder while it
+    /// is there; else a saved project's own folder, named after it; else
+    /// the Videos folder, named after the sequence for a project not saved.
     #[test]
-    fn a_new_export_goes_to_the_preferences_folder() {
+    fn a_new_export_goes_where_the_project_is() {
         let dir = Dir::new();
-        let mut prefs = ExportPrefs::default();
-        assert_eq!(export_folder(&prefs), default_export_dir(), "unset: the default");
-        prefs.default_output_dir = Some(dir.path().to_path_buf());
-        assert_eq!(export_folder(&prefs), dir.path(), "set: that folder");
-        prefs.default_output_dir = Some(dir.path().join("gone"));
-        assert_eq!(export_folder(&prefs), default_export_dir(), "a folder not there: the default");
+        let project = dir.path().join("Holiday.klipp");
+        std::fs::write(&project, "{}").unwrap();
+        let videos = dirs::video_dir().unwrap_or_else(|| dirs::home_dir().unwrap().join("Videos"));
+        assert_eq!(default_export_path(None, Some(&project), "Main Sequence", "mp4"), dir.path().join("Holiday.mp4"), "saved: beside the project, named after it");
+        let unsaved = std::path::Path::new(crate::project_paths::UNTITLED);
+        assert_eq!(default_export_path(None, Some(unsaved), "Main Sequence", "mp4"), videos.join("Main Sequence.mp4"), "not saved: Videos, after the sequence");
+        assert_eq!(default_export_path(None, None, "a/b", "mov"), videos.join("a_b.mov"), "no project: the sequence's name, made a file name");
+        let chosen = dir.path().join("exports");
+        std::fs::create_dir_all(&chosen).unwrap();
+        assert_eq!(default_export_path(Some(&chosen), Some(&project), "Main Sequence", "mp4"), chosen.join("Holiday.mp4"), "the preferences' folder first");
+        assert_eq!(default_export_path(Some(&dir.path().join("gone")), Some(&project), "Main Sequence", "mp4"), dir.path().join("Holiday.mp4"), "a preferences' folder not there: as unset");
     }
 
     /// #1816: with the file already there, Ask keeps the name and asks,

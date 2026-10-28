@@ -963,25 +963,11 @@ impl KlippApp {
                     .into_iter()
                     .chain(self.prefs.export.custom_presets.iter().cloned())
                     .collect();
-                // Reserve the foot of the column for the actions before
-                // the form gets to claim the space, so Export and Add to
-                // Queue are on screen at every window height. The form
-                // scrolls inside what is left.
+                // The buttons pinned to the column's foot, the form and
+                // the render queue scrolling above them (#2941).
                 let full = ui.available_rect_before_wrap();
-                let foot = export_foot_layout(full.height());
-                let bar_h = foot.bar_h;
-                let body_rect = egui::Rect::from_min_max(
-                    full.min,
-                    egui::pos2(full.max.x, full.max.y - bar_h),
-                );
-                let bar_rect = egui::Rect::from_min_max(
-                    egui::pos2(full.min.x, full.max.y - bar_h),
-                    full.max,
-                );
-
-                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(body_rect), |ui| {
-                    egui::ScrollArea::vertical().id_salt("export_ws_scroll").show(ui, |ui| {
-                        ui.set_min_width(ui.available_width());
+                crate::app::export::export_column(ui, full, "export_ws", &theme, &mut |ui, part| match part {
+                    crate::app::export::ExportPart::Form => {
                         self.export_settings_contents(ui, &all_presets, all_cmds, false);
                         ui.add_space(12.0);
                         // The queue lives under the form here; the Render
@@ -994,37 +980,14 @@ impl KlippApp {
                                 ui.add_space(12.0);
                                 ui.vertical(|ui| {
                                     ui.set_max_width(ui.available_width() - 12.0);
-                                    crate::panels::render_queue::RenderQueuePanel::show_contents(
-                                        ui, &self.state.render_queue, &theme, true, &mut actions,
-                                    );
+                                    crate::panels::render_queue::RenderQueuePanel::show_contents(ui, &self.state.render_queue, &theme, true, &mut actions);
                                 });
                             });
                         });
                         self.apply_render_queue_actions(actions);
-                    });
-                });
-
-                // The bar sits on the panel's own background with a rule
-                // above it, so it reads as a pinned foot rather than as
-                // the last thing in the form.
-                ui.painter().rect_filled(bar_rect, 0.0, theme.bg_panel);
-                ui.painter().hline(
-                    bar_rect.x_range(),
-                    bar_rect.top(),
-                    egui::Stroke::new(1.0_f32, theme.border),
-                );
-                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(bar_rect), |ui| {
-                    // Centre the whole foot — summary line and buttons
-                    // together — in the reserved strip, rather than the
-                    // button row alone, which left the summary hanging
-                    // off the top and the buttons off the bottom.
-                    // Nothing at all in a strip with no room for it —
-                    // a panel collapsed or mid-resize draws no half
-                    // button rather than a clipped one.
-                    if foot.content_h > 0.0 {
-                        ui.add_space(foot.pad);
-                        self.export_action_bar(ui, all_cmds, false, foot.show_summary);
                     }
+                    crate::app::export::ExportPart::Notes => self.export_notes(ui),
+                    crate::app::export::ExportPart::Buttons => self.export_buttons(ui, all_cmds, false),
                 });
                 return;
             }
