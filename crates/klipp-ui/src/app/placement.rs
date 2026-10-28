@@ -599,6 +599,23 @@ impl KlippApp {
     }
 }
 
+/// How a pool item let go on `track` at `at` goes in (#2966): laid down
+/// where it is let go, nothing else moving, onto empty space (a gap, or
+/// past the last clip); inserted, as the timeline's insert mode has it,
+/// onto a clip or the cut where one starts; inserted anywhere with the
+/// insert modifier held; laid over what is there in overwrite mode.
+pub(crate) fn media_drop_mode(track: &klipp_timeline::Track, at: klipp_core::Timecode, mode: klipp_timeline::magnetic::EditMode, insert_held: bool) -> klipp_timeline::magnetic::EditMode {
+    use klipp_timeline::magnetic::EditMode;
+    if insert_held {
+        return EditMode::Insert;
+    }
+    if mode == EditMode::Overwrite {
+        return EditMode::Overwrite;
+    }
+    let onto_a_clip = track.clips.iter().any(|c| !c.kind.is_gap() && c.timeline_in <= at && at < c.timeline_out);
+    if onto_a_clip { EditMode::Insert } else { EditMode::Overwrite }
+}
+
 /// The edits that put `clip`, a new clip starting at zero, on track
 /// `track_index` at `at` (#2549), as an insert or an overwrite, with its
 /// sound linked under it when `audio` is `Some` (the synced recording,
@@ -687,6 +704,52 @@ mod media_drop_tests {
 
     fn dropped() -> Clip {
         Clip::media(klipp_core::MediaId::new(), t(0), t(2), t(0), t(2))
+    }
+
+    /// #2966: a three-minute song let go on an empty audio track under a
+    /// cut, in insert mode, is laid down there and no clip on the picture
+    /// or sound tracks moves; with the insert modifier held it goes in and
+    /// moves what follows, as a drop did before.
+    #[test]
+    fn a_song_dropped_on_an_empty_track_moves_nothing_unless_insert_is_held() {
+        use klipp_timeline::magnetic::EditMode;
+        let (mut seq, ids) = timeline();
+        let a2 = seq.tracks.len();
+        seq.add_audio_track("Audio 2".into());
+        let song = || Clip::media(klipp_core::MediaId::new(), t(0), t(180), t(0), t(180));
+        let others: Vec<ClipId> = seq.all_clips().map(|c| c.id).collect();
+        let spans = |s: &Sequence| others.iter().map(|&id| span(s, id)).collect::<Vec<_>>();
+
+        let mode = super::media_drop_mode(&seq.tracks[a2], t(4), EditMode::Insert, false);
+        assert_eq!(mode, EditMode::Overwrite, "empty space: laid down");
+        let (edits, placed) = media_drop_edits(&seq, song(), a2, None, t(4), PasteMode::Overwrite, "Overwrite").expect("placed");
+        let after = run(&seq, &edits, true);
+        assert_eq!(span(&after, placed), (t(4), t(184)), "where it was let go");
+        assert!(after.tracks[a2].find_clip(placed).is_some(), "on A2");
+        assert_eq!(spans(&after), spans(&seq), "no clip on V1 or A1 moved");
+
+        let mode = super::media_drop_mode(&seq.tracks[a2], t(4), EditMode::Insert, true);
+        assert_eq!(mode, EditMode::Insert, "the insert modifier held");
+        let (edits, _) = media_drop_edits(&seq, song(), a2, None, t(4), PasteMode::Insert, "Insert").expect("placed");
+        let after = run(&seq, &edits, true);
+        assert_eq!(span(&after, ids[1]), (t(184), t(188)), "what follows the cut moves along, as before");
+    }
+
+    /// Onto a clip, or the cut where one starts, insert mode still
+    /// inserts; overwrite mode always lays over; a gap is empty space.
+    #[test]
+    fn insert_mode_inserts_onto_a_clip_and_lays_down_in_a_gap() {
+        use klipp_timeline::magnetic::EditMode;
+        let (seq, _) = timeline();
+        let vi = track_of(&seq, TrackKind::Video);
+        let v1 = &seq.tracks[vi];
+        assert_eq!(super::media_drop_mode(v1, t(4), EditMode::Insert, false), EditMode::Insert, "at a cut");
+        assert_eq!(super::media_drop_mode(v1, t(5), EditMode::Insert, false), EditMode::Insert, "onto a clip");
+        assert_eq!(super::media_drop_mode(v1, t(12), EditMode::Insert, false), EditMode::Overwrite, "past the last clip");
+        assert_eq!(super::media_drop_mode(v1, t(5), EditMode::Overwrite, false), EditMode::Overwrite);
+        let mut gapped = v1.clone();
+        gapped.clips.remove(1);
+        assert_eq!(super::media_drop_mode(&gapped, t(5), EditMode::Insert, false), EditMode::Overwrite, "in a gap");
     }
 
     fn run(seq: &Sequence, edits: &[EditCommand], forward: bool) -> Sequence {

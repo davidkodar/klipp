@@ -35,7 +35,7 @@ mod tips;
 mod perf;
 mod shutdown;
 mod multicam;
-mod placement;
+pub(crate) mod placement;
 mod history_apply;
 pub(crate) mod aspect_version;
 mod audio_roles;
