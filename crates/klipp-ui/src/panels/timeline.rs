@@ -3086,6 +3086,20 @@ impl TimelinePanel {
                     } else {
                         state.dragging_media_group.clone()
                     };
+                    // A picture let go on a text track, which holds titles,
+                    // goes on the video track nearest it (#2966): below,
+                    // else above. It did nothing.
+                    let (track_idx, track_kind) = match track_kind {
+                        TrackKind::Text if group.iter().any(|id| state.media_pool.get(id).is_some_and(|item| crate::drag_drop::media_fits_track(item, TrackKind::Video))) => {
+                            let tracks = &state.sequence().tracks;
+                            let video = (track_idx + 1..tracks.len()).chain((0..track_idx).rev()).find(|&i| tracks[i].kind == TrackKind::Video);
+                            match video {
+                                Some(v) => (v, TrackKind::Video),
+                                None => (track_idx, track_kind),
+                            }
+                        }
+                        _ => (track_idx, track_kind),
+                    };
                     let compatible = group.iter().any(|id| {
                         state.media_pool.get(id).is_some_and(|item| crate::drag_drop::media_fits_track(item, track_kind))
                     });
@@ -3100,16 +3114,28 @@ impl TimelinePanel {
                         // where.
                         let secs = ((pos.x - content_rect.left() + state.timeline_scroll_x) / state.timeline_zoom.max(1e-6)) as f64;
                         let at = Self::media_drop_time(state, secs, state.timeline_zoom, ui.input(|i| i.modifiers.shift));
+                        // Laid down on empty space, inserted onto a clip in
+                        // insert mode, inserted anywhere with Ctrl held
+                        // (#2966): the hint says which.
+                        let drop_mode = state.sequence().tracks.get(track_idx).map_or(state.edit_mode, |t| {
+                            crate::app::placement::media_drop_mode(t, at, state.edit_mode, ui.input(|i| i.modifiers.command))
+                        });
                         if group.len() == 1 {
                             let x = content_rect.left() + at.to_secs_f64() as f32 * state.timeline_zoom - state.timeline_scroll_x;
                             painter.vline(x, track_rect.y_range(), egui::Stroke::new(2.0_f32, tt.marker_info));
+                            let hint = match drop_mode {
+                                klipp_timeline::magnetic::EditMode::Insert => "Insert: moves what follows",
+                                _ if state.edit_mode == klipp_timeline::magnetic::EditMode::Overwrite => "Overwrite",
+                                _ => "Lay down (Ctrl to insert)",
+                            };
+                            painter.text(egui::pos2(x + 4.0, track_rect.top() + 2.0), egui::Align2::LEFT_TOP, hint, egui::FontId::proportional(11.0), tt.marker_info);
                         }
                         if !any_down {
                             state.dragging_media = None;
                             state.dragging_media_group.clear();
                             tracing::info!("Media drop: {} item(s) ({:?}) -> track {} ({}) at {:.3}s", group.len(), drag_media_id, track_idx, track_name, at.to_secs_f64());
                             if group.len() == 1 {
-                                cmds.push(media_drop_command(drag_media_id, track_idx, at, state.edit_mode));
+                                cmds.push(media_drop_command(drag_media_id, track_idx, at, drop_mode));
                             } else {
                                 cmds.push(AppCommand::AppendMediaBatchToTrack {
                                     media_ids: group,

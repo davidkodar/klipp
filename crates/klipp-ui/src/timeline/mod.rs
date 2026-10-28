@@ -1641,6 +1641,47 @@ mod menu_smoke_tests {
         assert!(matches!(track.kind, TrackKind::Video) && track.clips.is_empty(), "the clip goes on the new track, not {}", track.name);
     }
 
+    /// #2966: a pool clip let go on any picture track goes on that track,
+    /// V2 and V1 alike, not only the bottom one; on a text track, which
+    /// holds titles, it goes on the video track nearest below.
+    #[test]
+    fn a_drop_on_any_picture_track_lays_the_clip_there() {
+        let mut timeline = Timeline::new();
+        let media = timeline.state.media_pool.all().next().expect("the clip").id;
+        let name = timeline.state.sequences[0].next_track_name(TrackKind::Video);
+        timeline.state.sequences[0].add_video_track(name);
+        let name = timeline.state.sequences[0].next_track_name(TrackKind::Text);
+        timeline.state.sequences[0].add_text_track(name);
+        timeline.frame(Vec::new());
+        timeline.frame(Vec::new());
+        let rects = timeline.old.frame_cache.track_rects.clone();
+        let tracks = timeline.state.sequences[0].tracks.clone();
+        for (idx, _, rect) in &rects {
+            let kind = tracks[*idx].kind;
+            if !matches!(kind, TrackKind::Video | TrackKind::Text) {
+                continue;
+            }
+            timeline.state.dragging_media = Some(media);
+            let at = egui::pos2(rect.left() + 300.0, rect.center().y);
+            // The button is held from the pool, as in the app, until let go.
+            let mut sent = Vec::new();
+            timeline.frame(vec![egui::Event::PointerMoved(at), egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE }]);
+            sent.append(&mut timeline.sent);
+            timeline.frame(vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE }]);
+            sent.append(&mut timeline.sent);
+            let placed = sent.iter().find_map(|c| match c {
+                AppCommand::PlaceMedia { drop: klipp_core::events::ClipDrop::OnTrackAt { track_index, .. }, .. } => Some(*track_index),
+                _ => None,
+            });
+            let placed = placed.unwrap_or_else(|| panic!("nothing placed on {} ({kind:?}): {sent:?}", tracks[*idx].name));
+            match kind {
+                TrackKind::Video => assert_eq!(placed, *idx, "on {} where it was let go", tracks[*idx].name),
+                _ => assert_eq!(tracks[placed].kind, TrackKind::Video, "from the text track, onto a video track"),
+            }
+            assert!(timeline.state.dragging_media.is_none(), "the drag is over");
+        }
+    }
+
     /// A muted track's mute button is filled red in the header, so it
     /// reads at a glance; unmuted, nothing red is drawn (#2672).
     #[test]
