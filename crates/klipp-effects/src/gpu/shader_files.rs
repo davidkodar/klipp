@@ -74,11 +74,22 @@ fn every_shader_file_is_used() {
     let mut taken = std::collections::BTreeSet::new();
     for rel in index.lines() {
         let assembled = std::fs::read_to_string(out.join(rel)).unwrap();
-        assert!(sources.contains(&assembled), "{rel} is no shader the crate compiles");
+        // A numbered part (`shutter.1.wgsl`) is joined in Rust around a
+        // value spliced mid-expression; its text is inside a shader.
+        let part = rel.trim_end_matches(".wgsl").rsplit('.').next().is_some_and(|n| n.parse::<u32>().is_ok());
+        if part {
+            assert!(sources.iter().any(|s| s.contains(&assembled)), "{rel} is part of no shader the crate compiles");
+        } else {
+            assert!(sources.contains(&assembled), "{rel} is no shader the crate compiles");
+        }
         let raw = std::fs::read_to_string(shaders_dir().join(rel)).unwrap();
         taken.extend(raw.split('\n').filter_map(|l| l.strip_prefix(shader_includes::DIRECTIVE)).map(str::to_string));
     }
-    let rust = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/gpu.rs")).unwrap();
+    // A piece a helper macro still reads, in any source file.
+    let mut rust = String::new();
+    for path in ["src/gpu.rs", "src/warp.rs"] {
+        rust.push_str(&std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path)).unwrap());
+    }
     for e in std::fs::read_dir(shaders_dir().join("include")).unwrap().flatten() {
         let file = e.file_name().to_string_lossy().into_owned();
         let name = file.trim_end_matches(".wgsl");

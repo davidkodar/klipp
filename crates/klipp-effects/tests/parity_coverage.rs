@@ -393,7 +393,19 @@ fn every_shader_has_a_parity_check_or_a_reason() {
 fn every_shader_constant_is_registered() {
     let registered: BTreeSet<String> = klipp_effects::gpu::shader_sources().into_iter().map(|(n, _)| n.to_string()).collect();
     let mut unregistered = Vec::new();
-    for file in ["klipp-effects/src/gpu.rs", "klipp-effects/src/gpu/thumbs.rs", "klipp-effects/src/nv12_gpu.rs", "klipp-effects/src/p010_gpu.rs"] {
+    // gpu.rs and every module under gpu/, where the shaders' constants
+    // move by area (#2890), and the decoders' converters.
+    let mut files: Vec<String> = ["klipp-effects/src/gpu.rs", "klipp-effects/src/nv12_gpu.rs", "klipp-effects/src/p010_gpu.rs"].map(String::from).to_vec();
+    for e in std::fs::read_dir(crates_dir().join("klipp-effects/src/gpu")).unwrap().flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if name.ends_with(".rs") {
+            files.push(format!("klipp-effects/src/gpu/{name}"));
+        }
+    }
+    files.sort();
+    assert!(files.iter().any(|f| f.ends_with("gpu/transitions.rs")), "the area modules are scanned: {files:?}");
+    for file in &files {
+        let file = file.as_str();
         for line in source(file).lines() {
             // Whatever its visibility: `pub const`, `pub(crate) const` and
             // the rest count too.

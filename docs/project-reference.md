@@ -200,7 +200,7 @@ Klipp is a 42-crate Cargo workspace organised into layers, with dependencies flo
 | `klipp-nodes` | The per-clip picture graph: model, node registry and executor |
 | `klipp-engine` | Real-time playback: decode, composite, mix, output |
 | `klipp-compose` | The one definition of how a timeline frame is rendered |
-| `klipp-effects` | Built-in GPU effects and the shared scope pipeline (wgpu / Vulkan) |
+| `klipp-effects` | Built-in GPU effects and the shared scope pipeline (wgpu / Vulkan); the compute shaders are `.wgsl` files under `src/gpu/shaders/`, by area |
 | `klipp-transitions` | Transition pixel-math |
 | `klipp-title` | Title / text engine: shaping, layout, glyphs, style runs, motions |
 | `klipp-linebreak` | Unicode line breaking, vendored |
