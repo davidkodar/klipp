@@ -113,6 +113,7 @@ impl KlippApp {
         }
         let mut clip = klipp_timeline::Clip::media(mid, t_in, t_out, s_in, s_out);
         clip.speed = p.speed;
+        super::media::starting_role_on(&mut clip, &item);
         if !audio_only {
             clip.source_rotation = item.source_rotation;
         }
@@ -243,6 +244,7 @@ impl KlippApp {
         let p = crate::source_edit::three_point(&Marks { seq_in: None, seq_out: None, ..self.source_marks(&item) });
         let (t_in, t_out, s_in, s_out) = self.placement_timecodes(&item, &p);
         let mut new = klipp_timeline::Clip::media(mid, t_in, t_out, s_in, s_out);
+        super::media::starting_role_on(&mut new, &item);
         if !audio_only {
             new.source_rotation = item.source_rotation;
         }
