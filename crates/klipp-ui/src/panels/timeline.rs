@@ -10271,6 +10271,9 @@ impl TimelinePanel {
                                 } else {
                                     state.edit_mode
                                 };
+                                // Where every clip was, for its linked sound
+                                // to follow (#2967).
+                                let before = state.sequence().clone();
                                 let result = match effective_mode {
                                     klipp_timeline::magnetic::EditMode::Insert => {
                                         klipp_timeline::magnetic::MagneticEditor::move_primary(
@@ -10293,7 +10296,7 @@ impl TimelinePanel {
                                         }
                                     }
                                 };
-                                state.active_history_mut().push(crate::history::HistoryEntry { command: crate::history::EditCommand::Magnetic(result.command) });
+                                record_primary_drag(state, &before, result.command);
                                 state.dirty = true;
                                 cmds.push(AppCommand::SequenceUpdated);
                             }
@@ -17051,6 +17054,104 @@ fn hover_timeline_time(state: &AppState, track_idx: usize, clip_index: usize, fr
             klipp_core::Timecode::from_secs_f64(from + (to - from) * frac.clamp(0.0, 1.0), rate)
         }
         None => state.playhead,
+    }
+}
+
+
+/// A drag on the primary track done (#2967): with Linked on, the sound
+/// linked to each picture it moved follows by the same amount, the move
+/// and the sound one undo step; with Linked off, the picture alone.
+fn record_primary_drag(state: &mut AppState, before: &klipp_timeline::Sequence, command: klipp_timeline::magnetic_commands::MagneticEditCommand) {
+    let partners = if state.linked_selection { klipp_timeline::magnetic::MagneticEditor::follow_linked_partners(before, state.sequence_mut()) } else { Vec::new() };
+    let history = state.active_history_mut();
+    if partners.is_empty() {
+        history.push(crate::history::HistoryEntry { command: crate::history::EditCommand::Magnetic(command) });
+        return;
+    }
+    history.begin_batch();
+    history.push(crate::history::HistoryEntry { command: crate::history::EditCommand::Magnetic(command) });
+    for p in partners {
+        history.push(crate::history::HistoryEntry {
+            command: crate::history::EditCommand::LegacyMoveClip {
+                clip_id: p.clip_id,
+                old_timeline_in: p.old_in,
+                old_timeline_out: p.old_out,
+                new_timeline_in: p.new_in,
+                new_timeline_out: p.new_out,
+                linked_partner: None,
+            },
+        });
+    }
+    history.end_batch_as("Move Clip");
+}
+
+
+#[cfg(test)]
+mod linked_drag_tests {
+    use super::*;
+
+    /// A default sequence (V1 primary, A1 below) with three 2 s clips on
+    /// V1, each with its sound linked under it on A1.
+    fn linked_state() -> (AppState, Vec<klipp_core::ClipId>) {
+        let mut state = AppState::default();
+        let rate = state.sequence().fps.rate();
+        let two = RationalTime::from_secs_f64(2.0, rate);
+        let media = klipp_core::MediaId::new();
+        let ids: Vec<_> = (0..3).map(|_| state.sequences[0].tracks[0].append_clip(media, two)).collect();
+        for &id in &ids {
+            crate::app::linked_audio_for_tests(&mut state.sequences[0], id);
+        }
+        (state, ids)
+    }
+
+    fn span(state: &AppState, id: klipp_core::ClipId) -> (Timecode, Timecode) {
+        let c = state.sequence().all_clips().find(|c| c.id == id).unwrap();
+        (c.timeline_in, c.timeline_out)
+    }
+
+    fn sound_of(state: &AppState, id: klipp_core::ClipId) -> klipp_core::ClipId {
+        state.sequence().all_clips().find(|c| c.id == id).unwrap().linked_clip_id.unwrap()
+    }
+
+    /// #2967: a linked picture dragged 2 s along the primary track, past
+    /// the next clip, keeps its sound under it, and so does every picture
+    /// the move shifted, as one undo step; with Linked off the sound
+    /// stays where it was.
+    #[test]
+    fn a_dragged_linked_picture_takes_its_sound() {
+        for linked in [true, false] {
+            let (mut state, ids) = linked_state();
+            state.linked_selection = linked;
+            let sounds: Vec<_> = ids.iter().map(|&id| sound_of(&state, id)).collect();
+            let before_spans: Vec<_> = sounds.iter().map(|&s| span(&state, s)).collect();
+            let before = state.sequence().clone();
+            let to = RationalTime::from_secs_f64(4.0, state.sequence().fps.rate());
+            let result = klipp_timeline::magnetic::MagneticEditor::move_primary(state.sequence_mut(), ids[0], to);
+            record_primary_drag(&mut state, &before, result.command);
+            assert_ne!(span(&state, ids[0]), before_spans[0], "the picture moved");
+            for (&id, &sound) in ids.iter().zip(&sounds) {
+                if linked {
+                    assert_eq!(span(&state, sound), span(&state, id), "Linked on: the sound under its picture");
+                }
+            }
+            if !linked {
+                let after: Vec<_> = sounds.iter().map(|&s| span(&state, s)).collect();
+                assert_eq!(after, before_spans, "Linked off: only the picture moved");
+                continue;
+            }
+            // One undo puts pictures and sound back.
+            let entry = state.active_history_mut().undo().expect("one step");
+            let mut seqs = vec![state.sequence().clone()];
+            let mut pool = klipp_media::MediaPool::default();
+            let mut fps = seqs[0].fps;
+            let mut view = klipp_document::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps };
+            view.apply_inverse(&entry.command);
+            for (&id, &sound) in ids.iter().zip(&sounds) {
+                let c = |x| seqs[0].all_clips().find(|c| c.id == x).map(|c| (c.timeline_in, c.timeline_out)).unwrap();
+                assert_eq!(c(sound), c(id), "undone: in sync");
+            }
+            assert_eq!(seqs[0].all_clips().find(|c| c.id == sounds[0]).map(|c| (c.timeline_in, c.timeline_out)), Some(before_spans[0]), "undone: where it was");
+        }
     }
 }
 

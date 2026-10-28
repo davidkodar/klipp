@@ -203,6 +203,12 @@ use grade_edits::*;
 use tracking::*;
 pub(crate) use tracking::{surface_area_on_frame, surface_on_frame};
 use linked_audio::*;
+
+/// A clip's own sound linked under it, for tests outside this module.
+#[cfg(test)]
+pub(crate) fn linked_audio_for_tests(seq: &mut klipp_timeline::Sequence, clip: klipp_core::ClipId) {
+    attach_linked_audio_to_clip(seq, clip, None).expect("its sound linked under it");
+}
 use camera::*;
 use subtitles::*;
 use render_script::*;
