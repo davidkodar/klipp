@@ -28,61 +28,67 @@ pub(super) fn build_recent_thumbnail(
 
 /// Write the skim strip of `seq` beside `poster`, on a thread of its own:
 /// [`crate::panels::launch_screen::SKIM_FRAMES`] frames evenly through the
-/// cut, side by side, each the picture on the highest video track there
-/// (as the selects strip skims) decoded as poster frames are. A frame
-/// with no picture stays black.
-pub(super) fn spawn_skim_strip(seq: &klipp_timeline::Sequence, media_pool: &klipp_media::MediaPool, poster: &std::path::Path) {
+/// cut, side by side, each the timeline's picture there as the export
+/// draws it (#2945): its titles, effects, grade and transitions, nested
+/// scenes resolved through `all`. A frame that can't be drawn stays black.
+pub(super) fn spawn_skim_strip(seq: &klipp_timeline::Sequence, all: &[klipp_timeline::Sequence], media_pool: &klipp_media::MediaPool, poster: &std::path::Path) {
     let n = crate::panels::launch_screen::SKIM_FRAMES;
     let duration = seq.total_duration().to_secs_f64();
     if duration <= 0.0 {
         return;
     }
-    let rate = seq.fps.num.max(1);
-    let targets: Vec<Option<(PathBuf, f64)>> = (0..n)
-        .map(|i| {
-            let t = klipp_core::Timecode::from_secs_f64(duration * (i as f64 + 0.5) / n as f64, rate);
-            let (media_id, secs) = crate::panels::selects_strip::skim_target(seq, t)?;
-            let item = media_pool.get(&media_id)?;
-            (item.path.exists() && is_video_ext(&item.path)).then(|| (item.path.clone(), secs))
-        })
-        .collect();
-    if targets.iter().all(Option::is_none) {
-        return;
-    }
+    let snapshot = match klipp_render::SequenceSnapshot::from_sequence_with_all(seq, all, media_pool, &klipp_core::ExportSettings::default(), None, false, klipp_engine::video_decoder::working_colorspace()) {
+        Ok(mut s) => {
+            s.grade_encoding = klipp_core::grade_encoding();
+            s
+        }
+        Err(e) => {
+            tracing::warn!("skim strip: the timeline could not be read: {e}");
+            return;
+        }
+    };
     let cell_w = 192u32;
     let (rw, rh) = (seq.resolution.width.max(1), seq.resolution.height.max(1));
-    let cell_h = ((cell_w as u64 * rh as u64 / rw as u64) as u32).clamp(16, 400);
+    // Even, as the render's frame sizes are.
+    let cell_h = (((cell_w as u64 * rh as u64 / rw as u64) as u32).clamp(16, 400)) & !1;
     let out = crate::panels::launch_screen::skim_strip_path(poster);
     let _ = std::thread::Builder::new().name("skim-strip".into()).spawn(move || {
-        let strip_w = cell_w * n as u32;
-        let mut strip = vec![0u8; (strip_w * cell_h * 4) as usize];
-        for px in strip.chunks_exact_mut(4) {
-            px[3] = 255;
-        }
-        for (i, target) in targets.iter().enumerate() {
-            let Some((path, secs)) = target else { continue };
-            let Ok((rgba, w, h)) = klipp_engine::generate_thumbnail_at_size(path, *secs, cell_w) else { continue };
-            // Fitted into its cell, the rest left black.
-            let scale = (cell_w as f32 / w as f32).min(cell_h as f32 / h as f32);
-            let (fw, fh) = (((w as f32 * scale) as u32).max(1), ((h as f32 * scale) as u32).max(1));
-            let (ox, oy) = ((cell_w - fw.min(cell_w)) / 2, (cell_h - fh.min(cell_h)) / 2);
-            for y in 0..fh.min(cell_h) {
-                for x in 0..fw.min(cell_w) {
-                    let sx = ((x as f32 / scale) as u32).min(w - 1);
-                    let sy = ((y as f32 / scale) as u32).min(h - 1);
-                    let si = ((sy * w + sx) * 4) as usize;
-                    let di = (((oy + y) * strip_w + i as u32 * cell_w + ox + x) * 4) as usize;
-                    strip[di..di + 4].copy_from_slice(&rgba[si..si + 4]);
-                }
-            }
-        }
+        let strip = skim_strip_pixels(&snapshot, duration, n, cell_w, cell_h);
         // Written whole under another name, then put in place, so the
         // welcome screen never reads half a strip.
         let tmp = out.with_extension("strip.tmp");
-        if save_rgba_as_png(&strip, strip_w, cell_h, &tmp) {
+        if save_rgba_as_png(&strip, cell_w * n as u32, cell_h, &tmp) {
             let _ = std::fs::rename(&tmp, &out);
         }
     });
+}
+
+/// The skim strip's pixels: `n` cells of `cell_w` × `cell_h`, side by side,
+/// the timeline's picture at the middle of each nth of its `duration`,
+/// drawn by the export's renderer from the media's own files at the
+/// cell's size (#2945). A cell that can't be drawn is black.
+pub(super) fn skim_strip_pixels(snapshot: &klipp_render::SequenceSnapshot, duration: f64, n: usize, cell_w: u32, cell_h: u32) -> Vec<u8> {
+    let strip_w = cell_w * n as u32;
+    let mut strip = vec![0u8; (strip_w * cell_h * 4) as usize];
+    for px in strip.chunks_exact_mut(4) {
+        px[3] = 255;
+    }
+    for i in 0..n {
+        let secs = duration * (i as f64 + 0.5) / n as f64;
+        let still = match klipp_render::still::timeline_still(snapshot, secs, cell_w, cell_h) {
+            Ok(still) => still,
+            Err(e) => {
+                tracing::debug!("skim strip: no frame at {secs:.2} s: {e}");
+                continue;
+            }
+        };
+        for y in 0..cell_h {
+            let row = (y * cell_w * 4) as usize;
+            let di = ((y * strip_w + i as u32 * cell_w) * 4) as usize;
+            strip[di..di + (cell_w * 4) as usize].copy_from_slice(&still.rgba[row..row + (cell_w * 4) as usize]);
+        }
+    }
+    strip
 }
 
 /// Generate a poster frame thumbnail and save as PNG.
@@ -238,4 +244,30 @@ pub(super) fn save_rgb_as_png(rgb: &[u8], width: u32, height: u32, path: &std::p
     encoder.set_depth(png::BitDepth::Eight);
     let Ok(mut writer) = encoder.write_header() else { return false };
     writer.write_image_data(rgb).is_ok()
+}
+
+#[cfg(test)]
+mod skim_strip_tests {
+    /// #2945: the project screen's strip shows the picture, a title
+    /// included: a project whose picture is a title over nothing showed a
+    /// black strip, made from the top video track's raw media.
+    #[test]
+    fn the_skim_strip_shows_a_title() {
+        let tc = |s: f64| klipp_core::Timecode::from_secs_f64(s, 25);
+        let td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "STRIP".into(), font_size: 160.0, color: [255, 255, 255, 255], ..Default::default() });
+        let mut t1 = klipp_timeline::Track::new("T1", klipp_timeline::TrackKind::Text);
+        t1.clips = vec![klipp_timeline::Clip { kind: klipp_timeline::ClipKind::Title(td), ..klipp_timeline::Clip::gap(tc(0.0), tc(4.0)) }];
+        let mut seq = klipp_timeline::Sequence::new_default();
+        seq.fps = klipp_core::Fps::new(25, 1);
+        seq.resolution = klipp_core::Resolution { width: 640, height: 360 };
+        seq.tracks = vec![t1];
+        let snapshot = klipp_render::SequenceSnapshot::from_sequence_with_all(&seq, std::slice::from_ref(&seq), &klipp_media::MediaPool::default(), &klipp_core::ExportSettings::default(), None, false, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
+        let (n, w, h) = (4, 192, 108);
+        let strip = super::skim_strip_pixels(&snapshot, 4.0, n, w, h);
+        assert_eq!(strip.len(), (w * n as u32 * h * 4) as usize);
+        for cell in 0..n as u32 {
+            let white = (0..h).flat_map(|y| (0..w).map(move |x| ((y * w * n as u32 + cell * w + x) * 4) as usize)).filter(|&i| strip[i] > 200 && strip[i + 1] > 200 && strip[i + 2] > 200).count();
+            assert!(white > 20, "cell {cell} shows the title: {white} white pixels");
+        }
+    }
 }

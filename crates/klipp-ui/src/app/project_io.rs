@@ -721,7 +721,7 @@ impl KlippApp {
                     pinned: false,
                 };
                 if let Some(poster) = rp.thumbnail_path.as_deref() {
-                    spawn_skim_strip(&self.state.sequences[self.state.active_sequence_idx], &self.state.media_pool, poster);
+                    spawn_skim_strip(&self.state.sequences[self.state.active_sequence_idx], &self.state.sequences, &self.state.media_pool, poster);
                 }
                 self.prefs.add_recent_project(rp);
                 self.prefs_dirty = true;
