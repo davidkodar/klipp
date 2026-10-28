@@ -8,6 +8,7 @@
 use std::path::{Path, PathBuf};
 
 pub mod kokoro;
+pub mod piper_engine;
 
 /// The voice a take is spoken in when none is named: Kokoro's Heart,
 /// natural-sounding and free for any use. Where Kokoro cannot run (a build
@@ -20,11 +21,13 @@ pub const FALLBACK_VOICE: &str = "piper_en_us_ljspeech_high";
 
 /// The voice a take is spoken in when none is named, on this machine.
 pub fn default_voice() -> &'static str {
-    if cfg!(feature = "kokoro") && kokoro::espeak().is_ok() {
-        DEFAULT_VOICE
-    } else {
-        FALLBACK_VOICE
-    }
+    default_voice_where(cfg!(feature = "kokoro") && kokoro::espeak().is_ok())
+}
+
+/// The default voice where Kokoro can run or not: Kokoro's whenever it
+/// can (#2978), whatever Piper there is.
+fn default_voice_where(kokoro_runs: bool) -> &'static str {
+    if kokoro_runs { DEFAULT_VOICE } else { FALLBACK_VOICE }
 }
 
 /// The voice takes were named without: the default before the voices
@@ -132,14 +135,20 @@ fn label_of(id: &str, display_name: &str) -> (String, String) {
 /// Whether the AI model manager lists this entry as a row of its own. A
 /// Piper voice's settings file and each small Kokoro voice come with the
 /// voice or the Kokoro download they belong to, so they are not rows.
+///
+/// The Piper engine is a row of its own, under narration.
 pub fn shown_in_model_manager(id: &str) -> bool {
     !(kokoro::is_kokoro(id) || (id.starts_with("piper_") && id.ends_with("_config")))
 }
 
 /// The files that come with a model manager row and go when it is
 /// uninstalled: with the Kokoro download, every Kokoro voice; with a
-/// Piper voice, its settings and the copy of them made beside the model.
+/// Piper voice, its settings and the copy of them made beside the model;
+/// with the Piper engine, the folder it was unpacked into.
 pub fn extra_files(cache: &klipp_ml::cache::ModelCache, manifest: &klipp_ml::manifest::ModelManifest, id: &str) -> Vec<PathBuf> {
+    if piper_engine::is_engine(id) {
+        return vec![piper_engine::folder(cache)];
+    }
     if id == kokoro::MODEL {
         return manifest.models.iter().filter(|e| kokoro::is_kokoro(&e.id)).map(|e| cache.path_for(e)).collect();
     }
@@ -167,7 +176,7 @@ pub fn voices() -> Result<Vec<Voice>, String> {
     let mut voices: Vec<Voice> = manifest
         .models
         .iter()
-        .filter(|e| e.kind == klipp_ml::manifest::ModelKind::Voice && !e.id.ends_with("_config") && e.id != kokoro::MODEL)
+        .filter(|e| e.kind == klipp_ml::manifest::ModelKind::Voice && !e.id.ends_with("_config") && e.id != kokoro::MODEL && !piper_engine::is_engine(&e.id))
         .map(|e| {
             let (label, about) = label_of(&e.id, &e.display_name);
             let (engine, missing): (Engine, Vec<&klipp_ml::manifest::ModelEntry>) = if kokoro::is_kokoro(&e.id) {
@@ -212,6 +221,12 @@ pub fn download(ids: &[String], done: &std::sync::atomic::AtomicU64, cancel: &st
         if cancel.load(std::sync::atomic::Ordering::Relaxed) {
             return Err("cancelled".into());
         }
+        if piper_engine::is_engine(id) {
+            if piper().is_err() {
+                piper_engine::install(&mut Count(done), cancel)?;
+            }
+            continue;
+        }
         let entry = manifest.get(id).ok_or_else(|| format!("no {id} in the model manifest"))?;
         if cache.path_for(entry).is_file() {
             continue;
@@ -238,7 +253,7 @@ pub fn commercial_use(license: &str) -> bool {
 }
 
 /// The piper program: `KLIPP_PIPER`, else `piper` or `piper-tts` on the
-/// path.
+/// path, else the engine Klipp downloaded (#2978).
 pub fn piper() -> Result<PathBuf, String> {
     std::env::var("KLIPP_PIPER")
         .ok()
@@ -246,7 +261,16 @@ pub fn piper() -> Result<PathBuf, String> {
         .filter(|p| p.is_file())
         .or_else(|| which("piper"))
         .or_else(|| which("piper-tts"))
-        .ok_or_else(|| "the piper program is not installed; on Arch: pacman -S piper-tts, elsewhere pip install piper-tts, or set KLIPP_PIPER to the program".to_string())
+        .or_else(|| klipp_ml::cache::ModelCache::open().ok().and_then(|c| piper_engine::installed(&c)))
+        .ok_or_else(|| format!("Piper voices need the Piper engine, a download of {}", engine_size()))
+}
+
+/// The engine's download size as shown: "26 MB".
+pub fn engine_size() -> String {
+    klipp_ml::manifest::load_effective()
+        .ok()
+        .and_then(|m| m.get(piper_engine::ENGINE).map(|e| format!("{} MB", e.size_bytes.div_ceil(1_000_000))))
+        .unwrap_or_else(|| "a few MB".into())
 }
 
 /// A manifest entry's file in the model cache, fetched first with
@@ -484,7 +508,15 @@ pub fn synthesize(req: &Request) -> Result<PathBuf, String> {
         finish_take(&out)?;
         return Ok(out);
     }
-    let piper = piper()?;
+    // The engine too, when downloads were asked for and there is none.
+    let piper = match piper() {
+        Ok(p) => p,
+        Err(_) if req.download => {
+            let cancel = std::sync::atomic::AtomicBool::new(false);
+            piper_engine::install(&mut klipp_ml::download::NoOpProgress, &cancel)?
+        }
+        Err(why) => return Err(format!("{why}; ask with download_models true, or download it in Window > Narrate")),
+    };
     let (model, config) = voice_files(voice, req.download)?;
     let mut child = std::process::Command::new(&piper)
         .arg("--model")
@@ -755,8 +787,12 @@ mod tests {
     #[test]
     fn the_manifest_voices_and_their_licences() {
         let manifest = klipp_ml::manifest::ModelManifest::parse(klipp_ml::manifest::BUILTIN_MANIFEST).unwrap();
-        let voices: Vec<_> = manifest.models.iter().filter(|e| e.kind == klipp_ml::manifest::ModelKind::Voice && !e.id.ends_with("_config") && e.id != super::kokoro::MODEL).collect();
+        let voices: Vec<_> = manifest.models.iter().filter(|e| e.kind == klipp_ml::manifest::ModelKind::Voice && !e.id.ends_with("_config") && e.id != super::kokoro::MODEL && !super::piper_engine::is_engine(&e.id)).collect();
         assert!(voices.len() >= 18, "{}", voices.len());
+        // The engine the Piper voices run on, pinned like them (#2978).
+        let engine = manifest.get(super::piper_engine::ENGINE).expect("the Piper engine");
+        assert!(engine.sources.iter().all(|s| s.url.starts_with("https://github.com/rhasspy/piper/releases/download/")), "Piper's official release");
+        assert_eq!(engine.sha256.len(), 64);
         assert!(manifest.get(super::kokoro::MODEL).is_some(), "the Kokoro model every Kokoro voice needs");
         for v in &voices {
             if super::kokoro::is_kokoro(&v.id) {
@@ -812,6 +848,15 @@ mod tests {
             let owner = if super::kokoro::is_kokoro(&e.id) { super::kokoro::MODEL.to_string() } else { e.id.trim_end_matches("_config").to_string() };
             assert!(super::extra_files(&cache, &manifest, &owner).contains(&cache.path_for(e)), "{} is hidden and would be left behind", e.id);
         }
+    }
+
+    /// #2978: a take with no voice named is spoken by Kokoro wherever it
+    /// runs, Piper or none; only where it cannot, by the Piper fallback.
+    #[test]
+    fn kokoro_is_the_default_wherever_it_runs() {
+        assert_eq!(super::default_voice_where(true), super::DEFAULT_VOICE);
+        assert!(super::kokoro::is_kokoro(super::DEFAULT_VOICE), "a Kokoro voice, which needs no Piper");
+        assert_eq!(super::default_voice_where(false), super::FALLBACK_VOICE);
     }
 
     /// Without Kokoro in the build, a take with no voice named is spoken

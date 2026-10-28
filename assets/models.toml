@@ -211,7 +211,27 @@ kind = "text_recognizer"
 runtime = "ort"
 prompts = ""
 
-# ── Narration: a Piper voice (run by the piper program, installed apart) ──
+# ── Narration: the Piper engine, downloaded on request (#2978) ──
+#
+# Piper's official Linux release, run where no piper program is installed.
+# Unpacked by klipp-audio's narration::piper_engine under its path guards
+# and caps. Checksum taken from the release asset on 2026-10-28.
+
+[[model]]
+id = "piper_engine_linux_x86_64"
+display_name = "Piper engine — runs the Piper voices (Linux x86_64)"
+size_bytes = 26460462
+sha256 = "a50cb45f355b7af1f6d758c1b360717877ba0a398cc8cbe6d2a7a3a26e225992"
+license = "MIT (Piper); espeak-ng data GPL-3.0; ONNX Runtime MIT"
+attribution = "rhasspy/piper release 2023.11.14-2, piper_linux_x86_64.tar.gz"
+sources = [
+    { url = "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_x86_64.tar.gz" },
+]
+kind = "voice"
+runtime = "piper"
+prompts = ""
+
+# ── Narration: a Piper voice (run by the Piper engine) ──
 #
 # Only voices whose data and weights are free for any use: public domain,
 # CC0 or CC BY, trained from scratch or fine-tuned from a clean voice. Most

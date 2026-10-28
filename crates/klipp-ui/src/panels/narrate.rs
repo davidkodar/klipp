@@ -139,11 +139,11 @@ impl NarratePanel {
     }
 
     /// Fetch what the chosen voice still needs, counting as it goes.
-    fn start_download(&mut self, voice: &Voice) {
+    fn start_download(&mut self, ids: Vec<String>, total: u64) {
         let (tx, rx) = std::sync::mpsc::channel();
         let done = Arc::new(AtomicU64::new(0));
         let cancel = Arc::new(AtomicBool::new(false));
-        let (ids, d, c) = (voice.missing.clone(), done.clone(), cancel.clone());
+        let (d, c) = (done.clone(), cancel.clone());
         std::thread::Builder::new()
             .name("klipp-narrate-download".into())
             .spawn(move || {
@@ -151,7 +151,7 @@ impl NarratePanel {
             })
             .ok();
         self.error = None;
-        self.fetch = Some(Fetch { total: voice.size_bytes.max(1), done, cancel, rx });
+        self.fetch = Some(Fetch { total: total.max(1), done, cancel, rx });
     }
 
     /// Where a finished take goes; the commands are sent by `show`.
@@ -325,13 +325,20 @@ impl NarratePanel {
                 ui.add_space(6.0);
                 let mut ready = false;
                 if let Some(v) = &chosen {
-                    if let Some(why) = narration::engine_missing(v.engine) {
-                        let install = match v.engine {
-                            Engine::Kokoro => "sudo pacman -S espeak-ng",
-                            Engine::Piper => "sudo pacman -S piper-tts",
-                        };
+                    let missing = if self.fetch.is_some() { None } else { narration::engine_missing(v.engine) };
+                    if let (Some(_), Engine::Piper) = (&missing, v.engine) {
+                        // The engine is a download like the voices (#2978).
+                        ui.horizontal(|ui| {
+                            ui.label(engine_offer());
+                            if ui.button("Download").clicked() {
+                                let total = engine_bytes();
+                                self.start_download(vec![narration::piper_engine::ENGINE.to_string()], total);
+                            }
+                        });
+                    } else if let Some(why) = missing {
+                        let install = "sudo pacman -S espeak-ng";
                         ui.colored_label(ui.visuals().warn_fg_color, format!("This voice cannot speak yet: {why}."));
-                        if cfg!(feature = "ai-ort") || v.engine == Engine::Piper {
+                        if cfg!(feature = "ai-ort") {
                             ui.horizontal(|ui| {
                                 ui.label("Install it with");
                                 ui.code(install);
@@ -360,8 +367,7 @@ impl NarratePanel {
                         ui.horizontal(|ui| {
                             ui.label(what);
                             if ui.button("Download").clicked() {
-                                let v = v.clone();
-                                self.start_download(&v);
+                                self.start_download(v.missing.clone(), v.size_bytes);
                             }
                         });
                     } else if v.commercial_use {
@@ -423,16 +429,35 @@ impl NarratePanel {
 }
 
 /// A voice as the picker shows it: "Heart — female, US English", with the
-/// default marked recommended.
+/// default marked recommended, and its licence (#2978).
 fn picker_label(v: &Voice) -> String {
     let mut s = format!("{} — {}", v.label, v.about);
     if v.id == narration::DEFAULT_VOICE {
         s.push_str(" · recommended");
     }
-    if !v.commercial_use {
-        s.push_str(" · research only");
-    }
+    s.push_str(" · ");
+    s.push_str(&licence_short(v));
     s
+}
+
+/// A voice's licence in a few words: "Apache-2.0", "Public domain",
+/// "CC BY 4.0"; one not for paid work says so in full.
+fn licence_short(v: &Voice) -> String {
+    if !v.commercial_use {
+        return "research only — not for commercial use".into();
+    }
+    v.license.split([';', '(']).next().unwrap_or(&v.license).trim().to_string()
+}
+
+/// The engine's download in bytes, as the manifest says.
+fn engine_bytes() -> u64 {
+    klipp_ml::manifest::load_effective().ok().and_then(|m| m.get(narration::piper_engine::ENGINE).map(|e| e.size_bytes)).unwrap_or(0)
+}
+
+/// What the window offers when a Piper voice is chosen and there is no
+/// Piper engine.
+fn engine_offer() -> String {
+    format!("Piper voices need the Piper engine ({}). Download?", crate::model_download::fmt_bytes(engine_bytes()))
 }
 
 #[cfg(test)]
@@ -447,5 +472,23 @@ mod tests {
         p.fit_on = true;
         p.fit_secs = 1.8;
         assert_eq!(p.spec().fit_secs, Some(1.8));
+    }
+
+    /// #2978: every voice in the picker shows its licence: Kokoro's
+    /// Apache-2.0, a public-domain Piper voice as such, and Lessac as
+    /// research only; and the Piper engine is offered as a download of
+    /// its size, not a package to install.
+    #[test]
+    fn the_voice_list_shows_licences() {
+        let voices = klipp_audio::narration::voices().expect("the manifest's voices");
+        assert!(!voices.iter().any(|v| klipp_audio::narration::piper_engine::is_engine(&v.id)), "the engine is no voice");
+        let label = |id: &str| super::picker_label(voices.iter().find(|v| v.id == id).unwrap_or_else(|| panic!("{id}")));
+        assert_eq!(label("kokoro_voice_af_heart"), "Heart — female, US English · recommended · Apache-2.0");
+        assert!(label("piper_en_us_ljspeech_high").ends_with(" · Public domain"), "{}", label("piper_en_us_ljspeech_high"));
+        assert!(label("piper_en_us_lessac_medium").ends_with(" · research only — not for commercial use"), "{}", label("piper_en_us_lessac_medium"));
+        for v in &voices {
+            assert!(super::picker_label(v).contains(&super::licence_short(v)) && !super::licence_short(v).is_empty(), "{}", v.id);
+        }
+        assert_eq!(super::engine_offer(), "Piper voices need the Piper engine (25.2 MB). Download?");
     }
 }
