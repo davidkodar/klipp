@@ -66,6 +66,7 @@ pub mod smart_bin;
 pub mod sync;
 pub mod media_marker;
 pub mod span;
+pub mod debug_log;
 pub mod startup_timer;
 pub mod piece_transition;
 pub mod quote;

@@ -1645,6 +1645,9 @@ pub struct PlaybackEngine {
     expected_audio_generation: u64,
     // Performance
     last_stats_time: std::time::Instant,
+    /// When an ENGINE_HEARTBEAT with nothing in it was last logged
+    /// (#2988): a quiet engine logs one every 30 s, not every 2 s.
+    last_quiet_heartbeat: std::time::Instant,
     /// Per-stats-interval counters (2-second window). Let us see at a
     /// glance how much work the engine is doing without grep-summing
     /// the 60 fps-worth of PERF lines by hand.
@@ -2777,6 +2780,7 @@ impl PlaybackEngine {
             report_floor: std::cell::Cell::new(None),
             expected_audio_generation: 0,
             last_stats_time: std::time::Instant::now(),
+            last_quiet_heartbeat: std::time::Instant::now(),
             dbg_update_playback_count: 0,
             dbg_regrade_count: 0,
             dbg_param_changes_drained: 0,
@@ -3265,7 +3269,16 @@ impl PlaybackEngine {
                 } else {
                     0.0
                 };
-                tracing::info!(
+                // Every 2 s while anything happens; quiet, every 30 s
+                // (#2988), so a parked engine's beat doesn't bury what
+                // the rest of the app logs.
+                let busy = self.state == PlaybackState::Playing
+                    || self.dbg_update_playback_count + self.dbg_regrade_count + self.dbg_param_changes_drained + self.dbg_commands_handled + rb_count > 0;
+                let beat = busy || self.last_quiet_heartbeat.elapsed() >= Duration::from_secs(30);
+                if !busy && beat {
+                    self.last_quiet_heartbeat = std::time::Instant::now();
+                }
+                if beat { tracing::info!(
                     "ENGINE_HEARTBEAT state={:?} updates={} regrades={} param_changes={} cmds={} elapsed={:.2}s rate={:.1}/s drops_total={} hw_decode={:?} has_v1={} overlays={} cpu_readbacks={} readback_avg={:.2}ms readback_total={:.1}ms audio_gaps={}",
                     self.state,
                     self.dbg_update_playback_count,
@@ -3282,7 +3295,7 @@ impl PlaybackEngine {
                     rb_avg_ms,
                     rb_us as f64 / 1000.0,
                     crate::audio_output::underrun_callbacks(),
-                );
+                ); }
                 self.last_stats_time = std::time::Instant::now();
                 self.dbg_update_playback_count = 0;
                 self.dbg_regrade_count = 0;
@@ -3936,8 +3949,12 @@ impl PlaybackEngine {
             }
 
             AppCommand::SetInspectorMattePreviewTarget(target) => {
+                // Sent on every UI frame: logged only when it changes
+                // (#2988), 10 000 lines in two minutes otherwise.
+                if self.inspector_matte_preview_target != target {
+                    debug!("Inspector matte preview target: {:?}", target);
+                }
                 self.inspector_matte_preview_target = target;
-                debug!("Inspector matte preview target: {:?}", target);
             }
 
             AppCommand::SetScopeRenderMode { mode } => {
