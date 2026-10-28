@@ -36,19 +36,16 @@ pub fn sync_theme(t: &KlippTheme) {
     }
 }
 
+/// What an empty timeline says (#2933): how to put its first clip on,
+/// the way that moves nothing (#2984). The insert key is an edit that
+/// splits what is at the playhead, so it is not offered here.
+pub(crate) const EMPTY_TIMELINE_HINT: &str = "Drag a clip here from the media pool, or right-click it there and choose Add to End of Timeline";
+
 /// Read-only handle to the current theme. Returns a clone so callers
 /// can use the value without holding the read lock — every leaf that
 /// reaches for a theme token also paints, and we don't want a paint
 /// op holding the lock against a concurrent `sync_theme` from the UI
 /// thread (rare but possible during prefs hot-reload).
-/// What an empty timeline says (#2933): how to put its first clip on.
-pub(crate) fn empty_timeline_hint(kb: &crate::keybindings::KeyBindings) -> String {
-    match kb.display_for("insert_edit") {
-        key if key.is_empty() => "Drag a clip here from the media pool".to_string(),
-        key => format!("Drag a clip here from the media pool, or select one and press {key}"),
-    }
-}
-
 fn theme() -> KlippTheme {
     TIMELINE_THEME
         .get()
@@ -1772,7 +1769,7 @@ impl TimelinePanel {
             ui.painter().with_clip_rect(layout.tracks_clip).text(
                 layout.tracks_clip.center(),
                 egui::Align2::CENTER_CENTER,
-                empty_timeline_hint(kb),
+                EMPTY_TIMELINE_HINT,
                 egui::FontId::proportional(11.0),
                 theme().text_dim,
             );
