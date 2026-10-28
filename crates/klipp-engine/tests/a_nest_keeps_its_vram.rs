@@ -63,9 +63,8 @@ fn nest(depth: usize, left: MediaId, right: MediaId, fps: Fps) -> Sequence {
         t
     };
     let half = |m: MediaId, on_left: bool| {
-        let mut c = Clip { kind: ClipKind::Media { media_id: m }, source_in: tc(0), source_out: tc(45), ..Clip::gap(tc(0), tc(45)) };
-        c.push_effect(klipp_effects::BuiltinEffect::Crop { left: if on_left { 0.0 } else { 0.5 }, right: if on_left { 0.5 } else { 0.0 }, top: 0.0, bottom: 0.0, feather: 0.0, aspect: 0.0, focus_x: 0.5, focus_y: 0.5 });
-        c
+        let c = Clip { kind: ClipKind::Media { media_id: m }, source_in: tc(0), source_out: tc(45), ..Clip::gap(tc(0), tc(45)) };
+        klipp_timeline::test_clip::TestClip::of(c).effect(klipp_effects::BuiltinEffect::Crop { left: if on_left { 0.0 } else { 0.5 }, right: if on_left { 0.5 } else { 0.0 }, top: 0.0, bottom: 0.0, feather: 0.0, aspect: 0.0, focus_x: 0.5, focus_y: 0.5 }).build()
     };
     let placed = |s: &Sequence| {
         let mut c = Clip::precomposition(s.id, tc(0), tc(45));

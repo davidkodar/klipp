@@ -1342,7 +1342,7 @@ mod guard_tests {
     fn blur() -> Node {
         let n: Node = serde_json::from_value(serde_json::json!({
             "id": uuid::Uuid::new_v4(),
-            "type_id": types::LEGACY_EFFECT,
+            "type_id": crate::names::effect_node_type("gaussian_blur"),
             "legacy": {"payload": {"type": "gaussian_blur", "radius": 4.0}},
         }))
         .unwrap();
@@ -1380,7 +1380,7 @@ mod guard_tests {
         assert_eq!(n.anim[&ParamKey::from("radius")].keys[0]["value"].as_f64(), Some(hi as f64));
         let mut added: Node = serde_json::from_value(serde_json::json!({
             "id": uuid::Uuid::new_v4(),
-            "type_id": types::LEGACY_EFFECT,
+            "type_id": crate::names::effect_node_type("gaussian_blur"),
             "legacy": {"payload": {"type": "gaussian_blur", "radius": 1e20}},
         }))
         .unwrap();

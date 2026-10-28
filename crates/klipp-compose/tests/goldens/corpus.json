@@ -1,6 +1,6 @@
 {
-  "recorded_on": "870e2c9c",
-  "reason": "new cases for Gradient Map and Warp (#2758); frame blending drawn by the stack and the export since #2864",
+  "recorded_on": "081f2c21",
+  "reason": "#2995 held layer-style values at their ranges: the fixtures now give fractions of the layer, as the registry describes",
   "frames": [
   {"case":"effect/Opacity","kind":"rgba","len":9216,"offset":0,"path":"cpu","t":"0.5"},
   {"case":"effect/Opacity","kind":"rgba","len":9216,"offset":9216,"path":"CpuWithGpu","t":"0.5"},
