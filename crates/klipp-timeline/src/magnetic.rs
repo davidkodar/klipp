@@ -755,6 +755,45 @@ impl MagneticEditor {
         }
     }
 
+    /// The linked partners of the primary clips an edit moved (#2967),
+    /// moved by the same amount, so a picture dragged on the primary track
+    /// keeps its sound in sync: compared between `before` and `sequence`,
+    /// each primary clip whose start changed takes its partner along,
+    /// unless the partner is on the primary track, moved already (a
+    /// connected clip the edit carried), or on a locked track. The partners
+    /// moved, as cascade records (old and new spans).
+    pub fn follow_linked_partners(before: &Sequence, sequence: &mut Sequence) -> Vec<CascadeRecord> {
+        let Some(primary) = sequence.primary_track_index() else { return Vec::new() };
+        let was = |id: ClipId| before.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == id).map(|c| (c.timeline_in, c.timeline_out));
+        let moves: Vec<(ClipId, RationalTime)> = sequence.tracks[primary]
+            .clips
+            .iter()
+            .filter_map(|c| {
+                let (old_in, _) = was(c.id)?;
+                let delta = c.timeline_in - old_in;
+                (delta.value != 0).then_some((c.linked_clip_id?, delta))
+            })
+            .collect();
+        let mut out = Vec::new();
+        for (partner, delta) in moves {
+            let Some((ti, _)) = sequence.find_clip(partner) else { continue };
+            if ti == primary || sequence.tracks[ti].locked {
+                continue;
+            }
+            let Some(clip) = sequence.tracks[ti].find_clip(partner) else { continue };
+            let (old_in, old_out) = (clip.timeline_in, clip.timeline_out);
+            // Carried already by the edit (its anchor moved): not again.
+            if was(partner) != Some((old_in, old_out)) {
+                continue;
+            }
+            let (new_in, new_out) = (old_in + delta, old_out + delta);
+            sequence.set_clip_position(partner, new_in, new_out);
+            sequence.tracks[ti].sort_clips();
+            out.push(CascadeRecord { clip_id: partner, track_index: ti, old_in, old_out, new_in, new_out, collision: None });
+        }
+        out
+    }
+
     // ───────────────────────────────────────────────────────────────
     // 7. insert_gap
     // ───────────────────────────────────────────────────────────────
@@ -2156,6 +2195,36 @@ mod tests {
             awaiting_refit: false,
             version_of: None,
         }
+    }
+
+    /// #2967: a picture moved on the primary track takes its linked sound
+    /// along, and so does every picture the move shifted: each sound clip
+    /// sits under its picture after, none left behind.
+    #[test]
+    fn a_primary_move_takes_the_linked_sound_along() {
+        let mut seq = make_sequence(&[(0, 48), (48, 96), (96, 144)]);
+        let mut a1 = Track::new("Audio 1", TrackKind::Audio);
+        let pictures: Vec<ClipId> = seq.tracks[0].clips.iter().map(|c| c.id).collect();
+        for (i, &(from, to)) in [(0, 48), (48, 96), (96, 144)].iter().enumerate() {
+            let mut sound = media_clip(from, to);
+            sound.linked_clip_id = Some(pictures[i]);
+            seq.tracks[0].clips[i].linked_clip_id = Some(sound.id);
+            a1.clips.push(sound);
+        }
+        seq.tracks.push(a1);
+        let before = seq.clone();
+        MagneticEditor::move_primary(&mut seq, pictures[0], tc(144));
+        let moved = MagneticEditor::follow_linked_partners(&before, &mut seq);
+        assert_eq!(moved.len(), 3, "every picture moved, so every sound: {moved:?}");
+        for c in &seq.tracks[0].clips {
+            let sound = seq.tracks[1].find_clip(c.linked_clip_id.unwrap()).unwrap();
+            assert_eq!((sound.timeline_in, sound.timeline_out), (c.timeline_in, c.timeline_out), "the sound under its picture");
+        }
+        // A locked sound track stays.
+        let mut locked = before.clone();
+        locked.tracks[1].locked = true;
+        MagneticEditor::move_primary(&mut locked, pictures[0], tc(144));
+        assert!(MagneticEditor::follow_linked_partners(&before, &mut locked).is_empty());
     }
 
     /// Creates a sequence with a primary track and a connected track.
