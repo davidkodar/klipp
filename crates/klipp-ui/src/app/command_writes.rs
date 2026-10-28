@@ -729,6 +729,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SetTrackAutomationKeys { .. }
         | AppCommand::SetTrackLanguage { .. }
         | AppCommand::SetTrackTargeted { .. }
+        | AppCommand::TargetTrackFromBadge { .. }
         | AppCommand::SetTrackSourcePatch { .. }
         | AppCommand::PasteTrackAttributes { .. }
         | AppCommand::AddTrackVideoEffect { .. }

@@ -28,6 +28,8 @@ mod project_io;
 mod unsaved;
 #[cfg(test)]
 mod made_tracks_tests;
+#[cfg(test)]
+mod sound_source_tests;
 mod appearance;
 mod tips;
 mod perf;

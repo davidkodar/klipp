@@ -100,16 +100,17 @@ impl KlippApp {
         let audio_only = item.video_codec.is_empty();
         let kind = if audio_only { klipp_timeline::TrackKind::Audio } else { klipp_timeline::TrackKind::Video };
         let seq_idx = self.state.active_sequence_idx;
-        let Some(target) = self.state.sequences[seq_idx].source_track(kind) else {
+        if !self.state.sequences[seq_idx].tracks.iter().any(|t| t.kind == kind) {
             self.state.toast.show(if audio_only { "No audio track in sequence" } else { "No video track in sequence" });
-            return;
-        };
-        if self.state.sequences[seq_idx].tracks[target].locked {
-            self.state.toast.show("Target track is locked");
             return;
         }
         self.adopt_first_clip_format(&item);
         let (t_in, t_out, s_in, s_out) = self.placement_timecodes(&item, &p);
+        let Some(target) = self.source_edit_track(seq_idx, kind, t_in, t_out) else { return };
+        if self.state.sequences[seq_idx].tracks[target].locked {
+            self.state.toast.show("Target track is locked");
+            return;
+        }
         let mut clip = klipp_timeline::Clip::media(mid, t_in, t_out, s_in, s_out);
         clip.speed = p.speed;
         if !audio_only {
@@ -257,6 +258,20 @@ impl KlippApp {
             Ok(()) => self.finish_source_edit(id),
             Err(why) => self.state.toast.show(format!("Ripple Overwrite unchanged: {why}")),
         }
+    }
+
+    /// The track a source edit of `kind` lays its clip on from `from` to
+    /// `to`: the patched one, else the first of the kind for a picture; a
+    /// sound-only source goes where `Sequence::sound_source_track` says,
+    /// or on a new audio track when every one is taken, so it never writes
+    /// over sound it was not sent to (#2940). `None` with no track of the
+    /// kind.
+    pub(super) fn source_edit_track(&mut self, seq_idx: usize, kind: klipp_timeline::TrackKind, from: Timecode, to: Timecode) -> Option<usize> {
+        let seq = &mut self.state.sequences[seq_idx];
+        if kind != klipp_timeline::TrackKind::Audio {
+            return seq.source_track(kind);
+        }
+        Some(seq.sound_source_track_or_new(from, to))
     }
 
     fn finish_source_edit(&mut self, clip_id: ClipId) {

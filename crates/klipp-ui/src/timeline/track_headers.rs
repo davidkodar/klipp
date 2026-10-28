@@ -188,8 +188,9 @@ pub fn show(
             egui::pos2(badge_x, track_rect.center().y - 6.0),
             egui::vec2(badge_w, 12.0),
         );
-        // Track targeting (#915): an untargeted track's badge is dimmed,
-        // and clicking the badge turns targeting on or off.
+        // Track targeting (#915): an untargeted track's badge is dimmed.
+        // Clicking the badge makes the track where source edits of its
+        // kind go, or, chosen already, takes it back (#2940).
         let (badge_fill, badge_text) = if track.targeted {
             (badge_color, egui::Color32::WHITE)
         } else {
@@ -214,14 +215,19 @@ pub fn show(
                 "{}: {}{}",
                 layer_label,
                 if track.targeted {
-                    "targeted. Edit-point navigation, paste, split at playhead and match frame act on it. Click to untarget"
+                    "targeted. Edit-point navigation, paste, split at playhead and match frame act on it"
                 } else {
-                    "not targeted. Click to target"
+                    "not targeted"
                 },
-                if track.source_patch { ". Source edits land here" } else { "" },
+                match (track.kind, track.source_patch) {
+                    (klipp_timeline::TrackKind::Video | klipp_timeline::TrackKind::Audio, true) => ". Source edits land here. Click to take it back",
+                    (klipp_timeline::TrackKind::Video | klipp_timeline::TrackKind::Audio, false) => ". Click to send source edits here",
+                    (_, _) if track.targeted => ". Click to untarget",
+                    _ => ". Click to target",
+                },
             ));
         if badge_resp.clicked() {
-            cmds.push(AppCommand::SetTrackTargeted { track_id: track.id, on: !track.targeted });
+            cmds.push(AppCommand::TargetTrackFromBadge { track_id: track.id });
         }
 
         // Track name (after the badge)
@@ -791,7 +797,10 @@ pub fn show(
             };
             if let Some(what) = what {
                 if menu_toggle(ui, &format!("Source {what} Here"), "", patched)
-                    .on_hover_text(format!("On: insert, overwrite and append lay the source's {} on this track; off, on the first one", what.to_lowercase()))
+                    .on_hover_text(match kind {
+                        klipp_timeline::TrackKind::Audio => "On: insert, overwrite and append lay the source's sound on this track, over what is there; off, a sound-only source goes on the first free audio track".to_string(),
+                        _ => format!("On: insert, overwrite and append lay the source's {} on this track; off, on the first one", what.to_lowercase()),
+                    })
                     .clicked()
                 {
                     cmds.push(AppCommand::SetTrackSourcePatch { track_id, on: !patched });

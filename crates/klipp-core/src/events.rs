@@ -3192,6 +3192,11 @@ pub enum AppCommand {
     /// A track's targeting on or off (#915): edit-point navigation,
     /// paste, split at playhead and match frame act on targeted tracks.
     SetTrackTargeted { track_id: TrackId, on: bool },
+    /// A click on a track's badge (#2940): it becomes where source edits
+    /// of its kind go, targeted (alone of its kind while every track of it
+    /// was) with the source patched to it; targeted already, it is
+    /// untargeted and loses the patch. See `Sequence::target_from_badge`.
+    TargetTrackFromBadge { track_id: TrackId },
     /// Patch the source's picture or sound to a track (#915), or, off,
     /// take the patch away so source edits use the first track of the
     /// kind again.

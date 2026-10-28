@@ -701,7 +701,7 @@ impl KlippApp {
                             // through to the legacy track.clips path.
                             // The track the source is patched to (#915); the
                             // magnetic path only when that is the primary.
-                            let target = self.state.sequences[seq_idx].source_track(target_kind).expect("checked above");
+                            let Some(target) = self.source_edit_track(seq_idx, target_kind, timeline_in, timeline_in + dur) else { return true };
                             let primary_idx = self.state.sequences[seq_idx].primary_track_index();
                             let use_magnetic = !is_audio_only
                                 && primary_idx.is_some_and(|idx| {
@@ -790,7 +790,7 @@ impl KlippApp {
 
                             // The track the source is patched to (#915); the
                             // magnetic path only when that is the primary.
-                            let target = self.state.sequences[seq_idx].source_track(target_kind).expect("checked above");
+                            let Some(target) = self.source_edit_track(seq_idx, target_kind, timeline_in, timeline_in + dur) else { return true };
                             let primary_idx = self.state.sequences[seq_idx].primary_track_index();
                             let use_magnetic = !is_audio_only
                                 && primary_idx.is_some_and(|idx| {

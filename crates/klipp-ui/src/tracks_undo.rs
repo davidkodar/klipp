@@ -51,6 +51,7 @@ pub fn label(cmd: &AppCommand) -> Option<&'static str> {
         AppCommand::SetTrackTargeted { on: true, .. } => "Target Track",
         AppCommand::SetTrackTargeted { .. } => "Untarget Track",
         AppCommand::SetTrackSourcePatch { .. } => "Patch Source",
+        AppCommand::TargetTrackFromBadge { .. } => "Target Track",
         // Captions (#70): adding one was not undoable; a caption style,
         // with the captions it restyles, is one step.
         AppCommand::AddSubtitleAtPlayhead { .. } => "Add Caption",
@@ -321,6 +322,7 @@ mod tests {
             AppCommand::SetTrackLanguage { track_id: klipp_core::TrackId::new(), language: Some("de".into()) },
             AppCommand::SetTrackTargeted { track_id: klipp_core::TrackId::new(), on: false },
             AppCommand::SetTrackSourcePatch { track_id: klipp_core::TrackId::new(), on: true },
+            AppCommand::TargetTrackFromBadge { track_id: klipp_core::TrackId::new() },
         ] {
             assert!(label(&cmd).is_some(), "{cmd:?}");
         }

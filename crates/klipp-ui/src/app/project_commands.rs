@@ -1072,6 +1072,14 @@ impl KlippApp {
                 }
                 true
             }
+            AppCommand::TargetTrackFromBadge { track_id } => {
+                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                if let Some(i) = seq.tracks.iter().position(|t| t.id == *track_id) {
+                    seq.target_from_badge(i);
+                    self.state.dirty = true;
+                }
+                true
+            }
             AppCommand::SetTrackSourcePatch { track_id, on } => {
                 let seq = &mut self.state.sequences[self.state.active_sequence_idx];
                 if let Some(i) = seq.tracks.iter().position(|t| t.id == *track_id) {
