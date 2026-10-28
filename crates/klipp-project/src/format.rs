@@ -892,6 +892,8 @@ pub struct MediaItemJson {
     pub shot: klipp_core::ShotMetadata,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub truncated_from_secs: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dolby_vision_profile: Option<u8>,
 }
 
 fn is_default_log_format(f: &klipp_core::LogFormat) -> bool {

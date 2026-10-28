@@ -10692,6 +10692,7 @@ impl PlaybackEngine {
                 let mut sample_rate: Option<u32> = None;
                 let mut audio_channels: Option<u16> = None;
                 let mut colour_space: u8 = 0; // 0=Unknown, 1=SDR, 2=HDR10, 3=HLG
+                let mut dolby_vision_profile = None;
 
                 // The file's picture: the stream the decoders will open. An
                 // MP4 with embedded cover art has a second video stream, one
@@ -10705,6 +10706,10 @@ impl PlaybackEngine {
                         ffmpeg_next::media::Type::Video => {
                             if Some(stream.index()) != picture_stream {
                                 continue;
+                            }
+                            dolby_vision_profile = klipp_media::dolby_vision::stream_profile(&stream);
+                            if let Some(warning) = klipp_media::dolby_vision::warning(dolby_vision_profile) {
+                                warn!("{:?}: {warning}", path.file_name().unwrap_or_default());
                             }
                             let decoder = ffmpeg_next::codec::context::Context::from_parameters(params.clone())
                                 .and_then(|ctx| ctx.decoder().video());
@@ -10983,6 +10988,7 @@ impl PlaybackEngine {
                         pixel_format: pixel_format_name,
                         shot,
                         truncated_from_secs,
+                        dolby_vision_profile,
                     },
                 )));
 

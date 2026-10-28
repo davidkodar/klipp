@@ -269,6 +269,10 @@ pub struct MediaItem {
     /// a copy cut short. `duration` is then what it holds.
     #[serde(default)]
     pub truncated_from_secs: Option<f64>,
+    /// The Dolby Vision profile of its picture, when the file carries
+    /// one; profile 5 is not shown right yet ([`crate::dolby_vision`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dolby_vision_profile: Option<u8>,
     /// What the editor logged about the clip.
     #[serde(default)]
     pub log: klipp_core::ClipLog,
@@ -340,6 +344,7 @@ impl MediaItem {
         self.shot = from.shot.clone();
         self.metadata_read = from.metadata_read;
         self.truncated_from_secs = from.truncated_from_secs;
+        self.dolby_vision_profile = from.dolby_vision_profile;
     }
 
     /// True when this item is a subclip — a zone-within-parent virtual
@@ -458,6 +463,7 @@ impl MediaItem {
             shot: Default::default(),
             metadata_read: false,
             truncated_from_secs: None,
+            dolby_vision_profile: None,
             log: Default::default(),
             synced_audio: None,
             markers: Vec::new(),
@@ -731,6 +737,7 @@ mod subclip_tests {
             shot: Default::default(),
             metadata_read: false,
             truncated_from_secs: None,
+            dolby_vision_profile: None,
             log: Default::default(),
             synced_audio: None,
             markers: Vec::new(),
@@ -914,6 +921,7 @@ mod effective_rotation_tests {
             shot: Default::default(),
             metadata_read: false,
             truncated_from_secs: None,
+            dolby_vision_profile: None,
             log: Default::default(),
             synced_audio: None,
             markers: Vec::new(),
@@ -1077,6 +1085,7 @@ pub fn merge_reprobed(old: &MediaItem, fresh: &mut MediaItem) {
         shot: _,
         metadata_read: _,
         truncated_from_secs: _,
+        dolby_vision_profile: _,
         needs_reprobe: _,
         // What the user and the app said about it.
         rating,
@@ -1198,6 +1207,7 @@ impl MediaItem {
             shot: Default::default(),
             metadata_read: false,
             truncated_from_secs: None,
+            dolby_vision_profile: None,
             log: Default::default(),
             synced_audio: None,
             markers: Vec::new(),
@@ -1465,7 +1475,7 @@ mod tests {
             sample_rate: _, audio_channels: _, is_still: _, fingerprint: _, cache_key: _, file_modified_at: _, media_created_at: _,
             colour_space: _, source_rotation: _, camera_make: _, camera_model: _, encoder: _, bit_depth: _,
             video_bitrate_kbps: _, audio_bitrate_kbps: _, color_primaries: _, color_transfer: _, pixel_format: _,
-            detected_log_format: _, shot: _, metadata_read: _, truncated_from_secs: _,
+            detected_log_format: _, shot: _, metadata_read: _, truncated_from_secs: _, dolby_vision_profile: _,
             // The person's, or the project's: kept.
             kind: _, default_source_in: _, default_source_out: _, rating: _, tags: _, user_notes: _, bin: _, bin_id: _,
             parent_media_id: _, added_at: _, color_label: _, log_format: _, log_format_user_set: _, log: _,

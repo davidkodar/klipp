@@ -384,6 +384,7 @@ fn register_asset_media(
         shot: Default::default(),
         metadata_read: false,
         truncated_from_secs: None,
+        dolby_vision_profile: None,
         log: Default::default(),
         synced_audio: None,
         markers: Vec::new(),

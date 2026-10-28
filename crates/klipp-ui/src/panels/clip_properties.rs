@@ -503,6 +503,10 @@ fn render_metadata_tab(ui: &mut egui::Ui, media: &klipp_media::MediaItem) {
                 kv(ui, "Software / encoder", enc);
                 any = true;
             }
+            if let Some(warning) = klipp_media::dolby_vision::warning(media.dolby_vision_profile) {
+                kv(ui, "Dolby Vision", warning);
+                any = true;
+            }
             if let Some(claimed) = media.truncated_from_secs {
                 kv(ui, "Cut short", &format!("{} of {} the header claims", klipp_media::describe_secs(media.duration.to_secs_f64()), klipp_media::describe_secs(claimed)));
                 any = true;

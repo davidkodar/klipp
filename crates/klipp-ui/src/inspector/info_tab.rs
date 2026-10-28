@@ -326,6 +326,9 @@ fn media_section(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme, media:
             };
             text_row(ui, theme, "Transfer", text);
         }
+        if let Some(warning) = klipp_media::dolby_vision::warning(media.dolby_vision_profile) {
+            colour_row(ui, theme, "Dolby Vision", warning, theme.marker_warning);
+        }
 
         if let Some(epoch_secs) = media.media_created_at.or(media.file_modified_at).filter(|&t| t > 0) {
             text_row(ui, theme, "Shoot date", format_epoch_date(epoch_secs));
@@ -1009,6 +1012,26 @@ mod view_tests {
         assert_eq!(value_of(&texts, "Clips in bin"), "1 \u{00B7} 1 video \u{00B7} 0 audio");
         assert_eq!(value_of(&texts, "Klipp version"), klipp_core::build_info::get().version);
         assert_eq!(rules(&ctx, draw), 5, "a rule under each section header and none between rows");
+    }
+
+    /// Part of #1224: a Dolby Vision profile 5 item says its colours are
+    /// wrong; a profile 8 item, which imports as its HDR picture, does not.
+    #[test]
+    fn a_dolby_vision_profile_5_item_says_its_colours_are_wrong() {
+        let ctx = egui::Context::default();
+        for (profile, warns) in [(Some(5), true), (Some(8), false), (None, false)] {
+            let mut state = AppState::default();
+            let mut m = media();
+            m.dolby_vision_profile = profile;
+            state.media_pool.add(m.clone());
+            let mut tag_input = String::new();
+            let mut draw = |ui: &mut egui::Ui, theme: &KlippTheme, cmds: &mut Vec<AppCommand>| show_bin_media(ui, &state, theme, &m, &mut tag_input, cmds);
+            let (all, texts) = drawn(&ctx, &mut draw);
+            assert_eq!(all.iter().any(|t| t == "Dolby Vision"), warns, "profile {profile:?}: {all:?}");
+            if warns {
+                assert_eq!(value_of(&texts, "Dolby Vision"), klipp_media::dolby_vision::UNSUPPORTED_WARNING);
+            }
+        }
     }
 
     /// A bin item: every fact the tab gave is still there, and what the

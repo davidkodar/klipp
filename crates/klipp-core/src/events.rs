@@ -4647,6 +4647,8 @@ pub struct MediaLoadedPayload {
     /// The duration the file's header claims, when the file holds less:
     /// a copy cut short. `duration` is then what it holds.
     pub truncated_from_secs: Option<f64>,
+    /// The Dolby Vision profile of its picture, when it carries one.
+    pub dolby_vision_profile: Option<u8>,
 }
 
 /// Why the engine could not read a node's input for the eyedropper.
