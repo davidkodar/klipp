@@ -77,6 +77,35 @@ fn saved(e: &BuiltinEffect) -> (String, BTreeMap<String, Value>) {
     (tag, map.into_iter().collect())
 }
 
+/// `t`'s sample as saved, with each described field that saving skips at
+/// its default (a crop without a shape saves as it did before it had one,
+/// #2930) filled in with the default the registry describes, and checked:
+/// the filled-in fields read back as the sample itself, so skipping them
+/// loses nothing and the description is the field's real default.
+fn saved_with_defaults(t: &EffectType) -> (String, BTreeMap<String, Value>) {
+    let sample = (t.sample)();
+    let (tag, mut fields) = saved(&sample);
+    let mut filled = Vec::new();
+    let skipped: Vec<&ParamDesc> = t.desc.params.iter().filter(|p| !p.derived && p.index.is_none() && !fields.contains_key(p.field)).collect();
+    for p in skipped {
+        let v = match p.kind {
+            ParamKind::Bool => Value::Bool(p.default != 0.0),
+            ParamKind::Whole => serde_json::json!(p.default as i64),
+            ParamKind::Float => serde_json::json!(p.default),
+            _ => continue,
+        };
+        fields.insert(p.field.to_string(), v);
+        filled.push(p.field);
+    }
+    if !filled.is_empty() {
+        let mut object: serde_json::Map<String, Value> = fields.clone().into_iter().collect();
+        object.insert("type".into(), Value::String(tag.clone()));
+        let back: BuiltinEffect = serde_json::from_value(Value::Object(object)).unwrap_or_else(|e| panic!("{}: {e}", t.desc.id));
+        assert_eq!(back, sample, "{}: {filled:?}, skipped when saved, are not at the defaults the registry describes", t.desc.id);
+    }
+    (tag, fields)
+}
+
 #[test]
 fn every_variant_is_described_or_listed_as_not_yet() {
     let declared = declared_variants();
@@ -116,7 +145,7 @@ fn value_of<'a>(fields: &'a BTreeMap<String, Value>, p: &ParamDesc) -> &'a Value
 #[test]
 fn the_sample_is_saved_under_the_tag_with_exactly_the_described_fields() {
     for t in effect_types() {
-        let (tag, fields) = saved(&(t.sample)());
+        let (tag, fields) = saved_with_defaults(t);
         assert_eq!(tag, t.tag, "{}: the sample is saved as {tag:?}", t.desc.id);
         let saved_fields: BTreeSet<&str> = fields.keys().map(String::as_str).collect();
         // A field the compositor writes every frame is not saved.
@@ -141,7 +170,7 @@ fn the_sample_is_saved_under_the_tag_with_exactly_the_described_fields() {
 #[test]
 fn defaults_are_the_samples_values_and_inside_their_ranges() {
     for t in effect_types() {
-        let (_, fields) = saved(&(t.sample)());
+        let (_, fields) = saved_with_defaults(t);
         for p in t.desc.params {
             let at = format!("{}.{}", t.desc.id, p.field);
             if let (Some((lo, hi)), Some((slo, shi))) = (p.range, p.soft) {
