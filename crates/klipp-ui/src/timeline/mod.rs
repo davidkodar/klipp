@@ -1641,6 +1641,64 @@ mod menu_smoke_tests {
         assert!(matches!(track.kind, TrackKind::Video) && track.clips.is_empty(), "the clip goes on the new track, not {}", track.name);
     }
 
+    /// #2981: a pool clip let go over the middle of a clip on V2 edits
+    /// there: in insert mode it goes in at the drop time and the clip's
+    /// tail moves along; in overwrite mode it lays over from the drop time.
+    /// The command the panel sends is applied to the model as the app
+    /// applies it.
+    #[test]
+    fn a_drop_onto_the_middle_of_a_clip_edits_there() {
+        use klipp_timeline::magnetic::EditMode;
+        for mode in [EditMode::Insert, EditMode::Overwrite] {
+            let mut timeline = Timeline::new();
+            let media = timeline.state.media_pool.all().next().expect("the clip").id;
+            let v2_id = timeline.state.sequences[0].add_video_track("Video 2".into());
+            let v2 = timeline.state.sequences[0].tracks.iter().position(|t| t.id == v2_id).unwrap();
+            let s = |secs: f64| RationalTime::from_secs_f64(secs, 24);
+            timeline.state.sequences[0].tracks[v2].clips.push(Clip::media(media, s(0.0), s(11.0), s(0.0), s(11.0)));
+            timeline.state.edit_mode = mode;
+            timeline.frame(Vec::new());
+            timeline.frame(Vec::new());
+            let rect = timeline.old.frame_cache.track_rects.iter().find(|(i, _, _)| *i == v2).expect("V2 drawn").2;
+            let x = rect.left() + 5.0 * timeline.state.timeline_zoom - timeline.state.timeline_scroll_x;
+            let at = egui::pos2(x, rect.center().y);
+            // Pressed away from the clip (in the app, on the pool), then
+            // carried over it at hand speed and let go.
+            let start = egui::pos2(x, 590.0);
+            let mut sent = Vec::new();
+            timeline.frame(vec![egui::Event::PointerMoved(start), egui::Event::PointerButton { pos: start, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE }]);
+            timeline.state.dragging_media = Some(media);
+            sent.append(&mut timeline.sent);
+            for k in 1..=6 {
+                let p = egui::pos2(x, start.y + (at.y - start.y) * k as f32 / 6.0);
+                timeline.frame(vec![egui::Event::PointerMoved(p)]);
+                sent.append(&mut timeline.sent);
+            }
+            timeline.frame(vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE }]);
+            sent.append(&mut timeline.sent);
+            let (track_index, when, overwrite) = sent.iter().find_map(|c| match c {
+                AppCommand::PlaceMedia { drop: klipp_core::events::ClipDrop::OnTrackAt { track_index, at, overwrite }, .. } => Some((*track_index, *at, *overwrite)),
+                _ => None,
+            }).unwrap_or_else(|| panic!("{mode:?}: nothing placed: {sent:?}"));
+            assert_eq!(track_index, v2, "{mode:?}: on V2");
+            assert!((when.to_secs_f64() - 5.0).abs() < 0.1, "{mode:?}: at the drop time, not {when:?}");
+            assert_eq!(overwrite, mode == EditMode::Overwrite, "{mode:?}");
+            // As the app places it.
+            let seq = timeline.state.sequences[0].clone();
+            let dropped = Clip::media(media, s(0.0), s(2.0), s(0.0), s(2.0));
+            let (edits, placed) = crate::app::media_drop_for_tests(&seq, dropped, track_index, when, overwrite).unwrap_or_else(|e| panic!("{mode:?}: {e}"));
+            let mut seqs = vec![seq];
+            let mut pool = klipp_media::MediaPool::default();
+            let mut fps = seqs[0].fps;
+            let mut view = klipp_document::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps };
+            edits.iter().for_each(|e| { view.apply_forward(e); });
+            let spans: Vec<(f64, f64)> = seqs[0].tracks[v2].clips.iter().map(|c| ((c.timeline_in.to_secs_f64() * 10.0).round() / 10.0, (c.timeline_out.to_secs_f64() * 10.0).round() / 10.0)).collect();
+            assert!(seqs[0].tracks[v2].find_clip(placed).is_some(), "{mode:?}: placed on V2: {spans:?}");
+            let tail = if overwrite { (7.0, 11.0) } else { (7.0, 13.0) };
+            assert_eq!(spans, vec![(0.0, 5.0), (5.0, 7.0), tail], "{mode:?}");
+        }
+    }
+
     /// #2966: a pool clip let go on any picture track goes on that track,
     /// V2 and V1 alike, not only the bottom one; on a text track, which
     /// holds titles, it goes on the video track nearest below.

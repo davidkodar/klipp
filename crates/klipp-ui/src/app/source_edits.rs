@@ -9,42 +9,11 @@ use klipp_core::RationalTime;
 impl KlippApp {
     /// The source and sequence marks a source edit of `item` reads.
     fn source_marks(&self, item: &klipp_media::MediaItem) -> Marks {
-        let seq = self.state.sequence();
-        let secs = |t: Option<Timecode>| t.map(|t| t.to_secs_f64());
-        Marks {
-            source_in: secs(item.default_source_in),
-            source_out: secs(item.default_source_out),
-            media_len: item.duration.to_secs_f64(),
-            seq_in: secs(seq.in_point),
-            seq_out: secs(seq.out_point),
-            playhead: self.state.playhead.to_secs_f64(),
-        }
+        source_marks(&self.state, item)
     }
 
-    /// `p` as timecode: the timeline in at the sequence's rate, the source
-    /// range at the media's, the marks themselves where they are used
-    /// unchanged so no rounding creeps in.
     fn placement_timecodes(&self, item: &klipp_media::MediaItem, p: &Placement) -> (Timecode, Timecode, Timecode, Timecode) {
-        let rate = self.state.sequence().fps.rate();
-        let src_rate = item.duration.rate;
-        let exact = |secs: f64, marks: &[Option<Timecode>], rate: u32| {
-            marks
-                .iter()
-                .flatten()
-                .copied()
-                .find(|t| (t.to_secs_f64() - secs).abs() < 1e-9)
-                .unwrap_or_else(|| RationalTime::from_secs_f64(secs, rate))
-        };
-        let zero = Some(Timecode { value: 0, rate: src_rate });
-        let seq = self.state.sequence();
-        let timeline_marks = [seq.in_point, seq.out_point, Some(self.state.playhead)];
-        let source_marks = [item.default_source_in, item.default_source_out, zero, Some(item.duration)];
-        (
-            exact(p.timeline_in, &timeline_marks, rate),
-            exact(p.timeline_out, &timeline_marks, rate),
-            exact(p.source_in, &source_marks, src_rate),
-            exact(p.source_out, &source_marks, src_rate),
-        )
+        placement_timecodes(&self.state, item, p)
     }
 
     /// Where an insert or overwrite of `item` lands, by the three-point
@@ -141,22 +110,7 @@ impl KlippApp {
             return;
         }
         self.adopt_first_clip_format(&item);
-        let p = crate::source_edit::three_point(&self.source_marks(&item));
-        let (t_in, t_out, s_in, s_out) = self.placement_timecodes(&item, &p);
-        let seq_idx = self.state.active_sequence_idx;
-        let seq = &self.state.sequences[seq_idx];
-        let dest = match place_on_top_track(seq, t_in, t_out) {
-            Some(i) => i,
-            None => {
-                let n = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video).count();
-                self.state.sequences[seq_idx].add_video_track(format!("Video {}", n + 1));
-                0
-            }
-        };
-        let mut clip = klipp_timeline::Clip::media(mid, t_in, t_out, s_in, s_out);
-        clip.source_rotation = item.source_rotation;
-        let id = clip.id;
-        Self::overwrite_insert_clip_on_track(&mut self.state.sequences[seq_idx].tracks[dest], clip);
+        let id = place_on_top(&mut self.state, mid, &item);
         self.finish_source_edit(id);
     }
 
@@ -218,7 +172,7 @@ impl KlippApp {
                 retarget(c);
             }
         }
-        self.finish_source_edit(clip_id);
+        self.finish_source_edit_in_place(clip_id);
     }
 
     /// The clip under the playhead on the patched track replaced by the
@@ -251,7 +205,7 @@ impl KlippApp {
         let id = new.id;
         let sound = (item.has_audio && !audio_only).then(|| klipp_timeline::Clip::media(mid, t_in, t_out, s_in, s_out));
         match crate::source_edit::ripple_replace(&mut self.state.sequences[seq_idx], target, old, new, sound) {
-            Ok(()) => self.finish_source_edit(id),
+            Ok(()) => self.finish_source_edit_in_place(id),
             Err(why) => self.state.toast.show(format!("Ripple Overwrite unchanged: {why}")),
         }
     }
@@ -271,10 +225,91 @@ impl KlippApp {
     }
 
     fn finish_source_edit(&mut self, clip_id: ClipId) {
+        advance_past(&mut self.state, clip_id);
+        self.finish_source_edit_in_place(clip_id);
+    }
+
+    /// [`Self::finish_source_edit`] with the playhead left where it is:
+    /// an edit of the clip already under it.
+    fn finish_source_edit_in_place(&mut self, clip_id: ClipId) {
         self.state.selected_clip = Some(clip_id);
         self.state.dirty = true;
         self.sync_sequence_to_engine();
         let _ = self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead));
+    }
+}
+
+/// The source and sequence marks a source edit of `item` reads.
+fn source_marks(state: &AppState, item: &klipp_media::MediaItem) -> Marks {
+    let seq = state.sequence();
+    let secs = |t: Option<Timecode>| t.map(|t| t.to_secs_f64());
+    Marks {
+        source_in: secs(item.default_source_in),
+        source_out: secs(item.default_source_out),
+        media_len: item.duration.to_secs_f64(),
+        seq_in: secs(seq.in_point),
+        seq_out: secs(seq.out_point),
+        playhead: state.playhead.to_secs_f64(),
+    }
+}
+
+/// `p` as timecode: the timeline in at the sequence's rate, the source
+/// range at the media's, the marks themselves where they are used
+/// unchanged so no rounding creeps in.
+fn placement_timecodes(state: &AppState, item: &klipp_media::MediaItem, p: &Placement) -> (Timecode, Timecode, Timecode, Timecode) {
+    let rate = state.sequence().fps.rate();
+    let src_rate = item.duration.rate;
+    let exact = |secs: f64, marks: &[Option<Timecode>], rate: u32| {
+        marks
+            .iter()
+            .flatten()
+            .copied()
+            .find(|t| (t.to_secs_f64() - secs).abs() < 1e-9)
+            .unwrap_or_else(|| RationalTime::from_secs_f64(secs, rate))
+    };
+    let zero = Some(Timecode { value: 0, rate: src_rate });
+    let seq = state.sequence();
+    let timeline_marks = [seq.in_point, seq.out_point, Some(state.playhead)];
+    let source_marks = [item.default_source_in, item.default_source_out, zero, Some(item.duration)];
+    (
+        exact(p.timeline_in, &timeline_marks, rate),
+        exact(p.timeline_out, &timeline_marks, rate),
+        exact(p.source_in, &source_marks, src_rate),
+        exact(p.source_out, &source_marks, src_rate),
+    )
+}
+
+/// The source's picture laid on top (#919), by the three-point rules, on
+/// the track [`place_on_top_track`] picks or a new one on top; the
+/// playhead moved to its end (#2982). The new clip.
+fn place_on_top(state: &mut AppState, mid: MediaId, item: &klipp_media::MediaItem) -> ClipId {
+    let p = crate::source_edit::three_point(&source_marks(state, item));
+    let (t_in, t_out, s_in, s_out) = placement_timecodes(state, item, &p);
+    let seq_idx = state.active_sequence_idx;
+    let seq = &state.sequences[seq_idx];
+    let dest = match place_on_top_track(seq, t_in, t_out) {
+        Some(i) => i,
+        None => {
+            let n = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video).count();
+            state.sequences[seq_idx].add_video_track(format!("Video {}", n + 1));
+            0
+        }
+    };
+    let mut clip = klipp_timeline::Clip::media(mid, t_in, t_out, s_in, s_out);
+    clip.source_rotation = item.source_rotation;
+    let id = clip.id;
+    KlippApp::overwrite_insert_clip_on_track(&mut state.sequences[seq_idx].tracks[dest], clip);
+    advance_past(state, id);
+    id
+}
+
+/// The playhead moved to the end of `clip`, a clip a source edit just
+/// placed (#2982): the next edit at the playhead goes after it, so shots
+/// laid one by one follow each other rather than stacking at one time.
+pub(super) fn advance_past(state: &mut AppState, clip: ClipId) {
+    let out = state.sequence().all_clips().find(|c| c.id == clip).map(|c| c.timeline_out);
+    if let Some(out) = out {
+        state.playhead = out;
     }
 }
 
@@ -343,5 +378,37 @@ mod place_on_top_tests {
         for (a, b) in [(1.0, 3.0), (5.0, 7.0), (9.0, 11.0)] {
             assert_eq!(place(&mut seq2, a, b), "Video 2");
         }
+    }
+}
+
+#[cfg(test)]
+mod advance_tests {
+    use super::*;
+
+    /// #2982: Place on Top twice in a row, from the playhead: the second
+    /// shot starts where the first ends, on the same track, and the
+    /// playhead ends at its end. It stayed put, and the second shot went
+    /// on yet another new track at the same time.
+    #[test]
+    fn place_on_top_twice_lays_the_shots_one_after_the_other() {
+        let mut state = AppState::default();
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/place-on-top.mov".into(), None);
+        item.duration = Timecode::from_secs_f64(3.0, 24);
+        item.video_codec = "h264".into();
+        let mid = state.media_pool.add(item.clone());
+        state.playhead = Timecode::from_secs_f64(1.0, 24);
+        let first = place_on_top(&mut state, mid, &item);
+        let second = place_on_top(&mut state, mid, &item);
+        let seq = state.sequence();
+        let at = |id: ClipId| {
+            let ti = seq.tracks.iter().position(|t| t.find_clip(id).is_some()).expect("placed");
+            let c = seq.tracks[ti].find_clip(id).unwrap();
+            (ti, c.timeline_in, c.timeline_out)
+        };
+        let (t1, _, out1) = at(first);
+        let (t2, in2, out2) = at(second);
+        assert_eq!(in2, out1, "the second starts where the first ends");
+        assert_eq!(t2, t1, "on the same track");
+        assert_eq!(state.playhead, out2, "the playhead at the second's end");
     }
 }
