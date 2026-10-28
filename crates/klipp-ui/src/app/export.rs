@@ -1130,8 +1130,9 @@ impl KlippApp {
     /// clips, or one job per marker segment. The three ways an export is
     /// confirmed each had a copy of this.
     pub(super) fn queue_export(&mut self, settings: &klipp_core::ExportSettings) {
-        // The next export follows the marks again unless a range is picked.
-        self.export_dialog.range_picked = false;
+        // A range picked in the form stays picked for the next export
+        // (#2968): reset here, the form went back to a stale In/Out after
+        // each export and the next came out the In/Out's length.
         if self.export_dialog.range_mode == 3 {
             self.enqueue_marker_segments(settings);
             self.state.show_render_queue = true;
@@ -4388,6 +4389,51 @@ mod custom_ceiling_tests {
 #[cfg(test)]
 mod export_range_tests {
     use super::{follow_marks, range_for_export, ExportDialogState};
+
+    /// The frames an export from the form covers: the range step the
+    /// export runs, then the render snapshot `queue_export` makes.
+    fn exported_frames(dialog: &mut ExportDialogState, seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool) -> u64 {
+        dialog.form_export = true;
+        range_for_export(dialog, seq);
+        let snap = klipp_export::RenderSnapshot::from_sequence_with_all(seq, std::slice::from_ref(seq), pool, &klipp_core::ExportSettings::default(), None, dialog.range_mode == 1, klipp_core::WorkingColorspace::Rec709Linear).expect("a snapshot");
+        let s = &snap.sequence_snapshot;
+        s.export_range.map_or(s.duration_frames, |(a, b)| b - a)
+    }
+
+    /// #2968: Full timeline picked in the form stays picked: export after
+    /// export comes out the timeline's length, with In and Out still set.
+    /// After each export the form went back to the In/Out range, and the
+    /// next export came out the In/Out's length.
+    #[test]
+    fn a_picked_full_timeline_stays_picked_export_after_export() {
+        let mut pool = klipp_media::MediaPool::new();
+        let mut seq = sixty_seconds(&mut pool);
+        let full = (seq.total_duration().to_secs_f64() * seq.fps.as_f64()).round();
+        // In and Out set, then cleared, then Full timeline picked: the
+        // issue's steps.
+        seq.in_point = Some(klipp_core::RationalTime::from_secs_f64(20.0, 25));
+        seq.out_point = Some(klipp_core::RationalTime::from_secs_f64(30.0, 25));
+        let mut dialog = ExportDialogState::default();
+        follow_marks(&mut dialog, &seq);
+        assert_eq!(dialog.range_mode, 1, "In and Out offered and taken");
+        seq.in_point = None;
+        seq.out_point = None;
+        dialog.range_mode = 0;
+        dialog.range_picked = true;
+        assert_eq!(exported_frames(&mut dialog, &seq, &pool) as f64, full, "the timeline's length");
+
+        // And with the marks still there, picked again: each export of
+        // three is the whole timeline.
+        seq.in_point = Some(klipp_core::RationalTime::from_secs_f64(20.0, 25));
+        seq.out_point = Some(klipp_core::RationalTime::from_secs_f64(30.0, 25));
+        dialog.range_mode = 0;
+        dialog.range_picked = true;
+        for n in 0..3 {
+            follow_marks(&mut dialog, &seq);
+            assert_eq!(dialog.range_mode, 0, "export {n}: the form still shows Full timeline");
+            assert_eq!(exported_frames(&mut dialog, &seq, &pool) as f64, full, "export {n}: the timeline's length");
+        }
+    }
 
     fn sixty_seconds(pool: &mut klipp_media::MediaPool) -> klipp_timeline::Sequence {
         let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
