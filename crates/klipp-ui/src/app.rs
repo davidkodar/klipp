@@ -178,7 +178,6 @@ mod linked_audio;
 mod camera;
 mod transition_keys;
 mod transcription;
-pub(crate) use transcription::brief_to_transcription;
 mod locks;
 mod storyline;
 mod clip_moves;

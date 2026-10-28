@@ -260,6 +260,36 @@ pub fn poll_download(state: &mut ModelDownloadState) -> bool {
 /// Format a SHA-256 hex string as `abcd…wxyz` for display in a
 /// constrained dialog row. Full hash still available on hover (the
 /// caller chooses how to surface that).
+/// What a model of `kind` does in Klipp, for its download prompt (#2942):
+/// every prompt said "object masks", the speech model's too.
+pub fn model_purpose(kind: klipp_ml::ModelKind) -> &'static str {
+    use klipp_ml::ModelKind as K;
+    match kind {
+        K::MaskGenerator => "to cut objects out of the picture as masks",
+        K::VideoTracker => "to follow an object through a shot",
+        K::ObjectDetector => "to find people and objects in shots, for framing",
+        K::Transcriber => "to turn the speech in your clips into a transcript, for captions, search and cutting by words",
+        K::TextDetector => "to find text on screen in recordings",
+        K::TextRecognizer => "to read text on screen in recordings",
+        K::Voice => "to speak narration",
+        K::FaceDetector => "to find faces, for grading and framing",
+        K::SpeechEnhancer => "to lift voices out of noise (Voice Isolation)",
+        K::VoiceActivity => "to find where people speak, so transcription skips the noise",
+        K::Translator | K::TranslationVocabulary => "to translate captions",
+        K::SoundTagger => "to tell dialogue, music and effects apart",
+        K::ImageTextEmbedder => "to find footage by a description",
+    }
+}
+
+/// The download prompt's words for `entry` (#2942): what it is for, and
+/// that it stays on this machine.
+pub fn consent_text(entry: &ModelEntry) -> String {
+    format!(
+        "Klipp uses this local model {}. Once downloaded the file stays on your machine and Klipp never re-contacts the network to use it.",
+        model_purpose(entry.kind)
+    )
+}
+
 pub fn shorten_hash(full: &str) -> String {
     if full.len() < 12 {
         return full.to_string();
