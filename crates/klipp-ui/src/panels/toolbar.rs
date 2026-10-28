@@ -57,8 +57,12 @@ impl ToolbarPanel {
         styled_tooltip(&resp, theme, "Render Queue", None);
         if resp.clicked() { cmds.push(AppCommand::ShowRenderQueue); }
 
+        // The Nodes button's room, kept on every page: the switcher left of
+        // it then stays where it is when the page changes, rather than
+        // sliding under the pointer that just picked a page (#2954).
+        rx -= 96.0;
+        let switcher_right = rx - 10.0;
         if matches!(state.active_workspace, Workspace::Edit | Workspace::Color) {
-            rx -= 96.0;
             let rect = egui::Rect::from_min_size(egui::pos2(rx, cy - 14.0), egui::vec2(92.0, 28.0));
             // "Nodes", the name the Colour page uses for the same graphs, lit while
             // the dock is open (#1726).
@@ -143,7 +147,7 @@ impl ToolbarPanel {
         let labels: Vec<&str> = workspaces.iter().map(|w| w.1).collect();
         let ws_size = crate::widgets::segmented::segmented_size(ui, &labels, &ws_font, crate::theme::control::REGULAR);
         let active = workspaces.iter().position(|w| w.0 == state.active_workspace).unwrap_or(0);
-        let picked = match switcher_place(toolbar_rect, left_end + 10.0, right_edge, ws_size) {
+        let picked = match switcher_place(toolbar_rect, left_end + 10.0, switcher_right, ws_size) {
             SwitcherPlace::Tabs(ws_rect) => crate::widgets::segmented::segmented_in(ui, ws_rect, &labels, active, theme, ws_font),
             // Too narrow for them all: the one shown, the others a click away.
             SwitcherPlace::Menu(rect) => {
@@ -1746,6 +1750,66 @@ pub(crate) mod narrow_bar_tests {
         frame(&mut state, vec![egui::Event::PointerMoved(at), button(at, true)]);
         frame(&mut state, vec![button(at, false)]);
         assert!(state.show_colour_management);
+    }
+
+    /// #2954: each page opened from the switcher in turn, the pointer
+    /// left on its tab, exactly one tab is lit (its fill and its label in
+    /// the accent), and it is the page open.
+    #[test]
+    fn the_switcher_lights_only_the_open_page() {
+        for width in [1920.0, 1440.0, 1280.0, 1100.0, 1018.0] {
+            lights_only_the_open_page(width);
+        }
+    }
+
+    fn lights_only_the_open_page(width: f32) {
+        let ctx = egui::Context::default();
+        let theme = KlippTheme::default();
+        let mut panel = ToolbarPanel { logo_texture: None };
+        let mut state = AppState::default();
+        let mut time = 0.0;
+        let mut frame = |state: &mut AppState, events| {
+            time += 0.1;
+            ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 1080.0))), time: Some(time), events, ..Default::default() }, |ctx| {
+                egui::TopBottomPanel::top("toolbar").exact_height(40.0).show(ctx, |ui| {
+                    panel.show(ui, state, &[], &theme, &crate::keybindings::KeyBindings::default());
+                });
+            })
+        };
+        let pages = [(Workspace::Edit, "Edit"), (Workspace::Color, "Colour"), (Workspace::Composite, "Composite"), (Workspace::Export, "Export")];
+        let tabs = |out: &egui::FullOutput| -> Vec<(String, egui::Pos2, egui::Color32)> {
+            out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) if pages.iter().any(|(_, l)| *l == t.galley.text()) && t.pos.y < 40.0 => {
+                    let colour = t.galley.job.sections.first().map_or(t.fallback_color, |s| s.format.color);
+                    Some((t.galley.text().to_owned(), t.pos + t.galley.size() / 2.0, colour))
+                }
+                _ => None,
+            }).collect()
+        };
+        let fills = |out: &egui::FullOutput| -> Vec<egui::Rect> {
+            out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Rect(r) if r.fill == theme.accent_subtle && r.rect.max.y <= 40.0 => Some(r.rect),
+                _ => None,
+            }).collect()
+        };
+        let button = |at, pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        for _ in 0..3 { frame(&mut state, Vec::new()); }
+        for order in [[3, 2, 1, 0], [0, 2, 3, 1]] {
+            for i in order {
+                let (page, label) = pages[i];
+                let drawn = tabs(&frame(&mut state, Vec::new()));
+                // The tab's, drawn after the menu of the same name.
+                let at = drawn.iter().rev().find(|(t, ..)| t == label).unwrap_or_else(|| panic!("no {label} tab: {drawn:?}")).1;
+                frame(&mut state, vec![egui::Event::PointerMoved(at), button(at, true)]);
+                frame(&mut state, vec![egui::Event::PointerMoved(at), button(at, false)]);
+                assert_eq!(state.active_workspace, page);
+                let out = frame(&mut state, vec![egui::Event::PointerMoved(at)]);
+                let lit: Vec<String> = tabs(&out).into_iter().filter(|(.., c)| *c == theme.accent).map(|(t, ..)| t).collect();
+                assert_eq!(lit, vec![label.to_string()], "{width} px, {label} open: labels lit");
+                let filled = fills(&out);
+                assert!(filled.len() == 1 && filled[0].contains(at), "{width} px, {label} open: one tab filled, its own: {filled:?}");
+            }
+        }
     }
 
     /// The switcher sits centred when the menus leave room, moves into the
