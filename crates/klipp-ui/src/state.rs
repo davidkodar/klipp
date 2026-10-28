@@ -1684,6 +1684,14 @@ pub struct AppState {
     pub show_ai_models_dialog: bool,
     /// The Set Up AI Assistants window (#2649).
     pub show_assistant_setup: bool,
+    /// The Welcome window (#2933): the first time a project is open in
+    /// the editor, and from Help → Welcome.
+    pub show_welcome: bool,
+    /// The tour's step on screen (#2933), from 0; `None` when no tour is
+    /// running.
+    pub tour_step: Option<usize>,
+    /// Whether this session has asked whether to welcome yet.
+    pub welcome_checked: bool,
 
     /// Whether the Audio Plugins management dialog is visible.
     pub show_audio_plugins_dialog: bool,
@@ -4593,6 +4601,7 @@ impl AppState {
             || self.show_render_queue
             || self.show_ai_models_dialog
             || self.show_assistant_setup
+            || self.show_welcome
             || self.show_audio_plugins_dialog
             || self.show_system_probe
             || self.show_project_doctor
@@ -4709,6 +4718,9 @@ impl Default for AppState {
             preset_manager_selected: None,
             show_ai_models_dialog: false,
             show_assistant_setup: false,
+            show_welcome: false,
+            tour_step: None,
+            welcome_checked: false,
             show_audio_plugins_dialog: false,
             audio_plugins_dialog: crate::panels::audio_plugins::AudioPluginsDialogState::default(),
             show_system_probe: false,

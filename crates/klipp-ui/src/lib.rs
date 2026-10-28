@@ -81,6 +81,7 @@ pub mod graded_thumbs;
 pub mod icons;
 pub mod inspector;
 pub mod keybindings;
+pub mod welcome;
 mod keymap_presets;
 pub mod layout_state;
 pub(crate) mod layout;

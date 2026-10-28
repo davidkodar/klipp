@@ -3160,7 +3160,7 @@ impl ViewerPanel {
                 if cam_resp.clicked() {
                     cmds.push(AppCommand::ExtractFrameToBin);
                 }
-                cam_resp.on_hover_text("Extract frame to bin (Ctrl+Alt+B)");
+                cam_resp.on_hover_text(crate::keybindings::tip(ui.ctx(), "Extract frame to bin", "extract_frame_to_bin"));
                 cursor_right -= btn_w + gap;
             }
 

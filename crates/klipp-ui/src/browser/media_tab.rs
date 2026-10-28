@@ -342,6 +342,8 @@ pub fn show(
             state.selected_media_ids.clear();
         }
         backdrop.context_menu_rows(|ui| menu_body(ui, |ui| pool_menu(ui, view_mode, sort_by, sort_ascending, &mut cmds)));
+        // The tour's first step points here (#2933).
+        crate::welcome::anchor(ui.ctx(), "media_pool", ui.clip_rect());
         if bins_seen.is_empty() {
             ui.add_space(40.0);
             ui.centered_and_justified(|ui| {

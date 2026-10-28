@@ -33,6 +33,10 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &
             let resp = icon_button(ui, theme, btn, active, *draw_fn);
             let key = kb.display_for(action);
             styled_tooltip(&resp, theme, tip, Some(&key));
+            if *tool == klipp_core::Tool::Blade {
+                // The tour's trim-or-split step points here (#2933).
+                crate::welcome::anchor(ui.ctx(), "blade_tool", resp.rect);
+            }
             if resp.clicked() {
                 cmds.push(AppCommand::SetActiveTool(*tool));
             }

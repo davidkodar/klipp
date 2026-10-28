@@ -186,6 +186,13 @@ fn without_autosaves(projects: Vec<RecentProject>) -> Vec<RecentProject> {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeneralPrefs {
+    /// Whether the Welcome window shows the next time a project is open in
+    /// the editor (#2933). A fresh profile has it on, and it goes off once
+    /// shown, unless the window's own checkbox turns it back on. A settings
+    /// file from before it has none, and an existing user is not welcomed
+    /// again: it reads as off.
+    #[serde(default)]
+    pub show_welcome: bool,
     /// Explicit opt-in to background release checks. The original setting
     /// defaulted on, so its serialized value cannot establish user consent.
     #[serde(default, rename = "automatic_update_checks_opt_in")]
@@ -917,6 +924,7 @@ fn default_auto_save_ops() -> u32 { 25 }
 impl Default for GeneralPrefs {
     fn default() -> Self {
         Self {
+            show_welcome: true,
             auto_save_interval_secs: 300,
             check_for_updates: false,
             update_checks_answered: false,

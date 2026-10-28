@@ -126,6 +126,25 @@ impl KeyCombo {
     }
 }
 
+fn published_id() -> egui::Id {
+    egui::Id::new("klipp_key_bindings_in_effect")
+}
+
+/// Makes `kb` the keys a tooltip names this frame (#2933): set by the app
+/// before anything is drawn.
+pub fn publish(ctx: &egui::Context, kb: &KeyBindings) {
+    let kb = std::sync::Arc::new(kb.clone());
+    ctx.data_mut(|d| d.insert_temp(published_id(), kb));
+}
+
+/// `label` with `action`'s key in the layout in effect, `"Loop playback
+/// (Ctrl+L)"`, or `label` alone when the action has no key there.
+pub fn tip(ctx: &egui::Context, label: &str, action: &str) -> String {
+    let kb = ctx.data(|d| d.get_temp::<std::sync::Arc<KeyBindings>>(published_id()));
+    let key = kb.map_or_else(|| KeyBindings::defaults().display_for(action), |kb| kb.display_for(action));
+    if key.is_empty() { label.to_string() } else { format!("{label} ({key})") }
+}
+
 /// Where a frame's keys are read (`app::shortcuts::key_scope`), as far as
 /// which actions can fire there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

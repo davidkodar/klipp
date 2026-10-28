@@ -165,7 +165,7 @@ pub fn panel_title_row(ui: &mut Ui, title: &str, dim: bool, theme: &KlippTheme) 
                         .tint(tint)
                         .max_size(vec2(12.0, 12.0)),
                 );
-                if resp.on_hover_text("Collapse inspector  (Ctrl+Shift+I)").clicked() {
+                if resp.on_hover_text(crate::keybindings::tip(ui.ctx(), "Collapse inspector", "toggle_inspector_panel")).clicked() {
                     collapse = true;
                 }
             });

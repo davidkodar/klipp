@@ -145,6 +145,7 @@ mod graph_ops;
 mod path_commands;
 mod titles;
 mod text_tool;
+mod first_time_help;
 mod title_handles;
 mod node_edits;
 #[cfg(test)]

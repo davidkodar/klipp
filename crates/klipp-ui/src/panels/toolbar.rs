@@ -43,6 +43,8 @@ impl ToolbarPanel {
         let ic = icon_color(&resp, false, theme);
         draw_export_icon(&painter, resp.rect, ic);
         styled_tooltip(&resp, theme, "Export / Share", Some(&kb.display_for("export")));
+        // The tour's last step points here (#2933).
+        crate::welcome::anchor(ui.ctx(), "export", resp.rect);
         if resp.clicked() { cmds.push(AppCommand::ShowExportDialog); }
 
         rx -= 2.0;
@@ -1325,6 +1327,10 @@ impl ToolbarPanel {
                 } else {
                     let _ = crate::ui_util::open_external("https://github.com/davidkodar/klipp");
                 }
+                ui.close_menu();
+            }
+            if ui.button("Welcome\u{2026}").on_hover_text("The keyboard layout, a short tour, and editing with an AI assistant").clicked() {
+                state.show_welcome = true;
                 ui.close_menu();
             }
             if ui.button("Set Up AI Assistants\u{2026}").on_hover_text("Connect an AI assistant on this computer to Klipp").clicked() {

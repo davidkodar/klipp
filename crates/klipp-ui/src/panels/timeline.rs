@@ -41,6 +41,14 @@ pub fn sync_theme(t: &KlippTheme) {
 /// reaches for a theme token also paints, and we don't want a paint
 /// op holding the lock against a concurrent `sync_theme` from the UI
 /// thread (rare but possible during prefs hot-reload).
+/// What an empty timeline says (#2933): how to put its first clip on.
+pub(crate) fn empty_timeline_hint(kb: &crate::keybindings::KeyBindings) -> String {
+    match kb.display_for("insert_edit") {
+        key if key.is_empty() => "Drag a clip here from the media pool".to_string(),
+        key => format!("Drag a clip here from the media pool, or select one and press {key}"),
+    }
+}
+
 fn theme() -> KlippTheme {
     TIMELINE_THEME
         .get()
@@ -1755,6 +1763,19 @@ impl TimelinePanel {
         // pulse sit on top. Cheap noop when there are no hits.
         if !self.search_hits.is_empty() {
             self.draw_search_highlights(ui, state, &layout);
+        }
+
+        // The tour's second step points at the tracks (#2933), and an empty
+        // timeline says how to add its first clip, as the media pool does.
+        crate::welcome::anchor(ui.ctx(), "timeline", layout.tracks_clip);
+        if state.sequence().tracks.iter().all(|t| t.clips.is_empty()) {
+            ui.painter().with_clip_rect(layout.tracks_clip).text(
+                layout.tracks_clip.center(),
+                egui::Align2::CENTER_CENTER,
+                empty_timeline_hint(kb),
+                egui::FontId::proportional(11.0),
+                theme().text_dim,
+            );
         }
 
         // --- Status bar --- (skip when embedded)
@@ -15418,7 +15439,7 @@ impl TimelinePanel {
         // Fit button
         let fit_rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(btn_w, btn_h));
         let fit_resp = ui.interact(fit_rect, ui.id().with("zoom_fit"), egui::Sense::click())
-            .on_hover_text("Fit timeline to window (Shift+Z)");
+            .on_hover_text(crate::keybindings::tip(ui.ctx(), "Fit timeline to window", "fit_to_window"));
         painter.rect_filled(fit_rect, 2.0, if fit_resp.hovered() { tt.bg_hover } else { tt.bg_raised });
         painter.text(fit_rect.center(), egui::Align2::CENTER_CENTER, "Fit",
             egui::FontId::proportional(10.0), tt.text_primary);
