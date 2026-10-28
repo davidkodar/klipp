@@ -48,9 +48,9 @@
     <p class="caption">Narrated in English, with music. Shown in Klipp 0.1.0-rc.2. <a href="credits.html">Footage, music and sound credits</a>.</p>
   </section>
   <section id="features" class="section wrap all-features" aria-labelledby="all-features-title">
-  <div class="section-heading"><p class="eyebrow">In full</p><h2 id="all-features-title">All features.</h2></div><p class="section-intro">What Klipp 0.1.0 does, by area. Open a group to see the list.</p>
+  <div class="section-heading"><p class="eyebrow">In full</p><h2 id="all-features-title">All features.</h2></div><p class="section-intro">What Klipp 0.2.0 does, by area. Open a group to see the list.</p>
 
-  <details><summary>Editing <span class="count">18</span></summary><ul>
+  <details><summary>Editing <span class="count">19</span></summary><ul>
     <li>Magnetic multitrack timeline, with ripple on or off</li>
     <li>Insert, overwrite, replace and fit-to-fill edits from in and out marks</li>
     <li>Ripple, roll, slip and slide trims</li>
@@ -69,6 +69,7 @@
     <li>Skimming, a source viewer and match frame</li>
     <li>New version at another aspect: vertical or square, reframed on the subject</li>
     <li>Scene detection that splits a clip at its shot changes</li>
+    <li>Shorts: the moments of a long video that work on their own, each built as a vertical short</li>
   </ul></details>
 
   <details><summary>Media and organising <span class="count">12</span></summary><ul>
@@ -86,7 +87,7 @@
     <li>Stills, including HEIC, AVIF, JPEG XL and EXR where your FFmpeg reads them</li>
   </ul></details>
 
-  <details><summary>Colour <span class="count">18</span></summary><ul>
+  <details><summary>Colour <span class="count">19</span></summary><ul>
     <li>Scene-linear grading in ACEScg, BT.2020 or Rec.709 linear</li>
     <li>15 camera log curves; most are detected on import from the camera</li>
     <li>A node graph per clip, with a picture on every node</li>
@@ -103,28 +104,37 @@
     <li>Colour Check: names what is off in the frame, and the control that fixes it</li>
     <li>Match shots to a hero shot, or adopt a look from a reference</li>
     <li>Auto white balance, an eyedropper, and skin balance from detected faces</li>
+    <li>Auto colour: a starting grade set from the shot</li>
     <li>A grade library shared across projects, with stills, wipe and before/after</li>
     <li>Timeline and track grades, grade versions, and grades pasted onto many clips</li>
   </ul></details>
 
-  <details><summary>Effects and transitions <span class="count">14</span></summary><ul>
+  <details><summary>Effects and transitions <span class="count">15</span></summary><ul>
     <li>73 transitions, each with a live preview</li>
     <li>Piece transitions: strips, panels, halves and shatter</li>
     <li>Smooth Cut, for jump cuts between takes</li>
-    <li>57 built-in GPU video effects and six one-click looks</li>
+    <li>61 built-in GPU video effects and six one-click looks</li>
     <li>Chroma key and luma key</li>
     <li>Stabilisation, rolling-shutter correction, temporal noise reduction and deflicker</li>
     <li>Particles, lens flare, light rays, glow, halation, VHS and old film</li>
+    <li>Displace, Warp, Gradient Map, and reflections in water, on a floor or in glass</li>
     <li>Track mattes, and masks on any effect</li>
     <li>13 blend modes</li>
     <li>Remove Background, Isolate Object and Detect Objects (optional, run locally)</li>
-    <li>Subject tracking, and surface tracking with corner pin</li>
+    <li>Subject tracking, and planar tracking from a click: pin a title, clip or picture to a surface, lit and shaded as it is</li>
     <li>Motion blur per sequence, with shutter and samples</li>
     <li>Effect presets and favourites; most effect settings can be keyframed</li>
     <li>OFX 1.5 and frei0r video plug-ins: subsets of each format; compatibility varies by plugin</li>
   </ul></details>
 
-  <details><summary>Titles and graphics <span class="count">15</span></summary><ul>
+  <details><summary>Compositing <span class="count">4</span></summary><ul>
+    <li>The Composite page: a clip's picture as a graph under the viewer, with merges, masks, a view of any node, a wipe and single channels</li>
+    <li>14 recipes with live controls: sky replacement, a title behind the subject, screen replacement, a clean-plate background and more</li>
+    <li>Save nodes of a clip's picture as a recipe of your own</li>
+    <li>Templates with media slots and the controls they expose, shared as one .klipppack file; 13 built in, laid out for wide, tall and square frames</li>
+  </ul></details>
+
+  <details><summary>Titles and graphics <span class="count">18</span></summary><ul>
     <li>38 title templates in six categories, and templates of your own</li>
     <li>OpenType shaping for complex scripts and right-to-left text</li>
     <li>Vertical text and ruby</li>
@@ -140,12 +150,16 @@
     <li>Rolling credits and crawls</li>
     <li>Type in the viewer with the Text tool; image layers in titles</li>
     <li>Find and replace across titles, and missing-font replacement</li>
+    <li>Metal faces that reflect the shot: gold, silver, steel, copper, bronze, chrome</li>
+    <li>Text kept readable over busy pictures, and layouts made for 9:16 and 1:1</li>
+    <li>A catalogue of open-licence fonts, fetched on request</li>
   </ul></details>
 
-  <details><summary>Captions and transcripts <span class="count">9</span></summary><ul>
+  <details><summary>Captions and transcripts <span class="count">10</span></summary><ul>
     <li>Speech transcription on your machine (optional; model downloads on request)</li>
     <li>A transcript panel to set the language and correct words</li>
     <li>Captions made from the transcript in one step</li>
+    <li>Captions animated word by word from the transcript's timings</li>
     <li>SRT, VTT, ASS/SSA, TTML (IMSC), SCC and EBU-STL, in and out</li>
     <li>A subtitle editor, with a caption style per track</li>
     <li>Caption tracks with a language and visibility</li>
@@ -173,7 +187,7 @@
     <li>LADSPA, LV2 and CLAP audio plug-ins: subsets of each format; compatibility varies by plugin</li>
   </ul></details>
 
-  <details><summary>Delivery and interchange <span class="count">15</span></summary><ul>
+  <details><summary>Delivery and interchange <span class="count">16</span></summary><ul>
     <li>Export presets for the web, social, masters and broadcast; save your own</li>
     <li>H.264, H.265, AV1, VP9, ProRes, DNxHD and animated GIF</li>
     <li>MP4, MKV, MOV and WebM, in 8-bit or 10-bit</li>
@@ -181,6 +195,7 @@
     <li>Output transforms for Rec.709, Rec.2020, PQ, DCI-P3 and sRGB</li>
     <li>Hardware encoding (NVENC, AMF, VAAPI) when your FFmpeg has it, with software fallback</li>
     <li>A render queue, and one file per marker range</li>
+    <li>Every format at once from a sequence's versions, each rebuilt from its master</li>
     <li>Loudness targets on export</li>
     <li>Audio-only export as MP3, WAV or M4A</li>
     <li>Chapters from markers, written into MP4, MKV and MOV</li>
@@ -191,7 +206,7 @@
     <li>Autosave, backups and recovery after a crash</li>
   </ul></details>
 
-  <details><summary>Performance and platform <span class="count">9</span></summary><ul>
+  <details><summary>Performance and platform <span class="count">10</span></summary><ul>
     <li>A native Linux app, for Wayland and X11</li>
     <li>A Vulkan-capable GPU is required</li>
     <li>Compositing, grading and scopes on the GPU</li>
@@ -201,12 +216,13 @@
     <li>Models download on request and are checked by SHA-256</li>
     <li>No account; update checks are off until you turn them on</li>
     <li>A separate HDR reference output window</li>
+    <li>A first-time welcome: choose a keyboard layout, take a short tour</li>
   </ul></details>
 
   <details><summary>Assistant and automation <span class="count">8</span></summary><ul>
-    <li>An MCP server with 131 tools (optional; can be switched off)</li>
+    <li>An MCP server with 136 tools (optional; can be switched off)</li>
     <li>Your MCP client decides whether its model is local or in the cloud</li>
-    <li>65 edit operations; a whole batch undoes in one step</li>
+    <li>71 edit operations; a whole batch undoes in one step</li>
     <li>Footage analysis: shots, sound, motion, speech, framing, beats and on-screen text</li>
     <li>An Edit Plan window to approve, build or discard a proposed edit</li>
     <li>Draft review with a contact sheet and a quality check</li>
@@ -214,8 +230,8 @@
     <li>Hide emails, keys and passwords found on screen in a recording</li>
   </ul></details>
 </section>
-  <section id="start" class="section start"><div class="wrap start-grid"><div><p class="eyebrow">Start here</p><h2>A work in progress.<br>Ready to explore.</h2><p>Klipp is early software. Expect rough edges and breaking changes. The first release, <a href="https://github.com/davidkodar/klipp/releases/tag/v0.1.0">0.1.0</a>, is out as a signed Arch package. There are no stability guarantees yet.</p></div><div class="install"><h3>Install on Arch-based distributions</h3><p>x86_64 Linux · Vulkan 1.1 GPU required</p><p class="small">Download the package from the release page, then:</p><pre><code>sudo pacman -U klipp-0.1.0-1-x86_64.pkg.tar.zst
-klipp</code></pre><a class="button" href="https://github.com/davidkodar/klipp/releases/tag/v0.1.0">Download 0.1.0 <span aria-hidden="true">↗</span></a><p class="small">Updates install from Klipp's About window and are checked against the release's signature. To check the download yourself, or to build from source, see the <a href="https://github.com/davidkodar/klipp#try-klipp">README</a> and the <a href="https://github.com/davidkodar/klipp/blob/main/packaging/README.md">installation guide</a>. Ubuntu, Fedora and other distributions have no package yet: build from source with the <a href="https://github.com/davidkodar/klipp/blob/main/docs/project-reference.md#building">building guide</a>. They are less tested, as is broader GPU compatibility.</p></div></div></section>
+  <section id="start" class="section start"><div class="wrap start-grid"><div><p class="eyebrow">Start here</p><h2>A work in progress.<br>Ready to explore.</h2><p>Klipp is still young, but it works end to end: import, edit, grade, titles, sound and export. The latest release, <a href="https://github.com/davidkodar/klipp/releases/tag/v0.2.0">0.2.0</a>, is out as a signed Arch package. Keep copies of work you care about: the project format can still change between 0.x releases.</p></div><div class="install"><h3>Install on Arch-based distributions</h3><p>x86_64 Linux · Vulkan 1.1 GPU required</p><p class="small">Download the package from the release page, then:</p><pre><code>sudo pacman -U klipp-0.2.0-1-x86_64.pkg.tar.zst
+klipp</code></pre><a class="button" href="https://github.com/davidkodar/klipp/releases/tag/v0.2.0">Download 0.2.0 <span aria-hidden="true">↗</span></a><p class="small">Updates install from Klipp's About window and are checked against the release's signature. To check the download yourself, or to build from source, see the <a href="https://github.com/davidkodar/klipp#try-klipp">README</a> and the <a href="https://github.com/davidkodar/klipp/blob/main/packaging/README.md">installation guide</a>. Ubuntu, Fedora and other distributions have no package yet: build from source with the <a href="https://github.com/davidkodar/klipp/blob/main/docs/project-reference.md#building">building guide</a>. They are less tested, as is broader GPU compatibility.</p></div></div></section>
   <section class="wrap details"><h2>Good to know</h2><details><summary>Which plugin formats does Klipp host?</summary><p>OFX 1.5 and frei0r filters for video; LADSPA, LV2, and CLAP for audio. Support covers subsets of each format, and compatibility varies by plugin. Broad automated compatibility testing is ongoing. VST2 and VST3 are not supported.</p></details><details><summary>Do I need AI to use Klipp?</summary><p>No. AI features can be disabled in Preferences. Built-in models download on demand; connecting an external MCP assistant is optional.</p></details><details><summary>Where can I find the documentation?</summary><p>The repository contains the <a href="https://github.com/davidkodar/klipp/blob/main/docs/src/SUMMARY.md">user guide</a>, <a href="https://github.com/davidkodar/klipp/blob/main/docs/project-reference.md">detailed project reference</a>, and <a href="https://github.com/davidkodar/klipp/blob/main/CONTRIBUTING.md">contribution guide</a>.</p></details><details><summary>Can I bring in a project from Premiere Pro or DaVinci Resolve?</summary><p>Not their project files, but the edit, yes. Export the timeline as Final Cut Pro XML, FCPXML, OpenTimelineIO or EDL (AAF works when the OpenTimelineIO AAF adapter is installed), then use <em>File → Open Project from Another Editor…</em> in Klipp. The edit comes across (clips, cuts, timing, tracks, and markers where the format has them) and links to your original media, with an import report of anything that could not be brought over. Grades, most effects and titles do not transfer.</p></details><details><summary>Where can I ask for help or share an idea?</summary><p>In <a href="https://github.com/davidkodar/klipp/discussions">Discussions</a> on GitHub: ask for help, suggest ideas or show what you made. Please report bugs as <a href="https://github.com/davidkodar/klipp/issues/new/choose">issues</a>.</p></details></section>
 </main>
 <footer class="wrap footer"><a class="brand" href="#"><img src="assets/klipp-icon.svg" width="28" height="28" alt=""><img src="assets/klipp-wordmark.svg" height="20" alt="Klipp"></a><p>Swedish for “cut”. Built for Linux.</p><nav aria-label="Footer"><a href="https://github.com/davidkodar/klipp">Source ↗</a><a href="https://github.com/davidkodar/klipp/discussions">Discussions ↗</a><a href="credits.html">Credits</a><a href="https://github.com/davidkodar/klipp/blob/main/LICENSE">Licence</a></nav></footer>

@@ -5,6 +5,120 @@ Each release lists what changed for people using Klipp. Versions follow
 
 ## Unreleased
 
+## 0.2.0 — 2026-10-29
+
+This release adds the Composite page, where a clip's picture is built as a
+graph of nodes; recipes, ready looks such as sky replacement or a title
+behind the subject, with live controls; planar tracking, to pin titles and
+pictures to a wall, a screen or a sign; templates with media slots, shared
+as one file; and shorts cut from a long video. Most effects, transitions
+and audio tools were checked against what their names promise and
+corrected where they fell short.
+
+### Added
+
+- The Composite page: a clip's picture graph under the viewer. Merge
+  branches of effects with masks, draw titles and pinned pictures inside
+  the graph, view any node, wipe between a node's input and output, and
+  show one channel of the picture.
+- Templates: save clips as a template with media slots and the controls
+  they expose, link and offset those controls, and share templates as one
+  `.klipppack` file with their pictures, fonts and licences. The built-in
+  templates, including a motion pack of twelve, are laid out for wide,
+  tall and square frames.
+- Recipes: ready-made looks built into a clip's picture, with live
+  controls: matted glow, sky replacement, a title behind the subject,
+  screen replacement, background replacement from a clean plate, colour
+  hold, camera shake, glitch and more. Save your own nodes as a recipe.
+- Planar tracking: track a surface from a click, correct it on one frame,
+  and pin a title, clip or picture to it. The pinned layer hides where the
+  track is lost and takes the surface's light, shade and texture. Ready
+  looks put text on a wall, a screen or a sign. Grade windows and
+  stabilisation follow the same tracker.
+- Shorts: find the moments of a long video that work on their own, and
+  build a vertical short from each, from the media pool.
+- Export every format at once from a sequence's versions, and rebuild a
+  version from its master.
+- Metal title faces (gold, silver, steel, copper, bronze, chrome) that
+  reflect the shot, also on 3D titles. Titles take picture effects and a
+  glow, keep their text readable over busy pictures, and have layouts made
+  for 9:16 and 1:1.
+- A catalogue of open-licence fonts, fetched on request and previewable in
+  the font picker.
+- Captions animated word by word from the transcript's timings.
+- New effects: Displace, Warp, Gradient Map, flip, a gradient opacity
+  fade, reflections in water, on a floor, a wet street or glass, and old
+  film ageing. Freeze a frame from the clip menu. The generators add full
+  SMPTE bars.
+- Take the pauses out of a clip, and set a starting grade with auto
+  colour.
+- First-time help: a welcome that shows the keyboard layout, a short tour,
+  and a hint on the empty timeline.
+- Select words in the transcript by dragging across them.
+- Export to `.gif` and write 24-bit PCM.
+- Narration downloads the Piper speech engine on request.
+- Dolby Vision profile 5 clips are flagged at import.
+
+### Changed
+
+- Effects and transitions look as their names say, including glow, lens
+  flare, light leak, glitch, ripple, wave, zoom and page turn. Every
+  picture effect's amount is on one strength scale, and effect settings
+  are held to a safe range.
+- Pitch shift, normalize, declick, noise reduction, de-esser and hum
+  removal work as named. Reverb and delay tails ring past a clip's end.
+- Stabilising keeps a pan or tracking move and takes out only the shake.
+- Grading: shadows and highlights make moderate moves, foliage and highlight
+  zones change the picture, positive tint goes magenta, and matching one
+  shot to another carries its white balance. The Colour page grades the clip
+  you mean, with basic correction in its Colour tab.
+- Export: the buttons stay in view, progress shows in the panel, the
+  default path is beside the project, and the chosen range is kept. An
+  export no longer overwrites existing files.
+- Placing clips: a sound-only file lands on a free audio track as music
+  and ends with the picture above it, with a fade. Place on Top reuses a
+  free track and moves the playhead past what it placed, a drop on empty
+  track space lays the clip down, and a linked clip's sound moves with its
+  picture.
+- Import Media opens in the folder the last import came from, and the
+  frame-rate question is asked once per project.
+- Keymap layouts follow their editors' published defaults and show
+  conflicts.
+- In a small window, Auto sizes the interface to fit.
+- Transcribe names a missing speech model and offers to fetch it, then
+  shows its progress and the transcript.
+- Reversed clips play smoothly from the GPU decoder.
+- Crash recovery is offered on every open when an auto-save is newer than
+  the last save.
+- Relinking finds media outside a copied project and keeps its analysis.
+- Files from other people (projects, templates, subtitles, imports) are
+  read within limits, ffmpeg opens local files only, and the control
+  socket and downloads are private to the user.
+
+### Fixed
+
+- Undo and redo give back the same track names.
+- Inspector fields no longer disappear or lose the keyboard when the panel
+  layout changes, and a field left with Enter keeps its letters.
+- The viewer's overlays no longer paint over floating windows.
+- Skimming the timeline shows the timeline's picture.
+- A transition's incoming clip opens from where it first shows.
+- ProRes 422 is written as standard 422, and an export says when it
+  letterboxes.
+- Nested templates no longer hang playback or grow video memory.
+- The page switcher stays put when the page changes.
+- Klipp no longer aborts now and then on quit with NVIDIA drivers: GPU
+  work runs on Vulkan, and on OpenGL only without it.
+
+### Known limits
+
+- Tested on NVIDIA GPUs only; reports from AMD and Intel are welcome
+  (#2747).
+- Some LV2 and CLAP plug-ins lose internal state, such as a loaded file or
+  sample, on save and reopen (#1191).
+- Dolby Vision profile 5 clips are flagged at import, but their colours
+  are not converted yet (#1224).
+
 ## 0.1.0 — 2026-10-26
 
 The first release.
