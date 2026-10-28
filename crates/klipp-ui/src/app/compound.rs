@@ -50,7 +50,7 @@ impl KlippApp {
             name: name.clone(),
             fps,
             resolution: res,
-            first_clip_autoset: klipp_timeline::FirstClipAutoSet { resolution: false, fps: false },
+            first_clip_autoset: klipp_timeline::FirstClipAutoSet { resolution: false, fps: false, rate_answered: false },
             tracks: Vec::new(),
             in_point: None,
             out_point: None,

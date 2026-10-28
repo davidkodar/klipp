@@ -808,7 +808,7 @@ mod tests {
         a.name = "Episode".into();
         a.fps = Fps::new(25, 1);
         a.resolution = Resolution { width: 3840, height: 2160 };
-        a.first_clip_autoset = FirstClipAutoSet { resolution: false, fps: false };
+        a.first_clip_autoset = FirstClipAutoSet { resolution: false, fps: false, rate_answered: false };
         a.tracks = vec![Track::new("Camera A", TrackKind::Video), Track::new("B-roll", TrackKind::Video), Track::new("Dialogue", TrackKind::Audio), Track::new("Music", TrackKind::Audio)];
         a.tracks[0].magnetic_role = TrackRole::Primary;
         a.tracks[2].volume = 0.5;
@@ -817,7 +817,7 @@ mod tests {
         a.tracks[0].append_clip(klipp_core::MediaId::new(), Timecode::from_secs_f64(4.0, 25));
         let mut b = Sequence::new_default();
         b.name = "Vertical".into();
-        b.first_clip_autoset = FirstClipAutoSet { resolution: true, fps: true };
+        b.first_clip_autoset = FirstClipAutoSet { resolution: true, fps: true, rate_answered: false };
         let mut pool = MediaPool::new();
         let footage = Bin { id: BinId::new(), name: "Footage".into(), parent_id: None };
         let day1 = Bin { id: BinId::new(), name: "Day 1".into(), parent_id: Some(footage.id) };

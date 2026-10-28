@@ -19373,7 +19373,7 @@ mod tests {
             }
             (seqs[0].resolution, seqs[0].fps)
         };
-        let chosen = FirstClipAutoSet { resolution: false, fps: false };
+        let chosen = FirstClipAutoSet { resolution: false, fps: false, rate_answered: false };
 
         for auto in [chosen, FirstClipAutoSet::default()] {
             assert_eq!(format_after(empty(auto), place(sound, 1)), (hd, pal), "sound placed first sets nothing ({auto:?})");

@@ -1012,21 +1012,17 @@ impl KlippApp {
                 let seq_idx = dlg.sequence_idx;
                 let media_fps = dlg.media_fps;
                 self.framerate_mismatch_dialog = None;
-                match choice {
-                    FrameRateMismatchChoice::Change => {
-                        cmds.push(AppCommand::SetSequenceFps {
-                            sequence_idx: seq_idx,
-                            fps_num: media_fps.num,
-                            fps_den: media_fps.den,
-                        });
-                        self.suppress_fps_prompt = true;
-                        cmds.push(pending);
-                    }
-                    FrameRateMismatchChoice::DontChange => {
-                        self.suppress_fps_prompt = true;
-                        cmds.push(pending);
-                    }
-                    FrameRateMismatchChoice::Cancel => {}
+                // Answered either way, the sequence is not asked again
+                // (#2965); closed, the drop is cancelled and it may be.
+                let change_to = match choice {
+                    FrameRateMismatchChoice::Change => Some(Some(media_fps)),
+                    FrameRateMismatchChoice::DontChange => Some(None),
+                    FrameRateMismatchChoice::Cancel => None,
+                };
+                if let Some(change_to) = change_to {
+                    cmds.extend(self.state.answer_rate_question(seq_idx, change_to));
+                    self.suppress_fps_prompt = true;
+                    cmds.push(pending);
                 }
             }
         }
