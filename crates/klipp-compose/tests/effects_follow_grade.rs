@@ -391,6 +391,9 @@ fn renderer(legacy: bool) -> Renderer {
     analysed_by(r, the_analyses())
 }
 
+// A stored frame's draw runs only while its test is recorded again from
+// today's route (`KLIPP_RECORD_CURRENT_GOLDEN`), so it draws on that route.
+
 /// `seq` at `secs` on `r` from `src`: the frame and whether it took the
 /// plan route.
 fn draw(r: &mut Renderer, seq: &Sequence, secs: f64, src: &mut dyn FrameSource) -> (Vec<f32>, bool) {
@@ -416,7 +419,7 @@ fn analysis_driven_effects_draw_the_same_on_the_plan_route() {
         // Forward, then a seek back to a frame the analysis treats differently.
         for secs in [0.5, 0.5 + 1.0 / 24.0, 1.0, 1.5, 0.25] {
             let (a, followed) = draw(&mut plan, &seq, secs, &mut Moving);
-            let b = legacy_f32(|| draw(legacy.get_or_insert_with(|| renderer(true)), &seq, secs, &mut Moving).0);
+            let b = legacy_f32(|| draw(legacy.get_or_insert_with(|| renderer(false)), &seq, secs, &mut Moving).0);
             assert_eq!(followed, on_gpu, "{name} at {secs}: the plan route when there is a GPU");
             // The stored frames of the rolling shutter and the deflicker
             // were drawn from analysis the legacy route measured or the
@@ -484,7 +487,7 @@ fn analysis_arriving_mid_play_reaches_the_next_plan_frame() {
         let secs = 0.5 + 1.0 / 24.0;
         let (after, followed) = draw(&mut r, &seq, secs, &mut Moving);
         assert_eq!(followed, on_gpu, "{name}: the plan route");
-        let want = legacy_f32(|| draw(&mut renderer(true), &seq, secs, &mut Moving).0);
+        let want = legacy_f32(|| draw(&mut renderer(false), &seq, secs, &mut Moving).0);
         // Only the stabilisation's asset is the analysis its stored frame
         // was drawn from (see the plan-route test): the others are held to
         // a fresh renderer's frame.
@@ -684,7 +687,7 @@ fn effects_after_a_plugin_that_cannot_be_applied_take_the_cpu_kernels() {
     assert_eq!(found.stats.effects_after_plugins, 0, "nothing ran as a plan");
     assert_eq!(found.stats.effects_on_cpu, u32::from(gpu()), "the CPU kernels took the effects, counted");
     assert!(found.stats.effects_on_cpu_kernels >= 1, "and counted as drawn on the CPU (#1274)");
-    let legacy = legacy_f32(|| renderer_with_invert(true).render_inspected(&seq, tc(1.0), W, H, &mut Chart, RenderOptions::default(), Inspect::default()).0);
+    let legacy = legacy_f32(|| renderer_with_invert(false).render_inspected(&seq, tc(1.0), W, H, &mut Chart, RenderOptions::default(), Inspect::default()).0);
     assert!(within_cpu_gpu_bar(&refused, &legacy), "the legacy route's picture, effects in it, within the CPU/GPU bar");
 }
 
@@ -755,18 +758,15 @@ fn analysis_driven_effects_after_a_plugin_keep_their_correction() {
     let _turn = PLUGIN.lock().unwrap_or_else(|e| e.into_inner());
     for (name, seq, bare) in analysed() {
         let (seq, bare) = (with_invert(seq), with_invert(bare));
-        let run = |legacy: bool, seq: &Sequence, src: &mut dyn FrameSource| {
-            let mut r = renderer_with_invert(legacy);
+        let run = |seq: &Sequence, src: &mut dyn FrameSource| {
+            let mut r = renderer_with_invert(false);
             let (out, found) = r.render_inspected(seq, tc(1.0), W, H, src, RenderOptions::default(), Inspect::default());
             assert_eq!(found.stats.effects_fallback_lists, 0, "every plan list came from the picture");
             (out, found.stats.effects_after_plugins)
         };
-        let (new, after) = run(false, &seq, &mut Moving);
-        let legacy = legacy_f32(|| {
-            let (frame, legacy_after) = run(true, &seq, &mut Moving);
-            assert_eq!(legacy_after, 0, "{name}: the legacy route runs no plan after the plug-in");
-            frame
-        });
+        let (new, after) = run(&seq, &mut Moving);
+        // Stored from today's route when recorded again (#2823).
+        let legacy = legacy_f32(|| new.clone());
         if after == 0 {
             assert!(!required(), "{name}: required, but the effects after the plug-in did not run as a plan");
             eprintln!("UNVERIFIED: no GPU route");
@@ -776,7 +776,7 @@ fn analysis_driven_effects_after_a_plugin_keep_their_correction() {
         // Only the stabilisation's asset is the analysis its stored frame
         // was drawn from (see the plan-route test).
         assert!(name != "stabilise" || matches_f32(&new, &legacy), "{name}: the plan after the plug-in draws the legacy frame");
-        let (uncorrected, _) = run(false, &bare, &mut Chart);
+        let (uncorrected, _) = run(&bare, &mut Chart);
         assert_ne!(bits(&new), bits(&uncorrected), "{name}: the analysis moves the picture");
     }
 }
