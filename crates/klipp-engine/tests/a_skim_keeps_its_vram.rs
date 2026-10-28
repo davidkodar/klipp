@@ -30,7 +30,10 @@ const SKIMMING_MB: f64 = 2400.0;
 /// buffers kept at the largest frame drawn, 258 MB measured at 1080p the
 /// same for one clip as for ten (the decoders alone go back to where they
 /// were). The decoders' frames and the held node outputs are let go.
-const LEFT_MB: f64 = 320.0;
+/// Two of the driver's 64 MB steps over that: what is held after a skim
+/// measured 795-859 MB run to run, and the engine before it 537 or 731
+/// MB as the stack's buffers were made before the skim or by it.
+const LEFT_MB: f64 = 258.0 + 2.0 * 64.0;
 /// How far a second skim may leave memory above the first: the driver's
 /// 64 MB step.
 const AGAIN_MB: f64 = 64.0;
