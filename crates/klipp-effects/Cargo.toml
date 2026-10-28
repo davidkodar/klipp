@@ -47,6 +47,8 @@ klipp-frei0r = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png"] }
 
 [dev-dependencies]
+# The shader snapshot's checksums (#2890).
+sha2 = { workspace = true }
 tracing-subscriber = { workspace = true }
 klipp-color = { workspace = true }
 klipp-core = { workspace = true }
