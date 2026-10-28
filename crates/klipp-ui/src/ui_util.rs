@@ -318,3 +318,30 @@ mod tests {
         assert_eq!(image.size, [2, 2]);
     }
 }
+
+#[cfg(test)]
+mod panel_tests {
+    /// #2962: every panel the layout places is rooted at an id of its own,
+    /// so a panel shown or hidden before it (a curve editor, the browser's
+    /// rail, a scope overlay) does not give its fields new ids mid-typing.
+    #[test]
+    fn every_layout_panel_has_ids_of_its_own() {
+        let sources = [
+            ("app/main_layout.rs", include_str!("app/main_layout.rs")),
+            ("app/colour_workspace.rs", include_str!("app/colour_workspace.rs")),
+            ("app/graph_dock.rs", include_str!("app/graph_dock.rs")),
+        ];
+        let mut ids: Vec<&str> = Vec::new();
+        for (file, src) in sources {
+            assert!(!src.contains(concat!("allocate_clipped", "_ui(")), "{file} places a panel whose ids count on from the panels before it");
+            for at in src.match_indices("ui_util::panel_ui(").map(|(i, _)| i) {
+                let id = src[at..].split('"').nth(1).expect("a panel id");
+                assert!(!ids.contains(&id), "{id} is used twice");
+                ids.push(id);
+            }
+        }
+        for panel in ["toolbar_panel", "viewer_panel", "timeline_panel", "inspector_panel", "browser_panel", "status_bar_panel", "colour_tools_panel", "colour_nodes_panel"] {
+            assert!(ids.contains(&panel), "{panel}: {ids:?}");
+        }
+    }
+}

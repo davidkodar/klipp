@@ -40,8 +40,10 @@ pub(super) fn export_column(ui: &mut egui::Ui, rect: egui::Rect, id: &str, theme
     let buttons = egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - buttons_h), rect.max);
     let notes = egui::Rect::from_min_max(egui::pos2(rect.left(), buttons.top() - notes_h), egui::pos2(rect.right(), buttons.top()));
     let form = egui::Rect::from_min_max(rect.min, egui::pos2(rect.right(), notes.top()));
+    // Each part's ids its own, whatever is drawn before the column (the
+    // render queue comes and goes) or before the part (#2962).
     if form.height() > 0.0 {
-        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(form), |ui| {
+        crate::ui_util::panel_ui(ui, form, (id, "form_part"), |ui| {
             egui::ScrollArea::vertical().id_salt((id, "form")).max_height(form.height()).auto_shrink([false, false]).show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
                 draw(ui, ExportPart::Form);
@@ -56,20 +58,18 @@ pub(super) fn export_column(ui: &mut egui::Ui, rect: egui::Rect, id: &str, theme
     // Drawn every frame, in a strip as tall as they came to last frame
     // (none on the first), and measured for the next: a scroll area
     // reports what its content takes, whatever it shows.
-    let used = ui
-        .allocate_new_ui(egui::UiBuilder::new().max_rect(notes), |ui| {
-            egui::ScrollArea::vertical().id_salt((id, "notes")).max_height(notes.height()).auto_shrink([false, false]).show(ui, |ui| {
-                ui.add_space(6.0);
-                let top = ui.cursor().top();
-                draw(ui, ExportPart::Notes);
-                if ui.cursor().top() - top > 0.5 { ui.cursor().top() - top + 12.0 } else { 0.0 }
-            })
-            .inner
+    let used = crate::ui_util::panel_ui(ui, notes, (id, "notes_part"), |ui| {
+        egui::ScrollArea::vertical().id_salt((id, "notes")).max_height(notes.height()).auto_shrink([false, false]).show(ui, |ui| {
+            ui.add_space(6.0);
+            let top = ui.cursor().top();
+            draw(ui, ExportPart::Notes);
+            if ui.cursor().top() - top > 0.5 { ui.cursor().top() - top + 12.0 } else { 0.0 }
         })
-        .inner;
+        .inner
+    });
     ui.ctx().data_mut(|d| d.insert_temp(notes_id, used));
     if buttons_h >= crate::theme::control::REGULAR {
-        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(buttons), |ui| {
+        crate::ui_util::panel_ui(ui, buttons, (id, "buttons_part"), |ui| {
             ui.add_space(((buttons.height() - crate::theme::control::REGULAR) / 2.0).max(0.0));
             draw(ui, ExportPart::Buttons);
         });
@@ -4444,5 +4444,47 @@ mod export_range_tests {
         let s = &snapshot.sequence_snapshot;
         let secs = |frames: u64| (frames as f64 / s.fps).round();
         assert_eq!((secs(s.start_frame()), secs(s.frames_to_export())), (20.0, 10.0));
+    }
+}
+
+#[cfg(test)]
+mod field_id_tests {
+    use super::{export_column, ExportPart};
+
+    /// #2962: a number typed into the Export form keeps the keys while the
+    /// render queue's card comes and goes above the column (the export it
+    /// queued started), and Enter sets the value typed.
+    #[test]
+    fn a_form_field_keeps_the_keys_while_the_render_queue_comes_and_goes() {
+        let ctx = egui::Context::default();
+        let theme = crate::theme::KlippTheme::default();
+        let mut bitrate = 20.0_f32;
+        let mut field = egui::Id::NULL;
+        let run = |events: Vec<egui::Event>, queue: bool, bitrate: &mut f32, field: &mut egui::Id| {
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 800.0))), events, ..Default::default() };
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    if queue {
+                        ui.label("RENDER QUEUE");
+                    }
+                    let rect = egui::Rect::from_min_size(egui::pos2(0.0, 60.0), egui::vec2(400.0, 700.0));
+                    export_column(ui, rect, "export_ws", &theme, &mut |ui, part| {
+                        if let ExportPart::Form = part {
+                            *field = ui.add(egui::DragValue::new(&mut *bitrate)).id;
+                        }
+                    });
+                });
+            });
+        };
+        run(Vec::new(), false, &mut bitrate, &mut field);
+        ctx.memory_mut(|m| m.request_focus(field));
+        run(Vec::new(), false, &mut bitrate, &mut field);
+        let typing = ctx.memory(|m| m.focused()).expect("the field has the keys");
+        run(vec![egui::Event::Text("4".into())], true, &mut bitrate, &mut field);
+        run(Vec::new(), true, &mut bitrate, &mut field);
+        assert_eq!(ctx.memory(|m| m.focused()), Some(typing), "the field keeps the keys as the queue shows");
+        let enter = egui::Event::Key { key: egui::Key::Enter, physical_key: Some(egui::Key::Enter), pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+        run(vec![enter], true, &mut bitrate, &mut field);
+        assert_eq!(bitrate, 204.0, "Enter set the value typed");
     }
 }

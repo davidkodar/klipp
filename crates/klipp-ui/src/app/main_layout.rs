@@ -262,7 +262,7 @@ impl KlippApp {
                             egui::pos2(viewer_rect.right() - overlay_w - 8.0, viewer_rect.bottom() - overlay_h - 8.0),
                             egui::vec2(overlay_w, overlay_h),
                         );
-                        crate::ui_util::allocate_clipped_ui(ui, overlay_rect, |ui| {
+                        crate::ui_util::panel_ui(ui, overlay_rect, "scope_overlay", |ui| {
                             ui.set_min_size(overlay_rect.size());
                             // Semi-transparent dark background
                             ui.painter().rect_filled(overlay_rect, 4.0, egui::Color32::from_black_alpha(160));
@@ -455,7 +455,7 @@ impl KlippApp {
         let theme = &self.theme;
         let border = theme.border;
         let bg_deep = theme.bg_deep;
-        crate::ui_util::allocate_clipped_ui(ui, toolbar_rect, |ui| {
+        crate::ui_util::panel_ui(ui, toolbar_rect, "toolbar_panel", |ui| {
             ui.set_min_size(toolbar_rect.size());
             ui.painter().rect_filled(toolbar_rect, 0.0, bg_deep);
             ui.painter().hline(
@@ -631,7 +631,7 @@ impl KlippApp {
         // rounded corners, no stroke, no drop shadow, no inner margin. The
         // only divider between this panel and its neighbours is the panel
         // resizer; we don't add a competing border here.
-        crate::ui_util::allocate_clipped_ui(ui, viewer_rect, |ui| {
+        crate::ui_util::panel_ui(ui, viewer_rect, "viewer_panel", |ui| {
             ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
             ui.spacing_mut().window_margin = egui::Margin::ZERO;
             {
@@ -662,7 +662,7 @@ impl KlippApp {
         all_cmds: &mut Vec<AppCommand>,
     ) {
         self.curve_editor.sync_param_from_state(&self.state);
-        crate::ui_util::allocate_clipped_ui(ui, curve_editor_rect, |ui| {
+        crate::ui_util::panel_ui(ui, curve_editor_rect, "curve_editor_panel", |ui| {
             ui.set_min_size(curve_editor_rect.size());
             let panel_cmds = self.curve_editor.show(ui, &mut self.state, &self.theme);
             all_cmds.extend(panel_cmds);
@@ -675,7 +675,7 @@ impl KlippApp {
         audio_mixer_rect: egui::Rect,
         all_cmds: &mut Vec<AppCommand>,
     ) {
-        crate::ui_util::allocate_clipped_ui(ui, audio_mixer_rect, |ui| {
+        crate::ui_util::panel_ui(ui, audio_mixer_rect, "audio_mixer_panel", |ui| {
             ui.set_min_size(audio_mixer_rect.size());
             let panel_cmds = crate::panels::audio_mixer::show(ui, &mut self.state, &self.theme);
             all_cmds.extend(panel_cmds);
@@ -688,7 +688,7 @@ impl KlippApp {
         timeline_rect: egui::Rect,
         all_cmds: &mut Vec<AppCommand>,
     ) {
-        crate::ui_util::allocate_clipped_ui(ui, timeline_rect, |ui| {
+        crate::ui_util::panel_ui(ui, timeline_rect, "timeline_panel", |ui| {
             ui.set_min_size(timeline_rect.size());
             // Stash the active theme into the timeline's thread-local
             // so leaf render helpers (which fan out across thousands
@@ -1514,7 +1514,7 @@ impl KlippApp {
         );
 
         let bg_panel = self.theme.bg_panel;
-        crate::ui_util::allocate_clipped_ui(ui, browser_rect, |ui| {
+        crate::ui_util::panel_ui(ui, browser_rect, "browser_panel", |ui| {
             ui.set_min_size(browser_rect.size());
             ui.painter().rect_filled(browser_rect, 0.0, bg_panel);
             let panel_cmds = self.browser.show(
@@ -1601,7 +1601,7 @@ impl KlippApp {
         let theme = &self.theme;
         let border = theme.border;
         let bg_void = theme.bg_void;
-        crate::ui_util::allocate_clipped_ui(ui, statusbar_rect, |ui| {
+        crate::ui_util::panel_ui(ui, statusbar_rect, "status_bar_panel", |ui| {
             ui.set_min_size(statusbar_rect.size());
             ui.painter().rect_filled(statusbar_rect, 0.0, bg_void);
             ui.painter().hline(
