@@ -62,6 +62,7 @@ impl KlippApp {
             first_clip_autoset: klipp_timeline::FirstClipAutoSet {
                 resolution: *width == 0 || *height == 0,
                 fps: *fps_num == 0 || *fps_den == 0,
+                rate_answered: false,
             },
             tracks: {
                 let mut tracks = vec![
@@ -684,7 +685,7 @@ impl KlippApp {
                     name: name.clone(),
                     fps: klipp_core::Fps::new(*fps_num, *fps_den),
                     resolution: klipp_core::Resolution { width: *width, height: *height },
-                    first_clip_autoset: klipp_timeline::FirstClipAutoSet { resolution: false, fps: false },
+                    first_clip_autoset: klipp_timeline::FirstClipAutoSet { resolution: false, fps: false, rate_answered: false },
                     tracks: {
                         let mut tracks = vec![
                             klipp_timeline::Track::new("Video 1", klipp_timeline::TrackKind::Video),

@@ -161,10 +161,15 @@ pub struct FirstClipAutoSet {
     pub resolution: bool,
     #[serde(default = "default_true")]
     pub fps: bool,
+    /// The person answered whether a first clip of another rate changes
+    /// the sequence's (#2965): the sequence is not asked again, whatever
+    /// clip comes next. Its rate stays changeable in Sequence Settings.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub rate_answered: bool,
 }
 
 impl Default for FirstClipAutoSet {
-    fn default() -> Self { Self { resolution: true, fps: true } }
+    fn default() -> Self { Self { resolution: true, fps: true, rate_answered: false } }
 }
 
 
@@ -441,10 +446,12 @@ impl Sequence {
     /// sequence's own, when this would be its first video clip, the
     /// sequence keeps a rate of its own and `fps` is another. `None`
     /// otherwise: a sequence that follows its first clip takes the rate
-    /// without asking, and once a video clip is down every later clip is
-    /// conformed to the rate there is (#2550).
+    /// without asking, once a video clip is down every later clip is
+    /// conformed to the rate there is (#2550), and once the question was
+    /// answered it is not asked again (#2965).
     pub fn first_clip_rate_question(&self, fps: Fps) -> Option<Fps> {
-        (!self.has_video_clip() && !self.first_clip_autoset.fps && fps != self.fps).then_some(self.fps)
+        let asked = self.first_clip_autoset.rate_answered;
+        (!asked && !self.has_video_clip() && !self.first_clip_autoset.fps && fps != self.fps).then_some(self.fps)
     }
 
     fn has_video_clip(&self) -> bool {
@@ -3508,11 +3515,11 @@ mod tests {
             seq
         };
 
-        let mut chosen = fresh(FirstClipAutoSet { resolution: false, fps: false });
+        let mut chosen = fresh(FirstClipAutoSet { resolution: false, fps: false, rate_answered: false });
         assert_eq!(chosen.adopt_first_clip(uhd, ntsc), None);
         assert_eq!((chosen.resolution, chosen.fps), (vertical, pal));
 
-        let mut rate_only = fresh(FirstClipAutoSet { resolution: false, fps: true });
+        let mut rate_only = fresh(FirstClipAutoSet { resolution: false, fps: true, rate_answered: false });
         assert_eq!(rate_only.adopt_first_clip(uhd, ntsc), Some(((vertical, pal), (vertical, ntsc))));
 
         let mut automatic = fresh(FirstClipAutoSet::default());
@@ -3558,7 +3565,7 @@ mod tests {
         let (pal, ntsc) = (Fps::new(25, 1), Fps::new(24000, 1001));
         let mut seq = Sequence::new_default();
         seq.fps = pal;
-        seq.first_clip_autoset = FirstClipAutoSet { resolution: false, fps: false };
+        seq.first_clip_autoset = FirstClipAutoSet { resolution: false, fps: false, rate_answered: false };
         assert_eq!(seq.first_clip_rate_question(ntsc), Some(pal));
         assert_eq!(seq.first_clip_rate_question(pal), None, "the same rate");
 

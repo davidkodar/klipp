@@ -161,17 +161,10 @@ impl KlippApp {
         if self.suppress_fps_prompt {
             return false;
         }
-        let Some(item) = self.state.media_pool.get(media_id) else {
+        let Some((media_fps, sequence_fps)) = self.state.rate_question(media_id) else {
             return false;
         };
-        if item.video_codec.is_empty() || item.resolution.width == 0 || item.resolution.height == 0 {
-            return false;
-        }
-        let media_fps = item.fps;
         let seq_idx = self.state.active_sequence_idx;
-        let Some(sequence_fps) = self.state.sequences.get(seq_idx).and_then(|seq| seq.first_clip_rate_question(media_fps)) else {
-            return false;
-        };
         self.framerate_mismatch_dialog = Some(
             crate::panels::framerate_mismatch_dialog::FrameRateMismatchDialog {
                 sequence_idx: seq_idx,
@@ -786,5 +779,121 @@ mod media_drop_tests {
         let vi = track_of(&seq, TrackKind::Video);
         seq.tracks[vi].locked = true;
         assert!(media_drop_edits(&seq, dropped(), vi, None, t(4), PasteMode::Insert, "Insert").is_err());
+    }
+}
+
+impl crate::state::AppState {
+    /// The rates to ask about before `media_id` is placed on the active
+    /// sequence: the clip's and the sequence's, when it is a video clip
+    /// the sequence's first, at another rate, and the sequence has not
+    /// been asked yet ([`klipp_timeline::Sequence::first_clip_rate_question`]).
+    pub(crate) fn rate_question(&self, media_id: &klipp_core::MediaId) -> Option<(klipp_core::Fps, klipp_core::Fps)> {
+        let item = self.media_pool.get(media_id)?;
+        if item.video_codec.is_empty() || item.resolution.width == 0 || item.resolution.height == 0 {
+            return None;
+        }
+        let sequence_fps = self.sequences.get(self.active_sequence_idx)?.first_clip_rate_question(item.fps)?;
+        Some((item.fps, sequence_fps))
+    }
+
+    /// The rate question answered for sequence `seq_idx` (#2965): it is
+    /// not asked again for that sequence, whichever way it was answered,
+    /// and the answer is kept with the project. `Some` with the command
+    /// that changes the rate, when the answer was to change it.
+    pub(crate) fn answer_rate_question(&mut self, seq_idx: usize, change_to: Option<klipp_core::Fps>) -> Option<AppCommand> {
+        let seq = self.sequences.get_mut(seq_idx)?;
+        seq.first_clip_autoset.rate_answered = true;
+        self.dirty = true;
+        change_to.map(|fps| AppCommand::SetSequenceFps { sequence_idx: seq_idx, fps_num: fps.num, fps_den: fps.den })
+    }
+}
+
+#[cfg(test)]
+mod rate_question_tests {
+    use crate::panels::framerate_mismatch_dialog::{FrameRateMismatchChoice, FrameRateMismatchDialog};
+    use crate::state::AppState;
+    use klipp_core::{AppCommand, Fps, MediaId};
+
+    /// A 25 fps project with no clips yet, its rate chosen, and two
+    /// 50 fps video files in its pool.
+    fn project() -> (AppState, MediaId, MediaId) {
+        let mut state = AppState::default();
+        let seq = &mut state.sequences[0];
+        seq.fps = Fps { num: 25, den: 1 };
+        seq.first_clip_autoset.fps = false;
+        let mut file = |name: &str| {
+            let mut item = klipp_media::MediaItem::synthetic_for_test(format!("/tmp/{name}.mp4").into(), None);
+            item.fps = Fps { num: 50, den: 1 };
+            item.video_codec = "h264".into();
+            item.resolution = klipp_core::Resolution { width: 1920, height: 1080 };
+            state.media_pool.add(item)
+        };
+        let (a, b) = (file("first"), file("second"));
+        (state, a, b)
+    }
+
+    /// The dialog for `state`'s question about `media`: what it says, and
+    /// what a click on `button` answers.
+    fn asked(state: &AppState, media: &MediaId, button: &str) -> (Vec<String>, Option<FrameRateMismatchChoice>) {
+        let (media_fps, sequence_fps) = state.rate_question(media).expect("asked");
+        let mut dialog = FrameRateMismatchDialog { sequence_idx: 0, media_fps, sequence_fps, pending_cmd: AppCommand::AppendClip { media_id: *media } };
+        let ctx = egui::Context::default();
+        let mut run = |events: Vec<egui::Event>| {
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0))), events, ..Default::default() };
+            let mut choice = None;
+            let out = ctx.run(input, |ctx| choice = dialog.show(ctx));
+            let texts: Vec<(String, egui::Pos2)> = out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.pos + t.galley.size() / 2.0)),
+                _ => None,
+            }).collect();
+            (texts, choice)
+        };
+        run(Vec::new());
+        let (texts, _) = run(Vec::new());
+        let at = texts.iter().find(|(t, _)| t == button).map(|(_, p)| *p).expect("the button is drawn");
+        let b = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        let mut choice = run(vec![egui::Event::PointerMoved(at), b(true)]).1;
+        choice = choice.or(run(vec![b(false)]).1);
+        (texts.into_iter().map(|(t, _)| t).collect(), choice)
+    }
+
+    /// #2965: two 50 fps clips for a 25 fps project. The first asks, and
+    /// says which rate is whose and what each answer does; Don't Change
+    /// once, and the second clip asks nothing, even with the first not
+    /// placed, and the project keeps its rate. The answer is saved with the
+    /// project; one saved before it reads as not asked.
+    #[test]
+    fn dont_change_once_and_the_next_clip_asks_nothing() {
+        let (mut state, first, second) = project();
+        let (said, choice) = asked(&state, &first, "Don't Change");
+        for line in ["This clip runs at 50 fps. The project runs at 25 fps.", "Change: the project runs at 50 fps from now on.", "Don't Change: the project stays at 25 fps, and the clip plays at it."] {
+            assert!(said.iter().any(|t| t == line), "{line}: {said:?}");
+        }
+        assert_eq!(choice, Some(FrameRateMismatchChoice::DontChange));
+        assert!(state.answer_rate_question(0, None).is_none(), "Don't Change changes no rate");
+        assert_eq!(state.rate_question(&second), None, "the second clip asks nothing");
+        assert_eq!(state.rate_question(&first), None, "nor the first again");
+        assert_eq!(state.sequences[0].fps, Fps { num: 25, den: 1 });
+
+        let saved = serde_json::to_value(&state.sequences[0]).unwrap();
+        let reopened: klipp_timeline::Sequence = serde_json::from_value(saved.clone()).unwrap();
+        assert!(reopened.first_clip_autoset.rate_answered, "kept with the project");
+        let mut before = saved;
+        before["first_clip_autoset"].as_object_mut().unwrap().remove("rate_answered");
+        let older: klipp_timeline::Sequence = serde_json::from_value(before).unwrap();
+        assert!(older.first_clip_rate_question(Fps { num: 50, den: 1 }).is_some(), "a project saved before asks as it did");
+    }
+
+    /// Change answers too: the rate changes, and a clip of a third rate
+    /// asks nothing after.
+    #[test]
+    fn change_once_and_the_next_clip_asks_nothing() {
+        let (mut state, first, second) = project();
+        let (_, choice) = asked(&state, &first, "Change");
+        assert_eq!(choice, Some(FrameRateMismatchChoice::Change));
+        let cmd = state.answer_rate_question(0, Some(Fps { num: 50, den: 1 }));
+        assert!(matches!(cmd, Some(AppCommand::SetSequenceFps { sequence_idx: 0, fps_num: 50, fps_den: 1 })), "{cmd:?}");
+        state.media_pool.get_mut(&second).unwrap().fps = Fps { num: 30, den: 1 };
+        assert_eq!(state.rate_question(&second), None);
     }
 }

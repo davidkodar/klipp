@@ -3,9 +3,10 @@
 //! sequence already has clips on it (so the silent first-clip auto-set
 //! path in `AppendClip*` / `ImportMediaLinked` does not apply).
 //!
-//! Mirrors the DaVinci Resolve prompt: "Change" updates the sequence fps
-//! and proceeds with the drop; "Don't Change" proceeds without changing
-//! fps; closing the dialog cancels the drop entirely.
+//! "Change" updates the sequence fps and proceeds with the drop; "Don't
+//! Change" proceeds without changing fps; either answer is kept with the
+//! project, which is not asked again (#2965); closing the dialog cancels
+//! the drop entirely.
 
 use klipp_core::{AppCommand, Fps};
 
@@ -49,19 +50,14 @@ impl FrameRateMismatchDialog {
             .show(ctx, |ui| {
                 ui.set_min_width(420.0);
                 ui.add_space(4.0);
-                ui.label(format!(
-                    "The selected clip has a different frame rate to the project. \
-                     Would you like to change the project frame rate to {:.2} frames per second?",
-                    self.media_fps.as_f64()
-                ));
+                let (project, clip) = (rate(self.sequence_fps), rate(self.media_fps));
+                ui.label(format!("This clip runs at {clip} fps. The project runs at {project} fps."));
+                ui.add_space(8.0);
+                ui.label(format!("Change: the project runs at {clip} fps from now on."));
+                ui.label(format!("Don't Change: the project stays at {project} fps, and the clip plays at it."));
                 ui.add_space(8.0);
                 ui.label(
-                    egui::RichText::new(format!(
-                        "Project: {:.3} fps   ·   Clip: {:.3} fps",
-                        self.sequence_fps.as_f64(),
-                        self.media_fps.as_f64()
-                    ))
-                    .weak(),
+                    egui::RichText::new("You will not be asked again for this project. Its rate can still be changed in Sequence Settings.").weak(),
                 );
                 ui.add_space(16.0);
                 ui.horizontal(|ui| {
@@ -77,4 +73,10 @@ impl FrameRateMismatchDialog {
 
         choice
     }
+}
+
+/// A rate as people say it: "25", "29.97", "23.976".
+fn rate(fps: Fps) -> String {
+    let shown = format!("{:.3}", fps.as_f64());
+    shown.trim_end_matches('0').trim_end_matches('.').to_string()
 }
