@@ -1825,7 +1825,9 @@ impl KlippApp {
         // check; the dismissal set is consulted up front so each tip
         // ever fires at most once, persisted to prefs.
         self.maybe_fire_first_time_tips();
-        self.state.toast.render(ctx, &self.theme);
+        if let Some(action) = self.state.toast.render(ctx, &self.theme) {
+            self.toast_action(action);
+        }
         self.state.toast.cleanup();
 
         // 11c-bis. Floating drag ghost for FilePaths drags from the file
