@@ -205,6 +205,7 @@ impl KlippApp {
             hb_max_batch: 0,
             last_graded_playhead: None,
             graded_positions: std::collections::HashMap::new(),
+            colour_go_to: None,
             browser_before_workspace: None,
             dock_before_composite: None,
             node_browser_borrow: Default::default(),

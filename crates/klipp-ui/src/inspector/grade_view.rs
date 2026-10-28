@@ -380,6 +380,12 @@ impl GradeSnapshot {
         self.pending
     }
 
+    /// The Corrector the Colour page's Adjustments tab edits: the level's
+    /// first, else the one [`GradeSnapshot::pending`] draws.
+    pub(crate) fn corrector(&self) -> Option<NodeId> {
+        self.v1.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector).map(|n| n.id).or(self.pending)
+    }
+
     /// The node printer lights grade at this level (#1527): its enabled
     /// Corrector, else its enabled Colour Wheels, else the Corrector it
     /// reserves, which their first edit makes. Its path, and the offset it

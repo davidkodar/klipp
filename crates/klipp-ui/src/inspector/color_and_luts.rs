@@ -8,15 +8,65 @@ use klipp_core::AppCommand;
 #[derive(Clone, Default)]
 struct LutPreviewCache(std::collections::HashMap<std::path::PathBuf, egui::TextureHandle>);
 
-/// Show the Color tab content: per-clip Masks (if any), color
-/// redirect, global LUT, and LUT presets.
-pub fn show_color_and_luts(
+/// The Corrector's rows the Colour tab's Basic Correction draws (#2952),
+/// the Colour page's own for them.
+pub(crate) const BASIC_CORRECTION: [&str; 5] = ["exposure", "contrast", "saturation", "temperature", "tint"];
+
+/// Show the Color tab content: the basic correction (`grade`, the
+/// selected clip's grade as the Colour page reads it, taken by the app),
+/// per-clip Masks (if any), color redirect, global LUT, and LUT presets.
+/// `auto_colour` is set when Auto Colour is pressed.
+pub(crate) fn show_color_and_luts(
     ui: &mut egui::Ui,
     state: &AppState,
     theme: &KlippTheme,
+    grade: Option<&crate::inspector::grade_view::GradeSnapshot>,
+    auto_colour: &mut bool,
     cmds: &mut Vec<AppCommand>,
 ) {
     egui::ScrollArea::vertical().auto_shrink([false; 2]).id_salt("color_lut_scroll").show(ui, |ui| {
+        // ── Basic correction (#2952) ──
+        // The Colour page's Adjustments rows on the Corrector it edits, so
+        // a value set here is the one the page shows; a clip never graded
+        // draws the Corrector its first edit makes there.
+        let clip = state.selected_clip.and_then(|id| state.sequence().all_clips().find(|c| c.id == id));
+        if let Some(clip) = clip {
+            let frame = crate::inspector::keyframe_selection::FrameSelection {
+                time_secs: crate::inspector::keyframe_selection::clip_time(state, clip),
+                tolerance: crate::inspector::keyframe_selection::frame_tolerance(state.sequence()),
+                clip_start: clip.timeline_in,
+            };
+            section_card(ui, "BASIC CORRECTION", None, theme, |ui| {
+                let start = cmds.len();
+                if let Some((grade, node)) = grade.and_then(|g| Some((g, g.corrector()?))) {
+                    for key in BASIC_CORRECTION {
+                        grade.row(ui, theme, node, key, cmds, frame);
+                    }
+                }
+                // A key the rows name at the playhead is the stored key in its frame.
+                for cmd in &mut cmds[start..] {
+                    crate::inspector::keyframe_selection::resolve_for_clip(clip, frame.tolerance, cmd);
+                }
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(12.0);
+                    let w = ((ui.available_width() - 16.0) / 2.0).max(60.0);
+                    if ui.add_sized([w, crate::theme::control::REGULAR], egui::Button::new("Auto Colour"))
+                        .on_hover_text("A starting grade measured from the shot: exposure, white balance and contrast. One undo.")
+                        .clicked()
+                    {
+                        *auto_colour = true;
+                    }
+                    if ui.add_sized([w, crate::theme::control::REGULAR], egui::Button::new("Open in Colour page"))
+                        .on_hover_text(crate::keybindings::tip(ui.ctx(), "Grade this clip on the Colour page", "toggle_color_panel"))
+                        .clicked()
+                    {
+                        cmds.push(AppCommand::ToggleColorPanel);
+                    }
+                });
+            });
+        }
+
         // ── Masks section ──
         // Lets Edit-workspace users edit masks without jumping to
         // the Color workspace. Clicking a mask on the Program
@@ -74,20 +124,6 @@ pub fn show_color_and_luts(
             });
             });
         }
-
-        // The grade itself lives in the Color workspace.
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            ui.add_space(12.0);
-            let w = ui.available_width() - 12.0;
-            if ui.add_sized([w, crate::theme::control::REGULAR], egui::Button::new("Open Colour Panel"))
-                .on_hover_text(crate::keybindings::tip(ui.ctx(), "Switch to the Colour workspace", "toggle_color_panel"))
-                .clicked()
-            {
-                cmds.push(AppCommand::ToggleColorPanel);
-            }
-        });
-        ui.add_space(6.0);
 
         // Bake Grade — export the active clip's full grade chain to a .cube file.
         // Spatial nodes (qualifier / masks) are auto-skipped by the bake

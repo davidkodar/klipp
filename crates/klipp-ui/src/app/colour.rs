@@ -2437,6 +2437,10 @@ impl KlippApp {
     pub(super) fn run_colour_tool(&mut self, action: crate::panels::colour_check::ColourAction) {
         let Some(run) = self.local_control.clone() else { return };
         if self.colour_tool_reply.is_some() {
+            // The inspector's button has no window to say it in.
+            if action == crate::panels::colour_check::ColourAction::AutoColour {
+                self.state.toast.show("Auto Colour waits for the colour tool still running");
+            }
             return;
         }
         let selected_media = (self.state.selected_media_ids.len() == 1).then(|| self.state.selected_media_ids.iter().next().copied()).flatten();
@@ -2464,19 +2468,25 @@ impl KlippApp {
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => Err("the tool stopped without an answer".into()),
         };
-        let name = self.colour_check.tool_running.take().map(|a| a.name()).unwrap_or("The tool");
+        let action = self.colour_check.tool_running.take();
+        let name = action.map(|a| a.name()).unwrap_or("The tool");
         self.colour_tool_reply = None;
-        self.colour_check.tool_result = Some(match reply {
+        let result = match reply {
             Ok(v) => (true, v["text"].as_str().map(str::to_string).unwrap_or_else(|| format!("{name}: done."))),
             Err(why) => (false, format!("{name}: {why}")),
-        });
+        };
+        // Auto Colour is started from the inspector, so it answers there.
+        if action == Some(crate::panels::colour_check::ColourAction::AutoColour) {
+            self.state.toast.show(&result.1);
+        }
+        self.colour_check.tool_result = Some(result);
     }
 }
 
 /// The control request a Colour Check tool sends (#897), or `None` when
 /// what it acts on is not selected. Match to Hero takes the selected
 /// shots when there are two or more, else the whole picture track.
-fn colour_tool_request(
+pub(super) fn colour_tool_request(
     action: crate::panels::colour_check::ColourAction,
     clip: Option<klipp_core::ClipId>,
     clips: &[klipp_core::ClipId],
@@ -2496,6 +2506,7 @@ fn colour_tool_request(
         A::GradeToLook => json!({ "method": "grade_to_target", "clip_id": clip?.0.to_string(), "apply": true }),
         A::AdoptLookFromTimeline => json!({ "method": "adopt_look", "from_timeline": true, "apply": true }),
         A::AdoptLookFromMedia => json!({ "method": "adopt_look", "media_id": media?.0.to_string(), "apply": true }),
+        A::AutoColour => json!({ "method": "apply", "ops": [{ "op": "auto_colour", "clips": [clip?.0.to_string()] }] }),
         A::None | A::SelfCheck => return None,
     })
 }
