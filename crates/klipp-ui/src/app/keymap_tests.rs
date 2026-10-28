@@ -187,9 +187,16 @@ fn every_editor_layout_is_its_editors_published_default() {
         let bound = preset.bindings();
         let keys = |a: &str| -> Vec<String> { bound.get(a).map(|c| c.iter().map(KeyCombo::display).collect()).unwrap_or_default() };
         let deviations = fx["deviations"].as_object().cloned().unwrap_or_default();
+        // Klipp's own keys kept beside the editor's where its list leaves
+        // them unsettled (#2969), each saying why.
+        let adds = fx["klipp_adds"].as_object().cloned().unwrap_or_default();
         let mut wrong = Vec::new();
         for (action, row) in fx["actions"].as_object().expect("actions") {
-            let documented: Vec<String> = row["keys"].as_array().unwrap().iter().map(|k| KeyCombo::parse(k.as_str().unwrap()).expect("a key").display()).collect();
+            let mut documented: Vec<String> = row["keys"].as_array().unwrap().iter().map(|k| KeyCombo::parse(k.as_str().unwrap()).expect("a key").display()).collect();
+            if let Some(add) = adds.get(action) {
+                assert!(add["why"].as_str().is_some_and(|w| w.len() > 20), "{}: {action}'s added key says why", preset.label());
+                documented.extend(add["keys"].as_array().unwrap().iter().map(|k| KeyCombo::parse(k.as_str().unwrap()).expect("a key").display()));
+            }
             let have = keys(action);
             match deviations.get(action) {
                 Some(d) => {
@@ -348,4 +355,20 @@ fn a_field_that_vanishes_under_the_typing_keeps_the_editors_keys() {
     assert!(held, "the next frame finds the field gone and holds the keys");
     let state = crate::state::AppState { project_path: Some(crate::project_paths::UNTITLED.into()), field_keys_held: held, ..Default::default() };
     assert_eq!(key_scope(&state, false), KeyScope::CtrlOnly, "so Ctrl+A is no Select All");
+}
+
+/// #2969: in every keymap Home goes to the start, End to the end, and
+/// Delete removes the selected clip (closing the gap or leaving it, as the
+/// editor's own Delete does); in Final Cut, whose list names only the Mac
+/// Delete key, Klipp's Delete is kept beside it.
+#[test]
+fn home_end_and_delete_work_in_every_keymap() {
+    let ctx = egui::Context::default();
+    for preset in KeymapPreset::ALL {
+        let kb = KeyBindings::from_preset(preset);
+        let on = |key: &str| fired(&ctx, &kb, &KeyCombo::new(key));
+        assert!(on("Home").iter().any(|a| a == "go_to_start"), "{}: Home goes to the start: {:?}", preset.label(), on("Home"));
+        assert!(on("End").iter().any(|a| a == "go_to_end"), "{}: End goes to the end: {:?}", preset.label(), on("End"));
+        assert!(on("Delete").iter().any(|a| a == "delete_clip" || a == "lift_clip"), "{}: Delete removes the clip: {:?}", preset.label(), on("Delete"));
+    }
 }
