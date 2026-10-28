@@ -170,7 +170,9 @@ pub(crate) fn compute_layout(
     // Timeline sits above the scopes/nodes area (or fills to bottom if none)
     let timeline_bottom = color_bottom_top;
     let max_timeline_h = (timeline_bottom - main_top - theme::RESIZER_THICKNESS) * theme::TIMELINE_MAX_H_PCT;
-    let timeline_min_h = theme::TIMELINE_MIN_H;
+    // The Edit timeline keeps room for V1, A1 and A2 (#2944); the Colour
+    // strip keeps its own short minimum.
+    let timeline_min_h = if in_color_ws { theme::TIMELINE_MIN_H } else { theme::TIMELINE_THREE_TRACKS_H.min(max_timeline_h.max(theme::TIMELINE_MIN_H)) };
     // In Color the timeline is a strip: no toolbar, no tabs, its own
     // remembered height.
     // The Edit timeline starts as a share of the editing area rather

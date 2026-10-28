@@ -12,208 +12,48 @@ use klipp_timeline::magnetic::EditMode;
 /// is inserted before the zoom controls; the persistent controls never move.
 pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &mut Vec<AppCommand>, kb: &crate::keybindings::KeyBindings) {
     let btn = crate::theme::control::REGULAR;
+    // What the row has before the zoom group and a "»" button, which keep
+    // their place at the right (#2944).
+    let budget = ui.available_width() - ZOOM_GROUP_W - MORE_W - 8.0;
+    let widths_id = ui.id().with("timeline_toolbar_widths");
+    let mut widths: [f32; GROUPS.len()] = ui.ctx().data(|d| d.get_temp(widths_id)).unwrap_or([0.0; GROUPS.len()]);
+    let mut folded: Vec<Group> = Vec::new();
     ui.horizontal_centered(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
         ui.add_space(8.0);
-
-        // ── Edit tools ──
-        #[allow(clippy::type_complexity)]
-        let tool_defs: &[(klipp_core::Tool, &str, &str, fn(&egui::Painter, egui::Rect, egui::Color32))] = &[
-            (klipp_core::Tool::Select, "Select Tool", "select_tool", draw_tl_select_icon),
-            (klipp_core::Tool::Trim, "Trim Tool", "trim_tool", draw_tl_trim_icon),
-            (klipp_core::Tool::Blade, "Blade Tool", "blade_tool", draw_tl_blade_icon),
-            (klipp_core::Tool::Range, "Range Tool", "range_tool", draw_tl_range_icon),
-            // Works in the viewer: a click or a drag there makes a title (#1713).
-            (klipp_core::Tool::Text, "Text Tool: click or drag in the viewer to add a title", "text_tool", draw_tl_text_icon),
-            // Works in the viewer: draws and edits a freeform mask (#74).
-            (klipp_core::Tool::Mask, "Mask Tool: click in the viewer to draw a mask's points, drag to pull out curves", "mask_tool", draw_tl_mask_icon),
-        ];
-        for (tool, tip, action, draw_fn) in tool_defs {
-            let active = state.active_tool == *tool;
-            let resp = icon_button(ui, theme, btn, active, *draw_fn);
-            let key = kb.display_for(action);
-            styled_tooltip(&resp, theme, tip, Some(&key));
-            if *tool == klipp_core::Tool::Blade {
-                // The tour's trim-or-split step points here (#2933).
-                crate::welcome::anchor(ui.ctx(), "blade_tool", resp.rect);
+        // The groups in order while each fits, by its width the last time
+        // it was drawn; from the first that does not, the rest fold into
+        // the "»" menu, so nothing is drawn half under the zoom group.
+        let left = ui.cursor().min.x;
+        for (k, group) in GROUPS.iter().enumerate() {
+            if !folded.is_empty() || ui.cursor().min.x - left + widths[k] > budget {
+                folded.push(*group);
+                continue;
             }
+            let x0 = ui.cursor().min.x;
+            draw_group(*group, ui, state, theme, cmds, kb, btn);
+            if SEPARATOR_AFTER.contains(group) {
+                separator(ui, theme);
+            }
+            widths[k] = ui.cursor().min.x - x0;
+        }
+        if !folded.is_empty() {
+            let resp = ui.add(egui::Button::new("\u{00bb}").min_size(egui::vec2(MORE_W - 4.0, btn)));
+            styled_tooltip(&resp, theme, "More timeline controls", None);
+            let popup = ui.id().with("timeline_toolbar_more");
             if resp.clicked() {
-                cmds.push(AppCommand::SetActiveTool(*tool));
+                ui.memory_mut(|m| m.toggle_popup(popup));
             }
-        }
-
-        separator(ui, theme);
-
-        // ── Insert / Overwrite: a two-segment switch, the active mode lit ──
-        {
-            let active = if state.edit_mode == EditMode::Insert { 0 } else { 1 };
-            let before = ui.cursor().min;
-            if let Some(i) = crate::widgets::segmented::segmented(
-                ui, &["INS", "OVR"], active, theme,
-                egui::FontId::monospace(crate::theme::type_scale::CAPTION), crate::theme::control::COMPACT,
-            ) {
-                state.edit_mode = if i == 0 { EditMode::Insert } else { EditMode::Overwrite };
-            }
-            let tip = match state.edit_mode {
-                EditMode::Insert => "Edit Mode: Insert",
-                EditMode::Overwrite => "Edit Mode: Overwrite",
-            };
-            let rect = egui::Rect::from_min_max(before, ui.cursor().min + egui::vec2(0.0, crate::theme::control::COMPACT));
-            let hover = ui.interact(rect, ui.id().with("edit_mode_tip"), egui::Sense::hover());
-            styled_tooltip(&hover, theme, tip, Some(&kb.display_for("toggle_edit_mode")));
-        }
-
-        // ── Ripple: lit when edits close the gaps they leave (#912) ──
-        // The switch was only drawn by the timeline the app no longer
-        // shows, so ripple could not be turned off.
-        {
-            let text = egui::RichText::new("RIPPLE")
-                .font(egui::FontId::monospace(crate::theme::type_scale::CAPTION))
-                .color(if state.ripple_enabled { theme.accent } else { theme.text_dim });
-            let resp = ui.add(egui::Button::new(text).selected(state.ripple_enabled).min_size(egui::vec2(0.0, crate::theme::control::COMPACT)));
-            let tip = if state.ripple_enabled {
-                "Ripple on: deleting and trimming close the gap. Click to leave gaps."
-            } else {
-                "Ripple off: deleting and trimming leave a gap. Click to close gaps."
-            };
-            styled_tooltip(&resp, theme, tip, None);
-            if resp.clicked() {
-                cmds.push(AppCommand::SetRippleEnabled(!state.ripple_enabled));
-            }
-        }
-
-        separator(ui, theme);
-
-        // ── Snap (left-click = master; right-click = per-target menu) ──
-        // Dispatches through AppCommand so the central handler can
-        // persist state.snap → layout.snap on every flip (and so the
-        // four snap-toggle surfaces — toolbar, N shortcut, palette,
-        // View menu — stay in sync without parallel mutation paths).
-        let snap_active = state.snap.master;
-        let resp = icon_button(ui, theme, btn, snap_active, draw_tl_snap_icon);
-        // A small chevron in the corner hints at the per-target menu.
-        let chevron = if snap_active { theme.accent } else { theme.text_dim };
-        ui.painter().text(
-            egui::pos2(resp.rect.right() - 4.0, resp.rect.bottom() - 6.0),
-            egui::Align2::RIGHT_BOTTOM,
-            "\u{25BE}",
-            egui::FontId::proportional(10.0),
-            chevron,
-        );
-        styled_tooltip(&resp, theme, "Snap (right-click for per-target options)", Some(&kb.display_for("toggle_snap")));
-        if resp.clicked() {
-            cmds.push(AppCommand::SetSnapMaster(!state.snap.master));
-        }
-        resp.context_menu_rows(|ui| {
-            use klipp_core::SnapTargetKind;
-            let cfg = state.snap;
-            ui.set_min_width(180.0);
-            if menu_toggle(ui, "Snap (master)", "", cfg.master).clicked() {
-                cmds.push(AppCommand::SetSnapMaster(!cfg.master));
-                ui.close_menu();
-            }
-            ui.separator();
-            ui.add_enabled_ui(cfg.master, |ui| {
-                let rows: &[(SnapTargetKind, &str, bool)] = &[
-                    (SnapTargetKind::ClipEdge, "Snap to clips", cfg.clips),
-                    (SnapTargetKind::Playhead, "Snap to playhead", cfg.playhead),
-                    (SnapTargetKind::Marker, "Snap to markers", cfg.markers),
-                    (SnapTargetKind::InPoint, "Snap to in/out", cfg.in_out),
-                    (SnapTargetKind::Grid, "Snap to grid", cfg.grid),
-                ];
-                for &(target, label, enabled) in rows {
-                    if menu_toggle(ui, label, "", enabled).clicked() {
-                        cmds.push(AppCommand::SetSnapTarget { target, enabled: !enabled });
-                        ui.close_menu();
-                    }
+            egui::popup::popup_below_widget(ui, popup, &resp, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
+                ui.set_min_width(200.0);
+                for group in &folded {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        draw_group(*group, ui, state, theme, cmds, kb, btn);
+                    });
                 }
             });
-        });
-
-        // ── Skimming ──
-        let resp = icon_button(ui, theme, btn, state.skimming_enabled, draw_tl_skim_icon);
-        styled_tooltip(&resp, theme, "Skimming", Some(&kb.display_for("toggle_skimming")));
-        if resp.clicked() {
-            state.skimming_enabled = !state.skimming_enabled;
-            let msg = if state.skimming_enabled { "Skimming On" } else { "Skimming Off" };
-            state.toast.show(msg);
         }
-
-        // ── Timeline options: follow, proxies, what an append brings,
-        // find (#912). Each was only on the timeline the app no longer
-        // shows. ──
-        let resp = ui.add(egui::Button::new("\u{22EF}").min_size(egui::vec2(btn, btn)));
-        styled_tooltip(&resp, theme, "Timeline options", None);
-        egui::popup::popup_below_widget(ui, ui.id().with("timeline_options"), &resp, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
-            ui.set_min_width(230.0);
-            ui.label(egui::RichText::new("Follow the playhead").strong().size(11.0));
-            for follow in [crate::state::PlayheadFollow::Off, crate::state::PlayheadFollow::Page, crate::state::PlayheadFollow::Smooth] {
-                if ui.radio(state.playhead_follow == follow, follow.label()).clicked() {
-                    state.playhead_follow = follow;
-                    state.playhead_follow_chosen = true;
-                }
-            }
-            ui.separator();
-            if ui.checkbox(&mut state.use_proxies.clone(), "Play from proxies").on_hover_text("Lower quality, faster decode").clicked() {
-                cmds.push(AppCommand::SetUseProxies(!state.use_proxies));
-            }
-            if ui.checkbox(&mut state.append_brings_audio.clone(), "Appended clips bring their audio").clicked() {
-                cmds.push(AppCommand::SetAppendBringsAudio(!state.append_brings_audio));
-            }
-            ui.separator();
-            if ui.add(egui::Button::new("Find in Timeline\u{2026}").shortcut_text(kb.display_for("focus_panel_search"))).clicked() {
-                state.focus_search_request = Some(crate::state::PanelKind::Timeline);
-                ui.memory_mut(|m| m.close_popup());
-            }
-        });
-        if resp.clicked() {
-            ui.memory_mut(|m| m.toggle_popup(ui.id().with("timeline_options")));
-        }
-
-        // ── Linked: picture and sound trim and move together (#916) ──
-        // Off, each goes alone: a J or L cut. Alt while trimming does the
-        // same for one trim.
-        {
-            let text = egui::RichText::new("LINKED")
-                .font(egui::FontId::monospace(crate::theme::type_scale::CAPTION))
-                .color(if state.linked_selection { theme.accent } else { theme.text_dim });
-            let resp = ui.add(egui::Button::new(text).selected(state.linked_selection).min_size(egui::vec2(0.0, crate::theme::control::COMPACT)));
-            let tip = if state.linked_selection {
-                "Linked: picture and sound trim and move together. Click to work on each alone; Alt while trimming does it for one trim."
-            } else {
-                "Unlinked: picture and sound trim and move alone. Click to link them again."
-            };
-            styled_tooltip(&resp, theme, tip, None);
-            if resp.clicked() {
-                state.linked_selection = !state.linked_selection;
-            }
-        }
-
-        separator(ui, theme);
-
-        // ── Add marker ──
-        let resp = icon_button(ui, theme, btn, false, draw_tl_marker_icon);
-        styled_tooltip(&resp, theme, "Add Marker", Some(&kb.display_for("add_marker")));
-        if resp.clicked() {
-            cmds.push(AppCommand::AddMarker {
-                position: state.playhead,
-                label: String::new(),
-                color: klipp_core::MarkerColor::Blue,
-            });
-        }
-
-        // ── Add title ──
-        let resp = icon_button(ui, theme, btn, false, draw_tl_title_icon);
-        styled_tooltip(&resp, theme, "Add Title", Some(&kb.display_for("create_title")));
-        if resp.clicked() {
-            cmds.push(AppCommand::AddTitleAtPlayhead { over_clip: None });
-        }
-
-        // ── Contextual clip actions ──
-        // Keep this group empty when there is no selection so the toolbar
-        // stays quiet. Once a clip is selected, expose the high-frequency
-        // timeline operations that otherwise require a shortcut or menu.
-        show_context_actions(ui, state, theme, cmds);
 
         // ── Zoom (right-aligned): [−] [slider] [+] [Fit] ──
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -237,6 +77,241 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &
             ui.label(egui::RichText::new("\u{2212}").size(crate::theme::type_scale::CAPTION).color(theme.text_dim));
         });
     });
+    ui.ctx().data_mut(|d| d.insert_temp(widths_id, widths));
+}
+
+/// The zoom group's width at the row's right edge, kept clear of the
+/// groups: Fit, the slider and its ends.
+const ZOOM_GROUP_W: f32 = 200.0;
+/// The "»" button's room.
+const MORE_W: f32 = 30.0;
+
+/// The toolbar's groups, left to right; those that do not fit fold into
+/// the "»" menu from the right (#2944).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Group {
+    Tools,
+    EditMode,
+    Ripple,
+    Snap,
+    Skim,
+    Options,
+    Linked,
+    Marker,
+    Title,
+    Context,
+}
+
+const GROUPS: [Group; 10] = [Group::Tools, Group::EditMode, Group::Ripple, Group::Snap, Group::Skim, Group::Options, Group::Linked, Group::Marker, Group::Title, Group::Context];
+const SEPARATOR_AFTER: [Group; 3] = [Group::Tools, Group::Ripple, Group::Linked];
+
+/// One group's controls, in the row or in the "»" menu.
+fn draw_group(group: Group, ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &mut Vec<AppCommand>, kb: &crate::keybindings::KeyBindings, btn: f32) {
+    match group {
+        Group::Tools => {
+            // ── Edit tools ──
+            #[allow(clippy::type_complexity)]
+            let tool_defs: &[(klipp_core::Tool, &str, &str, fn(&egui::Painter, egui::Rect, egui::Color32))] = &[
+                (klipp_core::Tool::Select, "Select Tool", "select_tool", draw_tl_select_icon),
+                (klipp_core::Tool::Trim, "Trim Tool", "trim_tool", draw_tl_trim_icon),
+                (klipp_core::Tool::Blade, "Blade Tool", "blade_tool", draw_tl_blade_icon),
+                (klipp_core::Tool::Range, "Range Tool", "range_tool", draw_tl_range_icon),
+                // Works in the viewer: a click or a drag there makes a title (#1713).
+                (klipp_core::Tool::Text, "Text Tool: click or drag in the viewer to add a title", "text_tool", draw_tl_text_icon),
+                // Works in the viewer: draws and edits a freeform mask (#74).
+                (klipp_core::Tool::Mask, "Mask Tool: click in the viewer to draw a mask's points, drag to pull out curves", "mask_tool", draw_tl_mask_icon),
+            ];
+            for (tool, tip, action, draw_fn) in tool_defs {
+                let active = state.active_tool == *tool;
+                let resp = icon_button(ui, theme, btn, active, *draw_fn);
+                let key = kb.display_for(action);
+                styled_tooltip(&resp, theme, tip, Some(&key));
+                if *tool == klipp_core::Tool::Blade {
+                    // The tour's trim-or-split step points here (#2933).
+                    crate::welcome::anchor(ui.ctx(), "blade_tool", resp.rect);
+                }
+                if resp.clicked() {
+                    cmds.push(AppCommand::SetActiveTool(*tool));
+                }
+            }
+        }
+        Group::EditMode => {
+            // ── Insert / Overwrite: a two-segment switch, the active mode lit ──
+            {
+                let active = if state.edit_mode == EditMode::Insert { 0 } else { 1 };
+                let before = ui.cursor().min;
+                if let Some(i) = crate::widgets::segmented::segmented(
+                    ui, &["INS", "OVR"], active, theme,
+                    egui::FontId::monospace(crate::theme::type_scale::CAPTION), crate::theme::control::COMPACT,
+                ) {
+                    state.edit_mode = if i == 0 { EditMode::Insert } else { EditMode::Overwrite };
+                }
+                let tip = match state.edit_mode {
+                    EditMode::Insert => "Edit Mode: Insert",
+                    EditMode::Overwrite => "Edit Mode: Overwrite",
+                };
+                let rect = egui::Rect::from_min_max(before, ui.cursor().min + egui::vec2(0.0, crate::theme::control::COMPACT));
+                let hover = ui.interact(rect, ui.id().with("edit_mode_tip"), egui::Sense::hover());
+                styled_tooltip(&hover, theme, tip, Some(&kb.display_for("toggle_edit_mode")));
+            }
+        }
+        Group::Ripple => {
+            // ── Ripple: lit when edits close the gaps they leave (#912) ──
+            // The switch was only drawn by the timeline the app no longer
+            // shows, so ripple could not be turned off.
+            {
+                let text = egui::RichText::new("RIPPLE")
+                    .font(egui::FontId::monospace(crate::theme::type_scale::CAPTION))
+                    .color(if state.ripple_enabled { theme.accent } else { theme.text_dim });
+                let resp = ui.add(egui::Button::new(text).selected(state.ripple_enabled).min_size(egui::vec2(0.0, crate::theme::control::COMPACT)));
+                let tip = if state.ripple_enabled {
+                    "Ripple on: deleting and trimming close the gap. Click to leave gaps."
+                } else {
+                    "Ripple off: deleting and trimming leave a gap. Click to close gaps."
+                };
+                styled_tooltip(&resp, theme, tip, None);
+                if resp.clicked() {
+                    cmds.push(AppCommand::SetRippleEnabled(!state.ripple_enabled));
+                }
+            }
+        }
+        Group::Snap => {
+            // ── Snap (left-click = master; right-click = per-target menu) ──
+            // Dispatches through AppCommand so the central handler can
+            // persist state.snap → layout.snap on every flip (and so the
+            // four snap-toggle surfaces — toolbar, N shortcut, palette,
+            // View menu — stay in sync without parallel mutation paths).
+            let snap_active = state.snap.master;
+            let resp = icon_button(ui, theme, btn, snap_active, draw_tl_snap_icon);
+            // A small chevron in the corner hints at the per-target menu.
+            let chevron = if snap_active { theme.accent } else { theme.text_dim };
+            ui.painter().text(
+                egui::pos2(resp.rect.right() - 4.0, resp.rect.bottom() - 6.0),
+                egui::Align2::RIGHT_BOTTOM,
+                "\u{25BE}",
+                egui::FontId::proportional(10.0),
+                chevron,
+            );
+            styled_tooltip(&resp, theme, "Snap (right-click for per-target options)", Some(&kb.display_for("toggle_snap")));
+            if resp.clicked() {
+                cmds.push(AppCommand::SetSnapMaster(!state.snap.master));
+            }
+            resp.context_menu_rows(|ui| {
+                use klipp_core::SnapTargetKind;
+                let cfg = state.snap;
+                ui.set_min_width(180.0);
+                if menu_toggle(ui, "Snap (master)", "", cfg.master).clicked() {
+                    cmds.push(AppCommand::SetSnapMaster(!cfg.master));
+                    ui.close_menu();
+                }
+                ui.separator();
+                ui.add_enabled_ui(cfg.master, |ui| {
+                    let rows: &[(SnapTargetKind, &str, bool)] = &[
+                        (SnapTargetKind::ClipEdge, "Snap to clips", cfg.clips),
+                        (SnapTargetKind::Playhead, "Snap to playhead", cfg.playhead),
+                        (SnapTargetKind::Marker, "Snap to markers", cfg.markers),
+                        (SnapTargetKind::InPoint, "Snap to in/out", cfg.in_out),
+                        (SnapTargetKind::Grid, "Snap to grid", cfg.grid),
+                    ];
+                    for &(target, label, enabled) in rows {
+                        if menu_toggle(ui, label, "", enabled).clicked() {
+                            cmds.push(AppCommand::SetSnapTarget { target, enabled: !enabled });
+                            ui.close_menu();
+                        }
+                    }
+                });
+            });
+        }
+        Group::Skim => {
+            // ── Skimming ──
+            let resp = icon_button(ui, theme, btn, state.skimming_enabled, draw_tl_skim_icon);
+            styled_tooltip(&resp, theme, "Skimming", Some(&kb.display_for("toggle_skimming")));
+            if resp.clicked() {
+                state.skimming_enabled = !state.skimming_enabled;
+                let msg = if state.skimming_enabled { "Skimming On" } else { "Skimming Off" };
+                state.toast.show(msg);
+            }
+        }
+        Group::Options => {
+            // ── Timeline options: follow, proxies, what an append brings,
+            // find (#912). Each was only on the timeline the app no longer
+            // shows. ──
+            let resp = ui.add(egui::Button::new("\u{22EF}").min_size(egui::vec2(btn, btn)));
+            styled_tooltip(&resp, theme, "Timeline options", None);
+            egui::popup::popup_below_widget(ui, ui.id().with("timeline_options"), &resp, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
+                ui.set_min_width(230.0);
+                ui.label(egui::RichText::new("Follow the playhead").strong().size(11.0));
+                for follow in [crate::state::PlayheadFollow::Off, crate::state::PlayheadFollow::Page, crate::state::PlayheadFollow::Smooth] {
+                    if ui.radio(state.playhead_follow == follow, follow.label()).clicked() {
+                        state.playhead_follow = follow;
+                        state.playhead_follow_chosen = true;
+                    }
+                }
+                ui.separator();
+                if ui.checkbox(&mut state.use_proxies.clone(), "Play from proxies").on_hover_text("Lower quality, faster decode").clicked() {
+                    cmds.push(AppCommand::SetUseProxies(!state.use_proxies));
+                }
+                if ui.checkbox(&mut state.append_brings_audio.clone(), "Appended clips bring their audio").clicked() {
+                    cmds.push(AppCommand::SetAppendBringsAudio(!state.append_brings_audio));
+                }
+                ui.separator();
+                if ui.add(egui::Button::new("Find in Timeline\u{2026}").shortcut_text(kb.display_for("focus_panel_search"))).clicked() {
+                    state.focus_search_request = Some(crate::state::PanelKind::Timeline);
+                    ui.memory_mut(|m| m.close_popup());
+                }
+            });
+            if resp.clicked() {
+                ui.memory_mut(|m| m.toggle_popup(ui.id().with("timeline_options")));
+            }
+        }
+        Group::Linked => {
+            // ── Linked: picture and sound trim and move together (#916) ──
+            // Off, each goes alone: a J or L cut. Alt while trimming does the
+            // same for one trim.
+            {
+                let text = egui::RichText::new("LINKED")
+                    .font(egui::FontId::monospace(crate::theme::type_scale::CAPTION))
+                    .color(if state.linked_selection { theme.accent } else { theme.text_dim });
+                let resp = ui.add(egui::Button::new(text).selected(state.linked_selection).min_size(egui::vec2(0.0, crate::theme::control::COMPACT)));
+                let tip = if state.linked_selection {
+                    "Linked: picture and sound trim and move together. Click to work on each alone; Alt while trimming does it for one trim."
+                } else {
+                    "Unlinked: picture and sound trim and move alone. Click to link them again."
+                };
+                styled_tooltip(&resp, theme, tip, None);
+                if resp.clicked() {
+                    state.linked_selection = !state.linked_selection;
+                }
+            }
+        }
+        Group::Marker => {
+            // ── Add marker ──
+            let resp = icon_button(ui, theme, btn, false, draw_tl_marker_icon);
+            styled_tooltip(&resp, theme, "Add Marker", Some(&kb.display_for("add_marker")));
+            if resp.clicked() {
+                cmds.push(AppCommand::AddMarker {
+                    position: state.playhead,
+                    label: String::new(),
+                    color: klipp_core::MarkerColor::Blue,
+                });
+            }
+        }
+        Group::Title => {
+            // ── Add title ──
+            let resp = icon_button(ui, theme, btn, false, draw_tl_title_icon);
+            styled_tooltip(&resp, theme, "Add Title", Some(&kb.display_for("create_title")));
+            if resp.clicked() {
+                cmds.push(AppCommand::AddTitleAtPlayhead { over_clip: None });
+            }
+        }
+        Group::Context => {
+            // ── Contextual clip actions ──
+            // Keep this group empty when there is no selection so the toolbar
+            // stays quiet. Once a clip is selected, expose the high-frequency
+            // timeline operations that otherwise require a shortcut or menu.
+            show_context_actions(ui, state, theme, cmds);
+        }
+    }
 }
 
 fn show_context_actions(
