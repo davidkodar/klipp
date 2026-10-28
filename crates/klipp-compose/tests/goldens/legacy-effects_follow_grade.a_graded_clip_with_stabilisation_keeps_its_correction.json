@@ -1,8 +1,8 @@
 {
-  "recorded_on": "73e18f94",
-  "route": "legacy (set_legacy_effects)",
-  "adapter": {"backend":"Vulkan","driver":"NVIDIA","driver_info":"610.57.04","name":"NVIDIA GeForce RTX 4080"},
-  "reason": "phase 2b M2 step 11d-2: the legacy effects route's frames, recorded before 11d-3 deletes it",
+  "recorded_on": "de1fed46",
+  "route": "plans (today's route)",
+  "adapter": {"backend":"Vulkan","driver":"NVIDIA","driver_info":"615.78.08","name":"NVIDIA GeForce RTX 4080"},
+  "reason": "#2823 changed stabilisation (corrections relative to the smoothed path, in frame units, enlarged once per clip) and these tests' analysis inputs; the stored frames were drawn from the old inputs by the old correction",
   "frames": [
     {"key":"0","len":82944,"offset":0},
     {"key":"1","len":82944,"offset":82944}
