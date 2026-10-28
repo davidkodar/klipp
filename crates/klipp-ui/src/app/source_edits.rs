@@ -144,13 +144,7 @@ impl KlippApp {
         let (t_in, t_out, s_in, s_out) = self.placement_timecodes(&item, &p);
         let seq_idx = self.state.active_sequence_idx;
         let seq = &self.state.sequences[seq_idx];
-        let base = seq.source_track(klipp_timeline::TrackKind::Video).unwrap_or(seq.tracks.len());
-        let free = |t: &klipp_timeline::Track| {
-            t.kind == klipp_timeline::TrackKind::Video
-                && !t.locked
-                && !t.clips.iter().any(|c| !c.kind.is_gap() && c.timeline_in < t_out && t_in < c.timeline_out)
-        };
-        let dest = match (0..base).rev().find(|&i| free(&seq.tracks[i])) {
+        let dest = match place_on_top_track(seq, t_in, t_out) {
             Some(i) => i,
             None => {
                 let n = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video).count();
@@ -279,5 +273,73 @@ impl KlippApp {
         self.state.dirty = true;
         self.sync_sequence_to_engine();
         let _ = self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead));
+    }
+}
+
+/// Where Place on Top lays a picture over `t_in..t_out` (#2951): the
+/// nearest video track above the base that is free over that span, or
+/// `None` for a new track on top. The base is the patched video track, or
+/// with none patched the lowest, V1: the first in the list, the top, was
+/// taken for it, so each shot laid went above the last one's new track and
+/// made another.
+pub(super) fn place_on_top_track(seq: &klipp_timeline::Sequence, t_in: klipp_core::Timecode, t_out: klipp_core::Timecode) -> Option<usize> {
+    use klipp_timeline::TrackKind;
+    let base = seq
+        .tracks
+        .iter()
+        .position(|t| t.kind == TrackKind::Video && t.source_patch)
+        .or_else(|| seq.tracks.iter().rposition(|t| t.kind == TrackKind::Video))
+        .unwrap_or(seq.tracks.len());
+    let free = |t: &klipp_timeline::Track| t.kind == TrackKind::Video && !t.locked && !t.clips.iter().any(|c| !c.kind.is_gap() && c.timeline_in < t_out && t_in < c.timeline_out);
+    (0..base).rev().find(|&i| free(&seq.tracks[i]))
+}
+
+#[cfg(test)]
+mod place_on_top_tests {
+    use super::place_on_top_track;
+    use klipp_timeline::{Clip, Sequence, TrackKind};
+
+    fn tc(s: f64) -> klipp_core::Timecode {
+        klipp_core::Timecode::from_secs_f64(s, 24)
+    }
+
+    /// Lays a shot over `a..b` as Place on Top does: on the track it picks,
+    /// or on a new one on top.
+    fn place(seq: &mut Sequence, a: f64, b: f64) -> String {
+        let dest = match place_on_top_track(seq, tc(a), tc(b)) {
+            Some(i) => i,
+            None => {
+                let n = seq.tracks.iter().filter(|t| t.kind == TrackKind::Video).count();
+                seq.add_video_track(format!("Video {}", n + 1));
+                0
+            }
+        };
+        let clip = Clip::media(klipp_core::MediaId::new(), tc(a), tc(b), tc(0.0), tc(b - a));
+        super::KlippApp::overwrite_insert_clip_on_track(&mut seq.tracks[dest], clip);
+        seq.tracks[dest].name.clone()
+    }
+
+    /// #2951: three shots apart from each other over a V1 clip all land on
+    /// V2; a fourth over one of them goes to V3; nothing patched or patched.
+    #[test]
+    fn b_roll_reuses_a_free_track_and_stacks_only_when_it_must() {
+        let mut seq = Sequence::new_default();
+        let v1 = seq.tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        seq.tracks[v1].clips.push(Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(20.0), tc(0.0), tc(20.0)));
+        assert_eq!(place(&mut seq, 1.0, 3.0), "Video 2");
+        assert_eq!(place(&mut seq, 5.0, 7.0), "Video 2", "the free track above is used again");
+        assert_eq!(place(&mut seq, 9.0, 11.0), "Video 2");
+        assert_eq!(place(&mut seq, 10.0, 12.0), "Video 3", "over a shot on V2: a track above it");
+        assert_eq!(seq.tracks.iter().filter(|t| t.kind == TrackKind::Video).count(), 3);
+        // A gap on V2 again: the next shot fills it, not V3.
+        assert_eq!(place(&mut seq, 14.0, 16.0), "Video 2");
+        // With V1 patched, the same: above V1.
+        let mut seq2 = Sequence::new_default();
+        let v1 = seq2.tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        seq2.patch_source_to(v1);
+        seq2.tracks[v1].clips.push(Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(20.0), tc(0.0), tc(20.0)));
+        for (a, b) in [(1.0, 3.0), (5.0, 7.0), (9.0, 11.0)] {
+            assert_eq!(place(&mut seq2, a, b), "Video 2");
+        }
     }
 }
