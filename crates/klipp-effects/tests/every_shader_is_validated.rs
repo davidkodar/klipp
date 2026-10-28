@@ -8,7 +8,7 @@
 /// The files that compile shader modules, and where their WGSL is
 /// validated.
 const VALIDATED: &[(&str, &str)] = &[
-    ("klipp-effects/src/gpu.rs", "gpu::shader_validation_tests::every_shader_compiles (shader_sources)"),
+    ("klipp-effects/src/gpu/build.rs", "gpu::shader_validation_tests::every_shader_compiles (shader_sources)"),
     ("klipp-effects/src/gpu/mask_mix.rs", "gpu::shader_validation_tests::every_shader_compiles (shader_sources)"),
     ("klipp-effects/src/gpu/layer.rs", "gpu::shader_validation_tests::every_shader_compiles (shader_sources)"),
     ("klipp-effects/src/gpu/thumbs.rs", "gpu::shader_validation_tests::every_shader_compiles (shader_sources)"),
