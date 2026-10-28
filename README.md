@@ -13,7 +13,7 @@ Edit on a magnetic timeline, grade in scene-linear colour, and automate workflow
 
 **Early release · Vulkan GPU required · Arch package or source · GPL-3.0-only**
 
-Klipp is under active development. Expect rough edges and breaking changes; broad plugin compatibility, reliability hardening, and AMD/Intel GPU validation are ongoing. The latest release, [0.2.0](https://github.com/davidkodar/klipp/releases/tag/v0.2.0), is out as a signed Arch package; there are no stability guarantees yet.
+Klipp is still young, but it works end to end: import, edit, grade, titles, sound and export. Keep copies of work you care about: the project format can still change between 0.x releases. Broad plugin compatibility, reliability hardening, and AMD/Intel GPU validation are ongoing. The latest release, [0.2.0](https://github.com/davidkodar/klipp/releases/tag/v0.2.0), is out as a signed Arch package.
 
 [![Klipp Edit page with a harbour shot in the viewer, the media pool, and a timeline of titles, video, music, ambience and voice tracks](website/assets/edit.webp)](website/assets/edit.webp)
 
