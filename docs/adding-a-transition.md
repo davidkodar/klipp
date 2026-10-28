@@ -90,7 +90,12 @@ endpoints: `p=0` should produce pure `from`, `p=1` should produce pure `to`.
 
 ### 3. Implement the GPU shader
 
-**File:** `crates/klipp-effects/src/gpu.rs`
+**File:** `crates/klipp-effects/src/gpu/shaders/transitions/transition.wgsl`
+
+The shader is a `.wgsl` file; its `//#include` lines take in the shared
+pieces under `shaders/include/`, which the crate's build step assembles
+(see `build/shader_includes.rs`). The Rust side, its pipeline and
+dispatch, is in `crates/klipp-effects/src/gpu/transitions.rs`.
 
 Add an `else if` branch in the transition shader's if-chain:
 
@@ -195,7 +200,7 @@ separately for each new transition:
 | File | What it owns |
 |------|-------------|
 | `klipp-transitions/src/lib.rs` | CPU pixel math (the actual rendering algorithm) |
-| `klipp-effects/src/gpu.rs` | GPU compute shader (WGSL, runs on the GPU during playback) |
+| `klipp-effects/src/gpu/shaders/transitions/transition.wgsl` | GPU compute shader (WGSL, runs on the GPU during playback); its dispatch is in `gpu/transitions.rs` |
 | `klipp-ui/src/inspector/mod.rs` | Per-kind parameter controls (which sliders show for which transition) |
 | `klipp-ui/src/browser/transitions_tab.rs` | Category and preview function (the static card thumbnail) |
 
