@@ -5,6 +5,10 @@ use crate::state::AppState;
 use crate::theme::KlippTheme;
 use klipp_core::{AppCommand, MediaId};
 
+/// The pool menu's item that places a clip after the last one, moving
+/// nothing: what the empty timeline's hint names (#2984).
+pub(crate) const MENU_ADD_TO_END: &str = "Add to End of Timeline";
+
 /// What the pool is sorted by: any sortable [`Field`].
 pub type SortBy = klipp_media::Field;
 use klipp_media::{Field, FieldValue};
@@ -2008,7 +2012,7 @@ fn show_context_menu(
         cmds.push(AppCommand::PlaceMedia { media_id, drop: klipp_core::events::ClipDrop::AtPlayhead });
         ui.close_menu();
     }
-    if menu_item(ui, "Add to End of Timeline", "").clicked() {
+    if menu_item(ui, MENU_ADD_TO_END, "").clicked() {
         cmds.push(AppCommand::ImportMediaLinked { media_id, on_new_tracks: false });
         ui.close_menu();
     }

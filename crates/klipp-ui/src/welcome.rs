@@ -442,15 +442,18 @@ mod tests {
         }
     }
 
-    /// An empty timeline says how to add its first clip, in the layout's
-    /// key; the hint goes once a clip is on it.
+    /// An empty timeline says how to add its first clip, the way that
+    /// moves nothing: the pool's Add to End of Timeline, not the insert
+    /// key (#2984); the hint goes once a clip is on it.
     #[test]
     fn an_empty_timeline_says_how_to_add_a_clip() {
         let ctx = egui::Context::default();
         let kb = KeyBindings::defaults();
         let theme = KlippTheme::default();
-        let hint = crate::panels::timeline::empty_timeline_hint(&kb);
-        assert!(hint.contains(&kb.display_for("insert_edit")), "{hint}");
+        let hint = crate::panels::timeline::EMPTY_TIMELINE_HINT;
+        assert_eq!(hint, "Drag a clip here from the media pool, or right-click it there and choose Add to End of Timeline");
+        assert!(hint.ends_with(crate::browser::media_tab::MENU_ADD_TO_END), "the pool's menu item, by its own name");
+        assert!(!hint.contains(&format!(" {}", kb.display_for("insert_edit"))), "not the insert key: {hint}");
         let mut state = AppState::default();
         let mut panel = crate::timeline::NewTimelinePanel::default();
         let mut old = crate::panels::timeline::TimelinePanel::default();
