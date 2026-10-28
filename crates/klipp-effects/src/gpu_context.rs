@@ -18,6 +18,35 @@
 
 use tracing::info;
 
+/// The graphics APIs Klipp's GPU work runs on (#2990), for the engine's
+/// device, the UI's and export's alike: the platform's own (Vulkan
+/// here), and GL only where they have no adapter. `WGPU_BACKEND` still
+/// chooses. Asked for every API, the GL backend's adapter probe brought
+/// up NVIDIA's GL driver beside its Vulkan one; at exit the driver's
+/// teardown raced its own background shader compile and aborted the
+/// process ("corrupted size vs. prev_size"), one test run in five.
+pub fn backends() -> wgpu::Backends {
+    let _loading = klipp_load_lock::library_loading();
+    backends_unlocked()
+}
+
+/// [`backends`] with the driver-loading lock already held.
+fn backends_unlocked() -> wgpu::Backends {
+    static PICKED: std::sync::OnceLock<wgpu::Backends> = std::sync::OnceLock::new();
+    *PICKED.get_or_init(|| {
+        if let Some(chosen) = wgpu::util::backend_bits_from_env() {
+            return chosen;
+        }
+        let primary = wgpu::Instance::new(wgpu::InstanceDescriptor { backends: wgpu::Backends::PRIMARY, flags: wgpu::InstanceFlags::from_build_config() & !wgpu::InstanceFlags::VALIDATION, ..Default::default() });
+        if primary.enumerate_adapters(wgpu::Backends::PRIMARY).is_empty() {
+            info!("GpuContext: no Vulkan adapter; GL instead");
+            wgpu::Backends::GL
+        } else {
+            wgpu::Backends::PRIMARY
+        }
+    })
+}
+
 /// The limits Klipp asks a device for, the engine's and the UI's alike
 /// (#2341): wgpu's defaults, but the adapter's own largest buffer and
 /// storage binding. The defaults cap a binding at 128 MiB and a buffer at
@@ -100,7 +129,7 @@ impl GpuContext {
         // driver (#1032). Held until the device is made.
         let _loading = klipp_load_lock::library_loading();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
+            backends: backends_unlocked(),
             flags: wgpu::InstanceFlags::from_build_config() & !wgpu::InstanceFlags::VALIDATION,
             ..Default::default()
         });
