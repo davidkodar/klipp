@@ -6,6 +6,9 @@ What each of these tools does in full: the details its short description leaves 
 
 Several write tools applied together in one frame and recorded as ONE undo step: use it for anything that is one action in your plan (an append and its grade, a set of parameter changes). Every call is checked before any is applied; a bad one refuses the whole batch and nothing changes. Reads (status, lists, screenshots) are refused inside a batch. klipp_look calls batch too, but only with other looks: one look on many clips is one call and one undo step. Replies with the document revision after the batch.
 
+Arguments:
+- `calls`: In order. Each: {"tool": name, "args": {...}}
+
 ## klipp_cancel_job
 
 Cancel the named render or one queued analysis job. Running analysis, import and sync cannot be interrupted safely; a subject matte pass (`<media id>:subject_matte`, from klipp_track_subject) can, and keeps the frames it made. A queued UI cancellation has its own operation_id; confirm its outcome before saying the job stopped.
@@ -24,11 +27,21 @@ An export of another shape than the timeline (a square or vertical preset of a 1
 
 Several formats at once: `outputs` in place of `path`, each `{format, path, preset?, target_lufs?}` with format 16:9, 9:16, 1:1 or 4:5 (#2724). Each is exported from the open sequence's version at that aspect, a sequence of its own named "<name> 9:16" and so on: the sequence itself when it already has that shape, the version that exists, or one made now and reframed to follow the subjects once its files' framing analysis is done, its export waiting for that. Loudness is -14 LUFS unless the preset or target_lufs says otherwise. To change one format's framing, open its version and reframe its clips there; the next delivery uses it as it is. A version is a copy: when the master's cut has changed since it was made (a trim, a shot added or removed), the reply names it under `stale`, and what it delivers is the old cut; it is never rebuilt without being asked. Refused: a format that isn't one of the four, a path that isn't absolute, two outputs to one file.
 
+Arguments:
+- `burn_captions`: Captions burnt in (default on); titles always are; the reply says which
+- `captions_608`: CEA-608 in the video stream (h264/hevc)
+- `hdr10plus`: ST 2094-40 per shot (hevc, pq)
+- `target_lufs`: Loudness target: -14 web, -23 broadcast; default the brief's
+- `true_peak_dbtp`: True-peak ceiling, -10 to 0 (default -1)
+
 ## klipp_export_status
 
 Every render job Klipp knows: status (queued, rendering, complete, failed, cancelled), progress 0 to 1, frames, stage, error, loudness result. Also where its time goes, kept once it ends: hardware (the codec's acceleration), encoder and audio_encoder (the encoders opened, e.g. h264_nvenc, aac), compositing (GPU, or CPU and why, with how many frames), and timings: per frame render_ms (decode_ms and convert_ms inside it), pad_ms, encode_ms and audio_ms, gpu_composited and cpu_composited with each fallback's reason, and loudness_verify_secs and loudness_trials for the loudness fit before the render. With wait true, waits for job_id or all currently known jobs. Returns finished, succeeded and timed_out; failed or cancelled is not success. Timeout does not cancel renders.
 
 An 8-bit job also carries banding: pending until its sequence has been checked, which happens only while no render runs (so often just after the job ends), then bands or smooth. With bands, note suggests a 10-bit master (HEVC Main10 or ProRes) or the gradient's built-in grain; nothing is changed. A job is never held back for the check: read the next status, or klipp_check, for the answer.
+
+Arguments:
+- `timeout_ms`: Maximum wait, default one hour
 
 ## klipp_delivery_specs
 
@@ -49,6 +62,11 @@ Read live render and analysis jobs in one shape, including phase, progress, resu
 ## klipp_new_project
 
 Start an empty project: name, and location an existing folder (the project is <location>/<name>.klipp, saved at once). width, height and fps set its first sequence; left out, both follow the first clip placed. With template, a project template's name (klipp_project_templates), it starts from that template instead: its sequences, tracks, bins, colour setup and starter content. Refused when the open project has unsaved changes unless discard_changes is true: klipp_save_project first.
+
+Arguments:
+- `fps`: 25, 29.97, 30, 59.94 …
+- `location`: absolute path of an existing folder
+- `template`: a project template's name (klipp_project_templates)
 
 ## klipp_project_templates
 
@@ -82,6 +100,10 @@ Point a media item at a file: an offline item found again, or a better copy. The
 
 With folder (an absolute folder) instead of path, every offline item, or the one media_id names, is looked for under it, down to twelve levels: by content, name (any extension), reel, start timecode and length. One file that is clearly the item is relinked; the reply's relinked lists them with what matched. choose lists items with several equal files, or only a name or a length to go on: relink each with media_id and path. not_found says why close files were turned down. A file whose picture is turned (a phone video) is compared at its upright size. klipp_status, klipp_orient and klipp_open_project count the offline files, and how many of them any of the project's sequences use. A relinked file with the same content keeps its analysis (no new analysis runs). A project keeps the absolute path of media outside its folder too, so a copied or moved project still finds it where it was.
 
+Arguments:
+- `force`: relink a probable mismatch anyway
+- `path`: absolute path of the file
+
 ## klipp_make_proxies
 
 Make proxies, light copies playback reads in place of heavy originals (4K, camera codecs), as the media pool's Generate Proxy does: for media_ids, or every picture file on the timeline when none are given; a file with its proxy made already is left be. It runs as a job of kind proxies: follow it with klipp_job_status (files done of all, the share transcoded); a failed file is named with why. use_proxies true has playback read a file's proxy where it has one, false the originals; export always reads the originals. klipp_status says which playback reads, and how many files on the timeline have a proxy.
@@ -111,6 +133,8 @@ protocol-specific output schemas are excluded. It is a change identifier,
 not a security checksum. Old servers predating these diagnostics cannot
 report their identity retroactively and need one reconnect first.
 
+Arguments:
+- `expected_catalog_fingerprint`: Fingerprint from tools/list _meta; warns on mismatch.
 
 ## klipp_window_screenshot
 
@@ -147,6 +171,9 @@ One step back in the edit history: the open sequence's, or the project's for a s
 ## klipp_log_tail
 
 The last lines of Klipp's debug log (100 unless lines says). The engine logs its decisions here, among them why the direct-present fast path did or did not engage.
+
+Arguments:
+- `lines`: How many lines (default 100)
 
 ## klipp_switch_sequence
 

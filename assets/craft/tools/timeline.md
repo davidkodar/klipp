@@ -10,6 +10,9 @@ Put a marker on the timeline: how you and the editor leave each other notes. Mar
 
 Give a clip the audio of its own media file, linked, spanning exactly what the clip spans. Repairs a clip that was added before appending brought the audio along; refused if the clip already has its audio.
 
+Arguments:
+- `clip_id`: From klipp_list_clips
+
 ## klipp_build_edit_plan
 
 Build the approved edit plan onto the timeline after whatever is down, as a dry run by default — the reply says what it would build, step by step, and changes nothing. With apply true it is built as one undo step (undo takes it all back). Refused while the plan is unapproved. `detail` adds every step as JSON.
@@ -17,6 +20,9 @@ Build the approved edit plan onto the timeline after whatever is down, as a dry 
 ## klipp_create_multicam
 
 Make a multicam group from pool items (two or more angles of one event): synced onto one clock and laid out at the playhead, each angle on tracks of its own, as Create Synced Multicam does. sync is "timecode", "audio" or "timecode_then_audio" (default: timecode where a clip has it, sound for the rest). Seek first to where it should go. The sync runs in the background: read klipp_status (its multicam entry) or klipp_timeline once it is laid out.
+
+Arguments:
+- `media_ids`: the angles, from klipp_list_media
 
 ## klipp_detect_scene_cuts
 
@@ -82,6 +88,13 @@ Saving the project keeps the report for reopening, including Save As.
 
 Every track and its clips, one line a clip: clip id, kind, range in seconds, name (file or generator, or the clip's own) and media id, with speed, off, graded and effects only where set. A title or caption has its whole `text`, line breaks as `\n`, in both forms: read it back to correct a cue with set_text. Narrow it to a track, a stretch of time or one media item; full adds source ranges, frames, blend, grade group and paths. Each track lists its transitions too: kind, length, the stretch they cover and their two clips. Clip ids from here are what the grade tools take.
 
+Arguments:
+- `from_secs`: Only clips that end after this
+- `full`: Every field (default false)
+- `media_id`: Only clips of this media item
+- `to_secs`: Only clips that start before this
+- `track`: A track's index or name
+
 ## klipp_prepare_cut
 
 Prepare a frame-exact cut in a bounded TIMELINE range. Maps source pauses, word and sentence edges, shot changes, and settled screen reveals through trims and retiming onto sequence frames. Returns ranked candidates with evidence and uncertainty, relevant clips, linked sound, locks, handles, revision and project identity. Give the editing intent and an optional target moment. This only reads; choose a frame, plan the cut, and apply with its revision precondition. If ambiguous, inspect a contact sheet or audio excerpt first.
@@ -98,19 +111,33 @@ Change a marker's label, note, colour or kind, by its id from klipp_list_markers
 
 Append a media pool item to the end of the timeline as a new clip. A clip at a frame rate other than the project's is added without changing the project's rate.
 
+Arguments:
+- `media_id`: From klipp_list_media
+- `track`: Track index; omit for the default track
+
 ## klipp_translate_captions
 
 Translate a subtitle (or text) track's captions into another language onto a new subtitle track under it, at the same times and in the source track's caption style, as one undo step. The new track is in `to`'s language, which klipp_export_subtitles tags its file with. `to` is an ISO 639-1 code: from English into de, fr, es, sv, it, nl, fi or da, or into en from de, fr, es, sv, it or nl. `from` is the captions' language: by default the track's own language tag (set_track language), else English. `track` is the track's index, by default the first subtitle track with captions. It runs as a job: the reply gives `job_id` at once; follow it with klipp_follow_job or klipp_job_status (kind translation, phase downloading, loading, translating or applying), and stop it with klipp_cancel_job. One translation runs at a time. Captions are translated as whole sentences (joined until a full stop, a pause over a second, or about 240 characters) and each sentence's translation is shared back over its captions by length, so a caption may carry other words than its source did. The finished job's `result` names the new track and the captions to check: those that read faster than 20 characters a second, run past two lines of 42, or whose sentence the translator cut short. The brief's cast names and vocabulary are kept as written, and `glossary` (an object, source term to its translation) sets how a recurring term comes out, e.g. {"application": "program"}; terms match whole words in any case, each form given on its own. A caption whose kept term the model dropped is among those to check. A sentence that comes back with under half its words is translated again a clause at a time, and the fuller one kept. Each pair's model (OPUS-MT, Helsinki-NLP, CC BY 4.0, about 300 MB) downloads only with `download_models` true; it runs locally.
 
+Arguments:
+- `from`: default track language, else en
+- `to`: de fr es sv it nl fi da, or en
+
 ## klipp_set_append_audio
 
 Source patching: whether appending a clip also brings its audio. On suits camera footage; off is for cutting to music, where every clip would otherwise lay down room tone. Shows as V+A / V only in the timeline toolbar, and resets to on when the app restarts.
+
+Arguments:
+- `enabled`: true brings audio, false is video only
 
 ## klipp_set_brief
 
 The `brief` argument:
 
 Replace the brief as one undo step. With merge true, keep omitted fields; null clears a field. Fields (all optional): title, about, tone, platform, target_secs, width, height, loudness_lufs (web -14, broadcast -23), captions/music (bool), cast [{name,role,described}], features [{title,description,rank}] (rank 1 headline; plan segments reference titles), arc (e.g. hook/features/CTA), cta, brand_colors ["#rrggbb",...] (first is title default), notes. type_styles: [{name,font?,bold?,size?,color?,fill?,backing?,full_frame?,x?,y?,align?,outline?,outline_color?,glow?,glow_color?,gradient?,animate?,animate_secs?,stagger?,enter?,exit?,loop_effect?,shadow?,material?}] (shadow as on a title: {x?,y?,blur?,color?,opacity?}; material a metal's name: gold, silver, steel, copper, rose_gold, bronze, chrome, brushed_metal). Title ops/plan titles select style by name and override its fields. Built-ins heading/callout/card can be replaced. enter/exit use title motion objects; kind none disables. look: {name} preset broadcast_neutral|web_punchy|film_soft|warm_interview|golden|cool_tech|screencast, or black_l,white_l,mid_l,contrast_range,chroma_mean,cast_a,cast_b,skin_hue, and protect: the colours it keeps where they were, any of sky, foliage, skin (all when left out; golden keeps skin only, so it warms a sky); style_profile supplies a reference look_target. vocabulary: correctly spelt names/products/terms for speech recognition; run klipp_analyze after setting. language: ISO 639-1 speech code (en,sv); omitted detects per file. Lower thirds use cast names; klipp_check checks the brief; exports inherit omitted size/loudness. Unknown fields refused.
+
+Arguments:
+- `merge`: change only the fields given; the rest stay
 
 ## klipp_set_edit_plan
 
@@ -122,23 +149,48 @@ Propose the paper edit, as one undo step: the cut said before a clip is placed, 
 
 Choose whose sound the multicam group at at_secs (or the playhead) plays. Each angle brings its own sound, and heard together they echo, so a group plays one: an angle counted from 1 (the default is angle 1, the sound a synced group was matched to; pick the lav or the camera nearest the speaker), "follow" to cut the sound with the picture, or "off" when a recorder's track outside the group carries the sound. Playback and export hear the same. klipp_status's multicam entry says which is set.
 
+Arguments:
+- `at_secs`: timeline seconds; the playhead when left out
+- `sound`: an angle number from 1, "follow" or "off"
+
 ## klipp_switch_angle
 
 Cut the multicam group in play to an angle, counted from 1 as keys 1-9 are, at at_secs or at the playhead: from there on the program shows that camera, until the next cut. One undo step per cut. klipp_status's multicam entry lists the group's angles, the one in effect and the cut list; klipp_timeline marks each clip's angle and the primary's cuts. Cutting to a transcript: switch to the speaker's angle at each change of speaker.
+
+Arguments:
+- `at_secs`: timeline seconds; the playhead when left out
 
 ## klipp_timeline
 
 The timeline as text: tracks top first, every clip with its range in seconds and frames, what it is (media file, title text, generator), its grade and effects in a word, its id, the transitions on each track, and the markers. Read this before planning an edit; klipp_list_clips is the same as JSON with more fields. On a long cut, read one track or a stretch at a time with track, from_secs and to_secs.
 
+Arguments:
+- `from_secs`: Only what plays from here on the timeline
+- `max_chars`: Cut on a line boundary at this many characters (default 12000)
+- `to_secs`: Only what plays before here
+- `track`: One track only, by index (0 is the top)
+
 ## klipp_timeline_sheet
 
 A contact sheet of the timeline as one image: a tile for each shot (each stretch between cuts on the picture tracks), or frames tiles evenly spaced, over a range of it. The look at a whole cut — framing, grade continuity, titles — in one call instead of a frame_at per shot. The reply lists each tile's time and what is on it.
+
+Arguments:
+- `cols`: Tiles to a row (default 6)
+- `frames`: Evenly spaced tiles instead of one per shot (1-60)
+- `inline`: Also return the picture in the reply; by default only when no path is given
+- `path`: Absolute PNG path; temp dir when omitted
 
 ## klipp_apply
 
 Apply a list of editorial operations as ONE undo step, after resolving them the way klipp_plan does; pass its expected_revision and optionally expected_project_identity to refuse the whole edit if the timeline or project changed since planning. Replies with the steps and the revision. Ops: klipp_guide topic ops.
 
 The reply, of klipp_plan and klipp_apply alike, is the plan as text with long runs of one kind of step folded; `detail` true gives every step in full and each touched clip's range as JSON.
+
+Arguments:
+- `detail`: every step as JSON; see topic apply
+- `expected_project_identity`: from klipp_plan; refuse if the project changed
+- `expected_revision`: Revision from klipp_plan or a timeline read; refuse if it changed
+- `label`: A name for the history entry
 
 ## klipp_list_markers
 
@@ -152,11 +204,17 @@ Left out, max_width gives the viewer's frame, at most 1280 wide; the viewer deco
 
 channel shows one channel of the frame in grey: red, green or blue of the picture as it shows, alpha (black where nothing covers the frame, white where it is opaque) or luma. node shows a node of a clip's grade or of its chain (an effect after the grade, a merge) in place of the finished frame, its picture as it leaves that node, by its path as graph_read gives it ({root: {clip}, nodes: [...]}); a node beside the chain is refused. channel alpha checks a key or a matte directly: with nothing below the keyed clip, a chroma key over its screen is black on the screen and white on the subject. Both are for that one frame: the viewer's own channel and node are put back after, and the frame is the viewer's size.
 
+Arguments:
+- `path`: Absolute PNG path; temp dir when omitted
+
 ## klipp_fonts
 
 The font families a title or a brief's type style can name: those bundled with Klipp, always there, and those installed on this machine. Any other name falls back to Inter; set_brief, plan and apply warn when one is named. The text names the bundled families and counts the installed ones, which are listed in installed; query (a word, e.g. "serif" or "mono") lists only the families whose name holds it.
 
 Klipp's catalogue holds about thirty more open-licence families (OFL, Apache), fetched on request: engraved and high-contrast serifs (Cinzel, Bodoni Moda, Playfair Display), condensed news sans (Oswald, Roboto Condensed, Barlow Condensed), rounded and friendly sans (Nunito, Fredoka), scripts and handwriting (Great Vibes, Caveat, Permanent Marker), monospace (IBM Plex Mono) and Noto Sans for Japanese, Korean, Chinese, Arabic, Hebrew and Devanagari. catalogue lists each with its tags: style (what it is), mood (what it suits) and scripts (the writing it covers), its size and whether it is fetched. query matches them by name or by every word being a tag, so "condensed news sans", "wedding script" or "japanese" picks families. fetch: name downloads one (checked against its SHA-256, its licence kept beside it, in the user's data folder); then a title is set in it by its name. A plan that names a catalogue family not fetched yet says so, with the fetch to make. A project opened whose titles name catalogue families fetches them in the background.
+
+Arguments:
+- `fetch`: a catalogue family to fetch
 
 ## klipp_title_templates
 
@@ -167,3 +225,8 @@ recipes lists the recipes: node groups the recipe op builds into a clip's pictur
 ## klipp_screenshot
 
 Capture what the viewer is currently showing, as a PNG. Returns the file path, and inlines the image when it is small enough. This is how to actually see the result of a grade rather than infer it.
+
+Arguments:
+- `max_width`: Downscale to this width (default 1280)
+- `path`: Where to write the PNG; omit for a temp file
+- `timeout_ms`: How long to wait for that frame (default 3000)
