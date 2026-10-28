@@ -307,3 +307,45 @@ fn a_field_keeps_the_editors_keys_while_typed_in_and_after_enter() {
     let _ = ctx.run(egui::RawInput { events: vec![egui::Event::Text("b".into())], ..Default::default() }, |ctx| kept = ctx.input(|i| field_keys_held(true, false, false, i)));
     assert!(kept, "a letter does not");
 }
+
+/// #2962: a field being typed in that vanishes between frames (its panel
+/// laid out anew) holds the editor's keys as Enter does, so the Ctrl+A
+/// typed next is not Select All; checked as the frame loop checks it, at
+/// the next frame's start.
+#[test]
+fn a_field_that_vanishes_under_the_typing_keeps_the_editors_keys() {
+    use super::shortcuts::{field_keys_held, key_scope, KeyScope};
+    let ctx = egui::Context::default();
+    let mut value = 1.0_f32;
+    let id_of = std::cell::Cell::new(egui::Id::NULL);
+    // One frame as the loop runs it: whether a field had the keys at its
+    // start, after the panels were drawn (with the field or not), and
+    // what is held.
+    let mut run = |events: Vec<egui::Event>, drawn: bool, held: bool, typing_at_frame_end: bool| -> (bool, bool) {
+        let mut out = (false, false);
+        let _ = ctx.run(egui::RawInput { events, ..Default::default() }, |ctx| {
+            let at_start = ctx.memory(|m| m.focused().is_some());
+            let held = ctx.input(|i| field_keys_held(held, typing_at_frame_end, at_start, i));
+            egui::CentralPanel::default().show(ctx, |ui| {
+                if drawn {
+                    id_of.set(ui.add(egui::DragValue::new(&mut value)).id);
+                }
+            });
+            out = (held, ctx.memory(|m| m.focused().is_some()));
+        });
+        out
+    };
+    run(Vec::new(), true, false, false);
+    ctx.memory_mut(|m| m.request_focus(id_of.get()));
+    let (_, typing) = run(Vec::new(), true, false, false);
+    let (_, typing) = run(vec![egui::Event::Text("0".into())], true, false, typing);
+    assert!(typing, "the field has the keys");
+    // The field is not drawn this frame: egui lets its focus go at the end.
+    let (held, end) = run(Vec::new(), false, false, typing);
+    assert!(!held && end, "still typing as the frame's panels end");
+    let ctrl_a = egui::Event::Key { key: egui::Key::A, physical_key: Some(egui::Key::A), pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND };
+    let (held, _) = run(vec![ctrl_a], false, false, end);
+    assert!(held, "the next frame finds the field gone and holds the keys");
+    let state = crate::state::AppState { project_path: Some(crate::project_paths::UNTITLED.into()), field_keys_held: held, ..Default::default() };
+    assert_eq!(key_scope(&state, false), KeyScope::CtrlOnly, "so Ctrl+A is no Select All");
+}

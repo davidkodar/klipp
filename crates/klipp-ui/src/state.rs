@@ -1707,6 +1707,9 @@ pub struct AppState {
     /// A field was left by Enter (#2943): the editor's single keys wait
     /// until a click or Escape (`shortcuts::field_keys_held`).
     pub field_keys_held: bool,
+    /// Whether a field had the keys as the last frame's panels were drawn
+    /// (#2962): one gone by the next frame vanished under the typing.
+    pub typing_at_frame_end: bool,
 
     /// Whether the Audio Plugins management dialog is visible.
     pub show_audio_plugins_dialog: bool,
@@ -4764,6 +4767,7 @@ impl Default for AppState {
             tour_step: None,
             welcome_checked: false,
             field_keys_held: false,
+            typing_at_frame_end: false,
             show_audio_plugins_dialog: false,
             audio_plugins_dialog: crate::panels::audio_plugins::AudioPluginsDialogState::default(),
             show_system_probe: false,

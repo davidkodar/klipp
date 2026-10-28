@@ -38,6 +38,9 @@ struct Views {
     page: egui::Context,
     panel: crate::panels::node_inspector::NodeInspectorPanel,
     clock: f64,
+    /// A status message drawn before the inspector, as the panels before
+    /// it may draw one (#2962).
+    busy: bool,
 }
 
 impl Views {
@@ -46,7 +49,7 @@ impl Views {
         let (tab, page) = (egui::Context::default(), egui::Context::default());
         crate::icons::install(&tab);
         crate::icons::install(&page);
-        Self { state, clip, tab, page, panel: Default::default(), clock: 0.0 }
+        Self { state, clip, tab, page, panel: Default::default(), clock: 0.0, busy: false }
     }
 
     fn input(&mut self, events: Vec<egui::Event>) -> egui::RawInput {
@@ -63,10 +66,16 @@ impl Views {
         let clip = self.state.sequences[0].all_clips().find(|c| c.id == self.clip).unwrap().clone();
         let grade = crate::inspector::grade_view::snapshot_for(&clip, &[], false, &mut self.state.pending_corrector);
         let (mut cmds, mut auto) = (Vec::new(), false);
-        let state = &self.state;
+        let (state, busy) = (&self.state, self.busy);
         let out = self.tab.run(input, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
-                crate::inspector::color_and_luts::show_color_and_luts(ui, state, &theme, grade.as_ref(), &mut auto, &mut cmds);
+                if busy {
+                    ui.label("Saving…");
+                }
+                let rect = egui::Rect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(WIDTH, 1500.0));
+                crate::ui_util::panel_ui(ui, rect, "inspector_panel", |ui| {
+                    crate::inspector::color_and_luts::show_color_and_luts(ui, state, &theme, grade.as_ref(), &mut auto, &mut cmds);
+                });
             });
         });
         self.apply(&cmds);
@@ -165,4 +174,50 @@ fn auto_colour_from_the_tab_is_the_auto_colour_op() {
     let want: klipp_document::ops::Op = serde_json::from_value(serde_json::json!({ "op": "auto_colour", "clips": [views.clip.0.to_string()] })).unwrap();
     assert_eq!(ops, vec![want]);
     assert!(super::colour::colour_tool_request(crate::panels::colour_check::ColourAction::AutoColour, None, &[], None).is_none(), "no clip, no request");
+}
+
+
+/// #2962: Contrast typed into after a double-click on the tab, with a
+/// second clip in the timeline, while a status message drawn before the
+/// inspector comes and goes: the field keeps the keys, Ctrl+A selects its
+/// text, and Enter leaves the value typed on this clip's grade, the other
+/// clip and the selection as they were.
+#[test]
+fn contrast_typed_after_a_double_click_is_this_clips() {
+    let mut views = Views::new();
+    let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+    let other = klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(2.0), tc(4.0), tc(0.0), tc(2.0));
+    let other_id = other.id;
+    let v1 = views.state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+    views.state.sequences[0].tracks[v1].clips.push(other);
+    let grade_of = |state: &AppState, id: ClipId| serde_json::to_value(state.sequences[0].all_clips().find(|c| c.id == id).unwrap().grade()).unwrap();
+    let other_before = grade_of(&views.state, other_id);
+
+    let (_, drawn) = views.tab(Vec::new());
+    let (_, label) = drawn.iter().find(|(t, _)| t == "Contrast").cloned().unwrap();
+    let at = drawn.iter().find(|(t, p)| t == "0.00" && (p.y - label.y).abs() < 4.0).map(|(_, p)| *p).expect("Contrast's 0.00");
+    let b = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+    for ev in [vec![egui::Event::PointerMoved(at)], vec![b(true)], vec![b(false)], vec![b(true)], vec![b(false)], vec![]] {
+        views.tab(ev);
+    }
+    let field = views.tab.memory(|m| m.focused()).expect("the double-click gave Contrast the keys");
+    views.busy = true;
+    views.tab(vec![egui::Event::PointerGone]);
+    views.tab(Vec::new());
+    assert_eq!(views.tab.memory(|m| m.focused()), Some(field), "the field keeps the keys through the shift");
+    let ctrl = egui::Modifiers { ctrl: true, command: true, ..Default::default() };
+    let key = |key, modifiers| egui::Event::Key { key, physical_key: Some(key), pressed: true, repeat: false, modifiers };
+    views.tab(vec![key(egui::Key::A, ctrl)]);
+    let range = egui::TextEdit::load_state(&views.tab, field).and_then(|s| s.cursor.char_range()).expect("a selection");
+    assert_eq!((range.primary.index.min(range.secondary.index), range.primary.index.max(range.secondary.index)), (0, "0.00".len()), "Ctrl+A selected the field's text");
+    assert!(views.tab.wants_keyboard_input(), "and the field still has the keys, so Select All is not read");
+    views.busy = false;
+    views.tab(vec![egui::Event::Text("0.4".into())]);
+    views.tab(vec![key(egui::Key::Enter, egui::Modifiers::NONE)]);
+    views.tab(Vec::new());
+    let clip = views.state.sequences[0].all_clips().find(|c| c.id == views.clip).unwrap();
+    let contrast = clip.grade().nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector).and_then(|n| n.params.contrast);
+    assert_eq!(contrast, Some(0.4), "the value typed, on this clip");
+    assert_eq!(grade_of(&views.state, other_id), other_before, "the other clip is untouched");
+    assert_eq!((views.state.selected_clip, views.state.selected_clips.len()), (Some(views.clip), 0), "the selection is as it was");
 }

@@ -1415,16 +1415,16 @@ pub(super) enum KeyScope {
 /// timeline's shortcuts must not act on the clip behind it (Delete removed
 /// the clip as well as the nodes). The grade canvas keeps the grade's own
 /// keys, on the level it shows.
-/// Whether the editor's single keys wait (#2943), after a frame that
-/// began with a field being typed in (`typing_before`) and ended with
-/// none (`typing_now`): a field left by Enter holds them, so the next
-/// letters are not editing shortcuts; a click anywhere, or Escape, lets
-/// them go.
+/// Whether the editor's single keys wait (#2943), after a field was being
+/// typed in (`typing_before`) and is no longer (`typing_now`): a field
+/// left by Enter holds them, so the next letters are not editing
+/// shortcuts, and so does one that vanished under the typing (#2962), so
+/// Ctrl+A is not Select All; a click anywhere, or Escape, lets them go.
 pub(crate) fn field_keys_held(held: bool, typing_before: bool, typing_now: bool, i: &egui::InputState) -> bool {
     if i.pointer.any_pressed() || i.key_pressed(egui::Key::Escape) {
         return false;
     }
-    held || (typing_before && !typing_now && i.key_pressed(egui::Key::Enter))
+    held || (typing_before && !typing_now)
 }
 
 pub(super) fn key_scope(state: &crate::state::AppState, text_editing: bool) -> KeyScope {
