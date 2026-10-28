@@ -2994,6 +2994,13 @@ pub struct AppState {
     /// The caption translation running (#2213), for the status bar:
     /// what it is doing and how far.
     pub status_translation: Option<String>,
+    /// Transcripts asked for from the app and not in yet (#2942), followed
+    /// so their progress is said and the Transcript panel opens on them.
+    pub transcribing: Vec<klipp_core::MediaId>,
+    /// Clips to transcribe once the speech model is downloaded (#2942).
+    pub transcribe_after_download: Vec<klipp_core::MediaId>,
+    /// The transcripts running, for the status bar (#2942).
+    pub status_transcription: Option<String>,
     /// A Frame Glide drag in the viewer, sent when it is let go.
     pub frame_glide_drag: Option<crate::panels::frame_glide_tool::GlideDrag>,
     // Batch rename dialog (for bin media items).
@@ -5197,6 +5204,9 @@ impl Default for AppState {
             track_subject_looked: None,
             status_tracking: Vec::new(),
             status_translation: None,
+            transcribing: Vec::new(),
+            transcribe_after_download: Vec::new(),
+            status_transcription: None,
             frame_glide_drag: None,
             show_batch_rename_dialog: false,
             show_title_find: false,

@@ -154,6 +154,10 @@ pub fn show(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme) {
             if let Some(line) = &state.status_translation {
                 ui.label(egui::RichText::new(line).size(10.0).color(theme.text_secondary));
             }
+            // Clips being transcribed (#2942).
+            if let Some(line) = &state.status_transcription {
+                ui.label(egui::RichText::new(line).size(10.0).color(theme.text_secondary));
+            }
 
             // Render progress (if active)
             if let Some((label, progress)) = state.render_queue.active_job_progress() {

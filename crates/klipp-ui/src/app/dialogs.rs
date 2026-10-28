@@ -41,14 +41,7 @@ impl KlippApp {
                         ui.set_min_width(420.0);
                         ui.heading(&entry.display_name);
                         ui.add_space(4.0);
-                        ui.label(
-                            egui::RichText::new(
-                                "Klipp uses a local AI model to generate object \
-                                 masks. Once downloaded the file stays on your \
-                                 machine and Klipp never re-contacts the network \
-                                 to use it.",
-                            ).small(),
-                        );
+                        ui.label(egui::RichText::new(crate::model_download::consent_text(&entry)).small());
                         ui.add_space(8.0);
                         egui::Grid::new("model_consent_grid")
                             .num_columns(2)
@@ -188,6 +181,12 @@ impl KlippApp {
                 // through until their model exists; let them load it.
                 klipp_audio::dsp::voice_isolation::notify_model_installed();
                 self.state.model_download = ModelDownloadState::Idle;
+                // The clips that waited for the speech model (#2942).
+                if klipp_analysis::transcript::installed_model().is_some() {
+                    for media_id in std::mem::take(&mut self.state.transcribe_after_download) {
+                        self.transcribe(media_id);
+                    }
+                }
             }
         }
     }

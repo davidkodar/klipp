@@ -1470,6 +1470,7 @@ impl KlippApp {
         crate::aaf_install::show(ctx, &mut self.state.aaf_install, &mut all_cmds);
         self.poll_aaf_reading(ctx);
         self.keep_brief_with_transcription();
+        self.follow_transcriptions();
 
         // History panel
         if self.state.show_history_panel {

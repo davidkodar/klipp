@@ -790,20 +790,7 @@ impl KlippApp {
                     true
                 }
                 AppCommand::TranscribeClip { media_id } => {
-                    let info = self.state.media_pool.get(media_id).map(|item| {
-                        if item.has_audio {
-                            brief_to_transcription(self.state.sequences.get(self.state.active_sequence_idx).and_then(|s| s.brief.as_ref()));
-                            klipp_analysis::service::request_transcription(item);
-                        }
-                        (item.has_audio, item.filename.clone())
-                    });
-                    if let Some((has_audio, filename)) = info {
-                        if has_audio {
-                            self.state.toast.show(format!("Transcribing {filename}\u{2026}"));
-                        } else {
-                            self.state.toast.show(format!("{filename} has no sound to transcribe"));
-                        }
-                    }
+                    self.transcribe(*media_id);
                     true
                 }
                 AppCommand::RelinkAllFromDirectory { directory } => {
