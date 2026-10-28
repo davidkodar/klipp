@@ -157,8 +157,8 @@ fn a_skim_shows_titles_effects_and_transitions_as_parked() {
         alignment: TransitionAlignment::Center,
     });
     v1.clips = vec![sa, sb];
-    let mut reflected = title(0, 25, false);
-    reflected.push_effect(klipp_effects::registry::effect_type("reflection").map(|t| (t.sample)()).expect("the Reflection"));
+    let reflection = klipp_effects::registry::effect_type("reflection").map(|t| (t.sample)()).expect("the Reflection");
+    let reflected = klipp_timeline::test_clip::TestClip::of(title(0, 25, false)).effect(reflection).build();
     let mut t1 = Track::new("T1", TrackKind::Text);
     t1.clips = vec![reflected, title(55, 75, true)];
     let mut seq = Sequence::new_default();
@@ -169,7 +169,17 @@ fn a_skim_shows_titles_effects_and_transitions_as_parked() {
     let viewer = Viewer::start(seq, pool);
     let off_gpu = klipp_engine::engine::SKIM_SOURCES_OFF_GPU.load(Ordering::Relaxed);
     for (frame, what) in [(12, "the title and its reflection over the clip"), (35, "the middle of the wipe"), (65, "the title alone"), (60, "the title half way into its entrance")] {
-        let (composited, skim) = viewer.skim(frame);
+        // A decoder just opened has 400 ms for its first frame; on a GPU
+        // busy with other work that can pass, and the skim is left to the
+        // raw frame as it should be. The next skim of the place, its
+        // decoder open, is drawn: a few tries, then it is a failure.
+        let (mut composited, mut skim) = viewer.skim(frame);
+        for _ in 0..4 {
+            if composited {
+                break;
+            }
+            (composited, skim) = viewer.skim(frame);
+        }
         if !composited && !required {
             eprintln!("UNVERIFIED: the skim at {frame} was not drawn (no GPU stack here)");
             return;

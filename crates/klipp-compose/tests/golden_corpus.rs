@@ -431,10 +431,12 @@ fn effect_cases() -> Vec<Case> {
         ("Warp", Warp { mode: 0, amplitude: 60.0, wavelength: 0.3, speed: 1.0, direction: 0, angle: 180.0, strength: 0.5, radius: 0.5, center_x: 0.5, center_y: 0.5, band: 0.04, time: 0.4 }),
         ("Warp twirl", Warp { mode: 1, amplitude: 20.0, wavelength: 0.2, speed: 1.0, direction: 0, angle: 120.0, strength: 0.5, radius: 0.4, center_x: 0.45, center_y: 0.55, band: 0.04, time: 0.0 }),
     ];
+    // Fractions of the layer, as the registry describes them (#2995):
+    // pixel-sized values here were held at their ranges' ends.
     let around = vec![
-        ("RoundedCorners", RoundedCorners { radius: 6.0, feather: 1.0 }),
-        ("DropShadow", DropShadow { offset_x: 0.03, offset_y: 0.04, blur: 3.0, color: [0, 0, 0], opacity: 0.7 }),
-        ("OuterGlow", OuterGlow { radius: 5.0, intensity: 0.8, color: [255, 200, 80] }),
+        ("RoundedCorners", RoundedCorners { radius: 0.2, feather: 0.02 }),
+        ("DropShadow", DropShadow { offset_x: 0.03, offset_y: 0.04, blur: 0.03, color: [0, 0, 0], opacity: 0.7 }),
+        ("OuterGlow", OuterGlow { radius: 0.05, intensity: 0.8, color: [255, 200, 80] }),
         ("FillBars", FillBars { blur: 0.05, zoom: 1.0, darken: 0.25 }),
     ];
     full.into_iter()
@@ -646,7 +648,7 @@ fn rule_cases() -> Vec<Case> {
     let base = media(0.0, 4.0);
     let mut top = media(0.0, 4.0);
     top = TestClip::of(top)
-        .effects([transform(0.5, 0.0, 0.0), BuiltinEffect::DropShadow { offset_x: 0.03, offset_y: 0.04, blur: 2.0, color: [0, 0, 0], opacity: 0.8 }])
+        .effects([transform(0.5, 0.0, 0.0), BuiltinEffect::DropShadow { offset_x: 0.03, offset_y: 0.04, blur: 0.02, color: [0, 0, 0], opacity: 0.8 }])
         .lane("pos_x", 0.0, -10.0)
         .lane("pos_x", 2.0, 10.0)
         .build();
@@ -656,7 +658,7 @@ fn rule_cases() -> Vec<Case> {
     // A title's soft edges over footage, blurred, with a shadow.
     let base = media(0.0, 4.0);
     let mut t = title("Corpus", 0.0, 4.0);
-    t = TestClip::of(t).effects(vec![BuiltinEffect::GaussianBlur { radius: 1.5 }, BuiltinEffect::DropShadow { offset_x: 0.02, offset_y: 0.03, blur: 2.0, color: [0, 0, 0], opacity: 0.7 }]).build();
+    t = TestClip::of(t).effects(vec![BuiltinEffect::GaussianBlur { radius: 1.5 }, BuiltinEffect::DropShadow { offset_x: 0.02, offset_y: 0.03, blur: 0.02, color: [0, 0, 0], opacity: 0.7 }]).build();
     let f = Frames::default().with(&base, 60);
     out.push(Case::new("rule/title over footage", sequence(vec![track("T1", TrackKind::Text, vec![t]), track("V1", TrackKind::Video, vec![base])]), f));
 
@@ -696,7 +698,7 @@ fn grade_cases() -> Vec<Case> {
         let mut top = media(0.0, 4.0);
         top = TestClip::of(top).effects(own).build();
         let mut t = track("V2", TrackKind::Video, vec![top.clone()]);
-        t.effects.set_video_effect_list(vec![BuiltinEffect::Vignette { amount: 0.6, size: 0.5, softness: 0.5, roundness: 0.5 }, BuiltinEffect::DropShadow { offset_x: 0.03, offset_y: 0.03, blur: 2.0, color: [0, 0, 0], opacity: 0.7 }], vec![]);
+        t.effects.set_video_effect_list(vec![BuiltinEffect::Vignette { amount: 0.6, size: 0.5, softness: 0.5, roundness: 0.5 }, BuiltinEffect::DropShadow { offset_x: 0.03, offset_y: 0.03, blur: 0.02, color: [0, 0, 0], opacity: 0.7 }], vec![]);
         t.effects.grade_slot().set(Some(exposure(-0.5)));
         let f = Frames::default().with(&base, 90).with(&top, 0);
         out.push(Case::new(format!("grade/track effects and grade, {name}"), sequence(vec![t, track("V1", TrackKind::Video, vec![base])]), f));
@@ -984,7 +986,7 @@ fn nesting_cases() -> Vec<Case> {
     // A precomposition whose scene is another size than its parent.
     let scene_clip = media(0.0, 4.0);
     let mut scene_top = title("Pre", 0.0, 4.0);
-    scene_top = TestClip::of(scene_top).effects(vec![BuiltinEffect::DropShadow { offset_x: 0.03, offset_y: 0.04, blur: 2.0, color: [0, 0, 0], opacity: 0.7 }]).build();
+    scene_top = TestClip::of(scene_top).effects(vec![BuiltinEffect::DropShadow { offset_x: 0.03, offset_y: 0.04, blur: 0.02, color: [0, 0, 0], opacity: 0.7 }]).build();
     let mut scene = sequence(vec![track("T1", TrackKind::Text, vec![scene_top]), track("V1", TrackKind::Video, vec![scene_clip.clone()])]);
     scene.resolution = klipp_core::Resolution { width: W / 2, height: H / 2 };
     let mut pre = Clip::precomposition(scene.id, tc(0.0), tc(4.0));
@@ -1006,7 +1008,7 @@ fn camera_cases() -> Vec<Case> {
         .effects([
             BuiltinEffect::HSVAdjust { hue_shift: 30.0, saturation: 1.2, value: 1.0 },
             transform(0.5, 0.0, 0.0),
-            BuiltinEffect::DropShadow { offset_x: 0.03, offset_y: 0.04, blur: 2.0, color: [0, 0, 0], opacity: 0.7 },
+            BuiltinEffect::DropShadow { offset_x: 0.03, offset_y: 0.04, blur: 0.02, color: [0, 0, 0], opacity: 0.7 },
         ])
         .lane("pos_x", 0.0, -12.0)
         .lane("pos_x", 2.0, 12.0)

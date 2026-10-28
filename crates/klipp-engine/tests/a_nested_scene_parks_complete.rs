@@ -53,9 +53,8 @@ fn solid(colour: &str) -> Option<std::path::PathBuf> {
 fn nested(depth: usize, red: MediaId, green: MediaId, fps: Fps) -> (Sequence, Vec<Sequence>) {
     let tc = |s: f64| common::frame_tc((s * f64::from(FPS)).round() as i64, fps);
     let shot = |m: MediaId, from: f64, to: f64| Clip { kind: ClipKind::Media { media_id: m }, source_in: tc(0.0), source_out: tc(to - from), ..Clip::gap(tc(from), tc(to)) };
-    let half = |mut c: Clip, left: bool| {
-        c.push_effect(klipp_effects::BuiltinEffect::Crop { left: if left { 0.0 } else { 0.5 }, right: if left { 0.5 } else { 0.0 }, top: 0.0, bottom: 0.0, feather: 0.0, aspect: 0.0, focus_x: 0.5, focus_y: 0.5 });
-        c
+    let half = |c: Clip, left: bool| {
+        klipp_timeline::test_clip::TestClip::of(c).effect(klipp_effects::BuiltinEffect::Crop { left: if left { 0.0 } else { 0.5 }, right: if left { 0.5 } else { 0.0 }, top: 0.0, bottom: 0.0, feather: 0.0, aspect: 0.0, focus_x: 0.5, focus_y: 0.5 }).build()
     };
     let scene = |name: &str, tracks: Vec<Track>| {
         let mut s = Sequence::new_default();
