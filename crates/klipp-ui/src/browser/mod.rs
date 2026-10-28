@@ -1334,7 +1334,7 @@ impl BrowserPanel {
                             icon_rect,
                             Icon::CaretLeft.image(12.0).tint(tint).max_size(egui::vec2(12.0, 12.0)),
                         );
-                        let resp = resp.on_hover_text("Collapse browser  (Ctrl+Shift+B)");
+                        let resp = resp.on_hover_text(crate::keybindings::tip(ui.ctx(), "Collapse browser", "toggle_browser_panel"));
                         if resp.clicked() {
                             cmds.push(AppCommand::ToggleBrowserPanel);
                         }

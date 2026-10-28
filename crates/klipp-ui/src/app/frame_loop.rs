@@ -1108,10 +1108,14 @@ impl KlippApp {
         let dialog_cmds = self.show_unsaved_dialog(ctx);
         all_cmds.extend(dialog_cmds);
 
+        // The keys in effect, for the tooltips that name them (#2933).
+        crate::keybindings::publish(ctx, &self.key_bindings);
         self.show_modal_dialogs(ctx, &mut all_cmds);
 
         klipp_engine::ui_stage::mark(klipp_engine::ui_stage::RENDER_PANELS);
         self.render_main_layout(ctx, &mut all_cmds);
+        // The Welcome window and the tour (#2933), over the layout just drawn.
+        self.show_first_time_help(ctx);
 
         // A scrub that lost its release. egui does not promise
         // `drag_stopped` when the window loses focus or a modal opens over a

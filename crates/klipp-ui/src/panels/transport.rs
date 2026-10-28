@@ -251,7 +251,7 @@ impl TransportBar {
                 if resp.clicked() {
                     cmds.push(AppCommand::ToggleLoopPlayback);
                 }
-                resp.on_hover_text("Loop playback (Ctrl+L)");
+                resp.on_hover_text(crate::keybindings::tip(ui.ctx(), "Loop playback", "toggle_loop"));
             }
 
             // Fullscreen viewer. The shortcut is F11, which a Mac

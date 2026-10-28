@@ -81,7 +81,7 @@ pub fn show_color_and_luts(
             ui.add_space(12.0);
             let w = ui.available_width() - 12.0;
             if ui.add_sized([w, crate::theme::control::REGULAR], egui::Button::new("Open Colour Panel"))
-                .on_hover_text("Switch to the Colour workspace (C)")
+                .on_hover_text(crate::keybindings::tip(ui.ctx(), "Switch to the Colour workspace", "toggle_color_panel"))
                 .clicked()
             {
                 cmds.push(AppCommand::ToggleColorPanel);

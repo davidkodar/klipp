@@ -1,0 +1,24 @@
+{
+  "steps": [
+    {
+      "anchor": "media_pool",
+      "title": "Import media",
+      "text": "Drop video, sound or pictures here, or use File → Import Media ({import_media}). Klipp copies nothing: it reads your files where they are."
+    },
+    {
+      "anchor": "timeline",
+      "title": "Put a clip on the timeline",
+      "text": "Drag a clip from the media pool down here. Or select it and press {insert_edit} to insert it at the playhead, or {overwrite_edit} to lay it over what is there."
+    },
+    {
+      "anchor": "blade_tool",
+      "title": "Trim or split",
+      "text": "Drag a clip's edge to trim it. Press {split_at_playhead} to split the clip at the playhead, or take the Blade ({blade_tool}) and click where to cut."
+    },
+    {
+      "anchor": "export",
+      "title": "Export",
+      "text": "When it plays as you want it, export it here ({export}): a file for the web, a master, or one each for several places at once."
+    }
+  ]
+}

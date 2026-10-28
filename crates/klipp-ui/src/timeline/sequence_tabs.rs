@@ -348,8 +348,7 @@ pub fn show(
             egui::FontId::proportional(15.0),
             if resp.hovered() { theme.accent } else { theme.text_secondary },
         );
-        let shortcut = crate::keybindings::KeyBindings::defaults().display_for("leave_compound");
-        if resp.on_hover_text(format!("Leave the compound clip ({shortcut})")).clicked() {
+        if resp.on_hover_text(crate::keybindings::tip(ui.ctx(), "Leave the compound clip", "leave_compound")).clicked() {
             cmds.push(AppCommand::CloseCompoundClip);
         }
     }
