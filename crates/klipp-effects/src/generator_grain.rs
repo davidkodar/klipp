@@ -19,7 +19,7 @@
 //! keeps a still frame still.
 //!
 //! The constants below are the whole pattern. The WGSL
-//! (`shader_generator_grain_wgsl!` in `gpu.rs`) carries the same
+//! (`src/gpu/shaders/include/generator_grain.wgsl`) carries the same
 //! literals, which a test holds equal to these, and the GPU's living
 //! gradient is checked against the CPU's, so the two routes give one
 //! picture.
