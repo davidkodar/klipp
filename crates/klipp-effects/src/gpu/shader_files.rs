@@ -75,8 +75,11 @@ fn every_shader_file_is_used() {
     for rel in index.lines() {
         let assembled = std::fs::read_to_string(out.join(rel)).unwrap();
         // A numbered part (`shutter.1.wgsl`) is joined in Rust around a
-        // value spliced mid-expression; its text is inside a shader.
-        let part = rel.trim_end_matches(".wgsl").rsplit('.').next().is_some_and(|n| n.parse::<u32>().is_ok());
+        // value spliced mid-expression, and a body (`hdr10_to_linear_body`)
+        // follows a prelude chosen when the pipeline is built; either's text
+        // is inside a shader.
+        let stem = rel.trim_end_matches(".wgsl");
+        let part = stem.ends_with("_body") || stem.rsplit('.').next().is_some_and(|n| n.parse::<u32>().is_ok());
         if part {
             assert!(sources.iter().any(|s| s.contains(&assembled)), "{rel} is part of no shader the crate compiles");
         } else {
