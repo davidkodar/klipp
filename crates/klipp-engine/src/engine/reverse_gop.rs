@@ -16,12 +16,14 @@ use super::streams::HeldFrame;
 use crate::video_decoder::VideoDecoder;
 
 /// A window being decoded: the frames from `from` to before `to`, after
-/// the seek `epoch` that started it.
+/// the seek `epoch` that started it, given as far as `reached`, the
+/// latest frame's time.
 #[derive(Debug, Clone, Copy)]
 struct Fill {
     from: f64,
     to: f64,
     epoch: u64,
+    reached: Option<f64>,
 }
 
 pub(crate) struct ReverseGop {
@@ -74,11 +76,24 @@ impl ReverseGop {
     }
 
     /// Whether a frame for `secs` is held: one within half a frame, or
-    /// `secs` lies between two held frames.
+    /// `secs` lies between two held frames. Not in a window still being
+    /// decoded, past the frames it has given: the window before the one
+    /// shown fills from its start, and until it is done there is a gap
+    /// between its frames and those after it, where the latest frame held
+    /// is one from before the time, not the one at it. A jump there from
+    /// later in the clip showed a frame half a second early, as complete.
     fn covers(&self, secs: f64) -> bool {
         let (Some(first), Some(last)) = (self.frames.first(), self.frames.last()) else { return false };
         let (a, b) = (first.pts.unwrap_or(0.0), last.pts.unwrap_or(0.0));
-        secs >= a - self.half() && secs <= b + self.half()
+        if secs < a - self.half() || secs > b + self.half() {
+            return false;
+        }
+        // Frames come in time order: once one at or past `secs` has come,
+        // the frame for it is the one there or the one before.
+        match self.filling {
+            Some(fill) if secs >= fill.from - self.half() && secs < fill.to => fill.reached.is_some_and(|r| r >= secs - self.half()),
+            _ => true,
+        }
     }
 
     fn fill(&mut self, from: f64, to: f64) {
@@ -88,7 +103,7 @@ impl ReverseGop {
         }
         let epoch = self.decoder.seek(from);
         self.decoder.resume();
-        self.filling = Some(Fill { from, to, epoch });
+        self.filling = Some(Fill { from, to, epoch, reached: None });
     }
 
     /// Asked for the frame at `secs` (the playhead's source time): the
@@ -158,6 +173,9 @@ impl ReverseGop {
                 self.measured = Some(step);
             }
         }
+        if let (Some(fill), Some(latest)) = (self.filling.as_mut(), taken.last().and_then(|f| f.pts)) {
+            fill.reached = Some(fill.reached.map_or(latest, |r| r.max(latest)));
+        }
         for f in taken {
             let pts = f.pts.unwrap_or(0.0);
             match self.frames.binary_search_by(|h| h.pts.unwrap_or(0.0).total_cmp(&pts)) {
@@ -210,5 +228,81 @@ impl ReverseGop {
 impl Drop for ReverseGop {
     fn drop(&mut self) {
         self.decoder.stop_detached();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    /// Six seconds at 25 fps, large enough that a window takes a moment to
+    /// decode. `None` without ffmpeg.
+    fn source() -> Option<std::path::PathBuf> {
+        let out = std::env::temp_dir().join("klipp-reverse-gop-720p.mkv");
+        if out.exists() {
+            return Some(out);
+        }
+        let partial = out.with_extension(format!("{}.mkv", std::process::id()));
+        let ok = std::process::Command::new("ffmpeg")
+            .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=1280x720:r=25:d=6", "-c:v", "ffv1"])
+            .arg(&partial)
+            .status()
+            .ok()?
+            .success();
+        (ok && std::fs::rename(&partial, &out).is_ok()).then_some(out)
+    }
+
+    /// Asked for `secs` until its frame is held.
+    fn settle(gop: &mut ReverseGop, secs: f64) {
+        let t0 = Instant::now();
+        loop {
+            gop.want(secs, false);
+            if gop.ready() {
+                return;
+            }
+            assert!(t0.elapsed() < Duration::from_secs(10), "no frame for {secs} s");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    /// A jump back into the window being decoded before the one shown is
+    /// waited for until its own frame is there: never the latest frame
+    /// decoded so far, half a second or more before it, given as the
+    /// frame there and the reader ready. With a wide window, as when the
+    /// GPU's free memory has been read, the viewer showed a reversed clip's
+    /// last frame from 0.5 s too early.
+    #[test]
+    fn a_time_in_a_window_still_decoding_waits_for_its_own_frame() {
+        let Some(path) = source() else {
+            eprintln!("skipping: no ffmpeg");
+            return;
+        };
+        let lease = crate::decode_budget::admit(0.0, crate::decode_budget::Priority::Overflow);
+        let decoder = VideoDecoder::open_with_queue(&path, 0, lease, 8).expect("the source opens");
+        let mut gop = ReverseGop::new(decoder, 120, 0.0);
+        settle(&mut gop, 4.16);
+        // In the first half of what is held: the window before it, from
+        // the source's start, starts decoding.
+        settle(&mut gop, 2.56);
+        assert!(gop.filling.is_some(), "the window before is decoding");
+        let t0 = Instant::now();
+        loop {
+            gop.want(1.0, false);
+            let ready = gop.ready();
+            if let Some(f) = gop.frame(1.0) {
+                let pts = f.pts.expect("a time");
+                assert!((pts - 1.0).abs() <= gop.half() + 1e-6, "the frame given at 1.00 s is the one at {pts:.2} s (ready {ready})");
+            } else {
+                assert!(!ready, "ready with no frame at 1.00 s");
+            }
+            if ready && gop.filling.is_none() {
+                break;
+            }
+            assert!(t0.elapsed() < Duration::from_secs(10), "the window before never finished");
+            std::thread::sleep(Duration::from_micros(500));
+        }
+        drop(gop);
+        crate::video_decoder::wait_for_decode_threads(Duration::from_secs(10));
     }
 }
