@@ -481,6 +481,9 @@ fn main() -> Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_title("Klipp")
             .with_inner_size([1440.0, 900.0])
+            // A fresh profile's first start fills the screen; later ones
+            // as the window was left (#2944).
+            .with_maximized(klipp_ui::prefs::Preferences::load().general.open_maximized)
             .with_min_inner_size([960.0, 600.0])
             .with_icon(std::sync::Arc::new(icon_data))
             .with_app_id("klipp")

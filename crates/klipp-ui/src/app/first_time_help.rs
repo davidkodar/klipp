@@ -15,18 +15,11 @@ impl KlippApp {
         }
         let actions = crate::welcome::show_welcome(ctx, &mut self.state, &self.key_bindings, self.prefs.general.show_welcome, &self.theme);
         for action in actions {
-            match action {
-                crate::welcome::WelcomeAction::Keymap(preset) => {
-                    self.key_bindings.set_preset(preset);
-                    let _ = self.key_bindings.save();
-                }
-                crate::welcome::WelcomeAction::ShowAtStartup(on) => {
-                    self.prefs.general.show_welcome = on;
-                    let _ = self.prefs.save();
-                }
-                crate::welcome::WelcomeAction::SetUpAssistant => self.state.show_assistant_setup = true,
+            if crate::welcome::apply(action, &mut self.state, &mut self.prefs, &mut self.key_bindings) {
+                let _ = self.prefs.save();
             }
         }
         crate::welcome::show_tour(ctx, &mut self.state, &self.key_bindings, &self.theme);
+        crate::welcome::show_small_screen_note(ctx, &mut self.state, &self.theme);
     }
 }

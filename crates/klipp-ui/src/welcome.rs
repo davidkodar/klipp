@@ -7,6 +7,63 @@ use crate::keybindings::{KeyBindings, KeymapPreset};
 use crate::state::AppState;
 use crate::theme::KlippTheme;
 
+/// The interface sizes offered in the View menu and the small-screen
+/// note: Auto and the fixed ones, smaller ones for a small window (#2944).
+pub const INTERFACE_SIZES: [(&str, u32); 8] = [("Auto", 0), ("80%", 80), ("90%", 90), ("100%", 100), ("125%", 125), ("150%", 150), ("175%", 175), ("200%", 200)];
+
+/// Whether the small-screen note goes up now (#2944): once, ever, the first
+/// time Auto (`ui_scale_percent` 0) makes the interface smaller (`zoom`
+/// under 1) with a project open in the editor. True when `prefs` changed
+/// and is to be saved.
+pub fn small_screen_note_now(state: &mut AppState, prefs: &mut crate::prefs::AppearancePrefs, zoom: f32) -> bool {
+    if prefs.ui_scale_percent != 0 || zoom >= 1.0 || prefs.small_screen_note_shown || state.project_path.is_none() {
+        return false;
+    }
+    prefs.small_screen_note_shown = true;
+    state.small_screen_note = Some((zoom * 100.0).round() as u32);
+    true
+}
+
+/// The note that Auto made the interface smaller for a small window
+/// (#2944), at the foot of the editor while `state.small_screen_note` is
+/// set: the size chosen and a way to change it, there and then, or to
+/// dismiss it. Never a blocking dialog.
+pub fn show_small_screen_note(ctx: &egui::Context, state: &mut AppState, theme: &KlippTheme) {
+    let Some(pct) = state.small_screen_note else { return };
+    let screen = ctx.screen_rect();
+    let open_id = egui::Id::new("klipp_small_screen_sizes");
+    let mut sizes_open = ctx.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
+    egui::Area::new(egui::Id::new("klipp_small_screen_note"))
+        .order(egui::Order::Foreground)
+        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -(crate::theme::STATUSBAR_HEIGHT + 12.0)))
+        .constrain_to(screen)
+        .show(ctx, |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(format!("Small screen \u{2014} interface set to {pct}%")).color(theme.text_primary));
+                    if ui.link("Change").clicked() {
+                        sizes_open = !sizes_open;
+                    }
+                    if ui.small_button("\u{00d7}").on_hover_text("Dismiss").clicked() {
+                        state.small_screen_note = None;
+                    }
+                });
+                if sizes_open {
+                    ui.horizontal(|ui| {
+                        for (label, size) in INTERFACE_SIZES {
+                            if ui.selectable_label(state.ui_scale_percent == size, label).clicked() {
+                                state.ui_scale_request = Some(size);
+                                state.small_screen_note = None;
+                            }
+                        }
+                    });
+                    ui.label(egui::RichText::new("Also in View \u{2192} Interface Size and Preferences \u{2192} Appearance.").small().color(theme.text_dim));
+                }
+            });
+        });
+    ctx.data_mut(|d| d.insert_temp(open_id, sizes_open));
+}
+
 /// What the Welcome window asks of the app.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WelcomeAction {
@@ -76,6 +133,27 @@ pub fn anchor(ctx: &egui::Context, name: &str, rect: egui::Rect) {
 pub fn anchor_rect(ctx: &egui::Context, name: &str) -> Option<egui::Rect> {
     let now = ctx.cumulative_pass_nr();
     ctx.data(|d| d.get_temp::<(egui::Rect, u64)>(anchor_id(name))).filter(|(_, at)| *at + 1 >= now).map(|(r, _)| r)
+}
+
+/// The Welcome window's `action` done: the layout chosen and saved, the
+/// startup setting set (the one Preferences → General shows), the
+/// assistant setup opened. True when `prefs` changed and is to be saved.
+pub fn apply(action: WelcomeAction, state: &mut AppState, prefs: &mut crate::prefs::Preferences, kb: &mut KeyBindings) -> bool {
+    match action {
+        WelcomeAction::Keymap(preset) => {
+            kb.set_preset(preset);
+            let _ = kb.save();
+            false
+        }
+        WelcomeAction::ShowAtStartup(on) => {
+            prefs.general.show_welcome = on;
+            true
+        }
+        WelcomeAction::SetUpAssistant => {
+            state.show_assistant_setup = true;
+            false
+        }
+    }
 }
 
 /// Whether the Welcome window opens now, once a session: the first time a

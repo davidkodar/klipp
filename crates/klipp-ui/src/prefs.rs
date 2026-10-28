@@ -193,6 +193,11 @@ pub struct GeneralPrefs {
     /// again: it reads as off.
     #[serde(default)]
     pub show_welcome: bool,
+    /// Whether the window opens maximised (#2944): a fresh profile's first
+    /// start does, and from then on as it was left. A settings file from
+    /// before it reads as no, so nobody's window changes.
+    #[serde(default)]
+    pub open_maximized: bool,
     /// Explicit opt-in to background release checks. The original setting
     /// defaulted on, so its serialized value cannot establish user consent.
     #[serde(default, rename = "automatic_update_checks_opt_in")]
@@ -925,6 +930,7 @@ impl Default for GeneralPrefs {
     fn default() -> Self {
         Self {
             show_welcome: true,
+            open_maximized: true,
             auto_save_interval_secs: 300,
             check_for_updates: false,
             update_checks_answered: false,
@@ -1442,6 +1448,10 @@ pub struct AppearancePrefs {
     /// UI scale percentage. 0 = Auto (match system DPI).
     #[serde(default)]
     pub ui_scale_percent: u32,
+    /// Whether the note that Auto made the interface smaller for a small
+    /// window has been shown (#2944): once, ever.
+    #[serde(default)]
+    pub small_screen_note_shown: bool,
     /// Theme name as registered in [`crate::theme::ThemeRegistry`].
     /// Defaults to "Dark" (the built-in name from `theme/builtin/dark.toml`).
     /// User themes drop into `~/.config/klipp/themes/*.toml` and
@@ -1506,6 +1516,7 @@ impl Default for AppearancePrefs {
         Self {
             ui_text_size: default_ui_text_size(),
             ui_scale_percent: 0, // Auto
+            small_screen_note_shown: false,
             theme_name: default_theme_name(),
             follow_system_theme: false,
             follow_system_theme_pending: false,

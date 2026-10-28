@@ -18,18 +18,31 @@ impl KlippApp {
         // Sizes in points shrink as the zoom grows; times the zoom they
         // are the screen at the system scale, which is what Auto reads,
         // and what keeps this key the same once the zoom is set.
+        // Whether the window is maximised, kept for the next start (#2944);
+        // not in the first seconds, while the start's own maximise lands.
+        if let Some(maximized) = ctx.input(|i| (i.time > 3.0).then(|| i.viewport().maximized).flatten()) {
+            if maximized != self.prefs.general.open_maximized {
+                self.prefs.general.open_maximized = maximized;
+                let _ = self.prefs.save();
+            }
+        }
+        // The window, not the monitor (#2944): a small window on a large
+        // screen is small, and was given the large screen's 125%.
         let zoom = ctx.zoom_factor();
-        let (monitor, window) = ctx.input(|i| (i.viewport().monitor_size, i.screen_rect().width()));
-        let width = monitor.map_or(window, |m| m.x.max(window)) * zoom;
-        let key = (pct, width.round() as u32);
+        let size = ctx.input(|i| i.screen_rect().size()) * zoom;
+        self.state.small_window = size.x < SMALL_WINDOW.x || size.y < SMALL_WINDOW.y;
+        let key = (pct, size.x.round() as u32, size.y.round() as u32);
         if self.ui_scale_applied == Some(key) {
             return;
         }
         self.ui_scale_applied = Some(key);
-        let want = if pct == 0 { auto_zoom_factor(width) } else { pct as f32 / 100.0 };
-        tracing::debug!("interface size: {pct}% (0 = Auto), screen {width:.0} pt at the system scale (monitor {monitor:?}, window {window:.0}, zoom {zoom}), zoom {want}");
+        let want = if pct == 0 { auto_zoom_factor(size) } else { pct as f32 / 100.0 };
+        tracing::debug!("interface size: {pct}% (0 = Auto), window {:.0}x{:.0} pt at the system scale (zoom {zoom}), zoom {want}", size.x, size.y);
         if (zoom - want).abs() > 0.001 {
             ctx.set_zoom_factor(want);
+        }
+        if crate::welcome::small_screen_note_now(&mut self.state, &mut self.prefs.appearance, want) {
+            let _ = self.prefs.save();
         }
     }
 

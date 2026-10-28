@@ -759,7 +759,11 @@ impl CurveEditorPanel {
         self.dope = false;
         self.drag = None;
         self.needs_fit = true;
-        state.show_curve_editor = true;
+        // A small window keeps the editor closed (#2944): it took half the
+        // height above the timeline. Its curve is ready when it is opened.
+        if !state.small_window {
+            state.show_curve_editor = true;
+        }
     }
 
     fn show_inner(

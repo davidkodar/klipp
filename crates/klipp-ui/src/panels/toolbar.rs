@@ -1041,7 +1041,7 @@ impl ToolbarPanel {
                 cmds.push(AppCommand::SetMulticamMode { on: !state.multicam_mode, open: None });
             }
             ui.menu_rows("Interface Size", |ui| {
-                for (label, pct) in [("Auto", 0u32), ("100%", 100), ("125%", 125), ("150%", 150), ("175%", 175), ("200%", 200)] {
+                for (label, pct) in crate::welcome::INTERFACE_SIZES {
                     if menu_toggle(ui, label, "", state.ui_scale_percent == pct).clicked() {
                         state.ui_scale_request = Some(pct);
                         ui.close_menu();

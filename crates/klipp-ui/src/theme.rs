@@ -586,6 +586,10 @@ pub mod control {
 pub const TOOLBAR_HEIGHT: f32 = 36.0;
 pub const STATUSBAR_HEIGHT: f32 = 26.0;
 pub const TIMELINE_MIN_H: f32 = 60.0;
+/// The Edit timeline's least height (#2944): its tabs, toolbar and ruler,
+/// and a video track and two audio tracks under them (V1, A1, A2), so a
+/// small window still shows the sound of the cut.
+pub const TIMELINE_THREE_TRACKS_H: f32 = 24.0 + 34.0 + 24.0 + TRACK_VIDEO_H + 2.0 * TRACK_AUDIO_H + 8.0;
 /// What share of the editing area the timeline starts with.
 ///
 /// A proportion, not a pixel count. The old default was 210 px, which

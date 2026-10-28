@@ -159,6 +159,8 @@ mod mask_tool_tests;
 #[cfg(test)]
 mod keymap_tests;
 #[cfg(test)]
+mod small_window_tests;
+#[cfg(test)]
 mod mask_key_lanes_tests;
 #[cfg(test)]
 mod key_selection_tests;
@@ -376,7 +378,7 @@ pub struct KlippApp {
     /// The interface size last applied, and the screen width it was
     /// worked out for, so it is set once per change rather than every
     /// frame (and never fights a zoom made another way).
-    ui_scale_applied: Option<(u32, u32)>,
+    ui_scale_applied: Option<(u32, u32, u32)>,
     /// The files a filmstrip refinement pass is running for; see
     /// `AppCommand::RefineFilmstrip`.
     filmstrip_refining: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<MediaId>>>,
@@ -698,10 +700,25 @@ impl KlippApp {
 
 }
 
-/// The Auto interface size for a screen `width` points wide at the
-/// system scale: 125% from 2800 up, the system's own below.
-pub(crate) fn auto_zoom_factor(width: f32) -> f32 {
-    if width >= 2800.0 { 1.25 } else { 1.0 }
+/// A window under this size, in points at the system scale, is small
+/// (#2944): the interface steps down and the defaults keep the timeline's
+/// room.
+pub(crate) const SMALL_WINDOW: egui::Vec2 = egui::vec2(1600.0, 900.0);
+
+/// The Auto interface size for a window `size` points at the system scale
+/// (#2944): 125% from 2800 wide; the system's own from 1600×900; 90% below
+/// that, and 80% below 1440×810, never less, so the editor fits a small
+/// window the way it fits a full HD one.
+pub(crate) fn auto_zoom_factor(size: egui::Vec2) -> f32 {
+    if size.x >= 2800.0 {
+        1.25
+    } else if size.x < 1440.0 || size.y < 810.0 {
+        0.8
+    } else if size.x < SMALL_WINDOW.x || size.y < SMALL_WINDOW.y {
+        0.9
+    } else {
+        1.0
+    }
 }
 
 impl eframe::App for KlippApp {
@@ -915,8 +932,23 @@ mod auto_zoom_tests {
     /// (1920), 1440p (2560) and 1080p keep the system scale.
     #[test]
     fn a_large_screen_at_its_system_scale_gets_a_quarter_more() {
-        for (w, want) in [(3840.0, 1.25), (3072.0, 1.25), (2560.0, 1.0), (1920.0, 1.0)] {
-            assert_eq!(super::auto_zoom_factor(w), want, "{w}");
+        for (w, h, want) in [(3840.0, 2160.0, 1.25), (3072.0, 1728.0, 1.25), (2560.0, 1440.0, 1.0), (1920.0, 1080.0, 1.0)] {
+            assert_eq!(super::auto_zoom_factor(egui::vec2(w, h)), want, "{w}x{h}");
+        }
+    }
+
+    /// #2944: a small window steps down, 90% then 80%, never below; at
+    /// 1366×768 and 1280×720 the editor then has 1600×900 points or more.
+    #[test]
+    fn a_small_window_gets_a_smaller_interface() {
+        for (w, h, want) in [(1366.0, 768.0, 0.8), (1280.0, 720.0, 0.8), (1536.0, 864.0, 0.9), (1440.0, 900.0, 0.9), (1024.0, 600.0, 0.8), (1600.0, 900.0, 1.0)] {
+            let z = super::auto_zoom_factor(egui::vec2(w, h));
+            assert_eq!(z, want, "{w}x{h}");
+            assert!(z >= 0.8, "readable");
+        }
+        for (w, h) in [(1366.0_f32, 768.0_f32), (1280.0, 720.0)] {
+            let z = super::auto_zoom_factor(egui::vec2(w, h));
+            assert!(w / z >= 1600.0 - 0.5 && h / z >= 900.0 - 0.5, "{w}x{h} at {z}: {}x{}", w / z, h / z);
         }
     }
 }

@@ -2835,6 +2835,12 @@ pub struct AppState {
     pub multicam_at_playhead: bool,
     /// The interface size in effect, for the menu's check mark.
     pub ui_scale_percent: u32,
+    /// The window is small (#2944): under 1600×900 points at the system
+    /// scale, where the defaults keep room for the timeline.
+    pub small_window: bool,
+    /// The note that Auto made the interface smaller (#2944): the size
+    /// it chose, while the note is up.
+    pub small_screen_note: Option<u32>,
     /// Auto-create tracks when dropping clips outside existing tracks (synced from prefs).
     pub auto_create_tracks: bool,
 
@@ -5138,6 +5144,8 @@ impl Default for AppState {
             multicam_opened: None,
             multicam_at_playhead: false,
             ui_scale_percent: 0,
+            small_window: false,
+            small_screen_note: None,
             auto_create_tracks: true,
             project_auto_filmstrips: None,
             project_auto_skim: None,

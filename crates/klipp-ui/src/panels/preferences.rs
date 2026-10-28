@@ -640,6 +640,20 @@ impl PreferencesPanel {
 
         // ── STARTUP section ──
         Self::section_header(ui, "STARTUP", theme);
+        // The Welcome window's own "Show at startup" (#2933), the same
+        // setting, and the small-window note armed again (#2944).
+        Self::setting_row_with_subtitle(ui, "Show welcome at startup", "The keyboard layout, a short tour, editing with an AI assistant", theme, |ui| {
+            if ui.add(Switch::new(&mut prefs.general.show_welcome, theme)).changed() {
+                *dirty = true;
+            }
+        });
+        Self::setting_row_with_subtitle(ui, "Note a smaller interface", "Say so when Auto makes the interface smaller for a small window", theme, |ui| {
+            let mut on = !prefs.appearance.small_screen_note_shown;
+            if ui.add(Switch::new(&mut on, theme)).changed() {
+                prefs.appearance.small_screen_note_shown = !on;
+                *dirty = true;
+            }
+        });
 
         Self::setting_row_with_subtitle(ui, "On launch", "What to show when Klipp starts", theme, |ui| {
             use crate::prefs::StartupBehavior;
@@ -2791,7 +2805,7 @@ impl PreferencesPanel {
         );
 
         // UI scale
-        Self::setting_row_with_subtitle(ui, "UI scale", "Auto matches your system DPI settings", theme, |ui| {
+        Self::setting_row_with_subtitle(ui, "UI scale", "Auto follows the system scale, and steps down for a small window", theme, |ui| {
             let scales: &[(u32, &str)] = &[
                 (0, "Auto"),
                 (75, "75%"),
@@ -5250,6 +5264,66 @@ mod layout_tests {
         let timeline = at("Timeline");
         click(&ctx, &mut panel, &mut prefs, &mut dirty, timeline);
         assert_eq!(panel.active_tab, PrefsTab::Timeline);
+    }
+
+    /// #2933, #2944: General's "Show welcome at startup" and the Welcome
+    /// window's "Show at startup" are one setting, each way: the switch
+    /// sets what the window's box shows, and the box, applied as the app
+    /// applies it, sets what the switch flips from. "Note a smaller
+    /// interface" arms the small-screen note again.
+    #[test]
+    fn show_welcome_at_startup_is_one_setting_both_ways() {
+        let ctx = egui::Context::default();
+        let mut panel = PreferencesPanel::default();
+        let mut prefs = Preferences::default();
+        let mut dirty = false;
+        assert!(prefs.general.show_welcome, "a fresh profile");
+        let switch_at = |ctx: &egui::Context, panel: &mut PreferencesPanel, prefs: &mut Preferences, dirty: &mut bool, label: &str| {
+            draw(ctx, panel, prefs, dirty, Vec::new());
+            let d = draw(ctx, panel, prefs, dirty, Vec::new());
+            let row = d.texts.iter().find(|(s, _)| s == label).unwrap_or_else(|| panic!("no {label}")).1;
+            let right = d.rules.iter().filter(|(_, x0, _)| *x0 > 280.0).map(|(_, _, x1)| *x1).fold(0.0, f32::max);
+            egui::pos2(right - crate::inspector::rows::ROW_PAD - 16.0, row.y)
+        };
+        // Preferences → the window.
+        let at = switch_at(&ctx, &mut panel, &mut prefs, &mut dirty, "Show welcome at startup");
+        click(&ctx, &mut panel, &mut prefs, &mut dirty, at);
+        assert!(!prefs.general.show_welcome && dirty, "the switch turns it off");
+        let wctx = egui::Context::default();
+        let mut state = crate::state::AppState { show_welcome: true, ..Default::default() };
+        let mut kb = crate::keybindings::KeyBindings::defaults();
+        let theme = KlippTheme::default();
+        let mut boxed = None;
+        let mut got = Vec::new();
+        for i in 0..2 {
+            let out = wctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0))), time: Some(i as f64 * 0.1), ..Default::default() }, |ctx| {
+                got = crate::welcome::show_welcome(ctx, &mut state, &kb, prefs.general.show_welcome, &theme);
+            });
+            // The box's label is part of the box.
+            boxed = out.shapes.iter().find_map(|s| match &s.shape { egui::Shape::Text(t) if t.galley.text() == "Show at startup" => Some(t.pos + t.galley.size() / 2.0), _ => None });
+        }
+        let boxed = boxed.expect("the window's box");
+        // The window → Preferences: its box, ticked, turns it back on.
+        let press = |pressed| egui::Event::PointerButton { pos: boxed, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        let mut actions = Vec::new();
+        for (i, events) in [vec![egui::Event::PointerMoved(boxed), press(true)], vec![press(false)]].into_iter().enumerate() {
+            let _ = wctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0))), time: Some(0.2 + i as f64 * 0.1), events, ..Default::default() }, |ctx| {
+                actions.extend(crate::welcome::show_welcome(ctx, &mut state, &kb, prefs.general.show_welcome, &theme));
+            });
+        }
+        assert_eq!(actions, [crate::welcome::WelcomeAction::ShowAtStartup(true)], "the box shows it off, and ticks it on");
+        for a in actions {
+            crate::welcome::apply(a, &mut state, &mut prefs, &mut kb);
+        }
+        assert!(prefs.general.show_welcome, "Preferences' setting is on again");
+        let at = switch_at(&ctx, &mut panel, &mut prefs, &mut dirty, "Show welcome at startup");
+        click(&ctx, &mut panel, &mut prefs, &mut dirty, at);
+        assert!(!prefs.general.show_welcome, "and the switch flips it from there");
+        // The small-screen note, shown once, armed again by its switch.
+        prefs.appearance.small_screen_note_shown = true;
+        let at = switch_at(&ctx, &mut panel, &mut prefs, &mut dirty, "Note a smaller interface");
+        click(&ctx, &mut panel, &mut prefs, &mut dirty, at);
+        assert!(!prefs.appearance.small_screen_note_shown, "armed again");
     }
 
     /// The Updates section's "Check for updates…" asks for the check in
