@@ -817,6 +817,35 @@ mod media_drop_tests {
         assert_eq!(span(&after, ids[2]), (t(8), t(12)), "nothing moved");
     }
 
+    /// #2981: a pool clip let go in the middle of a clip on V2 (not the
+    /// primary track) edits there: inserted at the drop time in insert
+    /// mode, the clip under it split and its tail moved along; laid over
+    /// from the drop time in overwrite mode.
+    #[test]
+    fn a_drop_onto_the_middle_of_a_clip_edits_there() {
+        let (mut seq, _) = timeline();
+        let v2_id = seq.add_video_track("Video 2".into());
+        let v2 = seq.tracks.iter().position(|tr| tr.id == v2_id).unwrap();
+        let under = Clip::media(klipp_core::MediaId::new(), t(0), t(11), t(0), t(11));
+        let under_id = under.id;
+        seq.tracks[v2].clips.push(under);
+        // Its own sound linked under it, as a clip laid with its file's
+        // sound has.
+        attach_linked_audio_to_clip(&mut seq, under_id, None).expect("linked");
+        for (mode, label, sound) in [(PasteMode::Insert, "Insert", None), (PasteMode::Overwrite, "Overwrite", None), (PasteMode::Insert, "Insert with its sound", Some(None)), (PasteMode::Overwrite, "Overwrite with its sound", Some(None))] {
+            let (edits, placed) = media_drop_edits(&seq, dropped(), v2, sound, t(5), mode, label).unwrap_or_else(|e| panic!("{label}: {e}"));
+            let after = run(&seq, &edits, true);
+            assert!(after.tracks[v2].find_clip(placed).is_some(), "{label}: on V2");
+            assert_eq!(span(&after, placed), (t(5), t(7)), "{label}: at the drop time");
+            let ends: Vec<_> = after.tracks[v2].clips.iter().map(|c| (c.timeline_in, c.timeline_out)).collect();
+            assert!(ends.contains(&(t(0), t(5))), "{label}: the clip under it keeps its head: {ends:?}");
+            match mode {
+                PasteMode::Insert => assert!(ends.contains(&(t(7), t(13))), "{label}: the tail moved along: {ends:?}"),
+                _ => assert!(ends.contains(&(t(7), t(11))), "{label}: the tail after it, covered from 5 to 7: {ends:?}"),
+            }
+        }
+    }
+
     /// It goes on the track it was let go on, even when another track of
     /// its kind is the one targeted.
     #[test]

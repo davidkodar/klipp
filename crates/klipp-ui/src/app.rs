@@ -207,6 +207,14 @@ use tracking::*;
 pub(crate) use tracking::{surface_area_on_frame, surface_on_frame};
 use linked_audio::*;
 
+/// A pool clip dropped on `track` at `at` as the app places it, without
+/// its sound, for tests outside this module.
+#[cfg(test)]
+pub(crate) fn media_drop_for_tests(seq: &klipp_timeline::Sequence, clip: klipp_timeline::Clip, track: usize, at: klipp_core::Timecode, overwrite: bool) -> Result<(Vec<klipp_document::history::EditCommand>, klipp_core::ClipId), &'static str> {
+    let mode = if overwrite { crate::clip_clipboard::PasteMode::Overwrite } else { crate::clip_clipboard::PasteMode::Insert };
+    placement::media_drop_edits(seq, clip, track, None, at, mode, "Drop")
+}
+
 /// A clip's own sound linked under it, for tests outside this module.
 #[cfg(test)]
 pub(crate) fn linked_audio_for_tests(seq: &mut klipp_timeline::Sequence, clip: klipp_core::ClipId) {

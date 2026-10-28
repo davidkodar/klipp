@@ -733,7 +733,11 @@ impl KlippApp {
                             }
                             self.state.selected_clip = Some(new_id);
                             self.state.dirty = true;
+                            // On to the end of what was placed (#2982), so
+                            // the next edit at the playhead follows it.
+                            super::source_edits::advance_past(&mut self.state, new_id);
                             self.sync_sequence_to_engine();
+                            let _ = self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead));
                         }
                     }
                     true
@@ -847,7 +851,11 @@ impl KlippApp {
                             }
                             self.state.selected_clip = Some(new_id);
                             self.state.dirty = true;
+                            // On to the end of what was placed (#2982), so
+                            // the next edit at the playhead follows it.
+                            super::source_edits::advance_past(&mut self.state, new_id);
                             self.sync_sequence_to_engine();
+                            let _ = self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead));
                         }
                     }
                     true
