@@ -1,6 +1,6 @@
 //! The dither every 8-bit picture output adds before it rounds: the
 //! export's CPU display transform (`klipp_color::display`) and the GPU's
-//! display encodes (`shader_display_dither_wgsl!` in `gpu.rs`), one
+//! display encodes (`src/gpu/shaders/include/display_dither.wgsl`), one
 //! definition for both (#2072).
 //!
 //! The constants below are the whole pattern. The WGSL carries the same
