@@ -34,6 +34,8 @@ mod display_dither;
 mod display_to_texture;
 #[path = "../effect_definitions.rs"]
 mod effect_definitions;
+#[path = "../param_guard.rs"]
+mod param_guard;
 #[path = "../effects_hdr_behaviour.rs"]
 mod effects_hdr_behaviour;
 #[path = "../equalize_and_huesat_share_nothing.rs"]

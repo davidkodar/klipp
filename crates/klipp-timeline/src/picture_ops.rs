@@ -1246,12 +1246,15 @@ impl Clip {
                 // own writer.
                 let key = &klipp_graph_format::ParamKey::from(klipp_graph_lift::names::anim_key(&tag, key.as_str()));
                 params.insert(key.clone(), ep::held(&tag, key, &stored(value)?));
+                ep::guard_params(&tag, &mut params)?;
                 let effect = ep::effect(&tag, &params).map_err(|_| format!("{key} doesn't take {value:?}"))?;
                 let id = id_at(self, i)?;
                 self.replace_effect(id, effect);
             }
             GraphOp::SetPayload { payload, .. } => {
-                let effect: klipp_effects::BuiltinEffect = serde_json::from_value(payload.clone()).map_err(|e| format!("the effect: {e}"))?;
+                let (tag, mut params) = klipp_graph_lift::effect_params::to_params(payload)?;
+                klipp_graph_lift::effect_params::guard_params(&tag, &mut params)?;
+                let effect = klipp_graph_lift::effect_params::effect(&tag, &params).map_err(|e| format!("the effect: {e}"))?;
                 let id = id_at(self, index(order, named)?)?;
                 self.replace_effect(id, effect);
             }

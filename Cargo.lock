@@ -3214,6 +3214,7 @@ dependencies = [
  "klipp-nodes",
  "serde",
  "serde_json",
+ "tracing",
  "uuid",
 ]
 

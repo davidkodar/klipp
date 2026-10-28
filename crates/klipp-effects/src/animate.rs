@@ -33,7 +33,20 @@ impl BuiltinEffect {
     /// a speed curve, which is the clip's speed keyframes), the settings
     /// that shape a whole-clip analysis, and the effects whose parameters
     /// are whole pixel radii, and a media source's offset.
+    ///
+    /// What `f` returns is held inside the parameter's safe range
+    /// ([`crate::registry::guard_number`], #2995): a curve or a modifier
+    /// overshooting, or a key written before the guard, can't take the
+    /// render past it.
     pub fn animate(&mut self, f: &mut ParamFn) {
+        let Some(tag) = crate::registry::tag_of(self) else { return self.animate_as_given(f) };
+        self.animate_as_given(&mut |name, v| {
+            let out = f(name, v);
+            crate::registry::guard_number(tag, name, out as f64, crate::registry::NotFinite::Default).map_or(out, |(now, _)| now)
+        });
+    }
+
+    fn animate_as_given(&mut self, f: &mut ParamFn) {
         use BuiltinEffect as E;
         match self {
             E::Crop { left, right, top, bottom, feather, aspect, focus_x, focus_y } => {

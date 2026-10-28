@@ -7057,6 +7057,8 @@ pub fn list_effects(
         clip.builtin_effects().iter().cloned().enumerate().filter(|(i, _)| enabled(*i)).collect();
     let mut pinned = false;
     for (i, effect) in fx.iter_mut() {
+        // Inside its safe ranges, whatever wrote the list (#2995).
+        klipp_effects::registry::guard_effect(effect);
         // Every keyframable parameter, from the one list the inspector
         // offers keyframes from. Opacity is the exception: it is the
         // clip's compositing weight (`eval::evaluate_clip_opacity`).

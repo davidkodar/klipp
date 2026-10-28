@@ -272,7 +272,7 @@ fn set_param(n: &mut Node, key: &ParamKey, value: &ParamValue) -> Result<(), Str
         let key = &ParamKey::from(crate::names::anim_key(&tag, key.as_str()));
         let mut params = n.params.clone();
         params.insert(key.clone(), crate::effect_params::held(&tag, key, &v));
-        let entry = crate::effect_params::from_params(&tag, &params)?;
+        let entry = crate::effect_params::guard_params(&tag, &mut params)?;
         if !effect_entry_reads(&entry) {
             return Err(format!("{key} doesn't take {value:?}"));
         }
@@ -427,10 +427,12 @@ fn apply_anim(n: &mut Node, op: &GraphOp) -> Result<(), String> {
         GraphOp::AddKeyAt { key, keyframe, .. } => {
             let key = &stored(key);
             let t = key_time(keyframe)?;
+            let mut keyframe = keyframe.clone();
+            guard_key(&tag, key, &mut keyframe)?;
             let a = n.anim.entry(key.clone()).or_insert(Animation { keys: Vec::new(), modifiers: None });
             a.keys.retain(|k| key_time(k).map_or(true, |kt| (kt - t).abs() > SAME_TIME));
             let at = a.keys.iter().position(|k| key_time(k).is_ok_and(|kt| kt > t)).unwrap_or(a.keys.len());
-            a.keys.insert(at, keyframe.clone());
+            a.keys.insert(at, keyframe);
         }
         GraphOp::RemoveKeyAt { key, time_secs, .. } => {
             let key = &stored(key);
@@ -446,16 +448,30 @@ fn apply_anim(n: &mut Node, op: &GraphOp) -> Result<(), String> {
         }
         GraphOp::SetAnim { key, anim, .. } => match (&stored(key), anim) {
             (key, Some(a)) => {
-                for k in &a.keys {
+                let mut a = a.clone();
+                for k in &mut a.keys {
                     key_time(k)?;
+                    guard_key(&tag, key, k)?;
                 }
-                n.anim.insert(key.clone(), a.clone());
+                n.anim.insert(key.clone(), a);
             }
             (key, None) => {
                 n.anim.remove(key);
             }
         },
         _ => unreachable!("only the animation ops come here"),
+    }
+    Ok(())
+}
+
+/// A key's value held inside its parameter's safe range (#2995), as
+/// [`guard_params`] holds a value.
+fn guard_key(tag: &str, key: &ParamKey, keyframe: &mut Value) -> Result<(), String> {
+    let Some(v) = keyframe.get("value").and_then(Value::as_f64) else { return Ok(()) };
+    let (now, guarded) = klipp_effects::registry::guard_number(tag, key.as_str(), v, klipp_effects::registry::NotFinite::Refuse)?;
+    if let Some(g) = guarded {
+        tracing::info!("{tag}'s {} key held at {} (asked {})", g.key, g.now, g.was);
+        keyframe["value"] = serde_json::json!(now);
     }
     Ok(())
 }
@@ -490,7 +506,8 @@ fn set_payload(n: &mut Node, payload: &Value) -> Result<(), String> {
     }
     // An effect held in memory takes the payload's values into its map.
     if t == types::LEGACY_EFFECT && legacy.payload.as_object().is_some_and(|o| o.len() == 1) && payload.as_object().is_some_and(|o| o.len() > 1) {
-        let (_, values) = crate::effect_params::to_params(payload)?;
+        let (tag, mut values) = crate::effect_params::to_params(payload)?;
+        crate::effect_params::guard_params(&tag, &mut values)?;
         n.params.retain(|k, _| !crate::effect_params::is_field_key(k));
         n.params.extend(values);
         return Ok(());
@@ -514,6 +531,9 @@ fn set_label(n: &mut Node, label: &str) {
 fn held_node(node: &Node) -> Result<Node, String> {
     let mut n = node.clone();
     crate::effect_params::added_into_memory(&mut n)?;
+    if let Some(tag) = crate::effect_params::tag(&n).filter(|_| crate::effect_params::in_memory(&n)).map(str::to_owned) {
+        crate::effect_params::guard_params(&tag, &mut n.params)?;
+    }
     Ok(n)
 }
 
@@ -1311,5 +1331,60 @@ mod placement_tests {
         place_after(&mut g, nid, c, &[o]);
         place_beside(&mut g, nid, c);
         assert!(g.ui.positions.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod guard_tests {
+    use super::*;
+
+    /// A Gaussian blur node, its values held in its map.
+    fn blur() -> Node {
+        let n: Node = serde_json::from_value(serde_json::json!({
+            "id": uuid::Uuid::new_v4(),
+            "type_id": types::LEGACY_EFFECT,
+            "legacy": {"payload": {"type": "gaussian_blur", "radius": 4.0}},
+        }))
+        .unwrap();
+        held_node(&n).unwrap()
+    }
+
+    fn radius(n: &Node) -> f32 {
+        match crate::effect_params::effect_of(n).unwrap() {
+            klipp_effects::BuiltinEffect::GaussianBlur { radius } => radius,
+            e => panic!("{e:?}"),
+        }
+    }
+
+    /// A hostile value through every edit (#2995): a huge radius held at
+    /// the top of its range, a NaN or an infinity refused and the old
+    /// value kept, the same for a key and a payload, and a new node with
+    /// one comes in held.
+    #[test]
+    fn an_edit_never_takes_an_effect_past_its_range() {
+        let hi = klipp_effects::registry::effect_type("gaussian_blur").unwrap().desc.params[0].hard().unwrap().1;
+        let mut n = blur();
+        set_param(&mut n, &"radius".into(), &ParamValue::Float(1e30)).unwrap();
+        assert_eq!(radius(&n), hi);
+        set_param(&mut n, &"radius".into(), &ParamValue::Float(-5.0)).unwrap();
+        assert_eq!(radius(&n), 0.0);
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert!(set_param(&mut n, &"radius".into(), &ParamValue::Float(bad)).is_err(), "{bad} refused");
+            assert_eq!(radius(&n), 0.0, "{bad}: the old value kept");
+        }
+        set_payload(&mut n, &serde_json::json!({"type": "gaussian_blur", "radius": 1e9})).unwrap();
+        assert_eq!(radius(&n), hi);
+        assert!(set_payload(&mut n, &serde_json::json!({"type": "gaussian_blur", "radius": null})).is_err());
+        let key = GraphOp::AddKeyAt { path: NodePath::new(Root::Clip { clip: uuid::Uuid::nil() }, [n.id]), key: "radius".into(), keyframe: serde_json::json!({"time_secs": 0.0, "value": 1e12}) };
+        apply_anim(&mut n, &key).unwrap();
+        assert_eq!(n.anim[&ParamKey::from("radius")].keys[0]["value"].as_f64(), Some(hi as f64));
+        let mut added: Node = serde_json::from_value(serde_json::json!({
+            "id": uuid::Uuid::new_v4(),
+            "type_id": types::LEGACY_EFFECT,
+            "legacy": {"payload": {"type": "gaussian_blur", "radius": 1e20}},
+        }))
+        .unwrap();
+        added = held_node(&added).unwrap();
+        assert_eq!(radius(&added), hi);
     }
 }

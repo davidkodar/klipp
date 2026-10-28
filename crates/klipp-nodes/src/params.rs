@@ -646,7 +646,14 @@ impl NodeParams {
     /// parameter name went nowhere. Ignoring an unknown name silently is
     /// indistinguishable from applying it and reads as "the grade did
     /// not work".
+    ///
+    /// A value that isn't a number (NaN, an infinity) is never written
+    /// (#2995): the grade keeps what it had. The LUT spaces read infinity
+    /// as "the LUT's own", so take it.
     pub fn apply_override(&mut self, param_name: &str, value: f32) -> bool {
+        if !value.is_finite() && !matches!(param_name, "lut_input_space" | "lut_output_space") {
+            return self.clone().apply_override(param_name, 0.0);
+        }
         // For most params, near-zero means neutral → store None
         let n = if value.abs() < 0.0001 { None } else { Some(value) };
         match param_name {
@@ -986,6 +993,24 @@ impl NodeKeyframeTrack {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A grade value that isn't a number is never written (#2995), and
+    /// the name is still known.
+    #[test]
+    fn a_grade_never_takes_a_value_that_isnt_a_number() {
+        let mut p = NodeParams { exposure: Some(0.5), ..Default::default() };
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert!(p.apply_override("exposure", bad), "exposure is a known name");
+            assert_eq!(p.exposure, Some(0.5), "{bad} kept out");
+            assert!(p.apply_override("saturation", bad));
+            assert_eq!(p.saturation, None, "{bad} kept out");
+        }
+        assert!(!p.apply_override("no_such_param", f32::NAN));
+        // The LUT spaces read infinity as the LUT's own.
+        p.lut_input_space = Some(klipp_core::WorkingColorspace::default());
+        assert!(p.apply_override("lut_input_space", f32::INFINITY));
+        assert_eq!(p.lut_input_space, None);
+    }
 
     /// A grade key's track renders as its curve is drawn: an eased key's
     /// handles bend the value by their time as well as their value, the

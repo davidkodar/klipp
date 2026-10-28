@@ -25,7 +25,7 @@
 use super::{
     mixable,
     Alpha, Category, ColourDomain, EffectType, NodeTypeDesc, ParamDesc, ParamKind, Scaling, Spatial, Temporal, Unit,
-    IMAGE_IN, IMAGE_OUT,
+    IMAGE_IN, IMAGE_OUT, SEED_RANGE, TIME_RANGE,
 };
 use crate::{BuiltinEffect, SpillMethod};
 
@@ -92,7 +92,7 @@ const fn switch(field: &'static str, label: &'static str, on: bool) -> ParamDesc
 
 /// A pattern seed the compositor sets to the frame number each frame.
 const fn seed() -> ParamDesc {
-    ParamDesc { kind: ParamKind::Whole, soft: None, ..ParamDesc::float("seed", "Seed", 0.0, (0.0, 1.0), Unit::Count).fixed() }
+    ParamDesc { kind: ParamKind::Whole, soft: None, ..ParamDesc::float("seed", "Seed", 0.0, (0.0, 1.0), Unit::Count).fixed().within(SEED_RANGE) }
 }
 
 const UNIT: (f32, f32) = (0.0, 1.0);
@@ -192,9 +192,9 @@ pub(super) static TYPES: &[EffectType] = &[
                 ParamDesc::float("speed", "Speed", 8.0, (0.5, 30.0), Unit::Ratio),
                 ParamDesc::float("smoothness", "Smoothness", 0.0, UNIT, Unit::Ratio),
                 ParamDesc::float("hold", "Hold", 0.3, UNIT, Unit::Ratio),
-                ParamDesc { kind: ParamKind::Whole, ..ParamDesc::float("seed", "Seed", 67.0, (0.0, 10_000.0), Unit::Count).fixed() },
+                ParamDesc { kind: ParamKind::Whole, ..ParamDesc::float("seed", "Seed", 67.0, (0.0, 10_000.0), Unit::Count).fixed().within(SEED_RANGE) },
                 choice("target", "Flickers", 0.0, &["opacity", "exposure", "gamma"]),
-                ParamDesc { soft: None, ..ParamDesc::float("time", "Time", 0.0, (0.0, 1.0), Unit::Seconds).fixed() },
+                ParamDesc { soft: None, ..ParamDesc::float("time", "Time", 0.0, (0.0, 1.0), Unit::Seconds).fixed().within(TIME_RANGE) },
             ],
             ColourDomain::Linear,
             Spatial::PerPixel,
@@ -221,8 +221,8 @@ pub(super) static TYPES: &[EffectType] = &[
                 ParamDesc::float("lifetime", "Lifetime", 4.0, (0.2, 20.0), Unit::Seconds),
                 ParamDesc::float("opacity", "Opacity", 0.6, UNIT, Unit::Ratio),
                 other("color", "Colour", ParamKind::Colour),
-                ParamDesc { kind: ParamKind::Whole, ..ParamDesc::float("seed", "Seed", 1.0, (0.0, 10_000.0), Unit::Count).fixed() },
-                ParamDesc { soft: None, ..ParamDesc::float("time", "Time", 0.0, (0.0, 1.0), Unit::Seconds).fixed() },
+                ParamDesc { kind: ParamKind::Whole, ..ParamDesc::float("seed", "Seed", 1.0, (0.0, 10_000.0), Unit::Count).fixed().within(SEED_RANGE) },
+                ParamDesc { soft: None, ..ParamDesc::float("time", "Time", 0.0, (0.0, 1.0), Unit::Seconds).fixed().within(TIME_RANGE) },
             ],
             ColourDomain::Linear,
             Spatial::PerPixel,
@@ -325,7 +325,7 @@ pub(super) static TYPES: &[EffectType] = &[
                 ParamDesc::float("strength", "Strength", 0.8, UNIT, Unit::Ratio),
                 ParamDesc::float("window_secs", "Window", 1.0, (0.2, 4.0), Unit::Seconds).fixed(),
                 // Set each frame from the clip's analysis; 1.0 until it is analysed.
-                ParamDesc { soft: None, ..ParamDesc::float("gain", "Gain", 1.0, (0.0, 1.0), Unit::Ratio).fixed() },
+                ParamDesc { soft: None, ..ParamDesc::float("gain", "Gain", 1.0, (0.0, 1.0), Unit::Ratio).fixed().within((0.0, 8.0)) },
             ],
             ColourDomain::Linear,
             Spatial::PerPixel,

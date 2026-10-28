@@ -188,9 +188,28 @@ pub fn from_params(tag: &str, params: &BTreeMap<ParamKey, ParamValue>) -> Result
     Ok(Value::Object(fields))
 }
 
-/// The effect `tag` whose values are `params`, as the renderer runs it.
+/// An effect's values held inside their safe ranges (#2995), the one
+/// guard every edit of them passes: a number past its range is clamped
+/// in `params` and logged, a number that isn't one refused. The entry
+/// they store, guarded.
+pub fn guard_params(tag: &str, params: &mut BTreeMap<ParamKey, ParamValue>) -> Result<Value, String> {
+    let mut entry = from_params(tag, params)?;
+    for g in klipp_effects::registry::guard_entry(&mut entry, klipp_effects::registry::NotFinite::Refuse)? {
+        tracing::info!("{tag}'s {} held at {} (asked {})", g.key, g.now, g.was);
+        let key = ParamKey::from(g.key);
+        let held = held(tag, &key, &serde_json::json!(g.now));
+        params.insert(key, held);
+    }
+    Ok(entry)
+}
+
+/// The effect `tag` whose values are `params`, as the renderer runs it:
+/// every number inside its safe range (#2995), whatever wrote it, a
+/// number that isn't one at its default.
 pub fn effect(tag: &str, params: &BTreeMap<ParamKey, ParamValue>) -> Result<klipp_effects::BuiltinEffect, String> {
-    serde_json::from_value(from_params(tag, params)?).map_err(|e| format!("{tag}: {e}"))
+    let mut entry = from_params(tag, params)?;
+    klipp_effects::registry::guard_entry(&mut entry, klipp_effects::registry::NotFinite::Default)?;
+    serde_json::from_value(entry).map_err(|e| format!("{tag}: {e}"))
 }
 
 /// The saved tag of the effect node `n` (`"gaussian_blur"`): the one
@@ -228,7 +247,7 @@ fn is_effect(n: &Node) -> bool {
 
 /// Whether the effect node's entry holds only its tag: its values are in
 /// its map.
-fn in_memory(n: &Node) -> bool {
+pub(crate) fn in_memory(n: &Node) -> bool {
     n.legacy.as_ref().and_then(|l| l.payload.as_object()).is_some_and(|o| o.len() == 1)
 }
 
@@ -597,7 +616,12 @@ mod tests {
             assert_eq!(from_params(&tag, &map).unwrap(), entry, "{}", t.tag);
             assert_eq!(serde_json::to_value(effect(&tag, &map).unwrap()).unwrap(), entry, "{}", t.tag);
             for d in t.desc.params.iter().filter(|d| !d.derived) {
-                let held = map.get(&ParamKey::from(key_of(d))).unwrap_or_else(|| panic!("{}: {} isn't held", t.tag, key_of(d)));
+                // A setting the entry leaves out at its default (a crop's
+                // cover shape) has nothing to hold.
+                let Some(held) = map.get(&ParamKey::from(key_of(d))) else {
+                    assert!(entry.get(d.field).is_none(), "{}: {} isn't held", t.tag, key_of(d));
+                    continue;
+                };
                 let typed = match d.kind {
                     ParamKind::Float => matches!(held, ParamValue::Float(_)),
                     ParamKind::Whole => matches!(held, ParamValue::Int(_)),

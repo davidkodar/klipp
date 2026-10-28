@@ -26,8 +26,14 @@ pub fn apply(rgba: Vec<u8>, width: u32, height: u32, radius: f32) -> Vec<u8> {
     a
 }
 
+/// The widest sigma a blur takes: far past any frame's size.
+pub const MAX_SIGMA: f32 = 16_384.0;
+
 /// Compute 3 box sizes that approximate a Gaussian with the given sigma/radius.
+/// A sigma that isn't a number is none, and one past `MAX_SIGMA` is held
+/// there (#2995): an infinite one made the boxes overflow.
 pub fn boxes_for_gaussian(sigma: f32) -> [usize; 3] {
+    let sigma = if sigma.is_finite() { sigma.clamp(0.0, MAX_SIGMA) } else { 0.0 };
     let w_ideal = ((12.0 * sigma * sigma / 3.0) + 1.0).sqrt();
     let mut wl = w_ideal.floor() as usize;
     if wl.is_multiple_of(2) {
@@ -198,6 +204,17 @@ fn build_kernel(radius: f32) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Any sigma gives boxes, never an overflow (#2995).
+    #[test]
+    fn any_sigma_gives_boxes() {
+        for sigma in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, f32::MAX, -5.0, 0.0, 1e9] {
+            let boxes = boxes_for_gaussian(sigma);
+            assert!(boxes.iter().all(|&r| r <= MAX_SIGMA as usize * 2), "{sigma}: {boxes:?}");
+        }
+        assert_eq!(boxes_for_gaussian(f32::INFINITY), boxes_for_gaussian(0.0));
+        assert_eq!(boxes_for_gaussian(1e9), boxes_for_gaussian(MAX_SIGMA));
+    }
 
     #[test]
     fn zero_radius_passthrough() {

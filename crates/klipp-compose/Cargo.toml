@@ -52,6 +52,10 @@ name = "all"
 path = "tests/all/main.rs"
 
 [[test]]
+name = "effect_param_stress"
+path = "tests/effect_param_stress.rs"
+
+[[test]]
 name = "analysis_nodes_read_the_source_frame"
 path = "tests/analysis_nodes_read_the_source_frame.rs"
 

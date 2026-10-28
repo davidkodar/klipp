@@ -7493,7 +7493,14 @@ pub fn with_params(fx: klipp_effects::BuiltinEffect, params: &std::collections::
         };
         let wrong = || (format!("{key} {value} is not a value {tag} takes"), format!("give {}", takes(d)));
         let number = |v: &Value| -> Result<f64, (String, String)> {
-            let n = v.as_f64().filter(|n| n.is_finite()).ok_or_else(wrong)?;
+            let n = v.as_f64().ok_or_else(wrong)?;
+            // The one guard every write passes (#2995): a number, inside
+            // the hard range. An op asks for the slider's, so a value the
+            // guard would hold is refused, with what the setting takes.
+            let (_, held) = klipp_effects::registry::guard_number(&tag, d.key, n, klipp_effects::registry::NotFinite::Refuse).map_err(|_| wrong())?;
+            if held.is_some() {
+                return Err(wrong());
+            }
             // The range the effect accepts, else the one its slider offers.
             match d.range.or(d.soft) {
                 Some((lo, hi)) if n < lo as f64 - 1e-6 || n > hi as f64 + 1e-6 => Err(wrong()),
