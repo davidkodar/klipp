@@ -71,6 +71,9 @@ mod command_writes;
 mod event_writes;
 mod graph_dock;
 pub(crate) mod colour_target;
+mod music_trim;
+#[cfg(test)]
+mod music_trim_tests;
 #[cfg(test)]
 mod colour_target_tests;
 #[cfg(test)]

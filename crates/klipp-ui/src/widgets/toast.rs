@@ -4,10 +4,22 @@ use crate::theme::KlippTheme;
 #[derive(Default)]
 pub struct ToastState {
     message: Option<String>,
+    /// A button beside the message and what it does (#2983).
+    action: Option<(String, ToastAction)>,
     appear_time: Option<std::time::Instant>,
     /// Configurable visible duration (set from prefs.advanced.toast_duration_secs).
     pub visible_duration: f64,
 }
+
+/// What a toast's button does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToastAction {
+    /// Undo the history step with this stamp, while it is still the last.
+    UndoStep(u64),
+}
+
+/// How long a toast with a button stays at least, so it can be reached.
+const ACTION_VISIBLE_SECS: f64 = 8.0;
 
 const TOAST_FADE_IN: f64 = 0.15;
 const TOAST_FADE_OUT: f64 = 0.2;
@@ -19,32 +31,47 @@ impl ToastState {
     /// Show a new toast message. Replaces any existing toast.
     pub fn show(&mut self, message: impl Into<String>) {
         self.message = Some(message.into());
+        self.action = None;
         self.appear_time = Some(std::time::Instant::now());
     }
 
-    /// Render the toast if active. Call every frame from the top-level update.
-    pub fn render(&self, ctx: &egui::Context, theme: &KlippTheme) {
+    /// Show a message with a button labelled `label` that does `action`.
+    pub fn show_with_action(&mut self, message: impl Into<String>, label: impl Into<String>, action: ToastAction) {
+        self.show(message);
+        self.action = Some((label.into(), action));
+    }
+
+    /// How long it stays fully shown.
+    fn visible(&self) -> f64 {
+        let v = self.visible_duration.max(0.5);
+        if self.action.is_some() { v.max(ACTION_VISIBLE_SECS) } else { v }
+    }
+
+    /// Render the toast if active. Call every frame from the top-level
+    /// update. Its button's action, when it was clicked.
+    pub fn render(&self, ctx: &egui::Context, theme: &KlippTheme) -> Option<ToastAction> {
         let (msg, appear) = match (&self.message, self.appear_time) {
             (Some(m), Some(t)) => (m, t),
-            _ => return,
+            _ => return None,
         };
+        let mut clicked = None;
 
         let elapsed = appear.elapsed().as_secs_f64();
-        let total_duration = TOAST_FADE_IN + self.visible_duration.max(0.5) + TOAST_FADE_OUT;
+        let total_duration = TOAST_FADE_IN + self.visible() + TOAST_FADE_OUT;
         if elapsed > total_duration {
-            return;
+            return None;
         }
 
         // Calculate alpha
         let alpha = if elapsed < TOAST_FADE_IN {
             // Fade in
             (elapsed / TOAST_FADE_IN) as f32
-        } else if elapsed < TOAST_FADE_IN + self.visible_duration.max(0.5) {
+        } else if elapsed < TOAST_FADE_IN + self.visible() {
             // Fully visible
             1.0
         } else {
             // Fade out
-            let fade_elapsed = elapsed - TOAST_FADE_IN - self.visible_duration.max(0.5);
+            let fade_elapsed = elapsed - TOAST_FADE_IN - self.visible();
             1.0 - (fade_elapsed / TOAST_FADE_OUT) as f32
         }
         .clamp(0.0, 1.0);
@@ -112,11 +139,23 @@ impl ToastState {
                         // needed."), so wrapping has to work, not just
                         // not crash.
                         ui.set_max_width(560.0);
-                        ui.add(egui::Label::new(
-                            egui::RichText::new(msg.as_str())
-                                .size(12.0)
-                                .color(text_color),
-                        ));
+                        let text = egui::RichText::new(msg.as_str()).size(12.0).color(text_color);
+                        match &self.action {
+                            // A note with a button is one line, the button
+                            // after it (#2983).
+                            Some((label, action)) => {
+                                ui.horizontal(|ui| {
+                                    ui.add(egui::Label::new(text).extend());
+                                    ui.label(egui::RichText::new("\u{b7}").size(12.0).color(text_color));
+                                    if ui.link(egui::RichText::new(label.as_str()).size(12.0)).clicked() {
+                                        clicked = Some(*action);
+                                    }
+                                });
+                            }
+                            None => {
+                                ui.add(egui::Label::new(text));
+                            }
+                        }
                     });
             });
 
@@ -124,14 +163,16 @@ impl ToastState {
         if elapsed < total_duration {
             ctx.request_repaint();
         }
+        clicked
     }
 
     /// Clear expired toast messages.
     pub fn cleanup(&mut self) {
         if let Some(appear) = self.appear_time {
-            let total = TOAST_FADE_IN + self.visible_duration.max(0.5) + TOAST_FADE_OUT;
+            let total = TOAST_FADE_IN + self.visible() + TOAST_FADE_OUT;
             if appear.elapsed().as_secs_f64() > total {
                 self.message = None;
+                self.action = None;
                 self.appear_time = None;
             }
         }

@@ -102,6 +102,10 @@ impl KlippApp {
                                 self.sync_sequence_to_engine();
                                 self.state.selected_clip = Some(clip_id);
                                 self.state.dirty = true;
+                                // Sound under the picture ends with it (#2983).
+                                if item.video_codec.is_empty() {
+                                    self.trim_sound_to_picture(clip_id);
+                                }
                             }
                         }
                     }
@@ -139,6 +143,10 @@ impl KlippApp {
                 self.apply_edits_as_one(&edits, label);
                 self.state.selected_clip = Some(id);
                 self.state.selected_clips.clear();
+                // Sound under the picture ends with it (#2983).
+                if !has_video {
+                    self.trim_sound_to_picture(id);
+                }
             }
             Err(why) => self.state.toast.show(why),
         }
@@ -316,9 +324,13 @@ impl KlippApp {
     /// right-click equivalent.
     pub(super) fn place_media_at_playhead(&mut self, media_id: klipp_core::MediaId) {
         let start = self.state.playhead;
-        if let Some((_, mut entry)) = self.place_media_on_new_tracks(media_id, start) {
+        if let Some((video, mut entry)) = self.place_media_on_new_tracks(media_id, start) {
             self.refresh_placement_snapshot(self.state.active_sequence_idx, &mut entry);
             self.state.active_history_mut().push(crate::history::HistoryEntry { command: entry });
+            // A sound-only file under the picture ends with it (#2983).
+            if let (None, Some(sound)) = (video, self.state.selected_clip) {
+                self.trim_sound_to_picture(sound);
+            }
         }
         self.state.dirty = true;
         self.sync_sequence_to_engine();

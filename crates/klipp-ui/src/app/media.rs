@@ -245,6 +245,10 @@ impl KlippApp {
                             self.sync_sequence_to_engine();
                             self.state.selected_clip = Some(clip_id);
                             self.state.dirty = true;
+                            // Sound under the picture ends with it (#2983).
+                            if is_audio_only {
+                                self.trim_sound_to_picture(clip_id);
+                            }
                         }
                     }
                     true
