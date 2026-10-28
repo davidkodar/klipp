@@ -714,7 +714,9 @@ pub(crate) const FINAL_CUT: &[(&str, &[&str])] = &[
     ("copy_clip", &["Ctrl+C"]), // Copy
     ("create_title", &[]), // Connect Default Title
     ("cut_clip", &["Ctrl+X"]), // Cut
-    ("delete_clip", &["Backspace"]), // Delete
+    // Delete, and Klipp's Delete beside it (#2969): the page documents
+    // only the Mac Delete key (Backspace here), not Forward Delete.
+    ("delete_clip", &["Backspace", "Delete"]), // Delete
     ("deselect_all", &["Ctrl+Shift+A"]), // Deselect All
     ("export", &["Ctrl+E"]), // Share to Default Destination
     ("extend_edit", &["Shift+X"]), // Extend Edit

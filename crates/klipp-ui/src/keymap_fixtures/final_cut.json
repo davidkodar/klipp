@@ -1736,5 +1736,13 @@
    ]
   }
  ],
- "deviations": {}
+ "deviations": {},
+ "klipp_adds": {
+  "delete_clip": {
+   "keys": [
+    "Delete"
+   ],
+   "why": "The page documents only the Mac Delete key (Backspace here) and says nothing of Forward Delete; on a Windows or Linux keyboard Delete is the key that removes a clip, so Klipp's own Delete stays on it (#2969)."
+  }
+ }
 }
