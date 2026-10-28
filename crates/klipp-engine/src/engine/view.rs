@@ -800,7 +800,7 @@ impl PlaybackEngine {
     }
 
     /// Give the renderer the timeline's global LUT when it has changed.
-    fn push_global_lut(&mut self) {
+    pub(super) fn push_global_lut(&mut self) {
         let p = &self.color_pipeline;
         let sig = (
             p.enabled,

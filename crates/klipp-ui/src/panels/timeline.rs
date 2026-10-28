@@ -4784,7 +4784,9 @@ impl TimelinePanel {
         // gated on `awaiting_seek_frame && !showing_thumbnail_preview`, and
         // clearing the latter is what makes it re-pick the closest thumbnail
         // each frame instead of sticking on the first one.
-        if !has_skim_file {
+        // The engine draws the picture from skim files now (#2945): the
+        // filmstrip only where that was refused and there is no skim file.
+        if !has_skim_file && state.timeline_skim_declined {
             state.awaiting_seek_frame = true;
             state.showing_thumbnail_preview = false;
         }
@@ -4835,23 +4837,13 @@ impl TimelinePanel {
         // mush. Throttled by `skim_decode_in_flight`; latest request is
         // queued in `skim_queued_request` and dispatched when the in-flight
         // decode finishes (in `app.rs` after drain_events).
+        // The picture at the playhead, composited by the engine from skim
+        // files (#2945): asked for whatever is there, a title, a scene or a
+        // gap as much as a clip. The clip's raw skim frame stands in where
+        // the engine doesn't draw it.
+        let raw = scrub_clip.as_ref().filter(|_| has_skim_file).map(|(m, _, s)| (*m, *s));
+        state.request_timeline_skim(cmds, tc, raw);
         if let Some((media_id, _source_path, source_secs)) = scrub_clip {
-            // Video skim — only worth requesting if there's a skim_file.
-            // Otherwise the source decode is too slow for real-time scrub
-            // and we fall back to the filmstrip preview kicked above.
-            if has_skim_file {
-                // Timeline playhead scrub previews into the Program Viewer.
-                if !state.skim_decode_in_flight {
-                    cmds.push(AppCommand::BrowserSkimFrame {
-                        media_id,
-                        time_secs: source_secs,
-                        target: klipp_core::ViewerMode::Program,
-                    });
-                } else {
-                    state.skim_queued_request = Some((media_id, source_secs, klipp_core::ViewerMode::Program));
-                }
-                state.browser_skim_active_this_frame = true;
-            }
 
             // Audio skim — same command the media browser hover uses, and
             // now with the same 16ms floor between updates. The drag used
@@ -6546,16 +6538,8 @@ impl TimelinePanel {
                                 // Timeline filmstrip hover previews into the
                                 // Program Viewer (it represents what the
                                 // timeline output would be at that point).
-                                if !state.skim_decode_in_flight {
-                                    cmds.push(AppCommand::BrowserSkimFrame {
-                                        media_id: inner_media_id,
-                                        time_secs: inner_source_secs,
-                                        target: klipp_core::ViewerMode::Program,
-                                    });
-                                } else {
-                                    state.skim_queued_request =
-                                        Some((inner_media_id, inner_source_secs, klipp_core::ViewerMode::Program));
-                                }
+                                let at = hover_timeline_time(state, track_idx, clip_index, frac);
+                                state.request_timeline_skim(cmds, at, Some((inner_media_id, inner_source_secs)));
                             }
 
                             // Poster fallback intentionally omitted: writing it to
@@ -6617,6 +6601,14 @@ impl TimelinePanel {
                             }
                         }
                     }
+                    // A title, a generator: no media of its own, but a
+                    // picture at the hovered time all the same (#2945).
+                    if clip_media_id.is_none() && clip_compound_seq_id.is_none() {
+                        let frac = ((pos.x - clip_rect.min.x) / clip_rect.width()).clamp(0.0, 1.0) as f64;
+                        state.browser_skim_active_this_frame = true;
+                        let at = hover_timeline_time(state, track_idx, clip_index, frac);
+                        state.request_timeline_skim(cmds, at, None);
+                    }
                     if let Some(media_id) = clip_media_id {
                         state.browser_skim_active_this_frame = true;
 
@@ -6631,17 +6623,11 @@ impl TimelinePanel {
                             .and_then(|m| m.skim_file.as_ref())
                             .is_some_and(|p| p.exists());
 
-                        if has_skim_file {
-                            if !state.skim_decode_in_flight {
-                                cmds.push(AppCommand::BrowserSkimFrame {
-                                    media_id,
-                                    time_secs: skim_time,
-                                    target: klipp_core::ViewerMode::Program,
-                                });
-                            } else {
-                                state.skim_queued_request = Some((media_id, skim_time, klipp_core::ViewerMode::Program));
-                            }
-                        }
+                        // The picture at the hovered time, composited by
+                        // the engine (#2945); the clip's raw skim frame
+                        // stands in where it isn't drawn.
+                        let at = hover_timeline_time(state, track_idx, clip_index, frac as f64);
+                        state.request_timeline_skim(cmds, at, has_skim_file.then_some((media_id, skim_time)));
 
                         // Poster fallback intentionally omitted — see matching
                         // comment above the V1 filmstrip hover path. Filmstrip
@@ -17028,6 +17014,20 @@ fn files_drop_commands(paths: Vec<std::path::PathBuf>, track_idx: usize) -> Vec<
         .collect()
 }
 
+
+/// The timeline time under a hover `frac` of the way across clip
+/// `clip_index` of track `track_idx` (#2945).
+fn hover_timeline_time(state: &AppState, track_idx: usize, clip_index: usize, frac: f64) -> klipp_core::Timecode {
+    let rate = state.fps.rate();
+    match state.sequence().tracks.get(track_idx).and_then(|t| t.clips.get(clip_index)) {
+        Some(c) => {
+            let (from, to) = (c.timeline_in.to_secs_f64(), c.timeline_out.to_secs_f64());
+            klipp_core::Timecode::from_secs_f64(from + (to - from) * frac.clamp(0.0, 1.0), rate)
+        }
+        None => state.playhead,
+    }
+}
+
 #[cfg(test)]
 mod media_drop_tests {
     use super::*;
@@ -19530,15 +19530,16 @@ mod scrub_preview_tests {
             "the filmstrip thumbnail would be uploaded over the skim frame",
         );
         assert!(
-            cmds.iter().any(|c| matches!(c, AppCommand::BrowserSkimFrame { .. })),
-            "the skim frame itself must still be asked for",
+            cmds.iter().any(|c| matches!(c, AppCommand::SkimTimeline { .. })),
+            "the skim picture itself must still be asked for (#2945)",
         );
 
         std::fs::remove_dir_all(&dir).ok();
     }
 
     /// And the fallback still stands where it is the only picture
-    /// available: no skim file, so the thumbnail is what there is.
+    /// available: no skim file, and the engine left the skim to the raw
+    /// frame (#2945), so the thumbnail is what there is.
     #[test]
     fn a_drag_without_a_skim_file_still_arms_the_filmstrip() {
         let mut state = scrub_state(None);
@@ -19547,10 +19548,18 @@ mod scrub_preview_tests {
         let mut cmds = Vec::new();
 
         panel.scrub_to(&mut state, &mut cmds, 3.0, 100.0);
+        assert!(cmds.iter().any(|c| matches!(c, AppCommand::SkimTimeline { .. })), "the skim picture is asked for (#2945)");
+        assert!(!filmstrip_would_upload(&state), "the engine may draw it: no thumbnail over it yet");
 
+        // The engine left it to the raw frame, and there is no skim file:
+        // the thumbnail is what there is.
+        state.timeline_skim_declined = true;
+        state.timeline_skim_in_flight = None;
+        let mut cmds = Vec::new();
+        panel.scrub_to(&mut state, &mut cmds, 3.5, 110.0);
         assert!(
             filmstrip_would_upload(&state),
-            "with no skim file the filmstrip preview is the only preview",
+            "with no skim file and the skim left to the raw frame, the filmstrip preview is the only preview",
         );
         assert!(
             !cmds.iter().any(|c| matches!(c, AppCommand::BrowserSkimFrame { .. })),

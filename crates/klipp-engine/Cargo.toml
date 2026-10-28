@@ -219,6 +219,18 @@ name = "a_layer_shows_only_its_own_clip"
 path = "tests/a_layer_shows_only_its_own_clip.rs"
 
 [[test]]
+name = "a_skim_shows_the_picture"
+path = "tests/a_skim_shows_the_picture.rs"
+
+[[test]]
+name = "a_skim_keeps_its_vram"
+path = "tests/a_skim_keeps_its_vram.rs"
+
+[[test]]
+name = "a_skim_keeps_its_pace"
+path = "tests/a_skim_keeps_its_pace.rs"
+
+[[test]]
 name = "a_nested_scene_parks_complete"
 path = "tests/a_nested_scene_parks_complete.rs"
 

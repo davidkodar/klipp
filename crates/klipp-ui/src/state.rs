@@ -671,6 +671,18 @@ timeline_view! {
 }
 
 impl AppState {
+    /// Ask the engine for the timeline's picture at `time` for a skim
+    /// (#2945), or queue it behind the one in flight. `raw` is the raw
+    /// skim frame shown if the engine doesn't draw it.
+    pub fn request_timeline_skim(&mut self, cmds: &mut Vec<klipp_core::AppCommand>, time: Timecode, raw: Option<(MediaId, f64)>) {
+        if self.timeline_skim_in_flight.is_none() {
+            self.timeline_skim_in_flight = Some((std::time::Instant::now(), raw));
+            cmds.push(klipp_core::AppCommand::SkimTimeline { time });
+        } else {
+            self.timeline_skim_queued = Some((time, raw));
+        }
+    }
+
     /// Make sequence `sequence_idx` the one shown, as its tab does: its tab
     /// opened, this playhead kept on the sequence left and the other's
     /// taken back, the rate the sequence's. A tab clears the selection and
@@ -1982,6 +1994,16 @@ pub struct AppState {
     /// through the queue so the eventual response routes to the correct
     /// viewer.
     pub skim_queued_request: Option<(MediaId, f64, klipp_core::ViewerMode)>,
+    /// A timeline skim picture asked of the engine and not answered yet
+    /// (#2945): when it was asked, and the raw skim frame (media, source
+    /// seconds) to show for it if the engine doesn't draw it.
+    pub timeline_skim_in_flight: Option<(std::time::Instant, Option<(MediaId, f64)>)>,
+    /// The newest timeline skim position asked for while one is in
+    /// flight, sent when it is answered.
+    pub timeline_skim_queued: Option<(Timecode, Option<(MediaId, f64)>)>,
+    /// The last timeline skim was left to the raw frame: where there is no
+    /// skim file either, the filmstrip stands in.
+    pub timeline_skim_declined: bool,
     /// `(media_id, frame, target)` of the skim frame last asked for: the
     /// frame on screen while a skim rests on it. A resting pointer redraws
     /// the UI, and a request for the frame already shown is not sent
@@ -4830,6 +4852,9 @@ impl Default for AppState {
             skim_decode_in_flight: false,
             skim_decode_started_at: None,
             skim_queued_request: None,
+            timeline_skim_in_flight: None,
+            timeline_skim_queued: None,
+            timeline_skim_declined: false,
             skim_last_requested: None,
             browser_skim_active_this_frame: false,
             program_skim_active: false,

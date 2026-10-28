@@ -410,7 +410,7 @@ mod tests {
             "save_hyperzoom_preset_name", "save_hyperzoom_preset_error", "save_hyperzoom_preset_source_clip", "hyperzoom_preset_registry", "render_cache_ranges", "render_range", "scope_legal_range",
             "multicam_at_playhead", "waveform_zoom", "viewer_text_edit_select_all", "viewer_text_selection", "viewer_text_selection_locked", "viewer_text_select_anchor",
             "timeline_track_scale", "timeline_prefs", "timeline_search_next", "timeline_search_prev", "browser_skim_texture", "browser_skim_media_id", "skim_transcoding", "skim_in_flight_paths",
-            "skim_transcode_status", "skim_transcode_done_at", "browser_skim_pending", "skim_decode_in_flight", "skim_decode_started_at", "skim_queued_request", "skim_last_requested", "browser_skim_active_this_frame", "pending_skim_transcodes",
+            "skim_transcode_status", "skim_transcode_done_at", "browser_skim_pending", "skim_decode_in_flight", "skim_decode_started_at", "skim_queued_request", "timeline_skim_in_flight", "timeline_skim_queued", "timeline_skim_declined", "skim_last_requested", "browser_skim_active_this_frame", "pending_skim_transcodes",
             "clip_carry", "upper_timeline_split", "magnetic_timeline_enabled", "perf_fps", "perf_video_fps",
             "filmstrip_hover_enabled", "transcript_panel_hovered", "speed_dialog_ripple", "ripple_enabled", "linked_selection", "drag_drop", "surface_snaps_pending", "consolidate_include_skims", "project_auto_skim",
         ];
