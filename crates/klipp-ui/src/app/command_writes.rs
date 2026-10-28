@@ -140,6 +140,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::OpenSystemProbe
         | AppCommand::OpenProjectDoctor
         | AppCommand::BeginScrub
+        | AppCommand::SkimTimeline { .. }
         | AppCommand::EndScrub
         | AppCommand::TranscribeClip { .. }
         | AppCommand::ExportMetadataSheet { .. }

@@ -15,6 +15,8 @@ mod delivery;
 mod render_job;
 mod seek_lead;
 mod reverse_gop;
+mod skim_render;
+pub use skim_render::{SKIMS_COMPOSITED, SKIMS_DECLINED, SKIM_SOURCES_OFF_GPU};
 mod streams;
 mod view;
 
@@ -2007,6 +2009,9 @@ pub struct PlaybackEngine {
     scrub_audio_enabled: bool,
     // True while BeginScrub…EndScrub brackets a playhead drag.
     is_scrubbing: bool,
+    /// Skim-file decoders for skim pictures (#2945), closed when the skim
+    /// ends.
+    skim_pool: skim_render::SkimPool,
     /// The media playback can crossfade, refreshed once per tick: see
     /// [`fadeable_media`].
     fadeable_media: FadeableMedia,
@@ -2889,6 +2894,7 @@ impl PlaybackEngine {
             render_status_at: std::time::Instant::now(),
             scrub_audio_enabled: true,
             is_scrubbing: false,
+            skim_pool: Default::default(),
             fadeable_media: FadeableMedia::new(),
             pre_seek_result: Arc::new(std::sync::Mutex::new(None)),
             pre_seek_generation: 0,
@@ -3351,6 +3357,8 @@ impl PlaybackEngine {
             }
 
             AppCommand::Play => {
+                // A skim is over once the playhead moves or plays (#2945).
+                self.end_skim();
                 debug!("Play command received, state={:?}", self.state);
                 // Before playback can reach a gap (#2386).
                 self.prewarm_empty_stack();
@@ -3531,6 +3539,8 @@ impl PlaybackEngine {
             }
 
             AppCommand::SeekTo(tc) => {
+                // A skim is over once the playhead moves or plays (#2945).
+                self.end_skim();
                 // Identity seek while paused: seeking to the position we're
                 // already parked at (the skim-end revert does this — it only
                 // needs the committed frame repainted over the skim frame).
@@ -3616,6 +3626,8 @@ impl PlaybackEngine {
             }
 
             AppCommand::SetPlayhead(tc) => {
+                // A skim is over once the playhead moves or plays (#2945).
+                self.end_skim();
                 self.note_view(format!("asked to park at {:?} ({:?})", tc.value, self.state));
                 self.playhead = tc;
                 // Same Idle / Stopped gate lift as SeekTo.
@@ -3789,7 +3801,12 @@ impl PlaybackEngine {
                     }
                 }
             }
+            AppCommand::SkimTimeline { time } => {
+                let composited = self.skim_timeline(time);
+                let _ = self.event_tx.send(AppEvent::TimelineSkimShown { time, composited });
+            }
             AppCommand::EndScrub => {
+                self.end_skim();
                 // Scrub ended — UI will restore proxy state. Clear any
                 // scrub-induced mute; the per-tick update_playback reasserts
                 // speed / time-remap mutes on the next tick, so we don't need

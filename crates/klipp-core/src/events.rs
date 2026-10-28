@@ -1957,6 +1957,12 @@ pub enum AppCommand {
     /// Read-only report in v1; per-issue Fix actions are queued.
     OpenProjectDoctor,
     BeginScrub,
+    /// The timeline's picture at `time` for a skim (#2945): drawn by the
+    /// engine from the media's skim files with every title, effect and
+    /// transition, the playhead left where it is. Answered by
+    /// `AppEvent::TimelineSkimShown`; one not drawn is left to the raw
+    /// skim frame.
+    SkimTimeline { time: Timecode },
     /// End timeline scrubbing — engine restores full-res decode.
     EndScrub,
     /// Relink a specific offline media item to a new path.
@@ -4771,6 +4777,9 @@ pub enum AppEvent {
 
     // Browser skim frame
     BrowserSkimFrameReady { media_id: MediaId, rgba: Vec<u8>, width: u32, height: u32, target: ViewerMode },
+    /// A `SkimTimeline` answered: `composited` when the engine drew it,
+    /// else the UI shows the raw skim frame for it (#2945).
+    TimelineSkimShown { time: Timecode, composited: bool },
 
     // Video stabilization
     StabilizationProgress { clip_id: ClipId, progress: f32 },

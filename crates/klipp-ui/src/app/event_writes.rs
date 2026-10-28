@@ -77,6 +77,7 @@ pub(crate) fn event_writes(event: &AppEvent) -> bool {
         | AppEvent::SkimTranscodeProgress { .. }
         | AppEvent::SkimTranscodeFailed { .. }
         | AppEvent::BrowserSkimFrameReady { .. }
+        | AppEvent::TimelineSkimShown { .. }
         | AppEvent::StabilizationProgress { .. }
         | AppEvent::DeflickerProgress { .. }
         | AppEvent::DeflickerFailed { .. }

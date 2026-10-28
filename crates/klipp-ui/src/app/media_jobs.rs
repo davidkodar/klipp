@@ -330,6 +330,15 @@ impl KlippApp {
         source_height.min(1080).min(pref.max(240))
     }
 
+    /// The timeline skim position queued behind the one just answered, if
+    /// any, sent to the engine (#2945).
+    pub(super) fn send_queued_timeline_skim(&mut self) {
+        if let Some((time, raw)) = self.state.timeline_skim_queued.take() {
+            self.state.timeline_skim_in_flight = Some((std::time::Instant::now(), raw));
+            let _ = self.cmd_tx.send(AppCommand::SkimTimeline { time });
+        }
+    }
+
     /// Ask the skim worker for `media_id`'s frame at `time_secs`, from
     /// the skim transcode when there is one. Marks the request in flight;
     /// the frame (or an empty one on failure) clears it.

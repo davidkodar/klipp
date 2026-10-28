@@ -1682,6 +1682,13 @@ impl KlippApp {
             }
         }
 
+        // A timeline skim the engine never answered (#2945): let the next go.
+        if self.state.timeline_skim_in_flight.is_some_and(|(t, _)| t.elapsed().as_secs_f32() > 2.0) {
+            tracing::warn!("timeline skim unanswered: sending the next");
+            self.state.timeline_skim_in_flight = None;
+            self.send_queued_timeline_skim();
+        }
+
         // Watchdog: reset stuck skim_decode_in_flight after 2s with no completion.
         // Belt-and-braces backup to the always-send-completion fix in the decode threads.
         if self.state.skim_decode_in_flight {
