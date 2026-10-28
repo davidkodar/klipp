@@ -416,8 +416,8 @@ and the built-in delivery specs move to files under
 `assets/presets/<kind>/*.toml`, with a user folder beside them (#2887);
 effects, transitions and nodes are declared once, with menus and MCP
 lists generated from that (#2888); shaders move to `.wgsl` files and
-`gpu.rs` is split by area (#2890, under way: the folder and its build
-step are in place). Each conversion names what it fixes
+`gpu.rs` is split by area (#2890, done: one module per area under
+`crates/klipp-effects/src/gpu/`). Each conversion names what it fixes
 or enables; none is done for its own sake.
 
 ---

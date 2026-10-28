@@ -5,7 +5,7 @@
 //! Swirl, Ripple, Glitch RGB Split) call the same functions with their
 //! own strength through the cut, so a fix to one is a fix to both.
 //!
-//! [`functions_wgsl`] is the GPU's text of them and the functions here
+//! `include/warp_functions.wgsl` is the GPU's text of them and the functions here
 //! are the CPU's, written in Rust through [`crate::wgsl`] line for line,
 //! so the two agree. Each keeps the order of its arithmetic as the
 //! transitions had it, so they draw what they drew.
@@ -124,14 +124,9 @@ pub fn band_shift(y: f32, band_h: f32, step: u32, envelope: f32, w: f32) -> f32 
     (0.3 + 0.7 * rand3(band, step, 7u32)) * envelope * 0.04 * w * on
 }
 
-/// The functions above in WGSL, after a shader's own declarations: the
-/// hash, then each warp under its name with `warp_` before it.
-macro_rules! functions_wgsl {
-    () => {
-        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/gpu/shaders/include/warp_functions.wgsl"))
-    };
-}
-pub(crate) use functions_wgsl;
+// The WGSL is `src/gpu/shaders/include/warp_functions.wgsl` (#2890):
+// The functions above in WGSL, after a shader's own declarations: the
+// hash, then each warp under its name with `warp_` before it.
 
 /// The Warp effect's settings, as the kernels take them.
 #[derive(Clone, Copy, Debug)]
@@ -185,7 +180,7 @@ pub fn source(s: &Settings, x: f32, y: f32, w: f32, h: f32) -> V2 {
 }
 
 /// The Warp effect on the CPU: each pixel taken from [`source`],
-/// premultiplied while mixed, as the GPU's [`shader_wgsl`] does.
+/// premultiplied while mixed, as the GPU's `stylise/warp.wgsl` does.
 pub fn cpu(pixels: &[f32], width: u32, height: u32, s: &Settings) -> Vec<f32> {
     let (w, h) = (width as f32, height as f32);
     let at = |x: i32, y: i32| {
@@ -213,64 +208,6 @@ pub fn is_identity(s: &Settings) -> bool {
     }
 }
 
-/// The GPU's Warp: one pass, each pixel taken from `warp_source`. After
-/// the pixel storage, [`functions_wgsl`] and the displace sampler.
-macro_rules! shader_wgsl {
-    () => {
-        "
-struct Params {
-    width: u32,
-    height: u32,
-    mode: u32,
-    direction: u32,
-    amplitude: f32,
-    wavelength: f32,
-    speed: f32,
-    angle: f32,
-    strength: f32,
-    radius: f32,
-    center_x: f32,
-    center_y: f32,
-    band: f32,
-    time: f32,
-    _pad0: u32,
-    _pad1: u32,
-}
-
-@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
-@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
-@group(0) @binding(2) var<uniform> params: Params;
-
-fn warp_source(x: f32, y: f32, w: f32, h: f32) -> vec2<f32> {
-    let cx = params.center_x * w;
-    let cy = params.center_y * h;
-    if params.mode == 0u {
-        let p = warp_wave(x, y, w, h, params.amplitude * h / 1080.0, 1.0 / max(params.wavelength, 0.001), params.direction, fract(params.time * params.speed));
-        return p.xy;
-    } else if params.mode == 1u {
-        return warp_twirl(x, y, w, h, cx, cy, max(params.radius * h, 1.0), params.angle * 3.14159265 / 180.0, 3.0);
-    } else if params.mode == 2u {
-        return warp_bulge(x, y, cx, cy, params.radius * h, params.strength);
-    } else if params.mode == 3u {
-        let p = warp_ripple(x, y, w, h, cx, cy, 1.0 / max(params.wavelength, 0.001), fract(params.time * params.speed) * 6.28318530, 1.0, params.amplitude);
-        return p.xy;
-    }
-    let step = u32(max(params.time * params.speed, 0.0));
-    let band_h = max(params.band * h, 1.0);
-    let flip = select(-1.0, 1.0, rand3(u32(y / band_h), step, 8u) > 0.5);
-    return vec2<f32>(clamp(x + flip * warp_band_shift(y, band_h, step, params.strength, w), 0.0, w - 1.0), y);
-}
-
-@compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
-    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
-    let idx = gid.x;
-    let w = params.width;
-    if idx >= w * params.height { return; }
-    let p = warp_source(f32(idx % w), f32(idx / w), f32(w), f32(params.height));
-    output[idx] = pack(sample_premultiplied(p.x, p.y));
-}
-"
-    };
-}
-pub(crate) use shader_wgsl;
+// The WGSL is `src/gpu/shaders/stylise/warp.wgsl` (#2890):
+// The GPU's Warp: one pass, each pixel taken from `warp_source`. After
+// the pixel storage, `include/warp_functions.wgsl` and the displace sampler.

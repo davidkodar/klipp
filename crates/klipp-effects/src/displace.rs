@@ -4,9 +4,9 @@
 //! than sliding: water, heat haze, a wobble. Two octaves, the second
 //! finer and weaker, keep it from looking like a grid.
 //!
-//! The GPU runs [`shader_wgsl`]; the CPU runs [`cpu`], the same
+//! The GPU runs `gpu/shaders/stylise/displace.wgsl`; the CPU runs [`cpu`], the same
 //! computation written in Rust, so the two agree. The noise is also what
-//! the water reflection's ripple is made of (#2707): [`noise_wgsl`] and
+//! the water reflection's ripple is made of (#2707): `include/displace_noise.wgsl` and
 //! [`fbm`] are its one definition.
 //!
 //! A layer can be straight alpha with any colour where it is clear (a
@@ -99,122 +99,20 @@ pub fn cpu(pixels: &[f32], width: u32, height: u32, amount: f32, size: f32, spee
     out
 }
 
-/// The noise in WGSL: [`hash`], [`value`], [`fbm`] and [`offset`] as the
-/// GPU runs them, for any shader that ripples (#2707). A literal, so a
-/// shader can be put together with `concat!`.
-macro_rules! noise_wgsl {
-    () => {
-        "
-fn dn_hash(x: i32, y: i32, z: i32, seed: u32) -> f32 {
-    var h = (bitcast<u32>(x) * 0x8da6b343u) ^ (bitcast<u32>(y) * 0xd8163841u) ^ (bitcast<u32>(z) * 0xcb1ab31fu) ^ (seed * 0x165667b1u);
-    h = (h ^ (h >> 15u)) * 0x2c1b3c6du;
-    h = (h ^ (h >> 12u)) * 0x297a2d39u;
-    h = h ^ (h >> 15u);
-    return f32(h) / 4294967295.0;
-}
+// The WGSL is `src/gpu/shaders/include/displace_noise.wgsl` (#2890):
+// The noise in WGSL: [`hash`], [`value`], [`fbm`] and [`offset`] as the
+// GPU runs them, for any shader that ripples (#2707). A literal, so a
+// shader can be put together with `concat!`.
 
-fn dn_value(p: vec3<f32>, seed: u32) -> f32 {
-    let i = floor(p);
-    let f = p - i;
-    let u = f * f * (vec3<f32>(3.0) - f * 2.0);
-    let ix = i32(i.x);
-    let iy = i32(i.y);
-    let iz = i32(i.z);
-    let x00 = mix(dn_hash(ix, iy, iz, seed), dn_hash(ix + 1, iy, iz, seed), u.x);
-    let x10 = mix(dn_hash(ix, iy + 1, iz, seed), dn_hash(ix + 1, iy + 1, iz, seed), u.x);
-    let x01 = mix(dn_hash(ix, iy, iz + 1, seed), dn_hash(ix + 1, iy, iz + 1, seed), u.x);
-    let x11 = mix(dn_hash(ix, iy + 1, iz + 1, seed), dn_hash(ix + 1, iy + 1, iz + 1, seed), u.x);
-    return mix(mix(x00, x10, u.y), mix(x01, x11, u.y), u.z);
-}
+// The WGSL is `src/gpu/shaders/include/displace_sample.wgsl` (#2890):
+// [`sample_premultiplied`] in WGSL, reading the shader's `input` at its
+// `params.width` × `params.height`: what a shader that moves pixels
+// samples by (the Warp's too). After its declarations.
 
-fn dn_fbm(p: vec3<f32>, seed: u32) -> f32 {
-    let n = dn_value(p, seed) * 0.65 + dn_value(p * 2.03 + vec3<f32>(17.0, 31.0, 7.0), seed) * 0.35;
-    return n * 2.0 - 1.0;
-}
-
-fn dn_offset(x: f32, y: f32, amount: f32, size: f32, speed: f32, direction: u32, seed: u32, time: f32) -> vec2<f32> {
-    let p = vec3<f32>(x / max(size, 1.0), y / max(size, 1.0), time * speed);
-    var d = vec2<f32>(0.0);
-    if direction != 2u { d.x = dn_fbm(p, seed) * amount; }
-    if direction != 1u { d.y = dn_fbm(p + vec3<f32>(41.3, 7.9, 0.0), seed + 1u) * amount; }
-    return d;
-}
-"
-    };
-}
-pub(crate) use noise_wgsl;
-
-/// [`sample_premultiplied`] in WGSL, reading the shader's `input` at its
-/// `params.width` × `params.height`: what a shader that moves pixels
-/// samples by (the Warp's too). After its declarations.
-macro_rules! sample_wgsl {
-    () => {
-        "
-fn at(x: i32, y: i32) -> vec4<f32> {
-    let w = i32(params.width);
-    let h = i32(params.height);
-    return unpack(input[u32(clamp(y, 0, h - 1) * w + clamp(x, 0, w - 1))]);
-}
-
-fn sample_premultiplied(sx: f32, sy: f32) -> vec4<f32> {
-    let x0 = i32(floor(sx));
-    let y0 = i32(floor(sy));
-    let fx = sx - f32(x0);
-    let fy = sy - f32(y0);
-    var sum = vec4<f32>(0.0);
-    let c00 = at(x0, y0);
-    let c10 = at(x0 + 1, y0);
-    let c01 = at(x0, y0 + 1);
-    let c11 = at(x0 + 1, y0 + 1);
-    sum += vec4<f32>(c00.rgb * c00.a, c00.a) * ((1.0 - fx) * (1.0 - fy));
-    sum += vec4<f32>(c10.rgb * c10.a, c10.a) * (fx * (1.0 - fy));
-    sum += vec4<f32>(c01.rgb * c01.a, c01.a) * ((1.0 - fx) * fy);
-    sum += vec4<f32>(c11.rgb * c11.a, c11.a) * (fx * fy);
-    if sum.a > 1e-6 { return vec4<f32>(sum.rgb / sum.a, sum.a); }
-    return vec4<f32>(0.0);
-}
-
-"
-    };
-}
-pub(crate) use sample_wgsl;
-
-/// The GPU's Displace: one pass, each pixel from where the field moves
-/// it, premultiplied while mixed. After the pixel storage and
-/// [`noise_wgsl`]; [`sample_wgsl`] after it.
-macro_rules! shader_wgsl {
-    () => {
-        "
-struct Params {
-    width: u32,
-    height: u32,
-    amount: f32,
-    size: f32,
-    speed: f32,
-    direction: u32,
-    seed: u32,
-    time: f32,
-}
-
-@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
-@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
-@group(0) @binding(2) var<uniform> params: Params;
-
-@compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
-    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
-    let idx = gid.x;
-    let w = params.width;
-    if idx >= w * params.height { return; }
-    let x = f32(idx % w);
-    let y = f32(idx / w);
-    let d = dn_offset(x, y, params.amount, params.size, params.speed, params.direction, params.seed, params.time);
-    output[idx] = pack(sample_premultiplied(x + d.x, y + d.y));
-}
-"
-    };
-}
-pub(crate) use shader_wgsl;
+// The WGSL is `src/gpu/shaders/stylise/displace.wgsl` (#2890):
+// The GPU's Displace: one pass, each pixel from where the field moves
+// it, premultiplied while mixed. After the pixel storage and
+// `include/displace_noise.wgsl`; `include/displace_sample.wgsl` after it.
 
 #[cfg(test)]
 mod tests {

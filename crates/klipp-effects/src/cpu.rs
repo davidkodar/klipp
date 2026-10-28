@@ -483,7 +483,7 @@ pub(crate) fn apply(
         },
         // The twin of `SHADER_PARTICLES` (#1141).
         Particles { .. } => crate::particles::apply(effect, p, w, h),
-        // The twin of `gradient_map::shader_wgsl` (#2758).
+        // The twin of `gpu/shaders/stylise/gradient_map.wgsl` (#2758).
         GradientMap { shadow, mid, highlight, mix } => {
             if mix.abs() < f32::EPSILON {
                 return p;
@@ -503,7 +503,7 @@ pub(crate) fn apply(
             }
             crate::displace::cpu(&p, w, h, amount, size, speed, direction, seed, time)
         }
-        // The twin of `reflection::shader_wgsl` (#2707).
+        // The twin of `gpu/shaders/stylise/reflection.wgsl` (#2707).
         Reflection { .. } => match effect.reflection_params(w, h) {
             Some(params) if !crate::is_identity_effect(effect) => crate::reflection::cpu(&p, &params),
             _ => p,
