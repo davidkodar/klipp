@@ -707,6 +707,18 @@ enum PregradePixels {
     Hdr(crate::types::HdrInput),
 }
 
+/// A decoded frame as the pre-grade cache holds it, its picture read
+/// back first where it is on the GPU only. Cached as it came, a GPU frame
+/// was an empty picture, and a seek onto it later showed nothing (#2803
+/// stopped the backward steps filling those frames first).
+fn cached_pregrade(frame: &mut crate::types::LinearFrame) -> Pregrade {
+    frame.realise_hdr_on_cpu();
+    if frame.hdr.is_none() {
+        frame.ensure_cpu_data();
+    }
+    Pregrade::from_frame(frame)
+}
+
 impl PregradePixels {
     /// What a decoded frame should be cached as.
     fn from_frame(frame: &crate::types::LinearFrame) -> Self {
@@ -1186,6 +1198,18 @@ mod frame_cache_tests {
         Pregrade::new(PregradePixels::Srgb8(std::sync::Arc::new(vec![v; 16])))
     }
 
+    /// A frame never read back from the GPU is an empty picture: not kept,
+    /// so a seek onto it decodes it rather than showing nothing.
+    #[test]
+    fn an_empty_picture_is_not_cached() {
+        let a = Some(klipp_core::ClipId::new());
+        let mut cache = FrameCache::new(8);
+        cache.insert_if_absent(5, a, Pregrade::new(PregradePixels::Srgb8(std::sync::Arc::new(Vec::new()))), 2, 2);
+        assert!(cache.get(5, a).is_none(), "an empty picture was cached");
+        cache.insert_if_absent(5, a, px(1), 2, 2);
+        assert!(cache.get(5, a).is_some(), "the frame's own picture is");
+    }
+
     /// #411: inside a dissolve one playhead has two primary clips — the
     /// outgoing one played into its handle, the incoming one a seek
     /// opens. A frame cached for one is not served as the other.
@@ -1229,7 +1253,12 @@ impl FrameCache {
 
     /// Insert a frame into the cache, replacing what the key held.
     /// `clip` is the clip the primary decoder read it from.
+    /// A picture that isn't the frame's size (an sRGB one empty, from a
+    /// frame never read back) is not kept: shown, it would be no picture.
     fn insert(&mut self, frame_number: i64, clip: Option<klipp_core::ClipId>, pixels: Pregrade, width: u32, height: u32) {
+        if matches!(&pixels.pixels, PregradePixels::Srgb8(b) if b.len() != width as usize * height as usize * 4) {
+            return;
+        }
         self.remove(frame_number);
         let bytes = pregrade_bytes(&pixels);
         self.entries.insert(frame_number, FrameCacheEntry { pixels, clip, width, height, bytes });
@@ -8333,15 +8362,11 @@ impl PlaybackEngine {
         // 1. Drain any currently queued forward frames into cache
         if let Some(dec) = &self.v1_decoder {
             let mut queue = dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner());
-            while let Some(frame) = queue.pop() {
+            while let Some(mut frame) = queue.pop() {
                 if frame.is_eof { break; }
                 let pts = frame.pts;
                 let (w, h) = (frame.width, frame.height);
-                let pixels = Pregrade::new(match frame.hdr.as_ref() {
-                    Some(hdr) => PregradePixels::Hdr(hdr.to_cpu()),
-                    None => PregradePixels::Srgb8(Arc::new(frame.to_rgba())),
-                })
-                .with_pts(Some(frame.pts_secs()));
+                let pixels = cached_pregrade(&mut frame);
                 let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
                 let frame_num = if let Some(clip) = seq.tracks.get(self.current_track_index)
                     .and_then(|t| t.clips.get(self.current_clip_index))
@@ -8389,14 +8414,10 @@ impl PlaybackEngine {
             while std::time::Instant::now() < deadline {
                 let popped = self.v1_decoder.as_ref()
                     .and_then(|dec| dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).pop());
-                if let Some(frame) = popped {
+                if let Some(mut frame) = popped {
                     if frame.is_eof { break; }
                     let (w, h) = (frame.width, frame.height);
-                    let pixels = Pregrade::new(match frame.hdr.as_ref() {
-                        Some(hdr) => PregradePixels::Hdr(hdr.to_cpu()),
-                        None => PregradePixels::Srgb8(Arc::new(frame.to_rgba())),
-                    })
-                    .with_pts(Some(frame.pts_secs()));
+                    let pixels = cached_pregrade(&mut frame);
                     let frame_num = {
                         let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
                         if let Some(clip) = seq.tracks.get(self.current_track_index)
