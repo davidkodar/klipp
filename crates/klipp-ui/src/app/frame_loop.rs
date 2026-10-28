@@ -1113,7 +1113,12 @@ impl KlippApp {
         self.show_modal_dialogs(ctx, &mut all_cmds);
 
         klipp_engine::ui_stage::mark(klipp_engine::ui_stage::RENDER_PANELS);
+        let typing_before = ctx.memory(|m| m.focused().is_some());
         self.render_main_layout(ctx, &mut all_cmds);
+        // A field left by Enter holds the single keys (#2943).
+        let typing_now = ctx.memory(|m| m.focused().is_some());
+        let held = self.state.field_keys_held;
+        self.state.field_keys_held = ctx.input(|i| super::shortcuts::field_keys_held(held, typing_before, typing_now, i));
         // The Welcome window and the tour (#2933), over the layout just drawn.
         self.show_first_time_help(ctx);
 

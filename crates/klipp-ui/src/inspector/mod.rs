@@ -9060,6 +9060,41 @@ mod title_row_style_tests {
         assert!(failures.is_empty(), "{}", failures.join("\n\n"));
     }
 
+    /// #2943: one click on a number field (the title's Width, "100 %")
+    /// gives it the keys, sent as two frames or as one, as a pointer tool
+    /// does; and Ctrl+A there selects the field's text, all of it.
+    #[test]
+    fn a_single_click_on_a_number_field_types_into_it_and_ctrl_a_selects_its_text() {
+        let (clip, state) = title();
+        let at = |ctx: &egui::Context| {
+            frame(ctx, &clip, &state, Vec::new());
+            frame(ctx, &clip, &state, Vec::new()).1.into_iter().find(|(t, _)| t == "100 %").map(|(_, p)| p).expect("Width's 100 %")
+        };
+        let b = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        for one_frame in [false, true] {
+            let ctx = egui::Context::default();
+            let pos = at(&ctx);
+            frame(&ctx, &clip, &state, vec![egui::Event::PointerMoved(pos)]);
+            if one_frame {
+                frame(&ctx, &clip, &state, vec![b(pos, true), b(pos, false)]);
+            } else {
+                frame(&ctx, &clip, &state, vec![b(pos, true)]);
+                frame(&ctx, &clip, &state, vec![b(pos, false)]);
+            }
+            frame(&ctx, &clip, &state, Vec::new());
+            let focused = ctx.memory(|m| m.focused()).expect("a field has the keys");
+            assert!(ctx.wants_keyboard_input(), "one click, typing");
+            // Ctrl+A: the field's text, start to end.
+            let ctrl = egui::Modifiers { ctrl: true, command: true, ..Default::default() };
+            frame(&ctx, &clip, &state, vec![egui::Event::Key { key: egui::Key::A, physical_key: Some(egui::Key::A), pressed: true, repeat: false, modifiers: ctrl }]);
+            frame(&ctx, &clip, &state, Vec::new());
+            let range = egui::TextEdit::load_state(&ctx, focused).and_then(|s| s.cursor.char_range()).expect("a selection");
+            let (a, b) = (range.primary.index.min(range.secondary.index), range.primary.index.max(range.secondary.index));
+            assert_eq!((a, b), (0, "100".len()), "all of the field's text");
+            assert_eq!(ctx.memory(|m| m.focused()), Some(focused), "and the field keeps the keys");
+        }
+    }
+
     fn title() -> (klipp_timeline::Clip, AppState) {
         let td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Title text".into(), font_name: "Inter".into(), ..Default::default() });
         let oid = td.objects[0].id;
