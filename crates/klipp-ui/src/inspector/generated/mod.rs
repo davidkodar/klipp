@@ -93,12 +93,15 @@ pub fn node_rows(ui: &mut egui::Ui, ctx: &mut RowCtx, rows: &NodeRows) -> Vec<(&
 }
 
 /// A built-in effect's stored value for `desc`: its field in the saved
-/// effect, or the element of it a keyed array names.
+/// effect, or the element of it a keyed array names. A field the effect
+/// leaves out at its default (a Crop's cover shape and focus, #2757) is
+/// that default, as it reads back, and its row is drawn; a field stored
+/// as null stays null.
 pub fn effect_value(effect_json: &Value, desc: &ParamDesc) -> Value {
-    let v = effect_json.get(desc.field).cloned().unwrap_or(Value::Null);
+    let Some(v) = effect_json.get(desc.field) else { return default_value(desc) };
     match desc.index {
         Some(i) => v.get(i).cloned().unwrap_or(Value::Null),
-        None => v,
+        None => v.clone(),
     }
 }
 
@@ -108,7 +111,6 @@ pub fn effect_value(effect_json: &Value, desc: &ParamDesc) -> Value {
 /// switch or choice is its default, as the node reads it; anything else
 /// unset is `Null`.
 pub fn grade_value(entry: &Value, desc: &ParamDesc) -> Value {
-    use klipp_effects::registry::ParamKind;
     let mut at = entry.get("params");
     for step in desc.field.split('.') {
         at = at.and_then(|v| v.get(step));
@@ -118,8 +120,15 @@ pub fn grade_value(entry: &Value, desc: &ParamDesc) -> Value {
         Some(i) => v.get(i).cloned().unwrap_or(Value::Null),
         None => v,
     };
-    if !v.is_null() || !desc.default.is_finite() {
-        return v;
+    if v.is_null() { default_value(desc) } else { v }
+}
+
+/// `desc`'s default as a stored value: an unset number, switch or choice
+/// is it; anything else unset is `Null`.
+fn default_value(desc: &ParamDesc) -> Value {
+    use klipp_effects::registry::ParamKind;
+    if !desc.default.is_finite() {
+        return Value::Null;
     }
     match desc.kind {
         ParamKind::Float => serde_json::json!(desc.default),
@@ -160,4 +169,27 @@ pub fn node_keys(node: &klipp_graph_format::Node, key: &str) -> Vec<klipp_core::
         .get(&klipp_graph_format::ParamKey::new(key))
         .map(|a| a.keys.iter().filter_map(|k| serde_json::from_value(k.clone()).ok()).collect())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod effect_value_tests {
+    use super::*;
+
+    /// A Crop saved at its default cover shape and focus leaves those
+    /// fields out; read back, each is its default, so its row is drawn
+    /// (#2757). A field stored as null stays null.
+    #[test]
+    fn a_field_left_out_at_its_default_reads_as_the_default() {
+        let crop = klipp_effects::registry::effect_type("crop").expect("the Crop");
+        let saved = serde_json::to_value((crop.sample)()).unwrap();
+        let param = |key: &str| crop.desc.params.iter().find(|p| p.key == key).unwrap();
+        for (key, want) in [("aspect", 0.0), ("focus_x", 0.5), ("focus_y", 0.5)] {
+            assert!(saved.get(param(key).field).is_none(), "{key} is left out at its default: {saved}");
+            assert_eq!(effect_value(&saved, param(key)), serde_json::json!(want), "{key}");
+        }
+        assert_eq!(effect_value(&saved, param("left")), saved["left"], "a field saved is read as saved");
+        let mut nulled = saved.clone();
+        nulled["aspect"] = Value::Null;
+        assert_eq!(effect_value(&nulled, param("aspect")), Value::Null, "a null stays null");
+    }
 }
