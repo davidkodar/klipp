@@ -116,7 +116,7 @@ impl KlippApp {
         toggle_bar_rect: egui::Rect,
         theme: &KlippTheme,
     ) {
-        crate::ui_util::allocate_clipped_ui(ui, toggle_bar_rect, |ui| {
+        crate::ui_util::panel_ui(ui, toggle_bar_rect, "colour_toggle_bar", |ui| {
             ui.set_min_size(toggle_bar_rect.size());
             ui.painter().rect_filled(toggle_bar_rect, 0.0, theme.bg_panel);
             // Border between toggle bar and the scope content uses the
@@ -398,7 +398,7 @@ impl KlippApp {
             egui::pos2(center_left, toggle_bar_rect.max.y),
             egui::vec2(center_w, tools_h),
         );
-        crate::ui_util::allocate_clipped_ui(ui, tools_rect, |ui| {
+        crate::ui_util::panel_ui(ui, tools_rect, "colour_tools_panel", |ui| {
             ui.set_min_size(tools_rect.size());
             ui.painter().rect_filled(tools_rect, 0.0, theme.bg_panel);
             if let Some(clip_id) = self.state.selected_clip {
@@ -502,7 +502,7 @@ impl KlippApp {
             egui::pos2(center_left, toggle_bar_rect.max.y),
             egui::vec2(center_w, live_scopes_h),
         );
-        crate::ui_util::allocate_clipped_ui(ui, live_scopes_rect, |ui| {
+        crate::ui_util::panel_ui(ui, live_scopes_rect, "colour_scopes_panel", |ui| {
             ui.set_min_size(live_scopes_rect.size());
             // Use `bg_void` (the same colour the inner `show_scopes`
             // fills its `full_rect` with) instead of `bg_deep`. They
@@ -724,7 +724,7 @@ impl KlippApp {
             self.node_graph_v2_panel.request_fit();
         }
         self.refresh_node_thumbnails();
-        crate::ui_util::allocate_clipped_ui(ui, nodes_rect, |ui| {
+        crate::ui_util::panel_ui(ui, nodes_rect, "colour_nodes_panel", |ui| {
             ui.set_min_size(nodes_rect.size());
             ui.painter().rect_filled(nodes_rect, 0.0, theme.bg_deep);
             let clip_id = self.state.selected_clip;

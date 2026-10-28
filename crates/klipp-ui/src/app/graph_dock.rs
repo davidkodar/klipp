@@ -201,7 +201,7 @@ impl KlippApp {
             self.render_color_ws_node_strip(ui, cmds, body, theme);
             return;
         }
-        crate::ui_util::allocate_clipped_ui(ui, body, |ui| {
+        crate::ui_util::panel_ui(ui, body, "graph_dock_body", |ui| {
             let Some(clip) = clip_id.and_then(|id| self.state.sequences[self.state.active_sequence_idx].all_clips().find(|c| c.id == id)) else {
                 ui.centered_and_justified(|ui| { ui.label("Select a clip to show its graph"); });
                 return;
