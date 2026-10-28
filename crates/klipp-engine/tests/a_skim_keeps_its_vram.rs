@@ -25,10 +25,12 @@ const CLIPS: i64 = 10;
 /// skim decoders' frames on the GPU (some 450 MB each at 1080p, #2935)
 /// and the stack's buffers for a 1080p frame.
 const SKIMMING_MB: f64 = 2400.0;
-/// What may stay once a skim has ended: what the first skim sets up
-/// once and every later one reuses (some 320 MB measured: the driver's
-/// and the stack's pools), the decoders' frames gone.
-const LEFT_MB: f64 = 384.0;
+/// What may stay once a skim has ended: what the renderer sets up on its
+/// first frame and every later one reuses, the GPU stack's frame-sized
+/// buffers kept at the largest frame drawn, 258 MB measured at 1080p the
+/// same for one clip as for ten (the decoders alone go back to where they
+/// were). The decoders' frames and the held node outputs are let go.
+const LEFT_MB: f64 = 320.0;
 /// How far a second skim may leave memory above the first: the driver's
 /// 64 MB step.
 const AGAIN_MB: f64 = 64.0;

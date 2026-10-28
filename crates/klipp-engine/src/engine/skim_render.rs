@@ -59,6 +59,11 @@ pub(crate) struct SkimPool {
 }
 
 impl SkimPool {
+    /// Whether a skim decoder is open: a skim is under way.
+    pub fn is_open(&self) -> bool {
+        !self.open.is_empty()
+    }
+
     /// Close every decoder: the skim is over.
     pub fn clear(&mut self) {
         self.open.clear();
@@ -262,8 +267,13 @@ impl super::PlaybackEngine {
         true
     }
 
-    /// The skim is over: its decoders are closed, their memory let go.
+    /// The skim is over: its decoders are closed, their memory let go,
+    /// and the node outputs its frames held for a parked frame's slider
+    /// drag, which no skim position is.
     pub(super) fn end_skim(&mut self) {
+        if self.skim_pool.is_open() {
+            self.renderer.executor().clear_held();
+        }
         self.skim_pool.clear();
     }
 }
