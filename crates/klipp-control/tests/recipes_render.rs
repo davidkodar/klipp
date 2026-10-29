@@ -387,6 +387,55 @@ fn redact_draws_what_its_copy_on_a_track_above_drew() {
     }
 }
 
+/// Zoom as a recipe (#2886) draws what the zoom op drew before it: the
+/// clip's scale keyed 1 to 1.6 across it, eased in and out, and pushed
+/// toward the left, against those keys written straight onto the clip as
+/// the op wrote them, on the GPU stack within a level at its start, its
+/// middle and near its end.
+#[test]
+fn zoom_draws_what_its_keys_drew() {
+    use klipp_core::keyframe::{ease_into, upsert_keyframe, Ease};
+    let plain = shot_clip();
+    let before = sequence(plain.clone());
+    let (from, to, dur) = (1.0f32, 1.6f32, 2.0f64);
+    let reach = |scale: f32, dim: f32| (scale - 1.0) * dim / 2.0;
+    let (x0, x1) = (reach(from, W as f32), reach(to, W as f32));
+    let recipe = builtin_recipes().into_iter().find(|r| r.name == "Zoom and push").unwrap();
+    let n = |v: f64| TemplateValue::Number(v);
+    let values = BTreeMap::from([
+        ("from".to_string(), n(f64::from(from))),
+        ("to".to_string(), n(f64::from(to))),
+        ("length".to_string(), n(dur)),
+        ("ease".to_string(), TemplateValue::Enum("in_out".into())),
+        ("x_from".to_string(), n(f64::from(x0))),
+        ("x_to".to_string(), n(f64::from(x1))),
+        ("y_from".to_string(), n(0.0)),
+        ("y_to".to_string(), n(0.0)),
+    ]);
+    let (ops, _) = klipp_control::recipes::on_clip(&before, plain.id, &recipe, &values).unwrap_or_else(|e| panic!("{e}"));
+    let mut placed = plain.clone();
+    placed.apply_picture_ops(&ops).unwrap_or_else(|e| panic!("{e}"));
+    let now = sequence(placed);
+    // As the op wrote them.
+    let mut old = plain.clone();
+    let mut k = klipp_document::history::KeyframeSnapshot::from_clip(&old);
+    for (lane, a, b) in [(&mut k.transform_scale_keyframes, from, to), (&mut k.transform_pos_x_keyframes, x0, x1), (&mut k.transform_pos_y_keyframes, 0.0, 0.0)] {
+        upsert_keyframe(lane, 0.0, a);
+        upsert_keyframe(lane, dur, b);
+        ease_into(lane, 1, Ease::InOut);
+    }
+    k.transform_scale_y_keyframes.clear();
+    k.apply_to_clip(&mut old);
+    let was = sequence(old);
+    for at in [0.0, 1.0, 1.9] {
+        let Some(drawn) = stack_at(&now, at, "zoom") else { return };
+        let then = stack_at(&was, at, "zoom").expect("drawn once already");
+        assert!(worst(&drawn, &then) <= 1, "at {at} s: {} levels from the keys the op wrote", worst(&drawn, &then));
+    }
+    let late = stack_at(&now, 1.9, "zoom").unwrap();
+    assert!(worst(&late, &stack_at(&before, 1.9, "zoom").unwrap()) > 30, "zoomed by the end");
+}
+
 /// `recipe` placed on the test shot's clip with the harness's slots and
 /// `values` over them: the sequence it makes.
 fn placed_with(recipe: &klipp_timeline::composition_template::CompositionTemplate, plain: &Clip) -> Sequence {

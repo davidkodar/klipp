@@ -79,8 +79,16 @@ pub(crate) fn prepare(wire: &[GraphWireOp], mut docs: Documents) -> Result<Prepa
                     graph_model::modifiers_op(node, path, key, modifiers)?
                 }
                 GraphWireOp::Keys { key, keys, .. } => {
-                    let node = resolve(&docs, &path).map_err(|e| e.to_string())?;
-                    graph_model::keys_op(node, path, key, keys)?
+                    // The clip's placement, by the id it is always found by
+                    // or its node's.
+                    let placement = matches!(path.nodes.as_slice(), [id] if path.root_clip().is_some_and(|clip| klipp_graph_lift::clip_properties::placement_id(clip) == *id))
+                        || resolve(&docs, &path).is_ok_and(|n| n.type_id.as_str() == klipp_graph_format::lifted::types::PLACEMENT);
+                    if placement {
+                        graph_model::placement_keys_op(path, key, keys)?
+                    } else {
+                        let node = resolve(&docs, &path).map_err(|e| e.to_string())?;
+                        graph_model::keys_op(node, path, key, keys)?
+                    }
                 }
                 GraphWireOp::Enable { enabled, .. } => GraphOp::SetEnabled { path, enabled: *enabled },
                 GraphWireOp::Mix { mix, .. } => {

@@ -328,7 +328,10 @@ composition and is refused with a hint to save it again):
 * `graph` — a recipe's `{ops, checks, check_with}` instead: graph ops
   addressed from anchors or `{"new": k}` (`modify` among them, putting
   behaviours on a node's parameter, and `keys`, its keys, at most 256,
-  each a finite `time_secs`, seconds into the clip, and `value`; an `add` may carry `entry`, the
+  each a finite `time_secs`, seconds into the clip, and `value`, and an
+  `ease` into the next if it has one; `{"anchor": "placement"}` is the
+  clip's placement, which only a `keys` op names, keying its position,
+  scale, rotation or tilt as the clip's own keyframes; an `add` may carry `entry`, the
   node's whole stored entry, as a recipe saved from nodes does, refused
   unless it reads as that node's), the harness's checks, and the
   control values the checks run with where the test shot needs other
@@ -346,7 +349,9 @@ composition and is refused with a hint to save it again):
   for one value inside that parameter by JSON pointer, as a mask
   rectangle's `masks/masks/0/shape/Rectangle/center_x`, set where the
   recipe is placed, or `node:<op>.<param>#<i>.time_secs|value` for the
-  time or value of key `i` a recipe's `keys` op puts on that parameter);
+  time or value of key `i` a recipe's `keys` op puts on that parameter,
+  or `keys:<op>#<i>.time_secs|value|ease` for key `i` of the `keys` op
+  `op` itself, the placement's among them);
   `take: "hue"` sets it to a
   colour control's hue in degrees, as a qualifier reads that colour
   picked on the picture. With `link: {to: [a, b],

@@ -320,8 +320,19 @@ fn one() -> f32 {
 
 /// The nodes of a clip's picture a recipe attaches to (#2758): its
 /// source, its grade, its display step, and the end of its chain (what
-/// feeds the placement, or the output).
-pub const ANCHORS: [&str; 4] = ["source", "grade", "display", "end"];
+/// feeds the placement, or the output); and the clip's placement (#2886),
+/// which only a `keys` op names, to key its position, scale or rotation.
+pub const ANCHORS: [&str; 5] = ["source", "grade", "display", "end", "placement"];
+
+/// `keys:<op>#<i>.<field>` (#2886): the time (`time_secs`), value
+/// (`value`) or ease into the next key (`ease`) of key `i` of the recipe's
+/// `keys` op `op`, whatever it keys (a node it adds, or the clip's
+/// placement).
+pub fn keys_op_binding(property: &str) -> Option<(usize, usize, &str)> {
+    let (op, key) = property.strip_prefix("keys:")?.split_once('#')?;
+    let (i, field) = key.split_once('.')?;
+    matches!(field, "time_secs" | "value" | "ease").then_some((op.parse().ok()?, i.parse().ok()?, field))
+}
 
 /// The fields of a graph op that are paths: a recipe's anchors and new
 /// nodes are resolved there.
@@ -397,6 +408,9 @@ pub fn recipe_anchors(clip: &crate::Clip) -> Result<BTreeMap<&'static str, Uuid>
             anchors.insert(name, id);
         }
     }
+    // The clip's placement, by its node or the id it is always found by.
+    let placement = klipp_graph_lift::clip_properties::placement_node(&lifted.picture).map_or_else(|| klipp_graph_lift::clip_properties::placement_id(clip.id.0), |n| n.id);
+    anchors.insert("placement", placement);
     Ok(anchors)
 }
 
@@ -645,7 +659,11 @@ impl CompositionTemplate {
             }
         }
         for b in &self.bindings {
-            let (k, param) = node_binding(&b.property).ok_or_else(|| format!("a recipe binds node:<op>.<param>, not '{}'", b.property))?;
+            let direct = keys_op_binding(&b.property);
+            let (k, param) = match direct {
+                Some((op, _, _)) => (op, ""),
+                None => node_binding(&b.property).ok_or_else(|| format!("a recipe binds node:<op>.<param> or keys:<op>#<key>.<field>, not '{}'", b.property))?,
+            };
             let value = match (values.get(&b.parameter), self.parameters.get(&b.parameter), self.slots.get(&b.parameter)) {
                 (Some(v), Some(p), _) => {
                     p.validate(v).map_err(|e| format!("control '{}': {e}", b.parameter))?;
@@ -671,6 +689,18 @@ impl CompositionTemplate {
                 (None, v) => v.clone(),
             };
             let value = taken(&value, b.take).map_err(|e| format!("'{}': {e}", b.property))?;
+            // A key of a keys op named by its own place.
+            if let Some((op, at, field)) = direct {
+                let set = match (field, &value) {
+                    ("ease", TemplateValue::Text(t) | TemplateValue::Enum(t)) => serde_json::json!(t),
+                    ("ease", _) => return Err(format!("control '{}' sets a key's ease, so it is a name", b.parameter)),
+                    (_, TemplateValue::Number(n)) => serde_json::json!(n),
+                    _ => return Err(format!("control '{}' sets a key's {field}, so it is a number", b.parameter)),
+                };
+                let key = ops.get_mut(op).filter(|o| o["op"] == "keys").and_then(|o| o["keys"].get_mut(at)).and_then(|m| m.as_object_mut()).ok_or_else(|| format!("'{}': op {op} is no keys op with a key {at}", b.property))?;
+                key.insert(field.to_owned(), set);
+                continue;
+            }
             // A key's time or value, on the keys op that puts it there.
             if let Some((_, keyed, at, field)) = key_binding(&b.property) {
                 let TemplateValue::Number(n) = value else { return Err(format!("control '{}' sets a key's {field}, so it is a number", b.parameter)) };
@@ -838,8 +868,26 @@ impl CompositionTemplate {
             }
             TemplateKind::Recipe => {
                 let graph = self.graph.as_ref().filter(|g| !g.ops.is_empty()).ok_or("a recipe carries the graph it builds")?;
+                // The placement is keyed, never built onto.
+                for op in &graph.ops {
+                    let placed_by = PATH_FIELDS.iter().filter(|f| op.get(**f).and_then(|p| p.get("anchor")).and_then(|a| a.as_str()) == Some("placement")).copied().collect::<Vec<_>>();
+                    if !placed_by.is_empty() && (op["op"] != "keys" || placed_by != ["path"]) {
+                        return Err("only a keys op names the placement".into());
+                    }
+                }
                 for b in &self.bindings {
-                    let (k, _) = node_binding(&b.property).ok_or_else(|| format!("a recipe binds node:<op>.<param>, not '{}'", b.property))?;
+                    if let Some((op, at, field)) = keys_op_binding(&b.property) {
+                        let keys = graph.ops.get(op).filter(|o| o["op"] == "keys").ok_or_else(|| format!("'{}' names op {op}, which is no keys op", b.property))?;
+                        if keys["keys"].get(at).is_none() {
+                            return Err(format!("'{}': op {op} has no key {at}", b.property));
+                        }
+                        let named = self.parameters.get(&b.parameter).is_some_and(|p| matches!(p.default, TemplateValue::Text(_) | TemplateValue::Enum(_)));
+                        if (field == "ease") != named {
+                            return Err(format!("'{}' sets a key's {field}, so '{}' is {}", b.property, b.parameter, if field == "ease" { "a name" } else { "a number" }));
+                        }
+                        continue;
+                    }
+                    let (k, _) = node_binding(&b.property).ok_or_else(|| format!("a recipe binds node:<op>.<param> or keys:<op>#<key>.<field>, not '{}'", b.property))?;
                     let adds = graph.ops.get(k).and_then(|o| o.get("op")).and_then(|o| o.as_str()).is_some_and(|o| matches!(o, "add" | "add_beside"));
                     if !adds {
                         return Err(format!("'{}' names op {k}, which adds no node", b.property));
@@ -1275,7 +1323,7 @@ pub fn builtin_templates() -> Vec<CompositionTemplate> {
 /// The recipes Klipp ships (#2758), as files in `assets/recipes`: each a
 /// recipe like a saved one, read and checked as one is.
 pub fn builtin_recipes() -> Vec<CompositionTemplate> {
-    const FILES: [&str; 16] = [
+    const FILES: [&str; 18] = [
         include_str!("../../../assets/recipes/green_screen.klipptemplate"),
         include_str!("../../../assets/recipes/picture_in_picture.klipptemplate"),
         include_str!("../../../assets/recipes/matted_glow.klipptemplate"),
@@ -1292,6 +1340,8 @@ pub fn builtin_recipes() -> Vec<CompositionTemplate> {
         include_str!("../../../assets/recipes/bulge.klipptemplate"),
         include_str!("../../../assets/recipes/redact_mosaic.klipptemplate"),
         include_str!("../../../assets/recipes/redact_blur.klipptemplate"),
+        include_str!("../../../assets/recipes/zoom.klipptemplate"),
+        include_str!("../../../assets/recipes/zoom_push.klipptemplate"),
     ];
     FILES
         .iter()
@@ -2023,7 +2073,7 @@ mod tests {
     #[test]
     fn the_shipped_files_name_current_ids() {
         let shipped: Vec<CompositionTemplate> = builtin_recipes().into_iter().chain(builtin_templates()).collect();
-        assert_eq!(builtin_recipes().len(), 16);
+        assert_eq!(builtin_recipes().len(), 18);
         for t in shipped {
             let mut again = t.clone();
             again.migrate_ids().unwrap();

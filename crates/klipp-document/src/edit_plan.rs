@@ -419,7 +419,7 @@ pub fn to_ops(plan: &EditPlan, seq: &Sequence, pool: &MediaPool, brief: Option<&
                 // No movement asked for: a reframe, held.
                 ops.push(Op::Reframe { clip_id: clip(i), scale: Some(z.from), x: Some(z.x), y: Some(z.y) });
             } else {
-                ops.push(Op::Zoom { clip_id: clip(i), from: z.from, to: z.to, x: z.x, y: z.y, ease: z.ease });
+                ops.push(Op::Zoom { clip_id: clip(i), from: z.from, to: z.to, x: z.x, y: z.y, ease: z.ease, recipes: None });
             }
         }
         // A placement that fills the frame is what a clip does anyway, so
@@ -864,6 +864,20 @@ mod tests {
         // Picture first, then the join, the music, the text track, the titles.
         let kinds: Vec<&str> = ops.iter().map(|o| match o { Op::Place { .. } => "place", Op::Zoom { .. } => "zoom", Op::Reframe { .. } => "reframe", Op::Format { .. } => "format", Op::Role { .. } => "role", Op::Audio { .. } => "audio", Op::Transition { .. } => "transition", Op::Duck { .. } => "duck", Op::AddTrack { kind, .. } => kind.as_str(), Op::Title { .. } => "title", _ => "?" }).collect();
         assert_eq!(kinds, vec!["place", "format", "place", "zoom", "place", "transition", "audio", "place", "role", "audio", "duck", "text", "title", "title", "title"]);
+        // The zoom is built on its recipe, which the socket binds and
+        // klipp-control tests; here it keys the clip's scale as the recipe
+        // does, so the plan's other steps are what is checked.
+        let nothing = crate::ops::RecipeMaker(std::sync::Arc::new(|name: &str, _: &std::collections::BTreeMap<String, serde_json::Value>| {
+            let name = name.to_string();
+            Some(crate::ops::RecipeBuilder(std::sync::Arc::new(move |_: &Sequence, clip: klipp_core::ClipId| {
+                let instance = klipp_core::TemplateInstance { template_id: uuid::Uuid::nil(), bindings: Default::default(), overrides: Default::default(), media_slots: Default::default(), links: Vec::new() };
+                let key = |t: f64, v: f32| serde_json::to_value(klipp_core::keyframe::Keyframe { time_secs: t, value: v, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() }).unwrap();
+                let path = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: clip.0 }, [klipp_graph_lift::clip_properties::placement_id(clip.0)]);
+                let scale = klipp_graph_lift::ops::GraphOp::SetAnim { path, key: "scale".into(), anim: Some(klipp_graph_format::Animation { keys: vec![key(0.0, 1.0), key(1.0, 1.15)], modifiers: None }) };
+                Ok(crate::ops::RecipeBuild { ops: vec![scale], placed: klipp_core::RecipeInstance { name: name.clone(), instance, nodes: Default::default() }, note: None })
+            })))
+        }));
+        let ops: Vec<Op> = ops.into_iter().map(|op| match op { Op::Zoom { clip_id, from, to, x, y, ease, .. } => Op::Zoom { clip_id, from, to, x, y, ease, recipes: Some(nothing.clone()) }, op => op }).collect();
         let built = resolve(&seq, &pool, &ops).unwrap();
         assert!((built.duration_secs - 13.0).abs() < 1e-6, "{}", built.text());
         // The titles land where their segments start, on the new text track.
