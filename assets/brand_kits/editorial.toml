@@ -1,0 +1,16 @@
+# Starter brand kit (#2722): serif and warm, for stories and documentary.
+format = 1
+name = "Editorial"
+intro = { template = "Hook Card" }
+outro = { template = "End Screen" }
+lower_third = { template = "Photo Lower Third" }
+end_screen = { template = "End Screen" }
+
+[colours]
+primary = "#f5efe6"
+secondary = "#2b2118"
+accent = "#b5651d"
+
+[fonts]
+heading = "Playfair Display"
+body = "Lora"

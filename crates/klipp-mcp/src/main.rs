@@ -1183,6 +1183,14 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             v
         }
         "klipp_fonts" => json!({ "method": "fonts", "query": args.get("query").and_then(|v| v.as_str()), "fetch": args.get("fetch").and_then(|v| v.as_str()) }),
+        // Brand kits (#2722): one of list, get, set or remove.
+        "klipp_brand_kit" => match (args.get("list").and_then(Value::as_bool), args.get("get"), args.get("set"), args.get("remove")) {
+            (Some(true), None, None, None) => json!({ "method": "brand_kits" }),
+            (None, Some(_), None, None) => json!({ "method": "brand_kit", "name": arg_str(args, "get")? }),
+            (None, None, Some(kit), None) => json!({ "method": "save_brand_kit", "kit": kit, "files": args.get("files").cloned().unwrap_or_else(|| json!([])) }),
+            (None, None, None, Some(_)) => json!({ "method": "remove_brand_kit", "name": arg_str(args, "remove")? }),
+            _ => return Err("give one of list: true, get: name, set: {kit fields} (with files), or remove: name".into()),
+        },
         "klipp_title_templates" => match args.get("save") {
             // Saving a title as a template (#2757).
             Some(save) => {
@@ -2508,6 +2516,9 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
         tool("klipp_title_templates",
              "Title templates for the template op; save keeps one; pack shares a .klipppack. Guide: topic title_templates. Details: klipp_guide topic title_templates.",
              json!({ "save": { "type": "object" }, "pack": { "type": "object" } }), vec![]),
+        tool("klipp_brand_kit",
+             "A creator's colours, font pairing, type styles, logo and watermark place, intro, outro and lower third, kept once for every project. Details: klipp_guide topic timeline.",
+             json!({ "list": { "type": "boolean" }, "get": { "type": "string" }, "set": { "type": "object" }, "files": { "type": "array", "items": { "type": "string" } }, "remove": { "type": "string" } }), vec![]),
         tool("klipp_fonts",
              "The font families a title can name, and Klipp's catalogue to fetch. Details: klipp_guide topic fonts.",
              json!({ "query": { "type": "string" }, "fetch": { "type": "string" } }), vec![]),
@@ -2790,6 +2801,22 @@ mod interface_tests {
         assert_eq!(serde_json::from_str::<Value>(content[0]["text"].as_str().unwrap()).unwrap(), reply);
         let size = serde_json::to_vec(&tool_definitions_for(false)).unwrap().len();
         assert!(size < 60_000, "catalogue is {size} bytes");
+    }
+
+    /// #2722: klipp_brand_kit is one of list, get, set (with its files)
+    /// or remove, each its request; none or two of them is refused.
+    #[test]
+    fn brand_kit_calls_are_one_request_each() {
+        assert_eq!(tool_to_command("klipp_brand_kit", &json!({"list": true})).unwrap(), json!({"method": "brand_kits"}));
+        assert_eq!(tool_to_command("klipp_brand_kit", &json!({"get": "Bold"})).unwrap(), json!({"method": "brand_kit", "name": "Bold"}));
+        let set = json!({"set": {"name": "Mine", "colours": {"primary": "#112233"}}, "files": ["/tmp/logo.png"]});
+        assert_eq!(tool_to_command("klipp_brand_kit", &set).unwrap(), json!({"method": "save_brand_kit", "kit": {"name": "Mine", "colours": {"primary": "#112233"}}, "files": ["/tmp/logo.png"]}));
+        assert_eq!(tool_to_command("klipp_brand_kit", &json!({"remove": "Mine"})).unwrap(), json!({"method": "remove_brand_kit", "name": "Mine"}));
+        assert!(tool_to_command("klipp_brand_kit", &json!({})).is_err());
+        assert!(tool_to_command("klipp_brand_kit", &json!({"get": "a", "remove": "b"})).is_err());
+        for req in [json!({"method": "brand_kits"}), json!({"method": "save_brand_kit", "kit": {}, "files": []})] {
+            serde_json::from_value::<klipp_control::protocol::ControlCommand>(req).expect("a request the app reads");
+        }
     }
 
     #[test]

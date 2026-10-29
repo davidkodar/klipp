@@ -39,6 +39,7 @@
 pub mod lock;
 pub mod recovery;
 pub mod metadata_sheet;
+pub mod brand_kit;
 pub mod consolidate;
 pub mod project_fonts;
 pub mod consolidate_trim;

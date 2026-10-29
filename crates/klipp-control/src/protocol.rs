@@ -1298,6 +1298,20 @@ pub enum ControlCommand {
     },
     /// The installed template packs (#2757).
     TemplatePacks,
+    /// The brand kits (#2722): the user's and the starters.
+    BrandKits,
+    /// The brand kit `name`, every field.
+    BrandKit { name: String },
+    /// Keep `kit` (a brand kit's fields) as the user's, replacing one of
+    /// its name; `files` are the paths of the logo or intro/outro clips it
+    /// names, copied into its folder.
+    SaveBrandKit {
+        kit: serde_json::Value,
+        #[serde(default)]
+        files: Vec<String>,
+    },
+    /// The user's brand kit `name` removed, its folder with it.
+    RemoveBrandKit { name: String },
     /// The installed pack `name` removed: its folder, nothing else.
     RemoveTemplatePack { name: String },
     /// The node types the registry describes, with their ports and
