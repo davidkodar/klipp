@@ -15,6 +15,7 @@ pub mod stacked;
 pub mod mask_lane;
 pub mod param_lane;
 pub mod markers;
+pub mod auto_fit;
 
 use crate::state::AppState;
 use crate::theme::KlippTheme;

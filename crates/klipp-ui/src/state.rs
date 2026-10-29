@@ -1649,6 +1649,8 @@ pub struct AppState {
     /// Independent zoom + pan for the Program viewer.
     pub program_view: ViewerView,
     pub last_timeline_content_width: f32,
+    /// The view easing to the whole sequence after an assistant's edit.
+    pub auto_fit: crate::timeline::auto_fit::AutoFit,
     pub show_overview_bar: bool,
 
     // Selection
@@ -4774,6 +4776,7 @@ impl Default for AppState {
             source_view: ViewerView::default(),
             program_view: ViewerView::default(),
             last_timeline_content_width: 800.0,
+            auto_fit: Default::default(),
             show_overview_bar: true,
             selected_clip: None,
             selected_clip_loc_cache: std::cell::Cell::new(None),

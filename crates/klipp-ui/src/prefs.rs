@@ -1819,6 +1819,10 @@ pub struct TimelinePrefs {
     /// than the hover/idle border so selection reads at a glance.
     #[serde(default = "default_selection_border_width")]
     pub clip_selection_border_width: f32,
+    /// Fit the timeline to the whole sequence after an assistant's edit
+    /// changes its length or puts a clip out of view. On by default.
+    #[serde(default = "default_true")]
+    pub fit_after_assistant_edits: bool,
 }
 fn default_clip_colors() -> Vec<[u8; 3]> { vec![[50,90,160],[50,130,80],[160,90,50],[130,50,130],[50,130,130],[160,50,80]] }
 fn default_clip_gap() -> f32 { 3.0 }
@@ -1838,6 +1842,7 @@ impl Default for TimelinePrefs {
             min_track_height: default_min_track_h(), max_track_height: default_max_track_h(),
             text_track_height: default_text_track_h(),
             clip_selection_border_width: default_selection_border_width(),
+            fit_after_assistant_edits: true,
         }
     }
 }
@@ -2347,6 +2352,7 @@ mod tests {
         assert_eq!(rt.timeline.min_track_height, 24.0);
         assert_eq!(rt.timeline.max_track_height, 300.0);
         assert_eq!(rt.timeline.text_track_height, 32.0);
+        assert!(rt.timeline.fit_after_assistant_edits, "on by default");
 
         // ViewerPrefs
         assert_eq!(rt.viewer.action_safe_pct, 0.9);

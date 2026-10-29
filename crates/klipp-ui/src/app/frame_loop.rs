@@ -295,6 +295,9 @@ impl KlippApp {
         // 1. Drain events from engine
         klipp_engine::ui_stage::mark(klipp_engine::ui_stage::DRAIN_EVENTS);
         self.drain_events(ctx);
+        if self.state.step_auto_fit(std::time::Instant::now()) {
+            ctx.request_repaint();
+        }
         self.stop_at_out();
         self.tick_recording();
         self.tick_automation();

@@ -493,7 +493,7 @@ impl PreferencesPanel {
             PrefsTab::Color => &["color", "working space", "rec.709", "lut", "calibration", "monitor", "interpolation", "scopes", "vectorscope", "skin angle"],
             PrefsTab::Export => &["export", "encoder", "h.264", "h.265", "prores", "colour space", "color space", "audio sample rate", "overwrite", "parallel render"],
             PrefsTab::Title => &["title", "font", "size", "alignment", "duration", "safe area", "text"],
-            PrefsTab::Timeline => &["timeline", "clip colours", "clip colors", "clip gap", "trim handle", "track height", "waveform"],
+            PrefsTab::Timeline => &["timeline", "clip colours", "clip colors", "clip gap", "trim handle", "track height", "waveform", "fit", "assistant"],
             PrefsTab::Viewer => &["viewer", "overlay", "scope quality", "false colour", "zebra"],
             PrefsTab::Keyboard => &["keyboard", "shortcuts", "keybindings", "hotkeys", "remap"],
             PrefsTab::Advanced => &["advanced", "toast", "notification", "performance", "debug", "logging", "reset", "clear"],
@@ -3970,6 +3970,13 @@ impl PreferencesPanel {
 
         Self::section_header(ui, "SELECTION", theme);
         dim_row(ui, "Selection border width", &mut prefs.timeline.clip_selection_border_width, 1.0, 8.0, " px", dirty);
+
+        Self::section_header(ui, "ASSISTANT", theme);
+        Self::setting_row_with_subtitle(ui, "Fit the timeline after assistant edits", "When an edit changes the length or puts a clip out of view; not right after you zoom or scroll", theme, |ui| {
+            if ui.add(Switch::new(&mut prefs.timeline.fit_after_assistant_edits, theme)).changed() {
+                *dirty = true;
+            }
+        });
     }
 
     fn show_viewer(&mut self, ui: &mut egui::Ui, prefs: &mut Preferences, dirty: &mut bool, theme: &KlippTheme) {

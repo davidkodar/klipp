@@ -374,26 +374,17 @@ impl KlippApp {
                     true
                 }
                 AppCommand::ZoomTimelineToFit => {
-                    let dur = self.state.sequence_duration().to_secs_f64() as f32;
-                    let w = self.state.last_timeline_content_width;
-                    let raw = if dur > 0.0 && w > 0.0 { w / dur } else { 0.0 };
-                    let clamped = raw.clamp(0.1, 2000.0);
-                    let total_track_h: f32 = self.state.sequence().tracks.iter()
-                        .map(crate::panels::timeline::track_row_height)
-                        .sum();
-                    let track_scale = crate::panels::timeline::fit_track_scale(
-                        total_track_h,
-                        self.state.last_timeline_tracks_height,
-                    );
+                    let zoom = self.state.fit_zoom();
+                    let track_scale = self.state.fit_track_scale();
                     tracing::info!(
-                        "TL_ZOOM ZoomTimelineToFit dur={:.3} w={:.1} raw={:.4} clamped={:.4} total_track_h={:.1} avail_track_h={:.1} track_scale={:.3}",
-                        dur, w, raw, clamped, total_track_h,
+                        "TL_ZOOM ZoomTimelineToFit dur={:.3} w={:.1} zoom={:?} avail_track_h={:.1} track_scale={:.3}",
+                        self.state.sequence_duration().to_secs_f64(), self.state.last_timeline_content_width, zoom,
                         self.state.last_timeline_tracks_height, track_scale
                     );
                     self.state.timeline_track_scale = track_scale;
                     self.state.timeline_scroll_y = 0.0;
-                    if dur > 0.0 && w > 0.0 {
-                        self.state.timeline_zoom = clamped;
+                    if let Some(zoom) = zoom {
+                        self.state.timeline_zoom = zoom;
                         self.state.timeline_scroll_x = 0.0;
                     }
                     true
