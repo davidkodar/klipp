@@ -19798,21 +19798,102 @@ mod trim_preview_tests {
     }
 }
 
-/// The picture effects a track can take from its header's menu, by the
-/// name the `effect` op gives each.
-const TRACK_PICTURE_EFFECTS: &[(&str, &str)] = &[
-    ("vignette", "Vignette"),
-    ("grain", "Film Grain"),
-    ("glow", "Glow"),
-    ("bloom", "Bloom"),
-    ("diffusion", "Diffusion"),
-    ("halation", "Halation"),
-    ("sharpen", "Sharpen"),
-    ("blur", "Blur"),
-    ("chromatic_aberration", "Chromatic Aberration"),
-    ("denoise", "Denoise"),
-    ("old_film", "Old Film"),
-];
+/// A picture effect a track header's menu offers, as
+/// `assets/presets/track_effects` writes it: the name the `effect` op
+/// gives it and the menu's label.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TrackPictureEffect {
+    kind: String,
+    label: String,
+}
+
+/// The most effects the menu lists.
+const MAX_TRACK_PICTURE_EFFECTS: usize = 64;
+
+/// The picture effects a track can take from its header's menu, read
+/// once from the file built in; none when it can't be read.
+fn track_picture_effects() -> &'static [TrackPictureEffect] {
+    static EFFECTS: std::sync::OnceLock<Vec<TrackPictureEffect>> = std::sync::OnceLock::new();
+    EFFECTS.get_or_init(|| {
+        read_track_picture_effects(include_str!("../../../../assets/presets/track_effects/builtin.toml")).unwrap_or_else(|why| {
+            tracing::error!("the built-in track picture effects don't read: {why}");
+            Vec::new()
+        })
+    })
+}
+
+/// The effects in `text`, or why it is refused: too many, one the
+/// `effect` op doesn't know, or a name or label missing or given twice.
+fn read_track_picture_effects(text: &str) -> Result<Vec<TrackPictureEffect>, String> {
+    let effects: Vec<TrackPictureEffect> = klipp_core::preset_file::read(text, "track_picture_effect", 1, "effect")?;
+    if effects.len() > MAX_TRACK_PICTURE_EFFECTS {
+        return Err(format!("{} effects, past the {MAX_TRACK_PICTURE_EFFECTS} the menu lists", effects.len()));
+    }
+    let (mut kinds, mut labels) = (std::collections::HashSet::new(), std::collections::HashSet::new());
+    for e in &effects {
+        if klipp_document::ops::named_picture_effect(&e.kind, None).is_err() || e.kind != e.kind.to_lowercase() {
+            return Err(format!("\"{}\" is not an effect the effect op takes", e.kind));
+        }
+        if !kinds.insert(e.kind.as_str()) {
+            return Err(format!("\"{}\" is listed twice", e.kind));
+        }
+        if e.label.trim().is_empty() || !labels.insert(e.label.as_str()) {
+            return Err(format!("\"{}\": a label, given once", e.kind));
+        }
+    }
+    Ok(effects)
+}
+
+#[cfg(test)]
+mod track_picture_effect_tests {
+    use super::*;
+
+    /// The menu's file reads to the eleven effects as they were listed
+    /// in code, in order, each one the `effect` op takes (#2887).
+    #[test]
+    fn the_track_picture_effects_read_as_they_were() {
+        let listed: Vec<(&str, &str)> = track_picture_effects().iter().map(|e| (e.kind.as_str(), e.label.as_str())).collect();
+        assert_eq!(
+            listed,
+            [
+                ("vignette", "Vignette"),
+                ("grain", "Film Grain"),
+                ("glow", "Glow"),
+                ("bloom", "Bloom"),
+                ("diffusion", "Diffusion"),
+                ("halation", "Halation"),
+                ("sharpen", "Sharpen"),
+                ("blur", "Blur"),
+                ("chromatic_aberration", "Chromatic Aberration"),
+                ("denoise", "Denoise"),
+                ("old_film", "Old Film"),
+            ]
+        );
+    }
+
+    /// A file listing an effect the op doesn't take, one twice, a label
+    /// missing or twice, too many, or a field it doesn't know is refused,
+    /// saying why.
+    #[test]
+    fn a_bad_track_picture_effects_file_is_refused() {
+        let file = |body: &str| format!("kind = \"track_picture_effect\"\nformat_version = 1\n{body}");
+        let entry = |kind: &str, label: &str| format!("[[effect]]\nkind = \"{kind}\"\nlabel = \"{label}\"\n");
+        assert_eq!(read_track_picture_effects(&file(&entry("glow", "Glow"))).unwrap().len(), 1);
+        for (body, says) in [
+            (entry("sparkle", "Sparkle"), "not an effect"),
+            (entry("Glow", "Glow"), "not an effect"),
+            (format!("{}{}", entry("glow", "Glow"), entry("glow", "Glow 2")), "listed twice"),
+            (format!("{}{}", entry("glow", "Glow"), entry("blur", "Glow")), "a label, given once"),
+            (entry("glow", " "), "a label, given once"),
+            (format!("{}hint = \"x\"\n", entry("glow", "Glow")), "unknown field"),
+            ((0..65).map(|i| entry("glow", &format!("Glow {i}"))).collect::<String>(), "past the 64"),
+        ] {
+            let why = read_track_picture_effects(&file(&body)).unwrap_err();
+            assert!(why.contains(says), "{body}: {why}");
+        }
+    }
+}
 
 /// The Select items of a track header's menu (#844).
 pub(crate) fn track_select_items(ui: &mut egui::Ui, track_idx: usize, cmds: &mut Vec<AppCommand>) {
@@ -19935,9 +20016,9 @@ fn track_effects_menu(ui: &mut egui::Ui, track: &klipp_timeline::Track, cmds: &m
         ui.separator();
         if picture {
             ui.menu_rows("Add Picture Effect", |ui| {
-                for (kind, label) in TRACK_PICTURE_EFFECTS {
-                    if ui.button(*label).clicked() {
-                        cmds.push(AppCommand::AddTrackVideoEffect { track_id, kind: (*kind).to_string() });
+                for e in track_picture_effects() {
+                    if ui.button(&e.label).clicked() {
+                        cmds.push(AppCommand::AddTrackVideoEffect { track_id, kind: e.kind.clone() });
                         ui.close_menu();
                     }
                 }
