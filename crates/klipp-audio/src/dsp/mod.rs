@@ -599,7 +599,8 @@ pub fn probe_run(type_id: &str, sample_rate: u32) -> Result<(), String> {
     refused_run(type_id).map_or(Ok(()), Err)
 }
 
-/// Factory: create effect by type ID.
+/// Factory: create effect by type ID. A built-in one has its entry in
+/// `klipp_core::audio_effect_registry::AUDIO_EFFECTS` too.
 ///
 /// LADSPA plugins use a composite type_id: `"ladspa:{path}:{label}"`. The
 /// path component may itself contain a `:` (e.g. Windows drive letters), so
@@ -668,25 +669,9 @@ pub fn create_effect(type_id: &str, sample_rate: u32) -> Option<Box<dyn AudioEff
     }
 }
 
-/// List all available built-in effect types.
+/// The built-in effect types and their names:
+/// `klipp_core::audio_effect_registry::AUDIO_EFFECTS`, which
+/// [`create_effect`] makes each of.
 pub fn available_effects() -> Vec<(&'static str, &'static str)> {
-    vec![
-        ("eq", "Parametric EQ"),
-        ("compressor", "Compressor"),
-        ("limiter", "Limiter"),
-        ("gate", "Noise Gate"),
-        ("high_pass", "High-pass Filter"),
-        ("denoiser", "Broadband Denoiser"),
-        ("voice_isolation", "Voice Isolation"),
-        ("reverb", "Reverb"),
-        ("delay", "Delay"),
-        ("deesser", "De-Esser"),
-        ("hum_removal", "Hum Removal"),
-        ("noise_reduction", "Multi-band Gate"),
-        ("declick", "De-click"),
-        ("normalize", "Normalize"),
-        ("pitch_shift", "Pitch Shift"),
-        ("chorus", "Chorus"),
-        ("multiband_compressor", "Multiband Compressor"),
-    ]
+    klipp_core::audio_effect_registry::AUDIO_EFFECTS.iter().map(|s| (s.type_id, s.name)).collect()
 }

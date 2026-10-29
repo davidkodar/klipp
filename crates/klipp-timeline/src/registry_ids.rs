@@ -4,7 +4,8 @@
 //!
 //! An effect is `klipp.fx.<tag>` and a grade node `klipp.grade.<kind>`, as
 //! their registries declare them; a transition is
-//! `klipp.transition.<key>`, its key in snake case. A parameter is its
+//! `klipp.transition.<key>`, its key in snake case; a built-in audio
+//! effect `klipp.audio.<type_id>`. A parameter is its
 //! descriptor's key and a port its key. Projects keep saving effects by
 //! their serde tag and nodes by their kind, which these map to one for one.
 //!
@@ -55,7 +56,8 @@ pub struct Declared {
     pub ports: Vec<String>,
 }
 
-/// Every effect, grade node and transition this Klipp declares.
+/// Every effect, grade node, transition and built-in audio effect this
+/// Klipp declares.
 pub fn declared() -> Vec<Declared> {
     let of = |d: &klipp_effects::registry::NodeTypeDesc| Declared {
         id: d.id.to_string(),
@@ -69,7 +71,12 @@ pub fn declared() -> Vec<Declared> {
         params: serde_json::to_value(s.default_params).ok().and_then(|v| v.as_object().map(|o| o.keys().cloned().collect())).unwrap_or_default(),
         ports: Vec::new(),
     });
-    effects.chain(nodes).chain(transitions).collect()
+    let audio = klipp_core::audio_effect_registry::AUDIO_EFFECTS.iter().map(|s| Declared {
+        id: format!("{}{}", klipp_core::audio_effect_registry::AUDIO, s.type_id),
+        params: s.params.iter().map(|p| p.to_string()).collect(),
+        ports: Vec::new(),
+    });
+    effects.chain(nodes).chain(transitions).chain(audio).collect()
 }
 
 /// `CrossDissolve` as `cross_dissolve`.
@@ -212,5 +219,6 @@ mod tests {
         assert!(is_current(Subject::Type("klipp.fx.gaussian_blur")));
         assert!(is_current(Subject::Param("klipp.fx.gaussian_blur", "radius")));
         assert!(is_current(Subject::Type("klipp.grade.qualifier")));
+        assert!(is_current(Subject::Param("klipp.audio.hum_removal", "fundamental_hz")));
     }
 }

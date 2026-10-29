@@ -1,5 +1,103 @@
-# Every effect, node and transition id, parameter and port ever declared (#2888).
+# Every effect, node, transition and audio effect id, parameter and port ever declared (#2888).
 # Added to with KLIPP_BLESS_REGISTRY_IDS=1; a line is never removed.
+param klipp.audio.chorus depth
+param klipp.audio.chorus mix
+param klipp.audio.chorus rate
+param klipp.audio.chorus voices
+param klipp.audio.compressor attack
+param klipp.audio.compressor knee
+param klipp.audio.compressor makeup
+param klipp.audio.compressor ratio
+param klipp.audio.compressor release
+param klipp.audio.compressor threshold
+param klipp.audio.declick max_click_ms
+param klipp.audio.declick threshold
+param klipp.audio.deesser bandwidth
+param klipp.audio.deesser frequency
+param klipp.audio.deesser reduction
+param klipp.audio.deesser threshold
+param klipp.audio.delay delay_time
+param klipp.audio.delay feedback
+param klipp.audio.delay mix
+param klipp.audio.delay ping_pong
+param klipp.audio.denoiser floor
+param klipp.audio.denoiser profile_seconds
+param klipp.audio.denoiser strength
+param klipp.audio.denoiser wind
+param klipp.audio.eq band1_enabled
+param klipp.audio.eq band1_frequency
+param klipp.audio.eq band1_gain
+param klipp.audio.eq band1_q
+param klipp.audio.eq band2_enabled
+param klipp.audio.eq band2_frequency
+param klipp.audio.eq band2_gain
+param klipp.audio.eq band2_q
+param klipp.audio.eq band3_enabled
+param klipp.audio.eq band3_frequency
+param klipp.audio.eq band3_gain
+param klipp.audio.eq band3_q
+param klipp.audio.eq band4_enabled
+param klipp.audio.eq band4_frequency
+param klipp.audio.eq band4_gain
+param klipp.audio.eq band4_q
+param klipp.audio.eq band5_enabled
+param klipp.audio.eq band5_frequency
+param klipp.audio.eq band5_gain
+param klipp.audio.eq band5_q
+param klipp.audio.eq band6_enabled
+param klipp.audio.eq band6_frequency
+param klipp.audio.eq band6_gain
+param klipp.audio.eq band6_q
+param klipp.audio.gate attack
+param klipp.audio.gate range
+param klipp.audio.gate release
+param klipp.audio.gate threshold
+param klipp.audio.high_pass frequency
+param klipp.audio.high_pass slope
+param klipp.audio.hum_removal fundamental_hz
+param klipp.audio.hum_removal harmonic_2_enabled
+param klipp.audio.hum_removal harmonic_3_enabled
+param klipp.audio.hum_removal harmonics
+param klipp.audio.hum_removal q
+param klipp.audio.limiter attack
+param klipp.audio.limiter ceiling
+param klipp.audio.limiter input_gain
+param klipp.audio.limiter lookahead
+param klipp.audio.limiter mix
+param klipp.audio.limiter output_gain
+param klipp.audio.limiter release
+param klipp.audio.limiter threshold
+param klipp.audio.multiband_compressor attack
+param klipp.audio.multiband_compressor makeup_1
+param klipp.audio.multiband_compressor makeup_2
+param klipp.audio.multiband_compressor makeup_3
+param klipp.audio.multiband_compressor makeup_4
+param klipp.audio.multiband_compressor ratio_1
+param klipp.audio.multiband_compressor ratio_2
+param klipp.audio.multiband_compressor ratio_3
+param klipp.audio.multiband_compressor ratio_4
+param klipp.audio.multiband_compressor release
+param klipp.audio.multiband_compressor threshold_1
+param klipp.audio.multiband_compressor threshold_2
+param klipp.audio.multiband_compressor threshold_3
+param klipp.audio.multiband_compressor threshold_4
+param klipp.audio.multiband_compressor xover_high
+param klipp.audio.multiband_compressor xover_low
+param klipp.audio.multiband_compressor xover_mid
+param klipp.audio.noise_reduction reduction
+param klipp.audio.noise_reduction sensitivity
+param klipp.audio.noise_reduction smoothing
+param klipp.audio.normalize mode
+param klipp.audio.normalize target_lufs
+param klipp.audio.pitch_shift fine_cents
+param klipp.audio.pitch_shift semitones
+param klipp.audio.reverb damping
+param klipp.audio.reverb pre_delay
+param klipp.audio.reverb room_size
+param klipp.audio.reverb wet
+param klipp.audio.reverb width
+param klipp.audio.voice_isolation mode
+param klipp.audio.voice_isolation reduction
 param klipp.fx.anamorphic_streak intensity
 param klipp.fx.anamorphic_streak length
 param klipp.fx.anamorphic_streak threshold
@@ -1209,6 +1307,23 @@ port klipp.grade.tone_controls mask
 port klipp.grade.tone_controls out
 port klipp.grade.wheel_sat_bri in
 port klipp.grade.wheel_sat_bri out
+type klipp.audio.chorus
+type klipp.audio.compressor
+type klipp.audio.declick
+type klipp.audio.deesser
+type klipp.audio.delay
+type klipp.audio.denoiser
+type klipp.audio.eq
+type klipp.audio.gate
+type klipp.audio.high_pass
+type klipp.audio.hum_removal
+type klipp.audio.limiter
+type klipp.audio.multiband_compressor
+type klipp.audio.noise_reduction
+type klipp.audio.normalize
+type klipp.audio.pitch_shift
+type klipp.audio.reverb
+type klipp.audio.voice_isolation
 type klipp.fx.anamorphic_streak
 type klipp.fx.binocular_vignette
 type klipp.fx.bloom

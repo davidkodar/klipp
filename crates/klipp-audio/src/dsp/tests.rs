@@ -80,6 +80,22 @@ fn factory_creates_all_effects() {
     }
 }
 
+/// Each declared audio effect is made by the factory with the params
+/// it declares, in their order, and the ops guide names its params: the
+/// ops, the browser and the engine all read the one table (#2888).
+#[test]
+fn every_declared_effect_is_made_with_its_declared_params() {
+    let ops_md = include_str!("../../../../assets/craft/ops.md");
+    let entry = ops_md.lines().find(|l| l.starts_with("track_audio ")).expect("track_audio in ops.md");
+    for spec in klipp_core::audio_effect_registry::AUDIO_EFFECTS {
+        let fx = create_effect(spec.type_id, SR).unwrap_or_else(|| panic!("no {} in the factory", spec.type_id));
+        assert_eq!(fx.type_id(), spec.type_id);
+        let made: Vec<&str> = fx.param_descriptors().iter().map(|d| d.name).collect();
+        assert_eq!(spec.params, made.as_slice(), "{}", spec.type_id);
+        assert!(entry.contains(&format!("{} ", spec.type_id)), "ops.md lists no params for {}", spec.type_id);
+    }
+}
+
 #[test]
 fn factory_returns_none_for_unknown() {
     assert!(create_effect("nonexistent", SR).is_none());

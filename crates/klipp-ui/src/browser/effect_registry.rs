@@ -118,9 +118,24 @@ impl Default for EffectRegistry {
     }
 }
 
+/// The browser category an audio effect's group is listed under.
+pub fn audio_category(group: klipp_core::audio_effect_registry::AudioGroup) -> EffectCategory {
+    use klipp_core::audio_effect_registry::AudioGroup as G;
+    match group {
+        G::Eq => EffectCategory::AudioEQ,
+        G::Dynamics => EffectCategory::AudioDynamics,
+        G::Reverb => EffectCategory::AudioReverb,
+        G::Delay => EffectCategory::AudioDelay,
+        G::Modulation => EffectCategory::AudioModulation,
+        G::Pitch => EffectCategory::AudioPitch,
+        G::Restoration => EffectCategory::AudioRestoration,
+        G::Utility => EffectCategory::AudioUtility,
+    }
+}
+
 impl EffectRegistry {
     pub fn new() -> Self {
-        let effects = vec![
+        let mut effects = vec![
             EffectEntry {
                 name: "Opacity".into(),
                 category: EffectCategory::Color,
@@ -736,133 +751,16 @@ impl EffectRegistry {
                 description: String::new(),
                 grouping: "Stylize".into(),
             },
-            // ── Audio effects ──
-            EffectEntry {
-                name: "Parametric EQ".into(),
-                category: EffectCategory::AudioEQ,
-                source: EffectSource::Audio("eq".into()),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "EQ".into(),
-            },
-            EffectEntry {
-                name: "Pitch Shift".into(),
-                category: EffectCategory::AudioPitch,
-                source: EffectSource::Audio("pitch_shift".into()),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Pitch".into(),
-            },
-            EffectEntry {
-                name: "Compressor".into(),
-                category: EffectCategory::AudioDynamics,
-                source: EffectSource::Audio("compressor".into()),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Dynamics".into(),
-            },
-            EffectEntry {
-                name: "Limiter".into(),
-                category: EffectCategory::AudioDynamics,
-                source: EffectSource::Audio("limiter".into()),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Dynamics".into(),
-            },
-            EffectEntry {
-                name: "Noise Gate".into(),
-                category: EffectCategory::AudioDynamics,
-                source: EffectSource::Audio("gate".into()),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Dynamics".into(),
-            },
-            EffectEntry {
-                name: "High-pass Filter".into(),
-                category: EffectCategory::AudioRestoration,
-                source: EffectSource::Audio("high_pass".into()),
-                source_label: "Built-in",
-                description: "Remove low-frequency rumble and wind".into(),
-                grouping: "Restoration".into(),
-            },
-            EffectEntry {
-                name: "Broadband Denoiser".into(),
-                category: EffectCategory::AudioRestoration,
-                source: EffectSource::Audio("denoiser".into()),
-                source_label: "Built-in",
-                description: "Learn and reduce steady background noise".into(),
-                grouping: "Restoration".into(),
-            },
-            EffectEntry {
-                name: "Voice Isolation".into(),
-                category: EffectCategory::AudioRestoration,
-                source: EffectSource::Audio("voice_isolation".into()),
-                source_label: "Built-in",
-                description: "Separate speech from wind, traffic and room noise (AI)".into(),
-                grouping: "Restoration".into(),
-            },
-            EffectEntry {
-                name: "De-Esser".into(),
-                category: EffectCategory::AudioRestoration,
-                source: EffectSource::Audio("deesser".into()),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Restoration".into(),
-            },
-            EffectEntry {
-                name: "Normalize".into(),
-                category: EffectCategory::AudioUtility,
-                source: EffectSource::Audio("normalize".into()),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Utility".into(),
-            },
-            EffectEntry {
-                // this effect is a multi-band gate, not
-                // spectral-subtraction NR. The internal type_id stays
-                // "noise_reduction" so saved .klipp projects keep
-                // loading; the user-facing name advertises the honest
-                // behaviour.
-                name: "Multi-band Gate".into(),
-                category: EffectCategory::AudioDynamics,
-                source: EffectSource::Audio("noise_reduction".into()),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Dynamics".into(),
-            },
-            EffectEntry {
-                name: "De-click".into(),
-                category: EffectCategory::AudioRestoration,
-                source: EffectSource::Audio("declick".into()),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Restoration".into(),
-            },
-            EffectEntry {
-                name: "Reverb".into(),
-                category: EffectCategory::AudioReverb,
-                source: EffectSource::Audio("reverb".into()),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Reverb".into(),
-            },
-            EffectEntry {
-                name: "Delay".into(),
-                category: EffectCategory::AudioDelay,
-                source: EffectSource::Audio("delay".into()),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Delay".into(),
-            },
-            EffectEntry {
-                name: "Chorus".into(),
-                category: EffectCategory::AudioModulation,
-                source: EffectSource::Audio("chorus".into()),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Modulation".into(),
-            },
         ];
+        // The built-in audio effects, one row each from their table.
+        effects.extend(klipp_core::audio_effect_registry::AUDIO_EFFECTS.iter().map(|spec| EffectEntry {
+            name: spec.name.into(),
+            category: audio_category(spec.group),
+            source: EffectSource::Audio(spec.type_id.into()),
+            source_label: "Built-in",
+            description: spec.description.into(),
+            grouping: spec.group.label().into(),
+        }));
 
         Self { effects, reference_frame: None }
     }
@@ -1738,5 +1636,24 @@ mod tests {
             ladspa_category_from_name("", "compressor_st"),
             EffectCategory::AudioDynamics,
         );
+    }
+
+    /// The browser lists each built-in audio effect once, by its name,
+    /// hum removal and the multiband compressor among them (#2888), and
+    /// no audio row the engine does not have.
+    #[test]
+    fn the_browser_lists_every_audio_effect_once() {
+        let reg = EffectRegistry::new();
+        let rows: Vec<(&str, &str)> = reg
+            .effects
+            .iter()
+            .filter_map(|e| match &e.source {
+                EffectSource::Audio(t) => Some((t.as_str(), e.name.as_str())),
+                _ => None,
+            })
+            .collect();
+        let table: Vec<(&str, &str)> = klipp_core::audio_effect_registry::AUDIO_EFFECTS.iter().map(|s| (s.type_id, s.name)).collect();
+        assert_eq!(rows, table);
+        assert!(rows.iter().any(|(t, _)| *t == "hum_removal") && rows.iter().any(|(t, _)| *t == "multiband_compressor"));
     }
 }

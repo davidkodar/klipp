@@ -34,7 +34,7 @@ fn every_id_ever_declared_still_reads() {
         let mut all: Vec<String> = kept.iter().map(|l| l.to_string()).chain(new.iter().map(|l| l.to_string())).collect();
         all.sort();
         all.dedup();
-        let head = "# Every effect, node and transition id, parameter and port ever declared (#2888).\n# Added to with KLIPP_BLESS_REGISTRY_IDS=1; a line is never removed.\n";
+        let head = "# Every effect, node, transition and audio effect id, parameter and port ever declared (#2888).\n# Added to with KLIPP_BLESS_REGISTRY_IDS=1; a line is never removed.\n";
         std::fs::write(FILE, format!("{head}{}\n", all.join("\n"))).unwrap();
         return;
     }
@@ -61,7 +61,7 @@ fn every_migration_leads_to_a_current_id() {
 #[test]
 fn the_snapshot_covers_every_kind() {
     let now = registry_ids::snapshot();
-    for prefix in ["type klipp.fx.", "type klipp.grade.", "type klipp.transition.", "param klipp.fx.", "param klipp.grade.", "param klipp.transition.", "port klipp.fx."] {
+    for prefix in ["type klipp.fx.", "type klipp.grade.", "type klipp.transition.", "param klipp.fx.", "param klipp.grade.", "param klipp.transition.", "type klipp.audio.", "param klipp.audio.", "port klipp.fx."] {
         assert!(now.iter().any(|l| l.starts_with(prefix)), "no {prefix}");
     }
 }
