@@ -54,6 +54,8 @@ Picture and sound move together while **Linked Selection** is on; hold **Alt** a
 | **Lift delete** | **Shift+Delete** | Remove the clip; leave a gap |
 | **Close Gap** | Clip menu | Close the gap before a clip |
 
+With several clips selected, Delete and Shift+Delete take every one of them, on any track, and one undo puts them all back. Off the magnetic tracks a removed clip always leaves its gap.
+
 ## Snapping
 
 Toggle snapping with **N**. Clips snap to the playhead, other clip edges on any track, in and out points and markers; right-click the snap button to choose the targets or a grid. A snap holds until the pointer is half as far again past the snap distance, and the clip lands where the snap line showed. Hold **Shift** while dragging to skip snapping for that drag (**Ctrl** in a slide). An edit made at the playhead or an In point, such as a gap or a source insert, goes in exactly there, not on a nearby cut. See [Snapping](../ui/timeline.md#snapping).

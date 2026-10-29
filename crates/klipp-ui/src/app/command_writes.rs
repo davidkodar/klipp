@@ -361,6 +361,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::AppendMediaBatchToTrack { .. }
         | AppCommand::InsertAudioMediaClip { .. }
         | AppCommand::RemoveClip { .. }
+        | AppCommand::RemoveClips { .. }
         | AppCommand::AttachLinkedAudio { .. }
         | AppCommand::MoveClip { .. }
         | AppCommand::MoveClipToTrack { .. }

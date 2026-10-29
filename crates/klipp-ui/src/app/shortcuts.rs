@@ -304,7 +304,11 @@ impl KlippApp {
 
             // Shift+Delete — Lift (leave gap, no ripple) on magnetic tracks
             if !keyframe_deleted && kb.is_action_pressed("lift_clip", i) {
-                if let Some(clip_id) = self.state.selected_clip {
+                let several = super::selection_removal::selected(&self.state);
+                if several.len() > 1 {
+                    // Every selected clip, one step (#3060).
+                    cmds.push(AppCommand::RemoveClips { clip_ids: several, lift: true });
+                } else if let Some(clip_id) = self.state.selected_clip {
                     let track_idx = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
                         .position(|t| t.clips.iter().any(|c| c.id == clip_id));
                     if let Some(ti) = track_idx {
@@ -1463,6 +1467,9 @@ pub(super) fn delete_selection(state: &mut crate::state::AppState) -> Vec<AppCom
         if still {
             cmds.push(AppCommand::CloseGap { track_index, gap_start, gap_end });
         }
+    } else if super::selection_removal::selected(state).len() > 1 {
+        // Every selected clip, one step (#3060).
+        cmds.push(AppCommand::RemoveClips { clip_ids: super::selection_removal::selected(state), lift: false });
     } else if let Some(clip_id) = state.selected_clip {
         cmds.push(AppCommand::RemoveClip { clip_id });
     } else if state.selected_clips.is_empty()
