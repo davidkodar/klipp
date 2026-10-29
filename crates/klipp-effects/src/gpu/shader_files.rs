@@ -17,7 +17,7 @@ fn shaders_dir() -> std::path::PathBuf {
 }
 
 /// Every shader the crate compiles, by name, as `every_shader_compiles`
-/// gathers them.
+/// gathers them, and the scopes' (#3094).
 fn all_sources() -> Vec<(String, String)> {
     let flow = super::flow::sources();
     let planar = super::planar_wgsl::sources();
@@ -26,6 +26,7 @@ fn all_sources() -> Vec<(String, String)> {
         .map(|(n, s)| (n.to_string(), s.to_string()))
         .chain(flow.iter().map(|(n, s)| (n.to_string(), s.clone())))
         .chain(planar.iter().map(|(n, s)| (n.to_string(), s.clone())))
+        .chain(crate::gpu_scopes::shader_sources().into_iter().map(|(n, s)| (n.to_string(), s.to_string())))
         .collect()
 }
 
