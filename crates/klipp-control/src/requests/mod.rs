@@ -77,6 +77,7 @@ mod routing_tests {
         let start = lib.find("\nfn handle(").expect("handle in lib.rs");
         let handle = &lib[start..start + lib[start..].find("\n}\n").expect("end of handle")];
         let mut routed_all = BTreeSet::new();
+        let mut area_of = std::collections::BTreeMap::new();
         for (name, text) in AREAS {
             let call = format!(") => requests::{name}::respond(ctx, cmd, collect),");
             let at = handle.find(&call).unwrap_or_else(|| panic!("no route to {name}"));
@@ -84,9 +85,16 @@ mod routing_tests {
             let routed = variants(&handle[open..at]);
             assert_eq!(routed, answered(text), "{name}: routed vs answered");
             assert!(routed_all.is_disjoint(&routed), "{name} shares a variant");
+            area_of.extend(routed.iter().map(|v| (v.clone(), name)));
             routed_all.extend(routed);
         }
-        // 141 with template_packs and remove_template_pack (#2924).
-        assert_eq!(routed_all.len(), 141);
+        // The brand kit's (#2722): the kits kept beside the project's
+        // templates, the kit taken in with the plan's other requests.
+        for (variant, area) in [("BrandKits", "editing"), ("BrandKit", "editing"), ("SaveBrandKit", "editing"), ("RemoveBrandKit", "editing"), ("ExportBrandKit", "editing"), ("ImportBrandKit", "editing"), ("ApplyBrandKit", "planning")] {
+            assert_eq!(area_of.get(variant).copied(), Some(area), "{variant}");
+        }
+        // 141 with template_packs and remove_template_pack (#2924), 148
+        // with the brand kit's seven.
+        assert_eq!(routed_all.len(), 148);
     }
 }
