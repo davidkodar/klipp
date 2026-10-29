@@ -946,7 +946,7 @@ pub(crate) fn respond(
                 return send(AppCommand::AddEffect { clip_id, plugin_name: plugin.to_owned() });
             }
             if klipp_nodes::kinds::addable_node_kind(&kind).is_none() {
-                let valid: Vec<&str> = klipp_nodes::kinds::ADDABLE_NODE_KINDS.iter().map(|(n, _)| *n).collect();
+                let valid: Vec<&str> = klipp_nodes::kinds::addable_node_kinds().iter().map(|(n, _)| *n).collect();
                 return Err(format!("no node kind {kind:?}; the kinds are {}", valid.join(", ")));
             }
             // The id is chosen here so the reply can say it: the app

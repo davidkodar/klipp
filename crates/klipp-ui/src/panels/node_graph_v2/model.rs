@@ -152,16 +152,31 @@ pub(super) fn menu_entry_matches(label: &str, q: &str) -> bool {
     label.to_lowercase().contains(q) || SEARCH_ALIASES.iter().any(|(l, words)| label.starts_with(l) && words.iter().any(|w| w.contains(q)))
 }
 
-/// Presentation keeps today's labels and ordering. Only catalog types
-/// participate; the menu does not invent a second list of node types.
+/// The grade add menu: each node type its registry entry offers in the
+/// menu, under its group, by its label and rank (#2888); the entry's
+/// name is the kind's add name.
 pub(super) fn grade_menu() -> &'static [MenuCategory] {
+    use klipp_nodes::registry::{node_types, GradeMenuGroup, Offered};
     static MENU: std::sync::OnceLock<Vec<MenuCategory>> = std::sync::OnceLock::new();
-    MENU.get_or_init(|| GRADE_MENU_PRESENTATION.iter().map(|(category, entries)| {
-        let entries = entries.iter().copied().filter(|(_, name)| {
-            klipp_nodes::kinds::addable_node_kind(name).is_some_and(|kind| klipp_nodes::registry::node_types().any(|t| t.kind == kind))
-        }).collect();
-        (*category, entries)
-    }).collect())
+    MENU.get_or_init(|| {
+        GradeMenuGroup::ALL
+            .into_iter()
+            .map(|group| {
+                let mut entries: Vec<(u8, &'static str, &'static str)> = node_types()
+                    .filter_map(|t| match t.offered {
+                        Offered::Menu { group: g, label, rank } if g == group => {
+                            let name = klipp_nodes::kinds::addable_node_kinds().iter().find(|(_, k)| *k == t.kind).map(|(n, _)| *n)?;
+                            Some((rank, label, name))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                entries.sort_by_key(|e| e.0);
+                (group.label(), entries.into_iter().map(|(_, label, name)| (label, name)).collect())
+            })
+            .filter(|(_, entries): &MenuCategory| !entries.is_empty())
+            .collect()
+    })
 }
 
 
@@ -256,52 +271,6 @@ fn grade_glyph(kind: &NodeKind) -> &'static str {
         _ => "C",
     }
 }
-
-const GRADE_MENU_PRESENTATION: &[(&str, &[(&str, &str)])] = &[
-    ("Primary Grade", &[
-        ("Corrector (all-in-one)", "Corrector"),
-        ("Exposure", "Exposure"),
-        ("Contrast", "Contrast"),
-        ("Saturation", "Saturation"),
-        ("Tone Controls", "ToneControls"),
-        ("Colour Wheels", "ColorWheels"),
-        ("Wheel Sat/Bri", "WheelSatBri"),
-        ("Curves", "RGBCurves"),
-        ("Hue/Sat", "HueSatCurves"),
-        ("Colour Balance", "ColorBalance"),
-        ("HDR Zones", "HdrZones"),
-        ("Colour Match", "ColorMatch"),
-    ]),
-    ("Secondary", &[
-        ("Qualifier", "Qualifier"),
-        ("Luma Key", "LumaKey"),
-        ("Soft Clip", "SoftClip"),
-        ("Mask", "Mask"),
-        ("External Matte", "ExternalMatte"),
-        ("Difference Key", "DifferenceKey"),
-        ("Combine Mattes", "CombineMattes"),
-        ("Key Mixer", "KeyMixer"),
-        ("Mask Cutout", "MaskCutout"),
-    ]),
-    ("Compositing", &[
-        ("Layer", "Layer"),
-        ("Layer Mixer", "LayerMixer"),
-        ("Blend", "Blend"),
-        ("Apply Matte", "ApplyMatte"),
-    ]),
-    ("Utilities", &[
-        ("3D LUT", "Lut3D"),
-        ("Film Grain", "FilmGrain"),
-        ("Colour Warper", "ColorWarper"),
-        ("Noise Reduction", "Denoise"),
-        ("RGB Splitter", "RGBSplitter"),
-        ("RGB Combiner", "RGBCombiner"),
-        ("Reroute", "Reroute"),
-    ]),
-    ("Structural", &[
-        ("Compound", "Compound"),
-    ]),
-];
 
 #[cfg(test)]
 mod tests {
