@@ -98,6 +98,7 @@ pub mod multicam;
 pub mod registry_ids;
 pub mod picture_v1;
 mod sequence;
+pub mod stretch;
 pub mod shared;
 pub mod surface;
 /// Clips for tests, built through the picture (M4 step 12-0).

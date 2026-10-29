@@ -28,6 +28,8 @@ mod track_effects_run_on_the_bus;
 mod export_status_timings;
 #[path = "../export_audio_plays_the_whole_source.rs"]
 mod export_audio_plays_the_whole_source;
+#[path = "../rate_stretch_audio.rs"]
+mod rate_stretch_audio;
 #[path = "../export_frames_shared.rs"]
 mod export_frames_shared;
 #[path = "../export_mastering_peak.rs"]

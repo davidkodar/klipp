@@ -144,7 +144,8 @@ pub fn ease_key(kfs: &mut [Keyframe], index: usize, side: KeyEase) {
 /// A single keyframe: a value at a specific time.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Keyframe {
-    /// Time in seconds (relative to clip's source_in).
+    /// Seconds from the clip's start on the timeline (not into its
+    /// file): the clock that stretches with the clip (#3055).
     pub time_secs: f64,
     /// The parameter value at this time.
     pub value: f32,

@@ -248,6 +248,9 @@ pub enum Edge {
     Out,
 }
 
+mod stretch;
+pub use stretch::{plays_at_speed, stretch_at, stretch_range, StretchTo};
+
 /// How a title's text is set, for `title` and `style` (#1686): its
 /// weight, a variable font's axes, OpenType features, a justified
 /// paragraph's last line, its place up and down its box, an underline,
@@ -3255,7 +3258,12 @@ pub enum RefusalCode {
     CaptionsOverlap,
     /// [`Op::Transition`]: a smooth cut's two framings differ too much to
     /// morph (#2219); a shorter one differs as much.
-    FramingDiffers,
+    FramingDiffers,    /// A stretch (#3055) would put a speed outside 10% to 1600%.
+    SpeedOutOfRange,
+    /// A stretch without ripple would run into another clip.
+    WouldOverlap,
+    /// A clip to change is on a locked track.
+    TrackLocked,
 }
 
 impl RefusalCode {
