@@ -200,7 +200,7 @@ pub const MAX_PACK_BYTES: u64 = 500 * 1024 * 1024;
 
 /// A file name from a shared file, safe to join: its stem and extension
 /// each a [`klipp_core::safe_name`].
-fn safe_file(name: &str) -> String {
+pub(crate) fn safe_file(name: &str) -> String {
     let leaf = name.rsplit(['/', '\\']).next().unwrap_or(name);
     match leaf.rsplit_once('.') {
         Some((stem, ext)) if !stem.trim_matches('.').is_empty() => format!("{}.{}", klipp_core::safe_name(stem), klipp_core::safe_name(ext)),
@@ -213,7 +213,7 @@ use crate::path_util::inside;
 /// Reads one entry of the pack, at most [`MAX_ENTRY_BYTES`] (or `cap`)
 /// and within what is left of [`MAX_PACK_BYTES`]; `None` when the pack
 /// has no such entry.
-fn read_entry(zip: &mut zip::ZipArchive<std::fs::File>, path: &str, cap: u64, left: &mut u64) -> Result<Option<Vec<u8>>, String> {
+pub(crate) fn read_entry(zip: &mut zip::ZipArchive<std::fs::File>, path: &str, cap: u64, left: &mut u64) -> Result<Option<Vec<u8>>, String> {
     let entry = match zip.by_name(path) {
         Ok(e) => e,
         Err(_) => return Ok(None),

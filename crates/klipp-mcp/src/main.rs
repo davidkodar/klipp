@@ -1184,6 +1184,8 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
         }
         "klipp_fonts" => json!({ "method": "fonts", "query": args.get("query").and_then(|v| v.as_str()), "fetch": args.get("fetch").and_then(|v| v.as_str()) }),
         // Brand kits (#2722): one of list, get, set or remove.
+        "klipp_brand_kit" if args.get("export").is_some() => json!({ "method": "export_brand_kit", "name": arg_str(args, "export")?, "path": arg_str(args, "path")?, "licences": args.get("licences").cloned().unwrap_or_else(|| json!({})) }),
+        "klipp_brand_kit" if args.get("import").is_some() => json!({ "method": "import_brand_kit", "path": arg_str(args, "import")?, "replace": args.get("replace").and_then(Value::as_bool).unwrap_or(false) }),
         "klipp_brand_kit" => match (args.get("list").and_then(Value::as_bool), args.get("get"), args.get("set"), args.get("remove"), args.get("apply")) {
             (Some(true), None, None, None, None) => json!({ "method": "brand_kits" }),
             (None, Some(_), None, None, None) => json!({ "method": "brand_kit", "name": arg_str(args, "get")? }),
@@ -2519,7 +2521,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({ "save": { "type": "object" }, "pack": { "type": "object" } }), vec![]),
         tool("klipp_brand_kit",
              "Brand kits for every project: colours, fonts, logo, intro, outro. Details: klipp_guide topic timeline.",
-             json!({ "list": { "type": "boolean" }, "get": { "type": "string" }, "set": { "type": "object" }, "files": { "type": "array", "items": { "type": "string" } }, "remove": { "type": "string" }, "apply": { "type": "string" }, "parts": { "type": "array", "items": { "type": "string" } } }), vec![]),
+             json!({ "list": { "type": "boolean" }, "get": { "type": "string" }, "set": { "type": "object" }, "files": { "type": "array", "items": { "type": "string" } }, "remove": { "type": "string" }, "apply": { "type": "string" }, "parts": { "type": "array", "items": { "type": "string" } }, "export": { "type": "string" }, "import": { "type": "string" } }), vec![]),
         tool("klipp_fonts",
              "The font families a title can name, and Klipp's catalogue to fetch. Details: klipp_guide topic fonts.",
              json!({ "query": { "type": "string" }, "fetch": { "type": "string" } }), vec![]),
@@ -2814,6 +2816,8 @@ mod interface_tests {
         assert_eq!(tool_to_command("klipp_brand_kit", &set).unwrap(), json!({"method": "save_brand_kit", "kit": {"name": "Mine", "colours": {"primary": "#112233"}}, "files": ["/tmp/logo.png"]}));
         assert_eq!(tool_to_command("klipp_brand_kit", &json!({"remove": "Mine"})).unwrap(), json!({"method": "remove_brand_kit", "name": "Mine"}));
         assert_eq!(tool_to_command("klipp_brand_kit", &json!({"apply": "Bold", "parts": ["brief"]})).unwrap(), json!({"method": "apply_brand_kit", "name": "Bold", "parts": ["brief"]}));
+        assert_eq!(tool_to_command("klipp_brand_kit", &json!({"export": "Mine", "path": "/tmp/m.klippbrand", "licences": {"logo.png": "CC0"}})).unwrap(), json!({"method": "export_brand_kit", "name": "Mine", "path": "/tmp/m.klippbrand", "licences": {"logo.png": "CC0"}}));
+        assert_eq!(tool_to_command("klipp_brand_kit", &json!({"import": "/tmp/m.klippbrand", "replace": true})).unwrap(), json!({"method": "import_brand_kit", "path": "/tmp/m.klippbrand", "replace": true}));
         assert!(tool_to_command("klipp_brand_kit", &json!({})).is_err());
         assert!(tool_to_command("klipp_brand_kit", &json!({"get": "a", "remove": "b"})).is_err());
         for req in [json!({"method": "brand_kits"}), json!({"method": "save_brand_kit", "kit": {}, "files": []})] {

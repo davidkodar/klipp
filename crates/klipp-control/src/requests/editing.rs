@@ -940,6 +940,30 @@ pub(crate) fn respond(
             }))
         }
 
+        ControlCommand::ExportBrandKit { name, path, licences } => {
+            if in_batch {
+                return Err("sharing a brand kit is not part of a batch: send it on its own".into());
+            }
+            if !std::path::Path::new(&path).is_absolute() {
+                return Err(format!("give an absolute path ending in .{}", klipp_project::brand_kit::BRAND_EXTENSION));
+            }
+            let text = klipp_project::brand_kit::export_kit(klipp_timeline::template_places::data_root().as_deref(), &name, std::path::Path::new(&path), &licences)?;
+            Ok(json!({ "text": text, "path": path }))
+        }
+
+        ControlCommand::ImportBrandKit { path, replace } => {
+            if in_batch {
+                return Err("installing a brand kit is not part of a batch: send it on its own".into());
+            }
+            let root = klipp_timeline::template_places::data_root().ok_or("no data folder to keep brand kits in")?;
+            let found = klipp_project::brand_kit::import_kit(&root, std::path::Path::new(&path), replace)?;
+            let warnings = crate::plans::font_warnings([&found.kit.fonts.heading, &found.kit.fonts.body].into_iter().flatten().map(String::as_str));
+            let mut v = brand_kit_json(&found);
+            v["text"] = json!(format!("installed the brand kit \"{}\"{}", found.kit.name, if warnings.is_empty() { String::new() } else { format!("; {}", warnings.join("; ")) }));
+            v["warnings"] = json!(warnings);
+            Ok(v)
+        }
+
         ControlCommand::RemoveBrandKit { name } => {
             if in_batch {
                 return Err("removing a brand kit is not part of a batch: send it on its own".into());
