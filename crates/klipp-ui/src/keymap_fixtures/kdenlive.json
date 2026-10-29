@@ -1,0 +1,696 @@
+{
+ "editor": "Kdenlive",
+ "platform": "Linux and Windows (the manual's defaults)",
+ "version": "Kdenlive 26.08 Manual, Keyboard Shortcuts page (revision 16eda10), fetched 2026-10-29",
+ "sources": [
+  {
+   "url": "https://docs.kdenlive.org/en/user_interface/shortcuts.html",
+   "title": "Keyboard Shortcuts — Kdenlive Manual",
+   "date_or_version": "Kdenlive 26.08 Manual, page revision 16eda10; fetched 2026-10-29. Tables File, General, Navigation and Playback, Project Bin, Editing, Timeline, Titler, Render, Settings."
+  }
+ ],
+ "actions": {
+  "add_default_transition": {
+   "command": "Mix Clips",
+   "keys": [
+    "U"
+   ]
+  },
+  "add_marker": {
+   "command": "Add/Remove Guide",
+   "keys": [
+    "G"
+   ]
+  },
+  "blade_tool": {
+   "command": "Razor Tool",
+   "keys": [
+    "X"
+   ]
+  },
+  "command_palette": {
+   "command": "Find Action…",
+   "keys": [
+    "Ctrl+Alt+I"
+   ]
+  },
+  "copy_clip": {
+   "command": "Copy",
+   "keys": [
+    "Ctrl+C"
+   ]
+  },
+  "cut_clip": {
+   "command": "Cut",
+   "keys": [
+    "Ctrl+X"
+   ]
+  },
+  "delete_clip": {
+   "command": "Extract Clip",
+   "keys": [
+    "Shift+Delete"
+   ]
+  },
+  "deselect_all": {
+   "command": "Deselect",
+   "keys": [
+    "Ctrl+Shift+A"
+   ]
+  },
+  "duplicate_clip": {
+   "command": "Duplicate Clip",
+   "keys": [
+    "Ctrl+D"
+   ]
+  },
+  "export": {
+   "command": "Render",
+   "keys": [
+    "Ctrl+Enter"
+   ]
+  },
+  "extract_edit": {
+   "command": "Extract Timeline Zone",
+   "keys": [
+    "Shift+X"
+   ]
+  },
+  "go_to_end": {
+   "command": "Go to Project End",
+   "keys": [
+    "Ctrl+End"
+   ]
+  },
+  "go_to_start": {
+   "command": "Go to Project Start",
+   "keys": [
+    "Ctrl+Home"
+   ]
+  },
+  "group_clips": {
+   "command": "Group Clips",
+   "keys": [
+    "Ctrl+G"
+   ]
+  },
+  "import_media": {
+   "command": "(no default on the page; Ctrl+I is Insert Zone in Project Bin)",
+   "keys": []
+  },
+  "insert_edit": {
+   "command": "Insert Clip Zone in Timeline",
+   "keys": [
+    "V"
+   ]
+  },
+  "lift_clip": {
+   "command": "Delete Selected Item",
+   "keys": [
+    "Delete"
+   ]
+  },
+  "lift_edit": {
+   "command": "Lift Timeline Zone",
+   "keys": [
+    "Z"
+   ]
+  },
+  "new_project": {
+   "command": "New",
+   "keys": [
+    "Ctrl+N"
+   ]
+  },
+  "next_edit_point": {
+   "command": "Go to Next Snap Point",
+   "keys": [
+    "Alt+ArrowRight"
+   ]
+  },
+  "next_marker": {
+   "command": "Go to Next Guide",
+   "keys": [
+    "Ctrl+ArrowRight"
+   ]
+  },
+  "open_project": {
+   "command": "Open…",
+   "keys": [
+    "Ctrl+O"
+   ]
+  },
+  "overwrite_edit": {
+   "command": "Overwrite Clip Zone in Timeline",
+   "keys": [
+    "B"
+   ]
+  },
+  "paste_clip": {
+   "command": "Paste",
+   "keys": [
+    "Ctrl+V"
+   ]
+  },
+  "play_in_to_out": {
+   "command": "Play Zone",
+   "keys": [
+    "Ctrl+Space"
+   ]
+  },
+  "play_pause": {
+   "command": "Play / Stop",
+   "keys": [
+    "Space"
+   ]
+  },
+  "preferences": {
+   "command": "Configure Kdenlive…",
+   "keys": [
+    "Ctrl+Shift+,"
+   ]
+  },
+  "prev_edit_point": {
+   "command": "Go to Previous Snap Point",
+   "keys": [
+    "Alt+ArrowLeft"
+   ]
+  },
+  "prev_marker": {
+   "command": "Go to Previous Guide",
+   "keys": [
+    "Ctrl+ArrowLeft"
+   ]
+  },
+  "quit": {
+   "command": "Quit",
+   "keys": [
+    "Ctrl+Q"
+   ]
+  },
+  "redo": {
+   "command": "Redo",
+   "keys": [
+    "Ctrl+Shift+Z"
+   ]
+  },
+  "save_project": {
+   "command": "Save",
+   "keys": [
+    "Ctrl+S"
+   ]
+  },
+  "save_project_as": {
+   "command": "Save As…",
+   "keys": [
+    "Ctrl+Shift+S"
+   ]
+  },
+  "select_all": {
+   "command": "Select All",
+   "keys": [
+    "Ctrl+A"
+   ]
+  },
+  "select_tool": {
+   "command": "Selection Tool",
+   "keys": [
+    "S"
+   ]
+  },
+  "set_in_point": {
+   "command": "Set Zone In",
+   "keys": [
+    "I"
+   ]
+  },
+  "set_out_point": {
+   "command": "Set Zone Out",
+   "keys": [
+    "O"
+   ]
+  },
+  "shuttle_forward": {
+   "command": "Forward",
+   "keys": [
+    "L"
+   ]
+  },
+  "shuttle_pause": {
+   "command": "Pause",
+   "keys": [
+    "K"
+   ]
+  },
+  "shuttle_reverse": {
+   "command": "Rewind",
+   "keys": [
+    "J"
+   ]
+  },
+  "split_at_playhead": {
+   "command": "Cut Clip",
+   "keys": [
+    "Shift+R"
+   ]
+  },
+  "step_backward": {
+   "command": "Rewind 1 Frame",
+   "keys": [
+    "ArrowLeft"
+   ]
+  },
+  "step_forward": {
+   "command": "Forward 1 Frame",
+   "keys": [
+    "ArrowRight"
+   ]
+  },
+  "toggle_fullscreen": {
+   "command": "Switch Monitor Fullscreen",
+   "keys": [
+    "F11"
+   ]
+  },
+  "toggle_multicam_mode": {
+   "command": "Multitrack View",
+   "keys": [
+    "F12"
+   ]
+  },
+  "trim_in_to_playhead": {
+   "command": "Resize Item Start",
+   "keys": [
+    "("
+   ]
+  },
+  "trim_out_to_playhead": {
+   "command": "Resize Item End",
+   "keys": [
+    ")"
+   ]
+  },
+  "undo": {
+   "command": "Undo",
+   "keys": [
+    "Ctrl+Z"
+   ]
+  },
+  "ungroup_clips": {
+   "command": "Ungroup Clips",
+   "keys": [
+    "Ctrl+Shift+G"
+   ]
+  },
+  "zoom_in": {
+   "command": "Zoom In",
+   "keys": [
+    "Ctrl+="
+   ]
+  },
+  "zoom_out": {
+   "command": "Zoom Out",
+   "keys": [
+    "Ctrl+-"
+   ]
+  }
+ },
+ "loose": {
+  "add_default_transition": "LOOSE: Mix Clips makes a same-track mix at the cut between two clips; Klipp's default transition at the cut is the nearest action.",
+  "toggle_multicam_mode": "LOOSE: Multitrack View shows every track's picture to cut between; Klipp's multicam mode is the nearest.",
+  "trim_in_to_playhead": "LOOSE: Resize Item Start moves the selected item's start to the playhead; Klipp trims the clip under the playhead.",
+  "trim_out_to_playhead": "LOOSE: Resize Item End moves the selected item's end to the playhead; Klipp trims the clip under the playhead.",
+  "lift_clip": "Delete Selected Item leaves the gap: Klipp's lift.",
+  "delete_clip": "Extract Clip removes the clip and closes the gap: Klipp's delete."
+ },
+ "not_checked": {
+  "copy_clip": "The page also gives Ctrl+Ins; Insert is not a key Klipp's keymaps name.",
+  "paste_clip": "The page also gives Shift+Ins; Insert is not a key Klipp's keymaps name.",
+  "toggle_loop": "Loop Zone (Ctrl+Shift+Space) plays the zone looped; Klipp's loop toggle is a mode, so it keeps its key unless taken."
+ },
+ "editor_only": [
+  {
+   "command": "Full Screen Mode",
+   "keys": [
+    "Ctrl+Shift+F"
+   ]
+  },
+  {
+   "command": "Kdenlive Handbook",
+   "keys": [
+    "F1"
+   ]
+  },
+  {
+   "command": "Rename…",
+   "keys": [
+    "F2"
+   ]
+  },
+  {
+   "command": "Show Menu Bar",
+   "keys": [
+    "Ctrl+M"
+   ]
+  },
+  {
+   "command": "Up",
+   "keys": [
+    "Alt+ArrowUp"
+   ]
+  },
+  {
+   "command": "What's This?",
+   "keys": [
+    "Shift+F1"
+   ]
+  },
+  {
+   "command": "Align Playhead to Mouse Position",
+   "keys": [
+    "P"
+   ]
+  },
+  {
+   "command": "Go to Zone End",
+   "keys": [
+    "Shift+O"
+   ]
+  },
+  {
+   "command": "Go to Zone Start",
+   "keys": [
+    "Shift+I"
+   ]
+  },
+  {
+   "command": "Loop Zone",
+   "keys": [
+    "Ctrl+Shift+Space"
+   ]
+  },
+  {
+   "command": "Closing the extra bins",
+   "keys": [
+    "Ctrl+W"
+   ]
+  },
+  {
+   "command": "Focus Timecode",
+   "keys": [
+    "="
+   ]
+  },
+  {
+   "command": "Insert Zone in Project Bin",
+   "keys": [
+    "Ctrl+I"
+   ]
+  },
+  {
+   "command": "Adjust timeline zone",
+   "keys": [
+    "Shift+Z"
+   ]
+  },
+  {
+   "command": "Switch Monitor",
+   "keys": [
+    "T"
+   ]
+  },
+  {
+   "command": "Select Target 1",
+   "keys": [
+    "Ctrl+1"
+   ]
+  },
+  {
+   "command": "Select Target 2",
+   "keys": [
+    "Ctrl+2"
+   ]
+  },
+  {
+   "command": "Select Target 3",
+   "keys": [
+    "Ctrl+3"
+   ]
+  },
+  {
+   "command": "Select Target 4",
+   "keys": [
+    "Ctrl+4"
+   ]
+  },
+  {
+   "command": "Select Target 5",
+   "keys": [
+    "Ctrl+5"
+   ]
+  },
+  {
+   "command": "Select Target 6",
+   "keys": [
+    "Ctrl+6"
+   ]
+  },
+  {
+   "command": "Select Target 7",
+   "keys": [
+    "Ctrl+7"
+   ]
+  },
+  {
+   "command": "Select Target 8",
+   "keys": [
+    "Ctrl+8"
+   ]
+  },
+  {
+   "command": "Select Target 9",
+   "keys": [
+    "Ctrl+9"
+   ]
+  },
+  {
+   "command": "Switch All Tracks Active",
+   "keys": [
+    "Shift+Alt+A"
+   ]
+  },
+  {
+   "command": "Toggle All Track Lock",
+   "keys": [
+    "Ctrl+Shift+L"
+   ]
+  },
+  {
+   "command": "Toggle Track Hidden/Mute",
+   "keys": [
+    "Ctrl+Shift+H"
+   ]
+  },
+  {
+   "command": "Toggle All Tracks Active",
+   "keys": [
+    "Shift+A"
+   ]
+  },
+  {
+   "command": "Toggle Track Active",
+   "keys": [
+    "A"
+   ]
+  },
+  {
+   "command": "Add Subtitle",
+   "keys": [
+    "Shift+S"
+   ]
+  },
+  {
+   "command": "Grab Current Item",
+   "keys": [
+    "Shift+G"
+   ]
+  },
+  {
+   "command": "Cut All Clips",
+   "keys": [
+    "Ctrl+Shift+R"
+   ]
+  },
+  {
+   "command": "Deselect Clip",
+   "keys": [
+    "-"
+   ]
+  },
+  {
+   "command": "Start Preview Render",
+   "keys": [
+    "Shift+Enter"
+   ]
+  },
+  {
+   "command": "Spacer Tool",
+   "keys": [
+    "M"
+   ]
+  },
+  {
+   "command": "Select Audio Track 1",
+   "keys": [
+    "Alt+1"
+   ]
+  },
+  {
+   "command": "Select Audio Track 2",
+   "keys": [
+    "Alt+2"
+   ]
+  },
+  {
+   "command": "Select Audio Track 3",
+   "keys": [
+    "Alt+3"
+   ]
+  },
+  {
+   "command": "Select Audio Track 4",
+   "keys": [
+    "Alt+4"
+   ]
+  },
+  {
+   "command": "Select Audio Track 5",
+   "keys": [
+    "Alt+5"
+   ]
+  },
+  {
+   "command": "Select Audio Track 6",
+   "keys": [
+    "Alt+6"
+   ]
+  },
+  {
+   "command": "Select Audio Track 7",
+   "keys": [
+    "Alt+7"
+   ]
+  },
+  {
+   "command": "Select Audio Track 8",
+   "keys": [
+    "Alt+8"
+   ]
+  },
+  {
+   "command": "Select Audio Track 9",
+   "keys": [
+    "Alt+9"
+   ]
+  },
+  {
+   "command": "Select Video Track 1",
+   "keys": [
+    "1"
+   ]
+  },
+  {
+   "command": "Select Video Track 2",
+   "keys": [
+    "2"
+   ]
+  },
+  {
+   "command": "Select Video Track 3",
+   "keys": [
+    "3"
+   ]
+  },
+  {
+   "command": "Select Video Track 4",
+   "keys": [
+    "4"
+   ]
+  },
+  {
+   "command": "Select Video Track 5",
+   "keys": [
+    "5"
+   ]
+  },
+  {
+   "command": "Select Video Track 6",
+   "keys": [
+    "6"
+   ]
+  },
+  {
+   "command": "Select Video Track 7",
+   "keys": [
+    "7"
+   ]
+  },
+  {
+   "command": "Select Video Track 8",
+   "keys": [
+    "8"
+   ]
+  },
+  {
+   "command": "Select Video Track 9",
+   "keys": [
+    "9"
+   ]
+  },
+  {
+   "command": "Switch Track Target Audio Stream",
+   "keys": [
+    "'"
+   ]
+  },
+  {
+   "command": "Toggle Track Disabled",
+   "keys": [
+    "Shift+H"
+   ]
+  },
+  {
+   "command": "Toggle Track Lock",
+   "keys": [
+    "Shift+L"
+   ]
+  },
+  {
+   "command": "Toggle Track Target",
+   "keys": [
+    "Shift+T"
+   ]
+  },
+  {
+   "command": "Configure Keyboard Shortcuts…",
+   "keys": [
+    "Ctrl+Alt+,"
+   ]
+  }
+ ],
+ "deviations": {},
+ "klipp_adds": {
+  "go_to_start": {
+   "keys": [
+    "Home"
+   ],
+   "why": "The page's Home is Go to Clip Start, a jump Klipp has no action for; Home to the timeline's start is kept beside Go to Project Start (Ctrl+Home), as every keymap has it (#2969)."
+  },
+  "go_to_end": {
+   "keys": [
+    "End"
+   ],
+   "why": "The page's End is Go to Clip End, a jump Klipp has no action for; End to the timeline's end is kept beside Go to Project End (Ctrl+End), as every keymap has it (#2969)."
+  }
+ }
+}

@@ -273,15 +273,18 @@ pub enum KeymapPreset {
     Avid,
     Resolve,
     FinalCut,
+    /// The open-source editor's published defaults (#3027).
+    Kdenlive,
 }
 
 impl KeymapPreset {
-    pub const ALL: [KeymapPreset; 5] = [
+    pub const ALL: [KeymapPreset; 6] = [
         KeymapPreset::Klipp,
         KeymapPreset::Premiere,
         KeymapPreset::Avid,
         KeymapPreset::Resolve,
         KeymapPreset::FinalCut,
+        KeymapPreset::Kdenlive,
     ];
 
     pub fn label(self) -> &'static str {
@@ -291,6 +294,7 @@ impl KeymapPreset {
             KeymapPreset::Avid => "Avid Media Composer",
             KeymapPreset::Resolve => "DaVinci Resolve",
             KeymapPreset::FinalCut => "Final Cut Pro",
+            KeymapPreset::Kdenlive => "Kdenlive",
         }
     }
 
@@ -302,6 +306,7 @@ impl KeymapPreset {
             KeymapPreset::Avid => crate::keymap_presets::AVID,
             KeymapPreset::Resolve => crate::keymap_presets::RESOLVE,
             KeymapPreset::FinalCut => crate::keymap_presets::FINAL_CUT,
+            KeymapPreset::Kdenlive => crate::keymap_presets::KDENLIVE,
         }
     }
 
@@ -314,6 +319,7 @@ impl KeymapPreset {
             KeymapPreset::Avid => crate::keymap_presets::AVID_TAKEN,
             KeymapPreset::Resolve => crate::keymap_presets::RESOLVE_TAKEN,
             KeymapPreset::FinalCut => crate::keymap_presets::FINAL_CUT_TAKEN,
+            KeymapPreset::Kdenlive => crate::keymap_presets::KDENLIVE_TAKEN,
         }
     }
 
