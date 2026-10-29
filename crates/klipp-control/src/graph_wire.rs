@@ -119,7 +119,7 @@ pub enum GraphWireOp {
     /// ramp…, as a clip's behaviours store them; none takes them off.
     Modify { path: GraphPath, key: String, modifiers: Vec<Value> },
     /// The keys on a parameter (#2886): `{time_secs, value, interpolation?}`
-    /// each, seconds of the clip's media; none takes them off. Its
+    /// each, seconds into the clip; none takes them off. Its
     /// behaviours stay.
     Keys { path: GraphPath, key: String, keys: Vec<Value> },
 }

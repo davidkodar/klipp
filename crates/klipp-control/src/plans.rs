@@ -102,28 +102,42 @@ fn project_sequence_ids(ctx: &ControlContext, open: &klipp_timeline::Sequence) -
 /// op's slots and controls. One whose name names none is left without,
 /// which the document refuses.
 pub(crate) fn with_recipes(ops: &[klipp_document::ops::Op], dir: Option<&std::path::Path>, pool: &klipp_media::MediaPool) -> Vec<klipp_document::ops::Op> {
-    use klipp_document::ops::{Op, RecipeBuild, RecipeBuilder};
-    if !ops.iter().any(|op| matches!(op, Op::Recipe { .. })) {
+    use klipp_document::ops::{Op, RecipeBuild, RecipeBuilder, RecipeMaker};
+    if !ops.iter().any(|op| matches!(op, Op::Recipe { .. } | Op::Redact { .. })) {
         return ops.to_vec();
     }
     let recipes = crate::recipes::all(dir);
     // Where each media file's subject mattes are, for what the reply says
     // of a recipe reading one (#2758).
     let media = std::sync::Arc::new(crate::recipes::media_files(pool));
+    let builder = move |recipe: klipp_timeline::composition_template::CompositionTemplate, slots: std::collections::BTreeMap<String, serde_json::Value>, controls: std::collections::BTreeMap<String, serde_json::Value>| {
+        let media = media.clone();
+        RecipeBuilder(std::sync::Arc::new(move |seq: &klipp_timeline::Sequence, clip: klipp_core::ClipId| {
+            let values = crate::recipes::values(&recipe, &slots, &controls)?;
+            let (ops, placed) = crate::recipes::on_clip(seq, clip, &recipe, &values)?;
+            let note = crate::recipes::subject_note(seq, clip, &recipe, &values, &media);
+            Ok(RecipeBuild { ops, placed, note })
+        }))
+    };
+    // An op built on a recipe (#2886) asks for it by name with its
+    // controls, from Klipp's own only: a saved or installed recipe of the
+    // same name never stands in for what an op promises (a redaction that
+    // hides nothing).
+    let maker = {
+        let (own, builder) = (klipp_timeline::composition_template::builtin_recipes(), builder.clone());
+        RecipeMaker(std::sync::Arc::new(move |name: &str, controls: &std::collections::BTreeMap<String, serde_json::Value>| {
+            crate::recipes::named(&own, name).ok().cloned().map(|recipe| builder(recipe, Default::default(), controls.clone()))
+        }))
+    };
     ops.iter()
         .cloned()
         .map(|mut op| {
-            if let Op::Recipe { name, slots, controls, build, .. } = &mut op {
-                *build = crate::recipes::named(&recipes, name).ok().cloned().map(|recipe| {
-                    let (slots, controls) = (slots.clone(), controls.clone());
-                    let media = media.clone();
-                    RecipeBuilder(std::sync::Arc::new(move |seq: &klipp_timeline::Sequence, clip: klipp_core::ClipId| {
-                        let values = crate::recipes::values(&recipe, &slots, &controls)?;
-                        let (ops, placed) = crate::recipes::on_clip(seq, clip, &recipe, &values)?;
-                        let note = crate::recipes::subject_note(seq, clip, &recipe, &values, &media);
-                        Ok(RecipeBuild { ops, placed, note })
-                    }))
-                });
+            match &mut op {
+                Op::Recipe { name, slots, controls, build, .. } => {
+                    *build = crate::recipes::named(&recipes, name).ok().cloned().map(|recipe| builder(recipe, slots.clone(), controls.clone()));
+                }
+                Op::Redact { recipes, .. } => *recipes = Some(maker.clone()),
+                _ => {}
             }
             op
         })

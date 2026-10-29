@@ -336,6 +336,57 @@ fn a_recipe_keys_a_parameter_over_the_clip() {
     assert!(worst(&cpu(&seq, ViewChannel::Picture), &shown) <= 1, "the stack mid-way, against the CPU");
 }
 
+/// Redact as a recipe (#2886) draws what the redact op drew before it:
+/// a mosaic (or a blur) of the box with its margin, from `from` to `to`,
+/// against the cropped copy of the clip the op used to lay on a track
+/// above, on the GPU stack within a level; outside the stretch, the plain
+/// clip. The box crosses the patch's edge, so the blocks mix two colours.
+/// Its edges lie on whole pixels.
+#[test]
+fn redact_draws_what_its_copy_on_a_track_above_drew() {
+    use klipp_effects::BuiltinEffect as E;
+    // On whole pixels: at an edge part-way through a pixel, the crop
+    // rounded it out and the window counts it in when mostly covered.
+    let (x0, x1, y0, y1) = (0.25f32, 0.55f32, 0.2f32, 0.5f32);
+    for (name, fx) in [("Redact (mosaic)", E::Mosaic { block_size: 36.0 }), ("Redact (blur)", E::GaussianBlur { radius: 35.0 })] {
+        let recipe = builtin_recipes().into_iter().find(|r| r.name == name).expect(name);
+        let plain = shot_clip();
+        let before = sequence(plain.clone());
+        let n = |v: f32| TemplateValue::Number(f64::from(v));
+        let values = BTreeMap::from([
+            ("amount".to_string(), n(0.5)),
+            ("centre_x".to_string(), n((x0 + x1) / 2.0)),
+            ("centre_y".to_string(), n((y0 + y1) / 2.0)),
+            ("width".to_string(), n(x1 - x0)),
+            // Along the frame's width, as a window measures its height.
+            ("height".to_string(), n((y1 - y0) * H as f32 / W as f32)),
+            ("start".to_string(), TemplateValue::Number(0.8 - 0.001)),
+            ("from".to_string(), TemplateValue::Number(0.8)),
+            ("to".to_string(), TemplateValue::Number(1.2)),
+        ]);
+        let (ops, _) = klipp_control::recipes::on_clip(&before, plain.id, &recipe, &values).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let mut placed = plain.clone();
+        placed.apply_picture_ops(&ops).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let now = sequence(placed);
+        // As the op made it before: the same footage from 0.8 to 1.2 s,
+        // hidden then cut to the box, on a track above.
+        let mut cover = Clip { kind: plain.kind.clone(), ..Clip::gap(tc(0.8), tc(1.2)) };
+        cover.source_in = tc(0.8);
+        cover.source_out = tc(1.2);
+        let crop = E::Crop { left: x0, right: 1.0 - x1, top: y0, bottom: 1.0 - y1, feather: 0.0, aspect: 0.0, focus_x: 0.5, focus_y: 0.5 };
+        cover.apply_effect_edits(&[klipp_timeline::EffectEdit::Add(&fx), klipp_timeline::EffectEdit::Add(&crop)]).unwrap().unwrap();
+        let mut was = sequence(plain.clone());
+        let mut above = Track::new("V2", TrackKind::Video);
+        above.clips = vec![cover];
+        was.tracks.insert(0, above);
+        let Some(drawn) = stack_at(&now, 1.0, name) else { return };
+        let old = stack_at(&was, 1.0, name).expect("drawn once already");
+        assert!(worst(&drawn, &old) <= 1, "{name}: {} levels from the copy above", worst(&drawn, &old));
+        assert!(worst(&drawn, &stack_at(&before, 1.0, name).unwrap()) > 30, "{name}: something hidden");
+        assert!(worst(&stack_at(&now, 1.5, name).unwrap(), &stack_at(&before, 1.5, name).unwrap()) <= 1, "{name}: the plain clip after the stretch");
+    }
+}
+
 /// `recipe` placed on the test shot's clip with the harness's slots and
 /// `values` over them: the sequence it makes.
 fn placed_with(recipe: &klipp_timeline::composition_template::CompositionTemplate, plain: &Clip) -> Sequence {

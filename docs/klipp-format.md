@@ -328,7 +328,7 @@ composition and is refused with a hint to save it again):
 * `graph` — a recipe's `{ops, checks, check_with}` instead: graph ops
   addressed from anchors or `{"new": k}` (`modify` among them, putting
   behaviours on a node's parameter, and `keys`, its keys, at most 256,
-  each a finite `time_secs` in the media's seconds and `value`; an `add` may carry `entry`, the
+  each a finite `time_secs`, seconds into the clip, and `value`; an `add` may carry `entry`, the
   node's whole stored entry, as a recipe saved from nodes does, refused
   unless it reads as that node's), the harness's checks, and the
   control values the checks run with where the test shot needs other
