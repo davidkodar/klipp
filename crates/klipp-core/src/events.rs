@@ -1320,6 +1320,17 @@ pub enum AppCommand {
         /// Linked switch off).
         linked: bool,
     },
+    /// Rate stretch (#3055): `clip_ids` (the first the one dragged) made
+    /// to fill their length to `to` by their speed, from their end
+    /// (`at_end`) or their start, as one undo step; `ripple` moves what
+    /// follows, `keep_pitch` is how the sound plays.
+    StretchClip {
+        clip_ids: Vec<ClipId>,
+        at_end: bool,
+        to: Timecode,
+        ripple: bool,
+        keep_pitch: bool,
+    },
     /// Roll trim: adjust the boundary between two adjacent clips.
     /// Clip A's out moves and Clip B's in moves by the same amount, keeping total duration constant.
     RollTrimClip {
@@ -4487,6 +4498,10 @@ pub enum Tool {
     /// Enter, Escape and Alt-click for them. The timeline treats it as
     /// Select.
     Mask,
+    /// Rate Stretch tool (#3055): dragging a clip's edge changes its
+    /// speed so the same content fills the new length, where the Select
+    /// tool's edge trims; its top corners stretch with either.
+    Stretch,
 }
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]

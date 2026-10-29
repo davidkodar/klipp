@@ -296,6 +296,19 @@ impl KlippApp {
                     }
                     true
                 }
+                AppCommand::StretchClip { clip_ids, at_end, to, ripple, keep_pitch } => {
+                    use klipp_document::ops::{stretch_at, Edge, StretchTo};
+                    let edge = if *at_end { Edge::Out } else { Edge::In };
+                    match stretch_at(self.state.sequence(), &self.state.media_pool, clip_ids, edge, StretchTo::EdgeAt(to.to_secs_f64()), *ripple, *keep_pitch) {
+                        Ok((_, edit, _)) => self.apply_edits_as_one(&[edit], "Rate Stretch"),
+                        Err(r) => {
+                            self.state.toast.show(format!("Stretch unchanged: {}", r.why));
+                            // The drag's preview may have reached the engine.
+                            self.sync_sequence_to_engine();
+                        }
+                    }
+                    true
+                }
                 AppCommand::TrimClip { .. } => {
                     match crate::clip_edits::trim(self.state.sequence(), &self.state.media_pool, cmd) {
                         Ok(Some(edit)) => self.apply_edits_as_one(&[edit], "Trim Clip"),

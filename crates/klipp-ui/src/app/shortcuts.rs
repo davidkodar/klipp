@@ -598,6 +598,11 @@ impl KlippApp {
                 tracing::debug!("Trim tool");
                 cmds.push(AppCommand::SetActiveTool(Tool::Trim));
             }
+            // Shift+R — Rate Stretch tool (#3055): an edge drag changes
+            // the clip's speed to fill the new length.
+            if kb.is_action_pressed("stretch_tool", i) {
+                cmds.push(AppCommand::SetActiveTool(Tool::Stretch));
+            }
             // Y — Text tool: a click or a drag in the viewer makes a
             // title there (#1713)
             if kb.is_action_pressed("text_tool", i) {

@@ -547,6 +547,8 @@ impl KeyBindings {
         bind(&mut b, "blade_tool", vec![KeyCombo::new("B")]);
         bind(&mut b, "range_tool", vec![KeyCombo::new("R")]);
         bind(&mut b, "trim_tool", vec![KeyCombo::new("T")]);
+        // Shift+R: R is the Range tool here (#3055).
+        bind(&mut b, "stretch_tool", vec![KeyCombo::shift("R")]);
         // The Text tool (#1713). T is the Trim tool's and Shift+T, Alt+T
         // and Ctrl+T are taken, so it has Y, otherwise free; the Premiere
         // layout gives it T.
@@ -843,6 +845,7 @@ impl KeyBindings {
             "blade_tool" => "Blade Tool",
             "range_tool" => "Range Tool",
             "trim_tool" => "Trim Tool",
+            "stretch_tool" => "Rate Stretch Tool",
             "text_tool" => "Text Tool",
             "mask_tool" => "Mask Tool",
             "insert_edit" => "Insert Edit",
@@ -968,7 +971,7 @@ impl KeyBindings {
         &[
             ("File", &["new_project", "open_project", "save_project", "save_project_as", "close_project", "import_media", "export", "preferences", "quit"]),
             ("Edit", &["undo", "redo", "cut_clip", "copy_clip", "paste_clip", "paste_insert", "copy_attributes", "paste_attributes", "duplicate_clip", "select_all", "deselect_all", "select_track_clips", "select_track_forward", "select_track_backward", "select_forward", "select_backward", "delete_clip", "lift_clip", "split_at_playhead", "group_clips", "ungroup_clips"]),
-            ("Tools", &["select_tool", "blade_tool", "range_tool", "trim_tool", "text_tool", "mask_tool"]),
+            ("Tools", &["select_tool", "blade_tool", "range_tool", "trim_tool", "stretch_tool", "text_tool", "mask_tool"]),
             ("Timeline", &["add_default_transition", "add_audio_crossfade", "nudge_clips_back", "nudge_clips_forward", "nudge_clips_back_many", "nudge_clips_forward_many", "move_clips_up_a_track", "move_clips_down_a_track", "select_edit_point", "extend_edit", "play_around_edit", "trim_edit_back", "trim_edit_forward", "trim_edit_back_many", "trim_edit_forward_many", "insert_edit", "overwrite_edit", "fit_to_fill_edit", "place_on_top_edit", "replace_edit", "lift_edit", "extract_edit", "toggle_edit_mode", "ripple_trim_head", "ripple_trim_tail", "trim_out_to_playhead", "trim_in_to_playhead", "freeze_frame"]),
             ("Navigation", &["next_edit_point", "prev_edit_point", "leave_compound", "next_marker", "prev_marker", "set_in_point", "set_out_point", "clear_in_point", "clear_out_point", "clear_in_out", "set_range_to_clip", "match_frame_program_to_source", "match_frame_source_to_program"]),
             ("Transport", &["play_pause", "step_forward", "step_backward", "go_to_start", "go_to_end", "shuttle_reverse", "shuttle_pause", "shuttle_forward", "toggle_loop", "play_in_to_out"]),
