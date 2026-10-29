@@ -3,7 +3,7 @@
 //! picture (a solid, a gradient) for it from nothing; a Media Source
 //! brings another media item's, and Clip Below what is under the clip.
 
-use super::{Alpha, Category, ColourDomain, EffectType, NodeTypeDesc, ParamDesc, ParamKind, PortDesc, PortType, Spatial, Temporal, Unit, IMAGE_IN, IMAGE_OUT};
+use super::{hidden, Alpha, Category, ColourDomain, EffectType, NodeTypeDesc, ParamDesc, ParamKind, PortDesc, PortType, Spatial, Temporal, Unit, IMAGE_IN, IMAGE_OUT};
 use crate::generator::SHAPES;
 use crate::{BlendMode, BuiltinEffect};
 
@@ -58,6 +58,7 @@ pub(super) static TYPES: &[EffectType] = &[
             Spatial::PerPixel,
         ),
         tag: "merge",
+        browser: hidden("Lays a second picture over the chain from a port beside it, so it is added in the Composite page's graph"),
         sample: || BuiltinEffect::Merge { blend_mode: BlendMode::Normal, opacity: 1.0 },
     },
     EffectType {
@@ -77,6 +78,7 @@ pub(super) static TYPES: &[EffectType] = &[
             Spatial::Global,
         ),
         tag: "generator",
+        browser: hidden("A source picture beside the chain for a Merge, added from the Composite page's source menu"),
         sample: || BuiltinEffect::Generator { shape: 0, color_a: [40, 90, 200, 255], color_b: [255, 255, 255, 255], angle: 0.0, center_x: 0.5, center_y: 0.5, radius: 0.5 },
     },
     EffectType {
@@ -95,6 +97,7 @@ pub(super) static TYPES: &[EffectType] = &[
             )
         },
         tag: "media_source",
+        browser: hidden("A source picture beside the chain for a Merge, added from the Composite page's source menu"),
         sample: || BuiltinEffect::MediaSource { media: String::new(), offset: 0.0 },
     },
     EffectType {
@@ -111,6 +114,7 @@ pub(super) static TYPES: &[EffectType] = &[
             )
         },
         tag: "title_source",
+        browser: hidden("A source picture beside the chain for a Merge, added from the Composite page's source menu"),
         sample: || BuiltinEffect::TitleSource { title: String::new() },
     },
     EffectType {
@@ -120,6 +124,7 @@ pub(super) static TYPES: &[EffectType] = &[
             ..composite("klipp.fx.clip_below", "Clip Below", IMAGE_IN, &[], Spatial::Global)
         },
         tag: "clip_below",
+        browser: hidden("A source picture beside the chain for a Merge, added from the Composite page's source menu"),
         sample: || BuiltinEffect::ClipBelow {},
     },
     EffectType {
@@ -131,6 +136,7 @@ pub(super) static TYPES: &[EffectType] = &[
             ..composite("klipp.fx.grade_compound", "Grade", IMAGE_IN, &[], Spatial::Global)
         },
         tag: "grade_compound",
+        browser: hidden("Marks where the clip's grade runs in its chain; the Colour page makes it"),
         sample: || BuiltinEffect::GradeCompound {},
     },
 ];

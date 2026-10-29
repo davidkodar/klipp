@@ -23,6 +23,7 @@
 //! per-frame results of an analysis of the clip.
 
 use super::{
+    hidden, listed, BrowserCategory,
     mixable,
     Alpha, Category, ColourDomain, EffectType, NodeTypeDesc, ParamDesc, ParamKind, Scaling, Spatial, Temporal, Unit,
     IMAGE_IN, IMAGE_OUT, SEED_RANGE, TIME_RANGE,
@@ -116,6 +117,7 @@ pub(super) static TYPES: &[EffectType] = &[
             true,
         )),
         tag: "film_grain",
+        browser: listed(BrowserCategory::Film, "Film", "Animated emulsion grain, heavier in the shadows."),
         sample: || BuiltinEffect::FilmGrain { amount: 0.3, size: 1.5, color: 0, shadows: 0.6, seed: 0 },
     },
     EffectType {
@@ -144,6 +146,7 @@ pub(super) static TYPES: &[EffectType] = &[
             true,
         )),
         tag: "old_film",
+        browser: listed(BrowserCategory::Film, "Film", "Flicker, scratches, dust, gate weave and a sepia wash."),
         sample: || BuiltinEffect::OldFilm { flicker: 0.4, scratches: 0.5, dust: 0.5, weave: 0.5, sepia: 0.6, seed: 0, amount: 1.0, age: 0.0, mono: 0.0, stains: 0.0, frame_lines: 0.0, leaks: 0.0, burn: 0.0 },
     },
     EffectType {
@@ -164,6 +167,7 @@ pub(super) static TYPES: &[EffectType] = &[
             true,
         )),
         tag: "vhs",
+        browser: listed(BrowserCategory::Film, "Film", "Tape tracking, chroma bleed, noise and scanlines."),
         sample: || BuiltinEffect::Vhs { tracking: 0.5, bleed: 0.5, noise: 0.4, scanlines: 0.5, seed: 0 },
     },
     EffectType {
@@ -178,6 +182,7 @@ pub(super) static TYPES: &[EffectType] = &[
             true,
         )),
         tag: "noise_generator",
+        browser: listed(BrowserCategory::Film, "Film", ""),
         sample: || BuiltinEffect::NoiseGenerator { amount: 0.1, monochrome: 0, seed: 0 },
     },
     // A random flicker (#989): its seed the user's, its time the
@@ -202,6 +207,7 @@ pub(super) static TYPES: &[EffectType] = &[
             true,
         )),
         tag: "flicker",
+        browser: listed(BrowserCategory::Film, "Film", "Random jumps of the opacity, exposure or gamma, at a speed, with still spells."),
         sample: || BuiltinEffect::Flicker { amount: 0.5, speed: 8.0, smoothness: 0.0, hold: 0.3, seed: 67, target: 0, time: 0.0 },
     },
     // Particles drawn over the picture (#1141): their seed the user's,
@@ -230,6 +236,7 @@ pub(super) static TYPES: &[EffectType] = &[
             true,
         ),
         tag: "particles",
+        browser: listed(BrowserCategory::Film, "Film", "Dust, snow, rain, sparks or embers over the picture, seeded, the same every play."),
         sample: || BuiltinEffect::Particles { style: 0, amount: 150.0, size: 2.5, speed: 30.0, direction: 300.0, spread: 0.5, lifetime: 4.0, opacity: 0.6, color: [255, 240, 220], seed: 1, time: 0.0 },
     },
     EffectType {
@@ -252,6 +259,7 @@ pub(super) static TYPES: &[EffectType] = &[
             true,
         ),
         tag: "chroma_key",
+        browser: listed(BrowserCategory::Keying, "Keying", ""),
         sample: || BuiltinEffect::ChromaKey {
             key_color: [0, 255, 0],
             tolerance: 0.2,
@@ -279,6 +287,7 @@ pub(super) static TYPES: &[EffectType] = &[
             true,
         ),
         tag: "luma_key",
+        browser: listed(BrowserCategory::Keying, "Keying", "Key out a range of brightness, black by default: Low to High is see-through."),
         sample: || BuiltinEffect::LumaKey { low: 0.0, high: 0.1, soft: 0.05, invert: false },
     },
     EffectType {
@@ -296,6 +305,7 @@ pub(super) static TYPES: &[EffectType] = &[
             true,
         ),
         tag: "rolling_shutter_correction",
+        browser: listed(BrowserCategory::Distort, "Distort", ""),
         sample: || BuiltinEffect::RollingShutterCorrection { strength: 0.5, readout_ratio: 0.5 },
     },
     EffectType {
@@ -314,6 +324,7 @@ pub(super) static TYPES: &[EffectType] = &[
             false,
         ),
         tag: "temporal_denoise",
+        browser: listed(BrowserCategory::Distort, "Repair", "Cleans grain by averaging each pixel with the frames either side, leaving moving subjects alone. Runs on the source, before the grade."),
         sample: || BuiltinEffect::TemporalDenoise { strength: 0.5, threshold: 0.02 },
     },
     EffectType {
@@ -333,6 +344,7 @@ pub(super) static TYPES: &[EffectType] = &[
             true,
         ),
         tag: "deflicker",
+        browser: listed(BrowserCategory::Distort, "Repair", "Steadies whole-frame brightness pumping from mains-frequency lighting. Measures the clip first."),
         sample: || BuiltinEffect::Deflicker { strength: 0.8, window_secs: 1.0, gain: 1.0 },
     },
     EffectType {
@@ -351,6 +363,7 @@ pub(super) static TYPES: &[EffectType] = &[
             true,
         ),
         tag: "video_stabilization",
+        browser: listed(BrowserCategory::Distort, "Distort", ""),
         sample: || BuiltinEffect::VideoStabilization { smoothing: 0.5, crop_ratio: 0.05, zoom: true },
     },
     EffectType {
@@ -368,6 +381,7 @@ pub(super) static TYPES: &[EffectType] = &[
             false,
         ),
         tag: "speed_ramp",
+        browser: listed(BrowserCategory::Stylize, "Stylize", ""),
         sample: || BuiltinEffect::SpeedRamp { speed: 1.0, blend_mode: 1 },
     },
     EffectType {
@@ -384,6 +398,7 @@ pub(super) static TYPES: &[EffectType] = &[
             false,
         ),
         tag: "frei0r",
+        browser: hidden("Runs one installed frei0r plug-in; each plug-in the scan finds is listed as its own row"),
         sample: || BuiltinEffect::Frei0r { type_id: String::new(), params: Vec::new() },
     },
 ];

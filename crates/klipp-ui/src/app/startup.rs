@@ -478,6 +478,13 @@ impl KlippApp {
         app.browser.files_type_filter = app.prefs.file_browser.file_type_filter;
         app.browser.pinned_folders = app.prefs.file_browser.pinned_folders.clone();
         app.browser.favorite_effects = app.prefs.effects_browser.favorite_effects.clone();
+        // The browser names built-ins by their registry name since #2888:
+        // a star given under the browser's old name stays on the effect.
+        for name in &mut app.browser.favorite_effects {
+            if name == "Video Stabilization" {
+                *name = "Stabilisation".into();
+            }
+        }
         app.browser.favorite_transitions = app.prefs.effects_browser.favorite_transitions.clone();
         app.browser.favorite_titles = app.prefs.effects_browser.favorite_titles.clone();
         app.browser.favorite_generators = app.prefs.effects_browser.favorite_generators.clone();

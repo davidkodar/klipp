@@ -12,6 +12,7 @@
 //!   reset is 0.5.
 
 use super::{
+    listed, BrowserCategory,
     mixable,
     Alpha, Category, ColourDomain, EffectType, NodeTypeDesc, ParamDesc, ParamKind, Scaling, Spatial, Temporal, Unit,
     IMAGE_IN, IMAGE_OUT,
@@ -56,6 +57,7 @@ pub(super) static TYPES: &[EffectType] = &[
             Spatial::PerPixel,
         ),
         tag: "opacity",
+        browser: listed(BrowserCategory::Colour, "Colour", ""),
         sample: || BuiltinEffect::Opacity { value: 1.0 },
     },
     EffectType {
@@ -111,6 +113,7 @@ pub(super) static TYPES: &[EffectType] = &[
             Spatial::PerPixel,
         )),
         tag: "color_fade",
+        browser: listed(BrowserCategory::Colour, "Colour", "Fades the clip in from, or out to, a colour"),
         sample: || BuiltinEffect::ColorFade { color: [0, 0, 0, 255], duration_secs: 1.0, mode: ColorFadeMode::In, progress: 0.0 },
     },
     EffectType {
@@ -122,6 +125,7 @@ pub(super) static TYPES: &[EffectType] = &[
             Spatial::PerPixel,
         ),
         tag: "invert",
+        browser: listed(BrowserCategory::Colour, "Colour", ""),
         sample: || BuiltinEffect::Invert { mix: 1.0 },
     },
     EffectType {
@@ -133,6 +137,7 @@ pub(super) static TYPES: &[EffectType] = &[
             Spatial::PerPixel,
         )),
         tag: "posterize",
+        browser: listed(BrowserCategory::Stylize, "Stylize", ""),
         sample: || BuiltinEffect::Posterize { levels: 8.0 },
     },
     EffectType {
@@ -154,6 +159,7 @@ pub(super) static TYPES: &[EffectType] = &[
             Spatial::PerPixel,
         )),
         tag: "channel_mixer",
+        browser: listed(BrowserCategory::Colour, "Colour", ""),
         sample: || BuiltinEffect::ChannelMixer {
             red_red: 1.0,
             red_green: 0.0,
@@ -175,6 +181,7 @@ pub(super) static TYPES: &[EffectType] = &[
             Spatial::PerPixel,
         )),
         tag: "gamma",
+        browser: listed(BrowserCategory::Colour, "Colour", ""),
         sample: || BuiltinEffect::Gamma { gamma: 1.0 },
     },
     EffectType {
@@ -190,6 +197,7 @@ pub(super) static TYPES: &[EffectType] = &[
             Spatial::PerPixel,
         )),
         tag: "h_s_v_adjust",
+        browser: listed(BrowserCategory::Colour, "Colour", ""),
         sample: || BuiltinEffect::HSVAdjust { hue_shift: 0.0, saturation: 1.0, value: 1.0 },
     },
     EffectType {
@@ -201,6 +209,7 @@ pub(super) static TYPES: &[EffectType] = &[
             Spatial::PerPixel,
         )),
         tag: "vibrance",
+        browser: listed(BrowserCategory::Colour, "Colour", ""),
         sample: || BuiltinEffect::Vibrance { amount: 0.0 },
     },
     // The picture's brightness along a ramp of three colours (#2758),
@@ -219,6 +228,7 @@ pub(super) static TYPES: &[EffectType] = &[
             Spatial::PerPixel,
         ),
         tag: "gradient_map",
+        browser: listed(BrowserCategory::Colour, "Colour", "Brightness laid along a ramp of three colours, shadows to highlights"),
         sample: || BuiltinEffect::GradientMap { shadow: [20, 24, 64], mid: [190, 90, 70], highlight: [255, 236, 190], mix: 1.0 },
     },
     EffectType {
@@ -236,6 +246,7 @@ pub(super) static TYPES: &[EffectType] = &[
             Spatial::PerPixel,
         )),
         tag: "levels",
+        browser: listed(BrowserCategory::Colour, "Colour", ""),
         sample: || BuiltinEffect::Levels { in_black: 0.0, in_white: 1.0, gamma: 1.0, out_black: 0.0, out_white: 1.0 },
     },
     EffectType {
@@ -247,6 +258,7 @@ pub(super) static TYPES: &[EffectType] = &[
             Spatial::Global,
         )),
         tag: "equalize",
+        browser: listed(BrowserCategory::Colour, "Colour", ""),
         sample: || BuiltinEffect::Equalize { strength: 1.0 },
     },
     EffectType {
@@ -263,6 +275,7 @@ pub(super) static TYPES: &[EffectType] = &[
             Spatial::PerPixel,
         )),
         tag: "lut_3d",
+        browser: listed(BrowserCategory::Colour, "Colour", "A .cube, .3dl or .csp look over the picture"),
         sample: || BuiltinEffect::Lut3D { path: String::new(), opacity: 1.0, tetrahedral: true, prepared: None },
     },
     EffectType {
@@ -280,6 +293,7 @@ pub(super) static TYPES: &[EffectType] = &[
             Spatial::PerPixel,
         )),
         tag: "colour_space_transform",
+        browser: listed(BrowserCategory::Colour, "Colour", "The picture from one gamut and curve to another"),
         sample: || BuiltinEffect::ColourSpaceTransform { input_gamut: 0, input_curve: 0, output_gamut: 0, output_curve: 0, prepared: None },
     },
 ];

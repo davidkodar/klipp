@@ -118,6 +118,21 @@ impl Default for EffectRegistry {
     }
 }
 
+/// The browser category a built-in effect's registry entry lists it
+/// under.
+pub fn builtin_category(category: klipp_effects::registry::BrowserCategory) -> EffectCategory {
+    use klipp_effects::registry::BrowserCategory as C;
+    match category {
+        C::Blur => EffectCategory::Blur,
+        C::Colour => EffectCategory::Color,
+        C::Stylize => EffectCategory::Stylize,
+        C::Keying => EffectCategory::Keying,
+        C::Distort => EffectCategory::Distort,
+        C::Light => EffectCategory::Light,
+        C::Film => EffectCategory::Film,
+    }
+}
+
 /// The browser category an audio effect's group is listed under.
 pub fn audio_category(group: klipp_core::audio_effect_registry::AudioGroup) -> EffectCategory {
     use klipp_core::audio_effect_registry::AudioGroup as G;
@@ -135,448 +150,22 @@ pub fn audio_category(group: klipp_core::audio_effect_registry::AudioGroup) -> E
 
 impl EffectRegistry {
     pub fn new() -> Self {
-        let mut effects = vec![
-            EffectEntry {
-                name: "Opacity".into(),
-                category: EffectCategory::Color,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Opacity { value: 1.0 }),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Colour".into(),
-            },
-            EffectEntry {
-                name: "Gaussian Blur".into(),
-                category: EffectCategory::Blur,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::GaussianBlur { radius: 0.0 }),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Blur".into(),
-            },
-            EffectEntry {
-                name: "Fill Bars".into(),
-                category: EffectCategory::Blur,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::FillBars { blur: 0.05, zoom: 1.0, darken: 0.25 }),
-                source_label: "Built-in",
-                description: "Fills letterbox and pillarbox bars, as round an upright phone shot, with the picture itself, enlarged and blurred. Also known as blanking fill, blur fill, blurred background.".into(),
-                grouping: "Blur".into(),
-            },
-            EffectEntry {
-                name: "Sharpen".into(),
-                category: EffectCategory::Blur,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Sharpen { amount: 0.0 }),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Blur".into(),
-            },
-            EffectEntry {
-                name: "Crop".into(),
-                category: EffectCategory::Distort,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Crop {
-                    left: 0.0, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0, aspect: 0.0, focus_x: 0.5, focus_y: 0.5
+        // Every built-in effect its registry entry lists, by its name,
+        // in the category and with the description the entry gives (#2888).
+        let mut effects: Vec<EffectEntry> = klipp_effects::registry::effect_types()
+            .filter_map(|t| match t.browser {
+                klipp_effects::registry::Browser::Listed { category, grouping, description, start } => Some(EffectEntry {
+                    name: t.desc.name.into(),
+                    category: builtin_category(category),
+                    source: EffectSource::Builtin(start.unwrap_or(t.sample)()),
+                    source_label: "Built-in",
+                    description: description.into(),
+                    grouping: grouping.into(),
                 }),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Distort".into(),
-            },
-            EffectEntry {
-                name: "Transform".into(),
-                category: EffectCategory::Distort,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Transform {
-                    position_x: 0.0, position_y: 0.0,
-                    scale_x: 1.0, scale_y: 1.0,
-                    rotation: 0.0,
-                    anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0,
-                    focal_ref: None }),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Distort".into(),
-            },
-            EffectEntry {
-                name: "Corner Pin".into(),
-                category: EffectCategory::Distort,
-                source: EffectSource::Builtin(klipp_effects::corner_pin::still()),
-                source_label: "Built-in",
-                description: "Pin the picture to four corners, in perspective".into(),
-                grouping: "Distort".into(),
-            },
-            EffectEntry {
-                name: "Chroma Key".into(),
-                category: EffectCategory::Keying,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::ChromaKey {
-                    key_color: [0, 255, 0],
-                    tolerance: 0.2,
-                    soft_edge: 0.1,
-                    spill_method: klipp_effects::SpillMethod::ChannelClamp,
-                    spill_strength: 0.6,
-                }),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Keying".into(),
-            },
-            EffectEntry {
-                name: "Luma Key".into(),
-                category: EffectCategory::Keying,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::LumaKey { low: 0.0, high: 0.1, soft: 0.05, invert: false }),
-                source_label: "Built-in",
-                description: "Key out a range of brightness, black by default: Low to High is see-through.".into(),
-                grouping: "Keying".into(),
-            },
-            // Light effects
-            EffectEntry {
-                name: "Bloom".into(),
-                category: EffectCategory::Light,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Bloom {
-                    threshold: 0.7, radius: 20.0, intensity: 0.5,
-                }),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Light".into(),
-            },
-            EffectEntry {
-                name: "Glow".into(),
-                category: EffectCategory::Light,
-                // Round the highlights, as the `effect` op glows a picture (#2763).
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Glow {
-                    radius: 30.0, intensity: 0.4, threshold: 0.6,
-                }),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Light".into(),
-            },
-            EffectEntry {
-                name: "Light Rays".into(),
-                category: EffectCategory::Light,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::LightRays {
-                    center_x: 0.5, center_y: 0.3,
-                    threshold: 0.6, samples: 64,
-                    decay: 0.3, intensity: 0.5,
-                }),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Light".into(),
-            },
-            EffectEntry {
-                name: "Vignette".into(),
-                category: EffectCategory::Light,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Vignette {
-                    amount: -0.4, size: 0.8, softness: 0.5, roundness: 0.5,
-                }),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Light".into(),
-            },
-            EffectEntry {
-                name: "Binocular Vignette".into(),
-                category: EffectCategory::Light,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::BinocularVignette {
-                    amount: -1.0, spacing: 0.4, width: 0.85, height: 0.85, softness: 0.15, fringe: 4.0,
-                }),
-                source_label: "Built-in",
-                description: "The frame seen through two eyepieces, a colour fringe at their rims.".into(),
-                grouping: "Light".into(),
-            },
-            EffectEntry {
-                name: "Diffusion".into(),
-                category: EffectCategory::Light,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Diffusion {
-                    amount: 0.3, radius: 25.0, threshold: 0.5, desaturation: 0.2,
-                }),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Light".into(),
-            },
-            EffectEntry {
-                name: "Lens Flare".into(),
-                category: EffectCategory::Light,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::LensFlare {
-                    position_x: 0.7, position_y: 0.3, brightness: 0.6,
-                    flare_size: 0.15, ghost_count: 4, ghost_intensity: 0.3,
-                    chromatic_aberration: 0.4,
-                }),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Light".into(),
-            },
-            EffectEntry {
-                name: "Light Wrap".into(),
-                category: EffectCategory::Light,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::LightWrap {
-                    width: 15.0, intensity: 0.5, softness: 1.0,
-                }),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Light".into(),
-            },
-            EffectEntry {
-                name: "Anamorphic Streak".into(),
-                category: EffectCategory::Light,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::AnamorphicStreak {
-                    threshold: 0.7, length: 80.0, intensity: 0.5, tint: 0.3,
-                }),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Light".into(),
-            },
-            EffectEntry {
-                name: "Film Halation".into(),
-                category: EffectCategory::Film,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::FilmHalation {
-                    threshold: 0.75, radius: 15.0, intensity: 0.3, hue: 0.2,
-                }),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Light".into(),
-            },
-            EffectEntry {
-                name: "Invert".into(),
-                category: EffectCategory::Color,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Invert { mix: 1.0 }),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Colour".into(),
-            },
-            EffectEntry {
-                name: "Posterize".into(),
-                category: EffectCategory::Stylize,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Posterize { levels: 8.0 }),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Stylize".into(),
-            },
-            EffectEntry {
-                name: "Mosaic".into(),
-                category: EffectCategory::Stylize,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Mosaic { block_size: 10.0 }),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Stylize".into(),
-            },
-            EffectEntry {
-                name: "Edge Detect".into(),
-                category: EffectCategory::Stylize,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::EdgeDetect { strength: 1.0, mix: 1.0 }),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Stylize".into(),
-            },
-            EffectEntry {
-                name: "Emboss".into(),
-                category: EffectCategory::Stylize,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Emboss { angle: 135.0, strength: 1.0, mix: 1.0 }),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Stylize".into(),
-            },
-            EffectEntry {
-                name: "Channel Mixer".into(),
-                category: EffectCategory::Color,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::ChannelMixer {
-                    red_red: 1.0, red_green: 0.0, red_blue: 0.0,
-                    green_red: 0.0, green_green: 1.0, green_blue: 0.0,
-                    blue_red: 0.0, blue_green: 0.0, blue_blue: 1.0,
-                }),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Colour".into(),
-            },
-            EffectEntry {
-                name: "Directional Blur".into(),
-                category: EffectCategory::Blur,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::DirectionalBlur {
-                    angle: 0.0, distance: 20.0, samples: 8,
-                }),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Blur".into(),
-            },
-            EffectEntry {
-                name: "Mirror".into(),
-                category: EffectCategory::Distort,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Mirror {
-                    horizontal: 1, vertical: 0,
-                }),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Transform".into(),
-            },
-            EffectEntry {
-                name: "Lens Distortion".into(),
-                category: EffectCategory::Distort,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::LensDistortion {
-                    distortion: 0.0, scale: 1.0,
-                }),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Distort".into(),
-            },
-            EffectEntry {
-                name: "Reflection".into(),
-                category: EffectCategory::Distort,
-                source: EffectSource::Builtin(klipp_effects::reflection::surface("calm_water", 0.6).expect("a surface")),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Distort".into(),
-            },
-            EffectEntry {
-                name: "Displace".into(),
-                category: EffectCategory::Distort,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Displace {
-                    amount: 12.0, size: 80.0, speed: 1.0, direction: 0, seed: 0, time: 0.0,
-                }),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Distort".into(),
-            },
-            EffectEntry {
-                name: "Rolling Shutter Correction".into(),
-                category: EffectCategory::Distort,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::RollingShutterCorrection {
-                    strength: 0.5, readout_ratio: 0.5,
-                }),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Distort".into(),
-            },
-            EffectEntry {
-                name: "Temporal Noise Reduction".into(),
-                category: EffectCategory::Distort,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::TemporalDenoise { strength: 0.5, threshold: 0.02 }),
-                source_label: "Built-in",
-                description: "Cleans grain by averaging each pixel with the frames either side, leaving moving subjects alone. Runs on the source, before the grade.".into(),
-                grouping: "Repair".into(),
-            },
-            EffectEntry {
-                name: "Deflicker".into(),
-                category: EffectCategory::Distort,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Deflicker {
-                    strength: 0.8, window_secs: 1.0, gain: 1.0,
-                }),
-                source_label: "Built-in",
-                description: "Steadies whole-frame brightness pumping from mains-frequency lighting. Measures the clip first.".into(),
-                grouping: "Repair".into(),
-            },
-            EffectEntry {
-                name: "Video Stabilization".into(),
-                category: EffectCategory::Distort,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::VideoStabilization {
-                    smoothing: 0.5, crop_ratio: 0.05, zoom: true,
-                }),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Distort".into(),
-            },
-            EffectEntry {
-                name: "Dilate".into(),
-                category: EffectCategory::Stylize,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Dilate { radius: 1 }),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Stylize".into(),
-            },
-            EffectEntry {
-                name: "Erode".into(),
-                category: EffectCategory::Stylize,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Erode { radius: 1 }),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Stylize".into(),
-            },
-            EffectEntry {
-                name: "Denoise".into(),
-                category: EffectCategory::Blur,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Denoise {
-                    spatial_sigma: 5.0, color_sigma: 0.1, iterations: 1,
-                }),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Blur".into(),
-            },
-            EffectEntry {
-                name: "Gamma".into(),
-                category: EffectCategory::Color,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Gamma { gamma: 1.0 }),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Colour".into(),
-            },
-            EffectEntry {
-                name: "HSV Adjust".into(),
-                category: EffectCategory::Color,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::HSVAdjust {
-                    hue_shift: 0.0, saturation: 1.0, value: 1.0,
-                }),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Colour".into(),
-            },
-            EffectEntry {
-                name: "Noise".into(),
-                category: EffectCategory::Film,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::NoiseGenerator {
-                    amount: 0.1, monochrome: 0, seed: 0,
-                }),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Film".into(),
-            },
-            EffectEntry {
-                name: "Film Grain".into(),
-                category: EffectCategory::Film,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::FilmGrain {
-                    amount: 0.3, size: 1.5, color: 0, shadows: 0.6, seed: 0,
-                }),
-                source_label: "Built-in",
-                description: "Animated emulsion grain, heavier in the shadows.".into(),
-                grouping: "Film".into(),
-            },
-            EffectEntry {
-                name: "Old Film".into(),
-                category: EffectCategory::Film,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::OldFilm {
-                    flicker: 0.4, scratches: 0.5, dust: 0.5, weave: 0.5, sepia: 0.6, seed: 0, amount: 1.0, age: 0.0, mono: 0.0, stains: 0.0, frame_lines: 0.0, leaks: 0.0, burn: 0.0,
-                }),
-                source_label: "Built-in",
-                description: "Flicker, scratches, dust, gate weave and a sepia wash.".into(),
-                grouping: "Film".into(),
-            },
-            EffectEntry {
-                name: "Particles".into(),
-                category: EffectCategory::Film,
-                source: EffectSource::Builtin(crate::effect_presets::particles_default(0)),
-                source_label: "Built-in",
-                description: "Dust, snow, rain, sparks or embers over the picture, seeded, the same every play.".into(),
-                grouping: "Film".into(),
-            },
-            EffectEntry {
-                name: "Flicker".into(),
-                category: EffectCategory::Film,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Flicker {
-                    amount: 0.5, speed: 8.0, smoothness: 0.0, hold: 0.3, seed: 67, target: 0, time: 0.0,
-                }),
-                source_label: "Built-in",
-                description: "Random jumps of the opacity, exposure or gamma, at a speed, with still spells.".into(),
-                grouping: "Film".into(),
-            },
-            EffectEntry {
-                name: "VHS".into(),
-                category: EffectCategory::Film,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Vhs {
-                    tracking: 0.5, bleed: 0.5, noise: 0.4, scanlines: 0.5, seed: 0,
-                }),
-                source_label: "Built-in",
-                description: "Tape tracking, chroma bleed, noise and scanlines.".into(),
-                grouping: "Film".into(),
-            },
-            EffectEntry {
-                name: "Tilt-Shift".into(),
-                category: EffectCategory::Blur,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::TiltShift {
-                    center: 0.5, width: 0.3, softness: 0.2, radius: 12.0,
-                }),
-                source_label: "Built-in",
-                description: "A sharp band across the frame, blurred above and below.".into(),
-                grouping: "Blur".into(),
-            },
+                klipp_effects::registry::Browser::Hidden(_) => None,
+            })
+            .collect();
+        effects.extend([
             // ── Looks: several built-ins in one click, each still its own
             // row in the inspector afterwards. ──
             EffectEntry {
@@ -657,101 +246,7 @@ impl EffectRegistry {
                 description: "Blue streaks on the highlights, halation and a 2.39 frame".into(),
                 grouping: "Looks".into(),
             },
-            EffectEntry {
-                name: "Median Filter".into(),
-                category: EffectCategory::Blur,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::MedianFilter { radius: 1 }),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Blur".into(),
-            },
-            EffectEntry {
-                name: "Radial Blur".into(),
-                category: EffectCategory::Blur,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::RadialBlur {
-                    center_x: 0.5, center_y: 0.5, amount: 10.0, samples: 12, mode: 0,
-                }),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Blur".into(),
-            },
-            EffectEntry {
-                name: "Levels".into(),
-                category: EffectCategory::Color,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Levels {
-                    in_black: 0.0, in_white: 1.0, gamma: 1.0, out_black: 0.0, out_white: 1.0,
-                }),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Colour".into(),
-            },
-            EffectEntry {
-                name: "Equalize".into(),
-                category: EffectCategory::Color,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Equalize { strength: 1.0 }),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Colour".into(),
-            },
-            EffectEntry {
-                name: "Picture Transform".into(),
-                category: EffectCategory::Distort,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::PictureTransform {
-                    position_x: 0.0, position_y: 0.0, scale_x: 1.0, scale_y: 1.0, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5,
-                }),
-                source_label: "Built-in",
-                description: "Moves, scales and turns the picture inside the clip's frame, where it sits".into(),
-                grouping: "Distort".into(),
-            },
-            EffectEntry {
-                name: "3D LUT".into(),
-                category: EffectCategory::Color,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Lut3D {
-                    path: String::new(), opacity: 1.0, tetrahedral: true, prepared: None,
-                }),
-                source_label: "Built-in",
-                description: "A .cube, .3dl or .csp look over the picture".into(),
-                grouping: "Colour".into(),
-            },
-            EffectEntry {
-                name: "Colour Space Transform".into(),
-                category: EffectCategory::Color,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::ColourSpaceTransform {
-                    input_gamut: 0, input_curve: 0, output_gamut: 0, output_curve: 0, prepared: None,
-                }),
-                source_label: "Built-in",
-                description: "The picture from one gamut and curve to another".into(),
-                grouping: "Colour".into(),
-            },
-            EffectEntry {
-                name: "Letterbox".into(),
-                category: EffectCategory::Stylize,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Letterbox {
-                    aspect_ratio: 2.39, bar_color: 0, opacity: 1.0,
-                }),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Stylize".into(),
-            },
-            EffectEntry {
-                name: "Chromatic Aberration".into(),
-                category: EffectCategory::Stylize,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::ChromaticAberration {
-                    red_shift: 2.0, blue_shift: -2.0, center_x: 0.5, center_y: 0.5,
-                }),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Stylize".into(),
-            },
-            EffectEntry {
-                name: "Speed Ramp".into(),
-                category: EffectCategory::Stylize,
-                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::SpeedRamp { speed: 1.0, blend_mode: 1 }),
-                source_label: "Built-in",
-                description: String::new(),
-                grouping: "Stylize".into(),
-            },
-        ];
+        ]);
         // The built-in audio effects, one row each from their table.
         effects.extend(klipp_core::audio_effect_registry::AUDIO_EFFECTS.iter().map(|spec| EffectEntry {
             name: spec.name.into(),
@@ -1655,5 +1150,55 @@ mod tests {
         let table: Vec<(&str, &str)> = klipp_core::audio_effect_registry::AUDIO_EFFECTS.iter().map(|s| (s.type_id, s.name)).collect();
         assert_eq!(rows, table);
         assert!(rows.iter().any(|(t, _)| *t == "hum_removal") && rows.iter().any(|(t, _)| *t == "multiband_compressor"));
+    }
+
+    /// The browser lists every built-in effect its registry entry lists,
+    /// once, by its registry name, and none the entry hides (#2888). The
+    /// hidden ones are the graph's sources and merge, the grade marker,
+    /// the frei0r host, the tracker's pin and a title's focus band, each
+    /// with its reason: hiding one more is a change to this list.
+    #[test]
+    fn the_browser_lists_every_effect_a_clip_is_given() {
+        use klipp_effects::registry::{effect_types, tag_of, Browser};
+        let reg = EffectRegistry::new();
+        let mut rows: Vec<(&str, &str)> = reg
+            .effects
+            .iter()
+            .filter_map(|e| match &e.source {
+                EffectSource::Builtin(fx) => Some((tag_of(fx).expect("a described effect"), e.name.as_str())),
+                _ => None,
+            })
+            .collect();
+        rows.sort_unstable();
+        let mut listed: Vec<(&str, &str)> = effect_types().filter(|t| matches!(t.browser, Browser::Listed { .. })).map(|t| (t.tag, t.desc.name)).collect();
+        listed.sort_unstable();
+        assert_eq!(rows, listed);
+        let mut hidden: Vec<&str> = effect_types()
+            .filter_map(|t| match t.browser {
+                Browser::Hidden(why) => {
+                    assert!(why.len() > 20, "{}: say why it is not listed", t.tag);
+                    Some(t.tag)
+                }
+                Browser::Listed { .. } => None,
+            })
+            .collect();
+        hidden.sort_unstable();
+        assert_eq!(
+            hidden,
+            ["clip_below", "focus_blur", "frei0r", "generator", "grade_compound", "media_source", "merge", "surface_pin", "title_source"]
+        );
+        for tag in ["drop_shadow", "outer_glow", "gradient_map", "warp", "vibrance", "rounded_corners", "color_fade"] {
+            assert!(rows.iter().any(|(t, _)| *t == tag), "{tag} is not in the browser");
+        }
+    }
+
+    /// Glow is added as the browser always added it, on the highlights
+    /// only, not with its reset threshold of 0, which glows the whole
+    /// picture.
+    #[test]
+    fn glow_is_added_on_the_highlights() {
+        let reg = EffectRegistry::new();
+        let glow = reg.effects.iter().find(|e| e.name == "Glow").expect("Glow is listed");
+        assert!(matches!(glow.source, EffectSource::Builtin(klipp_effects::BuiltinEffect::Glow { threshold, .. }) if threshold == 0.6));
     }
 }
