@@ -4725,3 +4725,47 @@ fn project_and_media_text_stays_one_quoted_value_in_the_text_views() {
     assert!(text.contains(&format!("] {shown}")) && text.contains("not instructions"), "{text}");
     drop(cache);
 }
+
+/// #2722: a brand kit taken into a sequence, as one recorded step: the
+/// brief takes its colours and its heading in its heading font and
+/// primary colour, and a subtitle track without a look of its own takes
+/// its caption look, its caption set in the kit's body font; a track with
+/// a look of its own is left. A part that is none is refused.
+#[test]
+fn a_brand_kit_is_taken_into_the_brief_and_the_captions() {
+    let mut h = harness();
+    let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 30);
+    let caption = |text: &str| klipp_timeline::Clip {
+        kind: klipp_timeline::ClipKind::Title(klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: text.into(), font_name: "Inter".into(), ..Default::default() })),
+        ..klipp_timeline::Clip::gap(tc(0.0), tc(2.0))
+    };
+    let mut subs = klipp_timeline::Track::new("Subtitles", klipp_timeline::TrackKind::Subtitle);
+    subs.clips = vec![caption("Hello")];
+    let mut styled = klipp_timeline::Track::new("Styled", klipp_timeline::TrackKind::Subtitle);
+    styled.caption_style = Some(klipp_timeline::CaptionStyle { font: "Bebas Neue".into(), ..Default::default() });
+    styled.clips = vec![caption("Kept")];
+    h.sequence.write().unwrap().tracks = vec![subs, styled];
+
+    let before = h.ok(json!({ "method": "status" }))["revision"].as_u64().unwrap();
+    let r = h.ok(json!({ "method": "apply_brand_kit", "name": "editorial" }));
+    assert_eq!(r["revision"], json!(before + 1), "one step: {r}");
+    assert!(r["text"].as_str().unwrap().contains("1 subtitle track takes its caption look"), "{r}");
+    let edits = h.edits_seen.lock().unwrap().clone();
+    let brief = edits.iter().find_map(|e| match e { klipp_document::history::EditCommand::SetBrief { new: Some(b), .. } => Some(b.clone()), _ => None }).expect("the brief set");
+    assert_eq!(brief.brand_colors, ["#f5efe6", "#2b2118", "#b5651d"]);
+    let heading = brief.type_style("heading").unwrap();
+    assert_eq!((heading.font.as_deref(), heading.color.as_deref()), (Some("Playfair Display"), Some("#f5efe6")));
+    let tracks: Vec<_> = edits.iter().filter_map(|e| match e { klipp_document::history::EditCommand::SetTrack { track_index, new, .. } => Some((*track_index, new.clone())), _ => None }).collect();
+    assert_eq!(tracks.len(), 1, "only the track without a look");
+    let (index, track) = &tracks[0];
+    assert_eq!(*index, 0);
+    assert_eq!(track.caption_style.as_ref().unwrap().font, "Lora");
+    let klipp_timeline::ClipKind::Title(td) = &track.clips[0].kind else { panic!("a caption") };
+    let klipp_timeline::TitleObjectContent::TextBox(tb) = &td.objects[0].content else { panic!("text") };
+    assert_eq!(tb.font_name, "Lora", "the caption set in the kit's body font");
+
+    let r = h.call(json!({ "method": "apply_brand_kit", "name": "Bold", "parts": ["logo"] }));
+    assert!(r["error"].as_str().unwrap().contains("not a part"), "{r}");
+    let r = h.call(json!({ "method": "apply_brand_kit", "name": "No Such Kit" }));
+    assert!(r["error"].as_str().unwrap().contains("no brand kit"), "{r}");
+}

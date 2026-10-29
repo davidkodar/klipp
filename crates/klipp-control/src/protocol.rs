@@ -1312,6 +1312,15 @@ pub enum ControlCommand {
     },
     /// The user's brand kit `name` removed, its folder with it.
     RemoveBrandKit { name: String },
+    /// The brand kit `name` taken into the open sequence, as one undo
+    /// step: `parts` (all when left out) of `brief` (its colours and title
+    /// looks into the brief) and `captions` (its caption look onto every
+    /// subtitle track that has none of its own).
+    ApplyBrandKit {
+        name: String,
+        #[serde(default)]
+        parts: Option<Vec<String>>,
+    },
     /// The installed pack `name` removed: its folder, nothing else.
     RemoveTemplatePack { name: String },
     /// The node types the registry describes, with their ports and

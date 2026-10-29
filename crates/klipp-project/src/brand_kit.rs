@@ -253,6 +253,66 @@ impl BrandKit {
         Ok(())
     }
 
+    /// The title looks the kit gives (#2722): its own type styles, or,
+    /// with none, the built-in heading, callout and card in its fonts and
+    /// colours (the heading and card in the heading font, the callout in
+    /// the body font, all in the primary colour, the card on the
+    /// secondary), each built-in look's size, place and motion kept.
+    pub fn title_styles(&self) -> Vec<TypeStyle> {
+        if !self.type_styles.is_empty() {
+            return self.type_styles.clone();
+        }
+        let (heading, body) = (&self.fonts.heading, &self.fonts.body);
+        let (primary, secondary) = (&self.colours.primary, &self.colours.secondary);
+        [("heading", heading), ("callout", body), ("card", heading)]
+            .into_iter()
+            .filter_map(|(name, font)| {
+                let mut s = TypeStyle::builtin(name)?;
+                if font.is_none() && primary.is_none() && !(name == "card" && secondary.is_some()) {
+                    return None;
+                }
+                if font.is_some() {
+                    s.font = font.clone();
+                }
+                if primary.is_some() {
+                    s.color = primary.clone();
+                }
+                if name == "card" && secondary.is_some() {
+                    s.fill = secondary.clone();
+                }
+                Some(s)
+            })
+            .collect()
+    }
+
+    /// `current` (a project's Brief) with the kit taken in: its colours as
+    /// the brand colours, primary first, and its title looks, each
+    /// replacing the brief's of the same name; everything else kept.
+    pub fn into_brief(&self, current: &klipp_timeline::Brief) -> klipp_timeline::Brief {
+        let mut b = current.clone();
+        let colours: Vec<String> = [&self.colours.primary, &self.colours.secondary, &self.colours.accent].into_iter().flatten().cloned().collect();
+        if !colours.is_empty() {
+            b.brand_colors = colours;
+        }
+        for style in self.title_styles() {
+            match b.type_styles.iter_mut().find(|s| s.name.trim().eq_ignore_ascii_case(style.name.trim())) {
+                Some(s) => *s = style,
+                None => b.type_styles.push(style),
+            }
+        }
+        b
+    }
+
+    /// The caption look the kit gives a subtitle track: its own, or the
+    /// default look in its body font; none when it names neither.
+    pub fn caption_look(&self) -> Option<CaptionStyle> {
+        if let Some(c) = &self.captions {
+            return Some(c.clone());
+        }
+        let font = self.fonts.body.clone()?;
+        Some(CaptionStyle { font, ..CaptionStyle::default() })
+    }
+
     /// The files the kit names in its folder.
     pub fn files(&self) -> Vec<&str> {
         let mut out: Vec<&str> = Vec::new();
@@ -435,6 +495,29 @@ mod tests {
         assert!(remove(&root, "Bold").is_err(), "a starter stays");
         remove(&root, "Studio North").unwrap();
         assert!(!dir.exists() && get(Some(&root), "Studio North").is_err());
+    }
+
+    /// #2722: a kit taken into a Brief gives its colours, primary first,
+    /// and the built-in looks in its fonts and colours (their size and
+    /// place kept), replacing only those of the brief's; a caption look in
+    /// its body font.
+    #[test]
+    fn a_kit_is_taken_into_a_brief_and_a_caption_look() {
+        let editorial = starters().into_iter().find(|k| k.name == "Editorial").unwrap();
+        let mut current = klipp_timeline::Brief { title: "Harbour".into(), ..Default::default() };
+        current.type_styles.push(TypeStyle { name: "kicker".into(), size: Some(30.0), ..Default::default() });
+        current.type_styles.push(TypeStyle { name: "Heading".into(), font: Some("Comic".into()), ..Default::default() });
+        let b = editorial.into_brief(&current);
+        assert_eq!(b.title, "Harbour", "the rest of the brief kept");
+        assert_eq!(b.brand_colors, ["#f5efe6", "#2b2118", "#b5651d"]);
+        let heading = b.type_style("heading").unwrap();
+        assert_eq!((heading.font.as_deref(), heading.color.as_deref(), heading.size), (Some("Playfair Display"), Some("#f5efe6"), Some(72.0)));
+        assert_eq!(b.type_styles.iter().filter(|s| s.name.eq_ignore_ascii_case("heading")).count(), 1, "replaced, not doubled");
+        assert_eq!(b.type_style("callout").unwrap().font.as_deref(), Some("Lora"));
+        assert_eq!(b.type_style("card").unwrap().fill.as_deref(), Some("#2b2118"));
+        assert_eq!(b.type_style("kicker").unwrap().size, Some(30.0), "the brief's own look kept");
+        assert_eq!(editorial.caption_look().unwrap().font, "Lora");
+        assert!(BrandKit::new("Empty").caption_look().is_none() && BrandKit::new("Empty").title_styles().is_empty());
     }
 
     /// A hostile kit is refused: a later format, an unknown field, a colour
