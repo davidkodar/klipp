@@ -3,29 +3,36 @@
 use super::record::EffectRecording;
 use super::{BlurParams, GpuEffectsPipeline, WORKGROUP_SIZE};
 
-pub(super) struct LayerGpu {
+pub(super) struct LayerPipelines {
     rows: wgpu::ComputePipeline,
     bounds: wgpu::ComputePipeline,
     corners: wgpu::ComputePipeline,
     cast: wgpu::ComputePipeline,
     over: wgpu::ComputePipeline,
-    /// The recorded spills' passes (#2107): their bindings, the region
-    /// they work in, and a pipeline a pass.
+    /// The recorded spills' passes (#2107): their bindings and a pipeline
+    /// a pass.
     spill_layout: wgpu::BindGroupLayout,
+    spill: [wgpu::ComputePipeline; SPILL_PASSES],
+    fill_small: wgpu::ComputePipeline,
+    fill_over: wgpu::ComputePipeline,
+}
+
+/// The layer passes on one renderer: the device's pipelines (#2688),
+/// and the region, dispatch and scratch buffers this renderer writes.
+pub(super) struct LayerGpu {
+    pipelines: std::sync::Arc<LayerPipelines>,
+    /// The region the recorded spills work in.
     spill_region: wgpu::Buffer,
     /// The region's indirect dispatch, apart from the region: a buffer a
     /// pass dispatches by is not one it may write.
     spill_args: wgpu::Buffer,
     /// Bound for the dispatch in the passes that don't write it.
     spill_unused: wgpu::Buffer,
-    spill: [wgpu::ComputePipeline; SPILL_PASSES],
-    fill_small: wgpu::ComputePipeline,
-    fill_over: wgpu::ComputePipeline,
     scratch: Vec<wgpu::Buffer>,
     size: u64,
 }
 
-impl LayerGpu {
+impl LayerPipelines {
     pub(super) fn new(
         device: &wgpu::Device,
         single: &wgpu::PipelineLayout,
@@ -82,6 +89,14 @@ impl LayerGpu {
             fill_over: build(pair, FILL_OVER, "fill_over"),
             spill: SPILL.map(|(_, source, entry)| build(&spill_pl, source, entry)),
             spill_layout,
+        }
+    }
+}
+
+impl LayerGpu {
+    pub(super) fn new(device: &wgpu::Device, pipelines: std::sync::Arc<LayerPipelines>) -> Self {
+        Self {
+            pipelines,
             spill_region: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("spill_region"),
                 size: 16,
@@ -228,7 +243,7 @@ impl GpuEffectsPipeline {
                 0.0,
             ];
             self.write_params(&params);
-            self.dispatch(&self.layer_gpu.cast, input, cast, wg);
+            self.dispatch(&self.layer_gpu.pipelines.cast, input, cast, wg);
             if sigma >= 0.5 {
                 for radius in crate::blur::boxes_for_gaussian(sigma) {
                     if radius == 0 {
@@ -240,13 +255,13 @@ impl GpuEffectsPipeline {
                         radius: radius as i32,
                         _pad: 0,
                     });
-                    self.dispatch(&self.blur_h_pipeline, cast, output, wg);
-                    self.dispatch(&self.blur_v_pipeline, output, cast, wg);
+                    self.dispatch(&self.pipelines.blur_h_pipeline, cast, output, wg);
+                    self.dispatch(&self.pipelines.blur_v_pipeline, output, cast, wg);
                 }
             }
             if drawn {
                 self.write_params(&params);
-                self.dispatch_pair(&self.layer_gpu.over, cast, under, next, wg);
+                self.dispatch_pair(&self.layer_gpu.pipelines.over, cast, under, next, wg);
                 std::mem::swap(&mut under, &mut next);
             } else {
                 let mut encoder = self.encoder(Some("layer_first_spill"));
@@ -263,7 +278,7 @@ impl GpuEffectsPipeline {
         }
         if drawn {
             self.write_params(&Params::new(width, height));
-            self.dispatch_pair(&self.layer_gpu.over, input, under, output, wg);
+            self.dispatch_pair(&self.layer_gpu.pipelines.over, input, under, output, wg);
         }
         drawn
     }
@@ -305,11 +320,11 @@ impl GpuEffectsPipeline {
         let (sw, sh) = crate::layer::fill_size(width, height);
         let (small, spare) = (&self.layer_gpu.scratch[0], &self.layer_gpu.scratch[1]);
         let frame = rec.slots.claim(q, &Params::new(width, height)).expect("slots checked");
-        self.record_pass_n(rec, &self.layer_gpu.rows, src, spare, frame, height.div_ceil(WORKGROUP_SIZE));
-        self.record_pass_n(rec, &self.layer_gpu.bounds, spare, bounds, frame, 1);
+        self.record_pass_n(rec, &self.layer_gpu.pipelines.rows, src, spare, frame, height.div_ceil(WORKGROUP_SIZE));
+        self.record_pass_n(rec, &self.layer_gpu.pipelines.bounds, spare, bounds, frame, 1);
         let fill = FillParams { width, height, small_w: sw, small_h: sh, zoom, darken: darken.clamp(0.0, 1.0), pad: [0; 2] };
         let fill = rec.slots.claim(q, &fill).expect("slots checked");
-        self.record_pair_n(rec, &self.layer_gpu.fill_small, src, bounds, small, fill, (sw * sh).div_ceil(WORKGROUP_SIZE));
+        self.record_pair_n(rec, &self.layer_gpu.pipelines.fill_small, src, bounds, small, fill, (sw * sh).div_ceil(WORKGROUP_SIZE));
         let sigma = blur.max(0.0) * sw as f32;
         if sigma >= 0.5 {
             for radius in crate::blur::boxes_for_gaussian(sigma) {
@@ -317,11 +332,11 @@ impl GpuEffectsPipeline {
                     continue;
                 }
                 let slot = rec.slots.claim(q, &BlurParams { width: sw, height: sh, radius: radius as i32, _pad: 0 }).expect("slots checked");
-                self.record_pass_n(rec, &self.blur_h_pipeline, small, spare, slot, (sw * sh).div_ceil(WORKGROUP_SIZE));
-                self.record_pass_n(rec, &self.blur_v_pipeline, spare, small, slot, (sw * sh).div_ceil(WORKGROUP_SIZE));
+                self.record_pass_n(rec, &self.pipelines.blur_h_pipeline, small, spare, slot, (sw * sh).div_ceil(WORKGROUP_SIZE));
+                self.record_pass_n(rec, &self.pipelines.blur_v_pipeline, spare, small, slot, (sw * sh).div_ceil(WORKGROUP_SIZE));
             }
         }
-        self.record_pair_n(rec, &self.layer_gpu.fill_over, src, small, dst, fill, (width * height).div_ceil(WORKGROUP_SIZE));
+        self.record_pair_n(rec, &self.layer_gpu.pipelines.fill_over, src, small, dst, fill, (width * height).div_ceil(WORKGROUP_SIZE));
     }
 
     /// [`crate::layer::rounded_corners`] on resident buffers, recorded:
@@ -344,9 +359,9 @@ impl GpuEffectsPipeline {
         params.feather = feather.max(0.0);
         let slot = rec.slots.claim(&self.queue, &params).expect("slots checked");
         let rows = &self.layer_gpu.scratch[0];
-        self.record_pass_n(rec, &self.layer_gpu.rows, src, rows, slot, height.div_ceil(WORKGROUP_SIZE));
-        self.record_pass_n(rec, &self.layer_gpu.bounds, rows, bounds, slot, 1);
-        self.record_pair_n(rec, &self.layer_gpu.corners, src, bounds, dst, slot, (width * height).div_ceil(WORKGROUP_SIZE));
+        self.record_pass_n(rec, &self.layer_gpu.pipelines.rows, src, rows, slot, height.div_ceil(WORKGROUP_SIZE));
+        self.record_pass_n(rec, &self.layer_gpu.pipelines.bounds, rows, bounds, slot, 1);
+        self.record_pair_n(rec, &self.layer_gpu.pipelines.corners, src, bounds, dst, slot, (width * height).div_ceil(WORKGROUP_SIZE));
     }
 
     /// The spill's parameters at `width` × `height`, or `None` when it
@@ -468,7 +483,7 @@ impl GpuEffectsPipeline {
         let lg = &self.layer_gpu;
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("spill_pass"),
-            layout: &lg.spill_layout,
+            layout: &lg.pipelines.spill_layout,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: second.as_entire_binding() },
@@ -479,7 +494,7 @@ impl GpuEffectsPipeline {
             ],
         });
         let mut cpass = rec.encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some(SPILL[pass].0), timestamp_writes: None });
-        cpass.set_pipeline(&lg.spill[pass]);
+        cpass.set_pipeline(&lg.pipelines.spill[pass]);
         cpass.set_bind_group(0, &bind_group, &[]);
         match workgroups {
             Some(n) => crate::gpu::dispatch_flat(&mut cpass, n),

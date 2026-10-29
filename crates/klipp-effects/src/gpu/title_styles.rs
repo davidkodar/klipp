@@ -405,7 +405,7 @@ impl GpuEffectsPipeline {
             };
             self.write_params(&params);
             self.stack_pass(
-                &self.title_style_pipeline,
+                &self.pipelines.title_style_pipeline,
                 &source.1,
                 &self.stack_layers[slot],
                 (count as u32).div_ceil(WORKGROUP_SIZE),
@@ -488,7 +488,7 @@ impl GpuEffectsPipeline {
         };
         self.write_params(&base);
         self.stack_pass(
-            &self.title_style_pipeline,
+            &self.pipelines.title_style_pipeline,
             outline,
             &s.mask,
             (raw[0] * raw[1]).div_ceil(WORKGROUP_SIZE),
@@ -503,7 +503,7 @@ impl GpuEffectsPipeline {
             ..base
         });
         self.stack_pass(
-            &self.title_style_pipeline,
+            &self.pipelines.title_style_pipeline,
             &s.mask,
             &s.work,
             (count as u32).div_ceil(WORKGROUP_SIZE),
@@ -537,7 +537,7 @@ impl GpuEffectsPipeline {
                     stops: kernel,
                 });
                 self.stack_pass(
-                    &self.title_style_pipeline,
+                    &self.pipelines.title_style_pipeline,
                     current,
                     next,
                     (count as u32).div_ceil(WORKGROUP_SIZE),
@@ -567,7 +567,7 @@ impl GpuEffectsPipeline {
                         ..base
                     });
                     self.stack_pass(
-                        &self.title_style_pipeline,
+                        &self.pipelines.title_style_pipeline,
                         current,
                         next,
                         (if axis == 0 { h } else { w }).div_ceil(WORKGROUP_SIZE),
@@ -595,7 +595,7 @@ impl GpuEffectsPipeline {
             ..base
         });
         self.stack_pass(
-            &self.title_style_pipeline,
+            &self.pipelines.title_style_pipeline,
             current,
             &self.stack_layers[slot],
             (size[0] * size[1]).div_ceil(WORKGROUP_SIZE),
@@ -654,7 +654,7 @@ impl GpuEffectsPipeline {
             matrix: [[0.0; 4]; 3],
         });
         self.stack_pass(
-            &self.title_style_pipeline,
+            &self.pipelines.title_style_pipeline,
             input,
             &self.stack_layers[slot],
             (w * h).div_ceil(WORKGROUP_SIZE),
@@ -729,7 +729,7 @@ impl GpuEffectsPipeline {
         };
         self.write_params(&params);
         self.stack_pass(
-            &self.title_style_pipeline,
+            &self.pipelines.title_style_pipeline,
             layer,
             scratch,
             (count as u32).div_ceil(WORKGROUP_SIZE),
@@ -744,7 +744,7 @@ impl GpuEffectsPipeline {
             ..params
         });
         self.stack_pass(
-            &self.title_style_pipeline,
+            &self.pipelines.title_style_pipeline,
             scratch,
             layer,
             (count as u32).div_ceil(WORKGROUP_SIZE),
@@ -801,7 +801,7 @@ impl GpuEffectsPipeline {
         };
         self.write_params(&params);
         self.stack_pass(
-            &self.title_style_pipeline,
+            &self.pipelines.title_style_pipeline,
             layer,
             scratch,
             h.div_ceil(WORKGROUP_SIZE),
@@ -809,7 +809,7 @@ impl GpuEffectsPipeline {
         );
         self.write_params(&StyleParams { op: 20, ..params });
         self.stack_pass(
-            &self.title_style_pipeline,
+            &self.pipelines.title_style_pipeline,
             layer,
             scratch,
             1,
@@ -817,7 +817,7 @@ impl GpuEffectsPipeline {
         );
         self.write_params(&StyleParams { op: 21, ..params });
         self.stack_pass(
-            &self.title_style_pipeline,
+            &self.pipelines.title_style_pipeline,
             scratch,
             layer,
             (count as u32).div_ceil(WORKGROUP_SIZE),
@@ -904,7 +904,7 @@ impl GpuEffectsPipeline {
             matrix: [[0.0; 4]; 3],
         });
         self.stack_pass(
-            &self.title_style_pipeline,
+            &self.pipelines.title_style_pipeline,
             layer,
             scratch,
             (count as u32).div_ceil(WORKGROUP_SIZE),
@@ -960,7 +960,7 @@ impl GpuEffectsPipeline {
             tint: texture.tint.map(|v| v as f32 / 255.0),
         });
         self.stack_pass(
-            &self.title_style_pipeline,
+            &self.pipelines.title_style_pipeline,
             scratch,
             layer,
             (count as u32).div_ceil(WORKGROUP_SIZE),
@@ -1026,7 +1026,7 @@ impl GpuEffectsPipeline {
             matrix: [[opacity.clamp(0.0, 1.0), if sprite_alpha {1.0}else{0.0}, 0.0, 0.0], focus.map_or([0.0;4], |(vertical,band,edge)| [if vertical {2.0}else{1.0},band.clamp(0.0,0.999),edge.clamp(0.0,1.0),0.0]), [0.0; 4]],
         });
         self.stack_pass(
-            &self.title_style_pipeline,
+            &self.pipelines.title_style_pipeline,
             layer,
             scratch,
             (count as u32).div_ceil(WORKGROUP_SIZE),
@@ -1053,18 +1053,18 @@ impl GpuEffectsPipeline {
         let scratch=self.title_post_scratch.as_ref().unwrap();
         let params=StyleParams {width:w,height:h,frame_width:w,op:31,x0:0,y0:0,offset_x:0,offset_y:0,color:[0.0;4],matrix:to_authored};
         self.write_params(&params);
-        self.stack_pass(&self.title_style_pipeline,source,blurred,count.div_ceil(WORKGROUP_SIZE),"title premultiply authored");
+        self.stack_pass(&self.pipelines.title_style_pipeline,source,blurred,count.div_ceil(WORKGROUP_SIZE),"title premultiply authored");
         let r=(radius/1.7).round().max(1.0).min(w.max(h) as f32) as i32;
         for _ in 0..3 {
             self.write_params(&StyleParams {op:32,offset_x:r,offset_y:0,..params});
-            self.stack_pass(&self.title_style_pipeline,blurred,scratch,h.div_ceil(WORKGROUP_SIZE),"title focus horizontal");
+            self.stack_pass(&self.pipelines.title_style_pipeline,blurred,scratch,h.div_ceil(WORKGROUP_SIZE),"title focus horizontal");
             self.write_params(&StyleParams {op:32,offset_x:r,offset_y:1,..params});
-            self.stack_pass(&self.title_style_pipeline,scratch,blurred,w.div_ceil(WORKGROUP_SIZE),"title focus vertical");
+            self.stack_pass(&self.pipelines.title_style_pipeline,scratch,blurred,w.div_ceil(WORKGROUP_SIZE),"title focus vertical");
         }
         self.write_params(&StyleParams {op:33,color:[if vertical {1.0}else{0.0},band,0.0,0.0],..params});
-        self.stack_pass(&self.title_style_pipeline,blurred,source,count.div_ceil(WORKGROUP_SIZE),"title focus authored mix");
+        self.stack_pass(&self.pipelines.title_style_pipeline,blurred,source,count.div_ceil(WORKGROUP_SIZE),"title focus authored mix");
         self.write_params(&StyleParams {op:11,matrix:self.authored_to_working,..params});
-        self.stack_pass(&self.title_style_pipeline,source,scratch,count.div_ceil(WORKGROUP_SIZE),"title focus working space");
+        self.stack_pass(&self.pipelines.title_style_pipeline,source,scratch,count.div_ceil(WORKGROUP_SIZE),"title focus working space");
         let mut enc=self.encoder(Some("title focus copy"));
         enc.copy_buffer_to_buffer(scratch,0,source,0,u64::from(count)*16);
         self.submit(enc);
@@ -1133,18 +1133,18 @@ impl GpuEffectsPipeline {
         let params=StyleParams {width:w,height:h,frame_width:w,op:44,x0:0,y0:0,
             offset_x:0,offset_y:0,color:blur,matrix:to_authored};
         self.write_params(&params);
-        self.stack_pass(&self.title_style_pipeline,source,blurred,(w*h).div_ceil(WORKGROUP_SIZE),"title motion blur premultiply");
+        self.stack_pass(&self.pipelines.title_style_pipeline,source,blurred,(w*h).div_ceil(WORKGROUP_SIZE),"title motion blur premultiply");
         for _ in 0..3 {
             self.write_params(&StyleParams {op:45,offset_y:0,..params});
-            self.stack_pass(&self.title_style_pipeline,blurred,scratch,h.div_ceil(WORKGROUP_SIZE),"title motion blur horizontal");
+            self.stack_pass(&self.pipelines.title_style_pipeline,blurred,scratch,h.div_ceil(WORKGROUP_SIZE),"title motion blur horizontal");
             self.write_params(&StyleParams {op:45,offset_y:1,..params});
-            self.stack_pass(&self.title_style_pipeline,scratch,blurred,w.div_ceil(WORKGROUP_SIZE),"title motion blur vertical");
+            self.stack_pass(&self.pipelines.title_style_pipeline,scratch,blurred,w.div_ceil(WORKGROUP_SIZE),"title motion blur vertical");
         }
         if solid {self.stack_title_solid_anchor(blurred,true);}
         self.write_params(&StyleParams {offset_x:i32::from(solid),offset_y:i32::from(clip_rows),op:if scaled.is_some() {48}else if translates {47}else{46},matrix:[enter,exit,scaled.unwrap_or([0.0;4])],..params});
-        self.stack_pass(&self.title_style_pipeline,blurred,source,(w*h).div_ceil(WORKGROUP_SIZE),"title motion blur bytes");
+        self.stack_pass(&self.pipelines.title_style_pipeline,blurred,source,(w*h).div_ceil(WORKGROUP_SIZE),"title motion blur bytes");
         self.write_params(&StyleParams {op:11,matrix:self.authored_to_working,..params});
-        self.stack_pass(&self.title_style_pipeline,source,scratch,(w*h).div_ceil(WORKGROUP_SIZE),"title motion blur working space");
+        self.stack_pass(&self.pipelines.title_style_pipeline,source,scratch,(w*h).div_ceil(WORKGROUP_SIZE),"title motion blur working space");
         let mut enc=self.encoder(Some("title motion blur copy"));
         enc.copy_buffer_to_buffer(scratch,0,source,0,bytes);self.submit(enc);true
     }
@@ -1174,10 +1174,10 @@ impl GpuEffectsPipeline {
         }
         self.write_params(&FillParams{base:params,stops});
         let layer=&self.stack_layers[slot];let scratch=self.title_post_scratch.as_ref().unwrap();
-        self.stack_pass(&self.title_style_pipeline,layer,scratch,(w*h).div_ceil(WORKGROUP_SIZE),"fitted title rectangle");
+        self.stack_pass(&self.pipelines.title_style_pipeline,layer,scratch,(w*h).div_ceil(WORKGROUP_SIZE),"fitted title rectangle");
         if gradient.is_some() {
             self.write_params(&StyleParams{op:11,width:w,height:h,frame_width:w,matrix:self.authored_to_working,..params});
-            self.stack_pass(&self.title_style_pipeline,scratch,layer,(w*h).div_ceil(WORKGROUP_SIZE),"rectangle gradient working space");
+            self.stack_pass(&self.pipelines.title_style_pipeline,scratch,layer,(w*h).div_ceil(WORKGROUP_SIZE),"rectangle gradient working space");
             return true;
         }
         let mut enc=self.encoder(Some("title rectangle copy"));enc.copy_buffer_to_buffer(scratch,0,layer,0,u64::from(w)*u64::from(h)*16);self.submit(enc);true
@@ -1244,16 +1244,16 @@ impl GpuEffectsPipeline {
             // The stroke's mask into the scratch, then each box pass between
             // the scratch and the slot, ending in the scratch.
             self.write_params(&StyleParams{width:w,height:h,frame_width:w,op:52,x0:0,y0:0,offset_x:0,offset_y:0,color:[0.0;4],matrix:self.authored_to_working});
-            self.stack_pass(&self.title_style_pipeline,&geometry,scratch,groups,"title path glow mask");
+            self.stack_pass(&self.pipelines.title_style_pipeline,&geometry,scratch,groups,"title path glow mask");
             for _ in 0..3 {
                 for (axis,(from,to)) in [(scratch,layer.as_ref()),(layer.as_ref(),scratch)].into_iter().enumerate() {
                     self.write_params(&StyleParams{width:w,height:h,frame_width:w,op:53,x0,y0,offset_x:radius.round() as i32,offset_y:axis as i32,color:[x1 as f32,y1 as f32,0.0,0.0],matrix:self.authored_to_working});
-                    self.stack_pass(&self.title_style_pipeline,from,to,groups,"title path glow blur");
+                    self.stack_pass(&self.pipelines.title_style_pipeline,from,to,groups,"title path glow blur");
                 }
             }
         }
         self.write_params(&FillParams{base:StyleParams{width:w,height:h,frame_width:w,op:51,x0:0,y0:0,offset_x:stop_count,offset_y:0,color:[0.0;4],matrix:self.authored_to_working},stops});
-        self.stack_pass(&self.title_style_pipeline,&geometry,scratch,groups,"title vector path");
+        self.stack_pass(&self.pipelines.title_style_pipeline,&geometry,scratch,groups,"title vector path");
         let mut enc=self.encoder(Some("title path copy"));enc.copy_buffer_to_buffer(scratch,0,layer,0,u64::from(w)*u64::from(h)*16);self.submit(enc);true
     }
 
@@ -1296,9 +1296,9 @@ impl GpuEffectsPipeline {
         let params = StyleParams { width: w, height: h, frame_width: w, op: 54, x0: 0, y0: 0, offset_x: size[0] as i32, offset_y: size[1] as i32, color: rect,
             matrix: [clip.map(|v| v as f32), [0.0; 4], [0.0; 4]] };
         self.write_params(&params);
-        self.stack_pass(&self.title_style_pipeline, picture, scratch, groups, "title image fit");
+        self.stack_pass(&self.pipelines.title_style_pipeline, picture, scratch, groups, "title image fit");
         self.write_params(&StyleParams { op: 11, matrix: self.authored_to_working, ..params });
-        self.stack_pass(&self.title_style_pipeline, scratch, layer, groups, "title image working");
+        self.stack_pass(&self.pipelines.title_style_pipeline, scratch, layer, groups, "title image working");
         true
     }
 
@@ -1309,8 +1309,8 @@ impl GpuEffectsPipeline {
         let (w,h)=self.stack_dims;let count=w*h;
         let layer=&self.stack_layers[slot];let scratch=self.title_post_scratch.as_ref().unwrap();
         let params=StyleParams{width:w,height:h,frame_width:w,op:35,x0:0,y0:0,offset_x:i32::from(bytes),offset_y:0,color:[0.0;4],matrix:to_authored};
-        self.write_params(&params);self.stack_pass(&self.title_style_pipeline,layer,scratch,count.div_ceil(WORKGROUP_SIZE),"title scene quantization");
-        self.write_params(&StyleParams{op:11,matrix:self.authored_to_working,..params});self.stack_pass(&self.title_style_pipeline,scratch,layer,count.div_ceil(WORKGROUP_SIZE),"title scene quantized working");true
+        self.write_params(&params);self.stack_pass(&self.pipelines.title_style_pipeline,layer,scratch,count.div_ceil(WORKGROUP_SIZE),"title scene quantization");
+        self.write_params(&StyleParams{op:11,matrix:self.authored_to_working,..params});self.stack_pass(&self.pipelines.title_style_pipeline,scratch,layer,count.div_ceil(WORKGROUP_SIZE),"title scene quantized working");true
     }
 
     /// Match the CPU title raster's bounding box (alpha >= half a byte).
@@ -1320,7 +1320,7 @@ impl GpuEffectsPipeline {
         let (w,h)=self.stack_dims;
         self.write_params(&StyleParams {width:w,height:h,frame_width:w,op:40,x0:0,y0:0,
             offset_x:0,offset_y:0,color:[0.0;4],matrix:[[0.0;4];3]});
-        self.stack_pass(&self.title_style_pipeline,self.title_post_scratch.as_ref().unwrap(),
+        self.stack_pass(&self.pipelines.title_style_pipeline,self.title_post_scratch.as_ref().unwrap(),
             &self.stack_layers[slot],(w*h).div_ceil(WORKGROUP_SIZE),"title scene crop");
         true
     }
@@ -1364,7 +1364,7 @@ impl GpuEffectsPipeline {
                 offset_x:0,offset_y:0,color:[0.0;4],matrix:to_authored};
             self.write_params(&params);
             let source=&self.stack_layers[slot];let scratch=self.title_post_scratch.as_ref().unwrap();
-            self.stack_pass(&self.title_style_pipeline,source,scratch,(w*h).div_ceil(WORKGROUP_SIZE),"title half-float scale source");
+            self.stack_pass(&self.pipelines.title_style_pipeline,source,scratch,(w*h).div_ceil(WORKGROUP_SIZE),"title half-float scale source");
             let mut enc=self.encoder(Some("title scale source copy"));
             enc.copy_buffer_to_buffer(scratch,0,source,0,bytes);self.submit(enc);
         }
@@ -1377,11 +1377,11 @@ impl GpuEffectsPipeline {
         if solid {self.stack_title_solid_anchor(scratch,false);}
         self.write_params(&StyleParams {width:w,height:h,frame_width:w,op:if scaled.is_some() {43}else{41},x0:0,y0:0,
             offset_x:i32::from(solid),offset_y:i32::from(clip_rows),color:[0.0;4],matrix:[enter,exit,scaled.unwrap_or([0.0;4])]});
-        self.stack_pass(&self.title_style_pipeline,scratch,source,(w*h).div_ceil(WORKGROUP_SIZE),"title whole-layer motion");
+        self.stack_pass(&self.pipelines.title_style_pipeline,scratch,source,(w*h).div_ceil(WORKGROUP_SIZE),"title whole-layer motion");
         if scaled.is_some() {
             self.write_params(&StyleParams {width:w,height:h,frame_width:w,op:11,x0:0,y0:0,
                 offset_x:0,offset_y:0,color:[0.0;4],matrix:self.authored_to_working});
-            self.stack_pass(&self.title_style_pipeline,source,scratch,(w*h).div_ceil(WORKGROUP_SIZE),"title scaled working space");
+            self.stack_pass(&self.pipelines.title_style_pipeline,source,scratch,(w*h).div_ceil(WORKGROUP_SIZE),"title scaled working space");
             let mut enc=self.encoder(Some("title scaled layer copy"));
             enc.copy_buffer_to_buffer(scratch,0,source,0,bytes);self.submit(enc);
         }
@@ -1408,9 +1408,9 @@ impl GpuEffectsPipeline {
         let params=StyleParams {width:w,height:h,frame_width:w,op:49,x0:0,y0:0,
             offset_x:i32::from(blurred),offset_y:0,color:[0.0;4],matrix:[[0.0;4];3]};
         self.write_params(&params);
-        self.stack_pass(&self.title_style_pipeline,source,grid,(w.min(319)*h.min(319)).div_ceil(WORKGROUP_SIZE),"title solid anchor coverage");
+        self.stack_pass(&self.pipelines.title_style_pipeline,source,grid,(w.min(319)*h.min(319)).div_ceil(WORKGROUP_SIZE),"title solid anchor coverage");
         self.write_params(&StyleParams {op:50,..params});
-        self.stack_pass(&self.title_style_pipeline,grid,source,1,"title solid anchor distance");
+        self.stack_pass(&self.pipelines.title_style_pipeline,grid,source,1,"title solid anchor distance");
     }
 
     /// Leave [x0,y0,x1,y1] in the first four scratch words.
@@ -1430,9 +1430,9 @@ impl GpuEffectsPipeline {
         let params=StyleParams {width:w,height:h,frame_width:w,op:38,x0:0,y0:0,
             offset_x:0,offset_y:0,color:[0.0;4],matrix:[[0.0;4];3]};
         self.write_params(&params);
-        self.stack_pass(&self.title_style_pipeline,layer,rows,h.div_ceil(WORKGROUP_SIZE),"title scene row bounds");
+        self.stack_pass(&self.pipelines.title_style_pipeline,layer,rows,h.div_ceil(WORKGROUP_SIZE),"title scene row bounds");
         self.write_params(&StyleParams {op:39,..params});
-        self.stack_pass(&self.title_style_pipeline,rows,scratch,1,"title scene bounds reduction");
+        self.stack_pass(&self.pipelines.title_style_pipeline,rows,scratch,1,"title scene bounds reduction");
         true
     }
 
@@ -1468,7 +1468,7 @@ impl GpuEffectsPipeline {
             matrix: to_authored,
         });
         self.stack_pass(
-            &self.title_style_pipeline,
+            &self.pipelines.title_style_pipeline,
             &self.stack_layers[source],
             &self.stack_layers[destination],
             (w * h).div_ceil(WORKGROUP_SIZE),
@@ -1540,7 +1540,7 @@ impl GpuEffectsPipeline {
         let scratch = self.title_post_scratch.as_ref().unwrap();
         self.write_params(&params);
         self.stack_pass(
-            &self.title_style_pipeline,
+            &self.pipelines.title_style_pipeline,
             src,
             dst,
             (count as u32).div_ceil(WORKGROUP_SIZE),
@@ -1552,7 +1552,7 @@ impl GpuEffectsPipeline {
             ..params
         });
         self.stack_pass(
-            &self.title_style_pipeline,
+            &self.pipelines.title_style_pipeline,
             dst,
             scratch,
             (count as u32).div_ceil(WORKGROUP_SIZE),
@@ -1704,7 +1704,7 @@ impl GpuEffectsPipeline {
                 ..base
             });
             self.stack_pass(
-                &self.title_style_pipeline,
+                &self.pipelines.title_style_pipeline,
                 src,
                 dst,
                 (count as u32).div_ceil(WORKGROUP_SIZE),
@@ -1784,7 +1784,7 @@ impl GpuEffectsPipeline {
                         }
                         self.write_params(&params);
                         self.stack_pass(
-                            &self.title_style_pipeline,
+                            &self.pipelines.title_style_pipeline,
                             face_layer,
                             &s.composite,
                             (count as u32).div_ceil(WORKGROUP_SIZE),
@@ -1899,7 +1899,7 @@ impl GpuEffectsPipeline {
                 matrix: self.authored_to_working,
             });
             self.stack_pass(
-                &self.title_style_pipeline,
+                &self.pipelines.title_style_pipeline,
                 &s.composite,
                 layer,
                 (fw * fh).div_ceil(WORKGROUP_SIZE),
@@ -1928,7 +1928,7 @@ impl GpuEffectsPipeline {
         let count = u64::from(w) * u64::from(h);
         let step = |op: u32, src: &wgpu::Buffer, dst: &wgpu::Buffer| {
             self.write_params(&StyleParams { op, ..base });
-            self.stack_pass(&self.title_style_pipeline, src, dst, (count as u32).div_ceil(WORKGROUP_SIZE), "title metal height");
+            self.stack_pass(&self.pipelines.title_style_pipeline, src, dst, (count as u32).div_ceil(WORKGROUP_SIZE), "title metal height");
         };
         step(60, &s.mask, &s.work);
         if !self.record_alpha_blur(&s.work, &s.work, &s.blur, w, h, m.bevel_px.max(1.0)) {
@@ -1966,14 +1966,14 @@ impl GpuEffectsPipeline {
             },
             stops,
         });
-        self.stack_pass(&self.title_style_pipeline, &s.work, &s.composite, (count as u32).div_ceil(WORKGROUP_SIZE), "title metal face");
+        self.stack_pass(&self.pipelines.title_style_pipeline, &s.work, &s.composite, (count as u32).div_ceil(WORKGROUP_SIZE), "title metal face");
         // Where it sees the shot, kept for the shot's pass.
         if let Some(shot) = shot {
             self.write_params(&FillParams {
                 base: StyleParams { op: 63, color: [m.tint[0], m.tint[1], m.tint[2], alpha], matrix: [[m.roughness, m.edge, slope, m.highlights], [0.0; 4], [0.0; 4]], ..base },
                 stops,
             });
-            self.stack_pass(&self.title_style_pipeline, &s.work, &shot.buffer, (count as u32).div_ceil(WORKGROUP_SIZE), "title metal shot record");
+            self.stack_pass(&self.pipelines.title_style_pipeline, &s.work, &shot.buffer, (count as u32).div_ceil(WORKGROUP_SIZE), "title metal shot record");
         }
         true
     }

@@ -175,7 +175,7 @@ impl GpuEffectsPipeline {
             return Err(MaskMixError::SizeMismatch);
         }
         // In place (no `input`): the picture is `output`, read where it is.
-        let gpu = &self.mask_mix_gpu;
+        let gpu = &self.pipelines.mask_mix_gpu;
         let read = input.unwrap_or(&gpu.stand_in);
         let buffers = [read, effect, mask.unwrap_or(read), output, self.chain_params.buffer(slot)];
         let entries: Vec<_> = buffers
@@ -185,7 +185,7 @@ impl GpuEffectsPipeline {
             .collect();
         let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("mask_mix"),
-            layout: &self.mask_mix_gpu.layout,
+            layout: &self.pipelines.mask_mix_gpu.layout,
             entries: &entries,
         });
         let pipeline = if input.is_some() { &gpu.pipeline } else { &gpu.in_place_pipeline };
@@ -218,7 +218,7 @@ impl GpuEffectsPipeline {
             return Err(MaskMixError::SizeMismatch);
         }
         // In place (no `input`): the picture is `output`, read where it is.
-        let gpu = &self.mask_mix_gpu;
+        let gpu = &self.pipelines.mask_mix_gpu;
         let read = input.unwrap_or(&gpu.stand_in);
         let buffers = [read, effect, records, output, self.chain_params.buffer(slot), points];
         let entries: Vec<_> = buffers
@@ -228,7 +228,7 @@ impl GpuEffectsPipeline {
             .collect();
         let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("mask_mix_window"),
-            layout: &self.mask_mix_gpu.window_layout,
+            layout: &self.pipelines.mask_mix_gpu.window_layout,
             entries: &entries,
         });
         let pipeline = if input.is_some() { &gpu.window_pipeline } else { &gpu.window_in_place_pipeline };

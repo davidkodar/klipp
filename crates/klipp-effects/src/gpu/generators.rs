@@ -44,7 +44,7 @@ impl GpuEffectsPipeline {
         let pixel_count = width * height;
         let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
 
-        self.dispatch(&self.grain_pipeline, buf_a, buf_b, workgroups);
+        self.dispatch(&self.pipelines.grain_pipeline, buf_a, buf_b, workgroups);
         self.download_linear_rgba_f32(buf_b, (width * height) as usize)
     }
 
@@ -76,7 +76,7 @@ impl GpuEffectsPipeline {
             .as_ref()
             .expect(Self::CHAIN_BG_EXPECT);
         let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
-        Self::record_compute_dispatch(enc, &self.grain_pipeline, bind_group, workgroups);
+        Self::record_compute_dispatch(enc, &self.pipelines.grain_pipeline, bind_group, workgroups);
     }
 
     /// Draw the native living gradient directly in a stack layer. Only
@@ -94,7 +94,7 @@ impl GpuEffectsPipeline {
             centre: [width as f32 * (0.5 + 0.28 * (t * 0.33).cos()), height as f32 * (0.5 + 0.22 * (t * 0.21).sin())],
             to_working: self.authored_to_working,
         });
-        self.stack_pass(&self.living_gradient_pipeline, self.stack_acc.as_ref().unwrap(), &self.stack_layers[i], (width * height).div_ceil(WORKGROUP_SIZE), "stack_living_gradient");
+        self.stack_pass(&self.pipelines.living_gradient_pipeline, self.stack_acc.as_ref().unwrap(), &self.stack_layers[i], (width * height).div_ceil(WORKGROUP_SIZE), "stack_living_gradient");
         true
     }
 
@@ -116,7 +116,7 @@ impl GpuEffectsPipeline {
             _p: [0.0; 2],
             to_working: self.authored_to_working,
         });
-        self.stack_pass(&self.grain_generator_pipeline, self.stack_acc.as_ref().unwrap(), &self.stack_layers[i], (width * height).div_ceil(WORKGROUP_SIZE), "stack_grain_generator");
+        self.stack_pass(&self.pipelines.grain_generator_pipeline, self.stack_acc.as_ref().unwrap(), &self.stack_layers[i], (width * height).div_ceil(WORKGROUP_SIZE), "stack_grain_generator");
         true
     }
 
@@ -145,7 +145,7 @@ impl GpuEffectsPipeline {
             color: color.map(f32::from),
             to_working: self.authored_to_working,
         });
-        self.stack_pass(&self.segments_pipeline, buf, &self.stack_layers[i], (width * height).div_ceil(WORKGROUP_SIZE), "stack_segments");
+        self.stack_pass(&self.pipelines.segments_pipeline, buf, &self.stack_layers[i], (width * height).div_ceil(WORKGROUP_SIZE), "stack_segments");
         true
     }
 }

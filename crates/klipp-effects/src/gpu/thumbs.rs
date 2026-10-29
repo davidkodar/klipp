@@ -99,7 +99,7 @@ impl ChainThumbs {
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("chain_thumb"),
-            bind_group_layouts: &[&gpu.bind_group_layout],
+            bind_group_layouts: &[&gpu.pipelines.bind_group_layout],
             push_constant_ranges: &[],
         });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -168,7 +168,7 @@ impl GpuEffectsPipeline {
         self.queue.write_buffer(&thumbs.params[i], 0, bytemuck::bytes_of(&params));
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("chain_thumb"),
-            layout: &self.bind_group_layout,
+            layout: &self.pipelines.bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: src.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: thumbs.out.as_entire_binding() },

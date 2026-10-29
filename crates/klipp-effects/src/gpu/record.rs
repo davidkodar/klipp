@@ -196,7 +196,7 @@ impl GpuEffectsPipeline {
                 ladder.inside.iter().chain(&ladder.above).copied().collect()
             };
             let Some(slot) = rec.slots.claim_with_table(q, &params, u64::from(levels.to_bits()), table) else { return Recorded::OutOfSlots };
-            self.record_with_table(rec, &self.posterize_pipeline, src, dst, slot, width, height);
+            self.record_with_table(rec, &self.pipelines.posterize_pipeline, src, dst, slot, width, height);
             return Recorded::Done;
         }
         // Equalize (#1215): the frame's histogram, its CDF, then the map
@@ -210,7 +210,7 @@ impl GpuEffectsPipeline {
             let bind = |label, a: &wgpu::Buffer, b: &wgpu::Buffer, c: &wgpu::Buffer| {
                 self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some(label),
-                    layout: &self.huesat_bgl,
+                    layout: &self.pipelines.huesat_bgl,
                     entries: &[
                         wgpu::BindGroupEntry { binding: 0, resource: a.as_entire_binding() },
                         wgpu::BindGroupEntry { binding: 1, resource: b.as_entire_binding() },
@@ -222,9 +222,9 @@ impl GpuEffectsPipeline {
             let (hist, cdf) = (&self.equalize_hist_buf, &self.equalize_cdf_buf);
             let pixels = (width * height).div_ceil(WORKGROUP_SIZE);
             rec.encoder.clear_buffer(hist, 0, None);
-            Self::record_compute_dispatch(rec.encoder, &self.equalize_histogram_pipeline, &bind("equalize_histogram", src, hist, cdf), pixels);
-            Self::record_compute_dispatch(rec.encoder, &self.equalize_cdf_pipeline, &bind("equalize_cdf", hist, cdf, hist), 1);
-            Self::record_compute_dispatch(rec.encoder, &self.equalize_pipeline, &bind("equalize_map", src, dst, cdf), pixels);
+            Self::record_compute_dispatch(rec.encoder, &self.pipelines.equalize_histogram_pipeline, &bind("equalize_histogram", src, hist, cdf), pixels);
+            Self::record_compute_dispatch(rec.encoder, &self.pipelines.equalize_cdf_pipeline, &bind("equalize_cdf", hist, cdf, hist), 1);
+            Self::record_compute_dispatch(rec.encoder, &self.pipelines.equalize_pipeline, &bind("equalize_map", src, dst, cdf), pixels);
             return Recorded::Done;
         }
         if let BuiltinEffect::Lut3D { prepared, opacity, tetrahedral, .. } = effect {
@@ -237,7 +237,7 @@ impl GpuEffectsPipeline {
             let table = self.effect_lut_buffer(&lut.0);
             let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("recorded_lut"),
-                layout: &self.huesat_bgl,
+                layout: &self.pipelines.huesat_bgl,
                 entries: &[
                     wgpu::BindGroupEntry { binding: 0, resource: src.as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 1, resource: dst.as_entire_binding() },
@@ -245,7 +245,7 @@ impl GpuEffectsPipeline {
                     wgpu::BindGroupEntry { binding: 3, resource: table.as_entire_binding() },
                 ],
             });
-            Self::record_compute_dispatch(rec.encoder, &self.lut3d_pipeline, &bind_group, (width * height).div_ceil(WORKGROUP_SIZE));
+            Self::record_compute_dispatch(rec.encoder, &self.pipelines.lut3d_pipeline, &bind_group, (width * height).div_ceil(WORKGROUP_SIZE));
             return Recorded::Done;
         }
         // The transform's two curve tables ride in its slot's table, keyed
@@ -259,7 +259,7 @@ impl GpuEffectsPipeline {
             let key = 1 << 63 | used(t.decode.is_some(), *input_curve) << 16 | used(t.encode.is_some(), *output_curve);
             let table = || crate::colour_transform::slot_table(t);
             let Some(slot) = rec.slots.claim_with_table(q, &CstParams::new(width, height, t), key, table) else { return Recorded::OutOfSlots };
-            self.record_with_table(rec, &self.cst_pipeline, src, dst, slot, width, height);
+            self.record_with_table(rec, &self.pipelines.cst_pipeline, src, dst, slot, width, height);
             return Recorded::Done;
         }
         // One pass each: its pipeline, and its parameters in a slot of
@@ -270,14 +270,14 @@ impl GpuEffectsPipeline {
                     return Recorded::Identity;
                 }
                 let slot = rec.slots.claim(q, &OpacityParams { width, height, value: *value, _pad: 0 });
-                (&self.opacity_pipeline, slot)
+                (&self.pipelines.opacity_pipeline, slot)
             }
             BuiltinEffect::Invert { mix } => {
                 if (*mix).abs() < f32::EPSILON {
                     return Recorded::Identity;
                 }
                 let slot = rec.slots.claim(q, &InvertParams { width, height, mix: *mix, _pad: 0 });
-                (&self.invert_pipeline, slot)
+                (&self.pipelines.invert_pipeline, slot)
             }
             BuiltinEffect::ChannelMixer {
                 red_red, red_green, red_blue,
@@ -291,14 +291,14 @@ impl GpuEffectsPipeline {
                     br: *blue_red, bg: *blue_green, bb: *blue_blue,
                     _pad: 0,
                 });
-                (&self.channel_mixer_pipeline, slot)
+                (&self.pipelines.channel_mixer_pipeline, slot)
             }
             BuiltinEffect::Gamma { gamma } => {
                 if (*gamma - 1.0).abs() < f32::EPSILON {
                     return Recorded::Identity;
                 }
                 let slot = rec.slots.claim(q, &GammaParams { width, height, inv_gamma: 1.0 / *gamma, _pad: 0 });
-                (&self.gamma_pipeline, slot)
+                (&self.pipelines.gamma_pipeline, slot)
             }
             BuiltinEffect::HSVAdjust { hue_shift, saturation, value } => {
                 if hue_shift.abs() < f32::EPSILON && (*saturation - 1.0).abs() < f32::EPSILON && (*value - 1.0).abs() < f32::EPSILON {
@@ -311,7 +311,7 @@ impl GpuEffectsPipeline {
                     value: *value,
                     _pad: 0, _pad2: 0, _pad3: 0,
                 });
-                (&self.hsv_adjust_pipeline, slot)
+                (&self.pipelines.hsv_adjust_pipeline, slot)
             }
             BuiltinEffect::Levels { in_black, in_white, gamma, out_black, out_white } => {
                 if *in_black <= 0.0 && (*in_white - 1.0).abs() < f32::EPSILON
@@ -328,14 +328,14 @@ impl GpuEffectsPipeline {
                     out_white: *out_white,
                     _pad: 0,
                 });
-                (&self.levels_pipeline, slot)
+                (&self.pipelines.levels_pipeline, slot)
             }
             BuiltinEffect::Vibrance { amount } => {
                 let slot = rec.slots.claim(q, &GpuVibranceParams {
                     width, height, amount: *amount, _pad: 0,
                     luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad1: 0,
                 });
-                (&self.vibrance_pipeline, slot)
+                (&self.pipelines.vibrance_pipeline, slot)
             }
             BuiltinEffect::ColorFade { color, progress, .. } => {
                 let t = progress.clamp(0.0, 1.0);
@@ -347,7 +347,7 @@ impl GpuEffectsPipeline {
                     width, height, progress: t, _pad: 0,
                     color: [lin(color[0]), lin(color[1]), lin(color[2]), color[3] as f32 / 255.0],
                 });
-                (&self.color_fade_pipeline, slot)
+                (&self.pipelines.color_fade_pipeline, slot)
             }
             BuiltinEffect::Crop {
                 left,
@@ -370,7 +370,7 @@ impl GpuEffectsPipeline {
                     feather: *feather,
                     _pad: 0,
                 });
-                (&self.crop_pipeline, slot)
+                (&self.pipelines.crop_pipeline, slot)
             }
             BuiltinEffect::Transform {
                 position_x,
@@ -398,7 +398,7 @@ impl GpuEffectsPipeline {
                 let _ = (anchor_x, anchor_y, perspective);
                 let params = TransformParams::of(effect, width, height).expect("a Transform");
                 let slot = rec.slots.claim(q, &params);
-                (&self.transform_pipeline, slot)
+                (&self.pipelines.transform_pipeline, slot)
             }
             BuiltinEffect::Mirror { horizontal, vertical } => {
                 if *horizontal == 0 && *vertical == 0 {
@@ -409,7 +409,7 @@ impl GpuEffectsPipeline {
                     horizontal: *horizontal,
                     vertical: *vertical,
                 });
-                (&self.mirror_pipeline, slot)
+                (&self.pipelines.mirror_pipeline, slot)
             }
             BuiltinEffect::LensDistortion { distortion, scale } => {
                 if distortion.abs() < f32::EPSILON && (*scale - 1.0).abs() < f32::EPSILON {
@@ -420,7 +420,7 @@ impl GpuEffectsPipeline {
                     distortion: *distortion,
                     scale: *scale,
                 });
-                (&self.lens_distortion_pipeline, slot)
+                (&self.pipelines.lens_distortion_pipeline, slot)
             }
             BuiltinEffect::GradientMap { shadow, mid, highlight, mix } => {
                 if mix.abs() < f32::EPSILON {
@@ -437,7 +437,7 @@ impl GpuEffectsPipeline {
                     luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2],
                     _pad: 0,
                 });
-                (&self.gradient_map_pipeline, slot)
+                (&self.pipelines.gradient_map_pipeline, slot)
             }
             BuiltinEffect::Warp { .. } => {
                 let Some(s) = effect.warp_settings().filter(|s| !crate::warp::is_identity(s)) else {
@@ -450,7 +450,7 @@ impl GpuEffectsPipeline {
                     strength: s.strength, radius: s.radius, center_x: s.center_x, center_y: s.center_y,
                     band: s.band, time: s.time, _pad0: 0, _pad1: 0,
                 });
-                (&self.warp_pipeline, slot)
+                (&self.pipelines.warp_pipeline, slot)
             }
             BuiltinEffect::Displace { amount, size, speed, direction, seed, time } => {
                 if amount.abs() < f32::EPSILON {
@@ -461,14 +461,14 @@ impl GpuEffectsPipeline {
                     amount: *amount, size: *size, speed: *speed,
                     direction: *direction, seed: *seed, time: *time,
                 });
-                (&self.displace_pipeline, slot)
+                (&self.pipelines.displace_pipeline, slot)
             }
             BuiltinEffect::Reflection { .. } => {
                 let Some(params) = effect.reflection_params(width, height).filter(|_| !crate::is_identity_effect(effect)) else {
                     return Recorded::Identity;
                 };
                 let slot = rec.slots.claim(q, &params);
-                (&self.reflection_pipeline, slot)
+                (&self.pipelines.reflection_pipeline, slot)
             }
             BuiltinEffect::Letterbox { aspect_ratio, bar_color, opacity } => {
                 let slot = rec.slots.claim(q, &LetterboxParams {
@@ -480,7 +480,7 @@ impl GpuEffectsPipeline {
                     _pad1: 0,
                     _pad2: 0,
                 });
-                (&self.letterbox_pipeline, slot)
+                (&self.pipelines.letterbox_pipeline, slot)
             }
             BuiltinEffect::Dilate { radius } => {
                 let slot = rec.slots.claim(q, &DilateErodeParams {
@@ -488,7 +488,7 @@ impl GpuEffectsPipeline {
                     radius: (*radius).clamp(1, 10),
                     _pad: 0,
                 });
-                (&self.dilate_pipeline, slot)
+                (&self.pipelines.dilate_pipeline, slot)
             }
             BuiltinEffect::DirectionalBlur { angle, distance, samples } => {
                 if *distance < 0.5 {
@@ -503,7 +503,7 @@ impl GpuEffectsPipeline {
                     samples: samples_clamped,
                     _pad: 0, _pad2: 0, _pad3: 0,
                 });
-                (&self.directional_blur_pipeline, slot)
+                (&self.pipelines.directional_blur_pipeline, slot)
             }
             BuiltinEffect::EdgeDetect { strength, mix } => {
                 let slot = rec.slots.claim(q, &EdgeDetectParams {
@@ -512,7 +512,7 @@ impl GpuEffectsPipeline {
                     mix: *mix,
                     luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad_luma: 0,
                 });
-                (&self.edge_detect_pipeline, slot)
+                (&self.pipelines.edge_detect_pipeline, slot)
             }
             BuiltinEffect::Emboss { angle, strength, mix } => {
                 let angle_rad = angle.to_radians();
@@ -524,7 +524,7 @@ impl GpuEffectsPipeline {
                     mix: *mix,
                     _pad0: 0, _pad1: 0,
                 });
-                (&self.emboss_pipeline, slot)
+                (&self.pipelines.emboss_pipeline, slot)
             }
             BuiltinEffect::Erode { radius } => {
                 let slot = rec.slots.claim(q, &DilateErodeParams {
@@ -532,7 +532,7 @@ impl GpuEffectsPipeline {
                     radius: (*radius).clamp(1, 10),
                     _pad: 0,
                 });
-                (&self.erode_pipeline, slot)
+                (&self.pipelines.erode_pipeline, slot)
             }
             BuiltinEffect::Mosaic { block_size } => {
                 if *block_size <= 1.0 {
@@ -543,7 +543,7 @@ impl GpuEffectsPipeline {
                     block_size: *block_size,
                     _pad: 0,
                 });
-                (&self.mosaic_pipeline, slot)
+                (&self.pipelines.mosaic_pipeline, slot)
             }
             BuiltinEffect::RadialBlur { center_x, center_y, amount, samples, mode } => {
                 if *amount < 0.01 {
@@ -559,7 +559,7 @@ impl GpuEffectsPipeline {
                     mode: *mode,
                     _pad: 0,
                 });
-                (&self.radial_blur_pipeline, slot)
+                (&self.pipelines.radial_blur_pipeline, slot)
             }
             BuiltinEffect::Sharpen { amount } => {
                 if amount.abs() < f32::EPSILON {
@@ -572,7 +572,7 @@ impl GpuEffectsPipeline {
                     amount: *amount,
                     _pad: 0,
                 });
-                (&self.sharpen_pipeline, slot)
+                (&self.pipelines.sharpen_pipeline, slot)
             }
             BuiltinEffect::MedianFilter { radius } => {
                 let r = (*radius).clamp(1, 2); // clamp to 2 on GPU for performance
@@ -581,7 +581,7 @@ impl GpuEffectsPipeline {
                     radius: r,
                     _pad: 0,
                 });
-                (&self.median_filter_pipeline, slot)
+                (&self.pipelines.median_filter_pipeline, slot)
             }
             BuiltinEffect::ChromaKey {
                 key_color,
@@ -625,7 +625,7 @@ impl GpuEffectsPipeline {
                     spill_key_idx: key_idx,
                     _pad: [0; 3],
                 });
-                (&self.chroma_key_pipeline, slot)
+                (&self.pipelines.chroma_key_pipeline, slot)
             }
             // The grade's luma key op, its matte taken into alpha (#1638).
             // Its range is what goes, so the op keeps the inverse of it.
@@ -638,7 +638,7 @@ impl GpuEffectsPipeline {
                     _pad1: 0,
                     luma: [self.luma_coefs[0], self.luma_coefs[1], self.luma_coefs[2], 0.0],
                 });
-                (&self.luma_key_pipeline, slot)
+                (&self.pipelines.luma_key_pipeline, slot)
             }
             BuiltinEffect::Deflicker { strength, gain, .. } => {
                 // `window_secs` shaped the gains during analysis
@@ -649,7 +649,7 @@ impl GpuEffectsPipeline {
                     gain: *gain,
                     strength: strength.clamp(0.0, 1.0),
                 });
-                (&self.deflicker_pipeline, slot)
+                (&self.pipelines.deflicker_pipeline, slot)
             }
             BuiltinEffect::FilmGrain { amount, size, color, shadows, seed } => {
                 if *amount < f32::EPSILON {
@@ -661,7 +661,7 @@ impl GpuEffectsPipeline {
                     luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2],
                     _pad: 0, _pad2: 0,
                 });
-                (&self.film_grain_pipeline, slot)
+                (&self.pipelines.film_grain_pipeline, slot)
             }
             BuiltinEffect::NoiseGenerator { amount, monochrome, seed } => {
                 if *amount < f32::EPSILON {
@@ -674,12 +674,12 @@ impl GpuEffectsPipeline {
                     seed: *seed,
                     _pad: 0, _pad2: 0, _pad3: 0,
                 });
-                (&self.noise_generator_pipeline, slot)
+                (&self.pipelines.noise_generator_pipeline, slot)
             }
             BuiltinEffect::OldFilm { .. } => {
                 let Some(params) = effect.old_film_params(width, height, self.luma_coefs) else { return Recorded::Identity };
                 let slot = rec.slots.claim(q, &params);
-                (&self.old_film_pipeline, slot)
+                (&self.pipelines.old_film_pipeline, slot)
             }
             BuiltinEffect::Vhs { tracking, bleed, noise, scanlines, seed } => {
                 let slot = rec.slots.claim(q, &VhsParams {
@@ -688,7 +688,7 @@ impl GpuEffectsPipeline {
                     luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2],
                     _pad: 0, _pad2: 0,
                 });
-                (&self.vhs_pipeline, slot)
+                (&self.pipelines.vhs_pipeline, slot)
             }
             BuiltinEffect::CornerPin { tl, tr, br, bl } => {
                 let corners = [*tl, *tr, *br, *bl];
@@ -700,7 +700,7 @@ impl GpuEffectsPipeline {
                 // the eye" and writes transparent.
                 let inv = crate::corner_pin::inverse_map(width, height, &corners).unwrap_or([0.0; 9]);
                 let slot = rec.slots.claim(q, &CornerPinParams { width, height, inv, _pad: 0 });
-                (&self.corner_pin_pipeline, slot)
+                (&self.pipelines.corner_pin_pipeline, slot)
             }
             BuiltinEffect::AnamorphicStreak { threshold, length, intensity, tint } => {
                 let slot = rec.slots.claim(q, &AnamorphicStreakParams {
@@ -712,7 +712,7 @@ impl GpuEffectsPipeline {
                     _pad: 0, _pad2: 0,
                     luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad_luma: 0,
                 });
-                (&self.anamorphic_streak_pipeline, slot)
+                (&self.pipelines.anamorphic_streak_pipeline, slot)
             }
             BuiltinEffect::ChromaticAberration { red_shift, blue_shift, center_x, center_y } => {
                 if red_shift.abs() < f32::EPSILON && blue_shift.abs() < f32::EPSILON {
@@ -727,7 +727,7 @@ impl GpuEffectsPipeline {
                     _pad0: 0,
                     _pad1: 0,
                 });
-                (&self.chromatic_aberration_pipeline, slot)
+                (&self.pipelines.chromatic_aberration_pipeline, slot)
             }
             BuiltinEffect::LensFlare { position_x, position_y, brightness, flare_size, ghost_count, ghost_intensity, chromatic_aberration } => {
                 let slot = rec.slots.claim(q, &LensFlareParams {
@@ -738,7 +738,7 @@ impl GpuEffectsPipeline {
                     chromatic_aberration: *chromatic_aberration,
                     _pad: 0, _pad2: 0, _pad3: 0,
                 });
-                (&self.lens_flare_pipeline, slot)
+                (&self.pipelines.lens_flare_pipeline, slot)
             }
             BuiltinEffect::LightRays { center_x, center_y, threshold, samples, decay, intensity } => {
                 let slot = rec.slots.claim(q, &LightRaysParams {
@@ -751,7 +751,7 @@ impl GpuEffectsPipeline {
                     intensity: *intensity,
                     luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad_luma: 0,
                 });
-                (&self.light_rays_pipeline, slot)
+                (&self.pipelines.light_rays_pipeline, slot)
             }
             BuiltinEffect::Particles { .. } => {
                 // The twin of `particles::apply` (#1141).
@@ -759,7 +759,7 @@ impl GpuEffectsPipeline {
                     return Recorded::Identity;
                 };
                 let slot = rec.slots.claim(q, &pp);
-                (&self.particles_pipeline, slot)
+                (&self.pipelines.particles_pipeline, slot)
             }
             BuiltinEffect::BinocularVignette { amount, spacing, width: eye_w, height: eye_h, softness, fringe } => {
                 if amount.abs() < f32::EPSILON && fringe.abs() < f32::EPSILON {
@@ -769,7 +769,7 @@ impl GpuEffectsPipeline {
                     width, height,
                     amount: *amount, spacing: *spacing, eye_w: *eye_w, eye_h: *eye_h, softness: *softness, fringe: *fringe,
                 });
-                (&self.binocular_vignette_pipeline, slot)
+                (&self.pipelines.binocular_vignette_pipeline, slot)
             }
             &BuiltinEffect::Generator { shape, color_a, color_b, angle, center_x, center_y, radius } => {
                 let g = crate::generator::Gen::new(shape, color_a, color_b, angle, center_x, center_y, radius, width, height);
@@ -779,7 +779,7 @@ impl GpuEffectsPipeline {
                     dir: g.dir, centre: g.centre,
                     radius: g.radius, _pad2: [0; 3],
                 });
-                (&self.generator_pipeline, slot)
+                (&self.pipelines.generator_pipeline, slot)
             }
             BuiltinEffect::Vignette { amount, size, softness, roundness } => {
                 let slot = rec.slots.claim(q, &VignetteParams {
@@ -787,7 +787,7 @@ impl GpuEffectsPipeline {
                     amount: *amount, size: *size, softness: *softness, roundness: *roundness,
                     _pad: 0, _pad2: 0,
                 });
-                (&self.vignette_pipeline, slot)
+                (&self.pipelines.vignette_pipeline, slot)
             }
             _ => return Recorded::NotRecordable,
         };
@@ -863,7 +863,7 @@ impl GpuEffectsPipeline {
                     return Some(Recorded::Identity);
                 };
                 let Some(slot) = rec.slots.claim(q, &RscParams { width, height, strength: *strength, _pad: 0 }) else { return Some(Recorded::OutOfSlots) };
-                self.record_with(rec, &self.rsc_pipeline, src, dst, slot, rows, width, height);
+                self.record_with(rec, &self.pipelines.rsc_pipeline, src, dst, slot, rows, width, height);
                 Recorded::Done
             }
             BuiltinEffect::VideoStabilization { crop_ratio, zoom, .. } => {
@@ -872,7 +872,7 @@ impl GpuEffectsPipeline {
                 };
                 let crop_zoom = crate::stabilization_crop_zoom(*crop_ratio, *zoom);
                 let Some(slot) = rec.slots.claim(q, &StabilizationParams { width, height, crop_zoom, _pad: 0 }) else { return Some(Recorded::OutOfSlots) };
-                self.record_with(rec, &self.stabilization_pipeline, src, dst, slot, homographies, width, height);
+                self.record_with(rec, &self.pipelines.stabilization_pipeline, src, dst, slot, homographies, width, height);
                 Recorded::Done
             }
             BuiltinEffect::RoundedCorners { radius, feather } => {
@@ -901,7 +901,7 @@ impl GpuEffectsPipeline {
                 }
                 let seed = rec.slots.claim(q, &self.bloom_threshold(width, height, *threshold));
                 let blend = rec.slots.claim(q, &self.bloom_blend(width, height, *intensity, 0.0));
-                let light = LightLayer { seed, radius: *radius, blend: &self.bloom_blend_pipeline, blend_slot: blend };
+                let light = LightLayer { seed, radius: *radius, blend: &self.pipelines.bloom_blend_pipeline, blend_slot: blend };
                 self.record_light_layer(rec, src, dst, scratch, light, width, height);
                 Recorded::Done
             }
@@ -912,7 +912,7 @@ impl GpuEffectsPipeline {
                 }
                 let seed = rec.slots.claim(q, &self.bloom_threshold(width, height, *threshold));
                 let blend = rec.slots.claim(q, &self.bloom_blend(width, height, *amount, *desaturation));
-                let light = LightLayer { seed, radius: *radius, blend: &self.glow_blend_pipeline, blend_slot: blend };
+                let light = LightLayer { seed, radius: *radius, blend: &self.pipelines.glow_blend_pipeline, blend_slot: blend };
                 self.record_light_layer(rec, src, dst, scratch, light, width, height);
                 Recorded::Done
             }
@@ -928,7 +928,7 @@ impl GpuEffectsPipeline {
                     hal_r: 1.0, hal_g: *hue * 0.6, hal_b: *hue * *hue * 0.2, _pad: 0,
                     luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad_luma: 0,
                 });
-                let light = LightLayer { seed, radius: *radius, blend: &self.film_halation_blend_pipeline, blend_slot: blend };
+                let light = LightLayer { seed, radius: *radius, blend: &self.pipelines.film_halation_blend_pipeline, blend_slot: blend };
                 self.record_light_layer(rec, src, dst, scratch, light, width, height);
                 Recorded::Done
             }
@@ -942,7 +942,7 @@ impl GpuEffectsPipeline {
                 }
                 let seed = rec.slots.claim(q, &BloomThresholdParams { premultiply: 1, ..self.bloom_threshold(width, height, *threshold) });
                 let blend = rec.slots.claim(q, &BloomBlendParams { lift_alpha: 1, ..self.bloom_blend(width, height, *intensity, 0.0) });
-                let light = LightLayer { seed, radius: *radius, blend: &self.glow_blend_pipeline, blend_slot: blend };
+                let light = LightLayer { seed, radius: *radius, blend: &self.pipelines.glow_blend_pipeline, blend_slot: blend };
                 self.record_light_layer(rec, src, dst, scratch, light, width, height);
                 Recorded::Done
             }
@@ -952,7 +952,7 @@ impl GpuEffectsPipeline {
                     return Some(Recorded::OutOfSlots);
                 }
                 let blend = rec.slots.claim(q, &self.bloom_blend(width, height, *intensity, 0.0));
-                let light = LightLayer { seed: None, radius: *wrap_w * *softness, blend: &self.glow_blend_pipeline, blend_slot: blend };
+                let light = LightLayer { seed: None, radius: *wrap_w * *softness, blend: &self.pipelines.glow_blend_pipeline, blend_slot: blend };
                 self.record_light_layer(rec, src, dst, scratch, light, width, height);
                 Recorded::Done
             }
@@ -971,7 +971,7 @@ impl GpuEffectsPipeline {
                 let mut from = src;
                 for (i, box_r) in boxes.into_iter().enumerate() {
                     let slot = rec.slots.claim(q, &blur(box_r)).expect("slots_needed was checked");
-                    for (j, pipeline) in [&self.blur_h_pipeline, &self.blur_v_pipeline].into_iter().enumerate() {
+                    for (j, pipeline) in [&self.pipelines.blur_h_pipeline, &self.pipelines.blur_v_pipeline].into_iter().enumerate() {
                         let to = ends_in_dst(i * 2 + j, passes, dst, scratch);
                         self.record_pass(rec, pipeline, from, to, slot, width, height);
                         from = to;
@@ -1002,7 +1002,7 @@ impl GpuEffectsPipeline {
                 let mut from = src;
                 for i in 0..passes {
                     let to = ends_in_dst(i, passes, dst, scratch);
-                    self.record_pass(rec, &self.denoise_pipeline, from, to, slot, width, height);
+                    self.record_pass(rec, &self.pipelines.denoise_pipeline, from, to, slot, width, height);
                     from = to;
                 }
                 Recorded::Done
@@ -1021,12 +1021,12 @@ impl GpuEffectsPipeline {
                 let mut from = src;
                 for box_r in boxes {
                     let slot = rec.slots.claim(q, &blur(box_r)).expect("slots_needed was checked");
-                    self.record_pass(rec, &self.blur_h_pipeline, from, dst, slot, width, height);
-                    self.record_pass(rec, &self.blur_v_pipeline, dst, scratch, slot, width, height);
+                    self.record_pass(rec, &self.pipelines.blur_h_pipeline, from, dst, slot, width, height);
+                    self.record_pass(rec, &self.pipelines.blur_v_pipeline, dst, scratch, slot, width, height);
                     from = scratch;
                 }
                 let slot = rec.slots.claim(q, &TiltShiftParams { width, height, center: *center, band: *band, softness: *softness, _pad: 0, _pad2: 0, _pad3: 0 });
-                self.record_pair(rec, &self.tilt_shift_blend_pipeline, src, scratch, dst, slot.expect("slots_needed was checked"), width, height);
+                self.record_pair(rec, &self.pipelines.tilt_shift_blend_pipeline, src, scratch, dst, slot.expect("slots_needed was checked"), width, height);
                 Recorded::Done
             }
             BuiltinEffect::FocusBlur { radius, vertical, band } => {
@@ -1042,14 +1042,14 @@ impl GpuEffectsPipeline {
                     return Some(Recorded::OutOfSlots);
                 }
                 let slot = rec.slots.claim(q, &blur(0)).expect("slots_needed was checked");
-                self.record_pass(rec, &self.focus_blur_premultiply_pipeline, src, scratch, slot, width, height);
+                self.record_pass(rec, &self.pipelines.focus_blur_premultiply_pipeline, src, scratch, slot, width, height);
                 for box_r in boxes {
                     let slot = rec.slots.claim(q, &blur(box_r)).expect("slots_needed was checked");
-                    self.record_pass(rec, &self.blur_h_pipeline, scratch, dst, slot, width, height);
-                    self.record_pass(rec, &self.blur_v_pipeline, dst, scratch, slot, width, height);
+                    self.record_pass(rec, &self.pipelines.blur_h_pipeline, scratch, dst, slot, width, height);
+                    self.record_pass(rec, &self.pipelines.blur_v_pipeline, dst, scratch, slot, width, height);
                 }
                 let slot = rec.slots.claim(q, &FocusBlurParams { width, height, vertical: u32::from(*vertical), band: *band });
-                self.record_pair(rec, &self.focus_blur_blend_pipeline, src, scratch, dst, slot.expect("slots_needed was checked"), width, height);
+                self.record_pair(rec, &self.pipelines.focus_blur_blend_pipeline, src, scratch, dst, slot.expect("slots_needed was checked"), width, height);
                 Recorded::Done
             }
             _ => return None,
@@ -1073,14 +1073,14 @@ impl GpuEffectsPipeline {
         height: u32,
     ) {
         match light.seed {
-            Some(slot) => self.record_pass(rec, &self.bloom_threshold_pipeline, src, scratch, slot, width, height),
+            Some(slot) => self.record_pass(rec, &self.pipelines.bloom_threshold_pipeline, src, scratch, slot, width, height),
             None => rec.encoder.copy_buffer_to_buffer(src, 0, scratch, 0, u64::from(width * height) * 16),
         }
         for box_r in crate::blur::boxes_for_gaussian(light.radius) {
             let slot = rec.slots.claim(&self.queue, &BlurParams { width, height, radius: box_r as i32, _pad: 0 });
             let slot = slot.expect("slots_needed was checked");
-            self.record_pass(rec, &self.blur_h_pipeline, scratch, dst, slot, width, height);
-            self.record_pass(rec, &self.blur_v_pipeline, dst, scratch, slot, width, height);
+            self.record_pass(rec, &self.pipelines.blur_h_pipeline, scratch, dst, slot, width, height);
+            self.record_pass(rec, &self.pipelines.blur_v_pipeline, dst, scratch, slot, width, height);
         }
         self.record_pair(rec, light.blend, src, scratch, dst, light.blend_slot.expect("slots_needed was checked"), width, height);
     }
@@ -1127,7 +1127,7 @@ impl GpuEffectsPipeline {
     ) {
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("recorded_effect"),
-            layout: &self.bind_group_layout,
+            layout: &self.pipelines.bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
@@ -1153,7 +1153,7 @@ impl GpuEffectsPipeline {
     ) {
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("recorded_effect_side"),
-            layout: &self.huesat_bgl,
+            layout: &self.pipelines.huesat_bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
@@ -1203,7 +1203,7 @@ impl GpuEffectsPipeline {
     ) {
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("recorded_effect_table"),
-            layout: &self.huesat_bgl,
+            layout: &self.pipelines.huesat_bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
@@ -1244,7 +1244,7 @@ impl GpuEffectsPipeline {
     ) {
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("recorded_effect_pair"),
-            layout: &self.transition_bgl,
+            layout: &self.pipelines.transition_bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: a.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: b.as_entire_binding() },

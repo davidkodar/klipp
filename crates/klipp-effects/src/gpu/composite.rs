@@ -40,7 +40,7 @@ impl GpuEffectsPipeline {
         let kept = self.grade_mix_src.as_ref().expect("keep_chain_input first");
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("chain_bg_grade_mix"),
-            layout: &self.huesat_bgl,
+            layout: &self.pipelines.huesat_bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
@@ -50,7 +50,7 @@ impl GpuEffectsPipeline {
         });
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
-        Self::record_compute_dispatch(enc, &self.grade_mix_pipeline, &bind_group, workgroups);
+        Self::record_compute_dispatch(enc, &self.pipelines.grade_mix_pipeline, &bind_group, workgroups);
     }
 
     /// Dispatch-only Blend: `a + (b - a) * mix`, `a` the chain's
@@ -81,7 +81,7 @@ impl GpuEffectsPipeline {
         let other = self.slot_pool.buffer(other.0);
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("chain_bg_merge_over"),
-            layout: &self.huesat_bgl,
+            layout: &self.pipelines.huesat_bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
@@ -90,7 +90,7 @@ impl GpuEffectsPipeline {
             ],
         });
         let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
-        Self::record_compute_dispatch(enc, &self.merge_over_pipeline, &bind_group, (width * height).div_ceil(WORKGROUP_SIZE));
+        Self::record_compute_dispatch(enc, &self.pipelines.merge_over_pipeline, &bind_group, (width * height).div_ceil(WORKGROUP_SIZE));
     }
 
     pub(super) fn dispatch_composite(&mut self, in_is_a: bool, width: u32, height: u32, mix: f32, over: bool, other: &KeptPicture) {
@@ -107,7 +107,7 @@ impl GpuEffectsPipeline {
         let other = self.slot_pool.buffer(other.0);
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("chain_bg_composite"),
-            layout: &self.huesat_bgl,
+            layout: &self.pipelines.huesat_bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
@@ -115,7 +115,7 @@ impl GpuEffectsPipeline {
                 wgpu::BindGroupEntry { binding: 3, resource: other.as_entire_binding() },
             ],
         });
-        let pipeline = if over { &self.layer_over_pipeline } else { &self.blend_mix_pipeline };
+        let pipeline = if over { &self.pipelines.layer_over_pipeline } else { &self.pipelines.blend_mix_pipeline };
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
         Self::record_compute_dispatch(enc, pipeline, &bind_group, workgroups);
@@ -141,7 +141,7 @@ impl GpuEffectsPipeline {
         };
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("chain_bg_mix_toward"),
-            layout: &self.huesat_bgl,
+            layout: &self.pipelines.huesat_bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
@@ -150,7 +150,7 @@ impl GpuEffectsPipeline {
             ],
         });
         let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
-        Self::record_compute_dispatch(enc, &self.blend_mix_pipeline, &bind_group, (width * height).div_ceil(WORKGROUP_SIZE));
+        Self::record_compute_dispatch(enc, &self.pipelines.blend_mix_pipeline, &bind_group, (width * height).div_ceil(WORKGROUP_SIZE));
         true
     }
 
@@ -185,7 +185,7 @@ impl GpuEffectsPipeline {
         let acc = self.stack_acc.clone().unwrap();
         let rows_px = (y1 - y0) * width;
         let layer = std::sync::Arc::clone(&self.stack_layers[i]);
-        self.stack_pass(&self.blend_layer_pipeline, &layer, &acc, rows_px.div_ceil(WORKGROUP_SIZE), "stack_blend");
+        self.stack_pass(&self.pipelines.blend_layer_pipeline, &layer, &acc, rows_px.div_ceil(WORKGROUP_SIZE), "stack_blend");
         true
     }
 }

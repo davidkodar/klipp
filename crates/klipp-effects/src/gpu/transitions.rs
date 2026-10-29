@@ -25,8 +25,8 @@ impl GpuEffectsPipeline {
         let (Some(from_pm), Some(to_pm)) = (self.buf_a.as_ref(), self.buf_b.as_ref()) else { return false };
         self.write_params(&AlphaFormParams { width, height, unpremultiply: 0, _pad: 0 });
         let (from_layer, to_layer) = (std::sync::Arc::clone(&self.stack_layers[from]), std::sync::Arc::clone(&self.stack_layers[to]));
-        self.stack_pass(&self.alpha_form_pipeline, &from_layer, from_pm, wg, "stack_transition_premultiply_from");
-        self.stack_pass(&self.alpha_form_pipeline, &to_layer, to_pm, wg, "stack_transition_premultiply_to");
+        self.stack_pass(&self.pipelines.alpha_form_pipeline, &from_layer, from_pm, wg, "stack_transition_premultiply_from");
+        self.stack_pass(&self.pipelines.alpha_form_pipeline, &to_layer, to_pm, wg, "stack_transition_premultiply_to");
         self.write_params(&TransitionParams {
             width, height, progress, kind_id,
             param0: p[0], param1: p[1], param2: p[2], param3: p[3],
@@ -34,7 +34,7 @@ impl GpuEffectsPipeline {
         });
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("stack_transition_bg"),
-            layout: &self.transition_bgl,
+            layout: &self.pipelines.transition_bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: from_pm.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: to_pm.as_entire_binding() },
@@ -45,14 +45,14 @@ impl GpuEffectsPipeline {
         let mut enc = self.encoder(Some("stack_transition"));
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
-            pass.set_pipeline(&self.transition_pipeline);
+            pass.set_pipeline(&self.pipelines.transition_pipeline);
             pass.set_bind_group(0, &bg, &[]);
             dispatch_flat(&mut pass, wg);
         }
         self.submit(enc);
         self.write_params(&AlphaFormParams { width, height, unpremultiply: 1, _pad: 0 });
         let out_layer = std::sync::Arc::clone(&self.stack_layers[out]);
-        self.stack_pass(&self.alpha_form_pipeline, self.buf_c.as_ref().unwrap(), &out_layer, wg, "stack_transition_unpremultiply");
+        self.stack_pass(&self.pipelines.alpha_form_pipeline, self.buf_c.as_ref().unwrap(), &out_layer, wg, "stack_transition_unpremultiply");
         true
     }
 
@@ -106,7 +106,7 @@ impl GpuEffectsPipeline {
         // Create transition bind group (from, to, output, params)
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
-            layout: &self.transition_bgl,
+            layout: &self.pipelines.transition_bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: buf_a.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: buf_c.as_entire_binding() },
@@ -124,7 +124,7 @@ impl GpuEffectsPipeline {
                 label: None,
                 timestamp_writes: None,
             });
-            pass.set_pipeline(&self.transition_pipeline);
+            pass.set_pipeline(&self.pipelines.transition_pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
             dispatch_flat(&mut pass, workgroups);
         }
@@ -199,7 +199,7 @@ impl GpuEffectsPipeline {
 
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("render_transition_linear_bg"),
-            layout: &self.transition_bgl,
+            layout: &self.pipelines.transition_bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: buf_a.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: buf_c.as_entire_binding() },
@@ -217,7 +217,7 @@ impl GpuEffectsPipeline {
                 label: None,
                 timestamp_writes: None,
             });
-            pass.set_pipeline(&self.transition_pipeline);
+            pass.set_pipeline(&self.pipelines.transition_pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
             dispatch_flat(&mut pass, workgroups);
         }
@@ -264,7 +264,7 @@ impl GpuEffectsPipeline {
         matte_buf.unmap();
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some(label),
-            layout: &self.pieces_bgl,
+            layout: &self.pipelines.pieces_bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: from.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: to.as_entire_binding() },
@@ -277,7 +277,7 @@ impl GpuEffectsPipeline {
         let mut enc = self.encoder(Some(label));
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
-            pass.set_pipeline(&self.pieces_pipeline);
+            pass.set_pipeline(&self.pipelines.pieces_pipeline);
             pass.set_bind_group(0, &bg, &[]);
             dispatch_flat(&mut pass, (plan.width * plan.height).div_ceil(WORKGROUP_SIZE));
         }
@@ -374,7 +374,7 @@ impl GpuEffectsPipeline {
         self.write_params(&ShutterParams { width, height, n, mode });
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("stack_shutter"),
-            layout: &self.transition_bgl,
+            layout: &self.pipelines.transition_bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: samples.as_entire_binding() },
@@ -385,7 +385,7 @@ impl GpuEffectsPipeline {
         let mut enc = self.encoder(Some("stack_shutter"));
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
-            pass.set_pipeline(&self.shutter_pipeline);
+            pass.set_pipeline(&self.pipelines.shutter_pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
             dispatch_flat(&mut pass, (self.stack_pixel_count() as u32).div_ceil(WORKGROUP_SIZE));
         }
@@ -406,12 +406,12 @@ impl GpuEffectsPipeline {
         let (Some(from_pm), Some(to_pm)) = (self.buf_a.as_ref(), self.buf_b.as_ref()) else { return false };
         self.write_params(&AlphaFormParams { width, height, unpremultiply: 0, _pad: 0 });
         let (from_layer, to_layer) = (std::sync::Arc::clone(&self.stack_layers[from]), std::sync::Arc::clone(&self.stack_layers[to]));
-        self.stack_pass(&self.alpha_form_pipeline, &from_layer, from_pm, wg, "stack_pieces_premultiply_from");
-        self.stack_pass(&self.alpha_form_pipeline, &to_layer, to_pm, wg, "stack_pieces_premultiply_to");
+        self.stack_pass(&self.pipelines.alpha_form_pipeline, &from_layer, from_pm, wg, "stack_pieces_premultiply_from");
+        self.stack_pass(&self.pipelines.alpha_form_pipeline, &to_layer, to_pm, wg, "stack_pieces_premultiply_to");
         self.dispatch_pieces(from_pm, to_pm, self.buf_c.as_ref().unwrap(), plan, "stack_pieces");
         self.write_params(&AlphaFormParams { width, height, unpremultiply: 1, _pad: 0 });
         let out_layer = std::sync::Arc::clone(&self.stack_layers[out]);
-        self.stack_pass(&self.alpha_form_pipeline, self.buf_c.as_ref().unwrap(), &out_layer, wg, "stack_pieces_unpremultiply");
+        self.stack_pass(&self.pipelines.alpha_form_pipeline, self.buf_c.as_ref().unwrap(), &out_layer, wg, "stack_pieces_unpremultiply");
         true
     }
 
@@ -420,7 +420,7 @@ impl GpuEffectsPipeline {
     pub(super) fn dispatch_pair(&self, pipeline: &wgpu::ComputePipeline, a: &wgpu::Buffer, b: &wgpu::Buffer, output: &wgpu::Buffer, workgroups: u32) {
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("pair_bg"),
-            layout: &self.transition_bgl,
+            layout: &self.pipelines.transition_bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: a.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: b.as_entire_binding() },

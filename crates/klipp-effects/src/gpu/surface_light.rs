@@ -70,7 +70,7 @@ impl GpuEffectsPipeline {
         let groups = |n: u64| n.div_ceil(u64::from(WORKGROUP_SIZE)) as u32;
         let pass = |this: &Self, op: u32, read: &wgpu::Buffer, rw: &wgpu::Buffer, n: u64| {
             this.write_params(&params(op));
-            this.stack_pass(&this.surface_light_pipeline, read, rw, groups(n), "surface light");
+            this.stack_pass(&this.pipelines.surface_light_pipeline, read, rw, groups(n), "surface light");
         };
         pass(self, 0, &acc, &s.grid, cells);
         pass(self, 1, &layer, &s.grid, cells);

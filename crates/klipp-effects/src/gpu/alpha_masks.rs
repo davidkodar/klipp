@@ -67,7 +67,7 @@ impl GpuEffectsPipeline {
                 _pad: 0,
             });
             self.stack_pass(
-                &self.alpha_blur_h_pipeline,
+                &self.pipelines.alpha_blur_h_pipeline,
                 input,
                 scratch,
                 workgroups,
@@ -80,7 +80,7 @@ impl GpuEffectsPipeline {
                 _pad: 0,
             });
             self.stack_pass(
-                &self.alpha_blur_v_pipeline,
+                &self.pipelines.alpha_blur_v_pipeline,
                 scratch,
                 dst,
                 workgroups,
@@ -121,7 +121,7 @@ impl GpuEffectsPipeline {
             radius_sq,
         });
         self.stack_pass(
-            &self.alpha_dilate_pipeline,
+            &self.pipelines.alpha_dilate_pipeline,
             src,
             dst,
             (w * h).div_ceil(WORKGROUP_SIZE),

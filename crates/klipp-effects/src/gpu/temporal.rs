@@ -50,18 +50,18 @@ impl GpuEffectsPipeline {
         });
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("neighbour_fit_from_u8_bg"),
-            layout: &self.huesat_bgl,
+            layout: &self.pipelines.huesat_bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: input_u8.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: out.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: params.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: self.srgb8_lut.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: self.pipelines.srgb8_lut.as_entire_binding() },
             ],
         });
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("neighbour_fit_from_u8") });
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
-            pass.set_pipeline(&self.bridge_u8_fit_pipeline);
+            pass.set_pipeline(&self.pipelines.bridge_u8_fit_pipeline);
             pass.set_bind_group(0, &bg, &[]);
             dispatch_flat(&mut pass, (pixels as u32).div_ceil(WORKGROUP_SIZE));
         }
@@ -95,18 +95,18 @@ impl GpuEffectsPipeline {
         self.queue.write_buffer(&params, 0, bytemuck::bytes_of(&BridgeU8Params { width, height, _pad0: 0, _pad1: 0 }));
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("temporal_neighbour_from_u8_bg"),
-            layout: &self.huesat_bgl,
+            layout: &self.pipelines.huesat_bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: input_u8.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: out.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: params.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: self.srgb8_lut.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: self.pipelines.srgb8_lut.as_entire_binding() },
             ],
         });
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("temporal_neighbour_from_u8") });
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
-            pass.set_pipeline(&self.bridge_u8_to_linear_pipeline);
+            pass.set_pipeline(&self.pipelines.bridge_u8_to_linear_pipeline);
             pass.set_bind_group(0, &bg, &[]);
             dispatch_flat(&mut pass, (pixels as u32).div_ceil(WORKGROUP_SIZE));
         }
@@ -153,7 +153,7 @@ impl GpuEffectsPipeline {
         let after = neighbours.get(1).copied().unwrap_or(input);
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("chain_bg_temporal_denoise"),
-            layout: &self.temporal_denoise_bgl,
+            layout: &self.pipelines.temporal_denoise_bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
@@ -163,7 +163,7 @@ impl GpuEffectsPipeline {
             ],
         });
         let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
-        Self::record_compute_dispatch(enc, &self.temporal_denoise_pipeline, &bind_group, (width * height).div_ceil(WORKGROUP_SIZE));
+        Self::record_compute_dispatch(enc, &self.pipelines.temporal_denoise_pipeline, &bind_group, (width * height).div_ceil(WORKGROUP_SIZE));
         true
     }
 
@@ -209,7 +209,7 @@ impl GpuEffectsPipeline {
         let after = neighbours.get(1).copied().unwrap_or(&inp);
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("temporal_denoise_pixels_bg"),
-            layout: &self.temporal_denoise_bgl,
+            layout: &self.pipelines.temporal_denoise_bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: inp.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: out.as_entire_binding() },
@@ -219,7 +219,7 @@ impl GpuEffectsPipeline {
             ],
         });
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("temporal_denoise_pixels") });
-        Self::record_compute_dispatch(&mut encoder, &self.temporal_denoise_pipeline, &bind_group, (pixels as u32).div_ceil(WORKGROUP_SIZE));
+        Self::record_compute_dispatch(&mut encoder, &self.pipelines.temporal_denoise_pipeline, &bind_group, (pixels as u32).div_ceil(WORKGROUP_SIZE));
         self.queue.submit(std::iter::once(encoder.finish()));
         let read = self.with_downloaded(&out, bytes, |b| mapped_bytes_to_f32(b, pixels * 4)).filter(|v| v.len() == pixels * 4)?;
         Some((read, std::sync::Arc::new(out)))

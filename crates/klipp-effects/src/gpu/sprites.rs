@@ -85,7 +85,7 @@ impl GpuEffectsPipeline {
         self.upload(sprite, 0, bytemuck::cast_slice(packed));
         self.write_params(&SpriteRowsParams { width, height, y0: 0, y1: height, to_working: self.authored_to_working });
         let px = width * height;
-        self.stack_pass(&self.sprite_rows_f16_pipeline, sprite, &layer, px.div_ceil(WORKGROUP_SIZE), "stack_sprite_f16");
+        self.stack_pass(&self.pipelines.sprite_rows_f16_pipeline, sprite, &layer, px.div_ceil(WORKGROUP_SIZE), "stack_sprite_f16");
         true
     }
 
@@ -129,7 +129,7 @@ impl GpuEffectsPipeline {
         self.upload(sprite, b0 as u64, &rgba[b0..b1]);
         self.write_params(&SpriteRowsParams { width, height, y0, y1, to_working: self.authored_to_working });
         let rows_px = (y1 - y0) * width;
-        self.stack_pass(&self.sprite_rows_pipeline, sprite, &layer, rows_px.div_ceil(WORKGROUP_SIZE), "stack_sprite_rows");
+        self.stack_pass(&self.pipelines.sprite_rows_pipeline, sprite, &layer, rows_px.div_ceil(WORKGROUP_SIZE), "stack_sprite_rows");
         true
     }
 
@@ -303,7 +303,7 @@ impl GpuEffectsPipeline {
         });
         let rows_px = (y1 - y0) * width;
         let sprite = &self.stack_sprites[pos].buffer;
-        self.stack_pass(&self.sprite_place_pipeline, sprite, &layer, rows_px.div_ceil(WORKGROUP_SIZE), "stack_sprite_place");
+        self.stack_pass(&self.pipelines.sprite_place_pipeline, sprite, &layer, rows_px.div_ceil(WORKGROUP_SIZE), "stack_sprite_place");
         true
     }
 
@@ -376,7 +376,7 @@ impl GpuEffectsPipeline {
         let units_buf = &sprite.units.as_ref().unwrap().4;
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("stack_sprite_glyphs"),
-            layout: &self.sprite_glyphs_bgl,
+            layout: &self.pipelines.sprite_glyphs_bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: sprite.buffer.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: layer.as_entire_binding() },
@@ -389,7 +389,7 @@ impl GpuEffectsPipeline {
         let mut enc = self.encoder(Some("stack_sprite_glyphs"));
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
-            pass.set_pipeline(&self.sprite_glyphs_pipeline);
+            pass.set_pipeline(&self.pipelines.sprite_glyphs_pipeline);
             pass.set_bind_group(0, &bg, &[]);
             dispatch_flat(&mut pass, rows_px.div_ceil(WORKGROUP_SIZE));
         }
@@ -462,7 +462,7 @@ impl GpuEffectsPipeline {
         let sprite = self.stack_sprite_f16.as_ref().unwrap();
         self.upload(sprite, 0, bytemuck::cast_slice(texels));
         self.write_params(&SpriteBoxParams { width, height, bx0: bx.x0, by0: bx.y0, bw: bx.w, bh: bx.h, _p0: 0, _p1: 0, to_working: self.authored_to_working });
-        self.stack_pass(&self.sprite_box_f16_pipeline, sprite, &layer, (bx.w * bx.h).div_ceil(WORKGROUP_SIZE), "stack_sprite_box_f16");
+        self.stack_pass(&self.pipelines.sprite_box_f16_pipeline, sprite, &layer, (bx.w * bx.h).div_ceil(WORKGROUP_SIZE), "stack_sprite_box_f16");
         true
     }
 
@@ -509,7 +509,7 @@ impl GpuEffectsPipeline {
         let small_groups = (small as u32).div_ceil(WORKGROUP_SIZE);
         let pass = |this: &Self, op: u32, read: &wgpu::Buffer, rw: &wgpu::Buffer, groups: u32| {
             this.write_params(&params(op));
-            this.stack_pass(&this.title_metal_shot_pipeline, read, rw, groups, "title metal shot");
+            this.stack_pass(&this.pipelines.title_metal_shot_pipeline, read, rw, groups, "title metal shot");
         };
         pass(self, 0, &acc, &shot.buffer, small_groups);
         for _ in 0..2 {
