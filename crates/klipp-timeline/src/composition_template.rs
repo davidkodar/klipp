@@ -1275,7 +1275,7 @@ pub fn builtin_templates() -> Vec<CompositionTemplate> {
 /// The recipes Klipp ships (#2758), as files in `assets/recipes`: each a
 /// recipe like a saved one, read and checked as one is.
 pub fn builtin_recipes() -> Vec<CompositionTemplate> {
-    const FILES: [&str; 14] = [
+    const FILES: [&str; 16] = [
         include_str!("../../../assets/recipes/green_screen.klipptemplate"),
         include_str!("../../../assets/recipes/picture_in_picture.klipptemplate"),
         include_str!("../../../assets/recipes/matted_glow.klipptemplate"),
@@ -1290,6 +1290,8 @@ pub fn builtin_recipes() -> Vec<CompositionTemplate> {
         include_str!("../../../assets/recipes/wave.klipptemplate"),
         include_str!("../../../assets/recipes/twirl.klipptemplate"),
         include_str!("../../../assets/recipes/bulge.klipptemplate"),
+        include_str!("../../../assets/recipes/redact_mosaic.klipptemplate"),
+        include_str!("../../../assets/recipes/redact_blur.klipptemplate"),
     ];
     FILES
         .iter()
@@ -2021,7 +2023,7 @@ mod tests {
     #[test]
     fn the_shipped_files_name_current_ids() {
         let shipped: Vec<CompositionTemplate> = builtin_recipes().into_iter().chain(builtin_templates()).collect();
-        assert_eq!(builtin_recipes().len(), 14);
+        assert_eq!(builtin_recipes().len(), 16);
         for t in shipped {
             let mut again = t.clone();
             again.migrate_ids().unwrap();

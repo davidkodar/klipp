@@ -534,7 +534,7 @@ pub(crate) fn next_after_ops(ops: &[klipp_document::ops::Op], brief: Option<&kli
         }
     };
     let said: &str = if has(&|o| matches!(o, Op::Redact { .. })) {
-        "Redacted. Look at a frame inside the stretch (frame_at) to see the box covers what it should — the copy on the track above hides it — then check again."
+        "Redacted. Look at a frame inside the stretch (frame_at) to see the box covers what it should — it moves with the clip — then check again."
     } else if selects && uncaptioned && brief.is_some_and(|b| b.music) {
         let beat = if trail.music_on_track && trail.cut_to_beat { "" } else { ", cut them to the music's beat (klipp_beats)" };
         return Some(format!("The selects are down. Look at them together (frame_at across the cut){beat}{}", then()));

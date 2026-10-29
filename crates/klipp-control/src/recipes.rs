@@ -191,7 +191,7 @@ mod tests {
     #[test]
     fn every_built_in_recipe_reads_and_lists() {
         let recipes = ct::builtin_recipes();
-        assert_eq!(recipes.len(), 14, "every file in assets/recipes reads");
+        assert_eq!(recipes.len(), 16, "every file in assets/recipes reads");
         for r in &recipes {
             assert_eq!(r.kind, ct::TemplateKind::Recipe, "{}", r.name);
             let v = listed(r);
@@ -296,6 +296,54 @@ mod tests {
         let frames = &c.picture_v2().unwrap().picture.graph.ui.frames;
         let names: Vec<&str> = frames.iter().filter_map(|f| f["recipe"]["name"].as_str()).collect();
         assert_eq!(names, ["Picture in picture", "Green screen"], "a frame for each, holding its controls");
+    }
+
+    /// Redact on its recipe (#2886): the box hidden in the clip's own
+    /// picture, a mosaic after its display step masked to the box with a
+    /// margin, keyed on from `from` to `to`, in seconds into the clip, and
+    /// to nothing (a 1 px block) outside; one step, said as before. A saved recipe of the same name
+    /// never stands in for Klipp's own: what a redaction hides is not
+    /// someone else's file to say.
+    #[test]
+    fn a_redaction_is_its_recipe_in_the_clips_own_picture() {
+        use klipp_document::history::EditCommand;
+        use klipp_document::ops::{resolve, Anchor, ClipRef, Op};
+        let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let mut seq = Sequence::new_default();
+        // The clip starts 2 s in, from 5 s of its file.
+        let clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(2.0), t(6.0), t(5.0), t(9.0));
+        let id = clip.id;
+        let mut track = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+        track.clips = vec![clip];
+        seq.tracks = vec![track];
+        let op = Op::Redact { clip_id: ClipRef::Id(id), from: Some(Anchor::Secs(3.0)), to: Some(Anchor::Secs(5.0)), x: 0.2, y: 0.6, w: 0.3, h: 0.05, kind: "mosaic".into(), amount: None, recipes: None };
+        // A recipe of the same name in the template folder, hiding nothing.
+        let dir = std::env::temp_dir().join(format!("klipp-redact-own-{}", uuid::Uuid::new_v4()));
+        let mut decoy = ct::builtin_recipes().into_iter().find(|r| r.name == "Glitch").unwrap();
+        decoy.id = uuid::Uuid::new_v4();
+        decoy.name = "Redact (mosaic)".into();
+        ct::CompositionTemplateStore::load(Some(dir.clone())).save(decoy).unwrap();
+        let plan = resolve(&seq, &klipp_media::MediaPool::new(), &crate::plans::with_recipes(std::slice::from_ref(&op), Some(&dir), &klipp_media::MediaPool::new())).unwrap_or_else(|r| panic!("{r:?}"));
+        std::fs::remove_dir_all(&dir).ok();
+        let step = &plan.steps[0];
+        assert!(step.what.contains("from 3.00 to 5.00 s") && step.what.contains("in the clip's own picture"), "{}", step.what);
+        let EditCommand::PictureEdit { clip_id, edit, .. } = &step.edit else { panic!("a picture step: {:?}", step.edit) };
+        assert_eq!(*clip_id, id);
+        let mut c = seq.all_clips().find(|c| c.id == id).unwrap().clone();
+        c.restore_picture(&edit.after);
+        let graph = c.picture_v2().unwrap().picture.graph.clone();
+        let tags: Vec<&str> = graph.nodes.iter().filter_map(klipp_graph_lift::effect_params::tag).collect();
+        assert!(tags.contains(&"mosaic") && !tags.contains(&"vhs"), "Klipp's own recipe, not the saved one: {tags:?}");
+        let mosaic = graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("mosaic")).unwrap();
+        let keys: Vec<(f64, f64)> = mosaic.anim.get(&klipp_graph_format::ParamKey::from("block_size")).unwrap().keys.iter().map(|k| (k["time_secs"].as_f64().unwrap(), k["value"].as_f64().unwrap())).collect();
+        assert_eq!(keys.len(), 3);
+        assert!((keys[0].0 - 0.999).abs() < 1e-9 && keys[0].1 == 1.0, "a 1 px mosaic, nothing, before: {keys:?}");
+        assert_eq!((keys[1], keys[2]), ((1.0, 36.0), (3.0, 1.0)), "amount 0.5 through 12..60, 1 to 3 s into the clip: {keys:?}");
+        let mask = graph.nodes.iter().find_map(|n| n.legacy.as_ref().and_then(|l| (l.payload["kind"] == "Mask").then(|| l.payload["params"]["masks"]["masks"][0]["shape"]["Rectangle"].clone()))).expect("the box's mask");
+        let near = |k: &str, v: f64| (mask[k].as_f64().unwrap() - v).abs() < 1e-6;
+        assert!(near("center_x", 0.35) && near("width", 0.312) && near("center_y", 0.625) && near("height", 0.062 * 1080.0 / 1920.0), "the box and its margin: {mask}");
+        let names: Vec<&str> = graph.ui.frames.iter().filter_map(|f| f["recipe"]["name"].as_str()).collect();
+        assert_eq!(names, ["Redact (mosaic)"]);
     }
 
     /// A behaviour's control stays live (#2758): a recipe's wiggle, put on
