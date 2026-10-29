@@ -1035,20 +1035,12 @@ impl KlippApp {
                     let playhead = self.state.playhead;
                     let rate = if playhead.rate > 1 { playhead.rate } else { 24 };
                     let one_sec = klipp_core::RationalTime::from_frames(rate as i64, rate);
-                    // Resolve user snap config so a gap inserted at the
-                    // playhead respects the same snap rules as a clip
-                    // dragged onto the timeline.
-                    let active_seq = &self.state.sequences[self.state.active_sequence_idx];
-                    let pps = self.state.timeline_zoom;
-                    let grid_interval_secs = crate::timeline::grid_snap::resolve_grid_interval_secs(
-                        self.state.grid_snap_interval,
-                        active_seq.fps.rate(),
-                        pps,
-                    );
-                    let snap_cfg = self.state.snap;
+                    // At the playhead, where the person put it: the
+                    // magnetic layer's own snap (8 frames at any zoom)
+                    // would move it to a nearby cut (#3056).
                     let result = klipp_timeline::magnetic::MagneticEditor::insert_gap(
                         &mut self.state.sequences[self.state.active_sequence_idx],
-                        one_sec, playhead, grid_interval_secs, Some(&snap_cfg));
+                        one_sec, playhead, None, Some(&klipp_timeline::magnetic::PLACED));
                     self.state.push_history(EditCommand::Magnetic(result.command));
                     self.state.dirty = true;
                     self.sync_sequence_to_engine();

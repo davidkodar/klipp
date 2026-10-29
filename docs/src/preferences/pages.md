@@ -12,7 +12,7 @@ The preference pages not covered on their own pages: [General](./general.md), [S
 
 ## Editing
 
-- **Timeline behaviour** — snap threshold, grid snap, the snap targets (clip edges, playhead, markers, in/out, grid), zoom step, playhead follows playback, magnetic timeline
+- **Timeline behaviour** — snap threshold (in points on screen), grid snap, the snap targets (clip edges, playhead, markers, in/out), zoom step, playhead follows playback, magnetic timeline
 - **Defaults** — new sequence resolution, default transition and its duration, the **Shift+arrow step**
 - **Multicam** — angle badges on the timeline, and the default sync method: timecode then sound, timecode, or sound
 - **Tracking** — search radius, patch size and loss threshold for point tracking

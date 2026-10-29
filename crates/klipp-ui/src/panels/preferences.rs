@@ -954,9 +954,9 @@ impl PreferencesPanel {
         // ── TIMELINE BEHAVIOR section ──
         Self::section_header(ui, "TIMELINE BEHAVIOR", theme);
 
-        Self::setting_row_with_subtitle(ui, "Snap threshold", "Distance in pixels before snapping", theme, |ui| {
+        Self::setting_row_with_subtitle(ui, "Snap threshold", "How near an edge comes, in points on screen, before it snaps; it holds until half as far again", theme, |ui| {
             let mut v = prefs.editing.snap_threshold_px;
-            if ui.add(egui::DragValue::new(&mut v).range(2.0..=30.0).speed(0.5).suffix(" px").fixed_decimals(0)).changed() {
+            if ui.add(egui::DragValue::new(&mut v).range(2.0..=30.0).speed(0.5).suffix(" pt").fixed_decimals(0)).changed() {
                 // Dispatch through AppCommand so the handler also
                 // mirrors to state.snap_threshold_px (consulted live
                 // by the snap-resolution layer via the per-paint
@@ -967,7 +967,7 @@ impl PreferencesPanel {
             }
         });
 
-        Self::setting_row_with_subtitle(ui, "Grid snap", "Snap dragged clip edges to a time grid (Off keeps current behaviour)", theme, |ui| {
+        Self::setting_row_with_subtitle(ui, "Grid snap", "Snap dragged edges to a time grid; Off for none", theme, |ui| {
             use klipp_core::GridInterval;
             let cur = prefs.editing.grid_snap_interval;
             let cur_label = match cur {
@@ -1081,7 +1081,6 @@ impl PreferencesPanel {
                 (SnapTargetKind::Playhead, "Snap to playhead", "Match the current playhead position", snap_config.playhead),
                 (SnapTargetKind::Marker, "Snap to markers", "User-placed and range markers", snap_config.markers),
                 (SnapTargetKind::InPoint, "Snap to in/out", "Sequence in / out / start (t=0)", snap_config.in_out),
-                (SnapTargetKind::Grid, "Snap to grid", "Uses the Grid snap interval above", snap_config.grid),
             ];
             for &(target, label, subtitle, enabled) in rows {
                 Self::setting_row_with_subtitle(ui, label, subtitle, theme, |ui| {

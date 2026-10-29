@@ -98,8 +98,8 @@ impl GridInterval {
     pub fn label(&self) -> &'static str {
         match self {
             Self::Off => "Off",
-            Self::Adaptive => "Adaptive (match ruler)",
-            Self::Frame => "Frame",
+            Self::Adaptive => "Ruler ticks",
+            Self::Frame => "Frames",
             Self::HalfSecond => "0.5 s",
             Self::Second => "1 s",
             Self::TwoSeconds => "2 s",

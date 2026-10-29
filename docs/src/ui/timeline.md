@@ -36,7 +36,11 @@ Clips in Klipp's timeline close up by default: moving or deleting a clip ripples
 
 ## Snapping
 
-Toggle snapping with **N**. When enabled, clips snap to the playhead, other clip boundaries, in/out points and markers; right-click the snap button to choose the targets, or to snap to a grid.
+Toggle snapping with **N**. When enabled, every drag snaps the same way: moving and trimming clips, rolling and sliding edits, the playhead, the range tool, the blade and drops from the browser. An edge snaps to the playhead, other clips' edges on any track, in/out points, markers and the sequence start, and to the grid when one is chosen. The clips that move with the dragged one (its linked sound, its group) and the selected clips are never targets.
+
+A snap shows at once: the clip jumps to the point and the snap line appears with the target's name. It then holds until the pointer is half as far again past the snap distance, so a small movement of the hand doesn't let it go, and the drop lands exactly where it showed. Hold **Shift** to drag free, on the nearest frame; in a slide, which Shift starts, hold **Ctrl** instead.
+
+Right-click the snap button to choose the targets and the grid: Off, Ruler ticks, Frames, 0.5 s, 1 s, 2 s or 5 s. The snap threshold is in Preferences, in points on screen.
 
 ## Waveforms
 

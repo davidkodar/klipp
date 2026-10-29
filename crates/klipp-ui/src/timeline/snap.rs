@@ -109,6 +109,17 @@ impl Snapper {
         self
     }
 
+    /// The grid choices the snap menus offer, Off first.
+    pub const GRID_CHOICES: [klipp_core::GridInterval; 7] = [
+        klipp_core::GridInterval::Off,
+        klipp_core::GridInterval::Adaptive,
+        klipp_core::GridInterval::Frame,
+        klipp_core::GridInterval::HalfSecond,
+        klipp_core::GridInterval::Second,
+        klipp_core::GridInterval::TwoSeconds,
+        klipp_core::GridInterval::FiveSeconds,
+    ];
+
     /// The clips that move when `clip` is dragged: itself, its linked
     /// partner while the Linked switch is on, and its group.
     pub fn moving_with(state: &AppState, clip: ClipId) -> Vec<ClipId> {
@@ -172,7 +183,8 @@ impl Snapper {
                 }
                 offer((secs - t.at.to_secs_f64()).abs(), Snap { edge, at: t.at, kind: t.kind, owner: t.owner });
             }
-            if let Some(interval) = self.grid_secs.filter(|i| *i > 0.0 && self.config.grid) {
+            // The grid is one choice, its interval: Off for none (#3056).
+            if let Some(interval) = self.grid_secs.filter(|i| *i > 0.0) {
                 let nearest = (secs / interval).round() * interval;
                 offer((secs - nearest).abs(), Snap { edge, at: RationalTime::from_secs_f64(nearest, self.rate), kind: SnapTargetKind::Grid, owner: None });
             }
@@ -275,9 +287,9 @@ mod tests {
     }
 
     /// The snap menu's switches: a kind turned off is no target, the grid
-    /// snaps only when on (a clip edge winning a tie with it), and
-    /// snapping off snaps nothing. The playhead's drag leaves the
-    /// playhead out.
+    /// snaps once an interval is chosen, whatever the old grid switch
+    /// says (a clip edge winning a tie with it), and snapping off snaps
+    /// nothing. The playhead's drag leaves the playhead out.
     #[test]
     fn the_snap_menu_and_the_grid_choose_the_targets() {
         let (mut state, a, _) = state();
@@ -286,16 +298,16 @@ mod tests {
         assert!(Snapper::of(&state, 100.0, false).snap(&near_b, &[a], &mut None).is_none(), "clips off");
         state.snap.clips = true;
 
+        assert!(Snapper::of(&state, 100.0, false).snap(&[t(3.04)], &[a], &mut None).is_none(), "the grid Off");
         state.grid_snap_interval = klipp_core::GridInterval::Second;
-        assert!(Snapper::of(&state, 100.0, false).snap(&[t(3.04)], &[a], &mut None).is_none(), "the grid off");
-        state.snap.grid = true;
+        state.snap.grid = false;
         let got = Snapper::of(&state, 100.0, false).snap(&[t(3.04)], &[a], &mut None).unwrap();
         assert_eq!((got.at, got.kind), (t(3.0), SnapTargetKind::Grid));
         assert_eq!(Snapper::of(&state, 100.0, false).snap(&near_b, &[a], &mut None).unwrap().kind, SnapTargetKind::ClipEdge, "a tie at 5 s");
 
         state.playhead = t(8.0);
         assert!(Snapper::of(&state, 100.0, false).snap(&[t(8.02)], &[a], &mut None).is_some());
-        state.snap.grid = false;
+        state.grid_snap_interval = klipp_core::GridInterval::Off;
         assert!(Snapper::of(&state, 100.0, false).without(SnapTargetKind::Playhead).snap(&[t(8.02)], &[a], &mut None).is_none(), "not to itself");
 
         state.snap.master = false;

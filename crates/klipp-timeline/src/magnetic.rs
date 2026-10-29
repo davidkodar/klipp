@@ -101,6 +101,11 @@ pub const AUTO_CONNECT_SNAP_FRAMES: i64 = 12;
 
 const SNAP_THRESHOLD_FRAMES: i64 = 8;
 
+/// The snap settings for a time the person placed exactly (the playhead,
+/// an In mark): none, so an edit lands where they put it (#3056). The
+/// UI snaps a drag itself, at the distance it shows, before an edit.
+pub const PLACED: klipp_core::SnapConfig = klipp_core::SnapConfig { master: false, clips: false, playhead: false, markers: false, in_out: false, grid: false };
+
 // ═══════════════════════════════════════════════════════════════════
 // MagneticEditor — stateless editor with class methods
 // ═══════════════════════════════════════════════════════════════════
@@ -3013,6 +3018,20 @@ mod tests {
         // 3 frames away from boundary at 24 — should snap
         let snapped = MagneticEditor::snap_to_boundary(&seq, tc(27), None, None, None);
         assert_eq!(snapped, Some(tc(24)));
+    }
+
+    /// A gap put in at a placed time 3 frames past a cut goes in there,
+    /// splitting the clip, not on the cut 3 frames away (#3056); left
+    /// to the magnetic snap, it moves to the cut.
+    #[test]
+    fn a_placed_time_is_not_snapped() {
+        let gap_at = |snap: Option<&klipp_core::SnapConfig>| {
+            let mut seq = make_sequence(&[(0, 24), (24, 48)]);
+            MagneticEditor::insert_gap(&mut seq, tc(12), tc(27), None, snap);
+            seq.tracks[0].clips.iter().find(|c| c.kind.is_gap()).map(|c| c.timeline_in)
+        };
+        assert_eq!(gap_at(Some(&PLACED)), Some(tc(27)));
+        assert_eq!(gap_at(None), Some(tc(24)));
     }
 
     #[test]

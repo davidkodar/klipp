@@ -118,6 +118,11 @@ impl KlippApp {
                 self.prefs.editing.grid_snap_interval = *interval;
                 self.state.grid_snap_interval = *interval;
                 self.prefs_dirty = true;
+                // One choice (#3056): the grid's switch follows it, for
+                // whatever still reads the switch.
+                self.state.snap.grid = *interval != klipp_core::GridInterval::Off;
+                self.layout.snap = self.state.snap;
+                self.layout_dirty = true;
                 true
             }
             AppCommand::SetSnapThresholdPx(val) => {
