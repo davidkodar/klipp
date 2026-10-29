@@ -833,12 +833,11 @@ impl CompositionTemplate {
         }
         for b in &mut self.bindings {
             let Some((k, rest)) = node_binding(&b.property) else { continue };
-            let (param, field) = rest.split_once('~').map_or((rest, None), |(p, f)| (p, Some(f)));
+            // The parameter, then what the binding reaches inside it: a
+            // field (`~`), a value by JSON pointer (`/`) or a key (`#`).
+            let (param, tail) = rest.split_at(rest.find(['~', '/', '#']).unwrap_or(rest.len()));
             if let Some(now) = key_now(k, param, false)? {
-                b.property = match field {
-                    Some(f) => format!("node:{k}.{now}~{f}"),
-                    None => format!("node:{k}.{now}"),
-                };
+                b.property = format!("node:{k}.{now}{tail}");
             }
         }
         Ok(())
@@ -2016,8 +2015,9 @@ mod tests {
 
     /// #2888: a recipe naming renamed ids reads as the ids they are now,
     /// its type, a parameter in an add op, a modify op's key, a port and
-    /// a binding; a removed type, an unknown one and renames that loop
-    /// refuse it, saying which.
+    /// a binding (the parameter whole, or a value inside it by pointer, a
+    /// key or a field); a removed type, an unknown one and renames that
+    /// loop refuse it, saying which.
     #[test]
     fn a_recipe_reads_renamed_ids_as_they_are_now() {
         use crate::registry_ids::{Change, Migration, Subject};
@@ -2031,7 +2031,10 @@ mod tests {
         ];
         let recipe = |ty: &str| -> CompositionTemplate {
             let mut t = builtin_recipes().remove(0);
-            t.bindings = vec![serde_json::from_value(serde_json::json!({"parameter": "amount", "property": "node:0.old_radius"})).unwrap()];
+            t.bindings = ["node:0.old_radius", "node:0.old_radius/inner/0", "node:0.old_radius#1.value", "node:0.old_radius~x"]
+                .iter()
+                .map(|p| serde_json::from_value(serde_json::json!({"parameter": "amount", "property": p})).unwrap())
+                .collect();
             t.graph.as_mut().unwrap().ops = vec![
                 serde_json::json!({"op": "add", "after": {"anchor": "end"}, "type": ty, "params": {"old_radius": 3.0}}),
                 serde_json::json!({"op": "modify", "path": {"new": 0}, "key": "old_radius", "modifiers": []}),
@@ -2048,7 +2051,8 @@ mod tests {
         assert_eq!(ops[1]["key"], "radius");
         assert_eq!(ops[3]["to_port"], "fg");
         assert_eq!(ops[3]["from_port"], "out", "an anchor's port is the picture's, left as it is");
-        assert_eq!(t.bindings[0].property, "node:0.radius");
+        let bound: Vec<&str> = t.bindings.iter().map(|b| b.property.as_str()).collect();
+        assert_eq!(bound, ["node:0.radius", "node:0.radius/inner/0", "node:0.radius#1.value", "node:0.radius~x"], "a binding into the parameter too");
         for (ty, says) in [("klipp.fx.retired", "was removed: drawn by gaussian_blur now"), ("klipp.fx.never_was", "is not an effect or node"), ("klipp.fx.ping", "loop")] {
             let why = recipe(ty).migrate_ids_in(&table).unwrap_err();
             assert!(why.contains(says) && why.contains(ty), "{ty}: {why}");
