@@ -19,6 +19,11 @@ impl KlippApp {
                 self.move_selected_clips_to_track(*up);
                 true
             }
+            AppCommand::MoveClips { moves } => {
+                let ops = crate::timeline::moves::drag_move_ops(self.state.sequence(), moves, self.state.linked_selection);
+                self.apply_move_ops(ops, "Move Clips");
+                true
+            }
             _ => false,
         }
     }

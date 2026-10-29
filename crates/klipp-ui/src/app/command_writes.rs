@@ -362,6 +362,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::InsertAudioMediaClip { .. }
         | AppCommand::RemoveClip { .. }
         | AppCommand::RemoveClips { .. }
+        | AppCommand::MoveClips { .. }
         | AppCommand::AttachLinkedAudio { .. }
         | AppCommand::MoveClip { .. }
         | AppCommand::MoveClipToTrack { .. }

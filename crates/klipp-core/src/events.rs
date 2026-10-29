@@ -1296,6 +1296,10 @@ pub enum AppCommand {
     AttachLinkedAudio { clip_id: ClipId },
     MoveClip { clip_id: ClipId, new_timeline_in: Timecode },
     MoveClipToTrack { clip_id: ClipId, new_timeline_in: Timecode, from_track: usize, to_track: usize },
+    /// Several clips moved by one drag, as one undo step (#3060): each to
+    /// its new start, and to another track when `to_track` says so; their
+    /// linked partners with them while the Linked switch is on.
+    MoveClips { moves: Vec<(ClipId, Timecode, Option<usize>)> },
     /// Exchange two adjacent clips on the same track, preserving the
     /// total span. Validation rejects: cross-track pairs, non-adjacent
     /// clips (>1 frame gap), pairs sharing the same group, and
