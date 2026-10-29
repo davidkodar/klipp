@@ -902,8 +902,15 @@ impl KlippApp {
 
     pub(super) fn do_open_project_inner(&mut self, path: &std::path::Path) {
         match klipp_project::load_project(path) {
-            Ok((sequences, media_pool, color_settings, active_id, created_at, notes,
+            Ok((mut sequences, media_pool, color_settings, active_id, created_at, notes,
                 timeline_zoom, timeline_scroll_x, timeline_track_scale, title_assets)) => {
+                // A primary track saved with holes in it (by an edit
+                // before #3060 that didn't fill them) gets gap clips, so
+                // no magnetic edit packs it; said once.
+                let filled: usize = sequences.iter_mut().map(|s| s.fill_primary_holes()).sum();
+                if filled > 0 {
+                    tracing::warn!("{}: filled {filled} hole(s) on the primary track with gap clips", path.display());
+                }
                 self.state.fps = sequences.first().map(|s| s.fps).unwrap_or(klipp_core::Fps { num: 24, den: 1 });
                 let active_idx = active_id.as_deref()
                     .and_then(|id| sequences.iter().position(|s| s.id.to_string() == id))
@@ -914,6 +921,9 @@ impl KlippApp {
                 self.state.project_notes = notes;
                 self.state.last_import_report = klipp_project::import_report::read(path).unwrap_or_else(|e| { tracing::warn!("Could not read last import report: {e}"); None });
                 self.state.show_import_report = false;
+                if filled > 0 {
+                    self.state.toast.show(format!("The primary track had {filled} empty stretch{} without a gap clip; gap clips now hold {}, so nothing moves on the next edit", if filled == 1 { "" } else { "es" }, if filled == 1 { "it" } else { "them" }));
+                }
                 *self.state.control_shared.import_outcome.lock().unwrap_or_else(|e| e.into_inner()) = self.state.last_import_report.as_ref().map(|r| serde_json::json!({"report":r}));
                 self.state.project_epoch += 1;
                 self.retire_project_media();

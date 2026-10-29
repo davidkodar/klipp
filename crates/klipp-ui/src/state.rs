@@ -5886,6 +5886,7 @@ impl AppState {
     pub fn push_history(&mut self, command: EditCommand) {
         let command = self.with_made_tracks(command);
         let command = self.with_matched_follow(command);
+        let command = self.with_primary_holes_filled(command);
         // The project's steps go to its own history, reachable from any
         // sequence (#1986); inside a batch already open they are one more
         // edit of it, and the batch stays where it is.
@@ -5904,6 +5905,20 @@ impl AppState {
         self.prune_stale_redo();
         self.history_ops_since_save = self.history_ops_since_save.saturating_add(1);
         self.note_recorded_tracks();
+    }
+
+    /// `command`, already applied, with gap clips filling any hole it left
+    /// on the primary track (#3060), applied now and kept in the same
+    /// step: the primary stays gapless, so no later magnetic edit packs
+    /// it, and the undo takes the gap clips away with the edit.
+    fn with_primary_holes_filled(&mut self, command: EditCommand) -> EditCommand {
+        let Some((track_index, gaps)) = self.sequence().primary_holes() else { return command };
+        let fills: Vec<EditCommand> = gaps.into_iter().map(|clip| EditCommand::LegacyAppendClip { clip, track_index }).collect();
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut self.sequences, active: self.active_sequence_idx, media_pool: &mut self.media_pool, fps: &mut self.fps };
+        for f in &fills {
+            let _ = view.apply_forward(f);
+        }
+        EditCommand::Batch(std::iter::once(command).chain(fills).collect())
     }
 
     /// The active sequence's tracks as recorded, taken now if it has none

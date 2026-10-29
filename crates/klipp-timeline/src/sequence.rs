@@ -1303,6 +1303,40 @@ impl Sequence {
         self.tracks.iter_mut().flat_map(|t| t.clips.iter_mut())
     }
 
+    /// The gap clips the primary track needs to hold no holes (#3060): one
+    /// for each stretch between its start and its last clip that no clip
+    /// covers, with the primary's index. The primary is gapless by rule;
+    /// an edit that leaves a hole there (a place, a move, a removal or a
+    /// trim that doesn't ripple) fills it with a gap clip, so no later
+    /// magnetic edit packs the track to close it.
+    pub fn primary_holes(&self) -> Option<(usize, Vec<Clip>)> {
+        let p = self.primary_track_index()?;
+        let mut spans: Vec<(RationalTime, RationalTime)> = self.tracks[p].clips.iter().map(|c| (c.timeline_in, c.timeline_out)).collect();
+        spans.sort_by_key(|s| s.0);
+        let mut reached = RationalTime::ZERO;
+        let mut holes = Vec::new();
+        for (a, b) in spans {
+            if a.cmp(&reached).is_gt() {
+                // In the clip's rate: from a zero of rate 1 the gap's end
+                // would round to a whole second.
+                holes.push(Clip::gap(reached.rescale_to(a.rate), a));
+            }
+            if b.cmp(&reached).is_gt() {
+                reached = b;
+            }
+        }
+        (!holes.is_empty()).then_some((p, holes))
+    }
+
+    /// [`Self::primary_holes`] filled with gap clips; how many.
+    pub fn fill_primary_holes(&mut self) -> usize {
+        let Some((p, gaps)) = self.primary_holes() else { return 0 };
+        let n = gaps.len();
+        self.tracks[p].clips.extend(gaps);
+        self.tracks[p].sort_clips();
+        n
+    }
+
     /// Enforce primary invariant: primary track has no gaps.
     /// Call this after every magnetic edit as a debug assertion.
     #[cfg(debug_assertions)]
@@ -4931,5 +4965,29 @@ mod track_name_tests {
         seq.renumber_tracks();
         let got: Vec<&str> = seq.tracks.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(got, ["V2", "Vlog", "Ambience", "A2", "Audio 3", "Text 1", "Titles"]);
+    }
+}
+
+#[cfg(test)]
+mod primary_holes_tests {
+    use super::*;
+
+    /// A primary saved with holes (before #3060 filled them) gets a gap
+    /// clip for each when it is opened, in the clips' own rate; one
+    /// without holes is left as it is.
+    #[test]
+    fn holes_on_the_primary_are_filled_on_open() {
+        let t = |s: f64| RationalTime::from_secs_f64(s, 24);
+        let mut seq = Sequence::new_default();
+        let p = seq.primary_track_index().unwrap();
+        let c = |a: f64, b: f64| Clip::media(klipp_core::MediaId::new(), t(a), t(b), t(0.0), t(b - a));
+        seq.tracks[p].clips = vec![c(0.5, 4.0), c(14.0, 18.0), c(18.0, 22.0)];
+        assert_eq!(seq.fill_primary_holes(), 2);
+        let spans: Vec<(bool, RationalTime, RationalTime)> = seq.tracks[p].clips.iter().map(|c| (c.kind.is_gap(), c.timeline_in, c.timeline_out)).collect();
+        assert_eq!(spans[0], (true, t(0.0), t(0.5)));
+        assert_eq!(spans[2], (true, t(4.0), t(14.0)));
+        #[cfg(debug_assertions)]
+        seq.assert_primary_gapless();
+        assert_eq!(seq.fill_primary_holes(), 0, "nothing left to fill");
     }
 }
