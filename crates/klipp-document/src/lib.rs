@@ -31,6 +31,7 @@ pub mod history;
 pub mod matched;
 pub mod generators;
 pub mod ops;
+pub mod brand_kit_ops;
 pub mod qc;
 pub mod qc_geometry;
 pub mod qc_review;

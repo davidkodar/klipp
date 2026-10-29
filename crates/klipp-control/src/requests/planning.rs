@@ -245,8 +245,10 @@ pub(crate) fn respond(
             if in_batch {
                 return Err("apply_brand_kit is its own undo step; send it on its own".into());
             }
-            const PARTS: [&str; 2] = ["brief", "captions"];
-            let parts: Vec<String> = parts.unwrap_or_else(|| PARTS.map(String::from).to_vec()).iter().map(|p| p.trim().to_lowercase()).collect();
+            // The look (one undo step) and the sequence's parts (another):
+            // left out, the look alone.
+            const PARTS: [&str; 5] = ["brief", "captions", "intro", "outro", "watermark"];
+            let parts: Vec<String> = parts.unwrap_or_else(|| vec!["brief".into(), "captions".into()]).iter().map(|p| p.trim().to_lowercase()).collect();
             if let Some(p) = parts.iter().find(|p| !PARTS.contains(&p.as_str())) {
                 return Err(format!("\"{p}\" is not a part a kit is taken in by; give {}", PARTS.join(", ")));
             }
@@ -286,12 +288,26 @@ pub(crate) fn respond(
                 }
             }
             drop(seq);
+            // The sequence's parts are checked, and their files imported,
+            // before anything is changed.
+            let sequence_ops = brand_kit_sequence_ops(ctx, &found, &parts, &mut said)?;
             let fonts: Vec<String> = [&kit.fonts.heading, &kit.fonts.body].into_iter().flatten().cloned().collect();
             let text = format!("brand kit \"{}\": {}", kit.name, said.join("; "));
-            if edits.is_empty() {
+            if edits.is_empty() && sequence_ops.is_empty() {
                 return Ok(json!({ "text": format!("{text}; nothing changed"), "changed": false }));
             }
-            let mut v = send_full_envelope(ctx, Vec::new(), edits, true, None, Some(format!("Apply Brand Kit {}", kit.name)))?;
+            let mut v = json!({});
+            if !edits.is_empty() {
+                v = send_full_envelope(ctx, Vec::new(), edits, true, None, Some(format!("Apply Brand Kit {}", kit.name)))?;
+            }
+            if !sequence_ops.is_empty() {
+                let applied = handle(ctx, ControlCommand::Apply { ops: sequence_ops, expected_revision: None, expected_project_identity: None, label: Some(format!("Brand Kit {} Intro, Outro and Logo", kit.name)), detail: false }, &mut None)?;
+                for key in ["revision", "project_identity"] {
+                    if let Some(x) = applied.get(key) {
+                        v[key] = x.clone();
+                    }
+                }
+            }
             v["text"] = json!(text);
             with_warnings(&mut v, font_warnings(fonts.iter().map(String::as_str)));
             Ok(v)
@@ -1154,3 +1170,97 @@ fn check_brief(brief: &mut klipp_timeline::Brief) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// The ops that put a brand kit's intro, outro and watermark on the open
+/// sequence (#2722), for the `parts` asked: the kit's files imported
+/// first, each waited for. A part the kit has nothing for is said in
+/// `said`, not refused.
+fn brand_kit_sequence_ops(ctx: &ControlContext, found: &klipp_project::brand_kit::Found, parts: &[String], said: &mut Vec<String>) -> Result<Vec<klipp_document::ops::Op>, String> {
+    use klipp_document::brand_kit_ops::{intro_ops, outro_ops, Bookend, Watermark};
+    let kit = &found.kit;
+    let wants = |p: &str| parts.iter().any(|x| x == p);
+    if !wants("intro") && !wants("outro") && !wants("watermark") {
+        return Ok(Vec::new());
+    }
+    let file = |name: &str| -> Result<std::path::PathBuf, String> { found.dir.as_ref().map(|d| d.join(name)).ok_or_else(|| format!("the kit's {name} has no folder to come from")) };
+    // A kit's file as a media item, imported now when it isn't yet.
+    let media = |path: &std::path::Path| -> Result<klipp_media::MediaItem, String> {
+        let known = |ctx: &ControlContext| ctx.media_pool.read().ok().and_then(|p| p.find_by_path(path).cloned()).filter(|m| m.resolution.width > 0);
+        if let Some(m) = known(ctx) {
+            return Ok(m);
+        }
+        handle(ctx, ControlCommand::import_one(path.display().to_string(), false), &mut None)?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while std::time::Instant::now() < deadline {
+            if let Some(m) = known(ctx) {
+                return Ok(m);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        Err(format!("{} did not finish importing; try again", path.display()))
+    };
+    let bookend = |b: &klipp_project::brand_kit::Bookend| -> Result<(Bookend, f64), String> {
+        match (&b.template, &b.file) {
+            (Some(name), _) => {
+                let dir = crate::plans::composition_dir();
+                let store = crate::plans::template_store(dir.as_deref());
+                let t = store.find(name, None).ok_or_else(|| format!("no composition template \"{name}\" for the kit; title_templates lists them"))?;
+                // Held for the length it was made for, as the template op
+                // holds it: its composition's own.
+                let len = t.sequences.iter().find(|q| q.id.0 == t.composition_id).map(|q| q.total_duration().to_secs_f64()).filter(|l| *l > 0.0).ok_or_else(|| format!("the composition template \"{name}\" has no length"))?;
+                Ok((Bookend::Template(t.name.clone()), len))
+            }
+            (None, Some(f)) => {
+                let m = media(&file(f)?)?;
+                Ok((Bookend::Media(m.id), m.duration.to_secs_f64()))
+            }
+            _ => Err("the kit's intro or outro is neither a template nor a file".into()),
+        }
+    };
+    let (end, frame, seq_snapshot) = {
+        let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+        let end = seq.tracks.iter().flat_map(|t| t.clips.iter()).map(|c| c.timeline_out.to_secs_f64()).fold(0.0, f64::max);
+        (end, (seq.resolution.width, seq.resolution.height), seq.clone())
+    };
+    let mut ops = Vec::new();
+    let mut intro_len = 0.0;
+    if wants("intro") {
+        match &kit.intro {
+            Some(b) => {
+                let (b, len) = bookend(b)?;
+                intro_len = len;
+                ops.extend(intro_ops(&seq_snapshot, &b, len)?);
+                said.push(format!("the intro ({len:.1} s) opens it, the rest moved on"));
+            }
+            None => said.push("it has no intro".into()),
+        }
+    }
+    let total = end + intro_len;
+    if wants("outro") {
+        match &kit.outro {
+            Some(b) => {
+                let (b, len) = bookend(b)?;
+                ops.extend(outro_ops(total, &b)?);
+                said.push(format!("the outro ({len:.1} s) closes it"));
+            }
+            None => said.push("it has no outro".into()),
+        }
+    }
+    if wants("watermark") {
+        match &kit.logo {
+            Some(logo) => {
+                let m = media(&file(&logo.file)?)?;
+                use klipp_project::brand_kit::Corner;
+                let mark = Watermark { left: matches!(logo.corner, Corner::TopLeft | Corner::BottomLeft), top: matches!(logo.corner, Corner::TopLeft | Corner::TopRight), margin: logo.margin, scale: logo.scale, opacity: logo.opacity };
+                // The logo over everything, the intro and outro too when
+                // they come in the same step.
+                let outro_len = if wants("outro") { kit.outro.as_ref().and_then(|b| bookend(b).ok()).map_or(0.0, |(_, l)| l) } else { 0.0 };
+                ops.extend(mark.ops(m.id, (m.resolution.width, m.resolution.height), frame, (total + outro_len).max(0.1))?);
+                said.push("its logo sits as a watermark on a track of its own".into());
+            }
+            None => said.push("it has no logo".into()),
+        }
+    }
+    Ok(ops)
+}
+
