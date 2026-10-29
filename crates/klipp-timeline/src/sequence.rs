@@ -2215,10 +2215,10 @@ pub struct Look {
     pub node_graph: klipp_nodes::NodeGraph,
 }
 
-/// A marker placed at a specific time within a clip (relative to source_in).
+/// A marker placed at a specific time within a clip.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClipMarker {
-    /// Time relative to clip's source_in, in seconds.
+    /// Seconds from the clip's start on the timeline.
     pub time_secs: f64,
     /// Display name.
     pub name: String,
