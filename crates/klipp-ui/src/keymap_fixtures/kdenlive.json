@@ -678,7 +678,20 @@
    ]
   }
  ],
- "deviations": {},
+ "deviations": {
+  "trim_in_to_playhead": {
+   "documented": [
+    "("
+   ],
+   "why": "( is a character, not a key Klipp reads: on a US layout it is typed as Shift+9, the key Klipp binds"
+  },
+  "trim_out_to_playhead": {
+   "documented": [
+    ")"
+   ],
+   "why": ") is a character, not a key Klipp reads: on a US layout it is typed as Shift+0, the key Klipp binds"
+  }
+ },
  "klipp_adds": {
   "go_to_start": {
    "keys": [

@@ -1015,8 +1015,8 @@ pub(crate) const KDENLIVE: &[(&str, &[&str])] = &[
     ("step_forward", &["ArrowRight"]), // Forward 1 Frame
     ("toggle_fullscreen", &["F11"]), // Switch Monitor Fullscreen
     ("toggle_multicam_mode", &["F12"]), // Multitrack View
-    ("trim_in_to_playhead", &["("]), // Resize Item Start
-    ("trim_out_to_playhead", &[")"]), // Resize Item End
+    ("trim_in_to_playhead", &["Shift+9"]), // Resize Item Start: ( on a US layout
+    ("trim_out_to_playhead", &["Shift+0"]), // Resize Item End: ) on a US layout
     ("undo", &["Ctrl+Z"]), // Undo
     ("ungroup_clips", &["Ctrl+Shift+G"]), // Ungroup Clips
     ("zoom_in", &["Ctrl+="]), // Zoom In
