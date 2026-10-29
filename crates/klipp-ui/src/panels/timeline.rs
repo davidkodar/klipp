@@ -1001,6 +1001,54 @@ struct DragState {
     shown_in: Option<Timecode>,
     /// The snap the drag holds from frame to frame.
     hold: Option<crate::timeline::snap::SnapHold>,
+    /// The other clips the drag moves with it (#3060): the rest of a
+    /// selection the grabbed clip is in, and their groups, each with its
+    /// track and start when the drag began. Empty for a clip on its own.
+    party: Vec<(ClipId, usize, Timecode)>,
+}
+
+/// The clips a drag of `grabbed` moves besides it (#3060): when it is
+/// one of several selected, the rest of the selection and every clip
+/// grouped with one of them, a linked pair once (the move takes the
+/// partner along) while the Linked switch is on. None while any of them
+/// is on the primary track, whose ripple move is its own.
+fn drag_party(state: &AppState, grabbed: ClipId) -> Vec<(ClipId, usize, Timecode)> {
+    let seq = state.sequence();
+    let mut selected = state.selected_clips.clone();
+    selected.extend(state.selected_clip.filter(|id| !state.selected_clips.contains(id)));
+    if selected.len() < 2 || !selected.contains(&grabbed) {
+        return Vec::new();
+    }
+    let groups: Vec<_> = seq.all_clips().filter(|c| selected.contains(&c.id)).filter_map(|c| c.group_id).collect();
+    let mut set: Vec<ClipId> = vec![grabbed];
+    for c in seq.all_clips() {
+        let wanted = selected.contains(&c.id) || c.group_id.is_some_and(|g| groups.contains(&g));
+        let partner_in = state.linked_selection && c.linked_clip_id.is_some_and(|p| set.contains(&p));
+        if wanted && !partner_in && !set.contains(&c.id) {
+            set.push(c.id);
+        }
+    }
+    let mut party = Vec::new();
+    for &id in &set[1..] {
+        let Some((ti, ci)) = seq.find_clip(id) else { continue };
+        party.push((id, ti, seq.tracks[ti].clips[ci].timeline_in));
+    }
+    let on_primary = |id: ClipId| seq.find_clip(id).is_some_and(|(ti, _)| seq.tracks[ti].magnetic_role == klipp_timeline::TrackRole::Primary);
+    if set.iter().any(|&id| on_primary(id)) {
+        return Vec::new();
+    }
+    party
+}
+
+/// The track a drag from track `from` to track `to` puts a clip on
+/// track `ti` on (#3060): as many tracks of its kind along as `to` is
+/// from `from` among theirs. None when there is no such track.
+fn shifted_track(seq: &klipp_timeline::Sequence, from: usize, to: usize, ti: usize) -> Option<usize> {
+    let rank = |t: usize| seq.tracks.iter().take(t).filter(|o| o.kind == seq.tracks[t].kind).count() as isize;
+    let shift = rank(to) - rank(from);
+    let want = rank(ti) + shift;
+    let kind = seq.tracks.get(ti)?.kind;
+    seq.tracks.iter().enumerate().filter(|(_, t)| t.kind == kind).nth(usize::try_from(want).ok()?).map(|(i, _)| i)
 }
 
 struct TrimState {
@@ -8168,6 +8216,7 @@ impl TimelinePanel {
                                     linked_original_in: linked_orig,
                                     shown_in: None,
                                     hold: None,
+                                    party: drag_party(state, hit_id),
                                 });
                             }
                         }
@@ -9511,7 +9560,10 @@ impl TimelinePanel {
                     // selected, is a target (#3056).
                     let shift_held = ui.input(|i| i.modifiers.shift);
                     let snapper = crate::timeline::snap::Snapper::of(state, zoom, shift_held);
-                    let moving = crate::timeline::snap::Snapper::moving_with(state, drag.clip_id);
+                    let mut moving = crate::timeline::snap::Snapper::moving_with(state, drag.clip_id);
+                    for &(id, _, _) in &drag.party {
+                        moving.extend(crate::timeline::snap::Snapper::moving_with(state, id));
+                    }
                     let delta = new_timeline_in - drag.original_timeline_in;
                     let edges: Vec<RationalTime> = state.sequence().all_clips()
                         .filter(|c| moving.contains(&c.id))
@@ -9933,6 +9985,19 @@ impl TimelinePanel {
                             }
                         }
 
+                        // The other clips of the selection, each where it
+                        // goes (#3060).
+                        let hover_compatible = hover_track_idx.filter(|&t| state.sequence().tracks.get(t).map(|t| t.kind) == state.sequence().tracks.get(drag.track_idx).map(|t| t.kind));
+                        for &(id, ti, orig_in) in &drag.party {
+                            let Some(c) = state.sequence().all_clips().find(|c| c.id == id) else { continue };
+                            let dest = hover_compatible.map_or(Some(ti), |to| shifted_track(state.sequence(), drag.track_idx, to, ti));
+                            let Some(r) = dest.and_then(|d| self.frame_cache.track_rects.iter().find(|(i, _, _)| *i == d).map(|(_, _, r)| *r)) else { continue };
+                            let x = content_rect.left() + (orig_in + (final_in - drag.original_timeline_in)).to_secs_f64() as f32 * zoom - scroll;
+                            let ghost = egui::Rect::from_min_size(egui::pos2(x, r.top() + 2.0), egui::vec2(c.duration().to_secs_f64() as f32 * zoom, r.height() - 4.0));
+                            ghost_painter.rect_filled(ghost, 2.0, ghost_fill);
+                            ghost_painter.rect_stroke(ghost, 2.0, egui::Stroke::new(2.0_f32, ghost_border));
+                        }
+
                         // Snap indicator — amber glow
                         if snapped {
                             ghost_painter.rect_stroke(ghost_rect, 4.0,
@@ -10106,7 +10171,34 @@ impl TimelinePanel {
                 }
             }
 
-            if pointer_released && drag.track_idx == track_idx {
+            if pointer_released && drag.track_idx == track_idx && !drag.party.is_empty() {
+                // A selection's drag (#3060): every clip by the shown
+                // offset, each as many tracks of its kind along as the
+                // grabbed one; refused whole when one has nowhere to go.
+                let seq = state.sequence();
+                let shown = drag.shown_in.unwrap_or(drag.original_timeline_in);
+                let delta = shown - drag.original_timeline_in;
+                let to = pointer_pos
+                    .and_then(|pos| self.frame_cache.track_rects.iter().find(|(_, _, r)| r.contains(pos)).map(|(i, _, _)| *i))
+                    .filter(|&t| seq.tracks.get(t).map(|t| t.kind) == seq.tracks.get(drag.track_idx).map(|t| t.kind))
+                    .unwrap_or(drag.track_idx);
+                let mut moves = Vec::new();
+                let mut refused = None;
+                for (id, ti, orig) in std::iter::once((drag.clip_id, drag.track_idx, drag.original_timeline_in)).chain(drag.party.iter().copied()) {
+                    match shifted_track(seq, drag.track_idx, to, ti) {
+                        Some(d) if seq.tracks[d].locked && d != ti => refused = Some(format!("{} is locked", seq.tracks[d].name)),
+                        Some(d) => moves.push((id, orig + delta, (d != ti).then_some(d))),
+                        None => refused = Some(format!("there is no {:?} track that far along", seq.tracks[ti].kind)),
+                    }
+                }
+                match refused {
+                    Some(why) => state.toast.show(format!("Selection not moved: {why}")),
+                    None if delta.value != 0 || to != drag.track_idx => cmds.push(AppCommand::MoveClips { moves }),
+                    None => {}
+                }
+                self.dragging_clip = None;
+                self.press_origin = None;
+            } else if pointer_released && drag.track_idx == track_idx {
                 let clip_id = drag.clip_id;
                 let from_track = drag.track_idx;
                 let original_in = drag.original_timeline_in;

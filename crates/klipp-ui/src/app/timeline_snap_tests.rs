@@ -247,8 +247,7 @@ fn markers_snap_a_move_and_a_linked_partner_does_not() {
 
 /// Two grouped clips move as one, and the group snaps by whichever of
 /// its edges is nearest a target: here the second clip's out (it ends a
-/// second after the first) comes 4 points short of the target's in. A
-/// selected clip that stays where it is isn't a target either.
+/// second after the first) comes 4 points short of the target's in.
 #[test]
 fn a_group_snaps_by_its_nearest_edge() {
     let (mut state, moved, _) = three_tracks();
@@ -271,7 +270,10 @@ fn a_group_snaps_by_its_nearest_edge() {
     // to 2 s less 4 points, nowhere near a target of its own.
     let drop = grab + egui::vec2(2.0 * ZOOM - 4.0, 0.0);
     tl.drag(grab, &[grab + egui::vec2(200.0, 0.0), drop], egui::Modifiers::NONE);
-    assert_eq!(moved_to(&tl.sent), [(t(2.0), None)]);
+    // Both selected, so both go as the selection's move (#3060).
+    let mut got = moves(&tl.sent);
+    got.sort_by_key(|m| m.1.value);
+    assert_eq!(got, [(moved, t(2.0), None), (second_id, t(3.0), None)]);
 }
 
 fn marker(at: f64) -> klipp_timeline::Marker {
@@ -393,5 +395,93 @@ fn the_blade_cuts_where_its_line_shows() {
             _ => None,
         });
         assert_eq!(cut, Some(want), "{m:?}");
+    }
+}
+
+/// Free video tracks Video 4, Video 3 and Video 2 (top to bottom) over
+/// the primary: clips at 0–1 s on Video 4, 0.5–1.5 s on Video 3 and
+/// 3–4 s on Video 4, all selected. Snapping off, so the drag is exact.
+fn selection() -> (AppState, [ClipId; 3]) {
+    let (mut state, moved, _) = three_tracks();
+    state.snap.master = false;
+    let seq = &mut state.sequences[0];
+    seq.add_video_track("Video 4".into());
+    for t in &mut seq.tracks {
+        t.clips.retain(|c| c.id != moved);
+    }
+    let at = |seq: &klipp_timeline::Sequence, n: &str| seq.tracks.iter().position(|t| t.name == n).unwrap();
+    let (v4, v3) = (at(seq, "Video 4"), at(seq, "Video 3"));
+    let c = |a: f64, b: f64| Clip::media(klipp_core::MediaId::new(), t(a), t(b), t(0.0), t(b - a));
+    let (a, b, d) = (c(0.0, 1.0), c(0.5, 1.5), c(3.0, 4.0));
+    let ids = [a.id, b.id, d.id];
+    seq.tracks[v4].clips.extend([a, d]);
+    seq.tracks[v3].clips.push(b);
+    state.selected_clips = ids.to_vec();
+    state.selected_clip = Some(ids[0]);
+    (state, ids)
+}
+
+fn moves(sent: &[AppCommand]) -> Vec<(ClipId, RationalTime, Option<usize>)> {
+    sent.iter().find_map(|c| match c {
+        AppCommand::MoveClips { moves } => Some(moves.clone()),
+        _ => None,
+    }).unwrap_or_default()
+}
+
+/// Three selected clips on two tracks, one dragged 2 s later: all three
+/// move 2 s, frame-exact, and the document's moves put them there as
+/// one undo step that puts all three back.
+#[test]
+fn a_selection_drags_together_as_one_step() {
+    let (state, ids) = selection();
+    let mut tl = Timeline::new(state);
+    let v4 = tl.track("Video 4");
+    let grab = tl.at(v4, 0.5);
+    tl.drag(grab, &[grab + egui::vec2(40.0, 0.0), grab + egui::vec2(2.0 * ZOOM, 0.0)], egui::Modifiers::NONE);
+    let mut got = moves(&tl.sent);
+    got.sort_by_key(|m| m.1.value);
+    assert_eq!(got, [(ids[0], t(2.0), None), (ids[1], t(2.5), None), (ids[2], t(5.0), None)]);
+
+    let state = &mut tl.state;
+    let before: Vec<_> = ids.iter().map(|&id| span(state, id)).collect();
+    let ops = super::clip_moves::drag_move_ops(state.sequence(), &got, true);
+    let plan = klipp_document::ops::resolve(state.sequence(), &state.media_pool, &ops).expect("the moves resolve");
+    let edits: Vec<crate::history::EditCommand> = plan.steps.into_iter().map(|s| s.edit).collect();
+    {
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: state.active_sequence_idx, media_pool: &mut state.media_pool, fps: &mut state.fps };
+        for e in &edits {
+            let _ = view.apply_forward(e);
+        }
+    }
+    state.push_edits_as_one(&edits, "Move Clips");
+    assert_eq!(ids.iter().map(|&id| span(state, id).0).collect::<Vec<_>>(), [t(2.0), t(2.5), t(5.0)]);
+    let entry = state.active_history_mut().undo().expect("a step");
+    let mut view = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: state.active_sequence_idx, media_pool: &mut state.media_pool, fps: &mut state.fps };
+    view.apply_inverse(&entry.command);
+    assert_eq!(ids.iter().map(|&id| span(state, id)).collect::<Vec<_>>(), before);
+    assert!(state.active_history_mut().undo().is_none(), "one step");
+}
+
+/// Dragged down a track, a selection on Video 4 and Video 3 goes to
+/// Video 3 and Video 2, each one track of its kind lower; with Video 2
+/// locked the drag is refused and nothing is sent.
+#[test]
+fn a_selection_drags_across_tracks_or_is_refused_whole() {
+    for locked in [false, true] {
+        let (mut state, ids) = selection();
+        let v2 = state.sequence().tracks.iter().position(|t| t.name == "Video 2").unwrap();
+        state.sequences[0].tracks[v2].locked = locked;
+        let mut tl = Timeline::new(state);
+        let (v4, v3) = (tl.track("Video 4"), tl.track("Video 3"));
+        let grab = tl.at(v4, 0.5);
+        let to = tl.at(v3, 0.5);
+        tl.drag(grab, &[grab + egui::vec2(0.0, 20.0), to], egui::Modifiers::NONE);
+        if locked {
+            assert!(moves(&tl.sent).is_empty(), "refused: {:?}", moves(&tl.sent));
+            continue;
+        }
+        let mut got = moves(&tl.sent);
+        got.sort_by_key(|m| m.1.value);
+        assert_eq!(got, [(ids[0], t(0.0), Some(v3)), (ids[1], t(0.5), Some(v2)), (ids[2], t(3.0), Some(v3))]);
     }
 }
