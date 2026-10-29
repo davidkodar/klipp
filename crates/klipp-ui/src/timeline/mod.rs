@@ -373,6 +373,15 @@ impl NewTimelinePanel {
             let clamped = secs.max(0.0).min(duration_secs);
             klipp_core::RationalTime::from_secs_f64(clamped, fps_rate)
         };
+        // A press or click on the ruler puts the playhead on a clip edge,
+        // marker or mark within the snap distance, as every drag snaps
+        // (#3056); Shift for none.
+        let shift = ui.input(|i| i.modifiers.shift);
+        let seek_to = |state: &AppState, mouse_x: f32| -> klipp_core::RationalTime {
+            let raw = mouse_to_time(mouse_x);
+            let snapper = snap::Snapper::of(state, pps, shift).without(klipp_core::SnapTargetKind::Playhead);
+            snapper.snap(&[raw], &[], &mut None).map_or(raw, |s| s.at)
+        };
 
         // Hover cursor: ResizeHorizontal near handles
         let mut handle_hovered = false;
@@ -397,6 +406,7 @@ impl NewTimelinePanel {
                         kind,
                         original_in: state.sequence().in_point,
                         original_out: state.sequence().out_point,
+                        hold: None,
                     });
                 } else {
                     // Empty ruler press — seek the playhead IMMEDIATELY at
@@ -408,7 +418,7 @@ impl NewTimelinePanel {
                     // moves > 4px the dragged branch promotes this to a
                     // range create. Mirrors the OLD timeline's
                     // scrub-on-press behaviour (panels/timeline.rs:3654).
-                    let tc = mouse_to_time(pos.x);
+                    let tc = seek_to(state, pos.x);
                     let prev_playhead = state.playhead;
                     state.playhead = tc;
                     state.playhead_smooth_secs = tc.to_secs_f64();
@@ -425,39 +435,28 @@ impl NewTimelinePanel {
         }
 
         // On dragged: handle drag logic or threshold-based ruler range drag
+        let mut range_hold = None;
         if ruler_resp.dragged() {
             if let Some(pos) = ui.input(|i| i.pointer.latest_pos()) {
-                let snap_threshold = 10.0 / pps as f64;
-                let snap_targets = range_visuals::collect_snap_targets(state);
-                // Resolve the user's grid-snap interval at current zoom.
-                // None when GridInterval::Off (back-compat default) — the
-                // post-pass in find_nearest_snap is then a no-op.
-                let grid_interval_secs = grid_snap::resolve_grid_interval_secs(
-                    state.grid_snap_interval,
-                    state.fps.rate(),
-                    pps,
-                );
-
                 if let Some(ref drag) = state.range_drag {
-                    // Active drag — update in/out points
+                    // Active drag — update in/out points. The edge snaps as
+                    // every drag does (#3056), Shift for none; the marks
+                    // it moves are not targets.
                     let raw_tc = mouse_to_time(pos.x);
-                    let raw_secs = raw_tc.to_secs_f64();
-
-                    // Apply snap (master gate; per-target gating
-                    // happens inside find_nearest_snap via SnapConfig).
-                    let (snapped_tc, snapped_secs) = if state.snap.master {
-                        range_visuals::find_nearest_snap(raw_secs, &snap_targets, snap_threshold, grid_interval_secs, state.fps.rate(), Some(&state.snap))
-                            .map(|(tc, secs, _kind)| (tc, secs))
-                            .unwrap_or((raw_tc, raw_secs))
-                    } else {
-                        (raw_tc, raw_secs)
+                    let moving: &[klipp_core::SnapTargetKind] = match drag.kind {
+                        crate::state::RangeDragKind::InHandle => &[klipp_core::SnapTargetKind::InPoint],
+                        crate::state::RangeDragKind::OutHandle => &[klipp_core::SnapTargetKind::OutPoint],
+                        crate::state::RangeDragKind::RulerCreate { .. } => &[klipp_core::SnapTargetKind::InPoint, klipp_core::SnapTargetKind::OutPoint],
                     };
-
-                    // Show snap line if snapped
-                    if state.snap.master && (snapped_secs - raw_secs).abs() > 0.0001 {
-                        let snap_x = ruler_rect.left() + time_utils::time_to_x(snapped_secs, pps, scroll_x);
-                        state.range_snap_line_x = Some(snap_x);
+                    let snapper = moving.iter().fold(snap::Snapper::of(state, pps, shift), |s, k| s.without(*k));
+                    let mut hold = drag.hold;
+                    let snap = snapper.snap(&[raw_tc], &[], &mut hold);
+                    let snapped_tc = snap.map_or(raw_tc, |s| s.at);
+                    let snapped_secs = snapped_tc.to_secs_f64();
+                    if let Some(s) = snap {
+                        state.range_snap_line_x = Some(snapper.line(&s, ruler_rect.left()).0);
                     }
+                    range_hold = Some(hold);
 
                     match drag.kind {
                         crate::state::RangeDragKind::InHandle => {
@@ -532,11 +531,15 @@ impl NewTimelinePanel {
                             kind: drag_kind,
                             original_in: state.sequence().in_point,
                             original_out: state.sequence().out_point,
+                            hold: None,
                         });
                         state.ruler_press_origin = None;
                     }
                 }
             }
+        }
+        if let (Some(drag), Some(hold)) = (state.range_drag.as_mut(), range_hold) {
+            drag.hold = hold;
         }
 
         // On drag_stopped: push undo entry if values changed
@@ -577,7 +580,7 @@ impl NewTimelinePanel {
             // which returns None after release, dropping legitimate
             // clicks.
             if let Some(pos) = ruler_resp.interact_pointer_pos() {
-                let tc = mouse_to_time(pos.x);
+                let tc = seek_to(state, pos.x);
                 let prev_playhead = state.playhead;
                 state.playhead = tc;
                 state.playhead_smooth_secs = tc.to_secs_f64();

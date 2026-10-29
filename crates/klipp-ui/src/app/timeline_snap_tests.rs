@@ -273,3 +273,99 @@ fn a_group_snaps_by_its_nearest_edge() {
     tl.drag(grab, &[grab + egui::vec2(200.0, 0.0), drop], egui::Modifiers::NONE);
     assert_eq!(moved_to(&tl.sent), [(t(2.0), None)]);
 }
+
+fn marker(at: f64) -> klipp_timeline::Marker {
+    klipp_timeline::Marker {
+        id: klipp_core::MarkerId::new(), position: t(at), label: "m".into(), color: klipp_core::MarkerColor::Red,
+        duration: None, comment: String::new(), kind: Default::default(), review: None,
+    }
+}
+
+/// Clips on Video 2 at `spans`, each with a second of source to spare
+/// either side, and a marker at 2.5 s.
+fn clips_on_video_2(spans: &[(f64, f64)]) -> (AppState, Vec<ClipId>) {
+    let (mut state, moved, _) = three_tracks();
+    let seq = &mut state.sequences[0];
+    let v2 = seq.tracks.iter().position(|t| t.name == "Video 2").unwrap();
+    seq.tracks[v2].clips.retain(|c| c.id != moved);
+    let clips: Vec<Clip> = spans.iter().map(|&(a, b)| Clip::media(klipp_core::MediaId::new(), t(a), t(b), t(1.0), t(1.0 + b - a))).collect();
+    let ids = clips.iter().map(|c| c.id).collect();
+    seq.tracks[v2].clips = clips;
+    seq.markers.push(marker(2.5));
+    (state, ids)
+}
+
+fn span(state: &AppState, id: ClipId) -> (RationalTime, RationalTime) {
+    let c = state.sequence().all_clips().find(|c| c.id == id).unwrap();
+    (c.timeline_in, c.timeline_out)
+}
+
+/// A roll of the cut between two clips snaps to a marker as a move does:
+/// let go 4 points short of it, the cut is on it. It used to snap to the
+/// playhead only, at its own 8 points.
+#[test]
+fn a_roll_snaps_to_a_marker() {
+    let (state, ids) = clips_on_video_2(&[(0.0, 2.0), (2.0, 4.0)]);
+    let mut tl = Timeline::new(state);
+    let v2 = tl.track("Video 2");
+    let cut = tl.at(v2, 2.0);
+    tl.drag(cut, &[cut + egui::vec2(15.0, 0.0), tl.at(v2, 2.5) - egui::vec2(4.0, 0.0)], egui::Modifiers::NONE);
+    let rolled = tl.sent.iter().find_map(|c| match c {
+        AppCommand::RollTrimClip { clip_a_id, new_a_timeline_out, new_b_timeline_in, .. } if *clip_a_id == ids[0] => Some((*new_a_timeline_out, *new_b_timeline_in)),
+        _ => None,
+    });
+    assert_eq!(rolled, Some((t(2.5), t(2.5))));
+}
+
+/// A slide (the Trim tool, Shift at the press) snaps its clip's edge,
+/// once Shift is let go: its in, 4 points short of the marker, lands on
+/// it, the neighbours following.
+#[test]
+fn a_slide_snaps_once_shift_is_let_go() {
+    let (mut state, ids) = clips_on_video_2(&[(0.0, 2.0), (2.0, 3.0), (3.0, 5.0)]);
+    state.active_tool = klipp_core::Tool::Trim;
+    let mut tl = Timeline::new(state);
+    let v2 = tl.track("Video 2");
+    let grab = tl.at(v2, 2.5);
+    let (shift, none) = (egui::Modifiers::SHIFT, egui::Modifiers::NONE);
+    let b = |p, d, m| egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: d, modifiers: m };
+    tl.frame(vec![egui::Event::PointerMoved(grab)], shift);
+    tl.frame(vec![b(grab, true, shift)], shift);
+    tl.frame(vec![egui::Event::PointerMoved(grab + egui::vec2(8.0, 0.0))], shift);
+    let to = grab + egui::vec2(0.5 * ZOOM - 4.0, 0.0);
+    tl.frame(vec![egui::Event::PointerMoved(to)], none);
+    tl.frame(vec![b(to, false, none)], none);
+    tl.frame(Vec::new(), none);
+    assert_eq!(span(&tl.state, ids[1]), (t(2.5), t(3.5)));
+    assert_eq!(span(&tl.state, ids[0]).1, t(2.5));
+}
+
+/// The Range tool's moving end snaps to a clip edge, 4 points off; with
+/// Shift held it stays where the pointer is, on the nearest frame.
+#[test]
+fn the_range_tool_snaps_and_shift_does_not() {
+    for (m, want) in [(egui::Modifiers::NONE, t(5.0)), (egui::Modifiers::SHIFT, RationalTime { value: 122, rate: 24 })] {
+        let (mut state, _, _) = three_tracks();
+        state.active_tool = klipp_core::Tool::Range;
+        let mut tl = Timeline::new(state);
+        let v3 = tl.track("Video 3");
+        let from = tl.at(v3, 8.0);
+        tl.drag(from, &[from - egui::vec2(60.0, 0.0), tl.at(v3, 5.0) + egui::vec2(4.0, 0.0)], m);
+        let last_in = tl.sent.iter().rev().find_map(|c| match c {
+            AppCommand::SetSequenceInPoint(at) => Some(*at),
+            _ => None,
+        });
+        assert_eq!(last_in, Some(want), "{m:?}");
+    }
+}
+
+/// A clip or a title let go on the timeline lands on a marker within the
+/// distance; with Shift, on the nearest frame, rounded, not cut down.
+#[test]
+fn drops_snap_to_markers_and_round_to_a_frame() {
+    let (mut state, _, _) = three_tracks();
+    state.sequences[0].markers.push(marker(10.0));
+    let drop = |secs, shift| crate::panels::timeline::TimelinePanel::drop_time_for_test(&state, secs, ZOOM, shift);
+    assert_eq!(drop(10.0 + 4.0 / ZOOM as f64, false), t(10.0));
+    assert_eq!(drop(12.0 + 0.7 / 24.0, true), RationalTime { value: 289, rate: 24 });
+}

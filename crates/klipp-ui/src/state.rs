@@ -566,6 +566,8 @@ pub struct RangeDragState {
     pub kind: RangeDragKind,
     pub original_in: Option<Timecode>,
     pub original_out: Option<Timecode>,
+    /// The snap the drag holds from frame to frame (#3056).
+    pub hold: Option<crate::timeline::snap::SnapHold>,
 }
 
 /// What kind of range drag is in progress.
