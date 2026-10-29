@@ -38,6 +38,7 @@ mod multicam;
 pub(crate) mod placement;
 mod history_apply;
 pub(crate) mod aspect_version;
+mod brand_kit;
 mod audio_roles;
 mod visual_search;
 mod recording;

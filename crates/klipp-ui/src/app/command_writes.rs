@@ -58,6 +58,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::RemoveRecentProject { .. }
         | AppCommand::PinRecentProject { .. }
         | AppCommand::OpenPreferences { .. }
+        | AppCommand::OpenApplyBrandKit
         | AppCommand::SetFormatRate { .. }
         | AppCommand::OpenSequenceSettings { .. }
         | AppCommand::RegenerateFilmstripsForAll

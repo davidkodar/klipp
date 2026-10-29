@@ -233,7 +233,7 @@ pub(crate) fn respond(
                 None => None,
             };
             let from_template = template.is_some();
-            send_envelope(ctx, vec![AppCommand::CreateProject { name, location, fps_num, fps_den, width, height, sequence_name, template, hdr: false }], false)?;
+            send_envelope(ctx, vec![AppCommand::CreateProject { name, location, fps_num, fps_den, width, height, sequence_name, template, hdr: false, brand_kit: None }], false)?;
             let after = wait_for_project_event(ctx, before.generation, 60_000)?;
             if let Some(e) = after.last_error {
                 return Err(e);
@@ -739,7 +739,16 @@ pub(crate) fn respond(
         }
 
         #[cfg(feature = "test-hooks")]
-        ControlCommand::ShowPanel { workspace, inspector_tab } => {
+        ControlCommand::ShowPanel { workspace, inspector_tab, dialog } => {
+            if let Some(d) = dialog.as_deref() {
+                return send(match d.split_once(':') {
+                    Some(("preferences", page)) => AppCommand::OpenPreferences { page: Some(page.to_string()) },
+                    None if d == "preferences" => AppCommand::OpenPreferences { page: None },
+                    None if d == "new_project" => AppCommand::NewProject,
+                    None if d == "apply_brand_kit" => AppCommand::OpenApplyBrandKit,
+                    _ => return Err(format!("no dialog {d:?}: preferences[:page], new_project or apply_brand_kit")),
+                });
+            }
             const WORKSPACES: [&str; 4] = ["edit", "colour", "color", "export"];
             const TABS: [&str; 8] = ["video", "audio", "colour", "color", "effects", "title", "generator", "info"];
             if let Some(w) = workspace.as_deref().filter(|w| !WORKSPACES.contains(w)) {

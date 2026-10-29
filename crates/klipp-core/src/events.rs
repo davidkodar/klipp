@@ -1373,6 +1373,8 @@ pub enum AppCommand {
         template: Option<PathBuf>,
         /// Graded in a wide-gamut working space for HLG or PQ delivery.
         hdr: bool,
+        /// A brand kit whose look the new sequence takes (#2722).
+        brand_kit: Option<String>,
     },
     /// The look the viewer shows through, on screen only, or none (#466).
     SetProjectViewingLut { path: Option<PathBuf> },
@@ -1432,6 +1434,8 @@ pub enum AppCommand {
     RemoveRecentProject { path: PathBuf },
     /// Open Preferences, on the page named (`cache`, `keyboard`) when one is.
     OpenPreferences { page: Option<String> },
+    /// Open Timeline → Apply Brand Kit… (#2722).
+    OpenApplyBrandKit,
     /// Keep a recent project at the top of the list, or stop keeping it.
     PinRecentProject { path: PathBuf, pinned: bool },
     /// Copy a project folder beside it under a new name, and list the copy.

@@ -426,6 +426,10 @@ impl KlippApp {
                 self.state.show_preferences = true;
                 true
             }
+            AppCommand::OpenApplyBrandKit => {
+                self.state.show_apply_brand_kit = true;
+                true
+            }
             AppCommand::PinRecentProject { path, pinned } => {
                 if let Some(rp) = self.prefs.general.recent_projects.iter_mut().find(|rp| rp.path == *path) {
                     rp.pinned = *pinned;
@@ -552,13 +556,17 @@ impl KlippApp {
                 true
             }
             AppCommand::CreateProject {
-                name, location, fps_num, fps_den, width, height, sequence_name, template, hdr,
+                name, location, fps_num, fps_den, width, height, sequence_name, template, hdr, brand_kit,
             } => {
                 let project_dir = location.join(format!("{name}.klipp"));
                 if !self.start_new_project(name, sequence_name, (*fps_num, *fps_den), (*width, *height), template.as_deref(), &project_dir, *hdr) {
                     return true;
                 }
                 self.state.project_path = Some(project_dir.clone());
+                // The kit's look in the new sequence, before its first save.
+                if let Some(kit) = brand_kit {
+                    self.apply_brand_kit(kit, crate::state::BrandKitParts::default());
+                }
                 // Save immediately so the .klipp directory is created. The
                 // projects root is the user's to choose in Preferences: a
                 // place one project was made is not where every next one

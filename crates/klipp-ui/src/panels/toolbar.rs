@@ -797,6 +797,7 @@ impl ToolbarPanel {
                 }
                 ui.close_menu();
             }
+            if ui.button("Apply Brand Kit\u{2026}").on_hover_text("Take a brand kit's look, captions, intro, outro or logo into this sequence").clicked() { cmds.push(AppCommand::OpenApplyBrandKit); ui.close_menu(); }
             ui.separator();
             if ui.add(egui::Button::new("Insert Edit").shortcut_text(kb.display_for("insert_edit"))).clicked() { cmds.push(AppCommand::InsertEdit); ui.close_menu(); }
             if ui.add(egui::Button::new("Overwrite Edit").shortcut_text(kb.display_for("overwrite_edit"))).clicked() { cmds.push(AppCommand::OverwriteEdit); ui.close_menu(); }

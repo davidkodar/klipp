@@ -254,39 +254,26 @@ pub(crate) fn respond(
             }
             let found = klipp_project::brand_kit::get(klipp_timeline::template_places::data_root().as_deref(), &name)?;
             let kit = &found.kit;
-            let mut edits = Vec::new();
             let mut said = Vec::new();
             let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-            if parts.iter().any(|p| p == "brief") {
-                let old = seq.brief.clone();
-                let mut brief = kit.into_brief(&old.clone().unwrap_or_default());
+            let brief = if parts.iter().any(|p| p == "brief") {
+                let mut brief = kit.into_brief(&seq.brief.clone().unwrap_or_default());
                 check_brief(&mut brief).map_err(|e| format!("the kit's {e}"))?;
-                // The titles that follow a look the kit changes go with it.
-                let followers = klipp_document::ops::follow_brief(&seq, old.as_ref(), Some(&brief));
-                said.push(format!("the brief takes its colours and {} title look{}{}", kit.title_styles().len(), if kit.title_styles().len() == 1 { "" } else { "s" }, if followers.is_empty() { String::new() } else { format!(", restyling {} title{}", followers.len(), if followers.len() == 1 { "" } else { "s" }) }));
-                edits.push(klipp_document::history::EditCommand::SetBrief { old: old.map(Box::new), new: Some(Box::new(brief)) });
-                edits.extend(followers);
+                Some(brief)
+            } else {
+                None
+            };
+            let caption_look = if parts.iter().any(|p| p == "captions") { kit.caption_look() } else { None };
+            let look = klipp_document::brand_kit_ops::look_edits(&seq, brief.clone(), caption_look.as_ref());
+            if brief.is_some() {
+                let (n, f) = (kit.title_styles().len(), look.restyled_titles);
+                said.push(format!("the brief takes its colours and {n} title look{}{}", if n == 1 { "" } else { "s" }, if f == 0 { String::new() } else { format!(", restyling {f} title{}", if f == 1 { "" } else { "s" }) }));
             }
             if parts.iter().any(|p| p == "captions") {
-                match kit.caption_look() {
-                    None => said.push("it has no caption look".into()),
-                    Some(look) => {
-                        let mut restyled = 0;
-                        for (i, track) in seq.tracks.iter().enumerate().filter(|(_, t)| t.kind == klipp_timeline::TrackKind::Subtitle && t.caption_style.is_none()) {
-                            let mut new = track.clone();
-                            for clip in &mut new.clips {
-                                if let klipp_timeline::ClipKind::Title(td) = &mut clip.kind {
-                                    *td = klipp_document::ops::apply_caption_style(td, &look);
-                                }
-                            }
-                            new.caption_style = Some(look.clone());
-                            edits.push(klipp_document::history::EditCommand::SetTrack { description: "Brand Kit Captions", track_index: i, old: Box::new(track.clone()), new: Box::new(new) });
-                            restyled += 1;
-                        }
-                        said.push(format!("{restyled} subtitle track{} take{} its caption look", if restyled == 1 { "" } else { "s" }, if restyled == 1 { "s" } else { "" }));
-                    }
-                }
+                let n = look.caption_tracks;
+                said.push(if caption_look.is_none() { "it has no caption look".into() } else { format!("{n} subtitle track{} take{} its caption look", if n == 1 { "" } else { "s" }, if n == 1 { "s" } else { "" }) });
             }
+            let edits = look.edits;
             drop(seq);
             // The sequence's parts are checked, and their files imported,
             // before anything is changed.
@@ -1176,7 +1163,7 @@ fn check_brief(brief: &mut klipp_timeline::Brief) -> Result<(), String> {
 /// first, each waited for. A part the kit has nothing for is said in
 /// `said`, not refused.
 fn brand_kit_sequence_ops(ctx: &ControlContext, found: &klipp_project::brand_kit::Found, parts: &[String], said: &mut Vec<String>) -> Result<Vec<klipp_document::ops::Op>, String> {
-    use klipp_document::brand_kit_ops::{intro_ops, outro_ops, Bookend, Watermark};
+    use klipp_document::brand_kit_ops::{sequence_ops, Bookend, SequenceParts};
     let kit = &found.kit;
     let wants = |p: &str| parts.iter().any(|x| x == p);
     if !wants("intro") && !wants("outro") && !wants("watermark") {
@@ -1217,31 +1204,23 @@ fn brand_kit_sequence_ops(ctx: &ControlContext, found: &klipp_project::brand_kit
             _ => Err("the kit's intro or outro is neither a template nor a file".into()),
         }
     };
-    let (end, frame, seq_snapshot) = {
-        let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-        let end = seq.tracks.iter().flat_map(|t| t.clips.iter()).map(|c| c.timeline_out.to_secs_f64()).fold(0.0, f64::max);
-        (end, (seq.resolution.width, seq.resolution.height), seq.clone())
-    };
-    let mut ops = Vec::new();
-    let mut intro_len = 0.0;
+    let mut found_parts = SequenceParts::default();
     if wants("intro") {
         match &kit.intro {
             Some(b) => {
                 let (b, len) = bookend(b)?;
-                intro_len = len;
-                ops.extend(intro_ops(&seq_snapshot, &b, len)?);
                 said.push(format!("the intro ({len:.1} s) opens it, the rest moved on"));
+                found_parts.intro = Some((b, len));
             }
             None => said.push("it has no intro".into()),
         }
     }
-    let total = end + intro_len;
     if wants("outro") {
         match &kit.outro {
             Some(b) => {
                 let (b, len) = bookend(b)?;
-                ops.extend(outro_ops(total, &b)?);
                 said.push(format!("the outro ({len:.1} s) closes it"));
+                found_parts.outro = Some((b, len));
             }
             None => said.push("it has no outro".into()),
         }
@@ -1250,17 +1229,19 @@ fn brand_kit_sequence_ops(ctx: &ControlContext, found: &klipp_project::brand_kit
         match &kit.logo {
             Some(logo) => {
                 let m = media(&file(&logo.file)?)?;
-                use klipp_project::brand_kit::Corner;
-                let mark = Watermark { left: matches!(logo.corner, Corner::TopLeft | Corner::BottomLeft), top: matches!(logo.corner, Corner::TopLeft | Corner::TopRight), margin: logo.margin, scale: logo.scale, opacity: logo.opacity };
-                // The logo over everything, the intro and outro too when
-                // they come in the same step.
-                let outro_len = if wants("outro") { kit.outro.as_ref().and_then(|b| bookend(b).ok()).map_or(0.0, |(_, l)| l) } else { 0.0 };
-                ops.extend(mark.ops(m.id, (m.resolution.width, m.resolution.height), frame, (total + outro_len).max(0.1))?);
+                found_parts.watermark = Some((watermark(logo), m.id, (m.resolution.width, m.resolution.height)));
                 said.push("its logo sits as a watermark on a track of its own".into());
             }
             None => said.push("it has no logo".into()),
         }
     }
-    Ok(ops)
+    let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+    sequence_ops(&seq, &found_parts)
+}
+
+/// Where a kit's logo sits, as the ops place it.
+fn watermark(logo: &klipp_project::brand_kit::Logo) -> klipp_document::brand_kit_ops::Watermark {
+    let (left, top) = logo.corner.sides();
+    klipp_document::brand_kit_ops::Watermark { left, top, margin: logo.margin, scale: logo.scale, opacity: logo.opacity }
 }
 

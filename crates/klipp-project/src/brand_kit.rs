@@ -131,6 +131,25 @@ pub enum Corner {
     BottomRight,
 }
 
+impl Corner {
+    pub const ALL: [Corner; 4] = [Corner::TopLeft, Corner::TopRight, Corner::BottomLeft, Corner::BottomRight];
+
+    /// Whether it is on the left, and whether at the top.
+    pub fn sides(self) -> (bool, bool) {
+        (matches!(self, Corner::TopLeft | Corner::BottomLeft), matches!(self, Corner::TopLeft | Corner::TopRight))
+    }
+
+    /// Its name as a person reads it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Corner::TopLeft => "Top left",
+            Corner::TopRight => "Top right",
+            Corner::BottomLeft => "Bottom left",
+            Corner::BottomRight => "Bottom right",
+        }
+    }
+}
+
 /// An intro or outro: a composition template by name, or a clip in the
 /// kit's folder; one of them.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -454,7 +473,7 @@ pub fn remove(root: &Path, name: &str) -> Result<(), String> {
 pub const BRAND_EXTENSION: &str = "klippbrand";
 
 /// A file's licence, beside it in a kit's folder or a shared kit.
-fn licence_name(file: &str) -> String {
+pub fn licence_name(file: &str) -> String {
     format!("{file}.licence.txt")
 }
 
