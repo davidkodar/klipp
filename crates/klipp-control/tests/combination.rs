@@ -97,15 +97,37 @@ fn with_recipe(seq: &Sequence, clip: &mut Clip, recipe: &str) {
     clip.apply_picture_ops(&ops).unwrap_or_else(|e| panic!("{recipe}: {e}"));
 }
 
-/// Applies the first step of `ops` resolved against the project's first
-/// sequence.
-fn apply(seqs: &mut Vec<Sequence>, pool: &mut klipp_media::MediaPool, ops: &[Op]) -> klipp_document::history::EditCommand {
+/// `ops` resolved against the project's first sequence and applied: the
+/// edits, in order, for undo.
+fn apply(seqs: &mut Vec<Sequence>, pool: &mut klipp_media::MediaPool, ops: &[Op]) -> Vec<klipp_document::history::EditCommand> {
     let plan = resolve(&seqs[0], pool, ops).unwrap_or_else(|r| panic!("{}", r.why));
-    let edit = plan.steps[0].edit.clone();
+    let edits: Vec<_> = plan.steps.into_iter().map(|s| s.edit).collect();
+    for e in &edits {
+        forward(seqs, pool, e);
+    }
+    edits
+}
+
+fn forward(seqs: &mut Vec<Sequence>, pool: &mut klipp_media::MediaPool, edit: &klipp_document::history::EditCommand) {
     let mut fps = seqs[0].fps;
-    let mut view = klipp_document::apply::DocumentView { sequences: seqs, active: 0, media_pool: pool, fps: &mut fps };
-    let _ = view.apply_forward(&edit);
-    edit
+    let _ = klipp_document::apply::DocumentView { sequences: seqs, active: 0, media_pool: pool, fps: &mut fps }.apply_forward(edit);
+}
+
+fn inverse(seqs: &mut Vec<Sequence>, pool: &mut klipp_media::MediaPool, edit: &klipp_document::history::EditCommand) {
+    let mut fps = seqs[0].fps;
+    let _ = klipp_document::apply::DocumentView { sequences: seqs, active: 0, media_pool: pool, fps: &mut fps }.apply_inverse(edit);
+}
+
+/// The built-in recipe `name` placed on `clip` by the document's recipe
+/// op, so its controls stay live.
+fn recipe_op(clip: klipp_core::ClipId, name: &str) -> Op {
+    let r = builtin_recipes().into_iter().find(|r| r.name == name).unwrap_or_else(|| panic!("no recipe {name}"));
+    let build = klipp_document::ops::RecipeBuilder(Arc::new(move |seq, clip| {
+        let values = klipp_control::recipes::values(&r, &BTreeMap::new(), &BTreeMap::new())?;
+        let (ops, placed) = klipp_control::recipes::on_clip(seq, clip, &r, &values)?;
+        Ok(klipp_document::ops::RecipeBuild { ops, placed, note: None })
+    }));
+    Op::Recipe { clip_id: klipp_document::ops::ClipRef::Id(clip), name: name.into(), slots: BTreeMap::new(), controls: BTreeMap::new(), build: Some(build) }
 }
 
 /// The project's parts, each left out in turn to show it draws.
@@ -228,11 +250,6 @@ fn project_without(omit: Option<&str>) -> (Vec<Sequence>, klipp_media::MediaPool
     a1.clips = vec![sound];
     seq.tracks = vec![titles, matte, v1, a1];
     let b_id = seq.tracks[2].clips[1].id;
-    if has("recipe") {
-        let mut placed = seq.tracks[2].clips[1].clone();
-        with_recipe(&seq, &mut placed, "Twirl");
-        seq.tracks[2].clips[1] = placed;
-    }
 
     let mut seqs = vec![seq];
     // The template placed by the document, its slot filled and its control
@@ -252,6 +269,10 @@ fn project_without(omit: Option<&str>) -> (Vec<Sequence>, klipp_media::MediaPool
     let placed = template_clip(&seqs[0]).id;
     if has("override") {
         apply(&mut seqs, &mut pool, &[serde_json::from_value(serde_json::json!({ "op": "template_link", "clip_id": placed.0.to_string(), "target": "object:0.size", "value": 110.0 })).unwrap()]);
+    }
+    // The second recipe, placed by the document so its controls stay live.
+    if has("recipe") {
+        apply(&mut seqs, &mut pool, &[recipe_op(b_id, "Twirl")]);
     }
     // The title in the brief's style, over the graded clip.
     if has("title") { apply(&mut seqs, &mut pool, &[serde_json::from_value(serde_json::json!({ "op": "title", "text": "Hello", "at": { "secs": 5.0 }, "secs": 1.0, "style": "kicker", "track": 0 })).unwrap()]); }
@@ -364,4 +385,67 @@ fn the_project_draws_alike_on_both_routes_and_after_reopening() {
         assert!(d == 0, "step 2 (reopen) at {at} s: {d} levels from before saving");
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The project's document, as saved: what an edit and its undo compare.
+fn document(seqs: &[Sequence]) -> serde_json::Value {
+    serde_json::to_value(seqs).expect("the project serialises")
+}
+
+/// The frames at `times`, on the GPU; `None` without a GPU stack.
+fn frames(seqs: &[Sequence], times: &[f64], step: &str) -> Option<Vec<Vec<u8>>> {
+    let seq = flat(seqs);
+    times.iter().map(|&at| gpu_frame(&seq, at, step)).collect()
+}
+
+/// Step 3: the overridden macro changed, undone and redone: the frames
+/// match the state after each step, and the undo puts the document back
+/// as it was. Step 5: the template's macro and the recipe's control set
+/// to the values they hold change neither the document nor a frame.
+#[test]
+fn a_macro_change_undoes_and_redoes_and_a_control_set_to_its_value_changes_nothing() {
+    let (mut seqs, mut pool) = project();
+    let times = [1.0, 5.4];
+    let doc = document(&seqs);
+    let Some(before) = frames(&seqs, &times, "step 3 (before)") else { return };
+    let placed = template_clip(&seqs[0]).id;
+    let link = |clip: klipp_core::ClipId, control: &str, value: f64| -> Op {
+        serde_json::from_value(serde_json::json!({ "op": "template_link", "clip_id": clip.0.to_string(), "control": control, "value": value })).unwrap()
+    };
+
+    let edits = apply(&mut seqs, &mut pool, &[link(placed, "Grow", 1.0)]);
+    let changed = frames(&seqs, &times, "step 3 (changed)").expect("drawn before");
+    let d = worst(&changed[0], &before[0]);
+    assert!(d > 10, "step 3 (changed) at {} s: the macro moved the frame by only {d} levels", times[0]);
+    let changed_doc = document(&seqs);
+    for e in edits.iter().rev() {
+        inverse(&mut seqs, &mut pool, e);
+    }
+    assert!(document(&seqs) == doc, "step 3 (undo): the document is not as it was");
+    for (at, (now, then)) in times.iter().zip(frames(&seqs, &times, "step 3 (undo)").unwrap().iter().zip(&before)) {
+        assert_eq!(worst(now, then), 0, "step 3 (undo) at {at} s");
+    }
+    for e in &edits {
+        forward(&mut seqs, &mut pool, e);
+    }
+    assert!(document(&seqs) == changed_doc, "step 3 (redo): the document is not as the change left it");
+    for (at, (now, then)) in times.iter().zip(frames(&seqs, &times, "step 3 (redo)").unwrap().iter().zip(&changed)) {
+        assert_eq!(worst(now, then), 0, "step 3 (redo) at {at} s");
+    }
+    for e in edits.iter().rev() {
+        inverse(&mut seqs, &mut pool, e);
+    }
+
+    // Step 5: each control set to the value it holds.
+    let twirled = seqs[0].tracks.iter().flat_map(|t| &t.clips).find(|c| matches!(c.kind, ClipKind::Media { .. }) && c.timeline_in == tc(4.5)).expect("the plain clip").id;
+    for (what, op) in [("the template's Grow", link(placed, "Grow", 0.5)), ("the recipe's Angle", link(twirled, "Angle", 180.0))] {
+        let edits = apply(&mut seqs, &mut pool, &[op]);
+        assert!(document(&seqs) == doc, "step 5 ({what} at its value): the document changed");
+        for (at, (now, then)) in times.iter().zip(frames(&seqs, &times, "step 5").unwrap().iter().zip(&before)) {
+            assert_eq!(worst(now, then), 0, "step 5 ({what} at its value) at {at} s");
+        }
+        for e in edits.iter().rev() {
+            inverse(&mut seqs, &mut pool, e);
+        }
+    }
 }
