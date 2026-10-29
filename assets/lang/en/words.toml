@@ -1,0 +1,27 @@
+# English word lists for the transcript heuristics (#2889). Words are
+# matched lower case, punctuation left out; a phrase matches as words in
+# a row.
+format = 1
+language = "en"
+
+# Hesitation sounds a filler cut offers to take out: sounds with no
+# meaning of their own ("like" and "you know" are meant too often).
+fillers = ["um", "umm", "uh", "uhh", "erm", "er", "hmm", "mm", "mmm", "ah", "eh"]
+
+[hooks]
+# Openers that leave a sentence hanging on what came before.
+dangling = ["and", "so", "but", "because", "that", "it", "this", "which", "also", "then", "yeah", "um", "uh", "or", "plus", "they", "he", "she"]
+# Words that speak to the viewer.
+address = ["you", "your"]
+# Openers that pull a viewer in.
+strong = ["here's", "never", "stop", "why", "how", "what", "nobody", "everyone", "most", "the secret", "the truth", "the biggest", "the reason", "if you", "imagine", "listen"]
+# Words that turn toward a point.
+turns = ["but", "because", "turns out", "the reason", "that's why", "which means", "so the", "the point", "the trick"]
+
+[review]
+# Words a reviewer writes before a colon that label a comment rather
+# than sign it.
+labels = [
+    "note", "notes", "todo", "fix", "question", "idea", "comment", "re", "nb", "ps", "edit", "cut", "music", "audio", "sound", "mix", "colour", "color",
+    "grade", "title", "titles", "text", "vfx", "gfx", "picture", "logo", "caption", "captions", "subtitle", "subtitles", "general", "overall", "client",
+]

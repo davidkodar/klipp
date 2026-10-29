@@ -25,13 +25,15 @@ pub(crate) fn respond(
             };
             let words: Vec<(f64, f64, String)> = t.words.iter().map(|w| (w.start_secs, w.end_secs, w.text.clone())).collect();
             let dur = item.duration.to_secs_f64();
+            // The transcript's language picks its filler words (#2889).
+            let lists = klipp_core::lang::words(t.language.as_deref());
             // A take with next to no speech, or words whose times the
             // transcriber lost, is cut by its picture: its shots (#2489).
             let by_picture = speech_too_thin(&words, dur);
             let selects = if by_picture {
                 picture_selects(report.shots.as_ref().map(|s| s.boundaries.as_slice()).unwrap_or(&[]), dur)
             } else {
-                suggest_selects(&words, min_gap_secs.unwrap_or(0.6).max(0.1), 0.35)
+                suggest_selects(&words, min_gap_secs.unwrap_or(0.6).max(0.1), 0.35, lists.as_deref().ok())
             };
             let keep: Vec<&Select> = selects.iter().filter(|s| !s.filler).collect();
             let kept_secs: f64 = keep.iter().map(|s| s.out_secs - s.in_secs).sum();
@@ -40,6 +42,10 @@ pub(crate) fn respond(
             } else {
                 format!("{}: {} selects to keep out of {} runs, {:.1} s of {:.1} s ({:.0}%). Place each keep range, in order, closing the gaps.\n", quoted(&item.filename), keep.len(), selects.len(), kept_secs, dur, if dur > 0.0 { 100.0 * kept_secs / dur } else { 0.0 })
             };
+            match &lists {
+                Ok(l) => text.push_str(&format!("Filler words read in {}.\n", l.language)),
+                Err(why) => text.push_str(&format!("No run was dropped as filler: {why}.\n")),
+            }
             for s in &selects {
                 let mark = if s.filler { "drop" } else { "keep" };
                 let mut line = s.text.clone();
@@ -51,6 +57,7 @@ pub(crate) fn respond(
                 "text": text, "cut": cut, "media_id": media_id, "filename": item.filename,
                 "selects": selects.iter().map(|s| json!({ "in_secs": s.in_secs, "out_secs": s.out_secs, "text": s.text, "keep": !s.filler })).collect::<Vec<_>>(),
                 "kept_secs": kept_secs, "duration_secs": dur, "by": if by_picture { "picture" } else { "speech" },
+                "language": lists.as_ref().map(|l| l.language.clone()).ok(),
                 "next": "Place each keep range (place with the clip's source in/out at these times), in order, on the timeline; drop the rest. Then cover any jump cuts and check.",
             }))
         }
@@ -76,12 +83,20 @@ pub(crate) fn respond(
                 return Err(format!("a count of {count}: give count from 1 to 20"));
             }
             let ask = klipp_analysis::shorts::Ask { target_secs: target, min_secs: (target * 0.5).max(8.0), max_secs: (target * 2.0).min(90.0), count, include, exclude };
-            let found = klipp_analysis::shorts::find(&t.words, &ask);
+            // The transcript's language picks the hook words (#2889); with
+            // no list for it, moments are found by their shape alone.
+            let lists = klipp_core::lang::words(t.language.as_deref());
+            let none = klipp_core::lang::Words::none(t.language.as_deref().unwrap_or("?"));
+            let found = klipp_analysis::shorts::find(&t.words, &ask, lists.as_deref().unwrap_or(&none));
             let mut text = if found.is_empty() {
                 format!("{}: no moment of {:.0}-{:.0} s stands on its own here{}.\n", quoted(&item.filename), ask.min_secs, ask.max_secs, if ask.include.is_empty() && ask.exclude.is_empty() { "" } else { " with those topics" })
             } else {
                 format!("{}: {} moments for shorts, best first. Read each, re-rank by what it says, then make_shorts with the ones to keep.\n", quoted(&item.filename), found.len())
             };
+            match &lists {
+                Ok(l) => text.push_str(&format!("Hooks read in {}.\n", l.language)),
+                Err(why) => text.push_str(&format!("Hooks read by their shape alone: {why}.\n")),
+            }
             for (k, m) in found.iter().enumerate() {
                 let mut hook = m.hook.clone();
                 if hook.chars().count() > 90 { hook = hook.chars().take(89).collect::<String>() + "…"; }
@@ -91,6 +106,7 @@ pub(crate) fn respond(
             Ok(json!({
                 "text": text, "cut": cut, "media_id": media_id, "filename": item.filename,
                 "moments": found,
+                "language": lists.as_ref().map(|l| l.language.clone()).ok(),
                 "next": "Look at a moment with klipp_contact_sheet or klipp_frame_at over its range; the full text of each is in moments[].text.",
             }))
         }

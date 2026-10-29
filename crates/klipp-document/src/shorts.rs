@@ -13,19 +13,18 @@ const LEAD: f64 = 0.08;
 const TAIL: f64 = 0.12;
 /// A pause this long inside a moment is taken out when it is tightened.
 const PAUSE: f64 = 0.5;
-/// Words that carry nothing alone.
-const FILLER: &[&str] = &["um", "uh", "er", "erm", "ah", "hmm", "mm"];
 
 /// The pieces of the file to place for the moment `from..to`, in file
 /// seconds: one, its ends on the words', or with `tighten` one for each
-/// run of speech between the pauses, runs of only filler left out.
-pub fn pieces(words: &[SpokenWord], from: f64, to: f64, tighten: bool) -> Vec<(f64, f64)> {
+/// run of speech between the pauses, runs of only filler (in `lists`, the
+/// transcript's language, #2889) left out.
+pub fn pieces(words: &[SpokenWord], from: f64, to: f64, tighten: bool, lists: Option<&klipp_core::lang::Words>) -> Vec<(f64, f64)> {
     let inside: Vec<&SpokenWord> = words.iter().filter(|w| w.start_secs >= from - 0.05 && w.end_secs <= to + 0.05).collect();
     let (Some(first), Some(last)) = (inside.first(), inside.last()) else { return Vec::new() };
     if !tighten {
         return vec![((first.start_secs - LEAD).max(0.0), last.end_secs + TAIL)];
     }
-    let filler = |w: &SpokenWord| FILLER.contains(&w.text.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase().as_str());
+    let filler = |w: &SpokenWord| lists.is_some_and(|l| l.is_filler(&w.text));
     let mut runs: Vec<Vec<&SpokenWord>> = Vec::new();
     for w in inside {
         match runs.last_mut() {
@@ -89,14 +88,14 @@ mod tests {
     /// just before its first word and ends just after its last.
     #[test]
     fn a_tightened_moment_is_its_runs_of_speech() {
-        let p = pieces(&talk(), 10.0, 20.0, true);
+        let p = pieces(&talk(), 10.0, 20.0, true, Some(&klipp_core::lang::english()));
         assert_eq!(p.len(), 2, "{p:?}");
         assert!((p[0].0 - (10.0 - LEAD)).abs() < 1e-9 && (p[0].1 - (13.45 + TAIL)).abs() < 1e-9, "{p:?}");
         assert!((p[1].0 - (16.0 - LEAD)).abs() < 1e-9, "{p:?}");
-        let whole = pieces(&talk(), 10.0, 20.0, false);
+        let whole = pieces(&talk(), 10.0, 20.0, false, Some(&klipp_core::lang::english()));
         assert_eq!(whole.len(), 1);
         assert!((whole[0].0 - (10.0 - LEAD)).abs() < 1e-9 && (whole[0].1 - (19.45 + TAIL)).abs() < 1e-9, "{whole:?}");
-        assert!(pieces(&talk(), 30.0, 40.0, true).is_empty());
+        assert!(pieces(&talk(), 30.0, 40.0, true, Some(&klipp_core::lang::english())).is_empty());
     }
 
     struct Said(Vec<SpokenWord>);
@@ -122,7 +121,7 @@ mod tests {
         item.video_codec = "hevc".into();
         item.has_audio = true;
         let media = pool.add(item);
-        let p = pieces(&talk(), 10.0, 20.0, true);
+        let p = pieces(&talk(), 10.0, 20.0, true, Some(&klipp_core::lang::english()));
         let ops = short_ops(media, &p, Some("Why do most startups fail?"), 1.15);
         let plan = resolve_with(&seq, &pool, &ops, &Said(talk())).unwrap_or_else(|r| panic!("{r:?}"));
         let mut seqs = vec![seq];

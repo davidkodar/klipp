@@ -107,22 +107,20 @@ fn fields(line: &str, delimiter: char) -> Vec<String> {
     out
 }
 
-/// Words a reviewer writes before a colon that label a comment rather
-/// than sign it.
-const LABELS: &[&str] = &[
-    "note", "notes", "todo", "fix", "question", "idea", "comment", "re", "nb", "ps", "edit", "cut", "music", "audio", "sound", "mix", "colour", "color",
-    "grade", "title", "titles", "text", "vfx", "gfx", "picture", "logo", "caption", "captions", "subtitle", "subtitles", "general", "overall", "client",
-];
-
 /// Whether `name` reads as a person's name: one to three words, each
-/// starting with a capital letter, no digits, not a label word.
+/// starting with a capital letter, no digits, not a word that labels a
+/// comment in any language there is a list for (#2889): a review is in
+/// no transcript's language.
 fn looks_like_a_name(name: &str) -> bool {
     let words: Vec<&str> = name.split_whitespace().collect();
     !words.is_empty()
         && words.len() <= 3
         && name.len() <= 32
         && words.iter().all(|w| w.chars().next().is_some_and(char::is_uppercase) && !w.contains(char::is_numeric))
-        && !words.iter().any(|w| LABELS.contains(&w.to_lowercase().as_str()))
+        && !words.iter().any(|w| {
+            let w = w.to_lowercase();
+            klipp_core::lang::every().iter().any(|l| l.review.labels.contains(&w))
+        })
 }
 
 /// Comments read back from `text`: the comment template, or any

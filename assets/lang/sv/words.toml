@@ -1,0 +1,26 @@
+# Swedish word lists for the transcript heuristics (#2889). Words are
+# matched lower case, punctuation left out; a phrase matches as words in
+# a row.
+format = 1
+language = "sv"
+
+# Hesitation sounds a filler cut offers to take out.
+fillers = ["öh", "öhm", "äh", "ähm", "eh", "ehm", "hm", "hmm", "mm", "mmm"]
+
+[hooks]
+# Openers that leave a sentence hanging on what came before.
+dangling = ["och", "så", "men", "eftersom", "att", "det", "den", "som", "också", "sen", "ja", "eller", "plus", "de", "han", "hon", "öh", "äh"]
+# Words that speak to the viewer.
+address = ["du", "dig", "din", "ditt", "dina", "ni", "er", "era"]
+# Openers that pull a viewer in.
+strong = ["här är", "aldrig", "sluta", "varför", "hur", "vad", "ingen", "alla", "de flesta", "hemligheten", "sanningen", "den största", "anledningen", "om du", "tänk dig", "lyssna"]
+# Words that turn toward a point.
+turns = ["men", "eftersom", "det visar sig", "anledningen", "det är därför", "vilket betyder", "så den", "poängen", "tricket"]
+
+[review]
+# Words a reviewer writes before a colon that label a comment rather
+# than sign it.
+labels = [
+    "anteckning", "anteckningar", "fixa", "fråga", "idé", "kommentar", "klipp", "musik", "ljud", "mix", "färg", "gradering",
+    "titel", "titlar", "text", "logga", "bild", "textning", "undertext", "undertexter", "allmänt", "övergripande", "kund",
+]

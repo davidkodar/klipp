@@ -3026,6 +3026,7 @@ dependencies = [
 name = "klipp-core"
 version = "0.2.0"
 dependencies = [
+ "dirs",
  "half",
  "image",
  "klipp-effects",
@@ -3033,6 +3034,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 1.0.69",
+ "toml",
  "tracing",
  "uuid",
 ]

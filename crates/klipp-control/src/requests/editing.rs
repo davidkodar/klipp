@@ -339,7 +339,7 @@ pub(crate) fn respond(
                 return Err(format!("{} moments: give 1 to 10, from find_moments", moments.len()));
             }
             let id = klipp_core::MediaId(media_id.parse().map_err(|e| format!("media_id is not a uuid: {e}"))?);
-            let (item, words) = {
+            let (item, words, lists) = {
                 let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
                 let item = pool.get(&id).ok_or_else(|| format!("no media item {}", id.0))?.clone();
                 let report = klipp_analysis::report::MediaAnalysis::load(&item.path);
@@ -347,7 +347,8 @@ pub(crate) fn respond(
                     return Err(format!("{} has no transcript yet: analyze it first", item.filename));
                 };
                 let words: Vec<klipp_document::ops::SpokenWord> = t.words.iter().map(|w| klipp_document::ops::SpokenWord { start_secs: w.start_secs, end_secs: w.end_secs, text: w.text.clone(), confidence: w.confidence }).collect();
-                (item, words)
+                // The transcript's language picks its filler words (#2889).
+                (item, words, klipp_core::lang::words(t.language.as_deref()))
             };
             let dur = item.duration.to_secs_f64();
             let tighten = tighten.unwrap_or(true);
@@ -358,7 +359,7 @@ pub(crate) fn respond(
                 if !(m.from_secs >= 0.0 && m.to_secs > m.from_secs && m.to_secs <= dur + 0.5) {
                     return Err(format!("moment {}: {:.2}-{:.2} s is not inside the file's {dur:.2} s", k + 1, m.from_secs, m.to_secs));
                 }
-                let pieces = klipp_document::shorts::pieces(&words, m.from_secs, m.to_secs, tighten);
+                let pieces = klipp_document::shorts::pieces(&words, m.from_secs, m.to_secs, tighten, lists.as_deref().ok());
                 if pieces.is_empty() {
                     return Err(format!("moment {}: nothing is said in {:.2}-{:.2} s", k + 1, m.from_secs, m.to_secs));
                 }
@@ -380,9 +381,14 @@ pub(crate) fn respond(
                 made.push(json!({ "name": name, "pieces": pieces.len(), "secs": secs }));
             }
             let text = made.iter().map(|m| format!("  {} ({} piece(s), {:.1} s)", quoted(m["name"].as_str().unwrap_or_default()), m["pieces"], m["secs"].as_f64().unwrap_or_default())).collect::<Vec<_>>().join("\n");
+            let language = match &lists {
+                Ok(l) => format!("Filler runs read in {}.", l.language),
+                Err(why) => format!("No run was left out as filler: {why}."),
+            };
             Ok(json!({
-                "text": format!("{} short(s) made, each a sequence of its own at 1080x1920, {lufs} LUFS:\n{text}", made.len()),
+                "text": format!("{} short(s) made, each a sequence of its own at 1080x1920, {lufs} LUFS:\n{text}\n{language}", made.len()),
                 "shorts": made,
+                "language": lists.as_ref().map(|l| l.language.clone()).ok(),
                 "next": "Open each (klipp_switch_sequence) and look: klipp_frame_at over the cuts, the captions with klipp_timeline, then klipp_check. Pictures with no clear speaker stay centred: reframe them by hand.",
             }))
         }

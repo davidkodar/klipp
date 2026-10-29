@@ -16,10 +16,6 @@ pub struct Select {
     pub filler: bool,
 }
 
-pub(crate) fn is_filler_word(w: &str) -> bool {
-    let t: String = w.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase();
-    matches!(t.as_str(), "um" | "uh" | "uhh" | "umm" | "erm" | "er" | "hmm" | "mm" | "mmm" | "ah" | "eh")
-}
 
 /// Whether a take's words are too thin to cut it by (#2489): a take of
 /// half a minute or more with speech under a tenth of it, or words whose
@@ -54,7 +50,7 @@ pub fn picture_selects(boundaries: &[f64], duration_secs: f64) -> Vec<Select> {
 /// dead air and the filler, building a tight cut from a loose one. A gap
 /// of `min_gap` seconds or more starts a new select; a run that is only
 /// filler, or shorter than `min_len`, is flagged to drop.
-pub fn suggest_selects(words: &[(f64, f64, String)], min_gap: f64, min_len: f64) -> Vec<Select> {
+pub fn suggest_selects(words: &[(f64, f64, String)], min_gap: f64, min_len: f64, lists: Option<&klipp_core::lang::Words>) -> Vec<Select> {
     let mut selects: Vec<Select> = Vec::new();
     let mut cur: Vec<&(f64, f64, String)> = Vec::new();
     let flush = |cur: &mut Vec<&(f64, f64, String)>, out: &mut Vec<Select>| {
@@ -64,7 +60,9 @@ pub fn suggest_selects(words: &[(f64, f64, String)], min_gap: f64, min_len: f64)
         let in_secs = cur.first().unwrap().0;
         let out_secs = cur.last().unwrap().1;
         let text = cur.iter().map(|w| w.2.trim()).collect::<Vec<_>>().join(" ");
-        let all_filler = cur.iter().all(|w| is_filler_word(&w.2));
+        // Only filler in the transcript's language (#2889); none with no
+        // list for it.
+        let all_filler = lists.is_some_and(|l| cur.iter().all(|w| l.is_filler(&w.2)));
         let too_short = out_secs - in_secs < min_len;
         out.push(Select { in_secs, out_secs, text, filler: all_filler || too_short });
         cur.clear();
@@ -558,4 +556,27 @@ pub(crate) fn next_after_ops(ops: &[klipp_document::ops::Op], brief: Option<&kli
         "Run check to hold the cut to the brief and the craft before you export."
     };
     Some(said.to_string())
+}
+
+#[cfg(test)]
+mod language_tests {
+    use super::suggest_selects;
+
+    /// #2889: a Swedish take's runs of only hesitation are dropped by the
+    /// Swedish list, and kept by the English one, which does not know them;
+    /// with no list, nothing is dropped as filler.
+    #[test]
+    fn a_second_languages_fillers_are_dropped() {
+        let w = |a: f64, b: f64, t: &str| (a, b, t.to_string());
+        let words = vec![
+            w(0.0, 0.5, "Vi"), w(0.5, 1.0, "åkte"), w(1.0, 1.6, "till"), w(1.6, 2.2, "havet."),
+            w(3.5, 4.0, "Öh,"), w(4.0, 4.6, "ähm..."),
+            w(6.0, 6.5, "Det"), w(6.5, 7.0, "var"), w(7.0, 7.8, "fint."),
+        ];
+        let sv = klipp_core::lang::words(Some("sv")).unwrap();
+        let dropped = |l: Option<&klipp_core::lang::Words>| suggest_selects(&words, 0.6, 0.35, l).into_iter().filter(|s| s.filler).map(|s| s.text).collect::<Vec<_>>();
+        assert_eq!(dropped(Some(&sv)), ["Öh, ähm..."]);
+        assert!(dropped(Some(&klipp_core::lang::english())).is_empty(), "English does not know them");
+        assert!(dropped(None).is_empty());
+    }
 }
