@@ -241,59 +241,67 @@ pub(crate) fn respond(
             handle(ctx, ControlCommand::SetBrief { brief }, &mut None)
         }
 
+        ControlCommand::ApplyBrandKit { name, parts } => {
+            if in_batch {
+                return Err("apply_brand_kit is its own undo step; send it on its own".into());
+            }
+            const PARTS: [&str; 2] = ["brief", "captions"];
+            let parts: Vec<String> = parts.unwrap_or_else(|| PARTS.map(String::from).to_vec()).iter().map(|p| p.trim().to_lowercase()).collect();
+            if let Some(p) = parts.iter().find(|p| !PARTS.contains(&p.as_str())) {
+                return Err(format!("\"{p}\" is not a part a kit is taken in by; give {}", PARTS.join(", ")));
+            }
+            let found = klipp_project::brand_kit::get(klipp_timeline::template_places::data_root().as_deref(), &name)?;
+            let kit = &found.kit;
+            let mut edits = Vec::new();
+            let mut said = Vec::new();
+            let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+            if parts.iter().any(|p| p == "brief") {
+                let old = seq.brief.clone();
+                let mut brief = kit.into_brief(&old.clone().unwrap_or_default());
+                check_brief(&mut brief).map_err(|e| format!("the kit's {e}"))?;
+                // The titles that follow a look the kit changes go with it.
+                let followers = klipp_document::ops::follow_brief(&seq, old.as_ref(), Some(&brief));
+                said.push(format!("the brief takes its colours and {} title look{}{}", kit.title_styles().len(), if kit.title_styles().len() == 1 { "" } else { "s" }, if followers.is_empty() { String::new() } else { format!(", restyling {} title{}", followers.len(), if followers.len() == 1 { "" } else { "s" }) }));
+                edits.push(klipp_document::history::EditCommand::SetBrief { old: old.map(Box::new), new: Some(Box::new(brief)) });
+                edits.extend(followers);
+            }
+            if parts.iter().any(|p| p == "captions") {
+                match kit.caption_look() {
+                    None => said.push("it has no caption look".into()),
+                    Some(look) => {
+                        let mut restyled = 0;
+                        for (i, track) in seq.tracks.iter().enumerate().filter(|(_, t)| t.kind == klipp_timeline::TrackKind::Subtitle && t.caption_style.is_none()) {
+                            let mut new = track.clone();
+                            for clip in &mut new.clips {
+                                if let klipp_timeline::ClipKind::Title(td) = &mut clip.kind {
+                                    *td = klipp_document::ops::apply_caption_style(td, &look);
+                                }
+                            }
+                            new.caption_style = Some(look.clone());
+                            edits.push(klipp_document::history::EditCommand::SetTrack { description: "Brand Kit Captions", track_index: i, old: Box::new(track.clone()), new: Box::new(new) });
+                            restyled += 1;
+                        }
+                        said.push(format!("{restyled} subtitle track{} take{} its caption look", if restyled == 1 { "" } else { "s" }, if restyled == 1 { "s" } else { "" }));
+                    }
+                }
+            }
+            drop(seq);
+            let fonts: Vec<String> = [&kit.fonts.heading, &kit.fonts.body].into_iter().flatten().cloned().collect();
+            let text = format!("brand kit \"{}\": {}", kit.name, said.join("; "));
+            if edits.is_empty() {
+                return Ok(json!({ "text": format!("{text}; nothing changed"), "changed": false }));
+            }
+            let mut v = send_full_envelope(ctx, Vec::new(), edits, true, None, Some(format!("Apply Brand Kit {}", kit.name)))?;
+            v["text"] = json!(text);
+            with_warnings(&mut v, font_warnings(fonts.iter().map(String::as_str)));
+            Ok(v)
+        }
+
         ControlCommand::SetBrief { mut brief } => {
             if in_batch {
                 return Err("set_brief is its own undo step; send it on its own".into());
             }
-            for style in &brief.type_styles {
-                klipp_document::title_style::resolve_motion(style)
-                    .map_err(|e| format!("type style {:?}: {e}", style.name))?;
-                if let Some(shadow) = &style.shadow {
-                    klipp_document::ops::type_style_shadow(shadow).map_err(|e| format!("type style {:?}: {e}", style.name))?;
-                }
-                if let Some(metal) = &style.material {
-                    if klipp_core::title_material::MetalPreset::from_name(metal).is_none() {
-                        let names = klipp_core::title_material::MetalPreset::ALL.map(|p| p.name()).join(", ");
-                        return Err(format!("type style {:?}: \"{metal}\" is not a metal; use {names}", style.name));
-                    }
-                }
-            }
-            if let Some(t) = brief.target_secs {
-                if !t.is_finite() || t <= 0.0 {
-                    return Err(format!("a length of {t} s is not a length"));
-                }
-            }
-            if let Some(l) = brief.loudness_lufs {
-                if !(-40.0..=-5.0).contains(&l) {
-                    return Err(format!("{l} LUFS is not a delivery loudness; the web is about -14, broadcast -23"));
-                }
-            }
-            if brief.width.is_some() != brief.height.is_some() {
-                return Err("give both width and height, or neither".into());
-            }
-            if let Some(dup) = brief.cast.iter().enumerate().find(|(i, c)| brief.cast[..*i].iter().any(|d| d.name.trim().eq_ignore_ascii_case(c.name.trim()))) {
-                return Err(format!("{} is in the cast twice", dup.1.name));
-            }
-            if brief.cast.iter().any(|c| c.name.trim().is_empty()) {
-                return Err("a cast member needs a name".into());
-            }
-            if brief.features.iter().any(|f| f.title.trim().is_empty()) {
-                return Err("a feature needs a title".into());
-            }
-            if let Some(dup) = brief.features.iter().enumerate().find(|(i, f)| brief.features[..*i].iter().any(|d| d.title.trim().eq_ignore_ascii_case(f.title.trim()))) {
-                return Err(format!("the feature \"{}\" is listed twice", dup.1.title));
-            }
-            if let Some(look) = brief.look.take() {
-                let name = look.name.clone();
-                let resolved = resolve_look_target(look);
-                if resolved.mid_l.is_none() && resolved.cast_a.is_none() && !resolved.screencast {
-                    return Err(format!("look \"{name}\" is neither a preset ({}) nor numbers; give a name, or the fields black_l, white_l, mid_l, contrast_range, chroma_mean, cast_a, cast_b, skin_hue, protect — style_profile lifts them from a reference", klipp_color::measure::LookTarget::PRESETS.join(", ")));
-                }
-                brief.look = Some(resolved);
-            }
-            if let Some(c) = brief.brand_colors.iter().find(|c| { let c = c.trim(); !(c.len() == 7 && c.starts_with('#') && c[1..].chars().all(|ch| ch.is_ascii_hexdigit())) }) {
-                return Err(format!("\"{c}\" is not a brand colour; give #rrggbb"));
-            }
+            check_brief(&mut brief)?;
             let old = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?.brief.clone();
             let fonts_named: Vec<String> = brief.type_styles.iter().filter_map(|t| t.font.clone()).collect();
             let text = brief.text();
@@ -1088,4 +1096,61 @@ mod sound_role_tests {
         assert_eq!(SoundUse::of(R::Music).and(SoundUse::Unheard), SoundUse::Designed(R::Music));
         assert_eq!(sound_finding(0.0, "x", RUMBLE, "fix", SoundUse::Unheard).severity, "warning");
     }
+}
+
+/// A brief held to what `set_brief` takes (#2722: a brand kit taken in
+/// passes the same): type styles' motion, shadow and material, a length,
+/// a loudness, a size, the cast and features, the look resolved, and the
+/// brand colours as `#rrggbb`.
+fn check_brief(brief: &mut klipp_timeline::Brief) -> Result<(), String> {
+    for style in &brief.type_styles {
+        klipp_document::title_style::resolve_motion(style)
+            .map_err(|e| format!("type style {:?}: {e}", style.name))?;
+        if let Some(shadow) = &style.shadow {
+            klipp_document::ops::type_style_shadow(shadow).map_err(|e| format!("type style {:?}: {e}", style.name))?;
+        }
+        if let Some(metal) = &style.material {
+            if klipp_core::title_material::MetalPreset::from_name(metal).is_none() {
+                let names = klipp_core::title_material::MetalPreset::ALL.map(|p| p.name()).join(", ");
+                return Err(format!("type style {:?}: \"{metal}\" is not a metal; use {names}", style.name));
+            }
+        }
+    }
+    if let Some(t) = brief.target_secs {
+        if !t.is_finite() || t <= 0.0 {
+            return Err(format!("a length of {t} s is not a length"));
+        }
+    }
+    if let Some(l) = brief.loudness_lufs {
+        if !(-40.0..=-5.0).contains(&l) {
+            return Err(format!("{l} LUFS is not a delivery loudness; the web is about -14, broadcast -23"));
+        }
+    }
+    if brief.width.is_some() != brief.height.is_some() {
+        return Err("give both width and height, or neither".into());
+    }
+    if let Some(dup) = brief.cast.iter().enumerate().find(|(i, c)| brief.cast[..*i].iter().any(|d| d.name.trim().eq_ignore_ascii_case(c.name.trim()))) {
+        return Err(format!("{} is in the cast twice", dup.1.name));
+    }
+    if brief.cast.iter().any(|c| c.name.trim().is_empty()) {
+        return Err("a cast member needs a name".into());
+    }
+    if brief.features.iter().any(|f| f.title.trim().is_empty()) {
+        return Err("a feature needs a title".into());
+    }
+    if let Some(dup) = brief.features.iter().enumerate().find(|(i, f)| brief.features[..*i].iter().any(|d| d.title.trim().eq_ignore_ascii_case(f.title.trim()))) {
+        return Err(format!("the feature \"{}\" is listed twice", dup.1.title));
+    }
+    if let Some(look) = brief.look.take() {
+        let name = look.name.clone();
+        let resolved = resolve_look_target(look);
+        if resolved.mid_l.is_none() && resolved.cast_a.is_none() && !resolved.screencast {
+            return Err(format!("look \"{name}\" is neither a preset ({}) nor numbers; give a name, or the fields black_l, white_l, mid_l, contrast_range, chroma_mean, cast_a, cast_b, skin_hue, protect — style_profile lifts them from a reference", klipp_color::measure::LookTarget::PRESETS.join(", ")));
+        }
+        brief.look = Some(resolved);
+    }
+    if let Some(c) = brief.brand_colors.iter().find(|c| { let c = c.trim(); !(c.len() == 7 && c.starts_with('#') && c[1..].chars().all(|ch| ch.is_ascii_hexdigit())) }) {
+        return Err(format!("\"{c}\" is not a brand colour; give #rrggbb"));
+    }
+    Ok(())
 }

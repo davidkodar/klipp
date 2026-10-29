@@ -903,6 +903,7 @@ fn handle(
             | ControlCommand::BuildEditPlan { .. }
             | ControlCommand::UpdateBrief { .. }
             | ControlCommand::SetBrief { .. }
+            | ControlCommand::ApplyBrandKit { .. }
             | ControlCommand::Check { .. }
             | ControlCommand::ReviewFinding { .. }
             | ControlCommand::Batch { .. }
