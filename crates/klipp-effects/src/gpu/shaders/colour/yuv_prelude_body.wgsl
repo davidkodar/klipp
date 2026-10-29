@@ -1,0 +1,51 @@
+
+const COLOR_RANGE_LIMITED: u32 = 0u;
+const COLOR_RANGE_FULL: u32 = 1u;
+
+const MATRIX_BT709: u32 = 0u;
+const MATRIX_BT601: u32 = 1u;
+const MATRIX_BT2020_NCL: u32 = 2u;
+const MATRIX_SMPTE240: u32 = 3u;
+const MATRIX_IDENTITY: u32 = 4u;
+
+const TRANSFER_BT709: u32 = 0u;
+const TRANSFER_SRGB: u32 = 1u;
+const TRANSFER_LINEAR: u32 = 2u;
+const TRANSFER_PQ: u32 = 3u;
+const TRANSFER_HLG: u32 = 4u;
+const TRANSFER_GAMMA22: u32 = 5u;
+const TRANSFER_GAMMA28: u32 = 6u;
+
+const PRIMARIES_BT709: u32 = 0u;
+const PRIMARIES_BT2020: u32 = 1u;
+const PRIMARIES_BT601_525: u32 = 2u;
+const PRIMARIES_BT601_625: u32 = 3u;
+const PRIMARIES_DCI_P3: u32 = 4u;
+const PRIMARIES_DISPLAY_P3: u32 = 5u;
+
+// Camera log curves — IDs >= 100, matching klipp_core::color_ids.
+const TRANSFER_SLOG3: u32 = 100u;
+const TRANSFER_SLOG2: u32 = 101u;
+const TRANSFER_VLOG: u32 = 102u;
+const TRANSFER_LOGC3: u32 = 103u;
+const TRANSFER_LOGC4: u32 = 104u;
+const TRANSFER_CANON_LOG: u32 = 105u;
+const TRANSFER_CANON_LOG3: u32 = 106u;
+const TRANSFER_RED_LOG3G10: u32 = 107u;
+const TRANSFER_BMD_FILM_GEN5: u32 = 108u;
+const TRANSFER_DJI_DLOG: u32 = 109u;
+const TRANSFER_FLOG: u32 = 110u;
+const TRANSFER_APPLE_LOG: u32 = 111u;
+const TRANSFER_NLOG: u32 = 112u;
+const TRANSFER_GOPRO_FLAT: u32 = 113u;
+const TRANSFER_LEICA_LLOG: u32 = 114u;
+
+// Camera-native gamuts — IDs >= 100.
+const PRIMARIES_S_GAMUT3_CINE: u32 = 100u;
+const PRIMARIES_S_GAMUT3: u32 = 101u;
+const PRIMARIES_V_GAMUT: u32 = 102u;
+const PRIMARIES_CANON_CINEMA_GAMUT: u32 = 103u;
+const PRIMARIES_ALEXA_WIDE_GAMUT_3: u32 = 104u;
+const PRIMARIES_ALEXA_WIDE_GAMUT_4: u32 = 105u;
+const PRIMARIES_RED_WIDE_GAMUT: u32 = 106u;
+const PRIMARIES_BMD_WIDE_GAMUT: u32 = 107u;
