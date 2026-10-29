@@ -1141,17 +1141,17 @@ impl PreferencesPanel {
         Self::section_header(ui, "DEFAULTS", theme);
 
         Self::setting_row_with_subtitle(ui, "New sequence resolution", "Used when no clip is available to inherit from", theme, |ui| {
-            use crate::panels::new_project_dialog::RESOLUTION_PRESETS;
-            let idx = prefs.editing.default_sequence_resolution_idx.min(RESOLUTION_PRESETS.len() - 1);
-            let label = RESOLUTION_PRESETS[idx].0;
+            use crate::panels::new_project_dialog::resolution_presets;
+            let idx = prefs.editing.default_sequence_resolution_idx.min(resolution_presets().len() - 1);
+            let label = resolution_presets()[idx].0.as_str();
             egui::ComboBox::from_id_salt("default_seq_res")
                 .selected_text(label)
                 .width(220.0)
                 .show_ui(ui, |ui| {
-                    for (i, (name, _, _)) in RESOLUTION_PRESETS.iter().enumerate() {
+                    for (i, (name, _, _)) in resolution_presets().iter().enumerate() {
                         // Hide "Custom..." — preset must be a concrete size.
                         if *name == "Custom..." { continue; }
-                        if ui.selectable_label(prefs.editing.default_sequence_resolution_idx == i, *name).clicked() {
+                        if ui.selectable_label(prefs.editing.default_sequence_resolution_idx == i, name.as_str()).clicked() {
                             // Dispatch through AppCommand for live-sync.
                             // Read at "+ new sequence" time (timeline/
                             // sequence_tabs.rs:182) — mid-session

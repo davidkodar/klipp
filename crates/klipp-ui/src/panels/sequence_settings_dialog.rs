@@ -3,7 +3,7 @@
 //! and fps numerator/denominator). Reuses the preset tables defined in
 //! `new_project_dialog` so the same shorthand is offered everywhere.
 
-use crate::panels::new_project_dialog::{FPS_PRESETS, RESOLUTION_PRESETS};
+use crate::panels::new_project_dialog::{fps_presets, resolution_presets};
 use crate::inspector::rows;
 use crate::theme::KlippTheme;
 use klipp_core::AppCommand;
@@ -15,11 +15,11 @@ pub struct SequenceSettingsDialog {
     pub height: u32,
     pub fps_num: u32,
     pub fps_den: u32,
-    /// Index into `RESOLUTION_PRESETS`; the entry whose w/h matches the
+    /// Index into `resolution_presets()`; the entry whose w/h matches the
     /// current `width`/`height`. Falls back to the "Custom..." row if no
     /// preset matches, which unlocks the manual width/height editors.
     resolution_idx: usize,
-    /// Index into `FPS_PRESETS`. Same behaviour — defaults to last (Custom)
+    /// Index into `fps_presets()`. Same behaviour — defaults to last (Custom)
     /// when no preset matches.
     fps_idx: usize,
     /// The sequence camera's shutter: degrees (0 off) and samples.
@@ -31,14 +31,14 @@ pub struct SequenceSettingsDialog {
 
 impl SequenceSettingsDialog {
     pub fn open(sequence_idx: usize, width: u32, height: u32, fps_num: u32, fps_den: u32, (shutter_deg, shutter_samples): (f32, u8), title_nits: f32) -> Self {
-        let resolution_idx = RESOLUTION_PRESETS
+        let resolution_idx = resolution_presets()
             .iter()
             .position(|(_, w, h)| *w == width && *h == height)
-            .unwrap_or_else(|| RESOLUTION_PRESETS.len() - 1); // "Custom..."
-        let fps_idx = FPS_PRESETS
+            .unwrap_or_else(|| resolution_presets().len() - 1); // "Custom..."
+        let fps_idx = fps_presets()
             .iter()
             .position(|(_, n, d)| *n == fps_num && *d == fps_den)
-            .unwrap_or_else(|| FPS_PRESETS.len() - 1);
+            .unwrap_or_else(|| fps_presets().len() - 1);
         Self { sequence_idx, width, height, fps_num, fps_den, resolution_idx, fps_idx, shutter_deg, shutter_samples, title_nits }
     }
 
@@ -63,11 +63,11 @@ impl SequenceSettingsDialog {
         // Skip the "Automatic (from first clip)" entries — those only make
         // sense when creating a brand-new project. For an existing sequence
         // we always have concrete dimensions / fps.
-        let resolution_options: Vec<&(&str, u32, u32)> = RESOLUTION_PRESETS
+        let resolution_options: Vec<&(String, u32, u32)> = resolution_presets()
             .iter()
             .filter(|(label, _, _)| *label != "Automatic (from first clip)")
             .collect();
-        let fps_options: Vec<&(&str, u32, u32)> = FPS_PRESETS
+        let fps_options: Vec<&(String, u32, u32)> = fps_presets()
             .iter()
             .filter(|(label, _, _)| *label != "Automatic (from first clip)")
             .collect();
@@ -96,7 +96,7 @@ impl SequenceSettingsDialog {
                     let res_label = resolution_options
                         .iter()
                         .position(|(_, w, h)| *w == self.width && *h == self.height)
-                        .map(|i| resolution_options[i].0)
+                        .map(|i| resolution_options[i].0.as_str())
                         .unwrap_or("Custom...");
                     egui::ComboBox::from_id_salt("seq_settings_res")
                         .selected_text(res_label)
@@ -105,7 +105,7 @@ impl SequenceSettingsDialog {
                             for (i, (label, w, h)) in resolution_options.iter().enumerate() {
                                 let is_selected = self.width == *w && self.height == *h
                                     && *label != "Custom...";
-                                if ui.selectable_label(is_selected, *label).clicked() {
+                                if ui.selectable_label(is_selected, label.as_str()).clicked() {
                                     self.resolution_idx = i;
                                     if *label != "Custom..." {
                                         self.width = *w;
@@ -127,7 +127,7 @@ impl SequenceSettingsDialog {
                     let fps_label = fps_options
                         .iter()
                         .position(|(_, n, d)| *n == self.fps_num && *d == self.fps_den)
-                        .map(|i| fps_options[i].0)
+                        .map(|i| fps_options[i].0.as_str())
                         .unwrap_or("Custom");
                     egui::ComboBox::from_id_salt("seq_settings_fps")
                         .selected_text(fps_label)
@@ -135,7 +135,7 @@ impl SequenceSettingsDialog {
                         .show_ui(ui, |ui| {
                             for (i, (label, n, d)) in fps_options.iter().enumerate() {
                                 let is_selected = self.fps_num == *n && self.fps_den == *d;
-                                if ui.selectable_label(is_selected, *label).clicked() {
+                                if ui.selectable_label(is_selected, label.as_str()).clicked() {
                                     self.fps_idx = i;
                                     self.fps_num = *n;
                                     self.fps_den = *d;

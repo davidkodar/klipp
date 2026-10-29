@@ -1,0 +1,126 @@
+# Klipp's built-in project formats (#2887): what the New Project dialog,
+# the welcome screen and Sequence Settings offer. A format is named for
+# what it is for, with its picture in pixels, the frame rates it is made
+# at (the first the usual one, each a numerator and denominator) and
+# whether it is graded for HDR delivery. The picture sizes and the frame
+# rates are the dialogs' own lists. "Match first clip", "Automatic" and
+# "Custom..." are what the dialogs do, not presets, and are not here.
+kind = "project_formats"
+format_version = 1
+
+[[format]]
+name = "HD 1080p"
+width = 1920
+height = 1080
+rates = [[25, 1], [30000, 1001], [24000, 1001]]
+
+[[format]]
+name = "UHD 4K"
+width = 3840
+height = 2160
+rates = [[25, 1], [30000, 1001], [24000, 1001]]
+
+[[format]]
+name = "DCI 4K (cinema)"
+width = 4096
+height = 2160
+rates = [[24, 1]]
+
+[[format]]
+name = "Vertical (social)"
+width = 1080
+height = 1920
+rates = [[30, 1]]
+
+[[format]]
+name = "Square (social)"
+width = 1080
+height = 1080
+rates = [[30, 1]]
+
+[[format]]
+name = "HDR UHD (HLG / PQ)"
+width = 3840
+height = 2160
+rates = [[25, 1], [30000, 1001]]
+hdr = true
+
+[[size]]
+name = "720p HD"
+width = 1280
+height = 720
+
+[[size]]
+name = "1080p HD"
+width = 1920
+height = 1080
+
+[[size]]
+name = "1080p 4:3"
+width = 1440
+height = 1080
+
+[[size]]
+name = "2K"
+width = 2048
+height = 1080
+
+[[size]]
+name = "4K UHD"
+width = 3840
+height = 2160
+
+[[size]]
+name = "4K DCI"
+width = 4096
+height = 2160
+
+[[size]]
+name = "Vertical 9:16"
+width = 1080
+height = 1920
+
+[[size]]
+name = "Square 1:1"
+width = 1080
+height = 1080
+
+[[rate]]
+name = "23.976 fps"
+rate = [24000, 1001]
+
+[[rate]]
+name = "24 fps"
+rate = [24, 1]
+
+[[rate]]
+name = "25 fps"
+rate = [25, 1]
+
+[[rate]]
+name = "29.97 fps"
+rate = [30000, 1001]
+
+[[rate]]
+name = "30 fps"
+rate = [30, 1]
+
+[[rate]]
+name = "48 fps"
+rate = [48, 1]
+
+[[rate]]
+name = "50 fps"
+rate = [50, 1]
+
+[[rate]]
+name = "59.94 fps"
+rate = [60000, 1001]
+
+[[rate]]
+name = "60 fps"
+rate = [60, 1]
+
+[[rate]]
+name = "120 fps"
+rate = [120, 1]

@@ -216,7 +216,7 @@ impl TemplateEntry {
     /// The built-in format it is, when it is one.
     fn format(&self) -> Option<&'static crate::panels::new_project_dialog::Format> {
         match self.source {
-            TemplateSource::BuiltIn(i) => crate::panels::new_project_dialog::FORMATS.get(i),
+            TemplateSource::BuiltIn(i) => crate::panels::new_project_dialog::formats().get(i),
             TemplateSource::User(_) => None,
         }
     }
@@ -367,7 +367,7 @@ impl LaunchScreen {
     /// The templates offered: the user's own first, then the built-in
     /// formats, the same list the New Project dialog has.
     fn template_entries(&self) -> Vec<TemplateEntry> {
-        let built_in = crate::panels::new_project_dialog::FORMATS.iter().enumerate().map(|(i, f)| {
+        let built_in = crate::panels::new_project_dialog::formats().iter().enumerate().map(|(i, f)| {
             let detail = if f.width == 0 { "From the clip".to_string() } else { format!("{}\u{00D7}{}", f.width, f.height) };
             TemplateEntry { name: f.name.to_string(), detail, source: TemplateSource::BuiltIn(i) }
         });
@@ -965,7 +965,7 @@ impl LaunchScreen {
                 }
                 // The rate, at the row's end: a menu where there is a
                 // choice.
-                let rates = entry.format().map_or(&[][..], |f| f.rates);
+                let rates = entry.format().map_or(&[][..], |f| &f.rates);
                 let rate = entry.format().and_then(|f| crate::panels::new_project_dialog::format_rate(f, self.last_rate));
                 let mut right = row.max.x - 8.0;
                 if let Some(r) = rate {
