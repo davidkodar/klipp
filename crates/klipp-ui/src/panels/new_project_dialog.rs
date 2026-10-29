@@ -105,6 +105,11 @@ pub struct NewProjectDialog {
     pub brand_kit: Option<String>,
 }
 
+/// The brand kits there are, by name: the user's, then the starters.
+fn brand_kit_names() -> Vec<String> {
+    klipp_project::brand_kit::list(klipp_timeline::template_places::data_root().as_deref()).into_iter().map(|f| f.kit.name).collect()
+}
+
 impl NewProjectDialog {
     pub fn new(default_location: Option<&PathBuf>) -> Self {
         let location = default_location
@@ -125,7 +130,7 @@ impl NewProjectDialog {
             user_template: None,
             rename: None,
             needs: None,
-            brand_kits: klipp_project::brand_kit::list(klipp_timeline::template_places::data_root().as_deref()).into_iter().map(|f| f.kit.name).collect(),
+            brand_kits: brand_kit_names(),
             brand_kit: None,
         }
     }
@@ -172,6 +177,9 @@ impl NewProjectDialog {
         self.fps_idx = 0; // Automatic
         self.name_manually_edited = false;
         self.template_idx = 0;
+        // Kits made or imported since it last opened are listed.
+        self.brand_kits = brand_kit_names();
+        self.brand_kit = None;
         self.user_template = None;
         if let Some(loc) = default_location {
             self.location = loc.clone();
@@ -333,7 +341,7 @@ impl NewProjectDialog {
                 if !self.brand_kits.is_empty() {
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new("Brand kit").size(12.0 * control_scale).color(theme.text_secondary));
-                        ui.add_space(33.0 * control_scale);
+                        ui.add_space(39.0 * control_scale);
                         egui::ComboBox::from_id_salt("project_brand_kit")
                             .selected_text(self.brand_kit.clone().unwrap_or_else(|| "None".into()))
                             .width(200.0 * control_scale)

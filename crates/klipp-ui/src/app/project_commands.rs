@@ -426,6 +426,10 @@ impl KlippApp {
                 self.state.show_preferences = true;
                 true
             }
+            AppCommand::OpenApplyBrandKit => {
+                self.state.show_apply_brand_kit = true;
+                true
+            }
             AppCommand::PinRecentProject { path, pinned } => {
                 if let Some(rp) = self.prefs.general.recent_projects.iter_mut().find(|rp| rp.path == *path) {
                     rp.pinned = *pinned;

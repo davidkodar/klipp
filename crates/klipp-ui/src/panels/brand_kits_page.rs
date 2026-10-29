@@ -73,6 +73,10 @@ impl BrandKitsPage {
         });
         self.collect_picks();
         let kits = self.kits.get_or_insert_with(|| brand_kit::list(root().as_deref())).clone();
+        // The first kit open to start with, the user's own before a starter.
+        if self.draft.is_none() && self.said.is_none() {
+            self.draft = kits.first().map(Draft::of);
+        }
 
         P::section_header(ui, "KITS", theme);
         ui.horizontal_wrapped(|ui| {
@@ -198,7 +202,7 @@ impl BrandKitsPage {
 
     fn save_in(&mut self, root: &std::path::Path) {
         let Some(d) = self.draft.as_mut() else { return };
-        let target = brand_kit::kits_dir(&root).join(klipp_core::safe_name(&d.kit.name));
+        let target = brand_kit::kits_dir(root).join(klipp_core::safe_name(&d.kit.name));
         // Files already in the folder it is saved to stay where they are:
         // copied onto themselves they would be emptied.
         let files: Vec<PathBuf> = d.kit.files().into_iter().filter_map(|f| d.file(f)).filter(|p| p.parent() != Some(target.as_path())).collect();

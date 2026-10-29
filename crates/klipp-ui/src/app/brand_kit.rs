@@ -69,61 +69,61 @@ impl KlippApp {
             return;
         }
         let Some(pending) = self.state.pending_brand_kit.take() else { return };
-        match self.brand_kit_ops(&pending) {
+        match brand_kit_ops(&self.state, &pending) {
             Ok(ops) if ops.is_empty() => self.state.toast.show(format!("Brand kit \"{name}\" has no intro, outro or logo")),
             Ok(ops) => self.state.pending_doc_ops.push(crate::state::DocOpsRequest { label: format!("Brand Kit {name} Intro, Outro and Logo"), ops, independent: false }),
             Err(e) => self.state.toast.show(format!("Brand kit \"{name}\": {e}")),
         }
     }
+}
 
-    /// The ops that put the kit's intro, outro and logo on the open
-    /// sequence, its composition templates filled in.
-    fn brand_kit_ops(&self, pending: &PendingBrandKit) -> Result<Vec<klipp_document::ops::Op>, String> {
-        use klipp_document::ops::{Op, PlacedComposition};
-        let (kit, parts) = (&pending.found.kit, pending.parts);
-        let store = &self.state.composition_templates;
-        let pool = &self.state.media_pool;
-        let file = |name: &str| pending.found.dir.as_ref().map(|d| d.join(name)).ok_or_else(|| format!("its {name} has no folder to come from"));
-        let bookend = |b: &klipp_project::brand_kit::Bookend| -> Result<(Bookend, f64), String> {
-            match (&b.template, &b.file) {
-                (Some(name), _) => {
-                    let t = store.find(name, None).ok_or_else(|| format!("there is no composition template \"{name}\""))?;
-                    let len = t.sequences.iter().find(|q| q.id.0 == t.composition_id).map(|q| q.total_duration().to_secs_f64()).filter(|l| *l > 0.0).ok_or_else(|| format!("the composition template \"{name}\" has no length"))?;
-                    Ok((Bookend::Template(t.name.clone()), len))
-                }
-                (None, Some(f)) => {
-                    let m = pool.find_by_path(&file(f)?).ok_or_else(|| format!("{f} is not imported"))?;
-                    Ok((Bookend::Media(m.id), m.duration.to_secs_f64()))
-                }
-                _ => Err("its intro or outro is neither a template nor a file".into()),
-            }
-        };
-        let mut found = SequenceParts::default();
-        if parts.intro {
-            found.intro = kit.intro.as_ref().map(bookend).transpose()?;
-        }
-        if parts.outro {
-            found.outro = kit.outro.as_ref().map(bookend).transpose()?;
-        }
-        if parts.watermark {
-            if let Some(logo) = &kit.logo {
-                let m = pool.find_by_path(&file(&logo.file)?).ok_or_else(|| format!("{} is not imported", logo.file))?;
-                let (left, top) = logo.corner.sides();
-                found.watermark = Some((Watermark { left, top, margin: logo.margin, scale: logo.scale, opacity: logo.opacity }, m.id, (m.resolution.width, m.resolution.height)));
-            }
-        }
-        let mut ops = sequence_ops(self.state.sequence(), &found)?;
-        // A composition template's sequences go with it, copied into the
-        // project when it hasn't them.
-        for op in &mut ops {
-            if let Op::Template { name, composition, .. } = op {
+/// The ops that put the kit's intro, outro and logo on the open
+/// sequence, its composition templates filled in.
+fn brand_kit_ops(state: &crate::state::AppState, pending: &PendingBrandKit) -> Result<Vec<klipp_document::ops::Op>, String> {
+    use klipp_document::ops::{Op, PlacedComposition};
+    let (kit, parts) = (&pending.found.kit, pending.parts);
+    let store = &state.composition_templates;
+    let pool = &state.media_pool;
+    let file = |name: &str| pending.found.dir.as_ref().map(|d| d.join(name)).ok_or_else(|| format!("its {name} has no folder to come from"));
+    let bookend = |b: &klipp_project::brand_kit::Bookend| -> Result<(Bookend, f64), String> {
+        match (&b.template, &b.file) {
+            (Some(name), _) => {
                 let t = store.find(name, None).ok_or_else(|| format!("there is no composition template \"{name}\""))?;
-                let missing = klipp_timeline::composition_template::missing_sequences(t, &self.state.sequences);
-                *composition = Some(Box::new(PlacedComposition { template: t.clone(), missing }));
+                let len = t.sequences.iter().find(|q| q.id.0 == t.composition_id).map(|q| q.total_duration().to_secs_f64()).filter(|l| *l > 0.0).ok_or_else(|| format!("the composition template \"{name}\" has no length"))?;
+                Ok((Bookend::Template(t.name.clone()), len))
             }
+            (None, Some(f)) => {
+                let m = pool.find_by_path(&file(f)?).ok_or_else(|| format!("{f} is not imported"))?;
+                Ok((Bookend::Media(m.id), m.duration.to_secs_f64()))
+            }
+            _ => Err("its intro or outro is neither a template nor a file".into()),
         }
-        Ok(ops)
+    };
+    let mut found = SequenceParts::default();
+    if parts.intro {
+        found.intro = kit.intro.as_ref().map(bookend).transpose()?;
     }
+    if parts.outro {
+        found.outro = kit.outro.as_ref().map(bookend).transpose()?;
+    }
+    if parts.watermark {
+        if let Some(logo) = &kit.logo {
+            let m = pool.find_by_path(&file(&logo.file)?).ok_or_else(|| format!("{} is not imported", logo.file))?;
+            let (left, top) = logo.corner.sides();
+            found.watermark = Some((Watermark { left, top, margin: logo.margin, scale: logo.scale, opacity: logo.opacity }, m.id, (m.resolution.width, m.resolution.height)));
+        }
+    }
+    let mut ops = sequence_ops(state.sequence(), &found)?;
+    // A composition template's sequences go with it, copied into the
+    // project when it hasn't them.
+    for op in &mut ops {
+        if let Op::Template { name, composition, .. } = op {
+            let t = store.find(name, None).ok_or_else(|| format!("there is no composition template \"{name}\""))?;
+            let missing = klipp_timeline::composition_template::missing_sequences(t, &state.sequences);
+            *composition = Some(Box::new(PlacedComposition { template: t.clone(), missing }));
+        }
+    }
+    Ok(ops)
 }
 
 /// The files in the kit's folder the `parts` need: the logo for the
@@ -141,4 +141,37 @@ fn kit_files(found: &klipp_project::brand_kit::Found, parts: BrandKitParts) -> V
         }
     }
     names.into_iter().map(|n| dir.join(n)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The app's way to a kit's logo: the kit's file found in the media
+    /// pool once imported, and the watermark's three ops built for the
+    /// open sequence, held for the length of what is on it.
+    #[test]
+    fn a_kit_logo_in_the_pool_becomes_the_watermark() {
+        let dir = std::env::temp_dir().join(format!("klipp-brand-kit-app-{}", uuid::Uuid::new_v4()));
+        let mut kit = klipp_project::brand_kit::BrandKit::new("Acme");
+        kit.logo = Some(klipp_project::brand_kit::Logo { file: "mark.png".into(), corner: klipp_project::brand_kit::Corner::TopRight, margin: 0.03, scale: 0.12, opacity: 0.8 });
+        let found = klipp_project::brand_kit::Found { kit, source: klipp_project::brand_kit::Source::Mine, dir: Some(dir.clone()) };
+        let parts = BrandKitParts { look: false, captions: false, intro: false, outro: false, watermark: true };
+        assert_eq!(kit_files(&found, parts), vec![dir.join("mark.png")]);
+        assert!(kit_files(&found, BrandKitParts::default()).is_empty(), "the look needs no file");
+        let mut state = crate::state::AppState::default();
+        let mut logo = klipp_media::MediaItem::new_synthetic_title(klipp_core::MediaId::new(), "mark.png".into(), klipp_core::Timecode::from_secs_f64(5.0, 24), klipp_core::Fps::new(24, 1));
+        logo.path = dir.join("mark.png");
+        logo.resolution = klipp_core::Resolution { width: 200, height: 100 };
+        let logo_id = state.media_pool.add(logo);
+        let clip = klipp_timeline::test_clip::TestClip::media(8.0).build();
+        state.sequences[state.active_sequence_idx].tracks[0].clips.push(clip);
+        let pending = PendingBrandKit { found, parts, sequence: state.sequence().id, until: std::time::Instant::now() };
+        let ops: Vec<serde_json::Value> = brand_kit_ops(&state, &pending).unwrap().iter().map(|o| serde_json::to_value(o).unwrap()).collect();
+        assert_eq!(ops.len(), 3, "{ops:?}");
+        assert_eq!(ops[1]["media_id"].as_str(), Some(logo_id.0.to_string().as_str()));
+        assert!((ops[1]["source_out"].as_f64().unwrap() - 8.0).abs() < 1e-6, "{}", ops[1]);
+        let x = ops[2]["poses"][0]["x"].as_f64().unwrap();
+        assert!(x > 0.5, "top right: {x}");
+    }
 }
