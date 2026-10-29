@@ -116,15 +116,17 @@ pub fn cut_for_words(words: &[HeardWord], first: usize, last: usize) -> (f64, f6
     (from, to)
 }
 
-/// The hesitation sounds a filler sweep offers to cut. Kept to sounds
-/// with no meaning of their own: "like" and "you know" are words too
-/// often meant for a sweep to guess.
-const FILLERS: &[&str] = &["um", "umm", "uh", "uhh", "erm", "er", "hmm", "mm", "mmm", "ah", "eh"];
+/// The word lists of the language the project's speech is in (#2889),
+/// English when none is set; `Err` names a language with none.
+pub fn word_lists() -> Result<std::sync::Arc<klipp_core::lang::Words>, String> {
+    klipp_core::lang::words(klipp_analysis::transcript::language().as_deref())
+}
 
-/// Whether `text` is a filler, whatever its case and punctuation.
+/// Whether `text` is one of the hesitation sounds a filler sweep offers to
+/// cut, in the project's language, whatever its case and punctuation;
+/// nothing is, in a language with no list.
 pub fn is_filler(text: &str) -> bool {
-    let bare: String = text.chars().filter(|c| c.is_alphabetic()).collect::<String>().to_lowercase();
-    FILLERS.contains(&bare.as_str())
+    word_lists().is_ok_and(|w| w.is_filler(text))
 }
 
 /// The indices of the filler words.
@@ -218,7 +220,12 @@ pub struct Sweep {
 impl Sweep {
     /// Every filler among `words`.
     pub fn fillers(words: &[HeardWord]) -> Self {
-        let mut sweep = Self { title: "Fillers".into(), cuts: Vec::new(), longer_than: 0.0, keep: 0.0 };
+        // A language with no list says so, rather than finding none (#2889).
+        let title = match word_lists() {
+            Ok(_) => "Fillers".to_string(),
+            Err(why) => format!("Fillers: {why}"),
+        };
+        let mut sweep = Self { title, cuts: Vec::new(), longer_than: 0.0, keep: 0.0 };
         for i in fillers(words) {
             let at = ProposalAt::Word(WordKey::of(&words[i]));
             sweep.cuts.push(Proposal { label: String::new(), range: (0.0, 0.0), ticked: true, at });

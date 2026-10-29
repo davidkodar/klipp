@@ -95,14 +95,8 @@ fn tokens(text: &str) -> Vec<String> {
     text.split_whitespace().map(|w| w.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'').to_lowercase()).filter(|w| !w.is_empty()).collect()
 }
 
-/// Openers that leave a sentence hanging on what came before.
-const DANGLING: &[&str] = &["and", "so", "but", "because", "that", "it", "this", "which", "also", "then", "yeah", "um", "uh", "or", "plus", "they", "he", "she"];
-/// Openers that pull a viewer in.
-const STRONG: &[&str] = &["here's", "never", "stop", "why", "how", "what", "nobody", "everyone", "most", "the secret", "the truth", "the biggest", "the reason", "if you", "imagine", "listen"];
-/// Words that turn toward a point.
-const TURNS: &[&str] = &["but", "because", "turns out", "the reason", "that's why", "which means", "so the", "the point", "the trick"];
 
-fn hook_score(first: &Sentence, reasons: &mut Vec<String>) -> f32 {
+fn hook_score(first: &Sentence, words: &klipp_core::lang::Words, reasons: &mut Vec<String>) -> f32 {
     let t = tokens(&first.text);
     let lower = first.text.to_lowercase();
     let mut s = 0.0f32;
@@ -117,10 +111,10 @@ fn hook_score(first: &Sentence, reasons: &mut Vec<String>) -> f32 {
         s += 0.15;
         reasons.push("a number up front".into());
     }
-    if t.iter().any(|w| w == "you" || w == "your") {
+    if t.iter().any(|w| words.hooks.address.contains(w)) {
         s += 0.15;
     }
-    if STRONG.iter().any(|o| lower.starts_with(o)) {
+    if words.hooks.strong.iter().any(|o| lower.starts_with(o.as_str())) {
         s += 0.3;
         reasons.push("a strong first line".into());
     }
@@ -128,7 +122,7 @@ fn hook_score(first: &Sentence, reasons: &mut Vec<String>) -> f32 {
 }
 
 /// The moments of `words` that `ask` wants, best first.
-pub fn find(words: &[Word], ask: &Ask) -> Vec<ShortMoment> {
+pub fn find(words: &[Word], ask: &Ask, lists: &klipp_core::lang::Words) -> Vec<ShortMoment> {
     let ss = sentences(words);
     if ss.is_empty() {
         return Vec::new();
@@ -158,8 +152,8 @@ pub fn find(words: &[Word], ask: &Ask) -> Vec<ShortMoment> {
                 continue;
             }
             let mut reasons = Vec::new();
-            let hook = hook_score(&ss[i], &mut reasons);
-            let opens_clean = !tokens(&ss[i].text).first().is_some_and(|w| DANGLING.contains(&w.as_str()));
+            let hook = hook_score(&ss[i], lists, &mut reasons);
+            let opens_clean = !tokens(&ss[i].text).first().is_some_and(|w| lists.hooks.dangling.contains(w));
             let ends_clean = ss[j].closed && ss[j].gap_after >= 0.4;
             let alone = 0.6 * f32::from(u8::from(opens_clean)) + 0.4 * f32::from(u8::from(ends_clean));
             if !opens_clean {
@@ -167,7 +161,7 @@ pub fn find(words: &[Word], ask: &Ask) -> Vec<ShortMoment> {
             }
             let turn = span.len() > 1 && span[1..].iter().any(|s| {
                 let l = s.text.to_lowercase();
-                TURNS.iter().any(|t| l.starts_with(t) || l.contains(&format!(" {t} ")))
+                lists.hooks.turns.iter().any(|t| l.starts_with(t.as_str()) || l.contains(&format!(" {t} ")))
             });
             let payoff = if turn && ends_clean { 1.0 } else { 0.0 };
             if payoff > 0.0 {
@@ -240,7 +234,7 @@ mod tests {
     #[test]
     fn a_hook_that_lands_its_point_ranks_first() {
         let ask = Ask { target_secs: 20.0, min_secs: 10.0, max_secs: 30.0, count: 3, ..Ask::default() };
-        let found = find(&talk(), &ask);
+        let found = find(&talk(), &ask, &klipp_core::lang::english());
         assert!(!found.is_empty());
         let best = &found[0];
         assert!(best.hook.starts_with("Why do most startups"), "{best:?}");
@@ -263,16 +257,16 @@ mod tests {
     #[test]
     fn topics_include_and_exclude() {
         let ask = Ask { target_secs: 20.0, min_secs: 10.0, max_secs: 30.0, count: 5, ..Ask::default() };
-        let without = find(&talk(), &Ask { exclude: vec!["customers".into()], ..ask.clone() });
+        let without = find(&talk(), &Ask { exclude: vec!["customers".into()], ..ask.clone() }, &klipp_core::lang::english());
         assert!(without.iter().all(|m| !m.text.to_lowercase().contains("customers")));
-        let with = find(&talk(), &Ask { include: vec!["office".into()], ..ask });
+        let with = find(&talk(), &Ask { include: vec!["office".into()], ..ask }, &klipp_core::lang::english());
         assert!(!with.is_empty() && with.iter().all(|m| m.text.to_lowercase().contains("office")));
     }
 
     /// Too short a talk for the length asked gives none.
     #[test]
     fn nothing_long_enough_is_nothing() {
-        assert!(find(&spoken(&[("Hello there.", 0.0)]), &Ask::default()).is_empty());
-        assert!(find(&[], &Ask::default()).is_empty());
+        assert!(find(&spoken(&[("Hello there.", 0.0)]), &Ask::default(), &klipp_core::lang::english()).is_empty());
+        assert!(find(&[], &Ask::default(), &klipp_core::lang::english()).is_empty());
     }
 }

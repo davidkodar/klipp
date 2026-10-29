@@ -38,9 +38,13 @@ impl ShortsDialog {
             None => Err("This file has no transcript yet: analyze it (or Transcribe Clip), then find again.".into()),
             Some(words) => {
                 let ask = Ask { target_secs: self.length, min_secs: (self.length * 0.5).max(8.0), max_secs: (self.length * 2.0).min(90.0), count: self.count, ..Ask::default() };
-                let found = klipp_analysis::shorts::find(words, &ask);
+                // The project's language picks the hook words (#2889); with no
+                // list for it, moments are found by their shape alone.
+                let lists = crate::transcript::word_lists();
+                let none = klipp_core::lang::Words::none("?");
+                let found = klipp_analysis::shorts::find(words, &ask, lists.as_deref().unwrap_or(&none));
                 if found.is_empty() {
-                    Err(format!("No moment of {:.0} to {:.0} seconds stands on its own here.", ask.min_secs, ask.max_secs))
+                    Err(format!("No moment of {:.0} to {:.0} seconds stands on its own here.{}", ask.min_secs, ask.max_secs, lists.err().map(|why| format!(" ({why})")).unwrap_or_default()))
                 } else {
                     Ok(found.into_iter().map(|m| (m, true)).collect())
                 }
@@ -54,7 +58,7 @@ impl ShortsDialog {
         let Some(Ok(found)) = &self.found else { return Vec::new() };
         let mut cmds = Vec::new();
         for (k, (m, _)) in found.iter().filter(|(_, keep)| *keep).enumerate() {
-            let pieces = klipp_document::shorts::pieces(words, m.from_secs, m.to_secs, self.tighten);
+            let pieces = klipp_document::shorts::pieces(words, m.from_secs, m.to_secs, self.tighten, crate::transcript::word_lists().ok().as_deref());
             if pieces.is_empty() {
                 continue;
             }

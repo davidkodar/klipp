@@ -14,6 +14,9 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png"] }
 serde_json.workspace = true
+# Word lists by language (#2889): the data files, and the user's folder.
+toml = { workspace = true }
+dirs = { workspace = true }
 
 [lints]
 workspace = true

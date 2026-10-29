@@ -3020,7 +3020,7 @@ fn selects_split_a_take_and_drop_the_filler() {
         // another pause, then the real second select
         (5.0, 5.4, "the".into()), (5.45, 5.9, "point".into()), (5.95, 6.6, "stands".into()),
     ];
-    let sel = klipp_control::suggest_selects(&words, 0.6, 0.35);
+    let sel = klipp_control::suggest_selects(&words, 0.6, 0.35, Some(&klipp_core::lang::english()));
     assert_eq!(sel.len(), 3, "{sel:?}");
     assert!(!sel[0].filler && sel[0].text == "So here we go");
     assert!(sel[1].filler, "a lone 'um' is a drop: {:?}", sel[1]);
