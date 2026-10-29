@@ -618,7 +618,6 @@ pub struct KlippApp {
     /// re-open it. Cleared the moment the next append handler runs.
     suppress_fps_prompt: bool,
     // Node graph and inspector panels (Color workspace)
-    node_graph_panel: crate::panels::node_graph::NodeGraphPanel,
     node_graph_v2_panel: crate::panels::node_graph_v2::NodeGraphV2Panel,
     node_inspector_panel: crate::panels::node_inspector::NodeInspectorPanel,
     looks_panel_state: crate::panels::looks::LooksPanelState,

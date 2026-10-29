@@ -1,8 +1,7 @@
 //! V2 node-graph editor — 2D canvas with drag-to-move nodes,
 //! drag-to-connect wires, multi-port visualisation, pan + zoom.
 //!
-//! Replaces (or augments — see toggle) the legacy horizontal strip
-//! in `panels/node_graph.rs`. The painter borrows a `CanvasGraph`; the
+//! The painter borrows a `CanvasGraph`; the
 //! grade adapter keeps the same `AppCommand` mutation surface (AddNode / RemoveNode /
 //! ConnectNodes / DisconnectEdge / MoveNode / ToggleNodeEnabled),
 //! so the existing engine + executor + persistence paths are
