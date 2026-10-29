@@ -518,7 +518,8 @@ exist until the plan runs.
   length would need and the lengths that fit. One undo puts it back.
   In the app a person does the same by dragging the tab at the top corner
   of a clip's end or start, with the Rate Stretch tool (Shift+R) on an
-  edge, or with Ctrl held on an edge; Alt flips ripple while dragging.
+  edge, or with Ctrl held on an edge. It never ripples unless Alt is
+  held while dragging, whatever the timeline's ripple switch says.
   A trim that runs into the end of the clip's media offers "Stretch
   instead (S)": S takes the same drag on as a stretch, and let go, a
   toast still offers it. A clip slowed by a stretch is offered smooth

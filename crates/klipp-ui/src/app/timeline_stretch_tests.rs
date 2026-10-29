@@ -215,3 +215,25 @@ fn a_trim_at_the_media_end_offers_a_stretch() {
         assert!(!tl.state.stretch_offered, "the offer gone with the drag");
     }
 }
+
+/// A stretch overwrites into the gap unless Alt is held, whatever the
+/// timeline's ripple switch says (#3055: "ripple off by default"); both
+/// walkthrough personas had later clips pushed on with the switch on.
+#[test]
+fn a_stretch_ripples_only_with_alt() {
+    for alt in [false, true] {
+        let (mut state, _, _) = fixture();
+        state.ripple_enabled = true;
+        let mut tl = Timeline::new(state);
+        let v1 = tl.track("Video 1");
+        let r = tl.rect(v1);
+        let corner = egui::pos2(tl.x(v1, 4.0) - 8.0, r.top() + 6.0);
+        let m = if alt { egui::Modifiers::ALT } else { egui::Modifiers::NONE };
+        tl.drag(corner, &[corner + egui::vec2(60.0, 0.0)], m);
+        let ripples: Vec<bool> = tl.sent.iter().filter_map(|c| match c {
+            AppCommand::StretchClip { ripple, .. } => Some(*ripple),
+            _ => None,
+        }).collect();
+        assert_eq!(ripples, vec![alt], "Alt {alt}: {:?}", tl.sent);
+    }
+}

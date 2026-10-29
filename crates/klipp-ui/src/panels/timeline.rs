@@ -11114,7 +11114,7 @@ impl TimelinePanel {
     }
 
     /// A rate stretch under way (#3055): the dragged edge at the pointer,
-    /// snapped as every drag snaps, Alt flipping ripple; the clips drawn
+    /// snapped as every drag snaps, rippling only with Alt held; the clips drawn
     /// as the stretch would leave them, with a readout of the speed and
     /// length; on release, the stretch committed as one undo step.
     #[allow(clippy::too_many_arguments)]
@@ -11141,7 +11141,9 @@ impl TimelinePanel {
             let snapper = crate::timeline::snap::Snapper::of(state, zoom, !snap_enabled);
             let alt = ui.input(|i| i.modifiers.alt);
             let Some(drag) = self.stretching.as_mut() else { return };
-            drag.ripple = state.ripple_enabled != alt;
+            // Off unless Alt is held (#3055): a stretch overwrites into
+            // the gap, whatever the timeline's ripple switch says.
+            drag.ripple = alt;
             let secs = drag.edge_was.to_secs_f64() + f64::from(pos.x - drag.start_x) / f64::from(zoom);
             let raw = RationalTime::from_secs_f64(secs.max(0.0), fps.rate());
             let mut hold = drag.hold;
