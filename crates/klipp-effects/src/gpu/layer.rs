@@ -508,236 +508,28 @@ impl GpuEffectsPipeline {
     }
 }
 
-pub(super) const ROWS: &str = concat!(
-    shader_pixel_storage_wgsl!(),
-    r#"
-struct Params {
-    width: u32, height: u32, radius: f32, feather: f32,
-    offset_x: i32, offset_y: i32, opacity: f32, pad: u32,
-    color: vec4<f32>,
-}
-@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
-@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>; // not-pixels: per-row opaque bounds
-@group(0) @binding(2) var<uniform> params: Params;
-@compute @workgroup_size(256)
-fn rows(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
-    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
-    let y = gid.x;
-    if y >= params.height { return; }
-    var left = params.width;
-    var right = 0u;
-    for (var x = 0u; x < params.width; x++) {
-        if unpack(input[y * params.width + x]).a > 0.001 {
-            left = min(left, x);
-            right = x + 1u;
-        }
-    }
-    output[y] = vec4<f32>(f32(left), f32(y), f32(right), f32(y + 1u));
-}
-"#
-);
+pub(super) const ROWS: &str = gpu_shader!("layer/rows.wgsl");
 
-pub(super) const BOUNDS: &str = concat!(
-    shader_pixel_storage_wgsl!(),
-    r#"
-struct Params {
-    width: u32, height: u32, radius: f32, feather: f32,
-    offset_x: i32, offset_y: i32, opacity: f32, pad: u32,
-    color: vec4<f32>,
-}
-@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>; // not-pixels: per-row opaque bounds
-@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>; // not-pixels: reduced opaque bounds
-@group(0) @binding(2) var<uniform> params: Params;
-@compute @workgroup_size(256)
-fn bounds(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
-    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
-    if gid.x != 0u { return; }
-    var box = vec4<f32>(f32(params.width), f32(params.height), 0.0, 0.0);
-    for (var y = 0u; y < params.height; y++) {
-        let row = input[y];
-        if row.z > row.x { box = vec4<f32>(min(box.xy, row.xy), max(box.zw, row.zw)); }
-    }
-    output[0] = box;
-}
-"#
-);
+pub(super) const BOUNDS: &str = gpu_shader!("layer/bounds.wgsl");
 
-pub(super) const CAST: &str = concat!(
-    shader_pixel_storage_wgsl!(),
-    r#"
-struct Params {
-    width: u32, height: u32, radius: f32, feather: f32,
-    offset_x: i32, offset_y: i32, opacity: f32, pad: u32,
-    color: vec4<f32>,
-}
-@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
-@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
-@group(0) @binding(2) var<uniform> params: Params;
-@compute @workgroup_size(256)
-fn make_cast(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
-    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
-    let idx = gid.x;
-    if idx >= params.width * params.height { return; }
-    let x = i32(idx % params.width) - params.offset_x;
-    let y = i32(idx / params.width) - params.offset_y;
-    var a = 0.0;
-    if x >= 0 && y >= 0 && x < i32(params.width) && y < i32(params.height) {
-        a = unpack(input[u32(y) * params.width + u32(x)]).a * params.opacity;
-    }
-    output[idx] = pack(vec4<f32>(params.color.rgb, a));
-}
-"#
-);
+pub(super) const CAST: &str = gpu_shader!("layer/cast.wgsl");
 
-/// What every spill pass declares: its parameters ([`SpillParams`]) and
-/// the region (`x0, y0, x1, y1`).
-macro_rules! spill_head {
-    () => {
-        r#"
-struct Params {
-    width: u32, height: u32, radius: i32, mode: u32,
-    offset_x: i32, offset_y: i32, opacity: f32, pad: u32,
-    reach: vec4<i32>,
-    color: vec4<f32>,
-}
-struct Region { x0: atomic<i32>, y0: atomic<i32>, x1: atomic<i32>, y1: atomic<i32> }
-@group(0) @binding(3) var<uniform> params: Params;
-@group(0) @binding(4) var<storage, read_write> region: Region; // not-pixels: the region spills work in
-fn rect() -> vec4<i32> {
-    return vec4<i32>(atomicLoad(&region.x0), atomicLoad(&region.y0), atomicLoad(&region.x1), atomicLoad(&region.y1));
-}
-// The region `r`'s `i`th pixel, or (-1, -1) past its end. The region is
-// read once a pass's invocation, into `r`: atomics are not cached.
-fn region_pixel(r: vec4<i32>, i: u32) -> vec2<i32> {
-    let w = r.z - r.x;
-    if w <= 0 || i32(i) >= w * (r.w - r.y) { return vec2<i32>(-1, -1); }
-    return vec2<i32>(r.x + i32(i) % w, r.y + i32(i) / w);
-}
-fn inside(r: vec4<i32>, x: i32, y: i32) -> bool {
-    return x >= r.x && x < r.z && y >= r.y && y < r.w;
-}
-// The fixed-point step of a box blur's window: as fine as a window of
-// `2 * radius + 1` alphas of at most 1 can hold in a u32 without overflow,
-// with room for the float step's own rounding (2^24 to spare).
-fn fixed_scale() -> f32 {
-    return f32(0xFF000000u / u32(2 * params.radius + 1));
-}
-"#
-    };
-}
+// Every spill pass takes in `include/layer_spill_head.wgsl` (#3094): its
+// parameters (`SpillParams`) and the region (`x0, y0, x1, y1`).
 
 /// Empty bounds, before [`SPILL_BOUNDS`] grows them.
-const SPILL_RESET: &str = concat!(shader_pixel_storage_wgsl!(), spill_head!(), r#"
-@compute @workgroup_size(1)
-fn spill_reset() {
-    atomicStore(&region.x0, i32(params.width));
-    atomicStore(&region.y0, i32(params.height));
-    atomicStore(&region.x1, 0);
-    atomicStore(&region.y1, 0);
-}
-"#);
+const SPILL_RESET: &str = gpu_shader!("layer/spill_reset.wgsl");
 
 /// The bounds of the layer's pixels that are not wholly transparent.
-const SPILL_BOUNDS: &str = concat!(shader_pixel_storage_wgsl!(), spill_head!(), r#"
-@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
-var<workgroup> wx0: atomic<i32>;
-var<workgroup> wy0: atomic<i32>;
-var<workgroup> wx1: atomic<i32>;
-var<workgroup> wy1: atomic<i32>;
-@compute @workgroup_size(256)
-fn spill_bounds(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>, @builtin(local_invocation_index) li: u32) {
-    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
-    if li == 0u {
-        atomicStore(&wx0, i32(params.width));
-        atomicStore(&wy0, i32(params.height));
-        atomicStore(&wx1, 0);
-        atomicStore(&wy1, 0);
-    }
-    workgroupBarrier();
-    let idx = gid.x;
-    if idx < params.width * params.height && unpack(input[idx]).a > 0.0 {
-        let x = i32(idx % params.width);
-        let y = i32(idx / params.width);
-        atomicMin(&wx0, x);
-        atomicMin(&wy0, y);
-        atomicMax(&wx1, x + 1);
-        atomicMax(&wy1, y + 1);
-    }
-    workgroupBarrier();
-    if li == 0u && atomicLoad(&wx1) > atomicLoad(&wx0) {
-        atomicMin(&region.x0, atomicLoad(&wx0));
-        atomicMin(&region.y0, atomicLoad(&wy0));
-        atomicMax(&region.x1, atomicLoad(&wx1));
-        atomicMax(&region.y1, atomicLoad(&wy1));
-    }
-}
-"#);
+const SPILL_BOUNDS: &str = gpu_shader!("layer/spill_bounds.wgsl");
 
 /// The bounds grown by the casts' reach and kept in the frame, and the
 /// dispatch that covers them: nothing when the layer is all transparent.
-const SPILL_REGION: &str = concat!(shader_pixel_storage_wgsl!(), spill_head!(), r#"
-@group(0) @binding(5) var<storage, read_write> args: array<u32, 12>; // not-pixels: the region's indirect dispatches
-// `n` workgroups over x and, past the per-dimension limit, y, as
-// `split_workgroups` splits a direct dispatch (#2341): the passes rebuild
-// their index from both.
-fn split(at: u32, n: u32) {
-    var x = n;
-    var y = 1u;
-    if n > 65535u {
-        y = (n + 65534u) / 65535u;
-        x = (n + y - 1u) / y;
-    }
-    args[at] = x;
-    args[at + 1u] = y;
-    args[at + 2u] = 1u;
-}
-@compute @workgroup_size(1)
-fn spill_region() {
-    let b = rect();
-    var r = vec4<i32>(0);
-    if b.z > b.x && b.w > b.y {
-        r = vec4<i32>(
-            max(b.x - max(params.reach.x, 0), 0),
-            max(b.y - max(params.reach.z, 0), 0),
-            min(b.z + max(params.reach.y, 0), i32(params.width)),
-            min(b.w + max(params.reach.w, 0), i32(params.height)),
-        );
-    }
-    atomicStore(&region.x0, r.x);
-    atomicStore(&region.y0, r.y);
-    atomicStore(&region.x1, r.z);
-    atomicStore(&region.y1, r.w);
-    let n = u32((r.z - r.x) * (r.w - r.y));
-    // A thread a pixel; a thread a row; a thread a column.
-    split(0u, (n + 255u) / 256u);
-    // A thread a 32-pixel stretch of a row, or of a column.
-    let rw = u32(r.z - r.x);
-    let rh = u32(r.w - r.y);
-    split(3u, (rh * ((rw + 31u) / 32u) + 63u) / 64u);
-    split(6u, (rw * ((rh + 31u) / 32u) + 63u) / 64u);
-}
-"#);
+const SPILL_REGION: &str = gpu_shader!("layer/spill_region.wgsl");
 
 /// [`CAST`]'s alpha alone over the region, one float a pixel at its
 /// place in the frame: the colour is laid by [`SPILL_LAY`].
-const SPILL_CAST: &str = concat!(shader_pixel_storage_wgsl!(), spill_head!(), r#"
-@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
-@group(0) @binding(2) var<storage, read_write> output: array<f32>; // not-pixels: a cast's alpha
-@compute @workgroup_size(256)
-fn spill_cast(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
-    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
-    let r = rect();
-    let p = region_pixel(r, gid.x);
-    if p.x < 0 { return; }
-    let x = p.x - params.offset_x;
-    let y = p.y - params.offset_y;
-    var a = 0.0;
-    if x >= 0 && y >= 0 && x < i32(params.width) && y < i32(params.height) {
-        a = unpack(input[u32(y) * params.width + u32(x)]).a * params.opacity;
-    }
-    output[u32(p.y) * params.width + u32(p.x)] = a;
-}
-"#);
+const SPILL_CAST: &str = gpu_shader!("layer/spill_cast.wgsl");
 
 /// The box blur's horizontal pass over a cast's alpha in the region, a
 /// thread a 32-pixel stretch of a row: the window clamped at the frame's
@@ -750,123 +542,20 @@ fn spill_cast(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_w
 /// was not nothing; so the window is summed in fixed point, exactly, each
 /// alpha (0..1, as a cast's is) in the finest steps a window of its size
 /// can hold, and nothing stays nothing.
-const SPILL_BLUR_H: &str = concat!(shader_pixel_storage_wgsl!(), spill_head!(), r#"
-@group(0) @binding(0) var<storage, read> input: array<f32>; // not-pixels: a cast's alpha
-@group(0) @binding(2) var<storage, read_write> output: array<f32>; // not-pixels: a cast's alpha
-fn at_x(r: vec4<i32>, x: i32, y: i32) -> u32 {
-    let cx = clamp(x, 0, i32(params.width) - 1);
-    if cx < r.x || cx >= r.z { return 0u; }
-    return u32(round(clamp(input[u32(y) * params.width + u32(cx)], 0.0, 1.0) * fixed_scale()));
-}
-@compute @workgroup_size(64)
-fn spill_blur_h(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
-    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 64u, 0u, gid_flat.z);
-    let r = rect();
-    let stretches = (r.z - r.x + 31) / 32;
-    if stretches <= 0 { return; }
-    let y = r.y + i32(gid.x) / stretches;
-    if y >= r.w { return; }
-    let x0 = r.x + (i32(gid.x) % stretches) * 32;
-    let x1 = min(x0 + 32, r.z);
-    let inv = 1.0 / (f32(2 * params.radius + 1) * fixed_scale());
-    var sum = 0u;
-    for (var dx = -params.radius; dx <= params.radius; dx++) {
-        sum += at_x(r, x0 + dx, y);
-    }
-    for (var x = x0; x < x1; x++) {
-        output[u32(y) * params.width + u32(x)] = f32(sum) * inv;
-        sum = sum + at_x(r, x + params.radius + 1, y) - at_x(r, x - params.radius, y);
-    }
-}
-"#);
+const SPILL_BLUR_H: &str = gpu_shader!("layer/spill_blur_h.wgsl");
 
 /// [`SPILL_BLUR_H`]'s vertical pass, a thread a 32-pixel stretch of a
 /// column, top to bottom.
-const SPILL_BLUR_V: &str = concat!(shader_pixel_storage_wgsl!(), spill_head!(), r#"
-@group(0) @binding(0) var<storage, read> input: array<f32>; // not-pixels: a cast's alpha
-@group(0) @binding(2) var<storage, read_write> output: array<f32>; // not-pixels: a cast's alpha
-fn at_y(r: vec4<i32>, x: i32, y: i32) -> u32 {
-    let cy = clamp(y, 0, i32(params.height) - 1);
-    if cy < r.y || cy >= r.w { return 0u; }
-    return u32(round(clamp(input[u32(cy) * params.width + u32(x)], 0.0, 1.0) * fixed_scale()));
-}
-@compute @workgroup_size(64)
-fn spill_blur_v(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
-    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 64u, 0u, gid_flat.z);
-    let r = rect();
-    let cols = r.z - r.x;
-    if cols <= 0 { return; }
-    // Neighbouring threads take neighbouring columns, so they read
-    // neighbouring pixels.
-    let x = r.x + i32(gid.x) % cols;
-    let y0 = r.y + (i32(gid.x) / cols) * 32;
-    if y0 >= r.w { return; }
-    let y1 = min(y0 + 32, r.w);
-    let inv = 1.0 / (f32(2 * params.radius + 1) * fixed_scale());
-    var sum = 0u;
-    for (var dy = -params.radius; dy <= params.radius; dy++) {
-        sum += at_y(r, x, y0 + dy);
-    }
-    for (var y = y0; y < y1; y++) {
-        output[u32(y) * params.width + u32(x)] = f32(sum) * inv;
-        sum = sum + at_y(r, x, y + params.radius + 1) - at_y(r, x, y - params.radius);
-    }
-}
-"#);
+const SPILL_BLUR_V: &str = gpu_shader!("layer/spill_blur_v.wgsl");
 
 /// A cast laid in its colour over the region: alone (`mode` 0), or over
 /// the casts laid before it, by [`OVER`]'s rule.
-const SPILL_LAY: &str = concat!(shader_pixel_storage_wgsl!(), spill_head!(), r#"
-@group(0) @binding(0) var<storage, read> input: array<f32>; // not-pixels: a cast's alpha
-@group(0) @binding(1) var<storage, read> second: array<vec4<f32>>;
-@group(0) @binding(2) var<storage, read_write> output: array<vec4<f32>>;
-@compute @workgroup_size(256)
-fn spill_lay(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
-    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
-    let r = rect();
-    let p = region_pixel(r, gid.x);
-    if p.x < 0 { return; }
-    let idx = u32(p.y) * params.width + u32(p.x);
-    let top = vec4<f32>(params.color.rgb, input[idx]);
-    if params.mode == 0u {
-        output[idx] = pack(top);
-        return;
-    }
-    let bottom = unpack(second[idx]);
-    let a = top.a + bottom.a * (1.0 - top.a);
-    var pixel = bottom;
-    if a > 0.0 {
-        pixel = vec4<f32>((top.rgb * top.a + bottom.rgb * bottom.a * (1.0 - top.a)) / a, a);
-    }
-    output[idx] = pack(pixel);
-}
-"#);
+const SPILL_LAY: &str = gpu_shader!("layer/spill_lay.wgsl");
 
 /// The layer over its casts, over the whole frame by [`OVER`]'s rule:
 /// outside the region the casts are nothing, the first laid's colour at
 /// no alpha, as the whole-frame passes left them.
-const SPILL_FINAL: &str = concat!(shader_pixel_storage_wgsl!(), spill_head!(), r#"
-@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
-@group(0) @binding(1) var<storage, read> second: array<vec4<f32>>;
-@group(0) @binding(2) var<storage, read_write> output: array<vec4<f32>>;
-@compute @workgroup_size(256)
-fn spill_final(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
-    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
-    let idx = gid.x;
-    if idx >= params.width * params.height { return; }
-    let top = unpack(input[idx]);
-    var bottom = vec4<f32>(params.color.rgb, 0.0);
-    if inside(rect(), i32(idx % params.width), i32(idx / params.width)) {
-        bottom = unpack(second[idx]);
-    }
-    let a = top.a + bottom.a * (1.0 - top.a);
-    var pixel = bottom;
-    if a > 0.0 {
-        pixel = vec4<f32>((top.rgb * top.a + bottom.rgb * bottom.a * (1.0 - top.a)) / a, a);
-    }
-    output[idx] = pack(pixel);
-}
-"#);
+const SPILL_FINAL: &str = gpu_shader!("layer/spill_final.wgsl");
 
 /// The spills' passes: name, source, entry point.
 pub(super) const SPILL: [(&str, &str, &str); SPILL_PASSES] = [
@@ -880,162 +569,13 @@ pub(super) const SPILL: [(&str, &str, &str); SPILL_PASSES] = [
     ("LAYER_SPILL_FINAL", SPILL_FINAL, "spill_final"),
 ];
 
-pub(super) const CORNERS: &str = concat!(
-    shader_pixel_storage_wgsl!(),
-    r#"
-struct Params {
-    width: u32, height: u32, radius: f32, feather: f32,
-    offset_x: i32, offset_y: i32, opacity: f32, pad: u32,
-    color: vec4<f32>,
-}
-@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
-@group(0) @binding(1) var<storage, read> second: array<vec4<f32>>; // not-pixels: reduced opaque bounds
-@group(0) @binding(2) var<storage, read_write> output: array<vec4<f32>>;
-@group(0) @binding(3) var<uniform> params: Params;
-@compute @workgroup_size(256)
-fn corners(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
-    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
-    let idx = gid.x;
-    if idx >= params.width * params.height { return; }
-    let box = second[0];
-    let short = min(box.z - box.x, box.w - box.y);
-    let r = params.radius * short;
-    var pixel = unpack(input[idx]);
-    if box.z > box.x && r > 0.5 {
-        let pos = vec2<f32>(f32(idx % params.width), f32(idx / params.width)) + vec2<f32>(0.5);
-        let dxy = max(max(box.xy + vec2<f32>(r) - pos, pos - (box.zw - vec2<f32>(r))), vec2<f32>(0.0));
-        let d = length(dxy) - r;
-        pixel.a *= clamp(0.5 - d / max(params.feather * short, 1.0), 0.0, 1.0);
-    }
-    output[idx] = pack(pixel);
-}
-"#
-);
+pub(super) const CORNERS: &str = gpu_shader!("layer/corners.wgsl");
 
-pub(super) const OVER: &str = concat!(
-    shader_pixel_storage_wgsl!(),
-    r#"
-struct Params {
-    width: u32, height: u32, radius: f32, feather: f32,
-    offset_x: i32, offset_y: i32, opacity: f32, pad: u32,
-    color: vec4<f32>,
-}
-@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
-@group(0) @binding(1) var<storage, read> second: array<vec4<f32>>;
-@group(0) @binding(2) var<storage, read_write> output: array<vec4<f32>>;
-@group(0) @binding(3) var<uniform> params: Params;
-@compute @workgroup_size(256)
-fn over(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
-    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
-    let idx = gid.x;
-    if idx >= params.width * params.height { return; }
-    let top = unpack(input[idx]);
-    let bottom = unpack(second[idx]);
-    let a = top.a + bottom.a * (1.0 - top.a);
-    var pixel = bottom;
-    if a > 0.0 {
-        pixel = vec4<f32>((top.rgb * top.a + bottom.rgb * bottom.a * (1.0 - top.a)) / a, a);
-    }
-    output[idx] = pack(pixel);
-}
-"#
-);
+pub(super) const OVER: &str = gpu_shader!("layer/over.wgsl");
 
-/// Linear between the four pixels round `(x, y)`, clamped to `lo..=hi`:
-/// `crate::layer::bilinear`, for a buffer bound as `buf`.
-macro_rules! fill_bilinear_wgsl {
-    ($buf:literal) => {
-        concat!(
-            "fn bilinear_", $buf, "(x_in: f32, y_in: f32, w: u32, lo: vec2<f32>, hi: vec2<f32>) -> vec4<f32> {\n",
-            "    let x = clamp(x_in, lo.x, hi.x);\n",
-            "    let y = clamp(y_in, lo.y, hi.y);\n",
-            "    let ix = floor(x);\n",
-            "    let iy = floor(y);\n",
-            "    let tx = x - ix;\n",
-            "    let ty = y - iy;\n",
-            "    let x0 = u32(ix); let y0 = u32(iy);\n",
-            "    let x1 = u32(min(ix + 1.0, hi.x)); let y1 = u32(min(iy + 1.0, hi.y));\n",
-            "    let a = unpack(", $buf, "[y0 * w + x0]); let b = unpack(", $buf, "[y0 * w + x1]);\n",
-            "    let c = unpack(", $buf, "[y1 * w + x0]); let d = unpack(", $buf, "[y1 * w + x1]);\n",
-            "    let top = a + (b - a) * tx;\n",
-            "    let bottom = c + (d - c) * tx;\n",
-            "    return top + (bottom - top) * ty;\n",
-            "}\n",
-        )
-    };
-}
+// The fill shaders each hold a `bilinear_<buffer>`: linear between the
+// four pixels round `(x, y)`, clamped to `lo..=hi`, as
+// `crate::layer::bilinear` is, for the buffer it names.
+pub(super) const FILL_SMALL: &str = gpu_shader!("layer/fill_small.wgsl");
 
-pub(super) const FILL_SMALL: &str = concat!(
-    shader_pixel_storage_wgsl!(),
-    r#"
-struct FillParams {
-    width: u32, height: u32, small_w: u32, small_h: u32,
-    zoom: f32, darken: f32, pad0: u32, pad1: u32,
-}
-@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
-@group(0) @binding(1) var<storage, read> second: array<vec4<f32>>; // not-pixels: reduced opaque bounds
-@group(0) @binding(2) var<storage, read_write> output: array<vec4<f32>>;
-@group(0) @binding(3) var<uniform> params: FillParams;
-"#,
-    fill_bilinear_wgsl!("input"),
-    r#"
-@compute @workgroup_size(256)
-fn fill_small(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
-    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
-    let idx = gid.x;
-    if idx >= params.small_w * params.small_h { return; }
-    let box = second[0];
-    let wf = f32(params.width);
-    let hf = f32(params.height);
-    // Nothing opaque, or a picture that fills the frame: no bars, and an
-    // empty fill says so to fill_over.
-    if !(box.z > box.x) || (box.x <= 0.0 && box.y <= 0.0 && box.z >= wf && box.w >= hf) {
-        output[idx] = pack(vec4<f32>(0.0));
-        return;
-    }
-    let scale = max(wf / (box.z - box.x), hf / (box.w - box.y)) * max(params.zoom, 1.0);
-    let cx = (box.x + box.z) * 0.5;
-    let cy = (box.y + box.w) * 0.5;
-    let fx = (f32(idx % params.small_w) + 0.5) * wf / f32(params.small_w);
-    let fy = (f32(idx / params.small_w) + 0.5) * hf / f32(params.small_h);
-    let c = bilinear_input(cx + (fx - wf * 0.5) / scale - 0.5, cy + (fy - hf * 0.5) / scale - 0.5, params.width, box.xy, box.zw - vec2<f32>(1.0));
-    output[idx] = pack(vec4<f32>(c.rgb, 1.0));
-}
-"#
-);
-
-pub(super) const FILL_OVER: &str = concat!(
-    shader_pixel_storage_wgsl!(),
-    r#"
-struct FillParams {
-    width: u32, height: u32, small_w: u32, small_h: u32,
-    zoom: f32, darken: f32, pad0: u32, pad1: u32,
-}
-@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
-@group(0) @binding(1) var<storage, read> second: array<vec4<f32>>;
-@group(0) @binding(2) var<storage, read_write> output: array<vec4<f32>>;
-@group(0) @binding(3) var<uniform> params: FillParams;
-"#,
-    fill_bilinear_wgsl!("second"),
-    r#"
-@compute @workgroup_size(256)
-fn fill_over(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
-    let gid = vec3<u32>(gid_flat.x + gid_flat.y * nwg.x * 256u, 0u, gid_flat.z);
-    let idx = gid.x;
-    if idx >= params.width * params.height { return; }
-    let rx = f32(params.small_w) / f32(params.width);
-    let ry = f32(params.small_h) / f32(params.height);
-    let x = f32(idx % params.width);
-    let y = f32(idx / params.width);
-    let hi = vec2<f32>(f32(params.small_w - 1u), f32(params.small_h - 1u));
-    let bg = bilinear_second((x + 0.5) * rx - 0.5, (y + 0.5) * ry - 0.5, params.small_w, vec2<f32>(0.0), hi);
-    if bg.a < 0.5 {
-        output[idx] = input[idx];
-        return;
-    }
-    let px = unpack(input[idx]);
-    let keep = 1.0 - params.darken;
-    output[idx] = pack(vec4<f32>(px.rgb * px.a + bg.rgb * keep * (1.0 - px.a), 1.0));
-}
-"#
-);
+pub(super) const FILL_OVER: &str = gpu_shader!("layer/fill_over.wgsl");
