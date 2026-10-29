@@ -12,6 +12,10 @@ pub(crate) struct PointerPlayer {
     /// Frames the front step has played.
     played: u32,
     at: egui::Pos2,
+    /// The keys held with a button the steps pressed and haven't let go:
+    /// they stay held between requests, as a hand holds them through a
+    /// drag, instead of the real keyboard's (none) taking over.
+    held: Option<egui::Modifiers>,
 }
 
 impl PointerPlayer {
@@ -22,7 +26,12 @@ impl PointerPlayer {
     /// This frame's events from the front step, added to `raw`; a
     /// timeline point resolved by `timeline_point` (seconds, track).
     pub(crate) fn play(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput, timeline_point: impl Fn(f64, usize) -> Option<egui::Pos2>) {
-        let Some(step) = self.steps.front().cloned() else { return };
+        let Some(step) = self.steps.front().cloned() else {
+            if let Some(m) = self.held {
+                raw.modifiers = m;
+            }
+            return;
+        };
         let first = self.played == 0;
         if first {
             self.at = match step.at {
@@ -43,6 +52,12 @@ impl PointerPlayer {
             PointerButton::Secondary => egui::PointerButton::Secondary,
             PointerButton::Middle => egui::PointerButton::Middle,
         };
+        match step.action {
+            PointerAction::Press => self.held = Some(modifiers),
+            PointerAction::Release | PointerAction::Click => self.held = None,
+            _ if self.held.is_some() => self.held = Some(modifiers),
+            _ => {}
+        }
         let pos = self.at;
         raw.events.push(egui::Event::PointerMoved(pos));
         let press = |pressed| egui::Event::PointerButton { pos, button, pressed, modifiers };
@@ -145,5 +160,21 @@ mod tests {
         assert_eq!(key(&raws[1]), Some((egui::Key::Delete, false, true)));
         assert!(raws[2].events.contains(&egui::Event::Text("Hi".into())));
         assert_eq!(key(&raws[3]), None, "no such key");
+    }
+
+    /// A button pressed with Shift and not yet let go keeps Shift held in
+    /// the frames after the steps run out; let go, the real keyboard's
+    /// keys come back.
+    #[test]
+    fn keys_stay_held_with_a_held_button() {
+        let ctx = egui::Context::default();
+        let mut p = PointerPlayer::default();
+        let steps = |v| serde_json::from_value::<Vec<PointerStep>>(v).unwrap();
+        p.queue(&steps(serde_json::json!([{"action": "press", "at": {"screen": {"x": 1.0, "y": 1.0}}, "modifiers": {"shift": true}}])));
+        let _ = frame(&mut p, &ctx);
+        assert!(frame(&mut p, &ctx).modifiers.shift, "held between requests");
+        p.queue(&steps(serde_json::json!([{"action": "release"}])));
+        let _ = frame(&mut p, &ctx);
+        assert!(!frame(&mut p, &ctx).modifiers.shift, "let go");
     }
 }

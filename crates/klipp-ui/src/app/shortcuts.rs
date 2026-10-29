@@ -320,10 +320,9 @@ impl KlippApp {
                             self.sync_sequence_to_engine();
                             self.state.dirty = true;
                         } else {
-                            // Off the magnetic track a removal leaves its
-                            // gap, which is a lift; Shift+Delete did
-                            // nothing there (#911).
-                            cmds.push(AppCommand::RemoveClip { clip_id });
+                            // Off the magnetic track too, a lift leaves its
+                            // gap (#911, #3060).
+                            cmds.push(AppCommand::RemoveClips { clip_ids: vec![clip_id], lift: true });
                         }
                     }
                 }

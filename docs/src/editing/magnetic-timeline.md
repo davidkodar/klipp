@@ -54,7 +54,7 @@ Picture and sound move together while **Linked Selection** is on; hold **Alt** a
 | **Lift delete** | **Shift+Delete** | Remove the clip; leave a gap |
 | **Close Gap** | Clip menu | Close the gap before a clip |
 
-With several clips selected, Delete and Shift+Delete take every one of them, on any track, and one undo puts them all back. Dragging any of them moves them all by the same time, each drawn where it will land; dragged to another track, each goes the same number of tracks of its kind up or down, and the whole drag is refused when one would land on a locked or missing track. Selected clips on the primary storyline move as one block, rippled into the place the drag shows (or overwriting there with Alt or OVR), while the rest of the selection moves by the same time on its own tracks. Off the magnetic tracks a removed clip always leaves its gap.
+With several clips selected, Delete and Shift+Delete take every one of them, on any track, and one undo puts them all back. Dragging any of them moves them all by the same time, each drawn where it will land; dragged to another track, each goes the same number of tracks of its kind up or down, and the whole drag is refused when one would land on a locked or missing track. Selected clips on the primary storyline move as one block, rippled into the place the drag shows (or overwriting there with Alt or OVR), while the rest of the selection moves by the same time on its own tracks. Delete closes each gap and Shift+Delete leaves it, on every track.
 
 ## Snapping
 

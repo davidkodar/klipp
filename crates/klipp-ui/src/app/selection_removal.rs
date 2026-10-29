@@ -1,7 +1,6 @@
 //! Clips taken out of the timeline, one or a selection (#3060): Delete
-//! closes the gap on a magnetic track, Lift leaves it; off the magnetic
-//! tracks a removal always leaves its gap. Several clips are one undo
-//! step, as one is.
+//! closes the gap, Lift leaves it, on every track. Several clips are one
+//! undo step, as one is.
 
 use crate::history::EditCommand;
 use crate::state::AppState;
@@ -31,8 +30,8 @@ fn apply(state: &mut AppState, edit: EditCommand) {
     state.push_history(edit);
 }
 
-/// `ids` taken out, as one undo step named `label`: lifted (`lift`, a gap
-/// left on a magnetic track) or deleted. A clip already gone with a
+/// `ids` taken out, as one undo step named `label`: lifted (`lift`, the
+/// gap left) or deleted (the gap closed). A clip already gone with a
 /// linked partner taken before it, or on a locked track, is passed over.
 /// Refused whole, before anything changes, when a clip off the magnetic
 /// tracks can't go (its linked partner locked).
@@ -40,7 +39,7 @@ pub(crate) fn remove_clips(state: &mut AppState, ids: &[ClipId], lift: bool, lab
     for &id in ids {
         let Some((ti, _)) = state.sequence().find_clip(id) else { continue };
         if !state.sequence().tracks[ti].locked && !magnetic(state, ti) {
-            crate::clip_edits::remove(state.sequence(), &state.media_pool, id).map_err(|r| r.why)?;
+            crate::clip_edits::remove(state.sequence(), &state.media_pool, id, !lift).map_err(|r| r.why)?;
         }
     }
     let own_batch = !state.active_history_mut().is_batching();
@@ -55,7 +54,7 @@ pub(crate) fn remove_clips(state: &mut AppState, ids: &[ClipId], lift: bool, lab
         }
         removed += 1;
         if !magnetic(state, ti) {
-            if let Ok(edit) = crate::clip_edits::remove(state.sequence(), &state.media_pool, id) {
+            if let Ok(edit) = crate::clip_edits::remove(state.sequence(), &state.media_pool, id, !lift) {
                 apply(state, edit);
             }
             continue;
@@ -108,8 +107,9 @@ mod tests {
     }
 
     /// Three clips on two tracks: two on the primary (0–2, 2–4 s, packed)
-    /// and one on a free video track (1–3 s), plus one left alone.
-    fn state() -> (AppState, [ClipId; 4]) {
+    /// and one on a free video track (1–3 s), selected; left alone, one
+    /// after them on each (4–6 s on the primary, 4–5 s on the free track).
+    fn state() -> (AppState, [ClipId; 5]) {
         let mut state = AppState { magnetic_timeline_enabled: true, ..Default::default() };
         let seq = &mut state.sequences[0];
         seq.add_video_track("V2".into());
@@ -117,10 +117,10 @@ mod tests {
         let free = seq.tracks.iter().position(|t| t.name == "V2").unwrap();
         assert_eq!(seq.tracks[free].kind, TrackKind::Video);
         let c = |a: f64, b: f64| Clip::media(klipp_core::MediaId::new(), t(a), t(b), t(0.0), t(b - a));
-        let (p1, p2, p3, f1) = (c(0.0, 2.0), c(2.0, 4.0), c(4.0, 6.0), c(1.0, 3.0));
-        let ids = [p1.id, p2.id, f1.id, p3.id];
+        let (p1, p2, p3, f1, f2) = (c(0.0, 2.0), c(2.0, 4.0), c(4.0, 6.0), c(1.0, 3.0), c(4.0, 5.0));
+        let ids = [p1.id, p2.id, f1.id, p3.id, f2.id];
         seq.tracks[primary].clips.extend([p1, p2, p3]);
-        seq.tracks[free].clips.push(f1);
+        seq.tracks[free].clips.extend([f1, f2]);
         state.selected_clips = vec![ids[0], ids[2]];
         state.selected_clip = Some(ids[1]);
         (state, ids)
@@ -139,15 +139,16 @@ mod tests {
     }
 
     /// Delete with three selected clips on two tracks takes all three,
-    /// the primary closing up (the clip left behind moves to 0 s), in one
-    /// undo step that puts all three back where they were.
+    /// each track closing up (the primary's clip left behind moves to 0 s,
+    /// the free track's to 2 s), in one undo step that puts all three back
+    /// where they were.
     #[test]
     fn delete_takes_every_selected_clip_in_one_step() {
         let (mut state, ids) = state();
         let before = spans(&state);
         let sel = selected(&state);
         assert_eq!(remove_clips(&mut state, &sel, false, "Delete Clips"), Ok(3));
-        assert_eq!(spans(&state), [(ids[3], 0, 48)]);
+        assert_eq!(spans(&state), [(ids[3], 0, 48), (ids[4], 48, 72)]);
         assert!(state.selected_clips.is_empty() && state.selected_clip.is_none());
         undo(&mut state);
         assert_eq!(spans(&state), before);
@@ -155,7 +156,8 @@ mod tests {
     }
 
     /// Lift with the same selection takes all three and leaves their
-    /// gaps: the clip left behind stays at 4 s. One undo step.
+    /// gaps on both tracks: the clips left behind stay at 4 s. One undo
+    /// step.
     #[test]
     fn lift_takes_every_selected_clip_and_leaves_the_gaps() {
         let (mut state, ids) = state();
@@ -163,7 +165,9 @@ mod tests {
         let sel = selected(&state);
         assert_eq!(remove_clips(&mut state, &sel, true, "Lift Clips"), Ok(3));
         let left: Vec<_> = spans(&state).into_iter().filter(|s| !state.sequence().all_clips().any(|c| c.id == s.0 && c.kind.is_gap())).collect();
-        assert_eq!(left, [(ids[3], 96, 144)]);
+        let mut want = vec![(ids[3], 96, 144), (ids[4], 96, 120)];
+        want.sort_by_key(|x| (x.1, x.0 .0));
+        assert_eq!(left, want);
         undo(&mut state);
         assert_eq!(spans(&state), before);
         assert!(state.active_history_mut().undo().is_none(), "one step");
