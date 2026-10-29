@@ -763,7 +763,7 @@ impl KlippApp {
                         }
                         labels
                     };
-                    let panel_cmds = if self.state.use_node_graph_v2 {
+                    let panel_cmds = {
                         let slot = self.state.deferred_texture_drops_slot;
                         // Snapshot grade version names + active
                         // index BEFORE grabbing the mutable graph
@@ -828,11 +828,6 @@ impl KlippApp {
                             panel_rect,
                         );
                         cmds
-                    } else {
-                        clip.edit_grade(|graph| self.node_graph_panel.show(
-                            ui, &mut self.state.selected_node_id,
-                            graph, cid, &self.theme,
-                        ))
                     };
                     all_cmds.extend(panel_cmds);
                     self.keep_node_recents();

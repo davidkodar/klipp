@@ -251,7 +251,6 @@ impl KlippApp {
             sequence_settings_dialog: None,
             framerate_mismatch_dialog: None,
             suppress_fps_prompt: false,
-            node_graph_panel: crate::panels::node_graph::NodeGraphPanel::default(),
             node_graph_v2_panel: crate::panels::node_graph_v2::NodeGraphV2Panel::default(),
             node_inspector_panel: crate::panels::node_inspector::NodeInspectorPanel::default(),
             looks_panel_state: crate::panels::looks::LooksPanelState::default(),
