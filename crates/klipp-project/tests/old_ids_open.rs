@@ -26,10 +26,10 @@ fn saved() -> std::path::PathBuf {
 fn soft_edge(dir: &std::path::Path) -> f32 {
     let (seqs, ..) = load_project(dir).unwrap();
     let clip = seqs[0].all_clips().next().unwrap();
-    clip.builtin_effects().iter().find_map(|e| match e {
-        klipp_effects::BuiltinEffect::ChromaKey { soft_edge, .. } => Some(*soft_edge),
-        _ => None,
-    }).expect("the key")
+    // The key as the clip's picture holds it.
+    let lifted = clip.picture_v2().unwrap();
+    let key = lifted.picture.graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("chroma_key")).expect("the key");
+    klipp_graph_lift::effect_params::entry_of(key).unwrap()["soft_edge"].as_f64().unwrap() as f32
 }
 
 #[test]

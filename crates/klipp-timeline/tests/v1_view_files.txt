@@ -81,6 +81,8 @@ klipp-graph-lift/tests/effect_entry_readers.rs
 klipp-project/src/grade_stills.rs
 klipp-project/src/load.rs
 klipp-project/src/mlt_import.rs
+# Reads an opened project's saved effect nodes by their stored type and entry, to rename an effect or a setting through the id migration table before the project is read (#2888); it goes with the payload in picture revision 5.
+klipp-project/src/migrate_ids.rs
 klipp-project/src/save.rs
 klipp-project/tests/auto_move_save.rs
 klipp-project/tests/canvas_metadata.rs

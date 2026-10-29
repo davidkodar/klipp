@@ -43,7 +43,7 @@ effect_param_keyframes 2
 effects_state 5
 insert_effect 10
 insert_effect_with_id 2
-LEGACY_EFFECT 88
+LEGACY_EFFECT 90
 LEGACY_OFX 44
 move_builtin_effect 15
 move_effect 10
@@ -91,6 +91,7 @@ video_param_value 16
 # Raised for plug-in nodes named by their own plug-in on the picture
 # canvas (#1724), read from the payload's OFX identifier.
 # Raised for the node editor's Reset and Replace on the picture (#1745):
+# Raised for #2888 (load migrations): migrate_ids.rs finds an opened project's saved effect nodes by their stored type id (LEGACY_EFFECT 2) to rename an effect or a setting through the migration table before the project is read.
 # an effect node's defaults and a swapped effect are written through its
 # payload, as every picture effect edit is until revision 5's rows.
 Legacy 48

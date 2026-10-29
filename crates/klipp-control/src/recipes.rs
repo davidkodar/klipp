@@ -339,7 +339,8 @@ mod tests {
         assert_eq!(keys.len(), 3);
         assert!((keys[0].0 - 0.999).abs() < 1e-9 && keys[0].1 == 1.0, "a 1 px mosaic, nothing, before: {keys:?}");
         assert_eq!((keys[1], keys[2]), ((1.0, 36.0), (3.0, 1.0)), "amount 0.5 through 12..60, 1 to 3 s into the clip: {keys:?}");
-        let mask = graph.nodes.iter().find_map(|n| n.legacy.as_ref().and_then(|l| (l.payload["kind"] == "Mask").then(|| l.payload["params"]["masks"]["masks"][0]["shape"]["Rectangle"].clone()))).expect("the box's mask");
+        // The box's mask as graph_read gives it.
+        let mask = graph.nodes.iter().map(|n| crate::graph_read::node(n, 0)).find(|n| n["type"] == "klipp.grade.mask").map(|n| n["params"]["masks"]["masks"][0]["shape"]["Rectangle"].clone()).expect("the box's mask");
         let near = |k: &str, v: f64| (mask[k].as_f64().unwrap() - v).abs() < 1e-6;
         assert!(near("center_x", 0.35) && near("width", 0.312) && near("center_y", 0.625) && near("height", 0.062 * 1080.0 / 1920.0), "the box and its margin: {mask}");
         let names: Vec<&str> = graph.ui.frames.iter().filter_map(|f| f["recipe"]["name"].as_str()).collect();

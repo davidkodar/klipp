@@ -18,9 +18,6 @@
 use klipp_timeline::registry_ids::{resolve_in, Migration, Resolved, Subject, MIGRATIONS};
 use serde_json::Value;
 
-/// The effect node type a saved picture stores a built-in effect under.
-const LEGACY_EFFECT: &str = "klipp.legacy.effect";
-
 /// `project`, its renamed effects, grade nodes and effect settings read
 /// as they are called now, through [`MIGRATIONS`].
 pub fn migrate(project: &mut Value) -> Result<(), String> {
@@ -34,7 +31,7 @@ pub fn migrate_in(project: &mut Value, table: &[Migration]) -> Result<(), String
 }
 
 fn walk(v: &mut Value, resolve: &dyn Fn(Subject<'_>) -> Resolved) -> Result<(), String> {
-    if v.get("type_id").and_then(Value::as_str) == Some(LEGACY_EFFECT) {
+    if v.get("type_id").and_then(Value::as_str) == Some(klipp_graph_format::types::LEGACY_EFFECT) {
         effect(v, resolve)?;
     }
     // A grade node: its kind by name, its label and its settings (in a
@@ -168,7 +165,7 @@ mod tests {
     }
 
     fn effect_node(payload: Value, anim: Value) -> Value {
-        serde_json::json!({"nodes": [{"id": "n", "type_id": LEGACY_EFFECT, "legacy": {"payload": payload, "slot": 0}, "anim": anim}]})
+        serde_json::json!({"nodes": [{"id": "n", "type_id": klipp_graph_format::types::LEGACY_EFFECT, "legacy": {"payload": payload, "slot": 0}, "anim": anim}]})
     }
 
     #[test]
