@@ -65,3 +65,35 @@ fn the_snapshot_covers_every_kind() {
         assert!(now.iter().any(|l| l.starts_with(prefix)), "no {prefix}");
     }
 }
+
+/// Every effect, node, transition and audio id the guides write
+/// (`assets/craft`) reads as a current id (#2888): a rename moves the
+/// guide with it.
+#[test]
+fn every_id_the_guides_write_is_current() {
+    let craft = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/craft");
+    let mut files = vec![std::path::PathBuf::from(craft)];
+    let mut seen = 0;
+    while let Some(path) = files.pop() {
+        if path.is_dir() {
+            files.extend(std::fs::read_dir(&path).unwrap().map(|e| e.unwrap().path()));
+            continue;
+        }
+        if path.extension().is_none_or(|x| x != "md") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        for prefix in ["klipp.fx.", "klipp.grade.", "klipp.transition.", "klipp.audio."] {
+            for (at, _) in text.match_indices(prefix) {
+                let id: String = text[at..].chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '_').collect();
+                let id = id.trim_end_matches('.');
+                if id == prefix.trim_end_matches('.') {
+                    continue;
+                }
+                seen += 1;
+                assert!(matches!(registry_ids::resolve(Subject::Type(id)), Resolved::Current(ref now) if now == id), "{}: {id} is not a current id", path.display());
+            }
+        }
+    }
+    assert!(seen > 0, "no ids found in the guides");
+}
