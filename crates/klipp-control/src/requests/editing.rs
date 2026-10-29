@@ -90,7 +90,7 @@ mod fonts_reply_tests {
         let found = fonts_reply(names(&["Inter", "Playfair Display"]), names(&["DejaVu Sans", "Noto Serif Display"]), Some("display"));
         assert_eq!((found["bundled"].as_array().unwrap().len(), found["installed"].as_array().unwrap().len()), (1, 1), "{found}");
         assert!(found["text"].as_str().unwrap().contains("Noto Serif Display"));
-        let none = fonts_reply(names(&["Inter"]), names(&[]), Some("gothic"));
+        let none = fonts_reply(names(&["Inter"]), names(&[]), Some("blackletter"));
         assert!(none["text"].as_str().unwrap().starts_with("No family's name holds"));
     }
 
