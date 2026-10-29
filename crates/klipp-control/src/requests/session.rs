@@ -115,6 +115,8 @@ pub(crate) fn respond(
                 media,
                 playhead_secs: presented.unwrap_or(0.0),
                 playing,
+                sequences: &project.sequences,
+                active_sequence: project.active_sequence,
             });
             if let Some(o) = &offline {
                 text.push_str(&format!("\n{}", o["text"].as_str().unwrap_or("")));
@@ -189,6 +191,7 @@ pub(crate) fn respond(
                         "id": s.id,
                         "name": s.name,
                         "clips": s.clips,
+                        "duration_secs": s.duration_secs,
                         "active": index == project.active_sequence,
                     });
                     if let Some(parent) = &s.used_in {

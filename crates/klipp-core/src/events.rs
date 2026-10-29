@@ -5527,6 +5527,9 @@ pub struct SequenceSummary {
     pub name: String,
     /// Clips on all its tracks.
     pub clips: usize,
+    /// How long it runs, in seconds.
+    #[serde(default)]
+    pub duration_secs: f64,
     /// The sequence that holds it as a compound clip, if one does: it
     /// can't be removed while it is.
     #[serde(default, skip_serializing_if = "Option::is_none")]

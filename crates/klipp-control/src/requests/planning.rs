@@ -51,11 +51,14 @@ pub(crate) fn respond(
                 let any_running = statuses.iter().any(|s| matches!(s.state, klipp_analysis::service::State::Queued | klipp_analysis::service::State::Running));
                 (media, all_analysed, any_running)
             };
-            let (seq_text, clips) = {
+            let (seq_text, clips, sequences) = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
                 let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
                 let clips: usize = seq.tracks.iter().map(|t| t.clips.len()).sum();
-                (timeline_text(&seq.with_own_grades(), &pool, None, ctx.shared.revision(), TimelineView::default()), clips)
+                // The others named too: from the open one alone a reader
+                // took a four-sequence project for a one-sequence one.
+                let sequences = crate::envelope::sequences_text(&project.sequences, project.active_sequence, seq.total_duration().to_secs_f64());
+                (timeline_text(&seq.with_own_grades(), &pool, None, ctx.shared.revision(), TimelineView::default()), clips, sequences)
             };
             // What to do next, from where the work stands.
             let next = if media.is_empty() {
@@ -93,6 +96,7 @@ pub(crate) fn respond(
                 "brief": brief.as_ref().map(|b| b.text()),
                 "edit_plan": edit_plan.as_ref().map(|p| p.text(brief.as_ref().and_then(|b| b.target_secs))),
                 "media": media,
+                "sequences": sequences,
                 "sequence": seq_text,
                 "clips": clips,
                 "revision": ctx.shared.revision(),
