@@ -797,8 +797,9 @@ impl KlippApp {
                 self.state.selected_clips.clear();
                 cmds.push(AppCommand::SelectClip(None));
             }
-            // Select All clips
-            if kb.is_action_pressed("select_all", i) {
+            // Select All clips; the Files list takes Ctrl+A for its own
+            // files while it has the keyboard (#3019).
+            if kb.is_action_pressed("select_all", i) && !self.state.files_panel_focused {
                 cmds.push(AppCommand::SelectAllClips);
             }
             // The selected clip's track: all of it, or from the playhead on

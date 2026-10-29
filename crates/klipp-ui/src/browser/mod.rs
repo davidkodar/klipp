@@ -85,6 +85,16 @@ pub fn browser_search_field(
     }
 }
 
+/// The rows a keyboard move leaves selected in the Files list (#3019), as
+/// indices into the rows shown, `lo..=hi`: the row moved to alone, or with
+/// `extend` (Shift held) every row from the anchor to it.
+fn keyboard_selection(anchor: Option<usize>, to: usize, extend: bool) -> (usize, usize) {
+    match anchor.filter(|_| extend) {
+        Some(a) => (a.min(to), a.max(to)),
+        None => (to, to),
+    }
+}
+
 /// One pending file-browser selection action, captured during the row loop
 /// and applied after the ScrollArea closure releases its borrow on
 /// `self.files_entries`.
@@ -845,6 +855,9 @@ pub struct BrowserPanel {
     /// ctrl-clicked). Shift+click selects every visible row between the
     /// anchor and the clicked row, inclusive.
     pub files_selection_anchor: Option<std::path::PathBuf>,
+    /// The row a keyboard move last went to (#3019): Shift+arrow extends
+    /// the selection from the anchor to it, and moves it on.
+    pub files_selection_cursor: Option<std::path::PathBuf>,
     // File-thumbnail state (in-memory; disk cache is shared with media pool)
     file_thumb_textures: HashMap<std::path::PathBuf, egui::TextureHandle>,
     file_thumb_pending: HashSet<std::path::PathBuf>,
@@ -1080,6 +1093,7 @@ impl Default for BrowserPanel {
             files_receiver: None,
             files_selected: HashSet::new(),
             files_selection_anchor: None,
+            files_selection_cursor: None,
             file_thumb_textures: HashMap::new(),
             file_thumb_pending: HashSet::new(),
             file_thumb_failed: HashSet::new(),
@@ -2725,31 +2739,43 @@ impl BrowserPanel {
             // it), fall back to None so the next move starts from the top.
             let cur_idx = self.files_selection_anchor.as_ref()
                 .and_then(|a| filtered.iter().position(|e| &e.path == a));
+            // Shift moves from where the last keyboard move went, the
+            // anchor kept (#3019); Ctrl+A takes every file shown.
+            let (extend, select_all) = ui.input(|i| (i.modifiers.shift, i.modifiers.command && i.key_pressed(egui::Key::A)));
+            let from_idx = self.files_selection_cursor.as_ref()
+                .filter(|_| extend)
+                .and_then(|c| filtered.iter().position(|e| &e.path == c))
+                .or(cur_idx);
 
             let last = filtered.len() - 1;
             let page = 10usize;
             let mut new_idx: Option<usize> = None;
 
             if k_down {
-                new_idx = Some(match cur_idx { Some(i) if i < last => i + 1, _ => 0 });
+                new_idx = Some(match from_idx { Some(i) if i < last => i + 1, Some(i) if extend => i, _ => 0 });
             } else if k_up {
-                new_idx = Some(match cur_idx { Some(i) if i > 0 => i - 1, Some(_) => 0, None => last });
+                new_idx = Some(match from_idx { Some(i) if i > 0 => i - 1, Some(_) => 0, None => last });
             } else if k_home {
                 new_idx = Some(0);
             } else if k_end {
                 new_idx = Some(last);
             } else if k_pgdn {
-                new_idx = Some(match cur_idx { Some(i) => (i + page).min(last), None => 0 });
+                new_idx = Some(match from_idx { Some(i) => (i + page).min(last), None => 0 });
             } else if k_pgup {
-                new_idx = Some(match cur_idx { Some(i) => i.saturating_sub(page), None => 0 });
+                new_idx = Some(match from_idx { Some(i) => i.saturating_sub(page), None => 0 });
             }
 
             if let Some(idx) = new_idx {
                 let path = filtered[idx].path.clone();
-                self.files_selected.clear();
-                self.files_selected.insert(path.clone());
-                self.files_selection_anchor = Some(path);
+                let (lo, hi) = keyboard_selection(cur_idx, idx, extend);
+                self.files_selected = filtered[lo..=hi].iter().map(|e| e.path.clone()).collect();
+                if lo == hi || cur_idx.is_none() {
+                    self.files_selection_anchor = Some(path.clone());
+                }
+                self.files_selection_cursor = Some(path);
                 scroll_to_index = Some(idx);
+            } else if select_all {
+                self.files_selected = filtered.iter().filter(|e| !e.is_dir).map(|e| e.path.clone()).collect();
             }
 
             // ── Type-to-navigate ──
@@ -3926,6 +3952,7 @@ impl BrowserPanel {
             Some(FileSelectAction::Set(p)) => {
                 self.files_selected.clear();
                 self.files_selected.insert(p.clone());
+                self.files_selection_cursor = Some(p.clone());
                 self.files_selection_anchor = Some(p);
             }
             Some(FileSelectAction::Toggle(p)) => {
@@ -6852,5 +6879,75 @@ mod search_field_tests {
         assert!(ctx.wants_keyboard_input(), "the field has the keys");
         run(vec![egui::Event::Text("v".into())], &mut query, &mut frame_rect);
         assert_eq!(query, "v");
+    }
+}
+
+#[cfg(test)]
+mod keyboard_selection_tests {
+    use super::*;
+
+    /// One frame of the Files tab with `keys` pressed (each with its
+    /// modifiers).
+    fn frame(panel: &mut BrowserPanel, state: &mut AppState, keys: &[(egui::Key, egui::Modifiers)]) {
+        let ctx = egui::Context::default();
+        let theme = KlippTheme::default();
+        // A frame to lay out, then the one the keys arrive in.
+        for events in [Vec::new(), keys.iter().map(|&(key, modifiers)| egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }).collect()] {
+            // The keys' modifiers held, as a keyboard holds them.
+            let modifiers = if events.is_empty() { egui::Modifiers::NONE } else { keys.first().map_or(egui::Modifiers::NONE, |k| k.1) };
+            let input = egui::RawInput { events, modifiers, screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 800.0))), ..Default::default() };
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let (mut tab, mut pinned, mut ratio) = (crate::layout_state::BrowserTab::Files, false, 0.5);
+                    let _ = panel.show(ui, state, &theme, &mut tab, &mut pinned, &mut ratio);
+                });
+            });
+        }
+    }
+
+    fn names(panel: &BrowserPanel) -> Vec<String> {
+        let mut n: Vec<String> = panel.files_selected.iter().filter_map(|p| p.file_name().map(|f| f.to_string_lossy().into_owned())).collect();
+        n.sort();
+        n
+    }
+
+    /// #3019: Shift+arrow extends the selection from its anchor and takes
+    /// it back; Ctrl+A selects every file shown, the folder left out; a
+    /// plain arrow selects one again.
+    #[test]
+    fn the_keyboard_selects_several_files() {
+        let dir = std::env::temp_dir().join(format!("klipp-files-keys-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        for f in ["a.mp4", "b.mp4", "c.mp4", "d.mp4", "e.mp4"] {
+            std::fs::write(dir.join(f), b"").unwrap();
+        }
+        let mut panel = BrowserPanel::default();
+        let mut state = AppState::default();
+        panel.navigate_files_to(dir.clone());
+        frame(&mut panel, &mut state, &[]);
+        assert!(panel.files_entries.iter().any(|e| e.name == "b.mp4"), "the folder is listed: {:?}", panel.files_entries.iter().map(|e| &e.name).collect::<Vec<_>>());
+        panel.files_panel_focused = true;
+        panel.files_selected = [dir.join("b.mp4")].into_iter().collect();
+        panel.files_selection_anchor = Some(dir.join("b.mp4"));
+        let (shift, ctrl) = (egui::Modifiers::SHIFT, egui::Modifiers::COMMAND);
+        frame(&mut panel, &mut state, &[(egui::Key::ArrowDown, shift)]);
+        frame(&mut panel, &mut state, &[(egui::Key::ArrowDown, shift)]);
+        assert_eq!(names(&panel), ["b.mp4", "c.mp4", "d.mp4"]);
+        frame(&mut panel, &mut state, &[(egui::Key::ArrowUp, shift)]);
+        assert_eq!(names(&panel), ["b.mp4", "c.mp4"], "taken back a row");
+        frame(&mut panel, &mut state, &[(egui::Key::A, ctrl)]);
+        assert_eq!(names(&panel), ["a.mp4", "b.mp4", "c.mp4", "d.mp4", "e.mp4"], "every file, not the folder");
+        frame(&mut panel, &mut state, &[(egui::Key::ArrowDown, egui::Modifiers::NONE)]);
+        assert_eq!(panel.files_selected.len(), 1, "a plain arrow selects one");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_keyboard_range_runs_from_the_anchor() {
+        assert_eq!(keyboard_selection(Some(2), 5, true), (2, 5));
+        assert_eq!(keyboard_selection(Some(4), 1, true), (1, 4));
+        assert_eq!(keyboard_selection(Some(2), 5, false), (5, 5));
+        assert_eq!(keyboard_selection(None, 3, true), (3, 3));
     }
 }
