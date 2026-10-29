@@ -42,8 +42,13 @@ pub struct Migration {
     pub change: Change,
 }
 
-/// Every renamed or removed id, oldest first. None yet.
-pub const MIGRATIONS: &[Migration] = &[];
+/// Every renamed or removed id, oldest first.
+pub const MIGRATIONS: &[Migration] = &[
+    // The chroma key's edge softness, saved first as spill_suppression:
+    // projects read the old name by its serde alias, templates and
+    // recipes by this; its key is spill, as its keyframes are named.
+    Migration { old: Subject::Param("klipp.fx.chroma_key", "spill_suppression"), change: Change::Renamed("spill") },
+];
 
 /// The id prefix of a transition.
 pub const TRANSITION: &str = "klipp.transition.";
@@ -220,5 +225,6 @@ mod tests {
         assert!(is_current(Subject::Param("klipp.fx.gaussian_blur", "radius")));
         assert!(is_current(Subject::Type("klipp.grade.qualifier")));
         assert!(is_current(Subject::Param("klipp.audio.hum_removal", "fundamental_hz")));
+        assert_eq!(resolve(Subject::Param("klipp.fx.chroma_key", "spill_suppression")), Resolved::Current("spill".into()));
     }
 }

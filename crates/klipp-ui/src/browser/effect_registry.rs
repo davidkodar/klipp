@@ -1153,7 +1153,8 @@ mod tests {
     }
 
     /// The browser lists every built-in effect its registry entry lists,
-    /// once, by its registry name, and none the entry hides (#2888). The
+    /// once, by its registry name, each with a description, and none the
+    /// entry hides (#2888). The
     /// hidden ones are the graph's sources and merge, the grade marker,
     /// the frei0r host, the tracker's pin and a title's focus band, each
     /// with its reason: hiding one more is a change to this list.
@@ -1171,6 +1172,14 @@ mod tests {
             .collect();
         rows.sort_unstable();
         let mut listed: Vec<(&str, &str)> = effect_types().filter(|t| matches!(t.browser, Browser::Listed { .. })).map(|t| (t.tag, t.desc.name)).collect();
+        // A listed effect says what it does, and runs: on the GPU, or on
+        // the CPU where it has no GPU path.
+        for t in effect_types() {
+            if let Browser::Listed { description, .. } = t.browser {
+                assert!(description.len() > 10, "{}: give it a line under its name", t.tag);
+                assert!(t.desc.gpu || t.desc.cpu, "{}: listed, but runs nowhere", t.tag);
+            }
+        }
         listed.sort_unstable();
         assert_eq!(rows, listed);
         let mut hidden: Vec<&str> = effect_types()

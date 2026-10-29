@@ -57,7 +57,7 @@ pub(super) static TYPES: &[EffectType] = &[
             Spatial::PerPixel,
         ),
         tag: "opacity",
-        browser: listed(BrowserCategory::Colour, "Colour", ""),
+        browser: listed(BrowserCategory::Colour, "Colour", "How see-through the picture is"),
         sample: || BuiltinEffect::Opacity { value: 1.0 },
     },
     EffectType {
@@ -125,7 +125,7 @@ pub(super) static TYPES: &[EffectType] = &[
             Spatial::PerPixel,
         ),
         tag: "invert",
-        browser: listed(BrowserCategory::Colour, "Colour", ""),
+        browser: listed(BrowserCategory::Colour, "Colour", "The picture's negative"),
         sample: || BuiltinEffect::Invert { mix: 1.0 },
     },
     EffectType {
@@ -137,7 +137,7 @@ pub(super) static TYPES: &[EffectType] = &[
             Spatial::PerPixel,
         )),
         tag: "posterize",
-        browser: listed(BrowserCategory::Stylize, "Stylize", ""),
+        browser: listed(BrowserCategory::Stylize, "Stylize", "Cuts the picture to a few flat tones"),
         sample: || BuiltinEffect::Posterize { levels: 8.0 },
     },
     EffectType {
@@ -159,7 +159,7 @@ pub(super) static TYPES: &[EffectType] = &[
             Spatial::PerPixel,
         )),
         tag: "channel_mixer",
-        browser: listed(BrowserCategory::Colour, "Colour", ""),
+        browser: listed(BrowserCategory::Colour, "Colour", "Builds each colour channel from a mix of the three"),
         sample: || BuiltinEffect::ChannelMixer {
             red_red: 1.0,
             red_green: 0.0,
@@ -181,7 +181,7 @@ pub(super) static TYPES: &[EffectType] = &[
             Spatial::PerPixel,
         )),
         tag: "gamma",
-        browser: listed(BrowserCategory::Colour, "Colour", ""),
+        browser: listed(BrowserCategory::Colour, "Colour", "Lifts or lowers the midtones"),
         sample: || BuiltinEffect::Gamma { gamma: 1.0 },
     },
     EffectType {
@@ -197,7 +197,7 @@ pub(super) static TYPES: &[EffectType] = &[
             Spatial::PerPixel,
         )),
         tag: "h_s_v_adjust",
-        browser: listed(BrowserCategory::Colour, "Colour", ""),
+        browser: listed(BrowserCategory::Colour, "Colour", "Turns the hues and sets the saturation and brightness"),
         sample: || BuiltinEffect::HSVAdjust { hue_shift: 0.0, saturation: 1.0, value: 1.0 },
     },
     EffectType {
@@ -209,7 +209,7 @@ pub(super) static TYPES: &[EffectType] = &[
             Spatial::PerPixel,
         )),
         tag: "vibrance",
-        browser: listed(BrowserCategory::Colour, "Colour", ""),
+        browser: listed(BrowserCategory::Colour, "Colour", "More colour in the muted tones, leaving saturated ones alone"),
         sample: || BuiltinEffect::Vibrance { amount: 0.0 },
     },
     // The picture's brightness along a ramp of three colours (#2758),
@@ -246,7 +246,7 @@ pub(super) static TYPES: &[EffectType] = &[
             Spatial::PerPixel,
         )),
         tag: "levels",
-        browser: listed(BrowserCategory::Colour, "Colour", ""),
+        browser: listed(BrowserCategory::Colour, "Colour", "Sets the black, white and middle points"),
         sample: || BuiltinEffect::Levels { in_black: 0.0, in_white: 1.0, gamma: 1.0, out_black: 0.0, out_white: 1.0 },
     },
     EffectType {
@@ -258,7 +258,7 @@ pub(super) static TYPES: &[EffectType] = &[
             Spatial::Global,
         )),
         tag: "equalize",
-        browser: listed(BrowserCategory::Colour, "Colour", ""),
+        browser: listed(BrowserCategory::Colour, "Colour", "Spreads the picture's tones over the whole range"),
         sample: || BuiltinEffect::Equalize { strength: 1.0 },
     },
     EffectType {

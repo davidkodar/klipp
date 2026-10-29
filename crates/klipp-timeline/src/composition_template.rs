@@ -1854,6 +1854,19 @@ mod tests {
         }
     }
 
+    /// A recipe that keys with the chroma key's first name for its edge
+    /// softness, `spill_suppression`, reads it as `spill` through the
+    /// table Klipp ships, as a project does by the field's serde alias.
+    #[test]
+    fn a_recipe_reads_the_chroma_keys_old_edge_name() {
+        let mut t = builtin_recipes().remove(0);
+        t.bindings = vec![serde_json::from_value(serde_json::json!({"parameter": "amount", "property": "node:0.spill_suppression"})).unwrap()];
+        t.graph.as_mut().unwrap().ops = vec![serde_json::json!({"op": "add", "after": {"anchor": "end"}, "type": "klipp.fx.chroma_key", "params": {"spill_suppression": 0.2}})];
+        t.migrate_ids().unwrap();
+        assert_eq!(t.graph.as_ref().unwrap().ops[0]["params"], serde_json::json!({"spill": 0.2}));
+        assert_eq!(t.bindings[0].property, "node:0.spill");
+    }
+
     /// The ids every recipe and template Klipp ships names are current:
     /// reading them through the table changes nothing (#2888).
     #[test]
