@@ -138,10 +138,10 @@ pub(crate) fn delivery_outputs(ticked: &[bool], output_path: &str) -> Vec<klipp_
     let dir = path.parent().map(std::path::Path::to_path_buf).unwrap_or_default();
     let stem = path.file_stem().and_then(|s| s.to_str()).filter(|s| !s.is_empty()).unwrap_or("delivery");
     let presets = klipp_core::builtin_presets();
-    klipp_core::DELIVERY_TEMPLATES.iter().zip(ticked).filter(|(_, on)| **on).filter_map(|((_, aspect, suffix, id), _)| {
-        let p = presets.iter().find(|p| p.id == *id)?;
-        let file = dir.join(format!("{stem}_{suffix}.{}", p.settings.format.extension()));
-        Some(klipp_core::DeliveryOutput { aspect: *aspect, settings: p.settings.settings_for(file) })
+    klipp_core::delivery_templates().iter().zip(ticked).filter(|(_, on)| **on).filter_map(|(t, _)| {
+        let p = presets.iter().find(|p| p.id == t.preset)?;
+        let file = dir.join(format!("{stem}_{}.{}", t.suffix, p.settings.format.extension()));
+        Some(klipp_core::DeliveryOutput { aspect: t.aspect, settings: p.settings.settings_for(file) })
     }).collect()
 }
 
@@ -219,10 +219,10 @@ impl super::KlippApp {
         egui::CollapsingHeader::new("Deliver to\u{2026}").id_salt("export_deliver").default_open(false).show(ui, |ui| {
             ui.label(egui::RichText::new("Every format at once, each from this sequence's version in its shape, reframed to follow the subjects. Files go beside the output file, its name with the format's suffix.").small().weak());
             let open = self.state.active_sequence_idx;
-            for (i, (label, aspect, _, _)) in klipp_core::DELIVERY_TEMPLATES.iter().enumerate() {
+            for (i, t) in klipp_core::delivery_templates().iter().enumerate() {
                 ui.horizontal(|ui| {
-                    ui.checkbox(&mut self.export_dialog.deliver[i], *label);
-                    if let Some(v) = stale_version_at(&self.state.sequences, open, *aspect) {
+                    ui.checkbox(&mut self.export_dialog.deliver[i], t.name.as_str());
+                    if let Some(v) = stale_version_at(&self.state.sequences, open, t.aspect) {
                         ui.label(egui::RichText::new("\u{26A0} older than the master's last edit").small().color(ui.visuals().warn_fg_color));
                         if ui.small_button("Rebuild from Master").on_hover_text("Copy the master's cut in again; clips still there keep their framing").clicked() {
                             cmds.push(AppCommand::RebuildVersion { sequence_idx: v });

@@ -1,0 +1,30 @@
+# The formats the Export page delivers in one click (#2724, #2887): each
+# a name, its aspect as width and height parts, the suffix its file takes
+# (letters, digits, - and _), and the built-in export preset it is
+# written with, by its id.
+kind = "delivery_template"
+format_version = 1
+
+[[template]]
+name = "YouTube 16:9"
+aspect = [16, 9]
+suffix = "16x9"
+preset = "00000000-0000-4000-a000-000000000001"
+
+[[template]]
+name = "Shorts, Reels, TikTok 9:16"
+aspect = [9, 16]
+suffix = "9x16"
+preset = "00000000-0000-4000-a000-000000000006"
+
+[[template]]
+name = "Square 1:1"
+aspect = [1, 1]
+suffix = "1x1"
+preset = "00000000-0000-4000-a000-000000000005"
+
+[[template]]
+name = "Instagram feed 4:5"
+aspect = [4, 5]
+suffix = "4x5"
+preset = "00000000-0000-4000-a000-000000000010"

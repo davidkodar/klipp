@@ -75,15 +75,56 @@ impl ExportPresetSettings {
     }
 }
 
-/// The formats a delivery offers in one click (#2724): its label, its
-/// aspect as width and height parts, the suffix its file takes, and the
-/// built-in preset it is written with.
-pub const DELIVERY_TEMPLATES: &[(&str, (u32, u32), &str, &str)] = &[
-    ("YouTube 16:9", (16, 9), "16x9", "00000000-0000-4000-a000-000000000001"),
-    ("Shorts, Reels, TikTok 9:16", (9, 16), "9x16", "00000000-0000-4000-a000-000000000006"),
-    ("Square 1:1", (1, 1), "1x1", "00000000-0000-4000-a000-000000000005"),
-    ("Instagram feed 4:5", (4, 5), "4x5", "00000000-0000-4000-a000-000000000010"),
-];
+/// A format a delivery offers in one click (#2724): its name, its aspect
+/// as width and height parts, the suffix its file takes, and the built-in
+/// export preset it is written with, by id.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeliveryTemplate {
+    pub name: String,
+    pub aspect: (u32, u32),
+    pub suffix: String,
+    pub preset: String,
+}
+
+/// Why delivery templates can't be used: a name empty or twice, an
+/// aspect part of 0 or past 100, a suffix that is empty, longer than 16
+/// or anything but letters, digits, `-` and `_` (it goes into a file's
+/// name), or a preset that isn't one of Klipp's.
+fn delivery_fault(templates: &[DeliveryTemplate]) -> Option<String> {
+    let presets = builtin_presets();
+    templates.iter().enumerate().find_map(|(i, t)| {
+        if t.name.trim().is_empty() || templates[..i].iter().any(|o| o.name == t.name) {
+            Some(format!("template {}: a name, said once", i + 1))
+        } else if !(1..=100).contains(&t.aspect.0) || !(1..=100).contains(&t.aspect.1) {
+            Some(format!("\"{}\": an aspect of 1 to 100 parts each way", t.name))
+        } else if t.suffix.is_empty() || t.suffix.len() > 16 || !t.suffix.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+            Some(format!("\"{}\": a suffix of letters, digits, - and _, up to 16", t.name))
+        } else if !presets.iter().any(|p| p.id == t.preset) {
+            Some(format!("\"{}\": {} is not one of Klipp's export presets", t.name, t.preset))
+        } else {
+            None
+        }
+    })
+}
+
+fn read_delivery_templates(text: &str) -> Result<Vec<DeliveryTemplate>, String> {
+    let templates = crate::preset_file::read::<DeliveryTemplate>(text, "delivery_template", 1, "template")?;
+    delivery_fault(&templates).map_or(Ok(templates), Err)
+}
+
+/// The delivery templates, `assets/presets/delivery_templates/
+/// builtin.toml`, read once; a file that doesn't read leaves none, said,
+/// never a crash.
+pub fn delivery_templates() -> &'static [DeliveryTemplate] {
+    static TEMPLATES: std::sync::OnceLock<Vec<DeliveryTemplate>> = std::sync::OnceLock::new();
+    TEMPLATES.get_or_init(|| {
+        read_delivery_templates(include_str!("../../../assets/presets/delivery_templates/builtin.toml")).unwrap_or_else(|why| {
+            tracing::error!("the built-in delivery templates don't read: {why}");
+            Vec::new()
+        })
+    })
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProxyResolution {
@@ -606,6 +647,48 @@ mod tests {
             } else if !p.name.contains("Broadcast") {
                 assert_eq!(p.settings.target_lufs, None, "{}", p.name);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod delivery_template_tests {
+    use super::*;
+
+    /// The one-click delivery formats read from Klipp's file as the code
+    /// listed them (#2887): names, aspects, suffixes and presets, in order.
+    #[test]
+    fn the_delivery_templates_read_as_they_were() {
+        let got: Vec<(&str, (u32, u32), &str, &str)> = delivery_templates().iter().map(|t| (t.name.as_str(), t.aspect, t.suffix.as_str(), t.preset.as_str())).collect();
+        assert_eq!(got, [
+            ("YouTube 16:9", (16, 9), "16x9", "00000000-0000-4000-a000-000000000001"),
+            ("Shorts, Reels, TikTok 9:16", (9, 16), "9x16", "00000000-0000-4000-a000-000000000006"),
+            ("Square 1:1", (1, 1), "1x1", "00000000-0000-4000-a000-000000000005"),
+            ("Instagram feed 4:5", (4, 5), "4x5", "00000000-0000-4000-a000-000000000010"),
+        ]);
+    }
+
+    /// A template that can't be offered is refused, saying why: a suffix
+    /// that would climb out of the output folder or isn't plain, a preset
+    /// Klipp hasn't got, an aspect of nothing, a name twice, an unknown
+    /// field.
+    #[test]
+    fn a_bad_delivery_template_is_refused() {
+        let file = |body: &str| format!("kind = \"delivery_template\"\nformat_version = 1\n{body}");
+        let one = |name: &str, aspect: &str, suffix: &str, preset: &str| format!("[[template]]\nname = \"{name}\"\naspect = {aspect}\nsuffix = \"{suffix}\"\npreset = \"{preset}\"\n");
+        let yt = "00000000-0000-4000-a000-000000000001";
+        assert!(read_delivery_templates(&file(&one("Wide", "[2, 1]", "2x1", yt))).is_ok());
+        for (body, says) in [
+            (one("Escape", "[1, 1]", "../../x", yt), "a suffix of letters"),
+            (one("Spaced", "[1, 1]", "a b", yt), "a suffix of letters"),
+            (one("Long", "[1, 1]", "aaaaaaaaaaaaaaaaa", yt), "up to 16"),
+            (one("Unknown", "[1, 1]", "x", "00000000-0000-4000-a000-000000000999"), "not one of Klipp's export presets"),
+            (one("Flat", "[0, 1]", "x", yt), "an aspect of 1 to 100"),
+            (one("Twice", "[1, 1]", "x", yt) + &one("Twice", "[2, 1]", "y", yt), "a name, said once"),
+            (one("Extra", "[1, 1]", "x", yt) + "fps = 30\n", "unknown field"),
+        ] {
+            let why = read_delivery_templates(&file(&body)).err().unwrap_or_default();
+            assert!(why.contains(says), "{body}: {why}");
         }
     }
 }
