@@ -105,14 +105,21 @@ fn weights(family: &str) -> Vec<u16> {
 
 /// The sections the picker lists, each its families: the starred ones,
 /// the recent ones not starred, and the rest; every one matching
-/// `search` (no case), in the order given.
+/// `search` (no case) by its name, or, a catalogue family, by its style,
+/// mood or script tags (#3011). In each, the name matches first, then the
+/// rest in the order given.
 pub fn sections<'a>(families: &'a [String], favourites: &[String], recents: &[String], search: &str) -> Vec<(&'static str, Vec<&'a str>)> {
-    let needle = search.trim().to_lowercase();
-    let matches = |f: &str| needle.is_empty() || f.to_lowercase().contains(&needle);
+    // 0 by name, 1 by a tag, `None` not found.
+    let rank = |f: &str| klipp_title::catalogue::search(f, search).map(|tags| usize::from(!tags.is_empty()));
+    let found = |list: Vec<&'a str>| {
+        let mut list: Vec<(usize, &'a str)> = list.into_iter().filter_map(|f| rank(f).map(|r| (r, f))).collect();
+        list.sort_by_key(|(r, _)| *r);
+        list.into_iter().map(|(_, f)| f).collect::<Vec<&'a str>>()
+    };
     let find = |name: &str| families.iter().find(|f| *f == name).map(String::as_str);
-    let starred: Vec<&str> = favourites.iter().filter_map(|f| find(f)).filter(|f| matches(f)).collect();
-    let recent: Vec<&str> = recents.iter().filter_map(|f| find(f)).filter(|f| matches(f) && !starred.contains(f)).collect();
-    let rest: Vec<&str> = families.iter().map(String::as_str).filter(|f| matches(f) && !starred.contains(f) && !recent.contains(f)).collect();
+    let starred = found(favourites.iter().filter_map(|f| find(f)).collect());
+    let recent = found(recents.iter().filter_map(|f| find(f)).filter(|f| !starred.contains(f)).collect());
+    let rest = found(families.iter().map(String::as_str).filter(|f| !starred.contains(f) && !recent.contains(f)).collect());
     [("Favourites", starred), ("Recent", recent), ("All fonts", rest)].into_iter().filter(|(_, f)| !f.is_empty()).collect()
 }
 
@@ -352,6 +359,12 @@ mod tests {
         assert_eq!(s, [("Favourites", vec!["Noto Sans"]), ("Recent", vec!["Bebas Neue"]), ("All fonts", vec!["Inter", "Libre Baskerville"])]);
         let s = sections(&f, &[], &[], "BASK");
         assert_eq!(s, [("All fonts", vec!["Libre Baskerville"])]);
+        // A catalogue family here is found by its tags too, after the
+        // names that hold the word (#3011).
+        let here: Vec<String> = ["Inter", "Oswald", "Bebas Neue", "Roboto Condensed", "Great Vibes"].map(String::from).to_vec();
+        assert_eq!(sections(&here, &[], &[], "condensed"), [("All fonts", vec!["Roboto Condensed", "Oswald"])]);
+        assert_eq!(sections(&here, &[], &[], "wedding"), [("All fonts", vec!["Great Vibes"])]);
+        assert!(sections(&here, &[], &[], "arabic").is_empty(), "no family here writes it");
         assert!(sections(&f, &["Gone".into()], &[], "").iter().all(|(_, l)| !l.contains(&"Gone")), "a starred font not installed is not listed");
     }
 

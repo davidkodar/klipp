@@ -34,12 +34,35 @@ pub(crate) fn fonts_reply(bundled: Vec<String>, installed: Vec<String>, query: O
         );
         return json!({ "text": text, "bundled": bundled, "installed": installed, "catalogue": catalogue_json(&catalogue), "fallback": fallback });
     };
-    let hit = |names: Vec<String>| -> Vec<String> { names.into_iter().filter(|n| n.to_lowercase().contains(&q)).collect() };
+    // By name, or a catalogue family by its tags (#3011); the name
+    // matches first, and what each tag match matched by.
+    let mut matched = serde_json::Map::new();
+    let mut hit = |names: Vec<String>| -> Vec<String> {
+        let mut found: Vec<(usize, String)> = names
+            .into_iter()
+            .filter_map(|n| {
+                let tags = klipp_title::catalogue::search(&n, &q)?;
+                let rank = usize::from(!tags.is_empty());
+                if !tags.is_empty() {
+                    matched.insert(n.clone(), json!(tags));
+                }
+                Some((rank, n))
+            })
+            .collect();
+        found.sort_by_key(|(r, _)| *r);
+        found.into_iter().map(|(_, n)| n).collect()
+    };
     let (bundled, installed) = (hit(bundled), hit(installed));
     let catalogue = klipp_title::catalogue::query(&q);
+    for f in &catalogue {
+        let tags = klipp_title::catalogue::search(&f.name, &q).unwrap_or_default();
+        if !tags.is_empty() {
+            matched.insert(f.name.clone(), json!(tags));
+        }
+    }
     let names: Vec<&str> = catalogue.iter().map(|f| f.name.as_str()).collect();
     let text = match (bundled.is_empty(), installed.is_empty(), catalogue.is_empty()) {
-        (true, true, true) => format!("No family's name holds \"{q}\", and none in the catalogue is that; anything a title names that isn't here falls back to {fallback}."),
+        (true, true, true) => format!("No family's name holds \"{q}\", and none in the catalogue is tagged so; anything a title names that isn't here falls back to {fallback}."),
         _ => format!(
             "Families for \"{q}\": bundled {}; installed {}; in the catalogue, fetched on request {}.",
             if bundled.is_empty() { "none".into() } else { bundled.join(", ") },
@@ -47,7 +70,7 @@ pub(crate) fn fonts_reply(bundled: Vec<String>, installed: Vec<String>, query: O
             if names.is_empty() { "none".into() } else { names.join(", ") },
         ),
     };
-    json!({ "text": text, "bundled": bundled, "installed": installed, "catalogue": catalogue_json(&catalogue), "fallback": fallback, "query": q })
+    json!({ "text": text, "bundled": bundled, "installed": installed, "catalogue": catalogue_json(&catalogue), "matched_tags": matched, "fallback": fallback, "query": q })
 }
 
 /// Fetch the catalogue family `name` (#2732): checked by its hashes, kept
@@ -106,6 +129,12 @@ mod fonts_reply_tests {
         let found: Vec<&str> = news["catalogue"].as_array().unwrap().iter().filter_map(|f| f["name"].as_str()).collect();
         assert!(found.contains(&"Oswald") && found.contains(&"Roboto Condensed"), "{found:?}");
         assert!(news["text"].as_str().unwrap().contains("Oswald"));
+        // An installed catalogue family is found by its tags too, after
+        // the name matches, with the tags it matched (#3011).
+        let here = fonts_reply(vec![], vec!["Roboto Condensed".into(), "Oswald".into(), "DejaVu Sans".into()], Some("condensed"));
+        assert_eq!(here["installed"], serde_json::json!(["Roboto Condensed", "Oswald"]), "{here}");
+        assert_eq!(here["matched_tags"]["Oswald"], serde_json::json!(["condensed"]));
+        assert!(here["matched_tags"].get("Roboto Condensed").is_none(), "a name match has no tags to say");
         if !klipp_title::catalogue::fetched("Great Vibes") {
             let w = crate::plans::font_warnings(["Great Vibes"].into_iter());
             assert!(w[0].contains("catalogue") && w[0].contains("fetch: \"Great Vibes\""), "{w:?}");

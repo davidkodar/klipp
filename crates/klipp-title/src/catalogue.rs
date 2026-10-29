@@ -76,7 +76,13 @@ impl CatalogueFamily {
     /// ("condensed news sans", "japanese", "wedding script").
     pub fn matches(&self, query: &str) -> bool {
         let name = self.name.to_lowercase();
-        query.split_whitespace().map(str::to_lowercase).all(|w| name.contains(&w) || self.tags().any(|t| t == w || t.starts_with(&w)))
+        query.split_whitespace().map(str::to_lowercase).all(|w| name.contains(&w) || self.tags().any(|t| tag_fits(t, &w)))
+    }
+
+    /// Its tags a word of `query` names, in its own order (#3011).
+    pub fn matched_tags(&self, query: &str) -> Vec<&str> {
+        let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+        self.tags().filter(|t| words.iter().any(|w| tag_fits(t, w))).collect()
     }
 
     /// Its folder under `root`.
@@ -88,6 +94,25 @@ impl CatalogueFamily {
     fn licence_file(&self) -> &str {
         self.licence_url.rsplit('/').next().unwrap_or("LICENSE.txt")
     }
+}
+
+/// Whether the tag `t` is the word `w`, or begins with it ("cond" finds
+/// condensed).
+fn tag_fits(t: &str, w: &str) -> bool {
+    t == w || t.starts_with(w)
+}
+
+/// How the family named `name`, on this machine or in the catalogue, is
+/// found by a search for `query` (#3011): by its name (the name holds the
+/// whole query, any case), `Some` of no tags; else, a catalogue family,
+/// by its tags, `Some` of the tags that matched; else `None`. A name
+/// match lists first.
+pub fn search(name: &str, query: &str) -> Option<Vec<&'static str>> {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() || name.to_lowercase().contains(&q) {
+        return Some(Vec::new());
+    }
+    family(name).filter(|f| f.matches(&q)).map(|f| f.matched_tags(&q))
 }
 
 /// The families that match `query` (see [`CatalogueFamily::matches`]),
