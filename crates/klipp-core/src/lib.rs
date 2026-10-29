@@ -42,6 +42,7 @@ pub mod colorspace;
 pub mod config;
 pub mod events;
 pub mod generator;
+pub mod generator_entries;
 pub mod gpu_vendor;
 pub mod keyframe;
 pub mod mask_path;

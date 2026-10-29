@@ -6,119 +6,16 @@ use crate::browser::library_card::LibraryList;
 use crate::icons::Icon;
 use crate::state::AppState;
 use crate::theme::KlippTheme;
-use klipp_core::{AppCommand, FourPointGradient, GeneratorData};
+use klipp_core::AppCommand;
 
 
-struct GeneratorTemplate {
-    name: &'static str,
-    category: &'static str,
-    create_data: fn() -> GeneratorData,
-    /// `true` for generators whose visible content advances over the
-    /// clip (e.g. countdown). Drives the "Animated only" filter and
-    /// the per-card ANIMATED badge so the pattern matches the other
-    /// Library tabs.
-    animated: bool,
-}
+// The curated set, one generator per job, is Klipp's file (#2887):
+// `assets/presets/generators/builtin.toml`.
+type GeneratorTemplate = klipp_core::generator_entries::GeneratorEntry;
 
-// ---------------------------------------------------------------------------
-// The curated set: one generator per job, every colour and count a
-// parameter in the inspector. Fifteen in five groups.
-// ---------------------------------------------------------------------------
-
-fn solid() -> GeneratorData { GeneratorData::SolidColor { color: [0, 0, 0, 255] } }
-fn gradient() -> GeneratorData {
-    GeneratorData::Gradient { top: [36, 52, 92, 255], bottom: [8, 10, 18, 255], angle_deg: 0.0, four_point: None, grain: klipp_core::DEFAULT_GENERATOR_GRAIN }
+fn generators() -> &'static [GeneratorTemplate] {
+    klipp_core::generator_entries::generator_entries()
 }
-fn four_corner() -> GeneratorData {
-    GeneratorData::Gradient {
-        top: [0, 0, 0, 255],
-        bottom: [0, 0, 0, 255],
-        angle_deg: 0.0,
-        four_point: Some(FourPointGradient {
-            top_left: [255, 140, 60, 255],
-            top_right: [255, 200, 120, 255],
-            bottom_left: [60, 80, 200, 255],
-            bottom_right: [20, 30, 90, 255],
-        }),
-        grain: klipp_core::DEFAULT_GENERATOR_GRAIN,
-    }
-}
-fn living_gradient() -> GeneratorData {
-    GeneratorData::LivingGradient { a: [22, 34, 78, 255], b: [64, 24, 82, 255], angle_deg: 20.0, drift_deg_per_sec: 4.0, glow: 0.35, grain: klipp_core::DEFAULT_GENERATOR_GRAIN }
-}
-fn grain() -> GeneratorData {
-    GeneratorData::Grain { color: [26, 26, 30, 255], amount: 0.35, size_px: 2.0, speed: 24.0 }
-}
-fn color_bars() -> GeneratorData { GeneratorData::ColorBars }
-fn color_bars_100() -> GeneratorData { GeneratorData::ColorBars100 }
-fn color_bars_smpte() -> GeneratorData { GeneratorData::ColorBarsSmpte }
-fn countdown() -> GeneratorData { GeneratorData::Countdown }
-fn timer_count_up() -> GeneratorData {
-    GeneratorData::Timer {
-        mode: klipp_core::TimerMode::CountUp,
-        initial_seconds: 0.0,
-        format: klipp_core::TimerFormat::MmSs,
-        text_color: [255, 255, 255, 255],
-        background_color: [0, 0, 0, 255],
-    }
-}
-fn timer_count_down() -> GeneratorData {
-    GeneratorData::Timer {
-        mode: klipp_core::TimerMode::CountDown,
-        initial_seconds: 60.0,
-        format: klipp_core::TimerFormat::MmSs,
-        text_color: [255, 255, 255, 255],
-        background_color: [0, 0, 0, 255],
-    }
-}
-fn slate() -> GeneratorData {
-    GeneratorData::Slate {
-        project: String::from("Project Name"),
-        scene: String::new(),
-        take: String::new(),
-        director: String::new(),
-        camera: String::new(),
-        date: String::new(),
-        framerate: String::new(),
-        notes: String::new(),
-        text_color: [255, 255, 255, 255],
-        background_color: [0, 0, 0, 255],
-    }
-}
-fn placeholder() -> GeneratorData {
-    GeneratorData::Placeholder { label: String::from("Missing shot"), color: [66, 70, 84, 255] }
-}
-fn polygon() -> GeneratorData {
-    GeneratorData::Polygon { sides: 6, color: [255, 255, 255, 255], outline_width_px: 0.0, fill: true }
-}
-fn circle() -> GeneratorData {
-    // A true circle, smooth at any size (#2775): 24 sides showed facets.
-    GeneratorData::Polygon { sides: klipp_core::generator::CIRCLE_SIDES, color: [255, 255, 255, 255], outline_width_px: 0.0, fill: true }
-}
-fn star() -> GeneratorData {
-    GeneratorData::Star { points: 5, inner_radius_pct: 0.40, color: [255, 220, 60, 255], outline_width_px: 0.0, fill: true }
-}
-
-const CATEGORIES: &[&str] = &["Backgrounds", "Test", "Timing", "Slate", "Shape"];
-
-const GENERATORS: &[GeneratorTemplate] = &[
-    GeneratorTemplate { name: "Solid Colour",    category: "Backgrounds", create_data: solid,           animated: false },
-    GeneratorTemplate { name: "Gradient",        category: "Backgrounds", create_data: gradient,        animated: false },
-    GeneratorTemplate { name: "Four-Corner",     category: "Backgrounds", create_data: four_corner,     animated: false },
-    GeneratorTemplate { name: "Living Gradient", category: "Backgrounds", create_data: living_gradient, animated: true },
-    GeneratorTemplate { name: "Grain",           category: "Backgrounds", create_data: grain,           animated: true },
-    GeneratorTemplate { name: "SMPTE 75% Bars",  category: "Test",        create_data: color_bars,      animated: false },
-    GeneratorTemplate { name: "SMPTE 100% Bars", category: "Test",        create_data: color_bars_100,  animated: false },
-    GeneratorTemplate { name: "SMPTE Full Bars", category: "Test",        create_data: color_bars_smpte, animated: false },
-    GeneratorTemplate { name: "Countdown",       category: "Timing",      create_data: countdown,       animated: true },
-    GeneratorTemplate { name: "Timer Up",        category: "Timing",      create_data: timer_count_up,  animated: true },
-    GeneratorTemplate { name: "Timer Down",      category: "Timing",      create_data: timer_count_down, animated: true },
-    GeneratorTemplate { name: "Slate",           category: "Slate",       create_data: slate,           animated: false },
-    GeneratorTemplate { name: "Placeholder",     category: "Slate",       create_data: placeholder,     animated: false },
-    GeneratorTemplate { name: "Polygon",         category: "Shape",       create_data: polygon,         animated: false },
-    GeneratorTemplate { name: "Circle",          category: "Shape",       create_data: circle,          animated: false },
-    GeneratorTemplate { name: "Star",            category: "Shape",       create_data: star,            animated: false },
-];
 
 const GENERATORS_SIDEBAR_W: f32 = 180.0;
 
@@ -167,8 +64,8 @@ pub fn show(
             .show(ui, |ui| {
                 ui.add_space(6.0);
 
-                let installed_total = GENERATORS.len();
-                let in_list = |keys: &[String]| GENERATORS.iter().filter(|t| keys.iter().any(|k| k == t.name)).count();
+                let installed_total = generators().len();
+                let in_list = |keys: &[String]| generators().iter().filter(|t| keys.iter().any(|k| k == t.name.as_str())).count();
                 for (target, icon, label, count) in [
                     (LibraryList::Favourites, Icon::Star, "Favorites", in_list(favourites)),
                     (LibraryList::Recent, Icon::ArrowCounterClockwise, "Recent", in_list(&recent)),
@@ -193,8 +90,8 @@ pub fn show(
                     },
                     None,
                 );
-                for cat in CATEGORIES {
-                    let count = GENERATORS.iter().filter(|t| t.category == *cat).count();
+                for cat in &klipp_core::generator_entries::generator_categories() {
+                    let count = generators().iter().filter(|t| t.category == *cat).count();
                     let is_active = *active_category == Some(*cat) && list.is_none();
                     gen_sidebar_row(
                         ui, theme, Some(category_icon(cat)), cat,
@@ -246,15 +143,15 @@ pub fn show(
 
         // Filter the registry
         let search_lower = search_query.to_lowercase();
-        let mut filtered: Vec<&GeneratorTemplate> = GENERATORS
+        let mut filtered: Vec<&GeneratorTemplate> = generators()
             .iter()
             .filter(|t| match active_category {
                 Some(cat) => t.category == *cat,
                 None => true,
             })
             .filter(|t| match list {
-                Some(LibraryList::Favourites) => favourites.iter().any(|k| k == t.name),
-                Some(LibraryList::Recent) => recent.iter().any(|k| k == t.name),
+                Some(LibraryList::Favourites) => favourites.iter().any(|k| k == t.name.as_str()),
+                Some(LibraryList::Recent) => recent.iter().any(|k| k == t.name.as_str()),
                 None => true,
             })
             .filter(|t| !*animated_only || t.animated)
@@ -262,7 +159,7 @@ pub fn show(
                 if search_lower.is_empty() {
                     return true;
                 }
-                t.name.to_lowercase().contains(&search_lower)
+                t.name.as_str().to_lowercase().contains(&search_lower)
                     || t.category.to_lowercase().contains(&search_lower)
             })
             .collect();
@@ -277,7 +174,7 @@ pub fn show(
         }
         // Recent reads newest first, whatever the sort.
         if *list == Some(LibraryList::Recent) {
-            filtered.sort_by_key(|t| recent.iter().position(|k| k == t.name));
+            filtered.sort_by_key(|t| recent.iter().position(|k| k == t.name.as_str()));
         }
 
         // Result strip: count + sort dropdown
@@ -318,19 +215,19 @@ pub fn show(
                         .min_col_width(card_w)
                         .show(ui, |ui| {
                             for (i, tmpl) in filtered.iter().enumerate() {
-                                let is_selected = selected.as_deref() == Some(tmpl.name);
+                                let is_selected = selected.as_deref() == Some(tmpl.name.as_str());
                                 let tex = preview_texture(ui, previews, tmpl);
                                 let resp = generator_card(ui, theme, tmpl, card_w, card_h, is_selected, tex.as_ref());
                                 let active = resp.hovered() || is_selected;
-                                gen_update_anim_state(ui, tmpl.name, active && tmpl.animated);
+                                gen_update_anim_state(ui, tmpl.name.as_str(), active && tmpl.animated);
                                 if active && tmpl.animated {
                                     ui.ctx().request_repaint();
                                 }
-                                let is_fav = favourites.iter().any(|k| k == tmpl.name);
-                                let mut toggle = crate::browser::library_card::favourite_star(ui, theme, &resp, true, is_fav, tmpl.name);
+                                let is_fav = favourites.iter().any(|k| k == tmpl.name.as_str());
+                                let mut toggle = crate::browser::library_card::favourite_star(ui, theme, &resp, true, is_fav, tmpl.name.as_str());
                                 resp.context_menu_rows(|ui| toggle |= crate::browser::library_card::favourite_menu_item(ui, is_fav));
                                 if toggle {
-                                    crate::browser::library_card::toggle_favourite(favourites, tmpl.name);
+                                    crate::browser::library_card::toggle_favourite(favourites, tmpl.name.as_str());
                                 }
                                 handle_card_interaction(state, &mut cmds, selected, tmpl, &resp);
                                 if i % 2 == 1 {
@@ -343,19 +240,19 @@ pub fn show(
                         });
                 } else {
                     for tmpl in filtered.iter() {
-                        let is_selected = selected.as_deref() == Some(tmpl.name);
+                        let is_selected = selected.as_deref() == Some(tmpl.name.as_str());
                         let tex = preview_texture(ui, previews, tmpl);
                         let resp = generator_list_row(ui, theme, tmpl, avail_w, is_selected, tex.as_ref());
                         let active = resp.hovered() || is_selected;
-                        gen_update_anim_state(ui, tmpl.name, active && tmpl.animated);
+                        gen_update_anim_state(ui, tmpl.name.as_str(), active && tmpl.animated);
                         if active && tmpl.animated {
                             ui.ctx().request_repaint();
                         }
-                        let is_fav = favourites.iter().any(|k| k == tmpl.name);
-                        let mut toggle = crate::browser::library_card::favourite_star(ui, theme, &resp, false, is_fav, tmpl.name);
+                        let is_fav = favourites.iter().any(|k| k == tmpl.name.as_str());
+                        let mut toggle = crate::browser::library_card::favourite_star(ui, theme, &resp, false, is_fav, tmpl.name.as_str());
                         resp.context_menu_rows(|ui| toggle |= crate::browser::library_card::favourite_menu_item(ui, is_fav));
                         if toggle {
-                            crate::browser::library_card::toggle_favourite(favourites, tmpl.name);
+                            crate::browser::library_card::toggle_favourite(favourites, tmpl.name.as_str());
                         }
                         handle_card_interaction(state, &mut cmds, selected, tmpl, &resp);
                         ui.add_space(2.0);
@@ -375,20 +272,20 @@ fn handle_card_interaction(
     resp: &egui::Response,
 ) {
     if resp.clicked() {
-        *selected = Some(tmpl.name.to_string());
+        *selected = Some(tmpl.name.as_str().to_string());
     }
     if resp.double_clicked() {
-        crate::browser::library_card::push_recent(&mut state.library_recent.generators, tmpl.name);
+        crate::browser::library_card::push_recent(&mut state.library_recent.generators, tmpl.name.as_str());
         cmds.push(AppCommand::CreateGeneratorClip {
             track_index: None,
-            data: (tmpl.create_data)(),
+            data: tmpl.data.clone(),
         });
-        state.toast.show(format!("\"{}\" generator added to timeline", tmpl.name));
+        state.toast.show(format!("\"{}\" generator added to timeline", tmpl.name.as_str()));
     }
     if resp.drag_started() {
         state.drag_drop.begin(DragPayload::Generator {
-            name: tmpl.name.to_string(),
-            data: (tmpl.create_data)(),
+            name: tmpl.name.as_str().to_string(),
+            data: tmpl.data.clone(),
         });
     }
 }
@@ -413,7 +310,7 @@ fn generator_card(
         tmpl.category,
         if tmpl.animated { " \u{00B7} Animated" } else { "" },
     );
-    crate::browser::library_card::library_card(ui, rect, tmpl.name, &caption, is_selected, hovered, theme, |p, area| {
+    crate::browser::library_card::library_card(ui, rect, tmpl.name.as_str(), &caption, is_selected, hovered, theme, |p, area| {
         paint_preview(p, area, preview, theme);
     });
 
@@ -437,20 +334,20 @@ fn paint_preview(p: &egui::Painter, area: egui::Rect, preview: Option<&egui::Tex
 /// standing in while one renders.
 fn preview_texture(ui: &egui::Ui, previews: &mut GeneratorPreviews, tmpl: &GeneratorTemplate) -> Option<egui::TextureHandle> {
     use crate::browser::generator_previews::{FRAME_STEP, LOOP_SECS, REST_TIME};
-    let elapsed = if tmpl.animated { gen_read_anim_elapsed(ui, tmpl.name) } else { 0.0 };
+    let elapsed = if tmpl.animated { gen_read_anim_elapsed(ui, tmpl.name.as_str()) } else { 0.0 };
     let time = if elapsed > 0.0 { GeneratorPreviews::hover_time(elapsed) } else { REST_TIME };
     if elapsed > 0.0 {
         for k in 1..=6 {
             let ahead = GeneratorPreviews::hover_time((time + k as f32 * FRAME_STEP) % LOOP_SECS);
-            let key = GeneratorPreviews::key(tmpl.name, ahead);
-            previews.request(&key, ahead, tmpl.create_data);
+            let key = GeneratorPreviews::key(tmpl.name.as_str(), ahead);
+            previews.request(&key, ahead, || tmpl.data.clone());
         }
     }
-    let key = GeneratorPreviews::key(tmpl.name, time);
+    let key = GeneratorPreviews::key(tmpl.name.as_str(), time);
     previews
-        .get_or_request(&key, time, tmpl.create_data)
+        .get_or_request(&key, time, || tmpl.data.clone())
         .cloned()
-        .or_else(|| previews.nearest_for(tmpl.name, time).cloned())
+        .or_else(|| previews.nearest_for(tmpl.name.as_str(), time).cloned())
 }
 
 fn gen_read_anim_elapsed(ui: &egui::Ui, name: &str) -> f32 {
@@ -514,7 +411,7 @@ fn generator_list_row(
     ui.painter().text(
         egui::pos2(thumb_rect.max.x + 10.0, rect.center().y - 7.0),
         egui::Align2::LEFT_CENTER,
-        tmpl.name,
+        tmpl.name.as_str(),
         egui::FontId::proportional(crate::theme::type_scale::BODY),
         theme.text_primary,
     );
