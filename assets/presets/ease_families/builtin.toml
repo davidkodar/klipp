@@ -1,0 +1,21 @@
+# The named ease families a key menu offers (#2274, #2887), in menu
+# order: each a name and its In, Out and In-Out curve. The curves are
+# Klipp's own (keyframe.rs, `Ease`); a family groups three of them.
+kind = "ease_family"
+format_version = 1
+
+[[family]]
+name = "Exponential"
+eases = ["expo_in", "expo_out", "expo_in_out"]
+
+[[family]]
+name = "Back"
+eases = ["back_in", "back_out", "back_in_out"]
+
+[[family]]
+name = "Elastic"
+eases = ["elastic_in", "elastic_out", "elastic_in_out"]
+
+[[family]]
+name = "Bounce"
+eases = ["bounce_in", "bounce_out", "bounce_in_out"]

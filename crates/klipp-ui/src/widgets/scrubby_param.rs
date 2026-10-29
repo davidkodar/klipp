@@ -202,7 +202,7 @@ pub fn key_menu(ui: &mut egui::Ui, current: Option<klipp_core::Interpolation>) -
             }
         }
         // The named curves (#2274), on the segment leaving the key.
-        for (family, eases) in klipp_core::keyframe::Ease::PRESETS {
+        for (family, eases) in klipp_core::keyframe::Ease::families() {
             ui.menu_rows(family, |ui| {
                 for (ease, label) in eases.into_iter().zip(["In", "Out", "In-Out"]) {
                     if super::menu::menu_choice(ui, label, "", current == Some(Interpolation::Eased(ease))).clicked() {
