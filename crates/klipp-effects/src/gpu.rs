@@ -2015,27 +2015,12 @@ pub(crate) fn shader_pixel_storage_source() -> &'static str {
     shader_pixel_storage_wgsl!()
 }
 
-macro_rules! shader_linear_helpers_wgsl {
-    () => {
-        concat!(
-            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/gpu/shaders/include/srgb_components.wgsl")),
-            shader_pixel_storage_wgsl!(),
-            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/gpu/shaders/include/linear_helpers.wgsl")),
-        )
-    };
-}
-
-/// A window's shapes as WGSL: the `MaskRecord` layout and `eval_record`,
-/// the coverage of one shape at a pixel (signed distance, feather, invert,
-/// opacity). The including shader binds `points: array<vec2<f32>>`, which
-/// `bezier_sdf` reads. One copy for the window drawn into a matte
-/// (`SHADER_MASK_V2`) and the window drawn inside an effect's mix (#1252),
-/// so the two can't drift apart.
-macro_rules! mask_sdf_wgsl {
-    () => {
-        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/gpu/shaders/include/mask_sdf.wgsl"))
-    };
-}
+// `include/mask_sdf.wgsl`, a window's shapes as WGSL: the `MaskRecord`
+// layout and `eval_record`, the coverage of one shape at a pixel (signed
+// distance, feather, invert, opacity). The including shader binds
+// `points: array<vec2<f32>>`, which `bezier_sdf` reads. One copy for the
+// window drawn into a matte (`SHADER_MASK_V2`) and the window drawn
+// inside an effect's mix (#1252), so the two can't drift apart.
 
 // Opacity — multiply linear RGBA by a scalar. In linear light,
 // opacity 0.5 means "half the photons" (matching DaVinci / Nuke);

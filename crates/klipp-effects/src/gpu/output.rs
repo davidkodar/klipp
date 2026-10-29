@@ -1618,7 +1618,7 @@ pub(super) const SHADER_U8_FIT_TO_LINEAR: &str = gpu_shader!("output/u8_fit_to_l
 // `ToneMapOp::None`, exactly as it does for BT.709, where the operator
 // would otherwise sit between the mapping and the encode. With one
 // active the frame takes the CPU transform.
-// `shader_linear_helpers_wgsl` already carries the pixel storage hook.
+// Its includes already carry the pixel storage hook.
 pub(super) const SHADER_BT2020_DISPLAY_U8: &str = gpu_shader!("output/bt2020_display_u8.wgsl");
 
 pub(super) const SHADER_ACES_REC709_U8: &str = gpu_shader!("output/aces_rec709_u8.wgsl");
@@ -1645,7 +1645,7 @@ pub(super) const SHADER_ACES_REC709_U8: &str = gpu_shader!("output/aces_rec709_u
 // four chroma samples they reduce to are one whole word each of Cb and
 // Cr. Every write is word-aligned with no read-modify-write and no
 // atomics. The caller guarantees width % 8 == 0 and height % 2 == 0.
-// `shader_linear_helpers_wgsl` already carries the pixel storage hook.
+// Its includes already carry the pixel storage hook.
 pub(super) const SHADER_LINEAR_TO_YUV420: &str = gpu_shader!("output/linear_to_yuv420.wgsl");
 
 // The same bridge one sample wider: sRGB-encoded RGBA64 (four u16 per
