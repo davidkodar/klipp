@@ -53,6 +53,17 @@ pub fn grip_hint(clip: &Clip, pool: &klipp_media::MediaPool) -> &'static str {
     if klipp_document::ops::plays_at_speed(clip, pool) { "Drag to change speed" } else { "Drag to change length" }
 }
 
+/// Where the drag's readout of `size` goes: above the track, to the
+/// right of the pointer, or to its left where it would run past the
+/// timeline's right edge; always inside the timeline's visible area.
+pub fn readout_rect(content: egui::Rect, track: egui::Rect, pointer: egui::Pos2, size: egui::Vec2) -> egui::Rect {
+    let right = pointer.x + 12.0;
+    let x = if right + size.x <= content.right() { right } else { pointer.x - 12.0 - size.x };
+    let x = x.min(content.right() - size.x).max(content.left());
+    let y = (track.top() - size.y - 4.0).max(content.top()).min(content.bottom() - size.y);
+    egui::Rect::from_min_size(egui::pos2(x, y), size)
+}
+
 /// A stretch being dragged.
 pub struct StretchState {
     /// The clip dragged, then the other selected clips whose same edge is
@@ -216,6 +227,24 @@ mod tests {
         assert_eq!(grip_at(narrow, egui::pos2(125.0, 24.0)), None, "too narrow to show one");
         assert_eq!(fade_handle_xs(cr, 0.0, 0.0), (100.0 + FADE_INSET, 300.0 - FADE_INSET));
         assert_eq!(fade_handle_xs(cr, 40.0, 30.0), (140.0, 270.0), "a longer fade where it is");
+    }
+
+    /// The readout stays inside the timeline: to the right of the
+    /// pointer where it fits, flipped to its left near the right edge,
+    /// held inside on a timeline narrower than it.
+    #[test]
+    fn the_readout_stays_inside_the_timeline() {
+        let content = egui::Rect::from_min_max(egui::pos2(100.0, 50.0), egui::pos2(900.0, 400.0));
+        let track = egui::Rect::from_min_max(egui::pos2(100.0, 60.0), egui::pos2(900.0, 110.0));
+        let size = egui::vec2(180.0, 50.0);
+        for x in [101.0, 300.0, 700.0, 760.0, 890.0, 899.0] {
+            let r = readout_rect(content, track, egui::pos2(x, 80.0), size);
+            assert!(content.contains_rect(r), "at {x}: {r:?}");
+            assert!(r.left() > x || r.right() < x, "beside the pointer at {x}, not under it: {r:?}");
+        }
+        assert!(readout_rect(content, track, egui::pos2(890.0, 80.0), size).right() < 890.0, "flipped left at the edge");
+        let narrow = egui::Rect::from_min_max(egui::pos2(100.0, 50.0), egui::pos2(250.0, 400.0));
+        assert!(readout_rect(narrow, track, egui::pos2(200.0, 80.0), size).left() >= 100.0);
     }
 
     /// The drag previews the planner's stretch, stops at the next clip

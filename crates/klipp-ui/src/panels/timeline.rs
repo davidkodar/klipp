@@ -11047,9 +11047,7 @@ impl TimelinePanel {
         let w = galleys.iter().map(|g| g.size().x).fold(0.0, f32::max) + 12.0;
         let line_h = 13.0;
         let h = line_h * galleys.len() as f32 + 8.0;
-        let x = (pointer.x + 12.0).min(content_rect.right() - w).max(content_rect.left());
-        let y = (track_rect.top() - h - 4.0).max(content_rect.top());
-        let rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(w, h));
+        let rect = crate::timeline::stretch_drag::readout_rect(*content_rect, *track_rect, pointer, egui::vec2(w, h));
         painter.rect_filled(rect, 4.0, tt.bg_raised);
         painter.rect_stroke(rect, 4.0, egui::Stroke::new(1.0_f32, tt.accent));
         for (i, g) in galleys.into_iter().enumerate() {
