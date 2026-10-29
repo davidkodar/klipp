@@ -1,0 +1,38 @@
+# Klipp's "Animate letters" presets (#1510, #1701, #2887): each an id the
+# edit operations take, the name the Title tab shows, the units it picks
+# and what it does to them. A key is placed at the clip's start, at the
+# entrance (1.2 s in, or the clip's end on a shorter clip) or at the
+# clip's end, on the range's start, end or offset. Offsets and blur are
+# in font sizes, rotation in degrees clockwise.
+kind = "animator_preset"
+format_version = 1
+
+[[preset]]
+id = "wave"
+name = "Wave"
+selector = { end = 0.3, shape = "Smooth" }
+props = { dy = -0.3 }
+keys = [
+    { on = "offset", at = "start", value = -0.3 },
+    { on = "offset", at = "end", value = 1.0 },
+]
+
+[[preset]]
+id = "random_fade_in"
+name = "Random fade in"
+selector = { order = { Random = { seed = 1 } } }
+props = { opacity = 0.0 }
+keys = [
+    { on = "start", at = "start", value = 0.0 },
+    { on = "start", at = "entrance", value = 1.0 },
+]
+
+[[preset]]
+id = "spin_in"
+name = "Spin in"
+selector = { easing = "out_cubic" }
+props = { rotation = 360.0, scale = 0.4, opacity = 0.0 }
+keys = [
+    { on = "start", at = "start", value = 0.0 },
+    { on = "start", at = "entrance", value = 1.0 },
+]
