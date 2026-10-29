@@ -59,20 +59,32 @@ pub(crate) fn remove_clips(state: &mut AppState, ids: &[ClipId], lift: bool, lab
             }
             continue;
         }
+        // A clip pointing at this one as its matte or transform link
+        // loses the binding, so a stale id never outlives its target: as
+        // edits in the step, so the undo gives it back.
+        let unlinks: Vec<EditCommand> = state.sequence().all_clips()
+            .filter_map(|c| {
+                let matte = c.matte_source.as_ref().is_some_and(|b| b.source_clip_id == id);
+                let link = c.transform_link.as_ref().is_some_and(|tl| tl.target.referenced_clip_id() == id);
+                (matte || link).then(|| {
+                    let mut new = c.clone();
+                    if matte {
+                        new.matte_source = None;
+                    }
+                    if link {
+                        new.transform_link = None;
+                    }
+                    EditCommand::ReplaceClip { description: "Unlink", old: Box::new(c.clone()), new: Box::new(new) }
+                })
+            })
+            .collect();
+        for e in unlinks {
+            apply(state, e);
+        }
         if lift {
             let result = klipp_timeline::magnetic::MagneticEditor::lift(state.sequence_mut(), id);
             state.push_history(EditCommand::Magnetic(result.command));
             continue;
-        }
-        // A clip pointing at this one as its matte or transform link
-        // loses the binding, so a stale id never outlives its target.
-        for c in state.sequence_mut().all_clips_mut() {
-            if c.matte_source.as_ref().is_some_and(|b| b.source_clip_id == id) {
-                c.matte_source = None;
-            }
-            if c.transform_link.as_ref().is_some_and(|tl| tl.target.referenced_clip_id() == id) {
-                c.transform_link = None;
-            }
         }
         // A transition joining the clip (or its linked partner, which the
         // ripple delete takes too) goes with it (#979).
@@ -183,5 +195,41 @@ mod tests {
         state.selected_clips.clear();
         let cmds = crate::app::shortcuts::delete_selection(&mut state);
         assert!(matches!(&cmds[..], [klipp_core::AppCommand::RemoveClip { clip_id }] if *clip_id == ids[1]), "{cmds:?}");
+    }
+
+    /// On a primary track with gaps, deleting or lifting selected clips,
+    /// one of them the matte of a clip on another track, is one undo step
+    /// that puts the whole document back as it was: the gaps, the other
+    /// clips, and the matte binding the removal cleared.
+    #[test]
+    fn a_removal_undoes_to_the_exact_document() {
+        for lift in [false, true] {
+            let mut state = AppState { magnetic_timeline_enabled: true, ..Default::default() };
+            let seq = &mut state.sequences[0];
+            seq.add_video_track("V2".into());
+            let primary = seq.tracks.iter().position(|t| t.magnetic_role == klipp_timeline::TrackRole::Primary).unwrap();
+            let free = seq.tracks.iter().position(|t| t.name == "V2").unwrap();
+            let c = |a: f64, b: f64| Clip::media(klipp_core::MediaId::new(), t(a), t(b), t(0.0), t(b - a));
+            // The primary is gapless: its gaps are gap clips.
+            let prim: Vec<Clip> = [(0.0, 4.0), (14.0, 18.0), (26.0, 29.0), (34.0, 37.0)].iter().map(|&(a, b)| c(a, b)).collect();
+            let ids: Vec<ClipId> = prim.iter().map(|c| c.id).collect();
+            let gaps = [(4.0, 14.0), (18.0, 26.0), (29.0, 34.0)].map(|(a, b)| Clip::gap(t(a), t(b)));
+            let mut prim: Vec<Clip> = prim.into_iter().chain(gaps).collect();
+            prim.sort_by_key(|c| c.timeline_in.value);
+            let mut matted = c(26.0, 29.0);
+            matted.matte_source = Some(klipp_timeline::MatteBinding::new(ids[2]));
+            seq.tracks[primary].clips = prim;
+            seq.tracks[free].clips.push(matted);
+            let before = serde_json::to_value(&state.sequences).unwrap();
+            assert_eq!(remove_clips(&mut state, &[ids[1], ids[2]], lift, "Remove"), Ok(2));
+            let after = serde_json::to_value(&state.sequences).unwrap();
+            assert!(state.sequence().all_clips().all(|c| c.matte_source.is_none()), "lift {lift}: the binding to a removed clip is cleared");
+            undo(&mut state);
+            assert!(serde_json::to_value(&state.sequences).unwrap() == before, "lift {lift}: one undo puts the whole document back");
+            let entry = state.active_history_mut().redo().expect("the step again");
+            let mut view = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: state.active_sequence_idx, media_pool: &mut state.media_pool, fps: &mut state.fps };
+            let _ = view.apply_forward(&entry.command);
+            assert!(serde_json::to_value(&state.sequences).unwrap() == after, "lift {lift}: one redo as the removal left it");
+        }
     }
 }

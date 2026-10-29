@@ -9673,6 +9673,16 @@ impl TimelinePanel {
                         let ghost_border = egui::Color32::from_rgba_unmultiplied(mi.r(), mi.g(), mi.b(), 180);
                         ghost_painter.rect_filled(ghost_rect, 2.0, ghost_fill);
                         ghost_painter.rect_stroke(ghost_rect, 2.0, egui::Stroke::new(2.0_f32, ghost_border));
+                        // The other clips of the selection, each on its own
+                        // track where it goes (#3060).
+                        for &(id, ti, orig_in) in &drag.party {
+                            let Some(c) = state.sequence().all_clips().find(|c| c.id == id) else { continue };
+                            let Some(r) = self.frame_cache.track_rects.iter().find(|(i, _, _)| *i == ti).map(|(_, _, r)| *r) else { continue };
+                            let x = content_rect.left() + (orig_in + (final_in - drag.original_timeline_in)).to_secs_f64() as f32 * zoom - scroll;
+                            let ghost = egui::Rect::from_min_size(egui::pos2(x, r.top() + 2.0), egui::vec2(c.duration().to_secs_f64() as f32 * zoom, r.height() - 4.0));
+                            ghost_painter.rect_filled(ghost, 2.0, ghost_fill);
+                            ghost_painter.rect_stroke(ghost, 2.0, egui::Stroke::new(2.0_f32, ghost_border));
+                        }
 
                         // Draw filmstrip in ghost if available
                         if let Some(media_id) = state.sequence().tracks.get(drag.track_idx)
@@ -10215,17 +10225,22 @@ impl TimelinePanel {
             let block_on_primary = on_primary(drag.clip_id) || drag.party.iter().any(|&(id, _, _)| on_primary(id));
             if pointer_released && drag.track_idx == track_idx && !drag.party.is_empty() && block_on_primary {
                 // A selection with clips on the primary track (#3060):
-                // those move as one block, rippled into the slot the drag
-                // showed (or overwritten at their places, Alt or OVR);
-                // the rest by the shown offset on their tracks. One step.
+                // every clip moves by the shown offset on its own track,
+                // as the document moves clips, and nothing else on the
+                // primary moves: its other clips and gaps stay as they
+                // are. A move onto another clip is refused with the
+                // document's reason; the change is one undo step of the
+                // document's own edits.
                 let shown = drag.shown_in.unwrap_or(drag.original_timeline_in);
                 let delta = shown - drag.original_timeline_in;
                 let to = pointer_pos.and_then(|pos| self.frame_cache.track_rects.iter().find(|(_, _, r)| r.contains(pos)).map(|(i, _, _)| *i));
-                let overwrite = ui.input(|i| i.modifiers.alt) || state.edit_mode == klipp_timeline::magnetic::EditMode::Overwrite;
-                let members: Vec<(ClipId, usize, Timecode)> = std::iter::once((drag.clip_id, drag.track_idx, drag.original_timeline_in)).chain(drag.party.iter().copied()).collect();
-                match move_block_on_primary(state, &members, delta, overwrite, to.filter(|&t| t != drag.track_idx).is_some()) {
-                    Ok(()) => cmds.push(AppCommand::SequenceUpdated),
-                    Err(why) => state.toast.show(format!("Selection not moved: {why}")),
+                if to.is_some_and(|t| t != drag.track_idx) {
+                    state.toast.show("Selection not moved: a selection with clips on the primary track moves along its tracks, not to others");
+                } else if delta.value != 0 {
+                    let moves = std::iter::once((drag.clip_id, drag.original_timeline_in)).chain(drag.party.iter().map(|&(id, _, at)| (id, at)))
+                        .map(|(id, at)| (id, at + delta, None))
+                        .collect();
+                    cmds.push(AppCommand::MoveClips { moves });
                 }
                 self.dragging_clip = None;
                 self.press_origin = None;
@@ -17106,71 +17121,6 @@ fn hover_timeline_time(state: &AppState, track_idx: usize, clip_index: usize, fr
 /// A drag on the primary track done (#2967): with Linked on, the sound
 /// linked to each picture it moved follows by the same amount, the move
 /// and the sound one undo step; with Linked off, the picture alone.
-/// A selection's drag with clips on the primary track (#3060), as one
-/// undo step: the primary ones as a block, in their order, rippled into
-/// the slot their first clip's shown start falls in (or each overwritten
-/// at its start moved by `delta`), their linked sound following; every
-/// other clip moved by `delta` on its own track by the document's moves,
-/// checked before anything changes. A drop on another track is refused:
-/// the primary track's clips stay on it.
-fn move_block_on_primary(state: &mut AppState, members: &[(ClipId, usize, Timecode)], delta: RationalTime, overwrite: bool, other_track: bool) -> Result<(), String> {
-    if other_track {
-        return Err("a selection with clips on the primary track moves along its tracks, not to others".into());
-    }
-    let Some(p) = state.sequence().primary_track_index() else { return Err("no primary track".into()) };
-    let (mut block, rest): (Vec<_>, Vec<_>) = members.iter().copied().partition(|&(id, _, _)| state.sequence().tracks[p].find_clip(id).is_some());
-    block.sort_by_key(|&(_, _, at)| at.value);
-    let ids: Vec<ClipId> = block.iter().map(|m| m.0).collect();
-    let others: Vec<(ClipId, Timecode, Option<usize>)> = rest.iter().map(|&(id, _, at)| (id, at + delta, None)).collect();
-    let ops = crate::timeline::moves::drag_move_ops(state.sequence(), &others, state.linked_selection);
-    let other_edits: Vec<crate::history::EditCommand> = if ops.is_empty() {
-        Vec::new()
-    } else {
-        let plan = klipp_document::ops::resolve(state.sequence(), &state.media_pool, &ops).map_err(|r| r.why)?;
-        plan.steps.into_iter().map(|s| s.edit).collect()
-    };
-    if delta.value == 0 {
-        return Ok(());
-    }
-    let before = state.sequence().clone();
-    state.active_history_mut().begin_batch();
-    if overwrite {
-        for &(id, _, at) in &block {
-            let Some(clip) = state.sequence().tracks[p].find_clip(id).cloned() else { continue };
-            state.sequence_mut().tracks[p].clips.retain(|c| c.id != id);
-            let at = at + delta;
-            let r = klipp_timeline::magnetic::MagneticEditor::overwrite_primary(state.sequence_mut(), clip, if at.value < 0 { RationalTime { value: 0, rate: at.rate } } else { at });
-            state.active_history_mut().push(crate::history::HistoryEntry { command: crate::history::EditCommand::Magnetic(r.command) });
-        }
-    } else {
-        let first = block[0].2 + delta;
-        let mut slot = primary_insert_time(&state.sequence().tracks[p], &ids, first);
-        for &id in &ids {
-            let r = klipp_timeline::magnetic::MagneticEditor::move_primary(state.sequence_mut(), id, slot);
-            state.active_history_mut().push(crate::history::HistoryEntry { command: crate::history::EditCommand::Magnetic(r.command) });
-            // The next goes after this one.
-            if let Some(c) = state.sequence().tracks[p].find_clip(id) {
-                slot = c.timeline_out;
-            }
-        }
-    }
-    if state.linked_selection {
-        for f in klipp_timeline::magnetic::MagneticEditor::follow_linked_partners(&before, state.sequence_mut()) {
-            state.active_history_mut().push(crate::history::HistoryEntry {
-                command: crate::history::EditCommand::LegacyMoveClip { clip_id: f.clip_id, old_timeline_in: f.old_in, old_timeline_out: f.old_out, new_timeline_in: f.new_in, new_timeline_out: f.new_out, linked_partner: None },
-            });
-        }
-    }
-    for e in other_edits {
-        let mut view = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: state.active_sequence_idx, media_pool: &mut state.media_pool, fps: &mut state.fps };
-        let _ = view.apply_forward(&e);
-        state.push_history(e);
-    }
-    state.active_history_mut().end_batch_as("Move Clips");
-    state.dirty = true;
-    Ok(())
-}
-
 fn record_primary_drag(state: &mut AppState, before: &klipp_timeline::Sequence, command: klipp_timeline::magnetic_commands::MagneticEditCommand) {
     let partners = if state.linked_selection { klipp_timeline::magnetic::MagneticEditor::follow_linked_partners(before, state.sequence_mut()) } else { Vec::new() };
     let history = state.active_history_mut();
