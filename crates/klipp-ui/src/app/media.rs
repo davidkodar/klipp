@@ -1842,6 +1842,15 @@ impl KlippApp {
             include_skims,
             mode,
             looks: self.state.looks.clone(),
+            // The titles' fonts as this machine has them (#3009).
+            fonts: klipp_project::project_fonts::fonts_used(&self.state.sequences)
+                .into_iter()
+                .filter(|f| !klipp_title::bundled::BUNDLED.iter().any(|b| b.family.eq_ignore_ascii_case(f)))
+                .map(|family| {
+                    let source = klipp_title::collect::font_files(&family);
+                    klipp_project::project_fonts::CollectFont { family, source }
+                })
+                .collect(),
         };
 
         let (tx, rx) = std::sync::mpsc::channel();

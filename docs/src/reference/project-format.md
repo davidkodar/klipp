@@ -12,7 +12,9 @@ MyProject.klipp/
 │   ├── manifest.json     ← the media pool: items, bins, paths relative to here
 │   ├── stills.json       ← index of the compare stills
 │   └── stills/           ← the compare stills themselves, as PNGs
-└── looks/                ← looks saved from this project
+├── looks/                ← looks saved from this project
+├── fonts.json            ← the fonts a consolidated project carries
+└── fonts/                ← their files and licences, a folder per family
 ```
 
 `project.json` and `media/manifest.json` are the two files a project
@@ -116,7 +118,7 @@ When Klipp auto-detects log encoding from camera metadata, the detected `colour_
 
 ## Media References
 
-Klipp references media files by path, not by copy (paths in `media/manifest.json` are relative to it). Missing media opens the relink flow. If you need a self-contained project (for archival, hand-off), use **File → Consolidate Project...** to copy the media into one place, optionally only what the cut uses.
+Klipp references media files by path, not by copy (paths in `media/manifest.json` are relative to it). Missing media opens the relink flow. If you need a self-contained project (for archival, hand-off), use **File → Consolidate Project...** to copy the media into one place, optionally only what the cut uses. It also copies the font files its titles use, each with the licence beside it, into `fonts/`, listed in `fonts.json` by paths inside the project folder; opened on a machine without one of those families, the titles are drawn in the project's own copy. A font with no licence file beside it, or whose licence does not allow embedding, is left out and named in the report.
 
 ## See Also
 

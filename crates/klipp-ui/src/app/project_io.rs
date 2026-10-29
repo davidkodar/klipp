@@ -301,6 +301,8 @@ impl KlippApp {
         self.sync_media_pool_to_engine();
         self.state.title_assets.clear();
         self.state.looks.clear();
+        // A new project carries no fonts of its own (#3009).
+        klipp_title::catalogue::set_project_fonts(Vec::new());
         self.state.grade_stills.clear();
         self.state.active_grade_still = None;
         self.state.grade_still_compare = false;
@@ -922,6 +924,16 @@ impl KlippApp {
                 }
                 self.state.title_assets = title_assets;
                 self.state.looks = klipp_project::load_looks(path);
+                // The fonts the project carries, drawn where this machine
+                // lacks them (#3009); a list that fails its checks is
+                // said and none of it is used.
+                match klipp_project::project_fonts::load_fonts(path) {
+                    Ok(fonts) => klipp_title::catalogue::set_project_fonts(fonts),
+                    Err(why) => {
+                        klipp_title::catalogue::set_project_fonts(Vec::new());
+                        self.state.toast.show(format!("The project's own fonts were not used: {why}"));
+                    }
+                }
                 self.probe_unread_metadata();
                 // Restore saved timeline view-state (zoom + scroll). Legacy
                 // project files don't carry these — leave the in-memory

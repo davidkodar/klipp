@@ -195,9 +195,35 @@ pub fn pack_faces_in(root: &Path, name: &str) -> Option<Vec<FontInfo>> {
 }
 
 /// A family's faces that are not installed on the machine: fetched from
-/// the catalogue, else carried in by an installed template pack (#2757).
+/// the catalogue, else carried in by an installed template pack (#2757),
+/// else carried by the open project (#3009).
 pub fn extra_faces(name: &str) -> Option<Vec<FontInfo>> {
-    fetched_faces(name).or_else(|| klipp_timeline::template_places::data_root().and_then(|root| pack_faces_in(&root, name)))
+    fetched_faces(name).or_else(|| klipp_timeline::template_places::data_root().and_then(|root| pack_faces_in(&root, name))).or_else(|| project_faces(name))
+}
+
+/// The open project's own font files by family (#3009), as its font list
+/// names them once checked.
+static PROJECT_FONTS: std::sync::RwLock<Vec<(String, Vec<PathBuf>)>> = std::sync::RwLock::new(Vec::new());
+
+/// The open project's fonts, each family with its files: drawn where the
+/// machine lacks the family. Empty for a project that carries none.
+pub fn set_project_fonts(fonts: Vec<(String, Vec<PathBuf>)>) {
+    *PROJECT_FONTS.write().unwrap_or_else(|e| e.into_inner()) = fonts;
+    fetched_one();
+}
+
+/// The faces of `name` the open project carries.
+pub fn project_faces(name: &str) -> Option<Vec<FontInfo>> {
+    let fonts = PROJECT_FONTS.read().unwrap_or_else(|e| e.into_inner());
+    let (_, files) = fonts.iter().find(|(f, _)| f.eq_ignore_ascii_case(name.trim()))?;
+    let mut dirs: Vec<&Path> = files.iter().filter_map(|f| f.parent()).collect();
+    dirs.dedup();
+    let faces: Vec<FontInfo> = dirs
+        .into_iter()
+        .flat_map(|d| crate::font_discovery::scan_folder(d).into_values().flatten())
+        .filter(|face| files.contains(&face.path))
+        .collect();
+    (!faces.is_empty()).then_some(faces)
 }
 
 /// Says fonts were added beside the catalogue's (a pack's, #2757), so

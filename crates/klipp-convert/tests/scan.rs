@@ -78,7 +78,7 @@ fn a_collected_project_is_found() {
     let source = project(&home.join("Work/Source.klipp"));
     let dest = home.join("Delivery/Collected.klipp");
     let seq = vec![klipp_timeline::Sequence::new_default()];
-    let options = klipp_project::consolidate::ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: Default::default(), looks: Vec::new() };
+    let options = klipp_project::consolidate::ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: Default::default(), looks: Vec::new(), fonts: Vec::new() };
     klipp_project::consolidate::consolidate_project(&source, &klipp_media::MediaPool::new(), &seq, &Default::default(), options, None).unwrap();
     assert!(discover(&home).projects.contains(&dest), "the Collect Project destination is found: {:?}", discover(&home));
     let _ = std::fs::remove_dir_all(&home);

@@ -60,6 +60,10 @@ pub struct ConsolidateOptions {
     /// The project's Looks library, written into the destination with
     /// the files its grades read (#1016).
     pub looks: Vec<Look>,
+    /// The font families the titles name, as found where the project is
+    /// (#3009): copied with their licences into `fonts/`, or listed with
+    /// why not. [`crate::project_fonts::fonts_used`] names them.
+    pub fonts: Vec<crate::project_fonts::CollectFont>,
 }
 
 /// What a consolidation copies (#77).
@@ -110,6 +114,8 @@ pub struct ConsolidateResult {
     pub left_out: Vec<String>,
     /// Files cut to what the sequences use (#77).
     pub files_trimmed: usize,
+    /// Font families copied in (#3009); one left out is in `warnings`.
+    pub fonts_copied: Vec<String>,
 }
 
 /// Errors that can abort consolidation before completion.
@@ -766,6 +772,14 @@ pub fn consolidate_project(
             return Err(ConsolidateError::SaveFailed(e));
         }
     }
+    // The titles' fonts, with their licences, listed beside the project
+    // (#3009); one that can't go is said, not fatal.
+    let (fonts, font_warnings) = crate::project_fonts::copy_fonts(&options.fonts, &options.dest_dir);
+    plan.warnings.extend(font_warnings);
+    if let Err(e) = crate::project_fonts::save_fonts(&options.dest_dir, &fonts) {
+        let _ = std::fs::remove_dir_all(&options.dest_dir);
+        return Err(ConsolidateError::SaveFailed(e));
+    }
 
     Ok(ConsolidateResult {
         files_copied: files_total,
@@ -773,6 +787,7 @@ pub fn consolidate_project(
         warnings: plan.warnings,
         left_out: plan.left_out,
         files_trimmed,
+        fonts_copied: fonts.into_iter().map(|f| f.family).collect(),
     })
 }
 
@@ -1065,6 +1080,7 @@ mod tests {
                 include_skims: false,
                 mode: ConsolidateMode::Collect,
                 looks: Vec::new(),
+                fonts: Vec::new(),
             },
             None,
         )
@@ -1094,6 +1110,7 @@ mod tests {
                 include_skims: false,
                 mode: ConsolidateMode::Collect,
                 looks: Vec::new(),
+                fonts: Vec::new(),
             },
             None,
         )
