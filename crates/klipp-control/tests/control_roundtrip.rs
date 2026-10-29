@@ -4766,6 +4766,75 @@ fn project_and_media_text_stays_one_quoted_value_in_the_text_views() {
     drop(cache);
 }
 
+/// `list_markers` lists the clips' own markers beside the sequence's,
+/// each saying which: an FCPXML and an OTIO import bring theirs on the
+/// clips, the import report counted them, and a list of the sequence's
+/// alone came back empty.
+#[test]
+fn list_markers_lists_clip_markers_from_an_fcpxml_and_an_otio_import() {
+    let mut h = harness();
+    let fcpxml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<fcpxml version="1.9">
+  <resources>
+    <format id="r0" frameDuration="1/25s" width="1920" height="1080"/>
+    <asset id="r1" name="a.mp4" src="file:///tmp/a.mp4" duration="250/25s" format="r0"/>
+    <asset id="r2" name="b.mp4" src="file:///tmp/b.mp4" duration="250/25s" format="r0"/>
+  </resources>
+  <library><event name="E"><project name="P"><sequence duration="250/25s" format="r0"><spine>
+    <asset-clip name="Interview" ref="r1" offset="0/25s" duration="150/25s" start="0/25s">
+      <marker start="50/25s" duration="1/25s" value="Breath" note="cut here"/>
+    </asset-clip>
+    <asset-clip name="Waves" ref="r2" offset="150/25s" duration="100/25s" start="25/25s">
+      <marker start="75/25s" duration="1/25s" value="Gull"/>
+    </asset-clip>
+  </spine></sequence></project></event></library>
+</fcpxml>"#;
+    let rt = |v: f64| json!({"OTIO_SCHEMA": "RationalTime.1", "rate": 25.0, "value": v});
+    let range = |a: f64, d: f64| json!({"OTIO_SCHEMA": "TimeRange.1", "start_time": rt(a), "duration": rt(d)});
+    let clip = |name: &str, file: &str, a: f64, d: f64, mark: &str, at: f64| json!({
+        "OTIO_SCHEMA": "Clip.1", "name": name, "source_range": range(a, d), "metadata": {},
+        "media_reference": {"OTIO_SCHEMA": "ExternalReference.1", "target_url": format!("file:///tmp/{file}"), "metadata": {}},
+        "markers": [{"OTIO_SCHEMA": "Marker.1", "name": mark, "color": "RED", "marked_range": range(at, 0.0), "metadata": {}}],
+    });
+    let otio = json!({"OTIO_SCHEMA": "Timeline.1", "name": "T", "metadata": {}, "tracks": {"OTIO_SCHEMA": "Stack.1", "name": "tracks", "metadata": {}, "markers": [], "children": [
+        {"OTIO_SCHEMA": "Track.1", "name": "V1", "kind": "Video", "metadata": {}, "markers": [], "children": [
+            clip("Interview", "a.mp4", 0.0, 150.0, "Breath", 50.0), clip("Waves", "b.mp4", 25.0, 100.0, "Gull", 75.0)]}]}});
+    let otio_path = std::env::temp_dir().join(format!("klipp-markers-{}.otio", std::process::id()));
+    std::fs::write(&otio_path, otio.to_string()).unwrap();
+    let from_otio = klipp_project::otio_import::load_otio(&otio_path).expect("the OTIO imports");
+    let _ = std::fs::remove_file(&otio_path);
+    let from_fcpxml = klipp_project::fcpxml_import::parse_fcpxml(fcpxml).expect("the FCPXML imports");
+
+    for (format, imported) in [("FCPXML", from_fcpxml), ("OTIO", from_otio)] {
+        let mut seq = imported.sequence;
+        seq.markers.push(klipp_timeline::Marker {
+            id: klipp_core::MarkerId::new(),
+            position: klipp_core::RationalTime::from_secs_f64(1.0, seq.fps.rate()),
+            label: "Start".into(),
+            color: klipp_core::MarkerColor::Blue,
+            duration: None,
+            comment: String::new(),
+            kind: klipp_core::MarkerKind::default(),
+            review: None,
+        });
+        let clip_markers: usize = seq.tracks.iter().flat_map(|t| &t.clips).map(|c| c.clip_markers.len()).sum();
+        assert_eq!(clip_markers, 2, "{format}: the import puts its two markers on the clips");
+        *h.media_pool.write().unwrap() = imported.media_pool;
+        h.sequence.replace(seq);
+        let listed = h.ok(json!({"method": "list_markers"}));
+        let markers = listed["markers"].as_array().expect("a list");
+        let scopes: Vec<&str> = markers.iter().map(|m| m["scope"].as_str().unwrap_or_default()).collect();
+        assert_eq!(scopes, ["sequence", "clip", "clip"], "{format}: the clips' markers listed, in time order: {listed}");
+        let (breath, gull) = (&markers[1], &markers[2]);
+        assert_eq!((breath["label"].as_str(), gull["label"].as_str()), (Some("Breath"), Some("Gull")), "{format}: {listed}");
+        assert!((breath["at_secs"].as_f64().unwrap() - 2.0).abs() < 1e-6, "{format}: at the timeline's 2 s: {breath}");
+        assert!((gull["at_secs"].as_f64().unwrap() - 8.0).abs() < 1e-6, "{format}: at its source's 3 s, 2 s into Waves, which starts at 6 s: {gull}");
+        assert!(breath["clip"].as_str().is_some_and(|n| !n.is_empty()) && breath["clip_id"].is_string(), "{format}: says which clip: {breath}");
+        assert!(breath.get("marker_id").is_none(), "{format}: a clip marker has no id to update or remove by");
+        assert!(markers[0]["marker_id"].is_string(), "{format}: the sequence's does");
+    }
+}
+
 /// #2722: a brand kit taken into a sequence, as one recorded step: the
 /// brief takes its colours and its heading in its heading font and
 /// primary colour, and a subtitle track without a look of its own takes

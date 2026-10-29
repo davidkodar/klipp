@@ -196,6 +196,8 @@ Arguments:
 
 Every marker on the timeline in time order, with its id, time, range, label, note, colour and kind: the editor's notes to you, and yours to them. Read them at the start of a session: a todo marker is work asked for.
 
+Each says its scope: `sequence` for the timeline's own markers, `clip` for a marker that rides on a clip, as an FCPXML or OTIO import brings them. A clip marker gives its clip_id, the clip's name, its track and its time on the timeline; it has no marker_id, so klipp_update_marker and klipp_remove_marker don't reach it.
+
 ## klipp_frame_at
 
 The frame at a time on the timeline, as a PNG, without leaving the playhead where it was: seeks there, waits for the frame, captures, seeks back. Use it to look at what you did at a specific point. Seconds from timeline start.
