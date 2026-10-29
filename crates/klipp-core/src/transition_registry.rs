@@ -9,7 +9,7 @@
 //!   - CPU pixel math — lives in `klipp-transitions`
 //!   - GPU shader branches — live in `klipp-effects/src/gpu.rs`
 //!   - Inspector parameter UI — lives in `klipp-ui/src/inspector/mod.rs`
-//!   - Browser preview functions — live in `klipp-ui/src/browser/transitions_tab.rs`
+//!   - Browser card previews — `preview_of` in `klipp-ui/src/browser/transitions_tab.rs`
 //!
 //! When adding a new transition, see `docs/adding-a-transition.md` for the
 //! full checklist. The short version: add a variant and spec entry here,
@@ -117,6 +117,30 @@ pub enum TransitionKind {
 // TransitionSpec
 // ---------------------------------------------------------------------------
 
+/// The transitions browser's categories.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransitionGroup {
+    Dissolve,
+    Wipe,
+    Slide,
+    Zoom,
+    Effect,
+    Cinematic,
+}
+
+impl TransitionGroup {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Dissolve => "Dissolve",
+            Self::Wipe => "Wipe",
+            Self::Slide => "Slide",
+            Self::Zoom => "Zoom",
+            Self::Effect => "Effect",
+            Self::Cinematic => "Cinematic",
+        }
+    }
+}
+
 pub struct TransitionSpec {
     pub kind: TransitionKind,
     pub kind_id: u8,
@@ -125,6 +149,8 @@ pub struct TransitionSpec {
     pub display_name: &'static str,
     /// Short label for the timeline ribbon (max ~8 chars).
     pub short_label: &'static str,
+    /// Where the browser lists it.
+    pub group: TransitionGroup,
     pub default_params: TransitionUserParams,
 }
 
@@ -139,6 +165,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "CrossDissolve",
         display_name: "Cross Dissolve",
         short_label: "Dissolve",
+        group: TransitionGroup::Dissolve,
         default_params: TransitionUserParams { param0: 0.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -147,6 +174,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "WipeLeft",
         display_name: "Wipe Left",
         short_label: "Wipe L",
+        group: TransitionGroup::Wipe,
         default_params: TransitionUserParams { param0: 0.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -155,6 +183,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "WipeRight",
         display_name: "Wipe Right",
         short_label: "Wipe R",
+        group: TransitionGroup::Wipe,
         default_params: TransitionUserParams { param0: 0.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -163,6 +192,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "WipeUp",
         display_name: "Wipe Up",
         short_label: "Wipe U",
+        group: TransitionGroup::Wipe,
         default_params: TransitionUserParams { param0: 0.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -171,6 +201,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "WipeDown",
         display_name: "Wipe Down",
         short_label: "Wipe D",
+        group: TransitionGroup::Wipe,
         default_params: TransitionUserParams { param0: 0.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -179,6 +210,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "DipToBlack",
         display_name: "Dip to Black",
         short_label: "Dip Blk",
+        group: TransitionGroup::Dissolve,
         default_params: TransitionUserParams { param0: 0.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [0.0, 0.0, 0.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -187,6 +219,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "DipToWhite",
         display_name: "Dip to White",
         short_label: "Dip Wht",
+        group: TransitionGroup::Dissolve,
         default_params: TransitionUserParams { param0: 0.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -195,6 +228,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "PushLeft",
         display_name: "Push Left",
         short_label: "Push L",
+        group: TransitionGroup::Slide,
         default_params: TransitionUserParams { param0: 0.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -203,6 +237,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "FilmDissolve",
         display_name: "Film Dissolve",
         short_label: "Film",
+        group: TransitionGroup::Dissolve,
         default_params: TransitionUserParams { param0: 0.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -211,6 +246,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "BlurDissolve",
         display_name: "Blur Dissolve",
         short_label: "Blur",
+        group: TransitionGroup::Dissolve,
         default_params: TransitionUserParams { param0: 32.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -219,6 +255,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "Flash",
         display_name: "Flash",
         short_label: "Flash",
+        group: TransitionGroup::Effect,
         default_params: TransitionUserParams { param0: 1.0, param1: 0.5, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -227,6 +264,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "Spin",
         display_name: "Spin",
         short_label: "Spin",
+        group: TransitionGroup::Effect,
         default_params: TransitionUserParams { param0: 1.0, param1: 0.3, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -235,6 +273,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "LightLeak",
         display_name: "Light Leak",
         short_label: "Leak",
+        group: TransitionGroup::Cinematic,
         default_params: TransitionUserParams { param0: 1.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 0.706, 0.235, 1.0], subject: None },
     },
     TransitionSpec {
@@ -243,6 +282,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "LuminanceDissolve",
         display_name: "Luminance Dissolve",
         short_label: "Luma",
+        group: TransitionGroup::Dissolve,
         default_params: TransitionUserParams { param0: 1.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -251,6 +291,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "CircleWipeIn",
         display_name: "Circle Wipe In",
         short_label: "Circle In",
+        group: TransitionGroup::Wipe,
         default_params: TransitionUserParams { param0: 1.0, param1: 0.5, param2: 0.5, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -259,6 +300,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "CircleWipeOut",
         display_name: "Circle Wipe Out",
         short_label: "Circle Out",
+        group: TransitionGroup::Wipe,
         default_params: TransitionUserParams { param0: 1.0, param1: 0.5, param2: 0.5, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -267,6 +309,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "ClockWipe",
         display_name: "Clock Wipe",
         short_label: "Clock",
+        group: TransitionGroup::Wipe,
         default_params: TransitionUserParams { param0: 1.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -275,6 +318,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "BarnDoorOpen",
         display_name: "Barn Door Open",
         short_label: "Barn Opn",
+        group: TransitionGroup::Wipe,
         default_params: TransitionUserParams { param0: 1.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -283,6 +327,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "BarnDoorClose",
         display_name: "Barn Door Close",
         short_label: "Barn Cls",
+        group: TransitionGroup::Wipe,
         default_params: TransitionUserParams { param0: 1.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -291,6 +336,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "Pixelate",
         display_name: "Pixelate",
         short_label: "Pixel",
+        group: TransitionGroup::Effect,
         default_params: TransitionUserParams { param0: 32.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -299,6 +345,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "Ripple",
         display_name: "Ripple",
         short_label: "Ripple",
+        group: TransitionGroup::Effect,
         default_params: TransitionUserParams { param0: 20.0, param1: 8.0, param2: 1.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -307,6 +354,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "PageTurn",
         display_name: "Page Turn",
         short_label: "Page",
+        group: TransitionGroup::Cinematic,
         default_params: TransitionUserParams { param0: 0.6, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -315,6 +363,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "PageTurnReverse",
         display_name: "Page Turn Reverse",
         short_label: "Page R",
+        group: TransitionGroup::Cinematic,
         default_params: TransitionUserParams { param0: 0.6, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -323,6 +372,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "ChromaticAberration",
         display_name: "Chromatic Aberration",
         short_label: "Chroma",
+        group: TransitionGroup::Effect,
         default_params: TransitionUserParams { param0: 20.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -331,6 +381,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "FilmBurn",
         display_name: "Film Burn",
         short_label: "Burn",
+        group: TransitionGroup::Cinematic,
         default_params: TransitionUserParams { param0: 0.8, param1: 1.0, param2: 0.4, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -339,6 +390,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "StarWipe",
         display_name: "Star Wipe",
         short_label: "Star",
+        group: TransitionGroup::Wipe,
         default_params: TransitionUserParams { param0: 1.0, param1: 5.0, param2: 0.4, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -347,6 +399,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "SplitWipeHorizontal",
         display_name: "Split Wipe H",
         short_label: "Split H",
+        group: TransitionGroup::Wipe,
         default_params: TransitionUserParams { param0: 1.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -355,6 +408,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "SplitWipeVertical",
         display_name: "Split Wipe V",
         short_label: "Split V",
+        group: TransitionGroup::Wipe,
         default_params: TransitionUserParams { param0: 1.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -363,6 +417,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "VenetianBlindHorizontal",
         display_name: "Venetian Blind H",
         short_label: "Blind H",
+        group: TransitionGroup::Wipe,
         default_params: TransitionUserParams { param0: 1.0, param1: 8.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -371,6 +426,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "VenetianBlindVertical",
         display_name: "Venetian Blind V",
         short_label: "Blind V",
+        group: TransitionGroup::Wipe,
         default_params: TransitionUserParams { param0: 1.0, param1: 8.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -379,6 +435,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "CheckerboardWipe",
         display_name: "Checkerboard Wipe",
         short_label: "Check",
+        group: TransitionGroup::Wipe,
         default_params: TransitionUserParams { param0: 1.0, param1: 8.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -387,6 +444,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "DiagonalWipeTLBR",
         display_name: "Diagonal TL-BR",
         short_label: "Diag \\",
+        group: TransitionGroup::Wipe,
         default_params: TransitionUserParams { param0: 1.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -395,6 +453,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "DiagonalWipeTRBL",
         display_name: "Diagonal TR-BL",
         short_label: "Diag /",
+        group: TransitionGroup::Wipe,
         default_params: TransitionUserParams { param0: 1.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -403,6 +462,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "BoxWipeIn",
         display_name: "Box Wipe In",
         short_label: "Box In",
+        group: TransitionGroup::Wipe,
         default_params: TransitionUserParams { param0: 1.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -411,6 +471,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "BoxWipeOut",
         display_name: "Box Wipe Out",
         short_label: "Box Out",
+        group: TransitionGroup::Wipe,
         default_params: TransitionUserParams { param0: 1.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -419,6 +480,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "SlideLeft",
         display_name: "Slide Left",
         short_label: "Slide L",
+        group: TransitionGroup::Slide,
         default_params: TransitionUserParams { param0: 0.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -427,6 +489,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "SlideRight",
         display_name: "Slide Right",
         short_label: "Slide R",
+        group: TransitionGroup::Slide,
         default_params: TransitionUserParams { param0: 0.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -435,6 +498,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "SlideUp",
         display_name: "Slide Up",
         short_label: "Slide U",
+        group: TransitionGroup::Slide,
         default_params: TransitionUserParams { param0: 0.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -443,6 +507,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "SlideDown",
         display_name: "Slide Down",
         short_label: "Slide D",
+        group: TransitionGroup::Slide,
         default_params: TransitionUserParams { param0: 0.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -451,6 +516,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "CoverLeft",
         display_name: "Cover Left",
         short_label: "Cover L",
+        group: TransitionGroup::Slide,
         default_params: TransitionUserParams { param0: 0.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -459,6 +525,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "CoverRight",
         display_name: "Cover Right",
         short_label: "Cover R",
+        group: TransitionGroup::Slide,
         default_params: TransitionUserParams { param0: 0.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -467,6 +534,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "UncoverLeft",
         display_name: "Uncover Left",
         short_label: "Uncvr L",
+        group: TransitionGroup::Slide,
         default_params: TransitionUserParams { param0: 0.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -475,6 +543,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "UncoverRight",
         display_name: "Uncover Right",
         short_label: "Uncvr R",
+        group: TransitionGroup::Slide,
         default_params: TransitionUserParams { param0: 0.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -483,6 +552,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "SqueezeH",
         display_name: "Squeeze H",
         short_label: "Sqz H",
+        group: TransitionGroup::Slide,
         default_params: TransitionUserParams { param0: 0.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -491,6 +561,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "SqueezeV",
         display_name: "Squeeze V",
         short_label: "Sqz V",
+        group: TransitionGroup::Slide,
         default_params: TransitionUserParams { param0: 0.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -499,6 +570,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "AdditiveDissolve",
         display_name: "Additive Dissolve",
         short_label: "Add Dis",
+        group: TransitionGroup::Dissolve,
         default_params: TransitionUserParams { param0: 1.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -507,6 +579,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "FadeToColor",
         display_name: "Fade to Color",
         short_label: "Fade Clr",
+        group: TransitionGroup::Dissolve,
         default_params: TransitionUserParams { param0: 0.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [0.0, 0.0, 0.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -515,6 +588,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "GlitchDissolve",
         display_name: "Glitch Dissolve",
         short_label: "Glitch",
+        group: TransitionGroup::Effect,
         default_params: TransitionUserParams { param0: 1.0, param1: 16.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -523,6 +597,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "Desaturate",
         display_name: "Desaturate",
         short_label: "Desat",
+        group: TransitionGroup::Effect,
         default_params: TransitionUserParams { param0: 1.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -531,6 +606,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "NegativeFlash",
         display_name: "Negative Flash",
         short_label: "Neg",
+        group: TransitionGroup::Effect,
         default_params: TransitionUserParams { param0: 1.0, param1: 0.5, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -539,6 +615,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "Sepia",
         display_name: "Sepia",
         short_label: "Sepia",
+        group: TransitionGroup::Cinematic,
         default_params: TransitionUserParams { param0: 1.0, param1: 1.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -547,6 +624,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "ColorizeFlash",
         display_name: "Colorize Flash",
         short_label: "Colorize",
+        group: TransitionGroup::Effect,
         default_params: TransitionUserParams { param0: 1.0, param1: 0.5, param2: 0.0, param3: 0.0, color: [0.0, 0.8, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -555,6 +633,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "HueRotate",
         display_name: "Hue Rotate",
         short_label: "Hue Rot",
+        group: TransitionGroup::Effect,
         default_params: TransitionUserParams { param0: 1.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -563,6 +642,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "Swirl",
         display_name: "Swirl",
         short_label: "Swirl",
+        group: TransitionGroup::Effect,
         default_params: TransitionUserParams { param0: 90.0, param1: 1.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -571,6 +651,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "WaveDistortion",
         display_name: "Wave Distortion",
         short_label: "Wave",
+        group: TransitionGroup::Effect,
         default_params: TransitionUserParams { param0: 20.0, param1: 4.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -579,6 +660,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "StaticTV",
         display_name: "Static TV",
         short_label: "Static",
+        group: TransitionGroup::Effect,
         default_params: TransitionUserParams { param0: 1.0, param1: 2.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -587,6 +669,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "VHSTracking",
         display_name: "VHS Tracking",
         short_label: "VHS",
+        group: TransitionGroup::Effect,
         default_params: TransitionUserParams { param0: 1.0, param1: 6.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -595,6 +678,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "GlitchRGBSplit",
         display_name: "Glitch RGB Split",
         short_label: "RGB Spl",
+        group: TransitionGroup::Effect,
         default_params: TransitionUserParams { param0: 1.0, param1: 8.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -603,6 +687,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "ProjectorFlicker",
         display_name: "Projector Flicker",
         short_label: "Flicker",
+        group: TransitionGroup::Cinematic,
         default_params: TransitionUserParams { param0: 1.0, param1: 8.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -611,6 +696,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "Halation",
         display_name: "Halation",
         short_label: "Halat",
+        group: TransitionGroup::Cinematic,
         default_params: TransitionUserParams { param0: 0.3, param1: 1.0, param2: 0.0, param3: 0.0, color: [1.0, 0.4, 0.1, 1.0], subject: None },
     },
     TransitionSpec {
@@ -619,6 +705,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "AnamorphicFlare",
         display_name: "Anamorphic Flare",
         short_label: "Flare",
+        group: TransitionGroup::Cinematic,
         default_params: TransitionUserParams { param0: 1.0, param1: 0.15, param2: 0.0, param3: 0.0, color: [0.4, 0.7, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -627,6 +714,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "DreamSequence",
         display_name: "Dream Sequence",
         short_label: "Dream",
+        group: TransitionGroup::Cinematic,
         default_params: TransitionUserParams { param0: 1.0, param1: 0.8, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -635,6 +723,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "BokehDissolve",
         display_name: "Bokeh Dissolve",
         short_label: "Bokeh",
+        group: TransitionGroup::Cinematic,
         default_params: TransitionUserParams { param0: 1.0, param1: 0.6, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -643,6 +732,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "ZoomInDissolve",
         display_name: "Zoom In Dissolve",
         short_label: "Zoom In",
+        group: TransitionGroup::Zoom,
         default_params: TransitionUserParams { param0: 1.5, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -651,6 +741,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "ZoomOutDissolve",
         display_name: "Zoom Out Dissolve",
         short_label: "Zoom Out",
+        group: TransitionGroup::Zoom,
         default_params: TransitionUserParams { param0: 1.5, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -659,6 +750,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "CrossZoom",
         display_name: "Cross Zoom",
         short_label: "X Zoom",
+        group: TransitionGroup::Zoom,
         default_params: TransitionUserParams { param0: 1.4, param1: 1.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
     TransitionSpec {
@@ -667,6 +759,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "WaterDrop",
         display_name: "Water Drop",
         short_label: "Drop",
+        group: TransitionGroup::Cinematic,
         // ring width (fraction of the half diagonal), refraction px at
         // the crest, trailing ripples, crest highlight.
         default_params: TransitionUserParams { param0: 0.14, param1: 26.0, param2: 3.0, param3: 0.35, color: [1.0, 1.0, 1.0, 1.0], subject: None },
@@ -677,6 +770,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "WhipPan",
         display_name: "Whip Pan",
         short_label: "Whip",
+        group: TransitionGroup::Slide,
         // direction (0 left, 1 right, 2 up, 3 down), blur strength.
         default_params: TransitionUserParams { param0: 0.0, param1: 1.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
@@ -688,6 +782,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "SlideStrips",
         display_name: "Slide Strips",
         short_label: "Strips",
+        group: TransitionGroup::Slide,
         // 8 strips sliding sideways, neighbours opposite ways, staggered.
         default_params: TransitionUserParams { param0: 8.0, param1: 0.0, param2: 0.35, param3: 64.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
@@ -697,6 +792,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "SlidePanels",
         display_name: "Slide Panels",
         short_label: "Panels",
+        group: TransitionGroup::Slide,
         // 3 rows of square panels leaving to the right, in a sweep.
         default_params: TransitionUserParams { param0: 3.0, param1: 0.0, param2: 0.5, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
@@ -706,6 +802,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "PartHalves",
         display_name: "Part Halves",
         short_label: "Halves",
+        group: TransitionGroup::Slide,
         // Split down a steep diagonal, the halves parting across it.
         default_params: TransitionUserParams { param0: 0.0, param1: 70.0, param2: 0.15, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
@@ -715,6 +812,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "Shatter",
         display_name: "Shatter",
         short_label: "Shatter",
+        group: TransitionGroup::Cinematic,
         // 24 shards falling from the middle out, accelerating, with
         // shadows: centre out (2), accelerate (2 << 3), fall (3 << 12),
         // shadow (1 << 15).
@@ -726,6 +824,7 @@ pub const TRANSITION_SPECS: [TransitionSpec; 73] = [
         string_key: "SmoothCut",
         display_name: "Smooth Cut",
         short_label: "Smooth",
+        group: TransitionGroup::Dissolve,
         // No parameters: the morph's pace is the transition's length.
         default_params: TransitionUserParams { param0: 0.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0], subject: None },
     },
