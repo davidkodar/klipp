@@ -415,10 +415,98 @@ compound one-click features move to recipe files (#2886); named presets
 and the built-in delivery specs move to files under
 `assets/presets/<kind>/*.toml`, with a user folder beside them (#2887);
 effects, transitions and nodes are declared once, with menus and MCP
-lists generated from that (#2888); shaders move to `.wgsl` files and
+lists generated from that (#2888, done: see "Stable ids" below); shaders move to `.wgsl` files and
 `gpu.rs` is split by area (#2890, done: one module per area under
 `crates/klipp-effects/src/gpu/`). Each conversion names what it fixes
 or enables; none is done for its own sake.
+
+### Stable ids and their migrations
+
+Recipes, templates, packs and the assistant name effects, nodes,
+transitions and their parameters by **published ids**, which other
+people's files depend on. The names shown in menus can change freely;
+the ids can't.
+
+**What is published.** Each kind is declared once, in its registry, and
+`klipp-timeline/src/registry_ids.rs` (`declared()`) collects them:
+
+| Kind | Id | Declared in |
+|---|---|---|
+| Effect | `klipp.fx.<tag>` | `klipp-effects/src/registry/mod.rs` |
+| Grade node | `klipp.grade.<kind>` | `klipp-nodes/src/registry.rs` |
+| Transition | `klipp.transition.<key>` (key in snake case) | `klipp-core/src/transition_registry.rs` |
+| Audio effect | `klipp.audio.<type_id>` | `klipp-core/src/audio_effect_registry.rs` |
+
+A parameter's id is its descriptor's key and a port's is its key, on
+that type. Every id ever declared is listed in
+`klipp-timeline/tests/registry_ids.txt` (`type <id>`, `param <id>
+<key>`, `port <id> <key>`). A line is never removed from that file.
+
+**The rule.** An id is never renamed or removed without an entry in
+`MIGRATIONS` (`klipp-timeline/src/registry_ids.rs`):
+`Change::Renamed(<new>)` for a type's new id or a parameter's or port's
+new key on the same type, or `Change::Removed("why")` with a reason a
+person can read. A reader never drops an id it can't place silently:
+
+* A **template, recipe or pack** file read through
+  `CompositionTemplate::read` or saved by `CompositionTemplateStore::save` has
+  its ids rewritten by `CompositionTemplate::migrate_ids`. That covers
+  each graph op's type, its parameters, a modify op's key, a connect
+  op's ports, and every node binding. A removed type, a type this
+  Klipp doesn't know, or renames that loop refuse the file, naming the
+  id. An unknown parameter key is left for the graph op that places the
+  recipe to refuse by name.
+* A **project** is read through `klipp-project/src/migrate_ids.rs`
+  (from `load.rs`). Projects save effects by their serde tag and fields
+  and grade nodes by their kind, which map one for one onto the ids, so
+  a renamed effect, grade kind or effect setting reads as it is called
+  now, and a removed one refuses the project with the table's reason.
+  A grade kind neither declared nor in the table is refused by name. A
+  grade node's settings are nested `NodeParams` fields and are renamed
+  by a `#[serde(alias)]` there.
+
+**What depends on ids.** Recipe graph ops (`"type": "klipp.fx.…"`, their
+`params` keys, ports), and the node bindings of recipes and templates:
+`node:<op>.<param>`, `node:<op>.<param>~<field>`, a value inside a
+parameter by JSON pointer `node:<op>.<param>/<pointer>`, and a
+parameter's keys `node:<op>.<param>#<i>.time_secs|value`. All of these
+have their `<param>` rewritten through the table. A keys op's own keys,
+`keys:<op>#<i>.…`, name an op, not an id. The guides in `assets/craft`
+write ids too. Projects depend on the serde tags and field names that
+map onto the ids.
+
+**Renaming a parameter**, for example an effect's `radius` to `size`:
+
+1. Rename it in the effect (its field, and its descriptor key in the
+   registry). For an effect setting, a project reads the old name
+   through the table. For a grade node setting, add
+   `#[serde(alias = "radius")]` on the `NodeParams` field.
+2. Add `Migration { old: Subject::Param("klipp.fx.<tag>", "radius"),
+   change: Change::Renamed("size") }` to `MIGRATIONS`, with a comment
+   saying when and why.
+3. Run `cargo test -p klipp-timeline --test registry_ids`. It fails on
+   the new key, so add it with `KLIPP_BLESS_REGISTRY_IDS=1` (the old
+   line stays).
+4. Change any guide in `assets/craft` that writes the old key.
+
+A type renamed or removed works the same way, with `Subject::Type`.
+
+**What enforces it**, all under `klipp-timeline` unless named:
+* `tests/registry_ids.rs`:
+  * `every_id_ever_declared_still_reads`: every line of the snapshot
+    still resolves, to a current id or a removal.
+  * `every_migration_leads_to_a_current_id`: each entry leads to a
+    declared id or has a reason, and none names an id still declared.
+  * `the_snapshot_covers_every_kind`.
+  * `every_id_the_guides_write_is_current`.
+* `composition_template.rs`:
+  * `a_recipe_reads_renamed_ids_as_they_are_now`: types, params, keys,
+    ports and every binding form.
+  * `a_recipe_reads_the_chroma_keys_old_edge_name`: the shipped table's
+    one entry, `spill_suppression` to `spill`.
+* `klipp-project/src/migrate_ids.rs`: renamed effects, grade kinds and
+  settings read as they are now, and removed ones refuse with their
+  reason.
 
 ---
 
