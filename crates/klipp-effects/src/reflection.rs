@@ -25,42 +25,19 @@ pub const SCREEN: u32 = 1;
 pub const SOFT_LIGHT: u32 = 2;
 pub const OVERLAY: u32 = 3;
 
-/// The water surfaces' blend: chosen against footage (#2707).
-const CALM_BLEND: u32 = NORMAL;
-
 /// Where the ripple comes from: its noise. (The picture below is to come.)
 pub const FROM_NOISE: u32 = 0;
 
-/// The surfaces a reflection starts from, by name, label and
-/// description: water still and rippled, a glossy floor, a wet street,
-/// glass. One table for the app's presets and the assistant's kinds.
-pub const SURFACES: &[(&str, &str, &str)] = &[
-    ("calm_water", "Calm Water", "A slow sideways wobble that breaks into bands further down"),
-    ("rippled_water", "Rippled Water", "Choppy water: a stronger ripple in more broken strips"),
-    ("glossy_floor", "Glossy Floor", "A still, soft mirror on a polished floor"),
-    ("wet_street", "Wet Street", "Long smeared streaks on wet tarmac"),
-    ("glass", "Glass", "A faint, crisp mirror"),
-];
-
-/// The reflection on the surface `name` (see [`SURFACES`]), its waterline
-/// at `waterline`.
+/// The reflection on the surface `name` (water still and rippled, a
+/// glossy floor, a wet street, glass: the reflection presets that go by a
+/// key, `crate::presets`), its waterline at `waterline`. One table for
+/// the app's presets and the assistant's kinds.
 pub fn surface(name: &str, waterline: f32) -> Option<crate::BuiltinEffect> {
-    // Water takes its tint and darkness from the water measured under it
-    // (#2795); the other surfaces keep theirs.
-    // Letters dipping into water still show a little under it.
-    let e = |ripple_amount, ripple_size, ripple_speed, breakup, smear, fade, opacity, darken, contact, blend, tint, tint_amount, water: bool| crate::BuiltinEffect::Reflection {
-        waterline, gap: 0.0, ripple_amount, ripple_size, ripple_speed, breakup, smear, fade, opacity, darken, contact, blend, tint, tint_amount,
-        tint_auto: water, darken_auto: water, water: [0, 0, 0], water_key: 0,
-        submerge: if water { SUBMERGE } else { 0.0 }, ripple_from: FROM_NOISE, seed: 0, time: 0.0,
-    };
-    Some(match name {
-        "calm_water" => e(10.0, 60.0, 0.6, 0.6, 0.5, 0.45, 0.85, 0.45, 0.6, CALM_BLEND, [25, 85, 100], 0.2, true),
-        "rippled_water" => e(16.0, 40.0, 1.2, 0.7, 0.55, 0.5, 0.8, 0.5, 0.6, CALM_BLEND, [25, 85, 100], 0.25, true),
-        "glossy_floor" => e(0.0, 60.0, 0.0, 0.0, 0.15, 0.7, 0.45, 0.2, 0.3, NORMAL, [0, 0, 0], 0.0, false),
-        "wet_street" => e(3.0, 120.0, 0.2, 0.35, 0.8, 0.6, 0.6, 0.4, 0.4, OVERLAY, [30, 30, 35], 0.15, false),
-        "glass" => e(0.0, 60.0, 0.0, 0.0, 0.0, 0.35, 0.3, 0.0, 0.0, SCREEN, [0, 0, 0], 0.0, false),
-        _ => return None,
-    })
+    let mut e = crate::presets::keyed("reflection", name)?.effect.clone();
+    if let crate::BuiltinEffect::Reflection { waterline: w, .. } = &mut e {
+        *w = waterline;
+    }
+    Some(e)
 }
 
 /// How far under the water a layer dipping into it is by default

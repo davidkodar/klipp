@@ -246,27 +246,11 @@ pub fn cpu(pixels: &[f32], p: &Params) -> Vec<f32> {
     out
 }
 
-/// The templates: a look in one click, then Age and Damage (`age` and
-/// `amount`) to move it. Each name, its label, and its settings.
-pub const TEMPLATES: &[(&str, &str, &str)] = &[
-    ("super8", "Super 8", "A home movie: warm, grainy, lively flicker, the gate's edge showing"),
-    ("film_16mm", "16 mm", "A documentary print: lightly faded, a few scratches and specks"),
-    ("silent_film", "Silent Film", "The 1920s in black and white: heavy flicker, scratches, burned edges"),
-    ("faded_70s", "1970s Faded", "Colour gone warm and flat with age, the odd leak of light"),
-];
-
-/// The template `name`'s effect (see [`TEMPLATES`]).
+/// The template `name`'s effect: a look in one click, then Age and Damage
+/// (`age` and `amount`) to move it. The templates are the old-film
+/// presets that go by a key (`crate::presets`).
 pub fn template(name: &str) -> Option<crate::BuiltinEffect> {
-    let e = |flicker, scratches, dust, weave, sepia, age, mono, stains, frame_lines, leaks, burn| crate::BuiltinEffect::OldFilm {
-        flicker, scratches, dust, weave, sepia, seed: 0, amount: 1.0, age, mono, stains, frame_lines, leaks, burn,
-    };
-    Some(match name {
-        "super8" => e(0.6, 0.3, 0.6, 0.8, 0.1, 0.55, 0.0, 0.1, 0.6, 0.35, 0.2),
-        "film_16mm" => e(0.3, 0.4, 0.4, 0.4, 0.0, 0.35, 0.0, 0.05, 0.0, 0.0, 0.0),
-        "silent_film" => e(0.9, 0.8, 0.8, 0.7, 0.15, 0.6, 1.0, 0.25, 0.4, 0.0, 0.45),
-        "faded_70s" => e(0.2, 0.15, 0.3, 0.2, 0.0, 0.9, 0.0, 0.1, 0.0, 0.25, 0.0),
-        _ => return None,
-    })
+    crate::presets::keyed("old_film", name).map(|p| p.effect.clone())
 }
 
 
@@ -346,10 +330,13 @@ mod tests {
         assert!(aged([0.3, 0.2, 0.1, 1.0], 0.0)[..3].iter().zip([0.3f32, 0.2, 0.1]).all(|(a, b)| (a - b).abs() < 1e-4), "no age, no change");
     }
 
-    /// Every template is an Old Film; a name not among them is none.
+    /// The four templates the ops name are Old Films; a name not among
+    /// them is none.
     #[test]
     fn the_templates_are_old_films() {
-        for (name, _, _) in TEMPLATES {
+        let keys: Vec<&str> = crate::presets::keys_of("old_film").map(|p| p.key.as_str()).collect();
+        assert_eq!(keys, ["super8", "film_16mm", "silent_film", "faded_70s"]);
+        for name in keys {
             assert!(matches!(template(name), Some(crate::BuiltinEffect::OldFilm { .. })), "{name}");
         }
         assert!(template("vhs").is_none());

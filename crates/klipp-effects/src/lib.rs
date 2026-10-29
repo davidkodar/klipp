@@ -45,6 +45,7 @@ pub mod warp;
 pub mod gradient_map;
 pub mod planar;
 pub mod old_film;
+pub mod presets;
 pub mod reflection;
 pub mod surface_light;
 pub mod generator_grain;

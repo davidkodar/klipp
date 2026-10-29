@@ -1,0 +1,1913 @@
+# Klipp's built-in effect presets (#2887): each a name, a line saying what
+# it is and the effect at its values, listed in the effect's presets in
+# this order. A few also go by a key the ops and the app ask for them by:
+# an old-film template's, a reflection surface's, a particle kind's. A
+# person's own presets are kept apart, as JSON in their config folder.
+kind = "effect_preset"
+format_version = 1
+
+
+# ── Bloom ──
+[[preset]]
+name = "Subtle"
+description = "Gentle highlight enhancement"
+
+[preset.effect]
+type = "bloom"
+threshold = 0.8
+radius = 15.0
+intensity = 0.25
+
+[[preset]]
+name = "Cinematic"
+description = "Classic film bloom"
+
+[preset.effect]
+type = "bloom"
+threshold = 0.65
+radius = 25.0
+intensity = 0.5
+
+[[preset]]
+name = "Dreamy"
+description = "Heavy dreamlike glow"
+
+[preset.effect]
+type = "bloom"
+threshold = 0.5
+radius = 40.0
+intensity = 0.8
+
+[[preset]]
+name = "Music Video"
+description = "Intense overexposed look"
+
+[preset.effect]
+type = "bloom"
+threshold = 0.4
+radius = 35.0
+intensity = 1.2
+
+
+# ── Glow ──
+[[preset]]
+name = "Soft Touch"
+description = "Barely visible softening"
+
+[preset.effect]
+type = "glow"
+radius = 20.0
+intensity = 0.2
+threshold = 0.0
+
+[[preset]]
+name = "Romantic"
+description = "Soft warm glow"
+
+[preset.effect]
+type = "glow"
+radius = 35.0
+intensity = 0.45
+threshold = 0.0
+
+[[preset]]
+name = "Ethereal"
+description = "Strong diffuse glow"
+
+[preset.effect]
+type = "glow"
+radius = 50.0
+intensity = 0.7
+threshold = 0.0
+
+
+# ── Light Rays ──
+[[preset]]
+name = "Morning Sun"
+description = "Soft rays from upper right"
+
+[preset.effect]
+type = "light_rays"
+center_x = 0.8
+center_y = 0.2
+threshold = 0.65
+samples = 64
+decay = 0.3
+intensity = 0.4
+
+[[preset]]
+name = "Divine Light"
+description = "Strong rays from above"
+
+[preset.effect]
+type = "light_rays"
+center_x = 0.5
+center_y = 0.1
+threshold = 0.55
+samples = 96
+decay = 0.4
+intensity = 0.7
+
+[[preset]]
+name = "Window Light"
+description = "Gentle rays from center left"
+
+[preset.effect]
+type = "light_rays"
+center_x = 0.15
+center_y = 0.4
+threshold = 0.6
+samples = 48
+decay = 0.25
+intensity = 0.35
+
+
+# ── Vignette ──
+[[preset]]
+name = "Subtle Dark"
+description = "Gentle corner darkening"
+
+[preset.effect]
+type = "vignette"
+amount = -0.25
+size = 0.9
+softness = 0.6
+roundness = 0.5
+
+[[preset]]
+name = "Classic Film"
+description = "Standard film vignette"
+
+[preset.effect]
+type = "vignette"
+amount = -0.45
+size = 0.75
+softness = 0.5
+roundness = 0.5
+
+[[preset]]
+name = "Heavy Drama"
+description = "Strong dramatic darkening"
+
+[preset.effect]
+type = "vignette"
+amount = -0.7
+size = 0.6
+softness = 0.4
+roundness = 0.4
+
+[[preset]]
+name = "Spotlight"
+description = "Tight circular focus"
+
+[preset.effect]
+type = "vignette"
+amount = -0.8
+size = 0.5
+softness = 0.3
+roundness = 0.9
+
+[[preset]]
+name = "Light Edges"
+description = "Bright edge glow"
+
+[preset.effect]
+type = "vignette"
+amount = 0.3
+size = 0.8
+softness = 0.5
+roundness = 0.5
+
+
+# ── Diffusion ──
+[[preset]]
+name = "Light Mist"
+description = "Subtle pro-mist filter"
+
+[preset.effect]
+type = "diffusion"
+amount = 0.15
+radius = 20.0
+threshold = 0.6
+desaturation = 0.1
+
+[[preset]]
+name = "Classic Pro-Mist"
+description = "Standard diffusion filter"
+
+[preset.effect]
+type = "diffusion"
+amount = 0.3
+radius = 30.0
+threshold = 0.5
+desaturation = 0.2
+
+[[preset]]
+name = "Heavy Fog"
+description = "Strong dreamy diffusion"
+
+[preset.effect]
+type = "diffusion"
+amount = 0.5
+radius = 45.0
+threshold = 0.35
+desaturation = 0.35
+
+[[preset]]
+name = "Golden Hour"
+description = "Warm highlight softening"
+
+[preset.effect]
+type = "diffusion"
+amount = 0.35
+radius = 25.0
+threshold = 0.45
+desaturation = 0.05
+
+
+# ── Lens Flare ──
+[[preset]]
+name = "Subtle Flare"
+description = "Minimal lens flare"
+
+[preset.effect]
+type = "lens_flare"
+position_x = 0.7
+position_y = 0.3
+brightness = 0.3
+flare_size = 0.1
+ghost_count = 2
+ghost_intensity = 0.15
+chromatic_aberration = 0.2
+
+[[preset]]
+name = "Cinematic"
+description = "Classic film lens flare"
+
+[preset.effect]
+type = "lens_flare"
+position_x = 0.75
+position_y = 0.25
+brightness = 0.6
+flare_size = 0.15
+ghost_count = 4
+ghost_intensity = 0.3
+chromatic_aberration = 0.4
+
+[[preset]]
+name = "Sci-Fi"
+description = "Strong dramatic flare"
+
+[preset.effect]
+type = "lens_flare"
+position_x = 0.6
+position_y = 0.4
+brightness = 1.0
+flare_size = 0.2
+ghost_count = 6
+ghost_intensity = 0.5
+chromatic_aberration = 0.7
+
+
+# ── Light Wrap ──
+[[preset]]
+name = "Gentle"
+description = "Subtle edge integration"
+
+[preset.effect]
+type = "light_wrap"
+width = 10.0
+intensity = 0.3
+softness = 1.0
+
+[[preset]]
+name = "Standard"
+description = "Natural compositing wrap"
+
+[preset.effect]
+type = "light_wrap"
+width = 20.0
+intensity = 0.5
+softness = 1.0
+
+[[preset]]
+name = "Strong"
+description = "Heavy background bleed"
+
+[preset.effect]
+type = "light_wrap"
+width = 35.0
+intensity = 0.7
+softness = 1.5
+
+
+# ── Anamorphic Streak ──
+[[preset]]
+name = "Subtle Warm"
+description = "Gentle amber streaks"
+
+[preset.effect]
+type = "anamorphic_streak"
+threshold = 0.75
+length = 60.0
+intensity = 0.3
+tint = 0.2
+
+[[preset]]
+name = "Classic Anamorphic"
+description = "Standard lens streak"
+
+[preset.effect]
+type = "anamorphic_streak"
+threshold = 0.65
+length = 100.0
+intensity = 0.5
+tint = 0.3
+
+[[preset]]
+name = "Blade Runner"
+description = "Strong blue-tinted streaks"
+
+[preset.effect]
+type = "anamorphic_streak"
+threshold = 0.6
+length = 150.0
+intensity = 0.7
+tint = 0.8
+
+[[preset]]
+name = "Neon Nights"
+description = "Intense wide streaks"
+
+[preset.effect]
+type = "anamorphic_streak"
+threshold = 0.5
+length = 180.0
+intensity = 0.9
+tint = 0.6
+
+
+# ── Film Halation ──
+[[preset]]
+name = "Subtle Red"
+description = "Gentle film halation"
+
+[preset.effect]
+type = "film_halation"
+threshold = 0.8
+radius = 12.0
+intensity = 0.2
+hue = 0.1
+
+[[preset]]
+name = "Kodak 5219"
+description = "Classic motion picture film"
+
+[preset.effect]
+type = "film_halation"
+threshold = 0.7
+radius = 18.0
+intensity = 0.35
+hue = 0.25
+
+[[preset]]
+name = "Vintage Warm"
+description = "Strong warm halation"
+
+[preset.effect]
+type = "film_halation"
+threshold = 0.6
+radius = 25.0
+intensity = 0.5
+hue = 0.5
+
+
+# ── Gaussian Blur ──
+[[preset]]
+name = "Light Soften"
+description = "Subtle background softening"
+
+[preset.effect]
+type = "gaussian_blur"
+radius = 3.0
+
+[[preset]]
+name = "Medium Blur"
+description = "Standard blur"
+
+[preset.effect]
+type = "gaussian_blur"
+radius = 10.0
+
+[[preset]]
+name = "Heavy Blur"
+description = "Strong defocus"
+
+[preset.effect]
+type = "gaussian_blur"
+radius = 30.0
+
+[[preset]]
+name = "Privacy Blur"
+description = "Face/plate obscuring"
+
+[preset.effect]
+type = "gaussian_blur"
+radius = 50.0
+
+
+# ── Rounded Corners ──
+[[preset]]
+name = "Card"
+description = "Soft corners, as a UI card"
+
+[preset.effect]
+type = "rounded_corners"
+radius = 0.02
+feather = 0.002
+
+[[preset]]
+name = "Pill"
+description = "Fully rounded ends"
+
+[preset.effect]
+type = "rounded_corners"
+radius = 0.5
+feather = 0.002
+
+
+# ── Drop Shadow ──
+[[preset]]
+name = "Lift"
+description = "A close shadow, as if just off the surface"
+
+[preset.effect]
+type = "drop_shadow"
+offset_x = 0.0
+offset_y = 0.006
+blur = 0.012
+color = [
+    0,
+    0,
+    0,
+]
+opacity = 0.45
+
+[[preset]]
+name = "Float"
+description = "A wide soft shadow, well above the background"
+
+[preset.effect]
+type = "drop_shadow"
+offset_x = 0.0
+offset_y = 0.02
+blur = 0.05
+color = [
+    0,
+    0,
+    0,
+]
+opacity = 0.6
+
+
+# ── Outer Glow ──
+[[preset]]
+name = "Edge Light"
+description = "A tight rim of light"
+
+[preset.effect]
+type = "outer_glow"
+radius = 0.012
+intensity = 0.7
+color = [
+    255,
+    255,
+    255,
+]
+
+[[preset]]
+name = "Halo"
+description = "A wide glow onto the background"
+
+[preset.effect]
+type = "outer_glow"
+radius = 0.06
+intensity = 0.8
+color = [
+    120,
+    150,
+    255,
+]
+
+
+# ── Fill Bars ──
+[[preset]]
+name = "Blurred Background"
+description = "The bars filled with the picture, enlarged and blurred (Blanking Fill)"
+
+[preset.effect]
+type = "fill_bars"
+blur = 0.05
+zoom = 1.0
+darken = 0.25
+
+[[preset]]
+name = "Soft Ambient"
+description = "A wide, dark blur in the bars, the picture standing out"
+
+[preset.effect]
+type = "fill_bars"
+blur = 0.1
+zoom = 1.2
+darken = 0.5
+
+
+# ── Sharpen ──
+[[preset]]
+name = "Subtle"
+description = "Light sharpening for web"
+
+[preset.effect]
+type = "sharpen"
+amount = 0.3
+
+[[preset]]
+name = "Standard"
+description = "General-purpose sharpening"
+
+[preset.effect]
+type = "sharpen"
+amount = 0.6
+
+[[preset]]
+name = "Crispy"
+description = "Strong detail enhancement"
+
+[preset.effect]
+type = "sharpen"
+amount = 1.2
+
+
+# ── Opacity ──
+[[preset]]
+name = "25%"
+description = "Quarter opacity"
+
+[preset.effect]
+type = "opacity"
+value = 0.25
+
+[[preset]]
+name = "50%"
+description = "Half opacity"
+
+[preset.effect]
+type = "opacity"
+value = 0.5
+
+[[preset]]
+name = "75%"
+description = "Three-quarter opacity"
+
+[preset.effect]
+type = "opacity"
+value = 0.75
+
+
+# ── Rolling Shutter Correction ──
+[[preset]]
+name = "iPhone / Modern Phone"
+description = "Fast readout ~15ms"
+
+[preset.effect]
+type = "rolling_shutter_correction"
+strength = 0.5
+readout_ratio = 0.35
+
+[[preset]]
+name = "Action Cam (GoPro)"
+description = "Medium readout ~16ms"
+
+[preset.effect]
+type = "rolling_shutter_correction"
+strength = 0.5
+readout_ratio = 0.4
+
+[[preset]]
+name = "Mirrorless Camera"
+description = "Sony/Canon ~20ms readout"
+
+[preset.effect]
+type = "rolling_shutter_correction"
+strength = 0.5
+readout_ratio = 0.5
+
+[[preset]]
+name = "Drone (DJI)"
+description = "Slow readout ~30ms"
+
+[preset.effect]
+type = "rolling_shutter_correction"
+strength = 0.8
+readout_ratio = 0.75
+
+
+# ── Stabilisation ──
+[[preset]]
+name = "Subtle"
+description = "Gentle smoothing for handheld footage"
+
+[preset.effect]
+type = "video_stabilization"
+smoothing = 0.3
+crop_ratio = 0.03
+zoom = true
+
+[[preset]]
+name = "Smooth Handheld"
+description = "Moderate smoothing for walking/handheld"
+
+[preset.effect]
+type = "video_stabilization"
+smoothing = 0.5
+crop_ratio = 0.05
+zoom = true
+
+[[preset]]
+name = "Cinematic Glide"
+description = "Strong smoothing for a floaty look"
+
+[preset.effect]
+type = "video_stabilization"
+smoothing = 0.8
+crop_ratio = 0.08
+zoom = true
+
+[[preset]]
+name = "Locked Tripod"
+description = "Maximum smoothing for minor vibration"
+
+[preset.effect]
+type = "video_stabilization"
+smoothing = 1.0
+crop_ratio = 0.03
+zoom = false
+
+
+# ── Speed Ramp ──
+[[preset]]
+name = "Slow-Mo 50%"
+description = "Half-speed playback"
+
+[preset.effect]
+type = "speed_ramp"
+speed = 0.5
+blend_mode = 1
+
+[[preset]]
+name = "Slow-Mo 25%"
+description = "Quarter-speed playback"
+
+[preset.effect]
+type = "speed_ramp"
+speed = 0.25
+blend_mode = 1
+
+[[preset]]
+name = "Smooth Slow-Mo 25%"
+description = "Quarter speed, in-between frames following the motion"
+
+[preset.effect]
+type = "speed_ramp"
+speed = 0.25
+blend_mode = 2
+
+[[preset]]
+name = "Speed Up 2x"
+description = "Double-speed playback"
+
+[preset.effect]
+type = "speed_ramp"
+speed = 2.0
+blend_mode = 0
+
+[[preset]]
+name = "Speed Up 4x"
+description = "Quadruple-speed playback"
+
+[preset.effect]
+type = "speed_ramp"
+speed = 4.0
+blend_mode = 0
+
+
+# ── Chroma Key ──
+[[preset]]
+name = "Green Screen"
+description = "Standard green screen key"
+
+[preset.effect]
+type = "chroma_key"
+key_color = [
+    0,
+    177,
+    64,
+]
+tolerance = 0.25
+soft_edge = 0.15
+spill_method = "channel_clamp"
+spill_strength = 0.6
+
+[[preset]]
+name = "Blue Screen"
+description = "Standard blue screen key"
+
+[preset.effect]
+type = "chroma_key"
+key_color = [
+    0,
+    71,
+    187,
+]
+tolerance = 0.25
+soft_edge = 0.15
+spill_method = "channel_clamp"
+spill_strength = 0.6
+
+[[preset]]
+name = "Green Screen (Tight)"
+description = "Clean green screen with tight key"
+
+[preset.effect]
+type = "chroma_key"
+key_color = [
+    0,
+    177,
+    64,
+]
+tolerance = 0.15
+soft_edge = 0.25
+spill_method = "channel_clamp"
+spill_strength = 0.6
+
+
+# ── Luma Key ──
+[[preset]]
+name = "Key Out Black"
+description = "A black background keyed out, soft at its edge"
+
+[preset.effect]
+type = "luma_key"
+low = 0.0
+high = 0.1
+soft = 0.05
+invert = false
+
+[[preset]]
+name = "Key Out White"
+description = "A white background keyed out, soft at its edge"
+
+[preset.effect]
+type = "luma_key"
+low = 0.9
+high = 1.0
+soft = 0.05
+invert = false
+
+[[preset]]
+name = "Keep the Highlights"
+description = "Only the brightest parts kept, as for fire, sparks or light leaks over a picture"
+
+[preset.effect]
+type = "luma_key"
+low = 0.6
+high = 1.0
+soft = 0.2
+invert = true
+
+
+# ── Posterize ──
+[[preset]]
+name = "Pop Art"
+description = "Bold 4-level poster look"
+
+[preset.effect]
+type = "posterize"
+levels = 4.0
+
+[[preset]]
+name = "Retro Game"
+description = "8-bit game palette"
+
+[preset.effect]
+type = "posterize"
+levels = 8.0
+
+[[preset]]
+name = "Subtle"
+description = "Gentle banding (16 levels)"
+
+[preset.effect]
+type = "posterize"
+levels = 16.0
+
+
+# ── Mosaic ──
+[[preset]]
+name = "Privacy"
+description = "Face/plate obscuring"
+
+[preset.effect]
+type = "mosaic"
+block_size = 20.0
+
+[[preset]]
+name = "Pixel Art"
+description = "Retro pixel look"
+
+[preset.effect]
+type = "mosaic"
+block_size = 8.0
+
+[[preset]]
+name = "Extreme"
+description = "Very coarse pixelation"
+
+[preset.effect]
+type = "mosaic"
+block_size = 50.0
+
+
+# ── Edge Detect ──
+[[preset]]
+name = "Sketch"
+description = "Clean edge outline"
+
+[preset.effect]
+type = "edge_detect"
+strength = 2.0
+mix = 1.0
+
+[[preset]]
+name = "Overlay Edges"
+description = "Subtle edge enhancement"
+
+[preset.effect]
+type = "edge_detect"
+strength = 1.5
+mix = 0.3
+
+
+# ── Emboss ──
+[[preset]]
+name = "Stamp"
+description = "Classic stamp/relief look"
+
+[preset.effect]
+type = "emboss"
+angle = 135.0
+strength = 1.5
+mix = 1.0
+
+[[preset]]
+name = "Subtle Relief"
+description = "Gentle 3D texture"
+
+[preset.effect]
+type = "emboss"
+angle = 135.0
+strength = 0.8
+mix = 0.4
+
+[[preset]]
+name = "Side Light"
+description = "Lit from the right"
+
+[preset.effect]
+type = "emboss"
+angle = 0.0
+strength = 1.5
+mix = 1.0
+
+
+# ── Directional Blur ──
+[[preset]]
+name = "Horizontal Sweep"
+description = "Horizontal motion blur"
+
+[preset.effect]
+type = "directional_blur"
+angle = 0.0
+distance = 15.0
+samples = 12
+
+[[preset]]
+name = "Vertical Rain"
+description = "Vertical streak blur"
+
+[preset.effect]
+type = "directional_blur"
+angle = 90.0
+distance = 20.0
+samples = 16
+
+[[preset]]
+name = "Diagonal Speed"
+description = "Dynamic diagonal motion"
+
+[preset.effect]
+type = "directional_blur"
+angle = 45.0
+distance = 25.0
+samples = 12
+
+
+# ── Lens Distortion ──
+[[preset]]
+name = "GoPro Fix"
+description = "Correct action cam barrel distortion"
+
+[preset.effect]
+type = "lens_distortion"
+distortion = -0.3
+scale = 1.1
+
+[[preset]]
+name = "Fisheye"
+description = "Extreme barrel distortion"
+
+[preset.effect]
+type = "lens_distortion"
+distortion = -0.8
+scale = 0.7
+
+[[preset]]
+name = "Pincushion"
+description = "Inward pinch distortion"
+
+[preset.effect]
+type = "lens_distortion"
+distortion = 0.5
+scale = 1.0
+
+
+# ── Displace ──
+[[preset]]
+name = "Heat Haze"
+description = "Fine shimmer rising off hot ground"
+
+[preset.effect]
+type = "displace"
+amount = 4.0
+size = 30.0
+speed = 2.0
+direction = 0
+seed = 0
+time = 0.0
+
+[[preset]]
+name = "Water Wobble"
+description = "Slow sideways sway, as seen through water"
+
+[preset.effect]
+type = "displace"
+amount = 14.0
+size = 160.0
+speed = 0.6
+direction = 1
+seed = 0
+time = 0.0
+
+
+# ── Reflection ──
+[[preset]]
+key = "calm_water"
+name = "Calm Water"
+description = "A slow sideways wobble that breaks into bands further down"
+
+[preset.effect]
+type = "reflection"
+waterline = 0.6
+gap = 0.0
+ripple_amount = 10.0
+ripple_size = 60.0
+ripple_speed = 0.6
+breakup = 0.6
+smear = 0.5
+fade = 0.45
+opacity = 0.85
+darken = 0.45
+contact = 0.6
+blend = 0
+tint = [
+    25,
+    85,
+    100,
+]
+tint_amount = 0.2
+tint_auto = true
+darken_auto = true
+water = [
+    0,
+    0,
+    0,
+]
+water_key = 0
+submerge = 0.7
+ripple_from = 0
+seed = 0
+time = 0.0
+
+[[preset]]
+key = "rippled_water"
+name = "Rippled Water"
+description = "Choppy water: a stronger ripple in more broken strips"
+
+[preset.effect]
+type = "reflection"
+waterline = 0.6
+gap = 0.0
+ripple_amount = 16.0
+ripple_size = 40.0
+ripple_speed = 1.2
+breakup = 0.7
+smear = 0.55
+fade = 0.5
+opacity = 0.8
+darken = 0.5
+contact = 0.6
+blend = 0
+tint = [
+    25,
+    85,
+    100,
+]
+tint_amount = 0.25
+tint_auto = true
+darken_auto = true
+water = [
+    0,
+    0,
+    0,
+]
+water_key = 0
+submerge = 0.7
+ripple_from = 0
+seed = 0
+time = 0.0
+
+[[preset]]
+key = "glossy_floor"
+name = "Glossy Floor"
+description = "A still, soft mirror on a polished floor"
+
+[preset.effect]
+type = "reflection"
+waterline = 0.6
+gap = 0.0
+ripple_amount = 0.0
+ripple_size = 60.0
+ripple_speed = 0.0
+breakup = 0.0
+smear = 0.15
+fade = 0.7
+opacity = 0.45
+darken = 0.2
+contact = 0.3
+blend = 0
+tint = [
+    0,
+    0,
+    0,
+]
+tint_amount = 0.0
+tint_auto = false
+darken_auto = false
+water = [
+    0,
+    0,
+    0,
+]
+water_key = 0
+submerge = 0.0
+ripple_from = 0
+seed = 0
+time = 0.0
+
+[[preset]]
+key = "wet_street"
+name = "Wet Street"
+description = "Long smeared streaks on wet tarmac"
+
+[preset.effect]
+type = "reflection"
+waterline = 0.6
+gap = 0.0
+ripple_amount = 3.0
+ripple_size = 120.0
+ripple_speed = 0.2
+breakup = 0.35
+smear = 0.8
+fade = 0.6
+opacity = 0.6
+darken = 0.4
+contact = 0.4
+blend = 3
+tint = [
+    30,
+    30,
+    35,
+]
+tint_amount = 0.15
+tint_auto = false
+darken_auto = false
+water = [
+    0,
+    0,
+    0,
+]
+water_key = 0
+submerge = 0.0
+ripple_from = 0
+seed = 0
+time = 0.0
+
+[[preset]]
+key = "glass"
+name = "Glass"
+description = "A faint, crisp mirror"
+
+[preset.effect]
+type = "reflection"
+waterline = 0.6
+gap = 0.0
+ripple_amount = 0.0
+ripple_size = 60.0
+ripple_speed = 0.0
+breakup = 0.0
+smear = 0.0
+fade = 0.35
+opacity = 0.3
+darken = 0.0
+contact = 0.0
+blend = 1
+tint = [
+    0,
+    0,
+    0,
+]
+tint_amount = 0.0
+tint_auto = false
+darken_auto = false
+water = [
+    0,
+    0,
+    0,
+]
+water_key = 0
+submerge = 0.0
+ripple_from = 0
+seed = 0
+time = 0.0
+
+
+# ── Denoise ──
+[[preset]]
+name = "Light"
+description = "Subtle noise reduction for well-lit scenes"
+
+[preset.effect]
+type = "denoise"
+spatial_sigma = 3.0
+color_sigma = 0.08
+iterations = 1
+
+[[preset]]
+name = "Standard"
+description = "General-purpose denoising"
+
+[preset.effect]
+type = "denoise"
+spatial_sigma = 5.0
+color_sigma = 0.12
+iterations = 1
+
+[[preset]]
+name = "Heavy"
+description = "Strong noise reduction for phone/low-light footage"
+
+[preset.effect]
+type = "denoise"
+spatial_sigma = 8.0
+color_sigma = 0.2
+iterations = 2
+
+
+# ── Gamma ──
+[[preset]]
+name = "Brighten"
+description = "Lift midtones"
+
+[preset.effect]
+type = "gamma"
+gamma = 1.5
+
+[[preset]]
+name = "Darken"
+description = "Crush midtones"
+
+[preset.effect]
+type = "gamma"
+gamma = 0.7
+
+[[preset]]
+name = "High Contrast"
+description = "Strong S-curve via gamma"
+
+[preset.effect]
+type = "gamma"
+gamma = 0.5
+
+
+# ── Invert ──
+[[preset]]
+name = "Full Invert"
+description = "Complete colour inversion"
+
+[preset.effect]
+type = "invert"
+mix = 1.0
+
+[[preset]]
+name = "Partial Invert"
+description = "50% inverted blend"
+
+[preset.effect]
+type = "invert"
+mix = 0.5
+
+
+# ── Mirror ──
+[[preset]]
+name = "Horizontal Flip"
+description = "Flip left to right"
+
+[preset.effect]
+type = "mirror"
+horizontal = 1
+vertical = 0
+
+[[preset]]
+name = "Vertical Flip"
+description = "Flip top to bottom"
+
+[preset.effect]
+type = "mirror"
+horizontal = 0
+vertical = 1
+
+[[preset]]
+name = "Both"
+description = "Rotate 180 degrees"
+
+[preset.effect]
+type = "mirror"
+horizontal = 1
+vertical = 1
+
+
+# ── HSV Adjust ──
+[[preset]]
+name = "Hue Shift 30°"
+description = "Subtle warm shift"
+
+[preset.effect]
+type = "h_s_v_adjust"
+hue_shift = 30.0
+saturation = 1.0
+value = 1.0
+
+[[preset]]
+name = "Desaturate"
+description = "Remove all colour"
+
+[preset.effect]
+type = "h_s_v_adjust"
+hue_shift = 0.0
+saturation = 0.0
+value = 1.0
+
+[[preset]]
+name = "Boost Saturation"
+description = "Vivid colours"
+
+[preset.effect]
+type = "h_s_v_adjust"
+hue_shift = 0.0
+saturation = 1.8
+value = 1.0
+
+[[preset]]
+name = "Warm Shift"
+description = "Orange/warm tone shift"
+
+[preset.effect]
+type = "h_s_v_adjust"
+hue_shift = -15.0
+saturation = 1.2
+value = 1.05
+
+
+# ── Noise ──
+[[preset]]
+name = "Subtle Grain"
+description = "Light film grain texture"
+
+[preset.effect]
+type = "noise_generator"
+amount = 0.05
+monochrome = 1
+seed = 0
+
+[[preset]]
+name = "Heavy Noise"
+description = "Strong noise overlay"
+
+[preset.effect]
+type = "noise_generator"
+amount = 0.3
+monochrome = 0
+seed = 0
+
+[[preset]]
+name = "B&W Grain"
+description = "Classic monochrome film grain"
+
+[preset.effect]
+type = "noise_generator"
+amount = 0.15
+monochrome = 1
+seed = 0
+
+
+# ── Film Grain ──
+[[preset]]
+name = "Fine 35mm"
+description = "Tight grain that lives in the shadows"
+
+[preset.effect]
+type = "film_grain"
+amount = 0.25
+size = 1.2
+color = 0
+shadows = 0.7
+seed = 0
+
+[[preset]]
+name = "16mm"
+description = "Coarser, more visible grain"
+
+[preset.effect]
+type = "film_grain"
+amount = 0.45
+size = 2.2
+color = 0
+shadows = 0.5
+seed = 0
+
+[[preset]]
+name = "Colour Negative"
+description = "Per-channel grain of a colour stock"
+
+[preset.effect]
+type = "film_grain"
+amount = 0.3
+size = 1.6
+color = 1
+shadows = 0.6
+seed = 0
+
+
+# ── Old Film ──
+[[preset]]
+key = "super8"
+name = "Super 8"
+description = "A home movie: warm, grainy, lively flicker, the gate's edge showing"
+
+[preset.effect]
+type = "old_film"
+flicker = 0.6
+scratches = 0.3
+dust = 0.6
+weave = 0.8
+sepia = 0.1
+seed = 0
+amount = 1.0
+age = 0.55
+mono = 0.0
+stains = 0.1
+frame_lines = 0.6
+leaks = 0.35
+burn = 0.2
+
+[[preset]]
+key = "film_16mm"
+name = "16 mm"
+description = "A documentary print: lightly faded, a few scratches and specks"
+
+[preset.effect]
+type = "old_film"
+flicker = 0.3
+scratches = 0.4
+dust = 0.4
+weave = 0.4
+sepia = 0.0
+seed = 0
+amount = 1.0
+age = 0.35
+mono = 0.0
+stains = 0.05
+frame_lines = 0.0
+leaks = 0.0
+burn = 0.0
+
+[[preset]]
+key = "silent_film"
+name = "Silent Film"
+description = "The 1920s in black and white: heavy flicker, scratches, burned edges"
+
+[preset.effect]
+type = "old_film"
+flicker = 0.9
+scratches = 0.8
+dust = 0.8
+weave = 0.7
+sepia = 0.15
+seed = 0
+amount = 1.0
+age = 0.6
+mono = 1.0
+stains = 0.25
+frame_lines = 0.4
+leaks = 0.0
+burn = 0.45
+
+[[preset]]
+key = "faded_70s"
+name = "1970s Faded"
+description = "Colour gone warm and flat with age, the odd leak of light"
+
+[preset.effect]
+type = "old_film"
+flicker = 0.2
+scratches = 0.15
+dust = 0.3
+weave = 0.2
+sepia = 0.0
+seed = 0
+amount = 1.0
+age = 0.9
+mono = 0.0
+stains = 0.1
+frame_lines = 0.0
+leaks = 0.25
+burn = 0.0
+
+
+# ── Flicker ──
+[[preset]]
+name = "Faulty Bulb"
+description = "Hard drops in brightness, a few still spells"
+
+[preset.effect]
+type = "flicker"
+amount = 0.6
+speed = 10.0
+smoothness = 0.0
+hold = 0.5
+seed = 1
+target = 1
+time = 0.0
+
+[[preset]]
+name = "Candle"
+description = "Soft, quick wavering of the light"
+
+[preset.effect]
+type = "flicker"
+amount = 0.25
+speed = 6.0
+smoothness = 1.0
+hold = 0.0
+seed = 1
+target = 1
+time = 0.0
+
+[[preset]]
+name = "Glitchy Title"
+description = "Opacity jumps, for titles and overlays"
+
+[preset.effect]
+type = "flicker"
+amount = 0.9
+speed = 14.0
+smoothness = 0.0
+hold = 0.6
+seed = 1
+target = 0
+time = 0.0
+
+
+# ── Particles ──
+[[preset]]
+key = "dust"
+name = "Dust Motes"
+description = "Specks drifting in the light"
+
+[preset.effect]
+type = "particles"
+style = 0
+amount = 150.0
+size = 2.5
+speed = 30.0
+direction = 300.0
+spread = 0.5
+lifetime = 4.0
+opacity = 0.6
+color = [
+    255,
+    240,
+    220,
+]
+seed = 1
+time = 0.0
+
+[[preset]]
+key = "snow"
+name = "Snowfall"
+description = "Soft flakes falling and swaying"
+
+[preset.effect]
+type = "particles"
+style = 1
+amount = 300.0
+size = 3.5
+speed = 70.0
+direction = 95.0
+spread = 0.4
+lifetime = 6.0
+opacity = 0.85
+color = [
+    255,
+    255,
+    255,
+]
+seed = 1
+time = 0.0
+
+[[preset]]
+key = "rain"
+name = "Rain"
+description = "Fast streaks slanting down"
+
+[preset.effect]
+type = "particles"
+style = 2
+amount = 500.0
+size = 1.6
+speed = 1100.0
+direction = 100.0
+spread = 0.1
+lifetime = 1.5
+opacity = 0.6
+color = [
+    200,
+    210,
+    225,
+]
+seed = 1
+time = 0.0
+
+[[preset]]
+key = "sparks"
+name = "Sparks"
+description = "Bright sparks flying up and falling back"
+
+[preset.effect]
+type = "particles"
+style = 3
+amount = 120.0
+size = 1.6
+speed = 260.0
+direction = 280.0
+spread = 0.9
+lifetime = 1.2
+opacity = 1.0
+color = [
+    255,
+    190,
+    90,
+]
+seed = 1
+time = 0.0
+
+[[preset]]
+key = "embers"
+name = "Embers"
+description = "Glowing embers rising and cooling"
+
+[preset.effect]
+type = "particles"
+style = 4
+amount = 150.0
+size = 2.2
+speed = 60.0
+direction = 270.0
+spread = 0.6
+lifetime = 3.5
+opacity = 0.9
+color = [
+    255,
+    120,
+    40,
+]
+seed = 1
+time = 0.0
+
+
+# ── VHS ──
+[[preset]]
+name = "Worn Tape"
+description = "Heavy tracking and bleed"
+
+[preset.effect]
+type = "vhs"
+tracking = 0.8
+bleed = 0.8
+noise = 0.6
+scanlines = 0.6
+seed = 0
+
+[[preset]]
+name = "Clean Dub"
+description = "A subtle tape look"
+
+[preset.effect]
+type = "vhs"
+tracking = 0.2
+bleed = 0.4
+noise = 0.2
+scanlines = 0.4
+seed = 0
+
+
+# ── Tilt-Shift ──
+[[preset]]
+name = "Miniature"
+description = "A narrow sharp band, strong blur"
+
+[preset.effect]
+type = "tilt_shift"
+center = 0.55
+width = 0.2
+softness = 0.12
+radius = 24.0
+
+[[preset]]
+name = "Soft Frame"
+description = "Wide focus, gentle fall-off"
+
+[preset.effect]
+type = "tilt_shift"
+center = 0.5
+width = 0.5
+softness = 0.3
+radius = 8.0
+
+
+# ── Median Filter ──
+[[preset]]
+name = "Light Smooth"
+description = "Gentle noise removal"
+
+[preset.effect]
+type = "median_filter"
+radius = 1
+
+[[preset]]
+name = "Strong Smooth"
+description = "Aggressive noise removal"
+
+[preset.effect]
+type = "median_filter"
+radius = 2
+
+
+# ── Radial Blur ──
+[[preset]]
+name = "Zoom Blur"
+description = "Zoom-in motion blur from center"
+
+[preset.effect]
+type = "radial_blur"
+center_x = 0.5
+center_y = 0.5
+amount = 15.0
+samples = 16
+mode = 0
+
+[[preset]]
+name = "Spin Blur"
+description = "Rotational motion blur"
+
+[preset.effect]
+type = "radial_blur"
+center_x = 0.5
+center_y = 0.5
+amount = 10.0
+samples = 16
+mode = 1
+
+[[preset]]
+name = "Subtle Zoom"
+description = "Gentle zoom blur"
+
+[preset.effect]
+type = "radial_blur"
+center_x = 0.5
+center_y = 0.5
+amount = 5.0
+samples = 12
+mode = 0
+
+
+# ── Levels ──
+[[preset]]
+name = "Crush Blacks"
+description = "Lift input black point for contrast"
+
+[preset.effect]
+type = "levels"
+in_black = 0.15
+in_white = 1.0
+gamma = 1.0
+out_black = 0.0
+out_white = 1.0
+
+[[preset]]
+name = "Expand Range"
+description = "Stretch histogram to full range"
+
+[preset.effect]
+type = "levels"
+in_black = 0.05
+in_white = 0.95
+gamma = 1.0
+out_black = 0.0
+out_white = 1.0
+
+[[preset]]
+name = "Faded Film"
+description = "Lift output blacks for a faded look"
+
+[preset.effect]
+type = "levels"
+in_black = 0.0
+in_white = 1.0
+gamma = 1.1
+out_black = 0.1
+out_white = 0.9
+
+
+# ── Equalize ──
+[[preset]]
+name = "Auto Levels"
+description = "Full histogram equalization"
+
+[preset.effect]
+type = "equalize"
+strength = 1.0
+
+[[preset]]
+name = "Subtle"
+description = "Gentle contrast enhancement"
+
+[preset.effect]
+type = "equalize"
+strength = 0.3
+
+[[preset]]
+name = "Strong"
+description = "Strong contrast enhancement"
+
+[preset.effect]
+type = "equalize"
+strength = 0.7
+
+
+# ── Letterbox ──
+[[preset]]
+name = "CinemaScope 2.39:1"
+description = "Anamorphic widescreen matte"
+
+[preset.effect]
+type = "letterbox"
+aspect_ratio = 2.39
+bar_color = 0
+opacity = 1.0
+
+[[preset]]
+name = "Theatrical 1.85:1"
+description = "Standard theatrical widescreen"
+
+[preset.effect]
+type = "letterbox"
+aspect_ratio = 1.85
+bar_color = 0
+opacity = 1.0
+
+[[preset]]
+name = "Classic TV 4:3"
+description = "Pillarbox for 4:3 content"
+
+[preset.effect]
+type = "letterbox"
+aspect_ratio = 1.333
+bar_color = 0
+opacity = 1.0
+
+[[preset]]
+name = "Widescreen 16:9"
+description = "Standard HD widescreen"
+
+[preset.effect]
+type = "letterbox"
+aspect_ratio = 1.778
+bar_color = 0
+opacity = 1.0
+
+[[preset]]
+name = "IMAX 1.43:1"
+description = "IMAX original aspect ratio"
+
+[preset.effect]
+type = "letterbox"
+aspect_ratio = 1.43
+bar_color = 0
+opacity = 1.0
+
+[[preset]]
+name = "Ultra Panavision 2.76:1"
+description = "Ultra-wide anamorphic"
+
+[preset.effect]
+type = "letterbox"
+aspect_ratio = 2.76
+bar_color = 0
+opacity = 1.0
+
+
+# ── Chromatic Aberration ──
+[[preset]]
+name = "Subtle Fringe"
+description = "Light edge fringing"
+
+[preset.effect]
+type = "chromatic_aberration"
+red_shift = 2.0
+blue_shift = -2.0
+center_x = 0.5
+center_y = 0.5
+
+[[preset]]
+name = "Vintage Lens"
+description = "Classic imperfect lens"
+
+[preset.effect]
+type = "chromatic_aberration"
+red_shift = 4.0
+blue_shift = -4.0
+center_x = 0.5
+center_y = 0.5
+
+[[preset]]
+name = "Heavy Aberration"
+description = "Strong RGB separation"
+
+[preset.effect]
+type = "chromatic_aberration"
+red_shift = 8.0
+blue_shift = -6.0
+center_x = 0.5
+center_y = 0.5
+
+[[preset]]
+name = "Anamorphic Edge"
+description = "Asymmetric lens character"
+
+[preset.effect]
+type = "chromatic_aberration"
+red_shift = 3.0
+blue_shift = -5.0
+center_x = 0.5
+center_y = 0.5

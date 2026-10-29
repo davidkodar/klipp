@@ -111,16 +111,14 @@ impl BuiltinEffect {
 }
 
 /// Particles of `kind` with that kind's own look: its preset, and what
-/// a reset or the assistant's `snow` gives.
+/// a reset or the assistant's `snow` gives. The particle presets that go
+/// by a kind's name ([`KINDS`], `crate::presets`); an unknown kind is
+/// dust.
 pub fn preset(kind: u32) -> BuiltinEffect {
-    use BuiltinEffect::Particles;
-    match kind {
-        1 => Particles { style: kind, amount: 300.0, size: 3.5, speed: 70.0, direction: 95.0, spread: 0.4, lifetime: 6.0, opacity: 0.85, color: [255, 255, 255], seed: 1, time: 0.0 },
-        2 => Particles { style: kind, amount: 500.0, size: 1.6, speed: 1100.0, direction: 100.0, spread: 0.1, lifetime: 1.5, opacity: 0.6, color: [200, 210, 225], seed: 1, time: 0.0 },
-        3 => Particles { style: kind, amount: 120.0, size: 1.6, speed: 260.0, direction: 280.0, spread: 0.9, lifetime: 1.2, opacity: 1.0, color: [255, 190, 90], seed: 1, time: 0.0 },
-        4 => Particles { style: kind, amount: 150.0, size: 2.2, speed: 60.0, direction: 270.0, spread: 0.6, lifetime: 3.5, opacity: 0.9, color: [255, 120, 40], seed: 1, time: 0.0 },
-        _ => Particles { style: 0, amount: 150.0, size: 2.5, speed: 30.0, direction: 300.0, spread: 0.5, lifetime: 4.0, opacity: 0.6, color: [255, 240, 220], seed: 1, time: 0.0 },
-    }
+    let name = KINDS.get(kind as usize).copied().unwrap_or(KINDS[0]);
+    crate::presets::keyed("particles", name)
+        .or_else(|| crate::presets::keyed("particles", KINDS[0]))
+        .map_or_else(|| (crate::registry::effect_type("particles").expect("particles are described").sample)(), |p| p.effect.clone())
 }
 
 /// The numbers a Particles effect draws with on a `width` × `height`
