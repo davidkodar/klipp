@@ -51,6 +51,7 @@ pub mod edl_import;
 pub mod grade_stills;
 pub mod made_media;
 mod load;
+pub mod migrate_ids;
 pub mod mlt_export;
 mod not_carried;
 pub mod mlt_import;
