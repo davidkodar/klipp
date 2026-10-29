@@ -572,3 +572,55 @@ fn a_selection_on_the_primary_moves_as_a_block_and_undoes_exactly() {
     }
 }
 
+
+/// Escape during a drag cancels it (#3060): a trim pulled out a second
+/// and a move dragged two on a free track, and a trim of a primary clip
+/// with its linked sound and gap clips round it, each Escaped before it
+/// is let go: the tracks are exactly as before (the partner and the gap
+/// clips included), nothing is sent, and no history entry is made.
+#[test]
+fn escape_cancels_a_trim_and_a_move() {
+    for (case, trim) in [("free trim", true), ("free move", false), ("primary trim", true)] {
+        let (mut state, ids) = clips_on_video_2(&[(0.0, 2.0)]);
+        let (track_name, at) = if case == "primary trim" {
+            // A primary clip 4-6 s between gap clips, its sound linked.
+            let p = state.sequence().primary_track_index().unwrap();
+            let a1 = state.sequence().tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap();
+            let media = klipp_core::MediaId::new();
+            let mut picture = Clip::media(media, t(4.0), t(6.0), t(1.0), t(3.0));
+            let mut sound = Clip::media(media, t(4.0), t(6.0), t(1.0), t(3.0));
+            picture.linked_clip_id = Some(sound.id);
+            sound.linked_clip_id = Some(picture.id);
+            state.sequences[0].tracks[p].clips = vec![picture];
+            state.sequences[0].tracks[a1].clips = vec![sound];
+            state.sequences[0].tracks[p].clips.push(Clip::media(klipp_core::MediaId::new(), t(8.0), t(9.0), t(0.0), t(1.0)));
+            state.sequences[0].fill_primary_holes();
+            ("Video 1", 6.0)
+        } else {
+            ("Video 2", if trim { 2.0 } else { 1.0 })
+        };
+        let mut tl = Timeline::new(state);
+        let track = tl.track(track_name);
+        let before = serde_json::to_value(&tl.state.sequence().tracks).unwrap();
+        let grab = if trim { tl.at(track, at) - egui::vec2(3.0, 0.0) } else { tl.at(track, at) };
+        let m = egui::Modifiers::NONE;
+        let b = |p, d| egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: d, modifiers: m };
+        tl.frame(vec![egui::Event::PointerMoved(grab)], m);
+        tl.frame(vec![b(grab, true)], m);
+        tl.frame(vec![egui::Event::PointerMoved(grab + egui::vec2(10.0, 0.0))], m);
+        let to = grab + egui::vec2(if trim { ZOOM } else { 2.0 * ZOOM }, 0.0);
+        tl.frame(vec![egui::Event::PointerMoved(to)], m);
+        if trim {
+            assert!(serde_json::to_value(&tl.state.sequence().tracks).unwrap() != before, "{case}: the trim is under way");
+        }
+        tl.sent.clear();
+        tl.frame(vec![egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: m }], m);
+        tl.frame(vec![egui::Event::PointerMoved(to + egui::vec2(5.0, 0.0))], m);
+        tl.frame(vec![b(to, false)], m);
+        tl.frame(Vec::new(), m);
+        let _ = ids;
+        assert!(serde_json::to_value(&tl.state.sequence().tracks).unwrap() == before, "{case}: the tracks exactly as they were");
+        assert!(!tl.sent.iter().any(|c| matches!(c, AppCommand::MoveClip { .. } | AppCommand::MoveClips { .. } | AppCommand::MoveClipToTrack { .. } | AppCommand::TrimClip { .. } | AppCommand::MovePrimaryBlock { .. })), "{case}: nothing sent: {:?}", tl.sent);
+        assert!(tl.state.active_history_mut().undo().is_none(), "{case}: no history entry");
+    }
+}
