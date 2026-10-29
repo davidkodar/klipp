@@ -227,6 +227,9 @@ fn ready() -> Option<std::path::PathBuf> {
 fn a_reversed_4k_long_gop_clip_plays_at_speed_on_the_gpu() {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     let Some(video) = ready() else { return };
+    // Timed: what else holds the GPU, said before measuring.
+    let load = common::gpu_others();
+    eprintln!("reversed 4K: {load}");
     let r = start(&video, vec![clip_at(MediaId::new(), -1.0, 0.0, 8.0)]);
     let (shown, given, fell) = play(&r, 0.5, 4.0);
     stop(r);
@@ -234,7 +237,7 @@ fn a_reversed_4k_long_gop_clip_plays_at_speed_on_the_gpu() {
     // presented count repeats a frame the display asks for again.
     let fps = given as f64 / 3.0;
     eprintln!("reversed 4K: {fps:.1} source frames a second ({} presents); fallbacks and readbacks {fell:?}", shown.len());
-    assert!(fps >= 29.0, "reversed 4K plays at {fps:.1} fps");
+    assert!(fps >= 29.0, "reversed 4K plays at {fps:.1} fps ({load})");
     assert_eq!(fell, (0, 0, 0), "no picture fallbacks, engine readbacks or effect downloads while it played (picture, engine, effects)");
 }
 
@@ -337,3 +340,12 @@ fn stepping_back_while_paused_takes_frames_from_the_held_window() {
     assert!(converted <= steps.len() as u64, "{converted} frames converted for {} steps: only the paused frame shown", steps.len());
 }
 
+
+/// The GPU's other users are read from `nvidia-smi pmon`: each process
+/// with shader time but the test's own, at its highest share, busiest
+/// first; idle ones and the header left out.
+#[test]
+fn the_gpus_other_users_are_named() {
+    let pmon = "# gpu  pid  type  sm  mem  enc  dec  jpg  ofa  command\n# Idx  #  C/G  %  %  %  %  %  %  name\n    0  1614  G  14  9  -  -  -  -  Hyprland\n    0  4242  C+G  50  10  -  -  -  -  me\n    0  1153  G  -  -  -  -  -  -  idle\n    0  1614  G  23  15  -  -  -  -  Hyprland\n    0  7777  G  10  7  -  -  -  -  localsend\n";
+    assert_eq!(common::busy_on_gpu(pmon, 4242), vec![("Hyprland".to_string(), 23), ("localsend".to_string(), 10)]);
+}
