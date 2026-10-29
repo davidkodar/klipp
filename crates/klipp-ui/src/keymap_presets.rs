@@ -118,6 +118,7 @@ pub(crate) const PREMIERE: &[(&str, &[&str])] = &[
     ("trim_in_to_playhead", &["Q"]), // Ripple Trim Previous Edit To Playhead
     ("trim_out_to_playhead", &["W"]), // Ripple Trim Next Edit To Playhead
     ("trim_tool", &["B", "N"]), // Ripple Edit Tool / Rolling Edit Tool
+    ("stretch_tool", &["R"]), // Rate Stretch Tool
     ("undo", &["Ctrl+Z"]), // Undo
     ("ungroup_clips", &["Ctrl+Shift+G"]), // Ungroup
     ("zoom_in", &["="]), // Zoom In
@@ -195,7 +196,6 @@ pub(crate) const PREMIERE_TAKEN: &[&str] = &[
     "G", // Audio Gain…
     "PageDown", // Show Next Screen
     "PageUp", // Show Previous Screen
-    "R", // Rate Stretch Tool
     "Shift+-", // Minimize All Tracks
     "Shift+2", // Source Monitor (Window)
     "Shift+3", // Timeline (Window)

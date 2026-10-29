@@ -510,6 +510,9 @@ exist until the plan runs.
   clips after it move by the change, sync-locked tracks too. Speeds stay
   within 10% to 1600%: past that it is refused, saying the speed the
   length would need and the lengths that fit. One undo puts it back.
+  In the app a person does the same by dragging the tab at the top corner
+  of a clip's end or start, with the Rate Stretch tool (Shift+R) on an
+  edge, or with Ctrl held on an edge; Alt flips ripple while dragging.
 - `replace {clip_id, media_id, source_in?}`: another file, or another part
   of one, in a clip's slot: the same place, length and speed, with its
   grade, effects, role, volume, links and transitions kept and its linked

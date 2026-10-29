@@ -176,6 +176,8 @@ mod key_selection_tests;
 #[cfg(test)]
 mod timeline_snap_tests;
 #[cfg(test)]
+mod timeline_stretch_tests;
+#[cfg(test)]
 mod qualifier_3d_tests;
 #[cfg(test)]
 mod wipe_tests;

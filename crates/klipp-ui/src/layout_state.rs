@@ -267,6 +267,7 @@ pub enum EditTool {
     Zoom,
     Text,
     Mask,
+    Stretch,
 }
 
 #[cfg(test)]

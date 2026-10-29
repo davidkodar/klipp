@@ -114,6 +114,7 @@ fn draw_group(group: Group, ui: &mut egui::Ui, state: &mut AppState, theme: &Kli
             let tool_defs: &[(klipp_core::Tool, &str, &str, fn(&egui::Painter, egui::Rect, egui::Color32))] = &[
                 (klipp_core::Tool::Select, "Select Tool", "select_tool", draw_tl_select_icon),
                 (klipp_core::Tool::Trim, "Trim Tool", "trim_tool", draw_tl_trim_icon),
+                (klipp_core::Tool::Stretch, "Rate Stretch Tool: drag a clip's edge to change its speed so it fills the new length", "stretch_tool", draw_tl_stretch_icon),
                 (klipp_core::Tool::Blade, "Blade Tool", "blade_tool", draw_tl_blade_icon),
                 (klipp_core::Tool::Range, "Range Tool", "range_tool", draw_tl_range_icon),
                 // Works in the viewer: a click or a drag there makes a title (#1713).
@@ -577,6 +578,20 @@ fn draw_tl_trim_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32)
     painter.line_segment([egui::pos2(ir.max.x - 2.0, ir.min.y + 1.0), egui::pos2(ir.max.x - 2.0, ir.max.y - 1.0)], s);
     painter.line_segment([egui::pos2(ir.min.x + 2.0, ir.center().y), egui::pos2(ir.min.x + 5.0, ir.center().y)], s);
     painter.line_segment([egui::pos2(ir.max.x - 5.0, ir.center().y), egui::pos2(ir.max.x - 2.0, ir.center().y)], s);
+}
+
+/// Two bars with arrows pointing out between them: the clip made longer.
+fn draw_tl_stretch_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) {
+    let ir = icon_area(btn);
+    let s = egui::Stroke::new(1.3_f32, c);
+    let (l, r, y) = (ir.min.x + 2.0, ir.max.x - 2.0, ir.center().y);
+    painter.line_segment([egui::pos2(l, ir.min.y + 1.0), egui::pos2(l, ir.max.y - 1.0)], s);
+    painter.line_segment([egui::pos2(r, ir.min.y + 1.0), egui::pos2(r, ir.max.y - 1.0)], s);
+    painter.line_segment([egui::pos2(l + 2.0, y), egui::pos2(r - 2.0, y)], s);
+    for (tip, dir) in [(l + 2.0, 1.0), (r - 2.0, -1.0)] {
+        painter.line_segment([egui::pos2(tip, y), egui::pos2(tip + 2.5 * dir, y - 2.5)], s);
+        painter.line_segment([egui::pos2(tip, y), egui::pos2(tip + 2.5 * dir, y + 2.5)], s);
+    }
 }
 
 fn draw_tl_range_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) {

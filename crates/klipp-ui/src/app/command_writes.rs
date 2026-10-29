@@ -365,6 +365,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::MoveClipToTrack { .. }
         | AppCommand::SwapAdjacentClips { .. }
         | AppCommand::TrimClip { .. }
+        | AppCommand::StretchClip { .. }
         | AppCommand::RollTrimClip { .. }
         | AppCommand::NewProject
         | AppCommand::CloseProject

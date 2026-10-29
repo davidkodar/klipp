@@ -699,6 +699,13 @@
    "keys": [
     "-"
    ]
+  },
+  "stretch_tool": {
+   "command": "Rate Stretch Tool",
+   "keys": [
+    "R"
+   ],
+   "note": "'Rate Stretch tool (R)' (change-clip-speed-and-duration-using-the-rate-stretch-tool.html): Klipp's Rate Stretch tool since #3055."
   }
  },
  "loose": {
@@ -1385,12 +1392,6 @@
    "command": "Slip Clip Selection Right One Frame",
    "keys": [
     "Ctrl+Alt+ArrowRight"
-   ]
-  },
-  {
-   "command": "Rate Stretch Tool",
-   "keys": [
-    "R"
    ]
   },
   {
