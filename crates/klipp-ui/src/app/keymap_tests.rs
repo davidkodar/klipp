@@ -377,13 +377,14 @@ fn home_end_and_delete_work_in_every_keymap() {
 /// #3027: the open-source editor's layout is offered with the others, and
 /// its own keys reach their actions: X the razor, Shift+R a cut at the
 /// playhead, V and B insert and overwrite, Z and Shift+X lift and extract,
-/// G a marker, Delete a lift and Shift+Delete a delete.
+/// G a marker, Delete a lift and Shift+Delete a delete, and ( and ) the
+/// trims, pressed as a US keyboard types them: Shift+9 and Shift+0.
 #[test]
 fn the_open_source_editor_layout_is_offered_and_its_keys_work() {
     assert!(KeymapPreset::ALL.contains(&KeymapPreset::Kdenlive));
     let ctx = egui::Context::default();
     let kb = KeyBindings::from_preset(KeymapPreset::Kdenlive);
-    for (key, action) in [("X", "blade_tool"), ("Shift+R", "split_at_playhead"), ("V", "insert_edit"), ("B", "overwrite_edit"), ("Z", "lift_edit"), ("Shift+X", "extract_edit"), ("G", "add_marker"), ("Delete", "lift_clip"), ("Shift+Delete", "delete_clip"), ("Ctrl+Home", "go_to_start"), ("(", "trim_in_to_playhead")] {
+    for (key, action) in [("X", "blade_tool"), ("Shift+R", "split_at_playhead"), ("V", "insert_edit"), ("B", "overwrite_edit"), ("Z", "lift_edit"), ("Shift+X", "extract_edit"), ("G", "add_marker"), ("Delete", "lift_clip"), ("Shift+Delete", "delete_clip"), ("Ctrl+Home", "go_to_start"), ("Shift+9", "trim_in_to_playhead"), ("Shift+0", "trim_out_to_playhead")] {
         let on = fired(&ctx, &kb, &KeyCombo::parse(key).unwrap());
         assert!(on.iter().any(|a| a == action), "{key} runs {action}: {on:?}");
     }
