@@ -1923,69 +1923,25 @@ pub struct FalseColorPalette {
 }
 
 impl FalseColorPalette {
+    /// The built-in palette `name`, or, if Klipp's file doesn't have
+    /// it, one with no stops (every luma passes through).
+    fn built_in(name: &str) -> Self {
+        Self::built_ins().into_iter().find(|p| p.name == name).unwrap_or_else(|| Self { name: name.into(), stops: Vec::new() })
+    }
+
     /// Standard broadcast false color palette (13 stops, full 0–255 coverage).
     pub fn broadcast() -> Self {
-        Self {
-            name: "Broadcast Standard".into(),
-            stops: vec![
-                FalseColorStop { luma_min: 0,   luma_max: 10,  color: [0x40, 0x00, 0x80], label: "Black crush".into() },
-                FalseColorStop { luma_min: 11,  luma_max: 20,  color: [0x80, 0x00, 0xc0], label: "Very underexposed".into() },
-                FalseColorStop { luma_min: 21,  luma_max: 35,  color: [0x00, 0x00, 0xff], label: "Underexposed".into() },
-                FalseColorStop { luma_min: 36,  luma_max: 55,  color: [0x00, 0x80, 0xc0], label: "Dark".into() },
-                FalseColorStop { luma_min: 56,  luma_max: 75,  color: [0x00, 0x90, 0x40], label: "Below mid".into() },
-                FalseColorStop { luma_min: 76,  luma_max: 95,  color: [0x00, 0xb0, 0x00], label: "Skin shadow".into() },
-                FalseColorStop { luma_min: 96,  luma_max: 115, color: [0x40, 0xc0, 0x00], label: "Mid grey".into() },
-                FalseColorStop { luma_min: 116, luma_max: 135, color: [0x80, 0xc0, 0x00], label: "Proper exposure".into() },
-                FalseColorStop { luma_min: 136, luma_max: 165, color: [0xc0, 0xc0, 0x00], label: "Bright".into() },
-                FalseColorStop { luma_min: 166, luma_max: 195, color: [0xe0, 0x80, 0x00], label: "Highlight".into() },
-                FalseColorStop { luma_min: 196, luma_max: 220, color: [0xff, 0x40, 0x00], label: "Hot".into() },
-                FalseColorStop { luma_min: 221, luma_max: 240, color: [0xff, 0x00, 0x00], label: "Near clip".into() },
-                FalseColorStop { luma_min: 241, luma_max: 255, color: [0xff, 0x40, 0x80], label: "Clipped".into() },
-            ],
-        }
+        Self::built_in("Broadcast Standard")
     }
 
     /// ARRI LogC-style palette: blue shadows, green mids, pink highlights.
     pub fn arri() -> Self {
-        Self {
-            name: "ARRI".into(),
-            stops: vec![
-                FalseColorStop { luma_min: 0,   luma_max: 5,   color: [0x10, 0x00, 0x20], label: "Black".into() },
-                FalseColorStop { luma_min: 6,   luma_max: 20,  color: [0x20, 0x00, 0x60], label: "Near black".into() },
-                FalseColorStop { luma_min: 21,  luma_max: 40,  color: [0x00, 0x20, 0xb0], label: "Shadows".into() },
-                FalseColorStop { luma_min: 41,  luma_max: 60,  color: [0x00, 0x60, 0xc0], label: "Dark tones".into() },
-                FalseColorStop { luma_min: 61,  luma_max: 80,  color: [0x00, 0x90, 0x80], label: "Lower mid".into() },
-                FalseColorStop { luma_min: 81,  luma_max: 100, color: [0x00, 0xa0, 0x00], label: "Middle grey".into() },
-                FalseColorStop { luma_min: 101, luma_max: 120, color: [0x50, 0xb0, 0x00], label: "Skin tone".into() },
-                FalseColorStop { luma_min: 121, luma_max: 150, color: [0xa0, 0xb0, 0x00], label: "Upper mid".into() },
-                FalseColorStop { luma_min: 151, luma_max: 180, color: [0xd0, 0x90, 0x00], label: "Highlight".into() },
-                FalseColorStop { luma_min: 181, luma_max: 210, color: [0xe0, 0x50, 0x20], label: "Bright".into() },
-                FalseColorStop { luma_min: 211, luma_max: 235, color: [0xff, 0x30, 0x60], label: "Very bright".into() },
-                FalseColorStop { luma_min: 236, luma_max: 250, color: [0xff, 0x60, 0xa0], label: "Near clip".into() },
-                FalseColorStop { luma_min: 251, luma_max: 255, color: [0xff, 0x90, 0xd0], label: "Clipped".into() },
-            ],
-        }
+        Self::built_in("ARRI")
     }
 
     /// RED-style palette: teal shadows, green mids, orange-red highlights.
     pub fn red() -> Self {
-        Self {
-            name: "RED".into(),
-            stops: vec![
-                FalseColorStop { luma_min: 0,   luma_max: 8,   color: [0x10, 0x10, 0x30], label: "Black".into() },
-                FalseColorStop { luma_min: 9,   luma_max: 25,  color: [0x00, 0x30, 0x60], label: "Deep shadow".into() },
-                FalseColorStop { luma_min: 26,  luma_max: 45,  color: [0x00, 0x60, 0x80], label: "Shadow".into() },
-                FalseColorStop { luma_min: 46,  luma_max: 65,  color: [0x00, 0x80, 0x70], label: "Dark mid".into() },
-                FalseColorStop { luma_min: 66,  luma_max: 85,  color: [0x00, 0x98, 0x40], label: "Lower mid".into() },
-                FalseColorStop { luma_min: 86,  luma_max: 105, color: [0x30, 0xa8, 0x00], label: "Middle grey".into() },
-                FalseColorStop { luma_min: 106, luma_max: 130, color: [0x70, 0xb0, 0x00], label: "Skin tone".into() },
-                FalseColorStop { luma_min: 131, luma_max: 155, color: [0xb0, 0xa0, 0x00], label: "Upper mid".into() },
-                FalseColorStop { luma_min: 156, luma_max: 180, color: [0xd0, 0x70, 0x00], label: "Bright".into() },
-                FalseColorStop { luma_min: 181, luma_max: 210, color: [0xe8, 0x40, 0x00], label: "Highlight".into() },
-                FalseColorStop { luma_min: 211, luma_max: 240, color: [0xff, 0x20, 0x00], label: "Hot".into() },
-                FalseColorStop { luma_min: 241, luma_max: 255, color: [0xff, 0x60, 0x60], label: "Clipped".into() },
-            ],
-        }
+        Self::built_in("RED")
     }
 
     /// Pre-build a 256-entry LUT: luma index → [R, G, B].
@@ -2003,9 +1959,19 @@ impl FalseColorPalette {
         lut
     }
 
-    /// Return all built-in presets.
+    /// The built-in palettes, Klipp's file
+    /// `assets/presets/false_colour/builtin.toml` (#2887), read once; a
+    /// file that doesn't read leaves none, said, never a crash.
     pub fn built_ins() -> Vec<FalseColorPalette> {
-        vec![Self::broadcast(), Self::arri(), Self::red()]
+        static PALETTES: std::sync::OnceLock<Vec<FalseColorPalette>> = std::sync::OnceLock::new();
+        PALETTES
+            .get_or_init(|| {
+                read_palettes(include_str!("../../../assets/presets/false_colour/builtin.toml")).unwrap_or_else(|why| {
+                    tracing::error!("the built-in false colour palettes don't read: {why}");
+                    Vec::new()
+                })
+            })
+            .clone()
     }
 
     /// Count of luma values (0–255) not covered by any stop.
@@ -2038,6 +2004,46 @@ impl FalseColorPalette {
     pub fn sort_stops(&mut self) {
         self.stops.sort_by_key(|s| s.luma_min);
     }
+}
+
+/// A palette as Klipp's file writes it: its name and its stops.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PaletteEntry {
+    name: String,
+    stop: Vec<StopEntry>,
+}
+
+/// A stop as the file writes it: its luma band, both ends included, its
+/// colour and what it means.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StopEntry {
+    luma: (u8, u8),
+    color: [u8; 3],
+    label: String,
+}
+
+/// The palettes of a false colour palettes file; refused, saying why, for
+/// a palette with no name, one named twice, one with no stops or more
+/// than 256, or a stop whose band runs backwards or has no label.
+fn read_palettes(text: &str) -> Result<Vec<FalseColorPalette>, String> {
+    let entries: Vec<PaletteEntry> = klipp_core::preset_file::read(text, "false_colour_palette", 1, "palette")?;
+    let mut out: Vec<FalseColorPalette> = Vec::new();
+    for (i, e) in entries.into_iter().enumerate() {
+        if e.name.trim().is_empty() || out.iter().any(|p| p.name == e.name) {
+            return Err(format!("palette {}: a name, said once", i + 1));
+        }
+        if e.stop.is_empty() || e.stop.len() > 256 {
+            return Err(format!("\"{}\": 1 to 256 stops", e.name));
+        }
+        if let Some(s) = e.stop.iter().find(|s| s.luma.0 > s.luma.1 || s.label.trim().is_empty()) {
+            return Err(format!("\"{}\": the stop \"{}\" runs from low luma to high and says what it is", e.name, s.label));
+        }
+        let stops = e.stop.into_iter().map(|s| FalseColorStop { luma_min: s.luma.0, luma_max: s.luma.1, color: s.color, label: s.label }).collect();
+        out.push(FalseColorPalette { name: e.name, stops });
+    }
+    Ok(out)
 }
 
 fn default_false_color_palette() -> FalseColorPalette {
@@ -3045,6 +3051,48 @@ mod tests {
     }
 
     // ── False color palette tests ──
+
+    /// The built-in palettes read from Klipp's file as the code had them
+    /// (#2887): their names, their stop counts, and each one's first and
+    /// last stop whole.
+    #[test]
+    fn the_built_in_palettes_read_as_they_were() {
+        let built = FalseColorPalette::built_ins();
+        let names: Vec<&str> = built.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["Broadcast Standard", "ARRI", "RED"]);
+        assert_eq!(built.iter().map(|p| p.stops.len()).collect::<Vec<_>>(), [13, 13, 12]);
+        let stop = |p: &FalseColorPalette, i: usize| { let s = &p.stops[i]; (s.luma_min, s.luma_max, s.color, s.label.clone()) };
+        assert_eq!(stop(&built[0], 0), (0, 10, [0x40, 0x00, 0x80], "Black crush".to_string()));
+        assert_eq!(stop(&built[0], 12), (241, 255, [0xff, 0x40, 0x80], "Clipped".to_string()));
+        assert_eq!(stop(&built[1], 0), (0, 5, [0x10, 0x00, 0x20], "Black".to_string()));
+        assert_eq!(stop(&built[1], 12), (251, 255, [0xff, 0x90, 0xd0], "Clipped".to_string()));
+        assert_eq!(stop(&built[2], 0), (0, 8, [0x10, 0x10, 0x30], "Black".to_string()));
+        assert_eq!(stop(&built[2], 11), (241, 255, [0xff, 0x60, 0x60], "Clipped".to_string()));
+        assert_eq!(FalseColorPalette::arri(), built[1]);
+        assert!(built.iter().all(|p| p.unmapped_count() == 0), "each covers 0-255");
+    }
+
+    /// A palettes file with one that can't be offered is refused, saying
+    /// why: a name twice or none, no stops, a band that runs backwards, a
+    /// stop with no label, a luma past 255, an unknown field.
+    #[test]
+    fn a_bad_palettes_file_is_refused() {
+        let file = |body: &str| format!("kind = \"false_colour_palette\"\nformat_version = 1\n{body}");
+        let stop = "[[palette.stop]]\nluma = [0, 255]\ncolor = [1, 2, 3]\nlabel = \"All\"\n";
+        assert!(read_palettes(&file(&format!("[[palette]]\nname = \"Flat\"\n{stop}"))).is_ok());
+        for (body, says) in [
+            (format!("[[palette]]\nname = \"A\"\n{stop}[[palette]]\nname = \"A\"\n{stop}"), "a name, said once"),
+            (format!("[[palette]]\nname = \" \"\n{stop}"), "a name, said once"),
+            ("[[palette]]\nname = \"Empty\"\nstop = []\n".to_string(), "1 to 256 stops"),
+            ("[[palette]]\nname = \"Back\"\n[[palette.stop]]\nluma = [200, 100]\ncolor = [1, 2, 3]\nlabel = \"Back\"\n".to_string(), "runs from low luma to high"),
+            ("[[palette]]\nname = \"Mute\"\n[[palette.stop]]\nluma = [0, 10]\ncolor = [1, 2, 3]\nlabel = \"\"\n".to_string(), "says what it is"),
+            ("[[palette]]\nname = \"Over\"\n[[palette.stop]]\nluma = [0, 300]\ncolor = [1, 2, 3]\nlabel = \"Over\"\n".to_string(), ""),
+            (format!("[[palette]]\nname = \"Extra\"\nglow = 1\n{stop}"), "unknown field"),
+        ] {
+            let why = read_palettes(&file(&body)).err().unwrap_or_default();
+            assert!(!why.is_empty() && why.contains(says), "{body}: {why}");
+        }
+    }
 
     #[test]
     fn broadcast_lut_maps_known_values() {
