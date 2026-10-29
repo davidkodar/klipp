@@ -1,0 +1,206 @@
+# Klipp's false colour palettes (#2887): what the viewer's False Colour
+# Palette menu and the Preferences editor offer. Each a name and its stops,
+# each stop a band of 8-bit luma (from, to, both included), the colour it
+# is painted (RGB, 0 to 255) and what the band means. The first is the
+# default.
+kind = "false_colour_palette"
+format_version = 1
+
+[[palette]]
+name = "Broadcast Standard"
+
+[[palette.stop]]
+luma = [0, 10]
+color = [64, 0, 128]
+label = "Black crush"
+
+[[palette.stop]]
+luma = [11, 20]
+color = [128, 0, 192]
+label = "Very underexposed"
+
+[[palette.stop]]
+luma = [21, 35]
+color = [0, 0, 255]
+label = "Underexposed"
+
+[[palette.stop]]
+luma = [36, 55]
+color = [0, 128, 192]
+label = "Dark"
+
+[[palette.stop]]
+luma = [56, 75]
+color = [0, 144, 64]
+label = "Below mid"
+
+[[palette.stop]]
+luma = [76, 95]
+color = [0, 176, 0]
+label = "Skin shadow"
+
+[[palette.stop]]
+luma = [96, 115]
+color = [64, 192, 0]
+label = "Mid grey"
+
+[[palette.stop]]
+luma = [116, 135]
+color = [128, 192, 0]
+label = "Proper exposure"
+
+[[palette.stop]]
+luma = [136, 165]
+color = [192, 192, 0]
+label = "Bright"
+
+[[palette.stop]]
+luma = [166, 195]
+color = [224, 128, 0]
+label = "Highlight"
+
+[[palette.stop]]
+luma = [196, 220]
+color = [255, 64, 0]
+label = "Hot"
+
+[[palette.stop]]
+luma = [221, 240]
+color = [255, 0, 0]
+label = "Near clip"
+
+[[palette.stop]]
+luma = [241, 255]
+color = [255, 64, 128]
+label = "Clipped"
+
+[[palette]]
+name = "ARRI"
+
+[[palette.stop]]
+luma = [0, 5]
+color = [16, 0, 32]
+label = "Black"
+
+[[palette.stop]]
+luma = [6, 20]
+color = [32, 0, 96]
+label = "Near black"
+
+[[palette.stop]]
+luma = [21, 40]
+color = [0, 32, 176]
+label = "Shadows"
+
+[[palette.stop]]
+luma = [41, 60]
+color = [0, 96, 192]
+label = "Dark tones"
+
+[[palette.stop]]
+luma = [61, 80]
+color = [0, 144, 128]
+label = "Lower mid"
+
+[[palette.stop]]
+luma = [81, 100]
+color = [0, 160, 0]
+label = "Middle grey"
+
+[[palette.stop]]
+luma = [101, 120]
+color = [80, 176, 0]
+label = "Skin tone"
+
+[[palette.stop]]
+luma = [121, 150]
+color = [160, 176, 0]
+label = "Upper mid"
+
+[[palette.stop]]
+luma = [151, 180]
+color = [208, 144, 0]
+label = "Highlight"
+
+[[palette.stop]]
+luma = [181, 210]
+color = [224, 80, 32]
+label = "Bright"
+
+[[palette.stop]]
+luma = [211, 235]
+color = [255, 48, 96]
+label = "Very bright"
+
+[[palette.stop]]
+luma = [236, 250]
+color = [255, 96, 160]
+label = "Near clip"
+
+[[palette.stop]]
+luma = [251, 255]
+color = [255, 144, 208]
+label = "Clipped"
+
+[[palette]]
+name = "RED"
+
+[[palette.stop]]
+luma = [0, 8]
+color = [16, 16, 48]
+label = "Black"
+
+[[palette.stop]]
+luma = [9, 25]
+color = [0, 48, 96]
+label = "Deep shadow"
+
+[[palette.stop]]
+luma = [26, 45]
+color = [0, 96, 128]
+label = "Shadow"
+
+[[palette.stop]]
+luma = [46, 65]
+color = [0, 128, 112]
+label = "Dark mid"
+
+[[palette.stop]]
+luma = [66, 85]
+color = [0, 152, 64]
+label = "Lower mid"
+
+[[palette.stop]]
+luma = [86, 105]
+color = [48, 168, 0]
+label = "Middle grey"
+
+[[palette.stop]]
+luma = [106, 130]
+color = [112, 176, 0]
+label = "Skin tone"
+
+[[palette.stop]]
+luma = [131, 155]
+color = [176, 160, 0]
+label = "Upper mid"
+
+[[palette.stop]]
+luma = [156, 180]
+color = [208, 112, 0]
+label = "Bright"
+
+[[palette.stop]]
+luma = [181, 210]
+color = [232, 64, 0]
+label = "Highlight"
+
+[[palette.stop]]
+luma = [211, 240]
+color = [255, 32, 0]
+label = "Hot"
+
+[[palette.stop]]
+luma = [241, 255]
+color = [255, 96, 96]
+label = "Clipped"
