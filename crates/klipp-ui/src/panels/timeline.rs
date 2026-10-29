@@ -20031,34 +20031,6 @@ fn track_effects_menu(ui: &mut egui::Ui, track: &klipp_timeline::Track, cmds: &m
 }
 
 #[cfg(test)]
-mod track_effects_menu_tests {
-    /// The audio effects the ops accept by name are the ones the audio
-    /// engine has (#846): a type in one and not the other would be offered
-    /// and do nothing, or be refused though it exists.
-    #[test]
-    fn the_ops_name_every_audio_effect_the_engine_has() {
-        let engine: Vec<&str> = klipp_audio::dsp::available_effects().into_iter().map(|(t, _)| t).collect();
-        assert_eq!(klipp_document::ops::AUDIO_EFFECT_TYPES, engine.as_slice());
-    }
-
-    /// The param names the ops accept are each effect's own (#2484), and
-    /// the ops guide names every one of them.
-    #[test]
-    fn the_ops_name_every_audio_effect_param() {
-        let ops_md = include_str!("../../../../assets/craft/ops.md");
-        let entry = ops_md.lines().find(|l| l.starts_with("track_audio ")).expect("track_audio in ops.md");
-        for (effect, names) in klipp_document::ops::AUDIO_EFFECT_PARAMS {
-            let fx = klipp_audio::dsp::create_effect(effect, 48_000).unwrap_or_else(|| panic!("no {effect} in the engine"));
-            let engine: Vec<&str> = fx.param_descriptors().iter().map(|d| d.name).collect();
-            assert_eq!(*names, engine.as_slice(), "{effect}");
-            assert!(entry.contains(&format!("{effect} ")), "ops.md lists no params for {effect}");
-        }
-        let listed: Vec<&str> = klipp_document::ops::AUDIO_EFFECT_PARAMS.iter().map(|(t, _)| *t).collect();
-        assert_eq!(klipp_document::ops::AUDIO_EFFECT_TYPES, listed.as_slice());
-    }
-}
-
-#[cfg(test)]
 mod selects_drop_tests {
     use super::*;
 

@@ -36,31 +36,19 @@ pub struct AuditionSourceOption {
 
 const CATEGORY_SIDEBAR_W: f32 = 180.0;
 
-/// Public colour mapping for audio effect type IDs — keyed off the same
-/// type_id strings used throughout the audio chain. The tile in the
-/// FX library, the timeline bypass strips, and any future automation
-/// indicators all share this palette so a "Reverb" looks the same
-/// everywhere. LADSPA plugins fall back to `theme.accent` (single hue
-/// for the whole class — distinguishing 100+ third-party plugins by
+/// Public colour mapping for audio effect type IDs: a built-in effect
+/// takes its browser group's colour, so the tile in the FX library and
+/// the timeline bypass strips share one palette and a "Reverb" looks the
+/// same everywhere. LADSPA plugins fall back to `theme.accent` (single
+/// hue for the whole class — distinguishing 100+ third-party plugins by
 /// colour would just produce noise).
 pub fn audio_effect_color_for_type(type_id: &str, theme: &KlippTheme) -> egui::Color32 {
     if type_id.starts_with("ladspa:") {
         return theme.accent;
     }
-    match type_id {
-        "eq" => egui::Color32::from_rgb(0x2d, 0x6f, 0xa8), // blue
-        "pitch_shift" => egui::Color32::from_rgb(0xc0, 0x5e, 0x9e), // pink
-        "compressor" | "limiter" | "gate" | "multiband_compressor" => {
-            egui::Color32::from_rgb(0x3a, 0x8c, 0x6e) // green
-        }
-        "deesser" | "noise_reduction" | "declick" => {
-            egui::Color32::from_rgb(0xa9, 0xa3, 0x4e) // olive
-        }
-        "normalize" => egui::Color32::from_rgb(0x70, 0x80, 0x88), // grey
-        "reverb" => egui::Color32::from_rgb(0x4a, 0x6e, 0xa8),
-        "delay" => egui::Color32::from_rgb(0x6a, 0x80, 0xc0),
-        "chorus" => egui::Color32::from_rgb(0x9a, 0x6e, 0xc8),
-        _ => egui::Color32::from_rgb(0x50, 0x50, 0x60),
+    match klipp_core::audio_effect_registry::audio_effect(type_id) {
+        Some(spec) => audio_category_color(crate::browser::effect_registry::audio_category(spec.group), theme),
+        None => egui::Color32::from_rgb(0x50, 0x50, 0x60),
     }
 }
 
@@ -81,10 +69,9 @@ fn tile_color(entry: &EffectEntry, theme: &KlippTheme) -> egui::Color32 {
     }
 }
 
-/// Category-driven colour for audio effects. Mirrors the per-type
-/// palette in `audio_effect_color_for_type` but keyed on the parsed
-/// category so LADSPA plugins (which carry no type_id we recognise)
-/// still get a meaningful hue.
+/// Category-driven colour for audio effects: the built-in ones' by their
+/// group, and LADSPA plugins' (which carry no type_id we recognise) by
+/// their parsed category, so they still get a meaningful hue.
 fn audio_category_color(cat: EffectCategory, theme: &KlippTheme) -> egui::Color32 {
     match cat {
         EffectCategory::AudioEQ => egui::Color32::from_rgb(0x2d, 0x6f, 0xa8),
@@ -123,25 +110,7 @@ fn effect_type_for_dispatch(entry: &EffectEntry) -> Option<String> {
 /// hand-curated description; LADSPA shows "by {maker}" for provenance.
 fn description_for(entry: &EffectEntry) -> String {
     match &entry.source {
-        EffectSource::Audio(type_id) => match type_id.as_str() {
-            "compressor" => "Dynamic range control".into(),
-            "eq" => "6-band parametric equaliser".into(),
-            "limiter" => "Peak protection. Caps the track before its fader".into(),
-            "gate" => "Silence low-level noise".into(),
-            "high_pass" => "Remove low-frequency rumble and wind".into(),
-            "denoiser" => "Learn and reduce steady background noise".into(),
-            "voice_isolation" => "Separate speech from wind, traffic and room noise (AI)".into(),
-            "deesser" => "Reduce sibilance in vocals".into(),
-            "normalize" => "Set target loudness (LUFS)".into(),
-            "noise_reduction" => "Per-band noise gating".into(),
-            "declick" => "Remove pops & clicks".into(),
-            "reverb" => "Room & space simulation".into(),
-            "delay" => "Time-based repeat".into(),
-            "chorus" => "Modulation & width".into(),
-            "pitch_shift" => "Transpose audio pitch".into(),
-            "multiband_compressor" => "Per-band compression".into(),
-            _ => entry.grouping.clone(),
-        },
+        EffectSource::Audio(type_id) => klipp_core::audio_effect_registry::audio_effect(type_id).map_or_else(|| entry.grouping.clone(), |spec| spec.description.into()),
         EffectSource::Ladspa(plugin) => {
             if plugin.maker.is_empty() {
                 "LADSPA plugin".into()

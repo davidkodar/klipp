@@ -7821,44 +7821,6 @@ fn onto_track_grade(seq: &Sequence, i: usize, ti: usize, (what, edit, _): (Strin
     Ok((what, EditCommand::SetTrackSettings { changes: vec![(t.id, old, new)] }, Vec::new()))
 }
 
-/// The audio effects a track's chain (and a clip's) can run, by type:
-/// the built-in ones of `klipp_audio::dsp::available_effects`, which a
-/// test keeps this list in step with.
-pub const AUDIO_EFFECT_TYPES: &[&str] = &[
-    "eq", "compressor", "limiter", "gate", "high_pass", "denoiser", "voice_isolation", "reverb", "delay", "deesser",
-    "hum_removal", "noise_reduction", "declick", "normalize", "pitch_shift", "chorus", "multiband_compressor",
-];
-
-/// Each audio effect's parameter names, as its DSP describes them: a
-/// name not here is refused rather than kept and never read (#2484). A
-/// test keeps it in step with `klipp_audio`'s descriptors.
-pub const AUDIO_EFFECT_PARAMS: &[(&str, &[&str])] = &[
-    ("eq", &[
-        "band1_enabled", "band1_frequency", "band1_gain", "band1_q", "band2_enabled", "band2_frequency", "band2_gain", "band2_q",
-        "band3_enabled", "band3_frequency", "band3_gain", "band3_q", "band4_enabled", "band4_frequency", "band4_gain", "band4_q",
-        "band5_enabled", "band5_frequency", "band5_gain", "band5_q", "band6_enabled", "band6_frequency", "band6_gain", "band6_q",
-    ]),
-    ("compressor", &["threshold", "ratio", "attack", "release", "makeup", "knee"]),
-    ("limiter", &["threshold", "ceiling", "input_gain", "output_gain", "attack", "release", "lookahead", "mix"]),
-    ("gate", &["threshold", "attack", "release", "range"]),
-    ("high_pass", &["frequency", "slope"]),
-    ("denoiser", &["strength", "floor", "wind", "profile_seconds"]),
-    ("voice_isolation", &["reduction", "mode"]),
-    ("reverb", &["room_size", "damping", "wet", "width", "pre_delay"]),
-    ("delay", &["delay_time", "feedback", "mix", "ping_pong"]),
-    ("deesser", &["frequency", "threshold", "reduction", "bandwidth"]),
-    ("hum_removal", &["fundamental_hz", "harmonics", "q", "harmonic_2_enabled", "harmonic_3_enabled"]),
-    ("noise_reduction", &["reduction", "sensitivity", "smoothing"]),
-    ("declick", &["threshold", "max_click_ms"]),
-    ("normalize", &["target_lufs", "mode"]),
-    ("pitch_shift", &["semitones", "fine_cents"]),
-    ("chorus", &["rate", "depth", "mix", "voices"]),
-    ("multiband_compressor", &[
-        "xover_low", "xover_mid", "xover_high", "threshold_1", "threshold_2", "threshold_3", "threshold_4",
-        "ratio_1", "ratio_2", "ratio_3", "ratio_4", "makeup_1", "makeup_2", "makeup_3", "makeup_4", "attack", "release",
-    ]),
-];
-
 /// `track_audio`: the track's own audio chain (#846), one effect of a
 /// type added (with `params` set), switched, or taken off.
 #[allow(clippy::too_many_arguments)]
@@ -7903,10 +7865,15 @@ fn audio_chain_effect(i: usize, edit: &AudioChainEdit, transcripts: &dyn Transcr
         return Ok((plugin.id, params));
     }
     let effect = given.to_lowercase();
-    if !AUDIO_EFFECT_TYPES.contains(&effect.as_str()) {
-        return Err(refuse(i, format!("\"{effect}\" is not an audio effect"), format!("use one of {}, or an installed plug-in's id (audio_plugins)", AUDIO_EFFECT_TYPES.join(", "))));
-    }
-    let known = AUDIO_EFFECT_PARAMS.iter().find(|(t, _)| *t == effect).map(|(_, names)| *names).unwrap_or(&[]);
+    // The built-in effects and each one's param names, as its DSP
+    // describes them: a name not there is refused rather than kept and
+    // never read (#2484).
+    use klipp_core::audio_effect_registry::{audio_effect, AUDIO_EFFECTS};
+    let Some(spec) = audio_effect(&effect) else {
+        let all: Vec<&str> = AUDIO_EFFECTS.iter().map(|s| s.type_id).collect();
+        return Err(refuse(i, format!("\"{effect}\" is not an audio effect"), format!("use one of {}, or an installed plug-in's id (audio_plugins)", all.join(", "))));
+    };
+    let known = spec.params;
     if let Some(name) = edit.params.keys().find(|n| !known.contains(&n.as_str())) {
         return Err(refuse(i, format!("{effect} has no param \"{name}\""), format!("use one of {}", known.join(", "))));
     }
