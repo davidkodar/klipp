@@ -7333,72 +7333,75 @@ fn require_picture(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: 
 /// Where a picture's glow starts (linear luma): its highlights (#2763).
 const GLOW_THRESHOLD: f32 = 0.6;
 
-/// A picture effect by the name the ops and the app give it, at
-/// `amount` (0 to 1; a tasteful default when left out): the effect, and
-/// the amount it was made at. The one list behind `effect` on clips and
-/// the app's track effects (#846).
-pub fn named_picture_effect(kind: &str, amount: Option<f32>) -> Result<(klipp_effects::BuiltinEffect, f32), (String, String)> {
-    // Invert at full by default: a part mix of a picture and its negative
-    // is a grey wash (#2763), so the amount is only for a blend asked for.
-    let a = amount.unwrap_or(match kind.to_lowercase().as_str() { "sharpen" => 0.4, "glow" | "grain" => 0.4, "invert" => 1.0, _ => 0.5 });
-    if !a.is_finite() || !(0.0..=1.0).contains(&a) {
-        return Err((format!("amount {a} is out of range"), "give amount between 0 and 1".into()));
-    }
+/// One picture effect the `effect` op names: the names it is asked for
+/// by, the amount it is made at when none is given, and how it is made
+/// at an amount (0 to 1) for the name it was asked for by.
+struct OpEffect {
+    names: &'static [&'static str],
+    default: f32,
+    make: fn(&str, f32) -> klipp_effects::BuiltinEffect,
+}
+
+/// Every picture effect the `effect` op names (#2888): the one list its
+/// names, its refusal's hint and the guide's list are held to.
+const OP_EFFECTS: &[OpEffect] = {
     use klipp_effects::BuiltinEffect as E;
-    let fx = match kind.to_lowercase().as_str() {
+    &[
         // On one scale with the rest (#2762): 0.5 clearly visible, 1 strong.
-        "vignette" => E::Vignette { amount: -(a * 1.2).min(1.0), size: 0.7, softness: 0.5, roundness: 0.7 },
-        "grain" | "film_grain" => E::FilmGrain { amount: a * 0.5, size: 1.0, color: 0, shadows: 0.3, seed: 1 },
+        OpEffect { names: &["vignette"], default: 0.5, make: |_, a| E::Vignette { amount: -(a * 1.2).min(1.0), size: 0.7, softness: 0.5, roundness: 0.7 } },
+        OpEffect { names: &["grain", "film_grain"], default: 0.4, make: |_, a| E::FilmGrain { amount: a * 0.5, size: 1.0, color: 0, shadows: 0.3, seed: 1 } },
         // Round a picture's highlights, not over all of it (#2763); a
         // title glows whole (`picture_effect`).
-        "glow" => E::Glow { radius: 30.0, intensity: a, threshold: GLOW_THRESHOLD },
+        OpEffect { names: &["glow"], default: 0.4, make: |_, a| E::Glow { radius: 30.0, intensity: a, threshold: GLOW_THRESHOLD } },
         // The three that treat a clip as a layer rather than as the
         // frame: they only show once the picture is smaller than the
         // frame, which is what `compose` is for.
-        "corners" | "rounded_corners" => E::RoundedCorners { radius: a * 0.25, feather: 0.002 },
-        "shadow" | "drop_shadow" => E::DropShadow { offset_x: 0.0, offset_y: a * 0.02, blur: a * 0.04, color: [0, 0, 0], opacity: 0.2 + a * 0.6 },
+        OpEffect { names: &["corners", "rounded_corners"], default: 0.5, make: |_, a| E::RoundedCorners { radius: a * 0.25, feather: 0.002 } },
+        OpEffect { names: &["shadow", "drop_shadow"], default: 0.5, make: |_, a| E::DropShadow { offset_x: 0.0, offset_y: a * 0.02, blur: a * 0.04, color: [0, 0, 0], opacity: 0.2 + a * 0.6 } },
         // A cool light rather than white: white over a dark ground reads
         // as grey haze, not as glow.
-        "outer_glow" => E::OuterGlow { radius: a * 0.06, intensity: a, color: [140, 150, 255] },
+        OpEffect { names: &["outer_glow"], default: 0.5, make: |_, a| E::OuterGlow { radius: a * 0.06, intensity: a, color: [140, 150, 255] } },
         // The bars round an upright phone shot in a wide frame filled with
         // the picture, enlarged and blurred (#680); more is softer and
         // darker, so the picture stands out.
-        "fill_bars" | "blanking_fill" | "blur_fill" | "blurred_background" => E::FillBars { blur: 0.02 + a * 0.1, zoom: 1.0, darken: a * 0.5 },
-        "bloom" => E::Bloom { threshold: 0.7, radius: a * 40.0 + 10.0, intensity: a },
-        "diffusion" | "pro_mist" => E::Diffusion { amount: a, radius: 20.0, threshold: 0.6, desaturation: 0.1 },
-        "halation" | "film_halation" => E::FilmHalation { threshold: 0.75, radius: a * 30.0 + 10.0, intensity: a, hue: 0.05 },
-        "light_rays" | "god_rays" => E::LightRays { center_x: 0.5, center_y: 0.35, threshold: 0.5, samples: 48, decay: 0.95, intensity: a * 1.5 },
+        OpEffect { names: &["fill_bars", "blanking_fill", "blur_fill", "blurred_background"], default: 0.5, make: |_, a| E::FillBars { blur: 0.02 + a * 0.1, zoom: 1.0, darken: a * 0.5 } },
+        OpEffect { names: &["bloom"], default: 0.5, make: |_, a| E::Bloom { threshold: 0.7, radius: a * 40.0 + 10.0, intensity: a } },
+        OpEffect { names: &["diffusion", "pro_mist"], default: 0.5, make: |_, a| E::Diffusion { amount: a, radius: 20.0, threshold: 0.6, desaturation: 0.1 } },
+        OpEffect { names: &["halation", "film_halation"], default: 0.5, make: |_, a| E::FilmHalation { threshold: 0.75, radius: a * 30.0 + 10.0, intensity: a, hue: 0.05 } },
+        OpEffect { names: &["light_rays", "god_rays"], default: 0.5, make: |_, a| E::LightRays { center_x: 0.5, center_y: 0.35, threshold: 0.5, samples: 48, decay: 0.95, intensity: a * 1.5 } },
         // Its core a seventh of the frame, as the app's default: at the
         // frame's whole size it veiled the picture white (#2763).
-        "lens_flare" => E::LensFlare { position_x: 0.7, position_y: 0.3, brightness: a, flare_size: 0.15, ghost_count: 4, ghost_intensity: a * 0.5, chromatic_aberration: 0.3 },
+        OpEffect { names: &["lens_flare"], default: 0.5, make: |_, a| E::LensFlare { position_x: 0.7, position_y: 0.3, brightness: a, flare_size: 0.15, ghost_count: 4, ghost_intensity: a * 0.5, chromatic_aberration: 0.3 } },
         // Length is in canvas pixels (0 to 200, 80 by default): the default
         // amount gives a streak about that long (#1189).
-        "anamorphic" | "anamorphic_streak" | "streak" => E::AnamorphicStreak { threshold: 0.6, length: a * 200.0, intensity: a * 1.5, tint: 0.6 },
-        "light_wrap" => E::LightWrap { width: a * 20.0, intensity: a, softness: 0.5 },
-        "blur" => E::GaussianBlur { radius: a * 20.0 },
+        OpEffect { names: &["anamorphic", "anamorphic_streak", "streak"], default: 0.5, make: |_, a| E::AnamorphicStreak { threshold: 0.6, length: a * 200.0, intensity: a * 1.5, tint: 0.6 } },
+        OpEffect { names: &["light_wrap"], default: 0.5, make: |_, a| E::LightWrap { width: a * 20.0, intensity: a, softness: 0.5 } },
+        OpEffect { names: &["blur"], default: 0.5, make: |_, a| E::GaussianBlur { radius: a * 20.0 } },
         // The blur's amount runs 0 to 50 (10 by default): squared, the
         // default amount gives about the default blur and the full amount
         // the most (#1189).
         // On a cube: the full amount still the top of the range, but 0.6
         // about 11 rather than 18, where the picture was gone (#2763).
-        "radial_blur" | "zoom_blur" => E::RadialBlur { center_x: 0.5, center_y: 0.5, amount: a * a * a * 50.0, samples: 24, mode: 0 },
-        "spin_blur" => E::RadialBlur { center_x: 0.5, center_y: 0.5, amount: a * a * a * 50.0, samples: 24, mode: 1 },
-        "directional_blur" | "motion_blur" => E::DirectionalBlur { angle: 0.0, distance: a * 60.0, samples: 24 },
-        "sharpen" => E::Sharpen { amount: a },
-        "chromatic_aberration" | "rgb_split" | "fringe" => E::ChromaticAberration { red_shift: a * 8.0, blue_shift: -a * 8.0, center_x: 0.5, center_y: 0.5 },
-        "tilt_shift" => E::TiltShift { center: 0.5, width: 0.3, softness: 0.2, radius: a * 20.0 },
-        "mosaic" | "pixelate" => E::Mosaic { block_size: a * 40.0 + 2.0 },
+        OpEffect { names: &["radial_blur", "zoom_blur"], default: 0.5, make: |_, a| E::RadialBlur { center_x: 0.5, center_y: 0.5, amount: a * a * a * 50.0, samples: 24, mode: 0 } },
+        OpEffect { names: &["spin_blur"], default: 0.5, make: |_, a| E::RadialBlur { center_x: 0.5, center_y: 0.5, amount: a * a * a * 50.0, samples: 24, mode: 1 } },
+        OpEffect { names: &["directional_blur", "motion_blur"], default: 0.5, make: |_, a| E::DirectionalBlur { angle: 0.0, distance: a * 60.0, samples: 24 } },
+        OpEffect { names: &["sharpen"], default: 0.4, make: |_, a| E::Sharpen { amount: a } },
+        OpEffect { names: &["chromatic_aberration", "rgb_split", "fringe"], default: 0.5, make: |_, a| E::ChromaticAberration { red_shift: a * 8.0, blue_shift: -a * 8.0, center_x: 0.5, center_y: 0.5 } },
+        OpEffect { names: &["tilt_shift"], default: 0.5, make: |_, a| E::TiltShift { center: 0.5, width: 0.3, softness: 0.2, radius: a * 20.0 } },
+        OpEffect { names: &["mosaic", "pixelate"], default: 0.5, make: |_, a| E::Mosaic { block_size: a * 40.0 + 2.0 } },
         // Bands that show by the middle: 9 at 0.5, 2 at full.
-        "posterize" => E::Posterize { levels: (2.0 + (1.0 - a) * (1.0 - a) * 30.0).round() },
-        "invert" => E::Invert { mix: a },
-        "mirror" => E::Mirror { horizontal: 1, vertical: 0 },
+        OpEffect { names: &["posterize"], default: 0.5, make: |_, a| E::Posterize { levels: (2.0 + (1.0 - a) * (1.0 - a) * 30.0).round() } },
+        // At full by default: a part mix of a picture and its negative is
+        // a grey wash (#2763), so the amount is only for a blend asked for.
+        OpEffect { names: &["invert"], default: 1.0, make: |_, a| E::Invert { mix: a } },
+        OpEffect { names: &["mirror"], default: 0.5, make: |_, _| E::Mirror { horizontal: 1, vertical: 0 } },
         // Scaled up so the corners still read inside the picture: past its
         // edge the bend smeared the edge pixels into streaks (#2763).
-        "lens_distortion" | "barrel" => E::LensDistortion { distortion: a * 0.5, scale: 1.0 + 2.0 * a * 0.5 },
+        OpEffect { names: &["lens_distortion", "barrel"], default: 0.5, make: |_, a| E::LensDistortion { distortion: a * 0.5, scale: 1.0 + 2.0 * a * 0.5 } },
         // The layer mirrored about a waterline (#2707), on a surface:
         // calm water by default; the amount its strength, the surface's
         // own at the default. `params` sets the waterline and the rest.
-        "reflection" | "water_reflection" | "calm_water" | "rippled_water" | "glossy_floor" | "wet_street" | "glass" => {
+        OpEffect { names: &["reflection", "water_reflection", "calm_water", "rippled_water", "glossy_floor", "wet_street", "glass"], default: 0.5, make: |kind, a| {
             let kind = kind.to_lowercase();
             let surface = match kind.as_str() { "reflection" | "water_reflection" => "calm_water", other => other };
             match klipp_effects::reflection::surface(surface, 0.6) {
@@ -7410,42 +7413,42 @@ pub fn named_picture_effect(kind: &str, amount: Option<f32>) -> Result<(klipp_ef
                 }
                 _ => unreachable!("every surface named here is a reflection"),
             }
-        }
+        } },
         // Pixels moved by a drifting noise field (#2702): the default
         // amount moves them about 12 canvas pixels, the full amount 24.
-        "displace" | "ripple" | "heat_haze" => E::Displace { amount: a * 24.0, size: 80.0, speed: 1.0, direction: 0, seed: 1, time: 0.0 },
+        OpEffect { names: &["displace", "ripple", "heat_haze"], default: 0.5, make: |_, a| E::Displace { amount: a * 24.0, size: 80.0, speed: 1.0, direction: 0, seed: 1, time: 0.0 } },
         // A relief that shows, over most of the picture: at the amount as
         // both it was a grey haze (#2763).
-        "emboss" => E::Emboss { angle: 0.0, strength: 1.0 + a * 3.0, mix: 0.5 + a * 0.5 },
+        OpEffect { names: &["emboss"], default: 0.5, make: |_, a| E::Emboss { angle: 0.0, strength: 1.0 + a * 3.0, mix: 0.5 + a * 0.5 } },
         // The edges drawn on black, the amount their strength: mixed into
         // the picture by the amount, flat areas were a grey wash (#2763).
-        "edge_detect" | "edges" => E::EdgeDetect { strength: a * 2.0, mix: 1.0 },
-        "denoise" => E::Denoise { spatial_sigma: a * 4.0, color_sigma: a * 0.1, iterations: 1 },
-        "vhs" => E::Vhs { tracking: a * 0.8, bleed: a, noise: a * 0.7, scanlines: a, seed: 1 },
+        OpEffect { names: &["edge_detect", "edges"], default: 0.5, make: |_, a| E::EdgeDetect { strength: a * 2.0, mix: 1.0 } },
+        OpEffect { names: &["denoise"], default: 0.5, make: |_, a| E::Denoise { spatial_sigma: a * 4.0, color_sigma: a * 0.1, iterations: 1 } },
+        OpEffect { names: &["vhs"], default: 0.5, make: |_, a| E::Vhs { tracking: a * 0.8, bleed: a, noise: a * 0.7, scanlines: a, seed: 1 } },
         // Aged as well as damaged (#2744): its colour faded and warmed.
-        "old_film" => E::OldFilm { flicker: a * 0.5, scratches: a, dust: a, weave: a * 0.5, sepia: a * 0.5, seed: 1, amount: 1.0, age: a * 0.8, mono: 0.0, stains: a * 0.2, frame_lines: 0.0, leaks: 0.0, burn: 0.0 },
+        OpEffect { names: &["old_film"], default: 0.5, make: |_, a| E::OldFilm { flicker: a * 0.5, scratches: a, dust: a, weave: a * 0.5, sepia: a * 0.5, seed: 1, amount: 1.0, age: a * 0.8, mono: 0.0, stains: a * 0.2, frame_lines: 0.0, leaks: 0.0, burn: 0.0 } },
         // The film templates (#2744), the amount their damage: the
         // template's own at the default.
-        "super8" | "film_16mm" | "silent_film" | "faded_70s" => {
+        OpEffect { names: &["super8", "film_16mm", "silent_film", "faded_70s"], default: 0.5, make: |kind, a| {
             match klipp_effects::old_film::template(&kind.to_lowercase()) {
                 Some(E::OldFilm { flicker, scratches, dust, weave, sepia, seed, age, mono, stains, frame_lines, leaks, burn, .. }) => {
                     E::OldFilm { flicker, scratches, dust, weave, sepia, seed, amount: (a * 2.0).min(2.0), age, mono, stains, frame_lines, leaks, burn }
                 }
                 _ => unreachable!("every template named here is an old film"),
             }
-        }
+        } },
         // A random flicker of the opacity, eight jumps a second, a third
         // of them holding (#989); more flickers deeper.
-        "flicker" => E::Flicker { amount: a, speed: 8.0, smoothness: 0.0, hold: 0.3, seed: 1, target: 0, time: 0.0 },
-        "exposure_flicker" => E::Flicker { amount: a * 0.8, speed: 8.0, smoothness: 0.3, hold: 0.3, seed: 1, target: 1, time: 0.0 },
+        OpEffect { names: &["flicker"], default: 0.5, make: |_, a| E::Flicker { amount: a, speed: 8.0, smoothness: 0.0, hold: 0.3, seed: 1, target: 0, time: 0.0 } },
+        OpEffect { names: &["exposure_flicker"], default: 0.5, make: |_, a| E::Flicker { amount: a * 0.8, speed: 8.0, smoothness: 0.3, hold: 0.3, seed: 1, target: 1, time: 0.0 } },
         // Two eyepieces, the outside darker the more, a fringe at their
         // rims (#989).
         // Black outside the eyepieces from the default amount up, as
         // through binoculars; less only below it (#2763).
-        "binocular" | "binocular_vignette" => E::BinocularVignette { amount: -(0.5 + a).min(1.0), spacing: 0.4, width: 0.85, height: 0.85, softness: 0.15, fringe: a * 6.0 },
+        OpEffect { names: &["binocular", "binocular_vignette"], default: 0.5, make: |_, a| E::BinocularVignette { amount: -(0.5 + a).min(1.0), spacing: 0.4, width: 0.85, height: 0.85, softness: 0.15, fringe: a * 6.0 } },
         // Particles over the picture (#1141): each kind's own look, more
         // of them, and stronger, with the amount.
-        "dust" | "snow" | "rain" | "sparks" | "embers" | "particles" => {
+        OpEffect { names: &["dust", "snow", "rain", "sparks", "embers", "particles"], default: 0.5, make: |kind, a| {
             let kind = match kind { "snow" => 1, "rain" => 2, "sparks" => 3, "embers" => 4, _ => 0 };
             match klipp_effects::particles::preset(kind) {
                 E::Particles { style: kind, amount, size, speed, direction, spread, lifetime, opacity, color, seed, time } => {
@@ -7456,10 +7459,38 @@ pub fn named_picture_effect(kind: &str, amount: Option<f32>) -> Result<(klipp_ef
                 }
                 other => other,
             }
-        }
-        other => return Err((format!("\"{other}\" is not an effect"), "use e.g. vignette, grain, glow, bloom, chroma_key, luma_key, corners, shadow, outer_glow, fill_bars, diffusion, halation, light_rays, lens_flare, anamorphic, light_wrap, blur, radial_blur, spin_blur, directional_blur, sharpen, chromatic_aberration, tilt_shift, mosaic, posterize, invert, mirror, lens_distortion, displace, reflection (water_reflection, calm_water, rippled_water, glossy_floor, wet_street, glass), emboss, edge_detect, denoise, vhs, old_film (super8, film_16mm, silent_film, faded_70s), flicker, exposure_flicker, binocular, dust, snow, rain, sparks or embers".into())),
+        } },
+    ]
+};
+
+/// The `effect` op's names, for its refusal: each effect's first name,
+/// its others after it in brackets.
+pub fn op_effect_names() -> String {
+    OP_EFFECTS
+        .iter()
+        .map(|e| match e.names {
+            [one] => one.to_string(),
+            [first, rest @ ..] => format!("{first} ({})", rest.join(", ")),
+            [] => String::new(),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// A picture effect by the name the ops and the app give it, at
+/// `amount` (0 to 1; a tasteful default when left out): the effect, and
+/// the amount it was made at. The one list behind `effect` on clips and
+/// the app's track effects (#846), [`OP_EFFECTS`].
+pub fn named_picture_effect(kind: &str, amount: Option<f32>) -> Result<(klipp_effects::BuiltinEffect, f32), (String, String)> {
+    let name = kind.to_lowercase();
+    let Some(op) = OP_EFFECTS.iter().find(|e| e.names.contains(&name.as_str())) else {
+        return Err((format!("\"{name}\" is not an effect"), format!("use e.g. chroma_key, luma_key, {}", op_effect_names())));
     };
-    Ok((fx, a))
+    let a = amount.unwrap_or(op.default);
+    if !a.is_finite() || !(0.0..=1.0).contains(&a) {
+        return Err((format!("amount {a} is out of range"), "give amount between 0 and 1".into()));
+    }
+    Ok(((op.make)(&name, a), a))
 }
 
 /// `effect` with its `params` set (#2702): each one by the registry's
@@ -13562,15 +13593,9 @@ mod tests {
             assert!(guide.lines().any(|line| line.starts_with(&format!("- `{name}"))),
                 "document the {name} operation in the agent guide");
         }
-        let source = include_str!("ops.rs");
-        let effects = source.split("let fx = match kind.to_lowercase().as_str() {").nth(1).unwrap()
-            .split("other => return Err").next().unwrap();
-        for arm in effects.lines().map(str::trim).filter(|line| line.starts_with('"')) {
-            let names = arm.split("=>").next().unwrap();
-            for name in names.split('"').skip(1).step_by(2) {
-                assert!(guide.contains(&format!("`{name}`")),
-                    "document the {name} picture effect in the agent guide");
-            }
+        for name in super::OP_EFFECTS.iter().flat_map(|e| e.names) {
+            assert!(guide.contains(&format!("`{name}`")),
+                "document the {name} picture effect in the agent guide");
         }
     }
 
@@ -20799,6 +20824,35 @@ mod effects_edit_tests {
         clip = klipp_timeline::test_clip::TestClip::of(clip).effect(E::Opacity { value: 0.5 }).build();
         let placed = effects_edit(&clip, |_| false, Some((E::Sharpen { amount: 0.5 }, Place::Last))).unwrap();
         assert!(matches!(placed, EditCommand::PictureEdit { .. }), "after a placed kind: {placed:?}");
+    }
+}
+
+#[cfg(test)]
+mod op_effect_list_tests {
+    use super::{named_picture_effect, op_effect_names, OP_EFFECTS};
+
+    /// The `effect` op's names (#2888): each one names one effect, an
+    /// effect the registry describes and lists for a clip; the refusal
+    /// offers every one; and the ops guide's `effect` entry names each.
+    #[test]
+    fn every_op_effect_name_is_a_listed_effect_the_guide_names() {
+        let ops_md = include_str!("../../../assets/craft/ops.md");
+        let entry = ops_md.lines().find(|l| l.starts_with("effect {")).expect("effect in ops.md");
+        let hint = named_picture_effect("no_such_effect", None).unwrap_err().1;
+        let mut seen = std::collections::BTreeSet::new();
+        for op in OP_EFFECTS {
+            assert!((0.0..=1.0).contains(&op.default), "{:?}", op.names);
+            assert!(entry.contains(op.names[0]), "ops.md's effect entry does not name {}", op.names[0]);
+            for name in op.names {
+                assert!(seen.insert(*name), "{name} names two effects");
+                assert!(hint.contains(name), "the refusal does not offer {name}");
+                let (fx, _) = named_picture_effect(name, None).unwrap();
+                let tag = klipp_effects::registry::tag_of(&fx).unwrap_or_else(|| panic!("{name}: not a described effect"));
+                let listed = klipp_effects::registry::effect_type(tag).is_some_and(|t| matches!(t.browser, klipp_effects::registry::Browser::Listed { .. }));
+                assert!(listed, "{name}: {tag} is not an effect a clip is given");
+            }
+        }
+        assert!(op_effect_names().starts_with("vignette, grain (film_grain), glow"));
     }
 }
 
