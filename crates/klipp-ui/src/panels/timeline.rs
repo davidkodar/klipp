@@ -874,6 +874,9 @@ pub struct TimelinePanel {
     stretching: Option<crate::timeline::stretch_drag::StretchState>,
     roll_trimming: Option<RollTrimState>,
     slipping_clip: Option<SlipState>,
+    /// The active sequence's tracks as they were when the drag under way
+    /// began (#3060): what Escape puts back.
+    cancel_tracks: Option<(usize, Vec<klipp_timeline::Track>)>,
     sliding_clip: Option<SlideState>,
     /// Stores the pointer position at initial mouse-down, before egui's drag threshold kicks in.
     /// Used so trim/move detection uses the click position, not the drifted drag_started position.
@@ -967,6 +970,27 @@ pub(crate) const SNAP_HIGHLIGHT_MS: u64 = 180;
 pub(crate) fn snap_highlight(made_at: std::time::Instant, now: std::time::Instant) -> f32 {
     let elapsed_ms = now.saturating_duration_since(made_at).as_millis() as u64;
     1.0 - (elapsed_ms.min(SNAP_HIGHLIGHT_MS) as f32 / SNAP_HIGHLIGHT_MS as f32)
+}
+
+/// What a moved clip's readout says (#3060): its new start as the
+/// sequence counts time, and how far it moved, signed.
+fn move_readout_text(at: Timecode, delta: RationalTime, tc: klipp_core::TimecodeDisplay) -> String {
+    let secs = delta.to_secs_f64();
+    let sign = if secs < 0.0 { "\u{2212}" } else { "+" };
+    format!("{}  {sign}{}", crate::timeline::range_visuals::format_handle_timecode(at.to_secs_f64(), tc), crate::timeline::range_visuals::format_handle_timecode(secs.abs(), tc))
+}
+
+/// The readout above a moved clip's ghost, on the foreground layer so no
+/// track drawn after the dragged one covers it.
+fn paint_move_readout(ctx: &egui::Context, ghost: egui::Rect, at: Timecode, delta: RationalTime, state: &AppState) {
+    let tt = theme();
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("move_readout")));
+    let text = move_readout_text(at, delta, state.timecode_display());
+    let galley = painter.layout_no_wrap(text, egui::FontId::monospace(10.0), tt.text_primary);
+    let pos = egui::pos2(ghost.center().x - galley.size().x / 2.0, ghost.top() - 4.0 - galley.size().y);
+    let back = egui::Rect::from_min_size(pos - egui::vec2(3.0, 1.0), galley.size() + egui::vec2(6.0, 2.0));
+    painter.rect_filled(back, 2.0, tt.bg_deep);
+    painter.galley(pos, galley, tt.text_primary);
 }
 
 /// Where a clip dragged on the primary track to `at` is put in by a
@@ -5175,12 +5199,10 @@ impl TimelinePanel {
                         let in_diff = (clip.timeline_in.to_secs_f64() - snap_secs).abs();
                         let out_diff = (clip.timeline_out.to_secs_f64() - snap_secs).abs();
                         if in_diff < one_frame || out_diff < one_frame {
-                            // Display name: media filename for media
-                            // clips, generic kind label otherwise.
-                            // Mirrors the timeline status-bar pattern.
-                            clip_name = clip.media_id()
-                                .and_then(|mid| state.media_pool.get(&mid))
-                                .map(|m| m.filename.clone());
+                            // The clip's own name, as the timeline shows
+                            // it; its media's file name when it has none.
+                            let file = clip.media_id().and_then(|mid| state.media_pool.get(&mid)).map(|m| m.filename.clone()).unwrap_or_default();
+                            clip_name = Some(clip.label(&file).to_string());
                             break 'outer;
                         }
                     }
@@ -7914,6 +7936,27 @@ impl TimelinePanel {
     }
 
     /// Detect drag start: edge-first detection for trim, fade handles, roll trim, then clip-body for move/slip/slide.
+    /// Whether a drag of a clip, an edge or a cut is under way.
+    fn any_drag(&self) -> bool {
+        self.dragging_clip.is_some() || self.trimming_clip.is_some() || self.roll_trimming.is_some() || self.sliding_clip.is_some() || self.slipping_clip.is_some() || self.stretching.is_some()
+    }
+
+    /// The drag under way dropped, the timeline as it was when it began.
+    fn cancel_drag(&mut self, state: &mut AppState, cmds: &mut Vec<AppCommand>) {
+        if let Some((at, tracks)) = self.cancel_tracks.take().filter(|(at, _)| *at == state.active_sequence_idx) {
+            state.sequences[at].tracks = tracks;
+            cmds.push(AppCommand::SequenceUpdated);
+        }
+        self.dragging_clip = None;
+        self.trimming_clip = None;
+        self.roll_trimming = None;
+        self.sliding_clip = None;
+        self.slipping_clip = None;
+        self.stretching = None;
+        self.press_origin = None;
+        self.frame_cache.snap_line_x = None;
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn detect_drag_start(
         &mut self,
@@ -9732,19 +9775,7 @@ impl TimelinePanel {
                                 [egui::pos2(ghost_rect.right(), guide_top), egui::pos2(ghost_rect.right(), guide_bottom)],
                                 egui::Stroke::new(1.0_f32, guide_color),
                             );
-                            let tc_text = {
-                                let secs = final_in.to_secs_f64();
-                                let mins = (secs / 60.0) as u32;
-                                let s = secs % 60.0;
-                                format!("{:02}:{:05.2}", mins, s)
-                            };
-                            ghost_painter.text(
-                                egui::pos2(ghost_rect.center().x, ghost_rect.top() - 10.0),
-                                egui::Align2::CENTER_BOTTOM,
-                                &tc_text,
-                                egui::FontId::monospace(10.0),
-                                tt.text_secondary,
-                            );
+                            paint_move_readout(ui.ctx(), ghost_rect, final_in, final_in - drag.original_timeline_in, state);
                         }
 
                         // Insertion indicator: find where the clip would land between existing clips
@@ -10093,19 +10124,7 @@ impl TimelinePanel {
                         );
 
                         // Position timecode label above the ghost
-                        let tc_text = {
-                            let secs = final_in.to_secs_f64();
-                            let mins = (secs / 60.0) as u32;
-                            let s = secs % 60.0;
-                            format!("{:02}:{:05.2}", mins, s)
-                        };
-                        ghost_painter.text(
-                            egui::pos2(ghost_rect.center().x, ghost_rect.top() - 10.0),
-                            egui::Align2::CENTER_BOTTOM,
-                            &tc_text,
-                            egui::FontId::monospace(10.0),
-                            tt.text_secondary,
-                        );
+                        paint_move_readout(ui.ctx(), ghost_rect, final_in, final_in - drag.original_timeline_in, state);
 
                     }
 
@@ -12118,7 +12137,17 @@ impl TimelinePanel {
             self.handle_clip_click(ui, &track_response, state, cmds, track_idx, content_rect, track_rect, zoom, scroll, track_height, fps);
         }
 
+        // Escape cancels a drag under way, whatever it is, and puts the
+        // timeline back as it was when it began (#3060).
+        if self.any_drag() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.cancel_drag(state, cmds);
+        }
+        let starting = !self.any_drag();
+        let before = starting.then(|| track_response.drag_started()).filter(|s| *s).map(|_| (state.active_sequence_idx, state.sequence().tracks.clone()));
         self.detect_drag_start(ui, &track_response, state, cmds, track_idx, content_rect, track_rect, zoom, scroll, track_height, track_kind, pointer_pos);
+        if let Some(b) = before.filter(|_| self.any_drag()) {
+            self.cancel_tracks = Some(b);
+        }
 
         self.process_fade_drag(state, cmds, track_idx, content_rect, track_rect, zoom, scroll, track_height, pointer_pos, pointer_down, pointer_released);
 
@@ -19341,6 +19370,38 @@ mod snap_tests {
             &state,
         );
         assert_eq!(label, "Clip edge");
+    }
+
+    /// A moved clip's readout gives its new start as the sequence counts
+    /// time and how far it moved, signed (#3060): it said "00:03.00" in
+    /// decimal seconds, with no change.
+    #[test]
+    fn the_move_readout_is_timecode_and_its_change() {
+        let state = AppState::default();
+        let rt = |s: f64| RationalTime::from_secs_f64(s, 24);
+        let tc = state.timecode_display();
+        let fmt = |s: f64| crate::timeline::range_visuals::format_handle_timecode(s, tc);
+        assert_eq!(move_readout_text(rt(3.0), rt(2.0), tc), format!("{}  +{}", fmt(3.0), fmt(2.0)));
+        assert_eq!(move_readout_text(rt(1.0), rt(-0.5), tc), format!("{}  \u{2212}{}", fmt(1.0), fmt(0.5)));
+        assert!(!fmt(3.0).contains('.'), "timecode, not decimal seconds: {}", fmt(3.0));
+    }
+
+    /// A clip edge's snap label names the clip as the timeline does: its
+    /// own name, its media's file name when it has none (#3060).
+    #[test]
+    fn snap_legend_names_the_clip_by_its_own_name() {
+        let mut state = AppState::default();
+        let item = klipp_media::MediaItem::synthetic_for_test("/tmp/07-promenade-morning-run.mp4".into(), None);
+        let file = item.filename.clone();
+        let media = state.media_pool.add(item);
+        let rt = |s: f64| RationalTime::from_secs_f64(s, 24);
+        let mut named = klipp_timeline::Clip::media(media, rt(0.0), rt(2.0), rt(0.0), rt(2.0));
+        named.name = Some("Shot 2".into());
+        let plain = klipp_timeline::Clip::media(media, rt(5.0), rt(7.0), rt(0.0), rt(2.0));
+        state.sequences[0].tracks[0].clips = vec![named, plain];
+        let label = |secs| TimelinePanel::snap_legend_label_for_kind(klipp_core::SnapTargetKind::ClipEdge, secs, &state);
+        assert_eq!(label(2.0), "Clip edge: Shot 2");
+        assert_eq!(label(5.0), format!("Clip edge: {file}"));
     }
 
     // Pinned: Marker with no marker locatable falls back to "Marker".
