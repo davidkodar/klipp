@@ -233,6 +233,18 @@ impl TranscriptPanel {
         if delete {
             self.cut_selection(state);
         }
+        // Shift+Left/Right moves the selection's far end a word (#3020);
+        // the transport stands aside on the same flag.
+        if state.transcript_panel_hovered && !ui.ctx().wants_keyboard_input() {
+            let step = ui.input(|i| match (i.modifiers.shift, i.key_pressed(egui::Key::ArrowLeft), i.key_pressed(egui::Key::ArrowRight)) {
+                (true, true, false) => -1,
+                (true, false, true) => 1,
+                _ => 0,
+            });
+            if step != 0 {
+                self.selection = extended(self.selection, step, self.words.len());
+            }
+        }
     }
 
     fn toolbar(&mut self, ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &mut Vec<AppCommand>) {
@@ -450,6 +462,15 @@ fn fingerprint(state: &AppState) -> u64 {
     h.finish()
 }
 
+
+/// A word selection `(anchor, end)` with its end moved `step` words, kept
+/// inside the `n` words (#3020); none stays none.
+fn extended(selection: Option<(usize, usize)>, step: isize, n: usize) -> Option<(usize, usize)> {
+    let (anchor, end) = selection?;
+    let end = end.saturating_add_signed(step).min(n.saturating_sub(1));
+    Some((anchor, end))
+}
+
 #[cfg(test)]
 mod correction_tests {
     use super::correction_for;
@@ -512,7 +533,7 @@ mod range_tests {
         let theme = crate::theme::KlippTheme::default();
         // Held keys as winit reports them: with the events that carry them.
         let modifiers = events.iter().find_map(|e| match e {
-            egui::Event::PointerButton { modifiers, .. } => Some(*modifiers),
+            egui::Event::PointerButton { modifiers, .. } | egui::Event::Key { modifiers, .. } => Some(*modifiers),
             _ => None,
         }).unwrap_or_default();
         let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 900.0))), events, modifiers, ..Default::default() };
@@ -600,5 +621,36 @@ mod range_tests {
         assert_eq!(panel.selection, Some((1, 4)));
         let texts = frame(&ctx, &mut panel, &mut state, &source, Vec::new());
         at(&texts, "Cut 4 Words");
+    }
+
+    /// #3020: Shift+Right from a clicked word takes the next words one per
+    /// press, Shift+Left gives them back; the panel under the pointer.
+    #[test]
+    fn shift_arrows_extend_the_selection_a_word_at_a_time() {
+        let (mut state, source) = interview();
+        state.show_transcript_panel = true;
+        let (ctx, mut panel) = (egui::Context::default(), TranscriptPanel::new());
+        frame(&ctx, &mut panel, &mut state, &source, Vec::new());
+        let texts = frame(&ctx, &mut panel, &mut state, &source, Vec::new());
+        let two = at(&texts, "two");
+        frame(&ctx, &mut panel, &mut state, &source, vec![egui::Event::PointerMoved(two), press(two, true, false)]);
+        frame(&ctx, &mut panel, &mut state, &source, vec![press(two, false, false)]);
+        let key = |key| egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::SHIFT };
+        for _ in 0..3 {
+            frame(&ctx, &mut panel, &mut state, &source, vec![egui::Event::PointerMoved(two), key(egui::Key::ArrowRight)]);
+        }
+        assert_eq!(panel.selection, Some((1, 4)), "two to five");
+        frame(&ctx, &mut panel, &mut state, &source, vec![egui::Event::PointerMoved(two), key(egui::Key::ArrowLeft)]);
+        assert_eq!(panel.selection, Some((1, 3)), "taken back a word");
+        let texts = frame(&ctx, &mut panel, &mut state, &source, vec![egui::Event::PointerMoved(two)]);
+        at(&texts, "Cut 3 Words");
+    }
+
+    #[test]
+    fn a_selection_end_moves_inside_the_words() {
+        assert_eq!(super::extended(Some((2, 2)), 1, 5), Some((2, 3)));
+        assert_eq!(super::extended(Some((2, 4)), 1, 5), Some((2, 4)), "not past the last word");
+        assert_eq!(super::extended(Some((2, 0)), -1, 5), Some((2, 0)), "not before the first");
+        assert_eq!(super::extended(None, 1, 5), None);
     }
 }

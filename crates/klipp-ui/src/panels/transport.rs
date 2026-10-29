@@ -542,8 +542,11 @@ impl TransportBar {
                     cmds.push(route_for_viewer(AppCommand::Play, state));
                 }
             }
+            // Shift+arrows extend the transcript's selection while it is
+            // under the pointer (#3020).
+            let words_take_shift = state.show_transcript_panel && state.transcript_panel_hovered;
             if !text_editing && !i.modifiers.alt
-                && (kb.is_action_pressed("step_backward", i) || (i.modifiers.shift && i.key_pressed(egui::Key::ArrowLeft))) {
+                && (kb.is_action_pressed("step_backward", i) || (i.modifiers.shift && !words_take_shift && i.key_pressed(egui::Key::ArrowLeft))) {
                 if i.modifiers.shift {
                     cmds.push(route_for_viewer(AppCommand::SeekRelative(-shift_step), state));
                 } else {
@@ -551,7 +554,7 @@ impl TransportBar {
                 }
             }
             if !text_editing && !i.modifiers.alt
-                && (kb.is_action_pressed("step_forward", i) || (i.modifiers.shift && i.key_pressed(egui::Key::ArrowRight))) {
+                && (kb.is_action_pressed("step_forward", i) || (i.modifiers.shift && !words_take_shift && i.key_pressed(egui::Key::ArrowRight))) {
                 if i.modifiers.shift {
                     cmds.push(route_for_viewer(AppCommand::SeekRelative(shift_step), state));
                 } else {
