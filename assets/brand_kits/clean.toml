@@ -1,0 +1,16 @@
+# Starter brand kit (#2722): calm and plain, for talks and tutorials.
+format = 1
+name = "Clean"
+intro = { template = "Hook Card" }
+outro = { template = "End Screen" }
+lower_third = { template = "Banner Lower Third" }
+end_screen = { template = "End Screen" }
+
+[colours]
+primary = "#ffffff"
+secondary = "#1f2937"
+accent = "#3b82f6"
+
+[fonts]
+heading = "Work Sans"
+body = "Inter"

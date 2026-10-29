@@ -71,6 +71,7 @@ use std::collections::HashMap;
 
 pub mod bundled;
 pub mod catalogue;
+pub mod pairings;
 pub mod collect;
 pub mod font_discovery;
 

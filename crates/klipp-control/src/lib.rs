@@ -872,6 +872,10 @@ fn handle(
             | ControlCommand::ImportTemplatePack { .. }
             | ControlCommand::TemplatePacks
             | ControlCommand::RemoveTemplatePack { .. }
+            | ControlCommand::BrandKits
+            | ControlCommand::BrandKit { .. }
+            | ControlCommand::SaveBrandKit { .. }
+            | ControlCommand::RemoveBrandKit { .. }
             | ControlCommand::NodeTypes { .. }
             | ControlCommand::GraphRead { .. }
             | ControlCommand::GraphOps { .. }

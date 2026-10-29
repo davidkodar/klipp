@@ -16,6 +16,17 @@ fn catalogue_json(families: &[&klipp_title::catalogue::CatalogueFamily]) -> Vec<
         .collect()
 }
 
+/// A brand kit as a reply holds it: its fields, where it is from, and
+/// its folder when it is the user's.
+fn brand_kit_json(found: &klipp_project::brand_kit::Found) -> serde_json::Value {
+    let mut v = serde_json::to_value(&found.kit).unwrap_or_default();
+    v["source"] = json!(found.source.name());
+    if let Some(dir) = &found.dir {
+        v["path"] = json!(dir.display().to_string());
+    }
+    v
+}
+
 /// The fonts reply (#2492): each family once, in the JSON; the text
 /// names the bundled ones and how many are installed, or with `query`
 /// every family whose name holds it, either way. Klipp's catalogue
@@ -888,6 +899,54 @@ pub(crate) fn respond(
             let listed: Vec<serde_json::Value> = packs.iter().map(|p| json!({ "name": p.name, "source": klipp_timeline::template_places::Source::Pack(p.folder.clone()).name(), "author": p.about.author, "version": p.about.version, "licence": p.about.licence, "titles": p.titles, "templates": p.templates })).collect();
             let text = if packs.is_empty() { "no template packs installed".to_string() } else { format!("{} pack{} installed: {}", packs.len(), if packs.len() == 1 { "" } else { "s" }, packs.iter().map(|p| format!("{} ({} templates)", p.name, p.titles + p.templates)).collect::<Vec<_>>().join(", ")) };
             Ok(json!({ "text": text, "packs": listed }))
+        }
+
+        ControlCommand::BrandKits => {
+            let root = klipp_timeline::template_places::data_root();
+            let kits = klipp_project::brand_kit::list(root.as_deref());
+            let listed: Vec<serde_json::Value> = kits.iter().map(brand_kit_json).collect();
+            let text = format!("{} brand kit{}: {}. get one by name for all its fields; set to make or change your own.", kits.len(), if kits.len() == 1 { "" } else { "s" }, kits.iter().map(|f| format!("{} ({})", f.kit.name, f.source.name())).collect::<Vec<_>>().join(", "));
+            Ok(json!({ "text": text, "kits": listed }))
+        }
+
+        ControlCommand::BrandKit { name } => {
+            let found = klipp_project::brand_kit::get(klipp_timeline::template_places::data_root().as_deref(), &name)?;
+            let mut v = brand_kit_json(&found);
+            v["text"] = json!(format!("brand kit \"{}\" ({})", found.kit.name, found.source.name()));
+            Ok(v)
+        }
+
+        ControlCommand::SaveBrandKit { kit, files } => {
+            if in_batch {
+                return Err("saving a brand kit is not part of a batch: send it on its own".into());
+            }
+            let root = klipp_timeline::template_places::data_root().ok_or("no data folder to keep brand kits in")?;
+            let mut kit = kit;
+            if kit.get("format").is_none() {
+                kit["format"] = json!(klipp_project::brand_kit::FORMAT);
+            }
+            let kit: klipp_project::brand_kit::BrandKit = serde_json::from_value(kit).map_err(|e| format!("not a brand kit: {e}"))?;
+            let files: Vec<std::path::PathBuf> = files.iter().map(std::path::PathBuf::from).collect();
+            if let Some(f) = files.iter().find(|f| !f.is_absolute()) {
+                return Err(format!("give each file as an absolute path, not {}", f.display()));
+            }
+            let dir = klipp_project::brand_kit::save(&root, &kit, &files)?;
+            // A font no title can draw is said, as a plan says it (#2722).
+            let warnings = crate::plans::font_warnings([&kit.fonts.heading, &kit.fonts.body].into_iter().flatten().map(String::as_str));
+            Ok(json!({
+                "text": format!("saved the brand kit \"{}\"{}", kit.name, if warnings.is_empty() { String::new() } else { format!("; {}", warnings.join("; ")) }),
+                "path": dir.display().to_string(),
+                "warnings": warnings,
+            }))
+        }
+
+        ControlCommand::RemoveBrandKit { name } => {
+            if in_batch {
+                return Err("removing a brand kit is not part of a batch: send it on its own".into());
+            }
+            let root = klipp_timeline::template_places::data_root().ok_or("no data folder to keep brand kits in")?;
+            klipp_project::brand_kit::remove(&root, &name)?;
+            Ok(json!({ "text": format!("removed the brand kit \"{}\"", name.trim()) }))
         }
 
         ControlCommand::RemoveTemplatePack { name } => {

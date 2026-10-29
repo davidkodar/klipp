@@ -3399,6 +3399,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 1.0.69",
+ "toml",
  "tracing",
  "uuid",
  "zip 2.4.2",

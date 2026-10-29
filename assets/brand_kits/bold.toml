@@ -1,0 +1,16 @@
+# Starter brand kit (#2722): loud and condensed, for promos and sport.
+format = 1
+name = "Bold"
+intro = { template = "Hook Card" }
+outro = { template = "End Screen" }
+lower_third = { template = "Banner Lower Third" }
+end_screen = { template = "End Screen" }
+
+[colours]
+primary = "#ffd60a"
+secondary = "#111111"
+accent = "#ef233c"
+
+[fonts]
+heading = "Oswald"
+body = "Inter"

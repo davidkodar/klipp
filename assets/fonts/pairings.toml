@@ -1,0 +1,76 @@
+# Font pairings for brand kits (#2722): a family for headings and one for
+# body text that sit well together, each bundled with Klipp or in its
+# catalogue, with the mood it suits and the writing it covers.
+format = 1
+
+[[pair]]
+heading = "Playfair Display"
+body = "Lora"
+mood = ["editorial", "elegant", "warm"]
+scripts = ["latin"]
+
+[[pair]]
+heading = "Oswald"
+body = "Inter"
+mood = ["bold", "news", "sport"]
+scripts = ["latin"]
+
+[[pair]]
+heading = "Work Sans"
+body = "Inter"
+mood = ["clean", "modern", "neutral"]
+scripts = ["latin"]
+
+[[pair]]
+heading = "Bebas Neue"
+body = "Work Sans"
+mood = ["bold", "headline", "promo"]
+scripts = ["latin"]
+
+[[pair]]
+heading = "Cinzel"
+body = "EB Garamond"
+mood = ["classic", "epic", "formal"]
+scripts = ["latin"]
+
+[[pair]]
+heading = "Montserrat"
+body = "Source Serif 4"
+mood = ["modern", "documentary", "clean"]
+scripts = ["latin", "cyrillic"]
+
+[[pair]]
+heading = "Fredoka"
+body = "Nunito"
+mood = ["friendly", "playful", "soft"]
+scripts = ["latin"]
+
+[[pair]]
+heading = "Reem Kufi"
+body = "Cairo"
+mood = ["modern", "bold"]
+scripts = ["arabic", "latin"]
+
+[[pair]]
+heading = "Frank Ruhl Libre"
+body = "Heebo"
+mood = ["editorial", "classic"]
+scripts = ["hebrew", "latin"]
+
+[[pair]]
+heading = "Rozha One"
+body = "Hind"
+mood = ["bold", "headline"]
+scripts = ["devanagari", "latin"]
+
+[[pair]]
+heading = "Noto Serif JP"
+body = "Noto Sans JP"
+mood = ["documentary", "neutral"]
+scripts = ["japanese", "latin"]
+
+[[pair]]
+heading = "Black Han Sans"
+body = "Gowun Dodum"
+mood = ["bold", "friendly"]
+scripts = ["korean"]
