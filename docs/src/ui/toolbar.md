@@ -18,7 +18,7 @@ The row above the tracks holds everything that changes how an edit on the timeli
 1. **Edit tools** — Select (V), Trim (T), Blade (B), Range (R), Text (Y), Mask (P).
 2. **INS / OVR** — The edit mode for insert and overwrite edits (Shift+W toggles).
 3. **RIPPLE** — On, deleting and trimming close the gap; off, they leave one.
-4. **Snap** (N; right-click to snap to clips, the playhead, markers, in/out or the grid) and **Skimming** (S).
+4. **Snap** (N; right-click to snap to clips, the playhead, markers or in/out, and to choose a grid) and **Skimming** (S).
 5. **Timeline options** — Follow the playhead, play from proxies, lower quality for faster decode, appended clips bring their audio, and Find in Timeline (Ctrl+F).
 6. **LINKED** — Picture and sound trim and move together.
 7. **Add Marker** (M) and **Add Title** (Ctrl+T).
@@ -35,7 +35,7 @@ The default tool. Click clips to select, drag to move, drag clip edges to trim. 
 Drag a clip's body to slip it and a junction to roll it; Shift+drag on the body slides it. See [Magnetic Timeline](../editing/magnetic-timeline.md).
 
 ### Blade Tool (B)
-Click on a clip to split it at that position. With snapping on, the blade snaps to the playhead and clip boundaries.
+Click on a clip to split it at that position. With snapping on, the blade snaps as every drag does, to the playhead, clip edges, markers and in/out points, and its line shows where it will cut; Shift cuts at the pointer.
 
 ### Range Tool (R)
 Drag to select a range across one or more tracks. The range can be deleted, copied, or used as in and out points.

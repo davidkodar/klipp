@@ -886,6 +886,8 @@ fn handle(
         cmd @ ControlCommand::EffectCommand { .. } => requests::editing::respond(ctx, cmd, collect),
         #[cfg(feature = "test-hooks")]
         cmd @ ControlCommand::ShowPanel { .. } => requests::editing::respond(ctx, cmd, collect),
+        #[cfg(feature = "test-hooks")]
+        cmd @ ControlCommand::Pointer { .. } => requests::editing::respond(ctx, cmd, collect),
         cmd @ (ControlCommand::Selects { .. }
             | ControlCommand::FindMoments { .. }
             | ControlCommand::SearchMusic { .. }

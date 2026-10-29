@@ -4185,7 +4185,7 @@ impl TimelinePanel {
         let cur_grid = state.grid_snap_interval;
 
         response.context_menu_rows(|ui| {
-            use klipp_core::{GridInterval, SnapTargetKind};
+            use klipp_core::SnapTargetKind;
             ui.set_min_width(200.0);
 
             // ── Snap (master + per-target submenu) ──
@@ -4201,7 +4201,6 @@ impl TimelinePanel {
                         (SnapTargetKind::Playhead, "Playhead", snap_cfg.playhead),
                         (SnapTargetKind::Marker, "Markers", snap_cfg.markers),
                         (SnapTargetKind::InPoint, "In/Out", snap_cfg.in_out),
-                        (SnapTargetKind::Grid, "Grid", snap_cfg.grid),
                     ];
                     for &(target, label, enabled) in rows {
                         let row_label = if enabled { format!("\u{2714} {label}") } else { format!("    {label}") };
@@ -4215,26 +4214,8 @@ impl TimelinePanel {
 
             // ── Grid interval picker ──
             ui.menu_rows(format!("Grid: {}", cur_grid.label()), |ui| {
-                const PRESETS: &[GridInterval] = &[
-                    GridInterval::Off,
-                    GridInterval::Adaptive,
-                    GridInterval::Frame,
-                    GridInterval::HalfSecond,
-                    GridInterval::Second,
-                    GridInterval::TwoSeconds,
-                    GridInterval::FiveSeconds,
-                ];
-                for &preset in PRESETS {
-                    let is_selected = matches!(
-                        (preset, cur_grid),
-                        (GridInterval::Off, GridInterval::Off)
-                            | (GridInterval::Adaptive, GridInterval::Adaptive)
-                            | (GridInterval::Frame, GridInterval::Frame)
-                            | (GridInterval::HalfSecond, GridInterval::HalfSecond)
-                            | (GridInterval::Second, GridInterval::Second)
-                            | (GridInterval::TwoSeconds, GridInterval::TwoSeconds)
-                            | (GridInterval::FiveSeconds, GridInterval::FiveSeconds)
-                    );
+                for preset in crate::timeline::snap::Snapper::GRID_CHOICES {
+                    let is_selected = preset == cur_grid;
                     let prefix = if is_selected { "\u{2714} " } else { "    " };
                     if ui.button(format!("{prefix}{}", preset.label())).clicked() {
                         cmds.push(AppCommand::SetGridInterval(preset));
@@ -6770,55 +6751,10 @@ impl TimelinePanel {
             if let Some(pos) = pointer_pos {
                 if clip_rect.contains(pos) && content_rect.contains(pos) {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
-                    let blade_snap = state.snap.master && !ui.input(|i| i.modifiers.shift);
-                    let raw_x = pos.x - content_rect.left() + scroll;
-                    let raw_secs = (raw_x as f64 / zoom as f64).max(0.0);
-                    let mut blade_x = pos.x;
-
-                    if blade_snap {
-                        let snap_thresh_secs = (snap_threshold_px() * 2.0) as f64 / zoom as f64;
-                        // Snap targets: playhead, clip edges, in/out markers
-                        let mut best_dist = f64::MAX;
-                        let mut best_secs = raw_secs;
-
-                        // Playhead
-                        let ph_secs = state.playhead.to_secs_f64();
-                        let d = (raw_secs - ph_secs).abs();
-                        if d < snap_thresh_secs && d < best_dist {
-                            best_dist = d;
-                            best_secs = ph_secs;
-                        }
-                        // All clip edges
-                        for track in &state.sequence().tracks {
-                            for c in &track.clips {
-                                for &edge_secs in &[c.timeline_in.to_secs_f64(), c.timeline_out.to_secs_f64()] {
-                                    let d = (raw_secs - edge_secs).abs();
-                                    if d < snap_thresh_secs && d < best_dist {
-                                        best_dist = d;
-                                        best_secs = edge_secs;
-                                    }
-                                }
-                            }
-                        }
-                        // In/out markers
-                        if let Some(inp) = state.sequence().in_point {
-                            let d = (raw_secs - inp.to_secs_f64()).abs();
-                            if d < snap_thresh_secs && d < best_dist {
-                                best_dist = d;
-                                best_secs = inp.to_secs_f64();
-                            }
-                        }
-                        if let Some(outp) = state.sequence().out_point {
-                            let d = (raw_secs - outp.to_secs_f64()).abs();
-                            if d < snap_thresh_secs && d < best_dist {
-                                best_secs = outp.to_secs_f64();
-                            }
-                        }
-
-                        if best_dist < f64::MAX {
-                            blade_x = content_rect.left() + best_secs as f32 * zoom - scroll;
-                        }
-                    }
+                    // Where the click would cut, the same as the cut (#3056).
+                    let raw_secs = ((pos.x - content_rect.left() + scroll) as f64 / zoom as f64).max(0.0);
+                    let cut = Self::blade_time(state, raw_secs, zoom, ui.input(|i| i.modifiers.shift));
+                    let blade_x = content_rect.left() + cut.to_secs_f64() as f32 * zoom - scroll;
 
                     // Draw blade line (yellow if snapped, red if unsnapped)
                     let snapped = (blade_x - pos.x).abs() > 0.5;
@@ -8354,48 +8290,8 @@ impl TimelinePanel {
 
                 if let Some((hit_clip_id, hit_tl_in, hit_tl_out, _hit_is_seq, hit_group_id)) = hit_data {
                     if state.active_tool == Tool::Blade {
-                        // Snap blade position when snap is enabled (hold Shift to override)
-                        let mut cut_secs = click_secs;
-                        let blade_snap = state.snap.master && !ui.input(|i| i.modifiers.shift);
-                        if blade_snap {
-                            let snap_thresh_secs = (snap_threshold_px() * 2.0) as f64 / zoom as f64;
-                            let mut best_dist = f64::MAX;
-                            // Playhead
-                            let ph_secs = state.playhead.to_secs_f64();
-                            let d = (click_secs - ph_secs).abs();
-                            if d < snap_thresh_secs && d < best_dist {
-                                best_dist = d;
-                                cut_secs = ph_secs;
-                            }
-                            // Clip edges
-                            for track in &state.sequence().tracks {
-                                for c in &track.clips {
-                                    for &edge_secs in &[c.timeline_in.to_secs_f64(), c.timeline_out.to_secs_f64()] {
-                                        let d = (click_secs - edge_secs).abs();
-                                        if d < snap_thresh_secs && d < best_dist {
-                                            best_dist = d;
-                                            cut_secs = edge_secs;
-                                        }
-                                    }
-                                }
-                            }
-                            // In/out markers
-                            if let Some(inp) = state.sequence().in_point {
-                                let d = (click_secs - inp.to_secs_f64()).abs();
-                                if d < snap_thresh_secs && d < best_dist {
-                                    best_dist = d;
-                                    cut_secs = inp.to_secs_f64();
-                                }
-                            }
-                            if let Some(outp) = state.sequence().out_point {
-                                let d = (click_secs - outp.to_secs_f64()).abs();
-                                if d < snap_thresh_secs && d < best_dist {
-                                    cut_secs = outp.to_secs_f64();
-                                }
-                            }
-                            let _ = best_dist;
-                        }
-                        let cut_tc = RationalTime::from_secs_f64(cut_secs, fps.rate());
+                        // On a snap within the distance, Shift for none (#3056).
+                        let cut_tc = Self::blade_time(state, click_secs, zoom, ui.input(|i| i.modifiers.shift));
                         cmds.push(AppCommand::BladeClip {
                             track_index: track_idx,
                             clip_id: hit_clip_id,
@@ -10447,8 +10343,9 @@ impl TimelinePanel {
 
                         // The slid clip's edges snap as every drag's do
                         // (#3056); it and its neighbours move, so none of
-                        // them is a target.
-                        let snapper = crate::timeline::snap::Snapper::of(state, zoom, ui.input(|i| i.modifiers.shift));
+                        // them is a target. Shift starts a slide, so here
+                        // Ctrl is what lets it go free.
+                        let snapper = crate::timeline::snap::Snapper::of(state, zoom, ui.input(|i| i.modifiers.command));
                         let mut hold = slide.hold;
                         let edges = [slide.original_timeline_in + dt, slide.original_timeline_out + dt];
                         let movers: Vec<ClipId> = [Some(slide.clip_id), slide.left_clip_id, slide.right_clip_id].into_iter().flatten().collect();
@@ -10926,6 +10823,14 @@ impl TimelinePanel {
         if let (Some(roll), Some(hold)) = (self.roll_trimming.as_mut(), roll_hold) {
             roll.hold = hold;
         }
+    }
+
+    /// Where the blade cuts for a click `secs` into the timeline, and
+    /// where its line shows before the click (#3056): on a clip edge,
+    /// marker, mark or the playhead within the snap distance, else the
+    /// nearest frame; Shift for none.
+    fn blade_time(state: &AppState, secs: f64, zoom: f32, shift: bool) -> Timecode {
+        Self::media_drop_time(state, secs, zoom, shift)
     }
 
     /// Where a pool item or a title let go `secs` into the timeline goes

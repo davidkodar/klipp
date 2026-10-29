@@ -3485,6 +3485,10 @@ impl KlippApp {
                 self.state.grade_track_in_colour(*track_id);
                 true
             }
+            AppCommand::InjectPointer(steps) => {
+                self.pointer.queue(steps);
+                true
+            }
             AppCommand::ShowPanel { workspace, inspector_tab } => {
                 if super::main_layout::show_panel(&mut self.state, &mut self.layout, workspace.as_deref(), inspector_tab.as_deref()) {
                     self.layout_dirty = true;

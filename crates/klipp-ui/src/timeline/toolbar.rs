@@ -212,11 +212,19 @@ fn draw_group(group: Group, ui: &mut egui::Ui, state: &mut AppState, theme: &Kli
                         (SnapTargetKind::Playhead, "Snap to playhead", cfg.playhead),
                         (SnapTargetKind::Marker, "Snap to markers", cfg.markers),
                         (SnapTargetKind::InPoint, "Snap to in/out", cfg.in_out),
-                        (SnapTargetKind::Grid, "Snap to grid", cfg.grid),
                     ];
                     for &(target, label, enabled) in rows {
                         if menu_toggle(ui, label, "", enabled).clicked() {
                             cmds.push(AppCommand::SetSnapTarget { target, enabled: !enabled });
+                            ui.close_menu();
+                        }
+                    }
+                    // The grid, one choice (#3056).
+                    ui.separator();
+                    ui.label(egui::RichText::new("Grid").small());
+                    for choice in crate::timeline::snap::Snapper::GRID_CHOICES {
+                        if menu_toggle(ui, choice.label(), "", state.grid_snap_interval == choice).clicked() {
+                            cmds.push(AppCommand::SetGridInterval(choice));
                             ui.close_menu();
                         }
                     }

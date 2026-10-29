@@ -21,6 +21,7 @@ use klipp_core::{
 use klipp_engine::{PlaybackState, SharedFrameBuffer};
 
 mod export;
+mod pointer_hook;
 mod export_banding;
 mod frame_glide;
 mod track_subject;
@@ -384,6 +385,8 @@ pub struct KlippApp {
     preferences_panel: PreferencesPanel,
     transport: TransportBar,
     timeline: TimelinePanel,
+    /// Pointer steps a harness asked for, played one a frame (#3056).
+    pointer: pointer_hook::PointerPlayer,
     thumb_tx: Sender<ThumbnailResult>,
     thumb_rx: Receiver<ThumbnailResult>,
     source_frame_tx: Sender<SourceFrameResult>,
@@ -750,6 +753,14 @@ pub(crate) fn auto_zoom_factor(size: egui::Vec2) -> f32 {
 }
 
 impl eframe::App for KlippApp {
+    /// A harness's pointer steps (the control socket's `pointer`) join the
+    /// window's input here, a frame's worth at a time.
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        let timeline = &self.timeline;
+        let state = &self.state;
+        self.pointer.play(ctx, raw_input, |secs, track| pointer_hook::timeline_point(timeline, state, secs, track));
+    }
+
     /// Called by eframe right before the window closes — wgpu is still
     /// alive at this point. AppState drops AFTER this returns, by which
     /// time wgpu has already started tearing down; any GPU-resource
