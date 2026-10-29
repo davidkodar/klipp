@@ -1,5 +1,5 @@
 //! Mattes on a clip's picture (#1746): a window, a gradient, a roto shape,
-//! a luma key or a difference key, made beside the picture's chain from
+//! a qualifier, a luma key or a difference key, made beside the picture's chain from
 //! the clip's source, its matte feeding an effect's mask. The grade's own
 //! node kinds, run by the same executor: the renderer reads one beside the
 //! chain as a side matte (`klipp_compose::resolve::MaskSource::Side`).
@@ -10,7 +10,7 @@
 //! Its Sources menu adds, the same way, a picture a Merge lays over the
 //! clip's ([`source_ops`]): a generator's solid or gradient.
 
-use klipp_core::{DifferenceKeySettings, LumaKeySettings, Mask, MaskShape, MaskStack};
+use klipp_core::{DifferenceKeySettings, LumaKeySettings, Mask, MaskShape, MaskStack, QualifierSettings};
 use klipp_graph_format::lifted::types as lt;
 use klipp_graph_format::op::GraphOp;
 use klipp_graph_format::path::NodePath;
@@ -32,8 +32,9 @@ fn window(shape: MaskShape) -> NodeParams {
 }
 
 /// Each matte, in the menu's order. A key starts on, so it acts as it is
-/// added: the luma key selects the highlights; the difference key selects
-/// everything until a clean plate is chosen.
+/// added: the qualifier selects the reds until its range is picked
+/// (#2576); the luma key selects the highlights; the difference key
+/// selects everything until a clean plate is chosen.
 pub const MATTES: &[Matte] = &[
     Matte { tag: "matte.window", name: "Window", kind: NodeKind::Mask, params: || window(MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.3 }) },
     Matte {
@@ -48,6 +49,12 @@ pub const MATTES: &[Matte] = &[
         name: "Roto Shape",
         kind: NodeKind::Mask,
         params: || window(MaskShape::polygon(vec![(0.5, 0.3), (0.7, 0.5), (0.5, 0.7), (0.3, 0.5)])),
+    },
+    Matte {
+        tag: "matte.qualifier",
+        name: "Qualifier",
+        kind: NodeKind::Qualifier,
+        params: || NodeParams { qualifier: Some(QualifierSettings { enabled: true, ..QualifierSettings::default() }), ..NodeParams::default() },
     },
     Matte {
         tag: "matte.luma_key",

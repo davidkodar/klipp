@@ -4048,10 +4048,7 @@ impl NodeGraphV2Panel {
 
                     let q = self.add_menu_search.trim().to_lowercase();
                     let in_search = !q.is_empty();
-                    let matches = |label: &str| -> bool {
-                        if !in_search { return true; }
-                        label.to_lowercase().contains(&q)
-                    };
+                    let matches = |label: &str| -> bool { !in_search || model::menu_entry_matches(label, &q) };
                     if enter && in_search {
                         chosen_kind = categories.iter().flat_map(|(_, e)| e.iter()).find(|(label, _)| matches(label)).map(|(_, k)| *k);
                     }

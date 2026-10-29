@@ -636,6 +636,26 @@ mod tests {
     use klipp_timeline::Clip;
     use klipp_timeline::test_clip::TestClip;
 
+    /// #2576: searching any add menu (the grade's, the picture's and the
+    /// Composite page's) for a qualifier, HSL, hue or a key by colour
+    /// finds the Qualifier; a search for something else does not.
+    #[test]
+    fn every_add_menu_finds_the_qualifier_by_what_it_is_called() {
+        let menus: [(&str, &[MenuCategory]); 3] = [("grade", super::super::model::grade_menu()), ("picture", picture_menu()), ("composite", composite_menu())];
+        for (menu, categories) in menus {
+            let found = |q: &str| -> Vec<&str> {
+                categories.iter().flat_map(|(_, e)| e.iter()).filter(|(label, _)| super::super::model::menu_entry_matches(label, q)).map(|(label, _)| *label).collect()
+            };
+            for q in ["qualif", "qualifier", "hsl", "hue", "key by colour", "key by color", "colour key"] {
+                assert!(found(q).contains(&"Qualifier"), "{menu}: {q:?} finds {:?}", found(q));
+            }
+            assert!(!found("blur").contains(&"Qualifier"), "{menu}: a blur search");
+        }
+        // The picture's Qualifier is the matte made beside the chain.
+        let tag = picture_menu().iter().flat_map(|(_, e)| e.iter()).find(|(label, _)| *label == "Qualifier").map(|(_, t)| *t);
+        assert_eq!(tag, Some("matte.qualifier"));
+    }
+
     fn clip() -> Clip {
         let t = |s| klipp_core::RationalTime::from_secs_f64(s, 25);
         TestClip::of(Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0))).effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 2.0 }).build()
