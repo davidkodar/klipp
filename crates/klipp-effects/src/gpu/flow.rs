@@ -214,272 +214,33 @@ fn {name}_motion(xi: f32, yi: f32) -> vec2<f32> {{
 
 /// `work_luma`: the frame's encoded luma at level 0.
 fn shader_luma() -> String {
-    format!(
-        "{}
-@group(0) @binding(1) var<storage, read> frame: array<vec4<f32>>;
-@group(0) @binding(2) var<storage, read_write> out: array<f32>;
-@compute @workgroup_size(8, 8)
-fn main(@builtin(global_invocation_id) id: vec3<u32>) {{
-    if (id.x >= p.w || id.y >= p.h) {{ return; }}
-    let y0 = id.y * p.src_h / p.h;
-    let y1 = max((id.y + 1u) * p.src_h / p.h, y0 + 1u);
-    let x0 = id.x * p.src_w / p.w;
-    let x1 = max((id.x + 1u) * p.src_w / p.w, x0 + 1u);
-    var sum = 0.0;
-    for (var sy = y0; sy < y1; sy++) {{
-        for (var sx = x0; sx < x1; sx++) {{
-            sum += encode(frame[sy * p.src_w + sx]);
-        }}
-    }}
-    out[id.y * p.w + id.x] = sum / f32((x1 - x0) * (y1 - y0));
-}}
-",
-        prelude()
-    )
+    prelude() + gpu_shader!("flow/luma.1.wgsl")
 }
 
 /// `halve`: the level at `off` from the one above it at `coff`.
 fn shader_halve() -> String {
-    format!(
-        "{}
-@group(0) @binding(1) var<storage, read_write> lum: array<f32>;
-{}
-@compute @workgroup_size(8, 8)
-fn main(@builtin(global_invocation_id) id: vec3<u32>) {{
-    if (id.x >= p.w || id.y >= p.h) {{ return; }}
-    let x = i32(id.x) * 2;
-    let y = i32(id.y) * 2;
-    lum[p.off + id.y * p.w + id.x] = (up_at(x, y) + up_at(x + 1, y) + up_at(x, y + 1) + up_at(x + 1, y + 1)) * 0.25;
-}}
-",
-        prelude(),
-        plane_fns("up", "lum", "p.coff", "p.cw", "p.ch")
-    )
+    prelude() + gpu_shader!("flow/halve.1.wgsl") + &plane_fns("up", "lum", "p.coff", "p.cw", "p.ch") + gpu_shader!("flow/halve.2.wgsl")
 }
 
 /// `search`: one level's raw field, written from index 0 of `raw`.
 fn shader_search() -> String {
-    format!(
-        "{}
-@group(0) @binding(1) var<storage, read> from_l: array<f32>;
-@group(0) @binding(2) var<storage, read> to_l: array<f32>;
-@group(0) @binding(3) var<storage, read> coarse: array<vec4<f32>>;
-@group(0) @binding(4) var<storage, read_write> raw: array<vec4<f32>>;
-{}{}{}
-fn cost(x: i32, y: i32, pred: vec2<f32>, dx: i32, dy: i32) -> f32 {{
-    let mx = pred.x + f32(dx);
-    let my = pred.y + f32(dy);
-    var sum = 0.0;
-    for (var oy = -PATCH_RADIUS; oy <= PATCH_RADIUS; oy++) {{
-        for (var ox = -PATCH_RADIUS; ox <= PATCH_RADIUS; ox++) {{
-            sum += abs(from_at(x + ox, y + oy) - to_sample(f32(x + ox) + mx, f32(y + oy) + my));
-        }}
-    }}
-    let n = (2 * PATCH_RADIUS + 1) * (2 * PATCH_RADIUS + 1);
-    return sum / f32(n) + MOTION_PENALTY * f32(abs(dx) + abs(dy));
-}}
-fn parabola(minus: f32, centre: f32, plus: f32) -> f32 {{
-    let denom = minus - 2.0 * centre + plus;
-    if (denom > 1e-6) {{ return clamp((minus - plus) / (2.0 * denom), -0.5, 0.5); }}
-    return 0.0;
-}}
-@compute @workgroup_size(8, 8)
-fn main(@builtin(global_invocation_id) id: vec3<u32>) {{
-    if (id.x >= p.w || id.y >= p.h) {{ return; }}
-    let x = i32(id.x);
-    let y = i32(id.y);
-    var pred = vec2<f32>(0.0, 0.0);
-    if (p.cw > 0u) {{
-        let m = coarse_motion((f32(x) + 0.5) * 0.5 - 0.5, (f32(y) + 0.5) * 0.5 - 0.5);
-        pred = vec2<f32>(m.x * 2.0, m.y * 2.0);
-    }}
-    var bx = 0;
-    var by = 0;
-    var bc = 1e30;
-    for (var dy = -SEARCH_RADIUS; dy <= SEARCH_RADIUS; dy++) {{
-        for (var dx = -SEARCH_RADIUS; dx <= SEARCH_RADIUS; dx++) {{
-            let c = cost(x, y, pred, dx, dy);
-            if (c < bc) {{ bx = dx; by = dy; bc = c; }}
-        }}
-    }}
-    let sx = parabola(cost(x, y, pred, bx - 1, by), bc, cost(x, y, pred, bx + 1, by));
-    let sy = parabola(cost(x, y, pred, bx, by - 1), bc, cost(x, y, pred, bx, by + 1));
-    raw[id.y * p.w + id.x] = vec4<f32>(pred.x + f32(bx) + sx, pred.y + f32(by) + sy, bc, 0.0);
-}}
-",
-        prelude(),
-        plane_fns("from", "from_l", "p.off", "p.w", "p.h"),
-        plane_fns("to", "to_l", "p.off", "p.w", "p.h"),
-        field_fns("coarse", "coarse", "p.coff", "p.cw", "p.ch"),
-    )
+    prelude() + gpu_shader!("flow/search.1.wgsl") + &plane_fns("from", "from_l", "p.off", "p.w", "p.h") + &plane_fns("to", "to_l", "p.off", "p.w", "p.h") + &field_fns("coarse", "coarse", "p.coff", "p.cw", "p.ch") + gpu_shader!("flow/search.2.wgsl")
 }
 
 /// `smooth`: the level's field at `off` from the raw one.
 fn shader_smooth() -> String {
-    format!(
-        "{}
-@group(0) @binding(1) var<storage, read> raw: array<vec4<f32>>;
-@group(0) @binding(2) var<storage, read_write> field: array<vec4<f32>>;
-{}
-@compute @workgroup_size(8, 8)
-fn main(@builtin(global_invocation_id) id: vec3<u32>) {{
-    if (id.x >= p.w || id.y >= p.h) {{ return; }}
-    let x = i32(id.x);
-    let y = i32(id.y);
-    var sx = 0.0;
-    var sy = 0.0;
-    var sw = 0.0;
-    for (var oy = -1; oy <= 1; oy++) {{
-        for (var ox = -1; ox <= 1; ox++) {{
-            let v = raw_at(x + ox, y + oy);
-            let weight = 1.0 / (v.z + 0.01);
-            sx += v.x * weight;
-            sy += v.y * weight;
-            sw += weight;
-        }}
-    }}
-    field[p.off + id.y * p.w + id.x] = vec4<f32>(sx / sw, sy / sw, raw_at(x, y).z, 0.0);
-}}
-",
-        prelude(),
-        field_fns("raw", "raw", "0u", "p.w", "p.h")
-    )
+    prelude() + gpu_shader!("flow/smooth.1.wgsl") + &field_fns("raw", "raw", "0u", "p.w", "p.h") + gpu_shader!("flow/smooth.2.wgsl")
 }
 
 /// `unreliable_share`'s count, at level 0.
 fn shader_count() -> String {
-    format!(
-        "{}
-@group(0) @binding(1) var<storage, read> fwd: array<vec4<f32>>;
-@group(0) @binding(2) var<storage, read> bwd: array<vec4<f32>>;
-@group(0) @binding(3) var<storage, read_write> count: array<atomic<u32>>;
-{}{}
-@compute @workgroup_size(8, 8)
-fn main(@builtin(global_invocation_id) id: vec3<u32>) {{
-    if (id.x >= p.w || id.y >= p.h) {{ return; }}
-    let x = f32(id.x);
-    let y = f32(id.y);
-    let v = fwd_at(i32(id.x), i32(id.y));
-    let tx = x + v.x;
-    let ty = y + v.y;
-    let inside = tx >= 0.0 && ty >= 0.0 && tx <= f32(p.w - 1u) && ty <= f32(p.h - 1u);
-    let f = fwd_motion(x, y);
-    let b = bwd_motion(x + f.x, y + f.y);
-    let dis = sqrt((f.x + b.x) * (f.x + b.x) + (f.y + b.y) * (f.y + b.y));
-    if ((inside && dis > UNRELIABLE_DISAGREEMENT) || v.z > UNRELIABLE_COST) {{
-        atomicAdd(&count[0], 1u);
-    }}
-}}
-",
-        prelude(),
-        field_fns("fwd", "fwd", "0u", "p.w", "p.h"),
-        field_fns("bwd", "bwd", "0u", "p.w", "p.h"),
-    )
+    prelude() + gpu_shader!("flow/count.1.wgsl") + &field_fns("fwd", "fwd", "0u", "p.w", "p.h") + &field_fns("bwd", "bwd", "0u", "p.w", "p.h") + gpu_shader!("flow/count.2.wgsl")
 }
 
 /// `synthesise`: the in-between frame at `p.t`, at the frames' size
 /// (`src_w` × `src_h`) from the flow at the work size (`w` × `h`).
 fn shader_synth() -> String {
-    format!(
-        "{}
-@group(0) @binding(1) var<storage, read> fa: array<vec4<f32>>;
-@group(0) @binding(2) var<storage, read> fb: array<vec4<f32>>;
-@group(0) @binding(3) var<storage, read> fwd: array<vec4<f32>>;
-@group(0) @binding(4) var<storage, read> bwd: array<vec4<f32>>;
-@group(0) @binding(5) var<storage, read> count: array<u32>;
-@group(0) @binding(6) var<storage, read_write> out: array<vec4<f32>>;
-{}{}
-fn sample_rgba(from_b: bool, xi: f32, yi: f32) -> vec4<f32> {{
-    let x = clamp(xi, 0.0, f32(p.src_w - 1u));
-    let y = clamp(yi, 0.0, f32(p.src_h - 1u));
-    let x0f = floor(x);
-    let y0f = floor(y);
-    let fx = x - x0f;
-    let fy = y - y0f;
-    let x0 = u32(x0f);
-    let y0 = u32(y0f);
-    let x1 = min(x0 + 1u, p.src_w - 1u);
-    let y1 = min(y0 + 1u, p.src_h - 1u);
-    var c00: vec4<f32>; var c10: vec4<f32>; var c01: vec4<f32>; var c11: vec4<f32>;
-    if (from_b) {{
-        c00 = fb[y0 * p.src_w + x0]; c10 = fb[y0 * p.src_w + x1]; c01 = fb[y1 * p.src_w + x0]; c11 = fb[y1 * p.src_w + x1];
-    }} else {{
-        c00 = fa[y0 * p.src_w + x0]; c10 = fa[y0 * p.src_w + x1]; c01 = fa[y1 * p.src_w + x0]; c11 = fa[y1 * p.src_w + x1];
-    }}
-    let top = c00 + (c10 - c00) * fx;
-    let bottom = c01 + (c11 - c01) * fx;
-    return top + (bottom - top) * fy;
-}}
-fn inside(px: f32, py: f32) -> bool {{
-    return px >= -0.5 && py >= -0.5 && px <= f32(p.src_w) - 0.5 && py <= f32(p.src_h) - 0.5;
-}}
-// `disagreement` with `forward` the forward field when `from_a`.
-fn disagreement(from_a: bool, x: f32, y: f32) -> f32 {{
-    var f: vec2<f32>;
-    var b: vec2<f32>;
-    if (from_a) {{
-        f = fwd_motion(x, y);
-        b = bwd_motion(x + f.x, y + f.y);
-    }} else {{
-        f = bwd_motion(x, y);
-        b = fwd_motion(x + f.x, y + f.y);
-    }}
-    return sqrt((f.x + b.x) * (f.x + b.x) + (f.y + b.y) * (f.y + b.y));
-}}
-@compute @workgroup_size(8, 8)
-fn main(@builtin(global_invocation_id) id: vec3<u32>) {{
-    if (id.x >= p.src_w || id.y >= p.src_h) {{ return; }}
-    let i = id.y * p.src_w + id.x;
-    let t = clamp(p.t, 0.0, 1.0);
-    let a0 = fa[i];
-    let b0 = fb[i];
-    let blend = a0 + (b0 - a0) * t;
-    if (f32(count[0]) / f32(p.total) > p.frac) {{
-        out[i] = blend;
-        return;
-    }}
-    let kx = f32(p.w) / f32(p.src_w);
-    let ky = f32(p.h) / f32(p.src_h);
-    let x = f32(id.x);
-    let y = f32(id.y);
-    let qx = (x + 0.5) * kx - 0.5;
-    let qy = (y + 0.5) * ky - 0.5;
-    let f01 = fwd_motion(qx, qy);
-    let f10 = bwd_motion(qx, qy);
-    let s = 1.0 - t;
-    let ax = x + (-s * t * f01.x + t * t * f10.x) / kx;
-    let ay = y + (-s * t * f01.y + t * t * f10.y) / ky;
-    let bx = x + (s * s * f01.x - t * s * f10.x) / kx;
-    let by = y + (s * s * f01.y - t * s * f10.y) / ky;
-    var ra = 0.0;
-    if (inside(ax, ay)) {{
-        let e = disagreement(true, (ax + 0.5) * kx - 0.5, (ay + 0.5) * ky - 0.5) / CONSISTENCY_SCALE;
-        ra = exp(-e * e);
-    }}
-    var rb = 0.0;
-    if (inside(bx, by)) {{
-        let e = disagreement(false, (bx + 0.5) * kx - 0.5, (by + 0.5) * ky - 0.5) / CONSISTENCY_SCALE;
-        rb = exp(-e * e);
-    }}
-    let ca = sample_rgba(false, ax, ay);
-    let cb = sample_rgba(true, bx, by);
-    let wa = s * ra;
-    let wb = t * rb;
-    if (wa + wb <= 1e-3) {{
-        out[i] = blend;
-        return;
-    }}
-    let d = abs(encode(ca) - encode(cb)) / PHOTOMETRIC_SCALE;
-    let alike = exp(-d * d);
-    let confidence = max(ra, rb) * (1.0 + (alike - 1.0) * min(ra, rb));
-    let warped = (wa * ca + wb * cb) / (wa + wb);
-    out[i] = blend + (warped - blend) * confidence;
-}}
-",
-        prelude(),
-        field_fns("fwd", "fwd", "0u", "p.w", "p.h"),
-        field_fns("bwd", "bwd", "0u", "p.w", "p.h"),
-    )
+    prelude() + gpu_shader!("flow/synth.1.wgsl") + &field_fns("fwd", "fwd", "0u", "p.w", "p.h") + &field_fns("bwd", "bwd", "0u", "p.w", "p.h") + gpu_shader!("flow/synth.2.wgsl")
 }
 
 fn pipeline(device: &wgpu::Device, label: &str, source: &str) -> wgpu::ComputePipeline {
