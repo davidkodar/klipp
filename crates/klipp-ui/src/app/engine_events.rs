@@ -378,6 +378,7 @@ impl KlippApp {
                 }
                 AppEvent::MediaLoadFailed { media_id, path, error } => {
                     self.state.pending_undo_imports.remove(&media_id);
+                    self.state.pending_import_bins.remove(&media_id);
                     self.state.pending_skip_analysis.remove(&media_id);
                     self.state.pending_media_path = None;
                     tracing::error!("Failed to load media: {error}");

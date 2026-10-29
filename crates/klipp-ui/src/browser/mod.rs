@@ -6284,20 +6284,10 @@ mod rename_tests {
 mod tests {
     use super::FILE_THUMB_MAX_WIDTH;
 
-    /// Helper: walk a directory and collect media file paths, mirroring the
-    /// ImportMediaFolder handler logic in app.rs.
+    /// The media files Import Folder takes from a directory: the walk its
+    /// handler uses (#3096).
     fn collect_media_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
-        let mut files = Vec::new();
-        for entry in walkdir::WalkDir::new(dir)
-            .into_iter()
-            .filter_map(|e| e.ok())
-        {
-            if entry.file_type().is_file()
-                && klipp_core::media_extensions::path_is_media(entry.path()) {
-                    files.push(entry.path().to_path_buf());
-                }
-        }
-        files
+        klipp_media::folder_walk::media_in_folder(dir, true).unwrap().files.into_iter().map(|f| f.path).collect()
     }
 
     #[test]

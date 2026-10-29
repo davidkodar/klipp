@@ -22,6 +22,7 @@ impl KlippApp {
             if let Some(existing) = self.state.media_pool.find_by_path(path) {
                 let existing_id = existing.id;
                 self.state.pending_undo_imports.remove(media_id);
+                self.state.pending_import_bins.remove(media_id);
                 self.state.toast.show(format!(
                     "'{}' is already in the media pool",
                     path.file_name()
@@ -143,42 +144,40 @@ impl KlippApp {
                     }
                     true
                 }
-                AppCommand::ImportMediaFolder { ref directory } => {
-                    let media_extensions = klipp_core::media_extensions::all_media_extensions();
+                AppCommand::ImportMediaFolder { ref directory, bins } => {
                     let card = klipp_media::card::card_kind(directory);
-                    let mut imported = 0u32;
-                    let mut skipped = 0u32;
-                    for entry in walkdir::WalkDir::new(directory)
-                        .into_iter()
-                        .filter_map(|e| e.ok())
-                    {
-                        if entry.file_type().is_file() {
-                            if let Some(ext) = entry.path().extension().and_then(|e| e.to_str()) {
-                                if media_extensions.iter().any(|me| me.eq_ignore_ascii_case(ext)) {
-                                    // A card's proxies, thumbnails and
-                                    // indexes are not clips.
-                                    if klipp_media::card::is_card_side_file(entry.path()) {
-                                        skipped += 1;
-                                        continue;
-                                    }
-                                    let media_id = klipp_core::MediaId::new();
-                                    self.state.pending_undo_imports.insert(media_id);
-                                    let _ = self.cmd_tx.send(AppCommand::LoadMediaFile {
-                                        path: entry.path().to_path_buf(),
-                                        media_id,
-                                    });
-                                    imported += 1;
-                                }
-                            }
+                    // Walked within its limits (#3096): links not
+                    // followed, hidden items and a card's proxies,
+                    // thumbnails and indexes left out.
+                    let found = match klipp_media::folder_walk::media_in_folder(directory, true) {
+                        Ok(found) => found,
+                        Err(e) => {
+                            self.state.toast.show(format!("Can't read the folder: {e}"));
+                            return true;
                         }
+                    };
+                    for file in &found.files {
+                        let media_id = klipp_core::MediaId::new();
+                        self.state.pending_undo_imports.insert(media_id);
+                        if let (true, Some(folder)) = (bins, &file.folder) {
+                            self.state.pending_import_bins.insert(media_id, folder.clone());
+                        }
+                        let _ = self.cmd_tx.send(AppCommand::LoadMediaFile { path: file.path.clone(), media_id });
                     }
-                    if imported > 0 {
-                        self.state.toast.show(match card {
-                            Some(kind) => format!("Importing {imported} clips from a {kind}"),
-                            None => format!("Importing {imported} files from folder"),
-                        });
+                    let imported = found.files.len();
+                    let folders = found.by_folder().len();
+                    let mut said = match (card, imported) {
+                        (_, 0) => "No media files in that folder".to_string(),
+                        (Some(kind), n) => format!("Importing {n} clips from a {kind}"),
+                        (None, n) if folders > 1 => format!("Importing {n} files from {folders} folders"),
+                        (None, n) => format!("Importing {n} files from folder"),
+                    };
+                    let left_out = found.left_out();
+                    if !left_out.is_empty() {
+                        said.push_str(&format!(" ({})", left_out.join("; ")));
                     }
-                    tracing::info!("Folder import: {} files from {:?} ({} card extras skipped)", imported, directory, skipped);
+                    self.state.toast.show(said);
+                    tracing::info!("Folder import: {imported} files from {directory:?}, {folders} folders, left out: {left_out:?}");
                     true
                 }
                 AppCommand::AppendClip { media_id } => {

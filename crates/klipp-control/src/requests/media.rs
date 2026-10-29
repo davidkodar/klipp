@@ -272,36 +272,86 @@ pub(crate) fn respond(
             }))
         }
 
-        ControlCommand::ImportMedia { path, paths, folder, analyze } => {
+        ControlCommand::ImportMedia { path, paths, folder, recursive, bins, analyze } => {
             // Many files: each imported as one would be, each answered on
             // its own, and a file that can't be doesn't stop the rest
             // (#1587: 42 shots took a 42-entry batch).
             if !paths.is_empty() || folder.is_some() {
-                let mut files: Vec<String> = (!path.is_empty()).then_some(path).into_iter().chain(paths).collect();
-                if let Some(dir) = folder {
-                    files.extend(media_in_folder(std::path::Path::new(&dir))?);
-                }
+                // Each file and the subfolder it came from.
+                let mut files: Vec<(String, Option<String>)> = (!path.is_empty()).then_some(path).into_iter().chain(paths).map(|f| (f, None)).collect();
+                // A folder walked within its limits (#3096): links not
+                // followed, hidden items left out.
+                let walked = match &folder {
+                    Some(dir) => {
+                        let found = klipp_media::folder_walk::media_in_folder(std::path::Path::new(dir), recursive).map_err(|e| format!("can't read the folder {dir}: {e}"))?;
+                        files.extend(found.files.iter().map(|f| (f.path.to_string_lossy().into_owned(), f.folder.clone())));
+                        Some(found)
+                    }
+                    None => None,
+                };
+                let left_out = walked.as_ref().map(|w| w.left_out()).unwrap_or_default();
                 if files.is_empty() {
-                    return Err("no media file to import: the folder holds none".into());
+                    let why = if left_out.is_empty() { String::new() } else { format!(" ({})", left_out.join("; ")) };
+                    return Err(format!("no media file to import: the folder holds none{why}"));
                 }
                 let mut results = Vec::with_capacity(files.len());
                 let mut failed = 0;
-                for file in &files {
+                // Files new to the pool by the bin they go in, in the
+                // order the bins were first met.
+                let mut to_bins: Vec<(String, Vec<klipp_core::MediaId>)> = Vec::new();
+                let mut not_binned = 0;
+                for (file, sub) in &files {
                     match handle(ctx, ControlCommand::import_one(file.clone(), analyze), &mut None) {
-                        Ok(v) => results.push(json!({ "path": file, "media_id": v["media_id"], "already_imported": v["already_imported"] == true, "job_id": v["job_id"] })),
+                        Ok(v) => {
+                            let already = v["already_imported"] == true;
+                            if let (true, Some(bin), false) = (bins, sub, already) {
+                                match v["media_id"].as_str().and_then(|id| id.parse().ok()) {
+                                    Some(uuid) => match to_bins.iter_mut().find(|(b, _)| b == bin) {
+                                        Some((_, ids)) => ids.push(klipp_core::MediaId(uuid)),
+                                        None => to_bins.push((bin.clone(), vec![klipp_core::MediaId(uuid)])),
+                                    },
+                                    None => not_binned += 1,
+                                }
+                            }
+                            results.push(json!({ "path": file, "folder": sub, "media_id": v["media_id"], "already_imported": already, "job_id": v["job_id"] }));
+                        }
                         Err(why) => {
                             failed += 1;
-                            results.push(json!({ "path": file, "error": why }));
+                            results.push(json!({ "path": file, "folder": sub, "error": why }));
                         }
                     }
                 }
+                if !to_bins.is_empty() {
+                    let moves = to_bins.iter().map(|(bin, ids)| AppCommand::MoveItemsToBin { media_ids: ids.clone(), bin: Some(bin.clone()) }).collect();
+                    send_envelope(ctx, moves, true)?;
+                }
                 let done = files.len() - failed;
-                let text = if failed == 0 { format!("{done} file{} imported", if done == 1 { "" } else { "s" }) } else { format!("{done} of {} files imported; {failed} could not be", files.len()) };
+                let mut text = if failed == 0 { format!("{done} file{} imported", if done == 1 { "" } else { "s" }) } else { format!("{done} of {} files imported; {failed} could not be", files.len()) };
+                // Where they came from, folder by folder.
+                let by_folder = walked.as_ref().map(|w| w.by_folder()).unwrap_or_default();
+                if by_folder.len() > 1 || by_folder.first().is_some_and(|(f, _)| f.is_some()) {
+                    let each: Vec<String> = by_folder.iter().map(|(f, n)| format!("{} {n}", f.as_deref().unwrap_or("the folder itself"))).collect();
+                    text.push_str(&format!(", from {} folders: {}", by_folder.len(), each.join(", ")));
+                }
+                if !to_bins.is_empty() {
+                    let names: Vec<&str> = to_bins.iter().map(|(b, _)| b.as_str()).collect();
+                    text.push_str(&format!(". In bins: {}", names.join(", ")));
+                }
+                if not_binned > 0 {
+                    text.push_str(&format!(". {not_binned} still probing, so not in a bin yet"));
+                }
+                if !left_out.is_empty() {
+                    text.push_str(&format!(". Left out: {}", left_out.join("; ")));
+                }
+                text.push('.');
                 return Ok(json!({
                     "text": text,
                     "imported": done,
                     "failed": failed,
                     "results": results,
+                    "folders": by_folder.iter().map(|(f, n)| json!({ "folder": f, "files": n })).collect::<Vec<_>>(),
+                    "bins": to_bins.iter().map(|(b, ids)| json!({ "bin": b, "files": ids.len() })).collect::<Vec<_>>(),
+                    "left_out": left_out,
                     "analysis_requested": analyze,
                     "next": "A result with no media_id is still probing: follow its job_id. Read transcript and shots only after analysis completes.",
                 }));
@@ -500,21 +550,6 @@ pub(crate) fn respond(
 
         _ => Err("internal: a request was routed to the wrong area".into()),
     }
-}
-
-/// The media files directly in `dir`, by name: its subfolders and any
-/// other file (a list, a sidecar) left out.
-fn media_in_folder(dir: &std::path::Path) -> Result<Vec<String>, String> {
-    let entries = std::fs::read_dir(dir).map_err(|e| format!("can't read the folder {}: {e}", dir.display()))?;
-    let mut files: Vec<String> = entries
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.is_file() && klipp_core::media_extensions::path_is_media(p))
-        .filter(|p| !p.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.')))
-        .map(|p| p.to_string_lossy().into_owned())
-        .collect();
-    files.sort();
-    Ok(files)
 }
 
 /// What a media item is: a sound, a still or footage (#1892).

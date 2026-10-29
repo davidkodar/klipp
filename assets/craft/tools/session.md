@@ -183,6 +183,13 @@ Open another of the project's sequences, as clicking its tab does: by index or s
 
 Import media: one path, several paths, or a folder's media files. Each is answered with its media_id or an error; an item with no media_id yet is still being probed: follow its job_id.
 
+A folder brings its subfolders' media too (recursive false: its own files only). The walk does not follow links, leaves out hidden files and folders and camera-card proxies, reads at most 8 levels down and takes at most 5000 files; what it left out and any limit it reached are said in the reply's text and `left_out`. `folders` counts the files from each subfolder. With bins true, each subfolder's files that are new to the pool go into a bin named after its path below the folder (`video`, `video/day 2`), as one undo step; files already in the pool stay where they are. Use it for a shoot laid out as `video/`, `music/`, `sfx/` instead of importing each file by path.
+
+Arguments:
+- `analyze`: default true
+- `recursive`: a folder's subfolders too (default true)
+- `bins`: a bin per subfolder
+
 ## klipp_tag_media
 
 Tag a media item with words that sort the pool (a person, a place, "b-roll", "hero"), or remove tags. klipp_list_media shows each item's tags.

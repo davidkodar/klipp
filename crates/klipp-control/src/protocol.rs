@@ -186,7 +186,7 @@ impl ControlCommand {
     /// Import one file: what the tools that make a file and bring it in
     /// send.
     pub fn import_one(path: String, analyze: bool) -> Self {
-        Self::ImportMedia { path, paths: Vec::new(), folder: None, analyze }
+        Self::ImportMedia { path, paths: Vec::new(), folder: None, recursive: true, bins: false, analyze }
     }
 }
 
@@ -318,8 +318,10 @@ pub enum ControlCommand {
     },
     /// Import a file into the media pool. Asynchronous: the app probes
     /// the file on a worker, so poll `list_media` for the result.
-    /// `paths`, a `folder` (its media files, not its subfolders) or both
-    /// import many at once, each answered on its own (#1587).
+    /// `paths`, a `folder` or both import many at once, each answered on
+    /// its own (#1587). A folder's subfolders are read too unless
+    /// `recursive` is false, within the walk's limits (#3096); `bins`
+    /// puts each subfolder's files in a bin named after it.
     ImportMedia {
         #[serde(default)]
         path: String,
@@ -327,6 +329,10 @@ pub enum ControlCommand {
         paths: Vec<String>,
         #[serde(default)]
         folder: Option<String>,
+        #[serde(default = "default_true")]
+        recursive: bool,
+        #[serde(default)]
+        bins: bool,
         /// Queue automatic analysis when the file arrives (default true).
         #[serde(default = "default_analyze")]
         analyze: bool,

@@ -1427,13 +1427,14 @@ fn control_socket_reads_state_and_forwards_commands() {
     assert!(refused["error"].as_str().unwrap().contains("could not be imported"), "{}", refused["error"]);
     // Many at once (#1587): each file answered on its own, one that can't
     // be imported stopping none of the rest; a folder gives its media
-    // files only, not a list beside them or a subfolder.
+    // files only, not a list beside them, and not recursive, not a
+    // subfolder's.
     let shots = std::env::temp_dir().join(format!("klipp-import-many-{}", std::process::id()));
     std::fs::create_dir_all(shots.join("sub")).unwrap();
     std::fs::write(shots.join("broken.mp4"), b"this is not a video file at all").unwrap();
     std::fs::write(shots.join("list.txt"), b"broken.mp4").unwrap();
     std::fs::write(shots.join("sub").join("deeper.mp4"), b"not reached").unwrap();
-    let many = h.ok(json!({ "method": "import_media", "paths": ["/definitely/not/here.mov"], "folder": shots.to_string_lossy(), "analyze": false }));
+    let many = h.ok(json!({ "method": "import_media", "paths": ["/definitely/not/here.mov"], "folder": shots.to_string_lossy(), "recursive": false, "analyze": false }));
     assert_eq!(many["failed"], 2, "{many}");
     assert_eq!(many["imported"], 0, "{many}");
     let results = many["results"].as_array().unwrap();
@@ -1444,9 +1445,9 @@ fn control_socket_reads_state_and_forwards_commands() {
     let empty = h.call(json!({ "method": "import_media", "folder": shots.join("sub").join("none").to_string_lossy() }));
     assert_eq!(empty["ok"], json!(false), "a folder that isn't there is refused: {empty}");
     std::fs::remove_file(shots.join("broken.mp4")).unwrap();
-    let none = h.call(json!({ "method": "import_media", "folder": shots.to_string_lossy() }));
+    let none = h.call(json!({ "method": "import_media", "folder": shots.to_string_lossy(), "recursive": false }));
     assert_eq!(none["ok"], json!(false), "a folder with no media is refused: {none}");
-    assert!(none["error"].as_str().unwrap().contains("no media file"), "{}", none["error"]);
+    assert!(none["error"].as_str().unwrap().contains("no media file") && none["error"].as_str().unwrap().contains("1 subfolder not read"), "{}", none["error"]);
     let _ = std::fs::remove_dir_all(&shots);
     let nothing = h.call(json!({ "method": "import_media" }));
     assert_eq!(nothing["ok"], json!(false), "{nothing}");
@@ -1881,6 +1882,79 @@ fn a_render_cancellation_names_the_job_it_stops() {
     let status = h.ok(json!({"method":"job_status","job_id":requested}));
     assert_eq!(status["jobs"][0]["state"], "cancelled");
     assert_eq!(h.shared.exports.lock().unwrap()[1].status, "rendering");
+}
+
+/// A short mono WAV that is not silent, as the stand-in UI takes it.
+fn write_wav(path: &std::path::Path) {
+    let samples = 1_600u32;
+    let mut wav = Vec::new();
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + samples * 2).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&16_000u32.to_le_bytes());
+    wav.extend_from_slice(&32_000u32.to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&(samples * 2).to_le_bytes());
+    for frame in 0..samples {
+        let sample: i16 = if frame % 32 < 16 { 1000 } else { -1000 };
+        wav.extend_from_slice(&sample.to_le_bytes());
+    }
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, wav).unwrap();
+}
+
+/// #3096: a folder with media only in two levels of subfolders imports
+/// all of it, each file new to the pool put in a bin named after its
+/// subfolder when asked, as one step; the reply says how many came from
+/// which folder. A link out of the folder and a hidden folder are left
+/// out and said.
+#[test]
+fn a_folder_imports_its_subfolders_into_bins() {
+    let mut h = harness();
+    let root = std::env::temp_dir().join(format!("klipp-import-tree-{}", uuid::Uuid::new_v4()));
+    let outside = std::env::temp_dir().join(format!("klipp-import-outside-{}", uuid::Uuid::new_v4()));
+    for f in ["video/a.wav", "video/day 2/b.wav", "video/day 2/c.wav", "music/song.wav", ".cache/hidden.wav"] {
+        write_wav(&root.join(f));
+    }
+    write_wav(&outside.join("elsewhere.wav"));
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&outside, root.join("music").join("linked")).unwrap();
+
+    let reply = h.ok(json!({ "method": "import_media", "folder": root.to_string_lossy(), "bins": true, "analyze": false }));
+    assert_eq!(reply["imported"], 4, "{reply}");
+    assert_eq!(reply["folders"], json!([{"folder": "music", "files": 1}, {"folder": "video", "files": 1}, {"folder": "video/day 2", "files": 2}]), "{reply}");
+    assert_eq!(reply["bins"], json!([{"bin": "music", "files": 1}, {"bin": "video", "files": 1}, {"bin": "video/day 2", "files": 2}]), "{reply}");
+    let text = reply["text"].as_str().unwrap();
+    assert!(text.starts_with("4 files imported, from 3 folders: music 1, video 1, video/day 2 2. In bins: music, video, video/day 2."), "{text}");
+    assert!(text.contains("1 hidden item skipped"), "{text}");
+    #[cfg(unix)]
+    assert!(text.contains("1 link not followed"), "{text}");
+    let results = reply["results"].as_array().unwrap();
+    assert!(results.iter().all(|r| r["path"].as_str().unwrap().starts_with(root.to_str().unwrap())), "nothing from outside: {reply}");
+
+    // One envelope of moves, each bin's files by the ids the import gave.
+    let id_of = |name: &str| results.iter().find(|r| r["path"].as_str().unwrap().ends_with(name)).and_then(|r| r["media_id"].as_str()).map(|s| klipp_core::MediaId(s.parse().unwrap())).unwrap();
+    let moves: Vec<(Option<String>, Vec<klipp_core::MediaId>)> = h.sent.lock().unwrap().iter().filter_map(|c| match c {
+        klipp_core::AppCommand::MoveItemsToBin { media_ids, bin } => Some((bin.clone(), media_ids.clone())),
+        _ => None,
+    }).collect();
+    assert_eq!(moves, [
+        (Some("music".to_string()), vec![id_of("song.wav")]),
+        (Some("video".to_string()), vec![id_of("a.wav")]),
+        (Some("video/day 2".to_string()), vec![id_of("b.wav"), id_of("c.wav")]),
+    ]);
+    assert_eq!(h.envelopes.lock().unwrap().last(), Some(&(true, 3)), "the moves are one step");
+
+    // Again: all already in the pool, so none is moved again.
+    let again = h.ok(json!({ "method": "import_media", "folder": root.to_string_lossy(), "bins": true, "analyze": false }));
+    assert_eq!(again["bins"], json!([]), "{again}");
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&outside);
 }
 
 #[test]

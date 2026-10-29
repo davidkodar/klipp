@@ -6,6 +6,9 @@ What each of these tools does in full: the details its short description leaves 
 
 Put a marker on the timeline: how you and the editor leave each other notes. Mark what you are unsure of or want looked at, with a label and a note saying why, and the editor jumps through them. at_secs is timeline seconds; duration_secs makes it a range. color: red, orange, yellow, green, blue, purple; kind: chapter, todo, comment, best_take, section (chapters export as chapter points). Answers with the marker's id.
 
+Arguments:
+- `note`: the longer comment
+
 ## klipp_attach_audio
 
 Give a clip the audio of its own media file, linked, spanning exactly what the clip spans. Repairs a clip that was added before appending brought the audio along; refused if the clip already has its audio.
@@ -176,6 +179,7 @@ A contact sheet of the timeline as one image: a tile for each shot (each stretch
 
 Arguments:
 - `cols`: Tiles to a row (default 6)
+- `tile_width`: Pixels (default 320)
 - `frames`: Evenly spaced tiles instead of one per shot (1-60)
 - `inline`: Also return the picture in the reply; by default only when no path is given
 - `path`: Absolute PNG path; temp dir when omitted

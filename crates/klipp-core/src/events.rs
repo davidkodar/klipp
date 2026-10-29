@@ -1220,8 +1220,10 @@ pub enum AppCommand {
     ImportMediaTo { path: PathBuf, drop: ClipDrop },
     /// Place an already-imported pool item on the timeline.
     PlaceMedia { media_id: MediaId, drop: ClipDrop },
-    /// Recursively import all media files from a directory.
-    ImportMediaFolder { directory: PathBuf },
+    /// Import the media files of a directory and its subfolders, within
+    /// the walk's limits (#3096); `bins` puts each subfolder's files in a
+    /// bin named after it.
+    ImportMediaFolder { directory: PathBuf, bins: bool },
 
     // Loop
     /// Render `from..to` into the render cache in the background (#924):

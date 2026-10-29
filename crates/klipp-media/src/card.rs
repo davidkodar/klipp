@@ -12,7 +12,9 @@ use std::path::Path;
 /// Backup, Panasonic's Proxy, Icon and Voice, Sony XDCAM's General.
 const SIDE_DIRS: [&str; 11] = ["sub", "thmbnl", "clipinf", "playlist", "backup", "proxy", "icon", "voice", "general", "takr", "mediapro"];
 
-/// Whether a file on a card is one of the extras beside the clips.
+/// Whether a file on a card is one of the extras beside the clips, by
+/// its path below the card: a folder of the same name above the card,
+/// or off a card, says nothing.
 pub fn is_card_side_file(path: &Path) -> bool {
     path.ancestors()
         .skip(1)

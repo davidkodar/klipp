@@ -35,6 +35,7 @@ pub mod made;
 pub mod exif_read;
 pub mod field;
 pub mod card;
+pub mod folder_walk;
 pub mod dolby_vision;
 pub mod smart_bin;
 pub mod relink;
