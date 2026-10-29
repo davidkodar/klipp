@@ -79,11 +79,17 @@ pub fn with_ops(ops_json: &[Value]) -> Result<Sequence, String> {
     let list: Vec<Value> = ops_json
         .iter()
         .map(|op| {
-            let mut op = op.clone();
-            if op.get("clip_id").is_none() && op.get("on").is_none() {
-                op["clip_id"] = json!(id);
+            // The fixture's clip, for an op that takes one: an op that
+            // doesn't refuses the field (#2581).
+            let mut named = op.clone();
+            if op.get("clip_id").is_some() || op.get("on").is_some() {
+                return named;
             }
-            op
+            named["clip_id"] = json!(id);
+            match serde_json::from_value::<Op>(named.clone()) {
+                Err(e) if e.to_string().contains("unknown field `clip_id`") => op.clone(),
+                _ => named,
+            }
         })
         .collect();
     let ops: Vec<Op> = serde_json::from_value(Value::Array(list)).map_err(|e| e.to_string())?;

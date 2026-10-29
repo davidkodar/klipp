@@ -2,7 +2,7 @@
 
 Fields, limits and examples op by op, for the ops above that have more to them.
 
-Editorial operations, resolved by Klipp into frame-exact edits. Give a list of ops; each is an object with "op" and its fields:
+Editorial operations, resolved by Klipp into frame-exact edits. Give a list of ops; each is an object with "op" and its fields. A field an op does not take is refused, never passed over, and the refusal lists the ones it does:
 
 place {media_id, track, at, source_in?, source_out?, insert?, with_audio?, sync_source_secs?} — a media item onto a track (an index from klipp_timeline, or "video"/"audio"/"text" for the first of that kind) at an anchor; source_in/out in seconds of the file, the whole file by default; for still images this is the hold range and may exceed the import duration. Its sound comes along linked on the first audio track (made if none) unless with_audio is false (B-roll over a voice); an empty sequence takes the first picture's size and rate; with insert, every unlocked track is rippled later to make room and a clip straddling the anchor is split. sync_source_secs is the moment of the file (seconds from its start; search_sfx's heard.peak_secs) that lands on at: the clip starts that much earlier, to the sample on an audio track, so a whoosh's peak hits the cut; refused when the moment is outside the stretch placed or the clip would start before 0 (the reply gives the source_in that fits).
 
