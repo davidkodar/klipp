@@ -96,8 +96,8 @@ pub(super) fn range_for_export(dialog: &mut ExportDialogState, seq: &klipp_timel
 
 pub(super) struct ExportDialogState {
     /// Which of the delivery formats are ticked (#2724), as
-    /// `DELIVERY_TEMPLATES` lists them.
-    pub(super) deliver: [bool; 4],
+    /// `delivery_templates()` lists them.
+    pub(super) deliver: Vec<bool>,
     /// The render the last export started, said in the form's foot while
     /// it runs and once it is done (#2941).
     pub(super) last_job: Option<uuid::Uuid>,
@@ -198,7 +198,7 @@ pub(super) struct ExportDialogState {
 impl Default for ExportDialogState {
     fn default() -> Self {
         Self {
-            deliver: [false; 4],
+            deliver: vec![false; klipp_core::delivery_templates().len()],
             last_job: None,
             output_path: String::new(),
             format: ExportFormat::Mp4,
