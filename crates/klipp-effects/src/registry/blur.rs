@@ -83,7 +83,7 @@ pub(super) static TYPES: &[EffectType] = &[
             &[ParamDesc::float("radius", "Radius", 0.0, (0.0, 100.0), Unit::CanvasPx)],
         )),
         tag: "gaussian_blur",
-        browser: listed(BrowserCategory::Blur, "Blur", ""),
+        browser: listed(BrowserCategory::Blur, "Blur", "Softens the whole picture evenly"),
         sample: || BuiltinEffect::GaussianBlur { radius: 0.0 },
     },
     EffectType {
@@ -116,7 +116,7 @@ pub(super) static TYPES: &[EffectType] = &[
     EffectType {
         desc: mixable(blur("klipp.fx.sharpen", "Sharpen", &[ParamDesc::float("amount", "Amount", 0.0, (0.0, 2.0), Unit::Ratio)])),
         tag: "sharpen",
-        browser: listed(BrowserCategory::Blur, "Blur", ""),
+        browser: listed(BrowserCategory::Blur, "Blur", "Brings out edges and fine detail"),
         sample: || BuiltinEffect::Sharpen { amount: 0.0 },
     },
     EffectType {
@@ -130,7 +130,7 @@ pub(super) static TYPES: &[EffectType] = &[
             ],
         )),
         tag: "directional_blur",
-        browser: listed(BrowserCategory::Blur, "Blur", ""),
+        browser: listed(BrowserCategory::Blur, "Blur", "Smears the picture along one direction, as motion does"),
         sample: || BuiltinEffect::DirectionalBlur { angle: 0.0, distance: 20.0, samples: 8 },
     },
     EffectType {
@@ -161,7 +161,7 @@ pub(super) static TYPES: &[EffectType] = &[
             ],
         )),
         tag: "radial_blur",
-        browser: listed(BrowserCategory::Blur, "Blur", ""),
+        browser: listed(BrowserCategory::Blur, "Blur", "Blurs out from a centre, as a zoom or a spin does"),
         sample: || BuiltinEffect::RadialBlur { center_x: 0.5, center_y: 0.5, amount: 10.0, samples: 12, mode: 0 },
     },
     EffectType {
@@ -190,7 +190,7 @@ pub(super) static TYPES: &[EffectType] = &[
             ],
         )),
         tag: "denoise",
-        browser: listed(BrowserCategory::Blur, "Blur", ""),
+        browser: listed(BrowserCategory::Blur, "Blur", "Smooths noise in each frame while keeping edges"),
         sample: || BuiltinEffect::Denoise { spatial_sigma: 5.0, color_sigma: 0.1, iterations: 1 },
     },
     EffectType {
@@ -200,19 +200,19 @@ pub(super) static TYPES: &[EffectType] = &[
             &[whole("radius", "Radius", 1.0, Some((1.0, 5.0)), Unit::CanvasPx, false)],
         )),
         tag: "median_filter",
-        browser: listed(BrowserCategory::Blur, "Blur", ""),
+        browser: listed(BrowserCategory::Blur, "Blur", "Takes out specks and small noise, keeping edges hard"),
         sample: || BuiltinEffect::MedianFilter { radius: 1 },
     },
     EffectType {
         desc: mixable(blur("klipp.fx.dilate", "Dilate", &[whole("radius", "Radius", 1.0, Some((1.0, 10.0)), Unit::CanvasPx, false)])),
         tag: "dilate",
-        browser: listed(BrowserCategory::Stylize, "Stylize", ""),
+        browser: listed(BrowserCategory::Stylize, "Stylize", "Grows the bright areas outward"),
         sample: || BuiltinEffect::Dilate { radius: 1 },
     },
     EffectType {
         desc: mixable(blur("klipp.fx.erode", "Erode", &[whole("radius", "Radius", 1.0, Some((1.0, 10.0)), Unit::CanvasPx, false)])),
         tag: "erode",
-        browser: listed(BrowserCategory::Stylize, "Stylize", ""),
+        browser: listed(BrowserCategory::Stylize, "Stylize", "Shrinks the bright areas inward"),
         sample: || BuiltinEffect::Erode { radius: 1 },
     },
     EffectType {
@@ -226,7 +226,7 @@ pub(super) static TYPES: &[EffectType] = &[
             ],
         ),
         tag: "emboss",
-        browser: listed(BrowserCategory::Stylize, "Stylize", ""),
+        browser: listed(BrowserCategory::Stylize, "Stylize", "The picture as a relief lit from one side"),
         sample: || BuiltinEffect::Emboss { angle: 135.0, strength: 1.0, mix: 1.0 },
     },
     EffectType {
@@ -239,13 +239,13 @@ pub(super) static TYPES: &[EffectType] = &[
             ],
         ),
         tag: "edge_detect",
-        browser: listed(BrowserCategory::Stylize, "Stylize", ""),
+        browser: listed(BrowserCategory::Stylize, "Stylize", "Draws the picture's edges as lines"),
         sample: || BuiltinEffect::EdgeDetect { strength: 1.0, mix: 1.0 },
     },
     EffectType {
         desc: mixable(blur("klipp.fx.mosaic", "Mosaic", &[at_least_one_px(ParamDesc::float("block_size", "Block Size", 10.0, (1.0, 100.0), Unit::CanvasPx))])),
         tag: "mosaic",
-        browser: listed(BrowserCategory::Stylize, "Stylize", ""),
+        browser: listed(BrowserCategory::Stylize, "Stylize", "Large square pixels, as on a blurred-out face"),
         sample: || BuiltinEffect::Mosaic { block_size: 10.0 },
     },
 ];

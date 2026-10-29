@@ -90,7 +90,7 @@ pub(super) static TYPES: &[EffectType] = &[
             false,
         ),
         tag: "crop",
-        browser: listed(BrowserCategory::Distort, "Distort", ""),
+        browser: listed(BrowserCategory::Distort, "Distort", "Trims the picture's edges"),
         sample: || BuiltinEffect::Crop {
             left: 0.0,
             right: 0.0,
@@ -151,7 +151,7 @@ pub(super) static TYPES: &[EffectType] = &[
             false,
         ),
         tag: "transform",
-        browser: listed(BrowserCategory::Distort, "Distort", ""),
+        browser: listed(BrowserCategory::Distort, "Distort", "Moves, scales and turns the picture in the frame"),
         sample: || BuiltinEffect::Transform {
             position_x: 0.0,
             position_y: 0.0,
@@ -216,7 +216,7 @@ pub(super) static TYPES: &[EffectType] = &[
             false,
         ),
         tag: "mirror",
-        browser: listed(BrowserCategory::Distort, "Transform", ""),
+        browser: listed(BrowserCategory::Distort, "Transform", "Flips the picture across or up and down"),
         sample: || BuiltinEffect::Mirror {
             horizontal: 1,
             vertical: 0,
@@ -234,7 +234,7 @@ pub(super) static TYPES: &[EffectType] = &[
             false,
         ),
         tag: "lens_distortion",
-        browser: listed(BrowserCategory::Distort, "Distort", ""),
+        browser: listed(BrowserCategory::Distort, "Distort", "Bends the picture as a wide or long lens does, barrel or pincushion"),
         sample: || BuiltinEffect::LensDistortion {
             distortion: 0.0,
             scale: 1.0,
@@ -259,7 +259,7 @@ pub(super) static TYPES: &[EffectType] = &[
             false,
         )),
         tag: "displace",
-        browser: listed(BrowserCategory::Distort, "Distort", ""),
+        browser: listed(BrowserCategory::Distort, "Distort", "Moves the pixels by a drifting noise field: ripples and heat haze"),
         sample: || BuiltinEffect::Displace {
             amount: 12.0,
             size: 80.0,
@@ -359,7 +359,7 @@ pub(super) static TYPES: &[EffectType] = &[
             true,
         ),
         tag: "reflection",
-        browser: listed(BrowserCategory::Distort, "Distort", ""),
+        browser: listed(BrowserCategory::Distort, "Distort", "The picture mirrored below a waterline, on water, a floor, a wet street or glass"),
         sample: || BuiltinEffect::Reflection {
             waterline: 0.6,
             gap: 0.0,
@@ -404,7 +404,7 @@ pub(super) static TYPES: &[EffectType] = &[
             false,
         ),
         tag: "letterbox",
-        browser: listed(BrowserCategory::Stylize, "Stylize", ""),
+        browser: listed(BrowserCategory::Stylize, "Stylize", "Bars to a wider frame shape, black or white"),
         sample: || BuiltinEffect::Letterbox {
             aspect_ratio: 2.39,
             bar_color: 0,

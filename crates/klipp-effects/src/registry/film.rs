@@ -182,7 +182,7 @@ pub(super) static TYPES: &[EffectType] = &[
             true,
         )),
         tag: "noise_generator",
-        browser: listed(BrowserCategory::Film, "Film", ""),
+        browser: listed(BrowserCategory::Film, "Film", "Random noise over the picture, in colour or grey"),
         sample: || BuiltinEffect::NoiseGenerator { amount: 0.1, monochrome: 0, seed: 0 },
     },
     // A random flicker (#989): its seed the user's, its time the
@@ -259,7 +259,7 @@ pub(super) static TYPES: &[EffectType] = &[
             true,
         ),
         tag: "chroma_key",
-        browser: listed(BrowserCategory::Keying, "Keying", ""),
+        browser: listed(BrowserCategory::Keying, "Keying", "Key out a colour, green by default, with its spill pulled back"),
         sample: || BuiltinEffect::ChromaKey {
             key_color: [0, 255, 0],
             tolerance: 0.2,
@@ -305,7 +305,7 @@ pub(super) static TYPES: &[EffectType] = &[
             true,
         ),
         tag: "rolling_shutter_correction",
-        browser: listed(BrowserCategory::Distort, "Distort", ""),
+        browser: listed(BrowserCategory::Distort, "Distort", "Straightens the lean a rolling shutter gives fast pans"),
         sample: || BuiltinEffect::RollingShutterCorrection { strength: 0.5, readout_ratio: 0.5 },
     },
     EffectType {
@@ -363,7 +363,7 @@ pub(super) static TYPES: &[EffectType] = &[
             true,
         ),
         tag: "video_stabilization",
-        browser: listed(BrowserCategory::Distort, "Distort", ""),
+        browser: listed(BrowserCategory::Distort, "Distort", "Takes out the shake, keeping a pan or tracking move"),
         sample: || BuiltinEffect::VideoStabilization { smoothing: 0.5, crop_ratio: 0.05, zoom: true },
     },
     EffectType {
@@ -381,7 +381,7 @@ pub(super) static TYPES: &[EffectType] = &[
             false,
         ),
         tag: "speed_ramp",
-        browser: listed(BrowserCategory::Stylize, "Stylize", ""),
+        browser: listed(BrowserCategory::Stylize, "Stylize", "Plays the clip faster or slower, blending or following the motion between frames"),
         sample: || BuiltinEffect::SpeedRamp { speed: 1.0, blend_mode: 1 },
     },
     EffectType {
