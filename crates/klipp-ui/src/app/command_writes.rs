@@ -20,6 +20,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         // arrives later.
         AppCommand::SetSplitCompareNode { .. }
         | AppCommand::ShowPanel { .. }
+        | AppCommand::InjectPointer(_)
         | AppCommand::ShowMaskKeysOnTimeline { .. }
         | AppCommand::SetViewerOverlay { .. }
         | AppCommand::SetMulticamMode { .. }

@@ -1549,6 +1549,10 @@ pub enum AppCommand {
     /// only, never the document. For harnesses driving the app (the
     /// control socket's `show_panel`, test hooks only).
     ShowPanel { workspace: Option<String>, inspector_tab: Option<String> },
+    /// Play these pointer steps into the app's input, one a frame, as a
+    /// mouse's events (the control socket's `pointer`, test hooks only):
+    /// the input only, never the document by itself.
+    InjectPointer(Vec<crate::pointer::PointerStep>),
     /// Open the Colour workspace on video track `track_id`'s own grade
     /// (#1408): the layout only, never the document.
     GradeTrackInColour { track_id: TrackId },

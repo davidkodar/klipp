@@ -772,6 +772,13 @@ pub(crate) fn respond(
             send(AppCommand::ShowPanel { workspace, inspector_tab })
         }
         #[cfg(feature = "test-hooks")]
+        ControlCommand::Pointer { steps } => {
+            if let Some(why) = klipp_core::pointer::pointer_steps_fault(&steps) {
+                return Err(why);
+            }
+            send(AppCommand::InjectPointer(steps))
+        }
+        #[cfg(feature = "test-hooks")]
         ControlCommand::EffectCommand { clip_id, action, index, to, effect } => {
             use crate::protocol::EffectAction as A;
             let clip_id = existing_clip_id(ctx, &clip_id)?;
