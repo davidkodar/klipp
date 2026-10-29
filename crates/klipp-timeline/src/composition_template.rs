@@ -34,6 +34,8 @@ pub const MAX_SEQUENCES: usize = 64;
 /// A recipe's graph: as many ops as one graph batch takes.
 pub const MAX_RECIPE_OPS: usize = 64;
 pub const MAX_RECIPE_CHECKS: usize = 32;
+/// The most keys a recipe's `keys` op puts on one parameter (#2886).
+pub const MAX_RECIPE_KEYS: usize = 256;
 /// The longest name, label or property, bytes.
 pub const MAX_TEXT: usize = 256;
 /// The format this build writes and reads: 2 carries the composition.
@@ -318,8 +320,19 @@ fn one() -> f32 {
 
 /// The nodes of a clip's picture a recipe attaches to (#2758): its
 /// source, its grade, its display step, and the end of its chain (what
-/// feeds the placement, or the output).
-pub const ANCHORS: [&str; 4] = ["source", "grade", "display", "end"];
+/// feeds the placement, or the output); and the clip's placement (#2886),
+/// which only a `keys` op names, to key its position, scale or rotation.
+pub const ANCHORS: [&str; 5] = ["source", "grade", "display", "end", "placement"];
+
+/// `keys:<op>#<i>.<field>` (#2886): the time (`time_secs`), value
+/// (`value`) or ease into the next key (`ease`) of key `i` of the recipe's
+/// `keys` op `op`, whatever it keys (a node it adds, or the clip's
+/// placement).
+pub fn keys_op_binding(property: &str) -> Option<(usize, usize, &str)> {
+    let (op, key) = property.strip_prefix("keys:")?.split_once('#')?;
+    let (i, field) = key.split_once('.')?;
+    matches!(field, "time_secs" | "value" | "ease").then_some((op.parse().ok()?, i.parse().ok()?, field))
+}
 
 /// The fields of a graph op that are paths: a recipe's anchors and new
 /// nodes are resolved there.
@@ -339,6 +352,24 @@ pub fn node_binding(property: &str) -> Option<(usize, &str)> {
 pub fn nested_binding(param: &str) -> Option<(&str, String)> {
     let (head, rest) = param.split_once('/')?;
     (!head.is_empty() && !rest.is_empty()).then(|| (head, format!("/{rest}")))
+}
+
+/// `node:<k>.<param>#<i>.<field>` (#2886): the time (`time_secs`) or
+/// the value (`value`) of key `i` a recipe's `keys` op puts on parameter
+/// `param` of the node op `k` adds; `None` for another property.
+pub fn key_binding(property: &str) -> Option<(usize, &str, usize, &str)> {
+    let (k, rest) = node_binding(property)?;
+    let (param, key) = rest.split_once('#')?;
+    let (i, field) = key.split_once('.')?;
+    (!param.is_empty() && matches!(field, "time_secs" | "value")).then_some((k, param, i.parse().ok()?, field))
+}
+
+/// Whether recipe op `op` is the `keys` op on parameter `param` of the
+/// node op `k` adds.
+fn keys_on(op: &serde_json::Value, k: usize, param: &str) -> bool {
+    let new = serde_json::json!({ "new": k });
+    let path = &op["path"];
+    op["op"] == "keys" && op["key"] == param && (*path == new || path["nodes"].as_array().is_some_and(|n| n.len() == 1 && n[0] == new))
 }
 
 /// `node:<k>.<param>~<field>` (#2758): a field of the first behaviour a
@@ -377,6 +408,9 @@ pub fn recipe_anchors(clip: &crate::Clip) -> Result<BTreeMap<&'static str, Uuid>
             anchors.insert(name, id);
         }
     }
+    // The clip's placement, by its node or the id it is always found by.
+    let placement = klipp_graph_lift::clip_properties::placement_node(&lifted.picture).map_or_else(|| klipp_graph_lift::clip_properties::placement_id(clip.id.0), |n| n.id);
+    anchors.insert("placement", placement);
     Ok(anchors)
 }
 
@@ -625,7 +659,11 @@ impl CompositionTemplate {
             }
         }
         for b in &self.bindings {
-            let (k, param) = node_binding(&b.property).ok_or_else(|| format!("a recipe binds node:<op>.<param>, not '{}'", b.property))?;
+            let direct = keys_op_binding(&b.property);
+            let (k, param) = match direct {
+                Some((op, _, _)) => (op, ""),
+                None => node_binding(&b.property).ok_or_else(|| format!("a recipe binds node:<op>.<param> or keys:<op>#<key>.<field>, not '{}'", b.property))?,
+            };
             let value = match (values.get(&b.parameter), self.parameters.get(&b.parameter), self.slots.get(&b.parameter)) {
                 (Some(v), Some(p), _) => {
                     p.validate(v).map_err(|e| format!("control '{}': {e}", b.parameter))?;
@@ -651,6 +689,26 @@ impl CompositionTemplate {
                 (None, v) => v.clone(),
             };
             let value = taken(&value, b.take).map_err(|e| format!("'{}': {e}", b.property))?;
+            // A key of a keys op named by its own place.
+            if let Some((op, at, field)) = direct {
+                let set = match (field, &value) {
+                    ("ease", TemplateValue::Text(t) | TemplateValue::Enum(t)) => serde_json::json!(t),
+                    ("ease", _) => return Err(format!("control '{}' sets a key's ease, so it is a name", b.parameter)),
+                    (_, TemplateValue::Number(n)) => serde_json::json!(n),
+                    _ => return Err(format!("control '{}' sets a key's {field}, so it is a number", b.parameter)),
+                };
+                let key = ops.get_mut(op).filter(|o| o["op"] == "keys").and_then(|o| o["keys"].get_mut(at)).and_then(|m| m.as_object_mut()).ok_or_else(|| format!("'{}': op {op} is no keys op with a key {at}", b.property))?;
+                key.insert(field.to_owned(), set);
+                continue;
+            }
+            // A key's time or value, on the keys op that puts it there.
+            if let Some((_, keyed, at, field)) = key_binding(&b.property) {
+                let TemplateValue::Number(n) = value else { return Err(format!("control '{}' sets a key's {field}, so it is a number", b.parameter)) };
+                let op = ops.iter_mut().find(|o| keys_on(o, k, keyed)).ok_or_else(|| format!("'{}' names no key a keys op puts on op {k}'s {keyed}", b.property))?;
+                let key = op["keys"].get_mut(at).and_then(|m| m.as_object_mut()).ok_or_else(|| format!("'{}': its keys op has no key {at}", b.property))?;
+                key.insert(field.to_owned(), serde_json::json!(n));
+                continue;
+            }
             // A behaviour's field, on the modify op that puts it there.
             if let Some((_, behaviour_of, field)) = behaviour_binding(&b.property) {
                 let op = ops.iter_mut().find(|o| modifies(o, k, behaviour_of)).ok_or_else(|| format!("'{}' names no behaviour a modify op puts on op {k}'s {behaviour_of}", b.property))?;
@@ -810,8 +868,26 @@ impl CompositionTemplate {
             }
             TemplateKind::Recipe => {
                 let graph = self.graph.as_ref().filter(|g| !g.ops.is_empty()).ok_or("a recipe carries the graph it builds")?;
+                // The placement is keyed, never built onto.
+                for op in &graph.ops {
+                    let placed_by = PATH_FIELDS.iter().filter(|f| op.get(**f).and_then(|p| p.get("anchor")).and_then(|a| a.as_str()) == Some("placement")).copied().collect::<Vec<_>>();
+                    if !placed_by.is_empty() && (op["op"] != "keys" || placed_by != ["path"]) {
+                        return Err("only a keys op names the placement".into());
+                    }
+                }
                 for b in &self.bindings {
-                    let (k, _) = node_binding(&b.property).ok_or_else(|| format!("a recipe binds node:<op>.<param>, not '{}'", b.property))?;
+                    if let Some((op, at, field)) = keys_op_binding(&b.property) {
+                        let keys = graph.ops.get(op).filter(|o| o["op"] == "keys").ok_or_else(|| format!("'{}' names op {op}, which is no keys op", b.property))?;
+                        if keys["keys"].get(at).is_none() {
+                            return Err(format!("'{}': op {op} has no key {at}", b.property));
+                        }
+                        let named = self.parameters.get(&b.parameter).is_some_and(|p| matches!(p.default, TemplateValue::Text(_) | TemplateValue::Enum(_)));
+                        if (field == "ease") != named {
+                            return Err(format!("'{}' sets a key's {field}, so '{}' is {}", b.property, b.parameter, if field == "ease" { "a name" } else { "a number" }));
+                        }
+                        continue;
+                    }
+                    let (k, _) = node_binding(&b.property).ok_or_else(|| format!("a recipe binds node:<op>.<param> or keys:<op>#<key>.<field>, not '{}'", b.property))?;
                     let adds = graph.ops.get(k).and_then(|o| o.get("op")).and_then(|o| o.as_str()).is_some_and(|o| matches!(o, "add" | "add_beside"));
                     if !adds {
                         return Err(format!("'{}' names op {k}, which adds no node", b.property));
@@ -824,6 +900,14 @@ impl CompositionTemplate {
                     if let Some((_, param, _)) = behaviour_binding(&b.property) {
                         if !graph.ops.iter().any(|o| modifies(o, k, param)) {
                             return Err(format!("'{}' names a behaviour no modify op puts on op {k}'s {param}", b.property));
+                        }
+                    }
+                    if let Some((_, keyed, at, _)) = key_binding(&b.property) {
+                        if !graph.ops.iter().any(|o| keys_on(o, k, keyed) && o["keys"].get(at).is_some()) {
+                            return Err(format!("'{}' names no key {at} a keys op puts on op {k}'s {keyed}", b.property));
+                        }
+                        if self.parameters.get(&b.parameter).is_some_and(|p| !matches!(p.default, TemplateValue::Number(_))) {
+                            return Err(format!("'{}' sets a key, so '{}' is a number", b.property, b.parameter));
                         }
                     }
                     let (_, param) = node_binding(&b.property).expect("checked above");
@@ -888,6 +972,15 @@ impl CompositionTemplate {
         if let Some(g) = &self.graph {
             count("graph ops", g.ops.len(), MAX_RECIPE_OPS)?;
             count("checks", g.checks.len(), MAX_RECIPE_CHECKS)?;
+            // Keys from someone else's file: a bounded count, each with a
+            // finite time and value.
+            for op in g.ops.iter().filter(|o| o["op"] == "keys") {
+                let keys = op["keys"].as_array().ok_or("a keys op carries a list of keys")?;
+                count("keys on one parameter", keys.len(), MAX_RECIPE_KEYS)?;
+                if keys.iter().any(|k| !["time_secs", "value"].iter().all(|f| k.get(f).and_then(serde_json::Value::as_f64).is_some_and(f64::is_finite))) {
+                    return Err("each key of a keys op has a finite time_secs and value".into());
+                }
+            }
             count("check values", g.check_with.len(), MAX_PARAMETERS)?;
         }
         let texts = [self.name.as_str(), self.category.as_str(), self.written_by.as_str()]
@@ -1230,7 +1323,7 @@ pub fn builtin_templates() -> Vec<CompositionTemplate> {
 /// The recipes Klipp ships (#2758), as files in `assets/recipes`: each a
 /// recipe like a saved one, read and checked as one is.
 pub fn builtin_recipes() -> Vec<CompositionTemplate> {
-    const FILES: [&str; 14] = [
+    const FILES: [&str; 18] = [
         include_str!("../../../assets/recipes/green_screen.klipptemplate"),
         include_str!("../../../assets/recipes/picture_in_picture.klipptemplate"),
         include_str!("../../../assets/recipes/matted_glow.klipptemplate"),
@@ -1245,6 +1338,10 @@ pub fn builtin_recipes() -> Vec<CompositionTemplate> {
         include_str!("../../../assets/recipes/wave.klipptemplate"),
         include_str!("../../../assets/recipes/twirl.klipptemplate"),
         include_str!("../../../assets/recipes/bulge.klipptemplate"),
+        include_str!("../../../assets/recipes/redact_mosaic.klipptemplate"),
+        include_str!("../../../assets/recipes/redact_blur.klipptemplate"),
+        include_str!("../../../assets/recipes/zoom.klipptemplate"),
+        include_str!("../../../assets/recipes/zoom_push.klipptemplate"),
     ];
     FILES
         .iter()
@@ -1785,6 +1882,49 @@ mod tests {
         assert!(why.contains("has nothing at /masks/0/shape/Rectangle/centre_x"), "{why}");
     }
 
+    /// A recipe's keys (#2886): a control sets one key's value and a
+    /// linked one its time; a binding to a key no keys op puts there is
+    /// refused, and so are more keys than a parameter takes, or a key with
+    /// no number for its time, when the recipe is read.
+    #[test]
+    fn a_control_sets_a_key_and_a_recipe_holds_few_finite_keys() {
+        let recipe = |key: &str, keys: serde_json::Value| -> CompositionTemplate {
+            serde_json::from_value(serde_json::json!({
+                "format_version": 2, "id": "3f8b2c61-9a4e-4d17-b5c3-6e2a0f9d7b14", "name": "Blur in", "kind": "recipe",
+                "composition_id": "00000000-0000-0000-0000-000000000000",
+                "parameters": {
+                    "most": { "label": "Most", "default": { "type": "Number", "value": 8.0 }, "range": { "min": 0.0, "max": 40.0 } },
+                    "when": { "label": "When", "default": { "type": "Number", "value": 0.5 }, "range": { "min": 0.0, "max": 1.0 } }
+                },
+                "bindings": [
+                    { "parameter": "most", "property": format!("node:0.radius#{key}.value") },
+                    { "parameter": "when", "property": "node:0.radius#1.time_secs", "link": { "to": [0.0, 4.0] } }
+                ],
+                "graph": { "ops": [
+                    { "op": "add", "after": { "anchor": "end" }, "type": "klipp.fx.gaussian_blur" },
+                    { "op": "keys", "path": { "new": 0 }, "key": "radius", "keys": keys }
+                ] }
+            }))
+            .unwrap()
+        };
+        let two = serde_json::json!([{ "time_secs": 0.0, "value": 0.0 }, { "time_secs": 1.0, "value": 0.0 }]);
+        let r = recipe("1", two.clone());
+        r.validate().unwrap();
+        let anchors = BTreeMap::from([("end", Uuid::new_v4())]);
+        let values = BTreeMap::from([("most".to_string(), TemplateValue::Number(12.0))]);
+        let ops = r.recipe_ops(Uuid::new_v4(), &anchors, &values, &Placing::on_frame(klipp_core::Resolution { width: 100, height: 100 })).unwrap();
+        assert_eq!(ops[1]["keys"][1]["value"], 12.0);
+        assert_eq!(ops[1]["keys"][1]["time_secs"], 2.0, "0.5 through the link's 0..4");
+        assert_eq!(ops[1]["keys"][0], serde_json::json!({ "time_secs": 0.0, "value": 0.0 }), "the other key as written");
+        let why = recipe("5", two).validate().unwrap_err();
+        assert!(why.contains("no key 5"), "{why}");
+        let many: Vec<serde_json::Value> = (0..=MAX_RECIPE_KEYS).map(|i| serde_json::json!({ "time_secs": i as f64, "value": 0.0 })).collect();
+        let why = CompositionTemplate::read(&serde_json::to_string(&recipe("1", serde_json::json!(many))).unwrap()).unwrap_err();
+        assert!(why.contains("at most 256 keys"), "{why}");
+        let why = CompositionTemplate::read(&serde_json::to_string(&recipe("1", serde_json::json!([{ "time_secs": "soon", "value": 1.0 }, { "time_secs": 1.0, "value": 0.0 }]))).unwrap()).unwrap_err();
+        assert!(why.contains("finite time_secs and value"), "{why}");
+    }
+
     /// A template folder is somewhere anyone can drop a file (#2758): what
     /// isn't a template made here is skipped or refused, said, never read
     /// whole or built from. An oversized file, a link to a file elsewhere
@@ -1933,7 +2073,7 @@ mod tests {
     #[test]
     fn the_shipped_files_name_current_ids() {
         let shipped: Vec<CompositionTemplate> = builtin_recipes().into_iter().chain(builtin_templates()).collect();
-        assert_eq!(builtin_recipes().len(), 14);
+        assert_eq!(builtin_recipes().len(), 18);
         for t in shipped {
             let mut again = t.clone();
             again.migrate_ids().unwrap();

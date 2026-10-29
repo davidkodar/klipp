@@ -304,6 +304,138 @@ fn a_window_placed_by_its_controls_lays_its_picture_there() {
     assert!(drawn.iter().zip(at(&plain_frame, 0.25, 0.5)).all(|(a, b)| a.abs_diff(b) <= 1), "not where the file drew it: {drawn:?}");
 }
 
+/// Keys from a recipe (#2886): a blur's radius keyed from none to a
+/// control's value across the clip, the frames apart in time drawn apart,
+/// the stack within a level of the CPU where they meet.
+#[test]
+fn a_recipe_keys_a_parameter_over_the_clip() {
+    let recipe: klipp_timeline::composition_template::CompositionTemplate = serde_json::from_value(serde_json::json!({
+        "format_version": 2, "id": "8e4a1d27-3c6b-4f95-a2d0-7b9e1c5f3a64", "name": "Blur in", "kind": "recipe",
+        "composition_id": "00000000-0000-0000-0000-000000000000",
+        "parameters": { "most": { "label": "Most", "default": { "type": "Number", "value": 6.0 }, "range": { "min": 0.0, "max": 40.0 } } },
+        "bindings": [{ "parameter": "most", "property": "node:0.radius#1.value" }],
+        "graph": { "ops": [
+            { "op": "add", "after": { "anchor": "end" }, "type": "klipp.fx.gaussian_blur" },
+            { "op": "keys", "path": { "new": 0 }, "key": "radius", "keys": [{ "time_secs": 0.6, "value": 0.0 }, { "time_secs": 1.4, "value": 0.0 }] }
+        ] }
+    })).unwrap();
+    recipe.validate().unwrap();
+    let plain = Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(2.0)) };
+    let before = sequence(plain.clone());
+    let values = BTreeMap::from([("most".to_string(), TemplateValue::Number(20.0))]);
+    let (ops, _) = klipp_control::recipes::on_clip(&before, plain.id, &recipe, &values).unwrap_or_else(|e| panic!("{e}"));
+    let mut placed = plain.clone();
+    placed.apply_picture_ops(&ops).unwrap_or_else(|e| panic!("{e}"));
+    let seq = sequence(placed);
+    let Some(early) = stack_at(&seq, 0.6, "keyed blur") else { return };
+    let late = stack_at(&seq, 1.5, "keyed blur").expect("drawn once already");
+    let sharp = stack_at(&before, 0.6, "plain").expect("drawn once already");
+    assert!(worst(&early, &sharp) <= 1, "no blur at the first key: {} levels", worst(&early, &sharp));
+    assert!(worst(&late, &early) > 30, "blurred by the last key: {} levels apart", worst(&late, &early));
+    let shown = stack(&seq, ViewChannel::Picture, "keyed blur").expect("drawn once already");
+    assert!(worst(&cpu(&seq, ViewChannel::Picture), &shown) <= 1, "the stack mid-way, against the CPU");
+}
+
+/// Redact as a recipe (#2886) draws what the redact op drew before it:
+/// a mosaic (or a blur) of the box with its margin, from `from` to `to`,
+/// against the cropped copy of the clip the op used to lay on a track
+/// above, on the GPU stack within a level; outside the stretch, the plain
+/// clip. The box crosses the patch's edge, so the blocks mix two colours.
+/// Its edges lie on whole pixels.
+#[test]
+fn redact_draws_what_its_copy_on_a_track_above_drew() {
+    use klipp_effects::BuiltinEffect as E;
+    // On whole pixels: at an edge part-way through a pixel, the crop
+    // rounded it out and the window counts it in when mostly covered.
+    let (x0, x1, y0, y1) = (0.25f32, 0.55f32, 0.2f32, 0.5f32);
+    for (name, fx) in [("Redact (mosaic)", E::Mosaic { block_size: 36.0 }), ("Redact (blur)", E::GaussianBlur { radius: 35.0 })] {
+        let recipe = builtin_recipes().into_iter().find(|r| r.name == name).expect(name);
+        let plain = shot_clip();
+        let before = sequence(plain.clone());
+        let n = |v: f32| TemplateValue::Number(f64::from(v));
+        let values = BTreeMap::from([
+            ("amount".to_string(), n(0.5)),
+            ("centre_x".to_string(), n((x0 + x1) / 2.0)),
+            ("centre_y".to_string(), n((y0 + y1) / 2.0)),
+            ("width".to_string(), n(x1 - x0)),
+            // Along the frame's width, as a window measures its height.
+            ("height".to_string(), n((y1 - y0) * H as f32 / W as f32)),
+            ("start".to_string(), TemplateValue::Number(0.8 - 0.001)),
+            ("from".to_string(), TemplateValue::Number(0.8)),
+            ("to".to_string(), TemplateValue::Number(1.2)),
+        ]);
+        let (ops, _) = klipp_control::recipes::on_clip(&before, plain.id, &recipe, &values).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let mut placed = plain.clone();
+        placed.apply_picture_ops(&ops).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let now = sequence(placed);
+        // As the op made it before: the same footage from 0.8 to 1.2 s,
+        // hidden then cut to the box, on a track above.
+        let mut cover = Clip { kind: plain.kind.clone(), ..Clip::gap(tc(0.8), tc(1.2)) };
+        cover.source_in = tc(0.8);
+        cover.source_out = tc(1.2);
+        let crop = E::Crop { left: x0, right: 1.0 - x1, top: y0, bottom: 1.0 - y1, feather: 0.0, aspect: 0.0, focus_x: 0.5, focus_y: 0.5 };
+        cover.apply_effect_edits(&[klipp_timeline::EffectEdit::Add(&fx), klipp_timeline::EffectEdit::Add(&crop)]).unwrap().unwrap();
+        let mut was = sequence(plain.clone());
+        let mut above = Track::new("V2", TrackKind::Video);
+        above.clips = vec![cover];
+        was.tracks.insert(0, above);
+        let Some(drawn) = stack_at(&now, 1.0, name) else { return };
+        let old = stack_at(&was, 1.0, name).expect("drawn once already");
+        assert!(worst(&drawn, &old) <= 1, "{name}: {} levels from the copy above", worst(&drawn, &old));
+        assert!(worst(&drawn, &stack_at(&before, 1.0, name).unwrap()) > 30, "{name}: something hidden");
+        assert!(worst(&stack_at(&now, 1.5, name).unwrap(), &stack_at(&before, 1.5, name).unwrap()) <= 1, "{name}: the plain clip after the stretch");
+    }
+}
+
+/// Zoom as a recipe (#2886) draws what the zoom op drew before it: the
+/// clip's scale keyed 1 to 1.6 across it, eased in and out, and pushed
+/// toward the left, against those keys written straight onto the clip as
+/// the op wrote them, on the GPU stack within a level at its start, its
+/// middle and near its end.
+#[test]
+fn zoom_draws_what_its_keys_drew() {
+    use klipp_core::keyframe::{ease_into, upsert_keyframe, Ease};
+    let plain = shot_clip();
+    let before = sequence(plain.clone());
+    let (from, to, dur) = (1.0f32, 1.6f32, 2.0f64);
+    let reach = |scale: f32, dim: f32| (scale - 1.0) * dim / 2.0;
+    let (x0, x1) = (reach(from, W as f32), reach(to, W as f32));
+    let recipe = builtin_recipes().into_iter().find(|r| r.name == "Zoom and push").unwrap();
+    let n = |v: f64| TemplateValue::Number(v);
+    let values = BTreeMap::from([
+        ("from".to_string(), n(f64::from(from))),
+        ("to".to_string(), n(f64::from(to))),
+        ("length".to_string(), n(dur)),
+        ("ease".to_string(), TemplateValue::Enum("in_out".into())),
+        ("x_from".to_string(), n(f64::from(x0))),
+        ("x_to".to_string(), n(f64::from(x1))),
+        ("y_from".to_string(), n(0.0)),
+        ("y_to".to_string(), n(0.0)),
+    ]);
+    let (ops, _) = klipp_control::recipes::on_clip(&before, plain.id, &recipe, &values).unwrap_or_else(|e| panic!("{e}"));
+    let mut placed = plain.clone();
+    placed.apply_picture_ops(&ops).unwrap_or_else(|e| panic!("{e}"));
+    let now = sequence(placed);
+    // As the op wrote them.
+    let mut old = plain.clone();
+    let mut k = klipp_document::history::KeyframeSnapshot::from_clip(&old);
+    for (lane, a, b) in [(&mut k.transform_scale_keyframes, from, to), (&mut k.transform_pos_x_keyframes, x0, x1), (&mut k.transform_pos_y_keyframes, 0.0, 0.0)] {
+        upsert_keyframe(lane, 0.0, a);
+        upsert_keyframe(lane, dur, b);
+        ease_into(lane, 1, Ease::InOut);
+    }
+    k.transform_scale_y_keyframes.clear();
+    k.apply_to_clip(&mut old);
+    let was = sequence(old);
+    for at in [0.0, 1.0, 1.9] {
+        let Some(drawn) = stack_at(&now, at, "zoom") else { return };
+        let then = stack_at(&was, at, "zoom").expect("drawn once already");
+        assert!(worst(&drawn, &then) <= 1, "at {at} s: {} levels from the keys the op wrote", worst(&drawn, &then));
+    }
+    let late = stack_at(&now, 1.9, "zoom").unwrap();
+    assert!(worst(&late, &stack_at(&before, 1.9, "zoom").unwrap()) > 30, "zoomed by the end");
+}
+
 /// `recipe` placed on the test shot's clip with the harness's slots and
 /// `values` over them: the sequence it makes.
 fn placed_with(recipe: &klipp_timeline::composition_template::CompositionTemplate, plain: &Clip) -> Sequence {

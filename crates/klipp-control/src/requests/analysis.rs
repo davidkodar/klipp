@@ -267,7 +267,7 @@ pub(crate) fn respond(
                         for s in found.iter().filter(|s| s.end_secs > s_in && s.start_secs < s_out) {
                             let from = t_in + (s.start_secs.max(s_in) - s_in);
                             let to = t_in + (s.end_secs.min(s_out) - s_in);
-                            ops.push(Op::Redact { clip_id: ClipRef::Id(c.id), from: Some(Anchor::Secs(from)), to: Some(Anchor::Secs(to)), x: s.x, y: s.y, w: s.w, h: s.h, kind: "mosaic".into(), amount: None });
+                            ops.push(Op::Redact { clip_id: ClipRef::Id(c.id), from: Some(Anchor::Secs(from)), to: Some(Anchor::Secs(to)), x: s.x, y: s.y, w: s.w, h: s.h, kind: "mosaic".into(), amount: None, recipes: None });
                         }
                     }
                 }

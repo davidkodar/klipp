@@ -191,7 +191,7 @@ mod tests {
     #[test]
     fn every_built_in_recipe_reads_and_lists() {
         let recipes = ct::builtin_recipes();
-        assert_eq!(recipes.len(), 14, "every file in assets/recipes reads");
+        assert_eq!(recipes.len(), 18, "every file in assets/recipes reads");
         for r in &recipes {
             assert_eq!(r.kind, ct::TemplateKind::Recipe, "{}", r.name);
             let v = listed(r);
@@ -296,6 +296,100 @@ mod tests {
         let frames = &c.picture_v2().unwrap().picture.graph.ui.frames;
         let names: Vec<&str> = frames.iter().filter_map(|f| f["recipe"]["name"].as_str()).collect();
         assert_eq!(names, ["Picture in picture", "Green screen"], "a frame for each, holding its controls");
+    }
+
+    /// Redact on its recipe (#2886): the box hidden in the clip's own
+    /// picture, a mosaic after its display step masked to the box with a
+    /// margin, keyed on from `from` to `to`, in seconds into the clip, and
+    /// to nothing (a 1 px block) outside; one step, said as before. A saved recipe of the same name
+    /// never stands in for Klipp's own: what a redaction hides is not
+    /// someone else's file to say.
+    #[test]
+    fn a_redaction_is_its_recipe_in_the_clips_own_picture() {
+        use klipp_document::history::EditCommand;
+        use klipp_document::ops::{resolve, Anchor, ClipRef, Op};
+        let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let mut seq = Sequence::new_default();
+        // The clip starts 2 s in, from 5 s of its file.
+        let clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(2.0), t(6.0), t(5.0), t(9.0));
+        let id = clip.id;
+        let mut track = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+        track.clips = vec![clip];
+        seq.tracks = vec![track];
+        let op = Op::Redact { clip_id: ClipRef::Id(id), from: Some(Anchor::Secs(3.0)), to: Some(Anchor::Secs(5.0)), x: 0.2, y: 0.6, w: 0.3, h: 0.05, kind: "mosaic".into(), amount: None, recipes: None };
+        // A recipe of the same name in the template folder, hiding nothing.
+        let dir = std::env::temp_dir().join(format!("klipp-redact-own-{}", uuid::Uuid::new_v4()));
+        let mut decoy = ct::builtin_recipes().into_iter().find(|r| r.name == "Glitch").unwrap();
+        decoy.id = uuid::Uuid::new_v4();
+        decoy.name = "Redact (mosaic)".into();
+        ct::CompositionTemplateStore::load(Some(dir.clone())).save(decoy).unwrap();
+        let plan = resolve(&seq, &klipp_media::MediaPool::new(), &crate::plans::with_recipes(std::slice::from_ref(&op), Some(&dir), &klipp_media::MediaPool::new())).unwrap_or_else(|r| panic!("{r:?}"));
+        std::fs::remove_dir_all(&dir).ok();
+        let step = &plan.steps[0];
+        assert!(step.what.contains("from 3.00 to 5.00 s") && step.what.contains("in the clip's own picture"), "{}", step.what);
+        let EditCommand::PictureEdit { clip_id, edit, .. } = &step.edit else { panic!("a picture step: {:?}", step.edit) };
+        assert_eq!(*clip_id, id);
+        let mut c = seq.all_clips().find(|c| c.id == id).unwrap().clone();
+        c.restore_picture(&edit.after);
+        let graph = c.picture_v2().unwrap().picture.graph.clone();
+        let tags: Vec<&str> = graph.nodes.iter().filter_map(klipp_graph_lift::effect_params::tag).collect();
+        assert!(tags.contains(&"mosaic") && !tags.contains(&"vhs"), "Klipp's own recipe, not the saved one: {tags:?}");
+        let mosaic = graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("mosaic")).unwrap();
+        let keys: Vec<(f64, f64)> = mosaic.anim.get(&klipp_graph_format::ParamKey::from("block_size")).unwrap().keys.iter().map(|k| (k["time_secs"].as_f64().unwrap(), k["value"].as_f64().unwrap())).collect();
+        assert_eq!(keys.len(), 3);
+        assert!((keys[0].0 - 0.999).abs() < 1e-9 && keys[0].1 == 1.0, "a 1 px mosaic, nothing, before: {keys:?}");
+        assert_eq!((keys[1], keys[2]), ((1.0, 36.0), (3.0, 1.0)), "amount 0.5 through 12..60, 1 to 3 s into the clip: {keys:?}");
+        let mask = graph.nodes.iter().find_map(|n| n.legacy.as_ref().and_then(|l| (l.payload["kind"] == "Mask").then(|| l.payload["params"]["masks"]["masks"][0]["shape"]["Rectangle"].clone()))).expect("the box's mask");
+        let near = |k: &str, v: f64| (mask[k].as_f64().unwrap() - v).abs() < 1e-6;
+        assert!(near("center_x", 0.35) && near("width", 0.312) && near("center_y", 0.625) && near("height", 0.062 * 1080.0 / 1920.0), "the box and its margin: {mask}");
+        let names: Vec<&str> = graph.ui.frames.iter().filter_map(|f| f["recipe"]["name"].as_str()).collect();
+        assert_eq!(names, ["Redact (mosaic)"]);
+    }
+
+    /// Zoom on its recipe (#2886): the clip's own scale keyed start to
+    /// end over the clip, the height following the width, linear unless
+    /// asked and eased when asked; a push keys the position too, the
+    /// picture's edge meeting the frame's at the end; without one, the
+    /// clip's position keys are left as they were. No frame: the recipe
+    /// adds no node.
+    #[test]
+    fn zoom_is_its_recipe_on_the_clips_own_keys() {
+        use klipp_core::keyframe::{Ease, Interpolation};
+        use klipp_document::history::{EditCommand, KeyframeSnapshot};
+        use klipp_document::ops::{resolve, ClipRef, Op};
+        let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let mut seq = Sequence::new_default();
+        let mut clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(1.0), t(5.0), t(0.0), t(4.0));
+        let mut held = KeyframeSnapshot::from_clip(&clip);
+        klipp_core::keyframe::upsert_keyframe(&mut held.transform_pos_x_keyframes, 2.0, 30.0);
+        held.apply_to_clip(&mut clip);
+        let id = clip.id;
+        let mut track = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+        track.clips = vec![clip];
+        seq.tracks = vec![track];
+        let keys = |op: Op| {
+            let plan = resolve(&seq, &klipp_media::MediaPool::new(), &crate::plans::with_recipes(&[op], None, &klipp_media::MediaPool::new())).unwrap_or_else(|r| panic!("{r:?}"));
+            let EditCommand::PictureEdit { edit, .. } = &plan.steps[0].edit else { panic!("a picture step: {:?}", plan.steps[0].edit) };
+            let mut c = seq.all_clips().find(|c| c.id == id).unwrap().clone();
+            c.restore_picture(&edit.after);
+            assert!(c.picture_v2().unwrap().picture.graph.ui.frames.is_empty(), "no frame round no nodes");
+            (plan.steps[0].what.clone(), KeyframeSnapshot::from_clip(&c))
+        };
+        let zoom = |to, x, ease| Op::Zoom { clip_id: ClipRef::Id(id), from: 1.0, to, x, y: 0.0, ease, recipes: None };
+        let (what, k) = keys(zoom(1.3, 0.0, Ease::Linear));
+        assert!(what.contains("1.00\u{2192}1.30"), "{what}");
+        let scale: Vec<(f64, f32)> = k.transform_scale_keyframes.iter().map(|k| (k.time_secs, k.value)).collect();
+        assert_eq!(scale, [(0.0, 1.0), (4.0, 1.3)], "start to end over the clip, in its own seconds");
+        assert_eq!(k.transform_scale_keyframes[0].interpolation, Interpolation::Linear);
+        assert!(k.transform_scale_y_keyframes.is_empty());
+        assert_eq!(k.transform_pos_x_keyframes.iter().map(|k| (k.time_secs, k.value)).collect::<Vec<_>>(), [(2.0, 30.0)], "no push: the position as it was");
+        assert_eq!(keys(zoom(1.3, 0.0, Ease::InOut)).1.transform_scale_keyframes[0].interpolation, Interpolation::Bezier);
+        // Pushed left, the picture's left edge meets the frame's at the end:
+        // 1.5 times 1920 wide, 480 px either side, all of it to the right.
+        let (_, k) = keys(zoom(1.5, -1.0, Ease::Linear));
+        assert!(k.transform_pos_x_keyframes[0].value.abs() < 1e-3, "at 1x there is nowhere to be yet");
+        assert!((k.transform_pos_x_keyframes[1].value - 480.0).abs() < 1e-3, "{:?}", k.transform_pos_x_keyframes);
+        assert!(k.transform_pos_y_keyframes.iter().all(|k| k.value.abs() < 1e-3));
     }
 
     /// A behaviour's control stays live (#2758): a recipe's wiggle, put on

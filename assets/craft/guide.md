@@ -885,7 +885,8 @@ exist until the plan runs.
   screen tracked by its bezel. Track first; re-tracking moves what is
   pinned with it. Look at a frame after.
 - `redact {clip_id, x, y, w, h, from?, to?, kind?, amount?}`: hide a
-  patch of picture for a stretch. Coordinates are fractions of the
+  patch of picture for a stretch, in the clip's own picture, so it
+  moves with the clip and takes its grade. Coordinates are fractions of the
   frame from the top left, as `klipp_screen_text` reports them. The
   default kind is `mosaic`; `blur` is also available. The range
   defaults to the clip edges; `klipp_auto_redact` handles all findings.

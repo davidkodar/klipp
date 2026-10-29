@@ -102,6 +102,72 @@ pub(crate) fn modifiers_op(node: &Node, path: klipp_graph_format::path::NodePath
     Ok(klipp_graph_lift::ops::GraphOp::SetAnim { path, key: key.into(), anim })
 }
 
+/// The most keys one parameter takes from one op.
+pub const MAX_KEYS: usize = 256;
+
+/// The keys on parameter `key` of an effect node (#2886), its behaviours
+/// kept: a parameter that moves over time only. See [`read_keys`].
+pub(crate) fn keys_op(node: &Node, path: klipp_graph_format::path::NodePath, key: &str, keys: &[Value]) -> Result<klipp_graph_lift::ops::GraphOp, String> {
+    if node.type_id.as_str() != types::LEGACY_EFFECT {
+        return Err(format!("{key}: only an effect's parameters and the clip's placement take keys here"));
+    }
+    let desc = descriptor(node).ok_or("this node has no registered parameter description")?;
+    desc.params.iter().find(|p| p.key == key && p.keyframable).ok_or_else(|| format!("{key} is not a parameter of this node that moves over time"))?;
+    let keys = read_keys(key, keys)?;
+    let modifiers = node.anim.get(&klipp_graph_format::ParamKey::from(key)).and_then(|a| a.modifiers.clone());
+    let anim = (!keys.is_empty() || modifiers.is_some()).then_some(klipp_graph_format::Animation { keys, modifiers });
+    Ok(klipp_graph_lift::ops::GraphOp::SetAnim { path, key: key.into(), anim })
+}
+
+/// The keys on the clip's placement value `key` (#2886): its position,
+/// scale, rotation or tilt, as the clip's own keyframes. See
+/// [`read_keys`].
+pub(crate) fn placement_keys_op(path: klipp_graph_format::path::NodePath, key: &str, keys: &[Value]) -> Result<klipp_graph_lift::ops::GraphOp, String> {
+    if !klipp_graph_format::lifted::PLACEMENT_ANIM_KEYS.contains(&key) {
+        return Err(format!("the placement's {key} doesn't take keys; {} do", klipp_graph_format::lifted::PLACEMENT_ANIM_KEYS.join(", ")));
+    }
+    let keys = read_keys(key, keys)?;
+    let anim = (!keys.is_empty()).then_some(klipp_graph_format::Animation { keys, modifiers: None });
+    Ok(klipp_graph_lift::ops::GraphOp::SetAnim { path, key: key.into(), anim })
+}
+
+/// Keys as given, which someone else may have written: at most
+/// [`MAX_KEYS`], each with a finite time and value, put in time order,
+/// linear to the next unless it says otherwise; a key's `ease` (a named
+/// curve, `in_out`) eases it into the next as the key menu does.
+fn read_keys(key: &str, keys: &[Value]) -> Result<Vec<Value>, String> {
+    if keys.len() > MAX_KEYS {
+        return Err(format!("{key} takes at most {MAX_KEYS} keys"));
+    }
+    let mut read: Vec<(klipp_core::keyframe::Keyframe, Option<klipp_core::keyframe::Ease>)> = keys
+        .iter()
+        .map(|k| {
+            let mut k = k.clone();
+            let ease = match k.as_object_mut().and_then(|o| o.remove("ease")) {
+                Some(e) => Some(serde_json::from_value::<klipp_core::keyframe::Ease>(e.clone()).map_err(|_| format!("{key}: {e} is not an ease (linear, in, out, in_out, …)"))?),
+                None => None,
+            };
+            if let Some(o) = k.as_object_mut() {
+                o.entry("interpolation").or_insert_with(|| Value::from("Linear"));
+            }
+            let kf = serde_json::from_value(k).map_err(|e| format!("{key}: a key is like {{\"time_secs\": 0.5, \"value\": 1, \"interpolation\": \"Step\"}}: {e}"))?;
+            Ok((kf, ease))
+        })
+        .collect::<Result<_, String>>()?;
+    if read.iter().any(|(k, _)| !k.time_secs.is_finite() || !k.value.is_finite()) {
+        return Err(format!("{key}: a key's time and value must be finite"));
+    }
+    read.sort_by(|a, b| a.0.time_secs.total_cmp(&b.0.time_secs));
+    let eases: Vec<Option<klipp_core::keyframe::Ease>> = read.iter().map(|(_, e)| *e).collect();
+    let mut kfs: Vec<klipp_core::keyframe::Keyframe> = read.into_iter().map(|(k, _)| k).collect();
+    for (i, ease) in eases.into_iter().enumerate() {
+        if let Some(ease) = ease {
+            klipp_core::keyframe::ease_into(&mut kfs, i + 1, ease);
+        }
+    }
+    kfs.iter().map(serde_json::to_value).collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
 pub(crate) fn parameter(node: &Node, key: &str, value: &Value) -> Result<ParamValue, String> {
     let desc = descriptor(node).ok_or("this node has no registered parameter description")?;
     let p = desc.params.iter().find(|p| p.key == key && !p.derived).ok_or_else(|| format!("unknown or derived parameter {key}"))?;
@@ -244,6 +310,38 @@ mod tests {
             modifiers_op(&mv, path.clone(), "position_x", &vec![wiggle.clone(); 9]),
             modifiers_op(&mv, path.clone(), "position_x", &[json!({ "type": "explode" })]),
             modifiers_op(&mv, path.clone(), "position_x", &[json!({ "type": "wiggle", "amplitude": 1e300, "frequency": 2.0 })]),
+        ];
+        for (i, r) in refused.into_iter().enumerate() {
+            assert!(r.is_err(), "case {i} refused");
+        }
+    }
+
+    /// A parameter's keys (#2886), from a recipe or the graph op, which
+    /// someone else may have written: put on in time order, linear unless
+    /// a key says otherwise, its behaviours kept; refused on a grade node,
+    /// a parameter that doesn't move over time, past 256 keys, a key that
+    /// isn't one, and a value too large for a key.
+    #[test]
+    fn keys_go_on_an_effects_moving_parameters_bounded_and_finite() {
+        use klipp_graph_lift::ops::GraphOp;
+        let path = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: uuid::Uuid::new_v4() }, [uuid::Uuid::new_v4()]);
+        let mut blur = new_node("klipp.fx.gaussian_blur", uuid::Uuid::new_v4(), None).unwrap();
+        let wiggle = klipp_graph_format::Animation { keys: Vec::new(), modifiers: Some(json!({ "modifiers": [{ "type": "wiggle", "amplitude": 2.0, "frequency": 1.0 }] })) };
+        blur.anim.insert("radius".into(), wiggle);
+        let keys = [json!({ "time_secs": 1.0, "value": 8.0, "interpolation": "Step" }), json!({ "time_secs": 0.0, "value": 0.0 })];
+        let GraphOp::SetAnim { anim: Some(a), .. } = keys_op(&blur, path.clone(), "radius", &keys).unwrap() else { panic!("keys set") };
+        assert_eq!(a.keys[0]["time_secs"], json!(0.0), "in time order");
+        assert_eq!(a.keys[0]["interpolation"], json!("Linear"));
+        assert_eq!(a.keys[1]["interpolation"], json!("Step"));
+        assert!(a.modifiers.is_some(), "its behaviours kept");
+        let key = new_node("klipp.grade.difference_key", uuid::Uuid::new_v4(), None).unwrap();
+        let one = json!({ "time_secs": 0.0, "value": 1.0 });
+        let refused = [
+            keys_op(&key, path.clone(), "difference_key.tolerance", std::slice::from_ref(&one)),
+            keys_op(&blur, path.clone(), "not_a_parameter", std::slice::from_ref(&one)),
+            keys_op(&blur, path.clone(), "radius", &vec![one.clone(); MAX_KEYS + 1]),
+            keys_op(&blur, path.clone(), "radius", &[json!({ "time_secs": 0.0 })]),
+            keys_op(&blur, path.clone(), "radius", &[json!({ "time_secs": 0.0, "value": 1e39 })]),
         ];
         for (i, r) in refused.into_iter().enumerate() {
             assert!(r.is_err(), "case {i} refused");

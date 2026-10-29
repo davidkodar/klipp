@@ -22,14 +22,14 @@ pub(crate) fn ops_schema() -> Value {
     // Per-op shapes are enforced by GraphWireOp before a socket call and by
     // the server. Sharing the typed fields leaves room in the tool catalog.
     let fields = json!({
-        "op":{"enum":["add","add_beside","remove","connect","disconnect","publish","unpublish","set","enable","mix","mask_channel","move_after","modify"]},
+        "op":{"enum":["add","add_beside","remove","connect","disconnect","publish","unpublish","set","enable","mix","mask_channel","move_after","modify","keys"]},
         "path":path,"at":path,"after":{"oneOf":[path,id]},"type":text,"params":{"type":"object"},"label":text,
         "from":path,"from_port":text,"to":path,"to_port":text,"port":text,"key":text,"value":{},
         "enabled":{"type":"boolean"},"mix":{"type":["number","null"],"minimum":0,"maximum":1},
-        "channel":{"enum":["red","luminance","alpha",null]},"modifiers":{"type":"array"}
+        "channel":{"enum":["red","luminance","alpha",null]},"modifiers":{"type":"array"},"keys":{"type":"array"}
     });
     json!({"type":"array","minItems":1,"maxItems":64,"$defs":{"path":path_schema(false)},
-        "description":"add(after,type,params?,label?); add_beside(at, as add); connect(from,from_port,to,to_port); disconnect(to,port); publish(path,from,from_port,key,label?); on a path: remove, unpublish(key), set(key,value), enable(enabled), mix(mix), mask_channel(channel), move_after(after), modify(key,modifiers).",
+        "description":"add(after,type,params?,label?); add_beside(at,..); connect(from,from_port,to,to_port); disconnect(to,port); publish(path,from,from_port,key,label?); on a path: remove, unpublish(key), set(key,value), enable, mix, mask_channel, move_after, modify(key,modifiers), keys.",
         "items":object(fields,&["op"])
     })
 }

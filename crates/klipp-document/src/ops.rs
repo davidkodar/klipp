@@ -1343,13 +1343,12 @@ pub enum Op {
         clear: bool,
     },
     /// Hide a patch of the picture — an email, a key, a face — for a
-    /// stretch of a clip: a cropped copy of the same footage goes on a
-    /// video track above (one is made on top if none has room), covering
-    /// `x`,`y`,`w`,`h` of the frame (fractions, from the top left) from
-    /// `from` to `to` (the clip's own edges when left out), pixelated
-    /// (`kind` "mosaic", the default) or blurred (`kind` "blur"), by
-    /// `amount` 0 to 1. The copy follows nothing: move the clip and
-    /// redact again. Refused on a retimed clip.
+    /// stretch of a clip, in the clip's own picture (the Redact recipe of
+    /// its kind, #2886): `x`,`y`,`w`,`h` of the frame (fractions, from the
+    /// top left) from `from` to `to` (the clip's own edges when left out),
+    /// pixelated (`kind` "mosaic", the default) or blurred (`kind`
+    /// "blur"), by `amount` 0 to 1, from the graded picture. It moves with
+    /// the clip.
     Redact {
         clip_id: ClipRef,
         #[serde(default)]
@@ -1364,6 +1363,11 @@ pub enum Op {
         kind: String,
         #[serde(default)]
         amount: Option<f32>,
+        /// What builds its recipe into the clip, bound by whoever
+        /// resolves the op (the socket, which reads the recipe files):
+        /// never sent.
+        #[serde(skip)]
+        recipes: Option<RecipeMaker>,
     },
     /// Put a picture onto a surface tracked in a clip (#684), a phone
     /// screen, a sign, a monitor: `media_id` goes on a video track above
@@ -1534,6 +1538,10 @@ pub enum Op {
         /// Linear when left out: a Ken Burns drift keeps its speed.
         #[serde(default)]
         ease: klipp_core::keyframe::Ease,
+        /// What builds its recipe into the clip, bound by whoever
+        /// resolves the op (the socket): never sent.
+        #[serde(skip)]
+        recipes: Option<RecipeMaker>,
     },
     /// An animated crop that follows the action: `keys` are poses in
     /// the clip's own seconds, each a `scale` (1 as shot, up to 4)
@@ -3693,11 +3701,11 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             stabilize(seq, pool, i, ti, clip, *smoothing)
         }
-        Op::Redact { clip_id, from, to, x, y, w, h, kind, amount } => {
+        Op::Redact { clip_id, from, to, x, y, w, h, kind, amount, recipes } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             let from = match from { Some(a) => Some(resolve_anchor(seq, fps, a, i)?), None => None };
             let to = match to { Some(a) => Some(resolve_anchor(seq, fps, a, i)?), None => None };
-            redact(seq, pool, fps, i, ti, clip, from, to, [*x, *y, *w, *h], kind, *amount)
+            redact(seq, pool, i, ti, clip, from, to, [*x, *y, *w, *h], kind, *amount, recipes.as_ref())
         }
         Op::Pin { clip_id, media_id, layer, surface, from, to, fit, inset, on_loss, fade_secs, light, shade, texture, blend, template } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
@@ -3842,9 +3850,9 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             reframe(seq, pool, i, ti, clip, *scale, *x, *y)
         }
-        Op::Zoom { clip_id, from, to, x, y, ease } => {
+        Op::Zoom { clip_id, from, to, x, y, ease, recipes } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
-            zoom(seq, pool, i, ti, clip, (*from, *to), (*x, *y), *ease)
+            zoom(seq, pool, i, ti, clip, (*from, *to), (*x, *y), *ease, recipes.as_ref())
         }
         Op::Pan { clip_id, keys } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
@@ -6765,6 +6773,24 @@ pub struct PlacedComposition {
 #[derive(Clone)]
 pub struct RecipeBuilder(pub std::sync::Arc<dyn Fn(&Sequence, ClipId) -> Result<RecipeBuild, String> + Send + Sync>);
 
+/// What gives an op built on a recipe (#2886) the builder of the recipe
+/// `name` with `controls` set: the recipe files are read by whoever
+/// resolves the op (the socket), so the document asks it by name.
+#[derive(Clone)]
+pub struct RecipeMaker(pub std::sync::Arc<dyn Fn(&str, &std::collections::BTreeMap<String, serde_json::Value>) -> Option<RecipeBuilder> + Send + Sync>);
+
+impl std::fmt::Debug for RecipeMaker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RecipeMaker")
+    }
+}
+
+impl PartialEq for RecipeMaker {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
 /// What a recipe's builder gives (#2758): the graph ops, the instance its
 /// frame keeps, and anything the reply says beside (a subject matte the
 /// clip's media hasn't got yet, and how to make it).
@@ -6866,10 +6892,13 @@ fn recipe_link(i: usize, clip: &Clip, control: Option<&str>, target: Option<&str
     let c = new.control(&parameter);
     let mut ops = Vec::new();
     for l in new.links.iter().filter(|l| l.parameter == parameter) {
+        if klipp_timeline::composition_template::keys_op_binding(&l.property).is_some() {
+            return Err(refuse(i, format!("{} is set where \"{}\" is placed", l.property, placed.name), "place the recipe again with the value"));
+        }
         let (k, param) = klipp_timeline::composition_template::node_binding(&l.property).ok_or_else(|| refuse(i, format!("'{}' is not a recipe's node parameter", l.property), "report it"))?;
-        // A value inside a parameter (a mask's rectangle, #2886) is set
-        // where the recipe is placed, not live yet.
-        if klipp_timeline::composition_template::nested_binding(param).is_some() {
+        // A value inside a parameter (a mask's rectangle) or a key's time
+        // or value (#2886) is set where the recipe is placed, not live yet.
+        if klipp_timeline::composition_template::nested_binding(param).is_some() || klipp_timeline::composition_template::key_binding(&l.property).is_some() {
             return Err(refuse(i, format!("{} is set where \"{}\" is placed", l.property, placed.name), "place the recipe again with the value"));
         }
         let node = placed.nodes.get(&k).copied().ok_or_else(|| refuse(i, format!("the node \"{}\"'s step {k} made is gone", placed.name), "place the recipe again"))?;
@@ -7068,14 +7097,16 @@ fn set_text(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, 
 /// the text's edges too.
 const REDACT_MARGIN: f32 = 0.006;
 
+/// `redact` (#2886): the redaction recipe of its kind in the clip's own
+/// picture, the patch taken from the graded picture and laid back over
+/// it inside the box from `from` to `to`.
 #[allow(clippy::too_many_arguments)]
-fn redact(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, clip: &Clip, from: Option<Timecode>, to: Option<Timecode>, rect: [f32; 4], kind: &str, amount: Option<f32>) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
-    use klipp_effects::BuiltinEffect as E;
+fn redact(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, from: Option<Timecode>, to: Option<Timecode>, rect: [f32; 4], kind: &str, amount: Option<f32>, recipes: Option<&RecipeMaker>) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     let ClipKind::Media { media_id } = &clip.kind else {
         return Err(refuse(i, format!("{} is not a media clip", clip_name(seq, pool, clip)), "redact a picture from a file"));
     };
-    if (clip.speed - 1.0).abs() > 1e-6 || !clip.speed_keyframes.is_empty() {
-        return Err(refuse(i, format!("{} is retimed", clip_name(seq, pool, clip)), "redact it before the retime, or cover the patch with a title"));
+    if seq.tracks.get(ti).is_some_and(|t| t.locked) {
+        return Err(refuse(i, format!("track {ti} is locked"), "unlock it first"));
     }
     let [x, y, w, h] = rect;
     if !(w > 0.0 && h > 0.0) || !(0.0..=1.0).contains(&x) || !(0.0..=1.0).contains(&y) {
@@ -7086,41 +7117,54 @@ fn redact(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, clip:
     if b <= a {
         return Err(refuse(i, format!("{:.2}-{:.2} s is not a stretch inside {}", secs(a), secs(b), clip_name(seq, pool, clip)), "give from and to inside the clip, in order"));
     }
-    let src_in = clip.source_in + (a - clip.timeline_in);
-    let src_out = clip.source_in + (b - clip.timeline_in);
     let strength = amount.unwrap_or(0.5).clamp(0.0, 1.0);
-    let hide = match kind.to_lowercase().as_str() {
-        "mosaic" | "pixelate" => E::Mosaic { block_size: 12.0 + strength * 48.0 },
-        "blur" => E::GaussianBlur { radius: 10.0 + strength * 50.0 },
+    let name = match kind.to_lowercase().as_str() {
+        "mosaic" | "pixelate" => "Redact (mosaic)",
+        "blur" => "Redact (blur)",
         other => return Err(refuse(i, format!("\"{other}\" is not a way to redact"), "use mosaic or blur")),
     };
-    let left = (x - REDACT_MARGIN).clamp(0.0, 1.0);
-    let top = (y - REDACT_MARGIN).clamp(0.0, 1.0);
-    let right = (1.0 - (x + w + REDACT_MARGIN)).clamp(0.0, 1.0);
-    let bottom = (1.0 - (y + h + REDACT_MARGIN)).clamp(0.0, 1.0);
-    // The hidden patch is worked at full strength first, then cut to
-    // the box: the crop is applied last so the mosaic's blocks do not
-    // bleed the outside in.
-    let mut cover = Clip::media(*media_id, a, b, src_in, src_out);
-    cover.volume = 0.0;
-    add_plain_effects(&mut cover, &[hide, E::Crop { left, right, top, bottom, feather: 0.0, aspect: 0.0, focus_x: 0.5, focus_y: 0.5 }]).map_err(|e| refuse(i, format!("the cover couldn't take its effects: {e}"), "report it"))?;
-    // A video track above with room, else a new one on top.
-    let above = (0..ti).rev().find(|k| seq.tracks[*k].kind == TrackKind::Video && !seq.tracks[*k].locked && overlapping(seq, *k, a, b, None).is_none());
-    let (video, created) = match above {
-        Some(k) => ((cover, k), None),
-        None => ((cover, 0), Some(0)),
-    };
-    let ids = vec![video.0.id];
-    let where_ = match created {
-        Some(_) => "a new video track on top; every other track's index moves down by one".to_string(),
-        None => format!("track {}", video.1),
-    };
+    // The box with a margin round it, inside the frame, as the recipe's
+    // window: its centre and size.
+    let (left, right) = ((x - REDACT_MARGIN).clamp(0.0, 1.0), (x + w + REDACT_MARGIN).clamp(0.0, 1.0));
+    let (top, bottom) = ((y - REDACT_MARGIN).clamp(0.0, 1.0), (y + h + REDACT_MARGIN).clamp(0.0, 1.0));
+    // A window's height is measured as its width is, along the frame's
+    // width: the box's in the picture's own shape, the media's.
+    let size = pool.get(media_id).map(|m| m.resolution).filter(|r| r.width > 0 && r.height > 0).unwrap_or(seq.resolution);
+    let aspect = size.height as f32 / size.width.max(1) as f32;
+    // Shown from `a` to `b`, seconds into the clip, as its keys are timed;
+    // hidden a moment before.
+    let (shown, gone) = (secs(a - clip.timeline_in), secs(b - clip.timeline_in));
+    let controls: std::collections::BTreeMap<String, serde_json::Value> = [
+        ("amount", f64::from(strength)),
+        ("centre_x", f64::from((left + right) / 2.0)),
+        ("centre_y", f64::from((top + bottom) / 2.0)),
+        ("width", f64::from(right - left)),
+        ("height", f64::from((bottom - top) * aspect)),
+        ("start", shown - 0.001),
+        ("from", shown),
+        ("to", gone),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), serde_json::json!(v)))
+    .collect();
+    let edit = on_recipe(i, seq, clip, recipes, name, &controls)?;
     let what = format!(
-        "redact {} of {} from {:.2} to {:.2} s: {kind} over the box at {:.0}%,{:.0}% ({:.0}% by {:.0}%), a cropped copy on {where_}",
+        "redact {} of {} from {:.2} to {:.2} s: {kind} over the box at {:.0}%,{:.0}% ({:.0}% by {:.0}%), in the clip's own picture",
         short_name(&pool.get(media_id).map(|m| m.filename.clone()).unwrap_or_default()), clip_name(seq, pool, clip), secs(a), secs(b), x * 100.0, y * 100.0, w * 100.0, h * 100.0
     );
-    let _ = fps;
-    Ok((what, EditCommand::LinkedImport { video: Some(video), audio: None, created_video_track_at: created, created_audio_track_at: None, autoset: None }, ids))
+    Ok((what, EditCommand::PictureEdit { clip_id: clip.id, description: "Redact", edit: Box::new(edit) }, vec![clip.id]))
+}
+
+/// An op built on Klipp's recipe `name` (#2886): the recipe with
+/// `controls` set, built into `clip`'s picture through `recipes` (bound
+/// by the socket), with a frame round the nodes it made, if any.
+fn on_recipe(i: usize, seq: &Sequence, clip: &Clip, recipes: Option<&RecipeMaker>, name: &str, controls: &std::collections::BTreeMap<String, serde_json::Value>) -> Result<klipp_timeline::PictureEdit, Refusal> {
+    let build = recipes.and_then(|m| (m.0)(name, controls)).ok_or_else(|| refuse(i, format!("the recipe \"{name}\" isn't here"), "report it"))?;
+    let RecipeBuild { mut ops, placed, .. } = (build.0)(seq, clip.id).map_err(|why| refuse(i, why, "report it"))?;
+    if !placed.nodes.is_empty() {
+        ops.push(recipe_frame(clip, placed).map_err(|why| refuse(i, why, "report it"))?);
+    }
+    clip.clone().apply_picture_ops(&ops).map_err(|why| refuse(i, format!("\"{name}\" doesn't fit this clip's picture: {why}"), "report it"))
 }
 
 /// The surface `name` (an id or a name) on `clip`, or its latest.
@@ -9328,7 +9372,8 @@ fn highlight(seq: &Sequence, fps: Fps, i: usize, at: Timecode, hold: f64, region
 /// An animated zoom over the clip: transform keyframes for a push-in or
 /// pull-out, optionally moving toward a point. The renderer bakes a
 /// per-frame `Transform` from these, so it runs on the GPU.
-fn zoom(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, (from, to): (f32, f32), (x, y): (f32, f32), ease: klipp_core::keyframe::Ease) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+#[allow(clippy::too_many_arguments)]
+fn zoom(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, (from, to): (f32, f32), (x, y): (f32, f32), ease: klipp_core::keyframe::Ease, recipes: Option<&RecipeMaker>) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     require_picture(seq, pool, i, ti, clip, "zoom")?;
     for (name, v) in [("from", from), ("to", to)] {
         if !v.is_finite() || !(1.0..=4.0).contains(&v) {
@@ -9347,44 +9392,25 @@ fn zoom(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, (fro
         return Err(refuse(i, "a push at scale 1 has nowhere to go", "give a to above 1: the frame pushes into what the scale takes past its edge"));
     }
     let dur = (clip.timeline_out.to_secs_f64() - clip.timeline_in.to_secs_f64()).max(0.05);
-    let old_state = crate::history::KeyframeSnapshot::from_clip(clip);
-    let mut new_state = old_state.clone();
-    // Keyframes in the clip's own time: start scale to end scale.
-    let mut scale_kfs = Vec::new();
-    klipp_core::keyframe::upsert_keyframe(&mut scale_kfs, 0.0, from);
-    klipp_core::keyframe::upsert_keyframe(&mut scale_kfs, dur, to);
-    klipp_core::keyframe::ease_into(&mut scale_kfs, 1, ease);
-    new_state.transform_scale_keyframes = scale_kfs;
-    // The height follows the width's keys again (#1471).
-    new_state.transform_scale_y_keyframes = Vec::new();
-    // A push toward (x, y), as reframe measures it, at each end's own
-    // scale: the position grows with the room the zoom makes, so the
+    // The Zoom recipe keys the clip's scale, start to end over the clip,
+    // the height following the width's keys again (#1471). A push toward
+    // (x, y), as reframe measures it, keys its position too at each end's
+    // own scale: the position grows with the room the zoom makes, so the
     // picture's edge never shows on the way.
-    if x.abs() > 1e-4 || y.abs() > 1e-4 {
+    let push = x.abs() > 1e-4 || y.abs() > 1e-4;
+    let ease_name = serde_json::to_value(ease).map_err(|e| refuse(i, e.to_string(), "report it"))?;
+    let mut controls: std::collections::BTreeMap<String, serde_json::Value> = [("from", f64::from(from)), ("to", f64::from(to)), ("length", dur)].into_iter().map(|(k, v)| (k.to_string(), serde_json::json!(v))).collect();
+    controls.insert("ease".into(), ease_name);
+    if push {
         let (w, h) = (seq.resolution.width as f32, seq.resolution.height as f32);
-        let mut px = Vec::new();
-        klipp_core::keyframe::upsert_keyframe(&mut px, 0.0, -x * reach(from, w));
-        klipp_core::keyframe::upsert_keyframe(&mut px, dur, -x * reach(to, w));
-        klipp_core::keyframe::ease_into(&mut px, 1, ease);
-        new_state.transform_pos_x_keyframes = px;
-        let mut py = Vec::new();
-        klipp_core::keyframe::upsert_keyframe(&mut py, 0.0, -y * reach(from, h));
-        klipp_core::keyframe::upsert_keyframe(&mut py, dur, -y * reach(to, h));
-        klipp_core::keyframe::ease_into(&mut py, 1, ease);
-        new_state.transform_pos_y_keyframes = py;
+        for (k, v) in [("x_from", -x * reach(from, w)), ("x_to", -x * reach(to, w)), ("y_from", -y * reach(from, h)), ("y_to", -y * reach(to, h))] {
+            controls.insert(k.into(), serde_json::json!(f64::from(v)));
+        }
     }
-    let push = if x.abs() > 1e-4 || y.abs() > 1e-4 { format!(", push to {x:.2},{y:.2}") } else { String::new() };
+    let edit = on_recipe(i, seq, clip, recipes, if push { "Zoom and push" } else { "Zoom" }, &controls)?;
+    let push = if push { format!(", push to {x:.2},{y:.2}") } else { String::new() };
     let what = format!("zoom {}: {from:.2}\u{2192}{to:.2}{push}", clip_name(seq, pool, clip));
-    let edit = EditCommand::EditKeyframes {
-        clip_id: clip.id,
-        linked_clip_id: None,
-        description: "Zoom",
-        old_state,
-        new_state,
-        old_linked_state: None,
-        new_linked_state: None,
-    };
-    Ok((what, edit, vec![clip.id]))
+    Ok((what, EditCommand::PictureEdit { clip_id: clip.id, description: "Zoom", edit: Box::new(edit) }, vec![clip.id]))
 }
 
 /// What a look or a grade lands on: a picture clip's grade, the
@@ -14085,15 +14111,8 @@ mod tests {
         let Some(klipp_effects::BuiltinEffect::Transform { position_x, position_y, .. }) = new_effects.first() else { panic!("a transform") };
         let (right_edge, _) = on_screen(1.5, (*position_x, *position_y), (1.0, 0.5));
         assert!((right_edge - 1920.0).abs() < 0.5, "the picture's edge meets the frame's: {right_edge}");
-
-        // And a zoom that pushes toward a point gets there by the end,
-        // starting from where it was.
-        let plan = resolve(&seq, &pool, &[Op::Zoom { clip_id: ClipRef::Id(a), from: 1.0, to: 1.5, x: -1.0, y: 0.0, ease: Default::default() }]).unwrap();
-        let EditCommand::EditKeyframes { new_state, .. } = &plan.steps[0].edit else { panic!("keyframes") };
-        assert!(new_state.transform_pos_x_keyframes[0].value.abs() < 1e-3, "at 1x there is nowhere to be yet");
-        let end = (new_state.transform_pos_x_keyframes[1].value, new_state.transform_pos_y_keyframes[1].value);
-        let (left_edge, _) = on_screen(1.5, end, (0.0, 0.5));
-        assert!(left_edge.abs() < 0.5, "pushed left, the picture's left edge meets the frame's: {left_edge}");
+        // A zoom's push, built on its recipe, is held to the same edge in
+        // klipp-control (`zoom_is_its_recipe_on_the_clips_own_keys`).
     }
     /// Apply `edit` to `seqs`, forward or undone.
     fn applied(seqs: &mut Vec<Sequence>, pool: &MediaPool, edit: &EditCommand, undo: bool) {
@@ -15528,33 +15547,22 @@ mod tests {
         }
     }
 
+    /// Redact refuses, saying why, outside the clip, a box with no size,
+    /// a kind it hasn't got, and a locked track; built, it is its recipe,
+    /// which the socket binds (klipp-control's
+    /// `a_redaction_is_its_recipe_in_the_clips_own_picture`), and unbound
+    /// it says so rather than doing anything else.
     #[test]
-    fn a_redaction_is_a_cropped_pixelated_copy_on_the_track_above() {
-        let (seq, pool, _, a, _) = fixture();
-        // Clip a runs 0-4 s from 0-4 s of the file; hide a box from 1 to 3 s.
-        let op = Op::Redact { clip_id: ClipRef::Id(a), from: Some(Anchor::Secs(1.0)), to: Some(Anchor::Secs(3.0)), x: 0.2, y: 0.6, w: 0.3, h: 0.05, kind: "mosaic".into(), amount: None };
-        let plan = resolve(&seq, &pool, std::slice::from_ref(&op)).unwrap();
-        let step = &plan.steps[0];
-        assert!(step.what.contains("from 1.00 to 3.00 s") && step.what.contains("a new video track on top"), "{}", step.what);
-        let EditCommand::LinkedImport { video: Some((cover, track)), created_video_track_at: Some(0), audio: None, .. } = &step.edit else { panic!("{:?}", step.edit) };
-        assert_eq!(*track, 0);
-        assert_eq!((secs(cover.timeline_in), secs(cover.timeline_out), secs(cover.source_in), secs(cover.source_out)), (1.0, 3.0, 1.0, 3.0));
-        assert_eq!(cover.volume, 0.0);
-        assert!(matches!(klipp_timeline::test_clip::effects(cover).as_slice(), [klipp_effects::BuiltinEffect::Mosaic { .. }, klipp_effects::BuiltinEffect::Crop { left, top, .. }] if (*left - 0.194).abs() < 1e-3 && (*top - 0.594).abs() < 1e-3), "{:?}", klipp_timeline::test_clip::effects(cover));
-        assert_eq!((step.after[0].timeline_in_secs, step.after[0].timeline_out_secs), (1.0, 3.0));
-
-        // With a video track above that has room, it goes there and no track is made.
-        let mut seq2 = seq.clone();
-        seq2.tracks.insert(0, Track::new("V2", TrackKind::Video));
-        let plan = resolve(&seq2, &pool, std::slice::from_ref(&op)).unwrap();
-        assert!(matches!(&plan.steps[0].edit, EditCommand::LinkedImport { video: Some((_, 0)), created_video_track_at: None, .. }), "{:?}", plan.steps[0].edit);
-        assert!(plan.steps[0].what.contains("on track 0"));
-
-        // Outside the clip, a bad box, an unknown kind: refused with why.
-        let mk = |from: f64, to: f64, w: f32, kind: &str| Op::Redact { clip_id: ClipRef::Id(a), from: Some(Anchor::Secs(from)), to: Some(Anchor::Secs(to)), x: 0.2, y: 0.6, w, h: 0.05, kind: kind.into(), amount: None };
+    fn a_redaction_refuses_what_it_cannot_hide() {
+        let (mut seq, pool, _, a, _) = fixture();
+        let mk = |from: f64, to: f64, w: f32, kind: &str| Op::Redact { clip_id: ClipRef::Id(a), from: Some(Anchor::Secs(from)), to: Some(Anchor::Secs(to)), x: 0.2, y: 0.6, w, h: 0.05, kind: kind.into(), amount: None, recipes: None };
         assert!(resolve(&seq, &pool, &[mk(5.0, 9.0, 0.3, "mosaic")]).unwrap_err().why.contains("not a stretch inside"));
         assert!(resolve(&seq, &pool, &[mk(1.0, 3.0, 0.0, "mosaic")]).unwrap_err().why.contains("no size"));
         assert!(resolve(&seq, &pool, &[mk(1.0, 3.0, 0.3, "paint")]).unwrap_err().hint.contains("mosaic or blur"));
+        assert!(resolve(&seq, &pool, &[mk(1.0, 3.0, 0.3, "mosaic")]).unwrap_err().why.contains("isn't here"));
+        let ti = seq.tracks.iter().position(|t| t.clips.iter().any(|c| c.id == a)).unwrap();
+        seq.tracks[ti].locked = true;
+        assert!(resolve(&seq, &pool, &[mk(1.0, 3.0, 0.3, "mosaic")]).unwrap_err().why.contains("locked"));
     }
 
     /// #797: a track from the music library is placed as music and an
@@ -17258,14 +17266,8 @@ mod tests {
         // And linear is linear.
         assert_eq!(slide(Some(Ease::Linear))[0].interpolation, Interpolation::Linear);
 
-        // A zoom stays linear unless asked: a Ken Burns drift keeps its speed.
-        let zoom = |ease| {
-            let plan = resolve(&seq, &pool, &[Op::Zoom { clip_id: ClipRef::Id(a), from: 1.0, to: 1.3, x: 0.0, y: 0.0, ease }]).unwrap();
-            let EditCommand::EditKeyframes { new_state, .. } = plan.steps[0].edit.clone() else { panic!("keyframes") };
-            new_state.transform_scale_keyframes[0].interpolation
-        };
-        assert_eq!(zoom(Ease::Linear), Interpolation::Linear);
-        assert_eq!(zoom(Ease::InOut), Interpolation::Bezier);
+        // A zoom stays linear unless asked: held in klipp-control, where
+        // its recipe is built.
 
         // As the tools send it, by name, on a camera key.
         let ops: Vec<Op> = serde_json::from_str(r#"[{"op":"camera","keys":[{"secs":0.0},{"secs":3.0,"zoom":1.2,"ease":"back_out"}]}]"#).unwrap();
@@ -18224,18 +18226,16 @@ mod tests {
         let _: Vec<Op> = serde_json::from_str(r#"[{"op":"reframe","clip_id":{"track":0,"secs":1.0},"scale":1.3}]"#).unwrap();
     }
 
+    /// Zoom refuses, saying why, what it can't move; built, it is its
+    /// recipe, which the socket binds (klipp-control's
+    /// `zoom_is_its_recipe_on_the_clips_own_keys`), and unbound it says so.
     #[test]
-    fn zoom_writes_scale_keyframes() {
+    fn zoom_refuses_what_it_cannot_move() {
         let (seq, pool, _media, a, _) = fixture();
-        let plan = resolve(&seq, &pool, &[Op::Zoom { clip_id: ClipRef::Id(a), from: 1.0, to: 1.3, x: 0.0, y: 0.0, ease: Default::default() }]).unwrap();
-        assert!(plan.steps[0].what.contains("1.00\u{2192}1.30"), "{}", plan.steps[0].what);
-        let EditCommand::EditKeyframes { new_state, .. } = &plan.steps[0].edit else { panic!("keyframes edit") };
-        assert_eq!(new_state.transform_scale_keyframes.len(), 2, "start and end keyframes");
-        assert!((new_state.transform_scale_keyframes[0].value - 1.0).abs() < 1e-4);
-        assert!((new_state.transform_scale_keyframes[1].value - 1.3).abs() < 1e-4);
-        // Out of range and no-op are refused.
-        assert!(resolve(&seq, &pool, &[Op::Zoom { clip_id: ClipRef::Id(a), from: 1.0, to: 9.0, x: 0.0, y: 0.0, ease: Default::default() }]).is_err());
-        assert!(resolve(&seq, &pool, &[Op::Zoom { clip_id: ClipRef::Id(a), from: 1.0, to: 1.0, x: 0.0, y: 0.0, ease: Default::default() }]).unwrap_err().why.contains("nothing to zoom"));
+        let zoom = |from, to| Op::Zoom { clip_id: ClipRef::Id(a), from, to, x: 0.0, y: 0.0, ease: Default::default(), recipes: None };
+        assert!(resolve(&seq, &pool, &[zoom(1.0, 9.0)]).unwrap_err().why.contains("out of range"));
+        assert!(resolve(&seq, &pool, &[zoom(1.0, 1.0)]).unwrap_err().why.contains("nothing to zoom"));
+        assert!(resolve(&seq, &pool, &[zoom(1.0, 1.3)]).unwrap_err().why.contains("isn't here"));
         let _: Vec<Op> = serde_json::from_str(r#"[{"op":"zoom","clip_id":{"track":0,"secs":1.0},"to":1.2}]"#).unwrap();
     }
 

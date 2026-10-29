@@ -1,0 +1,243 @@
+{
+  "format_version": 2,
+  "id": "2e7c5a94-1d6b-4f38-9a03-8b4f6d2e1c75",
+  "name": "Zoom and push",
+  "category": "Camera",
+  "written_by": "built-in",
+  "kind": "recipe",
+  "composition_id": "00000000-0000-0000-0000-000000000000",
+  "parameters": {
+    "from": {
+      "label": "Start scale",
+      "default": {
+        "type": "Number",
+        "value": 1.0
+      },
+      "range": {
+        "min": 1.0,
+        "max": 4.0
+      }
+    },
+    "to": {
+      "label": "End scale",
+      "default": {
+        "type": "Number",
+        "value": 1.2
+      },
+      "range": {
+        "min": 1.0,
+        "max": 4.0
+      }
+    },
+    "length": {
+      "label": "Over (s)",
+      "default": {
+        "type": "Number",
+        "value": 5.0
+      },
+      "range": {
+        "min": 0.0,
+        "max": 86400.0
+      }
+    },
+    "ease": {
+      "label": "Ease",
+      "default": {
+        "type": "Enum",
+        "value": "linear"
+      },
+      "choices": [
+        "linear",
+        "in",
+        "out",
+        "in_out",
+        "expo_out",
+        "back_out",
+        "expo_in",
+        "expo_in_out",
+        "back_in",
+        "back_in_out",
+        "elastic_in",
+        "elastic_out",
+        "elastic_in_out",
+        "bounce_in",
+        "bounce_out",
+        "bounce_in_out"
+      ]
+    },
+    "x_from": {
+      "label": "Across at start (px)",
+      "default": {
+        "type": "Number",
+        "value": 0.0
+      },
+      "range": {
+        "min": -20000.0,
+        "max": 20000.0
+      }
+    },
+    "x_to": {
+      "label": "Across at end (px)",
+      "default": {
+        "type": "Number",
+        "value": 0.0
+      },
+      "range": {
+        "min": -20000.0,
+        "max": 20000.0
+      }
+    },
+    "y_from": {
+      "label": "Down at start (px)",
+      "default": {
+        "type": "Number",
+        "value": 0.0
+      },
+      "range": {
+        "min": -20000.0,
+        "max": 20000.0
+      }
+    },
+    "y_to": {
+      "label": "Down at end (px)",
+      "default": {
+        "type": "Number",
+        "value": 0.0
+      },
+      "range": {
+        "min": -20000.0,
+        "max": 20000.0
+      }
+    }
+  },
+  "slots": {},
+  "bindings": [
+    {
+      "parameter": "from",
+      "property": "keys:0#0.value"
+    },
+    {
+      "parameter": "to",
+      "property": "keys:0#1.value"
+    },
+    {
+      "parameter": "length",
+      "property": "keys:0#1.time_secs"
+    },
+    {
+      "parameter": "ease",
+      "property": "keys:0#0.ease"
+    },
+    {
+      "parameter": "x_from",
+      "property": "keys:2#0.value"
+    },
+    {
+      "parameter": "x_to",
+      "property": "keys:2#1.value"
+    },
+    {
+      "parameter": "length",
+      "property": "keys:2#1.time_secs"
+    },
+    {
+      "parameter": "ease",
+      "property": "keys:2#0.ease"
+    },
+    {
+      "parameter": "y_from",
+      "property": "keys:3#0.value"
+    },
+    {
+      "parameter": "y_to",
+      "property": "keys:3#1.value"
+    },
+    {
+      "parameter": "length",
+      "property": "keys:3#1.time_secs"
+    },
+    {
+      "parameter": "ease",
+      "property": "keys:3#0.ease"
+    }
+  ],
+  "graph": {
+    "ops": [
+      {
+        "op": "keys",
+        "path": {
+          "anchor": "placement"
+        },
+        "key": "scale",
+        "keys": [
+          {
+            "time_secs": 0.0,
+            "value": 1.0
+          },
+          {
+            "time_secs": 5.0,
+            "value": 1.2
+          }
+        ]
+      },
+      {
+        "op": "keys",
+        "path": {
+          "anchor": "placement"
+        },
+        "key": "scale_y",
+        "keys": []
+      },
+      {
+        "op": "keys",
+        "path": {
+          "anchor": "placement"
+        },
+        "key": "pos_x",
+        "keys": [
+          {
+            "time_secs": 0.0,
+            "value": 0.0
+          },
+          {
+            "time_secs": 5.0,
+            "value": 0.0
+          }
+        ]
+      },
+      {
+        "op": "keys",
+        "path": {
+          "anchor": "placement"
+        },
+        "key": "pos_y",
+        "keys": [
+          {
+            "time_secs": 0.0,
+            "value": 0.0
+          },
+          {
+            "time_secs": 5.0,
+            "value": 0.0
+          }
+        ]
+      }
+    ],
+    "checks": [
+      {
+        "at": [
+          0.2,
+          0.5
+        ],
+        "channel": "green",
+        "min": 0.8,
+        "max": 1.0,
+        "says": "the patch grown past where it was, about the frame's middle"
+      }
+    ],
+    "check_with": {
+      "from": 2.0,
+      "to": 2.0
+    }
+  }
+}

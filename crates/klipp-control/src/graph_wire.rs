@@ -118,6 +118,10 @@ pub enum GraphWireOp {
     /// The behaviours on a parameter (#2758): a wiggle, an oscillation, a
     /// ramp…, as a clip's behaviours store them; none takes them off.
     Modify { path: GraphPath, key: String, modifiers: Vec<Value> },
+    /// The keys on a parameter (#2886): `{time_secs, value, interpolation?}`
+    /// each, seconds into the clip; none takes them off. Its
+    /// behaviours stay.
+    Keys { path: GraphPath, key: String, keys: Vec<Value> },
 }
 
 impl GraphWireOp {
@@ -126,7 +130,7 @@ impl GraphWireOp {
             Self::Add { after, .. } => after,
             Self::AddBeside { at, .. } => at,
             Self::Publish { path, .. } | Self::Unpublish { path, .. } | Self::Remove { path } | Self::Set { path, .. } | Self::Enable { path, .. }
-            | Self::Mix { path, .. } | Self::MaskChannel { path, .. } | Self::MoveAfter { path, .. } | Self::Modify { path, .. } => path,
+            | Self::Mix { path, .. } | Self::MaskChannel { path, .. } | Self::MoveAfter { path, .. } | Self::Modify { path, .. } | Self::Keys { path, .. } => path,
             Self::Connect { to, .. } | Self::Disconnect { to, .. } => to,
         }
     }
