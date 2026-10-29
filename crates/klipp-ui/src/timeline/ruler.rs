@@ -58,8 +58,11 @@ pub fn choose_minor_subdivisions(major_interval_secs: f64, pixels_per_second: f3
     1
 }
 
-/// Format a time value as a ruler label.
+/// Format a time value as a ruler label. The time is first put on the
+/// nearest millisecond: a tick worked out a hair short of a second
+/// (1.9999999 s) is that second, not the one before.
 fn format_time_label(time_secs: f64, major_interval_secs: f64) -> String {
+    let time_secs = (time_secs * 1000.0).round() / 1000.0;
     if major_interval_secs >= 3600.0 {
         let h = (time_secs / 3600.0) as u32;
         let m = ((time_secs % 3600.0) / 60.0) as u32;
@@ -82,6 +85,25 @@ fn format_time_label(time_secs: f64, major_interval_secs: f64) -> String {
         let ms = (time_secs * 1000.0).round() as u32;
         format!("{}ms", ms)
     }
+}
+
+/// The ruler's ticks across `width` points scrolled `scroll_px` in at
+/// `pps` points a second, up to a major tick past `duration_secs`: each
+/// tick's time, with its label when it is a major one. Each is its index
+/// times the minor interval, never a running sum, which drifts: 0.2 s
+/// added ten times is 1.9999999 s, and the 2 s tick read 0:01.
+fn ticks(pps: f32, scroll_px: f32, width: f32, duration_secs: f64) -> Vec<(f64, Option<String>)> {
+    let major_interval = choose_major_interval(pps);
+    let subdivisions = i64::from(choose_minor_subdivisions(major_interval, pps));
+    let minor_interval = major_interval / subdivisions as f64;
+    let visible_start = (scroll_px / pps) as f64;
+    let visible_end = ((scroll_px + width) / pps) as f64;
+    let first_index = (visible_start / minor_interval).floor() as i64;
+    (first_index..first_index + 10_000)
+        .map(|index| (index, index as f64 * minor_interval))
+        .take_while(|(_, t)| *t <= visible_end.min(duration_secs + major_interval))
+        .map(|(index, t)| (t, (index.rem_euclid(subdivisions) == 0).then(|| format_time_label(t, major_interval))))
+        .collect()
 }
 
 /// The render status strip along the ruler's top (#924): where graded
@@ -138,45 +160,22 @@ pub fn draw_ruler(
         Stroke::new(1.0_f32, theme.border),
     );
 
-    let major_interval = choose_major_interval(pps);
-    let subdivisions = choose_minor_subdivisions(major_interval, pps);
-    let minor_interval = major_interval / subdivisions as f64;
-
-    let visible_start = (scroll_offset_px / pps) as f64;
-    let visible_end = ((scroll_offset_px + ruler_rect.width()) / pps) as f64;
-
-    // Snap to nearest minor interval before visible range
-    let first_tick = (visible_start / minor_interval).floor() * minor_interval;
-
     let major_tick_h = 9.0_f32;
     let minor_tick_h = 4.0_f32;
     let font_id = egui::FontId::monospace(10.0);
     let label_margin = 4.0_f32;
 
     let mut last_label_right = f32::NEG_INFINITY;
-    let mut tick_time = first_tick;
-    let mut iteration = 0;
-    let max_ticks = 10_000;
-
-    while tick_time <= visible_end.min(duration_secs + major_interval) {
-        iteration += 1;
-        if iteration > max_ticks {
-            break;
-        }
-
+    for (tick_time, label) in ticks(pps, scroll_offset_px, ruler_rect.width(), duration_secs) {
+        let is_major = label.is_some();
         let x = ruler_rect.min.x + (tick_time as f32 * pps) - scroll_offset_px;
 
         if x < ruler_rect.min.x - 1.0 {
-            tick_time += minor_interval;
             continue;
         }
         if x > ruler_rect.max.x + 1.0 {
             break;
         }
-
-        // Is this a major tick?
-        let remainder = (tick_time / major_interval).rem_euclid(1.0);
-        let is_major = !(1e-6..=(1.0 - 1e-6)).contains(&remainder);
 
         let tick_h = if is_major { major_tick_h } else { minor_tick_h };
         let tick_color = if is_major { theme.border_light } else { theme.border };
@@ -190,8 +189,7 @@ pub fn draw_ruler(
         );
 
         // Label on major ticks with collision prevention
-        if is_major {
-            let label = format_time_label(tick_time, major_interval);
+        if let Some(label) = label {
             let label_x = x + label_margin;
             let estimated_w = label.len() as f32 * 5.5;
 
@@ -206,8 +204,6 @@ pub fn draw_ruler(
                 last_label_right = label_x + estimated_w;
             }
         }
-
-        tick_time += minor_interval;
     }
 
     // "Beyond duration" amber tint
@@ -221,5 +217,33 @@ pub fn draw_ruler(
             0.0,
             Color32::from_rgba_unmultiplied(220, 220, 228, 14),
         );
+    }
+}
+
+#[cfg(test)]
+mod tick_tests {
+    use super::*;
+
+    /// Every major tick's label is its own time, at every zoom the
+    /// ruler picks intervals for: from tenths of a second apart to
+    /// minutes. A running sum of the minor interval put the 2 s tick at
+    /// 1.9999999 s, labelled 0:01.
+    #[test]
+    fn each_major_label_reads_its_own_time() {
+        for pps in [3.0_f32, 12.0, 25.0, 40.0, 55.0, 80.0, 120.0, 400.0, 900.0] {
+            let major = choose_major_interval(pps);
+            for (t, label) in ticks(pps, 0.0, 1600.0, 600.0) {
+                let Some(label) = label else { continue };
+                let n = (t / major).round();
+                assert!((t - n * major).abs() < 1e-9, "{pps} pps: a major tick off its interval at {t}");
+                assert_eq!(label, format_time_label(n * major + 1e-12, major), "{pps} pps: the tick at {t} s");
+                if major >= 1.0 {
+                    let secs = (n * major).round() as u64;
+                    assert_eq!(label, format!("{}:{:02}", secs / 60, secs % 60), "{pps} pps");
+                }
+            }
+        }
+        assert_eq!(format_time_label(1.999_999_9, 2.0), "0:02");
+        assert_eq!(format_time_label(59.999_999, 1.0), "1:00");
     }
 }
