@@ -260,7 +260,7 @@ mod tests {
     }
 
     fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
-        let instance = wgpu::Instance::default();
+        let instance = klipp_effects::gpu_context::instance();
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))?;
         pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default(), None)).ok()
     }

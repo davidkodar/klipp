@@ -47,6 +47,23 @@ fn backends_unlocked() -> wgpu::Backends {
     })
 }
 
+/// An instance on [`backends`], made as the app's devices make theirs:
+/// for a test or a tool that wants a device of its own, so it never
+/// brings up NVIDIA's GL driver beside its Vulkan one (#3000).
+pub fn instance() -> wgpu::Instance {
+    let _loading = klipp_load_lock::library_loading();
+    instance_unlocked()
+}
+
+/// [`instance`] with the driver-loading lock already held.
+fn instance_unlocked() -> wgpu::Instance {
+    wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends: backends_unlocked(),
+        flags: wgpu::InstanceFlags::from_build_config() & !wgpu::InstanceFlags::VALIDATION,
+        ..Default::default()
+    })
+}
+
 /// The limits Klipp asks a device for, the engine's and the UI's alike
 /// (#2341): wgpu's defaults, but the adapter's own largest buffer and
 /// storage binding. The defaults cap a binding at 128 MiB and a buffer at
@@ -128,11 +145,7 @@ impl GpuContext {
         // loading on another thread: the two deadlock inside NVIDIA's
         // driver (#1032). Held until the device is made.
         let _loading = klipp_load_lock::library_loading();
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: backends_unlocked(),
-            flags: wgpu::InstanceFlags::from_build_config() & !wgpu::InstanceFlags::VALIDATION,
-            ..Default::default()
-        });
+        let instance = instance_unlocked();
 
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,

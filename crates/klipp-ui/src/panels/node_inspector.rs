@@ -5813,7 +5813,7 @@ mod wheel_layout_tests {
 
 #[cfg(test)]
 fn render_wheel_layout_review(ctx: &egui::Context, out: &egui::FullOutput, textures: &egui::TexturesDelta, width: u32, path: &str) {
-    let instance = wgpu::Instance::default();
+    let instance = klipp_effects::gpu_context::instance();
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).unwrap();
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default(), None)).unwrap();
     let format = wgpu::TextureFormat::Rgba8Unorm;
