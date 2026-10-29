@@ -21,6 +21,7 @@
 //!   zero intensity): adding one changes nothing until it is set.
 
 use super::{
+    listed, starting, BrowserCategory,
     mixable,
     Alpha, Category, ColourDomain, EffectType, NodeTypeDesc, ParamDesc, ParamKind, Scaling, Spatial, Temporal, Unit,
     IMAGE_IN, IMAGE_OUT,
@@ -96,6 +97,7 @@ pub(super) static TYPES: &[EffectType] = &[
             false,
         )),
         tag: "bloom",
+        browser: listed(BrowserCategory::Light, "Light", ""),
         sample: || BuiltinEffect::Bloom { threshold: 0.7, radius: 20.0, intensity: 0.5 },
     },
     EffectType {
@@ -111,6 +113,7 @@ pub(super) static TYPES: &[EffectType] = &[
             false,
         )),
         tag: "glow",
+        browser: starting(BrowserCategory::Light, "Light", "", || BuiltinEffect::Glow { radius: 30.0, intensity: 0.4, threshold: 0.6 }),
         sample: || BuiltinEffect::Glow { radius: 30.0, intensity: 0.4, threshold: 0.0 },
     },
     EffectType {
@@ -129,6 +132,7 @@ pub(super) static TYPES: &[EffectType] = &[
             false,
         )),
         tag: "light_rays",
+        browser: listed(BrowserCategory::Light, "Light", ""),
         sample: || BuiltinEffect::LightRays { center_x: 0.5, center_y: 0.3, threshold: 0.6, samples: 64, decay: 0.3, intensity: 0.5 },
     },
     EffectType {
@@ -145,6 +149,7 @@ pub(super) static TYPES: &[EffectType] = &[
             false,
         )),
         tag: "vignette",
+        browser: listed(BrowserCategory::Light, "Light", ""),
         sample: || BuiltinEffect::Vignette { amount: -0.4, size: 0.8, softness: 0.5, roundness: 0.5 },
     },
     // Two eyepieces (#989): their spacing a share of the width, their
@@ -165,6 +170,7 @@ pub(super) static TYPES: &[EffectType] = &[
             false,
         )),
         tag: "binocular_vignette",
+        browser: listed(BrowserCategory::Light, "Light", "The frame seen through two eyepieces, a colour fringe at their rims."),
         sample: || BuiltinEffect::BinocularVignette { amount: -1.0, spacing: 0.4, width: 0.85, height: 0.85, softness: 0.15, fringe: 4.0 },
     },
     EffectType {
@@ -181,6 +187,7 @@ pub(super) static TYPES: &[EffectType] = &[
             false,
         )),
         tag: "diffusion",
+        browser: listed(BrowserCategory::Light, "Light", ""),
         sample: || BuiltinEffect::Diffusion { amount: 0.3, radius: 25.0, threshold: 0.5, desaturation: 0.2 },
     },
     EffectType {
@@ -200,6 +207,7 @@ pub(super) static TYPES: &[EffectType] = &[
             false,
         )),
         tag: "lens_flare",
+        browser: listed(BrowserCategory::Light, "Light", ""),
         sample: || BuiltinEffect::LensFlare {
             position_x: 0.7,
             position_y: 0.3,
@@ -223,6 +231,7 @@ pub(super) static TYPES: &[EffectType] = &[
             true,
         ),
         tag: "outer_glow",
+        browser: listed(BrowserCategory::Light, "Light", "Light spilling out from the edge of the layer onto what is behind it"),
         sample: || BuiltinEffect::OuterGlow { radius: 0.0, intensity: 0.0, color: [255, 255, 255] },
     },
     EffectType {
@@ -238,6 +247,7 @@ pub(super) static TYPES: &[EffectType] = &[
             false,
         )),
         tag: "light_wrap",
+        browser: listed(BrowserCategory::Light, "Light", ""),
         sample: || BuiltinEffect::LightWrap { width: 15.0, intensity: 0.5, softness: 1.0 },
     },
     EffectType {
@@ -254,6 +264,7 @@ pub(super) static TYPES: &[EffectType] = &[
             false,
         )),
         tag: "anamorphic_streak",
+        browser: listed(BrowserCategory::Light, "Light", ""),
         sample: || BuiltinEffect::AnamorphicStreak { threshold: 0.7, length: 80.0, intensity: 0.5, tint: 0.3 },
     },
     EffectType {
@@ -270,6 +281,7 @@ pub(super) static TYPES: &[EffectType] = &[
             false,
         )),
         tag: "film_halation",
+        browser: listed(BrowserCategory::Film, "Light", ""),
         sample: || BuiltinEffect::FilmHalation { threshold: 0.75, radius: 15.0, intensity: 0.3, hue: 0.2 },
     },
     EffectType {
@@ -286,6 +298,7 @@ pub(super) static TYPES: &[EffectType] = &[
             false,
         )),
         tag: "chromatic_aberration",
+        browser: listed(BrowserCategory::Stylize, "Stylize", ""),
         sample: || BuiltinEffect::ChromaticAberration { red_shift: 2.0, blue_shift: -2.0, center_x: 0.5, center_y: 0.5 },
     },
     EffectType {
@@ -303,6 +316,7 @@ pub(super) static TYPES: &[EffectType] = &[
             true,
         ),
         tag: "drop_shadow",
+        browser: listed(BrowserCategory::Light, "Light", "A shadow cast by the layer onto what is behind it"),
         sample: || BuiltinEffect::DropShadow { offset_x: 0.0, offset_y: 0.0, blur: 0.0, color: [0, 0, 0], opacity: 0.0 },
     },
 ];

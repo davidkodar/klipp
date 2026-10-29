@@ -14,6 +14,7 @@
 //! and offers 0.1..3, and the compositor substitutes one when tilted.
 
 use super::{
+    hidden, listed, BrowserCategory,
     Alpha, Category, ColourDomain, EffectType, NodeTypeDesc, ParamDesc, ParamKind, Scaling,
     Spatial, Temporal, Unit, IMAGE_IN, IMAGE_OUT, SEED_RANGE, TIME_RANGE,
 };
@@ -89,6 +90,7 @@ pub(super) static TYPES: &[EffectType] = &[
             false,
         ),
         tag: "crop",
+        browser: listed(BrowserCategory::Distort, "Distort", ""),
         sample: || BuiltinEffect::Crop {
             left: 0.0,
             right: 0.0,
@@ -149,6 +151,7 @@ pub(super) static TYPES: &[EffectType] = &[
             false,
         ),
         tag: "transform",
+        browser: listed(BrowserCategory::Distort, "Distort", ""),
         sample: || BuiltinEffect::Transform {
             position_x: 0.0,
             position_y: 0.0,
@@ -175,6 +178,7 @@ pub(super) static TYPES: &[EffectType] = &[
             false,
         ),
         tag: "rounded_corners",
+        browser: listed(BrowserCategory::Distort, "Distort", "Rounds the corners of the picture, so a placed clip reads as a card"),
         sample: || BuiltinEffect::RoundedCorners {
             radius: 0.0,
             feather: 0.0,
@@ -193,6 +197,7 @@ pub(super) static TYPES: &[EffectType] = &[
             true,
         ),
         tag: "fill_bars",
+        browser: listed(BrowserCategory::Blur, "Blur", "Fills letterbox and pillarbox bars, as round an upright phone shot, with the picture itself, enlarged and blurred. Also known as blanking fill, blur fill, blurred background."),
         sample: || BuiltinEffect::FillBars {
             blur: 0.05,
             zoom: 1.0,
@@ -211,6 +216,7 @@ pub(super) static TYPES: &[EffectType] = &[
             false,
         ),
         tag: "mirror",
+        browser: listed(BrowserCategory::Distort, "Transform", ""),
         sample: || BuiltinEffect::Mirror {
             horizontal: 1,
             vertical: 0,
@@ -228,6 +234,7 @@ pub(super) static TYPES: &[EffectType] = &[
             false,
         ),
         tag: "lens_distortion",
+        browser: listed(BrowserCategory::Distort, "Distort", ""),
         sample: || BuiltinEffect::LensDistortion {
             distortion: 0.0,
             scale: 1.0,
@@ -252,6 +259,7 @@ pub(super) static TYPES: &[EffectType] = &[
             false,
         )),
         tag: "displace",
+        browser: listed(BrowserCategory::Distort, "Distort", ""),
         sample: || BuiltinEffect::Displace {
             amount: 12.0,
             size: 80.0,
@@ -286,6 +294,7 @@ pub(super) static TYPES: &[EffectType] = &[
             false,
         )),
         tag: "warp",
+        browser: listed(BrowserCategory::Distort, "Distort", "Bends the picture: a wave, a twirl, a bulge or pinch, ripples or torn rows"),
         sample: || BuiltinEffect::Warp {
             mode: 0,
             amplitude: 20.0,
@@ -350,6 +359,7 @@ pub(super) static TYPES: &[EffectType] = &[
             true,
         ),
         tag: "reflection",
+        browser: listed(BrowserCategory::Distort, "Distort", ""),
         sample: || BuiltinEffect::Reflection {
             waterline: 0.6,
             gap: 0.0,
@@ -394,6 +404,7 @@ pub(super) static TYPES: &[EffectType] = &[
             false,
         ),
         tag: "letterbox",
+        browser: listed(BrowserCategory::Stylize, "Stylize", ""),
         sample: || BuiltinEffect::Letterbox {
             aspect_ratio: 2.39,
             bar_color: 0,
@@ -418,6 +429,7 @@ pub(super) static TYPES: &[EffectType] = &[
             false,
         ),
         tag: "corner_pin",
+        browser: listed(BrowserCategory::Distort, "Distort", "Pin the picture to four corners, in perspective"),
         sample: crate::corner_pin::still,
     },
     EffectType {
@@ -434,6 +446,7 @@ pub(super) static TYPES: &[EffectType] = &[
             false,
         ),
         tag: "surface_pin",
+        browser: hidden("Pins the picture to a tracked surface; the planar tracker's pin places it and sets the surface it follows"),
         sample: || BuiltinEffect::SurfacePin { surface: String::new(), inset: 0.0, on_source: [[0.0; 2]; 4], source: [0; 2] },
     },
     EffectType {
@@ -455,6 +468,7 @@ pub(super) static TYPES: &[EffectType] = &[
             false,
         ),
         tag: "picture_transform",
+        browser: listed(BrowserCategory::Distort, "Distort", "Moves, scales and turns the picture inside the clip's frame, where it sits"),
         sample: || BuiltinEffect::PictureTransform { position_x: 0.0, position_y: 0.0, scale_x: 1.0, scale_y: 1.0, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5 },
     },
 ];

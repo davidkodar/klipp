@@ -521,12 +521,57 @@ impl NodeTypeDesc {
     }
 }
 
+/// The effects browser's categories for built-in effects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrowserCategory {
+    Blur,
+    Colour,
+    Stylize,
+    Keying,
+    Distort,
+    Light,
+    Film,
+}
+
+/// Where the effects browser lists a built-in effect (#2888): every
+/// effect a person puts on a clip is listed, and one that is not says
+/// why.
+#[derive(Debug, Clone, Copy)]
+pub enum Browser {
+    Listed {
+        category: BrowserCategory,
+        /// The heading the Category sort groups it under.
+        grouping: &'static str,
+        /// The line under its name; empty for none.
+        description: &'static str,
+        /// What adding it puts on the clip, when not its reset
+        /// [`EffectType::sample`].
+        start: Option<fn() -> BuiltinEffect>,
+    },
+    /// Not listed, and why: placed some other way than from the browser.
+    Hidden(&'static str),
+}
+
+pub(crate) const fn listed(category: BrowserCategory, grouping: &'static str, description: &'static str) -> Browser {
+    Browser::Listed { category, grouping, description, start: None }
+}
+
+pub(crate) const fn starting(category: BrowserCategory, grouping: &'static str, description: &'static str, start: fn() -> BuiltinEffect) -> Browser {
+    Browser::Listed { category, grouping, description, start: Some(start) }
+}
+
+pub(crate) const fn hidden(why: &'static str) -> Browser {
+    Browser::Hidden(why)
+}
+
 /// A built-in effect's description, tied to its variant.
 #[derive(Debug, Clone, Copy)]
 pub struct EffectType {
     pub desc: NodeTypeDesc,
     /// The variant's tag in a saved project (`"gaussian_blur"`).
     pub tag: &'static str,
+    /// Where the effects browser lists it, or why it does not.
+    pub browser: Browser,
     /// The effect as a reset leaves it: every parameter at its
     /// [`ParamDesc::default`].
     pub sample: fn() -> BuiltinEffect,

@@ -18,6 +18,7 @@
 //!   title layer from its roll's focus band, so it has no slider ranges.
 
 use super::{
+    hidden, listed, BrowserCategory,
     mixable,
     Alpha, Category, ColourDomain, EffectType, NodeTypeDesc, ParamDesc, ParamKind, Scaling, Spatial, Temporal, Unit, IMAGE_IN,
     IMAGE_OUT,
@@ -82,6 +83,7 @@ pub(super) static TYPES: &[EffectType] = &[
             &[ParamDesc::float("radius", "Radius", 0.0, (0.0, 100.0), Unit::CanvasPx)],
         )),
         tag: "gaussian_blur",
+        browser: listed(BrowserCategory::Blur, "Blur", ""),
         sample: || BuiltinEffect::GaussianBlur { radius: 0.0 },
     },
     EffectType {
@@ -108,11 +110,13 @@ pub(super) static TYPES: &[EffectType] = &[
             ],
         )),
         tag: "focus_blur",
+        browser: hidden("A title's focus band, which the compositor puts on a title layer; not an effect a clip is given"),
         sample: || BuiltinEffect::FocusBlur { radius: 8.0, vertical: true, band: 0.3 },
     },
     EffectType {
         desc: mixable(blur("klipp.fx.sharpen", "Sharpen", &[ParamDesc::float("amount", "Amount", 0.0, (0.0, 2.0), Unit::Ratio)])),
         tag: "sharpen",
+        browser: listed(BrowserCategory::Blur, "Blur", ""),
         sample: || BuiltinEffect::Sharpen { amount: 0.0 },
     },
     EffectType {
@@ -126,6 +130,7 @@ pub(super) static TYPES: &[EffectType] = &[
             ],
         )),
         tag: "directional_blur",
+        browser: listed(BrowserCategory::Blur, "Blur", ""),
         sample: || BuiltinEffect::DirectionalBlur { angle: 0.0, distance: 20.0, samples: 8 },
     },
     EffectType {
@@ -156,6 +161,7 @@ pub(super) static TYPES: &[EffectType] = &[
             ],
         )),
         tag: "radial_blur",
+        browser: listed(BrowserCategory::Blur, "Blur", ""),
         sample: || BuiltinEffect::RadialBlur { center_x: 0.5, center_y: 0.5, amount: 10.0, samples: 12, mode: 0 },
     },
     EffectType {
@@ -170,6 +176,7 @@ pub(super) static TYPES: &[EffectType] = &[
             ],
         )),
         tag: "tilt_shift",
+        browser: listed(BrowserCategory::Blur, "Blur", "A sharp band across the frame, blurred above and below."),
         sample: || BuiltinEffect::TiltShift { center: 0.5, width: 0.3, softness: 0.2, radius: 12.0 },
     },
     EffectType {
@@ -183,6 +190,7 @@ pub(super) static TYPES: &[EffectType] = &[
             ],
         )),
         tag: "denoise",
+        browser: listed(BrowserCategory::Blur, "Blur", ""),
         sample: || BuiltinEffect::Denoise { spatial_sigma: 5.0, color_sigma: 0.1, iterations: 1 },
     },
     EffectType {
@@ -192,16 +200,19 @@ pub(super) static TYPES: &[EffectType] = &[
             &[whole("radius", "Radius", 1.0, Some((1.0, 5.0)), Unit::CanvasPx, false)],
         )),
         tag: "median_filter",
+        browser: listed(BrowserCategory::Blur, "Blur", ""),
         sample: || BuiltinEffect::MedianFilter { radius: 1 },
     },
     EffectType {
         desc: mixable(blur("klipp.fx.dilate", "Dilate", &[whole("radius", "Radius", 1.0, Some((1.0, 10.0)), Unit::CanvasPx, false)])),
         tag: "dilate",
+        browser: listed(BrowserCategory::Stylize, "Stylize", ""),
         sample: || BuiltinEffect::Dilate { radius: 1 },
     },
     EffectType {
         desc: mixable(blur("klipp.fx.erode", "Erode", &[whole("radius", "Radius", 1.0, Some((1.0, 10.0)), Unit::CanvasPx, false)])),
         tag: "erode",
+        browser: listed(BrowserCategory::Stylize, "Stylize", ""),
         sample: || BuiltinEffect::Erode { radius: 1 },
     },
     EffectType {
@@ -215,6 +226,7 @@ pub(super) static TYPES: &[EffectType] = &[
             ],
         ),
         tag: "emboss",
+        browser: listed(BrowserCategory::Stylize, "Stylize", ""),
         sample: || BuiltinEffect::Emboss { angle: 135.0, strength: 1.0, mix: 1.0 },
     },
     EffectType {
@@ -227,11 +239,13 @@ pub(super) static TYPES: &[EffectType] = &[
             ],
         ),
         tag: "edge_detect",
+        browser: listed(BrowserCategory::Stylize, "Stylize", ""),
         sample: || BuiltinEffect::EdgeDetect { strength: 1.0, mix: 1.0 },
     },
     EffectType {
         desc: mixable(blur("klipp.fx.mosaic", "Mosaic", &[at_least_one_px(ParamDesc::float("block_size", "Block Size", 10.0, (1.0, 100.0), Unit::CanvasPx))])),
         tag: "mosaic",
+        browser: listed(BrowserCategory::Stylize, "Stylize", ""),
         sample: || BuiltinEffect::Mosaic { block_size: 10.0 },
     },
 ];
