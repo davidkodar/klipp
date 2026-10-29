@@ -1248,13 +1248,6 @@ fn param_display(unit: klipp_audio::dsp::ParamUnit) -> (f32, &'static str) {
     }
 }
 
-/// Voice Isolation presets: (name, hint, Reduction dB).
-const VOICE_ISOLATION_PRESETS: &[(&str, &str, f32)] = &[
-    ("Natural", "Lowers the background by 12 dB: the voice leads, the place is still there", 12.0),
-    ("Clean", "Lowers the background by 24 dB: broadcast-clean dialogue with a hint of room", 24.0),
-    ("Full", "Removes all it can: studio-dry voice, for rescue jobs and voice-over", klipp_audio::dsp::voice_isolation::FULL_REDUCTION_DB),
-];
-
 fn show_voice_isolation_controls(
     ui: &mut egui::Ui,
     theme: &KlippTheme,
@@ -1302,18 +1295,7 @@ fn show_voice_isolation_controls(
 
     ui.add_space(4.0);
     ui.label(egui::RichText::new("PRESETS").size(10.0).strong().color(theme.text_dim));
-    ui.horizontal_wrapped(|ui| {
-        for (name, hint, db) in VOICE_ISOLATION_PRESETS {
-            let active = (reduction - db).abs() < 0.05;
-            if ui.selectable_label(active, *name).on_hover_text(*hint).clicked() {
-                cmds.push(AppCommand::SetAudioEffectParams {
-                    clip_id,
-                    effect_index: idx,
-                    params: vec![("reduction".into(), *db)],
-                });
-            }
-        }
-    });
+    audio_preset_buttons(ui, "voice_isolation", clip_id, idx, inst, cmds);
     let what = if remove_voice { "speech" } else { "background" };
     let amount = if reduction >= vi::FULL_REDUCTION_DB {
         format!("The {what} is removed as far as the model can.")
@@ -1323,20 +1305,22 @@ fn show_voice_isolation_controls(
     ui.label(egui::RichText::new(format!("{amount} Adds 40 ms of delay, compensated on export.")).size(10.0).color(theme.text_secondary));
 }
 
-/// Broadband Denoiser presets: (name, hint, Reduction, Noise Floor gain,
-/// Wind Reduction, Learn Window seconds). The floor is the deepest a
-/// noise-only bin is pulled down (0.12 ≈ -18 dB), which is what keeps
-/// dialogue natural.
-const DENOISER_PRESETS: &[(&str, &str, f32, f32, f32, f32)] = &[
-    ("Dialogue", "Everyday cleanup for speech: removes steady noise and keeps the voice natural (-18 dB floor)", 0.7, 0.12, 0.0, 0.5),
-    ("Light Touch", "Gentle reduction for interviews and ambience you want to keep (-12 dB floor)", 0.5, 0.25, 0.0, 0.5),
-    ("Room Tone", "Steady room ambience and camera self-noise behind dialogue", 0.8, 0.08, 0.0, 1.0),
-    ("Hiss", "Preamp, tape and high-gain microphone hiss", 0.85, 0.06, 0.0, 0.5),
-    ("HVAC / Fan", "Air conditioning, computer fans and fridge beds; learn over a longer stretch", 0.85, 0.05, 0.0, 2.0),
-    ("Wind", "Outdoor wind: ducks gusts in the low end and cleans the steady rush. Add a High-pass (camera wind preset) before it for heavy buffeting", 1.0, 0.03, 1.0, 1.0),
-    ("Traffic", "Distant traffic and city bed under location dialogue, with light gust control", 0.9, 0.06, 0.5, 2.0),
-    ("Aggressive", "Maximum reduction for rescue jobs; listen for watery artefacts", 1.0, 0.01, 1.0, 2.0),
-];
+/// The preset buttons of the audio effect `type_id` (#2887): Klipp's
+/// presets file's, each lit when the effect stands at its settings, a
+/// click setting them.
+fn audio_preset_buttons(ui: &mut egui::Ui, type_id: &str, clip_id: ClipId, idx: usize, inst: &AudioEffectInstance, cmds: &mut Vec<AppCommand>) {
+    let now = |name: &str| inst.params.iter().find(|(k, _)| k == name).map(|(_, v)| *v);
+    ui.horizontal_wrapped(|ui| {
+        for preset in klipp_core::audio_effect_registry::presets_of(type_id) {
+            let values = preset.values();
+            let active = values.iter().all(|(k, v)| now(k).is_some_and(|n| (n - v).abs() <= 0.005f32.max(v.abs() * 0.002)));
+            if ui.selectable_label(active, &preset.name).on_hover_text(&preset.description).clicked() {
+                cmds.push(AppCommand::SetAudioEffectParams { clip_id, effect_index: idx, params: values });
+            }
+        }
+    });
+}
+
 
 fn show_denoiser_controls(
     ui: &mut egui::Ui,
@@ -1350,35 +1334,12 @@ fn show_denoiser_controls(
     let param = |name: &str, default: f32| {
         inst.params.iter().find(|(k, _)| k == name).map(|(_, v)| *v).unwrap_or(default)
     };
-    let strength = param("strength", 0.75);
-    let floor = param("floor", 0.08);
-    let window = param("profile_seconds", 0.5);
-    let wind = param("wind", 0.0);
     let learned = param("profile_learned", 0.0) > 0.5;
     let learned_at = param("profile_at", -1.0);
 
     ui.add_space(4.0);
     ui.label(egui::RichText::new("PRESETS").size(10.0).strong().color(theme.text_dim));
-    ui.horizontal_wrapped(|ui| {
-        for (name, hint, p_strength, p_floor, p_wind, p_window) in DENOISER_PRESETS {
-            let active = (strength - p_strength).abs() < 0.005
-                && (floor - p_floor).abs() < 0.005
-                && (wind - p_wind).abs() < 0.005
-                && (window - p_window).abs() < 0.005;
-            if ui.selectable_label(active, *name).on_hover_text(*hint).clicked() {
-                cmds.push(AppCommand::SetAudioEffectParams {
-                    clip_id,
-                    effect_index: idx,
-                    params: vec![
-                        ("strength".into(), *p_strength),
-                        ("floor".into(), *p_floor),
-                        ("wind".into(), *p_wind),
-                        ("profile_seconds".into(), *p_window),
-                    ],
-                });
-            }
-        }
-    });
+    audio_preset_buttons(ui, "denoiser", clip_id, idx, inst, cmds);
 
     ui.add_space(4.0);
     ui.label(egui::RichText::new("NOISE PROFILE").size(10.0).strong().color(theme.text_dim));

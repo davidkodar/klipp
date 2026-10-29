@@ -1,0 +1,78 @@
+# Klipp's built-in audio effect presets (#2887): each the effect it is
+# for, a name, a line saying what it does, and the effect's settings it
+# sets, by their names. The inspector lists an effect's presets in this
+# order.
+kind = "audio_effect_preset"
+format_version = 1
+
+# ── Voice Isolation ──
+# Reduction is in dB; 60 removes all the model can.
+[[preset]]
+effect = "voice_isolation"
+name = "Natural"
+description = "Lowers the background by 12 dB: the voice leads, the place is still there"
+params = { reduction = 12.0 }
+
+[[preset]]
+effect = "voice_isolation"
+name = "Clean"
+description = "Lowers the background by 24 dB: broadcast-clean dialogue with a hint of room"
+params = { reduction = 24.0 }
+
+[[preset]]
+effect = "voice_isolation"
+name = "Full"
+description = "Removes all it can: studio-dry voice, for rescue jobs and voice-over"
+params = { reduction = 60.0 }
+
+# ── Broadband Denoiser ──
+# The floor is the deepest a noise-only bin is pulled down (0.12 is about
+# -18 dB), which is what keeps dialogue natural; profile_seconds is the
+# Learn Window.
+[[preset]]
+effect = "denoiser"
+name = "Dialogue"
+description = "Everyday cleanup for speech: removes steady noise and keeps the voice natural (-18 dB floor)"
+params = { strength = 0.7, floor = 0.12, wind = 0.0, profile_seconds = 0.5 }
+
+[[preset]]
+effect = "denoiser"
+name = "Light Touch"
+description = "Gentle reduction for interviews and ambience you want to keep (-12 dB floor)"
+params = { strength = 0.5, floor = 0.25, wind = 0.0, profile_seconds = 0.5 }
+
+[[preset]]
+effect = "denoiser"
+name = "Room Tone"
+description = "Steady room ambience and camera self-noise behind dialogue"
+params = { strength = 0.8, floor = 0.08, wind = 0.0, profile_seconds = 1.0 }
+
+[[preset]]
+effect = "denoiser"
+name = "Hiss"
+description = "Preamp, tape and high-gain microphone hiss"
+params = { strength = 0.85, floor = 0.06, wind = 0.0, profile_seconds = 0.5 }
+
+[[preset]]
+effect = "denoiser"
+name = "HVAC / Fan"
+description = "Air conditioning, computer fans and fridge beds; learn over a longer stretch"
+params = { strength = 0.85, floor = 0.05, wind = 0.0, profile_seconds = 2.0 }
+
+[[preset]]
+effect = "denoiser"
+name = "Wind"
+description = "Outdoor wind: ducks gusts in the low end and cleans the steady rush. Add a High-pass (camera wind preset) before it for heavy buffeting"
+params = { strength = 1.0, floor = 0.03, wind = 1.0, profile_seconds = 1.0 }
+
+[[preset]]
+effect = "denoiser"
+name = "Traffic"
+description = "Distant traffic and city bed under location dialogue, with light gust control"
+params = { strength = 0.9, floor = 0.06, wind = 0.5, profile_seconds = 2.0 }
+
+[[preset]]
+effect = "denoiser"
+name = "Aggressive"
+description = "Maximum reduction for rescue jobs; listen for watery artefacts"
+params = { strength = 1.0, floor = 0.01, wind = 1.0, profile_seconds = 2.0 }

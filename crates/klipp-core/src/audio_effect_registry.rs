@@ -93,6 +93,55 @@ pub fn audio_effect(type_id: &str) -> Option<&'static AudioEffectSpec> {
     AUDIO_EFFECTS.iter().find(|s| s.type_id == type_id)
 }
 
+/// A built-in audio effect preset (#2887), as Klipp's presets file holds
+/// it: the effect it is for, its name and line, and the settings it sets,
+/// by name, in the order the file gives them.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AudioPreset {
+    pub effect: String,
+    pub name: String,
+    pub description: String,
+    pub params: toml::Table,
+}
+
+impl AudioPreset {
+    /// Its settings, by name.
+    pub fn values(&self) -> Vec<(String, f32)> {
+        self.params.iter().filter_map(|(k, v)| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)).map(|v| (k.clone(), v as f32))).collect()
+    }
+
+    /// Why a preset someone wrote can't be used: an effect Klipp hasn't
+    /// got, a setting it hasn't, or a value that isn't a finite number.
+    fn fault(&self) -> Option<String> {
+        let Some(spec) = audio_effect(&self.effect) else { return Some(format!("\"{}\": \"{}\" is not a built-in audio effect", self.name, self.effect)) };
+        if let Some(k) = self.params.keys().find(|k| !spec.params.contains(&k.as_str())) {
+            return Some(format!("\"{}\": {} has no setting \"{k}\"", self.name, spec.name));
+        }
+        (self.values().len() != self.params.len() || self.values().iter().any(|(_, v)| !v.is_finite())).then(|| format!("\"{}\": each setting is a finite number", self.name))
+    }
+}
+
+/// Every built-in audio effect preset, `assets/presets/audio_effects/
+/// builtin.toml`, read once; a file that doesn't read leaves none, said,
+/// never a crash.
+pub fn audio_presets() -> &'static [AudioPreset] {
+    static PRESETS: std::sync::OnceLock<Vec<AudioPreset>> = std::sync::OnceLock::new();
+    PRESETS.get_or_init(|| {
+        let read = crate::preset_file::read::<AudioPreset>(include_str!("../../../assets/presets/audio_effects/builtin.toml"), "audio_effect_preset", 1, "preset")
+            .and_then(|presets| presets.iter().find_map(AudioPreset::fault).map_or(Ok(presets), Err));
+        read.unwrap_or_else(|why| {
+            tracing::error!("the built-in audio effect presets don't read: {why}");
+            Vec::new()
+        })
+    })
+}
+
+/// The presets of the audio effect saved as `type_id`, in order.
+pub fn presets_of(type_id: &str) -> impl Iterator<Item = &'static AudioPreset> + '_ {
+    audio_presets().iter().filter(move |p| p.effect == type_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -110,5 +159,29 @@ mod tests {
             assert_eq!(p.len(), s.params.len(), "{}: a param twice", s.type_id);
             assert!(!s.name.is_empty() && !s.description.is_empty(), "{}", s.type_id);
         }
+    }
+
+    /// The audio presets are Klipp's file's (#2887): the voice
+    /// isolation's three and the denoiser's eight, in order. One someone
+    /// else wrote is refused, saying why, for an effect Klipp hasn't got,
+    /// a setting the effect hasn't, a value that isn't a number, or one
+    /// that isn't finite.
+    #[test]
+    fn the_audio_presets_read_and_a_bad_one_is_refused() {
+        let names = |e: &str| presets_of(e).map(|p| p.name.as_str()).collect::<Vec<_>>();
+        assert_eq!(names("voice_isolation"), ["Natural", "Clean", "Full"]);
+        assert_eq!(names("denoiser"), ["Dialogue", "Light Touch", "Room Tone", "Hiss", "HVAC / Fan", "Wind", "Traffic", "Aggressive"]);
+        let dialogue = presets_of("denoiser").next().unwrap().values();
+        assert_eq!(dialogue, [("floor".to_string(), 0.12), ("profile_seconds".into(), 0.5), ("strength".into(), 0.7), ("wind".into(), 0.0)]);
+        let read = |entry: &str| {
+            crate::preset_file::read::<AudioPreset>(&format!("kind = \"audio_effect_preset\"\nformat_version = 1\n[[preset]]\nname = \"x\"\ndescription = \"y\"\n{entry}\n"), "audio_effect_preset", 1, "preset")
+                .and_then(|p| p.iter().find_map(AudioPreset::fault).map_or(Ok(p), Err))
+        };
+        assert!(read("effect = \"denoiser\"\nparams = { strength = 1 }").is_ok());
+        assert!(read("effect = \"theremin\"\nparams = {}").unwrap_err().contains("not a built-in audio effect"));
+        assert!(read("effect = \"denoiser\"\nparams = { sparkle = 1.0 }").unwrap_err().contains("no setting \"sparkle\""));
+        assert!(read("effect = \"denoiser\"\nparams = { strength = \"lots\" }").unwrap_err().contains("finite number"));
+        assert!(read("effect = \"denoiser\"\nparams = { strength = inf }").unwrap_err().contains("finite number"));
+        assert!(read("effect = \"denoiser\"\nparams = {}\nvolume = 2").unwrap_err().contains("unknown field"));
     }
 }
