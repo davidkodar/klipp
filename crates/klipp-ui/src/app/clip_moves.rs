@@ -19,6 +19,16 @@ impl KlippApp {
                 self.move_selected_clips_to_track(*up);
                 true
             }
+            AppCommand::MovePrimaryBlock { block, others, delta, overwrite } => {
+                match super::primary_block::move_block(&mut self.state, block, others, *delta, *overwrite) {
+                    Ok(()) => {
+                        self.sync_sequence_to_engine();
+                        let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    }
+                    Err(why) => self.state.toast.show(format!("Move unchanged: {why}")),
+                }
+                true
+            }
             AppCommand::MoveClips { moves } => {
                 let ops = crate::timeline::moves::drag_move_ops(self.state.sequence(), moves, self.state.linked_selection);
                 self.apply_move_ops(ops, "Move Clips");
