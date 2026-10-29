@@ -9674,11 +9674,29 @@ impl TimelinePanel {
                         ghost_painter.rect_filled(ghost_rect, 2.0, ghost_fill);
                         ghost_painter.rect_stroke(ghost_rect, 2.0, egui::Stroke::new(2.0_f32, ghost_border));
                         // The other clips of the selection, each on its own
-                        // track where it goes (#3060).
+                        // track where it goes (#3060): in Insert the
+                        // primary's one after another from the slot, as
+                        // the block goes in; else by the offset.
+                        let delta = final_in - drag.original_timeline_in;
+                        let mut primary_members: Vec<(ClipId, Timecode)> = std::iter::once((drag.clip_id, drag.original_timeline_in))
+                            .chain(drag.party.iter().filter(|m| m.1 == drag.track_idx).map(|m| (m.0, m.2)))
+                            .collect();
+                        primary_members.sort_by_key(|m| m.1.value);
+                        let mut block_at: HashMap<ClipId, Timecode> = HashMap::new();
+                        if effective_mode == klipp_timeline::magnetic::EditMode::Insert {
+                            let mut at = primary_members.first().map_or(final_in, |m| m.1 + delta);
+                            for (id, _) in &primary_members {
+                                block_at.insert(*id, at);
+                                if let Some(c) = state.sequence().tracks.get(drag.track_idx).and_then(|t| t.find_clip(*id)) {
+                                    at += c.duration();
+                                }
+                            }
+                        }
                         for &(id, ti, orig_in) in &drag.party {
                             let Some(c) = state.sequence().all_clips().find(|c| c.id == id) else { continue };
                             let Some(r) = self.frame_cache.track_rects.iter().find(|(i, _, _)| *i == ti).map(|(_, _, r)| *r) else { continue };
-                            let x = content_rect.left() + (orig_in + (final_in - drag.original_timeline_in)).to_secs_f64() as f32 * zoom - scroll;
+                            let start = block_at.get(&id).copied().unwrap_or(orig_in + delta);
+                            let x = content_rect.left() + start.to_secs_f64() as f32 * zoom - scroll;
                             let ghost = egui::Rect::from_min_size(egui::pos2(x, r.top() + 2.0), egui::vec2(c.duration().to_secs_f64() as f32 * zoom, r.height() - 4.0));
                             ghost_painter.rect_filled(ghost, 2.0, ghost_fill);
                             ghost_painter.rect_stroke(ghost, 2.0, egui::Stroke::new(2.0_f32, ghost_border));
@@ -10224,23 +10242,25 @@ impl TimelinePanel {
             let on_primary = |id: ClipId| primary.is_some_and(|p| state.sequence().tracks[p].find_clip(id).is_some());
             let block_on_primary = on_primary(drag.clip_id) || drag.party.iter().any(|&(id, _, _)| on_primary(id));
             if pointer_released && drag.track_idx == track_idx && !drag.party.is_empty() && block_on_primary {
-                // A selection with clips on the primary track (#3060):
-                // every clip moves by the shown offset on its own track,
-                // as the document moves clips, and nothing else on the
-                // primary moves: its other clips and gaps stay as they
-                // are. A move onto another clip is refused with the
-                // document's reason; the change is one undo step of the
-                // document's own edits.
+                // A selection with clips on the primary track (#3060): the
+                // primary's move as one block (in Insert into the slot the
+                // drag showed, in Overwrite each over what is at its start
+                // moved by the offset, Alt for Overwrite), the rest by the
+                // offset on their tracks, one undo step.
                 let shown = drag.shown_in.unwrap_or(drag.original_timeline_in);
                 let delta = shown - drag.original_timeline_in;
                 let to = pointer_pos.and_then(|pos| self.frame_cache.track_rects.iter().find(|(_, _, r)| r.contains(pos)).map(|(i, _, _)| *i));
                 if to.is_some_and(|t| t != drag.track_idx) {
                     state.toast.show("Selection not moved: a selection with clips on the primary track moves along its tracks, not to others");
                 } else if delta.value != 0 {
-                    let moves = std::iter::once((drag.clip_id, drag.original_timeline_in)).chain(drag.party.iter().map(|&(id, _, at)| (id, at)))
-                        .map(|(id, at)| (id, at + delta, None))
-                        .collect();
-                    cmds.push(AppCommand::MoveClips { moves });
+                    let members = std::iter::once((drag.clip_id, drag.track_idx, drag.original_timeline_in)).chain(drag.party.iter().copied());
+                    let (block, others): (Vec<_>, Vec<_>) = members.partition(|m| m.1 == drag.track_idx);
+                    cmds.push(AppCommand::MovePrimaryBlock {
+                        block: block.into_iter().map(|(id, _, at)| (id, at)).collect(),
+                        others: others.into_iter().map(|(id, _, at)| (id, at + delta, None)).collect(),
+                        delta,
+                        overwrite: ui.input(|i| i.modifiers.alt) || state.edit_mode == klipp_timeline::magnetic::EditMode::Overwrite,
+                    });
                 }
                 self.dragging_clip = None;
                 self.press_origin = None;

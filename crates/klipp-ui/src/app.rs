@@ -23,6 +23,7 @@ use klipp_engine::{PlaybackState, SharedFrameBuffer};
 mod export;
 mod pointer_hook;
 mod selection_removal;
+mod primary_block;
 mod export_banding;
 mod frame_glide;
 mod track_subject;

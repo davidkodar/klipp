@@ -493,16 +493,20 @@ fn a_selection_drags_across_tracks_or_is_refused_whole() {
 }
 
 /// The persona repro (#3060): Video 1, the primary, holds clips at 0-4,
-/// 14-18, 18-22, then A 26-29, B 29-32 and C 34-37. A, B and C selected,
-/// A dragged 2 s later, in Insert and in Overwrite: while dragging each
-/// selected clip has its ghost where it goes; let go, A, B and C move 2 s
-/// and nothing else on the track moves, its gaps kept. One undo puts
-/// the whole document back as it was, one redo as the move left it. The
-/// drag used to close every gap on the track, outside the undo step, and
+/// 14-18, 18-22, then A 26-29, B 29-32 and C 34-37, gap clips between (as
+/// a project with bare gaps reads once opened). A, B and C selected, A
+/// dragged 2 s later. While dragging each has its ghost where it goes: in
+/// Insert one after another from 28 s, in Overwrite each 2 s on. Let go,
+/// the block is sent as one move; applied, nothing is lost, the primary
+/// is gapless, and one undo and one redo give the exact documents. The
+/// drag used to close every gap on the track outside the undo step, and
 /// in Overwrite cut one clip and lose two on undo.
 #[test]
-fn a_selection_on_the_primary_moves_alone_and_undoes_exactly() {
-    for mode in [klipp_timeline::magnetic::EditMode::Insert, klipp_timeline::magnetic::EditMode::Overwrite] {
+fn a_selection_on_the_primary_moves_as_a_block_and_undoes_exactly() {
+    for (mode, ghosts_at, lands) in [
+        (klipp_timeline::magnetic::EditMode::Insert, [28, 31, 34], [(28.0, 31.0), (31.0, 34.0), (34.0, 37.0)]),
+        (klipp_timeline::magnetic::EditMode::Overwrite, [28, 31, 36], [(28.0, 31.0), (31.0, 34.0), (36.0, 39.0)]),
+    ] {
         let (mut state, _, _) = three_tracks();
         state.snap.master = false;
         state.edit_mode = mode;
@@ -514,6 +518,7 @@ fn a_selection_on_the_primary_moves_alone_and_undoes_exactly() {
             t.clips.clear();
         }
         state.sequences[0].tracks[v1].clips = clips;
+        state.sequences[0].fill_primary_holes();
         state.selected_clips = ids[3..].to_vec();
         state.selected_clip = Some(ids[3]);
         let original = serde_json::to_value(&state.sequences).unwrap();
@@ -521,11 +526,8 @@ fn a_selection_on_the_primary_moves_alone_and_undoes_exactly() {
         let mut tl = Timeline::new(state);
         tl.state.timeline_zoom = 30.0;
         tl.frame(Vec::new(), egui::Modifiers::NONE);
-        let at = |tl: &Timeline, secs: f64| {
-            let r = tl.old.frame_cache.track_rects.iter().find(|(i, _, _)| *i == v1).unwrap().2;
-            egui::pos2(r.left() + secs as f32 * 30.0, r.center().y)
-        };
-        let grab = at(&tl, 27.5);
+        let r = tl.old.frame_cache.track_rects.iter().find(|(i, _, _)| *i == v1).unwrap().2;
+        let grab = egui::pos2(r.left() + 27.5 * 30.0, r.center().y);
         let m = egui::Modifiers::NONE;
         let b = |p, d| egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: d, modifiers: m };
         tl.frame(vec![egui::Event::PointerMoved(grab)], m);
@@ -533,8 +535,6 @@ fn a_selection_on_the_primary_moves_alone_and_undoes_exactly() {
         tl.frame(vec![egui::Event::PointerMoved(grab + egui::vec2(10.0, 0.0))], m);
         let to = grab + egui::vec2(2.0 * 30.0, 0.0);
         tl.frame(vec![egui::Event::PointerMoved(to)], m);
-        // A ghost for each selected clip, on Video 1 at its new start.
-        let r = tl.old.frame_cache.track_rects.iter().find(|(i, _, _)| *i == v1).unwrap().2;
         let mut ghosts: Vec<i32> = tl.last.shapes.iter()
             .filter_map(|cs| match &cs.shape {
                 egui::Shape::Rect(g) if g.fill.a() == 128 && r.contains(g.rect.center()) => Some(((g.rect.left() - r.left()) / 30.0).round() as i32),
@@ -542,26 +542,26 @@ fn a_selection_on_the_primary_moves_alone_and_undoes_exactly() {
             })
             .collect();
         ghosts.sort();
-        assert_eq!(ghosts, [28, 31, 36], "{mode:?}: a ghost per selected clip (seconds)");
+        assert_eq!(ghosts, ghosts_at, "{mode:?}: a ghost per selected clip where it goes (seconds)");
         tl.frame(vec![b(to, false)], m);
         tl.frame(Vec::new(), m);
-        let mut got = moves(&tl.sent);
-        got.sort_by_key(|m| m.1.value);
-        assert_eq!(got, [(ids[3], t(28.0), None), (ids[4], t(31.0), None), (ids[5], t(36.0), None)], "{mode:?}");
+        let sent = tl.sent.iter().find_map(|c| match c {
+            AppCommand::MovePrimaryBlock { block, others, delta, overwrite } => Some((block.clone(), others.clone(), *delta, *overwrite)),
+            _ => None,
+        });
+        let Some((block, others, delta, overwrite)) = sent else { panic!("{mode:?}: the block is sent") };
+        assert_eq!(block, [(ids[3], t(26.0)), (ids[4], t(29.0)), (ids[5], t(34.0))], "{mode:?}");
+        assert!(others.is_empty() && delta == t(2.0));
+        assert_eq!(overwrite, mode == klipp_timeline::magnetic::EditMode::Overwrite);
 
-        // As the app applies it: the document's moves, one step.
+        // As the app applies it.
         let state = &mut tl.state;
-        let ops = crate::timeline::moves::drag_move_ops(state.sequence(), &got, true);
-        let plan = klipp_document::ops::resolve(state.sequence(), &state.media_pool, &ops).expect("the moves resolve");
-        let edits: Vec<crate::history::EditCommand> = plan.steps.into_iter().map(|s| s.edit).collect();
-        let view = |state: &mut AppState| klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: state.active_sequence_idx, media_pool: &mut state.media_pool, fps: &mut state.fps }.apply_forward(&crate::history::EditCommand::Batch(edits.clone()));
-        let _ = view(state);
-        state.push_edits_as_one(&edits, "Move Clips");
-        // The track's bare gaps (as the persona's setup made them) are gap
-        // clips now, in the same step: the primary is gapless.
+        super::primary_block::move_block(state, &block, &others, delta, overwrite).unwrap();
         assert!(state.sequence().primary_holes().is_none(), "{mode:?}: the primary is gapless");
-        let spans: Vec<(f64, f64)> = state.sequence().tracks[v1].clips.iter().filter(|c| !c.kind.is_gap()).map(|c| (c.timeline_in.to_secs_f64(), c.timeline_out.to_secs_f64())).collect();
-        assert_eq!(spans, [(0.0, 4.0), (14.0, 18.0), (18.0, 22.0), (28.0, 31.0), (31.0, 34.0), (36.0, 39.0)], "{mode:?}: only the selection moved, the gaps kept");
+        let real: Vec<(ClipId, f64, f64)> = state.sequence().tracks[v1].clips.iter().filter(|c| !c.kind.is_gap()).map(|c| (c.id, c.timeline_in.to_secs_f64(), c.timeline_out.to_secs_f64())).collect();
+        assert_eq!(real.iter().map(|r| r.0).collect::<Vec<_>>(), ids, "{mode:?}: every clip kept, in its order");
+        assert_eq!(real[3..].iter().map(|r| (r.1, r.2)).collect::<Vec<_>>(), lands, "{mode:?}: the block where its ghosts showed");
+        assert_eq!(real[..3].iter().map(|r| (r.1, r.2)).collect::<Vec<_>>(), [(0.0, 4.0), (14.0, 18.0), (18.0, 22.0)], "{mode:?}: the clips before it unmoved");
         let moved = serde_json::to_value(&state.sequences).unwrap();
         let entry = state.active_history_mut().undo().expect("a step");
         let _ = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: state.active_sequence_idx, media_pool: &mut state.media_pool, fps: &mut state.fps }.apply_inverse(&entry.command);
@@ -572,24 +572,3 @@ fn a_selection_on_the_primary_moves_alone_and_undoes_exactly() {
     }
 }
 
-/// On a gapless primary, its gaps gap clips, the same selection moved
-/// into a gap is refused whole by the document, naming what it would
-/// overlap, and nothing changes: never a clip cut or lost.
-#[test]
-fn a_selection_moved_into_a_primary_gap_clip_is_refused_and_nothing_changes() {
-    let mut state = AppState::default();
-    let v1 = state.sequence().tracks.iter().position(|t| t.magnetic_role == klipp_timeline::TrackRole::Primary).unwrap();
-    let c = |a: f64, b: f64| Clip::media(klipp_core::MediaId::new(), t(a), t(b), t(0.0), t(b - a));
-    let picks = [c(26.0, 29.0), c(29.0, 32.0), c(34.0, 37.0)];
-    let ids: Vec<ClipId> = picks.iter().map(|c| c.id).collect();
-    let mut track: Vec<Clip> = vec![c(0.0, 26.0)];
-    track.extend(picks);
-    track.insert(3, Clip::gap(t(32.0), t(34.0)));
-    state.sequences[0].tracks[v1].clips = track;
-    let before = serde_json::to_value(&state.sequences).unwrap();
-    let moves: Vec<(ClipId, RationalTime, Option<usize>)> = ids.iter().zip([28.0, 31.0, 36.0]).map(|(&id, at)| (id, t(at), None)).collect();
-    let ops = crate::timeline::moves::drag_move_ops(state.sequence(), &moves, true);
-    let why = klipp_document::ops::resolve(state.sequence(), &state.media_pool, &ops).expect_err("into the gap clip");
-    assert!(why.why.contains("overlap"), "{}", why.why);
-    assert!(serde_json::to_value(&state.sequences).unwrap() == before);
-}

@@ -1300,6 +1300,11 @@ pub enum AppCommand {
     /// its new start, and to another track when `to_track` says so; their
     /// linked partners with them while the Linked switch is on.
     MoveClips { moves: Vec<(ClipId, Timecode, Option<usize>)> },
+    /// A selection on the gapless primary dragged by `delta` (#3060): its
+    /// primary clips (`block`, each with its start) as one block, in
+    /// Insert or `overwrite`, and the `others` to their new starts, one
+    /// undo step.
+    MovePrimaryBlock { block: Vec<(ClipId, Timecode)>, others: Vec<(ClipId, Timecode, Option<usize>)>, delta: Timecode, overwrite: bool },
     /// Exchange two adjacent clips on the same track, preserving the
     /// total span. Validation rejects: cross-track pairs, non-adjacent
     /// clips (>1 frame gap), pairs sharing the same group, and
