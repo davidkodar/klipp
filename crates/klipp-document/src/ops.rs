@@ -6867,9 +6867,9 @@ fn recipe_link(i: usize, clip: &Clip, control: Option<&str>, target: Option<&str
     let mut ops = Vec::new();
     for l in new.links.iter().filter(|l| l.parameter == parameter) {
         let (k, param) = klipp_timeline::composition_template::node_binding(&l.property).ok_or_else(|| refuse(i, format!("'{}' is not a recipe's node parameter", l.property), "report it"))?;
-        // A value inside a parameter (a mask's rectangle, #2886) is set
-        // where the recipe is placed, not live yet.
-        if klipp_timeline::composition_template::nested_binding(param).is_some() {
+        // A value inside a parameter (a mask's rectangle) or a key's time
+        // or value (#2886) is set where the recipe is placed, not live yet.
+        if klipp_timeline::composition_template::nested_binding(param).is_some() || klipp_timeline::composition_template::key_binding(&l.property).is_some() {
             return Err(refuse(i, format!("{} is set where \"{}\" is placed", l.property, placed.name), "place the recipe again with the value"));
         }
         let node = placed.nodes.get(&k).copied().ok_or_else(|| refuse(i, format!("the node \"{}\"'s step {k} made is gone", placed.name), "place the recipe again"))?;
