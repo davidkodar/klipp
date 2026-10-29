@@ -332,6 +332,15 @@ pub fn node_binding(property: &str) -> Option<(usize, &str)> {
     (!param.is_empty()).then_some((k, param))
 }
 
+/// `node:<k>.<param>/<pointer>` (#2886): a value inside the parameter
+/// `param` of the node op `k` adds, by JSON pointer: one number of a
+/// grade mask's rectangle (`node:3.masks/masks/0/shape/Rectangle/center_x`).
+/// The parameter and the pointer; `None` for a parameter bound whole.
+pub fn nested_binding(param: &str) -> Option<(&str, String)> {
+    let (head, rest) = param.split_once('/')?;
+    (!head.is_empty() && !rest.is_empty()).then(|| (head, format!("/{rest}")))
+}
+
 /// `node:<k>.<param>~<field>` (#2758): a field of the first behaviour a
 /// recipe's `modify` op puts on parameter `param` of the node op `k`
 /// adds (a wiggle's `amplitude`); `None` for another property.
@@ -651,6 +660,12 @@ impl CompositionTemplate {
             }
             let op = ops.get_mut(k).and_then(|o| o.as_object_mut()).ok_or_else(|| format!("'{}' names op {k}, which the recipe lacks", b.property))?;
             let params = op.entry("params").or_insert_with(|| serde_json::json!({}));
+            // A value inside a parameter, where the recipe writes it.
+            if let Some((head, pointer)) = nested_binding(param) {
+                let at = params.get_mut(head).and_then(|v| v.pointer_mut(&pointer)).ok_or_else(|| format!("'{}': op {k}'s {head} has nothing at {pointer}", b.property))?;
+                *at = param_value(&value);
+                continue;
+            }
             params[param] = param_value(&value);
         }
         Ok(ops)
@@ -809,6 +824,15 @@ impl CompositionTemplate {
                     if let Some((_, param, _)) = behaviour_binding(&b.property) {
                         if !graph.ops.iter().any(|o| modifies(o, k, param)) {
                             return Err(format!("'{}' names a behaviour no modify op puts on op {k}'s {param}", b.property));
+                        }
+                    }
+                    let (_, param) = node_binding(&b.property).expect("checked above");
+                    if let Some((head, pointer)) = nested_binding(param) {
+                        if behaviour_binding(&b.property).is_some() {
+                            return Err(format!("'{}' binds a behaviour or a value inside a parameter, not both", b.property));
+                        }
+                        if graph.ops[k].get("params").and_then(|p| p.get(head)).and_then(|v| v.pointer(&pointer)).is_none() {
+                            return Err(format!("'{}': op {k}'s {head} has nothing at {pointer}", b.property));
                         }
                     }
                 }
@@ -1722,6 +1746,43 @@ mod tests {
         assert!((ops[0]["params"]["qual_hue_center"].as_f64().unwrap() - 240.0).abs() < 0.5, "blue's hue set: {}", ops[0]["params"]);
         let why = recipe(serde_json::json!({ "type": "Number", "value": 1.0 })).validate().unwrap_err();
         assert!(why.contains("takes a hue"), "{why}");
+    }
+
+    /// A control sets one value inside a parameter (#2886): a mask's
+    /// rectangle placed and sized by numbers, the rest of the mask as the
+    /// recipe wrote it, linked through a range like any number; a pointer
+    /// to nothing is refused when the recipe is read.
+    #[test]
+    fn a_control_sets_a_value_inside_a_parameter() {
+        let recipe = |pointer: &str| -> CompositionTemplate {
+            serde_json::from_value(serde_json::json!({
+                "format_version": 2, "id": "2b7c9e14-5a3d-4f86-9c21-7e4b0d8a6f13", "name": "Window", "kind": "recipe",
+                "composition_id": "00000000-0000-0000-0000-000000000000",
+                "parameters": {
+                    "x": { "label": "Across", "default": { "type": "Number", "value": 0.25 }, "range": { "min": 0.0, "max": 1.0 } },
+                    "w": { "label": "Width", "default": { "type": "Number", "value": 0.5 }, "range": { "min": 0.0, "max": 1.0 } }
+                },
+                "bindings": [
+                    { "parameter": "x", "property": format!("node:0.masks/masks/0/shape/Rectangle/{pointer}") },
+                    { "parameter": "w", "property": "node:0.masks/masks/0/shape/Rectangle/width", "link": { "to": [0.0, 2.0] } }
+                ],
+                "graph": { "ops": [{ "op": "add_beside", "at": { "anchor": "source" }, "type": "klipp.grade.mask",
+                    "params": { "masks": { "masks": [{ "shape": { "Rectangle": { "center_x": 0.5, "center_y": 0.5, "width": 0.3, "height": 0.6, "rotation": 0 } }, "feather": 0, "opacity": 1, "invert": false, "enabled": true }] } } }] }
+            }))
+            .unwrap()
+        };
+        let r = recipe("center_x");
+        r.validate().unwrap();
+        let anchors = BTreeMap::from([("source", Uuid::new_v4())]);
+        let values = BTreeMap::from([("x".to_string(), TemplateValue::Number(0.75))]);
+        let ops = r.recipe_ops(Uuid::new_v4(), &anchors, &values, &Placing::on_frame(klipp_core::Resolution { width: 100, height: 100 })).unwrap();
+        let rect = &ops[0]["params"]["masks"]["masks"][0]["shape"]["Rectangle"];
+        assert_eq!(rect["center_x"], 0.75);
+        assert_eq!(rect["width"], 1.0, "0.5 through the link's 0..2");
+        assert_eq!(rect["height"], 0.6, "the rest as written");
+        assert!(ops[0]["params"].get("masks/masks/0/shape/Rectangle/center_x").is_none(), "set inside, not as a key of its own");
+        let why = recipe("centre_x").validate().unwrap_err();
+        assert!(why.contains("has nothing at /masks/0/shape/Rectangle/centre_x"), "{why}");
     }
 
     /// A template folder is somewhere anyone can drop a file (#2758): what

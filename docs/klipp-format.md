@@ -341,7 +341,10 @@ composition and is refused with a hint to save it again):
   property path (`object:<i>.text|color|font|picture|size|opacity|…`,
   `clip:<n>.media`, `node:<op>.<param>`, or `node:<op>.<param>~<field>`
   for a field of the first behaviour a recipe's `modify` op puts on that
-  parameter, as a wiggle's `amplitude`); `take: "hue"` sets it to a
+  parameter, as a wiggle's `amplitude`, or `node:<op>.<param>/<pointer>`
+  for one value inside that parameter by JSON pointer, as a mask
+  rectangle's `masks/masks/0/shape/Rectangle/center_x`, set where the
+  recipe is placed); `take: "hue"` sets it to a
   colour control's hue in degrees, as a qualifier reads that colour
   picked on the picture. With `link: {to: [a, b],
   curve}` the parameter is a macro control: its range maps onto `to`
