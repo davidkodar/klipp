@@ -258,28 +258,17 @@ impl KlippApp {
             None
         };
 
-        // Thread user snap config through the magnetic edit so an
-        // insert from the source viewer respects the same snap rules
-        // (master + per-target + grid) as a drag-from-source-to-track
-        // edit. apply_inverse / apply_forward replays already-snapped
-        // commands and don't re-resolve, so the snap-time choice is
-        // recorded into the resulting MagneticEditCommand.
-        let pps = self.state.timeline_zoom;
-        let fps_rate = self.state.sequences[seq_idx].fps.rate();
-        let grid_interval_secs = crate::timeline::grid_snap::resolve_grid_interval_secs(
-            self.state.grid_snap_interval,
-            fps_rate,
-            pps,
-        );
-        let snap_cfg = self.state.snap;
+        // At the time the edit names (the playhead or the In), where the
+        // person put it: the magnetic layer's own snap (8 frames at any
+        // zoom) would move it to a nearby cut (#3056).
         let result = klipp_timeline::magnetic::MagneticEditor::three_point_edit(
             &mut self.state.sequences[seq_idx],
             new_clip,
             timeline_in,
             true,
             mode,
-            grid_interval_secs,
-            Some(&snap_cfg),
+            None,
+            Some(&klipp_timeline::magnetic::PLACED),
         );
 
         match (audio_clip_id, audio_track_info) {

@@ -56,7 +56,7 @@ Picture and sound move together while **Linked Selection** is on; hold **Alt** a
 
 ## Snapping
 
-Toggle snapping with **N**. Clips snap to the playhead, other clip edges on any track, in and out points and markers; right-click the snap button to choose the targets or to snap to a grid. Hold **Shift** while dragging to skip snapping for that drag. A snap line shows where a snap lands.
+Toggle snapping with **N**. Clips snap to the playhead, other clip edges on any track, in and out points and markers; right-click the snap button to choose the targets or a grid. A snap holds until the pointer is half as far again past the snap distance, and the clip lands where the snap line showed. Hold **Shift** while dragging to skip snapping for that drag (**Ctrl** in a slide). An edit made at the playhead or an In point, such as a gap or a source insert, goes in exactly there, not on a nearby cut. See [Snapping](../ui/timeline.md#snapping).
 
 ## Ripple Across Tracks
 

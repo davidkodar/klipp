@@ -317,27 +317,29 @@ fn a_roll_snaps_to_a_marker() {
     assert_eq!(rolled, Some((t(2.5), t(2.5))));
 }
 
-/// A slide (the Trim tool, Shift at the press) snaps its clip's edge,
-/// once Shift is let go: its in, 4 points short of the marker, lands on
-/// it, the neighbours following.
+/// A slide (the Trim tool, Shift at the press) snaps its clip's edge
+/// with Shift still held: its in, 4 points short of the marker, lands on
+/// it, the neighbours following. Ctrl held, it goes where the pointer is.
 #[test]
-fn a_slide_snaps_once_shift_is_let_go() {
-    let (mut state, ids) = clips_on_video_2(&[(0.0, 2.0), (2.0, 3.0), (3.0, 5.0)]);
-    state.active_tool = klipp_core::Tool::Trim;
-    let mut tl = Timeline::new(state);
-    let v2 = tl.track("Video 2");
-    let grab = tl.at(v2, 2.5);
-    let (shift, none) = (egui::Modifiers::SHIFT, egui::Modifiers::NONE);
-    let b = |p, d, m| egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: d, modifiers: m };
-    tl.frame(vec![egui::Event::PointerMoved(grab)], shift);
-    tl.frame(vec![b(grab, true, shift)], shift);
-    tl.frame(vec![egui::Event::PointerMoved(grab + egui::vec2(8.0, 0.0))], shift);
-    let to = grab + egui::vec2(0.5 * ZOOM - 4.0, 0.0);
-    tl.frame(vec![egui::Event::PointerMoved(to)], none);
-    tl.frame(vec![b(to, false, none)], none);
-    tl.frame(Vec::new(), none);
-    assert_eq!(span(&tl.state, ids[1]), (t(2.5), t(3.5)));
-    assert_eq!(span(&tl.state, ids[0]).1, t(2.5));
+fn a_slide_snaps_with_shift_held_and_ctrl_lets_it_go_free() {
+    for (during, want) in [(egui::Modifiers::SHIFT, t(2.5)), (egui::Modifiers::SHIFT | egui::Modifiers::COMMAND, RationalTime { value: 58, rate: 24 })] {
+        let (mut state, ids) = clips_on_video_2(&[(0.0, 2.0), (2.0, 3.0), (3.0, 5.0)]);
+        state.active_tool = klipp_core::Tool::Trim;
+        let mut tl = Timeline::new(state);
+        let v2 = tl.track("Video 2");
+        let grab = tl.at(v2, 2.5);
+        let shift = egui::Modifiers::SHIFT;
+        let b = |p, d, m| egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: d, modifiers: m };
+        tl.frame(vec![egui::Event::PointerMoved(grab)], shift);
+        tl.frame(vec![b(grab, true, shift)], shift);
+        tl.frame(vec![egui::Event::PointerMoved(grab + egui::vec2(8.0, 0.0))], shift);
+        let to = grab + egui::vec2(0.5 * ZOOM - 4.0, 0.0);
+        tl.frame(vec![egui::Event::PointerMoved(to)], during);
+        tl.frame(vec![b(to, false, during)], during);
+        tl.frame(Vec::new(), egui::Modifiers::NONE);
+        assert_eq!(span(&tl.state, ids[1]).0, want, "{during:?}");
+        assert_eq!(span(&tl.state, ids[0]).1, want);
+    }
 }
 
 /// The Range tool's moving end snaps to a clip edge, 4 points off; with
@@ -368,4 +370,28 @@ fn drops_snap_to_markers_and_round_to_a_frame() {
     let drop = |secs, shift| crate::panels::timeline::TimelinePanel::drop_time_for_test(&state, secs, ZOOM, shift);
     assert_eq!(drop(10.0 + 4.0 / ZOOM as f64, false), t(10.0));
     assert_eq!(drop(12.0 + 0.7 / 24.0, true), RationalTime { value: 289, rate: 24 });
+}
+
+/// The blade cuts on a snap within the distance, as its line shows: a
+/// click 4 points from the Out point cuts on it (the line used to miss a
+/// snap to the Out that the cut made); with Shift, at the pointer.
+#[test]
+fn the_blade_cuts_where_its_line_shows() {
+    for (m, want) in [(egui::Modifiers::NONE, t(1.5)), (egui::Modifiers::SHIFT, RationalTime { value: 38, rate: 24 })] {
+        let (mut state, _, _) = three_tracks();
+        state.sequences[0].out_point = Some(t(1.5));
+        state.active_tool = klipp_core::Tool::Blade;
+        let mut tl = Timeline::new(state);
+        let v2 = tl.track("Video 2");
+        let at = tl.at(v2, 1.5) + egui::vec2(4.0, 0.0);
+        tl.frame(vec![egui::Event::PointerMoved(at)], m);
+        for pressed in [true, false] {
+            tl.frame(vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: m }], m);
+        }
+        let cut = tl.sent.iter().find_map(|c| match c {
+            AppCommand::BladeClip { cut_at, .. } => Some(*cut_at),
+            _ => None,
+        });
+        assert_eq!(cut, Some(want), "{m:?}");
+    }
 }
