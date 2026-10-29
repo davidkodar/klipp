@@ -36,6 +36,7 @@ pub mod automation;
 pub mod build_info;
 pub mod color_grade;
 pub mod delivery_spec;
+pub mod preset_file;
 pub mod color_ids;
 pub mod colorspace;
 pub mod config;

@@ -374,198 +374,21 @@ pub fn find_spec(key: &str) -> Option<DeliverySpec> {
     all_specs().into_iter().find(|s| s.id == key || s.name.eq_ignore_ascii_case(key))
 }
 
-/// The frame rates the broadcast and streaming specs list.
-const BROADCAST_RATES: [f64; 9] = [24000.0 / 1001.0, 24.0, 25.0, 30000.0 / 1001.0, 30.0, 48.0, 50.0, 60000.0 / 1001.0, 60.0];
-
-fn web(format: ExportFormat, video: ExportVideoCodec, size: Option<Resolution>, crf: u32, audio: ExportAudioCodec, audio_kbps: u32, bit_depth: u8, lufs: Option<f32>, peak: Option<f32>) -> ExportPresetSettings {
-    ExportPresetSettings {
-        format,
-        video_codec: video,
-        resolution: size,
-        fps: None,
-        crf,
-        preset: crate::events::EncoderPreset::Medium,
-        audio_codec: audio,
-        audio_bitrate_kbps: Some(audio_kbps),
-        video_bitrate_kbps: None,
-        rate_control: crate::events::RateControl::Crf,
-        target_lufs: lufs,
-        true_peak_dbtp: peak,
-        bit_depth,
-    }
-}
-
-fn r(width: u32, height: u32) -> Resolution {
-    Resolution { width, height }
-}
-
-/// The built-in specs, with fixed ids so a project or a preference that
-/// names one keeps it across versions. Every number is from the page
-/// cited beside it, read 2026-10-25; a platform's recommendation is
-/// checked as one (`recommended`: a miss warns).
+/// The built-in specs: `assets/presets/delivery_specs/builtin.toml`
+/// (#2887), each number from the page cited beside it there, with fixed
+/// ids so a project or a preference that names one keeps it across
+/// versions. A file that doesn't read leaves none, said, never a crash.
 pub fn builtin_specs() -> Vec<DeliverySpec> {
-    use ExportAudioCodec as A;
-    use ExportFormat as F;
-    use ExportVideoCodec as V;
-    let spec = |id: &str, name: &str, sources: &[&str], export: ExportPresetSettings, hdr: HdrMode, requirements: Requirements| DeliverySpec {
-        id: id.into(),
-        name: name.into(),
-        built_in: true,
-        sources: sources.iter().map(|s| s.to_string()).collect(),
-        export,
-        hdr,
-        requirements,
-    };
-    vec![
-        // YouTube's recommended upload settings: MP4, H.264, BT.709, AAC
-        // or Opus at 48 kHz, stereo or 5.1; all recommendations. No
-        // loudness target is published.
-        // https://support.google.com/youtube/answer/1722171
-        spec(
-            "delivery-youtube-sdr",
-            "YouTube (SDR)",
-            &["https://support.google.com/youtube/answer/1722171"],
-            web(F::Mp4, V::H264, Some(r(1920, 1080)), 18, A::Aac, 384, 0, Some(crate::export_preset::WEB_LOUDNESS_LUFS), None),
-            HdrMode::Sdr,
-            Requirements {
-                containers: vec![F::Mp4],
-                video_codecs: vec![V::H264],
-                transfer: Some(Transfer::Sdr),
-                audio_codecs: vec![A::Aac, A::Opus],
-                sample_rates: vec![48_000],
-                channels: vec![1, 2, 6],
-                recommended: true,
-                ..Default::default()
-            },
-        ),
-        // YouTube HDR: PQ or HLG, Rec. 2020, 10- or 12-bit, 720p to 2160p,
-        // these frame rates (requirements); HEVC, VP9 or AV1 in MP4, MOV
-        // or MKV recommended, ProRes accepted.
-        // https://support.google.com/youtube/answer/7126552
-        spec(
-            "delivery-youtube-hdr",
-            "YouTube (HDR)",
-            &["https://support.google.com/youtube/answer/7126552", "https://support.google.com/youtube/answer/1722171"],
-            web(F::Mp4, V::H265, Some(r(3840, 2160)), 18, A::Aac, 384, 10, Some(crate::export_preset::WEB_LOUDNESS_LUFS), None),
-            HdrMode::Pq,
-            Requirements {
-                containers: vec![F::Mp4, F::Mov, F::Mkv],
-                video_codecs: vec![V::H265, V::Vp9, V::Av1, V::ProRes422, V::ProRes422HQ, V::ProRes4444],
-                min_height: Some(720),
-                frame_rates: BROADCAST_RATES.to_vec(),
-                min_bit_depth: Some(10),
-                transfer: Some(Transfer::Hdr),
-                audio_codecs: vec![A::Aac, A::Opus],
-                sample_rates: vec![48_000],
-                ..Default::default()
-            },
-        ),
-        // Vimeo's compression guidelines: H.264 High, H.265 or ProRes 422
-        // HQ; AAC-LC at 48 kHz; all recommendations.
-        // https://help.vimeo.com/hc/en-us/articles/12426043233169-Video-and-audio-compression-guidelines
-        spec(
-            "delivery-vimeo",
-            "Vimeo",
-            &["https://help.vimeo.com/hc/en-us/articles/12426043233169-Video-and-audio-compression-guidelines"],
-            web(F::Mp4, V::H264, Some(r(1920, 1080)), 18, A::Aac, 320, 0, Some(crate::export_preset::WEB_LOUDNESS_LUFS), None),
-            HdrMode::Sdr,
-            Requirements {
-                video_codecs: vec![V::H264, V::H265, V::ProRes422HQ],
-                audio_codecs: vec![A::Aac],
-                sample_rates: vec![48_000],
-                recommended: true,
-                ..Default::default()
-            },
-        ),
-        // Meta's published specs for Instagram Reels: MP4 or MOV, 9:16,
-        // 1440×2560, H.264, stereo AAC at 128 kbps or more
-        // (recommendations, from its Reels ads guide).
-        // https://www.facebook.com/business/ads-guide/update/video/instagram-reels
-        spec(
-            "delivery-instagram-reels",
-            "Instagram Reels (vertical)",
-            &["https://www.facebook.com/business/ads-guide/update/video/instagram-reels"],
-            web(F::Mp4, V::H264, Some(r(1440, 2560)), 18, A::Aac, 192, 0, Some(crate::export_preset::WEB_LOUDNESS_LUFS), None),
-            HdrMode::Sdr,
-            Requirements {
-                containers: vec![F::Mp4, F::Mov],
-                video_codecs: vec![V::H264],
-                aspect: Some((9, 16)),
-                audio_codecs: vec![A::Aac],
-                channels: vec![2],
-                recommended: true,
-                ..Default::default()
-            },
-        ),
-        // TikTok's published upload limits (its Content Posting API):
-        // MP4, WebM or MOV; H.264, H.265 or VP9; 23 to 60 fps; each side
-        // 360 to 4096 pixels.
-        // https://developers.tiktok.com/doc/content-posting-api-media-transfer-guide
-        spec(
-            "delivery-tiktok",
-            "TikTok (vertical)",
-            &["https://developers.tiktok.com/doc/content-posting-api-media-transfer-guide"],
-            web(F::Mp4, V::H264, Some(r(1080, 1920)), 18, A::Aac, 192, 0, Some(crate::export_preset::WEB_LOUDNESS_LUFS), None),
-            HdrMode::Sdr,
-            Requirements {
-                containers: vec![F::Mp4, F::WebM, F::Mov],
-                video_codecs: vec![V::H264, V::H265, V::Vp9],
-                min_height: Some(360),
-                max_side: Some(4096),
-                fps_range: Some((23.0, 60.0)),
-                ..Default::default()
-            },
-        ),
-        // EBU R 128: programme loudness -23.0 LUFS over the whole
-        // programme, true peak at most -1 dBTP. Tolerance: EBU's R 128
-        // page gives ±0.5 LU; the v5 text keeps ±1.0 LU for live
-        // programmes and ±0.2 LU as a measurement tolerance.
-        // https://tech.ebu.ch/files/live/sites/tech/files/shared/r/r128.pdf
-        // https://tech.ebu.ch/publications/r128
-        spec(
-            "delivery-ebu-r128",
-            "Broadcast: EBU R 128",
-            &["https://tech.ebu.ch/files/live/sites/tech/files/shared/r/r128.pdf", "https://tech.ebu.ch/publications/r128"],
-            web(F::Mov, V::ProRes422HQ, None, 18, A::Pcm24, 0, 10, Some(-23.0), Some(-1.0)),
-            HdrMode::Sdr,
-            Requirements { loudness: Some(Loudness { target: -23.0, tolerance: 0.5, true_peak_max: -1.0, dialogue_gated: false }), ..Default::default() },
-        ),
-        // ATSC A/85: -24 LKFS, about ±2 dB, true peak below -2 dBTP; long
-        // programmes measured on dialogue.
-        // https://www.atsc.org/atsc-documents/a85-techniques-for-establishing-and-maintaining-audio-loudness/
-        spec(
-            "delivery-atsc-a85",
-            "Broadcast: ATSC A/85",
-            &["https://www.atsc.org/atsc-documents/a85-techniques-for-establishing-and-maintaining-audio-loudness/"],
-            web(F::Mov, V::ProRes422HQ, None, 18, A::Pcm24, 0, 10, Some(-24.0), Some(-2.0)),
-            HdrMode::Sdr,
-            Requirements { loudness: Some(Loudness { target: -24.0, tolerance: 2.0, true_peak_max: -2.0, dialogue_gated: true }), ..Default::default() },
-        ),
-        // A streaming platform's master: the sound at -27 LKFS ±2 LU,
-        // dialogue-gated, true peak at most -2 dBTP, 48 kHz 24-bit PCM in
-        // stereo or 5.1; the picture HD or UHD at the listed rates,
-        // 10-bit. Exported as a ProRes 422 HQ mezzanine; a packaged (IMF)
-        // delivery is not made here.
-        // https://studiopartner.netflix.net/studio/branded-sound-mix-spec-and-best-practices
-        // https://studiopartner.netflix.net/studio/branded-imf-delivery-specifications
-        spec(
-            "delivery-streaming-master",
-            "Streaming master",
-            &["https://studiopartner.netflix.net/studio/branded-sound-mix-spec-and-best-practices", "https://studiopartner.netflix.net/studio/branded-imf-delivery-specifications"],
-            web(F::Mov, V::ProRes422HQ, Some(r(3840, 2160)), 18, A::Pcm24, 0, 10, Some(-27.0), Some(-2.0)),
-            HdrMode::Sdr,
-            Requirements {
-                frame_sizes: vec![r(3840, 2160), r(1920, 1080)],
-                frame_rates: vec![24000.0 / 1001.0, 24.0, 25.0, 30000.0 / 1001.0, 30.0, 50.0, 60000.0 / 1001.0, 60.0],
-                min_bit_depth: Some(10),
-                audio_codecs: vec![A::Pcm24],
-                sample_rates: vec![48_000],
-                channels: vec![2, 6],
-                loudness: Some(Loudness { target: -27.0, tolerance: 2.0, true_peak_max: -2.0, dialogue_gated: true }),
-                ..Default::default()
-            },
-        ),
-    ]
+    static SPECS: std::sync::OnceLock<Vec<DeliverySpec>> = std::sync::OnceLock::new();
+    SPECS
+        .get_or_init(|| match crate::preset_file::read::<DeliverySpec>(include_str!("../../../assets/presets/delivery_specs/builtin.toml"), "delivery_spec", 1, "spec") {
+            Ok(specs) => specs.into_iter().map(|s| DeliverySpec { built_in: true, ..s }).collect(),
+            Err(why) => {
+                tracing::error!("the built-in delivery specs don't read: {why}");
+                Vec::new()
+            }
+        })
+        .clone()
 }
 
 #[cfg(test)]
@@ -595,7 +418,7 @@ mod tests {
         Facts {
             container: Some(ExportFormat::Mp4),
             video_codec: Some(ExportVideoCodec::H265),
-            size: Some(r(3840, 2160)),
+            size: Some(Resolution { width: 3840, height: 2160 }),
             fps: Some(24000.0 / 1001.0),
             bit_depth: Some(10),
             transfer: Some(Transfer::Pq),
@@ -668,5 +491,17 @@ mod tests {
         let tiktok = spec("delivery-tiktok");
         assert_eq!(check(&tiktok, &t(30.0)).iter().find(|x| x.what == "Frame rate").unwrap().status, Status::Pass);
         assert_eq!(check(&tiktok, &t(120.0)).iter().find(|x| x.what == "Frame rate").unwrap().status, Status::Fail);
+    }
+
+    /// The built-in specs are the file's (#2887), read once: the same
+    /// eight, in their order, by their fixed ids, each marked built in
+    /// whatever the file says and each citing where its numbers are from.
+    #[test]
+    fn the_built_in_specs_are_the_files() {
+        let specs = builtin_specs();
+        let ids: Vec<&str> = specs.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["delivery-youtube-sdr", "delivery-youtube-hdr", "delivery-vimeo", "delivery-instagram-reels", "delivery-tiktok", "delivery-ebu-r128", "delivery-atsc-a85", "delivery-streaming-master"]);
+        assert!(specs.iter().all(|s| s.built_in && !s.sources.is_empty() && s.sources.iter().all(|u| u.starts_with("https://"))));
+        assert_eq!(find_spec("youtube (sdr)").map(|s| s.id), Some("delivery-youtube-sdr".into()), "found by name as before");
     }
 }
