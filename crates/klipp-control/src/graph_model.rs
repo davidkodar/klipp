@@ -106,37 +106,66 @@ pub(crate) fn modifiers_op(node: &Node, path: klipp_graph_format::path::NodePath
 pub const MAX_KEYS: usize = 256;
 
 /// The keys on parameter `key` of an effect node (#2886), its behaviours
-/// kept: a parameter that moves over time only, at most [`MAX_KEYS`],
-/// each a key with a finite time and value, linear to the next unless
-/// it says otherwise.
+/// kept: a parameter that moves over time only. See [`read_keys`].
 pub(crate) fn keys_op(node: &Node, path: klipp_graph_format::path::NodePath, key: &str, keys: &[Value]) -> Result<klipp_graph_lift::ops::GraphOp, String> {
     if node.type_id.as_str() != types::LEGACY_EFFECT {
-        return Err(format!("{key}: only an effect's parameters take keys here"));
+        return Err(format!("{key}: only an effect's parameters and the clip's placement take keys here"));
     }
     let desc = descriptor(node).ok_or("this node has no registered parameter description")?;
     desc.params.iter().find(|p| p.key == key && p.keyframable).ok_or_else(|| format!("{key} is not a parameter of this node that moves over time"))?;
-    if keys.len() > MAX_KEYS {
-        return Err(format!("{key} takes at most {MAX_KEYS} keys"));
-    }
-    let mut read: Vec<klipp_core::keyframe::Keyframe> = keys
-        .iter()
-        .map(|k| {
-            // Linear to the next key unless it says otherwise.
-            let mut k = k.clone();
-            if let Some(o) = k.as_object_mut() {
-                o.entry("interpolation").or_insert_with(|| Value::from("Linear"));
-            }
-            serde_json::from_value(k).map_err(|e| format!("{key}: a key is like {{\"time_secs\": 0.5, \"value\": 1, \"interpolation\": \"Step\"}}: {e}"))
-        })
-        .collect::<Result<_, _>>()?;
-    if read.iter().any(|k| !k.time_secs.is_finite() || !k.value.is_finite()) {
-        return Err(format!("{key}: a key's time and value must be finite"));
-    }
-    read.sort_by(|a, b| a.time_secs.total_cmp(&b.time_secs));
-    let keys = read.iter().map(serde_json::to_value).collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+    let keys = read_keys(key, keys)?;
     let modifiers = node.anim.get(&klipp_graph_format::ParamKey::from(key)).and_then(|a| a.modifiers.clone());
     let anim = (!keys.is_empty() || modifiers.is_some()).then_some(klipp_graph_format::Animation { keys, modifiers });
     Ok(klipp_graph_lift::ops::GraphOp::SetAnim { path, key: key.into(), anim })
+}
+
+/// The keys on the clip's placement value `key` (#2886): its position,
+/// scale, rotation or tilt, as the clip's own keyframes. See
+/// [`read_keys`].
+pub(crate) fn placement_keys_op(path: klipp_graph_format::path::NodePath, key: &str, keys: &[Value]) -> Result<klipp_graph_lift::ops::GraphOp, String> {
+    if !klipp_graph_format::lifted::PLACEMENT_ANIM_KEYS.contains(&key) {
+        return Err(format!("the placement's {key} doesn't take keys; {} do", klipp_graph_format::lifted::PLACEMENT_ANIM_KEYS.join(", ")));
+    }
+    let keys = read_keys(key, keys)?;
+    let anim = (!keys.is_empty()).then_some(klipp_graph_format::Animation { keys, modifiers: None });
+    Ok(klipp_graph_lift::ops::GraphOp::SetAnim { path, key: key.into(), anim })
+}
+
+/// Keys as given, which someone else may have written: at most
+/// [`MAX_KEYS`], each with a finite time and value, put in time order,
+/// linear to the next unless it says otherwise; a key's `ease` (a named
+/// curve, `in_out`) eases it into the next as the key menu does.
+fn read_keys(key: &str, keys: &[Value]) -> Result<Vec<Value>, String> {
+    if keys.len() > MAX_KEYS {
+        return Err(format!("{key} takes at most {MAX_KEYS} keys"));
+    }
+    let mut read: Vec<(klipp_core::keyframe::Keyframe, Option<klipp_core::keyframe::Ease>)> = keys
+        .iter()
+        .map(|k| {
+            let mut k = k.clone();
+            let ease = match k.as_object_mut().and_then(|o| o.remove("ease")) {
+                Some(e) => Some(serde_json::from_value::<klipp_core::keyframe::Ease>(e.clone()).map_err(|_| format!("{key}: {e} is not an ease (linear, in, out, in_out, …)"))?),
+                None => None,
+            };
+            if let Some(o) = k.as_object_mut() {
+                o.entry("interpolation").or_insert_with(|| Value::from("Linear"));
+            }
+            let kf = serde_json::from_value(k).map_err(|e| format!("{key}: a key is like {{\"time_secs\": 0.5, \"value\": 1, \"interpolation\": \"Step\"}}: {e}"))?;
+            Ok((kf, ease))
+        })
+        .collect::<Result<_, String>>()?;
+    if read.iter().any(|(k, _)| !k.time_secs.is_finite() || !k.value.is_finite()) {
+        return Err(format!("{key}: a key's time and value must be finite"));
+    }
+    read.sort_by(|a, b| a.0.time_secs.total_cmp(&b.0.time_secs));
+    let eases: Vec<Option<klipp_core::keyframe::Ease>> = read.iter().map(|(_, e)| *e).collect();
+    let mut kfs: Vec<klipp_core::keyframe::Keyframe> = read.into_iter().map(|(k, _)| k).collect();
+    for (i, ease) in eases.into_iter().enumerate() {
+        if let Some(ease) = ease {
+            klipp_core::keyframe::ease_into(&mut kfs, i + 1, ease);
+        }
+    }
+    kfs.iter().map(serde_json::to_value).collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
 }
 
 pub(crate) fn parameter(node: &Node, key: &str, value: &Value) -> Result<ParamValue, String> {

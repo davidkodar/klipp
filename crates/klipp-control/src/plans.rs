@@ -103,7 +103,7 @@ fn project_sequence_ids(ctx: &ControlContext, open: &klipp_timeline::Sequence) -
 /// which the document refuses.
 pub(crate) fn with_recipes(ops: &[klipp_document::ops::Op], dir: Option<&std::path::Path>, pool: &klipp_media::MediaPool) -> Vec<klipp_document::ops::Op> {
     use klipp_document::ops::{Op, RecipeBuild, RecipeBuilder, RecipeMaker};
-    if !ops.iter().any(|op| matches!(op, Op::Recipe { .. } | Op::Redact { .. })) {
+    if !ops.iter().any(|op| matches!(op, Op::Recipe { .. } | Op::Redact { .. } | Op::Zoom { .. })) {
         return ops.to_vec();
     }
     let recipes = crate::recipes::all(dir);
@@ -136,7 +136,7 @@ pub(crate) fn with_recipes(ops: &[klipp_document::ops::Op], dir: Option<&std::pa
                 Op::Recipe { name, slots, controls, build, .. } => {
                     *build = crate::recipes::named(&recipes, name).ok().cloned().map(|recipe| builder(recipe, slots.clone(), controls.clone()));
                 }
-                Op::Redact { recipes, .. } => *recipes = Some(maker.clone()),
+                Op::Redact { recipes, .. } | Op::Zoom { recipes, .. } => *recipes = Some(maker.clone()),
                 _ => {}
             }
             op
