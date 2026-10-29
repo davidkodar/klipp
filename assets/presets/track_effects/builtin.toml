@@ -1,0 +1,49 @@
+# The picture effects a track header's "Add Picture Effect" menu offers
+# (#846, #2887), in menu order: each the name the `effect` op takes and
+# the label the menu shows.
+kind = "track_picture_effect"
+format_version = 1
+
+[[effect]]
+kind = "vignette"
+label = "Vignette"
+
+[[effect]]
+kind = "grain"
+label = "Film Grain"
+
+[[effect]]
+kind = "glow"
+label = "Glow"
+
+[[effect]]
+kind = "bloom"
+label = "Bloom"
+
+[[effect]]
+kind = "diffusion"
+label = "Diffusion"
+
+[[effect]]
+kind = "halation"
+label = "Halation"
+
+[[effect]]
+kind = "sharpen"
+label = "Sharpen"
+
+[[effect]]
+kind = "blur"
+label = "Blur"
+
+[[effect]]
+kind = "chromatic_aberration"
+label = "Chromatic Aberration"
+
+[[effect]]
+kind = "denoise"
+label = "Denoise"
+
+[[effect]]
+kind = "old_film"
+label = "Old Film"
