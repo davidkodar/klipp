@@ -3031,6 +3031,7 @@ dependencies = [
  "image",
  "klipp-effects",
  "klipp-graph-format",
+ "klipp-presets",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -3108,6 +3109,7 @@ dependencies = [
  "klipp-frei0r",
  "klipp-grade-model",
  "klipp-load-lock",
+ "klipp-presets",
  "klipp-testing",
  "klipp-timeline",
  "klipp-title",
@@ -3377,6 +3379,14 @@ dependencies = [
  "libloading 0.8.9",
  "serde",
  "tracing",
+]
+
+[[package]]
+name = "klipp-presets"
+version = "0.2.0"
+dependencies = [
+ "serde",
+ "toml",
 ]
 
 [[package]]

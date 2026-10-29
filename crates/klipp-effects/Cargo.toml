@@ -8,6 +8,7 @@ license.workspace = true
 autotests = false
 
 [dependencies]
+klipp-presets = { workspace = true }
 # naga is a transitive dep of wgpu (same version pin); `shader_check`
 # parses and validates WGSL with it, so every crate's shaders are
 # checked in tests without a GPU (#2344).

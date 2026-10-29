@@ -1,0 +1,410 @@
+# Klipp's built-in delivery specs (#2887): what each platform or
+# broadcaster asks of a delivery, and what picking it sets on the Export
+# page. Every number is from the page cited beside it, read 2026-10-25; a
+# platform's recommendation is checked as one (`recommended`: a miss
+# warns). Ids are fixed, so a project or a preference that names one keeps
+# it across versions. A person's own specs are kept apart, in
+# delivery-specs.json, in the same fields.
+format_version = 1
+kind = "delivery_spec"
+
+# YouTube's recommended upload settings: MP4, H.264, BT.709, AAC
+# or Opus at 48 kHz, stereo or 5.1; all recommendations. No
+# loudness target is published.
+# https://support.google.com/youtube/answer/1722171
+[[spec]]
+id = "delivery-youtube-sdr"
+name = "YouTube (SDR)"
+built_in = true
+sources = ["https://support.google.com/youtube/answer/1722171"]
+hdr = "Sdr"
+
+[spec.export]
+format = "Mp4"
+video_codec = "H264"
+crf = 18
+preset = "Medium"
+audio_codec = "Aac"
+audio_bitrate_kbps = 384
+rate_control = "Crf"
+target_lufs = -14.0
+bit_depth = 0
+
+[spec.export.resolution]
+width = 1920
+height = 1080
+
+[spec.requirements]
+containers = ["Mp4"]
+video_codecs = ["H264"]
+frame_sizes = []
+frame_rates = []
+transfer = "Sdr"
+audio_codecs = [
+    "Aac",
+    "Opus",
+]
+sample_rates = [48000]
+channels = [
+    1,
+    2,
+    6,
+]
+captions = "Any"
+recommended = true
+
+# YouTube HDR: PQ or HLG, Rec. 2020, 10- or 12-bit, 720p to 2160p,
+# these frame rates (requirements); HEVC, VP9 or AV1 in MP4, MOV
+# or MKV recommended, ProRes accepted.
+# https://support.google.com/youtube/answer/7126552
+[[spec]]
+id = "delivery-youtube-hdr"
+name = "YouTube (HDR)"
+built_in = true
+sources = [
+    "https://support.google.com/youtube/answer/7126552",
+    "https://support.google.com/youtube/answer/1722171",
+]
+hdr = "Pq"
+
+[spec.export]
+format = "Mp4"
+video_codec = "H265"
+crf = 18
+preset = "Medium"
+audio_codec = "Aac"
+audio_bitrate_kbps = 384
+rate_control = "Crf"
+target_lufs = -14.0
+bit_depth = 10
+
+[spec.export.resolution]
+width = 3840
+height = 2160
+
+[spec.requirements]
+containers = [
+    "Mp4",
+    "Mov",
+    "Mkv",
+]
+video_codecs = [
+    "H265",
+    "Vp9",
+    "Av1",
+    "ProRes422",
+    "ProRes422HQ",
+    "ProRes4444",
+]
+frame_sizes = []
+min_height = 720
+frame_rates = [
+    23.976023976023978,
+    24.0,
+    25.0,
+    29.97002997002997,
+    30.0,
+    48.0,
+    50.0,
+    59.94005994005994,
+    60.0,
+]
+min_bit_depth = 10
+transfer = "Hdr"
+audio_codecs = [
+    "Aac",
+    "Opus",
+]
+sample_rates = [48000]
+channels = []
+captions = "Any"
+recommended = false
+
+# Vimeo's compression guidelines: H.264 High, H.265 or ProRes 422
+# HQ; AAC-LC at 48 kHz; all recommendations.
+# https://help.vimeo.com/hc/en-us/articles/12426043233169-Video-and-audio-compression-guidelines
+[[spec]]
+id = "delivery-vimeo"
+name = "Vimeo"
+built_in = true
+sources = ["https://help.vimeo.com/hc/en-us/articles/12426043233169-Video-and-audio-compression-guidelines"]
+hdr = "Sdr"
+
+[spec.export]
+format = "Mp4"
+video_codec = "H264"
+crf = 18
+preset = "Medium"
+audio_codec = "Aac"
+audio_bitrate_kbps = 320
+rate_control = "Crf"
+target_lufs = -14.0
+bit_depth = 0
+
+[spec.export.resolution]
+width = 1920
+height = 1080
+
+[spec.requirements]
+containers = []
+video_codecs = [
+    "H264",
+    "H265",
+    "ProRes422HQ",
+]
+frame_sizes = []
+frame_rates = []
+audio_codecs = ["Aac"]
+sample_rates = [48000]
+channels = []
+captions = "Any"
+recommended = true
+
+# Meta's published specs for Instagram Reels: MP4 or MOV, 9:16,
+# 1440×2560, H.264, stereo AAC at 128 kbps or more
+# (recommendations, from its Reels ads guide).
+# https://www.facebook.com/business/ads-guide/update/video/instagram-reels
+[[spec]]
+id = "delivery-instagram-reels"
+name = "Instagram Reels (vertical)"
+built_in = true
+sources = ["https://www.facebook.com/business/ads-guide/update/video/instagram-reels"]
+hdr = "Sdr"
+
+[spec.export]
+format = "Mp4"
+video_codec = "H264"
+crf = 18
+preset = "Medium"
+audio_codec = "Aac"
+audio_bitrate_kbps = 192
+rate_control = "Crf"
+target_lufs = -14.0
+bit_depth = 0
+
+[spec.export.resolution]
+width = 1440
+height = 2560
+
+[spec.requirements]
+containers = [
+    "Mp4",
+    "Mov",
+]
+video_codecs = ["H264"]
+frame_sizes = []
+aspect = [
+    9,
+    16,
+]
+frame_rates = []
+audio_codecs = ["Aac"]
+sample_rates = []
+channels = [2]
+captions = "Any"
+recommended = true
+
+# TikTok's published upload limits (its Content Posting API):
+# MP4, WebM or MOV; H.264, H.265 or VP9; 23 to 60 fps; each side
+# 360 to 4096 pixels.
+# https://developers.tiktok.com/doc/content-posting-api-media-transfer-guide
+[[spec]]
+id = "delivery-tiktok"
+name = "TikTok (vertical)"
+built_in = true
+sources = ["https://developers.tiktok.com/doc/content-posting-api-media-transfer-guide"]
+hdr = "Sdr"
+
+[spec.export]
+format = "Mp4"
+video_codec = "H264"
+crf = 18
+preset = "Medium"
+audio_codec = "Aac"
+audio_bitrate_kbps = 192
+rate_control = "Crf"
+target_lufs = -14.0
+bit_depth = 0
+
+[spec.export.resolution]
+width = 1080
+height = 1920
+
+[spec.requirements]
+containers = [
+    "Mp4",
+    "WebM",
+    "Mov",
+]
+video_codecs = [
+    "H264",
+    "H265",
+    "Vp9",
+]
+frame_sizes = []
+min_height = 360
+frame_rates = []
+fps_range = [
+    23.0,
+    60.0,
+]
+max_side = 4096
+audio_codecs = []
+sample_rates = []
+channels = []
+captions = "Any"
+recommended = false
+
+# EBU R 128: programme loudness -23.0 LUFS over the whole
+# programme, true peak at most -1 dBTP. Tolerance: EBU's R 128
+# page gives ±0.5 LU; the v5 text keeps ±1.0 LU for live
+# programmes and ±0.2 LU as a measurement tolerance.
+# https://tech.ebu.ch/files/live/sites/tech/files/shared/r/r128.pdf
+# https://tech.ebu.ch/publications/r128
+[[spec]]
+id = "delivery-ebu-r128"
+name = "Broadcast: EBU R 128"
+built_in = true
+sources = [
+    "https://tech.ebu.ch/files/live/sites/tech/files/shared/r/r128.pdf",
+    "https://tech.ebu.ch/publications/r128",
+]
+hdr = "Sdr"
+
+[spec.export]
+format = "Mov"
+video_codec = "ProRes422HQ"
+crf = 18
+preset = "Medium"
+audio_codec = "Pcm24"
+audio_bitrate_kbps = 0
+rate_control = "Crf"
+target_lufs = -23.0
+true_peak_dbtp = -1.0
+bit_depth = 10
+
+[spec.requirements]
+containers = []
+video_codecs = []
+frame_sizes = []
+frame_rates = []
+audio_codecs = []
+sample_rates = []
+channels = []
+captions = "Any"
+recommended = false
+
+[spec.requirements.loudness]
+target = -23.0
+tolerance = 0.5
+true_peak_max = -1.0
+dialogue_gated = false
+
+# ATSC A/85: -24 LKFS, about ±2 dB, true peak below -2 dBTP; long
+# programmes measured on dialogue.
+# https://www.atsc.org/atsc-documents/a85-techniques-for-establishing-and-maintaining-audio-loudness/
+[[spec]]
+id = "delivery-atsc-a85"
+name = "Broadcast: ATSC A/85"
+built_in = true
+sources = ["https://www.atsc.org/atsc-documents/a85-techniques-for-establishing-and-maintaining-audio-loudness/"]
+hdr = "Sdr"
+
+[spec.export]
+format = "Mov"
+video_codec = "ProRes422HQ"
+crf = 18
+preset = "Medium"
+audio_codec = "Pcm24"
+audio_bitrate_kbps = 0
+rate_control = "Crf"
+target_lufs = -24.0
+true_peak_dbtp = -2.0
+bit_depth = 10
+
+[spec.requirements]
+containers = []
+video_codecs = []
+frame_sizes = []
+frame_rates = []
+audio_codecs = []
+sample_rates = []
+channels = []
+captions = "Any"
+recommended = false
+
+[spec.requirements.loudness]
+target = -24.0
+tolerance = 2.0
+true_peak_max = -2.0
+dialogue_gated = true
+
+# A streaming platform's master: the sound at -27 LKFS ±2 LU,
+# dialogue-gated, true peak at most -2 dBTP, 48 kHz 24-bit PCM in
+# stereo or 5.1; the picture HD or UHD at the listed rates,
+# 10-bit. Exported as a ProRes 422 HQ mezzanine; a packaged (IMF)
+# delivery is not made here.
+# https://studiopartner.netflix.net/studio/branded-sound-mix-spec-and-best-practices
+# https://studiopartner.netflix.net/studio/branded-imf-delivery-specifications
+[[spec]]
+id = "delivery-streaming-master"
+name = "Streaming master"
+built_in = true
+sources = [
+    "https://studiopartner.netflix.net/studio/branded-sound-mix-spec-and-best-practices",
+    "https://studiopartner.netflix.net/studio/branded-imf-delivery-specifications",
+]
+hdr = "Sdr"
+
+[spec.export]
+format = "Mov"
+video_codec = "ProRes422HQ"
+crf = 18
+preset = "Medium"
+audio_codec = "Pcm24"
+audio_bitrate_kbps = 0
+rate_control = "Crf"
+target_lufs = -27.0
+true_peak_dbtp = -2.0
+bit_depth = 10
+
+[spec.export.resolution]
+width = 3840
+height = 2160
+
+[spec.requirements]
+containers = []
+video_codecs = []
+frame_rates = [
+    23.976023976023978,
+    24.0,
+    25.0,
+    29.97002997002997,
+    30.0,
+    50.0,
+    59.94005994005994,
+    60.0,
+]
+min_bit_depth = 10
+audio_codecs = ["Pcm24"]
+sample_rates = [48000]
+channels = [
+    2,
+    6,
+]
+captions = "Any"
+recommended = false
+
+[[spec.requirements.frame_sizes]]
+width = 3840
+height = 2160
+
+[[spec.requirements.frame_sizes]]
+width = 1920
+height = 1080
+
+[spec.requirements.loudness]
+target = -27.0
+tolerance = 2.0
+true_peak_max = -2.0
+dialogue_gated = true

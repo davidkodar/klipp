@@ -20971,7 +20971,7 @@ mod effect_params_tests {
         let calm = named_picture_effect("water_reflection", None).unwrap().0;
         assert_eq!(calm, klipp_effects::reflection::surface("calm_water", 0.6).unwrap());
         assert_eq!(named_picture_effect("Reflection", None).unwrap().0, calm, "any case");
-        for (name, _, _) in klipp_effects::reflection::SURFACES {
+        for name in klipp_effects::presets::keys_of("reflection").map(|p| p.key.as_str()) {
             assert!(matches!(named_picture_effect(name, None).unwrap().0, E::Reflection { .. }), "{name}");
         }
         let fx = effect("rippled_water", r##"{"waterline": 0.62, "tint": "#1d3b4f", "blend": "soft_light", "submerge": 0.3, "fade": 0.9}"##).unwrap();

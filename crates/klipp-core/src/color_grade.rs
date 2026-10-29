@@ -485,45 +485,91 @@ impl HdrZonesSettings {
 
     /// The zones' starting points (#240), as a colourist names them: each
     /// its name, what it does, and its settings, its boundaries those of
-    /// the source ([`Self::for_source`]).
+    /// the source ([`Self::for_source`]). From Klipp's presets file
+    /// (#2887), [`ZonePreset`].
     pub fn presets(scene_referred: bool) -> Vec<(&'static str, &'static str, HdrZonesSettings)> {
-        let with = |f: &dyn Fn(&mut HdrZonesSettings)| {
-            let mut z = HdrZonesSettings::for_source(scene_referred);
-            f(&mut z);
-            z
-        };
-        let tint = |z: &mut HdrZonesSettings, zone: usize, hue: f32, amount: f32| {
-            (z.colour_x[zone], z.colour_y[zone]) = Self::colour_puck(hue, amount);
-        };
-        vec![
-            ("HDR highlight roll-off", "Brings the highlights down half a stop and the speculars a stop, and calms their colour.", with(&|z| {
-                z.exposure[5] = -0.5;
-                z.exposure[6] = -1.0;
-                z.saturation[6] = 0.8;
-            })),
-            ("Lift shadows", "Opens the shadows and the darks without touching black.", with(&|z| {
-                z.exposure[3] = 0.4;
-                z.exposure[2] = 0.3;
-            })),
-            ("Deepen blacks", "Sets the blacks down and the darks with them, for a denser floor.", with(&|z| {
-                z.exposure[1] = -0.6;
-                z.exposure[2] = -0.2;
-            })),
-            ("Midtone contrast", "Pushes the shadows down and the lights up about mid grey, black and white left where they are.", with(&|z| {
-                z.exposure[3] = -0.3;
-                z.exposure[4] = 0.3;
-            })),
-            ("Warm highlights, cool shadows", "A split tone: orange in the highlights, a cool blue in the shadows.", with(&|z| {
-                tint(z, 5, 30.0, 0.25);
-                tint(z, 3, 210.0, 0.25);
-            })),
-        ]
+        zone_presets().iter().map(|p| (p.name.as_str(), p.description.as_str(), p.on(scene_referred))).collect()
     }
 
     /// The preset named `name` (any case), when there is one.
     pub fn preset(name: &str, scene_referred: bool) -> Option<HdrZonesSettings> {
         Self::presets(scene_referred).into_iter().find(|(n, _, _)| n.eq_ignore_ascii_case(name.trim())).map(|(_, _, z)| z)
     }
+}
+
+/// The HDR Zones' names, by their place: what a preset's changes are
+/// keyed by, as the `zones` op names them.
+pub const ZONE_KEYS: [&str; 7] = ["global", "black", "dark", "shadow", "light", "highlight", "specular"];
+
+/// One HDR Zones starting point, as Klipp's presets file holds it
+/// (#2887): its changes from neutral zones, by zone name.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ZonePreset {
+    pub name: String,
+    pub description: String,
+    /// Stops, by zone.
+    #[serde(default)]
+    pub exposure: std::collections::BTreeMap<String, f32>,
+    /// 1 is none, by zone.
+    #[serde(default)]
+    pub saturation: std::collections::BTreeMap<String, f32>,
+    #[serde(default)]
+    pub tint: Vec<ZoneTint>,
+}
+
+/// A zone's colour in a preset: a hue on the wheel, in degrees, and how
+/// far toward its rim.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ZoneTint {
+    pub zone: String,
+    pub hue: f32,
+    pub amount: f32,
+}
+
+impl ZonePreset {
+    /// The zones it gives on a source, scene-referred or not.
+    pub fn on(&self, scene_referred: bool) -> HdrZonesSettings {
+        let mut z = HdrZonesSettings::for_source(scene_referred);
+        let at = |name: &str| ZONE_KEYS.iter().position(|k| *k == name).expect("checked when read");
+        for (zone, v) in &self.exposure {
+            z.exposure[at(zone)] = *v;
+        }
+        for (zone, v) in &self.saturation {
+            z.saturation[at(zone)] = *v;
+        }
+        for t in &self.tint {
+            let i = at(&t.zone);
+            (z.colour_x[i], z.colour_y[i]) = HdrZonesSettings::colour_puck(t.hue, t.amount);
+        }
+        z
+    }
+
+    /// Why a preset someone wrote can't be used: a zone not named, or a
+    /// number that isn't finite.
+    fn fault(&self) -> Option<String> {
+        let zones = self.exposure.keys().chain(self.saturation.keys()).chain(self.tint.iter().map(|t| &t.zone));
+        if let Some(z) = zones.into_iter().find(|z| !ZONE_KEYS.contains(&z.as_str())) {
+            return Some(format!("\"{}\": \"{z}\" is not a zone; the zones are {}", self.name, ZONE_KEYS.join(", ")));
+        }
+        let numbers = self.exposure.values().chain(self.saturation.values()).copied().chain(self.tint.iter().flat_map(|t| [t.hue, t.amount]));
+        numbers.into_iter().any(|v| !v.is_finite()).then(|| format!("\"{}\": a number that isn't finite", self.name))
+    }
+}
+
+/// Klipp's HDR Zones presets, `assets/presets/hdr_zones/builtin.toml`,
+/// read once; a file that doesn't read leaves none, said, never a crash.
+pub fn zone_presets() -> &'static [ZonePreset] {
+    static PRESETS: std::sync::OnceLock<Vec<ZonePreset>> = std::sync::OnceLock::new();
+    PRESETS.get_or_init(|| {
+        let read = crate::preset_file::read::<ZonePreset>(include_str!("../../../assets/presets/hdr_zones/builtin.toml"), "hdr_zones_preset", 1, "preset")
+            .and_then(|presets| presets.iter().find_map(ZonePreset::fault).map_or(Ok(presets), Err));
+        read.unwrap_or_else(|why| {
+            tracing::error!("the built-in HDR Zones presets don't read: {why}");
+            Vec::new()
+        })
+    })
 }
 
 impl Default for HdrZonesSettings {
@@ -1776,5 +1822,24 @@ mod mask_track_tests {
         assert_eq!(m.keyframes.path.len(), 1);
         m.clear_track("feather");
         assert!(m.keyframes.feather.is_empty());
+    }
+
+    /// The HDR Zones presets are Klipp's file's (#2887): the five, in
+    /// order. One someone else wrote is refused, saying why, for a zone
+    /// that isn't one, a field the preset doesn't have, or a number that
+    /// isn't finite (TOML writes `inf` and `nan`).
+    #[test]
+    fn the_zone_presets_read_and_a_bad_one_is_refused() {
+        let names: Vec<&str> = zone_presets().iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["HDR highlight roll-off", "Lift shadows", "Deepen blacks", "Midtone contrast", "Warm highlights, cool shadows"]);
+        let read = |entry: &str| {
+            crate::preset_file::read::<ZonePreset>(&format!("kind = \"hdr_zones_preset\"\nformat_version = 1\n[[preset]]\nname = \"x\"\ndescription = \"y\"\n{entry}\n"), "hdr_zones_preset", 1, "preset")
+                .and_then(|p| p.iter().find_map(ZonePreset::fault).map_or(Ok(p), Err))
+        };
+        assert!(read("exposure = { light = 0.2 }").is_ok());
+        assert!(read("exposure = { sky = 0.2 }").unwrap_err().contains("\"sky\" is not a zone"));
+        assert!(read("glow = 1.0").unwrap_err().contains("unknown field"));
+        assert!(read("saturation = { dark = inf }").unwrap_err().contains("isn't finite"));
+        assert!(read("tint = [{ zone = \"dark\", hue = nan, amount = 0.2 }]").unwrap_err().contains("isn't finite"));
     }
 }

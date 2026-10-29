@@ -1,0 +1,12 @@
+[package]
+name = "klipp-presets"
+version.workspace = true
+edition = "2021"
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+toml = { workspace = true }
+
+[lints]
+workspace = true

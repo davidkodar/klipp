@@ -8,6 +8,7 @@ license.workspace = true
 half = { workspace = true }
 klipp-graph-format = { workspace = true }
 klipp-effects = { workspace = true }
+klipp-presets = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
