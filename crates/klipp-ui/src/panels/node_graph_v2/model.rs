@@ -140,6 +140,18 @@ impl CanvasKind for NodeKind {
     fn output_port_label(&self, port: u8) -> &'static str { NodeKind::output_port_label(self, port) }
 }
 
+/// The other words an add menu entry is searched by, as its label
+/// (#2576): what a colourist calls it, or the kind of key it is.
+const SEARCH_ALIASES: &[(&str, &[&str])] = &[
+    ("Qualifier", &["qualifier", "hsl", "hue", "key by colour", "key by color", "colour key", "color key", "secondary"]),
+];
+
+/// Whether the add menu's search `q`, lowercase and trimmed, finds the
+/// entry `label`: in its label, or in one of its other words.
+pub(super) fn menu_entry_matches(label: &str, q: &str) -> bool {
+    label.to_lowercase().contains(q) || SEARCH_ALIASES.iter().any(|(l, words)| label.starts_with(l) && words.iter().any(|w| w.contains(q)))
+}
+
 /// Presentation keeps today's labels and ordering. Only catalog types
 /// participate; the menu does not invent a second list of node types.
 pub(super) fn grade_menu() -> &'static [MenuCategory] {

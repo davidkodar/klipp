@@ -265,6 +265,17 @@ mod tests {
         }
     }
 
+    /// A qualifier beside the chain (#2576) is made and keyed by colour:
+    /// its switch, hue and width.
+    #[test]
+    fn a_qualifier_is_made_and_keyed_by_colour() {
+        let key = new_node("klipp.grade.qualifier", uuid::Uuid::new_v4(), None).unwrap();
+        assert_eq!(parameter(&key, "qual_enabled", &json!(true)).unwrap(), ParamValue::Bool(true));
+        assert_eq!(parameter(&key, "qual_hue_center", &json!(120.0)).unwrap(), ParamValue::Float(120.0));
+        assert_eq!(parameter(&key, "qual_hue_width", &json!(25)).unwrap(), ParamValue::Float(25.0));
+        assert!(parameter(&key, "qual_hue_center", &json!("120")).is_err());
+    }
+
     #[test]
     fn scalar_values_are_typed_and_soft_slider_ranges_are_not_hard_limits() {
         let blur = new_node("klipp.fx.gaussian_blur", uuid::Uuid::new_v4(), None).unwrap();
