@@ -934,47 +934,45 @@ pub struct TimelinePanel {
     pub(crate) colour_revealed_clip: Option<ClipId>,
 }
 
-/// Tracks the most-recent on-snap legend kind + when it changed, so
-/// the renderer can fade the label/line in over ~300 ms when the user
-/// crosses a semantic snap-target boundary. See `alpha_for_kind_change`
-/// for the pure timing math.
+/// The snap the line was last drawn for and when it was made, so a new
+/// snap is marked with a short highlight (#3056). See [`snap_highlight`].
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SnapLegendState {
-    pub last_kind: Option<klipp_core::SnapTargetKind>,
+    pub last: Option<(f32, klipp_core::SnapTargetKind)>,
     pub last_change_time: std::time::Instant,
 }
 
 impl Default for SnapLegendState {
     fn default() -> Self {
         Self {
-            last_kind: None,
+            last: None,
             last_change_time: std::time::Instant::now(),
         }
     }
 }
 
-/// Duration of the fade-in after a snap-target-kind change.
-pub(crate) const SNAP_LEGEND_FADE_MS: u64 = 300;
+/// How long a new snap's highlight lasts.
+pub(crate) const SNAP_HIGHLIGHT_MS: u64 = 180;
 
-/// Pure timing math for the on-snap legend's fade-on-kind-change.
-/// Returns `1.0` when no kind change happened (or the fade has
-/// completed); otherwise eases linearly from 0.0 → 1.0 across
-/// `SNAP_LEGEND_FADE_MS`. Pulled out as a free fn so it can be unit
-/// tested without standing up egui or a mutable TimelinePanel.
-pub(crate) fn alpha_for_kind_change(
-    prev_kind: Option<klipp_core::SnapTargetKind>,
-    current_kind: Option<klipp_core::SnapTargetKind>,
-    last_change_time: std::time::Instant,
-    now: std::time::Instant,
-) -> f32 {
-    // No current snap → no legend → alpha is moot.
-    let Some(_) = current_kind else { return 1.0; };
-    // First-ever snap counts as a kind change (prev_kind = None).
-    let kind_changed = prev_kind != current_kind;
-    if !kind_changed { return 1.0; }
-    let elapsed_ms = now.saturating_duration_since(last_change_time).as_millis() as u64;
-    if elapsed_ms >= SNAP_LEGEND_FADE_MS { 1.0 }
-    else { elapsed_ms as f32 / SNAP_LEGEND_FADE_MS as f32 }
+/// How strong the highlight round a snap line is, `1.0` the moment the
+/// snap is made down to `0.0` after [`SNAP_HIGHLIGHT_MS`]. The line itself
+/// is drawn at full strength from its first frame (#3056): it used to fade
+/// in from nothing, so a snap barely showed as it happened.
+pub(crate) fn snap_highlight(made_at: std::time::Instant, now: std::time::Instant) -> f32 {
+    let elapsed_ms = now.saturating_duration_since(made_at).as_millis() as u64;
+    1.0 - (elapsed_ms.min(SNAP_HIGHLIGHT_MS) as f32 / SNAP_HIGHLIGHT_MS as f32)
+}
+
+/// Where a clip dragged on the primary track to `at` is put in by a
+/// ripple move (#3056): before the first other clip whose middle is at
+/// or after `at`, as the drag's insert line shows, or after the last.
+fn primary_insert_time(track: &klipp_timeline::Track, dragged: ClipId, at: Timecode) -> Timecode {
+    let mid = |c: &klipp_timeline::Clip| (c.timeline_in.to_secs_f64() + c.timeline_out.to_secs_f64()) / 2.0;
+    track.clips.iter()
+        .filter(|c| c.id != dragged && mid(c) >= at.to_secs_f64())
+        .map(|c| c.timeline_in)
+        .min()
+        .unwrap_or_else(|| track.clips.iter().map(|c| c.timeline_out).max().unwrap_or(at))
 }
 
 /// A clip rename in progress (#920): the clips it names, the track whose
@@ -995,6 +993,10 @@ struct DragState {
     original_timeline_in: Timecode,
     linked_clip_id: Option<ClipId>,
     linked_original_in: Option<Timecode>,
+    /// Where the ghost was last drawn: what the drop commits (#3056).
+    shown_in: Option<Timecode>,
+    /// The snap the drag holds from frame to frame.
+    hold: Option<crate::timeline::snap::SnapHold>,
 }
 
 struct TrimState {
@@ -1012,6 +1014,8 @@ struct TrimState {
     linked: bool,
     /// For ripple trim: original positions of clips after the trimmed clip
     subsequent_clips: Vec<(ClipId, Timecode, Timecode)>, // (id, original_timeline_in, original_timeline_out)
+    /// The snap the trim holds from frame to frame (#3056).
+    hold: Option<crate::timeline::snap::SnapHold>,
 }
 
 impl TrimState {
@@ -5157,26 +5161,27 @@ impl TimelinePanel {
 
     fn draw_snap_line(&mut self, state: &AppState, painter: &egui::Painter, content_rect: egui::Rect, tracks_start_y: f32) {
         let snap_data = self.frame_cache.snap_line_x;
-        // Update the kind-change timer EVERY frame (whether snapping
-        // is active or not) so the next snap re-fades correctly.
-        let current_kind = snap_data.map(|(_, k)| k);
-        if current_kind != self.legend_state.last_kind {
-            self.legend_state.last_kind = current_kind;
+        // A new snap (another point, or another kind) starts the highlight.
+        let new_snap = match (snap_data, self.legend_state.last) {
+            (Some((x, k)), Some((lx, lk))) => k != lk || (x - lx).abs() > 0.5,
+            (Some(_), None) => true,
+            (None, _) => false,
+        };
+        if new_snap {
             self.legend_state.last_change_time = std::time::Instant::now();
         }
+        self.legend_state.last = snap_data;
         let Some((snap_x, kind)) = snap_data else { return; };
         if snap_x < content_rect.left() || snap_x > content_rect.right() { return; }
 
         let tt = theme();
-        let alpha_factor = alpha_for_kind_change(
-            self.legend_state.last_kind,
-            current_kind,
-            self.legend_state.last_change_time,
-            std::time::Instant::now(),
-        );
-        let line_alpha = (255.0 * alpha_factor) as u8;
-        let glow_alpha = (50.0 * alpha_factor) as u8;
-        let pill_alpha = (220.0 * alpha_factor) as u8;
+        let highlight = snap_highlight(self.legend_state.last_change_time, std::time::Instant::now());
+        if highlight > 0.0 {
+            painter.ctx().request_repaint();
+        }
+        let line_alpha = 255u8;
+        let glow_alpha = (50.0 + 110.0 * highlight) as u8;
+        let pill_alpha = 220u8;
         let snap_color = tt.accent;
         let snap_color_faded = egui::Color32::from_rgba_unmultiplied(
             snap_color.r(), snap_color.g(), snap_color.b(), line_alpha,
@@ -5196,7 +5201,7 @@ impl TimelinePanel {
                 egui::pos2(snap_x, content_rect.bottom()),
             ],
             egui::Stroke::new(
-                6.0_f32,
+                6.0 + 6.0 * highlight,
                 egui::Color32::from_rgba_unmultiplied(snap_color.r(), snap_color.g(), snap_color.b(), glow_alpha),
             ),
         );
@@ -8072,6 +8077,7 @@ impl TimelinePanel {
                         // a J or L cut (#916).
                         linked: state.linked_selection && !ui.input(|i| i.modifiers.alt),
                         subsequent_clips: subsequent,
+                        hold: None,
                     });
                 }
                 // Range tool: drag anywhere in track area sets range. No clip
@@ -8196,6 +8202,8 @@ impl TimelinePanel {
                                     original_timeline_in: hit_tl_in,
                                     linked_clip_id: linked_id,
                                     linked_original_in: linked_orig,
+                                    shown_in: None,
+                                    hold: None,
                                 });
                             }
                         }
@@ -9543,24 +9551,15 @@ impl TimelinePanel {
         zoom: f32,
         scroll: f32,
         fps: klipp_core::Fps,
-        snap_enabled: bool,
-        snap_threshold_secs: f64,
-        snap_targets: &[(f64, RationalTime, Option<ClipId>, klipp_core::SnapTargetKind)],
-        grid_interval_secs: Option<f64>,
         track_height: f32,
         pointer_pos: Option<egui::Pos2>,
         pointer_down: bool,
         pointer_released: bool,
     ) {
         let tt = theme();
-        let rate = fps.rate();
-        let snap_cfg = state.snap;
-        let find_snap = |edge_time: RationalTime, exclude_clip: ClipId| -> Option<(RationalTime, f64, klipp_core::SnapTargetKind)> {
-            Self::find_snap_target(snap_enabled, snap_threshold_secs, snap_targets, edge_time, exclude_clip, grid_interval_secs, rate, Some(&snap_cfg))
-        };
 
         // Handle ongoing drag (only process once, on the drag's source track)
-        let mut non_primary_target_in: Option<Timecode> = None;
+        let mut drag_seen: Option<(Timecode, Option<crate::timeline::snap::SnapHold>)> = None;
         if let Some(ref drag) = self.dragging_clip {
             if drag.track_idx != track_idx {
                 // Skip — will be handled when we draw the correct track
@@ -9583,48 +9582,33 @@ impl TimelinePanel {
                         }
                     };
 
-                    let mut final_in = new_timeline_in;
-                    let mut snapped = false;
+                    // Every edge of what moves with the clip snaps, the
+                    // nearest one winning; none of those clips, nor what is
+                    // selected, is a target (#3056).
                     let shift_held = ui.input(|i| i.modifiers.shift);
-
-                    if !shift_held {
-                    if let Some(track) = state.sequence().tracks.get(drag.track_idx) {
-                        if let Some(clip) = track.find_clip(drag.clip_id) {
-                            let dur = clip.duration();
-                            let new_out = new_timeline_in + dur;
-
-                            // Snap left edge
-                            if let Some((snap_target, snap_secs, snap_kind)) = find_snap(new_timeline_in, drag.clip_id) {
-                                final_in = snap_target;
-                                snapped = true;
-                                let snap_x = content_rect.left() + snap_secs as f32 * zoom - state.timeline_scroll_x;
-                                self.frame_cache.snap_line_x = Some((snap_x, snap_kind));
-                            }
-                            // Snap right edge (if no left-edge snap found, or if right is closer)
-                            if let Some((snap_target, snap_secs, snap_kind)) = find_snap(new_out, drag.clip_id) {
-                                let right_snap_in = snap_target - dur;
-                                // Prefer whichever snap is closer in pixels
-                                let left_dist = if snapped {
-                                    ((final_in.to_secs_f64() - new_timeline_in.to_secs_f64()).abs() * zoom as f64) as f32
-                                } else {
-                                    f32::MAX
-                                };
-                                let right_dist = ((snap_target.to_secs_f64() - new_out.to_secs_f64()).abs() * zoom as f64) as f32;
-                                if !snapped || right_dist < left_dist {
-                                    final_in = right_snap_in;
-                                    snapped = true;
-                                    let snap_x = content_rect.left() + snap_secs as f32 * zoom - state.timeline_scroll_x;
-                                    self.frame_cache.snap_line_x = Some((snap_x, snap_kind));
-                                }
-                            }
-                        }
+                    let snapper = crate::timeline::snap::Snapper::of(state, zoom, shift_held);
+                    let moving = crate::timeline::snap::Snapper::moving_with(state, drag.clip_id);
+                    let delta = new_timeline_in - drag.original_timeline_in;
+                    let edges: Vec<RationalTime> = state.sequence().all_clips()
+                        .filter(|c| moving.contains(&c.id))
+                        .flat_map(|c| [c.timeline_in + delta, c.timeline_out + delta])
+                        .collect();
+                    let mut exclude = moving.clone();
+                    exclude.extend(state.selected_clips.iter().copied().chain(state.selected_clip));
+                    let mut hold = drag.hold;
+                    let snap = snapper.snap(&edges, &exclude, &mut hold);
+                    let mut final_in = new_timeline_in;
+                    let snapped = snap.is_some();
+                    if let Some(snap) = snap {
+                        final_in = new_timeline_in + (snap.at - edges[snap.edge]);
+                        self.frame_cache.snap_line_x = Some(snapper.line(&snap, content_rect.left()));
                     }
-                    } // end if !shift_held
 
                     // Clamp to >= 0
                     if final_in.value < 0 {
                         final_in.value = 0;
                     }
+                    drag_seen = Some((final_in, hold));
 
                     let is_primary = state.sequence().tracks.get(drag.track_idx)
                         .is_some_and(|t| t.magnetic_role == klipp_timeline::TrackRole::Primary);
@@ -9969,8 +9953,6 @@ impl TimelinePanel {
                             }
                         }
 
-                        // Store target for primary cross-track drop
-                        non_primary_target_in = Some(final_in);
 
                     } else {
                         // NON-PRIMARY: Deferred movement with ghost preview
@@ -10069,8 +10051,6 @@ impl TimelinePanel {
                             tt.text_secondary,
                         );
 
-                        // Store target position for drop handler (set after the drag borrow ends)
-                        non_primary_target_in = Some(final_in);
                     }
 
                     // Auto-connect/disconnect indicator during non-primary drag
@@ -10206,8 +10186,8 @@ impl TimelinePanel {
                 let clip_id = drag.clip_id;
                 let from_track = drag.track_idx;
                 let original_in = drag.original_timeline_in;
-                let drag_start_x = drag.start_x;
-                let _drag_target_in = non_primary_target_in;
+                // The drop lands where the ghost was last drawn (#3056).
+                let shown_in = drag.shown_in.unwrap_or(original_in);
 
                 // Check if pointer is over a different compatible track
                 let target_track = pointer_pos.and_then(|pos| {
@@ -10221,18 +10201,9 @@ impl TimelinePanel {
                         let source_kind = state.sequence().tracks.get(from_track).map(|t| t.kind);
                         let target_kind = state.sequence().tracks.get(to_track).map(|t| t.kind);
                         if source_kind == target_kind {
-                            // Cross-track move — compute position from pointer at drop time
-                            let new_in = if let Some(pos) = pointer_pos {
-                                let dx = pos.x - drag_start_x;
-                                let delta_secs = dx as f64 / zoom as f64;
-                                let new_val = original_in.to_secs_f64() + delta_secs;
-                                RationalTime::from_secs_f64(new_val.max(0.0), fps.rate())
-                            } else {
-                                original_in
-                            };
                             cmds.push(AppCommand::MoveClipToTrack {
                                 clip_id,
-                                new_timeline_in: new_in,
+                                new_timeline_in: shown_in,
                                 from_track,
                                 to_track,
                             });
@@ -10252,11 +10223,7 @@ impl TimelinePanel {
                             .is_some_and(|t| t.magnetic_role == klipp_timeline::TrackRole::Primary);
                         if is_primary {
                             // Magnetic: route by edit mode (Insert = ripple move, Overwrite = replace)
-                            let target_time = pointer_pos.map(|pos| {
-                                let x_in_content = pos.x - content_rect.left() + scroll;
-                                let secs = (x_in_content as f64 / zoom as f64).max(0.0);
-                                RationalTime::from_secs_f64(secs, fps.rate())
-                            });
+                            let target_time = drag.shown_in;
                             if let Some(target_time) = target_time {
                                 if let Some(track) = state.sequence_mut().tracks.get_mut(from_track) {
                                     track.sort_clips();
@@ -10273,8 +10240,11 @@ impl TimelinePanel {
                                 let before = state.sequence().clone();
                                 let result = match effective_mode {
                                     klipp_timeline::magnetic::EditMode::Insert => {
+                                        // Into the slot the insert line showed.
+                                        let slot = state.sequence().tracks.get(from_track)
+                                            .map_or(target_time, |t| primary_insert_time(t, clip_id, target_time));
                                         klipp_timeline::magnetic::MagneticEditor::move_primary(
-                                            state.sequence_mut(), clip_id, target_time)
+                                            state.sequence_mut(), clip_id, slot)
                                     }
                                     klipp_timeline::magnetic::EditMode::Overwrite => {
                                         // Remove clip from track first, then overwrite at target
@@ -10298,16 +10268,7 @@ impl TimelinePanel {
                                 cmds.push(AppCommand::SequenceUpdated);
                             }
                         } else {
-                            // Non-primary: compute target position from pointer at drop time
-                            let target_in = if let Some(pos) = pointer_pos {
-                                let dx = pos.x - drag_start_x;
-                                let delta_secs = dx as f64 / zoom as f64;
-                                let new_val = original_in.to_secs_f64() + delta_secs;
-                                let clamped = new_val.max(0.0);
-                                RationalTime::from_secs_f64(clamped, fps.rate())
-                            } else {
-                                original_in
-                            };
+                            let target_in = shown_in;
                             if target_in != original_in {
                                 cmds.push(AppCommand::MoveClip {
                                     clip_id,
@@ -10381,6 +10342,10 @@ impl TimelinePanel {
                 self.dragging_clip = None;
                 self.press_origin = None;
             }
+        }
+        if let (Some(drag), Some((shown, hold))) = (self.dragging_clip.as_mut(), drag_seen) {
+            drag.shown_in = Some(shown);
+            drag.hold = hold;
         }
     }
 
@@ -10978,17 +10943,18 @@ impl TimelinePanel {
         scroll: f32,
         fps: klipp_core::Fps,
         snap_enabled: bool,
-        snap_threshold_secs: f64,
-        snap_targets: &[(f64, RationalTime, Option<ClipId>, klipp_core::SnapTargetKind)],
-        grid_interval_secs: Option<f64>,
         pointer_pos: Option<egui::Pos2>,
         pointer_down: bool,
         pointer_released: bool,
     ) {
-        let rate = fps.rate();
-        let snap_cfg = state.snap;
+        // One snap for every drag, held from frame to frame (#3056).
+        let snapper = crate::timeline::snap::Snapper::of(state, zoom, !snap_enabled);
+        let held = std::cell::Cell::new(self.trimming_clip.as_ref().and_then(|t| t.hold));
         let find_snap = |edge_time: RationalTime, exclude_clip: ClipId| -> Option<(RationalTime, f64, klipp_core::SnapTargetKind)> {
-            Self::find_snap_target(snap_enabled, snap_threshold_secs, snap_targets, edge_time, exclude_clip, grid_interval_secs, rate, Some(&snap_cfg))
+            let mut hold = held.get();
+            let snap = snapper.snap(&[edge_time], &[exclude_clip], &mut hold);
+            held.set(hold);
+            snap.map(|s| (s.at, s.at.to_secs_f64(), s.kind))
         };
 
         // Handle ongoing trim (only process on the trim's own track to avoid duplicate tooltips)
@@ -11183,6 +11149,9 @@ impl TimelinePanel {
                 self.trimming_clip = None;
                 self.press_origin = None;
             }
+        }
+        if let Some(t) = self.trimming_clip.as_mut() {
+            t.hold = held.get();
         }
     }
 
@@ -12042,22 +12011,8 @@ impl TimelinePanel {
 
         self.process_fade_drag(state, cmds, track_idx, content_rect, track_rect, zoom, scroll, track_height, pointer_pos, pointer_down, pointer_released);
 
-        // Collect snap targets upfront (avoids borrow conflicts with state mutation)
+        // Moves and trims snap through `timeline::snap::Snapper` (#3056).
         let snap_enabled = state.snap.master && !ui.input(|i| i.modifiers.shift);
-        let snap_threshold_secs = snap_threshold_px() as f64 / zoom as f64;
-        // Collect all snap points: (time_secs, RationalTime, owner_clip, kind)
-        // The kind is plumbed through find_snap_target so commit 3 can render
-        // a target-aware on-snap legend ("Clip edge" / "Playhead" / "Marker" …).
-        let snap_targets = Self::snap_targets_of(state, fps.rate());
-        // Resolve user's grid-snap interval to a concrete seconds value
-        // at current zoom + sequence fps. Returns None for GridInterval::Off
-        // (the back-compat default) so the find_snap_target post-pass
-        // is a no-op for users who haven't opted in.
-        let grid_interval_secs = crate::timeline::grid_snap::resolve_grid_interval_secs(
-            state.grid_snap_interval,
-            fps.rate(),
-            zoom,
-        );
 
         // Handle Range tool drag in track area (update in/out as user drags)
         if state.active_tool == Tool::Range {
@@ -12100,7 +12055,7 @@ impl TimelinePanel {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
         }
 
-        self.process_trim_drag(ui, painter, state, cmds, track_idx, content_rect, track_rect, zoom, scroll, fps, snap_enabled, snap_threshold_secs, &snap_targets, grid_interval_secs, pointer_pos, pointer_down, pointer_released);
+        self.process_trim_drag(ui, painter, state, cmds, track_idx, content_rect, track_rect, zoom, scroll, fps, snap_enabled, pointer_pos, pointer_down, pointer_released);
 
         self.process_roll_trim(painter, state, cmds, track_idx, content_rect, track_rect, zoom, scroll, fps, snap_enabled, pointer_pos, pointer_down, pointer_released);
 
@@ -12108,7 +12063,7 @@ impl TimelinePanel {
 
         self.process_slide_drag(ui, painter, state, cmds, track_idx, content_rect, track_rect, zoom, scroll, track_height, pointer_pos, pointer_down, pointer_released);
 
-        self.process_clip_drag(ui, painter, state, cmds, track_idx, content_rect, track_rect, zoom, scroll, fps, snap_enabled, snap_threshold_secs, &snap_targets, grid_interval_secs, track_height, pointer_pos, pointer_down, pointer_released);
+        self.process_clip_drag(ui, painter, state, cmds, track_idx, content_rect, track_rect, zoom, scroll, fps, track_height, pointer_pos, pointer_down, pointer_released);
     }
 
     fn compute_clip_colors(
@@ -19371,110 +19326,19 @@ mod snap_tests {
         );
     }
 
-    // ── On-snap legend fade timing (commit 3) ─────────────────────────
+    // ── On-snap highlight (#3056) ─────────────────────────────────────
 
     use std::time::{Duration, Instant};
 
-    // Pinned: alpha is 1.0 (fully visible) when there is no current
-    // snap — the renderer short-circuits before the alpha is read,
-    // but a sane value here keeps the helper composable.
+    /// A snap's highlight is full the moment it is made and gone after
+    /// SNAP_HIGHLIGHT_MS; the line is drawn at full strength throughout.
     #[test]
-    fn alpha_is_full_when_no_current_snap() {
-        let now = Instant::now();
-        let alpha = alpha_for_kind_change(
-            Some(klipp_core::SnapTargetKind::ClipEdge),
-            None,
-            now,
-            now,
-        );
-        assert!((alpha - 1.0).abs() < 1e-6);
-    }
-
-    // Pinned: when prev_kind matches current_kind, alpha stays at 1.0
-    // regardless of elapsed time. This is the "instance change" case
-    // — the brief explicitly says ClipEdge → ClipEdge across two
-    // different clips must NOT fade.
-    #[test]
-    fn alpha_does_not_reset_when_kind_unchanged() {
-        let earlier = Instant::now() - Duration::from_millis(50);
-        let now = Instant::now();
-        let alpha = alpha_for_kind_change(
-            Some(klipp_core::SnapTargetKind::ClipEdge),
-            Some(klipp_core::SnapTargetKind::ClipEdge),
-            earlier,
-            now,
-        );
-        assert!((alpha - 1.0).abs() < 1e-6,
-            "same-kind transitions must stay at full alpha");
-    }
-
-    // Pinned: when kind changes, alpha eases linearly from 0 → 1
-    // across SNAP_LEGEND_FADE_MS. At t=0 just after the change,
-    // alpha is approximately 0; at t=SNAP_LEGEND_FADE_MS/2 it is
-    // approximately 0.5; at t=SNAP_LEGEND_FADE_MS it is 1.0.
-    #[test]
-    fn alpha_eases_in_after_kind_change() {
-        let change_time = Instant::now();
-        // At zero elapsed (or near-zero), alpha should be very low.
-        let alpha_at_zero = alpha_for_kind_change(
-            Some(klipp_core::SnapTargetKind::ClipEdge),
-            Some(klipp_core::SnapTargetKind::Grid),
-            change_time,
-            change_time,
-        );
-        assert!(alpha_at_zero < 0.05,
-            "fade should start near zero immediately after a kind change, got {}", alpha_at_zero);
-
-        let half = change_time + Duration::from_millis(SNAP_LEGEND_FADE_MS / 2);
-        let alpha_at_half = alpha_for_kind_change(
-            Some(klipp_core::SnapTargetKind::ClipEdge),
-            Some(klipp_core::SnapTargetKind::Grid),
-            change_time,
-            half,
-        );
-        assert!((alpha_at_half - 0.5).abs() < 0.05,
-            "fade should be ~0.5 at half the duration, got {}", alpha_at_half);
-
-        let full = change_time + Duration::from_millis(SNAP_LEGEND_FADE_MS);
-        let alpha_at_full = alpha_for_kind_change(
-            Some(klipp_core::SnapTargetKind::ClipEdge),
-            Some(klipp_core::SnapTargetKind::Grid),
-            change_time,
-            full,
-        );
-        assert!((alpha_at_full - 1.0).abs() < 1e-6,
-            "fade should reach 1.0 at SNAP_LEGEND_FADE_MS, got {}", alpha_at_full);
-    }
-
-    // Pinned: first-ever snap (prev_kind = None → current_kind = Some)
-    // counts as a kind change — the legend fades in on first
-    // appearance instead of popping.
-    #[test]
-    fn alpha_treats_first_snap_as_kind_change() {
-        let change_time = Instant::now();
-        let alpha = alpha_for_kind_change(
-            None,
-            Some(klipp_core::SnapTargetKind::ClipEdge),
-            change_time,
-            change_time,
-        );
-        assert!(alpha < 0.05,
-            "first snap should be a kind change (None → Some), got alpha={}", alpha);
-    }
-
-    // Pinned: alpha is clamped at 1.0 once the fade duration has
-    // elapsed (not e.g. 1.5x the duration).
-    #[test]
-    fn alpha_clamps_at_one_after_fade_complete() {
-        let change_time = Instant::now();
-        let way_after = change_time + Duration::from_millis(SNAP_LEGEND_FADE_MS * 10);
-        let alpha = alpha_for_kind_change(
-            Some(klipp_core::SnapTargetKind::ClipEdge),
-            Some(klipp_core::SnapTargetKind::Grid),
-            change_time,
-            way_after,
-        );
-        assert!((alpha - 1.0).abs() < 1e-6, "alpha must clamp at 1.0, got {}", alpha);
+    fn a_snap_is_highlighted_at_once_and_the_highlight_passes() {
+        let made = Instant::now();
+        assert_eq!(snap_highlight(made, made), 1.0);
+        let half = snap_highlight(made, made + Duration::from_millis(SNAP_HIGHLIGHT_MS / 2));
+        assert!((half - 0.5).abs() < 0.01, "{half}");
+        assert_eq!(snap_highlight(made, made + Duration::from_millis(SNAP_HIGHLIGHT_MS * 10)), 0.0);
     }
 
     // ── On-snap legend labels ─────────────────────────────────────────
@@ -19817,7 +19681,7 @@ mod trim_preview_tests {
                 original_timeline_in: clip.timeline_in, original_timeline_out: clip.timeline_out,
                 ripple: true,
                 linked: true,
-                subsequent_clips: vec![(seq.tracks[0].clips[1].id, tc(4.0), tc(8.0))],
+                subsequent_clips: vec![(seq.tracks[0].clips[1].id, tc(4.0), tc(8.0))], hold: None,
             };
             // Exactly the speculative mutation made while the pointer
             // is down: only the drawn track has been changed so far.
@@ -19855,7 +19719,7 @@ mod trim_preview_tests {
             clip_id: c.id, track_idx: 0, edge: TrimEdge::Left, start_x: 0.0,
             original_source_in: c.source_in, original_source_out: c.source_out,
             original_timeline_in: c.timeline_in, original_timeline_out: c.timeline_out,
-            ripple: true, linked: true, subsequent_clips: vec![],
+            ripple: true, linked: true, subsequent_clips: vec![], hold: None,
         };
         track.clips.push(c);
         seq.tracks = vec![track];
