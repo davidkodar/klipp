@@ -77,6 +77,15 @@ pub(super) fn stretch(seq: &Sequence, pool: &MediaPool, i: usize, clip_ids: &[Cl
             members.push((ti, c));
         }
     }
+    // A multicam group stretches as one: its other angles go with it, as
+    // a ripple trim takes them, or the group would play out of step.
+    for k in 0..members.len() {
+        for id in multicam_followers(seq, members[k].1) {
+            if let Some((ti, _, c)) = find_clip(seq, id).filter(|(_, _, c)| !members.iter().any(|(_, m)| m.id == c.id)) {
+                members.push((ti, c));
+            }
+        }
+    }
     let named = members.len();
     for k in 0..named {
         let partner = members[k].1.linked_clip_id.and_then(|lid| find_clip(seq, lid));
@@ -390,6 +399,30 @@ mod tests {
         let after = applied(&seq, &pool, &edit);
         assert_eq!((clip(&after, v).timeline_in, clip(&after, v).timeline_out), (tc(0.0), tc(8.0)));
         assert_eq!((clip(&after, next).timeline_in, clip(&after, next).timeline_out), (tc(8.0), tc(14.0)));
+    }
+
+    /// A multicam group's other angle stretches with the angle named, in
+    /// step.
+    #[test]
+    fn a_multicam_groups_angles_stretch_together() {
+        let (mut seq, pool, v, _, next) = fixture();
+        seq.tracks[0].clips.retain(|c| c.id != next);
+        let group = klipp_core::GroupId::new();
+        let ci = seq.tracks[0].clips.iter().position(|c| c.id == v).unwrap();
+        seq.tracks[0].clips[ci].multicam_group = Some(group);
+        let mut angle = seq.tracks[0].clips[ci].clone();
+        angle.id = ClipId::new();
+        angle.linked_clip_id = None;
+        let angle_id = angle.id;
+        let mut v2 = Track::new("V2", TrackKind::Video);
+        v2.clips = vec![angle];
+        seq.tracks.push(v2);
+        let (_, edit, _) = stretch_at(&seq, &pool, &[v], Edge::Out, StretchTo::Length(8.0), false, true).unwrap();
+        let after = applied(&seq, &pool, &edit);
+        for id in [v, angle_id] {
+            let c = clip(&after, id);
+            assert_eq!((secs(c.timeline_out), c.speed), (8.0, 0.5), "every angle in step");
+        }
     }
 
     /// A title changes length only; the limits are said; a locked track

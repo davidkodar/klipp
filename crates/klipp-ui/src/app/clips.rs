@@ -300,7 +300,16 @@ impl KlippApp {
                     use klipp_document::ops::{stretch_at, Edge, StretchTo};
                     let edge = if *at_end { Edge::Out } else { Edge::In };
                     match stretch_at(self.state.sequence(), &self.state.media_pool, clip_ids, edge, StretchTo::EdgeAt(to.to_secs_f64()), *ripple, *keep_pitch) {
-                        Ok((_, edit, _)) => self.apply_edits_as_one(&[edit], "Rate Stretch"),
+                        Ok((_, edit, _)) => {
+                            self.apply_edits_as_one(&[edit], "Rate Stretch");
+                            // Slowed, with nothing drawing its in-between
+                            // frames: smooth motion offered, as the clip's
+                            // speed settings offer it.
+                            let first = clip_ids.first().and_then(|id| self.state.sequence().all_clips().find(|c| c.id == *id));
+                            if let Some((id, pct)) = first.and_then(|c| crate::timeline::stretch_drag::smooth_offer(c, &self.state.media_pool).map(|p| (c.id, p))) {
+                                self.state.toast.show_with_action(format!("Slowed to {pct:.0}%: each frame is shown longer"), "Smooth motion", crate::widgets::toast::ToastAction::SmoothMotion(id));
+                            }
+                        }
                         Err(r) => {
                             self.state.toast.show(format!("Stretch unchanged: {}", r.why));
                             // The drag's preview may have reached the engine.
