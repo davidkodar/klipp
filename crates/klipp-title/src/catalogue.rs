@@ -268,7 +268,7 @@ mod tests {
     #[test]
     fn the_catalogue_names_hashes_and_tags_every_family() {
         let all = families();
-        assert!(all.len() >= 30, "{} families", all.len());
+        assert!(all.len() >= 70, "{} families", all.len());
         let mut names: Vec<String> = all.iter().map(|f| f.name.to_lowercase()).collect();
         names.sort();
         names.dedup();
@@ -285,8 +285,10 @@ mod tests {
                 assert!(file.size > 0 && file.sha256.len() == 64 && file.sha256.bytes().all(|b| b.is_ascii_hexdigit()), "{} {}", f.name, file.name);
             }
         }
-        for script in ["japanese", "korean", "chinese", "arabic", "hebrew", "devanagari"] {
-            assert!(!query(script).is_empty(), "covers {script}");
+        // Three or more families for each major writing system (#3010).
+        for (script, _) in SAMPLES {
+            let n = all.iter().filter(|f| f.scripts.iter().any(|s| s == script)).count();
+            assert!(n >= 3, "{script}: {n} families");
         }
         for style in ["serif", "display", "condensed", "rounded", "script", "handwritten", "mono"] {
             assert!(!query(style).is_empty(), "has a {style}");
@@ -299,10 +301,81 @@ mod tests {
         let news = names("condensed news sans");
         assert!(news.contains(&"Oswald".to_string()) && news.contains(&"Roboto Condensed".to_string()), "{news:?}");
         assert!(news.iter().all(|n| !n.contains("Garamond")), "{news:?}");
-        assert_eq!(names("japanese"), ["Noto Sans JP"]);
+        let japanese = names("japanese");
+        assert!(japanese.contains(&"Noto Sans JP".to_string()) && japanese.len() >= 3, "{japanese:?}");
+        assert_eq!(names("japanese serif"), ["Noto Serif JP"], "every word a tag");
         assert!(names("wedding script").contains(&"Great Vibes".to_string()));
         assert_eq!(names("cinzel"), ["Cinzel"], "by name too");
         assert!(family("playfair display").is_some() && family("No Such Face").is_none());
+    }
+
+    /// Words in each writing system the catalogue covers, to check a
+    /// family tagged with it has their glyphs (#3010).
+    const SAMPLES: &[(&str, &str)] = &[
+        ("latin", "Hamburgefonstiv"),
+        ("cyrillic", "Съешь же ещё"),
+        ("greek", "Γειά σου κόσμε"),
+        ("arabic", "مرحبا بالعالم"),
+        ("hebrew", "שלום עולם"),
+        ("devanagari", "नमस्ते दुनिया"),
+        ("bengali", "আমার সোনার বাংলা"),
+        ("tamil", "வணக்கம் உலகம்"),
+        ("thai", "สวัสดีชาวโลก"),
+        ("chinese", "你好世界电影"),
+        ("japanese", "こんにちは世界"),
+        ("korean", "안녕하세요 세계"),
+    ];
+
+    /// #3010, online: with `KLIPP_FONT_CATALOGUE_ONLINE` naming a folder
+    /// (kept between runs), every family is fetched as the app fetches it,
+    /// every file matches its SHA-256, each family has the glyphs of every
+    /// writing system it is tagged with, and a title in each writing
+    /// system is drawn in a catalogue family for it.
+    #[test]
+    fn every_family_downloads_covers_its_scripts_and_draws() {
+        let Some(root) = std::env::var_os("KLIPP_FONT_CATALOGUE_ONLINE").map(std::path::PathBuf::from) else {
+            eprintln!("skipping: KLIPP_FONT_CATALOGUE_ONLINE not set");
+            return;
+        };
+        let mut wrong = Vec::new();
+        for f in families() {
+            let dir = match fetch_in(&root, f, &AtomicBool::new(false)) {
+                Ok(dir) => dir,
+                Err(e) => {
+                    wrong.push(format!("{}: {e}", f.name));
+                    continue;
+                }
+            };
+            let faces: Vec<Vec<u8>> = f.files.iter().map(|x| std::fs::read(dir.join(&x.name)).unwrap()).collect();
+            for (x, bytes) in f.files.iter().zip(&faces) {
+                if sha(bytes) != x.sha256 {
+                    wrong.push(format!("{} {}: SHA-256 differs", f.name, x.name));
+                }
+            }
+            for script in &f.scripts {
+                let Some((_, sample)) = SAMPLES.iter().find(|(s, _)| s == script) else {
+                    wrong.push(format!("{}: no sample for \"{script}\"", f.name));
+                    continue;
+                };
+                let missing: String = sample.chars().filter(|c| !c.is_whitespace()).filter(|&c| !faces.iter().any(|b| ttf_parser::Face::parse(b, 0).is_ok_and(|face| face.glyph_index(c).is_some()))).collect();
+                if !missing.is_empty() {
+                    wrong.push(format!("{}: tagged {script} but has no glyph for {missing}", f.name));
+                }
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+        std::env::set_var("KLIPP_FONTS_DIR", &root);
+        for (script, sample) in SAMPLES {
+            let f = families().iter().find(|f| f.scripts.iter().any(|s| s == script)).expect("a family for each");
+            let mut r = crate::TitleRenderer::new();
+            if !r.font_registry.contains_key(&f.name) {
+                let key = r.ensure_font_loaded(&f.name, klipp_timeline::FontStyle::Regular);
+                assert!(r.font_cache.contains_key(&key), "{script}: {} loads from the catalogue's folder", f.name);
+            }
+            let td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: (*sample).into(), font_name: f.name.clone(), font_size: 120.0, color: [255, 255, 255, 255], ..Default::default() });
+            let ink = r.render(&td, 640, 360).chunks_exact(4).filter(|p| p[3] > 128).count();
+            assert!(ink > 500, "{script}: a title in {} draws ({ink} pixels)", f.name);
+        }
     }
 
     /// Serves `body` once per request on a local port.
