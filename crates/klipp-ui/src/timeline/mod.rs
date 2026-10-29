@@ -7,6 +7,7 @@ pub mod sequence_tabs;
 pub mod time_utils;
 pub mod range_visuals;
 pub mod grid_snap;
+pub mod snap;
 pub mod camera_lane;
 pub mod stacked;
 pub mod mask_lane;
