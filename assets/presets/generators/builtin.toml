@@ -1,0 +1,109 @@
+# The generators the Library's Generators tab offers (#2887): one per
+# job, every colour and count a setting in the inspector afterwards. Each
+# a name, its group in the tab's sidebar (the groups listed in the order
+# they first appear), whether its picture moves over the clip, and the
+# generator clip it adds, in the form a project saves it. Colours are
+# RGBA, 0 to 255. A gradient's grain, left out, is Klipp's default.
+kind = "generator_entry"
+format_version = 1
+
+[[generator]]
+name = "Solid Colour"
+category = "Backgrounds"
+data = { SolidColor = { color = [0, 0, 0, 255] } }
+
+[[generator]]
+name = "Gradient"
+category = "Backgrounds"
+data = { Gradient = { top = [36, 52, 92, 255], bottom = [8, 10, 18, 255], angle_deg = 0.0 } }
+
+[[generator]]
+name = "Four-Corner"
+category = "Backgrounds"
+[generator.data.Gradient]
+top = [0, 0, 0, 255]
+bottom = [0, 0, 0, 255]
+angle_deg = 0.0
+four_point = { top_left = [255, 140, 60, 255], top_right = [255, 200, 120, 255], bottom_left = [60, 80, 200, 255], bottom_right = [20, 30, 90, 255] }
+
+[[generator]]
+name = "Living Gradient"
+category = "Backgrounds"
+animated = true
+data = { LivingGradient = { a = [22, 34, 78, 255], b = [64, 24, 82, 255], angle_deg = 20.0, drift_deg_per_sec = 4.0, glow = 0.35 } }
+
+[[generator]]
+name = "Grain"
+category = "Backgrounds"
+animated = true
+data = { Grain = { color = [26, 26, 30, 255], amount = 0.35, size_px = 2.0, speed = 24.0 } }
+
+[[generator]]
+name = "SMPTE 75% Bars"
+category = "Test"
+data = "ColorBars"
+
+[[generator]]
+name = "SMPTE 100% Bars"
+category = "Test"
+data = "ColorBars100"
+
+[[generator]]
+name = "SMPTE Full Bars"
+category = "Test"
+data = "ColorBarsSmpte"
+
+[[generator]]
+name = "Countdown"
+category = "Timing"
+animated = true
+data = "Countdown"
+
+[[generator]]
+name = "Timer Up"
+category = "Timing"
+animated = true
+data = { Timer = { mode = "CountUp", initial_seconds = 0.0, format = "MmSs", text_color = [255, 255, 255, 255], background_color = [0, 0, 0, 255] } }
+
+[[generator]]
+name = "Timer Down"
+category = "Timing"
+animated = true
+data = { Timer = { mode = "CountDown", initial_seconds = 60.0, format = "MmSs", text_color = [255, 255, 255, 255], background_color = [0, 0, 0, 255] } }
+
+[[generator]]
+name = "Slate"
+category = "Slate"
+[generator.data.Slate]
+project = "Project Name"
+scene = ""
+take = ""
+director = ""
+camera = ""
+date = ""
+framerate = ""
+notes = ""
+text_color = [255, 255, 255, 255]
+background_color = [0, 0, 0, 255]
+
+[[generator]]
+name = "Placeholder"
+category = "Slate"
+data = { Placeholder = { label = "Missing shot", color = [66, 70, 84, 255] } }
+
+[[generator]]
+name = "Polygon"
+category = "Shape"
+data = { Polygon = { sides = 6, color = [255, 255, 255, 255], outline_width_px = 0.0, fill = true } }
+
+# A true circle, smooth at any size (#2775): from 64 sides a polygon is
+# drawn as one; 24 showed facets.
+[[generator]]
+name = "Circle"
+category = "Shape"
+data = { Polygon = { sides = 64, color = [255, 255, 255, 255], outline_width_px = 0.0, fill = true } }
+
+[[generator]]
+name = "Star"
+category = "Shape"
+data = { Star = { points = 5, inner_radius_pct = 0.40, color = [255, 220, 60, 255], outline_width_px = 0.0, fill = true } }
