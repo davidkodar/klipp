@@ -410,6 +410,50 @@ pub fn set_keyframe_interpolation(
     }
 }
 
+/// A family of eases as `assets/presets/ease_families` writes it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EaseFamily {
+    name: String,
+    eases: [Ease; 3],
+}
+
+/// The ease families, read once from the file built in; none when it
+/// can't be read.
+fn ease_families() -> &'static [EaseFamily] {
+    static FAMILIES: std::sync::OnceLock<Vec<EaseFamily>> = std::sync::OnceLock::new();
+    FAMILIES.get_or_init(|| {
+        read_ease_families(include_str!("../../../assets/presets/ease_families/builtin.toml")).unwrap_or_else(|why| {
+            tracing::error!("the built-in ease families don't read: {why}");
+            Vec::new()
+        })
+    })
+}
+
+/// The families in `text`, or why it is refused: a name missing or
+/// given twice, eases not In, Out and In-Out in that order, a plain
+/// ease in a family, or a curve in two places.
+fn read_ease_families(text: &str) -> Result<Vec<EaseFamily>, String> {
+    let families: Vec<EaseFamily> = crate::preset_file::read(text, "ease_family", 1, "family")?;
+    let (mut names, mut eases) = (std::collections::HashSet::new(), std::collections::HashSet::new());
+    for f in &families {
+        if f.name.trim().is_empty() || !names.insert(f.name.as_str()) {
+            return Err(format!("family \"{}\": a name, given once", f.name));
+        }
+        let named = |e: Ease| serde_json::to_value(e).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default();
+        let ordered = named(f.eases[0]).ends_with("_in") && named(f.eases[1]).ends_with("_out") && named(f.eases[2]).ends_with("_in_out");
+        if !ordered {
+            return Err(format!("family \"{}\": its eases In, Out and In-Out, in that order", f.name));
+        }
+        for e in f.eases {
+            if matches!(e, Ease::Linear | Ease::In | Ease::Out | Ease::InOut) || !eases.insert(e) {
+                return Err(format!("family \"{}\": {e:?} is a plain ease or in another family", f.name));
+            }
+        }
+    }
+    Ok(families)
+}
+
 /// How a move eases into a keyframe: the named curves motion design
 /// uses, written as the Bezier handles [`evaluate`] already solves — the
 /// same model as CSS `cubic-bezier`, handles as fractions of the
@@ -453,14 +497,11 @@ pub enum Ease {
 }
 
 impl Ease {
-    /// The presets a key menu offers, by family, with their labels:
-    /// each family's In, Out and In-Out.
-    pub const PRESETS: [(&'static str, [Ease; 3]); 4] = [
-        ("Exponential", [Ease::ExpoIn, Ease::ExpoOut, Ease::ExpoInOut]),
-        ("Back", [Ease::BackIn, Ease::BackOut, Ease::BackInOut]),
-        ("Elastic", [Ease::ElasticIn, Ease::ElasticOut, Ease::ElasticInOut]),
-        ("Bounce", [Ease::BounceIn, Ease::BounceOut, Ease::BounceInOut]),
-    ];
+    /// The families a key menu offers, in order, each its name and its
+    /// In, Out and In-Out curve, as the built-in file lists them.
+    pub fn families() -> impl Iterator<Item = (&'static str, [Ease; 3])> {
+        ease_families().iter().map(|f| (f.name.as_str(), f.eases))
+    }
 
     /// The curve's two handles, `(x1, y1, x2, y2)`, or `None` for a
     /// straight line or a curve one cubic cannot draw (elastic, bounce).
@@ -831,13 +872,50 @@ mod tests {
         assert_eq!(handles_at(&keys, 1).1, (0.4, 0.9));
     }
 
+    /// The families file reads to the four families as they were in
+    /// code, in menu order (#2887).
+    #[test]
+    fn the_ease_families_read_as_they_were() {
+        let families: Vec<(&str, [Ease; 3])> = Ease::families().collect();
+        assert_eq!(
+            families,
+            [
+                ("Exponential", [Ease::ExpoIn, Ease::ExpoOut, Ease::ExpoInOut]),
+                ("Back", [Ease::BackIn, Ease::BackOut, Ease::BackInOut]),
+                ("Elastic", [Ease::ElasticIn, Ease::ElasticOut, Ease::ElasticInOut]),
+                ("Bounce", [Ease::BounceIn, Ease::BounceOut, Ease::BounceInOut]),
+            ]
+        );
+    }
+
+    /// A families file that would mislabel or repeat a curve is refused,
+    /// saying why.
+    #[test]
+    fn a_bad_ease_families_file_is_refused() {
+        let file = |body: &str| format!("kind = \"ease_family\"\nformat_version = 1\n{body}");
+        let back = "[[family]]\nname = \"Back\"\neases = [\"back_in\", \"back_out\", \"back_in_out\"]\n";
+        assert_eq!(read_ease_families(&file(back)).unwrap()[0].eases, [Ease::BackIn, Ease::BackOut, Ease::BackInOut]);
+        for (body, says) in [
+            (format!("{back}{back}"), "given once"),
+            (back.replace("\"Back\"", "\" \""), "given once"),
+            (back.replace("[\"back_in\", \"back_out\"", "[\"back_out\", \"back_in\""), "in that order"),
+            (format!("{back}[[family]]\nname = \"Again\"\neases = [\"back_in\", \"expo_out\", \"expo_in_out\"]\n"), "in another family"),
+            (back.replace("\"back_in\", \"back_out\", \"back_in_out\"", "\"back_in\", \"back_out\""), "expected an array of length 3"),
+            (back.replace("back_in\"", "spring_in\""), "unknown variant"),
+            (format!("{back}hint = \"x\"\n"), "unknown field"),
+        ] {
+            let why = read_ease_families(&file(&body)).unwrap_err();
+            assert!(why.contains(says), "{body}: {why}");
+        }
+    }
+
     /// Every named curve starts at 0 and ends at 1. Elastic swings past
     /// both ends, back overshoots, bounce never passes its end. A curve one
     /// cubic can draw evaluates as `ease_into`'s Bezier segment does, so a
     /// preset and an automatic op's ease give the same move.
     #[test]
     fn eased_curves_run_from_start_to_end() {
-        let all = Ease::PRESETS.iter().flat_map(|(_, e)| *e).chain([Ease::Linear, Ease::In, Ease::Out, Ease::InOut]);
+        let all = Ease::families().flat_map(|(_, e)| e).chain([Ease::Linear, Ease::In, Ease::Out, Ease::InOut]);
         for e in all {
             assert!(e.at(0.0).abs() < 1e-6 && (e.at(1.0) - 1.0).abs() < 1e-6, "{e:?}");
             let line = vec![kf_linear(0.0, 0.0), kf_linear(2.0, 10.0)];

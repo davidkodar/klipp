@@ -1676,7 +1676,7 @@ impl CurveEditorPanel {
                     }
                 }
                 if !masked {
-                    for (family, eases) in klipp_core::keyframe::Ease::PRESETS {
+                    for (family, eases) in klipp_core::keyframe::Ease::families() {
                         ui.menu_rows(family, |ui| {
                             for (ease, label) in eases.into_iter().zip(["In", "Out", "In-Out"]) {
                                 if ui.selectable_label(current == Some(I::Eased(ease)), label).clicked() {
