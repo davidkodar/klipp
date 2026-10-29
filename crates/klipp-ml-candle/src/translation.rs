@@ -291,6 +291,31 @@ pub fn clauses(source: &str) -> Vec<String> {
     out
 }
 
+/// `source` in its sentences, cut after a word that ends one (`.`, `!`,
+/// `?`, `…`, a closing quote or bracket after it) when the next word
+/// starts one (a capital, a digit, an opening quote), so "Mr. smith" and
+/// "3.5" stay whole. Every word lands in one, in order. A cue of two
+/// sentences was translated as one line, and the model dropped a short
+/// first sentence whole (#2555).
+pub fn sentences_of(source: &str) -> Vec<String> {
+    let all: Vec<&str> = source.split_whitespace().collect();
+    let ends = |w: &str| w.trim_end_matches(['"', '\'', '”', '’', ')', ']', '»']).ends_with(['.', '!', '?', '…']);
+    let starts = |w: &str| w.trim_start_matches(['"', '\'', '“', '‘', '(', '[', '«', '¿', '¡']).chars().next().is_some_and(|c| c.is_uppercase() || c.is_ascii_digit());
+    let mut out: Vec<String> = Vec::new();
+    let mut cur: Vec<&str> = Vec::new();
+    for (i, w) in all.iter().enumerate() {
+        cur.push(w);
+        if ends(w) && all.get(i + 1).is_some_and(|next| starts(next)) {
+            out.push(cur.join(" "));
+            cur.clear();
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur.join(" "));
+    }
+    out
+}
+
 /// The most tokens of a line the encoder reads: its 512 positions, less
 /// room for `</s>`. A longer line is translated up to there and flagged.
 pub const MAX_INPUT_TOKENS: usize = 500;
@@ -328,6 +353,40 @@ pub fn start(id: String, source: &str, target: &str, lines: Vec<String>) -> Resu
     Ok(rx)
 }
 
+/// A caption line translated: each of its sentences on its own (#2555),
+/// then put together. Given two, the model could drop one whole.
+#[cfg(feature = "candle")]
+pub fn translate_line(t: &mut Translator, line: &str) -> Result<Line, String> {
+    let mut said = Line { text: String::new(), cut: None };
+    for sentence in sentences_of(line) {
+        let one = translate_sentence(t, &sentence)?;
+        if !said.text.is_empty() && !one.text.is_empty() {
+            said.text.push(' ');
+        }
+        said.text.push_str(&one.text);
+        said.cut = said.cut.or(one.cut);
+    }
+    Ok(said)
+}
+
+/// One sentence translated, and again a clause at a time where the model
+/// left one out (#2489), kept when that says more.
+#[cfg(feature = "candle")]
+fn translate_sentence(t: &mut Translator, sentence: &str) -> Result<Line, String> {
+    let mut said = t.translate(sentence).map_err(|e| e.to_string())?;
+    if said.cut.is_none() && left_some_out(sentence, &said.text) {
+        let mut parts = Vec::new();
+        for clause in clauses(sentence) {
+            parts.push(t.translate(&clause).map_err(|e| e.to_string())?.text);
+        }
+        let again = parts.join(" ");
+        if words(&again) > words(&said.text) {
+            said.text = again;
+        }
+    }
+    Ok(said)
+}
+
 /// Job `id`'s work: fetch, load, translate line by line, `cancel` read
 /// between lines.
 fn run(id: &str, pair: &Pair, lines: &[String], cancel: &std::sync::atomic::AtomicBool) -> Result<Vec<Line>, String> {
@@ -354,20 +413,7 @@ fn run(id: &str, pair: &Pair, lines: &[String], cancel: &std::sync::atomic::Atom
             if cancel.load(std::sync::atomic::Ordering::Relaxed) {
                 return Err(CANCELLED.into());
             }
-            let mut said = t.translate(line).map_err(|e| e.to_string())?;
-            // A clause the model left out (#2489): the line again a clause
-            // at a time, kept when it says more.
-            if said.cut.is_none() && left_some_out(line, &said.text) {
-                let mut parts = Vec::new();
-                for clause in clauses(line) {
-                    parts.push(t.translate(&clause).map_err(|e| e.to_string())?.text);
-                }
-                let again = parts.join(" ");
-                if words(&again) > words(&said.text) {
-                    said.text = again;
-                }
-            }
-            out.push(said);
+            out.push(translate_line(&mut t, line)?);
             jobs::update(id, |j| {
                 j.phase = "translating";
                 j.done = i + 1;
@@ -682,6 +728,26 @@ mod model {
     mod tests {
         use super::*;
 
+        /// #2555 with the real en→sv pair, when `KLIPP_OPUS_EN_SV` names
+        /// its model file and `KLIPP_OPUS_EN_SV_TOKENIZER` its tokenizer:
+        /// a cue of a short greeting and a longer sentence comes back with
+        /// both.
+        #[test]
+        fn a_two_sentence_cue_keeps_its_first_sentence() {
+            let (Ok(model), Ok(tokenizer)) = (std::env::var("KLIPP_OPUS_EN_SV"), std::env::var("KLIPP_OPUS_EN_SV_TOKENIZER")) else {
+                eprintln!("skipping: KLIPP_OPUS_EN_SV / KLIPP_OPUS_EN_SV_TOKENIZER not set");
+                return;
+            };
+            let pair = super::super::pair("en", "sv").unwrap();
+            let mut t = Translator::load(&pair, std::path::Path::new(&model), std::path::Path::new(&tokenizer)).expect("the pair loads");
+            let cue = "Good morning, everyone. Today we are going down to the old harbour to look at the fishing boats.";
+            let whole = t.translate(cue).unwrap().text;
+            let line = super::super::translate_line(&mut t, cue).unwrap().text;
+            eprintln!("as one line: {whole}\nby sentence: {line}");
+            assert!(line.contains("God morgon") || line.contains("god morgon"), "the greeting kept: {line}");
+            assert!(line.contains("hamn"), "the harbour kept: {line}");
+        }
+
         /// The real en→de pair, when `KLIPP_OPUS_EN_DE` names a folder
         /// holding its `model.safetensors` and `tokenizer.json`.
         #[test]
@@ -735,6 +801,21 @@ mod tests {
         let plain = clauses("one two three four five six seven eight");
         assert_eq!(plain.join(" "), "one two three four five six seven eight");
         assert_eq!(plain.len(), 2, "cut at the middle with no commas");
+    }
+
+    /// #2555: a cue of a short greeting and a longer sentence is two
+    /// sentences, each translated on its own; a number, an abbreviation
+    /// before a small word and a lone sentence stay whole.
+    #[test]
+    fn a_line_is_cut_into_its_sentences() {
+        assert_eq!(sentences_of("Hello there, friends. We went down to the harbour to see the boats."), ["Hello there, friends.", "We went down to the harbour to see the boats."]);
+        assert_eq!(sentences_of("Really? \"Yes!\" she said."), ["Really?", "\"Yes!\" she said."]);
+        assert_eq!(sentences_of("It costs 3.5 euros. That is all."), ["It costs 3.5 euros.", "That is all."]);
+        assert_eq!(sentences_of("ask mr. smith first"), ["ask mr. smith first"]);
+        assert_eq!(sentences_of("Thank you all."), ["Thank you all."]);
+        assert_eq!(sentences_of("Wait… 2 more."), ["Wait…", "2 more."]);
+        let line = "One. Two three. Four five six.";
+        assert_eq!(sentences_of(line).join(" "), line, "every word, in order");
     }
 
     #[test]
