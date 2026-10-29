@@ -1,0 +1,65 @@
+//! The primary track stays gapless (#3060): an op that leaves a stretch
+//! of it uncovered (a place past its end, a removal or a trim that
+//! doesn't ripple, a move of its last clip) fills that stretch with a gap
+//! clip in the same step, so no later magnetic edit packs the track
+//! without a word; the undo takes the gap clip away with the edit.
+
+use klipp_core::{MediaId, RationalTime};
+use klipp_document::apply::DocumentView;
+use klipp_document::ops::{resolve, Op};
+use klipp_timeline::{Clip, Sequence, TrackRole};
+
+fn t(secs: f64) -> RationalTime {
+    RationalTime::from_secs_f64(secs, 24)
+}
+
+/// A sequence whose primary holds 0-2, 2-4 and 4-6 s, and a pool with
+/// one long item for the place op.
+fn fixture() -> (Sequence, klipp_media::MediaPool, MediaId, [klipp_core::ClipId; 3]) {
+    let mut seq = Sequence::new_default();
+    let p = seq.tracks.iter().position(|t| t.magnetic_role == TrackRole::Primary).unwrap();
+    let mut pool = klipp_media::MediaPool::new();
+    let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/gapless.mov".into(), None);
+    item.duration = t(60.0);
+    let media = pool.add(item);
+    let clips: Vec<Clip> = (0..3).map(|i| Clip::media(media, t(2.0 * i as f64), t(2.0 * i as f64 + 2.0), t(0.0), t(2.0))).collect();
+    let ids = [clips[0].id, clips[1].id, clips[2].id];
+    seq.tracks[p].clips = clips;
+    (seq, pool, media, ids)
+}
+
+/// `op` applied to the fixture; the primary is gapless after it, and its
+/// undo puts the sequence back exactly.
+fn holds(name: &str, seq: Sequence, pool: klipp_media::MediaPool, op: serde_json::Value) -> Sequence {
+    let op: Op = serde_json::from_value(op).unwrap_or_else(|e| panic!("{name}: {e}"));
+    let plan = resolve(&seq, &pool, &[op]).unwrap_or_else(|r| panic!("{name}: {}", r.why));
+    let (mut seqs, mut p, mut fps) = (vec![seq.clone()], pool, seq.fps);
+    let mut view = DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+    for s in &plan.steps {
+        let _ = view.apply_forward(&s.edit);
+    }
+    let after = view.sequences[0].clone();
+    assert!(after.primary_holes().is_none(), "{name}: a hole left on the primary: {:?}", after.primary_holes());
+    #[cfg(debug_assertions)]
+    after.assert_primary_gapless();
+    for s in plan.steps.iter().rev() {
+        let _ = view.apply_inverse(&s.edit);
+    }
+    assert!(serde_json::to_value(&view.sequences[0]).unwrap() == serde_json::to_value(&seq).unwrap(), "{name}: the undo puts it back");
+    after
+}
+
+#[test]
+fn every_op_that_leaves_a_hole_on_the_primary_fills_it() {
+    let (seq, pool, media, ids) = fixture();
+    let p = seq.primary_track_index().unwrap();
+    let id = |i: usize| ids[i].0.to_string();
+    let placed = holds("place past the end", seq.clone(), pool.clone(), serde_json::json!({ "op": "place", "media_id": media.0.to_string(), "track": p, "at": { "secs": 9.0 }, "source_in": 0.0, "source_out": 1.0, "with_audio": false }));
+    assert!(placed.tracks[p].clips.iter().any(|c| c.kind.is_gap() && c.timeline_in == t(6.0) && c.timeline_out == t(9.0)), "a gap clip 6-9 s");
+    let removed = holds("remove without ripple", seq.clone(), pool.clone(), serde_json::json!({ "op": "remove", "clip_id": id(1), "ripple": false }));
+    assert!(removed.tracks[p].clips.iter().any(|c| c.kind.is_gap() && c.timeline_in == t(2.0) && c.timeline_out == t(4.0)), "a gap clip where it was");
+    holds("move the last clip later", seq.clone(), pool.clone(), serde_json::json!({ "op": "move", "clip_id": id(2), "to": { "secs": 5.0 } }));
+    holds("trim an out without ripple", seq.clone(), pool.clone(), serde_json::json!({ "op": "trim", "clip_id": id(1), "edge": "out", "to": { "secs": 3.5 } }));
+    let trimmed = holds("trim an in without ripple", seq.clone(), pool.clone(), serde_json::json!({ "op": "trim", "clip_id": id(0), "edge": "in", "to": { "secs": 0.5 } }));
+    assert!(trimmed.tracks[p].clips.iter().any(|c| c.kind.is_gap() && c.timeline_in.to_secs_f64() == 0.0 && c.timeline_out == t(0.5)), "a gap clip of half a second, not rounded");
+}

@@ -232,4 +232,58 @@ mod tests {
             assert!(serde_json::to_value(&state.sequences).unwrap() == after, "lift {lift}: one redo as the removal left it");
         }
     }
+
+    /// The Premiere persona's crash (#3060): on a gapless primary, a clip
+    /// lifted (a gap clip in its place), the last clip nudged later by
+    /// the document's move, then a clip deleted: the nudge's hole is a
+    /// gap clip, so the delete's magnetic edit finds the primary gapless
+    /// (no debug panic, nothing packed), and undoing all three steps
+    /// gives the document back exactly.
+    #[test]
+    fn a_lift_a_nudge_and_a_delete_keep_the_primary_gapless() {
+        let mut state = AppState { magnetic_timeline_enabled: true, ..Default::default() };
+        let p = state.sequence().tracks.iter().position(|t| t.magnetic_role == klipp_timeline::TrackRole::Primary).unwrap();
+        let c = |a: f64, b: f64| Clip::media(klipp_core::MediaId::new(), t(a), t(b), t(0.0), t(b - a));
+        let clips: Vec<Clip> = [(0.0, 2.0), (2.0, 4.0), (4.0, 6.0), (6.0, 8.0)].iter().map(|&(a, b)| c(a, b)).collect();
+        let ids: Vec<ClipId> = clips.iter().map(|c| c.id).collect();
+        state.sequences[0].tracks[p].clips = clips;
+        let original = serde_json::to_value(&state.sequences).unwrap();
+        remove_clips(&mut state, &[ids[0]], true, "Lift").unwrap();
+        // Alt+. on the last clip, ten frames: the document's move.
+        let ops = crate::timeline::moves::drag_move_ops(state.sequence(), &[(ids[3], t(6.0 + 10.0 / 24.0), None)], true);
+        let plan = klipp_document::ops::resolve(state.sequence(), &state.media_pool, &ops).expect("the nudge");
+        let edits: Vec<EditCommand> = plan.steps.into_iter().map(|s| s.edit).collect();
+        for e in &edits {
+            let _ = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: 0, media_pool: &mut state.media_pool, fps: &mut state.fps }.apply_forward(e);
+        }
+        state.push_edits_as_one(&edits, "Nudge");
+        assert!(state.sequence().primary_holes().is_none(), "the nudge's hole is a gap clip");
+        remove_clips(&mut state, &[ids[1]], false, "Delete").unwrap();
+        state.sequence().assert_primary_gapless();
+        for _ in 0..3 {
+            undo(&mut state);
+        }
+        assert!(serde_json::to_value(&state.sequences).unwrap() == original, "three undos give it back exactly");
+    }
+
+    /// An edit the app applies itself (not a planned op), leaving a hole
+    /// on the primary, gets its gap clip when it is recorded: in the same
+    /// step, so one undo takes both away.
+    #[test]
+    fn a_recorded_edit_that_leaves_a_hole_gets_its_gap_clip() {
+        let mut state = AppState::default();
+        let p = state.sequence().tracks.iter().position(|t| t.magnetic_role == klipp_timeline::TrackRole::Primary).unwrap();
+        let c = |a: f64, b: f64| Clip::media(klipp_core::MediaId::new(), t(a), t(b), t(0.0), t(b - a));
+        state.sequences[0].tracks[p].clips = vec![c(0.0, 2.0), c(2.0, 4.0)];
+        let original = serde_json::to_value(&state.sequences).unwrap();
+        let old = state.sequences[0].tracks[p].clips[0].clone();
+        let mut new = old.clone();
+        new.timeline_out = t(1.5);
+        new.source_out = t(1.5);
+        state.sequences[0].tracks[p].clips[0] = new.clone();
+        state.push_history(EditCommand::ReplaceClip { description: "Trim", old: Box::new(old), new: Box::new(new) });
+        assert!(state.sequence().tracks[p].clips.iter().any(|c| c.kind.is_gap() && c.timeline_in == t(1.5) && c.timeline_out == t(2.0)), "a gap clip 1.5-2 s");
+        undo(&mut state);
+        assert!(serde_json::to_value(&state.sequences).unwrap() == original);
+    }
 }

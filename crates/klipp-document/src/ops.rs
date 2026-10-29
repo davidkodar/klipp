@@ -3580,9 +3580,28 @@ pub fn resolve_in(seq: &Sequence, others: &[Selects], pool: &MediaPool, ops: &[O
         let made_tracks = sims[0].tracks.iter().map(|t| t.id).filter(|id| !tracks_before.contains(id)).collect();
         steps.push(Step { op: op.clone(), what, edit, after, made_clips, made_tracks });
     }
+    fill_primary_holes_at_end(&mut sims, &mut sim_pool, &mut sim_fps, &mut steps);
     let picture_end_secs = sims[0].tracks.iter().filter(|t| t.kind == TrackKind::Video).flat_map(|t| t.clips.iter()).map(|c| secs(c.timeline_out)).fold(0.0, f64::max);
     let track_ids = sims[0].tracks.iter().map(|t| t.id).collect();
     Ok(Plan { steps, track_ids, duration_secs: secs(sims[0].total_duration()), picture_end_secs, sources: selects.read })
+}
+
+/// Gap clips filling any hole the plan left on the primary track
+/// (#3060), applied to the plan's sequence and made part of its last
+/// step: the primary stays gapless, so no later magnetic edit packs it,
+/// and the undo takes the gap clips away with the edit. Filled once, at
+/// the end, so the plan's steps between see each other's holes (a
+/// selection moved clip by clip).
+fn fill_primary_holes_at_end(sims: &mut Vec<Sequence>, pool: &mut MediaPool, fps: &mut klipp_core::Fps, steps: &mut [Step]) {
+    let Some(last) = steps.last_mut() else { return };
+    let Some((track_index, gaps)) = sims[0].primary_holes() else { return };
+    let fills: Vec<EditCommand> = gaps.into_iter().map(|clip| EditCommand::LegacyAppendClip { clip, track_index }).collect();
+    let mut view = crate::apply::DocumentView { sequences: sims, active: 0, media_pool: pool, fps };
+    for f in &fills {
+        view.apply_forward(f);
+    }
+    let edit = std::mem::replace(&mut last.edit, EditCommand::Batch(Vec::new()));
+    last.edit = EditCommand::Batch(std::iter::once(edit).chain(fills).collect());
 }
 
 /// `edit` applied, and why a write it makes through a picture-truth
@@ -3635,6 +3654,7 @@ pub fn resolve_each_with(seq: &Sequence, pool: &MediaPool, ops: &[Op], transcrip
         let made_tracks = sims[0].tracks.iter().map(|t| t.id).filter(|id| !tracks_before.contains(id)).collect();
         steps.push(Step { op: op.clone(), what, edit, after, made_clips, made_tracks });
     }
+    fill_primary_holes_at_end(&mut sims, &mut sim_pool, &mut sim_fps, &mut steps);
     let picture_end_secs = sims[0].tracks.iter().filter(|t| t.kind == TrackKind::Video).flat_map(|t| t.clips.iter()).map(|c| secs(c.timeline_out)).fold(0.0, f64::max);
     let track_ids = sims[0].tracks.iter().map(|t| t.id).collect();
     (Plan { steps, track_ids, duration_secs: secs(sims[0].total_duration()), picture_end_secs, sources: Vec::new() }, refused)

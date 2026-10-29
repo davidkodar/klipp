@@ -557,7 +557,10 @@ fn a_selection_on_the_primary_moves_alone_and_undoes_exactly() {
         let view = |state: &mut AppState| klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: state.active_sequence_idx, media_pool: &mut state.media_pool, fps: &mut state.fps }.apply_forward(&crate::history::EditCommand::Batch(edits.clone()));
         let _ = view(state);
         state.push_edits_as_one(&edits, "Move Clips");
-        let spans: Vec<(f64, f64)> = state.sequence().tracks[v1].clips.iter().map(|c| (c.timeline_in.to_secs_f64(), c.timeline_out.to_secs_f64())).collect();
+        // The track's bare gaps (as the persona's setup made them) are gap
+        // clips now, in the same step: the primary is gapless.
+        assert!(state.sequence().primary_holes().is_none(), "{mode:?}: the primary is gapless");
+        let spans: Vec<(f64, f64)> = state.sequence().tracks[v1].clips.iter().filter(|c| !c.kind.is_gap()).map(|c| (c.timeline_in.to_secs_f64(), c.timeline_out.to_secs_f64())).collect();
         assert_eq!(spans, [(0.0, 4.0), (14.0, 18.0), (18.0, 22.0), (28.0, 31.0), (31.0, 34.0), (36.0, 39.0)], "{mode:?}: only the selection moved, the gaps kept");
         let moved = serde_json::to_value(&state.sequences).unwrap();
         let entry = state.active_history_mut().undo().expect("a step");
