@@ -386,7 +386,7 @@ pub(crate) fn respond(
                 crate::handle(ctx, ControlCommand::Apply { ops, expected_revision: None, expected_project_identity: None, label: Some(format!("Make Short {}", k + 1)), detail: false }, &mut None)?;
                 let sounds: Vec<String> = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Audio).flat_map(|t| &t.clips).map(|c| c.id.0.to_string()).collect();
                 if !sounds.is_empty() {
-                    crate::handle(ctx, ControlCommand::NormalizeClips { clip_ids: sounds, mode: klipp_core::normalize::NormalizeMode::Loudness, target: Some(lufs), ceiling_dbtp: Some(-1.0), group: true, apply: Some(true) }, &mut None)?;
+                    crate::handle(ctx, ControlCommand::NormalizeClips { clip_ids: sounds, mode: klipp_core::normalize::NormalizeMode::Loudness, target: Some(lufs), target_name: None, ceiling_dbtp: Some(-1.0), group: true, apply: Some(true) }, &mut None)?;
                 }
                 let secs: f64 = pieces.iter().map(|(a, b)| b - a).sum();
                 made.push(json!({ "name": name, "pieces": pieces.len(), "secs": secs }));
@@ -521,11 +521,20 @@ pub(crate) fn respond(
             send(AppCommand::AttachLinkedAudio { clip_id: existing_clip_id(ctx, &c)? })
         }
 
-        ControlCommand::NormalizeClips { clip_ids, mode, target, ceiling_dbtp, group, apply } => {
+        ControlCommand::NormalizeClips { clip_ids, mode, target, target_name, ceiling_dbtp, group, apply } => {
             if in_batch {
                 return Err("normalize_clips measures the clips first; send it on its own".into());
             }
             use klipp_core::normalize::{NormalizeMode, NormalizeSettings};
+            let target = match (target_name.as_deref(), target) {
+                (None, t) => t,
+                (Some(_), Some(_)) => return Err("give target or target_name, not both".into()),
+                (Some(_), None) if mode == NormalizeMode::Peak => return Err("a named target is a loudness; give target in dBFS for peak".into()),
+                (Some(name), None) => Some(klipp_core::normalize::named_target(name).ok_or_else(|| {
+                    let names: Vec<String> = klipp_core::normalize::loudness_targets().into_iter().map(|(n, _)| n).collect();
+                    format!("there is no loudness target \"{name}\"; there are {}", names.join(", "))
+                })?),
+            };
             let target = target.unwrap_or(match mode {
                 NormalizeMode::Loudness => klipp_core::normalize::LOUDNESS_PRESETS[0].1,
                 NormalizeMode::Peak => -1.0,

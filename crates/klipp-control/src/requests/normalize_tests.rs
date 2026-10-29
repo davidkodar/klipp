@@ -66,6 +66,7 @@ fn normalize(ctx: &ControlContext, ids: &[klipp_core::ClipId], group: bool, appl
         clip_ids: ids.iter().map(|c| c.to_string()).collect(),
         mode: klipp_core::normalize::NormalizeMode::Loudness,
         target: Some(-16.0),
+        target_name: None,
         ceiling_dbtp: Some(-1.0),
         group,
         apply,
@@ -120,7 +121,25 @@ fn it_is_refused_in_a_batch() {
     let Some((ctx, ids, _)) = context() else { return };
     let mut collect = Some(Collected::default());
     let got = respond(&ctx, ControlCommand::NormalizeClips {
-        clip_ids: vec![ids[0].to_string()], mode: Default::default(), target: None, ceiling_dbtp: None, group: false, apply: None,
+        clip_ids: vec![ids[0].to_string()], mode: Default::default(), target: None, target_name: None, ceiling_dbtp: None, group: false, apply: None,
     }, &mut collect);
     assert!(got.is_err());
 }
+
+/// A loudness target by name (#2887): a standard's, any case, measures to
+/// it as the number would; one that isn't there, a name with a number
+/// too, or a name for a peak are refused, saying which there are.
+#[test]
+fn a_loudness_target_is_named() {
+    let Some((ctx, ids, _)) = context() else { return };
+    let ask = |mode, target: Option<f64>, name: &str| respond(&ctx, ControlCommand::NormalizeClips {
+        clip_ids: vec![ids[0].to_string()], mode, target, target_name: Some(name.into()), ceiling_dbtp: None, group: false, apply: Some(false),
+    }, &mut None);
+    let loudness = klipp_core::normalize::NormalizeMode::Loudness;
+    let why = ask(loudness, None, "Cinema").unwrap_err();
+    assert!(why.contains("no loudness target \"Cinema\"") && why.contains("EBU R128 broadcast"), "{why}");
+    assert!(ask(loudness, Some(-20.0), "Podcast").unwrap_err().contains("not both"));
+    assert!(ask(klipp_core::normalize::NormalizeMode::Peak, None, "Podcast").unwrap_err().contains("peak"));
+    assert!(ask(loudness, None, "podcast").is_ok(), "a standard by name, any case");
+}
+

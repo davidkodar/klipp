@@ -36,7 +36,7 @@ Per-clip gain adjustment applies before all other processing. Use gain to normal
 **Normalize…** in a clip's menu, or **Clip → Normalize Audio…**, brings the selected clips to a loudness or peak target by setting their gain. The media files are not changed, and one undo puts every clip back.
 
 - **Mode:** integrated loudness (ITU-R BS.1770, in LUFS) or peak (the highest sample, in dBFS).
-- **Target:** −14 LUFS (web), −16 LUFS (podcast), −23 LUFS (EBU R128 broadcast), −24 LUFS (ATSC A/85), or any value.
+- **Target:** −14 LUFS (web), −16 LUFS (podcast), −23 LUFS (EBU R128 broadcast), −24 LUFS (ATSC A/85), or any value. Targets of your own are listed after these: put them in a `.toml` file in `~/.config/klipp/presets/loudness/` (`kind = "loudness_target"`, `format_version = 1`, then a `[[target]]` with a `name` and `lufs` for each).
 - **Clips:** each on its own, or the selection as one group. A group takes one gain measured from all its clips together, so the clips keep their levels against each other.
 - **True-peak ceiling:** the gain never raises a clip's true peak above it (−1 dBTP by default). A clip held below its target by the ceiling is counted in the message afterwards.
 

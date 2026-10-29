@@ -15,6 +15,9 @@ const DEFAULT_PEAK_DBFS: f64 = -1.0;
 pub struct NormalizeDialog {
     pub settings: NormalizeSettings,
     pub clip_ids: Vec<ClipId>,
+    /// The loudness targets with a name, the standards then the person's
+    /// own, read once as the dialog opens (#2887).
+    pub targets: Vec<(String, f64)>,
 }
 
 impl NormalizeDialog {
@@ -24,12 +27,12 @@ impl NormalizeDialog {
         if settings.check().is_err() {
             settings = NormalizeSettings::default();
         }
-        Self { settings, clip_ids }
+        Self { settings, clip_ids, targets: klipp_core::normalize::loudness_targets() }
     }
 
     /// The loudness preset the target is, if it is one.
     pub fn preset(&self) -> Option<usize> {
-        LOUDNESS_PRESETS.iter().position(|(_, v)| (*v - self.settings.target).abs() < 1e-6)
+        self.targets.iter().position(|(_, v)| (*v - self.settings.target).abs() < 1e-6)
     }
 
     /// Switch the mode; the target moves to that mode's default when it
@@ -130,10 +133,11 @@ pub fn show_dialog(ctx: &egui::Context, state: &mut crate::state::AppState) -> V
                 ui.label("Target");
                 ui.horizontal(|ui| match dialog.settings.mode {
                     NormalizeMode::Loudness => {
-                        let shown = dialog.preset().map_or("Custom".to_string(), |i| format!("{} ({} LUFS)", LOUDNESS_PRESETS[i].0, LOUDNESS_PRESETS[i].1));
+                        let shown = dialog.preset().map_or("Custom".to_string(), |i| format!("{} ({} LUFS)", dialog.targets[i].0, dialog.targets[i].1));
                         egui::ComboBox::from_id_salt("normalize_preset").selected_text(shown).show_ui(ui, |ui| {
-                            for (name, value) in LOUDNESS_PRESETS {
-                                if ui.selectable_label(dialog.preset() == LOUDNESS_PRESETS.iter().position(|p| p.1 == value), format!("{name} ({value} LUFS)")).clicked() {
+                            for i in 0..dialog.targets.len() {
+                                let (name, value) = dialog.targets[i].clone();
+                                if ui.selectable_label(dialog.preset() == Some(i), format!("{name} ({value} LUFS)")).clicked() {
                                     dialog.settings.target = value;
                                 }
                             }

@@ -624,6 +624,11 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
                     v[key] = x.clone();
                 }
             }
+            // A loudness target by its name rather than its number (#2887).
+            if let Some(name) = args.get("target").and_then(|t| t.as_str()) {
+                v["target_name"] = json!(name);
+                v.as_object_mut().expect("an object").remove("target");
+            }
             v
         }
         "klipp_set_append_audio" => json!({
@@ -2148,7 +2153,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({
                  "clip_ids": { "type": "array", "items": { "type": "string" } },
                  "mode": { "type": "string", "enum": ["loudness", "peak"] },
-                 "target": { "type": "number" },
+                 "target": { "type": ["number", "string"] },
                  "ceiling_dbtp": { "type": "number" },
                  "group": { "type": "boolean" },
                  "apply": { "type": "boolean" }
@@ -2823,6 +2828,16 @@ mod interface_tests {
         for req in [json!({"method": "brand_kits"}), json!({"method": "save_brand_kit", "kit": {}, "files": []})] {
             serde_json::from_value::<klipp_control::protocol::ControlCommand>(req).expect("a request the app reads");
         }
+    }
+
+    /// A loudness target by name (#2887) goes to the socket as its name,
+    /// a number as the target it is.
+    #[test]
+    fn a_normalize_target_goes_by_number_or_name() {
+        let by_name = tool_to_command("klipp_normalize", &json!({"clip_ids": ["c"], "target": "Podcast"})).unwrap();
+        assert_eq!((by_name.get("target"), &by_name["target_name"]), (None, &json!("Podcast")));
+        let by_number = tool_to_command("klipp_normalize", &json!({"clip_ids": ["c"], "target": -16.0})).unwrap();
+        assert_eq!((&by_number["target"], by_number.get("target_name")), (&json!(-16.0), None));
     }
 
     #[test]
@@ -3561,7 +3576,7 @@ mod catalogue_trim_tests {
         ("klipp_normalize", "clip_ids", "From klipp_list_clips"),
         ("klipp_normalize", "group", "One gain for all the clips. Default false"),
         ("klipp_normalize", "mode", "loudness: integrated LUFS (ITU-R BS.1770); peak: sample peak dBFS. Default loudness"),
-        ("klipp_normalize", "target", "LUFS or dBFS. Default -14 LUFS (web) or -1 dBFS; -16 podcast, -23 EBU R128, -24 ATSC A/85"),
+        ("klipp_normalize", "target", "LUFS or dBFS, or a loudness target by name (Web, Podcast, EBU R128 broadcast, ATSC A/85, or one of the person's own). Default -14 LUFS (web) or -1 dBFS; -16 podcast, -23 EBU R128, -24 ATSC A/85"),
         ("klipp_track_surface", "at_secs", "Timeline second of the corners; else the playhead"),
         ("klipp_track_surface", "click", "[x,y] inside the surface, frame fractions; instead of corners"),
         ("klipp_track_surface", "corners", "[[x,y] TL, TR, BR, BL], frame fractions"),

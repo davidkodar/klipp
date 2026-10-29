@@ -355,6 +355,10 @@ pub enum ControlCommand {
         #[serde(default)]
         mode: klipp_core::normalize::NormalizeMode,
         target: Option<f64>,
+        /// A loudness target by its name (#2887): a standard's, or one of
+        /// the person's own.
+        #[serde(default)]
+        target_name: Option<String>,
         ceiling_dbtp: Option<f64>,
         #[serde(default)]
         group: bool,

@@ -73,4 +73,4 @@ Arguments:
 - `clip_ids`: From klipp_list_clips
 - `group`: One gain for all the clips. Default false
 - `mode`: loudness: integrated LUFS (ITU-R BS.1770); peak: sample peak dBFS. Default loudness
-- `target`: LUFS or dBFS. Default -14 LUFS (web) or -1 dBFS; -16 podcast, -23 EBU R128, -24 ATSC A/85
+- `target`: LUFS or dBFS, or a loudness target by name (Web, Podcast, EBU R128 broadcast, ATSC A/85, or one of the person's own). Default -14 LUFS (web) or -1 dBFS; -16 podcast, -23 EBU R128, -24 ATSC A/85
