@@ -159,6 +159,12 @@ fn project_without(omit: Option<&str>) -> (Vec<Sequence>, klipp_media::MediaPool
     // of the project draws the same pictures.
     let id = |n: u8| MediaId(uuid::Uuid::from_bytes([n; 16]));
     let (inner_media, a_media, b_media, slot_media) = (id(1), id(2), id(3), id(4));
+    // Each in the pool, as an export resolves every clip's media there.
+    for (n, m) in [inner_media, a_media, b_media, slot_media].into_iter().enumerate() {
+        let mut item = klipp_media::MediaItem::synthetic_for_test(format!("/tmp/combination-{n}.mov").into(), None);
+        item.id = m;
+        pool.add(item);
+    }
 
     // The inner precomposition: a shot with a recipe built in.
     let mut inner = blank("Inner");
@@ -447,5 +453,35 @@ fn a_macro_change_undoes_and_redoes_and_a_control_set_to_its_value_changes_nothi
         for e in edits.iter().rev() {
             inverse(&mut seqs, &mut pool, e);
         }
+    }
+}
+
+/// Step 4: a short range drawn as an export draws it (the timeline frozen
+/// for the delivery, the export's renderer, its GPU route) matches the
+/// viewer's frames at those times.
+#[test]
+fn an_exported_range_matches_the_viewer() {
+    let (seqs, pool) = project();
+    let settings = klipp_core::ExportSettings { resolution: Some(klipp_core::Resolution { width: W, height: H }), ..Default::default() };
+    let snap = klipp_render::snapshot::SequenceSnapshot::from_sequence_with_all(&seqs[0], &seqs, &pool, &settings, None, false, WorkingColorspace::Rec709Linear)
+        .unwrap_or_else(|e| panic!("step 4 (export): the timeline does not freeze: {e}"));
+    let mut export = klipp_render::export_frames::export_renderer(&snap, "combination");
+    let viewer = flat(&seqs);
+    // The range across the matted clip, the transition and the graded
+    // clip under its title: every fourth frame from 3.0 s to 5.5 s.
+    for f in (72..132).step_by(4) {
+        let at = f as f64 / 24.0;
+        let Some(shown) = gpu_frame(&viewer, at, "step 4 (viewer)") else { return };
+        let frame = klipp_effects::residency::frame("combination export", at);
+        let linear = export.render_linear_on_gpu(&snap.video.sequence, tc(at), W, H, &mut Pictures, RenderOptions::default());
+        drop(frame);
+        let Some(linear) = linear else {
+            assert!(!required(), "step 4 (export) at {at} s: the export's GPU route declined: {:?}", export.last_decline());
+            eprintln!("UNVERIFIED: step 4 (export) at {at} s: the GPU route declined");
+            return;
+        };
+        let exported = klipp_color::display::display_transform_ws_to(&linear, klipp_color::display::ToneMapOp::None, WorkingColorspace::Rec709Linear, klipp_core::SdrTransfer::Srgb);
+        let d = worst(&exported, &shown);
+        assert!(d <= 3, "step 4 (export) at {at:.3} s: the exported frame is {d} levels from the viewer's");
     }
 }
