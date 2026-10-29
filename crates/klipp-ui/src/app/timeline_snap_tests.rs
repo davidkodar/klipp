@@ -21,13 +21,14 @@ struct Timeline {
     old: crate::panels::timeline::TimelinePanel,
     time: f64,
     sent: Vec<AppCommand>,
+    last: egui::FullOutput,
 }
 
 impl Timeline {
     fn new(state: AppState) -> Self {
         let mut old = crate::panels::timeline::TimelinePanel::default();
         old.embedded = true;
-        let mut t = Timeline { ctx: egui::Context::default(), state, panel: Default::default(), old, time: 0.0, sent: Vec::new() };
+        let mut t = Timeline { ctx: egui::Context::default(), state, panel: Default::default(), old, time: 0.0, sent: Vec::new(), last: Default::default() };
         t.state.timeline_zoom = ZOOM;
         t.state.timeline_scroll_x = 0.0;
         t.frame(Vec::new(), egui::Modifiers::NONE);
@@ -40,7 +41,7 @@ impl Timeline {
         let (theme, kb) = (KlippTheme::default(), crate::keybindings::KeyBindings::default());
         let (state, panel, old) = (&mut self.state, &mut self.panel, &mut self.old);
         let mut cmds = Vec::new();
-        let _ = self.ctx.run(input, |ctx| {
+        self.last = self.ctx.run(input, |ctx| {
             egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
                 cmds = panel.show(ui, state, &theme, old, &kb, false);
             });
@@ -533,4 +534,34 @@ fn a_selection_with_a_primary_clip_ripples_it_and_moves_the_rest() {
     want.sort_by_key(|x| x.0 .0);
     assert_eq!(after, want);
     assert!(state.active_history_mut().undo().is_none(), "one step");
+}
+
+/// While a selection is dragged down a track, each clip's ghost is drawn
+/// where it will land: the two Video 4 clips on Video 3 at their own
+/// times, the Video 3 clip on Video 2, including the lower tracks drawn
+/// after the dragged one.
+#[test]
+fn a_selection_dragged_down_shows_each_ghost_where_it_lands() {
+    let (state, _) = selection();
+    let mut tl = Timeline::new(state);
+    let (v4, v3, v2) = (tl.track("Video 4"), tl.track("Video 3"), tl.track("Video 2"));
+    let grab = tl.at(v4, 0.5);
+    let to = tl.at(v3, 0.5);
+    let m = egui::Modifiers::NONE;
+    tl.frame(vec![egui::Event::PointerMoved(grab)], m);
+    tl.frame(vec![egui::Event::PointerButton { pos: grab, button: egui::PointerButton::Primary, pressed: true, modifiers: m }], m);
+    tl.frame(vec![egui::Event::PointerMoved(grab + egui::vec2(0.0, 10.0))], m);
+    tl.frame(vec![egui::Event::PointerMoved(to)], m);
+    let rects: Vec<(usize, egui::Rect)> = tl.old.frame_cache.track_rects.iter().map(|(i, _, r)| (*i, *r)).collect();
+    let left = tl.at(v4, 0.0).x;
+    let mut ghosts: Vec<(usize, i32)> = tl.last.shapes.iter()
+        .filter_map(|cs| match &cs.shape {
+            egui::Shape::Rect(r) if r.fill.a() == 128 => rects.iter().find(|(_, tr)| tr.contains(r.rect.center())).map(|(t, _)| (*t, (((r.rect.left() - left) / ZOOM) * 10.0).round() as i32)),
+            _ => None,
+        })
+        .collect();
+    ghosts.sort();
+    let mut want = vec![(v3, 0), (v3, 30), (v2, 5)];
+    want.sort();
+    assert_eq!(ghosts, want, "(track, tenths of a second)");
 }
