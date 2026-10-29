@@ -435,6 +435,9 @@ fn load_project_as(dir: &Path, form: crate::FileForm, strict: bool) -> Result<Lo
     // says why, rather than failing somewhere inside with a parse error
     // or, worse, reading with something missing (#994).
     refuse_newer_format(&value)?;
+    // Renamed effects, grade nodes and effect settings read as they are
+    // called now, and removed ones refused with why (#2888).
+    crate::migrate_ids::migrate(&mut value)?;
 
     // Revision 2 only (#1089): a file from before it is refused, naming the
     // tool that converts it, and a converted one is read back into today's

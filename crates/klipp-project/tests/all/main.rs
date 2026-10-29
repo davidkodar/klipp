@@ -148,3 +148,5 @@ mod vector_path;
 mod working_colorspace_round_trip;
 #[path = "../zero_mix_round_trip.rs"]
 mod zero_mix_round_trip;
+#[path = "../old_ids_open.rs"]
+mod old_ids_open;
