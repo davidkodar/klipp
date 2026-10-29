@@ -66,6 +66,58 @@ pub mod presentation;
 pub struct NodeType {
     pub desc: NodeTypeDesc,
     pub kind: NodeKind,
+    /// How a grade is given one (#2888): from the add menu, by name only,
+    /// or never, and why.
+    pub offered: Offered,
+}
+
+/// The grade add menu's groups, in the order the menu shows them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum GradeMenuGroup {
+    Primary,
+    Secondary,
+    Compositing,
+    Utilities,
+    Structural,
+}
+
+impl GradeMenuGroup {
+    pub const ALL: [GradeMenuGroup; 5] = [Self::Primary, Self::Secondary, Self::Compositing, Self::Utilities, Self::Structural];
+
+    /// The group's heading in the menu.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Primary => "Primary Grade",
+            Self::Secondary => "Secondary",
+            Self::Compositing => "Compositing",
+            Self::Utilities => "Utilities",
+            Self::Structural => "Structural",
+        }
+    }
+}
+
+/// How a grade is given a node of a type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Offered {
+    /// In the add menu, under `group`, as `label`, `rank`th in its group;
+    /// and by name.
+    Menu { group: GradeMenuGroup, label: &'static str, rank: u8 },
+    /// Not in the menu, and why; added by name (the socket's `add_node`).
+    ByName(&'static str),
+    /// Never added, and why.
+    Fixed(&'static str),
+}
+
+const fn menu(group: GradeMenuGroup, label: &'static str, rank: u8) -> Offered {
+    Offered::Menu { group, label, rank }
+}
+
+const fn by_name(why: &'static str) -> Offered {
+    Offered::ByName(why)
+}
+
+const fn fixed(why: &'static str) -> Offered {
+    Offered::Fixed(why)
 }
 
 /// Every grade node type.
@@ -435,6 +487,7 @@ static P_REROUTE: &[ParamDesc] = &[];
 static TYPES: &[NodeType] = &[
     NodeType {
         kind: NodeKind::Source,
+        offered: fixed("The picture the grade starts from: a graph has exactly one"),
         desc: NodeTypeDesc {
             id: "klipp.grade.source",
             name: "Source",
@@ -454,6 +507,7 @@ static TYPES: &[NodeType] = &[
     },
     NodeType {
         kind: NodeKind::Output,
+        offered: fixed("The picture the grade ends at: a graph has exactly one"),
         desc: NodeTypeDesc {
             id: "klipp.grade.output",
             name: "Output",
@@ -475,6 +529,7 @@ static TYPES: &[NodeType] = &[
     },
     NodeType {
         kind: NodeKind::InputTransform,
+        offered: by_name("A new grade has one, holding the camera log the clip is read with; not offered again in the menu"),
         desc: NodeTypeDesc {
             id: "klipp.grade.input_transform",
             name: "Input Transform",
@@ -494,6 +549,7 @@ static TYPES: &[NodeType] = &[
     },
     NodeType {
         kind: NodeKind::Corrector,
+        offered: menu(GradeMenuGroup::Primary, "Corrector (all-in-one)", 0),
         desc: NodeTypeDesc {
             id: "klipp.grade.corrector",
             name: "Corrector",
@@ -513,6 +569,7 @@ static TYPES: &[NodeType] = &[
     },
     NodeType {
         kind: NodeKind::Exposure,
+        offered: menu(GradeMenuGroup::Primary, "Exposure", 1),
         desc: NodeTypeDesc {
             id: "klipp.grade.exposure",
             name: "Exposure",
@@ -532,6 +589,7 @@ static TYPES: &[NodeType] = &[
     },
     NodeType {
         kind: NodeKind::Contrast,
+        offered: menu(GradeMenuGroup::Primary, "Contrast", 2),
         desc: NodeTypeDesc {
             id: "klipp.grade.contrast",
             name: "Contrast",
@@ -551,6 +609,7 @@ static TYPES: &[NodeType] = &[
     },
     NodeType {
         kind: NodeKind::Saturation,
+        offered: menu(GradeMenuGroup::Primary, "Saturation", 3),
         desc: NodeTypeDesc {
             id: "klipp.grade.saturation",
             name: "Saturation",
@@ -570,6 +629,7 @@ static TYPES: &[NodeType] = &[
     },
     NodeType {
         kind: NodeKind::ToneControls,
+        offered: menu(GradeMenuGroup::Primary, "Tone Controls", 4),
         desc: NodeTypeDesc {
             id: "klipp.grade.tone_controls",
             name: "Tone Controls",
@@ -589,6 +649,7 @@ static TYPES: &[NodeType] = &[
     },
     NodeType {
         kind: NodeKind::ColorWheels,
+        offered: menu(GradeMenuGroup::Primary, "Colour Wheels", 5),
         desc: NodeTypeDesc {
             id: "klipp.grade.color_wheels",
             name: "Color Wheels",
@@ -608,6 +669,7 @@ static TYPES: &[NodeType] = &[
     },
     NodeType {
         kind: NodeKind::WheelSatBri,
+        offered: menu(GradeMenuGroup::Primary, "Wheel Sat/Bri", 6),
         desc: NodeTypeDesc {
             id: "klipp.grade.wheel_sat_bri",
             name: "Wheel Sat/Bri",
@@ -627,6 +689,7 @@ static TYPES: &[NodeType] = &[
     },
     NodeType {
         kind: NodeKind::RGBCurves,
+        offered: menu(GradeMenuGroup::Primary, "Curves", 7),
         desc: NodeTypeDesc {
             id: "klipp.grade.rgb_curves",
             name: "RGB Curves",
@@ -646,6 +709,7 @@ static TYPES: &[NodeType] = &[
     },
     NodeType {
         kind: NodeKind::HueSatCurves,
+        offered: menu(GradeMenuGroup::Primary, "Hue/Sat", 8),
         desc: NodeTypeDesc {
             id: "klipp.grade.hue_sat_curves",
             name: "Hue/Sat Curves",
@@ -665,6 +729,7 @@ static TYPES: &[NodeType] = &[
     },
     NodeType {
         kind: NodeKind::ColorBalance,
+        offered: menu(GradeMenuGroup::Primary, "Colour Balance", 9),
         desc: NodeTypeDesc {
             id: "klipp.grade.color_balance",
             name: "Color Balance",
@@ -684,6 +749,7 @@ static TYPES: &[NodeType] = &[
     },
     NodeType {
         kind: NodeKind::HdrZones,
+        offered: menu(GradeMenuGroup::Primary, "HDR Zones", 10),
         desc: NodeTypeDesc {
             id: "klipp.grade.hdr_zones",
             name: "HDR Zones",
@@ -703,6 +769,7 @@ static TYPES: &[NodeType] = &[
     },
     NodeType {
         kind: NodeKind::Qualifier,
+        offered: menu(GradeMenuGroup::Secondary, "Qualifier", 0),
         desc: NodeTypeDesc {
             id: "klipp.grade.qualifier",
             name: "Qualifier",
@@ -722,6 +789,7 @@ static TYPES: &[NodeType] = &[
     },
     NodeType {
         kind: NodeKind::LumaKey,
+        offered: menu(GradeMenuGroup::Secondary, "Luma Key", 1),
         desc: NodeTypeDesc {
             id: "klipp.grade.luma_key",
             name: "Luma Key",
@@ -741,6 +809,7 @@ static TYPES: &[NodeType] = &[
     },
     NodeType {
         kind: NodeKind::SoftClip,
+        offered: menu(GradeMenuGroup::Secondary, "Soft Clip", 2),
         desc: NodeTypeDesc {
             id: "klipp.grade.soft_clip",
             name: "Soft Clip",
@@ -760,6 +829,7 @@ static TYPES: &[NodeType] = &[
     },
     NodeType {
         kind: NodeKind::Mask,
+        offered: menu(GradeMenuGroup::Secondary, "Mask", 3),
         desc: NodeTypeDesc {
             id: "klipp.grade.mask",
             name: "Mask",
@@ -779,6 +849,7 @@ static TYPES: &[NodeType] = &[
     },
     NodeType {
         kind: NodeKind::CombineMattes,
+        offered: menu(GradeMenuGroup::Secondary, "Combine Mattes", 6),
         desc: NodeTypeDesc {
             id: "klipp.grade.combine_mattes",
             name: "Combine Mattes",
@@ -798,6 +869,7 @@ static TYPES: &[NodeType] = &[
     },
     NodeType {
         kind: NodeKind::KeyMixer,
+        offered: menu(GradeMenuGroup::Secondary, "Key Mixer", 7),
         desc: NodeTypeDesc {
             id: "klipp.grade.key_mixer",
             name: "Key Mixer",
@@ -818,6 +890,7 @@ static TYPES: &[NodeType] = &[
     },
     NodeType {
         kind: NodeKind::ExternalMatte,
+        offered: menu(GradeMenuGroup::Secondary, "External Matte", 4),
         desc: NodeTypeDesc {
             id: "klipp.grade.external_matte",
             name: "External Matte",
@@ -837,6 +910,7 @@ static TYPES: &[NodeType] = &[
     },
     NodeType {
         kind: NodeKind::DifferenceKey,
+        offered: menu(GradeMenuGroup::Secondary, "Difference Key", 5),
         desc: NodeTypeDesc {
             id: "klipp.grade.difference_key",
             name: "Difference Key",
@@ -856,6 +930,7 @@ static TYPES: &[NodeType] = &[
     },
     NodeType {
         kind: NodeKind::Layer,
+        offered: menu(GradeMenuGroup::Compositing, "Layer", 0),
         desc: NodeTypeDesc {
             id: "klipp.grade.layer",
             name: "Layer",
@@ -875,6 +950,7 @@ static TYPES: &[NodeType] = &[
     },
     NodeType {
         kind: NodeKind::Blend,
+        offered: menu(GradeMenuGroup::Compositing, "Blend", 2),
         desc: NodeTypeDesc {
             id: "klipp.grade.blend",
             name: "Blend",
@@ -894,6 +970,7 @@ static TYPES: &[NodeType] = &[
     },
     NodeType {
         kind: NodeKind::ApplyMatte,
+        offered: menu(GradeMenuGroup::Compositing, "Apply Matte", 3),
         desc: NodeTypeDesc {
             id: "klipp.grade.apply_matte",
             name: "Apply Matte",
@@ -913,6 +990,7 @@ static TYPES: &[NodeType] = &[
     },
     NodeType {
         kind: NodeKind::LayerMixer,
+        offered: menu(GradeMenuGroup::Compositing, "Layer Mixer", 1),
         desc: NodeTypeDesc {
             id: "klipp.grade.layer_mixer",
             name: "Layer Mixer",
@@ -932,6 +1010,7 @@ static TYPES: &[NodeType] = &[
     },
     NodeType {
         kind: NodeKind::Lut3D,
+        offered: menu(GradeMenuGroup::Utilities, "3D LUT", 0),
         desc: NodeTypeDesc {
             id: "klipp.grade.lut_3d",
             name: "3D LUT",
@@ -951,6 +1030,7 @@ static TYPES: &[NodeType] = &[
     },
     NodeType {
         kind: NodeKind::FilmGrain,
+        offered: menu(GradeMenuGroup::Utilities, "Film Grain", 1),
         desc: NodeTypeDesc {
             id: "klipp.grade.film_grain",
             name: "Film Grain",
@@ -970,6 +1050,7 @@ static TYPES: &[NodeType] = &[
     },
     NodeType {
         kind: NodeKind::ColorMatch,
+        offered: menu(GradeMenuGroup::Primary, "Colour Match", 11),
         desc: NodeTypeDesc {
             id: "klipp.grade.color_match",
             name: "Color Match",
@@ -989,6 +1070,7 @@ static TYPES: &[NodeType] = &[
     },
     NodeType {
         kind: NodeKind::ColorWarper,
+        offered: menu(GradeMenuGroup::Utilities, "Colour Warper", 2),
         desc: NodeTypeDesc {
             id: "klipp.grade.color_warper",
             name: "Color Warper",
@@ -1008,6 +1090,7 @@ static TYPES: &[NodeType] = &[
     },
     NodeType {
         kind: NodeKind::Denoise,
+        offered: menu(GradeMenuGroup::Utilities, "Noise Reduction", 3),
         desc: NodeTypeDesc {
             id: "klipp.grade.denoise",
             name: "Noise Reduction",
@@ -1027,6 +1110,7 @@ static TYPES: &[NodeType] = &[
     },
     NodeType {
         kind: NodeKind::Compound,
+        offered: menu(GradeMenuGroup::Structural, "Compound", 0),
         desc: NodeTypeDesc {
             id: "klipp.grade.compound",
             name: "Compound",
@@ -1046,6 +1130,7 @@ static TYPES: &[NodeType] = &[
     },
     NodeType {
         kind: NodeKind::RGBSplitter,
+        offered: menu(GradeMenuGroup::Utilities, "RGB Splitter", 4),
         desc: NodeTypeDesc {
             id: "klipp.grade.rgb_splitter",
             name: "RGB Splitter",
@@ -1065,6 +1150,7 @@ static TYPES: &[NodeType] = &[
     },
     NodeType {
         kind: NodeKind::RGBCombiner,
+        offered: menu(GradeMenuGroup::Utilities, "RGB Combiner", 5),
         desc: NodeTypeDesc {
             id: "klipp.grade.rgb_combiner",
             name: "RGB Combiner",
@@ -1084,6 +1170,7 @@ static TYPES: &[NodeType] = &[
     },
     NodeType {
         kind: NodeKind::PrimariesMatrix,
+        offered: fixed("Put around a grade by a change of working colour space, so the grade keeps its look; never added on its own"),
         desc: NodeTypeDesc {
             id: "klipp.grade.primaries_matrix",
             name: "Primaries Matrix",
@@ -1103,6 +1190,7 @@ static TYPES: &[NodeType] = &[
     },
     NodeType {
         kind: NodeKind::MaskCutout,
+        offered: menu(GradeMenuGroup::Secondary, "Mask Cutout", 8),
         desc: NodeTypeDesc {
             id: "klipp.grade.mask_cutout",
             name: "Mask Cutout",
@@ -1122,6 +1210,7 @@ static TYPES: &[NodeType] = &[
     },
     NodeType {
         kind: NodeKind::Reroute,
+        offered: menu(GradeMenuGroup::Utilities, "Reroute", 6),
         desc: NodeTypeDesc {
             id: "klipp.grade.reroute",
             name: "Reroute",

@@ -380,3 +380,37 @@ fn top_level_defaults_render_as_the_unset_parameter() {
     assert!(moved * 2 > checked, "only {moved} of {checked} top-level parameters change the render off their default");
     eprintln!("top-level defaults: {checked} checked, {moved} change the render off their default");
 }
+
+/// How each type is offered (#2888): every type but Source, Output and
+/// the primaries matrix can be added by its variant's name, which reads
+/// back as that kind; the menu's labels and ranks are each used once in
+/// their group; and a type not in the menu says why.
+#[test]
+fn every_node_type_says_how_a_grade_is_given_one() {
+    use klipp_nodes::kinds::{addable_node_kind, addable_node_kinds};
+    use klipp_nodes::registry::Offered;
+    let mut fixed = Vec::new();
+    let mut slots = BTreeSet::new();
+    let mut labels = BTreeSet::new();
+    for t in node_types() {
+        match t.offered {
+            Offered::Fixed(why) => {
+                assert!(why.len() > 20, "{}: say why", t.desc.id);
+                fixed.push(t.kind);
+            }
+            Offered::ByName(why) => assert!(why.len() > 20, "{}: say why", t.desc.id),
+            Offered::Menu { group, label, rank } => {
+                assert!(slots.insert((group, rank)), "{}: rank {rank} twice in {group:?}", t.desc.id);
+                assert!(labels.insert(label), "{}: label {label} twice", t.desc.id);
+            }
+        }
+    }
+    assert_eq!(fixed, [NodeKind::Source, NodeKind::Output, NodeKind::PrimariesMatrix]);
+    assert_eq!(addable_node_kinds().len(), node_types().count() - fixed.len());
+    for (name, kind) in addable_node_kinds() {
+        assert_eq!(serde_json::from_value::<NodeKind>(Value::String(name.to_string())).unwrap(), *kind, "{name}");
+        assert_eq!(addable_node_kind(name), Some(*kind));
+    }
+    assert_eq!(addable_node_kind("Source"), None);
+    assert_eq!(addable_node_kind("InputTransform"), Some(NodeKind::InputTransform));
+}

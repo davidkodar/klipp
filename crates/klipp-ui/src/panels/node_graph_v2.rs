@@ -5702,77 +5702,31 @@ mod dock_toolbar_tests {
     }
 }
 
-/// The add-node menu's categories — display order top-to-bottom in the menu when
-/// search is empty. Source of truth for both the flat-search
-/// path AND the categorised path; entries the user can pick
-/// are exactly these. Every kind is one `add_color_node` can make
-/// (`klipp_nodes::kinds::ADDABLE_NODE_KINDS`): a name outside it would
-/// add nothing, which the test below holds.
-#[cfg(test)]
-const ADD_MENU_CATEGORIES: &[(&str, &[(&str, &str)])] = &[
-    ("Primary Grade", &[
-        ("Corrector (all-in-one)", "Corrector"),
-        ("Exposure", "Exposure"),
-        ("Contrast", "Contrast"),
-        ("Saturation", "Saturation"),
-        ("Tone Controls", "ToneControls"),
-        ("Colour Wheels", "ColorWheels"),
-        ("Wheel Sat/Bri", "WheelSatBri"),
-        ("Curves", "RGBCurves"),
-        ("Hue/Sat", "HueSatCurves"),
-        ("Colour Balance", "ColorBalance"),
-        ("HDR Zones", "HdrZones"),
-        ("Colour Match", "ColorMatch"),
-    ]),
-    ("Secondary", &[
-        ("Qualifier", "Qualifier"),
-        ("Luma Key", "LumaKey"),
-        ("Soft Clip", "SoftClip"),
-        ("Mask", "Mask"),
-        ("External Matte", "ExternalMatte"),
-        ("Difference Key", "DifferenceKey"),
-        ("Combine Mattes", "CombineMattes"),
-        ("Key Mixer", "KeyMixer"),
-        ("Mask Cutout", "MaskCutout"),
-    ]),
-    ("Compositing", &[
-        ("Layer", "Layer"),
-        ("Layer Mixer", "LayerMixer"),
-        ("Blend", "Blend"),
-        ("Apply Matte", "ApplyMatte"),
-    ]),
-    ("Utilities", &[
-        ("3D LUT", "Lut3D"),
-        ("Film Grain", "FilmGrain"),
-        ("Colour Warper", "ColorWarper"),
-        ("Noise Reduction", "Denoise"),
-        ("RGB Splitter", "RGBSplitter"),
-        ("RGB Combiner", "RGBCombiner"),
-        ("Reroute", "Reroute"),
-    ]),
-    ("Structural", &[
-        ("Compound", "Compound"),
-    ]),
-];
-
 #[cfg(test)]
 mod add_menu_tests {
+    /// The grade add menu offers each kind its registry entry puts in
+    /// the menu, under its group and label, and every one of them is a
+    /// kind `add_color_node` makes: a name outside
+    /// `klipp_nodes::kinds::addable_node_kinds` would add nothing.
     #[test]
-    fn the_grade_add_menu_lists_the_same_entries() {
+    fn every_kind_the_add_menu_offers_can_be_added() {
         use super::model::CanvasGraph;
         let graph = klipp_nodes::NodeGraph::default();
         let model = super::model::GradeCanvas(&graph, true);
-        let actual: Vec<_> = model.add_menu().iter().map(|(label, entries)| (*label, entries.as_slice())).collect();
-        assert_eq!(actual, super::ADD_MENU_CATEGORIES);
-    }
-
-    #[test]
-    fn every_kind_the_add_menu_offers_can_be_added() {
-        for (category, entries) in super::ADD_MENU_CATEGORIES {
-            for (label, kind) in *entries {
+        let menu = model.add_menu();
+        let groups: Vec<&str> = menu.iter().map(|(g, _)| *g).collect();
+        assert_eq!(groups, ["Primary Grade", "Secondary", "Compositing", "Utilities", "Structural"]);
+        let mut offered = 0;
+        for (category, entries) in menu {
+            for (label, kind) in entries {
                 assert!(klipp_nodes::kinds::addable_node_kind(kind).is_some(), "{category} › {label}: {kind} is not an addable kind");
+                offered += 1;
             }
         }
+        let in_menu = klipp_nodes::registry::node_types().filter(|t| matches!(t.offered, klipp_nodes::registry::Offered::Menu { .. })).count();
+        assert_eq!(offered, in_menu);
+        assert_eq!(menu[0].1[0], ("Corrector (all-in-one)", "Corrector"));
+        assert_eq!(menu[1].1[4], ("External Matte", "ExternalMatte"));
     }
 }
 

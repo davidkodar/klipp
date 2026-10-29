@@ -578,48 +578,29 @@ impl PortRole {
 
 /// The node kinds a grade can be given by name — the node graph's add
 /// menus, the control socket's `add_node` — each with the name it is
-/// asked for by. The one list both read, so a name the socket accepts is
+/// asked for by, its variant's name. Made from each type's
+/// [`Offered`](crate::registry::Offered), so a name the socket accepts is
 /// always one the app makes. Source and Output are not here: a graph has
 /// exactly one of each.
-pub const ADDABLE_NODE_KINDS: &[(&str, NodeKind)] = &[
-    ("Corrector", NodeKind::Corrector),
-    ("Exposure", NodeKind::Exposure),
-    ("Contrast", NodeKind::Contrast),
-    ("Saturation", NodeKind::Saturation),
-    ("ToneControls", NodeKind::ToneControls),
-    ("ColorWheels", NodeKind::ColorWheels),
-    ("WheelSatBri", NodeKind::WheelSatBri),
-    ("RGBCurves", NodeKind::RGBCurves),
-    ("HueSatCurves", NodeKind::HueSatCurves),
-    ("ColorBalance", NodeKind::ColorBalance),
-    ("HdrZones", NodeKind::HdrZones),
-    ("InputTransform", NodeKind::InputTransform),
-    ("Qualifier", NodeKind::Qualifier),
-    ("LumaKey", NodeKind::LumaKey),
-    ("SoftClip", NodeKind::SoftClip),
-    ("Mask", NodeKind::Mask),
-    ("CombineMattes", NodeKind::CombineMattes),
-    ("KeyMixer", NodeKind::KeyMixer),
-    ("ExternalMatte", NodeKind::ExternalMatte),
-    ("DifferenceKey", NodeKind::DifferenceKey),
-    ("ApplyMatte", NodeKind::ApplyMatte),
-    ("Blend", NodeKind::Blend),
-    ("Layer", NodeKind::Layer),
-    ("LayerMixer", NodeKind::LayerMixer),
-    ("Lut3D", NodeKind::Lut3D),
-    ("FilmGrain", NodeKind::FilmGrain),
-    ("ColorMatch", NodeKind::ColorMatch),
-    ("ColorWarper", NodeKind::ColorWarper),
-    ("Denoise", NodeKind::Denoise),
-    ("Compound", NodeKind::Compound),
-    ("RGBSplitter", NodeKind::RGBSplitter),
-    ("RGBCombiner", NodeKind::RGBCombiner),
-    ("MaskCutout", NodeKind::MaskCutout),
-    ("Reroute", NodeKind::Reroute),
-];
+pub fn addable_node_kinds() -> &'static [(&'static str, NodeKind)] {
+    static NAMED: std::sync::OnceLock<Vec<(String, NodeKind)>> = std::sync::OnceLock::new();
+    static KINDS: std::sync::OnceLock<Vec<(&'static str, NodeKind)>> = std::sync::OnceLock::new();
+    KINDS.get_or_init(|| {
+        NAMED
+            .get_or_init(|| {
+                crate::registry::node_types()
+                    .filter(|t| !matches!(t.offered, crate::registry::Offered::Fixed(_)))
+                    .map(|t| (format!("{:?}", t.kind), t.kind))
+                    .collect()
+            })
+            .iter()
+            .map(|(name, kind)| (name.as_str(), *kind))
+            .collect()
+    })
+}
 
-/// The kind [`ADDABLE_NODE_KINDS`] names `name`, or `None` when no node
+/// The kind [`addable_node_kinds`] names `name`, or `None` when no node
 /// of that name can be added.
 pub fn addable_node_kind(name: &str) -> Option<NodeKind> {
-    ADDABLE_NODE_KINDS.iter().find(|(n, _)| *n == name).map(|(_, k)| *k)
+    addable_node_kinds().iter().find(|(n, _)| *n == name).map(|(_, k)| *k)
 }
