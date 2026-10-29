@@ -410,7 +410,11 @@ pub enum ControlCommand {
     /// where the pointer is), `button` (`primary`, `secondary`,
     /// `middle`), `modifiers` (`{"shift", "ctrl", "alt"}`, held through
     /// the step), `scroll` (`[x, y]` points, for `scroll`) and `frames`
-    /// (how many frames the step holds, 1 to 600). At most 512 steps.
+    /// (how many frames the step holds, 1 to 600). Keys too: `key_press`,
+    /// `key_release` and `key` (pressed and let go a frame apart) name
+    /// their `key` as egui does (`"Delete"`, `"A"`, `"F2"`), with the
+    /// step's modifiers held; `text` types its `text` (up to 4096
+    /// characters) into the focused field. At most 512 steps.
     /// The pointer stays where a request leaves it, for the next. A drag
     /// lands where it showed on the frame before the release: move to the
     /// drop point in one step and release in the next. The reply comes

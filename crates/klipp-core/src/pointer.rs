@@ -34,6 +34,14 @@ pub enum PointerAction {
     Scroll,
     /// Nothing: the frame passes with the pointer where it is.
     Wait,
+    /// Press the key `key` (an egui key name: "Delete", "A", "F2").
+    KeyPress,
+    /// Let the key `key` go.
+    KeyRelease,
+    /// Press the key `key` and let it go, a frame apart.
+    Key,
+    /// Type `text`, as a keyboard's characters reach a text field.
+    Text,
 }
 
 /// A mouse button.
@@ -57,7 +65,7 @@ pub struct PointerModifiers {
 
 /// One step: where, what, with which button and keys, held for `frames`
 /// frames (1 when not given).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PointerStep {
     #[serde(default)]
@@ -71,6 +79,12 @@ pub struct PointerStep {
     /// The wheel's turn for `scroll`, points across and down.
     #[serde(default)]
     pub scroll: [f32; 2],
+    /// The key a key step presses or lets go, by egui's name for it.
+    #[serde(default)]
+    pub key: Option<String>,
+    /// What a `text` step types.
+    #[serde(default)]
+    pub text: Option<String>,
     #[serde(default)]
     pub frames: Option<u32>,
 }
@@ -79,6 +93,8 @@ pub struct PointerStep {
 pub const MAX_POINTER_STEPS: usize = 512;
 /// The most frames one step holds.
 pub const MAX_STEP_FRAMES: u32 = 600;
+/// The longest text one step types, in characters.
+pub const MAX_TEXT_CHARS: usize = 4096;
 
 /// Why `steps` can't be played: too many, a step held too long, or a
 /// point that isn't a finite number. A step that says no place plays
@@ -98,6 +114,13 @@ pub fn pointer_steps_fault(steps: &[PointerStep]) -> Option<String> {
         } && s.scroll.iter().all(|v| v.is_finite());
         if !finite {
             return Some(format!("step {i}: a number that isn't finite"));
+        }
+        let keyed = matches!(s.action, PointerAction::KeyPress | PointerAction::KeyRelease | PointerAction::Key);
+        if keyed && !s.key.as_deref().is_some_and(|k| !k.is_empty() && k.len() <= 32) {
+            return Some(format!("step {i}: a key step names its key, as egui does (\"Delete\", \"A\")"));
+        }
+        if s.action == PointerAction::Text && !s.text.as_deref().is_some_and(|t| !t.is_empty() && t.chars().count() <= MAX_TEXT_CHARS) {
+            return Some(format!("step {i}: a text step types 1 to {MAX_TEXT_CHARS} characters"));
         }
     }
     None
@@ -126,6 +149,10 @@ mod tests {
         assert!(one(serde_json::json!([{"at": {"screen": {"x": 1.0, "y": 1.0}}, "frames": 0}])).unwrap().unwrap().contains("frames"));
         assert!(one(serde_json::json!([{"at": {"screen": {"x": 1.0, "y": 1.0}}, "frames": 601}])).unwrap().unwrap().contains("frames"));
         assert!(one(serde_json::json!([])).unwrap().unwrap().contains("1 to 512"));
+        assert_eq!(one(serde_json::json!([{"action": "key", "key": "Delete", "modifiers": {"shift": true}}, {"action": "text", "text": "Hello"}])).unwrap(), None);
+        assert!(one(serde_json::json!([{"action": "key"}])).unwrap().unwrap().contains("names its key"));
+        assert!(one(serde_json::json!([{"action": "text", "text": ""}])).unwrap().unwrap().contains("1 to 4096"));
+        assert!(one(serde_json::json!([{"action": "text", "text": "x".repeat(4097)}])).unwrap().unwrap().contains("1 to 4096"));
         assert!(one(serde_json::json!([{"action": "fling"}])).is_err());
         assert!(one(serde_json::json!([{"at": {"screen": {"x": 1.0, "y": 1.0}}, "force": 3}])).is_err());
         let many = vec![serde_json::json!({"at": {"screen": {"x": 1.0, "y": 1.0}}}); 513];
