@@ -18,8 +18,65 @@ pub enum NormalizeMode {
 }
 
 /// The loudness targets with a name: web, podcast, EBU R128 broadcast and
-/// ATSC A/85.
+/// ATSC A/85. Built in, as the standards are: a person's own come after
+/// them ([`loudness_targets`]) and never stand in for one.
 pub const LOUDNESS_PRESETS: [(&str, f64); 4] = [("Web", -14.0), ("Podcast", -16.0), ("EBU R128 broadcast", -23.0), ("ATSC A/85", -24.0)];
+
+/// A loudness target of a person's own (#2887), as their presets folder
+/// holds it (`klipp_presets::user_dir("loudness")`, `[[target]]` with a
+/// `name` and `lufs`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LoudnessTarget {
+    pub name: String,
+    pub lufs: f64,
+}
+
+/// The longest name a person's loudness target takes, in characters.
+const MAX_TARGET_NAME: usize = 64;
+
+/// Every loudness target with a name: the built-in ones, then a person's
+/// own, from their presets folder, read as someone else's. One with no
+/// name or a name past its length or with control characters, a loudness
+/// outside -70 to 0 LUFS, or the name of one before it (a standard's, any
+/// case) is skipped, as is a file that doesn't read, each said in the log.
+pub fn loudness_targets() -> Vec<(String, f64)> {
+    let (targets, skipped) = loudness_targets_in(klipp_presets::user_dir("loudness").as_deref());
+    for why in skipped {
+        tracing::warn!("a loudness target was skipped: {why}");
+    }
+    targets
+}
+
+/// [`loudness_targets`] with a person's own from `dir`, and what was
+/// skipped.
+pub fn loudness_targets_in(dir: Option<&std::path::Path>) -> (Vec<(String, f64)>, Vec<String>) {
+    let mut targets: Vec<(String, f64)> = LOUDNESS_PRESETS.iter().map(|(n, v)| (n.to_string(), *v)).collect();
+    let (theirs, mut skipped) = dir.map_or_else(|| (Vec::new(), Vec::new()), |d| klipp_presets::read_dir::<LoudnessTarget>(d, "loudness_target", 1, "target"));
+    for t in theirs {
+        let name = t.name.trim();
+        let why = if name.is_empty() || name.chars().count() > MAX_TARGET_NAME || name.chars().any(char::is_control) {
+            Some(format!("a name of {} characters, or with control characters", name.chars().count()))
+        } else if !(t.lufs.is_finite() && (-70.0..=0.0).contains(&t.lufs)) {
+            Some(format!("\"{name}\": {} LUFS is outside -70 to 0", t.lufs))
+        } else if targets.iter().any(|(n, _)| n.eq_ignore_ascii_case(name)) {
+            Some(format!("\"{name}\" is the name of one before it"))
+        } else {
+            None
+        };
+        match why {
+            Some(why) => skipped.push(why),
+            None => targets.push((name.to_string(), t.lufs)),
+        }
+    }
+    (targets, skipped)
+}
+
+/// The loudness of the target named `name` (any case), built in or a
+/// person's own.
+pub fn named_target(name: &str) -> Option<f64> {
+    loudness_targets().into_iter().find(|(n, _)| n.eq_ignore_ascii_case(name.trim())).map(|(_, v)| v)
+}
 
 /// The most a normalize raises a clip's gain: the most a clip's gain
 /// holds (+24 dB).
@@ -168,5 +225,32 @@ mod tests {
         assert!(NormalizeSettings { target: 3.0, ..Default::default() }.check().is_err());
         assert!(NormalizeSettings { ceiling_dbtp: 2.0, ..Default::default() }.check().is_err());
         assert!(NormalizeSettings::default().check().is_ok());
+    }
+
+    /// A person's own loudness targets come after the four standards
+    /// (#2887), read from their folder as someone else's: one that would
+    /// take a standard's name (any case) or one before it, a loudness
+    /// outside -70 to 0, a name with control characters, a field a target
+    /// hasn't and a file that doesn't read are each skipped and said.
+    #[test]
+    fn a_person_s_loudness_targets_follow_the_standards() {
+        let dir = std::env::temp_dir().join(format!("klipp-loudness-targets-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = |n: &str, entries: &str| std::fs::write(dir.join(n), format!("kind = \"loudness_target\"\nformat_version = 1\n{entries}")).unwrap();
+        file("mine.toml", "[[target]]\nname = \"Cinema trailer\"\nlufs = -27.0\n[[target]]\nname = \"WEB\"\nlufs = -10.0\n[[target]]\nname = \"Too loud\"\nlufs = 6.0\n[[target]]\nname = \"Bell\\u0007\"\nlufs = -20.0\n[[target]]\nname = \"cinema TRAILER\"\nlufs = -26.0\n");
+        file("odd.toml", "[[target]]\nname = \"x\"\nlufs = -20.0\npeak = 1.0\n");
+        let (targets, skipped) = loudness_targets_in(Some(&dir));
+        std::fs::remove_dir_all(&dir).unwrap();
+        let names: Vec<&str> = targets.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["Web", "Podcast", "EBU R128 broadcast", "ATSC A/85", "Cinema trailer"]);
+        assert_eq!(targets[0].1, -14.0, "a standard keeps its loudness");
+        assert_eq!(targets[4].1, -27.0);
+        assert_eq!(skipped.len(), 5, "{skipped:?}");
+        assert!(skipped.iter().any(|s| s.contains("\"WEB\" is the name of one before it")));
+        assert!(skipped.iter().any(|s| s.contains("outside -70 to 0")));
+        assert!(skipped.iter().any(|s| s.contains("control characters")));
+        assert!(skipped.iter().any(|s| s.starts_with("odd.toml: ") && s.contains("unknown field")));
+        assert_eq!(loudness_targets_in(None).0.len(), 4, "no folder, the standards");
+        assert_eq!(named_target(" ebu r128 BROADCAST "), Some(-23.0), "a standard by name, any case");
     }
 }
