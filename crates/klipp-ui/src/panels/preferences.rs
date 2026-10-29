@@ -28,6 +28,10 @@ enum PrefsTab {
     About,
 }
 
+/// What the Keyboard section shows for an action the preset gives no key
+/// (#3021).
+const NO_KEY: &str = "No key in this preset";
+
 pub struct PreferencesPanel {
     /// "Check for updates…" was clicked: About opens and checks.
     pub(crate) show_updates: bool,
@@ -4529,12 +4533,13 @@ impl PreferencesPanel {
                         x -= 6.0; // gap between multiple combos
                     }
                 } else {
-                    // No binding — show em dash
+                    // No binding: said in words, beside the Set that gives
+                    // it one (#3021).
                     ui.painter().text(
-                        egui::pos2(set_rect.left() - 20.0, rect.center().y),
+                        egui::pos2(set_rect.left() - 10.0, rect.center().y),
                         egui::Align2::RIGHT_CENTER,
-                        "\u{2014}",
-                        egui::FontId::proportional(12.0),
+                        NO_KEY,
+                        egui::FontId::proportional(crate::inspector::rows::TEXT),
                         theme.text_dim,
                     );
                 }
@@ -5397,5 +5402,32 @@ mod open_page_tests {
         assert_eq!(panel.active_tab, PrefsTab::Color, "the calibration LUT's page (#466)");
         panel.open_page("nonsense");
         assert_eq!(panel.active_tab, PrefsTab::Color);
+    }
+}
+
+#[cfg(test)]
+mod keyboard_section_tests {
+    use super::*;
+
+    /// #3021: an action the preset gives no key says so in words, beside
+    /// its Set; no bare dash is drawn.
+    #[test]
+    fn an_action_with_no_key_says_so() {
+        let ctx = egui::Context::default();
+        let theme = KlippTheme::default();
+        let mut panel = PreferencesPanel::default();
+        let mut kb = crate::keybindings::KeyBindings::from_preset(crate::keybindings::KeymapPreset::Premiere);
+        let unbound = crate::keybindings::KeyBindings::categories().iter().flat_map(|(_, a)| a.iter()).filter(|a| kb.bindings.get(**a).is_none_or(|c| c.is_empty())).count();
+        assert!(unbound > 0, "the preset leaves some actions without a key");
+        let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 20000.0))), ..Default::default() };
+        let out = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| panel.show_keyboard(ui, &mut kb, &theme));
+        });
+        let texts: Vec<String> = out.shapes.iter().filter_map(|s| match &s.shape {
+            egui::epaint::Shape::Text(t) => Some(t.galley.text().to_string()),
+            _ => None,
+        }).collect();
+        assert_eq!(texts.iter().filter(|t| *t == NO_KEY).count(), unbound, "every unbound row says so");
+        assert!(!texts.iter().any(|t| t == "\u{2014}"), "no bare dash");
     }
 }
