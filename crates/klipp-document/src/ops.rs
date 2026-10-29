@@ -1779,6 +1779,42 @@ pub enum Op {
         #[serde(default)]
         take_out: Option<Vec<[f32; 3]>>,
     },
+    /// Stretch a clip (#3055): the same part of its file (its In to Out)
+    /// played faster or slower to fill a new length, everything timed
+    /// from its start (keys, markers, a speed ramp's shape) moved with
+    /// the content, its fades kept in seconds. One of `to_secs` (the new
+    /// length, its start kept), `end_at_secs` or `start_at_secs` (that
+    /// edge moved to a time on the timeline, the other kept) or `speed`
+    /// (its start kept). `clip_ids` stretches several by as much as the
+    /// first, those that touch keeping their timing; their linked sound
+    /// or picture goes with them. A title, still or freeze frame changes
+    /// length only.
+    Stretch {
+        #[serde(default)]
+        clip_id: Option<ClipRef>,
+        #[serde(default)]
+        clip_ids: Vec<ClipRef>,
+        #[serde(default)]
+        to_secs: Option<f64>,
+        #[serde(default)]
+        end_at_secs: Option<f64>,
+        #[serde(default)]
+        start_at_secs: Option<f64>,
+        #[serde(default)]
+        speed: Option<f64>,
+        /// Move what follows by the change; without it a stretch into
+        /// another clip is refused.
+        #[serde(default)]
+        ripple: bool,
+        /// The sound keeps its pitch (left out, it does); false lets it
+        /// follow the speed, as tape does.
+        #[serde(default = "default_true")]
+        keep_pitch: bool,
+        /// How the first clip's in-between frames are drawn once slowed,
+        /// as for `retime`: "sample", "blend" or "flow".
+        #[serde(default)]
+        interpolation: Option<String>,
+    },
     /// Change a clip's speed. `speed` above 1 is faster and shorter, below
     /// 1 slower and longer (0.5 is half speed); negative plays the clip
     /// reversed at that magnitude (#617), its sound read at the speed,
@@ -2344,7 +2380,7 @@ pub const OP_NAMES: &[&str] = &[
     "graphics", "vector_path", "connector", "place", "add_track", "remove_track", "set_track", "track_automation", "trim", "j_cut", "l_cut", "split", "join", "remove", "move", "cut",
     "captions", "audio", "volume", "duck", "lower_third", "set_text", "grade", "effect", "redact",
     "slip", "slide", "pin", "role", "match", "matte", "format", "stabilize", "reframe", "zoom", "pan", "follow", "refit", "highlight",
-    "ramp", "freeze", "grade_group", "remove_grade_group", "look", "qualify", "zones", "retime", "replace", "track_audio", "clip_audio", "clean_audio",
+    "ramp", "freeze", "grade_group", "remove_grade_group", "look", "qualify", "zones", "retime", "stretch", "replace", "track_audio", "clip_audio", "clean_audio",
     "transition", "style", "title", "compose", "camera", "crop", "generator", "depth", "label", "motion_blur",
     "strobe", "remove_silences", "auto_colour", "set_length", "over_edits", "template", "template_link", "recipe", "edit_from_selects", "opacity_mask",
 ];
@@ -4004,6 +4040,32 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             let q = QualifyArgs { target: target.as_deref(), hue: *hue, hue_width: *hue_width, sat_low: *sat_low, sat_high: *sat_high, lum_low: *lum_low, lum_high: *lum_high, invert: *invert, exposure: *exposure, saturation: *saturation, hue_shift: *hue_shift, temperature: *temperature, remove: *remove, window: window.as_deref(), window_feather: *window_feather, rgb: *rgb, keep: keep.as_deref(), take_out: take_out.as_deref() };
             qualify(seq, pool, i, ti, clip, q)
+        }
+        Op::Stretch { clip_id, clip_ids, to_secs, end_at_secs, start_at_secs, speed, ripple, keep_pitch, interpolation } => {
+            let refs: Vec<&ClipRef> = clip_id.iter().chain(clip_ids.iter()).collect();
+            if refs.is_empty() {
+                return Err(refuse(i, "no clip to stretch", "give clip_id, or clip_ids"));
+            }
+            let ids = refs.iter().map(|r| resolve_clip(seq, fps, r, i).map(|(_, _, c)| c.id)).collect::<Result<Vec<_>, _>>()?;
+            let (edge, to) = match (to_secs, end_at_secs, start_at_secs, speed) {
+                (Some(l), None, None, None) => (Edge::Out, StretchTo::Length(*l)),
+                (None, Some(t), None, None) => (Edge::Out, StretchTo::EdgeAt(*t)),
+                (None, None, Some(t), None) => (Edge::In, StretchTo::EdgeAt(*t)),
+                (None, None, None, Some(s)) => (Edge::Out, StretchTo::Speed(*s)),
+                _ => return Err(refuse(i, "a stretch takes one of to_secs, end_at_secs, start_at_secs or speed", "give the new length, where an edge goes, or the speed")),
+            };
+            let (what, edit, touched) = stretch::stretch(seq, pool, i, &ids, edge, to, *ripple, *keep_pitch)?;
+            let Some(how) = interpolation.as_deref() else { return Ok((what, edit, touched)) };
+            // How its frames are drawn, set on the clip as stretched, so
+            // a redo puts back its stretched keys.
+            let mut sims = vec![seq.clone()];
+            let (mut sim_pool, mut sim_fps) = (pool.clone(), fps);
+            crate::apply::DocumentView { sequences: &mut sims, active: 0, media_pool: &mut sim_pool, fps: &mut sim_fps }.apply_forward(&edit);
+            let stretched = sims[0].all_clips().find(|c| c.id == ids[0]).cloned().ok_or_else(|| refuse(i, "the stretched clip is gone", "stretch it again"))?;
+            match interpolation_edit(&sims[0], pool, i, &stretched, how)? {
+                Some((how, frames)) => Ok((format!("{what}; {how}"), EditCommand::Batch(vec![edit, frames]), touched)),
+                None => Ok((what, edit, touched)),
+            }
         }
         Op::Retime { clip_id, speed, fit, ripple, interpolation } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
