@@ -14,6 +14,7 @@ members = [
     "crates/klipp-plugin",
     "crates/klipp-frei0r",
     "crates/klipp-load-lock",
+    "crates/klipp-presets",
     "crates/klipp-effects",
     "crates/klipp-nodes",
     "crates/klipp-title",
@@ -244,6 +245,7 @@ klipp-plugin  = { path = "crates/klipp-plugin" }
 klipp-frei0r = { path = "crates/klipp-frei0r" }
 klipp-load-lock = { path = "crates/klipp-load-lock" }
 klipp-effects = { path = "crates/klipp-effects" }
+klipp-presets = { path = "crates/klipp-presets" }
 klipp-nodes   = { path = "crates/klipp-nodes" }
 klipp-title  = { path = "crates/klipp-title" }
 klipp-render  = { path = "crates/klipp-render" }
