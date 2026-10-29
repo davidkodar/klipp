@@ -88,35 +88,7 @@ struct App {
 /// A full-screen triangle pair sampling the frame. No colour maths: the
 /// surface is linear and the frame is linear, so the only job is to put
 /// the values on the screen untouched.
-const SHADER: &str = r#"
-@group(0) @binding(0) var frame: texture_2d<f32>;
-@group(0) @binding(1) var samp: sampler;
-
-struct Vs { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> }
-
-@vertex
-fn vs(@builtin(vertex_index) i: u32) -> Vs {
-    // Two triangles covering the viewport.
-    var p = array<vec2<f32>, 6>(
-        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(-1.0, 1.0),
-        vec2<f32>(-1.0, 1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0),
-    );
-    let xy = p[i];
-    var o: Vs;
-    o.pos = vec4<f32>(xy, 0.0, 1.0);
-    // Texture space is y-down.
-    o.uv = vec2<f32>((xy.x + 1.0) * 0.5, (1.0 - xy.y) * 0.5);
-    return o;
-}
-
-@fragment
-fn fs(v: Vs) -> @location(0) vec4<f32> {
-    // Straight through. The surface is scRGB — linear, 1.0 = SDR
-    // reference white, values above it are the HDR highlights — which is
-    // exactly what the viewer published.
-    return textureSampleLevel(frame, samp, v.uv, 0.0);
-}
-"#;
+const SHADER: &str = include_str!("presenter.wgsl");
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, el: &ActiveEventLoop) {
@@ -462,5 +434,13 @@ mod shader_tests {
         naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
             .validate(&module)
             .unwrap_or_else(|e| panic!("{}", e.emit_to_string(super::SHADER)));
+    }
+
+    /// The shader file is byte for byte the string it replaced (#3094):
+    /// its length and FNV-1a hash as they were before the move.
+    #[test]
+    fn the_shader_is_as_it_was_before_the_move() {
+        let fnv = super::SHADER.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3));
+        assert_eq!((super::SHADER.len(), fnv), (931, 0xc224c57b86ed6c0f));
     }
 }
