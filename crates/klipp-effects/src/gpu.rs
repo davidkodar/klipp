@@ -201,22 +201,14 @@ impl GpuMaskDef {
 use crate::cpu::EQUALIZE_CDF_LEN;
 use crate::cpu_grade::HUESAT_LUT_LEN;
 
-pub struct GpuEffectsPipeline {
-    readbacks: readbacks::Counters,
-    // Arc-wrapped so the effects pipeline can share its device with
-    // klipp-effects' NV12/P010 converters (and any future GPU-using
-    // type) through `GpuContext`. Internal call sites deref
-    // transparently via Arc's Deref<Target = wgpu::Device>.
-    device: std::sync::Arc<wgpu::Device>,
-    queue: std::sync::Arc<wgpu::Queue>,
-    // Compute pipelines — effects (2-buffer: input, output, params)
+/// The compute pipelines, their bind group layouts and the constant
+/// tables they read (#2688): made once a device, compiled on its first
+/// renderer and shared by every later one, so a new engine skips the
+/// compile. Nothing in it is written after it is built.
+pub(super) struct EffectPipelines {
     opacity_pipeline: wgpu::ComputePipeline,
     color_fade_pipeline: wgpu::ComputePipeline,
-    layer_gpu: layer::LayerGpu,
     mask_mix_gpu: mask_mix::MaskMixGpu,
-    /// Optical-flow interpolation's pipelines and kept pairs (#2215),
-    /// made on first use.
-    flow_gpu: Option<flow::FlowGpu>,
     blur_h_pipeline: wgpu::ComputePipeline,
     blur_v_pipeline: wgpu::ComputePipeline,
     sharpen_pipeline: wgpu::ComputePipeline,
@@ -224,7 +216,6 @@ pub struct GpuEffectsPipeline {
     transform_pipeline: wgpu::ComputePipeline,
     corner_pin_pipeline: wgpu::ComputePipeline,
     chroma_key_pipeline: wgpu::ComputePipeline,
-    // Compute pipelines — light effects
     bloom_threshold_pipeline: wgpu::ComputePipeline,
     bloom_blend_pipeline: wgpu::ComputePipeline,
     glow_blend_pipeline: wgpu::ComputePipeline,
@@ -246,14 +237,10 @@ pub struct GpuEffectsPipeline {
     lens_flare_pipeline: wgpu::ComputePipeline,
     anamorphic_streak_pipeline: wgpu::ComputePipeline,
     film_halation_blend_pipeline: wgpu::ComputePipeline,
-    // Compute pipelines — new effects
     invert_pipeline: wgpu::ComputePipeline,
     posterize_pipeline: wgpu::ComputePipeline,
     /// The colour-space transform effect's pass (#1746).
     cst_pipeline: wgpu::ComputePipeline,
-    /// The LUT effects' tables on the GPU, the latest last, each kept with
-    /// the preparation it was uploaded from so a table is uploaded once.
-    effect_luts: std::cell::RefCell<Vec<(Arc<crate::colour_transform::LutTable>, Arc<wgpu::Buffer>)>>,
     mosaic_pipeline: wgpu::ComputePipeline,
     edge_detect_pipeline: wgpu::ComputePipeline,
     channel_mixer_pipeline: wgpu::ComputePipeline,
@@ -285,15 +272,8 @@ pub struct GpuEffectsPipeline {
     chromatic_aberration_pipeline: wgpu::ComputePipeline,
     binocular_vignette_pipeline: wgpu::ComputePipeline,
     particles_pipeline: wgpu::ComputePipeline,
-    // Compute pipeline — rolling shutter correction (uses huesat 4-binding layout)
     rsc_pipeline: wgpu::ComputePipeline,
-    rsc_row_buf: Option<wgpu::Buffer>,
-    rsc_row_buf_size: u64,
-    // Compute pipeline — video stabilization (uses huesat 4-binding layout)
     stabilization_pipeline: wgpu::ComputePipeline,
-    stabilization_buf: Option<wgpu::Buffer>,
-    stabilization_buf_size: u64,
-    // Compute pipelines — color grading (standalone, not part of effect chain)
     color_grade_pipeline: wgpu::ComputePipeline,
     huesat_pipeline: wgpu::ComputePipeline,
     huesat_bgl: wgpu::BindGroupLayout,
@@ -301,48 +281,17 @@ pub struct GpuEffectsPipeline {
     /// once: input (the graded frame), output, params, the kept
     /// pre-secondary frame, and the matte.
     apply_matte_bgl: wgpu::BindGroupLayout,
-    huesat_lut_buf: wgpu::Buffer,
-    /// The equalize pass's 256-entry CDF.
-    ///
-    /// Its own buffer, deliberately. It used to be written over the
-    /// start of `huesat_lut_buf`, which worked only because `upload`
-    /// flushes before every write — so a pending hue/sat dispatch was
-    /// always submitted before the CDF landed on top of the LUT it
-    /// reads. Nothing at either end had to say so for the code to run,
-    /// the two sites are thousands of lines apart, and the invariant
-    /// lived in a private helper neither mentioned. Batching or
-    /// deferring uploads would have broken grades, but only on a clip
-    /// carrying both hue/sat curves and an Equalize effect.
-    ///
-    /// 1 KiB is not worth that.
-    equalize_cdf_buf: wgpu::Buffer,
-    /// Equalize's histogram, 256 counts, cleared in the encoder before
-    /// each Equalize records its count into it (#1215).
-    equalize_hist_buf: wgpu::Buffer,
-    // Compute pipeline — 3D LUT (reuses huesat_bgl: input, output, params, lut storage)
     lut3d_pipeline: wgpu::ComputePipeline,
-    lut3d_buf: Option<wgpu::Buffer>,
-    lut3d_buf_size: u64,
-    // Compute pipeline — color balance (temperature/tint/hue)
     color_balance_pipeline: wgpu::ComputePipeline,
     hdr_zones_pipeline: wgpu::ComputePipeline,
-    // Compute pipeline — wheel sat/bri (per-wheel saturation & brightness)
     wheel_sat_bri_pipeline: wgpu::ComputePipeline,
-    // Compute pipeline — RGB curves (LUT-based, reuses huesat_bgl 4-binding layout)
     rgb_curves_pipeline: wgpu::ComputePipeline,
-    rgb_curves_lut_buf: wgpu::Buffer,
-    // Compute pipeline — vibrance
     vibrance_pipeline: wgpu::ComputePipeline,
-    // Compute pipeline — a scene-referred clip's display step (step 11c)
     scene_to_display_pipeline: wgpu::ComputePipeline,
-    // Compute pipeline — color warper (12-sector hue/sat)
     color_warper_pipeline: wgpu::ComputePipeline,
-    // Compute pipeline — input transform (log-to-sRGB via 1D LUT, reuses huesat_bgl)
-    // Compute pipelines — clarity (3-pass: blur_h, blur_v, apply)
     clarity_blur_h_pipeline: wgpu::ComputePipeline,
     clarity_blur_v_pipeline: wgpu::ComputePipeline,
     clarity_apply_pipeline: wgpu::ComputePipeline,
-    // Compute pipeline — mask matte generation (SDF power windows)
     mask_pipeline: wgpu::ComputePipeline,
     /// Compute pipeline — mask cutout (chain frame × matte). 4-binding
     /// layout: input chain buffer, output chain buffer, params,
@@ -358,85 +307,34 @@ pub struct GpuEffectsPipeline {
     blend_mix_pipeline: wgpu::ComputePipeline,
     merge_over_pipeline: wgpu::ComputePipeline,
     layer_over_pipeline: wgpu::ComputePipeline,
-    /// The picture a Corrector's mix over all its stages blends against
-    /// (its Keep/Mix stage pair, within the one node). A grade
-    /// secondary's kept picture and a composite's second picture are
-    /// pool slots ([`KeptPicture`], M3 step 17b).
-    grade_mix_src: Option<wgpu::Buffer>,
-    // Compute pipeline — qualifier (secondary color correction)
     qualifier_pipeline: wgpu::ComputePipeline,
-    // Compute pipeline — standalone luminance-threshold key (matte
-    // producer, simpler than qualifier — luma in, matte out).
     luma_key_pipeline: wgpu::ComputePipeline,
     difference_key_pipeline: wgpu::ComputePipeline,
     difference_key_bgl: wgpu::BindGroupLayout,
-    /// The difference key's clean plate, resized to the frame on the
-    /// host and uploaded once. Keyed by the host's own cache generation
-    /// rather than by contents: comparing 33 MB to decide whether to
-    /// upload 33 MB would defeat the purpose.
-    plate_buf: Option<wgpu::Buffer>,
-    plate_key: Option<(u64, u32, u32)>,
-    /// A difference key recorded in the open chain reads `plate_buf`
-    /// (#1266): a different plate can't go in until that chain is
-    /// submitted, since an upload lands before the whole encoder runs.
-    plate_read_in_chain: bool,
     /// Temporal noise reduction on the chain (#1988): the chain's picture
     /// against up to two neighbour frames in buffers of their own.
     temporal_denoise_pipeline: wgpu::ComputePipeline,
     temporal_denoise_bgl: wgpu::BindGroupLayout,
-    // Compute pipeline — standalone soft-clip / hard-clip transform
-    // (per-channel Reinhard rolloff above threshold). Value
-    // transform, not a matte producer.
     soft_clip_pipeline: wgpu::ComputePipeline,
-    // Compute pipeline — film grain overlay
     grain_pipeline: wgpu::ComputePipeline,
-    // Compute pipelines — alpha mask operations (for title renderer)
     alpha_blur_h_pipeline: wgpu::ComputePipeline,
     alpha_blur_v_pipeline: wgpu::ComputePipeline,
     alpha_dilate_pipeline: wgpu::ComputePipeline,
     title_style_pipeline: wgpu::ComputePipeline,
-    title_style_scratch: Option<title_styles::StyleScratch>,
-    /// Metal titles that reflect the shot behind them, by stack slot,
-    /// waiting for the layers below to be laid (#2706); emptied as a
-    /// frame's stack begins.
-    title_metal_shots: std::collections::HashMap<usize, title_styles::MetalShot>,
     title_metal_shot_pipeline: wgpu::ComputePipeline,
-    title_metal_shot_scratch: Option<(wgpu::Buffer, u64)>,
     /// Contrast protection for titles (#2734) and its two small grids
     /// (measure, blur) with their cell count.
     contrast_protect_pipeline: wgpu::ComputePipeline,
-    contrast_protect_scratch: Option<(wgpu::Buffer, wgpu::Buffer, u64)>,
     /// A pinned layer taking its surface's light and texture (#2751):
     /// its grid and blur, its row sums, and a frame of factors, with the
     /// cell and pixel counts they were made for.
     surface_light_pipeline: wgpu::ComputePipeline,
-    surface_light_scratch: Option<surface_light::Scratch>,
-    title_post_scratch: Option<wgpu::Buffer>,
-    title_scene_bounds: Option<wgpu::Buffer>,
-    title_outlines: Vec<(u64,wgpu::Buffer)>,
-    // Compute pipelines — transitions (3-buffer: from, to, output, params)
     transition_pipeline: wgpu::ComputePipeline,
     /// Posed piece transitions (#985): `SHADER_PIECES`.
     pieces_pipeline: wgpu::ComputePipeline,
     /// A layer smeared across the shutter, in one pass (#1923).
     shutter_pipeline: wgpu::ComputePipeline,
-    // ── linear-f32 → sRGB-u8 pixel encode pipeline ─────────────────
-    // GPU replacement for the CPU `linear_rgba_to_u8` LUT pass that
-    // costs 40-90 ms per 4K frame. Reads `array<vec4<f32>>` linear,
-    // writes `array<u32>` packed sRGB-u8 RGBA. Output buffer is 4×
-    // smaller than the input, which matters because the readback
-    // dominates wall-time on this op (PCIe-bound, sub-ms compute).
     bridge_u8_pipeline: wgpu::ComputePipeline,
-    bridge_u8_out_buf: Option<wgpu::Buffer>,
-    bridge_u8_out_size: u64,
-    bridge_u8_staging_buf: Option<wgpu::Buffer>,
-    bridge_u8_staging_size: u64,
-    // ── sRGB-u8 → linear-f32 pixel decode pipeline ─────────────────
-    // The opposite of `bridge_u8_pipeline`: takes packed u8 RGBA
-    // (from a decoder's NV12/P010 output buffer for example) and
-    // writes linear-light vec4<f32> RGBA into the grade chain's input
-    // slot. Enables phase 4d's GPU-resident decode → grade path —
-    // without this bridge the grade chain can only consume CPU data.
     bridge_u8_to_linear_pipeline: wgpu::ComputePipeline,
     /// [`Self::bridge_u8_fit_to_linear_into_chain`]: the same decode, from
     /// a frame of another size, fitted into the chain's.
@@ -459,16 +357,10 @@ pub struct GpuEffectsPipeline {
     /// transform on the GPU rather than per-pixel on one core.
     aces_rec709_pipeline: wgpu::ComputePipeline,
     display_tables_bgl: wgpu::BindGroupLayout,
-    /// The matrices and tone curves that shader reads, uploaded once.
-    aces_rec709_data: Option<CachedTables>,
     /// Bound in that slot by a delivery that is not ACES, which never
     /// reads it.
     no_display_tables: wgpu::Buffer,
     no_light: wgpu::Buffer,
-    /// BT.2020's reach tables, cusps and matrices — 148 KB, uploaded
-    /// once.
-    bt2020_gamut_data: Option<CachedTables>,
-    hdr_encode_data: Option<CachedTables>,
     bt2020_display_pipeline: wgpu::ComputePipeline,
     /// Packed RGB10 HDR code values → scene-linear working-space f32,
     /// written into the chain's `buf_a`. The GPU half of
@@ -481,15 +373,175 @@ pub struct GpuEffectsPipeline {
     /// GPU as 4 bytes a pixel instead of 16.
     display_u8_pipeline: wgpu::ComputePipeline,
     hdr_nit_map_pipeline: wgpu::ComputePipeline,
-    hdr_nit_buf: Option<wgpu::Buffer>,
-    hdr_nit_staging: Option<wgpu::Buffer>,
-    /// Map-readable copy of `bridge_u8_out_buf` for the display readback.
-    display_u8_staging: Option<wgpu::Buffer>,
     /// `bridge_u8_out_buf` into a storage texture, one texel per
     /// invocation: the display bytes land in the viewer's texture
     /// without a copy, so no row-pitch alignment applies.
     u8_to_texture_pipeline: wgpu::ComputePipeline,
     u8_to_texture_bgl: wgpu::BindGroupLayout,
+    sprite_place_pipeline: wgpu::ComputePipeline,
+    /// The per-glyph sprite pass: sprite, output, params, glyph map,
+    /// glyph table.
+    sprite_glyphs_bgl: wgpu::BindGroupLayout,
+    sprite_glyphs_pipeline: wgpu::ComputePipeline,
+    blend_layer_pipeline: wgpu::ComputePipeline,
+    premultiply_pipeline: wgpu::ComputePipeline,
+    /// The viewer's channel view of the finished stack (#2758).
+    view_channel_pipeline: wgpu::ComputePipeline,
+    alpha_form_pipeline: wgpu::ComputePipeline,
+    sprite_rows_pipeline: wgpu::ComputePipeline,
+    sprite_rows_f16_pipeline: wgpu::ComputePipeline,
+    sprite_box_f16_pipeline: wgpu::ComputePipeline,
+    matte_extract_pipeline: wgpu::ComputePipeline,
+    mask_min_h_pipeline: wgpu::ComputePipeline,
+    mask_min_v_pipeline: wgpu::ComputePipeline,
+    matte_apply_pipeline: wgpu::ComputePipeline,
+    scale_alpha_pipeline: wgpu::ComputePipeline,
+    bind_group_layout: wgpu::BindGroupLayout,         // effects: input, output, params
+    transition_bgl: wgpu::BindGroupLayout,             // transitions: from, to, output, params
+    pieces_bgl: wgpu::BindGroupLayout,                 // posed pieces: from, to, output, params, pieces, matte
+    /// The layer passes' pipelines.
+    layer: Arc<layer::LayerPipelines>,
+}
+
+impl EffectPipelines {
+    /// `device`'s pipelines: the ones an earlier renderer on it compiled,
+    /// or compiled now and kept for the next. Each device's are kept while
+    /// the device is: one replaced after a loss gets its own, and the old
+    /// one's go with it. The compile takes over a second with the driver's
+    /// shader cache cold, longer than a strobe's first gap (#2688).
+    fn shared(device: &Arc<wgpu::Device>) -> Option<Arc<Self>> {
+        static KEPT: std::sync::Mutex<Vec<(std::sync::Weak<wgpu::Device>, Arc<EffectPipelines>)>> = std::sync::Mutex::new(Vec::new());
+        // Held while compiling, so two renderers made at once compile once.
+        let mut kept = KEPT.lock().unwrap_or_else(|e| e.into_inner());
+        kept.retain(|(d, _)| d.strong_count() > 0);
+        if let Some((_, p)) = kept.iter().find(|(d, _)| std::ptr::eq(d.as_ptr(), Arc::as_ptr(device))) {
+            return Some(Arc::clone(p));
+        }
+        let built = Arc::new(Self::build(device)?);
+        kept.push((Arc::downgrade(device), Arc::clone(&built)));
+        Some(built)
+    }
+}
+
+pub struct GpuEffectsPipeline {
+    /// Shared with every renderer on the device (#2688).
+    pipelines: Arc<EffectPipelines>,
+    readbacks: readbacks::Counters,
+    // Arc-wrapped so the effects pipeline can share its device with
+    // klipp-effects' NV12/P010 converters (and any future GPU-using
+    // type) through `GpuContext`. Internal call sites deref
+    // transparently via Arc's Deref<Target = wgpu::Device>.
+    device: std::sync::Arc<wgpu::Device>,
+    queue: std::sync::Arc<wgpu::Queue>,
+    // Compute pipelines — effects (2-buffer: input, output, params)
+    layer_gpu: layer::LayerGpu,
+    /// Optical-flow interpolation's pipelines and kept pairs (#2215),
+    /// made on first use.
+    flow_gpu: Option<flow::FlowGpu>,
+    // Compute pipelines — light effects
+    // Compute pipelines — new effects
+    /// The LUT effects' tables on the GPU, the latest last, each kept with
+    /// the preparation it was uploaded from so a table is uploaded once.
+    effect_luts: std::cell::RefCell<Vec<(Arc<crate::colour_transform::LutTable>, Arc<wgpu::Buffer>)>>,
+    // Compute pipeline — rolling shutter correction (uses huesat 4-binding layout)
+    rsc_row_buf: Option<wgpu::Buffer>,
+    rsc_row_buf_size: u64,
+    // Compute pipeline — video stabilization (uses huesat 4-binding layout)
+    stabilization_buf: Option<wgpu::Buffer>,
+    stabilization_buf_size: u64,
+    // Compute pipelines — color grading (standalone, not part of effect chain)
+    huesat_lut_buf: wgpu::Buffer,
+    /// The equalize pass's 256-entry CDF.
+    ///
+    /// Its own buffer, deliberately. It used to be written over the
+    /// start of `huesat_lut_buf`, which worked only because `upload`
+    /// flushes before every write — so a pending hue/sat dispatch was
+    /// always submitted before the CDF landed on top of the LUT it
+    /// reads. Nothing at either end had to say so for the code to run,
+    /// the two sites are thousands of lines apart, and the invariant
+    /// lived in a private helper neither mentioned. Batching or
+    /// deferring uploads would have broken grades, but only on a clip
+    /// carrying both hue/sat curves and an Equalize effect.
+    ///
+    /// 1 KiB is not worth that.
+    equalize_cdf_buf: wgpu::Buffer,
+    /// Equalize's histogram, 256 counts, cleared in the encoder before
+    /// each Equalize records its count into it (#1215).
+    equalize_hist_buf: wgpu::Buffer,
+    // Compute pipeline — 3D LUT (reuses huesat_bgl: input, output, params, lut storage)
+    lut3d_buf: Option<wgpu::Buffer>,
+    lut3d_buf_size: u64,
+    // Compute pipeline — color balance (temperature/tint/hue)
+    // Compute pipeline — wheel sat/bri (per-wheel saturation & brightness)
+    // Compute pipeline — RGB curves (LUT-based, reuses huesat_bgl 4-binding layout)
+    rgb_curves_lut_buf: wgpu::Buffer,
+    // Compute pipeline — vibrance
+    // Compute pipeline — a scene-referred clip's display step (step 11c)
+    // Compute pipeline — color warper (12-sector hue/sat)
+    // Compute pipeline — input transform (log-to-sRGB via 1D LUT, reuses huesat_bgl)
+    // Compute pipelines — clarity (3-pass: blur_h, blur_v, apply)
+    // Compute pipeline — mask matte generation (SDF power windows)
+    /// The picture a Corrector's mix over all its stages blends against
+    /// (its Keep/Mix stage pair, within the one node). A grade
+    /// secondary's kept picture and a composite's second picture are
+    /// pool slots ([`KeptPicture`], M3 step 17b).
+    grade_mix_src: Option<wgpu::Buffer>,
+    // Compute pipeline — qualifier (secondary color correction)
+    // Compute pipeline — standalone luminance-threshold key (matte
+    // producer, simpler than qualifier — luma in, matte out).
+    /// The difference key's clean plate, resized to the frame on the
+    /// host and uploaded once. Keyed by the host's own cache generation
+    /// rather than by contents: comparing 33 MB to decide whether to
+    /// upload 33 MB would defeat the purpose.
+    plate_buf: Option<wgpu::Buffer>,
+    plate_key: Option<(u64, u32, u32)>,
+    /// A difference key recorded in the open chain reads `plate_buf`
+    /// (#1266): a different plate can't go in until that chain is
+    /// submitted, since an upload lands before the whole encoder runs.
+    plate_read_in_chain: bool,
+    // Compute pipeline — standalone soft-clip / hard-clip transform
+    // (per-channel Reinhard rolloff above threshold). Value
+    // transform, not a matte producer.
+    // Compute pipeline — film grain overlay
+    // Compute pipelines — alpha mask operations (for title renderer)
+    title_style_scratch: Option<title_styles::StyleScratch>,
+    /// Metal titles that reflect the shot behind them, by stack slot,
+    /// waiting for the layers below to be laid (#2706); emptied as a
+    /// frame's stack begins.
+    title_metal_shots: std::collections::HashMap<usize, title_styles::MetalShot>,
+    title_metal_shot_scratch: Option<(wgpu::Buffer, u64)>,
+    contrast_protect_scratch: Option<(wgpu::Buffer, wgpu::Buffer, u64)>,
+    surface_light_scratch: Option<surface_light::Scratch>,
+    title_post_scratch: Option<wgpu::Buffer>,
+    title_scene_bounds: Option<wgpu::Buffer>,
+    title_outlines: Vec<(u64,wgpu::Buffer)>,
+    // Compute pipelines — transitions (3-buffer: from, to, output, params)
+    // ── linear-f32 → sRGB-u8 pixel encode pipeline ─────────────────
+    // GPU replacement for the CPU `linear_rgba_to_u8` LUT pass that
+    // costs 40-90 ms per 4K frame. Reads `array<vec4<f32>>` linear,
+    // writes `array<u32>` packed sRGB-u8 RGBA. Output buffer is 4×
+    // smaller than the input, which matters because the readback
+    // dominates wall-time on this op (PCIe-bound, sub-ms compute).
+    bridge_u8_out_buf: Option<wgpu::Buffer>,
+    bridge_u8_out_size: u64,
+    bridge_u8_staging_buf: Option<wgpu::Buffer>,
+    bridge_u8_staging_size: u64,
+    // ── sRGB-u8 → linear-f32 pixel decode pipeline ─────────────────
+    // The opposite of `bridge_u8_pipeline`: takes packed u8 RGBA
+    // (from a decoder's NV12/P010 output buffer for example) and
+    // writes linear-light vec4<f32> RGBA into the grade chain's input
+    // slot. Enables phase 4d's GPU-resident decode → grade path —
+    // without this bridge the grade chain can only consume CPU data.
+    /// The matrices and tone curves that shader reads, uploaded once.
+    aces_rec709_data: Option<CachedTables>,
+    /// BT.2020's reach tables, cusps and matrices — 148 KB, uploaded
+    /// once.
+    bt2020_gamut_data: Option<CachedTables>,
+    hdr_encode_data: Option<CachedTables>,
+    hdr_nit_buf: Option<wgpu::Buffer>,
+    hdr_nit_staging: Option<wgpu::Buffer>,
+    /// Map-readable copy of `bridge_u8_out_buf` for the display readback.
+    display_u8_staging: Option<wgpu::Buffer>,
     /// The layer stack: one linear buffer per layer, two for the
     /// accumulator (ping-pong), an RGBA8 upload buffer for sprites.
     /// Sized by `stack_begin`, never shrunk.
@@ -506,34 +558,13 @@ pub struct GpuEffectsPipeline {
     /// when the stack's size changes.
     stack_sprites: Vec<ResidentSprite>,
     stack_sprite_tick: u64,
-    sprite_place_pipeline: wgpu::ComputePipeline,
-    /// The per-glyph sprite pass: sprite, output, params, glyph map,
-    /// glyph table.
-    sprite_glyphs_bgl: wgpu::BindGroupLayout,
-    sprite_glyphs_pipeline: wgpu::ComputePipeline,
     /// The glyph table of the frame being placed (grows as needed).
     sprite_glyph_table: Option<wgpu::Buffer>,
     stack_buf_size: u64,
     /// Whether anything has been blended into the accumulator yet.
     stack_acc_touched: bool,
     stack_dims: (u32, u32),
-    blend_layer_pipeline: wgpu::ComputePipeline,
-    premultiply_pipeline: wgpu::ComputePipeline,
-    /// The viewer's channel view of the finished stack (#2758).
-    view_channel_pipeline: wgpu::ComputePipeline,
-    alpha_form_pipeline: wgpu::ComputePipeline,
-    sprite_rows_pipeline: wgpu::ComputePipeline,
-    sprite_rows_f16_pipeline: wgpu::ComputePipeline,
-    sprite_box_f16_pipeline: wgpu::ComputePipeline,
-    matte_extract_pipeline: wgpu::ComputePipeline,
-    mask_min_h_pipeline: wgpu::ComputePipeline,
-    mask_min_v_pipeline: wgpu::ComputePipeline,
-    matte_apply_pipeline: wgpu::ComputePipeline,
-    scale_alpha_pipeline: wgpu::ComputePipeline,
     // Bind group layouts
-    bind_group_layout: wgpu::BindGroupLayout,         // effects: input, output, params
-    transition_bgl: wgpu::BindGroupLayout,             // transitions: from, to, output, params
-    pieces_bgl: wgpu::BindGroupLayout,                 // posed pieces: from, to, output, params, pieces, matte
     // Reusable buffers — resized when frame dimensions change
     buf_a: Option<wgpu::Buffer>,
     buf_b: Option<wgpu::Buffer>,
@@ -1104,7 +1135,7 @@ impl GpuEffectsPipeline {
             for (cfg_idx, (input, output)) in configs_3.iter().enumerate() {
                 let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("chain_bg_3b"),
-                    layout: &self.bind_group_layout,
+                    layout: &self.pipelines.bind_group_layout,
                     entries: &[
                         wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                         wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
@@ -1123,7 +1154,7 @@ impl GpuEffectsPipeline {
 
                 let bg_huesat = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("chain_bg_huesat"),
-                    layout: &self.huesat_bgl,
+                    layout: &self.pipelines.huesat_bgl,
                     entries: &[
                         wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                         wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
@@ -1136,7 +1167,7 @@ impl GpuEffectsPipeline {
 
                 let bg_rgb_curves = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("chain_bg_rgb_curves"),
-                    layout: &self.huesat_bgl,
+                    layout: &self.pipelines.huesat_bgl,
                     entries: &[
                         wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                         wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
@@ -1149,7 +1180,7 @@ impl GpuEffectsPipeline {
 
                 let bg_clarity_apply = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("chain_bg_clarity_apply"),
-                    layout: &self.huesat_bgl,
+                    layout: &self.pipelines.huesat_bgl,
                     entries: &[
                         wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                         wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
@@ -1162,7 +1193,7 @@ impl GpuEffectsPipeline {
 
                 let bg_mask_cutout = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("chain_bg_mask_cutout"),
-                    layout: &self.huesat_bgl,
+                    layout: &self.pipelines.huesat_bgl,
                     entries: &[
                         wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                         wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
@@ -1180,7 +1211,7 @@ impl GpuEffectsPipeline {
     fn bind_group(&self, input: &wgpu::Buffer, output: &wgpu::Buffer) -> wgpu::BindGroup {
         self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
-            layout: &self.bind_group_layout,
+            layout: &self.pipelines.bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
@@ -2614,5 +2645,38 @@ mod shader_validation_tests {
             }
         }
         assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+}
+
+#[cfg(test)]
+mod shared_pipeline_tests {
+    use super::*;
+
+    fn bits(v: &[f32]) -> Vec<u32> {
+        v.iter().map(|x| x.to_bits()).collect()
+    }
+
+    /// #2688: a renderer made after the first on a device reuses its
+    /// pipelines instead of compiling them again, and draws the same.
+    #[test]
+    fn a_second_renderer_reuses_the_devices_pipelines() {
+        let Some(ctx) = crate::gpu_context::GpuContext::shared() else {
+            assert!(std::env::var_os("KLIPP_TEST_REQUIRE_GPU").is_none(), "GPU required");
+            return;
+        };
+        let t = std::time::Instant::now();
+        let mut first = GpuEffectsPipeline::with_context(ctx).expect("a renderer");
+        let first_ms = t.elapsed().as_secs_f64() * 1000.0;
+        let t = std::time::Instant::now();
+        let mut second = GpuEffectsPipeline::with_context(ctx).expect("another");
+        let second_ms = t.elapsed().as_secs_f64() * 1000.0;
+        eprintln!("first renderer {first_ms:.0} ms, second {second_ms:.0} ms");
+        assert!(Arc::ptr_eq(&first.pipelines, &second.pipelines), "the second renderer compiled its own");
+        let frame: Vec<f32> = (0..16 * 16 * 4).map(|i| (i % 97) as f32 / 97.0).collect();
+        let fx = [crate::BuiltinEffect::GaussianBlur { radius: 2.0 }, crate::BuiltinEffect::Sharpen { amount: 0.8 }];
+        let a = first.apply_effects(&fx, &frame, 16, 16);
+        let b = second.apply_effects(&fx, &frame, 16, 16);
+        assert_ne!(a, frame, "the effects changed the picture");
+        assert_eq!(bits(&a), bits(&b), "both draw the same");
     }
 }

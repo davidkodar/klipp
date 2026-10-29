@@ -59,7 +59,7 @@ impl GpuEffectsPipeline {
         // Bind group: input(buf_a, read), output(out_buf, write), params(uniform).
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("bridge_u8_bg"),
-            layout: &self.bind_group_layout,
+            layout: &self.pipelines.bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: buf_a.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: out_buf.as_entire_binding() },
@@ -76,7 +76,7 @@ impl GpuEffectsPipeline {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("bridge_u8_pass"), timestamp_writes: None,
             });
-            pass.set_pipeline(&self.bridge_u8_pipeline);
+            pass.set_pipeline(&self.pipelines.bridge_u8_pipeline);
             pass.set_bind_group(0, &bg, &[]);
             dispatch_flat(&mut pass, workgroups);
         }
@@ -223,7 +223,7 @@ impl GpuEffectsPipeline {
 
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("encode_grade_to_texture_bg"),
-            layout: &self.bind_group_layout,
+            layout: &self.pipelines.bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: src_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: out_buf.as_entire_binding() },
@@ -236,7 +236,7 @@ impl GpuEffectsPipeline {
             let mut pass = encoder.begin_compute_pass(
                 &wgpu::ComputePassDescriptor { label: None, timestamp_writes: None },
             );
-            pass.set_pipeline(&self.bridge_u8_pipeline);
+            pass.set_pipeline(&self.pipelines.bridge_u8_pipeline);
             pass.set_bind_group(0, &bg, &[]);
             dispatch_flat(&mut pass, workgroups);
         }
@@ -301,7 +301,7 @@ impl GpuEffectsPipeline {
 
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("bridge_u8_to_linear_bg"),
-            layout: &self.huesat_bgl,
+            layout: &self.pipelines.huesat_bgl,
             entries: &[
                 // binding 0: input u8 buffer (external, read-only)
                 wgpu::BindGroupEntry { binding: 0, resource: input_u8.as_entire_binding() },
@@ -310,7 +310,7 @@ impl GpuEffectsPipeline {
                 // binding 2: params uniform
                 wgpu::BindGroupEntry { binding: 2, resource: self.params_binding() },
                 // binding 3: the codes' decode table
-                wgpu::BindGroupEntry { binding: 3, resource: self.srgb8_lut.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: self.pipelines.srgb8_lut.as_entire_binding() },
             ],
         });
 
@@ -320,7 +320,7 @@ impl GpuEffectsPipeline {
             let mut pass = encoder.begin_compute_pass(
                 &wgpu::ComputePassDescriptor { label: None, timestamp_writes: None },
             );
-            pass.set_pipeline(&self.bridge_u8_to_linear_pipeline);
+            pass.set_pipeline(&self.pipelines.bridge_u8_to_linear_pipeline);
             pass.set_bind_group(0, &bg, &[]);
             dispatch_flat(&mut pass, workgroups);
         }
@@ -359,19 +359,19 @@ impl GpuEffectsPipeline {
         self.write_params(&BridgeU8FitParams { src_w, src_h, out_w: width, out_h: height, dst_w, dst_h, x_off, y_off });
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("bridge_u8_fit_bg"),
-            layout: &self.huesat_bgl,
+            layout: &self.pipelines.huesat_bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: input_u8.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: buf_a.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: self.params_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: self.srgb8_lut.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: self.pipelines.srgb8_lut.as_entire_binding() },
             ],
         });
         let workgroups = (pixel_count as u32).div_ceil(WORKGROUP_SIZE);
         let mut encoder = self.encoder(Some("bridge_u8_fit_to_linear"));
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
-            pass.set_pipeline(&self.bridge_u8_fit_pipeline);
+            pass.set_pipeline(&self.pipelines.bridge_u8_fit_pipeline);
             pass.set_bind_group(0, &bg, &[]);
             dispatch_flat(&mut pass, workgroups);
         }
@@ -561,11 +561,11 @@ impl GpuEffectsPipeline {
         } else if hdr_op != 0 || scene_op == 2 {
             &self.hdr_encode_data.as_ref()?.buf
         } else {
-            &self.no_display_tables
+            &self.pipelines.no_display_tables
         };
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("linear_to_yuv420_bg"),
-            layout: &self.display_tables_bgl,
+            layout: &self.pipelines.display_tables_bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: source.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: planes.as_entire_binding() },
@@ -575,7 +575,7 @@ impl GpuEffectsPipeline {
                     binding: 4,
                     resource: light_buf
                         .as_ref()
-                        .unwrap_or(&self.no_light)
+                        .unwrap_or(&self.pipelines.no_light)
                         .as_entire_binding(),
                 },
             ],
@@ -593,7 +593,7 @@ impl GpuEffectsPipeline {
                 label: None,
                 timestamp_writes: None,
             });
-            pass.set_pipeline(&self.linear_to_yuv420_pipeline);
+            pass.set_pipeline(&self.pipelines.linear_to_yuv420_pipeline);
             pass.set_bind_group(0, &bg, &[]);
             pass.dispatch_workgroups(wg_x, wg_y, 1);
         }
@@ -668,7 +668,7 @@ impl GpuEffectsPipeline {
         let staging = self.hdr_nit_staging.as_ref()?;
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("hdr_nit_map_bg"),
-            layout: &self.bind_group_layout,
+            layout: &self.pipelines.bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: src.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: out.as_entire_binding() },
@@ -683,7 +683,7 @@ impl GpuEffectsPipeline {
                 label: None,
                 timestamp_writes: None,
             });
-            pass.set_pipeline(&self.hdr_nit_map_pipeline);
+            pass.set_pipeline(&self.pipelines.hdr_nit_map_pipeline);
             pass.set_bind_group(0, &bg, &[]);
             dispatch_flat(&mut pass, (mw * mh).div_ceil(WORKGROUP_SIZE));
         }
@@ -748,13 +748,13 @@ impl GpuEffectsPipeline {
         let data = &self.aces_rec709_data.as_ref()?.buf;
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("aces_rec709_bg"),
-            layout: &self.display_tables_bgl,
+            layout: &self.pipelines.display_tables_bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: source.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: out.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: self.params_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: data.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: self.no_light.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: self.pipelines.no_light.as_entire_binding() },
             ],
         });
 
@@ -767,7 +767,7 @@ impl GpuEffectsPipeline {
                 label: None,
                 timestamp_writes: None,
             });
-            pass.set_pipeline(&self.aces_rec709_pipeline);
+            pass.set_pipeline(&self.pipelines.aces_rec709_pipeline);
             pass.set_bind_group(0, &bg, &[]);
             dispatch_flat(&mut pass, (pixel_count as u32).div_ceil(WORKGROUP_SIZE));
         }
@@ -921,13 +921,13 @@ impl GpuEffectsPipeline {
         let data = &self.bt2020_gamut_data.as_ref()?.buf;
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("bt2020_display_bg"),
-            layout: &self.display_tables_bgl,
+            layout: &self.pipelines.display_tables_bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: source.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: out.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: self.params_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: data.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: self.no_light.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: self.pipelines.no_light.as_entire_binding() },
             ],
         });
 
@@ -940,7 +940,7 @@ impl GpuEffectsPipeline {
                 label: None,
                 timestamp_writes: None,
             });
-            pass.set_pipeline(&self.bt2020_display_pipeline);
+            pass.set_pipeline(&self.pipelines.bt2020_display_pipeline);
             pass.set_bind_group(0, &bg, &[]);
             dispatch_flat(&mut pass, (pixel_count as u32).div_ceil(WORKGROUP_SIZE));
         }
@@ -1019,12 +1019,12 @@ impl GpuEffectsPipeline {
 
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("bridge_rgba64_to_linear_bg"),
-            layout: &self.huesat_bgl,
+            layout: &self.pipelines.huesat_bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: input_rgba64.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: buf_a.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: self.params_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: self.srgb16_lut.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: self.pipelines.srgb16_lut.as_entire_binding() },
             ],
         });
 
@@ -1034,7 +1034,7 @@ impl GpuEffectsPipeline {
             let mut pass = encoder.begin_compute_pass(
                 &wgpu::ComputePassDescriptor { label: None, timestamp_writes: None },
             );
-            pass.set_pipeline(&self.bridge_rgba64_to_linear_pipeline);
+            pass.set_pipeline(&self.pipelines.bridge_rgba64_to_linear_pipeline);
             pass.set_bind_group(0, &bg, &[]);
             dispatch_flat(&mut pass, workgroups);
         }
@@ -1099,7 +1099,7 @@ impl GpuEffectsPipeline {
         });
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("bridge_hdr10_to_linear_bg"),
-            layout: &self.bind_group_layout,
+            layout: &self.pipelines.bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: codes.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: buf_a.as_entire_binding() },
@@ -1111,7 +1111,7 @@ impl GpuEffectsPipeline {
             let mut pass = encoder.begin_compute_pass(
                 &wgpu::ComputePassDescriptor { label: None, timestamp_writes: None },
             );
-            pass.set_pipeline(if deep { &self.bridge_hdr16_pipeline } else { &self.bridge_hdr10_pipeline });
+            pass.set_pipeline(if deep { &self.pipelines.bridge_hdr16_pipeline } else { &self.pipelines.bridge_hdr10_pipeline });
             pass.set_bind_group(0, &bg, &[]);
             dispatch_flat(&mut pass, (pixel_count as u32).div_ceil(WORKGROUP_SIZE));
         }
@@ -1252,7 +1252,7 @@ impl GpuEffectsPipeline {
         });
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("linear_to_display_u8_bg"),
-            layout: &self.bind_group_layout,
+            layout: &self.pipelines.bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: src.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: out.as_entire_binding() },
@@ -1264,7 +1264,7 @@ impl GpuEffectsPipeline {
             let mut pass = encoder.begin_compute_pass(
                 &wgpu::ComputePassDescriptor { label: None, timestamp_writes: None },
             );
-            pass.set_pipeline(&self.display_u8_pipeline);
+            pass.set_pipeline(&self.pipelines.display_u8_pipeline);
             pass.set_bind_group(0, &bg, &[]);
             dispatch_flat(&mut pass, (pixel_count as u32).div_ceil(WORKGROUP_SIZE));
         }
@@ -1281,7 +1281,7 @@ impl GpuEffectsPipeline {
             self.queue.write_buffer(&tex_params, 0, bytemuck::bytes_of(&BridgeU8Params { width, height, _pad0: 0, _pad1: 0 }));
             let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("u8_to_texture_bg"),
-                layout: &self.u8_to_texture_bgl,
+                layout: &self.pipelines.u8_to_texture_bgl,
                 entries: &[
                     wgpu::BindGroupEntry { binding: 0, resource: out.as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&view) },
@@ -1291,7 +1291,7 @@ impl GpuEffectsPipeline {
             let mut pass = encoder.begin_compute_pass(
                 &wgpu::ComputePassDescriptor { label: Some("u8_to_texture"), timestamp_writes: None },
             );
-            pass.set_pipeline(&self.u8_to_texture_pipeline);
+            pass.set_pipeline(&self.pipelines.u8_to_texture_pipeline);
             pass.set_bind_group(0, &bg, &[]);
             pass.dispatch_workgroups(width.div_ceil(16), height.div_ceil(16), 1);
         }
@@ -1356,7 +1356,7 @@ impl GpuEffectsPipeline {
             .as_ref()
             .expect(Self::CHAIN_BG_EXPECT);
         let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
-        Self::record_compute_dispatch(enc, &self.scene_to_display_pipeline, bind_group, workgroups);
+        Self::record_compute_dispatch(enc, &self.pipelines.scene_to_display_pipeline, bind_group, workgroups);
     }
 
     /// Upload an sRGB u8 RGBA frame to a pixel storage buffer as

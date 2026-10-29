@@ -35,7 +35,7 @@ impl GpuEffectsPipeline {
             luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], max_kernel,
             chroma_sigma, _pad: [0; 3],
         });
-        self.dispatch(&self.denoise_pipeline, buf_a, buf_b, workgroups);
+        self.dispatch(&self.pipelines.denoise_pipeline, buf_a, buf_b, workgroups);
 
         self.download_linear_rgba_f32(buf_b, (width * height) as usize)
     }
@@ -61,7 +61,7 @@ impl GpuEffectsPipeline {
             .as_ref()
             .expect(Self::CHAIN_BG_EXPECT);
         let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
-        Self::record_compute_dispatch(enc, &self.denoise_pipeline, bind_group, workgroups);
+        Self::record_compute_dispatch(enc, &self.pipelines.denoise_pipeline, bind_group, workgroups);
     }
 }
 

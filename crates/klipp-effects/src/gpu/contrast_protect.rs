@@ -52,7 +52,7 @@ impl GpuEffectsPipeline {
         let small_groups = (small as u32).div_ceil(WORKGROUP_SIZE);
         let pass = |this: &Self, op: u32, read: &wgpu::Buffer, rw: &wgpu::Buffer, groups: u32| {
             this.write_params(&params(op));
-            this.stack_pass(&this.contrast_protect_pipeline, read, rw, groups, "contrast protect");
+            this.stack_pass(&this.pipelines.contrast_protect_pipeline, read, rw, groups, "contrast protect");
         };
         pass(self, 0, &acc, measure, small_groups);
         pass(self, 1, &layer, measure, small_groups);

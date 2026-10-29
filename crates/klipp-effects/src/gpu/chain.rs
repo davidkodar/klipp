@@ -330,7 +330,7 @@ impl GpuEffectsPipeline {
                     // Create bind group with 4 bindings (like huesat)
                     let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                         label: Some("equalize_bg"),
-                        layout: &self.huesat_bgl,
+                        layout: &self.pipelines.huesat_bgl,
                         entries: &[
                             wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                             wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
@@ -342,7 +342,7 @@ impl GpuEffectsPipeline {
                     let mut encoder = self.encoder(None);
                     {
                         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
-                        pass.set_pipeline(&self.equalize_pipeline);
+                        pass.set_pipeline(&self.pipelines.equalize_pipeline);
                         pass.set_bind_group(0, &bg, &[]);
                         dispatch_flat(&mut pass, workgroups);
                     }

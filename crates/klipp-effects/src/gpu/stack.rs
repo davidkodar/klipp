@@ -75,7 +75,7 @@ impl GpuEffectsPipeline {
     pub(super) fn stack_pass(&self, pipeline: &wgpu::ComputePipeline, read: &wgpu::Buffer, rw: &wgpu::Buffer, workgroups: u32, label: &str) {
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some(label),
-            layout: &self.bind_group_layout,
+            layout: &self.pipelines.bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: read.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: rw.as_entire_binding() },
@@ -238,7 +238,7 @@ impl GpuEffectsPipeline {
         let src = if slot_a { self.buf_a.as_ref().unwrap() } else { self.buf_b.as_ref().unwrap() };
         let acc = self.stack_acc.clone().unwrap();
         let wg = (self.stack_pixel_count() as u32).div_ceil(WORKGROUP_SIZE);
-        self.stack_pass(&self.blend_layer_pipeline, src, &acc, wg, "stack_mix");
+        self.stack_pass(&self.pipelines.blend_layer_pipeline, src, &acc, wg, "stack_mix");
         true
     }
 
@@ -256,7 +256,7 @@ impl GpuEffectsPipeline {
         }
         self.write_params(&BridgeU8Params { width, height, _pad0: 0, _pad1: 0 });
         let wg = (self.stack_pixel_count() as u32).div_ceil(WORKGROUP_SIZE);
-        self.stack_pass(&self.premultiply_pipeline, &acc, self.buf_a.as_ref().unwrap(), wg, "stack_premultiply");
+        self.stack_pass(&self.pipelines.premultiply_pipeline, &acc, self.buf_a.as_ref().unwrap(), wg, "stack_premultiply");
         true
     }
 
@@ -271,7 +271,7 @@ impl GpuEffectsPipeline {
         let acc = self.stack_acc.clone().unwrap();
         self.write_params(&ViewChannelParams { width, height, channel, _pad0: 0, luma: [luma[0], luma[1], luma[2], 0.0] });
         let wg = (self.stack_pixel_count() as u32).div_ceil(WORKGROUP_SIZE);
-        self.stack_pass(&self.view_channel_pipeline, &acc, self.buf_a.as_ref().unwrap(), wg, "stack_view_channel");
+        self.stack_pass(&self.pipelines.view_channel_pipeline, &acc, self.buf_a.as_ref().unwrap(), wg, "stack_view_channel");
         true
     }
 

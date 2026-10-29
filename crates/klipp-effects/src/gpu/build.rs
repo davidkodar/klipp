@@ -1,15 +1,14 @@
-//! Building the GPU effects pipeline (#2890): every compute pipeline,
-//! its bind group layouts and the buffers it starts with, made once from a
-//! device and queue.
+//! Building the GPU effects pipeline (#2890): every compute pipeline and
+//! its bind group layouts, compiled once a device and shared by its
+//! renderers (#2688), and the buffers each renderer starts with.
 
 use super::*;
 
-impl GpuEffectsPipeline {
-    pub(super) fn build_from_device_queue(
-        device: std::sync::Arc<wgpu::Device>,
-        queue: std::sync::Arc<wgpu::Queue>,
-        device_lost: Arc<AtomicBool>,
-    ) -> Option<Self> {
+impl EffectPipelines {
+    /// Every pipeline and layout, compiled on `device`; `None` when a
+    /// shader fails to build.
+    pub(super) fn build(device: &std::sync::Arc<wgpu::Device>) -> Option<Self> {
+        let device = std::sync::Arc::clone(device);
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("effects_bgl"),
             entries: &[
@@ -463,44 +462,6 @@ impl GpuEffectsPipeline {
         let contrast_protect_pipeline = create_pipeline(&device, &pipeline_layout, "contrast_protect", contrast_protect::SHADER_CONTRAST_PROTECT);
         let surface_light_pipeline = create_pipeline(&device, &pipeline_layout, "surface_light", surface_light::SHADER_SURFACE_LIGHT);
 
-        // LUT buffer, sized from the same constant the uploads are.
-        //
-        // A buffer left a curve short would not fail to compile: the
-        // binding is a runtime-sized `array<f32>`. It would fail at the
-        // upload instead — `queue.write_buffer` validates the write and
-        // an oversized one reaches the uncaptured-error handler — so
-        // the symptom is a logged validation error and a LUT that never
-        // arrives, not a silent out-of-bounds read.
-        let huesat_lut_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("huesat_lut"),
-            size: HUESAT_LUT_LEN as u64 * 4,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        // The equalize CDF: 256 f32. Its own buffer — see the field.
-        let equalize_cdf_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("equalize_cdf"),
-            size: EQUALIZE_CDF_LEN as u64 * 4,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-
-        let equalize_hist_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("equalize_histogram"),
-            size: EQUALIZE_CDF_LEN as u64 * 4,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-
-        // RGB curves LUT buffer: 4 channels × 256 entries × 4 bytes = 4096 bytes
-        let rgb_curves_lut_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("rgb_curves_lut"),
-            size: 4 * 256 * 4,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
         let transition_pipeline = create_pipeline(&device, &transition_pl, "transition", SHADER_TRANSITION);
         let pieces_pipeline = create_pipeline(&device, &pieces_pl, "pieces", SHADER_PIECES);
         let shutter_pipeline = create_pipeline(&device, &transition_pl, "shutter", SHADER_SHUTTER);
@@ -746,7 +707,7 @@ impl GpuEffectsPipeline {
         );
 
         let mask_mix_gpu = mask_mix::MaskMixGpu::new(&device);
-        let layer_gpu = layer::LayerGpu::new(&device, &pipeline_layout, &transition_pl);
+        let layer = Arc::new(layer::LayerPipelines::new(&device, &pipeline_layout, &transition_pl));
         let pipeline_count = 68;
         info!(
             "GPU effects: compiled {} pipelines in {:.0}ms",
@@ -760,40 +721,10 @@ impl GpuEffectsPipeline {
             return None;
         }
 
-        let params_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("params"),
-            size: PARAMS_SIZE,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        // Ring of per-dispatch params buffers for the chain path. Each
-        // chain dispatch claims its own slot so the params write lands
-        // in a buffer no later dispatch in the same submit reads from.
-        let stack_params_ring: Vec<wgpu::Buffer> = (0..STACK_PARAMS_RING_SIZE)
-            .map(|i| {
-                device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some(&format!("stack_params_{i}")),
-                    size: PARAMS_SIZE,
-                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                })
-            })
-            .collect();
-        let chain_params = ParamSlots::new(&device, CHAIN_PARAMS_RING_SIZE, PARAMS_SIZE, "chain_params");
-        let effect_params = Some(ParamSlots::new(&device, EFFECT_PARAMS_RING_SIZE, PARAMS_SIZE, "effect_params"));
-
-        info!("GPU effects pipeline initialized");
-
-        Some(Self {
-            readbacks: readbacks::Counters::default(),
-            layer_gpu,
-            mask_mix_gpu,
-            flow_gpu: None,
-            device,
-            queue,
+        Some(EffectPipelines {
             opacity_pipeline,
             color_fade_pipeline,
+            mask_mix_gpu,
             blur_h_pipeline,
             blur_v_pipeline,
             sharpen_pipeline,
@@ -822,7 +753,6 @@ impl GpuEffectsPipeline {
             invert_pipeline,
             posterize_pipeline,
             cst_pipeline,
-            effect_luts: std::cell::RefCell::new(Vec::new()),
             mosaic_pipeline,
             edge_detect_pipeline,
             channel_mixer_pipeline,
@@ -851,27 +781,23 @@ impl GpuEffectsPipeline {
             binocular_vignette_pipeline,
             particles_pipeline,
             rsc_pipeline,
-            rsc_row_buf: None,
-            rsc_row_buf_size: 0,
             stabilization_pipeline,
-            stabilization_buf: None,
-            stabilization_buf_size: 0,
             color_grade_pipeline,
             huesat_pipeline,
             huesat_bgl,
             apply_matte_bgl,
-            huesat_lut_buf,
-            equalize_cdf_buf,
-            equalize_hist_buf,
             lut3d_pipeline,
-            lut3d_buf: None,
-            lut3d_buf_size: 0,
+            color_balance_pipeline,
+            hdr_zones_pipeline,
+            wheel_sat_bri_pipeline,
+            rgb_curves_pipeline,
             vibrance_pipeline,
             scene_to_display_pipeline,
             color_warper_pipeline,
             clarity_blur_h_pipeline,
             clarity_blur_v_pipeline,
             clarity_apply_pipeline,
+            mask_pipeline,
             mask_cutout_pipeline,
             grade_mix_pipeline,
             apply_matte_pipeline,
@@ -879,20 +805,10 @@ impl GpuEffectsPipeline {
             blend_mix_pipeline,
             merge_over_pipeline,
             layer_over_pipeline,
-            grade_mix_src: None,
-            mask_pipeline,
-            color_balance_pipeline,
-            hdr_zones_pipeline,
-            wheel_sat_bri_pipeline,
-            rgb_curves_pipeline,
-            rgb_curves_lut_buf,
             qualifier_pipeline,
             luma_key_pipeline,
             difference_key_pipeline,
             difference_key_bgl,
-            plate_buf: None,
-            plate_key: None,
-            plate_read_in_chain: false,
             temporal_denoise_pipeline,
             temporal_denoise_bgl,
             soft_clip_pipeline,
@@ -901,17 +817,9 @@ impl GpuEffectsPipeline {
             alpha_blur_v_pipeline,
             alpha_dilate_pipeline,
             title_style_pipeline,
-            title_style_scratch: None,
-            title_metal_shots: std::collections::HashMap::new(),
             title_metal_shot_pipeline,
-            title_metal_shot_scratch: None,
             contrast_protect_pipeline,
-            contrast_protect_scratch: None,
             surface_light_pipeline,
-            surface_light_scratch: None,
-            title_post_scratch: None,
-            title_scene_bounds: None,
-            title_outlines: Vec::new(),
             transition_pipeline,
             pieces_pipeline,
             shutter_pipeline,
@@ -924,34 +832,18 @@ impl GpuEffectsPipeline {
             linear_to_yuv420_pipeline,
             aces_rec709_pipeline,
             display_tables_bgl,
-            aces_rec709_data: None,
             no_display_tables,
             no_light,
-            bt2020_gamut_data: None,
-            hdr_encode_data: None,
             bt2020_display_pipeline,
             bridge_hdr10_pipeline,
             bridge_hdr16_pipeline,
             display_u8_pipeline,
             hdr_nit_map_pipeline,
-            hdr_nit_buf: None,
-            hdr_nit_staging: None,
-            display_u8_staging: None,
-            stack_layers: Vec::new(),
-            stack_title_slot: 0,
-            stack_acc: None,
-            stack_sprite_u8: None,
-            stack_sprite_f16: None,
-            stack_rects: None,
-            stack_sprites: Vec::new(),
-            stack_sprite_tick: 0,
+            u8_to_texture_pipeline,
+            u8_to_texture_bgl,
             sprite_place_pipeline,
             sprite_glyphs_bgl,
             sprite_glyphs_pipeline,
-            sprite_glyph_table: None,
-            stack_buf_size: 0,
-            stack_acc_touched: false,
-            stack_dims: (0, 0),
             blend_layer_pipeline,
             premultiply_pipeline,
             view_channel_pipeline,
@@ -964,15 +856,136 @@ impl GpuEffectsPipeline {
             mask_min_v_pipeline,
             matte_apply_pipeline,
             scale_alpha_pipeline,
-            u8_to_texture_pipeline,
-            u8_to_texture_bgl,
+            bind_group_layout,
+            transition_bgl,
+            pieces_bgl,
+            layer,
+        })
+    }
+}
+
+impl GpuEffectsPipeline {
+    pub(super) fn build_from_device_queue(
+        device: std::sync::Arc<wgpu::Device>,
+        queue: std::sync::Arc<wgpu::Queue>,
+        device_lost: Arc<AtomicBool>,
+    ) -> Option<Self> {
+        let pipelines = EffectPipelines::shared(&device)?;
+        let layer_gpu = layer::LayerGpu::new(&device, Arc::clone(&pipelines.layer));
+
+        // What a renderer writes as it draws, its own.
+        //
+        // The hue/sat LUT buffer, sized from the same constant the
+        // uploads are. A buffer left a curve short would not fail to
+        // compile: the binding is a runtime-sized `array<f32>`. It would
+        // fail at the upload instead — `queue.write_buffer` validates the
+        // write and an oversized one reaches the uncaptured-error handler —
+        // so the symptom is a logged validation error and a LUT that never
+        // arrives, not a silent out-of-bounds read.
+        let huesat_lut_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("huesat_lut"),
+            size: HUESAT_LUT_LEN as u64 * 4,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        // The equalize CDF: 256 f32. Its own buffer — see the field.
+        let equalize_cdf_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("equalize_cdf"),
+            size: EQUALIZE_CDF_LEN as u64 * 4,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let equalize_hist_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("equalize_histogram"),
+            size: EQUALIZE_CDF_LEN as u64 * 4,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        // RGB curves LUT buffer: 4 channels × 256 entries × 4 bytes = 4096 bytes
+        let rgb_curves_lut_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("rgb_curves_lut"),
+            size: 4 * 256 * 4,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let params_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("params"),
+            size: PARAMS_SIZE,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        // Ring of per-dispatch params buffers for the chain path. Each
+        // chain dispatch claims its own slot so the params write lands
+        // in a buffer no later dispatch in the same submit reads from.
+        let stack_params_ring: Vec<wgpu::Buffer> = (0..STACK_PARAMS_RING_SIZE)
+            .map(|i| {
+                device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some(&format!("stack_params_{i}")),
+                    size: PARAMS_SIZE,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                })
+            })
+            .collect();
+        let chain_params = ParamSlots::new(&device, CHAIN_PARAMS_RING_SIZE, PARAMS_SIZE, "chain_params");
+        let effect_params = Some(ParamSlots::new(&device, EFFECT_PARAMS_RING_SIZE, PARAMS_SIZE, "effect_params"));
+
+        info!("GPU effects pipeline initialized");
+
+        Some(Self {
+            readbacks: readbacks::Counters::default(),
+            pipelines,
+            layer_gpu,
+            flow_gpu: None,
+            device,
+            queue,
+            effect_luts: std::cell::RefCell::new(Vec::new()),
+            rsc_row_buf: None,
+            rsc_row_buf_size: 0,
+            stabilization_buf: None,
+            stabilization_buf_size: 0,
+            huesat_lut_buf,
+            equalize_cdf_buf,
+            equalize_hist_buf,
+            lut3d_buf: None,
+            lut3d_buf_size: 0,
+            grade_mix_src: None,
+            rgb_curves_lut_buf,
+            plate_buf: None,
+            plate_key: None,
+            plate_read_in_chain: false,
+            title_style_scratch: None,
+            title_metal_shots: std::collections::HashMap::new(),
+            title_metal_shot_scratch: None,
+            contrast_protect_scratch: None,
+            surface_light_scratch: None,
+            title_post_scratch: None,
+            title_scene_bounds: None,
+            title_outlines: Vec::new(),
+            aces_rec709_data: None,
+            bt2020_gamut_data: None,
+            hdr_encode_data: None,
+            hdr_nit_buf: None,
+            hdr_nit_staging: None,
+            display_u8_staging: None,
+            stack_layers: Vec::new(),
+            stack_title_slot: 0,
+            stack_acc: None,
+            stack_sprite_u8: None,
+            stack_sprite_f16: None,
+            stack_rects: None,
+            stack_sprites: Vec::new(),
+            stack_sprite_tick: 0,
+            sprite_glyph_table: None,
+            stack_buf_size: 0,
+            stack_acc_touched: false,
+            stack_dims: (0, 0),
             bridge_u8_out_buf: None,
             bridge_u8_out_size: 0,
             bridge_u8_staging_buf: None,
             bridge_u8_staging_size: 0,
-            bind_group_layout,
-            transition_bgl,
-            pieces_bgl,
             buf_a: None,
             buf_b: None,
             buf_c: None,

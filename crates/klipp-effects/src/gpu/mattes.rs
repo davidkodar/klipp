@@ -170,7 +170,7 @@ impl GpuEffectsPipeline {
         // Pull the bind group layout straight off the pipeline so
         // we don't have to keep a second handle around in the
         // pipeline struct for every dispatch.
-        let bgl = self.mask_pipeline.get_bind_group_layout(0);
+        let bgl = self.pipelines.mask_pipeline.get_bind_group_layout(0);
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("mask_v2_bg"),
             layout: &bgl,
@@ -187,7 +187,7 @@ impl GpuEffectsPipeline {
                 label: Some("mask_v2_pass"),
                 timestamp_writes: None,
             });
-            pass.set_pipeline(&self.mask_pipeline);
+            pass.set_pipeline(&self.pipelines.mask_pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
             dispatch_flat(&mut pass, workgroups);
         }
@@ -257,7 +257,7 @@ impl GpuEffectsPipeline {
         let pixel_count = width * height;
         let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
 
-        self.dispatch(&self.qualifier_pipeline, buf_a, buf_b, workgroups);
+        self.dispatch(&self.pipelines.qualifier_pipeline, buf_a, buf_b, workgroups);
         self.download_linear_rgba_f32(buf_b, (width * height) as usize)
     }
 
@@ -301,7 +301,7 @@ impl GpuEffectsPipeline {
         });
 
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
-        self.dispatch(&self.luma_key_pipeline, buf_a, buf_b, workgroups);
+        self.dispatch(&self.pipelines.luma_key_pipeline, buf_a, buf_b, workgroups);
         self.download_linear_rgba_f32(buf_b, (width * height) as usize)
     }
 
@@ -360,7 +360,7 @@ impl GpuEffectsPipeline {
             .as_ref()
             .expect(Self::CHAIN_BG_EXPECT);
         let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
-        Self::record_compute_dispatch(enc, &self.mask_cutout_pipeline, bind_group, workgroups);
+        Self::record_compute_dispatch(enc, &self.pipelines.mask_cutout_pipeline, bind_group, workgroups);
     }
 
     /// Upload the difference key's clean plate, already resized to the
@@ -435,7 +435,7 @@ impl GpuEffectsPipeline {
         let (kept, matte) = (self.slot_pool.buffer(kept.0), self.slot_pool.buffer(matte.0));
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("chain_bg_apply_matte"),
-            layout: &self.apply_matte_bgl,
+            layout: &self.pipelines.apply_matte_bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
@@ -446,7 +446,7 @@ impl GpuEffectsPipeline {
         });
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
-        Self::record_compute_dispatch(enc, &self.apply_matte_pipeline, &bind_group, workgroups);
+        Self::record_compute_dispatch(enc, &self.pipelines.apply_matte_pipeline, &bind_group, workgroups);
     }
 
     /// Multiply layer `i`'s alpha by `factor` (a transition side's
@@ -459,7 +459,7 @@ impl GpuEffectsPipeline {
         self.write_params(&ScaleAlphaParams { width, height, factor, _pad: 0 });
         let wg = (self.stack_pixel_count() as u32).div_ceil(WORKGROUP_SIZE);
         let layer = std::sync::Arc::clone(&self.stack_layers[i]);
-        self.stack_pass(&self.scale_alpha_pipeline, self.matte_buf.as_ref().unwrap(), &layer, wg, "stack_scale_alpha");
+        self.stack_pass(&self.pipelines.scale_alpha_pipeline, self.matte_buf.as_ref().unwrap(), &layer, wg, "stack_scale_alpha");
         true
     }
 
@@ -478,24 +478,24 @@ impl GpuEffectsPipeline {
         let source_buf = std::sync::Arc::clone(&self.stack_layers[source]);
         let consumer_buf = std::sync::Arc::clone(&self.stack_layers[consumer]);
         self.write_params(&MatteExtractParams { width, height, channel, invert: invert as u32, luma_r: luma[0], luma_g: luma[1], luma_b: luma[2], _pad: 0 });
-        self.stack_pass(&self.matte_extract_pipeline, &source_buf, self.matte_buf.as_ref().unwrap(), wg, "stack_matte_extract");
+        self.stack_pass(&self.pipelines.matte_extract_pipeline, &source_buf, self.matte_buf.as_ref().unwrap(), wg, "stack_matte_extract");
         if choke_px >= 0.5 {
             let radius = (choke_px.round() as u32).max(1);
             self.write_params(&MaskPoolParams { width, height, radius, _pad: 0 });
-            self.stack_pass(&self.mask_min_h_pipeline, self.matte_buf.as_ref().unwrap(), self.buf_c.as_ref().unwrap(), wg, "stack_mask_min_h");
+            self.stack_pass(&self.pipelines.mask_min_h_pipeline, self.matte_buf.as_ref().unwrap(), self.buf_c.as_ref().unwrap(), wg, "stack_mask_min_h");
             self.write_params(&MaskPoolParams { width, height, radius, _pad: 0 });
-            self.stack_pass(&self.mask_min_v_pipeline, self.buf_c.as_ref().unwrap(), self.matte_buf.as_ref().unwrap(), wg, "stack_mask_min_v");
+            self.stack_pass(&self.pipelines.mask_min_v_pipeline, self.buf_c.as_ref().unwrap(), self.matte_buf.as_ref().unwrap(), wg, "stack_mask_min_v");
         }
         if feather_px >= 0.25 {
             for r in crate::blur::boxes_for_gaussian(feather_px) {
                 self.write_params(&BlurParams { width, height, radius: r as i32, _pad: 0 });
-                self.stack_pass(&self.blur_h_pipeline, self.matte_buf.as_ref().unwrap(), self.buf_c.as_ref().unwrap(), wg, "stack_feather_h");
+                self.stack_pass(&self.pipelines.blur_h_pipeline, self.matte_buf.as_ref().unwrap(), self.buf_c.as_ref().unwrap(), wg, "stack_feather_h");
                 self.write_params(&BlurParams { width, height, radius: r as i32, _pad: 0 });
-                self.stack_pass(&self.blur_v_pipeline, self.buf_c.as_ref().unwrap(), self.matte_buf.as_ref().unwrap(), wg, "stack_feather_v");
+                self.stack_pass(&self.pipelines.blur_v_pipeline, self.buf_c.as_ref().unwrap(), self.matte_buf.as_ref().unwrap(), wg, "stack_feather_v");
             }
         }
         self.write_params(&ScaleAlphaParams { width, height, factor: 1.0, _pad: 0 });
-        self.stack_pass(&self.matte_apply_pipeline, self.matte_buf.as_ref().unwrap(), &consumer_buf, wg, "stack_matte_apply");
+        self.stack_pass(&self.pipelines.matte_apply_pipeline, self.matte_buf.as_ref().unwrap(), &consumer_buf, wg, "stack_matte_apply");
         true
     }
 
@@ -603,7 +603,7 @@ impl GpuEffectsPipeline {
                     remove_inv: [v[5], v[6], v[7]],
                     reach: v[8],
                 });
-                &self.qualifier_pipeline
+                &self.pipelines.qualifier_pipeline
             }
             GpuKey::LumaKey { low, high, soft, invert } => {
                 self.write_chain_params(slot, &GpuLumaKeyParams {
@@ -613,7 +613,7 @@ impl GpuEffectsPipeline {
                     _pad1: 0,
                     luma: [self.luma_coefs[0], self.luma_coefs[1], self.luma_coefs[2], 0.0],
                 });
-                &self.luma_key_pipeline
+                &self.pipelines.luma_key_pipeline
             }
             GpuKey::DifferenceKey { tolerance, soft, invert, luminance } => {
                 self.write_chain_params(slot, &GpuDifferenceKeyParams {
@@ -627,7 +627,7 @@ impl GpuEffectsPipeline {
                     _pad1: 0,
                     luma: [self.luma_coefs[0], self.luma_coefs[1], self.luma_coefs[2], 0.0],
                 });
-                &self.difference_key_pipeline
+                &self.pipelines.difference_key_pipeline
             }
         };
         let (input, output) = match route {
@@ -647,9 +647,9 @@ impl GpuEffectsPipeline {
             GpuKey::DifferenceKey { .. } => {
                 entries.push(wgpu::BindGroupEntry { binding: 3, resource: self.plate_buf.as_ref().expect("checked by the caller").as_entire_binding() });
                 plate_read = true;
-                &self.difference_key_bgl
+                &self.pipelines.difference_key_bgl
             }
-            _ => &self.bind_group_layout,
+            _ => &self.pipelines.bind_group_layout,
         };
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("chain_bg_key"), layout, entries: &entries });
         let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
@@ -685,12 +685,12 @@ impl GpuEffectsPipeline {
             // Horizontal pass
             let (inp, out) = if current_in_a { (buf_a, buf_b) } else { (buf_b, buf_a) };
             self.write_params(&AlphaBlurParams { width: w, height: h, radius: box_r as u32, _pad: 0 });
-            self.dispatch(&self.alpha_blur_h_pipeline, inp, out, workgroups);
+            self.dispatch(&self.pipelines.alpha_blur_h_pipeline, inp, out, workgroups);
             current_in_a = !current_in_a;
 
             // Vertical pass
             let (inp, out) = if current_in_a { (buf_a, buf_b) } else { (buf_b, buf_a) };
-            self.dispatch(&self.alpha_blur_v_pipeline, inp, out, workgroups);
+            self.dispatch(&self.pipelines.alpha_blur_v_pipeline, inp, out, workgroups);
             current_in_a = !current_in_a;
         }
 
@@ -721,7 +721,7 @@ impl GpuEffectsPipeline {
         let workgroups = (w * h).div_ceil(WORKGROUP_SIZE);
 
         self.write_params(&AlphaDilateParams { width: w, height: h, radius: r, radius_sq: (radius.max(0.0) * radius.max(0.0)) as u32 });
-        self.dispatch(&self.alpha_dilate_pipeline, buf_a, buf_b, workgroups);
+        self.dispatch(&self.pipelines.alpha_dilate_pipeline, buf_a, buf_b, workgroups);
 
         let result_bytes = self.download(buf_b, byte_size);
         let result_u32: &[u32] = bytemuck::cast_slice(&result_bytes);

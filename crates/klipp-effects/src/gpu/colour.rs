@@ -87,7 +87,7 @@ impl GpuEffectsPipeline {
             log_high_range: wheel_shape.high_range,
             luma_mix: wheel_shape.luma_mix,
         });
-        self.dispatch(&self.color_grade_pipeline, buf_a, buf_b, workgroups);
+        self.dispatch(&self.pipelines.color_grade_pipeline, buf_a, buf_b, workgroups);
 
         self.download_linear_rgba_f32(buf_b, (width * height) as usize)
     }
@@ -122,7 +122,7 @@ impl GpuEffectsPipeline {
             width, height, wb: flat3(white_balance), hue, global_mix,
             _pad0: 0, _pad1: 0,
         });
-        self.dispatch(&self.color_balance_pipeline, buf_a, buf_b, workgroups);
+        self.dispatch(&self.pipelines.color_balance_pipeline, buf_a, buf_b, workgroups);
 
         self.download_linear_rgba_f32(buf_b, (width * height) as usize)
     }
@@ -140,7 +140,7 @@ impl GpuEffectsPipeline {
         self.upload_frame(buf_a, bytemuck::cast_slice(linear_rgba));
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         self.write_params(&GpuHdrZonesParams::new(width, height, terms));
-        self.dispatch(&self.hdr_zones_pipeline, buf_a, buf_b, workgroups);
+        self.dispatch(&self.pipelines.hdr_zones_pipeline, buf_a, buf_b, workgroups);
         self.download_linear_rgba_f32(buf_b, (width * height) as usize)
     }
 
@@ -178,7 +178,7 @@ impl GpuEffectsPipeline {
             luma_yb: self.luma_coefs[2],
             _pad0: 0,
         });
-        self.dispatch(&self.wheel_sat_bri_pipeline, buf_a, buf_b, workgroups);
+        self.dispatch(&self.pipelines.wheel_sat_bri_pipeline, buf_a, buf_b, workgroups);
 
         self.download_linear_rgba_f32(buf_b, (width * height) as usize)
     }
@@ -224,7 +224,7 @@ impl GpuEffectsPipeline {
         // Create bind group with 4 bindings (reuse huesat_bgl layout)
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("rgb_curves_bg"),
-            layout: &self.huesat_bgl,
+            layout: &self.pipelines.huesat_bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: buf_a.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: buf_b.as_entire_binding() },
@@ -238,7 +238,7 @@ impl GpuEffectsPipeline {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: None, timestamp_writes: None,
             });
-            pass.set_pipeline(&self.rgb_curves_pipeline);
+            pass.set_pipeline(&self.pipelines.rgb_curves_pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
             dispatch_flat(&mut pass, workgroups);
         }
@@ -261,7 +261,7 @@ impl GpuEffectsPipeline {
         self.upload_frame(buf_a, bytemuck::cast_slice(linear_rgba));
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         self.write_params(&GpuVibranceParams { width, height, amount, _pad: 0, luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad1: 0 });
-        self.dispatch(&self.vibrance_pipeline, buf_a, buf_b, workgroups);
+        self.dispatch(&self.pipelines.vibrance_pipeline, buf_a, buf_b, workgroups);
         self.download_linear_rgba_f32(buf_b, (width * height) as usize)
     }
 
@@ -280,7 +280,7 @@ impl GpuEffectsPipeline {
             width, height, _pad0: 0, _pad1: 0,
             hue_shifts: *hue_shifts, sat_shifts: *sat_shifts,
         });
-        self.dispatch(&self.color_warper_pipeline, buf_a, buf_b, workgroups);
+        self.dispatch(&self.pipelines.color_warper_pipeline, buf_a, buf_b, workgroups);
         self.download_linear_rgba_f32(buf_b, (width * height) as usize)
     }
 
@@ -311,16 +311,16 @@ impl GpuEffectsPipeline {
 
         // Pass 1: horizontal blur (input RGBA → buf_b luma)
         self.write_params(&GpuClarityBlurParams { width, height, radius, _pad: 0, luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad1: 0 });
-        self.dispatch(&self.clarity_blur_h_pipeline, buf_a, buf_b, workgroups);
+        self.dispatch(&self.pipelines.clarity_blur_h_pipeline, buf_a, buf_b, workgroups);
 
         // Pass 2: vertical blur (buf_b luma → buf_c blurred luma)
-        self.dispatch(&self.clarity_blur_v_pipeline, buf_b, buf_c, workgroups);
+        self.dispatch(&self.pipelines.clarity_blur_v_pipeline, buf_b, buf_c, workgroups);
 
         // Pass 3: apply unsharp mask (input RGBA + blurred luma → output RGBA)
         self.write_params(&GpuClarityApplyParams { width, height, amount, _pad: 0, luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad1: 0 });
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("clarity_apply_bg"),
-            layout: &self.huesat_bgl,
+            layout: &self.pipelines.huesat_bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: buf_a.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: buf_b.as_entire_binding() },
@@ -331,7 +331,7 @@ impl GpuEffectsPipeline {
         let mut encoder = self.encoder(None);
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
-            pass.set_pipeline(&self.clarity_apply_pipeline);
+            pass.set_pipeline(&self.pipelines.clarity_apply_pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
             dispatch_flat(&mut pass, workgroups);
         }
@@ -382,7 +382,7 @@ impl GpuEffectsPipeline {
         // Create bind group with 4 bindings
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("huesat_bg"),
-            layout: &self.huesat_bgl,
+            layout: &self.pipelines.huesat_bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: buf_a.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: buf_b.as_entire_binding() },
@@ -396,7 +396,7 @@ impl GpuEffectsPipeline {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: None, timestamp_writes: None,
             });
-            pass.set_pipeline(&self.huesat_pipeline);
+            pass.set_pipeline(&self.pipelines.huesat_pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
             dispatch_flat(&mut pass, workgroups);
         }
@@ -458,7 +458,7 @@ impl GpuEffectsPipeline {
 
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("lut3d_bg"),
-            layout: &self.huesat_bgl,
+            layout: &self.pipelines.huesat_bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: buf_a.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: buf_b.as_entire_binding() },
@@ -472,7 +472,7 @@ impl GpuEffectsPipeline {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: None, timestamp_writes: None,
             });
-            pass.set_pipeline(&self.lut3d_pipeline);
+            pass.set_pipeline(&self.pipelines.lut3d_pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
             dispatch_flat(&mut pass, workgroups);
         }
@@ -521,7 +521,7 @@ impl GpuEffectsPipeline {
         });
 
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
-        self.dispatch(&self.soft_clip_pipeline, buf_a, buf_b, workgroups);
+        self.dispatch(&self.pipelines.soft_clip_pipeline, buf_a, buf_b, workgroups);
         self.download_linear_rgba_f32(buf_b, (width * height) as usize)
     }
 
@@ -580,7 +580,7 @@ impl GpuEffectsPipeline {
             .as_ref()
             .expect(Self::CHAIN_BG_EXPECT);
         let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
-        Self::record_compute_dispatch(enc, &self.color_grade_pipeline, bind_group, workgroups);
+        Self::record_compute_dispatch(enc, &self.pipelines.color_grade_pipeline, bind_group, workgroups);
     }
 
     /// Dispatch-only colour-balance pass.
@@ -606,7 +606,7 @@ impl GpuEffectsPipeline {
             .as_ref()
             .expect(Self::CHAIN_BG_EXPECT);
         let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
-        Self::record_compute_dispatch(enc, &self.color_balance_pipeline, bind_group, workgroups);
+        Self::record_compute_dispatch(enc, &self.pipelines.color_balance_pipeline, bind_group, workgroups);
     }
 
     /// Dispatch-only HDR zones pass (#240).
@@ -621,7 +621,7 @@ impl GpuEffectsPipeline {
             .as_ref()
             .expect(Self::CHAIN_BG_EXPECT);
         let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
-        Self::record_compute_dispatch(enc, &self.hdr_zones_pipeline, bind_group, workgroups);
+        Self::record_compute_dispatch(enc, &self.pipelines.hdr_zones_pipeline, bind_group, workgroups);
     }
 
     /// Dispatch-only wheel sat/bri pass.
@@ -654,7 +654,7 @@ impl GpuEffectsPipeline {
             .as_ref()
             .expect(Self::CHAIN_BG_EXPECT);
         let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
-        Self::record_compute_dispatch(enc, &self.wheel_sat_bri_pipeline, bind_group, workgroups);
+        Self::record_compute_dispatch(enc, &self.pipelines.wheel_sat_bri_pipeline, bind_group, workgroups);
     }
 
     /// Dispatch-only RGB curves pass. Uploads LUT, writes params, dispatches.
@@ -686,7 +686,7 @@ impl GpuEffectsPipeline {
             .as_ref()
             .expect(Self::CHAIN_BG_EXPECT);
         let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
-        Self::record_compute_dispatch(enc, &self.rgb_curves_pipeline, bind_group, workgroups);
+        Self::record_compute_dispatch(enc, &self.pipelines.rgb_curves_pipeline, bind_group, workgroups);
     }
 
     /// Dispatch-only vibrance pass.
@@ -707,7 +707,7 @@ impl GpuEffectsPipeline {
             .as_ref()
             .expect(Self::CHAIN_BG_EXPECT);
         let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
-        Self::record_compute_dispatch(enc, &self.vibrance_pipeline, bind_group, workgroups);
+        Self::record_compute_dispatch(enc, &self.pipelines.vibrance_pipeline, bind_group, workgroups);
     }
 
     /// Dispatch-only 12-sector colour warper pass.
@@ -732,7 +732,7 @@ impl GpuEffectsPipeline {
             .as_ref()
             .expect(Self::CHAIN_BG_EXPECT);
         let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
-        Self::record_compute_dispatch(enc, &self.color_warper_pipeline, bind_group, workgroups);
+        Self::record_compute_dispatch(enc, &self.pipelines.color_warper_pipeline, bind_group, workgroups);
     }
 
     /// Dispatch-only clarity (midtone unsharp-mask) pass. Uses `buf_c` as
@@ -788,7 +788,7 @@ impl GpuEffectsPipeline {
                 .as_ref()
                 .expect(Self::CHAIN_BG_EXPECT);
             let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
-            Self::record_compute_dispatch(enc, &self.clarity_blur_h_pipeline, bind_group, workgroups);
+            Self::record_compute_dispatch(enc, &self.pipelines.clarity_blur_h_pipeline, bind_group, workgroups);
         }
 
         // Pass 2: vertical blur (out luma → buf_c blurred luma).
@@ -802,7 +802,7 @@ impl GpuEffectsPipeline {
                 .as_ref()
                 .expect(Self::CHAIN_BG_EXPECT);
             let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
-            Self::record_compute_dispatch(enc, &self.clarity_blur_v_pipeline, bind_group, workgroups);
+            Self::record_compute_dispatch(enc, &self.pipelines.clarity_blur_v_pipeline, bind_group, workgroups);
         }
 
         // Pass 3: unsharp mask (in RGBA + buf_c blurred luma → out RGBA).
@@ -812,7 +812,7 @@ impl GpuEffectsPipeline {
             .as_ref()
             .expect(Self::CHAIN_BG_EXPECT);
         let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
-        Self::record_compute_dispatch(enc, &self.clarity_apply_pipeline, bind_group, workgroups);
+        Self::record_compute_dispatch(enc, &self.pipelines.clarity_apply_pipeline, bind_group, workgroups);
     }
 
     /// Dispatch-only hue/sat curves pass. Uploads the 6×256 LUT, writes
@@ -837,7 +837,7 @@ impl GpuEffectsPipeline {
             .as_ref()
             .expect(Self::CHAIN_BG_EXPECT);
         let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
-        Self::record_compute_dispatch(enc, &self.huesat_pipeline, bind_group, workgroups);
+        Self::record_compute_dispatch(enc, &self.pipelines.huesat_pipeline, bind_group, workgroups);
     }
 
     /// Dispatch-only 3D LUT pass with trilinear interpolation.
@@ -897,7 +897,7 @@ impl GpuEffectsPipeline {
         // once per chain (≤1 3D LUT node per grade) so the cost is bounded.
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("lut3d_chain_bg"),
-            layout: &self.huesat_bgl,
+            layout: &self.pipelines.huesat_bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
@@ -906,7 +906,7 @@ impl GpuEffectsPipeline {
             ],
         });
         let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
-        Self::record_compute_dispatch(enc, &self.lut3d_pipeline, &bind_group, workgroups);
+        Self::record_compute_dispatch(enc, &self.pipelines.lut3d_pipeline, &bind_group, workgroups);
     }
 
     /// Equalize's histogram and CDF of `linear` (straight RGBA, `width` ×
@@ -926,7 +926,7 @@ impl GpuEffectsPipeline {
         let bind = |a: &wgpu::Buffer, b: &wgpu::Buffer, c: &wgpu::Buffer| {
             self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("equalize_probe"),
-                layout: &self.huesat_bgl,
+                layout: &self.pipelines.huesat_bgl,
                 entries: &[
                     wgpu::BindGroupEntry { binding: 0, resource: a.as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 1, resource: b.as_entire_binding() },
@@ -937,8 +937,8 @@ impl GpuEffectsPipeline {
         };
         let mut encoder = self.encoder(None);
         encoder.clear_buffer(hist, 0, None);
-        Self::record_compute_dispatch(&mut encoder, &self.equalize_histogram_pipeline, &bind(frame, hist, cdf), (width * height).div_ceil(WORKGROUP_SIZE));
-        Self::record_compute_dispatch(&mut encoder, &self.equalize_cdf_pipeline, &bind(hist, cdf, hist), 1);
+        Self::record_compute_dispatch(&mut encoder, &self.pipelines.equalize_histogram_pipeline, &bind(frame, hist, cdf), (width * height).div_ceil(WORKGROUP_SIZE));
+        Self::record_compute_dispatch(&mut encoder, &self.pipelines.equalize_cdf_pipeline, &bind(hist, cdf, hist), 1);
         self.submit(encoder);
         let counts: Vec<u32> = bytemuck::cast_slice(&self.download(hist, EQUALIZE_CDF_LEN as u64 * 4)).to_vec();
         let ramp: Vec<f32> = bytemuck::cast_slice(&self.download(cdf, EQUALIZE_CDF_LEN as u64 * 4)).to_vec();
