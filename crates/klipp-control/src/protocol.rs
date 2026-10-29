@@ -1312,6 +1312,22 @@ pub enum ControlCommand {
     },
     /// The user's brand kit `name` removed, its folder with it.
     RemoveBrandKit { name: String },
+    /// The brand kit `name` written to `path` (an absolute `.klippbrand`)
+    /// to share, each file's licence by its name in `licences` or beside
+    /// it in the kit's folder.
+    ExportBrandKit {
+        name: String,
+        path: String,
+        #[serde(default)]
+        licences: std::collections::BTreeMap<String, String>,
+    },
+    /// The shared brand kit at `path` installed as the user's own; one of
+    /// its name is kept unless `replace`.
+    ImportBrandKit {
+        path: String,
+        #[serde(default)]
+        replace: bool,
+    },
     /// The brand kit `name` taken into the open sequence, as one undo
     /// step: `parts` (all when left out) of `brief` (its colours and title
     /// looks into the brief) and `captions` (its caption look onto every

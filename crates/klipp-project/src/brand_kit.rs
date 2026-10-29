@@ -448,6 +448,107 @@ pub fn remove(root: &Path, name: &str) -> Result<(), String> {
     std::fs::remove_dir_all(&dir).map_err(|e| format!("cannot remove the kit: {e}"))
 }
 
+/// A shared brand kit's file extension (#2722): a zip of `kit.toml` and
+/// the files it names, each with its licence, read by the template
+/// pack's reader within its caps.
+pub const BRAND_EXTENSION: &str = "klippbrand";
+
+/// A file's licence, beside it in a kit's folder or a shared kit.
+fn licence_name(file: &str) -> String {
+    format!("{file}.licence.txt")
+}
+
+/// Write the kit `name` (the user's or a starter) to `out`, a
+/// `.klippbrand`: its `kit.toml` and each file it names with its licence,
+/// given in `licences` by file name or as `<file>.licence.txt` in the
+/// kit's folder; a file with neither is refused, named. What was written.
+pub fn export_kit(root: Option<&Path>, name: &str, out: &Path, licences: &std::collections::BTreeMap<String, String>) -> Result<String, String> {
+    use std::io::Write;
+    use zip::write::{SimpleFileOptions, ZipWriter};
+    if out.extension().and_then(|e| e.to_str()) != Some(BRAND_EXTENSION) {
+        return Err(format!("give a path ending in .{BRAND_EXTENSION}"));
+    }
+    let found = get(root, name)?;
+    let kit = &found.kit;
+    let dir = found.dir.clone();
+    let licence_of = |file: &str| -> Option<String> {
+        licences.get(file).cloned().or_else(|| dir.as_ref().and_then(|d| std::fs::read_to_string(d.join(licence_name(file))).ok())).filter(|t| !t.trim().is_empty())
+    };
+    let unlicensed: Vec<&str> = kit.files().into_iter().filter(|f| licence_of(f).is_none()).collect();
+    if !unlicensed.is_empty() {
+        return Err(format!("no licence for {}: give licences {{\"<file>\": \"<licence text>\"}}, or put <file>.licence.txt in the kit's folder", unlicensed.join(", ")));
+    }
+    let tmp = out.with_extension(format!("{BRAND_EXTENSION}.part"));
+    let written = (|| -> Result<(), String> {
+        let mut zip = ZipWriter::new(std::fs::File::create(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?);
+        let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        let mut put = |path: &str, bytes: &[u8]| -> Result<(), String> {
+            zip.start_file(path, options).map_err(|e| e.to_string())?;
+            zip.write_all(bytes).map_err(|e| e.to_string())
+        };
+        put(KIT_FILE, kit.write()?.as_bytes())?;
+        for f in kit.files() {
+            let src = dir.as_ref().map(|d| d.join(f)).ok_or_else(|| format!("{f} has no folder to come from"))?;
+            put(f, &std::fs::read(&src).map_err(|e| format!("{}: {e}", src.display()))?)?;
+            put(&licence_name(f), licence_of(f).unwrap_or_default().as_bytes())?;
+        }
+        zip.finish().map_err(|e| e.to_string())?;
+        Ok(())
+    })();
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    std::fs::rename(&tmp, out).map_err(|e| format!("{}: {e}", out.display()))?;
+    Ok(format!("wrote the brand kit \"{}\" with {} file{} to {}", kit.name, kit.files().len(), if kit.files().len() == 1 { "" } else { "s" }, out.display()))
+}
+
+/// Install the shared kit at `path` as the user's own, read as untrusted:
+/// every entry within the pack's caps, the kit checked as any kit is, only
+/// the files it names read, each with its licence, written under plain
+/// names into its own folder. A kit of its name is kept unless `replace`.
+pub fn import_kit(root: &Path, path: &Path, replace: bool) -> Result<Found, String> {
+    use crate::template_pack::{read_entry, MAX_ENTRY_BYTES, MAX_PACK_BYTES};
+    let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut zip = zip::ZipArchive::new(file).map_err(|e| format!("not a brand kit file: {e}"))?;
+    let mut left = MAX_PACK_BYTES;
+    let text = read_entry(&mut zip, KIT_FILE, MAX_KIT_BYTES, &mut left)?.ok_or(format!("not a brand kit file: it has no {KIT_FILE}"))?;
+    let kit = BrandKit::read(&String::from_utf8(text).map_err(|_| format!("{KIT_FILE} is not text"))?)?;
+    if !replace && list(Some(root)).iter().any(|f| f.source == Source::Mine && f.kit.name.eq_ignore_ascii_case(&kit.name)) {
+        return Err(format!("you have a brand kit \"{}\" already: import with replace to take its place", kit.name));
+    }
+    // Each file read before anything is written: a missing or oversized
+    // one leaves nothing behind.
+    let mut files = Vec::new();
+    for f in kit.files() {
+        let cap = if LOGO_KINDS.iter().any(|k| f.to_lowercase().ends_with(k)) { MAX_LOGO_BYTES } else { MAX_ENTRY_BYTES };
+        let bytes = read_entry(&mut zip, f, cap, &mut left)?.ok_or_else(|| format!("the kit names {f}, which the file does not hold"))?;
+        let licence = read_entry(&mut zip, &licence_name(f), MAX_KIT_BYTES, &mut left)?.filter(|l| !l.is_empty()).ok_or_else(|| format!("{f} comes with no licence"))?;
+        files.push((f.to_string(), bytes, licence));
+    }
+    let dir = crate::path_util::inside(&kits_dir(root), &[&klipp_core::safe_name(&kit.name)])?;
+    let staging = crate::path_util::inside(&kits_dir(root), &[&format!(".{}.importing", klipp_core::safe_name(&kit.name))])?;
+    let _ = std::fs::remove_dir_all(&staging);
+    std::fs::create_dir_all(&staging).map_err(|e| format!("cannot make the kit's folder: {e}"))?;
+    let staged = (|| -> Result<(), String> {
+        for (f, bytes, licence) in &files {
+            std::fs::write(crate::path_util::inside(&staging, &[f])?, bytes).map_err(|e| e.to_string())?;
+            std::fs::write(crate::path_util::inside(&staging, &[&licence_name(f)])?, licence).map_err(|e| e.to_string())?;
+        }
+        std::fs::write(staging.join(KIT_FILE), kit.write()?).map_err(|e| e.to_string())
+    })();
+    if let Err(e) = staged {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(e);
+    }
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).map_err(|e| format!("cannot replace the kit: {e}"))?;
+    }
+    std::fs::rename(&staging, &dir).map_err(|e| format!("cannot install the kit: {e}"))?;
+    let kit = read_dir(&dir)?;
+    Ok(Found { kit, source: Source::Mine, dir: Some(dir) })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -518,6 +619,70 @@ mod tests {
         assert_eq!(b.type_style("kicker").unwrap().size, Some(30.0), "the brief's own look kept");
         assert_eq!(editorial.caption_look().unwrap().font, "Lora");
         assert!(BrandKit::new("Empty").caption_look().is_none() && BrandKit::new("Empty").title_styles().is_empty());
+    }
+
+    /// A kit shared as a file and installed elsewhere is the same kit, its
+    /// logo and licence with it; a file without a licence is not shared; a
+    /// kit already there is kept unless replaced.
+    #[test]
+    fn a_kit_is_shared_as_a_file_and_installed() {
+        let (root, src, other) = (tmp("share-root"), tmp("share-src"), tmp("share-other"));
+        std::fs::write(src.join("logo.png"), b"\x89PNG the logo").unwrap();
+        let mut kit = BrandKit::new("Shared");
+        kit.colours.primary = Some("#123456".into());
+        kit.logo = Some(Logo { file: "logo.png".into(), corner: Corner::TopLeft, margin: 0.05, scale: 0.1, opacity: 1.0 });
+        save(&root, &kit, &[src.join("logo.png")]).unwrap();
+        let out = src.join("shared.klippbrand");
+        assert!(export_kit(Some(&root), "Shared", &out, &Default::default()).unwrap_err().contains("no licence for logo.png"));
+        let licences = [("logo.png".to_string(), "CC0".to_string())].into_iter().collect();
+        export_kit(Some(&root), "Shared", &out, &licences).unwrap();
+        let found = import_kit(&other, &out, false).unwrap();
+        assert_eq!(found.kit, kit);
+        let dir = found.dir.unwrap();
+        assert_eq!(std::fs::read(dir.join("logo.png")).unwrap(), b"\x89PNG the logo");
+        assert_eq!(std::fs::read_to_string(dir.join("logo.png.licence.txt")).unwrap(), "CC0");
+        assert!(import_kit(&other, &out, false).unwrap_err().contains("already"));
+        import_kit(&other, &out, true).unwrap();
+        assert!(export_kit(Some(&root), "Shared", &src.join("x.zip"), &licences).is_err(), "the extension");
+        export_kit(None, "Bold", &src.join("bold.klippbrand"), &Default::default()).unwrap();
+    }
+
+    /// A hostile shared kit: not a zip, no kit file, a later format, a
+    /// file name that climbs out, a named file missing, one with no
+    /// licence, an oversized logo and an oversized kit file are each
+    /// refused, and nothing is left in the kits folder.
+    #[test]
+    fn a_hostile_shared_kit_is_refused() {
+        use std::io::Write;
+        let (dir, root) = (tmp("hostile-share"), tmp("hostile-share-root"));
+        let zip_of = |name: &str, entries: &[(&str, Vec<u8>)]| {
+            let path = dir.join(name);
+            let mut z = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+            for (p, b) in entries {
+                z.start_file(*p, zip::write::SimpleFileOptions::default()).unwrap();
+                z.write_all(b).unwrap();
+            }
+            z.finish().unwrap();
+            path
+        };
+        let kit = |extra: &str| format!("format = 1\nname = \"K\"\n{extra}").into_bytes();
+        std::fs::write(dir.join("notzip.klippbrand"), b"not a zip").unwrap();
+        let logo = "[logo]\nfile = \"logo.png\"\n";
+        let cases = [
+            (dir.join("notzip.klippbrand"), "not a zip"),
+            (zip_of("nokit.klippbrand", &[("other.txt", b"x".to_vec())]), "no kit file"),
+            (zip_of("later.klippbrand", &[(KIT_FILE, b"format = 9\nname = \"K\"\n".to_vec())]), "a later format"),
+            (zip_of("climb.klippbrand", &[(KIT_FILE, kit("[logo]\nfile = \"../../evil.png\"\n")), ("../../evil.png", b"x".to_vec())]), "a name that climbs out"),
+            (zip_of("missing.klippbrand", &[(KIT_FILE, kit(logo))]), "a missing file"),
+            (zip_of("unlicensed.klippbrand", &[(KIT_FILE, kit(logo)), ("logo.png", b"x".to_vec())]), "no licence"),
+            (zip_of("huge.klippbrand", &[(KIT_FILE, kit(logo)), ("logo.png", vec![0u8; MAX_LOGO_BYTES as usize + 1]), ("logo.png.licence.txt", b"CC0".to_vec())]), "an oversized logo"),
+            (zip_of("hugekit.klippbrand", &[(KIT_FILE, vec![b'#'; MAX_KIT_BYTES as usize + 1])]), "an oversized kit file"),
+        ];
+        for (path, why) in cases {
+            assert!(import_kit(&root, &path, true).is_err(), "{why} was installed");
+        }
+        let left: Vec<_> = std::fs::read_dir(kits_dir(&root)).map(|d| d.flatten().map(|e| e.file_name()).collect()).unwrap_or_default();
+        assert!(left.is_empty(), "nothing left behind: {left:?}");
     }
 
     /// A hostile kit is refused: a later format, an unknown field, a colour

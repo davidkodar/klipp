@@ -876,6 +876,8 @@ fn handle(
             | ControlCommand::BrandKit { .. }
             | ControlCommand::SaveBrandKit { .. }
             | ControlCommand::RemoveBrandKit { .. }
+            | ControlCommand::ExportBrandKit { .. }
+            | ControlCommand::ImportBrandKit { .. }
             | ControlCommand::NodeTypes { .. }
             | ControlCommand::GraphRead { .. }
             | ControlCommand::GraphOps { .. }
