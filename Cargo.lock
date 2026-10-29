@@ -3391,6 +3391,7 @@ dependencies = [
  "klipp-nodes",
  "klipp-plugin",
  "klipp-timeline",
+ "klipp-title",
  "pathdiff",
  "roxmltree 0.20.0",
  "serde",

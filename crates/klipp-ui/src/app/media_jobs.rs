@@ -538,6 +538,15 @@ impl KlippApp {
                     if !r.offline_skipped.is_empty() {
                         msg.push_str(&format!(", {} offline skipped", r.offline_skipped.len()));
                     }
+                    // The titles' fonts (#3009): those carried, and those
+                    // left out with why.
+                    if !r.fonts_copied.is_empty() {
+                        msg.push_str(&format!(", fonts carried: {}", r.fonts_copied.join(", ")));
+                    }
+                    let fonts_left: Vec<&str> = r.warnings.iter().filter_map(|w| w.strip_prefix("font ")).collect();
+                    if !fonts_left.is_empty() {
+                        msg.push_str(&format!("; {}", fonts_left.join("; ")));
+                    }
                     msg.push('.');
                     // A file that could not be cut cleanly was copied whole.
                     for w in &r.warnings {

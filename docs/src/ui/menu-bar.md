@@ -28,7 +28,7 @@ The menus and their items. Shortcuts are Klipp's default keymap; a different pre
 | Sequence Settings... | — | Resolution, frame rate and audio of the open sequence |
 | Last Import Report… | — | What the last timeline import carried, changed or left out |
 | Relink Media... | — | Point missing media at its files |
-| Consolidate Project... | — | Copy the project's media into one place, optionally only what the cut uses |
+| Consolidate Project... | — | Copy the project's media into one place, optionally only what the cut uses, with the fonts its titles use |
 | Quit | Ctrl+Q | Exit Klipp |
 
 ## Edit

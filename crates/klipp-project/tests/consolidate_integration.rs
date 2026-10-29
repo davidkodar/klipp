@@ -118,6 +118,7 @@ fn run_consolidate(
             include_skims: false,
             mode: Default::default(),
             looks: Vec::new(),
+            fonts: Vec::new(),
         },
         None,
     )
@@ -445,7 +446,7 @@ fn used_only_copies_what_the_timeline_uses() {
     seq.tracks.push(v);
     let seqs = vec![seq];
     let dest = tmp_path("used_dest");
-    let options = ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: ConsolidateMode::UsedOnly, looks: Vec::new() };
+    let options = ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: ConsolidateMode::UsedOnly, looks: Vec::new(), fonts: Vec::new() };
 
     let summary = summarise(&pool, &seqs, &ColorSettings::default(), &options);
     assert_eq!((summary.files, summary.bytes), (1, 10), "{summary:?}");
@@ -507,7 +508,7 @@ fn trimmed_cuts_the_file_and_moves_the_clip() {
     seq.tracks.push(v);
     let seqs = vec![seq];
     let dest = tmp_path("trim_dest");
-    let options = ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: ConsolidateMode::Trimmed { handle_secs: 1.0 }, looks: Vec::new() };
+    let options = ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: ConsolidateMode::Trimmed { handle_secs: 1.0 }, looks: Vec::new(), fonts: Vec::new() };
     let summary = summarise(&pool, &seqs, &ColorSettings::default(), &options);
     assert_eq!((summary.files, summary.trimmed), (1, 1), "{summary:?}");
 
@@ -570,7 +571,7 @@ fn collect_brings_the_files_grades_read_and_the_looks() {
     seq.tracks[0].clips.push(clip);
     save_project_with_color(&source_dir, std::slice::from_ref(&seq), &MediaPool::new(), &ColorSettings::default(), None, None, "").unwrap();
 
-    let options = ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: Default::default(), looks: vec![look] };
+    let options = ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: Default::default(), looks: vec![look], fonts: Vec::new() };
     consolidate_project(&source_dir, &MediaPool::new(), std::slice::from_ref(&seq), &ColorSettings::default(), options, None).unwrap();
 
     let read = |g: &NodeGraph| -> Vec<PathBuf> { g.nodes.iter().flat_map(|n| [n.params.lut_path.clone(), n.params.matte_image_path.clone()]).flatten().collect() };
@@ -619,7 +620,7 @@ fn collect_walks_compound_graphs_and_brings_the_stills() {
     let still = klipp_project::GradeStillData { name: "Hero".into(), filename: "hero.png".into(), rgba: vec![255; 2 * 2 * 4], width: 2, height: 2, source: None, grade: Some(still_grade), grade_labels: Vec::new() };
     klipp_project::save_grade_stills(&source_dir, &[still]).unwrap();
 
-    let options = ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: Default::default(), looks: Vec::new() };
+    let options = ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: Default::default(), looks: Vec::new(), fonts: Vec::new() };
     consolidate_project(&source_dir, &MediaPool::new(), std::slice::from_ref(&seq), &ColorSettings::default(), options, None).unwrap();
 
     let (seqs, ..) = load_project(&dest).unwrap();
@@ -649,7 +650,7 @@ fn collect_keeps_a_missing_global_luts_path() {
     let color = ColorSettings { global_lut_path: Some(missing.clone()), ..Default::default() };
     let seq = Sequence::new_default();
     save_project_with_color(&source_dir, std::slice::from_ref(&seq), &MediaPool::new(), &color, None, None, "").unwrap();
-    let options = ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: Default::default(), looks: Vec::new() };
+    let options = ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: Default::default(), looks: Vec::new(), fonts: Vec::new() };
     let result = consolidate_project(&source_dir, &MediaPool::new(), std::slice::from_ref(&seq), &color, options, None).unwrap();
     assert!(result.warnings.iter().any(|w| w.contains("look.cube")), "the missing LUT is warned about: {:?}", result.warnings);
     let (_seqs, _pool, loaded_color, ..) = load_project(&dest).unwrap();
