@@ -33,31 +33,13 @@ struct TransitionDef {
     /// progress (0.0 = before, 1.0 = after). Static cards pass 0.5 so
     /// the user sees the mid-point pose; hovered cards animate by
     /// driving progress with a wall-clock loop.
-    preview: fn(painter: &egui::Painter, rect: egui::Rect, theme: &KlippTheme, progress: f32),
+    preview: PreviewFn,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TransitionCategory {
-    Dissolve,
-    Wipe,
-    Slide,
-    Zoom,
-    Effect,
-    Cinematic,
-}
+type PreviewFn = fn(painter: &egui::Painter, rect: egui::Rect, theme: &KlippTheme, progress: f32);
 
-impl TransitionCategory {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Dissolve => "Dissolve",
-            Self::Wipe => "Wipe",
-            Self::Slide => "Slide",
-            Self::Zoom => "Zoom",
-            Self::Effect => "Effect",
-            Self::Cinematic => "Cinematic",
-        }
-    }
-}
+/// The browser's categories, as each transition's spec names its own.
+pub use klipp_core::TransitionGroup as TransitionCategory;
 
 // ---------- Preview helpers ----------
 
@@ -106,36 +88,26 @@ fn lerp_u8_preview(a: u8, b: u8, t: f32) -> u8 {
 
 // ---------- Transition registry ----------
 
-const TRANSITIONS: &[TransitionDef] = &[
-    TransitionDef {
-        kind: klipp_core::TransitionKind::CrossDissolve,
-        category: TransitionCategory::Dissolve,
-        preview: |p, r, _, _progress| preview_gradient_h(p, r, 8, PREVIEW_A, PREVIEW_B),
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::WipeLeft,
-        category: TransitionCategory::Wipe,
-        preview: |p, r, _, _progress| preview_split_h(p, r, 0.5, PREVIEW_A, PREVIEW_B),
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::WipeRight,
-        category: TransitionCategory::Wipe,
-        preview: |p, r, _, _progress| preview_split_h(p, r, 0.5, PREVIEW_B, PREVIEW_A),
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::WipeUp,
-        category: TransitionCategory::Wipe,
-        preview: |p, r, _, _progress| preview_split_v(p, r, 0.5, PREVIEW_A, PREVIEW_B),
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::WipeDown,
-        category: TransitionCategory::Wipe,
-        preview: |p, r, _, _progress| preview_split_v(p, r, 0.5, PREVIEW_B, PREVIEW_A),
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::DipToBlack,
-        category: TransitionCategory::Dissolve,
-        preview: |p, r, _, _progress| {
+/// Every transition the registry declares, in its order, with the
+/// browser category its spec gives and the card preview drawn for it.
+static TRANSITIONS: std::sync::LazyLock<Vec<TransitionDef>> = std::sync::LazyLock::new(|| {
+    klipp_core::TRANSITION_SPECS
+        .iter()
+        .map(|spec| TransitionDef { kind: spec.kind, category: spec.group, preview: preview_of(spec.kind) })
+        .collect()
+});
+
+/// The card preview a transition draws: one arm a kind, so a new
+/// transition does not build until it has one.
+fn preview_of(kind: klipp_core::TransitionKind) -> PreviewFn {
+    use klipp_core::TransitionKind as K;
+    match kind {
+        K::CrossDissolve => |p, r, _, _progress| preview_gradient_h(p, r, 8, PREVIEW_A, PREVIEW_B),
+        K::WipeLeft => |p, r, _, _progress| preview_split_h(p, r, 0.5, PREVIEW_A, PREVIEW_B),
+        K::WipeRight => |p, r, _, _progress| preview_split_h(p, r, 0.5, PREVIEW_B, PREVIEW_A),
+        K::WipeUp => |p, r, _, _progress| preview_split_v(p, r, 0.5, PREVIEW_A, PREVIEW_B),
+        K::WipeDown => |p, r, _, _progress| preview_split_v(p, r, 0.5, PREVIEW_B, PREVIEW_A),
+        K::DipToBlack => |p, r, _, _progress| {
             let third = r.width() / 3.0;
             p.rect_filled(
                 egui::Rect::from_min_size(r.min, egui::vec2(third, r.height())),
@@ -159,11 +131,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 PREVIEW_B,
             );
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::DipToWhite,
-        category: TransitionCategory::Dissolve,
-        preview: |p, r, _, _progress| {
+        K::DipToWhite => |p, r, _, _progress| {
             let third = r.width() / 3.0;
             p.rect_filled(
                 egui::Rect::from_min_size(r.min, egui::vec2(third, r.height())),
@@ -187,11 +155,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 PREVIEW_B,
             );
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::PushLeft,
-        category: TransitionCategory::Slide,
-        preview: |p, r, _, _progress| {
+        K::PushLeft => |p, r, _, _progress| {
             preview_split_h(p, r, 0.5, PREVIEW_A, PREVIEW_B);
             let cx = r.center();
             p.arrow(
@@ -200,16 +164,8 @@ const TRANSITIONS: &[TransitionDef] = &[
                 egui::Stroke::new(2.0_f32, egui::Color32::WHITE),
             );
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::FilmDissolve,
-        category: TransitionCategory::Dissolve,
-        preview: |p, r, _, _progress| preview_gradient_h(p, r, 12, PREVIEW_A, PREVIEW_B),
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::BlurDissolve,
-        category: TransitionCategory::Dissolve,
-        preview: |p, r, _, _progress| {
+        K::FilmDissolve => |p, r, _, _progress| preview_gradient_h(p, r, 12, PREVIEW_A, PREVIEW_B),
+        K::BlurDissolve => |p, r, _, _progress| {
             preview_gradient_h(p, r, 6, PREVIEW_A, PREVIEW_B);
             for i in 0..4 {
                 let x = r.min.x + r.width() * (i as f32 + 1.0) / 5.0;
@@ -219,19 +175,11 @@ const TRANSITIONS: &[TransitionDef] = &[
                 );
             }
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::Flash,
-        category: TransitionCategory::Effect,
-        preview: |p, r, _, _progress| {
+        K::Flash => |p, r, _, _progress| {
             preview_split_h(p, r, 0.5, PREVIEW_A, PREVIEW_B);
             preview_circle(p, r, 0.6, egui::Color32::from_white_alpha(180));
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::Spin,
-        category: TransitionCategory::Effect,
-        preview: |p, r, _, _progress| {
+        K::Spin => |p, r, _, _progress| {
             p.rect_filled(r, 0.0, PREVIEW_A);
             let cx = r.center();
             let hw = r.width() * 0.3;
@@ -244,29 +192,17 @@ const TRANSITIONS: &[TransitionDef] = &[
             ];
             p.add(egui::Shape::convex_polygon(pts, PREVIEW_B, egui::Stroke::NONE));
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::CircleWipeIn,
-        category: TransitionCategory::Wipe,
-        preview: |p, r, _, _progress| {
+        K::CircleWipeIn => |p, r, _, _progress| {
             p.rect_filled(r, 0.0, PREVIEW_A);
             let radius = r.height() * 0.45;
             p.circle_filled(r.center(), radius, PREVIEW_B);
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::CircleWipeOut,
-        category: TransitionCategory::Wipe,
-        preview: |p, r, _, _progress| {
+        K::CircleWipeOut => |p, r, _, _progress| {
             p.rect_filled(r, 0.0, PREVIEW_B);
             let radius = r.height() * 0.25;
             p.circle_filled(r.center(), radius, PREVIEW_A);
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::BarnDoorOpen,
-        category: TransitionCategory::Wipe,
-        preview: |p, r, _, _progress| {
+        K::BarnDoorOpen => |p, r, _, _progress| {
             p.rect_filled(r, 0.0, PREVIEW_B);
             let quarter = r.width() * 0.25;
             p.rect_filled(
@@ -284,11 +220,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 egui::Stroke::new(1.0_f32, egui::Color32::from_white_alpha(60)),
             );
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::BarnDoorClose,
-        category: TransitionCategory::Wipe,
-        preview: |p, r, _, _progress| {
+        K::BarnDoorClose => |p, r, _, _progress| {
             p.rect_filled(r, 0.0, PREVIEW_A);
             let quarter = r.width() * 0.25;
             p.rect_filled(
@@ -302,11 +234,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 PREVIEW_B,
             );
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::SlideLeft,
-        category: TransitionCategory::Slide,
-        preview: |p, r, _, _progress| {
+        K::SlideLeft => |p, r, _, _progress| {
             preview_split_h(p, r, 0.6, PREVIEW_A, PREVIEW_B);
             p.arrow(
                 egui::pos2(r.center().x + 10.0, r.center().y),
@@ -314,11 +242,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 egui::Stroke::new(2.0_f32, egui::Color32::WHITE),
             );
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::SlideRight,
-        category: TransitionCategory::Slide,
-        preview: |p, r, _, _progress| {
+        K::SlideRight => |p, r, _, _progress| {
             preview_split_h(p, r, 0.4, PREVIEW_B, PREVIEW_A);
             p.arrow(
                 egui::pos2(r.center().x - 10.0, r.center().y),
@@ -326,11 +250,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 egui::Stroke::new(2.0_f32, egui::Color32::WHITE),
             );
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::SlideUp,
-        category: TransitionCategory::Slide,
-        preview: |p, r, _, _progress| {
+        K::SlideUp => |p, r, _, _progress| {
             preview_split_v(p, r, 0.6, PREVIEW_A, PREVIEW_B);
             p.arrow(
                 egui::pos2(r.center().x, r.center().y + 10.0),
@@ -338,11 +258,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 egui::Stroke::new(2.0_f32, egui::Color32::WHITE),
             );
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::SlideDown,
-        category: TransitionCategory::Slide,
-        preview: |p, r, _, _progress| {
+        K::SlideDown => |p, r, _, _progress| {
             preview_split_v(p, r, 0.4, PREVIEW_B, PREVIEW_A);
             p.arrow(
                 egui::pos2(r.center().x, r.center().y - 10.0),
@@ -350,11 +266,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 egui::Stroke::new(2.0_f32, egui::Color32::WHITE),
             );
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::CoverLeft,
-        category: TransitionCategory::Slide,
-        preview: |p, r, _, _progress| {
+        K::CoverLeft => |p, r, _, _progress| {
             p.rect_filled(r, 0.0, PREVIEW_A);
             let cover_w = r.width() * 0.55;
             p.rect_filled(
@@ -366,11 +278,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 PREVIEW_B,
             );
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::CoverRight,
-        category: TransitionCategory::Slide,
-        preview: |p, r, _, _progress| {
+        K::CoverRight => |p, r, _, _progress| {
             p.rect_filled(r, 0.0, PREVIEW_A);
             let cover_w = r.width() * 0.55;
             p.rect_filled(
@@ -382,11 +290,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 PREVIEW_B,
             );
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::UncoverLeft,
-        category: TransitionCategory::Slide,
-        preview: |p, r, _, _progress| {
+        K::UncoverLeft => |p, r, _, _progress| {
             p.rect_filled(r, 0.0, PREVIEW_B);
             let uncover_w = r.width() * 0.45;
             p.rect_filled(
@@ -398,11 +302,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 PREVIEW_A,
             );
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::UncoverRight,
-        category: TransitionCategory::Slide,
-        preview: |p, r, _, _progress| {
+        K::UncoverRight => |p, r, _, _progress| {
             p.rect_filled(r, 0.0, PREVIEW_B);
             let uncover_w = r.width() * 0.45;
             p.rect_filled(
@@ -414,11 +314,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 PREVIEW_A,
             );
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::SqueezeH,
-        category: TransitionCategory::Slide,
-        preview: |p, r, _, _progress| {
+        K::SqueezeH => |p, r, _, _progress| {
             p.rect_filled(r, 0.0, PREVIEW_B);
             let squeeze_w = r.width() * 0.3;
             p.rect_filled(
@@ -437,11 +333,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 egui::Stroke::new(1.5_f32, egui::Color32::WHITE),
             );
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::SqueezeV,
-        category: TransitionCategory::Slide,
-        preview: |p, r, _, _progress| {
+        K::SqueezeV => |p, r, _, _progress| {
             p.rect_filled(r, 0.0, PREVIEW_B);
             let squeeze_h = r.height() * 0.3;
             p.rect_filled(
@@ -460,29 +352,17 @@ const TRANSITIONS: &[TransitionDef] = &[
                 egui::Stroke::new(1.5_f32, egui::Color32::WHITE),
             );
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::BoxWipeIn,
-        category: TransitionCategory::Wipe,
-        preview: |p, r, _, _progress| {
+        K::BoxWipeIn => |p, r, _, _progress| {
             p.rect_filled(r, 0.0, PREVIEW_A);
             let inner = r.shrink(r.width() * 0.2);
             p.rect_filled(inner, 0.0, PREVIEW_B);
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::BoxWipeOut,
-        category: TransitionCategory::Wipe,
-        preview: |p, r, _, _progress| {
+        K::BoxWipeOut => |p, r, _, _progress| {
             p.rect_filled(r, 0.0, PREVIEW_B);
             let inner = r.shrink(r.width() * 0.2);
             p.rect_filled(inner, 0.0, PREVIEW_A);
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::DiagonalWipeTLBR,
-        category: TransitionCategory::Wipe,
-        preview: |p, r, _, _progress| {
+        K::DiagonalWipeTLBR => |p, r, _, _progress| {
             p.rect_filled(r, 0.0, PREVIEW_B);
             let pts = vec![r.min, egui::pos2(r.max.x, r.min.y), egui::pos2(r.min.x, r.max.y)];
             p.add(egui::Shape::convex_polygon(pts, PREVIEW_A, egui::Stroke::NONE));
@@ -491,11 +371,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 egui::Stroke::new(1.5_f32, egui::Color32::from_white_alpha(100)),
             );
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::DiagonalWipeTRBL,
-        category: TransitionCategory::Wipe,
-        preview: |p, r, _, _progress| {
+        K::DiagonalWipeTRBL => |p, r, _, _progress| {
             p.rect_filled(r, 0.0, PREVIEW_B);
             let pts = vec![r.min, r.max, egui::pos2(r.max.x, r.min.y)];
             p.add(egui::Shape::convex_polygon(pts, PREVIEW_A, egui::Stroke::NONE));
@@ -504,11 +380,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 egui::Stroke::new(1.5_f32, egui::Color32::from_white_alpha(100)),
             );
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::CheckerboardWipe,
-        category: TransitionCategory::Wipe,
-        preview: |p, r, _, _progress| {
+        K::CheckerboardWipe => |p, r, _, _progress| {
             let grid = 4usize;
             let cell_w = r.width() / grid as f32;
             let cell_h = r.height() / grid as f32;
@@ -529,11 +401,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 }
             }
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::VenetianBlindHorizontal,
-        category: TransitionCategory::Wipe,
-        preview: |p, r, _, _progress| {
+        K::VenetianBlindHorizontal => |p, r, _, _progress| {
             let strips = 5;
             let strip_h = r.height() / strips as f32;
             for i in 0..strips {
@@ -549,11 +417,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 );
             }
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::VenetianBlindVertical,
-        category: TransitionCategory::Wipe,
-        preview: |p, r, _, _progress| {
+        K::VenetianBlindVertical => |p, r, _, _progress| {
             let strips = 5;
             let strip_w = r.width() / strips as f32;
             for i in 0..strips {
@@ -569,11 +433,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 );
             }
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::SplitWipeHorizontal,
-        category: TransitionCategory::Wipe,
-        preview: |p, r, _, _progress| {
+        K::SplitWipeHorizontal => |p, r, _, _progress| {
             p.rect_filled(r, 0.0, PREVIEW_A);
             let center_w = r.width() * 0.35;
             p.rect_filled(
@@ -596,11 +456,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 egui::Stroke::new(1.0_f32, egui::Color32::from_white_alpha(80)),
             );
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::SplitWipeVertical,
-        category: TransitionCategory::Wipe,
-        preview: |p, r, _, _progress| {
+        K::SplitWipeVertical => |p, r, _, _progress| {
             p.rect_filled(r, 0.0, PREVIEW_A);
             let center_h = r.height() * 0.35;
             p.rect_filled(
@@ -623,11 +479,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 egui::Stroke::new(1.0_f32, egui::Color32::from_white_alpha(80)),
             );
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::StarWipe,
-        category: TransitionCategory::Wipe,
-        preview: |p, r, _, _progress| {
+        K::StarWipe => |p, r, _, _progress| {
             p.rect_filled(r, 0.0, PREVIEW_A);
             let cx = r.center();
             let outer_r = r.height() * 0.42;
@@ -646,11 +498,7 @@ const TRANSITIONS: &[TransitionDef] = &[
             // Star isn't strictly convex, but convex_polygon renders it as a fan from pts[0].
             p.add(egui::Shape::convex_polygon(pts, PREVIEW_B, egui::Stroke::NONE));
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::ClockWipe,
-        category: TransitionCategory::Wipe,
-        preview: |p, r, _, _progress| {
+        K::ClockWipe => |p, r, _, _progress| {
             p.rect_filled(r, 0.0, PREVIEW_A);
             let cx = r.center();
             let radius = r.height() * 0.45;
@@ -673,11 +521,7 @@ const TRANSITIONS: &[TransitionDef] = &[
             );
             p.line_segment([cx, hand_end], egui::Stroke::new(2.0_f32, egui::Color32::WHITE));
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::PageTurn,
-        category: TransitionCategory::Cinematic,
-        preview: |p, r, _, _progress| {
+        K::PageTurn => |p, r, _, _progress| {
             p.rect_filled(r, 0.0, PREVIEW_B);
             let fold = r.min.x + r.width() * 0.6;
             p.rect_filled(
@@ -700,11 +544,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 egui::Stroke::new(2.0_f32, egui::Color32::from_black_alpha(120)),
             );
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::PageTurnReverse,
-        category: TransitionCategory::Cinematic,
-        preview: |p, r, _, _progress| {
+        K::PageTurnReverse => |p, r, _, _progress| {
             p.rect_filled(r, 0.0, PREVIEW_B);
             let fold = r.min.x + r.width() * 0.4;
             p.rect_filled(
@@ -727,11 +567,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 egui::Stroke::new(2.0_f32, egui::Color32::from_black_alpha(120)),
             );
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::ZoomInDissolve,
-        category: TransitionCategory::Zoom,
-        preview: |pa, r, _, _progress| {
+        K::ZoomInDissolve => |pa, r, _, _progress| {
             pa.rect_filled(r, 0.0, PREVIEW_B);
             let shrink = r.shrink(r.width() * 0.15);
             pa.rect_filled(
@@ -753,11 +589,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 );
             }
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::ZoomOutDissolve,
-        category: TransitionCategory::Zoom,
-        preview: |pa, r, _, _progress| {
+        K::ZoomOutDissolve => |pa, r, _, _progress| {
             pa.rect_filled(r, 0.0, PREVIEW_B);
             pa.rect_filled(
                 r,
@@ -789,11 +621,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 );
             }
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::CrossZoom,
-        category: TransitionCategory::Zoom,
-        preview: |pa, r, _, _progress| {
+        K::CrossZoom => |pa, r, _, _progress| {
             let mid = r.min.x + r.width() * 0.5;
             let left = egui::Rect::from_min_max(r.min, egui::pos2(mid, r.max.y));
             pa.rect_filled(left, 0.0, PREVIEW_A);
@@ -810,11 +638,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 egui::Stroke::new(1.5_f32, egui::Color32::from_white_alpha(180)),
             );
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::BokehDissolve,
-        category: TransitionCategory::Cinematic,
-        preview: |pa, r, _, _progress| {
+        K::BokehDissolve => |pa, r, _, _progress| {
             preview_gradient_h(pa, r, 8, PREVIEW_A, PREVIEW_B);
             let circles: [(f32, f32, f32, u8); 5] = [
                 (0.3, 0.4, 14.0, 60),
@@ -841,11 +665,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 );
             }
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::AnamorphicFlare,
-        category: TransitionCategory::Cinematic,
-        preview: |pa, r, _, _progress| {
+        K::AnamorphicFlare => |pa, r, _, _progress| {
             pa.rect_filled(r, 0.0, PREVIEW_A);
             let streak_h = r.height() * 0.12;
             let streak_rect = egui::Rect::from_center_size(
@@ -875,11 +695,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 );
             }
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::DreamSequence,
-        category: TransitionCategory::Cinematic,
-        preview: |pa, r, _, _progress| {
+        K::DreamSequence => |pa, r, _, _progress| {
             preview_gradient_h(pa, r, 8, PREVIEW_A, PREVIEW_B);
             pa.rect_filled(
                 r,
@@ -899,11 +715,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 egui::Color32::from_rgba_unmultiplied(255, 250, 230, 60),
             );
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::ProjectorFlicker,
-        category: TransitionCategory::Cinematic,
-        preview: |pa, r, _, _progress| {
+        K::ProjectorFlicker => |pa, r, _, _progress| {
             pa.rect_filled(r, 0.0, egui::Color32::from_rgb(40, 35, 25));
             for i in 0..3 {
                 let y = r.min.y + r.height() * (i as f32 + 0.5) / 3.0;
@@ -935,11 +747,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 ),
             );
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::Halation,
-        category: TransitionCategory::Cinematic,
-        preview: |pa, r, _, _progress| {
+        K::Halation => |pa, r, _, _progress| {
             pa.rect_filled(r, 0.0, PREVIEW_A);
             let cx = egui::pos2(r.min.x + r.width() * 0.65, r.min.y + r.height() * 0.35);
             pa.circle_filled(
@@ -963,11 +771,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 egui::Color32::from_rgba_unmultiplied(255, 240, 220, 240),
             );
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::GlitchRGBSplit,
-        category: TransitionCategory::Effect,
-        preview: |pa, r, _, _progress| {
+        K::GlitchRGBSplit => |pa, r, _, _progress| {
             pa.rect_filled(r, 0.0, egui::Color32::from_rgb(15, 15, 25));
             let block_h = r.height() / 5.0;
             for i in 0..5 {
@@ -1000,11 +804,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 );
             }
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::StaticTV,
-        category: TransitionCategory::Effect,
-        preview: |pa, r, _, _progress| {
+        K::StaticTV => |pa, r, _, _progress| {
             let line_h = 4.0_f32;
             let lines = (r.height() / line_h) as usize;
             for i in 0..lines {
@@ -1023,11 +823,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 );
             }
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::VHSTracking,
-        category: TransitionCategory::Effect,
-        preview: |pa, r, _, _progress| {
+        K::VHSTracking => |pa, r, _, _progress| {
             pa.rect_filled(r, 0.0, PREVIEW_A);
             let bands = 5usize;
             let band_h = r.height() / bands as f32;
@@ -1056,11 +852,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 egui::Color32::from_rgba_unmultiplied(255, 100, 100, 100),
             );
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::Swirl,
-        category: TransitionCategory::Effect,
-        preview: |pa, r, _, _progress| {
+        K::Swirl => |pa, r, _, _progress| {
             pa.rect_filled(r, 0.0, PREVIEW_A);
             let cx = r.center();
             let steps = 24usize;
@@ -1092,11 +884,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 );
             }
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::WaveDistortion,
-        category: TransitionCategory::Effect,
-        preview: |pa, r, _, _progress| {
+        K::WaveDistortion => |pa, r, _, _progress| {
             preview_gradient_h(pa, r, 8, PREVIEW_A, PREVIEW_B);
             let steps = 40usize;
             let amp = r.height() * 0.2;
@@ -1113,11 +901,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 prev = next;
             }
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::ColorizeFlash,
-        category: TransitionCategory::Effect,
-        preview: |p, r, _, _progress| {
+        K::ColorizeFlash => |p, r, _, _progress| {
             preview_split_h(p, r, 0.5, PREVIEW_A, PREVIEW_B);
             preview_circle(
                 p,
@@ -1126,11 +910,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 egui::Color32::from_rgba_unmultiplied(0, 200, 255, 150),
             );
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::HueRotate,
-        category: TransitionCategory::Effect,
-        preview: |pa, r, _, _progress| {
+        K::HueRotate => |pa, r, _, _progress| {
             let steps = 12usize;
             for i in 0..steps {
                 let t = i as f32 / steps as f32;
@@ -1165,11 +945,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 );
             }
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::NegativeFlash,
-        category: TransitionCategory::Effect,
-        preview: |p, r, _, _progress| {
+        K::NegativeFlash => |p, r, _, _progress| {
             preview_split_h(p, r, 0.5, PREVIEW_A, PREVIEW_B);
             let strip_w = r.width() * 0.25;
             p.rect_filled(
@@ -1182,11 +958,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 ),
             );
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::Sepia,
-        category: TransitionCategory::Cinematic,
-        preview: |p, r, _, _progress| {
+        K::Sepia => |p, r, _, _progress| {
             let third = r.width() / 3.0;
             p.rect_filled(
                 egui::Rect::from_min_size(r.min, egui::vec2(third, r.height())),
@@ -1210,11 +982,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 PREVIEW_B,
             );
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::GlitchDissolve,
-        category: TransitionCategory::Effect,
-        preview: |p, r, _, _progress| {
+        K::GlitchDissolve => |p, r, _, _progress| {
             let block_h = r.height() / 6.0;
             for i in 0..6 {
                 let y = r.min.y + i as f32 * block_h;
@@ -1246,11 +1014,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 egui::Color32::from_rgba_unmultiplied(0, 0, 255, 120),
             );
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::Desaturate,
-        category: TransitionCategory::Effect,
-        preview: |p, r, _, _progress| {
+        K::Desaturate => |p, r, _, _progress| {
             let third = r.width() / 3.0;
             p.rect_filled(
                 egui::Rect::from_min_size(r.min, egui::vec2(third, r.height())),
@@ -1274,11 +1038,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 PREVIEW_B,
             );
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::AdditiveDissolve,
-        category: TransitionCategory::Dissolve,
-        preview: |p, r, _, _progress| {
+        K::AdditiveDissolve => |p, r, _, _progress| {
             preview_gradient_h(p, r, 8, PREVIEW_A, PREVIEW_B);
             p.rect_filled(
                 egui::Rect::from_center_size(
@@ -1289,11 +1049,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 egui::Color32::from_rgba_unmultiplied(255, 255, 255, 80),
             );
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::FadeToColor,
-        category: TransitionCategory::Dissolve,
-        preview: |p, r, _, _progress| {
+        K::FadeToColor => |p, r, _, _progress| {
             let third = r.width() / 3.0;
             p.rect_filled(
                 egui::Rect::from_min_size(r.min, egui::vec2(third, r.height())),
@@ -1317,11 +1073,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 PREVIEW_B,
             );
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::FilmBurn,
-        category: TransitionCategory::Cinematic,
-        preview: |p, r, _, _progress| {
+        K::FilmBurn => |p, r, _, _progress| {
             p.rect_filled(r, 0.0, PREVIEW_A);
             let cx = egui::pos2(r.min.x + r.width() * 0.6, r.min.y + r.height() * 0.4);
             p.circle_filled(
@@ -1349,11 +1101,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 );
             }
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::ChromaticAberration,
-        category: TransitionCategory::Effect,
-        preview: |p, r, _, _progress| {
+        K::ChromaticAberration => |p, r, _, _progress| {
             p.rect_filled(r, 0.0, egui::Color32::from_rgb(20, 20, 30));
             let cx = r.center();
             let hw = r.width() * 0.3;
@@ -1380,11 +1128,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 egui::Color32::from_rgba_unmultiplied(0, 0, 255, 120),
             );
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::Ripple,
-        category: TransitionCategory::Effect,
-        preview: |p, r, _, _progress| {
+        K::Ripple => |p, r, _, _progress| {
             preview_gradient_h(p, r, 8, PREVIEW_A, PREVIEW_B);
             let cx = r.center();
             for i in 1..=4i32 {
@@ -1397,37 +1141,13 @@ const TRANSITIONS: &[TransitionDef] = &[
                 );
             }
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::SlideStrips,
-        category: TransitionCategory::Slide,
-        preview: |p, r, _, progress| paint_pieces(p, r, klipp_core::TransitionKind::SlideStrips, progress, PREVIEW_A, PREVIEW_B),
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::SlidePanels,
-        category: TransitionCategory::Slide,
-        preview: |p, r, _, progress| paint_pieces(p, r, klipp_core::TransitionKind::SlidePanels, progress, PREVIEW_A, PREVIEW_B),
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::PartHalves,
-        category: TransitionCategory::Slide,
-        preview: |p, r, _, progress| paint_pieces(p, r, klipp_core::TransitionKind::PartHalves, progress, PREVIEW_A, PREVIEW_B),
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::Shatter,
-        category: TransitionCategory::Cinematic,
-        preview: |p, r, _, progress| paint_pieces(p, r, klipp_core::TransitionKind::Shatter, progress, PREVIEW_A, PREVIEW_B),
-    },
-    TransitionDef {
+        K::SlideStrips => |p, r, _, progress| paint_pieces(p, r, klipp_core::TransitionKind::SlideStrips, progress, PREVIEW_A, PREVIEW_B),
+        K::SlidePanels => |p, r, _, progress| paint_pieces(p, r, klipp_core::TransitionKind::SlidePanels, progress, PREVIEW_A, PREVIEW_B),
+        K::PartHalves => |p, r, _, progress| paint_pieces(p, r, klipp_core::TransitionKind::PartHalves, progress, PREVIEW_A, PREVIEW_B),
+        K::Shatter => |p, r, _, progress| paint_pieces(p, r, klipp_core::TransitionKind::Shatter, progress, PREVIEW_A, PREVIEW_B),
         // A jump cut's two framings morphed into each other (#2219).
-        kind: klipp_core::TransitionKind::SmoothCut,
-        category: TransitionCategory::Dissolve,
-        preview: |p, r, _, _progress| preview_gradient_h(p, r, 8, PREVIEW_A, PREVIEW_B),
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::WhipPan,
-        category: TransitionCategory::Slide,
-        preview: |p, r, _, _progress| {
+        K::SmoothCut => |p, r, _, _progress| preview_gradient_h(p, r, 8, PREVIEW_A, PREVIEW_B),
+        K::WhipPan => |p, r, _, _progress| {
             preview_split_h(p, r, 0.5, PREVIEW_A, PREVIEW_B);
             // Speed lines across the join.
             let cy = r.center().y;
@@ -1440,11 +1160,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 );
             }
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::WaterDrop,
-        category: TransitionCategory::Cinematic,
-        preview: |p, r, _, progress| {
+        K::WaterDrop => |p, r, _, progress| {
             p.rect_filled(r, 0.0, PREVIEW_A);
             let c = r.center();
             let radius = r.width() * 0.62 * progress;
@@ -1457,11 +1173,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 }
             }
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::Pixelate,
-        category: TransitionCategory::Effect,
-        preview: |p, r, _, _progress| {
+        K::Pixelate => |p, r, _, _progress| {
             let block = 8.0;
             let cols = (r.width() / block) as usize;
             let rows = (r.height() / block) as usize;
@@ -1484,11 +1196,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 }
             }
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::LuminanceDissolve,
-        category: TransitionCategory::Dissolve,
-        preview: |p, r, _, _progress| {
+        K::LuminanceDissolve => |p, r, _, _progress| {
             // Gradient from dark (A) toward bright, with B bleeding through brights.
             for i in 0..8 {
                 let t = i as f32 / 8.0;
@@ -1524,16 +1232,12 @@ const TRANSITIONS: &[TransitionDef] = &[
                 );
             }
         },
-    },
-    TransitionDef {
-        kind: klipp_core::TransitionKind::LightLeak,
-        category: TransitionCategory::Cinematic,
-        preview: |p, r, _, _progress| {
+        K::LightLeak => |p, r, _, _progress| {
             preview_gradient_h(p, r, 8, PREVIEW_A, PREVIEW_B);
             preview_circle(p, r, 0.4, egui::Color32::from_rgba_unmultiplied(255, 180, 60, 120));
         },
-    },
-];
+    }
+}
 
 // ---------- UI ----------
 
@@ -3493,5 +3197,23 @@ mod tests {
 
     fn spec_for_string_key(key: &str) -> &'static klipp_core::TransitionSpec {
         klipp_core::spec_for_string_key(key).unwrap()
+    }
+
+    /// The browser lists each declared transition once, under the
+    /// category its spec gives (#2888): the same categories, with as
+    /// many in each, as the hand-kept list it replaced.
+    #[test]
+    fn the_browser_lists_every_transition_once_by_its_spec() {
+        let kinds: Vec<_> = TRANSITIONS.iter().map(|t| t.kind).collect();
+        let specs: Vec<_> = klipp_core::TRANSITION_SPECS.iter().map(|s| s.kind).collect();
+        assert_eq!(kinds, specs);
+        let count = |c| TRANSITIONS.iter().filter(|t| t.category == c).count();
+        use TransitionCategory as C;
+        assert_eq!(
+            [count(C::Dissolve), count(C::Wipe), count(C::Slide), count(C::Zoom), count(C::Effect), count(C::Cinematic)],
+            [9, 19, 15, 3, 15, 12]
+        );
+        assert_eq!(klipp_core::spec_for_kind(klipp_core::TransitionKind::SmoothCut).group, C::Dissolve);
+        assert_eq!(klipp_core::spec_for_kind(klipp_core::TransitionKind::WhipPan).group, C::Slide);
     }
 }

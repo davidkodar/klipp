@@ -88,7 +88,7 @@ pub use modifier::{EvalContext, Extrapolation, Modifier, ModifierBlend, Modifier
 pub use snap::{GridInterval, SnapConfig, SnapTargetKind};
 pub use ofx_value::OfxValue;
 pub use types::{AudioEffectInstance, BlendMode, ChannelConfig, ClipRole, ColorSpace, DEFAULT_GENERATOR_GRAIN, RoleProposal, RoleSource, FadeCurve, FocalRef, FourPointGradient, GeneratorData, LogFormat, PixelFormat, Resolution, TimerFormat, TimerMode, TrackPoint, TransitionAlignment, TransitionUserParams, ViewChannel};
-pub use transition_registry::{TransitionKind, TransitionSpec, TRANSITION_SPECS, spec_for_kind, spec_for_kind_id, spec_for_string_key};
+pub use transition_registry::{TransitionGroup, TransitionKind, TransitionSpec, TRANSITION_SPECS, spec_for_kind, spec_for_kind_id, spec_for_string_key};
 pub use config::{
     ChannelMask, GpuPreference, HistogramDisplayMode, HistogramLevels, HistogramSettings,
     LoudnessStandard, MeteringBallistics, PanLaw, PlaybackQuality, ScopeSettings,

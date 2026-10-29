@@ -38,6 +38,7 @@ TransitionSpec {
     string_key: "MyNewTransition",        // PascalCase, matches enum variant name
     display_name: "My New Transition",    // full name for browser, combo boxes, search
     short_label: "New",                   // compact for timeline ribbon (aim for <= 8 chars)
+    group: TransitionGroup::Effect,       // browser category: Dissolve, Wipe, Slide, Zoom, Effect, Cinematic
     default_params: TransitionUserParams {
         param0: 1.0,
         param1: 0.0,
@@ -64,6 +65,7 @@ Run `cargo check -p klipp-core` to verify.
 - `display_name` — shown in the browser card, combo boxes, search filter, and
   toast messages.
 - `short_label` — shown on the timeline ribbon where space is tight.
+- `group` — the transitions browser category it is listed under.
 - `default_params` — what playback uses before the user touches any inspector
   controls. Set these to sensible defaults for the transition's look.
 
@@ -152,27 +154,22 @@ if matches!(transition.kind, TransitionKind::MyNewTransition) {
 If the transition has no user-configurable parameters, add a "No additional
 parameters" label instead.
 
-### 5. Add the browser entry
+### 5. Add the browser preview
 
 **File:** `crates/klipp-ui/src/browser/transitions_tab.rs`
 
-Add a `TransitionDef` to the `TRANSITIONS` array:
+The browser lists every spec by itself. Add the kind's arm to
+`preview_of`, which draws its card; the match has no catch-all, so the
+build fails until the arm is there:
 
 ```rust
-TransitionDef {
-    kind: klipp_core::TransitionKind::MyNewTransition,
-    category: TransitionCategory::Effect,  // or Dissolve, Wipe, Slide, Zoom, Cinematic
-    preview: |p, r, _| {
-        // Draw a static preview into the 48px card area using painter primitives.
-        // Use PREVIEW_A (blue) and PREVIEW_B (orange) for clip A/B colors.
-        // Available helpers: preview_split_h, preview_split_v, preview_gradient_h,
-        //                    preview_circle, preview_diagonal.
-    },
+K::MyNewTransition => |p, r, _, _progress| {
+    // Draw a static preview into the card using painter primitives.
+    // Use PREVIEW_A (blue) and PREVIEW_B (orange) for clip A/B colors.
+    // Available helpers: preview_split_h, preview_split_v, preview_gradient_h,
+    //                    preview_circle, preview_diagonal.
 },
 ```
-
-The display name and kind_id are read from the registry automatically via
-`spec_for_kind(def.kind)` — you don't set them here.
 
 ### 6. Verify
 
