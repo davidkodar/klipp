@@ -6916,16 +6916,26 @@ mod keyboard_selection_tests {
     /// plain arrow selects one again.
     #[test]
     fn the_keyboard_selects_several_files() {
-        let dir = std::env::temp_dir().join(format!("klipp-files-keys-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = std::env::temp_dir().join(format!("klipp-files-keys-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         for f in ["a.mp4", "b.mp4", "c.mp4", "d.mp4", "e.mp4"] {
             std::fs::write(dir.join(f), b"").unwrap();
         }
         let mut panel = BrowserPanel::default();
-        let mut state = AppState::default();
+        // No watcher re-reading the folder partway through.
+        let mut state = AppState { file_browser_auto_refresh: false, ..Default::default() };
         panel.navigate_files_to(dir.clone());
         frame(&mut panel, &mut state, &[]);
+        // The folder is read on a worker, which a loaded machine may not
+        // have run by now: its answer, while still to come, waited for and
+        // taken by a frame.
+        if let Some(pending) = panel.files_receiver.take() {
+            let read = pending.recv_timeout(std::time::Duration::from_secs(30)).expect("the folder is read");
+            let (tx, rx) = std::sync::mpsc::channel();
+            tx.send(read).unwrap();
+            panel.files_receiver = Some(rx);
+            frame(&mut panel, &mut state, &[]);
+        }
         assert!(panel.files_entries.iter().any(|e| e.name == "b.mp4"), "the folder is listed: {:?}", panel.files_entries.iter().map(|e| &e.name).collect::<Vec<_>>());
         panel.files_panel_focused = true;
         panel.files_selected = [dir.join("b.mp4")].into_iter().collect();
