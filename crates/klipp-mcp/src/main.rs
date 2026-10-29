@@ -596,6 +596,8 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             if let Some(p) = args.get("path").and_then(Value::as_str) { v["path"] = json!(p); }
             if let Some(ps) = args.get("paths").filter(|p| !p.is_null()) { v["paths"] = ps.clone(); }
             if let Some(f) = args.get("folder").and_then(Value::as_str) { v["folder"] = json!(f); }
+            if let Some(r) = args.get("recursive").and_then(Value::as_bool) { v["recursive"] = json!(r); }
+            if let Some(b) = args.get("bins").and_then(Value::as_bool) { v["bins"] = json!(b); }
             if v.get("path").is_none() && v.get("paths").is_none() && v.get("folder").is_none() {
                 return Err("klipp_import_media needs path, paths or folder".into());
             }
@@ -2131,7 +2133,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({ "data": { "type": ["object", "string"] }, "at_secs": { "type": "number" }, "secs": { "type": "number" }, "track": { "type": "integer" }, "apply": { "type": "boolean" } }), vec!["data", "at_secs", "secs"]),
         tool("klipp_import_media",
              "Import media: a path, paths, or a folder's files. Details: klipp_guide topic import_media.",
-             json!({ "path": { "type": "string" }, "paths": { "type": "array", "items": { "type": "string" } }, "folder": { "type": "string" }, "analyze": { "type": "boolean", "description": "default true" } }),
+             json!({ "path": { "type": "string" }, "paths": { "type": "array", "items": { "type": "string" } }, "folder": { "type": "string" }, "recursive": { "type": "boolean" }, "bins": { "type": "boolean" }, "analyze": { "type": "boolean" } }),
              vec![]),
         tool("klipp_append_clip",
              "Append a media pool item to the timeline as a new clip. Details: klipp_guide topic append_clip.",
@@ -2610,7 +2612,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                  "at_secs": { "type": "number" },
                  "duration_secs": { "type": "number" },
                  "label": { "type": "string" },
-                 "note": { "type": "string", "description": "the longer comment" },
+                 "note": { "type": "string" },
                  "color": { "type": "string", "enum": ["red", "orange", "yellow", "green", "blue", "purple"] },
                  "kind": { "type": "string", "enum": ["chapter", "todo", "comment", "best_take", "section"] }
              }), vec!["at_secs"]),
@@ -2705,7 +2707,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                  "to_secs": { "type": "number" },
                  "frames": { "type": "integer" },
                  "cols": { "type": "integer" },
-                 "tile_width": { "type": "integer", "description": "Pixels (default 320)" },
+                 "tile_width": { "type": "integer" },
                  "path": { "type": "string" },
                  "inline": { "type": "boolean" },
              }), vec![]),
@@ -3330,6 +3332,9 @@ mod wait_tests {
         let many = tool_to_command("klipp_import_media", &json!({ "paths": ["/tmp/a.mp4", "/tmp/b.mp4"], "folder": "/tmp/shots" })).unwrap();
         assert_eq!(many["paths"], json!(["/tmp/a.mp4", "/tmp/b.mp4"]));
         assert_eq!(many["folder"], "/tmp/shots");
+        assert!(many.get("recursive").is_none() && many.get("bins").is_none(), "left to the app's defaults: {many}");
+        let tree = tool_to_command("klipp_import_media", &json!({ "folder": "/tmp/shots", "recursive": false, "bins": true })).unwrap();
+        assert_eq!((tree["recursive"].clone(), tree["bins"].clone()), (json!(false), json!(true)));
         assert!(many.get("path").is_none());
         assert!(tool_to_command("klipp_import_media", &json!({ "analyze": false })).is_err());
         let music = tool_to_command("klipp_add_music", &json!({ "tracks": [{ "title": "a" }, { "title": "b" }] })).unwrap();
@@ -3664,6 +3669,9 @@ mod catalogue_trim_tests {
         ("klipp_relink_media", "force", "relink a probable mismatch anyway"),
         ("klipp_relink_media", "path", "absolute path of the file"),
         ("klipp_timeline_sheet", "cols", "Tiles to a row (default 6)"),
+        ("klipp_timeline_sheet", "tile_width", "Pixels (default 320)"),
+        ("klipp_add_marker", "note", "the longer comment"),
+        ("klipp_import_media", "analyze", "default true"),
         ("klipp_timeline_sheet", "frames", "Evenly spaced tiles instead of one per shot (1-60)"),
         ("klipp_timeline_sheet", "inline", "Also return the picture in the reply; by default only when no path is given"),
         ("klipp_timeline_sheet", "path", "Absolute PNG path; temp dir when omitted"),

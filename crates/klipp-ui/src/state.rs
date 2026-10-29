@@ -1693,6 +1693,9 @@ pub struct AppState {
     pub pending_media_path: Option<PathBuf>,
     /// Explicit pool imports awaiting their probe; history is recorded only on success.
     pub pending_undo_imports: std::collections::HashSet<klipp_core::MediaId>,
+    /// The bin a folder import puts each awaited file in (#3096), taken
+    /// when it enters the pool.
+    pub pending_import_bins: std::collections::HashMap<klipp_core::MediaId, String>,
     /// Per-import opt-outs, consumed when the async load succeeds or fails.
     pub pending_skip_analysis: std::collections::HashSet<klipp_core::MediaId>,
     /// Media imported with a timeline destination (e.g. from the Audio
@@ -4791,6 +4794,7 @@ impl Default for AppState {
             unsaved_dialog_action: UnsavedAction::None,
             pending_media_path: None,
             pending_undo_imports: std::collections::HashSet::new(),
+            pending_import_bins: std::collections::HashMap::new(),
             pending_skip_analysis: std::collections::HashSet::new(),
             pending_media_drop: std::collections::HashMap::new(),
             retired_media_ids: std::collections::HashSet::new(),
@@ -5875,8 +5879,14 @@ impl AppState {
 
     /// Finish a probe, recording explicit pool imports only when they first
     /// enter the project. Re-probes and timeline drops keep their existing history.
-    pub(crate) fn complete_pool_import(&mut self, item: klipp_media::MediaItem, is_new: bool) {
+    pub(crate) fn complete_pool_import(&mut self, mut item: klipp_media::MediaItem, is_new: bool) {
         let requested = self.pending_undo_imports.remove(&item.id);
+        // Its folder's bin, set before the step is recorded so undo and
+        // redo carry it (#3096).
+        if let (Some(bin), true) = (self.pending_import_bins.remove(&item.id), is_new) {
+            item.bin_id = Some(self.media_pool.find_or_create_bin(&bin));
+            item.bin = Some(bin);
+        }
         if requested && is_new {
             self.push_history(EditCommand::AddMediaToPool { item: item.clone() });
         }
@@ -7703,6 +7713,34 @@ mod pool_import_undo_tests {
         state.complete_pool_import(item, false);
         assert_eq!(state.undo_depth(), 0, "a re-probe must not undo an existing item");
         assert!(state.pending_undo_imports.is_empty());
+    }
+
+    /// #3096: a file a folder import put in its subfolder's bin enters
+    /// the pool in that bin, made when it isn't there, and its undo and
+    /// redo keep it there; a re-probe of an item in the pool takes no
+    /// bin.
+    #[test]
+    fn a_folder_import_puts_the_file_in_its_subfolders_bin() {
+        let mut state = AppState::default();
+        let item = klipp_media::MediaItem::synthetic_for_test("video/day 2/b.wav".into(), None);
+        let id = item.id;
+        state.pending_undo_imports.insert(id);
+        state.pending_import_bins.insert(id, "video/day 2".into());
+        state.complete_pool_import(item.clone(), true);
+        let pooled = state.media_pool.get(&id).unwrap();
+        assert_eq!(pooled.bin.as_deref(), Some("video/day 2"));
+        let bin_id = pooled.bin_id.expect("the bin made");
+        assert!(state.media_pool.bins.iter().any(|b| b.id == bin_id && b.name == "video/day 2"));
+        assert!(state.pending_import_bins.is_empty());
+        replay(&mut state, false);
+        assert!(state.media_pool.get(&id).is_none());
+        replay(&mut state, true);
+        assert_eq!(state.media_pool.get(&id).unwrap().bin.as_deref(), Some("video/day 2"), "redo keeps the bin");
+
+        state.pending_import_bins.insert(id, "elsewhere".into());
+        state.complete_pool_import(item, false);
+        assert_eq!(state.media_pool.get(&id).unwrap().bin, None, "a re-probe is not put in a bin");
+        assert!(state.pending_import_bins.is_empty());
     }
 }
 

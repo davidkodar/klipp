@@ -421,14 +421,18 @@ fn pool_menu(ui: &mut egui::Ui, view_mode: &mut BrowserViewMode, sort_by: &mut S
         crate::file_dialog::spawn(crate::command_palette::import_media_commands);
         ui.close_menu();
     }
-    if menu_item(ui, "Import Folder\u{2026}", "").clicked() {
-        crate::file_dialog::spawn(move || {
-            rfd::FileDialog::new()
-                .pick_folder()
-                .map(|dir| vec![AppCommand::ImportMediaFolder { directory: dir }])
-                .unwrap_or_default()
-        });
-        ui.close_menu();
+    // A folder with its subfolders (#3096), each subfolder a bin when
+    // asked.
+    for (label, bins) in [("Import Folder\u{2026}", false), ("Import Folder as Bins\u{2026}", true)] {
+        if menu_item(ui, label, "").clicked() {
+            crate::file_dialog::spawn(move || {
+                rfd::FileDialog::new()
+                    .pick_folder()
+                    .map(|dir| vec![AppCommand::ImportMediaFolder { directory: dir, bins }])
+                    .unwrap_or_default()
+            });
+            ui.close_menu();
+        }
     }
     ui.separator();
     ui.menu_rows("Sort By", |ui| menu_body(ui, |ui| {
