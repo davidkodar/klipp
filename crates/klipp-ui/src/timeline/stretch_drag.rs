@@ -194,7 +194,7 @@ impl StretchState {
         if self.clip_ids.len() > 1 {
             out.push(format!("{} clips together", self.clip_ids.len()));
         }
-        out.push(self.note.clone().unwrap_or_else(|| if self.ripple { "Ripple: later clips move".into() } else { "Alt: ripple".into() }));
+        out.push(self.note.clone().unwrap_or_else(|| if self.ripple { "Ripple: later clips move".into() } else { "No ripple · Alt to ripple".into() }));
         out
     }
 }
@@ -283,7 +283,8 @@ mod tests {
         let shown = seq.all_clips().find(|c| c.id == id).unwrap();
         assert!((shown.timeline_out.to_secs_f64() - 5.0).abs() < 1e-9 && (shown.speed - 0.8).abs() < 1e-9);
         let tc_display = klipp_core::TimecodeDisplay::plain(seq.fps);
-        assert_eq!(drag.readout(&seq, &pool, &tc_display)[0], "Speed 80.0%");
+        let lines = drag.readout(&seq, &pool, &tc_display);
+        assert_eq!((lines[0].as_str(), lines.last().map(String::as_str)), ("Speed 80.0%", Some("No ripple · Alt to ripple")), "says it doesn't ripple");
         // Into the next clip: the last place stays, and why is said.
         drag.preview(&mut seq, &pool, tc(8.0));
         assert!((seq.all_clips().find(|c| c.id == id).unwrap().timeline_out.to_secs_f64() - 5.0).abs() < 1e-9);
@@ -294,6 +295,8 @@ mod tests {
         let shown = seq.all_clips().find(|c| c.id == id).unwrap();
         assert!((shown.timeline_out.to_secs_f64() - 40.0).abs() < 1e-9 && (shown.speed - 0.1).abs() < 1e-9, "{} s at {}", shown.timeline_out.to_secs_f64(), shown.speed);
         assert_eq!(drag.note.as_deref(), Some("at the 10% limit"));
+        drag.note = None;
+        assert_eq!(drag.readout(&seq, &pool, &tc_display).last().map(String::as_str), Some("Ripple: later clips move"), "says it ripples");
         let cmd = drag.finish(&mut seq);
         assert!(matches!(cmd, Some(klipp_core::AppCommand::StretchClip { at_end: true, ripple: true, .. })), "{cmd:?}");
         assert_eq!(seq.all_clips().find(|c| c.id == id).unwrap().timeline_out, tc(4.0), "put back for the commit");

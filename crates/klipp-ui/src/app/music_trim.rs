@@ -104,8 +104,7 @@ impl super::KlippApp {
                 }
             }
             crate::widgets::toast::ToastAction::Stretch { clip_id, at_end, to } => {
-                let ripple = self.state.ripple_enabled;
-                self.send_commands(vec![klipp_core::AppCommand::StretchClip { clip_ids: vec![clip_id], at_end, to, ripple, keep_pitch: true }]);
+                self.send_commands(vec![klipp_core::AppCommand::StretchClip { clip_ids: vec![clip_id], at_end, to, ripple: false, keep_pitch: true }]);
             }
             crate::widgets::toast::ToastAction::SmoothMotion(clip_id) => {
                 match klipp_document::ops::interpolation_at(self.state.sequence(), &self.state.media_pool, clip_id, "flow") {
