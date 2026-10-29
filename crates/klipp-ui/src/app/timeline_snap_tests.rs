@@ -483,6 +483,11 @@ fn a_selection_drags_across_tracks_or_is_refused_whole() {
         let mut got = moves(&tl.sent);
         got.sort_by_key(|m| m.1.value);
         assert_eq!(got, [(ids[0], t(0.0), Some(v3)), (ids[1], t(0.5), Some(v2)), (ids[2], t(3.0), Some(v3))]);
+        // The document takes them in an order where none lands on a clip
+        // still waiting to leave (the Video 3 one goes down first).
+        let ops = crate::timeline::moves::drag_move_ops(tl.state.sequence(), &got, true);
+        let plan = klipp_document::ops::resolve(tl.state.sequence(), &tl.state.media_pool, &ops).expect("the moves resolve");
+        assert_eq!(plan.steps.len(), 3);
     }
 }
 

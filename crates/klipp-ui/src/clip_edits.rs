@@ -6,8 +6,10 @@ use klipp_document::{history::EditCommand, ops::{self, ClipRef, Edge, Op, Refusa
 use klipp_media::MediaPool;
 use klipp_timeline::Sequence;
 
-pub(crate) fn remove(seq: &Sequence, pool: &MediaPool, id: ClipId) -> Result<EditCommand, Refusal> {
-    let plan = ops::resolve(seq, pool, &[Op::Remove { clip_id: ClipRef::Id(id), ripple: true, linked: true }])?;
+/// Clip `id` (and its linked partner) taken out of a free track: the gap
+/// closed (`ripple`, Delete) or left (Lift, #3060).
+pub(crate) fn remove(seq: &Sequence, pool: &MediaPool, id: ClipId, ripple: bool) -> Result<EditCommand, Refusal> {
+    let plan = ops::resolve(seq, pool, &[Op::Remove { clip_id: ClipRef::Id(id), ripple, linked: true }])?;
     let mut removed = vec![id];
     if let Some((ti, ci)) = seq.find_clip(id) {
         if let Some(partner) = seq.tracks[ti].clips[ci].linked_clip_id.filter(|p| seq.find_clip(*p).is_some()) {
@@ -185,7 +187,7 @@ mod tests {
             let removed_audio = seq.tracks[1].clips[0].id;
             seq.tracks[0].clips[1].matte_source = Some(MatteBinding::new(removed_audio));
             let id = seq.tracks[selected_track].clips[0].id;
-            let edit = remove(&seq, &pool, id).unwrap();
+            let edit = remove(&seq, &pool, id, true).unwrap();
             let after = apply_and_round_trip(seq, pool, edit);
             assert_eq!(after.tracks[0].clips.len(), 1);
             assert_eq!(after.tracks[1].clips.len(), 1);
@@ -202,11 +204,11 @@ mod tests {
         seq.tracks[0].clips[1].matte_source = Some(MatteBinding::new(id));
         seq.tracks[1].locked = true;
         let before = serde_json::to_value(&seq).unwrap();
-        assert!(remove(&seq, &pool, id).unwrap_err().why.contains("locked"));
+        assert!(remove(&seq, &pool, id, true).unwrap_err().why.contains("locked"));
         assert_eq!(serde_json::to_value(&seq).unwrap(), before);
         seq.tracks[1].locked = false;
         seq.tracks[1].clips[0].timeline_in -= tc(0.4);
-        assert!(remove(&seq, &pool, id).unwrap_err().why.contains("different timeline ranges"));
+        assert!(remove(&seq, &pool, id, true).unwrap_err().why.contains("different timeline ranges"));
     }
 
     #[test]
@@ -220,7 +222,7 @@ mod tests {
         let edit = trim(&seq, &pool, &command(&seq.tracks[0].clips[0], Edge::Out, -1.0, true)).unwrap().unwrap();
         let after = apply_and_round_trip(seq.clone(), pool.clone(), edit);
         assert_eq!(serde_json::to_value(&after.tracks[1]).unwrap(), sound_before);
-        let edit = remove(&seq, &pool, id).unwrap();
+        let edit = remove(&seq, &pool, id, true).unwrap();
         let after = apply_and_round_trip(seq, pool, edit);
         assert_eq!(serde_json::to_value(&after.tracks[1]).unwrap(), sound_before);
     }
