@@ -7,6 +7,11 @@ use super::*;
 
 impl KlippApp {
     pub(super) fn handle_global_shortcuts(&mut self, ctx: &egui::Context) -> Vec<AppCommand> {
+        // A trim at its media's end offers a stretch on S (#3055): the key
+        // is the offer's then, not skimming's or any other binding's.
+        if self.state.stretch_offered && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::S)) {
+            self.state.stretch_requested = true;
+        }
         // An editor layout's one command on a key is two Klipp actions
         // here: the one the selection does not mean sits this frame out
         // (#2934, `keybindings::resolved`).

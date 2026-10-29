@@ -1070,6 +1070,9 @@ struct TrimState {
     /// The trim reached the end of the clip's media (or its start) and
     /// the pointer went on (#3055: where a stretch is offered).
     at_media_end: bool,
+    /// Where the pointer would have the edge, past the media's end too:
+    /// where a stretch instead goes.
+    wanted: Option<Timecode>,
     /// The snap the trim holds from frame to frame (#3056).
     hold: Option<crate::timeline::snap::SnapHold>,
 }
@@ -8116,6 +8119,7 @@ impl TimelinePanel {
                         original: state.sequence().clone(),
                         target: None,
                         at_media_end: false,
+                        wanted: None,
                         hold: None,
                     });
                 }
@@ -11017,14 +11021,18 @@ impl TimelinePanel {
                         self.frame_cache.snap_line_x = Some((content_rect.left() + secs as f32 * zoom - state.timeline_scroll_x, kind));
                     }
                 }
+                trim.wanted = Some(target);
                 let t = target.to_secs_f64();
                 let (lo, hi) = match trim.edge {
                     TrimEdge::Left => (head_min.max(if trim.ripple { f64::NEG_INFINITY } else { 0.0 }), was.timeline_out.to_secs_f64() - frame),
                     TrimEdge::Right => (was.timeline_in.to_secs_f64() + frame, tail_max),
                 };
-                trim.at_media_end = match trim.edge {
-                    TrimEdge::Left => t < head_min && head_min.is_finite(),
-                    TrimEdge::Right => t > tail_max && tail_max.is_finite(),
+                // Only a clip playing a file runs out of it; a title's
+                // start stops at the timeline's.
+                let plays = klipp_document::ops::plays_at_speed(&was, &state.media_pool);
+                trim.at_media_end = plays && match trim.edge {
+                    TrimEdge::Left => t < head_min,
+                    TrimEdge::Right => t > tail_max,
                 };
                 if t < lo || t > hi {
                     target = RationalTime::from_secs_f64(t.clamp(lo, hi), target.rate);
@@ -11047,6 +11055,22 @@ impl TimelinePanel {
                     };
                     Self::paint_trim_overlay(painter, content_rect, track_rect, zoom, scroll, at, delta, now.timeline_out - now.timeline_in, label, state.timecode_display());
                 }
+                // At the media's end with the pointer going on: a stretch
+                // offered, S taking the same drag on as one (#3055).
+                state.stretch_offered = trim.at_media_end;
+                if trim.at_media_end {
+                    Self::paint_hint(painter, pos + egui::vec2(14.0, -18.0), egui::Align2::LEFT_CENTER, "Stretch instead (S)");
+                }
+                if trim.at_media_end && std::mem::take(&mut state.stretch_requested) {
+                    let at_end = matches!(trim.edge, TrimEdge::Right);
+                    let stretch = crate::timeline::stretch_drag::StretchState::begin(&trim.original, &was, trim.track_idx, at_end, trim.start_x, &state.selected_clips);
+                    let at = state.active_sequence_idx;
+                    state.sequences[at].tracks = trim.original.tracks.clone();
+                    state.stretch_offered = false;
+                    self.trimming_clip = None;
+                    self.stretching = Some(stretch);
+                    return;
+                }
             }
 
             if pointer_released {
@@ -11055,6 +11079,16 @@ impl TimelinePanel {
                 if let Some(command) = self.trimming_clip.as_ref().and_then(|t| t.finish(state.sequence_mut())) {
                     cmds.push(command);
                 }
+                // Let go at the media's end: the stretch still offered,
+                // after the trim, as a step of its own (#3055).
+                if let Some(t) = self.trimming_clip.as_ref().filter(|t| t.at_media_end) {
+                    if let Some(to) = t.wanted {
+                        let action = crate::widgets::toast::ToastAction::Stretch { clip_id: t.clip_id, at_end: matches!(t.edge, TrimEdge::Right), to };
+                        state.toast.show_with_action("Reached the end of the media", "Stretch instead", action);
+                    }
+                }
+                state.stretch_offered = false;
+                state.stretch_requested = false;
                 self.trimming_clip = None;
                 self.press_origin = None;
             }
@@ -19643,7 +19677,7 @@ mod trim_preview_tests {
                 original_timeline_in: clip.timeline_in, original_timeline_out: clip.timeline_out,
                 ripple: true,
                 linked: true,
-                original: seq.clone(), target: Some(tc(3.0)), at_media_end: false, hold: None,
+                original: seq.clone(), target: Some(tc(3.0)), at_media_end: false, wanted: None, hold: None,
             };
             // Exactly the speculative mutation made while the pointer
             // is down: only the drawn track has been changed so far.
@@ -19683,7 +19717,7 @@ mod trim_preview_tests {
             clip_id: c.id, track_idx: 0, edge: TrimEdge::Left, start_x: 0.0,
             original_source_in: c.source_in, original_source_out: c.source_out,
             original_timeline_in: c.timeline_in, original_timeline_out: c.timeline_out,
-            ripple: true, linked: true, original: seq.clone(), target: Some(tc(1.0)), at_media_end: false, hold: None,
+            ripple: true, linked: true, original: seq.clone(), target: Some(tc(1.0)), at_media_end: false, wanted: None, hold: None,
         };
         seq.tracks[0].clips[0].source_in = tc(1.0);
         seq.tracks[0].clips[0].timeline_out = tc(3.0);
@@ -19719,7 +19753,7 @@ mod trim_preview_tests {
             clip_id: c.id, track_idx: 0, edge: TrimEdge::Right, start_x: 0.0,
             original_source_in: c.source_in, original_source_out: c.source_out,
             original_timeline_in: c.timeline_in, original_timeline_out: c.timeline_out,
-            ripple: false, linked: true, original: seq.clone(), target: Some(tc(15.0)), at_media_end: false, hold: None,
+            ripple: false, linked: true, original: seq.clone(), target: Some(tc(15.0)), at_media_end: false, wanted: None, hold: None,
         };
         let command = drag.finish(&mut seq).unwrap();
         let edit = crate::clip_edits::trim(&seq, &pool, &command).unwrap().unwrap();

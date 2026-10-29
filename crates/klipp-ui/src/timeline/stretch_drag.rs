@@ -64,6 +64,15 @@ pub fn readout_rect(content: egui::Rect, track: egui::Rect, pointer: egui::Pos2,
     egui::Rect::from_min_size(egui::pos2(x, y), size)
 }
 
+/// The speed, in percent, of a clip a stretch left slowed with nothing
+/// drawing its in-between frames: where smooth motion is offered, as the
+/// clip's speed settings offer it. `None` for one at full speed or
+/// faster, ramped, already blending, or without a frame rate.
+pub fn smooth_offer(clip: &Clip, pool: &klipp_media::MediaPool) -> Option<f64> {
+    let slowed = klipp_document::ops::plays_at_speed(clip, pool) && clip.speed.abs() < 1.0 - 1e-9 && clip.speed_keyframes.is_empty();
+    (slowed && !clip.has_frame_blend_entry()).then(|| clip.speed.abs() * 100.0)
+}
+
 /// A stretch being dragged.
 pub struct StretchState {
     /// The clip dragged, then the other selected clips whose same edge is
@@ -227,6 +236,21 @@ mod tests {
         assert_eq!(grip_at(narrow, egui::pos2(125.0, 24.0)), None, "too narrow to show one");
         assert_eq!(fade_handle_xs(cr, 0.0, 0.0), (100.0 + FADE_INSET, 300.0 - FADE_INSET));
         assert_eq!(fade_handle_xs(cr, 40.0, 30.0), (140.0, 270.0), "a longer fade where it is");
+    }
+
+    /// Smooth motion is offered for a clip slowed with nothing blending,
+    /// not for one at full speed or faster, or a title.
+    #[test]
+    fn smooth_motion_is_offered_for_a_slowed_clip_only() {
+        let (seq, pool, id) = fixture();
+        let mut c = seq.all_clips().find(|c| c.id == id).unwrap().clone();
+        assert_eq!(smooth_offer(&c, &pool), None, "full speed");
+        c.speed = 0.5;
+        assert_eq!(smooth_offer(&c, &pool), Some(50.0));
+        c.speed = 2.0;
+        assert_eq!(smooth_offer(&c, &pool), None, "faster");
+        let blended = klipp_timeline::test_clip::TestClip::of(Clip { speed: 0.5, ..c.clone() }).effect(klipp_effects::BuiltinEffect::SpeedRamp { speed: 1.0, blend_mode: 2 }).build();
+        assert_eq!(smooth_offer(&blended, &pool), None, "already following the motion");
     }
 
     /// The readout stays inside the timeline: to the right of the

@@ -519,6 +519,11 @@ exist until the plan runs.
   In the app a person does the same by dragging the tab at the top corner
   of a clip's end or start, with the Rate Stretch tool (Shift+R) on an
   edge, or with Ctrl held on an edge; Alt flips ripple while dragging.
+  A trim that runs into the end of the clip's media offers "Stretch
+  instead (S)": S takes the same drag on as a stretch, and let go, a
+  toast still offers it. A clip slowed by a stretch is offered smooth
+  motion (`interpolation: flow`); its sound's pitch is the inspector's
+  Keep pitch, as `keep_pitch` is here.
 - `replace {clip_id, media_id, source_in?}`: another file, or another part
   of one, in a clip's slot: the same place, length and speed, with its
   grade, effects, role, volume, links and transitions kept and its linked

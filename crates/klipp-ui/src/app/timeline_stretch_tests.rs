@@ -170,3 +170,48 @@ fn two_selected_clips_with_the_same_end_stretch_together() {
     assert_eq!(s.len(), 1, "{:?}", tl.sent);
     assert_eq!(s[0].0, vec![clip, other], "both, the dragged one first");
 }
+
+/// A trim past the end of the clip's media stops there and offers a
+/// stretch: S (as the shortcuts pass it on) takes the same drag on as a
+/// stretch to where the pointer goes; let go without it, the trim lands
+/// at the media's end and the toast offers the stretch.
+#[test]
+fn a_trim_at_the_media_end_offers_a_stretch() {
+    for take_it in [true, false] {
+        let (mut state, clip, _) = fixture();
+        // The clip shows the file's last 4 s: nothing after its end.
+        let c = state.sequences[0].tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).find(|c| c.id == clip).unwrap();
+        c.source_in = t(6.0);
+        c.source_out = t(10.0);
+        let mut tl = Timeline::new(state);
+        let v1 = tl.track("Video 1");
+        let r = tl.rect(v1);
+        let edge = egui::pos2(tl.x(v1, 4.0) - 4.0, r.bottom() - 8.0);
+        let m = egui::Modifiers::NONE;
+        let b = |p, d| egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: d, modifiers: m };
+        tl.frame(vec![egui::Event::PointerMoved(edge)], m);
+        tl.frame(vec![b(edge, true)], m);
+        tl.frame(vec![egui::Event::PointerMoved(edge + egui::vec2(8.0, 0.0))], m);
+        let past = egui::pos2(tl.x(v1, 6.0) - 4.0, edge.y);
+        tl.frame(vec![egui::Event::PointerMoved(past)], m);
+        assert!(tl.state.stretch_offered, "offered at the media's end");
+        assert!(tl.texts.iter().any(|t| t == "Stretch instead (S)"), "{:?}", tl.texts);
+        if take_it {
+            tl.state.stretch_requested = true;
+            tl.frame(vec![egui::Event::PointerMoved(past + egui::vec2(1.0, 0.0))], m);
+            tl.frame(vec![egui::Event::PointerMoved(past)], m);
+        }
+        tl.frame(vec![b(past, false)], m);
+        tl.frame(Vec::new(), m);
+        let trims = tl.sent.iter().filter(|c| matches!(c, AppCommand::TrimClip { .. })).count();
+        if take_it {
+            let s = tl.stretches();
+            assert_eq!((s.len(), trims), (1, 0), "the same drag a stretch: {:?}", tl.sent);
+            assert!((s[0].2 - 6.0).abs() < 0.05, "to where the pointer went: {}", s[0].2);
+        } else {
+            assert_eq!((tl.stretches().len(), trims), (0, 1), "{:?}", tl.sent);
+            assert_eq!(tl.state.toast.message_for_test(), Some("Reached the end of the media"));
+        }
+        assert!(!tl.state.stretch_offered, "the offer gone with the drag");
+    }
+}

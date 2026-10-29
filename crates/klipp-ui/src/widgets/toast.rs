@@ -16,6 +16,12 @@ pub struct ToastState {
 pub enum ToastAction {
     /// Undo the history step with this stamp, while it is still the last.
     UndoStep(u64),
+    /// A trim stopped at its media's end: stretch the clip from that edge
+    /// to where the pointer went instead (#3055).
+    Stretch { clip_id: klipp_core::ClipId, at_end: bool, to: klipp_core::Timecode },
+    /// A clip slowed by a stretch: draw its in-between frames by optical
+    /// flow (#3055).
+    SmoothMotion(klipp_core::ClipId),
 }
 
 /// How long a toast with a button stays at least, so it can be reached.

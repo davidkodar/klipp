@@ -1960,6 +1960,11 @@ pub struct AppState {
 
     // GUI redesign
     pub skimming_enabled: bool,
+    /// A trim has reached its media's end with the pointer going on, and
+    /// offers "Stretch instead (S)" (#3055): S is the offer's, not a
+    /// shortcut's, while it shows; pressing it sets `stretch_requested`.
+    pub stretch_offered: bool,
+    pub stretch_requested: bool,
     /// Whether VIDEO files in the file browser are hover-skimmable.
     /// Mirrored from `prefs.file_browser.file_browser_video_skim`. Independent
     /// of the global `skimming_enabled` toolbar toggle — both must be on
@@ -4876,6 +4881,8 @@ impl Default for AppState {
             dragging_media: None,
             dragging_media_group: Vec::new(),
             skimming_enabled: true,
+            stretch_offered: false,
+            stretch_requested: false,
             file_browser_video_skim_enabled: true,
             file_browser_audio_skim_enabled: true,
             toast: crate::widgets::toast::ToastState::default(),
