@@ -11,7 +11,7 @@ use crate::theme::KlippTheme;
 
 /// The presets, for a clip `clip_secs` long, as klipp-core names them.
 pub fn presets(clip_secs: f64) -> Vec<Animator> {
-    klipp_core::title_motion::ANIMATOR_PRESETS.iter().filter_map(|n| klipp_core::title_motion::animator_preset(n, clip_secs)).collect()
+    klipp_core::title_motion::animator_preset_ids().into_iter().filter_map(|n| klipp_core::title_motion::animator_preset(n, clip_secs)).collect()
 }
 
 fn unit_label(u: SelectUnit) -> &'static str {

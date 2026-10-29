@@ -783,39 +783,154 @@ fn srgb_byte(v: f32) -> u8 {
     (c * 255.0).round() as u8
 }
 
-/// The animator presets by name, as edit operations and the Title tab
-/// name them (#1510, #1701).
-pub const ANIMATOR_PRESETS: [&str; 3] = ["wave", "random_fade_in", "spin_in"];
+/// The animator presets' ids, in order, as edit operations and the
+/// Title tab name them (#1510, #1701).
+pub fn animator_preset_ids() -> Vec<&'static str> {
+    animator_presets().iter().map(|p| p.id.as_str()).collect()
+}
 
-/// The preset `name` for a title `clip_secs` long: a wave running
-/// through the letters over the clip, letters fading in in a random
-/// order, and letters spinning in one after another; `None` for a name
-/// that is not one.
+/// The preset `name` for a title `clip_secs` long, its keys placed on
+/// the clip; `None` for a name that is not one.
 pub fn animator_preset(name: &str, clip_secs: f64) -> Option<Animator> {
-    let key = |time_secs: f64, value: f32| crate::keyframe::Keyframe { time_secs, value, interpolation: crate::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
+    let p = animator_presets().iter().find(|p| p.id == name)?;
     let clip = clip_secs.max(0.1);
-    let entrance = clip.min(1.2);
-    Some(match name {
-        "wave" => Animator {
-            name: "Wave".into(),
-            selector: RangeSelector { end: 0.3, shape: SelectShape::Smooth, offset_keyframes: vec![key(0.0, -0.3), key(clip, 1.0)], ..Default::default() },
-            props: AnimatorProps { dy: -0.3, ..Default::default() },
-            ..Default::default()
-        },
-        "random_fade_in" => Animator {
-            name: "Random fade in".into(),
-            selector: RangeSelector { order: SelectOrder::Random { seed: 1 }, start_keyframes: vec![key(0.0, 0.0), key(entrance, 1.0)], ..Default::default() },
-            props: AnimatorProps { opacity: 0.0, ..Default::default() },
-            ..Default::default()
-        },
-        "spin_in" => Animator {
-            name: "Spin in".into(),
-            selector: RangeSelector { start_keyframes: vec![key(0.0, 0.0), key(entrance, 1.0)], easing: Easing::OutCubic, ..Default::default() },
-            props: AnimatorProps { rotation: 360.0, scale: 0.4, opacity: 0.0, ..Default::default() },
-            ..Default::default()
-        },
-        _ => return None,
+    let mut selector = RangeSelector { unit: p.selector.unit, start: p.selector.start, end: p.selector.end, offset: p.selector.offset, shape: p.selector.shape, easing: p.selector.easing, order: p.selector.order, amount: p.selector.amount, ..Default::default() };
+    for k in &p.keys {
+        let time_secs = match k.at {
+            KeyAt::Start => 0.0,
+            KeyAt::Entrance => clip.min(1.2),
+            KeyAt::End => clip,
+        };
+        let key = crate::keyframe::Keyframe { time_secs, value: k.value, interpolation: crate::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
+        match k.on {
+            KeyOn::Start => selector.start_keyframes.push(key),
+            KeyOn::End => selector.end_keyframes.push(key),
+            KeyOn::Offset => selector.offset_keyframes.push(key),
+        }
+    }
+    let q = &p.props;
+    let props = AnimatorProps { dx: q.dx, dy: q.dy, scale: q.scale, rotation: q.rotation, opacity: q.opacity, blur: q.blur, colour: q.colour, backing: q.backing };
+    Some(Animator { name: p.name.clone(), selector, props, ..Default::default() })
+}
+
+/// An animator preset as `assets/presets/animators` writes it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AnimatorPreset {
+    id: String,
+    name: String,
+    #[serde(default)]
+    selector: PresetSelector,
+    #[serde(default)]
+    props: PresetProps,
+    #[serde(default)]
+    keys: Vec<PresetKey>,
+}
+
+/// A preset's selector without its keys, which `keys` places.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct PresetSelector {
+    unit: SelectUnit,
+    start: f32,
+    end: f32,
+    offset: f32,
+    shape: SelectShape,
+    easing: Easing,
+    order: SelectOrder,
+    amount: f32,
+}
+
+impl Default for PresetSelector {
+    fn default() -> Self {
+        let d = RangeSelector::default();
+        Self { unit: d.unit, start: d.start, end: d.end, offset: d.offset, shape: d.shape, easing: d.easing, order: d.order, amount: d.amount }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct PresetProps {
+    dx: f32,
+    dy: f32,
+    scale: f32,
+    rotation: f32,
+    opacity: f32,
+    blur: f32,
+    colour: Option<[u8; 4]>,
+    backing: Option<[u8; 4]>,
+}
+
+impl Default for PresetProps {
+    fn default() -> Self {
+        Self { dx: 0.0, dy: 0.0, scale: 1.0, rotation: 0.0, opacity: 1.0, blur: 0.0, colour: None, backing: None }
+    }
+}
+
+/// A key on the range's `on` at `at` on the clip.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PresetKey {
+    on: KeyOn,
+    at: KeyAt,
+    value: f32,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum KeyOn {
+    Start,
+    End,
+    Offset,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum KeyAt {
+    Start,
+    Entrance,
+    End,
+}
+
+/// The most keys one preset places.
+const MAX_PRESET_KEYS: usize = 64;
+
+/// Klipp's animator presets, read once from the file built in; none
+/// when it can't be read.
+fn animator_presets() -> &'static [AnimatorPreset] {
+    static PRESETS: std::sync::OnceLock<Vec<AnimatorPreset>> = std::sync::OnceLock::new();
+    PRESETS.get_or_init(|| {
+        read_animator_presets(include_str!("../../../assets/presets/animators/builtin.toml")).unwrap_or_else(|why| {
+            tracing::error!("the built-in animator presets don't read: {why}");
+            Vec::new()
+        })
     })
+}
+
+/// The presets in `text`, or why it is refused: an id that isn't a
+/// lowercase word or is given twice, no name, too many keys, or a
+/// number that isn't finite.
+fn read_animator_presets(text: &str) -> Result<Vec<AnimatorPreset>, String> {
+    let presets: Vec<AnimatorPreset> = crate::preset_file::read(text, "animator_preset", 1, "preset")?;
+    let mut ids = std::collections::HashSet::new();
+    for p in &presets {
+        let word = !p.id.is_empty() && p.id.len() <= 32 && p.id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+        if !word || !ids.insert(p.id.as_str()) {
+            return Err(format!("preset \"{}\": an id of lowercase letters, digits and _, given once", p.id));
+        }
+        if p.name.trim().is_empty() {
+            return Err(format!("preset \"{}\" needs a name", p.id));
+        }
+        if p.keys.len() > MAX_PRESET_KEYS {
+            return Err(format!("preset \"{}\": at most {MAX_PRESET_KEYS} keys", p.id));
+        }
+        let (s, q) = (&p.selector, &p.props);
+        let numbers = [s.start, s.end, s.offset, s.amount, q.dx, q.dy, q.scale, q.rotation, q.opacity, q.blur];
+        if !numbers.iter().chain(p.keys.iter().map(|k| &k.value)).all(|v| v.is_finite()) {
+            return Err(format!("preset \"{}\": a number that isn't finite", p.id));
+        }
+    }
+    Ok(presets)
 }
 
 /// Each unit's place along the selector's range, 0 first: the order
@@ -1937,5 +2052,73 @@ mod animator_tests {
         assert!(!json.contains("enabled") && !json.contains("end_keyframes") && !json.contains("colour"), "{json}");
         assert_eq!(serde_json::from_str::<Animator>(&json).unwrap(), a);
         assert_eq!(serde_json::from_str::<Animator>("{}").unwrap(), Animator::default());
+    }
+
+    /// The presets as they were written in code before the file: the
+    /// file's read to the same animators on any clip length.
+    fn as_written(name: &str, clip_secs: f64) -> Option<Animator> {
+        let clip = clip_secs.max(0.1);
+        let entrance = clip.min(1.2);
+        Some(match name {
+            "wave" => Animator {
+                name: "Wave".into(),
+                selector: RangeSelector { end: 0.3, shape: SelectShape::Smooth, offset_keyframes: vec![key(0.0, -0.3), key(clip, 1.0)], ..Default::default() },
+                props: AnimatorProps { dy: -0.3, ..Default::default() },
+                ..Default::default()
+            },
+            "random_fade_in" => Animator {
+                name: "Random fade in".into(),
+                selector: RangeSelector { order: SelectOrder::Random { seed: 1 }, start_keyframes: vec![key(0.0, 0.0), key(entrance, 1.0)], ..Default::default() },
+                props: AnimatorProps { opacity: 0.0, ..Default::default() },
+                ..Default::default()
+            },
+            "spin_in" => Animator {
+                name: "Spin in".into(),
+                selector: RangeSelector { start_keyframes: vec![key(0.0, 0.0), key(entrance, 1.0)], easing: Easing::OutCubic, ..Default::default() },
+                props: AnimatorProps { rotation: 360.0, scale: 0.4, opacity: 0.0, ..Default::default() },
+                ..Default::default()
+            },
+            _ => return None,
+        })
+    }
+
+    /// The presets file reads to the three presets as they were, keys
+    /// placed on a long clip, a short one and one of no length (#2887).
+    #[test]
+    fn the_animator_presets_read_as_they_were() {
+        assert_eq!(animator_preset_ids(), ["wave", "random_fade_in", "spin_in"]);
+        for clip in [4.0, 0.5, 0.0, 30.0] {
+            for id in animator_preset_ids() {
+                assert_eq!(animator_preset(id, clip), as_written(id, clip), "{id} on a {clip} s clip");
+            }
+        }
+        assert_eq!(animator_preset("bounce", 4.0), None);
+    }
+
+    /// A presets file with one that can't be offered is refused, saying
+    /// why: an id twice or not a word, no name, a field it doesn't know,
+    /// a key placed nowhere it knows, a number that isn't finite.
+    #[test]
+    fn a_bad_animator_presets_file_is_refused() {
+        let file = |body: &str| format!("kind = \"animator_preset\"\nformat_version = 1\n{body}");
+        let one = "[[preset]]\nid = \"lift\"\nname = \"Lift\"\nprops = { dy = -0.5 }\nkeys = [{ on = \"end\", at = \"entrance\", value = 1.0 }]\n";
+        let read = read_animator_presets(&file(one)).unwrap();
+        assert_eq!((read.len(), read[0].props.dy, read[0].keys.len()), (1, -0.5, 1));
+        for (body, says) in [
+            (format!("{one}{one}"), "given once"),
+            (one.replace("\"lift\"", "\"Lift Up\""), "given once"),
+            (one.replace("\"Lift\"", "\" \""), "needs a name"),
+            (one.replace("dy = -0.5", "dy = nan"), "isn't finite"),
+            (format!("{one}keys_extra = 1\n"), "unknown field"),
+            (one.replace("dy = -0.5", "dy = -0.5, glow = 1"), "unknown field"),
+            (one.replace("at = \"entrance\"", "at = \"middle\""), "unknown variant"),
+            (one.replace("on = \"end\"", "on = \"amount\""), "unknown variant"),
+        ] {
+            let why = read_animator_presets(&file(&body)).unwrap_err();
+            assert!(why.contains(says), "{body}: {why}");
+        }
+        let many = format!("[[preset]]\nid = \"many\"\nname = \"Many\"\n{}", "[[preset.keys]]\non = \"start\"\nat = \"start\"\nvalue = 0.0\n".repeat(65));
+        assert!(read_animator_presets(&file(&many)).unwrap_err().contains("at most 64 keys"));
+        assert!(read_animator_presets(&file(one).replace("animator_preset", "effect_preset")).is_err());
     }
 }

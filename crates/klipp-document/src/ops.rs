@@ -11972,10 +11972,10 @@ fn range_value(v: Option<f32>, lo: f32, what: &str, i: usize) -> Result<Option<f
 /// An [`AnimatorSpec`] as an animator: its preset, if any, with the
 /// spec's fields over it, every value checked.
 fn animator(spec: &AnimatorSpec, i: usize) -> Result<klipp_core::title_motion::Animator, Refusal> {
-    use klipp_core::title_motion::{animator_preset, RangeSelector, SelectOrder, SelectShape, ANIMATOR_PRESETS};
+    use klipp_core::title_motion::{animator_preset, animator_preset_ids, RangeSelector, SelectOrder, SelectShape};
     let mut a = match spec.preset.as_deref() {
         // A preset's keys are laid over four seconds; `*_keys` replace them.
-        Some(p) => animator_preset(&p.to_lowercase(), 4.0).ok_or_else(|| refuse(i, format!("\"{p}\" is not an animator preset"), format!("use {}, or give the animator's fields", ANIMATOR_PRESETS.join(", "))))?,
+        Some(p) => animator_preset(&p.to_lowercase(), 4.0).ok_or_else(|| refuse(i, format!("\"{p}\" is not an animator preset"), format!("use {}, or give the animator's fields", animator_preset_ids().join(", "))))?,
         None => Default::default(),
     };
     if let Some(n) = &spec.name {
