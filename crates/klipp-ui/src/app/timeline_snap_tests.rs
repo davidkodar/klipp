@@ -444,7 +444,7 @@ fn a_selection_drags_together_as_one_step() {
 
     let state = &mut tl.state;
     let before: Vec<_> = ids.iter().map(|&id| span(state, id)).collect();
-    let ops = super::clip_moves::drag_move_ops(state.sequence(), &got, true);
+    let ops = crate::timeline::moves::drag_move_ops(state.sequence(), &got, true);
     let plan = klipp_document::ops::resolve(state.sequence(), &state.media_pool, &ops).expect("the moves resolve");
     let edits: Vec<crate::history::EditCommand> = plan.steps.into_iter().map(|s| s.edit).collect();
     {
@@ -484,4 +484,48 @@ fn a_selection_drags_across_tracks_or_is_refused_whole() {
         got.sort_by_key(|m| m.1.value);
         assert_eq!(got, [(ids[0], t(0.0), Some(v3)), (ids[1], t(0.5), Some(v2)), (ids[2], t(3.0), Some(v3))]);
     }
+}
+
+/// A selection with a primary-track clip: the primary's three clips are
+/// packed 0–2, 2–4, 4–6 s, and the first is selected with a clip at
+/// 1–2 s on Video 2. Dragged so the first's start snaps to 4 s, the
+/// primary ripples once (the first goes between the other two) and the
+/// Video 2 clip moves by the same 4 s. One undo puts everything back.
+#[test]
+fn a_selection_with_a_primary_clip_ripples_it_and_moves_the_rest() {
+    let (mut state, _, _) = three_tracks();
+    state.edit_mode = klipp_timeline::magnetic::EditMode::Insert;
+    let seq = &mut state.sequences[0];
+    let at = |seq: &klipp_timeline::Sequence, n: &str| seq.tracks.iter().position(|t| t.name == n).unwrap();
+    let (v1, v2) = (at(seq, "Video 1"), at(seq, "Video 2"));
+    for t in &mut seq.tracks {
+        t.clips.clear();
+    }
+    let c = |a: f64, b: f64| Clip::media(klipp_core::MediaId::new(), t(a), t(b), t(0.0), t(b - a));
+    let prim: Vec<Clip> = (0..3).map(|i| c(2.0 * i as f64, 2.0 * i as f64 + 2.0)).collect();
+    let ids: Vec<ClipId> = prim.iter().map(|c| c.id).collect();
+    seq.tracks[v1].clips = prim;
+    let free = c(1.0, 2.0);
+    let fid = free.id;
+    seq.tracks[v2].clips.push(free);
+    state.selected_clips = vec![ids[0], fid];
+    state.selected_clip = Some(ids[0]);
+    let before: Vec<_> = state.sequence().all_clips().map(|c| (c.id, c.timeline_in, c.timeline_out)).collect();
+    let mut tl = Timeline::new(state);
+    let grab = tl.at(v1, 1.0);
+    let drop = grab + egui::vec2(4.0 * ZOOM - 4.0, 0.0);
+    tl.drag(grab, &[grab + egui::vec2(60.0, 0.0), drop], egui::Modifiers::NONE);
+    let order: Vec<ClipId> = tl.state.sequence().tracks[v1].clips.iter().map(|c| c.id).collect();
+    assert_eq!(order, [ids[1], ids[0], ids[2]], "the primary rippled once");
+    assert_eq!(span(&tl.state, fid), (t(5.0), t(6.0)), "the rest by the same offset");
+    let state = &mut tl.state;
+    let entry = state.active_history_mut().undo().expect("a step");
+    let mut view = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: state.active_sequence_idx, media_pool: &mut state.media_pool, fps: &mut state.fps };
+    view.apply_inverse(&entry.command);
+    let mut after: Vec<_> = state.sequence().all_clips().map(|c| (c.id, c.timeline_in, c.timeline_out)).collect();
+    let mut want = before.clone();
+    after.sort_by_key(|x| x.0 .0);
+    want.sort_by_key(|x| x.0 .0);
+    assert_eq!(after, want);
+    assert!(state.active_history_mut().undo().is_none(), "one step");
 }

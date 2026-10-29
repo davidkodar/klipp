@@ -193,6 +193,16 @@ fn ends_in_view(name: &str, rect: egui::Rect, draw: &mut dyn FnMut(&mut egui::Ui
     scrolled
 }
 
+/// A folder of three empty clips, the same on every machine.
+fn files_fixture() -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("klipp-small-window-files-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("a temp folder");
+    for name in ["a.mov", "b.mov", "c.wav"] {
+        std::fs::write(dir.join(name), b"").expect("a fixture file");
+    }
+    dir
+}
+
 /// Each side panel, at each window's height: the browser's tabs and the
 /// Library's categories, and the inspector's tabs for a media clip and a
 /// title, scroll to their ends.
@@ -208,6 +218,9 @@ fn every_side_panel_scrolls_to_its_end() {
             if let Some(c) = category {
                 panel.library_category = c;
             }
+            // The Files tab lists a fixed folder of its own, not this
+            // machine's Videos, whose listing came in mid-scroll.
+            panel.files_current_path = files_fixture();
             let _ = ends_in_view(&format!("{w}x{h} browser {tab:?} {category:?}"), rects.browser_rect, &mut |ui| {
                 let (mut tab, mut pinned, mut ratio) = (tab, false, 0.5);
                 let _ = panel.show(ui, &mut state, &theme, &mut tab, &mut pinned, &mut ratio);
