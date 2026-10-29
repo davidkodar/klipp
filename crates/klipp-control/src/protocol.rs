@@ -220,7 +220,7 @@ pub struct ShortMomentAsk {
 // shape *is* the wire format — risk the JSON for nothing.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "method", rename_all = "snake_case")]
+#[serde(tag = "method", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ControlCommand {
     /// Liveness plus version, so a client can tell a stale socket from a
     /// running app.
@@ -1985,6 +1985,17 @@ mod socket_path_tests {
 
 #[cfg(test)]
 mod tests {
+    /// A request's field the method doesn't take is refused with the ones
+    /// it does (#2581); `id` and `idempotency_key` sit beside any method.
+    #[test]
+    fn a_method_refuses_a_field_it_does_not_take() {
+        let read = |v: serde_json::Value| serde_json::from_value::<super::Request>(v).map(|_| ()).map_err(|e| e.to_string());
+        assert_eq!(read(serde_json::json!({"id": 7, "idempotency_key": "k", "method": "seek", "secs": 1.0})), Ok(()));
+        let err = read(serde_json::json!({"id": 7, "method": "seek", "secs": 1.0, "sec": 2.0})).unwrap_err();
+        assert!(err.contains("sec") && err.contains("secs"), "{err}");
+        assert_eq!(read(serde_json::json!({"method": "ping"})), Ok(()));
+    }
+
     use super::Request;
     use serde_json::json;
 

@@ -1223,7 +1223,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
                         .map_err(|e| json!({"op_index":op_index,"why":e.to_string(),"applied":false}).to_string())?;
                 }
             }
-            serde_json::from_value::<klipp_control::protocol::ControlCommand>(v.clone()).map_err(|e| format!("invalid graph request: {e}"))?;
+            serde_json::from_value::<klipp_control::protocol::Request>(v.clone()).map_err(|e| format!("invalid graph request: {e}"))?;
             v
         }
         "klipp_import_timeline" => json!({"method":"import_timeline","path":args.get("path"),"new_project":args.get("new_project").and_then(Value::as_bool).unwrap_or(false)}),

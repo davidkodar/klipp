@@ -807,7 +807,7 @@ fn run_script(s: &str, i: usize) -> Result<klipp_timeline::Script, Refusal> {
 // so the size disparity does not matter.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "op", rename_all = "snake_case")]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Op {
     /// An empty native graphics container for editable vector layers.
     Graphics {
@@ -13486,6 +13486,18 @@ fn clip_name_plain(c: &Clip) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// A field no op has is refused, never passed over (#2581): `grade`
+    /// with a misspelt setting said nothing and graded without it. The
+    /// fields a title takes through its typesetting still read.
+    #[test]
+    fn an_unknown_field_is_refused() {
+        let read = |v: serde_json::Value| serde_json::from_value::<super::Op>(v).map(|_| ()).map_err(|e| e.to_string());
+        let err = read(serde_json::json!({"op": "grade", "clip_id": "6f2c1d5e-1b2a-4c3d-8e9f-0a1b2c3d4e5f", "contrast": 1.25, "blacks": -0.06})).unwrap_err();
+        assert!(err.contains("blacks"), "{err}");
+        assert_eq!(read(serde_json::json!({"op": "grade", "clip_id": "6f2c1d5e-1b2a-4c3d-8e9f-0a1b2c3d4e5f", "contrast": 1.25})), Ok(()));
+        assert!(read(serde_json::json!({"op": "title", "text": "A", "at": {"secs": 1.0}, "secs": 2.0, "weight": 700})).is_ok(), "a typeset field");
+        assert!(read(serde_json::json!({"op": "title", "text": "A", "at": {"secs": 1.0}, "secs": 2.0, "wieght": 700})).is_err(), "a misspelt typeset field");
+    }
     #[test]
     fn native_graphics_and_generator_effects_are_undoable_and_persist() {
         let seq = Sequence::new_default();
