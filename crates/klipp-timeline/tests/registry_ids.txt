@@ -1,0 +1,1393 @@
+# Every effect, node and transition id, parameter and port ever declared (#2888).
+# Added to with KLIPP_BLESS_REGISTRY_IDS=1; a line is never removed.
+param klipp.fx.anamorphic_streak intensity
+param klipp.fx.anamorphic_streak length
+param klipp.fx.anamorphic_streak threshold
+param klipp.fx.anamorphic_streak tint
+param klipp.fx.binocular_vignette amount
+param klipp.fx.binocular_vignette fringe
+param klipp.fx.binocular_vignette height
+param klipp.fx.binocular_vignette softness
+param klipp.fx.binocular_vignette spacing
+param klipp.fx.binocular_vignette width
+param klipp.fx.bloom intensity
+param klipp.fx.bloom radius
+param klipp.fx.bloom threshold
+param klipp.fx.channel_mixer blue_blue
+param klipp.fx.channel_mixer blue_green
+param klipp.fx.channel_mixer blue_red
+param klipp.fx.channel_mixer green_blue
+param klipp.fx.channel_mixer green_green
+param klipp.fx.channel_mixer green_red
+param klipp.fx.channel_mixer red_blue
+param klipp.fx.channel_mixer red_green
+param klipp.fx.channel_mixer red_red
+param klipp.fx.chroma_key key_color
+param klipp.fx.chroma_key spill
+param klipp.fx.chroma_key spill_method
+param klipp.fx.chroma_key spill_strength
+param klipp.fx.chroma_key tolerance
+param klipp.fx.chromatic_aberration blue_shift
+param klipp.fx.chromatic_aberration center_x
+param klipp.fx.chromatic_aberration center_y
+param klipp.fx.chromatic_aberration red_shift
+param klipp.fx.color_fade color
+param klipp.fx.color_fade duration_secs
+param klipp.fx.color_fade mode
+param klipp.fx.color_fade progress
+param klipp.fx.colour_space_transform input_curve
+param klipp.fx.colour_space_transform input_gamut
+param klipp.fx.colour_space_transform output_curve
+param klipp.fx.colour_space_transform output_gamut
+param klipp.fx.colour_space_transform prepared
+param klipp.fx.corner_pin bl_x
+param klipp.fx.corner_pin bl_y
+param klipp.fx.corner_pin br_x
+param klipp.fx.corner_pin br_y
+param klipp.fx.corner_pin tl_x
+param klipp.fx.corner_pin tl_y
+param klipp.fx.corner_pin tr_x
+param klipp.fx.corner_pin tr_y
+param klipp.fx.crop aspect
+param klipp.fx.crop bottom
+param klipp.fx.crop feather
+param klipp.fx.crop focus_x
+param klipp.fx.crop focus_y
+param klipp.fx.crop left
+param klipp.fx.crop right
+param klipp.fx.crop top
+param klipp.fx.deflicker gain
+param klipp.fx.deflicker strength
+param klipp.fx.deflicker window_secs
+param klipp.fx.denoise color_sigma
+param klipp.fx.denoise iterations
+param klipp.fx.denoise spatial_sigma
+param klipp.fx.diffusion amount
+param klipp.fx.diffusion desaturation
+param klipp.fx.diffusion radius
+param klipp.fx.diffusion threshold
+param klipp.fx.dilate radius
+param klipp.fx.directional_blur angle
+param klipp.fx.directional_blur distance
+param klipp.fx.directional_blur samples
+param klipp.fx.displace amount
+param klipp.fx.displace direction
+param klipp.fx.displace seed
+param klipp.fx.displace size
+param klipp.fx.displace speed
+param klipp.fx.displace time
+param klipp.fx.drop_shadow blur
+param klipp.fx.drop_shadow color
+param klipp.fx.drop_shadow offset_x
+param klipp.fx.drop_shadow offset_y
+param klipp.fx.drop_shadow opacity
+param klipp.fx.edge_detect mix
+param klipp.fx.edge_detect strength
+param klipp.fx.emboss angle
+param klipp.fx.emboss mix
+param klipp.fx.emboss strength
+param klipp.fx.equalize strength
+param klipp.fx.erode radius
+param klipp.fx.fill_bars blur
+param klipp.fx.fill_bars darken
+param klipp.fx.fill_bars zoom
+param klipp.fx.film_grain amount
+param klipp.fx.film_grain color
+param klipp.fx.film_grain seed
+param klipp.fx.film_grain shadows
+param klipp.fx.film_grain size
+param klipp.fx.film_halation hue
+param klipp.fx.film_halation intensity
+param klipp.fx.film_halation radius
+param klipp.fx.film_halation threshold
+param klipp.fx.flicker amount
+param klipp.fx.flicker hold
+param klipp.fx.flicker seed
+param klipp.fx.flicker smoothness
+param klipp.fx.flicker speed
+param klipp.fx.flicker target
+param klipp.fx.flicker time
+param klipp.fx.focus_blur band
+param klipp.fx.focus_blur radius
+param klipp.fx.focus_blur vertical
+param klipp.fx.frei0r params
+param klipp.fx.frei0r type_id
+param klipp.fx.gamma gamma
+param klipp.fx.gaussian_blur radius
+param klipp.fx.generator angle
+param klipp.fx.generator center_x
+param klipp.fx.generator center_y
+param klipp.fx.generator color_a
+param klipp.fx.generator color_b
+param klipp.fx.generator radius
+param klipp.fx.generator shape
+param klipp.fx.glow intensity
+param klipp.fx.glow radius
+param klipp.fx.glow threshold
+param klipp.fx.gradient_map highlight
+param klipp.fx.gradient_map mid
+param klipp.fx.gradient_map mix
+param klipp.fx.gradient_map shadow
+param klipp.fx.hsv_adjust hue_shift
+param klipp.fx.hsv_adjust saturation
+param klipp.fx.hsv_adjust value
+param klipp.fx.invert mix
+param klipp.fx.lens_distortion distortion
+param klipp.fx.lens_distortion scale
+param klipp.fx.lens_flare brightness
+param klipp.fx.lens_flare chromatic_aberration
+param klipp.fx.lens_flare flare_size
+param klipp.fx.lens_flare ghost_count
+param klipp.fx.lens_flare ghost_intensity
+param klipp.fx.lens_flare position_x
+param klipp.fx.lens_flare position_y
+param klipp.fx.letterbox aspect_ratio
+param klipp.fx.letterbox bar_color
+param klipp.fx.letterbox opacity
+param klipp.fx.levels gamma
+param klipp.fx.levels in_black
+param klipp.fx.levels in_white
+param klipp.fx.levels out_black
+param klipp.fx.levels out_white
+param klipp.fx.light_rays center_x
+param klipp.fx.light_rays center_y
+param klipp.fx.light_rays decay
+param klipp.fx.light_rays intensity
+param klipp.fx.light_rays samples
+param klipp.fx.light_rays threshold
+param klipp.fx.light_wrap intensity
+param klipp.fx.light_wrap softness
+param klipp.fx.light_wrap width
+param klipp.fx.luma_key high
+param klipp.fx.luma_key invert
+param klipp.fx.luma_key low
+param klipp.fx.luma_key soft
+param klipp.fx.lut_3d opacity
+param klipp.fx.lut_3d path
+param klipp.fx.lut_3d prepared
+param klipp.fx.lut_3d tetrahedral
+param klipp.fx.media_source media
+param klipp.fx.media_source offset
+param klipp.fx.median_filter radius
+param klipp.fx.merge blend_mode
+param klipp.fx.merge opacity
+param klipp.fx.mirror horizontal
+param klipp.fx.mirror vertical
+param klipp.fx.mosaic block_size
+param klipp.fx.noise_generator amount
+param klipp.fx.noise_generator monochrome
+param klipp.fx.noise_generator seed
+param klipp.fx.old_film age
+param klipp.fx.old_film amount
+param klipp.fx.old_film burn
+param klipp.fx.old_film dust
+param klipp.fx.old_film flicker
+param klipp.fx.old_film frame_lines
+param klipp.fx.old_film leaks
+param klipp.fx.old_film mono
+param klipp.fx.old_film scratches
+param klipp.fx.old_film seed
+param klipp.fx.old_film sepia
+param klipp.fx.old_film stains
+param klipp.fx.old_film weave
+param klipp.fx.opacity value
+param klipp.fx.outer_glow color
+param klipp.fx.outer_glow intensity
+param klipp.fx.outer_glow radius
+param klipp.fx.particles amount
+param klipp.fx.particles color
+param klipp.fx.particles direction
+param klipp.fx.particles lifetime
+param klipp.fx.particles opacity
+param klipp.fx.particles seed
+param klipp.fx.particles size
+param klipp.fx.particles speed
+param klipp.fx.particles spread
+param klipp.fx.particles style
+param klipp.fx.particles time
+param klipp.fx.picture_transform anchor_x
+param klipp.fx.picture_transform anchor_y
+param klipp.fx.picture_transform position_x
+param klipp.fx.picture_transform position_y
+param klipp.fx.picture_transform rotation
+param klipp.fx.picture_transform scale_x
+param klipp.fx.picture_transform scale_y
+param klipp.fx.posterize levels
+param klipp.fx.radial_blur amount
+param klipp.fx.radial_blur center_x
+param klipp.fx.radial_blur center_y
+param klipp.fx.radial_blur mode
+param klipp.fx.radial_blur samples
+param klipp.fx.reflection blend
+param klipp.fx.reflection breakup
+param klipp.fx.reflection contact
+param klipp.fx.reflection darken
+param klipp.fx.reflection darken_auto
+param klipp.fx.reflection fade
+param klipp.fx.reflection gap
+param klipp.fx.reflection opacity
+param klipp.fx.reflection ripple_amount
+param klipp.fx.reflection ripple_from
+param klipp.fx.reflection ripple_size
+param klipp.fx.reflection ripple_speed
+param klipp.fx.reflection seed
+param klipp.fx.reflection smear
+param klipp.fx.reflection submerge
+param klipp.fx.reflection time
+param klipp.fx.reflection tint
+param klipp.fx.reflection tint_amount
+param klipp.fx.reflection tint_auto
+param klipp.fx.reflection water
+param klipp.fx.reflection water_key
+param klipp.fx.reflection waterline
+param klipp.fx.rolling_shutter_correction readout_ratio
+param klipp.fx.rolling_shutter_correction strength
+param klipp.fx.rounded_corners feather
+param klipp.fx.rounded_corners radius
+param klipp.fx.sharpen amount
+param klipp.fx.speed_ramp blend_mode
+param klipp.fx.speed_ramp speed
+param klipp.fx.surface_pin inset
+param klipp.fx.surface_pin surface
+param klipp.fx.temporal_denoise strength
+param klipp.fx.temporal_denoise threshold
+param klipp.fx.tilt_shift center
+param klipp.fx.tilt_shift radius
+param klipp.fx.tilt_shift softness
+param klipp.fx.tilt_shift width
+param klipp.fx.title_source title
+param klipp.fx.transform anchor_x
+param klipp.fx.transform anchor_y
+param klipp.fx.transform focal_ref
+param klipp.fx.transform perspective
+param klipp.fx.transform position_x
+param klipp.fx.transform position_y
+param klipp.fx.transform rotation
+param klipp.fx.transform rotation_x
+param klipp.fx.transform rotation_y
+param klipp.fx.transform scale_x
+param klipp.fx.transform scale_y
+param klipp.fx.vhs bleed
+param klipp.fx.vhs noise
+param klipp.fx.vhs scanlines
+param klipp.fx.vhs seed
+param klipp.fx.vhs tracking
+param klipp.fx.vibrance amount
+param klipp.fx.video_stabilization crop_ratio
+param klipp.fx.video_stabilization smoothing
+param klipp.fx.video_stabilization zoom
+param klipp.fx.vignette amount
+param klipp.fx.vignette roundness
+param klipp.fx.vignette size
+param klipp.fx.vignette softness
+param klipp.fx.warp amplitude
+param klipp.fx.warp angle
+param klipp.fx.warp band
+param klipp.fx.warp center_x
+param klipp.fx.warp center_y
+param klipp.fx.warp direction
+param klipp.fx.warp mode
+param klipp.fx.warp radius
+param klipp.fx.warp speed
+param klipp.fx.warp strength
+param klipp.fx.warp time
+param klipp.fx.warp wavelength
+param klipp.grade.apply_matte mix
+param klipp.grade.blend mix
+param klipp.grade.color_balance global_mix
+param klipp.grade.color_balance hue
+param klipp.grade.color_balance key_invert
+param klipp.grade.color_balance temperature
+param klipp.grade.color_balance tint
+param klipp.grade.color_match color_match.exposure
+param klipp.grade.color_match color_match.saturation
+param klipp.grade.color_match color_match.temperature
+param klipp.grade.color_match color_match.tint
+param klipp.grade.color_warper warper_hue_0
+param klipp.grade.color_warper warper_hue_1
+param klipp.grade.color_warper warper_hue_10
+param klipp.grade.color_warper warper_hue_11
+param klipp.grade.color_warper warper_hue_2
+param klipp.grade.color_warper warper_hue_3
+param klipp.grade.color_warper warper_hue_4
+param klipp.grade.color_warper warper_hue_5
+param klipp.grade.color_warper warper_hue_6
+param klipp.grade.color_warper warper_hue_7
+param klipp.grade.color_warper warper_hue_8
+param klipp.grade.color_warper warper_hue_9
+param klipp.grade.color_warper warper_sat_0
+param klipp.grade.color_warper warper_sat_1
+param klipp.grade.color_warper warper_sat_10
+param klipp.grade.color_warper warper_sat_11
+param klipp.grade.color_warper warper_sat_2
+param klipp.grade.color_warper warper_sat_3
+param klipp.grade.color_warper warper_sat_4
+param klipp.grade.color_warper warper_sat_5
+param klipp.grade.color_warper warper_sat_6
+param klipp.grade.color_warper warper_sat_7
+param klipp.grade.color_warper warper_sat_8
+param klipp.grade.color_warper warper_sat_9
+param klipp.grade.color_wheels gain_master
+param klipp.grade.color_wheels gain_x
+param klipp.grade.color_wheels gain_y
+param klipp.grade.color_wheels gamma_master
+param klipp.grade.color_wheels gamma_x
+param klipp.grade.color_wheels gamma_y
+param klipp.grade.color_wheels key_invert
+param klipp.grade.color_wheels lift_master
+param klipp.grade.color_wheels lift_x
+param klipp.grade.color_wheels lift_y
+param klipp.grade.color_wheels log_high_master
+param klipp.grade.color_wheels log_high_range
+param klipp.grade.color_wheels log_high_x
+param klipp.grade.color_wheels log_high_y
+param klipp.grade.color_wheels log_low_master
+param klipp.grade.color_wheels log_low_range
+param klipp.grade.color_wheels log_low_x
+param klipp.grade.color_wheels log_low_y
+param klipp.grade.color_wheels log_mid_master
+param klipp.grade.color_wheels log_mid_x
+param klipp.grade.color_wheels log_mid_y
+param klipp.grade.color_wheels luma_mix
+param klipp.grade.color_wheels offset_master
+param klipp.grade.color_wheels offset_x
+param klipp.grade.color_wheels offset_y
+param klipp.grade.color_wheels wheels_log_mode
+param klipp.grade.combine_mattes matte_combine_op
+param klipp.grade.compound compound_subgraph
+param klipp.grade.contrast clarity
+param klipp.grade.contrast contrast
+param klipp.grade.contrast contrast_pivot
+param klipp.grade.contrast key_invert
+param klipp.grade.corrector blacks
+param klipp.grade.corrector clarity
+param klipp.grade.corrector contrast
+param klipp.grade.corrector contrast_pivot
+param klipp.grade.corrector curves
+param klipp.grade.corrector curves_mix
+param klipp.grade.corrector curves_preserve_luma
+param klipp.grade.corrector exposure
+param klipp.grade.corrector gain_bri
+param klipp.grade.corrector gain_master
+param klipp.grade.corrector gain_sat
+param klipp.grade.corrector gain_x
+param klipp.grade.corrector gain_y
+param klipp.grade.corrector gamma_bri
+param klipp.grade.corrector gamma_master
+param klipp.grade.corrector gamma_sat
+param klipp.grade.corrector gamma_x
+param klipp.grade.corrector gamma_y
+param klipp.grade.corrector global_mix
+param klipp.grade.corrector highlights
+param klipp.grade.corrector hue
+param klipp.grade.corrector huesat
+param klipp.grade.corrector huesat_mix
+param klipp.grade.corrector key_invert
+param klipp.grade.corrector lift_bri
+param klipp.grade.corrector lift_master
+param klipp.grade.corrector lift_sat
+param klipp.grade.corrector lift_x
+param klipp.grade.corrector lift_y
+param klipp.grade.corrector log_high_master
+param klipp.grade.corrector log_high_range
+param klipp.grade.corrector log_high_x
+param klipp.grade.corrector log_high_y
+param klipp.grade.corrector log_low_master
+param klipp.grade.corrector log_low_range
+param klipp.grade.corrector log_low_x
+param klipp.grade.corrector log_low_y
+param klipp.grade.corrector log_mid_master
+param klipp.grade.corrector log_mid_x
+param klipp.grade.corrector log_mid_y
+param klipp.grade.corrector luma_mix
+param klipp.grade.corrector offset_bri
+param klipp.grade.corrector offset_master
+param klipp.grade.corrector offset_sat
+param klipp.grade.corrector offset_x
+param klipp.grade.corrector offset_y
+param klipp.grade.corrector saturation
+param klipp.grade.corrector shadows
+param klipp.grade.corrector temperature
+param klipp.grade.corrector tint
+param klipp.grade.corrector vibrance
+param klipp.grade.corrector warper_hue_0
+param klipp.grade.corrector warper_hue_1
+param klipp.grade.corrector warper_hue_10
+param klipp.grade.corrector warper_hue_11
+param klipp.grade.corrector warper_hue_2
+param klipp.grade.corrector warper_hue_3
+param klipp.grade.corrector warper_hue_4
+param klipp.grade.corrector warper_hue_5
+param klipp.grade.corrector warper_hue_6
+param klipp.grade.corrector warper_hue_7
+param klipp.grade.corrector warper_hue_8
+param klipp.grade.corrector warper_hue_9
+param klipp.grade.corrector warper_sat_0
+param klipp.grade.corrector warper_sat_1
+param klipp.grade.corrector warper_sat_10
+param klipp.grade.corrector warper_sat_11
+param klipp.grade.corrector warper_sat_2
+param klipp.grade.corrector warper_sat_3
+param klipp.grade.corrector warper_sat_4
+param klipp.grade.corrector warper_sat_5
+param klipp.grade.corrector warper_sat_6
+param klipp.grade.corrector warper_sat_7
+param klipp.grade.corrector warper_sat_8
+param klipp.grade.corrector warper_sat_9
+param klipp.grade.corrector wheels_log_mode
+param klipp.grade.corrector whites
+param klipp.grade.denoise denoise_chroma
+param klipp.grade.denoise denoise_luma
+param klipp.grade.denoise denoise_radius
+param klipp.grade.difference_key difference_key.enabled
+param klipp.grade.difference_key difference_key.invert
+param klipp.grade.difference_key difference_key.match_space
+param klipp.grade.difference_key difference_key.plate_frame
+param klipp.grade.difference_key difference_key.plate_path
+param klipp.grade.difference_key difference_key.soft
+param klipp.grade.difference_key difference_key.tolerance
+param klipp.grade.exposure exposure
+param klipp.grade.exposure key_invert
+param klipp.grade.external_matte matte_channel
+param klipp.grade.external_matte matte_image_path
+param klipp.grade.external_matte matte_invert
+param klipp.grade.external_matte matte_subject
+param klipp.grade.film_grain grain.amount
+param klipp.grade.film_grain grain.enabled
+param klipp.grade.film_grain grain.highlights
+param klipp.grade.film_grain grain.monochrome
+param klipp.grade.film_grain grain.shadows
+param klipp.grade.film_grain grain.size
+param klipp.grade.hdr_zones hdr_black_boundary
+param klipp.grade.hdr_zones hdr_black_colour_x
+param klipp.grade.hdr_zones hdr_black_colour_y
+param klipp.grade.hdr_zones hdr_black_exposure
+param klipp.grade.hdr_zones hdr_black_falloff
+param klipp.grade.hdr_zones hdr_black_saturation
+param klipp.grade.hdr_zones hdr_dark_boundary
+param klipp.grade.hdr_zones hdr_dark_colour_x
+param klipp.grade.hdr_zones hdr_dark_colour_y
+param klipp.grade.hdr_zones hdr_dark_exposure
+param klipp.grade.hdr_zones hdr_dark_falloff
+param klipp.grade.hdr_zones hdr_dark_saturation
+param klipp.grade.hdr_zones hdr_global_colour_x
+param klipp.grade.hdr_zones hdr_global_colour_y
+param klipp.grade.hdr_zones hdr_global_exposure
+param klipp.grade.hdr_zones hdr_global_saturation
+param klipp.grade.hdr_zones hdr_highlight_boundary
+param klipp.grade.hdr_zones hdr_highlight_colour_x
+param klipp.grade.hdr_zones hdr_highlight_colour_y
+param klipp.grade.hdr_zones hdr_highlight_exposure
+param klipp.grade.hdr_zones hdr_highlight_falloff
+param klipp.grade.hdr_zones hdr_highlight_saturation
+param klipp.grade.hdr_zones hdr_light_boundary
+param klipp.grade.hdr_zones hdr_light_colour_x
+param klipp.grade.hdr_zones hdr_light_colour_y
+param klipp.grade.hdr_zones hdr_light_exposure
+param klipp.grade.hdr_zones hdr_light_falloff
+param klipp.grade.hdr_zones hdr_light_saturation
+param klipp.grade.hdr_zones hdr_shadow_boundary
+param klipp.grade.hdr_zones hdr_shadow_colour_x
+param klipp.grade.hdr_zones hdr_shadow_colour_y
+param klipp.grade.hdr_zones hdr_shadow_exposure
+param klipp.grade.hdr_zones hdr_shadow_falloff
+param klipp.grade.hdr_zones hdr_shadow_saturation
+param klipp.grade.hdr_zones hdr_specular_boundary
+param klipp.grade.hdr_zones hdr_specular_colour_x
+param klipp.grade.hdr_zones hdr_specular_colour_y
+param klipp.grade.hdr_zones hdr_specular_exposure
+param klipp.grade.hdr_zones hdr_specular_falloff
+param klipp.grade.hdr_zones hdr_specular_saturation
+param klipp.grade.hue_sat_curves huesat
+param klipp.grade.hue_sat_curves huesat_mix
+param klipp.grade.input_transform log_format
+param klipp.grade.key_mixer key_mixer
+param klipp.grade.key_mixer key_mixer_output_gain
+param klipp.grade.key_mixer key_mixer_output_offset
+param klipp.grade.layer_mixer layer_mixer
+param klipp.grade.luma_key luma_key_enabled
+param klipp.grade.luma_key luma_key_high
+param klipp.grade.luma_key luma_key_invert
+param klipp.grade.luma_key luma_key_low
+param klipp.grade.luma_key luma_key_soft
+param klipp.grade.lut_3d lut_input_space
+param klipp.grade.lut_3d lut_opacity
+param klipp.grade.lut_3d lut_output_space
+param klipp.grade.lut_3d lut_path
+param klipp.grade.mask masks
+param klipp.grade.primaries_matrix primaries_from
+param klipp.grade.primaries_matrix primaries_to
+param klipp.grade.qualifier qual_blue_high
+param klipp.grade.qualifier qual_blue_low
+param klipp.grade.qualifier qual_blur
+param klipp.grade.qualifier qual_clean_black
+param klipp.grade.qualifier qual_clean_white
+param klipp.grade.qualifier qual_denoise
+param klipp.grade.qualifier qual_enabled
+param klipp.grade.qualifier qual_green_high
+param klipp.grade.qualifier qual_green_low
+param klipp.grade.qualifier qual_hue_center
+param klipp.grade.qualifier qual_hue_soft
+param klipp.grade.qualifier qual_hue_width
+param klipp.grade.qualifier qual_invert
+param klipp.grade.qualifier qual_key_radius
+param klipp.grade.qualifier qual_key_soft
+param klipp.grade.qualifier qual_lum_high
+param klipp.grade.qualifier qual_lum_low
+param klipp.grade.qualifier qual_lum_soft
+param klipp.grade.qualifier qual_mode
+param klipp.grade.qualifier qual_red_high
+param klipp.grade.qualifier qual_red_low
+param klipp.grade.qualifier qual_rgb_soft
+param klipp.grade.qualifier qual_sat_high
+param klipp.grade.qualifier qual_sat_low
+param klipp.grade.qualifier qual_sat_soft
+param klipp.grade.qualifier qual_shrink_grow
+param klipp.grade.rgb_curves curves
+param klipp.grade.rgb_curves curves_mix
+param klipp.grade.rgb_curves curves_preserve_luma
+param klipp.grade.rgb_curves key_invert
+param klipp.grade.saturation key_invert
+param klipp.grade.saturation saturation
+param klipp.grade.saturation vibrance
+param klipp.grade.soft_clip soft_clip.enabled
+param klipp.grade.soft_clip soft_clip.knee
+param klipp.grade.soft_clip soft_clip.threshold
+param klipp.grade.tone_controls blacks
+param klipp.grade.tone_controls highlights
+param klipp.grade.tone_controls key_invert
+param klipp.grade.tone_controls shadows
+param klipp.grade.tone_controls whites
+param klipp.grade.wheel_sat_bri gain_bri
+param klipp.grade.wheel_sat_bri gain_sat
+param klipp.grade.wheel_sat_bri gamma_bri
+param klipp.grade.wheel_sat_bri gamma_sat
+param klipp.grade.wheel_sat_bri lift_bri
+param klipp.grade.wheel_sat_bri lift_sat
+param klipp.grade.wheel_sat_bri offset_bri
+param klipp.grade.wheel_sat_bri offset_sat
+param klipp.transition.additive_dissolve color
+param klipp.transition.additive_dissolve param0
+param klipp.transition.additive_dissolve param1
+param klipp.transition.additive_dissolve param2
+param klipp.transition.additive_dissolve param3
+param klipp.transition.anamorphic_flare color
+param klipp.transition.anamorphic_flare param0
+param klipp.transition.anamorphic_flare param1
+param klipp.transition.anamorphic_flare param2
+param klipp.transition.anamorphic_flare param3
+param klipp.transition.barn_door_close color
+param klipp.transition.barn_door_close param0
+param klipp.transition.barn_door_close param1
+param klipp.transition.barn_door_close param2
+param klipp.transition.barn_door_close param3
+param klipp.transition.barn_door_open color
+param klipp.transition.barn_door_open param0
+param klipp.transition.barn_door_open param1
+param klipp.transition.barn_door_open param2
+param klipp.transition.barn_door_open param3
+param klipp.transition.blur_dissolve color
+param klipp.transition.blur_dissolve param0
+param klipp.transition.blur_dissolve param1
+param klipp.transition.blur_dissolve param2
+param klipp.transition.blur_dissolve param3
+param klipp.transition.bokeh_dissolve color
+param klipp.transition.bokeh_dissolve param0
+param klipp.transition.bokeh_dissolve param1
+param klipp.transition.bokeh_dissolve param2
+param klipp.transition.bokeh_dissolve param3
+param klipp.transition.box_wipe_in color
+param klipp.transition.box_wipe_in param0
+param klipp.transition.box_wipe_in param1
+param klipp.transition.box_wipe_in param2
+param klipp.transition.box_wipe_in param3
+param klipp.transition.box_wipe_out color
+param klipp.transition.box_wipe_out param0
+param klipp.transition.box_wipe_out param1
+param klipp.transition.box_wipe_out param2
+param klipp.transition.box_wipe_out param3
+param klipp.transition.checkerboard_wipe color
+param klipp.transition.checkerboard_wipe param0
+param klipp.transition.checkerboard_wipe param1
+param klipp.transition.checkerboard_wipe param2
+param klipp.transition.checkerboard_wipe param3
+param klipp.transition.chromatic_aberration color
+param klipp.transition.chromatic_aberration param0
+param klipp.transition.chromatic_aberration param1
+param klipp.transition.chromatic_aberration param2
+param klipp.transition.chromatic_aberration param3
+param klipp.transition.circle_wipe_in color
+param klipp.transition.circle_wipe_in param0
+param klipp.transition.circle_wipe_in param1
+param klipp.transition.circle_wipe_in param2
+param klipp.transition.circle_wipe_in param3
+param klipp.transition.circle_wipe_out color
+param klipp.transition.circle_wipe_out param0
+param klipp.transition.circle_wipe_out param1
+param klipp.transition.circle_wipe_out param2
+param klipp.transition.circle_wipe_out param3
+param klipp.transition.clock_wipe color
+param klipp.transition.clock_wipe param0
+param klipp.transition.clock_wipe param1
+param klipp.transition.clock_wipe param2
+param klipp.transition.clock_wipe param3
+param klipp.transition.colorize_flash color
+param klipp.transition.colorize_flash param0
+param klipp.transition.colorize_flash param1
+param klipp.transition.colorize_flash param2
+param klipp.transition.colorize_flash param3
+param klipp.transition.cover_left color
+param klipp.transition.cover_left param0
+param klipp.transition.cover_left param1
+param klipp.transition.cover_left param2
+param klipp.transition.cover_left param3
+param klipp.transition.cover_right color
+param klipp.transition.cover_right param0
+param klipp.transition.cover_right param1
+param klipp.transition.cover_right param2
+param klipp.transition.cover_right param3
+param klipp.transition.cross_dissolve color
+param klipp.transition.cross_dissolve param0
+param klipp.transition.cross_dissolve param1
+param klipp.transition.cross_dissolve param2
+param klipp.transition.cross_dissolve param3
+param klipp.transition.cross_zoom color
+param klipp.transition.cross_zoom param0
+param klipp.transition.cross_zoom param1
+param klipp.transition.cross_zoom param2
+param klipp.transition.cross_zoom param3
+param klipp.transition.desaturate color
+param klipp.transition.desaturate param0
+param klipp.transition.desaturate param1
+param klipp.transition.desaturate param2
+param klipp.transition.desaturate param3
+param klipp.transition.diagonal_wipe_t_l_b_r color
+param klipp.transition.diagonal_wipe_t_l_b_r param0
+param klipp.transition.diagonal_wipe_t_l_b_r param1
+param klipp.transition.diagonal_wipe_t_l_b_r param2
+param klipp.transition.diagonal_wipe_t_l_b_r param3
+param klipp.transition.diagonal_wipe_t_r_b_l color
+param klipp.transition.diagonal_wipe_t_r_b_l param0
+param klipp.transition.diagonal_wipe_t_r_b_l param1
+param klipp.transition.diagonal_wipe_t_r_b_l param2
+param klipp.transition.diagonal_wipe_t_r_b_l param3
+param klipp.transition.dip_to_black color
+param klipp.transition.dip_to_black param0
+param klipp.transition.dip_to_black param1
+param klipp.transition.dip_to_black param2
+param klipp.transition.dip_to_black param3
+param klipp.transition.dip_to_white color
+param klipp.transition.dip_to_white param0
+param klipp.transition.dip_to_white param1
+param klipp.transition.dip_to_white param2
+param klipp.transition.dip_to_white param3
+param klipp.transition.dream_sequence color
+param klipp.transition.dream_sequence param0
+param klipp.transition.dream_sequence param1
+param klipp.transition.dream_sequence param2
+param klipp.transition.dream_sequence param3
+param klipp.transition.fade_to_color color
+param klipp.transition.fade_to_color param0
+param klipp.transition.fade_to_color param1
+param klipp.transition.fade_to_color param2
+param klipp.transition.fade_to_color param3
+param klipp.transition.film_burn color
+param klipp.transition.film_burn param0
+param klipp.transition.film_burn param1
+param klipp.transition.film_burn param2
+param klipp.transition.film_burn param3
+param klipp.transition.film_dissolve color
+param klipp.transition.film_dissolve param0
+param klipp.transition.film_dissolve param1
+param klipp.transition.film_dissolve param2
+param klipp.transition.film_dissolve param3
+param klipp.transition.flash color
+param klipp.transition.flash param0
+param klipp.transition.flash param1
+param klipp.transition.flash param2
+param klipp.transition.flash param3
+param klipp.transition.glitch_dissolve color
+param klipp.transition.glitch_dissolve param0
+param klipp.transition.glitch_dissolve param1
+param klipp.transition.glitch_dissolve param2
+param klipp.transition.glitch_dissolve param3
+param klipp.transition.glitch_r_g_b_split color
+param klipp.transition.glitch_r_g_b_split param0
+param klipp.transition.glitch_r_g_b_split param1
+param klipp.transition.glitch_r_g_b_split param2
+param klipp.transition.glitch_r_g_b_split param3
+param klipp.transition.halation color
+param klipp.transition.halation param0
+param klipp.transition.halation param1
+param klipp.transition.halation param2
+param klipp.transition.halation param3
+param klipp.transition.hue_rotate color
+param klipp.transition.hue_rotate param0
+param klipp.transition.hue_rotate param1
+param klipp.transition.hue_rotate param2
+param klipp.transition.hue_rotate param3
+param klipp.transition.light_leak color
+param klipp.transition.light_leak param0
+param klipp.transition.light_leak param1
+param klipp.transition.light_leak param2
+param klipp.transition.light_leak param3
+param klipp.transition.luminance_dissolve color
+param klipp.transition.luminance_dissolve param0
+param klipp.transition.luminance_dissolve param1
+param klipp.transition.luminance_dissolve param2
+param klipp.transition.luminance_dissolve param3
+param klipp.transition.negative_flash color
+param klipp.transition.negative_flash param0
+param klipp.transition.negative_flash param1
+param klipp.transition.negative_flash param2
+param klipp.transition.negative_flash param3
+param klipp.transition.page_turn color
+param klipp.transition.page_turn param0
+param klipp.transition.page_turn param1
+param klipp.transition.page_turn param2
+param klipp.transition.page_turn param3
+param klipp.transition.page_turn_reverse color
+param klipp.transition.page_turn_reverse param0
+param klipp.transition.page_turn_reverse param1
+param klipp.transition.page_turn_reverse param2
+param klipp.transition.page_turn_reverse param3
+param klipp.transition.part_halves color
+param klipp.transition.part_halves param0
+param klipp.transition.part_halves param1
+param klipp.transition.part_halves param2
+param klipp.transition.part_halves param3
+param klipp.transition.pixelate color
+param klipp.transition.pixelate param0
+param klipp.transition.pixelate param1
+param klipp.transition.pixelate param2
+param klipp.transition.pixelate param3
+param klipp.transition.projector_flicker color
+param klipp.transition.projector_flicker param0
+param klipp.transition.projector_flicker param1
+param klipp.transition.projector_flicker param2
+param klipp.transition.projector_flicker param3
+param klipp.transition.push_left color
+param klipp.transition.push_left param0
+param klipp.transition.push_left param1
+param klipp.transition.push_left param2
+param klipp.transition.push_left param3
+param klipp.transition.ripple color
+param klipp.transition.ripple param0
+param klipp.transition.ripple param1
+param klipp.transition.ripple param2
+param klipp.transition.ripple param3
+param klipp.transition.sepia color
+param klipp.transition.sepia param0
+param klipp.transition.sepia param1
+param klipp.transition.sepia param2
+param klipp.transition.sepia param3
+param klipp.transition.shatter color
+param klipp.transition.shatter param0
+param klipp.transition.shatter param1
+param klipp.transition.shatter param2
+param klipp.transition.shatter param3
+param klipp.transition.slide_down color
+param klipp.transition.slide_down param0
+param klipp.transition.slide_down param1
+param klipp.transition.slide_down param2
+param klipp.transition.slide_down param3
+param klipp.transition.slide_left color
+param klipp.transition.slide_left param0
+param klipp.transition.slide_left param1
+param klipp.transition.slide_left param2
+param klipp.transition.slide_left param3
+param klipp.transition.slide_panels color
+param klipp.transition.slide_panels param0
+param klipp.transition.slide_panels param1
+param klipp.transition.slide_panels param2
+param klipp.transition.slide_panels param3
+param klipp.transition.slide_right color
+param klipp.transition.slide_right param0
+param klipp.transition.slide_right param1
+param klipp.transition.slide_right param2
+param klipp.transition.slide_right param3
+param klipp.transition.slide_strips color
+param klipp.transition.slide_strips param0
+param klipp.transition.slide_strips param1
+param klipp.transition.slide_strips param2
+param klipp.transition.slide_strips param3
+param klipp.transition.slide_up color
+param klipp.transition.slide_up param0
+param klipp.transition.slide_up param1
+param klipp.transition.slide_up param2
+param klipp.transition.slide_up param3
+param klipp.transition.smooth_cut color
+param klipp.transition.smooth_cut param0
+param klipp.transition.smooth_cut param1
+param klipp.transition.smooth_cut param2
+param klipp.transition.smooth_cut param3
+param klipp.transition.spin color
+param klipp.transition.spin param0
+param klipp.transition.spin param1
+param klipp.transition.spin param2
+param klipp.transition.spin param3
+param klipp.transition.split_wipe_horizontal color
+param klipp.transition.split_wipe_horizontal param0
+param klipp.transition.split_wipe_horizontal param1
+param klipp.transition.split_wipe_horizontal param2
+param klipp.transition.split_wipe_horizontal param3
+param klipp.transition.split_wipe_vertical color
+param klipp.transition.split_wipe_vertical param0
+param klipp.transition.split_wipe_vertical param1
+param klipp.transition.split_wipe_vertical param2
+param klipp.transition.split_wipe_vertical param3
+param klipp.transition.squeeze_h color
+param klipp.transition.squeeze_h param0
+param klipp.transition.squeeze_h param1
+param klipp.transition.squeeze_h param2
+param klipp.transition.squeeze_h param3
+param klipp.transition.squeeze_v color
+param klipp.transition.squeeze_v param0
+param klipp.transition.squeeze_v param1
+param klipp.transition.squeeze_v param2
+param klipp.transition.squeeze_v param3
+param klipp.transition.star_wipe color
+param klipp.transition.star_wipe param0
+param klipp.transition.star_wipe param1
+param klipp.transition.star_wipe param2
+param klipp.transition.star_wipe param3
+param klipp.transition.static_t_v color
+param klipp.transition.static_t_v param0
+param klipp.transition.static_t_v param1
+param klipp.transition.static_t_v param2
+param klipp.transition.static_t_v param3
+param klipp.transition.swirl color
+param klipp.transition.swirl param0
+param klipp.transition.swirl param1
+param klipp.transition.swirl param2
+param klipp.transition.swirl param3
+param klipp.transition.uncover_left color
+param klipp.transition.uncover_left param0
+param klipp.transition.uncover_left param1
+param klipp.transition.uncover_left param2
+param klipp.transition.uncover_left param3
+param klipp.transition.uncover_right color
+param klipp.transition.uncover_right param0
+param klipp.transition.uncover_right param1
+param klipp.transition.uncover_right param2
+param klipp.transition.uncover_right param3
+param klipp.transition.v_h_s_tracking color
+param klipp.transition.v_h_s_tracking param0
+param klipp.transition.v_h_s_tracking param1
+param klipp.transition.v_h_s_tracking param2
+param klipp.transition.v_h_s_tracking param3
+param klipp.transition.venetian_blind_horizontal color
+param klipp.transition.venetian_blind_horizontal param0
+param klipp.transition.venetian_blind_horizontal param1
+param klipp.transition.venetian_blind_horizontal param2
+param klipp.transition.venetian_blind_horizontal param3
+param klipp.transition.venetian_blind_vertical color
+param klipp.transition.venetian_blind_vertical param0
+param klipp.transition.venetian_blind_vertical param1
+param klipp.transition.venetian_blind_vertical param2
+param klipp.transition.venetian_blind_vertical param3
+param klipp.transition.water_drop color
+param klipp.transition.water_drop param0
+param klipp.transition.water_drop param1
+param klipp.transition.water_drop param2
+param klipp.transition.water_drop param3
+param klipp.transition.wave_distortion color
+param klipp.transition.wave_distortion param0
+param klipp.transition.wave_distortion param1
+param klipp.transition.wave_distortion param2
+param klipp.transition.wave_distortion param3
+param klipp.transition.whip_pan color
+param klipp.transition.whip_pan param0
+param klipp.transition.whip_pan param1
+param klipp.transition.whip_pan param2
+param klipp.transition.whip_pan param3
+param klipp.transition.wipe_down color
+param klipp.transition.wipe_down param0
+param klipp.transition.wipe_down param1
+param klipp.transition.wipe_down param2
+param klipp.transition.wipe_down param3
+param klipp.transition.wipe_left color
+param klipp.transition.wipe_left param0
+param klipp.transition.wipe_left param1
+param klipp.transition.wipe_left param2
+param klipp.transition.wipe_left param3
+param klipp.transition.wipe_right color
+param klipp.transition.wipe_right param0
+param klipp.transition.wipe_right param1
+param klipp.transition.wipe_right param2
+param klipp.transition.wipe_right param3
+param klipp.transition.wipe_up color
+param klipp.transition.wipe_up param0
+param klipp.transition.wipe_up param1
+param klipp.transition.wipe_up param2
+param klipp.transition.wipe_up param3
+param klipp.transition.zoom_in_dissolve color
+param klipp.transition.zoom_in_dissolve param0
+param klipp.transition.zoom_in_dissolve param1
+param klipp.transition.zoom_in_dissolve param2
+param klipp.transition.zoom_in_dissolve param3
+param klipp.transition.zoom_out_dissolve color
+param klipp.transition.zoom_out_dissolve param0
+param klipp.transition.zoom_out_dissolve param1
+param klipp.transition.zoom_out_dissolve param2
+param klipp.transition.zoom_out_dissolve param3
+port klipp.fx.anamorphic_streak in
+port klipp.fx.anamorphic_streak mask
+port klipp.fx.anamorphic_streak out
+port klipp.fx.binocular_vignette in
+port klipp.fx.binocular_vignette mask
+port klipp.fx.binocular_vignette out
+port klipp.fx.bloom in
+port klipp.fx.bloom mask
+port klipp.fx.bloom out
+port klipp.fx.channel_mixer in
+port klipp.fx.channel_mixer mask
+port klipp.fx.channel_mixer out
+port klipp.fx.chroma_key in
+port klipp.fx.chroma_key out
+port klipp.fx.chromatic_aberration in
+port klipp.fx.chromatic_aberration mask
+port klipp.fx.chromatic_aberration out
+port klipp.fx.clip_below in
+port klipp.fx.clip_below out
+port klipp.fx.color_fade in
+port klipp.fx.color_fade mask
+port klipp.fx.color_fade out
+port klipp.fx.colour_space_transform in
+port klipp.fx.colour_space_transform mask
+port klipp.fx.colour_space_transform out
+port klipp.fx.corner_pin in
+port klipp.fx.corner_pin out
+port klipp.fx.crop in
+port klipp.fx.crop out
+port klipp.fx.deflicker in
+port klipp.fx.deflicker out
+port klipp.fx.denoise in
+port klipp.fx.denoise mask
+port klipp.fx.denoise out
+port klipp.fx.diffusion in
+port klipp.fx.diffusion mask
+port klipp.fx.diffusion out
+port klipp.fx.dilate in
+port klipp.fx.dilate mask
+port klipp.fx.dilate out
+port klipp.fx.directional_blur in
+port klipp.fx.directional_blur mask
+port klipp.fx.directional_blur out
+port klipp.fx.displace in
+port klipp.fx.displace mask
+port klipp.fx.displace out
+port klipp.fx.drop_shadow in
+port klipp.fx.drop_shadow out
+port klipp.fx.edge_detect in
+port klipp.fx.edge_detect out
+port klipp.fx.emboss in
+port klipp.fx.emboss out
+port klipp.fx.equalize in
+port klipp.fx.equalize mask
+port klipp.fx.equalize out
+port klipp.fx.erode in
+port klipp.fx.erode mask
+port klipp.fx.erode out
+port klipp.fx.fill_bars in
+port klipp.fx.fill_bars out
+port klipp.fx.film_grain in
+port klipp.fx.film_grain mask
+port klipp.fx.film_grain out
+port klipp.fx.film_halation in
+port klipp.fx.film_halation mask
+port klipp.fx.film_halation out
+port klipp.fx.flicker in
+port klipp.fx.flicker mask
+port klipp.fx.flicker out
+port klipp.fx.focus_blur in
+port klipp.fx.focus_blur mask
+port klipp.fx.focus_blur out
+port klipp.fx.frei0r in
+port klipp.fx.frei0r out
+port klipp.fx.gamma in
+port klipp.fx.gamma mask
+port klipp.fx.gamma out
+port klipp.fx.gaussian_blur in
+port klipp.fx.gaussian_blur mask
+port klipp.fx.gaussian_blur out
+port klipp.fx.generator in
+port klipp.fx.generator out
+port klipp.fx.glow in
+port klipp.fx.glow mask
+port klipp.fx.glow out
+port klipp.fx.grade_compound in
+port klipp.fx.grade_compound out
+port klipp.fx.gradient_map in
+port klipp.fx.gradient_map out
+port klipp.fx.hsv_adjust in
+port klipp.fx.hsv_adjust mask
+port klipp.fx.hsv_adjust out
+port klipp.fx.invert in
+port klipp.fx.invert out
+port klipp.fx.lens_distortion in
+port klipp.fx.lens_distortion out
+port klipp.fx.lens_flare in
+port klipp.fx.lens_flare mask
+port klipp.fx.lens_flare out
+port klipp.fx.letterbox in
+port klipp.fx.letterbox out
+port klipp.fx.levels in
+port klipp.fx.levels mask
+port klipp.fx.levels out
+port klipp.fx.light_rays in
+port klipp.fx.light_rays mask
+port klipp.fx.light_rays out
+port klipp.fx.light_wrap in
+port klipp.fx.light_wrap mask
+port klipp.fx.light_wrap out
+port klipp.fx.luma_key in
+port klipp.fx.luma_key out
+port klipp.fx.lut_3d in
+port klipp.fx.lut_3d mask
+port klipp.fx.lut_3d out
+port klipp.fx.media_source in
+port klipp.fx.media_source out
+port klipp.fx.median_filter in
+port klipp.fx.median_filter mask
+port klipp.fx.median_filter out
+port klipp.fx.merge fg
+port klipp.fx.merge in
+port klipp.fx.merge mask
+port klipp.fx.merge out
+port klipp.fx.mirror in
+port klipp.fx.mirror out
+port klipp.fx.mosaic in
+port klipp.fx.mosaic mask
+port klipp.fx.mosaic out
+port klipp.fx.noise_generator in
+port klipp.fx.noise_generator mask
+port klipp.fx.noise_generator out
+port klipp.fx.old_film in
+port klipp.fx.old_film mask
+port klipp.fx.old_film out
+port klipp.fx.opacity in
+port klipp.fx.opacity out
+port klipp.fx.outer_glow in
+port klipp.fx.outer_glow out
+port klipp.fx.particles in
+port klipp.fx.particles out
+port klipp.fx.picture_transform in
+port klipp.fx.picture_transform out
+port klipp.fx.posterize in
+port klipp.fx.posterize mask
+port klipp.fx.posterize out
+port klipp.fx.radial_blur in
+port klipp.fx.radial_blur mask
+port klipp.fx.radial_blur out
+port klipp.fx.reflection in
+port klipp.fx.reflection out
+port klipp.fx.rolling_shutter_correction in
+port klipp.fx.rolling_shutter_correction out
+port klipp.fx.rounded_corners in
+port klipp.fx.rounded_corners out
+port klipp.fx.sharpen in
+port klipp.fx.sharpen mask
+port klipp.fx.sharpen out
+port klipp.fx.speed_ramp in
+port klipp.fx.speed_ramp out
+port klipp.fx.surface_pin in
+port klipp.fx.surface_pin out
+port klipp.fx.temporal_denoise in
+port klipp.fx.temporal_denoise out
+port klipp.fx.tilt_shift in
+port klipp.fx.tilt_shift mask
+port klipp.fx.tilt_shift out
+port klipp.fx.title_source in
+port klipp.fx.title_source out
+port klipp.fx.transform in
+port klipp.fx.transform out
+port klipp.fx.vhs in
+port klipp.fx.vhs mask
+port klipp.fx.vhs out
+port klipp.fx.vibrance in
+port klipp.fx.vibrance mask
+port klipp.fx.vibrance out
+port klipp.fx.video_stabilization in
+port klipp.fx.video_stabilization out
+port klipp.fx.vignette in
+port klipp.fx.vignette mask
+port klipp.fx.vignette out
+port klipp.fx.warp in
+port klipp.fx.warp mask
+port klipp.fx.warp out
+port klipp.grade.apply_matte graded
+port klipp.grade.apply_matte matte
+port klipp.grade.apply_matte out
+port klipp.grade.apply_matte ungraded
+port klipp.grade.blend a
+port klipp.grade.blend b
+port klipp.grade.blend out
+port klipp.grade.color_balance in
+port klipp.grade.color_balance mask
+port klipp.grade.color_balance out
+port klipp.grade.color_match in
+port klipp.grade.color_match out
+port klipp.grade.color_match reference
+port klipp.grade.color_warper in
+port klipp.grade.color_warper out
+port klipp.grade.color_wheels in
+port klipp.grade.color_wheels mask
+port klipp.grade.color_wheels out
+port klipp.grade.combine_mattes a
+port klipp.grade.combine_mattes b
+port klipp.grade.combine_mattes matte
+port klipp.grade.compound in
+port klipp.grade.compound out
+port klipp.grade.contrast in
+port klipp.grade.contrast mask
+port klipp.grade.contrast out
+port klipp.grade.corrector in
+port klipp.grade.corrector mask
+port klipp.grade.corrector out
+port klipp.grade.denoise in
+port klipp.grade.denoise out
+port klipp.grade.difference_key in
+port klipp.grade.difference_key matte
+port klipp.grade.exposure in
+port klipp.grade.exposure mask
+port klipp.grade.exposure out
+port klipp.grade.external_matte matte
+port klipp.grade.film_grain in
+port klipp.grade.film_grain out
+port klipp.grade.hdr_zones in
+port klipp.grade.hdr_zones out
+port klipp.grade.hue_sat_curves in
+port klipp.grade.hue_sat_curves out
+port klipp.grade.input_transform in
+port klipp.grade.input_transform out
+port klipp.grade.key_mixer in0
+port klipp.grade.key_mixer in1
+port klipp.grade.key_mixer matte
+port klipp.grade.layer bg
+port klipp.grade.layer fg
+port klipp.grade.layer out
+port klipp.grade.layer_mixer in_1
+port klipp.grade.layer_mixer in_2
+port klipp.grade.layer_mixer out
+port klipp.grade.luma_key in
+port klipp.grade.luma_key matte
+port klipp.grade.lut_3d in
+port klipp.grade.lut_3d out
+port klipp.grade.mask in
+port klipp.grade.mask matte
+port klipp.grade.mask_cutout in
+port klipp.grade.mask_cutout matte
+port klipp.grade.mask_cutout out
+port klipp.grade.output alpha
+port klipp.grade.output in
+port klipp.grade.primaries_matrix in
+port klipp.grade.primaries_matrix out
+port klipp.grade.qualifier in
+port klipp.grade.qualifier matte
+port klipp.grade.reroute in
+port klipp.grade.reroute out
+port klipp.grade.rgb_combiner b
+port klipp.grade.rgb_combiner g
+port klipp.grade.rgb_combiner out
+port klipp.grade.rgb_combiner r
+port klipp.grade.rgb_curves in
+port klipp.grade.rgb_curves mask
+port klipp.grade.rgb_curves out
+port klipp.grade.rgb_splitter b
+port klipp.grade.rgb_splitter g
+port klipp.grade.rgb_splitter in
+port klipp.grade.rgb_splitter r
+port klipp.grade.saturation in
+port klipp.grade.saturation mask
+port klipp.grade.saturation out
+port klipp.grade.soft_clip in
+port klipp.grade.soft_clip out
+port klipp.grade.source out
+port klipp.grade.tone_controls in
+port klipp.grade.tone_controls mask
+port klipp.grade.tone_controls out
+port klipp.grade.wheel_sat_bri in
+port klipp.grade.wheel_sat_bri out
+type klipp.fx.anamorphic_streak
+type klipp.fx.binocular_vignette
+type klipp.fx.bloom
+type klipp.fx.channel_mixer
+type klipp.fx.chroma_key
+type klipp.fx.chromatic_aberration
+type klipp.fx.clip_below
+type klipp.fx.color_fade
+type klipp.fx.colour_space_transform
+type klipp.fx.corner_pin
+type klipp.fx.crop
+type klipp.fx.deflicker
+type klipp.fx.denoise
+type klipp.fx.diffusion
+type klipp.fx.dilate
+type klipp.fx.directional_blur
+type klipp.fx.displace
+type klipp.fx.drop_shadow
+type klipp.fx.edge_detect
+type klipp.fx.emboss
+type klipp.fx.equalize
+type klipp.fx.erode
+type klipp.fx.fill_bars
+type klipp.fx.film_grain
+type klipp.fx.film_halation
+type klipp.fx.flicker
+type klipp.fx.focus_blur
+type klipp.fx.frei0r
+type klipp.fx.gamma
+type klipp.fx.gaussian_blur
+type klipp.fx.generator
+type klipp.fx.glow
+type klipp.fx.grade_compound
+type klipp.fx.gradient_map
+type klipp.fx.hsv_adjust
+type klipp.fx.invert
+type klipp.fx.lens_distortion
+type klipp.fx.lens_flare
+type klipp.fx.letterbox
+type klipp.fx.levels
+type klipp.fx.light_rays
+type klipp.fx.light_wrap
+type klipp.fx.luma_key
+type klipp.fx.lut_3d
+type klipp.fx.media_source
+type klipp.fx.median_filter
+type klipp.fx.merge
+type klipp.fx.mirror
+type klipp.fx.mosaic
+type klipp.fx.noise_generator
+type klipp.fx.old_film
+type klipp.fx.opacity
+type klipp.fx.outer_glow
+type klipp.fx.particles
+type klipp.fx.picture_transform
+type klipp.fx.posterize
+type klipp.fx.radial_blur
+type klipp.fx.reflection
+type klipp.fx.rolling_shutter_correction
+type klipp.fx.rounded_corners
+type klipp.fx.sharpen
+type klipp.fx.speed_ramp
+type klipp.fx.surface_pin
+type klipp.fx.temporal_denoise
+type klipp.fx.tilt_shift
+type klipp.fx.title_source
+type klipp.fx.transform
+type klipp.fx.vhs
+type klipp.fx.vibrance
+type klipp.fx.video_stabilization
+type klipp.fx.vignette
+type klipp.fx.warp
+type klipp.grade.apply_matte
+type klipp.grade.blend
+type klipp.grade.color_balance
+type klipp.grade.color_match
+type klipp.grade.color_warper
+type klipp.grade.color_wheels
+type klipp.grade.combine_mattes
+type klipp.grade.compound
+type klipp.grade.contrast
+type klipp.grade.corrector
+type klipp.grade.denoise
+type klipp.grade.difference_key
+type klipp.grade.exposure
+type klipp.grade.external_matte
+type klipp.grade.film_grain
+type klipp.grade.hdr_zones
+type klipp.grade.hue_sat_curves
+type klipp.grade.input_transform
+type klipp.grade.key_mixer
+type klipp.grade.layer
+type klipp.grade.layer_mixer
+type klipp.grade.luma_key
+type klipp.grade.lut_3d
+type klipp.grade.mask
+type klipp.grade.mask_cutout
+type klipp.grade.output
+type klipp.grade.primaries_matrix
+type klipp.grade.qualifier
+type klipp.grade.reroute
+type klipp.grade.rgb_combiner
+type klipp.grade.rgb_curves
+type klipp.grade.rgb_splitter
+type klipp.grade.saturation
+type klipp.grade.soft_clip
+type klipp.grade.source
+type klipp.grade.tone_controls
+type klipp.grade.wheel_sat_bri
+type klipp.transition.additive_dissolve
+type klipp.transition.anamorphic_flare
+type klipp.transition.barn_door_close
+type klipp.transition.barn_door_open
+type klipp.transition.blur_dissolve
+type klipp.transition.bokeh_dissolve
+type klipp.transition.box_wipe_in
+type klipp.transition.box_wipe_out
+type klipp.transition.checkerboard_wipe
+type klipp.transition.chromatic_aberration
+type klipp.transition.circle_wipe_in
+type klipp.transition.circle_wipe_out
+type klipp.transition.clock_wipe
+type klipp.transition.colorize_flash
+type klipp.transition.cover_left
+type klipp.transition.cover_right
+type klipp.transition.cross_dissolve
+type klipp.transition.cross_zoom
+type klipp.transition.desaturate
+type klipp.transition.diagonal_wipe_t_l_b_r
+type klipp.transition.diagonal_wipe_t_r_b_l
+type klipp.transition.dip_to_black
+type klipp.transition.dip_to_white
+type klipp.transition.dream_sequence
+type klipp.transition.fade_to_color
+type klipp.transition.film_burn
+type klipp.transition.film_dissolve
+type klipp.transition.flash
+type klipp.transition.glitch_dissolve
+type klipp.transition.glitch_r_g_b_split
+type klipp.transition.halation
+type klipp.transition.hue_rotate
+type klipp.transition.light_leak
+type klipp.transition.luminance_dissolve
+type klipp.transition.negative_flash
+type klipp.transition.page_turn
+type klipp.transition.page_turn_reverse
+type klipp.transition.part_halves
+type klipp.transition.pixelate
+type klipp.transition.projector_flicker
+type klipp.transition.push_left
+type klipp.transition.ripple
+type klipp.transition.sepia
+type klipp.transition.shatter
+type klipp.transition.slide_down
+type klipp.transition.slide_left
+type klipp.transition.slide_panels
+type klipp.transition.slide_right
+type klipp.transition.slide_strips
+type klipp.transition.slide_up
+type klipp.transition.smooth_cut
+type klipp.transition.spin
+type klipp.transition.split_wipe_horizontal
+type klipp.transition.split_wipe_vertical
+type klipp.transition.squeeze_h
+type klipp.transition.squeeze_v
+type klipp.transition.star_wipe
+type klipp.transition.static_t_v
+type klipp.transition.swirl
+type klipp.transition.uncover_left
+type klipp.transition.uncover_right
+type klipp.transition.v_h_s_tracking
+type klipp.transition.venetian_blind_horizontal
+type klipp.transition.venetian_blind_vertical
+type klipp.transition.water_drop
+type klipp.transition.wave_distortion
+type klipp.transition.whip_pan
+type klipp.transition.wipe_down
+type klipp.transition.wipe_left
+type klipp.transition.wipe_right
+type klipp.transition.wipe_up
+type klipp.transition.zoom_in_dissolve
+type klipp.transition.zoom_out_dissolve

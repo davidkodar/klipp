@@ -685,7 +685,102 @@ pub enum SlotKind {
     Surface,
 }
 
+/// The new node a recipe op's path names, `{"new": k}` or a path whose
+/// one node is that.
+fn new_node_of(path: &serde_json::Value) -> Option<usize> {
+    let at = path.get("new").or_else(|| path["nodes"].as_array().filter(|n| n.len() == 1).and_then(|n| n[0].get("new")))?;
+    at.as_u64().and_then(|k| usize::try_from(k).ok())
+}
+
 impl CompositionTemplate {
+    /// The ids its recipe graph names, read as they are now (#2888): a
+    /// renamed type, parameter or port as its new id, through
+    /// [`crate::registry_ids::MIGRATIONS`]. A type this Klipp doesn't
+    /// have, one removed, or renames that loop, refuse the file, saying
+    /// which. A parameter or port key that isn't declared is left as it
+    /// is: the graph op that places the recipe refuses it by name.
+    pub fn migrate_ids(&mut self) -> Result<(), String> {
+        self.migrate_ids_in(crate::registry_ids::MIGRATIONS)
+    }
+
+    /// [`Self::migrate_ids`] through `table`.
+    fn migrate_ids_in(&mut self, table: &[crate::registry_ids::Migration]) -> Result<(), String> {
+        use crate::registry_ids::{is_current, resolve_in, Resolved, Subject};
+        let resolve = |s: Subject<'_>| resolve_in(table, s, &is_current);
+        let Some(graph) = self.graph.as_mut() else { return Ok(()) };
+        let mut types: Vec<Option<String>> = Vec::with_capacity(graph.ops.len());
+        for (k, op) in graph.ops.iter_mut().enumerate() {
+            let Some(t) = op.get("type").and_then(|t| t.as_str()).map(str::to_owned) else {
+                types.push(None);
+                continue;
+            };
+            let now = match resolve(Subject::Type(&t)) {
+                Resolved::Current(now) => now,
+                Resolved::Removed(why) => return Err(format!("op {k}: {t} was removed: {why}")),
+                Resolved::Unknown => return Err(format!("op {k}: {t} is not an effect or node this Klipp has")),
+                Resolved::Loops => return Err(format!("op {k}: {t}'s renames run in a loop")),
+            };
+            op["type"] = now.clone().into();
+            types.push(Some(now));
+        }
+        let key_now = |at: usize, key: &str, port: bool| -> Result<Option<String>, String> {
+            let Some(ty) = types.get(at).and_then(|t| t.as_deref()) else { return Ok(None) };
+            match resolve(if port { Subject::Port(ty, key) } else { Subject::Param(ty, key) }) {
+                Resolved::Current(now) => Ok((now != key).then_some(now)),
+                Resolved::Removed(why) => Err(format!("{ty}'s {key} was removed: {why}")),
+                Resolved::Loops => Err(format!("{ty}'s {key}: its renames run in a loop")),
+                Resolved::Unknown => Ok(None),
+            }
+        };
+        for (k, op) in graph.ops.iter_mut().enumerate() {
+            if let Some(params) = op.get_mut("params").and_then(|p| p.as_object_mut()) {
+                for key in params.keys().cloned().collect::<Vec<_>>() {
+                    if let Some(now) = key_now(k, &key, false)? {
+                        let value = params.remove(&key).expect("a key just listed");
+                        params.insert(now, value);
+                    }
+                }
+            }
+            if op["op"] == "modify" {
+                if let (Some(at), Some(key)) = (new_node_of(&op["path"]), op["key"].as_str().map(str::to_owned)) {
+                    if let Some(now) = key_now(at, &key, false)? {
+                        op["key"] = now.into();
+                    }
+                }
+            }
+            if op["op"] == "connect" {
+                for (end, port) in [("from", "from_port"), ("to", "to_port")] {
+                    if let (Some(at), Some(key)) = (new_node_of(&op[end]), op[port].as_str().map(str::to_owned)) {
+                        if let Some(now) = key_now(at, &key, true)? {
+                            op[port] = now.into();
+                        }
+                    }
+                }
+            }
+        }
+        for b in &mut self.bindings {
+            let Some((k, rest)) = node_binding(&b.property) else { continue };
+            let (param, field) = rest.split_once('~').map_or((rest, None), |(p, f)| (p, Some(f)));
+            if let Some(now) = key_now(k, param, false)? {
+                b.property = match field {
+                    Some(f) => format!("node:{k}.{now}~{f}"),
+                    None => format!("node:{k}.{now}"),
+                };
+            }
+        }
+        Ok(())
+    }
+
+    /// `json` read as a template file: its ids as they are now
+    /// ([`Self::migrate_ids`]), then checked ([`Self::validate`]).
+    pub fn read(json: &str) -> Result<Self, String> {
+        let mut t: Self = serde_json::from_str(json).map_err(|e| e.to_string())?;
+        t.within_limits()?;
+        t.migrate_ids()?;
+        t.validate()?;
+        Ok(t)
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         self.within_limits()?;
         if self.format_version > FORMAT_VERSION {
@@ -1097,7 +1192,7 @@ pub fn builtin_templates() -> Vec<CompositionTemplate> {
     ];
     FILES
         .iter()
-        .filter_map(|json| match serde_json::from_str::<CompositionTemplate>(json).map_err(|e| e.to_string()).and_then(|t| t.validate().map(|()| t)) {
+        .filter_map(|json| match CompositionTemplate::read(json) {
             Ok(t) => Some(t),
             Err(why) => {
                 tracing::error!("a built-in template doesn't read: {why}");
@@ -1129,7 +1224,7 @@ pub fn builtin_recipes() -> Vec<CompositionTemplate> {
     ];
     FILES
         .iter()
-        .filter_map(|json| match serde_json::from_str::<CompositionTemplate>(json).map_err(|e| e.to_string()).and_then(|t| t.validate().map(|()| t)) {
+        .filter_map(|json| match CompositionTemplate::read(json) {
             Ok(t) => Some(t),
             Err(why) => {
                 tracing::error!("a built-in recipe doesn't read: {why}");
@@ -1154,8 +1249,8 @@ fn read_templates_in(dir: &Path) -> Vec<(PathBuf, CompositionTemplate)> {
         if path.extension().and_then(|extension| extension.to_str()) != Some(EXTENSION) {
             continue;
         }
-        match read_capped(&path).and_then(|json| serde_json::from_str::<CompositionTemplate>(&json).map_err(|error| error.to_string())) {
-            Ok(template) if template.validate().is_ok() => {
+        match read_capped(&path).and_then(|json| CompositionTemplate::read(&json)) {
+            Ok(template) => {
                 // One id is one template: a second file carrying it is a
                 // copy, and saving would rewrite the first while dropping
                 // both from the list.
@@ -1165,7 +1260,6 @@ fn read_templates_in(dir: &Path) -> Vec<(PathBuf, CompositionTemplate)> {
                     entries.push((path, template));
                 }
             }
-            Ok(template) => tracing::warn!("Skipping invalid template '{}': {}", path.display(), template.validate().unwrap_err()),
             Err(error) => tracing::warn!("Skipping template '{}': {error}", path.display()),
         }
     }
@@ -1263,6 +1357,9 @@ impl CompositionTemplateStore {
     }
 
     pub fn save(&mut self, mut template: CompositionTemplate) -> Result<(), String> {
+        // A pack's template comes from someone else's build (#2888).
+        template.within_limits()?;
+        template.migrate_ids()?;
         template.validate()?;
         // A shipped template or a pack's is never written: saved, it is a
         // copy of the user's own.
@@ -1714,5 +1811,69 @@ mod tests {
         bad.formats.insert("portrait".into(), split.composition_id);
         assert!(bad.validate().unwrap_err().contains("not tall or square"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #2888: a recipe naming renamed ids reads as the ids they are now,
+    /// its type, a parameter in an add op, a modify op's key, a port and
+    /// a binding; a removed type, an unknown one and renames that loop
+    /// refuse it, saying which.
+    #[test]
+    fn a_recipe_reads_renamed_ids_as_they_are_now() {
+        use crate::registry_ids::{Change, Migration, Subject};
+        let table = [
+            Migration { old: Subject::Type("klipp.fx.old_blur"), change: Change::Renamed("klipp.fx.gaussian_blur") },
+            Migration { old: Subject::Param("klipp.fx.gaussian_blur", "old_radius"), change: Change::Renamed("radius") },
+            Migration { old: Subject::Port("klipp.fx.merge", "front"), change: Change::Renamed("fg") },
+            Migration { old: Subject::Type("klipp.fx.retired"), change: Change::Removed("drawn by gaussian_blur now") },
+            Migration { old: Subject::Type("klipp.fx.ping"), change: Change::Renamed("klipp.fx.pong") },
+            Migration { old: Subject::Type("klipp.fx.pong"), change: Change::Renamed("klipp.fx.ping") },
+        ];
+        let recipe = |ty: &str| -> CompositionTemplate {
+            let mut t = builtin_recipes().remove(0);
+            t.bindings = vec![serde_json::from_value(serde_json::json!({"parameter": "amount", "property": "node:0.old_radius"})).unwrap()];
+            t.graph.as_mut().unwrap().ops = vec![
+                serde_json::json!({"op": "add", "after": {"anchor": "end"}, "type": ty, "params": {"old_radius": 3.0}}),
+                serde_json::json!({"op": "modify", "path": {"new": 0}, "key": "old_radius", "modifiers": []}),
+                serde_json::json!({"op": "add", "after": {"new": 0}, "type": "klipp.fx.merge"}),
+                serde_json::json!({"op": "connect", "from": {"anchor": "source"}, "from_port": "out", "to": {"new": 2}, "to_port": "front"}),
+            ];
+            t
+        };
+        let mut t = recipe("klipp.fx.old_blur");
+        t.migrate_ids_in(&table).unwrap();
+        let ops = &t.graph.as_ref().unwrap().ops;
+        assert_eq!(ops[0]["type"], "klipp.fx.gaussian_blur");
+        assert_eq!(ops[0]["params"], serde_json::json!({"radius": 3.0}));
+        assert_eq!(ops[1]["key"], "radius");
+        assert_eq!(ops[3]["to_port"], "fg");
+        assert_eq!(ops[3]["from_port"], "out", "an anchor's port is the picture's, left as it is");
+        assert_eq!(t.bindings[0].property, "node:0.radius");
+        for (ty, says) in [("klipp.fx.retired", "was removed: drawn by gaussian_blur now"), ("klipp.fx.never_was", "is not an effect or node"), ("klipp.fx.ping", "loop")] {
+            let why = recipe(ty).migrate_ids_in(&table).unwrap_err();
+            assert!(why.contains(says) && why.contains(ty), "{ty}: {why}");
+        }
+    }
+
+    /// The ids every recipe and template Klipp ships names are current:
+    /// reading them through the table changes nothing (#2888).
+    #[test]
+    fn the_shipped_files_name_current_ids() {
+        let shipped: Vec<CompositionTemplate> = builtin_recipes().into_iter().chain(builtin_templates()).collect();
+        assert_eq!(builtin_recipes().len(), 14);
+        for t in shipped {
+            let mut again = t.clone();
+            again.migrate_ids().unwrap();
+            assert_eq!(serde_json::to_value(&again).unwrap(), serde_json::to_value(&t).unwrap(), "{}", t.name);
+        }
+    }
+
+    /// A file from someone else is bounded before its ids are read: too
+    /// many ops is refused as such, not walked.
+    #[test]
+    fn a_recipe_past_its_limits_is_refused_before_its_ids_are_read() {
+        let mut many = builtin_recipes().remove(0);
+        many.graph.as_mut().unwrap().ops = vec![serde_json::json!({"op": "add", "after": {"anchor": "end"}, "type": "klipp.fx.not_here"}); MAX_RECIPE_OPS + 1];
+        let why = CompositionTemplate::read(&serde_json::to_string(&many).unwrap()).unwrap_err();
+        assert!(why.contains("at most"), "{why}");
     }
 }
