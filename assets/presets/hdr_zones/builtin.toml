@@ -1,0 +1,34 @@
+# Klipp's HDR Zones starting points (#240, #2887), as a colourist names
+# them: each a name, what it does, and its changes from neutral zones
+# placed for the source (an SDR picture's or a scene-referred one's), by
+# zone: global, black, dark, shadow, light, highlight, specular. Exposure
+# is in stops; saturation 1 is none; a tint is a hue on the wheel (0 red,
+# 30 orange, 210 a cool blue) and an amount (1 the wheel's rim).
+kind = "hdr_zones_preset"
+format_version = 1
+
+[[preset]]
+name = "HDR highlight roll-off"
+description = "Brings the highlights down half a stop and the speculars a stop, and calms their colour."
+exposure = { highlight = -0.5, specular = -1.0 }
+saturation = { specular = 0.8 }
+
+[[preset]]
+name = "Lift shadows"
+description = "Opens the shadows and the darks without touching black."
+exposure = { shadow = 0.4, dark = 0.3 }
+
+[[preset]]
+name = "Deepen blacks"
+description = "Sets the blacks down and the darks with them, for a denser floor."
+exposure = { black = -0.6, dark = -0.2 }
+
+[[preset]]
+name = "Midtone contrast"
+description = "Pushes the shadows down and the lights up about mid grey, black and white left where they are."
+exposure = { shadow = -0.3, light = 0.3 }
+
+[[preset]]
+name = "Warm highlights, cool shadows"
+description = "A split tone: orange in the highlights, a cool blue in the shadows."
+tint = [{ zone = "highlight", hue = 30.0, amount = 0.25 }, { zone = "shadow", hue = 210.0, amount = 0.25 }]

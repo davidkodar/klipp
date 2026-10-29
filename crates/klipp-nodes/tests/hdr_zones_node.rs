@@ -218,3 +218,10 @@ fn the_presets_do_what_their_names_say() {
         if (-4.0..-1.6).contains(s) { assert!(px[2] > px[0], "cool at {s} stops: {px:?}"); }
     }
 }
+
+/// The zone names a preset file's changes are keyed by are the ones the
+/// node's keys and the `zones` op use (#2887).
+#[test]
+fn a_zone_presets_names_are_the_zones() {
+    assert_eq!(klipp_core::color_grade::ZONE_KEYS, klipp_nodes::params::HDR_ZONE_KEYS);
+}
