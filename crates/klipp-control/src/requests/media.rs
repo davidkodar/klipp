@@ -457,7 +457,9 @@ pub(crate) fn respond(
 
         ControlCommand::ListMarkers => {
             let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-            Ok(json!({ "markers": seq.markers.iter().map(|m| json!({
+            let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+            let mut markers: Vec<serde_json::Value> = seq.markers.iter().map(|m| json!({
+                "scope": "sequence",
                 "marker_id": m.id.0.to_string(),
                 "at_secs": m.position.to_secs_f64(),
                 "duration_secs": m.duration.map(|d| d.to_secs_f64()),
@@ -465,7 +467,33 @@ pub(crate) fn respond(
                 "note": m.comment,
                 "color": format!("{:?}", m.color).to_lowercase(),
                 "kind": marker_kind_name(m.kind),
-            })).collect::<Vec<_>>() }))
+            })).collect();
+            // The clips' own markers too, as a timeline or list import
+            // brings them: the import counted them, and a list without
+            // them read as though they were lost. They ride with their
+            // clip, so they have no marker_id to update or remove by.
+            for track in &seq.tracks {
+                for c in &track.clips {
+                    let media_name = match c.kind {
+                        klipp_timeline::ClipKind::Media { media_id } => pool.get(&media_id).map(|m| m.filename.as_str()),
+                        _ => None,
+                    };
+                    for m in &c.clip_markers {
+                        markers.push(json!({
+                            "scope": "clip",
+                            "clip_id": c.id.0.to_string(),
+                            "clip": c.label(media_name.unwrap_or("")),
+                            "track": track.name,
+                            "at_secs": c.timeline_in.to_secs_f64() + m.time_secs,
+                            "label": m.name,
+                            "note": m.comment,
+                            "color": format!("{:?}", m.color).to_lowercase(),
+                        }));
+                    }
+                }
+            }
+            markers.sort_by(|a, b| a["at_secs"].as_f64().partial_cmp(&b["at_secs"].as_f64()).unwrap_or(std::cmp::Ordering::Equal));
+            Ok(json!({ "markers": markers }))
         }
 
         ControlCommand::UpdateMarker { marker_id, label, note, color, kind } => {
