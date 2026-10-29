@@ -1288,6 +1288,9 @@ pub enum AppCommand {
         timeline_in: Timecode,
     },
     RemoveClip { clip_id: ClipId },
+    /// Several clips taken out as one undo step (#3060): deleted (a
+    /// magnetic track closing up) or lifted (`lift`, the gap left).
+    RemoveClips { clip_ids: Vec<ClipId>, lift: bool },
     /// Give an existing video clip the audio of its own media file,
     /// linked, spanning exactly what the clip spans.
     AttachLinkedAudio { clip_id: ClipId },

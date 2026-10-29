@@ -1100,67 +1100,14 @@ impl KlippApp {
 
     pub(super) fn remove_clip_impl(&mut self, clip_id: klipp_core::ClipId) {
         if self.clip_track_is_locked(&clip_id) { return; }
-        let Some((ti, _)) = self.state.sequence().find_clip(clip_id) else { return };
-        if !self.is_magnetic_track(ti) {
-            match crate::clip_edits::remove(self.state.sequence(), &self.state.media_pool, clip_id) {
-                Ok(edit) => {
-                    self.apply_edits_as_one(&[edit], "Remove Clip");
-                    if self.state.selected_clip.is_some_and(|id| self.state.sequence().find_clip(id).is_none()) {
-                        self.state.selected_clip = None;
-                    }
-                    return;
-                }
-                Err(r) => {
-                    self.state.toast.show(format!("Remove unchanged: {}. Unlock the linked track or use Lift to leave a gap.", r.why));
-                    return;
-                }
-            }
+        // The selection's removal, for one clip (#3060).
+        if let Err(why) = super::selection_removal::remove_clips(&mut self.state, &[clip_id], false, "Remove Clip") {
+            self.state.toast.show(format!("Remove unchanged: {why}. Unlock the linked track or use Lift to leave a gap."));
+            return;
         }
-
-        // Cross-field invariant: any clip that pointed at this one as a matte
-        // source must have its binding cleared so we don't orphan it. Done
-        // before the remove so the consumer's own state is consistent at
-        // every observation point. Mirrors the pattern called out in the
-        // `route-engine-state-through-AppCommand` memory.
-        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-        for c in seq.all_clips_mut() {
-            if c.matte_source.as_ref().is_some_and(|b| b.source_clip_id == clip_id) {
-                c.matte_source = None;
-            }
-            // Same cascade-clear policy for transform_link: a clip
-            // pointing at the removed clip as its transform-link
-            // target loses the binding so a stale ClipId never
-            // outlives its target.
-            if c.transform_link.as_ref().is_some_and(|tl| tl.target.referenced_clip_id() == clip_id) {
-                c.transform_link = None;
-            }
-        }
-
-        // A transition joining the clip (or its linked partner, which the
-        // ripple delete takes too) goes with it, in the same undo step
-        // (#979): left behind, it named a clip that was gone.
-        let gone: Vec<klipp_core::ClipId> = std::iter::once(clip_id).chain(self.state.sequence().find_clip(clip_id).and_then(|(ti, ci)| self.state.sequence().tracks[ti].clips[ci].linked_clip_id)).collect();
-        let transitions = klipp_document::ops::transitions_removed_with(self.state.sequence(), &gone);
-        // One batch, unless a gesture removing several clips has one open.
-        let own_batch = !transitions.is_empty() && !self.state.active_history_mut().is_batching();
-        if own_batch {
-            self.state.active_history_mut().begin_batch();
-        }
-        for e in &transitions {
-            self.apply_edit_forward(e);
-            self.state.push_history(e.clone());
-        }
-        let result = klipp_timeline::magnetic::MagneticEditor::ripple_delete(
-            &mut self.state.sequences[self.state.active_sequence_idx], clip_id);
-        self.state.push_history(EditCommand::Magnetic(result.command));
-        if own_batch {
-            self.state.active_history_mut().end_batch_as("Remove Clip");
-        }
-        if self.state.selected_clip == Some(clip_id) {
-            self.state.selected_clip = None;
-        }
+        self.state.media_usage_cache_dirty = true;
         self.sync_sequence_to_engine();
-        self.state.dirty = true;
+        let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
     }
 
     /// Pro-NLE Q/W: pick a target clip by playhead proximity (no selection
