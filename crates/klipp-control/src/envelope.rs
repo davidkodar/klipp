@@ -103,6 +103,25 @@ pub(crate) struct StatusFacts<'a> {
     pub(crate) media: usize,
     pub(crate) playhead_secs: f64,
     pub(crate) playing: bool,
+    /// Every sequence of the project and the open one's index.
+    pub(crate) sequences: &'a [klipp_core::SequenceSummary],
+    pub(crate) active_sequence: usize,
+}
+
+/// Every sequence of the project in one line, the open one marked, so a
+/// reader who sees one timeline knows whether there are others. The open
+/// one's length is `open_secs`, read live: the list can lag an edit.
+pub(crate) fn sequences_text(list: &[klipp_core::SequenceSummary], active: usize, open_secs: f64) -> String {
+    let each: Vec<String> = list.iter().enumerate().map(|(i, s)| {
+        let open = i == active;
+        let secs = if open { open_secs } else { s.duration_secs };
+        format!("[{i}] {} {secs:.1} s, {} clip{}{}", quoted(&s.name), s.clips, if s.clips == 1 { "" } else { "s" }, if open { " (open)" } else { "" })
+    }).collect();
+    match list.len() {
+        0 => "Sequences: none.".to_string(),
+        1 => format!("Sequences: 1, the open one: {}.", each[0]),
+        n => format!("Sequences: {n}; switch_sequence opens another: {}.", each.join("; ")),
+    }
 }
 
 /// Minutes and seconds, as a person reads a time: `1:05`, `0:00`; hours
@@ -154,6 +173,10 @@ pub(crate) fn status_text(f: &StatusFacts) -> String {
         seq.resolution.height,
         if sounds == 1 { "" } else { "s" },
     ));
+    if f.sequences.len() > 1 {
+        out.push_str(&sequences_text(f.sequences, f.active_sequence, seq.total_duration().to_secs_f64()));
+        out.push('\n');
+    }
     out.push_str(&format!("Playhead: {} at {}.\n", if f.playing { "playing" } else { "paused" }, clock(f.playhead_secs)));
     out.push_str(&match f.media {
         0 => "Media: none imported yet.".to_string(),

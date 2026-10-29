@@ -739,6 +739,7 @@ impl AppState {
             id: seq.id.to_string(),
             name: seq.name.clone(),
             clips: seq.tracks.iter().map(|t| t.clips.len()).sum(),
+            duration_secs: seq.total_duration().to_secs_f64(),
             used_in: self.sequences.iter().find(|other| {
                 other.id != seq.id && other.tracks.iter().flat_map(|t| &t.clips).any(|c| matches!(c.kind, klipp_timeline::ClipKind::Sequence { sequence_id, .. } if sequence_id == seq.id))
             }).map(|other| other.name.clone()),

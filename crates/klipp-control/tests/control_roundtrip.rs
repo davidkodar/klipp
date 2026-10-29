@@ -3898,15 +3898,15 @@ fn status_lists_the_sequences_and_switch_sequence_opens_one() {
     {
         let mut p = h.shared.project.lock().unwrap();
         p.sequences = vec![
-            klipp_core::SequenceSummary { id: "a".into(), name: "Main".into(), clips: 3, used_in: None, version: None, width: 0, height: 0 },
-            klipp_core::SequenceSummary { id: "b".into(), name: "Social cut".into(), clips: 1, used_in: None, version: None, width: 0, height: 0 },
+            klipp_core::SequenceSummary { id: "a".into(), name: "Main".into(), clips: 3, duration_secs: 0.0, used_in: None, version: None, width: 0, height: 0 },
+            klipp_core::SequenceSummary { id: "b".into(), name: "Social cut".into(), clips: 1, duration_secs: 0.0, used_in: None, version: None, width: 0, height: 0 },
         ];
         p.active_sequence = 0;
     }
     let status = h.ok(json!({"method": "status"}));
     assert_eq!(status["sequences"], json!([
-        {"index": 0, "id": "a", "name": "Main", "clips": 3, "active": true},
-        {"index": 1, "id": "b", "name": "Social cut", "clips": 1, "active": false},
+        {"index": 0, "id": "a", "name": "Main", "clips": 3, "duration_secs": 0.0, "active": true},
+        {"index": 1, "id": "b", "name": "Social cut", "clips": 1, "duration_secs": 0.0, "active": false},
     ]));
     h.ok(json!({"method": "switch_sequence", "index": 1}));
     h.ok(json!({"method": "switch_sequence", "sequence_id": "a"}));
@@ -3926,6 +3926,46 @@ fn status_lists_the_sequences_and_switch_sequence_opens_one() {
         assert!(reply["error"].as_str().unwrap_or_default().contains(why), "{bad}: {}", reply["error"]);
     }
     assert_eq!(h.sent.lock().unwrap().len(), 2, "a refused switch sends nothing");
+}
+
+/// `orient` and `status` name every sequence of the project with its
+/// length, the open one marked, not the open one alone: from the open
+/// one's timeline a reader took a four-sequence project for a
+/// one-sequence one and said so.
+#[test]
+fn orient_and_status_name_every_sequence_with_its_length() {
+    let mut h = harness();
+    {
+        let mut p = h.shared.project.lock().unwrap();
+        let summary = |id: &str, name: &str, clips, secs| klipp_core::SequenceSummary { id: id.into(), name: name.into(), clips, duration_secs: secs, used_in: None, version: None, width: 1920, height: 1080 };
+        p.sequences = vec![
+            summary("a", "Main Sequence", 0, 0.0),
+            summary("b", "Handoff EDL", 3, 12.0),
+            summary("c", "Handoff FCPXML", 2, 10.0),
+            summary("d", "Editor's cut", 2, 99.0),
+        ];
+        p.active_sequence = 3;
+    }
+    let orient = h.ok(json!({"method": "orient"}));
+    let line = orient["sequences"].as_str().unwrap_or_default();
+    assert!(line.starts_with("Sequences: 4;"), "{line}");
+    for name in ["\"Main Sequence\" 0.0 s, 0 clips", "\"Handoff EDL\" 12.0 s, 3 clips", "\"Handoff FCPXML\" 10.0 s, 2 clips", "\"Editor's cut\""] {
+        assert!(line.contains(name), "{name} in: {line}");
+    }
+    let status = h.ok(json!({"method": "status"}));
+    let live = status["duration_secs"].as_f64().expect("the open sequence's length");
+    assert!(line.contains(&format!("[3] \"Editor's cut\" {live:.1} s, 2 clips (open)")) && !line.contains("99.0"), "the open one marked, its length read live, not the list's: {line}");
+    assert_eq!(line.matches("(open)").count(), 1, "{line}");
+    let text = status["text"].as_str().unwrap_or_default();
+    assert!(text.contains("Sequences: 4;") && text.contains("\"Handoff FCPXML\""), "{text}");
+    assert_eq!(status["sequences"][1]["duration_secs"], json!(12.0));
+
+    h.shared.project.lock().unwrap().sequences.truncate(1);
+    h.shared.project.lock().unwrap().active_sequence = 0;
+    let one = h.ok(json!({"method": "orient"}));
+    assert!(one["sequences"].as_str().unwrap_or_default().starts_with("Sequences: 1, the open one:"), "{one}");
+    let status = h.ok(json!({"method": "status"}));
+    assert!(!status["text"].as_str().unwrap_or_default().contains("Sequences:"), "one sequence: the Timeline line says it");
 }
 
 /// `edit_from_selects` (#2385) through `apply`: the socket plans it
@@ -3962,7 +4002,7 @@ fn edit_from_selects_names_the_sequence_and_content_it_copied() {
 fn remove_sequence_is_refused_until_confirmed_and_never_for_a_held_or_only_one() {
     let mut h = harness();
     let set = |h: &mut Harness, list: Vec<klipp_core::SequenceSummary>| h.shared.project.lock().unwrap().sequences = list;
-    let summary = |id: &str, name: &str, clips, used_in: Option<&str>| klipp_core::SequenceSummary { id: id.into(), name: name.into(), clips, used_in: used_in.map(Into::into), version: None, width: 0, height: 0 };
+    let summary = |id: &str, name: &str, clips, used_in: Option<&str>| klipp_core::SequenceSummary { id: id.into(), name: name.into(), clips, duration_secs: 0.0, used_in: used_in.map(Into::into), version: None, width: 0, height: 0 };
     let (a, b, c, d) = ("00000000-0000-4000-8000-00000000000a", "00000000-0000-4000-8000-00000000000b", "00000000-0000-4000-8000-00000000000c", "00000000-0000-4000-8000-00000000000d");
     set(&mut h, vec![summary(a, "Main", 3, None), summary(b, "Demo", 2, None), summary(c, "Nest", 1, Some("Main")), summary(d, "Spare", 0, None)]);
     let refused = |h: &mut Harness, cmd: Value, why: &str| {
@@ -4044,7 +4084,7 @@ fn a_refused_picture_write_is_in_the_reply() {
 #[test]
 fn duplicate_sequence_copies_and_opens_the_copy() {
     let mut h = harness();
-    let summary = |id: &str, name: &str| klipp_core::SequenceSummary { id: id.into(), name: name.into(), clips: 1, used_in: None, version: None, width: 0, height: 0 };
+    let summary = |id: &str, name: &str| klipp_core::SequenceSummary { id: id.into(), name: name.into(), clips: 1, duration_secs: 0.0, used_in: None, version: None, width: 0, height: 0 };
     let (a, b) = ("00000000-0000-4000-8000-00000000000a", "00000000-0000-4000-8000-00000000000b");
     {
         let mut p = h.shared.project.lock().unwrap();
@@ -4647,9 +4687,9 @@ fn rebuild_version_only_rebuilds_a_stale_version() {
         let mut p = h.shared.project.lock().unwrap();
         let version = |stale| Some(klipp_core::VersionSummary { of: "a".into(), stale });
         p.sequences = vec![
-            klipp_core::SequenceSummary { id: "a".into(), name: "Main".into(), clips: 3, used_in: None, version: None, width: 1920, height: 1080 },
-            klipp_core::SequenceSummary { id: "b".into(), name: "Main 9:16".into(), clips: 3, used_in: None, version: version(false), width: 1080, height: 1920 },
-            klipp_core::SequenceSummary { id: "c".into(), name: "Main 1:1".into(), clips: 3, used_in: None, version: version(true), width: 1080, height: 1080 },
+            klipp_core::SequenceSummary { id: "a".into(), name: "Main".into(), clips: 3, duration_secs: 0.0, used_in: None, version: None, width: 1920, height: 1080 },
+            klipp_core::SequenceSummary { id: "b".into(), name: "Main 9:16".into(), clips: 3, duration_secs: 0.0, used_in: None, version: version(false), width: 1080, height: 1920 },
+            klipp_core::SequenceSummary { id: "c".into(), name: "Main 1:1".into(), clips: 3, duration_secs: 0.0, used_in: None, version: version(true), width: 1080, height: 1080 },
         ];
         p.active_sequence = 0;
     }
