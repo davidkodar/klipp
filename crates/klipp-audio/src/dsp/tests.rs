@@ -96,6 +96,22 @@ fn every_declared_effect_is_made_with_its_declared_params() {
     }
 }
 
+/// Each built-in audio preset (#2887) sets settings its effect has, each
+/// inside the effect's own range; the voice isolation's Full is all the
+/// model can remove.
+#[test]
+fn every_audio_preset_is_inside_its_effects_ranges() {
+    for p in klipp_core::audio_effect_registry::audio_presets() {
+        let fx = create_effect(&p.effect, SR).unwrap_or_else(|| panic!("{}: no {}", p.name, p.effect));
+        for (k, v) in p.values() {
+            let d = fx.param_descriptors().iter().find(|d| d.name == k).unwrap_or_else(|| panic!("{}: no {k}", p.name));
+            assert!((d.min..=d.max).contains(&v), "{}: {k} {v} outside {}..{}", p.name, d.min, d.max);
+        }
+    }
+    let full = klipp_core::audio_effect_registry::presets_of("voice_isolation").find(|p| p.name == "Full").unwrap().values();
+    assert_eq!(full, [("reduction".to_string(), voice_isolation::FULL_REDUCTION_DB)]);
+}
+
 #[test]
 fn factory_returns_none_for_unknown() {
     assert!(create_effect("nonexistent", SR).is_none());
