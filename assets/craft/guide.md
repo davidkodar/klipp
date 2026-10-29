@@ -494,6 +494,22 @@ exist until the plan runs.
   it changes only that. A clip that will show its pictures held, a 16 fps
   file at 0.6x on a 30 fps timeline showing 9.6 a second, is said in the
   reply and by check (`judder`).
+- `stretch {clip_id | clip_ids, to_secs | end_at_secs | start_at_secs | speed, ripple?, keep_pitch?, interpolation?}`:
+  make a clip fill a new length with the same content: the part of its
+  file it shows stays, its speed changes to fit (a shot stretched to the
+  music's end, squeezed into a slot). Unlike `retime`, everything timed
+  from the clip's start goes with the content: its keyframes, its grade's
+  keys, its markers and a speed ramp's shape; its fades keep their
+  seconds. `to_secs` is the new length (its start kept), `end_at_secs` or
+  `start_at_secs` moves that edge to a timeline time, `speed` sets the
+  speed instead. Its linked sound stretches with it and keeps its pitch
+  (`keep_pitch: false` lets it follow the speed, as tape does).
+  `clip_ids` stretches several by as much as the first; clips that touch
+  keep their timing. A title, still or freeze frame changes length only.
+  Without `ripple` a stretch into another clip is refused; with it the
+  clips after it move by the change, sync-locked tracks too. Speeds stay
+  within 10% to 1600%: past that it is refused, saying the speed the
+  length would need and the lengths that fit. One undo puts it back.
 - `replace {clip_id, media_id, source_in?}`: another file, or another part
   of one, in a clip's slot: the same place, length and speed, with its
   grade, effects, role, volume, links and transitions kept and its linked

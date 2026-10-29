@@ -6,6 +6,9 @@ use crate::*;
 #[cfg(test)]
 #[path = "normalize_tests.rs"]
 mod normalize_tests;
+#[cfg(test)]
+#[path = "stretch_tests.rs"]
+mod stretch_tests;
 
 /// The catalogue's families as the fonts reply lists them (#2732): name,
 /// tags, size and whether fetched.
