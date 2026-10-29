@@ -251,6 +251,59 @@ fn a_merge_masked_by_a_window_lays_its_picture_inside_it() {
     assert!(outside.iter().zip(clip).all(|(a, b)| a.abs_diff(b) <= 1), "the clip as it was outside: {outside:?} against {clip:?}");
 }
 
+/// A window placed by controls (#2886): the recipe's mask rectangle set
+/// from numbers inside its parameter, the picture laid where they put it
+/// and not where the recipe file drew it, on the GPU stack within a level
+/// of the CPU.
+#[test]
+fn a_window_placed_by_its_controls_lays_its_picture_there() {
+    let recipe: klipp_timeline::composition_template::CompositionTemplate = serde_json::from_value(serde_json::json!({
+        "format_version": 2, "id": "5c2e8a41-7d3b-4f19-b6e0-9a1c4d7f2e85", "name": "Placed window", "kind": "recipe",
+        "composition_id": "00000000-0000-0000-0000-000000000000",
+        "parameters": {
+            "x": { "label": "Across", "default": { "type": "Number", "value": 0.25 }, "range": { "min": 0.0, "max": 1.0 } },
+            "y": { "label": "Down", "default": { "type": "Number", "value": 0.5 }, "range": { "min": 0.0, "max": 1.0 } }
+        },
+        "slots": { "picture": { "label": "Picture", "kind": "media" } },
+        "bindings": [
+            { "parameter": "picture", "property": "node:1.media" },
+            { "parameter": "x", "property": "node:3.masks/masks/0/shape/Rectangle/center_x" },
+            { "parameter": "y", "property": "node:3.masks/masks/0/shape/Rectangle/center_y" }
+        ],
+        "graph": { "ops": [
+            { "op": "add", "after": { "anchor": "end" }, "type": "klipp.fx.merge", "params": { "blend_mode": "Normal" } },
+            { "op": "add_beside", "at": { "anchor": "source" }, "type": "klipp.fx.media_source" },
+            { "op": "connect", "from": { "anchor": "source" }, "from_port": "out", "to": { "new": 1 }, "to_port": "in" },
+            { "op": "add_beside", "at": { "anchor": "source" }, "type": "klipp.grade.mask",
+              "params": { "masks": { "masks": [{ "shape": { "Rectangle": { "center_x": 0.25, "center_y": 0.5, "width": 0.3, "height": 0.4, "rotation": 0 } }, "feather": 0, "opacity": 1, "invert": false, "enabled": true }] } } },
+            { "op": "connect", "from": { "anchor": "source" }, "from_port": "out", "to": { "new": 3 }, "to_port": "in" },
+            { "op": "connect", "from": { "new": 1 }, "from_port": "out", "to": { "new": 0 }, "to_port": "fg" },
+            { "op": "connect", "from": { "new": 3 }, "from_port": "out", "to": { "new": 0 }, "to_port": "mask" }
+        ] }
+    })).unwrap();
+    recipe.validate().unwrap();
+    let plain = Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(2.0)) };
+    let before = sequence(plain.clone());
+    let values = BTreeMap::from([
+        ("picture".to_string(), filled(SlotKind::Media)),
+        ("x".to_string(), TemplateValue::Number(0.75)),
+        ("y".to_string(), TemplateValue::Number(0.3)),
+    ]);
+    let (ops, _) = klipp_control::recipes::on_clip(&before, plain.id, &recipe, &values).unwrap_or_else(|e| panic!("{e}"));
+    let mut placed = plain.clone();
+    placed.apply_picture_ops(&ops).unwrap_or_else(|e| panic!("{e}"));
+    let seq = sequence(placed);
+    let want = cpu(&seq, ViewChannel::Picture);
+    let Some(shown) = stack(&seq, ViewChannel::Picture, "window placed by controls") else { return };
+    assert!(worst(&want, &shown) <= 1, "the stack draws {} levels from the CPU", worst(&want, &shown));
+    let at = |f: &[u8], x: f32, y: f32| { let i = (((y * H as f32) as u32 * W + (x * W as f32) as u32) * 4) as usize; [f[i], f[i + 1], f[i + 2]] };
+    let inside = at(&shown, 0.75, 0.3);
+    assert!(inside[0] > 200 && inside[1] < 60, "the picture where the controls put the window: {inside:?}");
+    let plain_frame = cpu(&before, ViewChannel::Picture);
+    let drawn = at(&shown, 0.25, 0.5);
+    assert!(drawn.iter().zip(at(&plain_frame, 0.25, 0.5)).all(|(a, b)| a.abs_diff(b) <= 1), "not where the file drew it: {drawn:?}");
+}
+
 /// `recipe` placed on the test shot's clip with the harness's slots and
 /// `values` over them: the sequence it makes.
 fn placed_with(recipe: &klipp_timeline::composition_template::CompositionTemplate, plain: &Clip) -> Sequence {
