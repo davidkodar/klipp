@@ -24,6 +24,7 @@ pub(crate) fn rows(preset: crate::keybindings::KeymapPreset) -> &'static [(&'sta
         K::Avid => AVID,
         K::Resolve => RESOLVE,
         K::FinalCut => FINAL_CUT,
+        K::Kdenlive => KDENLIVE,
     }
 }
 
@@ -965,4 +966,121 @@ pub(crate) const FINAL_CUT_TAKEN: &[&str] = &[
     "[", // Select Left Edge
     "]", // Select Right Edge
     "`", // Override Connections
+];
+
+/// The open-source editor's published defaults (#3027): `keymap_fixtures/kdenlive.json`.
+pub(crate) const KDENLIVE: &[(&str, &[&str])] = &[
+    ("add_default_transition", &["U"]), // Mix Clips
+    ("add_marker", &["G"]), // Add/Remove Guide
+    ("blade_tool", &["X"]), // Razor Tool
+    ("command_palette", &["Ctrl+Alt+I"]), // Find Action…
+    ("copy_clip", &["Ctrl+C"]), // Copy
+    ("cut_clip", &["Ctrl+X"]), // Cut
+    ("delete_clip", &["Shift+Delete"]), // Extract Clip
+    ("deselect_all", &["Ctrl+Shift+A"]), // Deselect
+    ("duplicate_clip", &["Ctrl+D"]), // Duplicate Clip
+    ("export", &["Ctrl+Enter"]), // Render
+    ("extract_edit", &["Shift+X"]), // Extract Timeline Zone
+    ("go_to_end", &["Ctrl+End", "End"]), // Go to Project End
+    ("go_to_start", &["Ctrl+Home", "Home"]), // Go to Project Start
+    ("group_clips", &["Ctrl+G"]), // Group Clips
+    ("import_media", &[]), // (no default on the page; Ctrl+I is Insert Zone in Project Bin)
+    ("insert_edit", &["V"]), // Insert Clip Zone in Timeline
+    ("lift_clip", &["Delete"]), // Delete Selected Item
+    ("lift_edit", &["Z"]), // Lift Timeline Zone
+    ("new_project", &["Ctrl+N"]), // New
+    ("next_edit_point", &["Alt+ArrowRight"]), // Go to Next Snap Point
+    ("next_marker", &["Ctrl+ArrowRight"]), // Go to Next Guide
+    ("open_project", &["Ctrl+O"]), // Open…
+    ("overwrite_edit", &["B"]), // Overwrite Clip Zone in Timeline
+    ("paste_clip", &["Ctrl+V"]), // Paste
+    ("play_in_to_out", &["Ctrl+Space"]), // Play Zone
+    ("play_pause", &["Space"]), // Play / Stop
+    ("preferences", &["Ctrl+Shift+,"]), // Configure Kdenlive…
+    ("prev_edit_point", &["Alt+ArrowLeft"]), // Go to Previous Snap Point
+    ("prev_marker", &["Ctrl+ArrowLeft"]), // Go to Previous Guide
+    ("quit", &["Ctrl+Q"]), // Quit
+    ("redo", &["Ctrl+Shift+Z"]), // Redo
+    ("save_project", &["Ctrl+S"]), // Save
+    ("save_project_as", &["Ctrl+Shift+S"]), // Save As…
+    ("select_all", &["Ctrl+A"]), // Select All
+    ("select_tool", &["S"]), // Selection Tool
+    ("set_in_point", &["I"]), // Set Zone In
+    ("set_out_point", &["O"]), // Set Zone Out
+    ("shuttle_forward", &["L"]), // Forward
+    ("shuttle_pause", &["K"]), // Pause
+    ("shuttle_reverse", &["J"]), // Rewind
+    ("split_at_playhead", &["Shift+R"]), // Cut Clip
+    ("step_backward", &["ArrowLeft"]), // Rewind 1 Frame
+    ("step_forward", &["ArrowRight"]), // Forward 1 Frame
+    ("toggle_fullscreen", &["F11"]), // Switch Monitor Fullscreen
+    ("toggle_multicam_mode", &["F12"]), // Multitrack View
+    ("trim_in_to_playhead", &["("]), // Resize Item Start
+    ("trim_out_to_playhead", &[")"]), // Resize Item End
+    ("undo", &["Ctrl+Z"]), // Undo
+    ("ungroup_clips", &["Ctrl+Shift+G"]), // Ungroup Clips
+    ("zoom_in", &["Ctrl+="]), // Zoom In
+    ("zoom_out", &["Ctrl+-"]), // Zoom Out
+];
+
+/// Its keys for commands Klipp lacks.
+pub(crate) const KDENLIVE_TAKEN: &[&str] = &[
+    "'", // Switch Track Target Audio Stream
+    "-", // Deselect Clip
+    "1", // Select Video Track 1
+    "2", // Select Video Track 2
+    "3", // Select Video Track 3
+    "4", // Select Video Track 4
+    "5", // Select Video Track 5
+    "6", // Select Video Track 6
+    "7", // Select Video Track 7
+    "8", // Select Video Track 8
+    "9", // Select Video Track 9
+    "=", // Focus Timecode
+    "A", // Toggle Track Active
+    "Alt+1", // Select Audio Track 1
+    "Alt+2", // Select Audio Track 2
+    "Alt+3", // Select Audio Track 3
+    "Alt+4", // Select Audio Track 4
+    "Alt+5", // Select Audio Track 5
+    "Alt+6", // Select Audio Track 6
+    "Alt+7", // Select Audio Track 7
+    "Alt+8", // Select Audio Track 8
+    "Alt+9", // Select Audio Track 9
+    "Alt+ArrowUp", // Up
+    "Ctrl+1", // Select Target 1
+    "Ctrl+2", // Select Target 2
+    "Ctrl+3", // Select Target 3
+    "Ctrl+4", // Select Target 4
+    "Ctrl+5", // Select Target 5
+    "Ctrl+6", // Select Target 6
+    "Ctrl+7", // Select Target 7
+    "Ctrl+8", // Select Target 8
+    "Ctrl+9", // Select Target 9
+    "Ctrl+Alt+,", // Configure Keyboard Shortcuts…
+    "Ctrl+I", // Insert Zone in Project Bin
+    "Ctrl+M", // Show Menu Bar
+    "Ctrl+Shift+F", // Full Screen Mode
+    "Ctrl+Shift+H", // Toggle Track Hidden/Mute
+    "Ctrl+Shift+L", // Toggle All Track Lock
+    "Ctrl+Shift+R", // Cut All Clips
+    "Ctrl+Shift+Space", // Loop Zone
+    "Ctrl+W", // Closing the extra bins
+    "F1", // Kdenlive Handbook
+    "F2", // Rename…
+    "M", // Spacer Tool
+    "P", // Align Playhead to Mouse Position
+    "Shift+A", // Toggle All Tracks Active
+    "Shift+Alt+A", // Switch All Tracks Active
+    "Shift+Enter", // Start Preview Render
+    "Shift+F1", // What's This?
+    "Shift+G", // Grab Current Item
+    "Shift+H", // Toggle Track Disabled
+    "Shift+I", // Go to Zone Start
+    "Shift+L", // Toggle Track Lock
+    "Shift+O", // Go to Zone End
+    "Shift+S", // Add Subtitle
+    "Shift+T", // Toggle Track Target
+    "Shift+Z", // Adjust timeline zone
+    "T", // Switch Monitor
 ];

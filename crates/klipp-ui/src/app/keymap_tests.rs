@@ -180,6 +180,7 @@ fn every_editor_layout_is_its_editors_published_default() {
         (KeymapPreset::Avid, include_str!("../keymap_fixtures/avid.json")),
         (KeymapPreset::Resolve, include_str!("../keymap_fixtures/resolve.json")),
         (KeymapPreset::FinalCut, include_str!("../keymap_fixtures/final_cut.json")),
+        (KeymapPreset::Kdenlive, include_str!("../keymap_fixtures/kdenlive.json")),
     ];
     for (preset, text) in fixtures {
         let fx: serde_json::Value = serde_json::from_str(text).unwrap_or_else(|e| panic!("{}: {e}", preset.label()));
@@ -370,5 +371,20 @@ fn home_end_and_delete_work_in_every_keymap() {
         assert!(on("Home").iter().any(|a| a == "go_to_start"), "{}: Home goes to the start: {:?}", preset.label(), on("Home"));
         assert!(on("End").iter().any(|a| a == "go_to_end"), "{}: End goes to the end: {:?}", preset.label(), on("End"));
         assert!(on("Delete").iter().any(|a| a == "delete_clip" || a == "lift_clip"), "{}: Delete removes the clip: {:?}", preset.label(), on("Delete"));
+    }
+}
+
+/// #3027: the open-source editor's layout is offered with the others, and
+/// its own keys reach their actions: X the razor, Shift+R a cut at the
+/// playhead, V and B insert and overwrite, Z and Shift+X lift and extract,
+/// G a marker, Delete a lift and Shift+Delete a delete.
+#[test]
+fn the_open_source_editor_layout_is_offered_and_its_keys_work() {
+    assert!(KeymapPreset::ALL.contains(&KeymapPreset::Kdenlive));
+    let ctx = egui::Context::default();
+    let kb = KeyBindings::from_preset(KeymapPreset::Kdenlive);
+    for (key, action) in [("X", "blade_tool"), ("Shift+R", "split_at_playhead"), ("V", "insert_edit"), ("B", "overwrite_edit"), ("Z", "lift_edit"), ("Shift+X", "extract_edit"), ("G", "add_marker"), ("Delete", "lift_clip"), ("Shift+Delete", "delete_clip"), ("Ctrl+Home", "go_to_start"), ("(", "trim_in_to_playhead")] {
+        let on = fired(&ctx, &kb, &KeyCombo::parse(key).unwrap());
+        assert!(on.iter().any(|a| a == action), "{key} runs {action}: {on:?}");
     }
 }
