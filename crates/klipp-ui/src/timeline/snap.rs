@@ -102,6 +102,13 @@ impl Snapper {
         }
     }
 
+    /// This snapper with no target of `kind`: the playhead's drag doesn't
+    /// snap to the playhead.
+    pub fn without(mut self, kind: SnapTargetKind) -> Self {
+        self.targets.retain(|t| t.kind != kind);
+        self
+    }
+
     /// The clips that move when `clip` is dragged: itself, its linked
     /// partner while the Linked switch is on, and its group.
     pub fn moving_with(state: &AppState, clip: ClipId) -> Vec<ClipId> {
@@ -265,5 +272,33 @@ mod tests {
         }
         assert!(Snapper::of(&state, 100.0, false).snap(&[t(5.02)], &[a], &mut None).is_none(), "the group");
         assert_eq!(Snapper::moving_with(&state, a), [a, b]);
+    }
+
+    /// The snap menu's switches: a kind turned off is no target, the grid
+    /// snaps only when on (a clip edge winning a tie with it), and
+    /// snapping off snaps nothing. The playhead's drag leaves the
+    /// playhead out.
+    #[test]
+    fn the_snap_menu_and_the_grid_choose_the_targets() {
+        let (mut state, a, _) = state();
+        let near_b = [t(5.02)];
+        state.snap.clips = false;
+        assert!(Snapper::of(&state, 100.0, false).snap(&near_b, &[a], &mut None).is_none(), "clips off");
+        state.snap.clips = true;
+
+        state.grid_snap_interval = klipp_core::GridInterval::Second;
+        assert!(Snapper::of(&state, 100.0, false).snap(&[t(3.04)], &[a], &mut None).is_none(), "the grid off");
+        state.snap.grid = true;
+        let got = Snapper::of(&state, 100.0, false).snap(&[t(3.04)], &[a], &mut None).unwrap();
+        assert_eq!((got.at, got.kind), (t(3.0), SnapTargetKind::Grid));
+        assert_eq!(Snapper::of(&state, 100.0, false).snap(&near_b, &[a], &mut None).unwrap().kind, SnapTargetKind::ClipEdge, "a tie at 5 s");
+
+        state.playhead = t(8.0);
+        assert!(Snapper::of(&state, 100.0, false).snap(&[t(8.02)], &[a], &mut None).is_some());
+        state.snap.grid = false;
+        assert!(Snapper::of(&state, 100.0, false).without(SnapTargetKind::Playhead).snap(&[t(8.02)], &[a], &mut None).is_none(), "not to itself");
+
+        state.snap.master = false;
+        assert!(Snapper::of(&state, 100.0, false).snap(&near_b, &[a], &mut None).is_none(), "snapping off");
     }
 }

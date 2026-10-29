@@ -865,6 +865,10 @@ pub struct TimelinePanel {
     /// starts an edit — no trim, fade, move, slip or slide (#323).
     pub select_only: bool,
     dragging_clip: Option<DragState>,
+    /// The snap a playhead drag holds, and its line, drawn the next
+    /// frame (#3056).
+    scrub_hold: std::cell::Cell<Option<crate::timeline::snap::SnapHold>>,
+    scrub_line: std::cell::Cell<Option<(f32, klipp_core::SnapTargetKind)>>,
     trimming_clip: Option<TrimState>,
     roll_trimming: Option<RollTrimState>,
     slipping_clip: Option<SlipState>,
@@ -1072,6 +1076,8 @@ struct RollTrimState {
     original_a_timeline_out: Timecode,
     /// Original timeline_in of clip B
     original_b_timeline_in: Timecode,
+    /// The snap the roll holds from frame to frame (#3056).
+    hold: Option<crate::timeline::snap::SnapHold>,
 }
 
 #[allow(dead_code)]
@@ -1105,6 +1111,8 @@ struct SlideState {
     linked_clip_id: Option<ClipId>,
     linked_original_in: Option<Timecode>,
     linked_original_out: Option<Timecode>,
+    /// The snap the slide holds from frame to frame (#3056).
+    hold: Option<crate::timeline::snap::SnapHold>,
 }
 
 #[derive(Clone, Copy)]
@@ -3505,8 +3513,8 @@ impl TimelinePanel {
                                 let rel_x = pos.x - content_rect.left();
                                 let time_secs = (rel_x + state.timeline_scroll_x) / state.timeline_zoom;
                                 let fps_rate = state.sequences[state.active_sequence_idx].fps.rate();
-                                let frame = (time_secs * fps_rate as f32) as i64;
-                                let timeline_in = RationalTime::from_frames(frame.max(0), fps_rate);
+                                // On a snap, or the nearest frame (#3056).
+                                let timeline_in = Self::media_drop_time(state, time_secs as f64, state.timeline_zoom, ui.input(|i| i.modifiers.shift));
                                 let duration_frames = fps_rate * 5;
                                 state.pending_title_data = Some(title_data);
                                 // If dropped on a Video track, redirect to a Text track so the
@@ -3827,8 +3835,8 @@ impl TimelinePanel {
                         let rel_x = cursor_pos.x - content_rect.left();
                         let time_secs = (rel_x + state.timeline_scroll_x) / state.timeline_zoom;
                         let fps_rate = state.sequences[state.active_sequence_idx].fps.rate();
-                        let frame = (time_secs * fps_rate as f32) as i64;
-                        let timeline_in = RationalTime::from_frames(frame.max(0), fps_rate);
+                        // On a snap, or the nearest frame (#3056).
+                        let timeline_in = Self::media_drop_time(state, time_secs as f64, state.timeline_zoom, ui.input(|i| i.modifiers.shift));
                         let duration_frames = fps_rate * 5;
                         state.pending_title_data = Some(title_data);
                         cmds.push(AppCommand::CreateTitleClip {
@@ -4104,7 +4112,7 @@ impl TimelinePanel {
                 if let Some(pos) = ui.input(|i| i.pointer.latest_pos()) {
                     let x_in_content = pos.x - content_rect.left() + state.timeline_scroll_x;
                     let target_secs = (x_in_content / state.timeline_zoom) as f64;
-                    self.scrub_to(state, cmds, target_secs, pos.x);
+                    self.scrub_to(state, cmds, target_secs, pos.x, ui.input(|i| i.modifiers.shift));
                     // A plain tap on the ruler never goes through
                     // `drag_started`/`drag_stopped`, so `scrub_end`
                     // (which commits the final `SetPlayhead`) never
@@ -4720,6 +4728,7 @@ impl TimelinePanel {
         if state.is_scrubbing {
             return;
         }
+        self.scrub_hold.set(None);
         state.is_scrubbing = true;
         state.pre_scrub_use_proxies = state.use_proxies;
         state.pre_scrub_was_playing = state.playback == PlaybackState::Playing;
@@ -4760,7 +4769,17 @@ impl TimelinePanel {
         cmds: &mut Vec<AppCommand>,
         target_secs: f64,
         pointer_x: f32,
+        shift: bool,
     ) {
+        // The playhead snaps to clip edges, markers and the rest as every
+        // drag does (#3056), never to itself; Shift for none.
+        let snapper = crate::timeline::snap::Snapper::of(state, state.timeline_zoom, shift).without(klipp_core::SnapTargetKind::Playhead);
+        let mut hold = self.scrub_hold.get();
+        let raw = klipp_core::Timecode::from_secs_f64(target_secs.max(0.0), state.fps.rate());
+        let snap = snapper.snap(&[raw], &[], &mut hold);
+        self.scrub_hold.set(hold);
+        self.scrub_line.set(snap.map(|s| snapper.line(&s, pointer_x - target_secs as f32 * state.timeline_zoom + state.timeline_scroll_x)));
+        let target_secs = snap.map_or(target_secs, |s| s.at.to_secs_f64());
         let dur_secs = state.sequence_duration().to_secs_f64();
         let clamped = if dur_secs > 0.0 {
             target_secs.clamp(0.0, dur_secs)
@@ -5074,7 +5093,7 @@ impl TimelinePanel {
                     if let Some(pos) = ui.input(|i| i.pointer.latest_pos()) {
                         let x_in_content = pos.x - content_rect.left() + state.timeline_scroll_x;
                         let target_secs = (x_in_content / state.timeline_zoom) as f64;
-                        self.scrub_to(state, cmds, target_secs, pos.x);
+                        self.scrub_to(state, cmds, target_secs, pos.x, ui.input(|i| i.modifiers.shift));
                     }
                 }
             }
@@ -5160,7 +5179,7 @@ impl TimelinePanel {
     }
 
     fn draw_snap_line(&mut self, state: &AppState, painter: &egui::Painter, content_rect: egui::Rect, tracks_start_y: f32) {
-        let snap_data = self.frame_cache.snap_line_x;
+        let snap_data = self.frame_cache.snap_line_x.or_else(|| self.scrub_line.get().filter(|_| state.is_scrubbing));
         // A new snap (another point, or another kind) starts the highlight.
         let new_snap = match (snap_data, self.legend_state.last) {
             (Some((x, k)), Some((lx, lk))) => k != lk || (x - lx).abs() > 0.5,
@@ -8030,6 +8049,7 @@ impl TimelinePanel {
                                             original_b_source_in: clips[i + 1].source_in,
                                             original_a_timeline_out: clips[i].timeline_out,
                                             original_b_timeline_in: clips[i + 1].timeline_in,
+                                            hold: None,
                                         });
                                         break;
                                     }
@@ -8085,10 +8105,17 @@ impl TimelinePanel {
                 else if state.active_tool == Tool::Range {
                     let x_in_content = pos.x - content_rect.left() + scroll;
                     let anchor_secs = (x_in_content as f64 / zoom as f64).max(0.0);
+                    // The range starts on a snap as it ends on one (#3056).
+                    let raw = RationalTime::from_secs_f64(anchor_secs, state.sequence().fps.rate());
+                    let snapper = crate::timeline::snap::Snapper::of(state, zoom, ui.input(|i| i.modifiers.shift))
+                        .without(klipp_core::SnapTargetKind::InPoint)
+                        .without(klipp_core::SnapTargetKind::OutPoint);
+                    let anchor_secs = snapper.snap(&[raw], &[], &mut None).map_or(anchor_secs, |s| s.at.to_secs_f64());
                     state.range_drag = Some(crate::state::RangeDragState {
                         kind: crate::state::RangeDragKind::RulerCreate { anchor_secs },
                         original_in: state.sequence().in_point,
                         original_out: state.sequence().out_point,
+                        hold: None,
                     });
                 }
                 // Second: check if pointer is inside a clip body (drag/move or slip/slide)
@@ -8161,6 +8188,7 @@ impl TimelinePanel {
                                     linked_clip_id: linked_id,
                                     linked_original_in: linked_orig_in,
                                     linked_original_out: linked_orig_out,
+                                    hold: None,
                                 });
                             } else if matches!(gesture, BodyDragGesture::Slip) {
                                 tracing::debug!("drag_started SLIP: clip={:?}", hit_id);
@@ -10368,13 +10396,27 @@ impl TimelinePanel {
         pointer_released: bool,
     ) {
         // ── Slide drag processing ────────────────────────────────────────
+        let mut slide_hold = None;
         if let Some(ref slide) = self.sliding_clip {
             if slide.track_idx == track_idx {
                 if let Some(pos) = pointer_pos {
                     if pointer_down {
                         let dx = pos.x - slide.start_x;
                         let dt_secs = dx as f64 / zoom as f64;
-                        let dt = RationalTime::from_secs_f64(dt_secs, slide.original_timeline_in.rate);
+                        let mut dt = RationalTime::from_secs_f64(dt_secs, slide.original_timeline_in.rate);
+
+                        // The slid clip's edges snap as every drag's do
+                        // (#3056); it and its neighbours move, so none of
+                        // them is a target.
+                        let snapper = crate::timeline::snap::Snapper::of(state, zoom, ui.input(|i| i.modifiers.shift));
+                        let mut hold = slide.hold;
+                        let edges = [slide.original_timeline_in + dt, slide.original_timeline_out + dt];
+                        let movers: Vec<ClipId> = [Some(slide.clip_id), slide.left_clip_id, slide.right_clip_id].into_iter().flatten().collect();
+                        let snap = snapper.snap(&edges, &movers, &mut hold);
+                        if let Some(snap) = snap {
+                            dt += snap.at - edges[snap.edge];
+                        }
+                        slide_hold = Some(hold);
 
                         // Look up neighbour constraints from current state in
                         // a tightly-scoped block. The left/right clamps need
@@ -10404,6 +10446,10 @@ impl TimelinePanel {
                         );
 
                         let actual_dt = new_tl_in - slide.original_timeline_in;
+                        // The line only where the slide reached the snap.
+                        if let Some(snap) = snap.filter(|_| actual_dt == dt) {
+                            self.frame_cache.snap_line_x = Some(snapper.line(&snap, content_rect.left()));
+                        }
 
                         // Apply slide to the clip
                         if let Some(track) = state.sequence_mut().tracks.get_mut(track_idx) {
@@ -10545,6 +10591,9 @@ impl TimelinePanel {
                     self.press_origin = None;
                 }
             }
+        }
+        if let (Some(slide), Some(hold)) = (self.sliding_clip.as_mut(), slide_hold) {
+            slide.hold = hold;
         }
     }
 
@@ -10690,6 +10739,7 @@ impl TimelinePanel {
         pointer_released: bool,
     ) {
         // Handle ongoing roll trim
+        let mut roll_hold = None;
         if let Some(ref roll) = self.roll_trimming {
             if roll.track_idx != track_idx {
                 // Skip — will be handled when we draw the correct track
@@ -10751,21 +10801,21 @@ impl TimelinePanel {
 
                     let pre_snap_tl_out = roll.original_a_timeline_out + use_delta;
 
-                    // Snap the boundary to playhead (8px threshold).
-                    // Gated on master + per-target Playhead — flipping
-                    // off "Snap to playhead" in the per-target dropdown
-                    // disables this site too (trace-full-chain).
+                    // The edit point snaps as every drag does (#3056), to
+                    // a target both clips can reach; the two clips (they
+                    // move) are not targets.
                     let mut snapped_boundary = pre_snap_tl_out;
-                    if snap_enabled && state.snap.playhead {
-                        let playhead_secs = state.playhead.to_secs_f64();
-                        let boundary_secs = pre_snap_tl_out.to_secs_f64();
-                        let dist_px = ((boundary_secs - playhead_secs).abs() * zoom as f64) as f32;
-                        if dist_px < 8.0 {
-                            snapped_boundary = state.playhead;
-                            let snap_x = content_rect.left() + playhead_secs as f32 * zoom - state.timeline_scroll_x;
-                            self.frame_cache.snap_line_x = Some((snap_x, klipp_core::SnapTargetKind::Playhead));
+                    let snapper = crate::timeline::snap::Snapper::of(state, zoom, !snap_enabled);
+                    let mut hold = roll.hold;
+                    if let Some(snap) = snapper.snap(&[pre_snap_tl_out], &[roll.clip_a_id, roll.clip_b_id], &mut hold) {
+                        let d = snap.at - roll.original_a_timeline_out;
+                        let (a_out, b_in) = (roll.original_a_source_out + d, roll.original_b_source_in + d);
+                        if a_out >= min_a_out && a_out <= media_a_dur && b_in >= zero && b_in <= max_b_in {
+                            snapped_boundary = snap.at;
+                            self.frame_cache.snap_line_x = Some(snapper.line(&snap, content_rect.left()));
                         }
                     }
+                    roll_hold = Some(hold);
 
                     let snap_delta = snapped_boundary - roll.original_a_timeline_out;
                     let final_a_source_out = roll.original_a_source_out + snap_delta;
@@ -10833,99 +10883,23 @@ impl TimelinePanel {
                 self.press_origin = None;
             }
         }
+        if let (Some(roll), Some(hold)) = (self.roll_trimming.as_mut(), roll_hold) {
+            roll.hold = hold;
+        }
     }
 
-    /// Find the best snap target for a given edge time.
-    ///
-    /// `snap_enabled` is the master gate (already short-circuits Shift-
-    /// drag). `snap_config`, when `Some`, gates per-target kinds — a
-    /// candidate of kind `K` is only considered if
-    /// `snap_config.is_kind_enabled(K)` is true. `None` disables
-    /// per-target filtering (every kind is in scope) — used in tests.
-    ///
-    /// `grid_interval_secs`: when `Some(secs > 0)` and grid is enabled
-    /// in `snap_config`, a constant-time grid post-pass checks
-    /// `round(edge / secs) * secs` against the threshold. Pass `None`
-    /// (or grid disabled in config) for no grid snap. Per audit-
-    /// finding (l) the grid pass MUST stay constant-time — never
-    /// enumerate.
-    ///
-    /// Returns the snapped time, its seconds value, and the
-    /// `SnapTargetKind` of the matched target.
-    #[allow(clippy::too_many_arguments)]
-    /// Every point an edge snaps to: each clip's ends, the playhead, the
-    /// start, and the In and Out when set.
-    fn snap_targets_of(state: &AppState, rate: u32) -> Vec<(f64, RationalTime, Option<ClipId>, klipp_core::SnapTargetKind)> {
-        let mut targets = Vec::new();
-        for track in &state.sequence().tracks {
-            for clip in &track.clips {
-                targets.push((clip.timeline_in.to_secs_f64(), clip.timeline_in, Some(clip.id), klipp_core::SnapTargetKind::ClipEdge));
-                targets.push((clip.timeline_out.to_secs_f64(), clip.timeline_out, Some(clip.id), klipp_core::SnapTargetKind::ClipEdge));
-            }
-        }
-        targets.push((state.playhead.to_secs_f64(), state.playhead, None, klipp_core::SnapTargetKind::Playhead));
-        targets.push((0.0, RationalTime { value: 0, rate }, None, klipp_core::SnapTargetKind::SequenceStart));
-        if let Some(inp) = state.sequence().in_point {
-            targets.push((inp.to_secs_f64(), inp, None, klipp_core::SnapTargetKind::InPoint));
-        }
-        if let Some(outp) = state.sequence().out_point {
-            targets.push((outp.to_secs_f64(), outp, None, klipp_core::SnapTargetKind::OutPoint));
-        }
-        targets
+    /// Where a pool item or a title let go `secs` into the timeline goes
+    /// (#2549, #3056): on the cut, playhead, marker, start or mark within
+    /// the snap distance, else on the frame under the pointer. Shift held
+    /// lets go without snapping.
+    #[cfg(test)]
+    pub(crate) fn drop_time_for_test(state: &AppState, secs: f64, zoom: f32, shift: bool) -> Timecode {
+        Self::media_drop_time(state, secs, zoom, shift)
     }
 
-    /// Where a pool item let go `secs` into the timeline goes (#2549): on
-    /// the cut, playhead, start or mark within the snap distance, else on
-    /// the frame under the pointer. Shift held lets go without snapping.
     fn media_drop_time(state: &AppState, secs: f64, zoom: f32, shift: bool) -> Timecode {
-        let rate = state.sequence().fps.rate();
-        let raw = RationalTime::from_secs_f64(secs.max(0.0), rate);
-        let snap_enabled = state.snap.master && !shift;
-        let threshold = snap_threshold_px() as f64 / zoom.max(1e-6) as f64;
-        let grid = crate::timeline::grid_snap::resolve_grid_interval_secs(state.grid_snap_interval, rate, zoom);
-        Self::find_snap_target(snap_enabled, threshold, &Self::snap_targets_of(state, rate), raw, ClipId::new(), grid, rate, Some(&state.snap))
-            .map_or(raw, |(at, _, _)| at)
-    }
-
-    fn find_snap_target(
-        snap_enabled: bool,
-        snap_threshold_secs: f64,
-        snap_targets: &[(f64, RationalTime, Option<ClipId>, klipp_core::SnapTargetKind)],
-        edge_time: RationalTime,
-        exclude_clip: ClipId,
-        grid_interval_secs: Option<f64>,
-        rate: u32,
-        snap_config: Option<&crate::layout_state::SnapConfig>,
-    ) -> Option<(RationalTime, f64, klipp_core::SnapTargetKind)> {
-        if !snap_enabled { return None; }
-        let edge_secs = edge_time.to_secs_f64();
-        let mut best: Option<(f64, RationalTime, klipp_core::SnapTargetKind)> = None;
-        for &(target_secs, target_tc, owner, kind) in snap_targets {
-            if owner == Some(exclude_clip) { continue; }
-            if let Some(cfg) = snap_config {
-                if !cfg.is_kind_enabled(kind) { continue; }
-            }
-            let dist = (edge_secs - target_secs).abs();
-            if dist < snap_threshold_secs && best.as_ref().is_none_or(|(d, _, _)| dist < *d) {
-                best = Some((dist, target_tc, kind));
-            }
-        }
-        // Grid post-pass — constant-time, no enumeration. Gated by
-        // both the config flag (per-target) and a positive interval.
-        let grid_allowed = snap_config.is_none_or(|c| c.grid);
-        if grid_allowed {
-            if let Some(interval) = grid_interval_secs {
-                if interval > 0.0 {
-                    let nearest = (edge_secs / interval).round() * interval;
-                    let dist = (edge_secs - nearest).abs();
-                    if dist < snap_threshold_secs && best.as_ref().is_none_or(|(d, _, _)| dist < *d) {
-                        let grid_tc = RationalTime::from_secs_f64(nearest, rate);
-                        best = Some((dist, grid_tc, klipp_core::SnapTargetKind::Grid));
-                    }
-                }
-            }
-        }
-        best.map(|(_, target, kind)| (target, target.to_secs_f64(), kind))
+        let raw = RationalTime::from_secs_f64(secs.max(0.0), state.sequence().fps.rate());
+        crate::timeline::snap::Snapper::of(state, zoom, shift).snap(&[raw], &[], &mut None).map_or(raw, |s| s.at)
     }
 
     /// Process ongoing trim drag (only on the trim's own track).
@@ -12023,7 +11997,23 @@ impl TimelinePanel {
                             let x_in_content = pos.x - content_rect.left() + scroll;
                             let current_secs = (x_in_content as f64 / zoom as f64).max(0.0);
                             let anchor_tc = RationalTime::from_secs_f64(anchor_secs, fps.rate());
-                            let current_tc = RationalTime::from_secs_f64(current_secs, fps.rate());
+                            // The moving end snaps, held, as every drag's
+                            // edge does (#3056); the marks it sets aren't
+                            // targets.
+                            let snapper = crate::timeline::snap::Snapper::of(state, zoom, !snap_enabled)
+                                .without(klipp_core::SnapTargetKind::InPoint)
+                                .without(klipp_core::SnapTargetKind::OutPoint);
+                            let mut hold = drag.hold;
+                            let raw = RationalTime::from_secs_f64(current_secs, fps.rate());
+                            let snap = snapper.snap(&[raw], &[], &mut hold);
+                            if let Some(d) = state.range_drag.as_mut() {
+                                d.hold = hold;
+                            }
+                            if let Some(snap) = snap {
+                                self.frame_cache.snap_line_x = Some(snapper.line(&snap, content_rect.left()));
+                            }
+                            let current_tc = snap.map_or(raw, |s| s.at);
+                            let current_secs = current_tc.to_secs_f64();
                             if current_secs < anchor_secs {
                                 cmds.push(AppCommand::SetSequenceInPoint(current_tc));
                                 cmds.push(AppCommand::SetSequenceOutPoint(anchor_tc));
@@ -19137,193 +19127,31 @@ mod find_matte_candidate_above_tests {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// find_snap_target — UI-layer snap with constant-time grid post-pass
+// The snap line and its legend
 // ═══════════════════════════════════════════════════════════════════
 #[cfg(test)]
 mod snap_tests {
     use super::*;
 
-    fn make_targets_with_clip_edge(secs: f64, rate: u32) -> Vec<(f64, RationalTime, Option<ClipId>, klipp_core::SnapTargetKind)> {
-        // One clip-edge target at `secs` seconds. Owner is None so no
-        // exclude_clip filter applies (callers pass an unrelated id).
-        vec![(secs, RationalTime::from_secs_f64(secs, rate), None, klipp_core::SnapTargetKind::ClipEdge)]
-    }
-
+    /// The playhead dragged to 3 points from a clip's in lands on it, held
+    /// until past 1.5 times the distance; it never snaps to itself, and
+    /// with Shift it goes where the pointer is (#3056).
     #[test]
-    fn find_snap_target_returns_clip_edge_kind_for_clip_edge_match() {
-        let targets = make_targets_with_clip_edge(1.0, 24);
-        let edge = RationalTime::from_secs_f64(1.05, 24);
-        let result = TimelinePanel::find_snap_target(
-            true, 0.1, &targets, edge, ClipId::new(), None, 24, None,
-        );
-        let (_, _, kind) = result.expect("expected snap hit");
-        assert_eq!(kind, klipp_core::SnapTargetKind::ClipEdge);
-    }
-
-    #[test]
-    fn find_snap_target_returns_grid_kind_when_grid_is_only_candidate() {
-        // No clip-edge targets within threshold; grid post-pass wins.
-        // Edge at 2.05s, no targets, 1.0s grid → nearest grid is 2.0
-        // (0.05s away), within 0.1s threshold → Grid hit.
-        let targets: Vec<_> = Vec::new();
-        let edge = RationalTime::from_secs_f64(2.05, 24);
-        let result = TimelinePanel::find_snap_target(
-            true, 0.1, &targets, edge, ClipId::new(), Some(1.0), 24, None,
-        );
-        let (_, _, kind) = result.expect("expected grid hit");
-        assert_eq!(kind, klipp_core::SnapTargetKind::Grid);
-    }
-
-    // Pinned: passing None for grid_interval_secs MUST produce zero
-    // grid candidates. This is the load-bearing back-compat assertion
-    // for the "Off keeps current behaviour" guarantee in the brief.
-    #[test]
-    fn find_snap_target_off_grid_yields_no_grid_candidate() {
-        let targets: Vec<_> = Vec::new();
-        // Edge at 2.05s — would hit the 2.0s grid tick if grid were
-        // configured, but with None nothing snaps.
-        let edge = RationalTime::from_secs_f64(2.05, 24);
-        let result = TimelinePanel::find_snap_target(
-            true, 0.1, &targets, edge, ClipId::new(), None, 24, None,
-        );
-        assert!(result.is_none(), "Off (None grid_interval_secs) must produce no grid hit");
-    }
-
-    // Pinned: existing snap targets win ties over the grid post-pass.
-    // When a clip edge AND a grid tick are equidistant from the edge,
-    // the linear scan runs first and best.is_none_or check causes the
-    // grid pass to skip equal distances. Result: clip-edge precedence,
-    // which matches user expectation that snapping to media boundaries
-    // (a deliberate user choice) takes priority over grid (an
-    // ambient guideline).
-    #[test]
-    fn find_snap_target_clip_edge_wins_tie_over_grid() {
-        // Clip edge at 2.0s, grid at 2.0s, edge query at 1.99s.
-        // Both candidates produce the same distance (0.01s). Clip
-        // wins because it's pushed first and grid only replaces on
-        // strict-less-than.
-        let targets = make_targets_with_clip_edge(2.0, 24);
-        let edge = RationalTime::from_secs_f64(1.99, 24);
-        let result = TimelinePanel::find_snap_target(
-            true, 0.1, &targets, edge, ClipId::new(), Some(1.0), 24, None,
-        );
-        let (_, _, kind) = result.expect("expected snap hit");
-        assert_eq!(kind, klipp_core::SnapTargetKind::ClipEdge,
-            "tie must go to clip-edge, not grid");
-    }
-
-    #[test]
-    fn find_snap_target_grid_respects_threshold() {
-        // Edge at 2.5s, 1.0s grid → nearest grid points are 2.0 and
-        // 3.0, both 0.5s away. With a 0.1s threshold, neither qualifies.
-        let targets: Vec<_> = Vec::new();
-        let edge = RationalTime::from_secs_f64(2.5, 24);
-        let result = TimelinePanel::find_snap_target(
-            true, 0.1, &targets, edge, ClipId::new(), Some(1.0), 24, None,
-        );
-        assert!(result.is_none(), "grid candidate outside threshold must not hit");
-    }
-
-    #[test]
-    fn find_snap_target_disabled_yields_none_regardless_of_grid() {
-        // Master snap-off short-circuits before any candidate is
-        // tested. Pinned because future per-target work in commit 2
-        // adds more granular gates; the master gate must still
-        // dominate.
-        let targets = make_targets_with_clip_edge(1.0, 24);
-        let edge = RationalTime::from_secs_f64(1.0, 24);
-        let result = TimelinePanel::find_snap_target(
-            false, 0.1, &targets, edge, ClipId::new(), Some(1.0), 24, None,
-        );
-        assert!(result.is_none(), "snap_enabled=false must short-circuit even with grid configured");
-    }
-
-    // ── Per-target gating (commit 2) ──────────────────────────────────
-
-    fn cfg_all_off_except_master() -> klipp_core::SnapConfig {
-        klipp_core::SnapConfig {
-            master: true,
-            clips: false,
-            playhead: false,
-            markers: false,
-            in_out: false,
-            grid: false,
-        }
-    }
-
-    // Pinned: with `clips` disabled in SnapConfig, a clip-edge target
-    // that would otherwise hit is filtered out. Catches a regression
-    // where the per-target gate is bypassed (e.g. someone adds a new
-    // call site without the `snap_config` argument).
-    #[test]
-    fn per_target_clips_off_suppresses_clip_edge_match() {
-        let targets = make_targets_with_clip_edge(1.0, 24);
-        let edge = RationalTime::from_secs_f64(1.05, 24);
-        let cfg = cfg_all_off_except_master();
-        let result = TimelinePanel::find_snap_target(
-            true, 0.1, &targets, edge, ClipId::new(), None, 24, Some(&cfg),
-        );
-        assert!(result.is_none(),
-            "clips=false in SnapConfig must suppress clip-edge matches");
-    }
-
-    // Pinned: with `grid` disabled in SnapConfig, the grid post-pass
-    // is skipped even when grid_interval_secs is supplied. Trace-full-
-    // chain coverage — the same gate exists in range_visuals and
-    // magnetic.rs.
-    #[test]
-    fn per_target_grid_off_suppresses_grid_post_pass() {
-        let targets: Vec<_> = Vec::new();
-        let edge = RationalTime::from_secs_f64(2.05, 24);
-        let cfg = cfg_all_off_except_master();
-        // `grid: false` in cfg, but caller passes Some(1.0) for the
-        // resolved interval — config must still suppress the match.
-        let result = TimelinePanel::find_snap_target(
-            true, 0.1, &targets, edge, ClipId::new(), Some(1.0), 24, Some(&cfg),
-        );
-        assert!(result.is_none(),
-            "grid=false in SnapConfig must skip the grid post-pass even when interval is Some");
-    }
-
-    // Pinned: master-off in SnapConfig short-circuits before any
-    // per-target check. Already covered for the bool-master path
-    // (find_snap_target_disabled_yields_none_regardless_of_grid).
-    // This test pins the SnapConfig path: external master gating
-    // happens at the call site (state.snap.master), not inside
-    // find_snap_target — so the snap_enabled bool is the canonical
-    // master gate. Including it here confirms the SnapConfig
-    // per-target booleans don't accidentally re-enable snap when
-    // master is off.
-    #[test]
-    fn master_off_short_circuits_even_with_all_per_target_on() {
-        let targets = make_targets_with_clip_edge(1.0, 24);
-        let edge = RationalTime::from_secs_f64(1.05, 24);
-        let cfg = klipp_core::SnapConfig::default(); // every per-target on
-        let result = TimelinePanel::find_snap_target(
-            false, 0.1, &targets, edge, ClipId::new(), None, 24, Some(&cfg),
-        );
-        assert!(result.is_none());
-    }
-
-    // Pinned: SnapConfig::default() produces the same hits as the
-    // pre-SnapConfig find_snap_target (which had no config arg).
-    // Back-compat parity at the SnapConfig boundary.
-    #[test]
-    fn snap_config_default_is_back_compat_with_pre_config_behaviour() {
-        let targets = make_targets_with_clip_edge(1.0, 24);
-        let edge = RationalTime::from_secs_f64(1.05, 24);
-        let cfg = klipp_core::SnapConfig::default();
-        let with_default = TimelinePanel::find_snap_target(
-            true, 0.1, &targets, edge, ClipId::new(), None, 24, Some(&cfg),
-        );
-        let without_config = TimelinePanel::find_snap_target(
-            true, 0.1, &targets, edge, ClipId::new(), None, 24, None,
-        );
-        assert_eq!(
-            with_default.map(|(_, _, k)| k),
-            without_config.map(|(_, _, k)| k),
-            "default SnapConfig must produce identical results to None config"
-        );
+    fn the_playhead_drag_snaps_to_a_clip_edge() {
+        let mut state = AppState { timeline_zoom: 100.0, snap_threshold_px: 10.0, ..Default::default() };
+        let v = state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        let rt = |s| RationalTime::from_secs_f64(s, 24);
+        state.sequences[0].tracks[v].clips.push(klipp_timeline::Clip::media(klipp_core::MediaId::new(), rt(5.0), rt(9.0), rt(0.0), rt(4.0)));
+        let panel = TimelinePanel::default();
+        let mut cmds = Vec::new();
+        panel.scrub_to(&mut state, &mut cmds, 5.03, 0.0, false);
+        assert_eq!(state.playhead, rt(5.0));
+        panel.scrub_to(&mut state, &mut cmds, 5.13, 0.0, false);
+        assert_eq!(state.playhead, rt(5.0), "held");
+        panel.scrub_to(&mut state, &mut cmds, 5.2, 0.0, false);
+        assert_eq!(state.playhead, rt(5.2), "let go");
+        panel.scrub_to(&mut state, &mut cmds, 5.03, 0.0, true);
+        assert_eq!(state.playhead, rt(5.03), "Shift");
     }
 
     // ── On-snap highlight (#3056) ─────────────────────────────────────
@@ -19511,7 +19339,7 @@ mod scrub_preview_tests {
         let panel = TimelinePanel::default();
         let mut cmds = Vec::new();
 
-        panel.scrub_to(&mut state, &mut cmds, 3.0, 100.0);
+        panel.scrub_to(&mut state, &mut cmds, 3.0, 100.0, true);
 
         assert!(
             !filmstrip_would_upload(&state),
@@ -19535,7 +19363,7 @@ mod scrub_preview_tests {
         let panel = TimelinePanel::default();
         let mut cmds = Vec::new();
 
-        panel.scrub_to(&mut state, &mut cmds, 3.0, 100.0);
+        panel.scrub_to(&mut state, &mut cmds, 3.0, 100.0, true);
         assert!(cmds.iter().any(|c| matches!(c, AppCommand::SkimTimeline { .. })), "the skim picture is asked for (#2945)");
         assert!(!filmstrip_would_upload(&state), "the engine may draw it: no thumbnail over it yet");
 
@@ -19544,7 +19372,7 @@ mod scrub_preview_tests {
         state.timeline_skim_declined = true;
         state.timeline_skim_in_flight = None;
         let mut cmds = Vec::new();
-        panel.scrub_to(&mut state, &mut cmds, 3.5, 110.0);
+        panel.scrub_to(&mut state, &mut cmds, 3.5, 110.0, true);
         assert!(
             filmstrip_would_upload(&state),
             "with no skim file and the skim left to the raw frame, the filmstrip preview is the only preview",
@@ -19566,7 +19394,7 @@ mod scrub_preview_tests {
         let panel = TimelinePanel::default();
         let mut cmds = Vec::new();
 
-        panel.scrub_to(&mut state, &mut cmds, 3.0, 100.0);
+        panel.scrub_to(&mut state, &mut cmds, 3.0, 100.0, true);
 
         assert!(
             state.browser_skim_active_this_frame,
@@ -19582,7 +19410,7 @@ mod scrub_preview_tests {
         let panel = TimelinePanel::default();
         let mut cmds = Vec::new();
 
-        panel.scrub_to(&mut state, &mut cmds, 3.0, 100.0);
+        panel.scrub_to(&mut state, &mut cmds, 3.0, 100.0, true);
 
         assert!(
             !state.browser_skim_active_this_frame,
@@ -19602,10 +19430,10 @@ mod scrub_preview_tests {
 
         // The first drag frame seeds the sample; the second is 80px
         // along, one 16ms UI frame later.
-        panel.scrub_to(&mut state, &mut cmds, 3.0, 100.0);
+        panel.scrub_to(&mut state, &mut cmds, 3.0, 100.0, true);
         state.skim_last_update =
             std::time::Instant::now() - std::time::Duration::from_millis(16);
-        panel.scrub_to(&mut state, &mut cmds, 4.0, 180.0);
+        panel.scrub_to(&mut state, &mut cmds, 4.0, 180.0, true);
 
         assert!(
             klipp_engine::skim_audio::determine_skim_mode(state.skim_speed_px_per_sec)
@@ -19625,13 +19453,13 @@ mod scrub_preview_tests {
         let panel = TimelinePanel::default();
         let mut cmds = Vec::new();
 
-        panel.scrub_to(&mut state, &mut cmds, 3.0, 100.0);
+        panel.scrub_to(&mut state, &mut cmds, 3.0, 100.0, true);
         state.skim_last_update =
             std::time::Instant::now() - std::time::Duration::from_millis(16);
-        panel.scrub_to(&mut state, &mut cmds, 4.0, 180.0);
+        panel.scrub_to(&mut state, &mut cmds, 4.0, 180.0, true);
         state.skim_last_update =
             std::time::Instant::now() - std::time::Duration::from_millis(16);
-        panel.scrub_to(&mut state, &mut cmds, 4.0, 180.1);
+        panel.scrub_to(&mut state, &mut cmds, 4.0, 180.1, true);
 
         assert_eq!(
             klipp_engine::skim_audio::determine_skim_mode(state.skim_speed_px_per_sec),
