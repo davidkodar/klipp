@@ -3,65 +3,125 @@ use klipp_core::AppCommand;
 use klipp_project::template::ProjectTemplate;
 use std::path::{Path, PathBuf};
 
-pub const RESOLUTION_PRESETS: &[(&str, u32, u32)] = &[
-    ("Automatic (from first clip)", 0, 0),
-    ("720p HD", 1280, 720),
-    ("1080p HD", 1920, 1080),
-    ("1080p 4:3", 1440, 1080),
-    ("2K", 2048, 1080),
-    ("4K UHD", 3840, 2160),
-    ("4K DCI", 4096, 2160),
-    ("Vertical 9:16", 1080, 1920),
-    ("Square 1:1", 1080, 1080),
-    ("Custom...", 0, 0),
-];
-
-pub const FPS_PRESETS: &[(&str, u32, u32)] = &[
-    ("Automatic (from first clip)", 0, 0),
-    ("23.976 fps", 24000, 1001),
-    ("24 fps", 24, 1),
-    ("25 fps", 25, 1),
-    ("29.97 fps", 30000, 1001),
-    ("30 fps", 30, 1),
-    ("48 fps", 48, 1),
-    ("50 fps", 50, 1),
-    ("59.94 fps", 60000, 1001),
-    ("60 fps", 60, 1),
-    ("120 fps", 120, 1),
-];
-
 /// A frame rate, as numerator and denominator.
 pub type Rate = (u32, u32);
 
-const R25: Rate = (25, 1);
-const R2997: Rate = (30000, 1001);
-const R23976: Rate = (24000, 1001);
-
-/// A built-in project format: what it is for, its picture, and the rates
-/// it is made at, the first the usual one. Shared by the New Project
-/// dialog and the welcome screen.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// A project format: what it is for, its picture, and the rates it is
+/// made at, the first the usual one. Shared by the New Project dialog and
+/// the welcome screen.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Format {
-    pub name: &'static str,
+    pub name: String,
     /// 0×0 takes the picture from the first clip.
+    #[serde(default)]
     pub width: u32,
+    #[serde(default)]
     pub height: u32,
     /// Empty takes the rate from the first clip.
-    pub rates: &'static [Rate],
+    #[serde(default)]
+    pub rates: Vec<Rate>,
     /// Graded in a wide-gamut space for HLG or PQ delivery.
+    #[serde(default)]
     pub hdr: bool,
 }
 
-/// The built-in formats, one each, named for what they are for.
-pub const FORMATS: &[Format] = &[
-    Format { name: "Match first clip", width: 0, height: 0, rates: &[], hdr: false },
-    Format { name: "HD 1080p", width: 1920, height: 1080, rates: &[R25, R2997, R23976], hdr: false },
-    Format { name: "UHD 4K", width: 3840, height: 2160, rates: &[R25, R2997, R23976], hdr: false },
-    Format { name: "DCI 4K (cinema)", width: 4096, height: 2160, rates: &[(24, 1)], hdr: false },
-    Format { name: "Vertical (social)", width: 1080, height: 1920, rates: &[(30, 1)], hdr: false },
-    Format { name: "Square (social)", width: 1080, height: 1080, rates: &[(30, 1)], hdr: false },
-    Format { name: "HDR UHD (HLG / PQ)", width: 3840, height: 2160, rates: &[R25, R2997], hdr: true },
-];
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Size {
+    name: String,
+    width: u32,
+    height: u32,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FrameRate {
+    name: String,
+    rate: Rate,
+}
+
+/// The dialogs' lists: the formats, the picture sizes and the frame
+/// rates, each as offered (#2887).
+struct Presets {
+    formats: Vec<Format>,
+    sizes: Vec<(String, u32, u32)>,
+    rates: Vec<(String, u32, u32)>,
+}
+
+/// The largest picture side a format or a size may give.
+const MAX_SIDE: u32 = 16384;
+
+/// Why a project formats file can't be used: an entry without a name or
+/// with one twice in its list, a picture with no size or past
+/// [`MAX_SIDE`], a format with no rate, or a rate of nothing.
+fn presets_fault(formats: &[Format], sizes: &[Size], rates: &[FrameRate]) -> Option<String> {
+    let names = |list: Vec<&str>, what: &str| {
+        list.iter().enumerate().find_map(|(i, n)| {
+            if n.trim().is_empty() {
+                Some(format!("{what} {}: a name says something", i + 1))
+            } else {
+                list[..i].contains(n).then(|| format!("\"{n}\" twice among the {what}s"))
+            }
+        })
+    };
+    let side = |w: u32, h: u32| (1..=MAX_SIDE).contains(&w) && (1..=MAX_SIDE).contains(&h);
+    let rate = |(n, d): Rate| n > 0 && d > 0 && n / d <= 1000;
+    names(formats.iter().map(|f| f.name.as_str()).collect(), "format")
+        .or_else(|| names(sizes.iter().map(|s| s.name.as_str()).collect(), "size"))
+        .or_else(|| names(rates.iter().map(|r| r.name.as_str()).collect(), "rate"))
+        .or_else(|| formats.iter().find(|f| !side(f.width, f.height)).map(|f| format!("\"{}\": its picture is 1 to {MAX_SIDE} pixels a side", f.name)))
+        .or_else(|| formats.iter().find(|f| f.rates.is_empty() || !f.rates.iter().all(|r| rate(*r))).map(|f| format!("\"{}\": it is made at one rate or more, none of nothing", f.name)))
+        .or_else(|| sizes.iter().find(|s| !side(s.width, s.height)).map(|s| format!("\"{}\": its picture is 1 to {MAX_SIDE} pixels a side", s.name)))
+        .or_else(|| rates.iter().find(|r| !rate(r.rate)).map(|r| format!("\"{}\": a rate of nothing", r.name)))
+}
+
+fn read_presets(text: &str) -> Result<Presets, String> {
+    fn read<T: serde::de::DeserializeOwned>(text: &str, table: &str) -> Result<Vec<T>, String> {
+        klipp_core::preset_file::read(text, "project_formats", 1, table)
+    }
+    let (formats, sizes, rates): (Vec<Format>, Vec<Size>, Vec<FrameRate>) = (read(text, "format")?, read(text, "size")?, read(text, "rate")?);
+    if let Some(why) = presets_fault(&formats, &sizes, &rates) {
+        return Err(why);
+    }
+    // What the dialogs do, besides the presets: take the first clip's
+    // picture and rate, or a size typed in.
+    let first = Format { name: "Match first clip".into(), width: 0, height: 0, rates: Vec::new(), hdr: false };
+    let automatic = ("Automatic (from first clip)".to_string(), 0, 0);
+    Ok(Presets {
+        formats: std::iter::once(first).chain(formats).collect(),
+        sizes: std::iter::once(automatic.clone()).chain(sizes.into_iter().map(|s| (s.name, s.width, s.height))).chain(std::iter::once(("Custom...".to_string(), 0, 0))).collect(),
+        rates: std::iter::once(automatic).chain(rates.into_iter().map(|r| (r.name, r.rate.0, r.rate.1))).collect(),
+    })
+}
+
+/// Klipp's file, `assets/presets/project_formats/builtin.toml`, read
+/// once; a file that doesn't read leaves only what the dialogs do, said,
+/// never a crash.
+fn presets() -> &'static Presets {
+    static PRESETS: std::sync::OnceLock<Presets> = std::sync::OnceLock::new();
+    PRESETS.get_or_init(|| {
+        read_presets(include_str!("../../../../assets/presets/project_formats/builtin.toml")).unwrap_or_else(|why| {
+            tracing::error!("the built-in project formats don't read: {why}");
+            read_presets("kind = \"project_formats\"\nformat_version = 1\n").expect("no presets read")
+        })
+    })
+}
+
+/// The formats, "Match first clip" first.
+pub fn formats() -> &'static [Format] {
+    &presets().formats
+}
+
+/// The picture sizes: "Automatic" first, "Custom..." last.
+pub fn resolution_presets() -> &'static [(String, u32, u32)] {
+    &presets().sizes
+}
+
+/// The frame rates, "Automatic" first.
+pub fn fps_presets() -> &'static [(String, u32, u32)] {
+    &presets().rates
+}
 
 /// A rate as people say it: "25", "29.97", "23.976".
 pub fn rate_label((num, den): Rate) -> String {
@@ -283,7 +343,7 @@ impl NewProjectDialog {
                     let old_idx = self.template_idx;
                     let selected = match self.chosen_template() {
                         Some((_, t)) => t.name.clone(),
-                        None => FORMATS[self.template_idx].name.to_string(),
+                        None => formats()[self.template_idx].name.to_string(),
                     };
                     egui::ComboBox::from_id_salt("project_template")
                         .selected_text(selected)
@@ -292,8 +352,8 @@ impl NewProjectDialog {
                         .height(480.0 * control_scale)
                         .show_ui(ui, |ui| {
                             scale_dialog_style(ui, control_scale);
-                            for (i, format) in FORMATS.iter().enumerate() {
-                                if ui.selectable_label(self.user_template.is_none() && self.template_idx == i, format.name).clicked() {
+                            for (i, format) in formats().iter().enumerate() {
+                                if ui.selectable_label(self.user_template.is_none() && self.template_idx == i, format.name.as_str()).clicked() {
                                     self.template_idx = i;
                                     self.user_template = None;
                                 }
@@ -428,20 +488,20 @@ impl NewProjectDialog {
                                 .color(theme.text_secondary),
                         );
                         ui.add_space(30.0 * control_scale);
-                        let current_label = RESOLUTION_PRESETS[self.resolution_idx].0;
+                        let current_label = resolution_presets()[self.resolution_idx].0.as_str();
                         egui::ComboBox::from_id_salt("res_preset")
                             .selected_text(current_label)
                             .width(200.0 * control_scale)
                             .show_ui(ui, |ui| {
                                 scale_dialog_style(ui, control_scale);
-                                for (i, (label, _, _)) in RESOLUTION_PRESETS.iter().enumerate() {
-                                    ui.selectable_value(&mut self.resolution_idx, i, *label);
+                                for (i, (label, _, _)) in resolution_presets().iter().enumerate() {
+                                    ui.selectable_value(&mut self.resolution_idx, i, label.as_str());
                                 }
                             });
                     });
 
                     // Custom resolution fields (shown when "Custom..." selected)
-                    if self.resolution_idx == RESOLUTION_PRESETS.len() - 1 {
+                    if self.resolution_idx == resolution_presets().len() - 1 {
                         ui.horizontal(|ui| {
                             ui.add_space(108.0 * control_scale);
                             let field_height = ui.spacing().interact_size.y;
@@ -474,14 +534,14 @@ impl NewProjectDialog {
                                 .color(theme.text_secondary),
                         );
                         ui.add_space(26.0 * control_scale);
-                        let current_fps_label = FPS_PRESETS[self.fps_idx].0;
+                        let current_fps_label = fps_presets()[self.fps_idx].0.as_str();
                         egui::ComboBox::from_id_salt("fps_preset")
                             .selected_text(current_fps_label)
                             .width(200.0 * control_scale)
                             .show_ui(ui, |ui| {
                                 scale_dialog_style(ui, control_scale);
-                                for (i, (label, _, _)) in FPS_PRESETS.iter().enumerate() {
-                                    ui.selectable_value(&mut self.fps_idx, i, *label);
+                                for (i, (label, _, _)) in fps_presets().iter().enumerate() {
+                                    ui.selectable_value(&mut self.fps_idx, i, label.as_str());
                                 }
                             });
                     });
@@ -548,7 +608,7 @@ impl NewProjectDialog {
                                 height,
                                 sequence_name: seq_name,
                                 template: self.chosen_template().map(|(p, _)| p.clone()),
-                                hdr: self.user_template.is_none() && FORMATS.get(self.template_idx).is_some_and(|f| f.hdr),
+                                hdr: self.user_template.is_none() && formats().get(self.template_idx).is_some_and(|f| f.hdr),
                                 brand_kit: self.brand_kit.clone(),
                             });
                             close = true;
@@ -583,11 +643,11 @@ impl NewProjectDialog {
     /// Set the format rows from built-in format `i`: its picture and
     /// usual rate, or both from the first clip.
     pub fn apply_format(&mut self, i: usize) {
-        let Some(format) = FORMATS.get(i) else { return };
+        let Some(format) = formats().get(i) else { return };
         self.template_idx = i;
-        self.resolution_idx = RESOLUTION_PRESETS.iter().position(|(_, w, h)| (*w, *h) == (format.width, format.height) && *w > 0).unwrap_or(0);
+        self.resolution_idx = resolution_presets().iter().position(|(_, w, h)| (*w, *h) == (format.width, format.height) && *w > 0).unwrap_or(0);
         self.fps_idx = format_rate(format, None)
-            .and_then(|r| FPS_PRESETS.iter().position(|(_, n, d)| (*n, *d) == r))
+            .and_then(|r| fps_presets().iter().position(|(_, n, d)| (*n, *d) == r))
             .unwrap_or(0);
     }
 
@@ -596,7 +656,7 @@ impl NewProjectDialog {
             // "Automatic (from first clip)" — use 0×0 as sentinel, auto-set when first clip added
             (0, 0)
         } else {
-            let (_, w, h) = RESOLUTION_PRESETS[self.resolution_idx];
+            let (_, w, h) = resolution_presets()[self.resolution_idx];
             if w == 0 && h == 0 {
                 // Custom
                 (self.custom_width.max(64), self.custom_height.max(64))
@@ -611,7 +671,7 @@ impl NewProjectDialog {
             // "Automatic" — use 0/0 as sentinel, auto-set from first clip
             (0, 0)
         } else {
-            let (_, num, den) = FPS_PRESETS[self.fps_idx];
+            let (_, num, den) = fps_presets()[self.fps_idx];
             (num, den)
         }
     }
@@ -804,20 +864,61 @@ mod template_tests {
         dir
     }
 
+    /// #2887: the picture sizes and frame rates the dialogs offer come
+    /// from Klipp's file, as the code listed them, with "Automatic" first
+    /// and "Custom..." last for the sizes.
+    #[test]
+    fn the_sizes_and_rates_read_as_they_were() {
+        let sizes: Vec<(&str, u32, u32)> = resolution_presets().iter().map(|(n, w, h)| (n.as_str(), *w, *h)).collect();
+        assert_eq!(sizes, [
+            ("Automatic (from first clip)", 0, 0), ("720p HD", 1280, 720), ("1080p HD", 1920, 1080), ("1080p 4:3", 1440, 1080), ("2K", 2048, 1080),
+            ("4K UHD", 3840, 2160), ("4K DCI", 4096, 2160), ("Vertical 9:16", 1080, 1920), ("Square 1:1", 1080, 1080), ("Custom...", 0, 0),
+        ]);
+        let rates: Vec<(&str, u32, u32)> = fps_presets().iter().map(|(n, a, b)| (n.as_str(), *a, *b)).collect();
+        assert_eq!(rates, [
+            ("Automatic (from first clip)", 0, 0), ("23.976 fps", 24000, 1001), ("24 fps", 24, 1), ("25 fps", 25, 1), ("29.97 fps", 30000, 1001),
+            ("30 fps", 30, 1), ("48 fps", 48, 1), ("50 fps", 50, 1), ("59.94 fps", 60000, 1001), ("60 fps", 60, 1), ("120 fps", 120, 1),
+        ]);
+        let f = &formats()[6];
+        assert_eq!((f.name.as_str(), f.width, f.height, f.rates.as_slice(), f.hdr), ("HDR UHD (HLG / PQ)", 3840, 2160, &[(25, 1), (30000, 1001)][..], true));
+    }
+
+    /// A project formats file with an entry that can't be offered is
+    /// refused, saying why: a name twice or empty, a picture of no size or
+    /// past 16384, a format with no rate, a rate of nothing, an unknown
+    /// field.
+    #[test]
+    fn a_bad_project_formats_file_is_refused() {
+        let file = |body: &str| format!("kind = \"project_formats\"\nformat_version = 1\n{body}");
+        assert!(read_presets(&file("[[size]]\nname = \"Tiny\"\nwidth = 64\nheight = 64\n")).is_ok());
+        for (body, says) in [
+            ("[[size]]\nname = \"A\"\nwidth = 64\nheight = 64\n[[size]]\nname = \"A\"\nwidth = 32\nheight = 32\n", "\"A\" twice"),
+            ("[[rate]]\nname = \" \"\nrate = [25, 1]\n", "a name says something"),
+            ("[[size]]\nname = \"Huge\"\nwidth = 99999\nheight = 64\n", "1 to 16384 pixels"),
+            ("[[format]]\nname = \"Flat\"\nwidth = 0\nheight = 0\nrates = [[25, 1]]\n", "1 to 16384 pixels"),
+            ("[[format]]\nname = \"Still\"\nwidth = 64\nheight = 64\nrates = []\n", "one rate or more"),
+            ("[[rate]]\nname = \"Zero\"\nrate = [25, 0]\n", "a rate of nothing"),
+            ("[[size]]\nname = \"X\"\nwidth = 64\nheight = 64\ncolour = 1\n", "unknown field"),
+        ] {
+            let why = read_presets(&file(body)).err().unwrap_or_default();
+            assert!(why.contains(says), "{body}: {why}");
+        }
+    }
+
     /// #1864: the built-in formats are the purpose-named list, and no two
     /// are the same format: the same picture, gamut and a rate in common.
     #[test]
     fn the_formats_are_named_for_their_purpose_and_never_repeat() {
-        let names: Vec<_> = FORMATS.iter().map(|f| f.name).collect();
+        let names: Vec<_> = formats().iter().map(|f| f.name.as_str()).collect();
         assert_eq!(names, ["Match first clip", "HD 1080p", "UHD 4K", "DCI 4K (cinema)", "Vertical (social)", "Square (social)", "HDR UHD (HLG / PQ)"]);
-        for (i, a) in FORMATS.iter().enumerate() {
-            for b in &FORMATS[i + 1..] {
+        for (i, a) in formats().iter().enumerate() {
+            for b in &formats()[i + 1..] {
                 let same_picture = (a.width, a.height, a.hdr) == (b.width, b.height, b.hdr);
                 let shared_rate = a.rates.iter().any(|r| b.rates.contains(r)) || (a.rates.is_empty() && b.rates.is_empty());
                 assert!(!(same_picture && shared_rate), "{} and {} are the same format", a.name, b.name);
             }
         }
-        assert!(FORMATS[1].rates.contains(&(24000, 1001)), "23.976 is offered");
+        assert!(formats()[1].rates.contains(&(24000, 1001)), "23.976 is offered");
         assert_eq!(rate_label((30000, 1001)), "29.97");
         assert_eq!(rate_label((24000, 1001)), "23.976");
         assert_eq!(rate_label((25, 1)), "25");
@@ -829,7 +930,7 @@ mod template_tests {
     fn the_dialog_makes_the_chosen_format() {
         let mut dialog = NewProjectDialog::new(None);
         dialog.project_name = "Clip".into();
-        for (i, f) in FORMATS.iter().enumerate() {
+        for (i, f) in formats().iter().enumerate() {
             dialog.apply_format(i);
             assert_eq!(dialog.resolved_resolution(), (f.width, f.height), "{}", f.name);
             assert_eq!(dialog.resolved_fps(), f.rates.first().copied().unwrap_or((0, 0)), "{}", f.name);

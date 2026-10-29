@@ -259,12 +259,12 @@ pub fn show(
         // Automatic, which keeps the historical inherit-from-active
         // behaviour. Lets users pin a vertical/square default if their
         // workflow is mainly that orientation.
-        use crate::panels::new_project_dialog::RESOLUTION_PRESETS;
+        use crate::panels::new_project_dialog::resolution_presets;
         let active = &state.sequences[state.active_sequence_idx];
         let n = state.sequences.len() + 1;
         let pref_idx = state.default_sequence_resolution_idx;
-        let (width, height) = if pref_idx > 0 && pref_idx < RESOLUTION_PRESETS.len() {
-            let (_, w, h) = RESOLUTION_PRESETS[pref_idx];
+        let (width, height) = if pref_idx > 0 && pref_idx < resolution_presets().len() {
+            let (_, w, h) = resolution_presets()[pref_idx];
             if w > 0 && h > 0 { (w, h) } else { (active.resolution.width, active.resolution.height) }
         } else {
             (active.resolution.width, active.resolution.height)
