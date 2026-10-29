@@ -39,7 +39,9 @@ fn graph_value(graph: &Graph, depth: usize) -> Value {
     json!({"nodes":graph.nodes.iter().map(|n| node(n,depth)).collect::<Vec<_>>(),"edges":edges,"output":graph.output})
 }
 
-fn node(n: &Node, depth: usize) -> Value {
+/// A node as `graph_read` gives it: its type id, label and parameters by
+/// key.
+pub(crate) fn node(n: &Node, depth: usize) -> Value {
     let desc = graph_model::descriptor(n);
     let mut params = serde_json::Map::new();
     // An effect's values as its stored entry, written from its map (M3-2).

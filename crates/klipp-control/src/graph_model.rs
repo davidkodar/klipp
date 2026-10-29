@@ -108,7 +108,7 @@ pub const MAX_KEYS: usize = 256;
 /// The keys on parameter `key` of an effect node (#2886), its behaviours
 /// kept: a parameter that moves over time only. See [`read_keys`].
 pub(crate) fn keys_op(node: &Node, path: klipp_graph_format::path::NodePath, key: &str, keys: &[Value]) -> Result<klipp_graph_lift::ops::GraphOp, String> {
-    if node.type_id.as_str() != types::LEGACY_EFFECT {
+    if klipp_graph_lift::effect_params::tag(node).is_none() {
         return Err(format!("{key}: only an effect's parameters and the clip's placement take keys here"));
     }
     let desc = descriptor(node).ok_or("this node has no registered parameter description")?;
