@@ -4769,3 +4769,28 @@ fn a_brand_kit_is_taken_into_the_brief_and_the_captions() {
     let r = h.call(json!({ "method": "apply_brand_kit", "name": "No Such Kit" }));
     assert!(r["error"].as_str().unwrap().contains("no brand kit"), "{r}");
 }
+
+/// #2722: a brand kit's intro and outro put on the sequence as one step:
+/// the clip there moved on by the intro's length, the intro composition
+/// at the start and the outro at the new end; a kit with no logo says so
+/// for a watermark rather than refusing.
+#[test]
+fn a_brand_kits_intro_and_outro_open_and_close_the_piece() {
+    let mut h = harness();
+    let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 30);
+    let mut v = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+    let clip = klipp_timeline::Clip::gap(tc(0.0), tc(4.0));
+    let clip_id = clip.id;
+    v.clips = vec![clip];
+    h.sequence.write().unwrap().tracks = vec![v];
+    let before = h.ok(json!({ "method": "status" }))["revision"].as_u64().unwrap();
+    let r = h.ok(json!({ "method": "apply_brand_kit", "name": "Clean", "parts": ["intro", "outro", "watermark"] }));
+    assert_eq!(r["revision"], json!(before + 1), "one step: {r}");
+    let text = r["text"].as_str().unwrap();
+    assert!(text.contains("the intro (") && text.contains("the outro (") && text.contains("it has no logo"), "{text}");
+    let edits = h.edits_seen.lock().unwrap().clone();
+    let moved = edits.iter().any(|e| format!("{e:?}").contains(&clip_id.0.to_string()) && format!("{e:?}").contains("Move"));
+    assert!(moved, "the clip moved on: {edits:#?}");
+    let placed = edits.iter().filter(|e| format!("{e:?}").contains("Precomposition")).count();
+    assert!(placed >= 2, "the intro and the outro placed as compositions: {placed}");
+}
