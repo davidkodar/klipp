@@ -9,6 +9,7 @@ impl KlippApp {
         self.drain_control_inbox();
         self.apply_analysis_markers();
         self.advance_refits();
+        self.advance_brand_kit();
         self.advance_deliveries();
         self.propose_audio_roles();
         if std::mem::take(&mut self.state.matched_follow_sync) {

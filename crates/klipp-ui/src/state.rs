@@ -1386,6 +1386,35 @@ pub struct PendingDelivery {
     pub settings: klipp_core::ExportSettings,
 }
 
+/// Which parts of a brand kit are taken in (#2722): the look (the
+/// brief's colours and title looks), the caption look, the intro, the
+/// outro and the logo as a watermark.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BrandKitParts {
+    pub look: bool,
+    pub captions: bool,
+    pub intro: bool,
+    pub outro: bool,
+    pub watermark: bool,
+}
+
+impl Default for BrandKitParts {
+    /// The look alone, as the socket takes a kit by default.
+    fn default() -> Self {
+        Self { look: true, captions: true, intro: false, outro: false, watermark: false }
+    }
+}
+
+/// A brand kit's intro, outro or logo waiting for the kit's files to
+/// import into the sequence it was asked for, until a deadline.
+#[derive(Debug, Clone)]
+pub struct PendingBrandKit {
+    pub found: klipp_project::brand_kit::Found,
+    pub parts: BrandKitParts,
+    pub sequence: klipp_core::SequenceId,
+    pub until: std::time::Instant,
+}
+
 /// Document ops a panel asks the app to run as one undo step.
 #[derive(Debug, Clone)]
 pub struct DocOpsRequest {
@@ -2790,6 +2819,12 @@ pub struct AppState {
     /// the app on its next frame, through the same resolver the
     /// assistant's ops use.
     pub pending_doc_ops: Vec<DocOpsRequest>,
+    /// A brand kit's intro, outro and logo waiting for its files (#2722).
+    pub pending_brand_kit: Option<PendingBrandKit>,
+    /// Timeline → Apply Brand Kit… is open, with the kit and parts
+    /// chosen in it.
+    pub show_apply_brand_kit: bool,
+    pub apply_brand_kit: (String, BrandKitParts),
     /// Aspect versions waiting for their files' framing analysis before
     /// they are reframed (#2211), by sequence, so switching tabs meanwhile
     /// reframes the right one when it is next open.
@@ -5145,6 +5180,9 @@ impl Default for AppState {
             show_transcript_panel: false,
             transcript_panel_hovered: false,
             pending_doc_ops: Vec::new(),
+            pending_brand_kit: None,
+            show_apply_brand_kit: false,
+            apply_brand_kit: (String::new(), BrandKitParts::default()),
             pending_refits: Vec::new(),
             pending_deliveries: Vec::new(),
             delivery_home: None,

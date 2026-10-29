@@ -1049,6 +1049,13 @@ impl KlippApp {
             cmds.extend(crate::panels::title_find_dialog::show_title_find_dialog(ctx, &mut self.state));
         }
 
+        // Apply Brand Kit (#2722).
+        if self.state.show_apply_brand_kit {
+            if let Some((name, parts)) = crate::panels::brand_kit_dialog::show(ctx, &mut self.state) {
+                self.apply_brand_kit(&name, parts);
+            }
+        }
+
         // Clip Properties modal (#47)
         if self.state.show_clip_properties {
             let dialog_cmds = crate::panels::clip_properties::show_clip_properties_dialog(

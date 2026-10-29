@@ -25,6 +25,7 @@ enum PrefsTab {
     Accounts,
     Advanced,
     Keyboard,
+    BrandKits,
     About,
 }
 
@@ -58,6 +59,8 @@ pub struct PreferencesPanel {
     /// can't come back.
     accounts: std::sync::Arc<std::sync::Mutex<AccountsState>>,
     freesound_code: String,
+    /// Preferences → Brand Kits (#2722).
+    brand_kits: super::brand_kits_page::BrandKitsPage,
 }
 
 /// The Accounts page's sign-in, as its worker leaves it (#1894).
@@ -141,6 +144,7 @@ impl Default for PreferencesPanel {
             open_assistant_setup: false,
             accounts: Default::default(),
             freesound_code: String::new(),
+            brand_kits: Default::default(),
         }
     }
 }
@@ -317,7 +321,7 @@ impl PreferencesPanel {
                             ("MEDIA & AUDIO", &[(PrefsTab::FileBrowser, "File Browser"), (PrefsTab::Audio, "Audio"), (PrefsTab::AudioHardware, "Audio HW"), (PrefsTab::Proxy, "Proxy"), (PrefsTab::ExternalTools, "External Tools"), (PrefsTab::Accounts, "Accounts")]),
                             ("COLOUR & EXPORT", &[(PrefsTab::Color, "Colour"), (PrefsTab::Export, "Export")]),
                             ("AI", &[(PrefsTab::Ai, "AI")]),
-                            ("INTERFACE", &[(PrefsTab::Title, "Titles"), (PrefsTab::Keyboard, "Keyboard"), (PrefsTab::Advanced, "Advanced")]),
+                            ("INTERFACE", &[(PrefsTab::Title, "Titles"), (PrefsTab::BrandKits, "Brand Kits"), (PrefsTab::Keyboard, "Keyboard"), (PrefsTab::Advanced, "Advanced")]),
                             ("ABOUT", &[(PrefsTab::About, "About Klipp")]),
                         ];
 
@@ -382,6 +386,7 @@ impl PreferencesPanel {
                             PrefsTab::Viewer => self.show_viewer(ui, prefs, prefs_dirty, theme),
                             PrefsTab::Advanced => self.show_advanced(ui, prefs, prefs_dirty, theme),
                             PrefsTab::Keyboard => self.show_keyboard(ui, key_bindings, theme),
+                            PrefsTab::BrandKits => self.brand_kits.show(ui, theme),
                             PrefsTab::About => self.show_about(ui, theme),
                         }
                     });
@@ -460,6 +465,7 @@ impl PreferencesPanel {
             "cache" => self.active_tab = PrefsTab::MediaCache,
             "keyboard" => self.active_tab = PrefsTab::Keyboard,
             "colour" => self.active_tab = PrefsTab::Color,
+            "brand_kits" => self.active_tab = PrefsTab::BrandKits,
             _ => return,
         }
         self.search_query.clear();
@@ -491,6 +497,7 @@ impl PreferencesPanel {
             PrefsTab::Viewer => &["viewer", "overlay", "scope quality", "false colour", "zebra"],
             PrefsTab::Keyboard => &["keyboard", "shortcuts", "keybindings", "hotkeys", "remap"],
             PrefsTab::Advanced => &["advanced", "toast", "notification", "performance", "debug", "logging", "reset", "clear"],
+            PrefsTab::BrandKits => &["brand kit", "brand kits", "brand", "logo", "watermark", "colours", "colors", "font pairing", "pairing", "intro", "outro", "klippbrand"],
             PrefsTab::About => &["about", "version", "license", "gpu", "cpu", "memory", "hardware", "technology"],
         }
     }
@@ -548,7 +555,7 @@ impl PreferencesPanel {
 
     /// A section's header: its name, with a hairline below, as the
     /// inspector's sections have.
-    fn section_header(ui: &mut egui::Ui, label: &str, theme: &KlippTheme) {
+    pub(crate) fn section_header(ui: &mut egui::Ui, label: &str, theme: &KlippTheme) {
         ui.add_space(12.0);
         let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), crate::widgets::inspector_group::SECTION_HEADER_H), egui::Sense::hover());
         ui.painter().text(
@@ -563,11 +570,11 @@ impl PreferencesPanel {
     }
 
     /// Draw a setting row with label on left and a widget on right (returned via closure).
-    fn setting_row(ui: &mut egui::Ui, label: &str, theme: &KlippTheme, add_right: impl FnOnce(&mut egui::Ui)) {
+    pub(crate) fn setting_row(ui: &mut egui::Ui, label: &str, theme: &KlippTheme, add_right: impl FnOnce(&mut egui::Ui)) {
         Self::setting_row_inner(ui, label, None, theme, add_right);
     }
 
-    fn setting_row_with_subtitle(ui: &mut egui::Ui, label: &str, subtitle: &str, theme: &KlippTheme, add_right: impl FnOnce(&mut egui::Ui)) {
+    pub(crate) fn setting_row_with_subtitle(ui: &mut egui::Ui, label: &str, subtitle: &str, theme: &KlippTheme, add_right: impl FnOnce(&mut egui::Ui)) {
         Self::setting_row_inner(ui, label, Some(subtitle), theme, add_right);
     }
 
@@ -3923,7 +3930,7 @@ impl PreferencesPanel {
     }
 
     /// The page's name at its top.
-    fn page_title(ui: &mut egui::Ui, title: &str, theme: &KlippTheme) {
+    pub(crate) fn page_title(ui: &mut egui::Ui, title: &str, theme: &KlippTheme) {
         ui.horizontal(|ui| {
             ui.add_space(14.0);
             ui.label(egui::RichText::new(title).strong().size(16.0).color(theme.text_primary));
@@ -4916,11 +4923,11 @@ mod connect_assistant_tests {
 mod layout_tests {
     use super::*;
 
-    const TABS: [PrefsTab; 21] = [
+    const TABS: [PrefsTab; 22] = [
         PrefsTab::General, PrefsTab::Ai, PrefsTab::System, PrefsTab::Appearance, PrefsTab::Playback, PrefsTab::Editing,
         PrefsTab::FileBrowser, PrefsTab::Audio, PrefsTab::AudioHardware, PrefsTab::Export, PrefsTab::MediaCache, PrefsTab::Color,
         PrefsTab::Title, PrefsTab::Timeline, PrefsTab::Viewer, PrefsTab::Proxy, PrefsTab::ExternalTools, PrefsTab::Accounts, PrefsTab::Advanced,
-        PrefsTab::Keyboard, PrefsTab::About,
+        PrefsTab::Keyboard, PrefsTab::BrandKits, PrefsTab::About,
     ];
 
     /// Every row and section label the dialog drew before its restyle,

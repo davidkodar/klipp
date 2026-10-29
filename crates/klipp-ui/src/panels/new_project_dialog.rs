@@ -99,6 +99,10 @@ pub struct NewProjectDialog {
     /// What the chosen template needs, a line each, worked out once for
     /// the template it was worked out for.
     needs: Option<(PathBuf, Vec<String>)>,
+    /// The brand kits there are, and the one whose look the new sequence
+    /// takes (#2722).
+    pub brand_kits: Vec<String>,
+    pub brand_kit: Option<String>,
 }
 
 impl NewProjectDialog {
@@ -121,6 +125,8 @@ impl NewProjectDialog {
             user_template: None,
             rename: None,
             needs: None,
+            brand_kits: klipp_project::brand_kit::list(klipp_timeline::template_places::data_root().as_deref()).into_iter().map(|f| f.kit.name).collect(),
+            brand_kit: None,
         }
     }
 
@@ -322,6 +328,28 @@ impl NewProjectDialog {
                 });
                 ui.add_space(2.0);
 
+                // A brand kit's look: its colours, title looks and caption
+                // look in the new sequence (#2722).
+                if !self.brand_kits.is_empty() {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Brand kit").size(12.0 * control_scale).color(theme.text_secondary));
+                        ui.add_space(33.0 * control_scale);
+                        egui::ComboBox::from_id_salt("project_brand_kit")
+                            .selected_text(self.brand_kit.clone().unwrap_or_else(|| "None".into()))
+                            .width(200.0 * control_scale)
+                            .show_ui(ui, |ui| {
+                                scale_dialog_style(ui, control_scale);
+                                ui.selectable_value(&mut self.brand_kit, None, "None");
+                                for name in &self.brand_kits {
+                                    ui.selectable_value(&mut self.brand_kit, Some(name.clone()), name);
+                                }
+                            })
+                            .response
+                            .on_hover_text("Its colours, title looks and caption look in the new sequence; Timeline \u{2192} Apply Brand Kit\u{2026} adds its intro, outro and logo");
+                    });
+                    ui.add_space(2.0);
+                }
+
                 // A template of the user's sets the sequences, their formats
                 // and tracks, the bins and the colour: what it holds,
                 // where the format rows were.
@@ -513,6 +541,7 @@ impl NewProjectDialog {
                                 sequence_name: seq_name,
                                 template: self.chosen_template().map(|(p, _)| p.clone()),
                                 hdr: self.user_template.is_none() && FORMATS.get(self.template_idx).is_some_and(|f| f.hdr),
+                                brand_kit: self.brand_kit.clone(),
                             });
                             close = true;
                         }

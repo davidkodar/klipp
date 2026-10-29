@@ -1373,6 +1373,8 @@ pub enum AppCommand {
         template: Option<PathBuf>,
         /// Graded in a wide-gamut working space for HLG or PQ delivery.
         hdr: bool,
+        /// A brand kit whose look the new sequence takes (#2722).
+        brand_kit: Option<String>,
     },
     /// The look the viewer shows through, on screen only, or none (#466).
     SetProjectViewingLut { path: Option<PathBuf> },
