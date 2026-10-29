@@ -522,6 +522,22 @@ CARGO_BUILD_JOBS=4 cargo test -p klipp-compose   # fewer parallel links
 The big crates compile their integration tests into one `tests/all`
 binary each, to keep link time down. GPU tests skip quietly without a
 usable GPU; `KLIPP_TEST_REQUIRE_GPU=1` turns a skip into a failure.
+A test that wants a device of its own makes its instance with
+`klipp_effects::gpu_context::instance()`, on the same graphics APIs as
+the app (Vulkan, GL only without it), never `wgpu::Instance::default()`:
+asked for every API, NVIDIA's GL driver comes up beside its Vulkan one
+and the two race at exit (#3000).
+
+A GPU test binary can still abort at exit after every test passed: the
+run prints `test result: ok. … 0 failed`, then the process dies on
+`double free or corruption` or a segfault, and cargo reports
+`error: test failed`. The core (`coredumpctl info <pid>`) shows the
+crashing thread inside NVIDIA's shader compiler (`libnvidia-gpucomp`,
+`libnvidia-glvkspirv`) and the main thread in `exit()`: the driver's own
+teardown racing its background compile. It was seen with NVIDIA
+615.78.08, in about one run in a hundred of `klipp-effects`' lib tests.
+It is not a failing test; report it as an exit abort after a pass, apart
+from failures.
 
 The workspace uses `lld` as the linker (`.cargo/config.toml`). `mold`
 is not currently wired in.

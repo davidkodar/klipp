@@ -18,11 +18,7 @@ fn try_wgpu() -> Option<(Arc<wgpu::Device>, Arc<wgpu::Queue>)> {
         }
     }
 
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::all(),
-        flags: wgpu::InstanceFlags::from_build_config() & !wgpu::InstanceFlags::VALIDATION,
-        ..Default::default()
-    });
+    let instance = klipp_effects::gpu_context::instance();
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
         force_fallback_adapter: false,

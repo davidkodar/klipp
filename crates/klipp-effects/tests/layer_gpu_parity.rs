@@ -4,7 +4,7 @@ use klipp_effects::{
 };
 
 fn pipeline() -> Option<GpuEffectsPipeline> {
-    let adapters = wgpu::Instance::default().enumerate_adapters(wgpu::Backends::all());
+    let adapters = klipp_effects::gpu_context::instance().enumerate_adapters(klipp_effects::gpu_context::backends());
     if adapters.is_empty() {
         eprintln!("skipping layer parity: no GPU adapter");
         return None;
