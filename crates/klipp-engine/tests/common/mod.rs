@@ -700,3 +700,38 @@ pub fn ofx_fixture_bundle() -> Option<std::path::PathBuf> {
         .success();
     ok.then_some(root)
 }
+
+/// What else is keeping the GPU busy, for a timing test to print before
+/// it measures and to name when it falls short: the GPU's power state and
+/// clock, and each other process with a share of its shader time (from
+/// `nvidia-smi`). A test sharing the GPU with a compositor or another app
+/// reads slower without any change of its own; said this way, a
+/// contended run isn't mistaken for a slowdown.
+#[allow(dead_code)]
+pub fn gpu_others() -> String {
+    let run = |args: &[&str]| std::process::Command::new("nvidia-smi").args(args).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+    let Some(state) = run(&["--query-gpu=pstate,clocks.sm", "--format=csv,noheader"]) else { return "GPU load unknown (no nvidia-smi)".into() };
+    let busy = run(&["pmon", "-c", "2", "-s", "u"]).map(|t| busy_on_gpu(&t, std::process::id())).unwrap_or_default();
+    let others = if busy.is_empty() { "nothing else busy".to_string() } else { busy.iter().map(|(name, pct)| format!("{name} {pct}%")).collect::<Vec<_>>().join(", ") };
+    format!("GPU {}; others on it: {others}", state.trim())
+}
+
+/// The processes `nvidia-smi pmon -s u` shows using shader time, but
+/// `me`, each at its highest share over the samples, busiest first.
+#[allow(dead_code)]
+pub fn busy_on_gpu(pmon: &str, me: u32) -> Vec<(String, u32)> {
+    let mut seen: Vec<(String, u32)> = Vec::new();
+    for line in pmon.lines().filter(|l| !l.trim_start().starts_with('#')) {
+        let f: Vec<&str> = line.split_whitespace().collect();
+        let (Some(pid), Some(sm), Some(name)) = (f.get(1).and_then(|p| p.parse::<u32>().ok()), f.get(3).and_then(|s| s.parse::<u32>().ok()), f.last()) else { continue };
+        if pid == me || sm == 0 {
+            continue;
+        }
+        match seen.iter_mut().find(|(n, _)| n == name) {
+            Some((_, p)) => *p = (*p).max(sm),
+            None => seen.push((name.to_string(), sm)),
+        }
+    }
+    seen.sort_by_key(|s| std::cmp::Reverse(s.1));
+    seen
+}
