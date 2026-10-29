@@ -396,6 +396,30 @@ pub enum ControlCommand {
         #[serde(default)] inspector_tab: Option<String>,
         #[serde(default)] dialog: Option<String>,
     },
+    /// Play pointer steps into the app's input, one a frame, as a mouse's
+    /// events reach egui (#3056): a harness drags, clicks and scrolls
+    /// through the same code a person's hand goes through, on any panel,
+    /// without moving the machine's own pointer. Test hooks only
+    /// (`test-hooks`), as `show_panel`.
+    ///
+    /// Each step: `action` (`move`, the default; `press`, `release`,
+    /// `click`, `scroll`, `wait`), `at` (`{"screen": {"x", "y"}}` in
+    /// points from the window's top left; `{"timeline": {"secs",
+    /// "track"}}`, a time on a timeline track at the middle of its
+    /// height; `{"offset": {"dx", "dy"}}` from the step before; left out,
+    /// where the pointer is), `button` (`primary`, `secondary`,
+    /// `middle`), `modifiers` (`{"shift", "ctrl", "alt"}`, held through
+    /// the step), `scroll` (`[x, y]` points, for `scroll`) and `frames`
+    /// (how many frames the step holds, 1 to 600). At most 512 steps.
+    /// The pointer stays where a request leaves it, for the next. A drag
+    /// lands where it showed on the frame before the release: move to the
+    /// drop point in one step and release in the next. The reply comes
+    /// when the steps are queued; read the result back (`timeline`,
+    /// `window_screenshot`) once they have played.
+    #[cfg(feature = "test-hooks")]
+    Pointer {
+        steps: Vec<klipp_core::pointer::PointerStep>,
+    },
     /// Timeline → Detect Scene Cuts for a clip (#616): its picture changes
     /// found in the background and the clip split there with its linked
     /// sound, one undoable edit. Returns at once; the split shows on the

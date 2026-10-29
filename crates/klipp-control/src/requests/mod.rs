@@ -58,12 +58,12 @@ mod routing_tests {
         out
     }
 
-    // The test hooks (`effect_command`, `show_panel`) are routed each on
+    // The test hooks (`effect_command`, `show_panel`, `pointer`) are routed each on
     // its own line, behind their feature, to the area that answers them.
     #[test]
     fn the_test_hook_goes_to_the_area_that_answers_it() {
         let lib = include_str!("../lib.rs");
-        for hook in ["EffectCommand", "ShowPanel"] {
+        for hook in ["EffectCommand", "ShowPanel", "Pointer"] {
             assert!(lib.contains(&format!("{HOOK}\n        cmd @ ControlCommand::{hook} {{ .. }} => requests::editing::respond(ctx, cmd, collect),")), "{hook}");
             assert!(include_str!("editing.rs").contains(&format!("{HOOK}\n        ControlCommand::{hook} {{")), "{hook}");
         }
