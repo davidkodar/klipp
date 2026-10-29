@@ -20,6 +20,9 @@ impl KlippApp {
     pub(super) fn drain_control_inbox(&mut self) {
         let Some(inbox) = self.control_inbox.as_ref() else { return };
         let envelopes: Vec<klipp_document::control::ControlEnvelope> = inbox.try_iter().collect();
+        // An edit among them: the timeline may fit itself to it.
+        let edits = envelopes.iter().any(|e| !e.edits.is_empty() || crate::timeline::auto_fit::edits_document(&e.commands));
+        let before = edits.then(|| self.state.before_assistant_edit(std::time::Instant::now()));
         for env in envelopes {
             let mut refused = None;
             let mut refused_op = None;
@@ -172,6 +175,9 @@ impl KlippApp {
                 }
                 let _ = ack.send(klipp_document::control::ControlAck { revision: self.state.control_shared.revision(), refused, refused_op, renamed, ungated, picture_refused });
             }
+        }
+        if let Some(before) = before {
+            self.state.after_assistant_edit(before);
         }
     }
 
