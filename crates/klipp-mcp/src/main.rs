@@ -2832,7 +2832,7 @@ mod interface_tests {
         let definitions = tool_definitions_for(false);
         let graph = definitions.iter().find(|t| t["name"] == "klipp_graph").unwrap();
         let ops = graph["inputSchema"]["properties"]["ops"]["items"]["properties"]["op"]["enum"].as_array().unwrap();
-        assert_eq!(ops.len(), 13);
+        assert_eq!(ops.len(), 14);
         for op in [json!({"op":"publish","path":path,"from":path,"from_port":"out","key":"matte"}),
                    json!({"op":"unpublish","path":path,"key":"matte"})] {
             assert!(ops.contains(&op["op"]));

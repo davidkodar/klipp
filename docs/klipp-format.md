@@ -327,7 +327,8 @@ composition and is refused with a hint to save it again):
   sequence and every sequence it nests, so it inserts into any project.
 * `graph` — a recipe's `{ops, checks, check_with}` instead: graph ops
   addressed from anchors or `{"new": k}` (`modify` among them, putting
-  behaviours on a node's parameter; an `add` may carry `entry`, the
+  behaviours on a node's parameter, and `keys`, its keys, at most 256,
+  each a finite `time_secs` in the media's seconds and `value`; an `add` may carry `entry`, the
   node's whole stored entry, as a recipe saved from nodes does, refused
   unless it reads as that node's), the harness's checks, and the
   control values the checks run with where the test shot needs other
@@ -344,7 +345,9 @@ composition and is refused with a hint to save it again):
   parameter, as a wiggle's `amplitude`, or `node:<op>.<param>/<pointer>`
   for one value inside that parameter by JSON pointer, as a mask
   rectangle's `masks/masks/0/shape/Rectangle/center_x`, set where the
-  recipe is placed); `take: "hue"` sets it to a
+  recipe is placed, or `node:<op>.<param>#<i>.time_secs|value` for the
+  time or value of key `i` a recipe's `keys` op puts on that parameter);
+  `take: "hue"` sets it to a
   colour control's hue in degrees, as a qualifier reads that colour
   picked on the picture. With `link: {to: [a, b],
   curve}` the parameter is a macro control: its range maps onto `to`

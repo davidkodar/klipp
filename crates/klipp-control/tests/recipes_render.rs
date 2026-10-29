@@ -304,6 +304,38 @@ fn a_window_placed_by_its_controls_lays_its_picture_there() {
     assert!(drawn.iter().zip(at(&plain_frame, 0.25, 0.5)).all(|(a, b)| a.abs_diff(b) <= 1), "not where the file drew it: {drawn:?}");
 }
 
+/// Keys from a recipe (#2886): a blur's radius keyed from none to a
+/// control's value across the clip, the frames apart in time drawn apart,
+/// the stack within a level of the CPU where they meet.
+#[test]
+fn a_recipe_keys_a_parameter_over_the_clip() {
+    let recipe: klipp_timeline::composition_template::CompositionTemplate = serde_json::from_value(serde_json::json!({
+        "format_version": 2, "id": "8e4a1d27-3c6b-4f95-a2d0-7b9e1c5f3a64", "name": "Blur in", "kind": "recipe",
+        "composition_id": "00000000-0000-0000-0000-000000000000",
+        "parameters": { "most": { "label": "Most", "default": { "type": "Number", "value": 6.0 }, "range": { "min": 0.0, "max": 40.0 } } },
+        "bindings": [{ "parameter": "most", "property": "node:0.radius#1.value" }],
+        "graph": { "ops": [
+            { "op": "add", "after": { "anchor": "end" }, "type": "klipp.fx.gaussian_blur" },
+            { "op": "keys", "path": { "new": 0 }, "key": "radius", "keys": [{ "time_secs": 0.6, "value": 0.0 }, { "time_secs": 1.4, "value": 0.0 }] }
+        ] }
+    })).unwrap();
+    recipe.validate().unwrap();
+    let plain = Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(2.0)) };
+    let before = sequence(plain.clone());
+    let values = BTreeMap::from([("most".to_string(), TemplateValue::Number(20.0))]);
+    let (ops, _) = klipp_control::recipes::on_clip(&before, plain.id, &recipe, &values).unwrap_or_else(|e| panic!("{e}"));
+    let mut placed = plain.clone();
+    placed.apply_picture_ops(&ops).unwrap_or_else(|e| panic!("{e}"));
+    let seq = sequence(placed);
+    let Some(early) = stack_at(&seq, 0.6, "keyed blur") else { return };
+    let late = stack_at(&seq, 1.5, "keyed blur").expect("drawn once already");
+    let sharp = stack_at(&before, 0.6, "plain").expect("drawn once already");
+    assert!(worst(&early, &sharp) <= 1, "no blur at the first key: {} levels", worst(&early, &sharp));
+    assert!(worst(&late, &early) > 30, "blurred by the last key: {} levels apart", worst(&late, &early));
+    let shown = stack(&seq, ViewChannel::Picture, "keyed blur").expect("drawn once already");
+    assert!(worst(&cpu(&seq, ViewChannel::Picture), &shown) <= 1, "the stack mid-way, against the CPU");
+}
+
 /// `recipe` placed on the test shot's clip with the harness's slots and
 /// `values` over them: the sequence it makes.
 fn placed_with(recipe: &klipp_timeline::composition_template::CompositionTemplate, plain: &Clip) -> Sequence {
