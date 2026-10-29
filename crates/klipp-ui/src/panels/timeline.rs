@@ -11030,6 +11030,15 @@ impl TimelinePanel {
         }
     }
 
+    /// A hint over a clip's picture, on a dark pill so it reads over any
+    /// frame.
+    fn paint_hint(painter: &egui::Painter, at: egui::Pos2, align: egui::Align2, text: &str) {
+        let galley = painter.layout_no_wrap(text.to_owned(), egui::FontId::proportional(10.0), egui::Color32::WHITE);
+        let rect = align.anchor_size(at, galley.size()).expand2(egui::vec2(4.0, 1.5));
+        painter.rect_filled(rect, rect.height() / 2.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 190));
+        painter.galley(rect.min + egui::vec2(4.0, 1.5), galley, egui::Color32::WHITE);
+    }
+
     /// The stretch's readout: a small box above the track at the pointer.
     fn paint_stretch_readout(painter: &egui::Painter, content_rect: &egui::Rect, track_rect: &egui::Rect, pointer: egui::Pos2, lines: &[String]) {
         let tt = theme();
@@ -11089,7 +11098,7 @@ impl TimelinePanel {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
                     let hint = crate::timeline::stretch_drag::grip_hint(clip, &state.media_pool);
                     let (x, align) = if at_end { (cr.right() - crate::timeline::stretch_drag::GRIP_W - 4.0, egui::Align2::RIGHT_CENTER) } else { (cr.left() + crate::timeline::stretch_drag::GRIP_W + 4.0, egui::Align2::LEFT_CENTER) };
-                    painter.text(egui::pos2(x, cr.top() + crate::timeline::stretch_drag::GRIP_H / 2.0), align, hint, egui::FontId::proportional(10.0), tt.text_primary);
+                    Self::paint_hint(painter, egui::pos2(x, cr.top() + crate::timeline::stretch_drag::GRIP_H / 2.0), align, hint);
                 }
             }
         }
@@ -11099,7 +11108,7 @@ impl TimelinePanel {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
                 let at_end = matches!(edge, TrimEdge::Right);
                 let (x, align) = if at_end { (cr.right() - 10.0, egui::Align2::RIGHT_CENTER) } else { (cr.left() + 10.0, egui::Align2::LEFT_CENTER) };
-                painter.text(egui::pos2(x, cr.center().y), align, crate::timeline::stretch_drag::grip_hint(hit_clip, &state.media_pool), egui::FontId::proportional(10.0), tt.text_primary);
+                Self::paint_hint(painter, egui::pos2(x, cr.center().y), align, crate::timeline::stretch_drag::grip_hint(hit_clip, &state.media_pool));
             }
         }
         // Trim handle hover highlight — edge-first detection + roll trim junction detection.
