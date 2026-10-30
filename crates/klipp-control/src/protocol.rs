@@ -1275,6 +1275,10 @@ pub enum ControlCommand {
         #[serde(default)]
         fetch: Option<String>,
     },
+    /// The generators a `generator` op places by name (#3095): Klipp's,
+    /// then a person's own, each with its group, and what of theirs was
+    /// skipped.
+    Generators,
     /// The title templates, built-in (#1724) and saved (#1139), each with
     /// the fields it keeps editable: what a `template` op places and sets.
     TitleTemplates,
@@ -1649,10 +1653,15 @@ pub enum ControlCommand {
     /// Automatic does). Refused over unsaved changes unless
     /// `discard_changes`. With `template` (a project template's name) the
     /// project starts from it instead: its sequences, tracks, bins, colour
-    /// setup and starter content (#618).
+    /// setup and starter content (#618). With `format` (a project format's
+    /// name, Klipp's or a person's own, #3095) the first sequence takes
+    /// its picture, its usual rate and its HDR grading; `width`, `height`
+    /// and `fps` then go unsaid.
     NewProject {
         name: String,
         location: String,
+        #[serde(default)]
+        format: Option<String>,
         #[serde(default)]
         width: Option<u32>,
         #[serde(default)]
@@ -2166,6 +2175,10 @@ mod tests {
     fn project_and_sequence_requests_parse() {
         let np: Request = serde_json::from_value(json!({"id": 1, "method": "new_project", "name": "a", "location": "/tmp", "fps": 25.0})).unwrap();
         assert!(matches!(np.command, super::ControlCommand::NewProject { fps: Some(_), width: None, discard_changes: false, .. }));
+        let by_format: Request = serde_json::from_value(json!({"id": 1, "method": "new_project", "name": "a", "location": "/tmp", "format": "UHD 4K"})).unwrap();
+        assert!(matches!(by_format.command, super::ControlCommand::NewProject { format: Some(ref f), fps: None, .. } if f == "UHD 4K"));
+        let list: Request = serde_json::from_value(json!({"id": 1, "method": "generators"})).unwrap();
+        assert!(matches!(list.command, super::ControlCommand::Generators));
         let ns: Request = serde_json::from_value(json!({"id": 1, "method": "new_sequence", "name": "V", "width": 1080, "height": 1920, "fps": 30})).unwrap();
         assert!(matches!(ns.command, super::ControlCommand::NewSequence { width: 1080, height: 1920, .. }));
     }

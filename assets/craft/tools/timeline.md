@@ -53,6 +53,8 @@ Preview a native generator clip; apply true places it as one undo step. Give at_
 
 Omit track to use/create a bottom Background video track. Overlaps and locked tracks are refused.
 
+`data` can also be the name of a generator the Generators tab lists, in any case: Klipp's own ("Living Gradient", "SMPTE Full Bars", "Countdown" …) or one the person keeps. list true lists them all, each with its group and whether it is Klipp's or theirs, and what of theirs was skipped and why. A person's own are `.toml` files in `~/.config/klipp/presets/generators/`, in the form of Klipp's (`kind = "generator_entry"`, `format_version = 1`, one `[[generator]]` each with name, category, animated? and data); they are read when Klipp starts. A file that is a link, past 1 MB, of another kind or with a field Klipp doesn't know is skipped whole; a generator named as one of Klipp's, as one before it, or a still frame is skipped alone.
+
 ## klipp_export_timeline
 
 Write the open sequence to an interchange timeline file, for another editor or a round trip through klipp_import_timeline. path is absolute, in a folder that exists, and its extension names the format: .fcpxml (Final Cut Pro X), .edl (CMX 3600), .otio (OpenTimelineIO), .aaf (written through OpenTimelineIO's otioconvert and its AAF adapter, which must be installed) or .kdenlive. format, if given, must match the extension. An existing file is refused unless overwrite is true: ask before replacing one. The reply names the format, the clip count, and in dropped what the format could not carry (OpenTimelineIO and AAF list titles, grades and effects left out); the other formats carry what they can without a list. Not part of a batch.

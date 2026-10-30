@@ -1,5 +1,7 @@
 //! The generators the Library's Generators tab offers (#2887), as Klipp's
-//! file `assets/presets/generators/builtin.toml` holds them.
+//! file `assets/presets/generators/builtin.toml` holds them, then a
+//! person's own from their `generators` presets folder (#3095), in the
+//! same form.
 
 use crate::GeneratorData;
 
@@ -37,16 +39,73 @@ fn read(text: &str) -> Result<Vec<GeneratorEntry>, String> {
     crate::preset_file::read::<GeneratorEntry>(text, "generator_entry", 1, "generator").and_then(|entries| fault(&entries).map_or(Ok(entries), Err))
 }
 
-/// Every generator the tab offers, in order, read once; a file that
-/// doesn't read leaves none, said, never a crash.
-pub fn generator_entries() -> &'static [GeneratorEntry] {
-    static ENTRIES: std::sync::OnceLock<Vec<GeneratorEntry>> = std::sync::OnceLock::new();
-    ENTRIES.get_or_init(|| {
-        read(include_str!("../../../assets/presets/generators/builtin.toml")).unwrap_or_else(|why| {
-            tracing::error!("the built-in generators don't read: {why}");
-            Vec::new()
-        })
+/// The presets folder a person's own generators are read from.
+pub const USER_FOLDER: &str = "generators";
+
+/// The longest text a person's generator carries, in characters: a
+/// placeholder's label, a slate's field.
+const MAX_TEXT_CHARS: usize = 256;
+
+/// Why a generator someone wrote can't be offered, beyond what
+/// [`crate::preset_file::merge`] asks of every entry: no group, a still
+/// frame, a number that isn't one, or text past [`MAX_TEXT_CHARS`].
+fn user_fault(e: &GeneratorEntry) -> Result<(), String> {
+    fn walk(v: &serde_json::Value) -> Result<(), String> {
+        match v {
+            serde_json::Value::Number(n) if n.as_f64().is_none_or(|f| !f.is_finite()) => Err("a number that isn't one".into()),
+            serde_json::Value::String(t) if t.chars().count() > MAX_TEXT_CHARS => Err(format!("text of {} characters, past {MAX_TEXT_CHARS}", t.chars().count())),
+            serde_json::Value::Array(a) => a.iter().try_for_each(walk),
+            serde_json::Value::Object(o) => o.values().try_for_each(walk),
+            _ => Ok(()),
+        }
+    }
+    if e.category.trim().is_empty() {
+        return Err("a category says something".into());
+    }
+    if matches!(e.data, GeneratorData::StillFrame { .. }) {
+        return Err("a still frame is made from footage, not offered".into());
+    }
+    // Floats past f32 or NaN don't come through TOML as numbers JSON can
+    // hold: written as JSON, they are null.
+    let value = serde_json::to_value(&e.data).map_err(|e| e.to_string())?;
+    if serde_json::to_string(&value).is_ok_and(|t| t.contains("null")) {
+        return Err("a number that isn't one".into());
+    }
+    walk(&value)
+}
+
+/// Klipp's generators, then those in `dirs` (a person's folder, then the
+/// packs'), each read as someone else's, and what was skipped.
+pub fn generator_listing_in(dirs: &[std::path::PathBuf]) -> crate::preset_file::Merged<GeneratorEntry> {
+    let built_in = read(include_str!("../../../assets/presets/generators/builtin.toml")).unwrap_or_else(|why| {
+        tracing::error!("the built-in generators don't read: {why}");
+        Vec::new()
+    });
+    crate::preset_file::merge(built_in, dirs, "generator_entry", 1, "generator", |e: &GeneratorEntry| &e.name, user_fault)
+}
+
+/// Every generator the tab offers, with what was skipped, read once a
+/// run: Klipp's, then the person's own. A file that doesn't read is said
+/// in the log, never a crash.
+pub fn generator_listing() -> &'static crate::preset_file::Merged<GeneratorEntry> {
+    static LISTING: std::sync::OnceLock<crate::preset_file::Merged<GeneratorEntry>> = std::sync::OnceLock::new();
+    LISTING.get_or_init(|| {
+        let listing = generator_listing_in(&crate::preset_file::user_dir(USER_FOLDER).into_iter().collect::<Vec<_>>());
+        for why in &listing.skipped {
+            tracing::warn!("a generator of yours was skipped: {why}");
+        }
+        listing
     })
+}
+
+/// Every generator the tab offers, in order.
+pub fn generator_entries() -> &'static [GeneratorEntry] {
+    &generator_listing().entries
+}
+
+/// The generator named `name`, in any case: Klipp's or a person's own.
+pub fn generator_named(name: &str) -> Option<&'static GeneratorEntry> {
+    generator_entries().iter().find(|e| e.name.eq_ignore_ascii_case(name.trim()))
 }
 
 /// The tab's groups, in the order their first generator comes.
@@ -105,5 +164,40 @@ mod tests {
         assert!(read(&file(&entry(" ", "\"ColorBars\""))).unwrap_err().contains("a name and a category"));
         assert!(read(&file(&(entry("Bars", "\"ColorBars\"") + "price = 2\n"))).unwrap_err().contains("unknown field"));
         assert!(read(&file(&entry("Plasma", "\"Plasma\""))).is_err());
+    }
+
+    /// A file dropped in a person's generators folder lists after Klipp's
+    /// sixteen (#3095); a hostile one is refused, said, and Klipp's stay
+    /// whole: a link, one past the size, an unknown field, the wrong
+    /// kind, a built-in's name, a still frame, text past its length.
+    #[test]
+    fn a_person_s_generator_lists_after_klipp_s_and_a_hostile_one_is_refused() {
+        let dir = std::env::temp_dir().join(format!("klipp-user-generators-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = |n: &str, body: &str| std::fs::write(dir.join(n), format!("kind = \"generator_entry\"\nformat_version = 1\n{body}")).unwrap();
+        let entry = |name: &str, data: &str| format!("[[generator]]\nname = \"{name}\"\ncategory = \"Mine\"\ndata = {data}\n");
+        file("a.toml", &entry("Brand Red", "{ SolidColor = { color = [200, 20, 30, 255] } }"));
+        file("b.toml", &(entry("Odd", "\"ColorBars\"") + "price = 2\n"));
+        std::fs::write(dir.join("c.toml"), "kind = \"effect_preset\"\nformat_version = 1\n").unwrap();
+        file("d.toml", &format!("# {}\n", "x".repeat(crate::preset_file::MAX_FILE_BYTES)));
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(dir.join("a.toml"), dir.join("e.toml")).unwrap();
+        file("f.toml", &(entry("gradient", "\"ColorBars\"") + &entry("Still", "{ StillFrame = { png_path = \"/etc/passwd\", width = 1, height = 1 } }") + &entry("Card", &format!("{{ Placeholder = {{ label = \"{}\", color = [0, 0, 0, 255] }} }}", "x".repeat(300)))));
+        let listing = generator_listing_in(std::slice::from_ref(&dir));
+        let names: Vec<&str> = listing.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names.len(), 17, "{names:?}");
+        assert_eq!(names[..16], generator_entries()[..16].iter().map(|e| e.name.as_str()).collect::<Vec<_>>()[..], "Klipp's, whole and first");
+        assert_eq!(names[16], "Brand Red");
+        assert_eq!(listing.built_in, 16);
+        let said = |what: &str| assert!(listing.skipped.iter().any(|s| s.contains(what)), "{what}: {:?}", listing.skipped);
+        said("b.toml: generator_entry entry 1: unknown field");
+        said("c.toml: a effect_preset file, not a generator_entry file");
+        said("d.toml: ");
+        #[cfg(unix)]
+        said("e.toml: not a plain file");
+        said("\"gradient\" is the name of one of Klipp's own");
+        said("\"Still\": a still frame");
+        said("\"Card\": text of 300 characters");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

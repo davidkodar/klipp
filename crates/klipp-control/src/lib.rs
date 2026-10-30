@@ -866,6 +866,7 @@ fn handle(
             | ControlCommand::Plan { .. }
             | ControlCommand::Apply { .. }
             | ControlCommand::Fonts { .. }
+            | ControlCommand::Generators
             | ControlCommand::TitleTemplates
             | ControlCommand::SaveTemplate { .. }
             | ControlCommand::ExportTemplatePack { .. }
