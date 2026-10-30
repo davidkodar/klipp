@@ -63,6 +63,15 @@ pub fn gap_at(track: &klipp_timeline::Track, at: Timecode) -> Option<(Timecode, 
     gaps(track).into_iter().find(|&(a, b)| a <= at && at < b)
 }
 
+/// The span a Set Range to Clip marks (#3127): the selected clip's, a
+/// gap clip aside, else the first clip under the playhead.
+pub fn range_to_clip(seq: &Sequence, selected: Option<klipp_core::ClipId>, playhead: Timecode) -> Option<(Timecode, Timecode)> {
+    selected
+        .and_then(|id| seq.all_clips().find(|c| c.id == id && !c.kind.is_gap()))
+        .or_else(|| seq.tracks.iter().find_map(|t| t.clip_at_timecode(playhead).map(|(_, c)| c).filter(|c| !c.kind.is_gap())))
+        .map(|c| (c.timeline_in, c.timeline_out))
+}
+
 /// The first gap starting after `after` on any unlocked track: its track
 /// and its span (#925).
 pub fn next_gap(seq: &Sequence, after: Timecode) -> Option<(usize, Timecode, Timecode)> {
@@ -104,6 +113,25 @@ pub fn track_of(seq: &Sequence, clip: ClipId) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
+    /// #3127: Set Range to Clip marks the selected clip; a gap clip
+    /// selected, or nothing, gives the clip under the playhead; nothing
+    /// there, no range.
+    #[test]
+    fn set_range_to_clip_takes_the_selected_clip_else_the_one_at_the_playhead() {
+        let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+        let mut seq = klipp_timeline::Sequence::new_default();
+        let p = seq.primary_track_index().unwrap();
+        let a = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0));
+        let gap = klipp_timeline::Clip::gap(t(2.0), t(4.0));
+        let b = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(4.0), t(7.0), t(0.0), t(3.0));
+        let (a_id, gap_id) = (a.id, gap.id);
+        seq.tracks[p].clips = vec![a, gap, b];
+        assert_eq!(super::range_to_clip(&seq, Some(a_id), t(5.0)), Some((t(0.0), t(2.0))), "the selected clip");
+        assert_eq!(super::range_to_clip(&seq, Some(gap_id), t(5.0)), Some((t(4.0), t(7.0))), "a gap selected: the clip at the playhead");
+        assert_eq!(super::range_to_clip(&seq, None, t(1.0)), Some((t(0.0), t(2.0))));
+        assert_eq!(super::range_to_clip(&seq, None, t(3.0)), None, "the playhead over the gap");
+    }
+
     use super::*;
     use klipp_core::{MediaId, RationalTime};
     use klipp_timeline::{Clip, Track, TrackKind};

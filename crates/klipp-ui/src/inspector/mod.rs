@@ -253,7 +253,7 @@ impl NewInspectorPanel {
             // there, in the sequence's timecode (#3126): a line of its own,
             // the banner too narrow for it beside the track's name.
             ui.add_space(2.0);
-            ui.label(egui::RichText::new(clip_span_text(clip.timeline_in, clip.timeline_out, state.timecode_display())).monospace().size(10.0).color(theme.text_secondary));
+            ui.label(egui::RichText::new(clip_span_text(clip.timeline_in, clip.timeline_out, state.timecode_display())).monospace().size(crate::theme::type_scale::CAPTION).color(theme.text_secondary));
         }
 
         // ── The clip's own name and colour (#920) ──

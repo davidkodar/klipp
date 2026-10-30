@@ -509,6 +509,22 @@ impl KlippApp {
                     true
                 }
                 // Phase 4: Sequence markers
+                AppCommand::SetRangeToClip => {
+                    let (selected, playhead) = (self.state.selected_clip, self.state.playhead);
+                    match crate::selection::range_to_clip(self.state.sequence(), selected, playhead) {
+                        Some((new_in, new_out)) => {
+                            let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                            let (old_in, old_out) = (seq.in_point, seq.out_point);
+                            seq.in_point = Some(new_in);
+                            seq.out_point = Some(new_out);
+                            self.state.push_history(crate::history::EditCommand::SetRange { old_in, old_out, new_in: Some(new_in), new_out: Some(new_out) });
+                            self.state.toast.show("Range: clip marked");
+                            self.sync_sequence_to_engine();
+                        }
+                        None => self.state.toast.show("No clip to mark: select one, or put the playhead on one"),
+                    }
+                    true
+                }
                 AppCommand::SetSequenceInPoint(tc) => {
                     self.state.sequences[self.state.active_sequence_idx].in_point = Some(*tc);
                     self.sync_sequence_to_engine();

@@ -462,6 +462,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::InsertSourceAtPlayhead
         | AppCommand::CreateSubclipFromZone { .. }
         | AppCommand::SetSequenceInPoint(..)
+        | AppCommand::SetRangeToClip
         | AppCommand::SetSequenceOutPoint(..)
         | AppCommand::ClearSequenceInPoint
         | AppCommand::ClearSequenceOutPoint

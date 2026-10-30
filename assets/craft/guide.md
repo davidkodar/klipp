@@ -486,12 +486,17 @@ exist until the plan runs.
   the picture is never leaned or sheared. It enlarges the picture just
   as far as that clip's correction needs, so no edge is ever stretched
   in.
-- `retime {clip_id, speed | fit, ripple?}`: change a clip's speed, its linked
+- `mark {clip_id | from, to | clear}`: the sequence's range, its in and
+  out points: a clip's span, two times, or none (`clear: true`). One undo
+  step. It is what `retime`'s `fit_range` and an export's range read.
+- `retime {clip_id, speed | fit | length_secs | fit_range, ripple?}`: change a clip's speed, its linked
   sound with it. Above 1 is faster and shorter, below 1 slower and
   longer, negative plays it reversed. `fit: true` in place of `speed` is
   fit to fill: the speed that makes the clip end exactly where the next
   clip on its track begins, worked out for you (a shot slowed to fill a
-  bar, a slot left for it in a cut to music). Its sound plays at the speed, its
+  bar, a slot left for it in a cut to music); a gap clip between is room
+  it fills. `length_secs` makes the clip that long and `fit_range` as long
+  as the marked range (set it with `mark`), the speed worked out. Its sound plays at the speed, its
   pitch moving with it as tape's does, backward when reversed; music and
   other tracks are untouched. (A speed ramp's own sound is silent.)
   With `ripple` the clips after it on its tracks move by the change in

@@ -1917,6 +1917,9 @@ pub enum AppCommand {
 
     // Sequence markers
     SetSequenceInPoint(RationalTime),
+    /// The sequence's range set to a clip's span, one step (#3127): the
+    /// selected clip, else the one under the playhead.
+    SetRangeToClip,
     SetSequenceOutPoint(RationalTime),
     ClearSequenceInPoint,
     ClearSequenceOutPoint,
