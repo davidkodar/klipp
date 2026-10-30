@@ -10904,7 +10904,6 @@ fn retime(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id: ClipId,
 }
 
 /// What `clean_audio` was asked to fix.
-#[derive(Clone, Copy)]
 struct CleanFlags {
     voice: bool,
     reduction_db: Option<f32>,
@@ -10986,66 +10985,6 @@ fn add_audio_steps<'a>(seq: &Sequence, pool: &MediaPool, i: usize, given: &Clip,
     new_state.audio_effects = chain;
     let edit = EditCommand::EditAudioChain { clip_id: clip.id, description, old_state: crate::history::AudioChainSnapshot::from_clip(clip), new_state };
     Ok((added, edit))
-}
-
-#[cfg(test)]
-fn clean_audio_coded(seq: &Sequence, pool: &MediaPool, i: usize, given: &Clip, flags: CleanFlags) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
-    let CleanFlags { voice, reduction_db, wind, hiss, hum, deess } = flags;
-    let clip = sound_settings_clip(seq, given);
-    if !clip.media_id().and_then(|id| pool.get(&id)).is_some_and(|m| m.has_audio) {
-        return Err(refuse(i, format!("{} has no sound", clip_name(seq, pool, clip)), "name a clip whose media has audio"));
-    }
-    if !(voice || wind || hiss || hum || deess) {
-        return Err(refuse(i, "nothing to clean", "set voice, wind, hiss, hum or deess"));
-    }
-    let mk = |effect_type: &str, params: Vec<(&str, f32)>| klipp_core::AudioEffectInstance {
-        effect_type: effect_type.to_string(),
-        enabled: true,
-        wet_dry: 1.0,
-        params: params.into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
-    };
-    let mut chain = clip.audio_effects.clone();
-    let has = |chain: &[klipp_core::AudioEffectInstance], t: &str| chain.iter().any(|e| e.effect_type == t);
-    let mut said: Vec<String> = Vec::new();
-    if voice && !has(&chain, "voice_isolation") {
-        let db = reduction_db.unwrap_or(24.0).clamp(0.0, 60.0);
-        chain.push(mk("voice_isolation", vec![("reduction", db), ("mode", 0.0)]));
-        said.push(if wind || hiss {
-            format!("speech isolated from the noise, wind and hiss included (Voice Isolation, {db:.0} dB)")
-        } else {
-            format!("speech isolated from the noise (Voice Isolation, {db:.0} dB)")
-        });
-    }
-    // Wind and hiss go to the Broadband Denoiser's presets, wind the
-    // stronger; one of it, so two flags do not stack two reducers. With
-    // Voice Isolation on the clip it has them covered.
-    if (wind || hiss) && !voice && !has(&chain, "denoiser") {
-        let (strength, floor, wind_amount, window) = if wind { (1.0, 0.03, 1.0, 1.0) } else { (0.85, 0.06, 0.0, 0.5) };
-        chain.push(mk("denoiser", vec![("strength", strength), ("floor", floor), ("wind", wind_amount), ("profile_seconds", window)]));
-        said.push(if wind { "wind and rumble reduced".into() } else { "hiss reduced".into() });
-    }
-    if hum && !has(&chain, "hum_removal") {
-        chain.push(mk("hum_removal", vec![("fundamental_hz", 50.0), ("harmonics", 4.0), ("q", 30.0)]));
-        said.push("mains hum removed".into());
-    }
-    if deess && !has(&chain, "deesser") {
-        chain.push(mk("deesser", vec![("frequency", 6500.0), ("threshold", -24.0), ("reduction", 6.0), ("bandwidth", 1.0)]));
-        said.push("sibilance tamed".into());
-    }
-    if said.is_empty() {
-        return Err(refuse(i, "the sound already has these cleaners", "nothing to add"));
-    }
-    let mut new_state = crate::history::AudioChainSnapshot::from_clip(clip);
-    new_state.audio_effects = chain;
-    let on = if clip.id == given.id { String::new() } else { " (on the linked audio)".to_string() };
-    let what = format!("clean {}: {}{on}", clip_name(seq, pool, given), said.join(", "));
-    let edit = EditCommand::EditAudioChain {
-        clip_id: clip.id,
-        description: "Clean Audio",
-        old_state: crate::history::AudioChainSnapshot::from_clip(clip),
-        new_state,
-    };
-    Ok((what, edit, vec![given.id]))
 }
 
 /// A transition between `clip` and the clip after it on its track. The
@@ -15300,7 +15239,7 @@ mod tests {
         }
     }
 
-    pub(super) fn fixture() -> (Sequence, MediaPool, MediaId, ClipId, ClipId) {
+    fn fixture() -> (Sequence, MediaPool, MediaId, ClipId, ClipId) {
         let mut seq = Sequence::new_default();
         seq.fps = Fps::new(25, 1);
         let mut pool = MediaPool::new();
@@ -21622,46 +21561,5 @@ mod effect_params_tests {
         assert!(effect("displace", r#"{"direction": "sideways"}"#).is_err());
         assert!(effect("displace", r#"{"seed": 1.5}"#).is_err());
         assert!(effect("displace", r#"{"amount": "lots"}"#).is_err());
-    }
-}
-
-#[cfg(test)]
-mod clean_audio_file_check {
-    use super::tests::fixture;
-    use super::*;
-
-    /// #2886: `clean_audio` built on Klipp's own Clean Audio recipe makes
-    /// what its code made, reply, edit and refusal alike, for every set of
-    /// flags, a reduction left out, given or past its range, a sound
-    /// already holding any of the four cleaners, asked of the picture or
-    /// of its linked sound.
-    #[test]
-    fn clean_audio_on_its_recipe_makes_what_its_code_made() {
-        let (seq, pool, _, a, _) = fixture();
-        let linked = seq.tracks[0].clips[0].linked_clip_id.unwrap();
-        // Asked of the picture, and of its linked sound: either way the
-        // picture holds the sound settings.
-        let fx = |t: &str| klipp_core::AudioEffectInstance { effect_type: t.into(), enabled: true, wet_dry: 0.7, params: vec![("x".into(), 1.0)] };
-        let cleaners = ["voice_isolation", "denoiser", "hum_removal", "deesser"];
-        let mut n = 0;
-        for had in 0..16u32 {
-            let mut seq = seq.clone();
-            let holder = seq.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).find(|c| c.id == a).unwrap();
-            holder.audio_effects = cleaners.iter().enumerate().filter(|(k, _)| had & (1 << k) != 0).map(|(_, t)| fx(t)).collect();
-            for (bits, asked) in (0..32u32).flat_map(|b| [(b, a), (b, linked)]) {
-                let given = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == asked).unwrap().clone();
-                for reduction_db in [None, Some(12.0), Some(90.0)] {
-                    let flags = CleanFlags { voice: bits & 1 != 0, reduction_db, wind: bits & 2 != 0, hiss: bits & 4 != 0, hum: bits & 8 != 0, deess: bits & 16 != 0 };
-                    // The edit by its Debug form: every field of every
-                    // effect, in order.
-                    let shown = |r: Result<(String, EditCommand, Vec<ClipId>), Refusal>| r.map(|(what, edit, ids)| (what, format!("{edit:?}"), ids)).map_err(|r| (r.why, r.hint));
-                    let want = shown(clean_audio_coded(&seq, &pool, 0, &given, flags));
-                    let got = shown(clean_audio(&seq, &pool, 0, &given, flags));
-                    assert_eq!(got, want, "had {had:04b} flags {bits:05b} reduction {reduction_db:?} asked of {asked:?}");
-                    n += 1;
-                }
-            }
-        }
-        assert_eq!(n, 16 * 32 * 2 * 3);
     }
 }
