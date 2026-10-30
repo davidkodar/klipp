@@ -210,8 +210,20 @@ fn canonicalize(directory: &Path, case: &str) -> Result<(), String> {
         .ok_or("manifest items missing")?;
     items.sort_by_key(|v| v["filename"].as_str().unwrap_or("").to_owned());
     for item in items {
-        let filename = item["filename"].as_str().ok_or("media filename missing")?;
+        let filename = item["filename"].as_str().ok_or("media filename missing")?.to_owned();
         item["path"] = Value::String(format!("../../media/{filename}"));
+        // The media is the corpus's own, beside the projects: found by its
+        // relative path, never by where this run's folder is, which differs
+        // on every run (#3175). Its fingerprint as a load takes it from the
+        // file, so opening it and saving writes the same.
+        // Its disk cache key too: this machine's, from the file's path and
+        // modified time.
+        if let Some(map) = item.as_object_mut() {
+            map.remove("absolute_path");
+            map.remove("cache_key");
+        }
+        let media = directory.join("../../media").join(&filename);
+        item["fingerprint"] = klipp_media::relink::fingerprint(&media).map_or(Value::Null, Value::from);
     }
     for value in [&mut project, &mut manifest] {
         value["generation"] = Value::String(id(&format!("{case}/generation")).to_string());
