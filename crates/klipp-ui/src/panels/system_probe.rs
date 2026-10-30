@@ -266,6 +266,9 @@ fn cpu_section() -> ReportSection {
                 .and_then(|rest| rest.split(':').nth(1))
                 .map(|v| v.trim().to_string())
         })
+        // arm64 has no `model name`: Apple Silicon is named from the
+        // device tree.
+        .or_else(crate::soc_info::cpu_name)
         .unwrap_or_else(|| "(unknown)".to_string());
     rows.push(("CPU model".into(), model));
 
@@ -313,7 +316,8 @@ fn gpu_section() -> ReportSection {
         .filter(|s| !s.is_empty())
         .collect();
     let device_str = if devices.is_empty() {
-        "(none)".to_string()
+        // A GPU on the chip (Apple Silicon) is no PCI device.
+        crate::soc_info::gpu().map(|g| format!("{} ({})", g.name, g.detail)).unwrap_or_else(|| "(none)".to_string())
     } else {
         devices.join("\n  ")
     };

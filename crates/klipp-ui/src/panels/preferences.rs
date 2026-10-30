@@ -4606,6 +4606,9 @@ impl PreferencesPanel {
                 .find(|l| l.starts_with("model name"))
                 .and_then(|l| l.split(':').nth(1))
                 .map(|s| s.trim().to_string())
+                // arm64 has no `model name`: Apple Silicon is named from
+                // the device tree.
+                .or_else(crate::soc_info::cpu_name)
                 .unwrap_or_else(|| "Unknown".into());
             let display = crate::ui_util::elide(&model, 40);
             ui.label(egui::RichText::new(display).color(theme.text_dim).size(11.0));
@@ -4628,7 +4631,12 @@ impl PreferencesPanel {
                     }
                     s
                 })
-                .filter(|s| !s.is_empty())
+                .filter(|s| !s.is_empty());
+            // A GPU on the chip (Apple Silicon) is no PCI device, so lspci
+            // has nothing: it is named from the device tree instead.
+            let soc_gpu = if gpu_name.is_none() { crate::soc_info::gpu() } else { None };
+            let gpu_name = gpu_name
+                .or_else(|| soc_gpu.as_ref().map(|g| g.name.clone()))
                 .unwrap_or_else(|| "Unknown".into());
 
             // Detect driver + API info based on vendor
@@ -4669,6 +4677,8 @@ impl PreferencesPanel {
                     .map(|s| format!("Mesa {}", s.trim()))
                     .filter(|s| s.len() > 5)
                     .unwrap_or_default()
+            } else if let Some(gpu) = soc_gpu {
+                gpu.detail
             } else {
                 String::new()
             };
