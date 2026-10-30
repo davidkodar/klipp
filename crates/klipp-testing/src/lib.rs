@@ -25,6 +25,7 @@
 //!   diagnostics.
 
 pub mod diff;
+pub mod encoders;
 pub mod fixtures;
 pub mod scratch;
 pub mod snapshot;
