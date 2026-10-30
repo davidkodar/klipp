@@ -342,10 +342,12 @@ fn stepping_back_while_paused_takes_frames_from_the_held_window() {
 
 
 /// The GPU's other users are read from `nvidia-smi pmon`: each process
-/// with shader time but the test's own, at its highest share, busiest
-/// first; idle ones and the header left out.
+/// with shader time or decoding but the test's own, at its highest
+/// shares, busiest first; idle ones and the header left out.
 #[test]
 fn the_gpus_other_users_are_named() {
-    let pmon = "# gpu  pid  type  sm  mem  enc  dec  jpg  ofa  command\n# Idx  #  C/G  %  %  %  %  %  %  name\n    0  1614  G  14  9  -  -  -  -  Hyprland\n    0  4242  C+G  50  10  -  -  -  -  me\n    0  1153  G  -  -  -  -  -  -  idle\n    0  1614  G  23  15  -  -  -  -  Hyprland\n    0  7777  G  10  7  -  -  -  -  localsend\n";
-    assert_eq!(common::busy_on_gpu(pmon, 4242), vec![("Hyprland".to_string(), 23), ("localsend".to_string(), 10)]);
+    let pmon = "# gpu  pid  type  sm  mem  enc  dec  jpg  ofa  command\n# Idx  #  C/G  %  %  %  %  %  %  name\n    0  1614  G  14  9  -  -  -  -  Hyprland\n    0  4242  C+G  50  10  -  80  -  -  me\n    0  1153  G  -  -  -  -  -  -  idle\n    0  1614  G  23  15  -  -  -  -  Hyprland\n    0  7777  G  10  7  -  -  -  -  localsend\n    0  9090  C+G  2  1  -  41  -  -  klipp-app\n    0  9090  C+G  0  0  -  55  -  -  klipp-app\n";
+    // Shader time and the decoder, each at its highest: another app
+    // decoding holds up a reversed clip with its shaders all but idle.
+    assert_eq!(common::busy_on_gpu(pmon, 4242), vec![("klipp-app".to_string(), 2, 55), ("Hyprland".to_string(), 23, 0), ("localsend".to_string(), 10, 0)]);
 }

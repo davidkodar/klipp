@@ -712,26 +712,37 @@ pub fn gpu_others() -> String {
     let run = |args: &[&str]| std::process::Command::new("nvidia-smi").args(args).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
     let Some(state) = run(&["--query-gpu=pstate,clocks.sm", "--format=csv,noheader"]) else { return "GPU load unknown (no nvidia-smi)".into() };
     let busy = run(&["pmon", "-c", "2", "-s", "u"]).map(|t| busy_on_gpu(&t, std::process::id())).unwrap_or_default();
-    let others = if busy.is_empty() { "nothing else busy".to_string() } else { busy.iter().map(|(name, pct)| format!("{name} {pct}%")).collect::<Vec<_>>().join(", ") };
+    let share = |sm: u32, dec: u32| match (sm, dec) {
+        (_, 0) => format!("{sm}%"),
+        (0, _) => format!("{dec}% decode"),
+        _ => format!("{sm}%, {dec}% decode"),
+    };
+    let others = if busy.is_empty() { "nothing else busy".to_string() } else { busy.iter().map(|(name, sm, dec)| format!("{name} {}", share(*sm, *dec))).collect::<Vec<_>>().join(", ") };
     format!("GPU {}; others on it: {others}", state.trim())
 }
 
-/// The processes `nvidia-smi pmon -s u` shows using shader time, but
-/// `me`, each at its highest share over the samples, busiest first.
+/// The processes `nvidia-smi pmon -s u` shows using shader time or the
+/// video decoder, but `me`, each at its highest shader and decode share
+/// over the samples, busiest first. The decoder is apart from the
+/// shaders: a reversed long-GOP clip is held up by another process's
+/// decoding with the shaders idle.
 #[allow(dead_code)]
-pub fn busy_on_gpu(pmon: &str, me: u32) -> Vec<(String, u32)> {
-    let mut seen: Vec<(String, u32)> = Vec::new();
+pub fn busy_on_gpu(pmon: &str, me: u32) -> Vec<(String, u32, u32)> {
+    let pct = |f: &[&str], i: usize| f.get(i).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+    let mut seen: Vec<(String, u32, u32)> = Vec::new();
     for line in pmon.lines().filter(|l| !l.trim_start().starts_with('#')) {
         let f: Vec<&str> = line.split_whitespace().collect();
-        let (Some(pid), Some(sm), Some(name)) = (f.get(1).and_then(|p| p.parse::<u32>().ok()), f.get(3).and_then(|s| s.parse::<u32>().ok()), f.last()) else { continue };
-        if pid == me || sm == 0 {
+        let (Some(pid), Some(name)) = (f.get(1).and_then(|p| p.parse::<u32>().ok()), f.last()) else { continue };
+        // Columns: gpu pid type sm mem enc dec jpg ofa command.
+        let (sm, dec) = (pct(&f, 3), pct(&f, 6));
+        if pid == me || (sm == 0 && dec == 0) {
             continue;
         }
-        match seen.iter_mut().find(|(n, _)| n == name) {
-            Some((_, p)) => *p = (*p).max(sm),
-            None => seen.push((name.to_string(), sm)),
+        match seen.iter_mut().find(|(n, _, _)| n == name) {
+            Some((_, s, d)) => (*s, *d) = ((*s).max(sm), (*d).max(dec)),
+            None => seen.push((name.to_string(), sm, dec)),
         }
     }
-    seen.sort_by_key(|s| std::cmp::Reverse(s.1));
+    seen.sort_by_key(|s| std::cmp::Reverse(s.1 + s.2));
     seen
 }
