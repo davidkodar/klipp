@@ -883,6 +883,11 @@ exist until the plan runs.
   `steps` names those to add (all when left out), each one the sound
   has already is skipped, and `controls` sets their numbers. One undo
   step.
+  A clips recipe (listed under `clip_recipes`: Track Matte Reveal, Whip
+  Pan (left), Whip Pan (right)) edits the clip and clips found from it,
+  the clip above or the next on its track, or those `slots` names by
+  clip id: a track matte, keys on their placement or opacity. One undo
+  step; refused when a clip it needs isn't there.
 - `join {clip_id, side?}`: a split undone later, or a scene cut found
   where the shot did not change: the clip and the piece of the same shot
   on its `side` ("next", the default, or "previous") made one again, its

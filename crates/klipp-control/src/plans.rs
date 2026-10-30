@@ -108,6 +108,7 @@ pub(crate) fn with_recipes(ops: &[klipp_document::ops::Op], dir: Option<&std::pa
     }
     let recipes = crate::recipes::all(dir);
     let chains = crate::recipes::audio_all(dir);
+    let clip_recipes = crate::recipes::clips_all(dir);
     // Where each media file's subject mattes are, for what the reply says
     // of a recipe reading one (#2758).
     let media = std::sync::Arc::new(crate::recipes::media_files(pool));
@@ -134,7 +135,7 @@ pub(crate) fn with_recipes(ops: &[klipp_document::ops::Op], dir: Option<&std::pa
         .cloned()
         .map(|mut op| {
             match &mut op {
-                Op::Recipe { name, slots, controls, steps, build, audio, .. } => {
+                Op::Recipe { name, slots, controls, steps, build, audio, clips, .. } => {
                     *build = crate::recipes::named(&recipes, name).ok().cloned().map(|recipe| builder(recipe, slots.clone(), controls.clone()));
                     // No picture recipe of the name: an audio chain's
                     // steps, with the op's controls (#2886).
@@ -142,6 +143,10 @@ pub(crate) fn with_recipes(ops: &[klipp_document::ops::Op], dir: Option<&std::pa
                         *audio = crate::recipes::named(&chains, name).ok().map(|chain| {
                             klipp_document::ops::AudioSteps(crate::recipes::values(chain, slots, controls).and_then(|values| chain.audio_steps(&values, steps.as_deref())))
                         });
+                    }
+                    // Nor an audio chain: a clips recipe (#2886).
+                    if build.is_none() && audio.is_none() {
+                        *clips = crate::recipes::named(&clip_recipes, name).ok().map(|r| klipp_document::ops::ClipsRecipe(Box::new(r.clone())));
                     }
                 }
                 Op::Redact { recipes, .. } | Op::Zoom { recipes, .. } => *recipes = Some(maker.clone()),
@@ -315,7 +320,15 @@ pub(crate) fn title_templates(dir: Option<&std::path::Path>, compositions: Optio
         chains.iter().map(|r| r.name.as_str()).collect::<Vec<_>>().join(", ")
     ));
     let chains: Vec<serde_json::Value> = chains.iter().map(crate::recipes::listed_audio).collect();
-    json!({ "text": text, "builtin": builtin, "templates": list, "compositions": composed, "recipes": recipes, "audio_chains": chains })
+    // Clips recipes (#2886): edits of a clip and the clips found from it.
+    let clip_recipes = crate::recipes::clips_all(compositions);
+    text.push_str(&format!(
+        " {} clips recipes, placed on a clip with the recipe op, the clips they need found from it (or given by slot): {}.",
+        clip_recipes.len(),
+        clip_recipes.iter().map(|r| r.name.as_str()).collect::<Vec<_>>().join(", ")
+    ));
+    let clip_recipes: Vec<serde_json::Value> = clip_recipes.iter().map(crate::recipes::listed_clips).collect();
+    json!({ "text": text, "builtin": builtin, "templates": list, "compositions": composed, "recipes": recipes, "audio_chains": chains, "clip_recipes": clip_recipes })
 }
 
 /// Exact clip changes predicted by resolved cut edits. The UI applies the

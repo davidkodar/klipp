@@ -31,6 +31,22 @@ pub fn audio_all(dir: Option<&std::path::Path>) -> Vec<CompositionTemplate> {
     chains
 }
 
+/// Every clips recipe there is (#2886): the user's own, the installed
+/// packs', then Klipp's, found as [`all`] finds recipes.
+pub fn clips_all(dir: Option<&std::path::Path>) -> Vec<CompositionTemplate> {
+    let mut recipes: Vec<CompositionTemplate> = crate::plans::template_store(dir).clip_recipes().cloned().collect();
+    recipes.extend(ct::builtin_clip_recipes());
+    recipes
+}
+
+/// A clips recipe as the list call gives it (#2886): its clip slots, each
+/// with how it is found when not given.
+pub fn listed_clips(r: &CompositionTemplate) -> Value {
+    let find = r.clips.as_ref().map(|c| &c.find);
+    let slots: Vec<Value> = r.slots.iter().map(|(name, s)| json!({ "name": name, "label": s.label, "found": find.and_then(|f| f.get(name)) })).collect();
+    json!({ "name": r.name, "category": r.category, "slots": slots })
+}
+
 /// An audio chain recipe as the list call gives it (#2886): its steps,
 /// each the effect it adds and what it does, and its controls.
 pub fn listed_audio(r: &CompositionTemplate) -> Value {
@@ -220,6 +236,73 @@ mod tests {
         assert!(why.contains("\"Green screen\""), "names those there are: {why}");
     }
 
+    /// #2886: the recipe op, bound as the socket binds it, places a clips
+    /// recipe: its clips found from the one it is placed on, or given by
+    /// slot; one undo step named for it; a control of a person's own
+    /// recipe setting the key it is bound to; refused, said, where a clip
+    /// it needs isn't there. The listing names them with their slots.
+    #[test]
+    fn the_recipe_op_places_a_clips_recipe() {
+        use klipp_document::history::EditCommand;
+        use klipp_document::ops::{resolve, ClipRef, Op};
+        let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+        let solid = |from: f64, to: f64| klipp_timeline::Clip { kind: klipp_timeline::ClipKind::Generator(klipp_core::GeneratorData::SolidColor { color: [200, 0, 0, 255] }), source_in: t(0.0), source_out: t(to - from), ..klipp_timeline::Clip::gap(t(from), t(to)) };
+        let (a, b, above) = (solid(0.0, 2.0), solid(2.0, 4.0), solid(0.0, 2.0));
+        let (ia, ib, iabove) = (a.id, b.id, above.id);
+        let mut v1 = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+        v1.clips = vec![a, b];
+        let mut v2 = klipp_timeline::Track::new("V2", klipp_timeline::TrackKind::Video);
+        v2.clips = vec![above];
+        let mut seq = Sequence::new_default();
+        seq.resolution = klipp_core::Resolution { width: 1920, height: 1080 };
+        seq.tracks = vec![v1, v2];
+        let pool = klipp_media::MediaPool::new();
+        let op = |on: klipp_core::ClipId, name: &str, slots: Value, controls: Value| Op::Recipe {
+            clip_id: ClipRef::Id(on), name: name.into(), slots: serde_json::from_value(slots).unwrap(), controls: serde_json::from_value(controls).unwrap(), steps: None, build: None, audio: None, clips: None,
+        };
+        let placed = |o: Op, dir: Option<&std::path::Path>| resolve(&seq, &pool, &crate::plans::with_recipes(&[o], dir, &pool));
+        let after = |edit: &EditCommand| {
+            let mut seqs = vec![seq.clone()];
+            let (mut p, mut f) = (pool.clone(), seq.fps);
+            klipp_document::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut f }.apply_forward(edit);
+            seqs.remove(0)
+        };
+        let plan = placed(op(ia, "track matte REVEAL", json!({}), json!({})), None).unwrap_or_else(|r| panic!("{r:?}"));
+        let [step] = plan.steps.as_slice() else { panic!("one step") };
+        assert!(matches!(&step.edit, EditCommand::Named { label, .. } if label == "Track Matte Reveal"), "{:?}", step.edit);
+        let s = after(&step.edit);
+        assert_eq!(s.all_clips().find(|c| c.id == ia).unwrap().matte_source.as_ref().map(|m| m.source_clip_id), Some(iabove), "the clip above found");
+        let plan = placed(op(ia, "Whip Pan (left)", json!({ "Next clip": ib.0.to_string() }), json!({})), None).unwrap_or_else(|r| panic!("{r:?}"));
+        assert_eq!(after(&plan.steps[0].edit).all_clips().find(|c| c.id == ib).unwrap().video_param_keyframes(klipp_core::VideoParam::PositionX).len(), 2, "the given next clip keyed");
+        let why = placed(op(ib, "Whip Pan (left)", json!({}), json!({})), None).unwrap_err().why;
+        assert!(why.contains("needs a next clip on the same track"), "{why}");
+        let why = placed(op(iabove, "Track Matte Reveal", json!({}), json!({})), None).unwrap_err().why;
+        assert!(why.contains("needs a clip on a higher track"), "{why}");
+
+        // A person's own, with a control on the outgoing clip's end key.
+        let dir = std::env::temp_dir().join(format!("klipp-clips-recipe-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut mine = ct::builtin_clip_recipes().into_iter().find(|r| r.name == "Whip Pan (left)").unwrap();
+        mine.id = uuid::Uuid::new_v4();
+        mine.name = "Short whip".into();
+        mine.parameters.insert("reach".into(), ct::TemplateParameter { label: "Reach (px)".into(), default: TemplateValue::Number(-960.0), range: Some(ct::NumberRange { min: Some(-4000.0), max: Some(4000.0) }), choices: Vec::new() });
+        mine.bindings = vec![ct::TemplateBinding { parameter: "reach".into(), property: "steps.0.keys.1.value".into(), link: None, take: None }];
+        ct::CompositionTemplateStore::load(Some(dir.clone())).save(mine).unwrap();
+        let end_x = |controls: Value| {
+            let plan = placed(op(ia, "Short whip", json!({}), controls), Some(&dir)).unwrap_or_else(|r| panic!("{r:?}"));
+            after(&plan.steps[0].edit).all_clips().find(|c| c.id == ia).unwrap().video_param_keyframes(klipp_core::VideoParam::PositionX).last().map(|k| k.value)
+        };
+        assert_eq!(end_x(json!({})), Some(-960.0), "its default");
+        assert_eq!(end_x(json!({ "Reach (px)": -300.0 })), Some(-300.0), "set by its control");
+        let why = placed(op(ia, "Short whip", json!({}), json!({ "reach": 9000.0 })), Some(&dir)).unwrap_err().why;
+        assert!(why.contains("Reach (px)"), "{why}");
+        let listed = crate::plans::title_templates(None, Some(&dir));
+        assert!(listed["text"].as_str().unwrap().contains("clips recipes, placed on a clip with the recipe op"), "{}", listed["text"]);
+        let names: Vec<&str> = listed["clip_recipes"].as_array().unwrap().iter().filter_map(|r| r["name"].as_str()).collect();
+        assert!(names.contains(&"Short whip") && names.contains(&"Track Matte Reveal"), "{names:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// #2886: the recipe op, bound as the socket binds it, adds an audio
     /// chain's steps to a clip's sound as one step: those asked for, in
     /// the recipe's order, a control setting one; a step its sound has
@@ -243,7 +326,7 @@ mod tests {
         seq.tracks = vec![track];
         let op = |steps: Option<Vec<&str>>, controls: Value| Op::Recipe {
             clip_id: ClipRef::Id(id), name: "clean AUDIO".into(), slots: BTreeMap::new(), controls: serde_json::from_value(controls).unwrap(),
-            steps: steps.map(|s| s.into_iter().map(String::from).collect()), build: None, audio: None,
+            steps: steps.map(|s| s.into_iter().map(String::from).collect()), build: None, audio: None, clips: None,
         };
         let placed = |o: Op| resolve(&seq, &pool, &crate::plans::with_recipes(&[o], None, &pool));
         let plan = placed(op(Some(vec!["deess", "voice", "hum"]), json!({"Voice reduction (dB)": 12.0}))).unwrap_or_else(|r| panic!("{r:?}"));
@@ -278,7 +361,7 @@ mod tests {
         let pool = klipp_media::MediaPool::new();
         let op = |name: &str, slots: Value, controls: Value| Op::Recipe {
             clip_id: ClipRef::Id(id), name: name.into(),
-            slots: serde_json::from_value(slots).unwrap(), controls: serde_json::from_value(controls).unwrap(), steps: None, build: None, audio: None,
+            slots: serde_json::from_value(slots).unwrap(), controls: serde_json::from_value(controls).unwrap(), steps: None, build: None, audio: None, clips: None,
         };
         let bound = crate::plans::with_recipes(&[op("green screen", json!({"screen": "#05be05"}), json!({"Tolerance": 0.25, "Softness": 0.3}))], None, &klipp_media::MediaPool::new());
         let plan = resolve(&seq, &pool, &bound).unwrap_or_else(|r| panic!("{r:?}"));
@@ -320,7 +403,7 @@ mod tests {
         seq.tracks = vec![track];
         let pool = klipp_media::MediaPool::new();
         let link = |control: Option<&str>, target: Option<&str>, value: f64| Op::TemplateLink { clip_id: ClipRef::Id(id), control: control.map(Into::into), target: target.map(Into::into), action: None, value: Some(value) };
-        let place = |name: &str, slots: Value| Op::Recipe { clip_id: ClipRef::Id(id), name: name.into(), slots: serde_json::from_value(slots).unwrap(), controls: BTreeMap::new(), steps: None, build: None, audio: None };
+        let place = |name: &str, slots: Value| Op::Recipe { clip_id: ClipRef::Id(id), name: name.into(), slots: serde_json::from_value(slots).unwrap(), controls: BTreeMap::new(), steps: None, build: None, audio: None, clips: None };
         let ops = [
             place("Picture in picture", json!({"picture": "m1"})),
             place("Green screen", json!({"screen": "#05be05"})),
@@ -480,7 +563,7 @@ mod tests {
         track.clips = vec![clip];
         seq.tracks = vec![track];
         let ops = [
-            Op::Recipe { clip_id: ClipRef::Id(id), name: "Shaking".into(), slots: BTreeMap::new(), controls: BTreeMap::new(), steps: None, build: None, audio: None },
+            Op::Recipe { clip_id: ClipRef::Id(id), name: "Shaking".into(), slots: BTreeMap::new(), controls: BTreeMap::new(), steps: None, build: None, audio: None, clips: None },
             Op::TemplateLink { clip_id: ClipRef::Id(id), control: Some("Shake".into()), target: None, action: None, value: Some(50.0) },
         ];
         let plan = resolve(&seq, &klipp_media::MediaPool::new(), &crate::plans::with_recipes(&ops, Some(&dir), &klipp_media::MediaPool::new())).unwrap_or_else(|r| panic!("{r:?}"));

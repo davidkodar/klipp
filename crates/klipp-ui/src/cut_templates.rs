@@ -83,6 +83,7 @@ pub enum TemplateKind {
 #[derive(Debug, Clone, Copy)]
 pub struct TemplateContext<'a> {
     pub seq: &'a Sequence,
+    pub pool: &'a klipp_media::MediaPool,
     pub selected_clip_id: Option<ClipId>,
     pub playhead: Timecode,
     pub fps: Fps,
@@ -344,7 +345,38 @@ fn plan_whip_pan_transition(ctx: &TemplateContext, direction: WhipDirection) -> 
 /// palette to grey out unavailable entries and by the right-click
 /// menu to hide them. Returns `false` for any precondition the
 /// template's plan would otherwise silently fail on.
+/// The built-in clips recipe a template is (#2886), by name: the matte
+/// reveal and the whip pans are files; the hyperzoom ones stay code (the
+/// hyperzoom planner is).
+pub fn recipe_of(kind: &TemplateKind) -> Option<&'static str> {
+    match kind {
+        TemplateKind::TrackMatteReveal => Some("Track Matte Reveal"),
+        TemplateKind::WhipPanTransition { direction: WhipDirection::Left } => Some("Whip Pan (left)"),
+        TemplateKind::WhipPanTransition { direction: WhipDirection::Right } => Some("Whip Pan (right)"),
+        TemplateKind::HyperzoomLetterTransition | TemplateKind::CrossDissolveHyperzoomBridge => None,
+    }
+}
+
+/// The recipe op placing Klipp's own clips recipe `name` on `clip`, its
+/// clips found from it.
+fn recipe_op(name: &str, clip: ClipId) -> Option<klipp_document::ops::Op> {
+    use klipp_document::ops::{ClipRef, ClipsRecipe, Op};
+    let recipe = klipp_timeline::composition_template::builtin_clip_recipes().into_iter().find(|r| r.name == name)?;
+    Some(Op::Recipe { clip_id: ClipRef::Id(clip), name: name.into(), slots: Default::default(), controls: Default::default(), steps: None, build: None, audio: None, clips: Some(ClipsRecipe(Box::new(recipe))) })
+}
+
+/// The recipe `name` placed on the selected clip, as the document plans
+/// it: one step, or why not.
+fn recipe_plan(name: &str, ctx: &TemplateContext) -> Result<klipp_document::ops::Plan, String> {
+    let clip = ctx.selected_clip_id.ok_or("select a clip first")?;
+    let op = recipe_op(name, clip).ok_or_else(|| format!("Klipp's \"{name}\" recipe is missing"))?;
+    klipp_document::ops::resolve(ctx.seq, ctx.pool, std::slice::from_ref(&op)).map_err(|r| r.why)
+}
+
 pub fn can_apply(kind: &TemplateKind, ctx: &TemplateContext) -> bool {
+    if let Some(name) = recipe_of(kind) {
+        return recipe_plan(name, ctx).is_ok();
+    }
     match kind {
         TemplateKind::HyperzoomLetterTransition => can_apply_hyperzoom_letter_transition(ctx),
         TemplateKind::TrackMatteReveal => can_apply_track_matte_reveal(ctx),
@@ -429,13 +461,25 @@ fn find_next_clip_on_track(seq: &Sequence, clip_id: ClipId) -> Option<(ClipId, f
 /// (via `PaletteAction::Custom`) and the right-click context menu
 /// (commit 3). Inline pattern — no `AppCommand::ApplyTemplate`
 /// variant, no parallel mutation paths.
-pub fn dispatch_template(state: &AppState, kind: &TemplateKind, cmds: &mut Vec<AppCommand>) {
-    let ctx = TemplateContext {
-        seq: state.sequence(),
-        selected_clip_id: state.selected_clip,
-        playhead: state.playhead,
-        fps: state.fps,
-    };
+pub fn dispatch_template(state: &mut AppState, kind: &TemplateKind, cmds: &mut Vec<AppCommand>) {
+    if let Some(name) = recipe_of(kind) {
+        // A clips recipe (#2886): planned by the document, applied and
+        // recorded as one undo step, then the engine told.
+        match recipe_plan(name, &template_context(state)) {
+            Ok(plan) => {
+                for step in plan.steps {
+                    let active = state.active_sequence_idx;
+                    let _ = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active, media_pool: &mut state.media_pool, fps: &mut state.fps }.apply_forward(&step.edit);
+                    state.push_history(step.edit);
+                }
+                state.dirty = true;
+                cmds.push(AppCommand::SequenceUpdated);
+            }
+            Err(why) => state.toast.show(&why),
+        }
+        return;
+    }
+    let ctx = template_context(state);
     cmds.extend(plan_template(kind, &ctx));
 }
 
@@ -537,6 +581,7 @@ pub const MENU_ROWS: [TemplateMenuRow; 5] = [
 pub fn template_context(state: &AppState) -> TemplateContext<'_> {
     TemplateContext {
         seq: state.sequence(),
+        pool: &state.media_pool,
         selected_clip_id: state.selected_clip,
         playhead: state.playhead,
         fps: state.fps,
@@ -571,6 +616,7 @@ mod tests {
     fn ctx<'a>(seq: &'a Sequence, sel: Option<ClipId>) -> TemplateContext<'a> {
         TemplateContext {
             seq,
+            pool: Box::leak(Box::new(klipp_media::MediaPool::new())),
             selected_clip_id: sel,
             playhead: tc(0),
             fps: Fps::film_24(),
@@ -994,6 +1040,19 @@ mod tests {
         state.selected_clip = Some(consumer_id);
 
         for row in MENU_ROWS {
+            // A row that is a clips recipe (#2886) applies it: one undo
+            // step named for it, and the engine told.
+            if let Some(name) = recipe_of(&row.kind) {
+                let mut probe = AppState::default();
+                probe.sequences[0] = state.sequence().clone();
+                probe.selected_clip = Some(consumer_id);
+                let mut via_dispatch = Vec::new();
+                (row.dispatch)(&mut probe, &mut via_dispatch);
+                assert!(matches!(via_dispatch.as_slice(), [AppCommand::SequenceUpdated]), "row {:?}: {via_dispatch:?}", row.label);
+                let entry = probe.take_undo().unwrap_or_else(|| panic!("row {:?}: one undo step", row.label));
+                assert!(matches!(&entry.command, klipp_document::history::EditCommand::Named { label, .. } if label == name), "row {:?}", row.label);
+                continue;
+            }
             let ctx = template_context(&state);
             let direct = plan_template(&row.kind, &ctx);
             assert!(
@@ -1015,6 +1074,152 @@ mod tests {
                  wrong dispatch_* fn was wired to this kind.",
                 row.label,
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod recipe_check {
+    //! #2886: the matte reveal and the whip pans as Klipp's own clips
+    //! recipes, against the commands their code planned, applied as the
+    //! app's handlers apply them.
+    use super::*;
+    use klipp_compose::{FrameSource, RenderOptions, Renderer, SourceFrame};
+    use klipp_core::{GeneratorData, RationalTime, Resolution};
+    use klipp_timeline::{Clip, ClipKind, TextBox, TitleData, Track, TrackKind};
+
+    fn tc(s: f64) -> Timecode {
+        RationalTime::from_secs_f64(s, 24)
+    }
+
+    fn solid(color: [u8; 4], from: f64, to: f64) -> Clip {
+        Clip { kind: ClipKind::Generator(GeneratorData::SolidColor { color }), source_in: tc(0.0), source_out: tc(to - from), ..Clip::gap(tc(from), tc(to)) }
+    }
+
+    /// Red then blue on V1, big white text over the red on V2.
+    fn scene() -> (Sequence, ClipId) {
+        let mut seq = Sequence::new_default();
+        seq.resolution = Resolution { width: 320, height: 180 };
+        let (red, blue) = (solid([220, 40, 40, 255], 0.0, 2.0), solid([40, 60, 220, 255], 2.0, 4.0));
+        let id = red.id;
+        let mut v1 = Track::new("V1", TrackKind::Video);
+        v1.clips = vec![red, blue];
+        let mut v2 = Track::new("V2", TrackKind::Video);
+        v2.clips = vec![Clip { kind: ClipKind::Title(TitleData::single_text(TextBox { text: "MATTE".into(), font_size: 300.0, ..Default::default() })), ..Clip::gap(tc(0.0), tc(2.0)) }];
+        seq.tracks = vec![v1, v2];
+        (seq, id)
+    }
+
+    /// The old plan's commands, as the app's handlers apply them: a matte
+    /// binds the source and hides it (`SetClipMatte`), a key is upserted
+    /// on its lane (`AddVideoKeyframe`).
+    fn by_code(seq: &Sequence, kind: &TemplateKind, selected: ClipId) -> Sequence {
+        let pool = klipp_media::MediaPool::new();
+        let ctx = TemplateContext { seq, pool: &pool, selected_clip_id: Some(selected), playhead: tc(0.0), fps: seq.fps };
+        let mut out = seq.clone();
+        for cmd in plan_template(kind, &ctx) {
+            match cmd {
+                AppCommand::SetClipMatte { clip_id, source_clip_id, channel, invert, feather_px, choke_px } => {
+                    assert_eq!(channel, 0, "alpha");
+                    let binding = klipp_timeline::MatteBinding { source_clip_id, channel: klipp_nodes::params::MatteChannel::Alpha, invert, feather_px, choke_px };
+                    out.all_clips_mut().find(|c| c.id == clip_id).unwrap().matte_source = Some(binding);
+                    out.all_clips_mut().find(|c| c.id == source_clip_id).unwrap().consumed_as_matte = true;
+                }
+                AppCommand::AddVideoKeyframe { clip_id, param, time_secs, value } => {
+                    out.all_clips_mut().find(|c| c.id == clip_id).unwrap().edit_video_param_keyframes(param, |k| klipp_core::keyframe::upsert_keyframe(k, time_secs, value));
+                }
+                other => panic!("not a command these plan: {other:?}"),
+            }
+        }
+        out
+    }
+
+    fn by_recipe(seq: &Sequence, kind: &TemplateKind, selected: ClipId) -> Sequence {
+        let pool = klipp_media::MediaPool::new();
+        let ctx = TemplateContext { seq, pool: &pool, selected_clip_id: Some(selected), playhead: tc(0.0), fps: seq.fps };
+        let plan = recipe_plan(recipe_of(kind).unwrap(), &ctx).unwrap();
+        let mut seqs = vec![seq.clone()];
+        let (mut p, mut f) = (pool.clone(), seq.fps);
+        for step in &plan.steps {
+            klipp_document::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut f }.apply_forward(&step.edit);
+        }
+        seqs.remove(0)
+    }
+
+    struct NoMedia;
+    impl FrameSource for NoMedia {
+        fn frame(&mut self, _: &Clip, _: f64, _: u32, _: u32) -> Option<SourceFrame> {
+            None
+        }
+    }
+
+    const KINDS: [TemplateKind; 3] = [TemplateKind::TrackMatteReveal, TemplateKind::WhipPanTransition { direction: WhipDirection::Left }, TemplateKind::WhipPanTransition { direction: WhipDirection::Right }];
+
+    /// Each recipe makes the timeline its code made, field for field, but
+    /// the Scale key of 1.0 the code's whip pan put on the outgoing clip
+    /// at the pan's start (a reset of a scaled clip, dropped); and on the
+    /// GPU stack the two draw the same frames, mid-reveal, mid-whip and at
+    /// rest, within a level, with no frame falling back.
+    #[test]
+    fn each_cut_recipe_makes_and_draws_what_its_code_did() {
+        let mut gpu = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+        gpu.set_gpu_enabled(true);
+        let has_gpu = gpu.executor().gpu_pipeline_or_init().is_some();
+        assert!(has_gpu || std::env::var_os("KLIPP_TEST_REQUIRE_GPU").is_none(), "GPU required");
+        let mut worst = 0;
+        for kind in &KINDS {
+            let (seq, red) = scene();
+            let mut want = by_code(&seq, kind, red);
+            let got = by_recipe(&seq, kind, red);
+            if matches!(kind, TemplateKind::WhipPanTransition { .. }) {
+                let clip = want.all_clips_mut().find(|c| c.id == red).unwrap();
+                let scale = clip.video_param_keyframes(klipp_core::VideoParam::Scale).to_vec();
+                assert_eq!(scale.iter().map(|k| (k.time_secs, k.value)).collect::<Vec<_>>(), [(1.8, 1.0)], "the code's one Scale key");
+                clip.edit_video_param_keyframes(klipp_core::VideoParam::Scale, Vec::clear);
+            }
+            assert_eq!(serde_json::to_value(&got).unwrap(), serde_json::to_value(&want).unwrap(), "{kind:?}");
+            if !has_gpu {
+                continue;
+            }
+            for secs in [0.25, 1.0, 1.9, 2.1, 3.0] {
+                let mut frame = |s: &Sequence| {
+                    let (px, _) = gpu.render_display_u8_on_gpu(s, tc(secs), 320, 180, &mut NoMedia, RenderOptions::default()).expect("drawn on the GPU");
+                    assert_eq!(klipp_effects::residency::last_frame().fallback_count(), 0, "{kind:?} at {secs}");
+                    px
+                };
+                let (a, b, plain) = (frame(&want), frame(&got), frame(&seq));
+                let d = a.iter().zip(&b).map(|(x, y)| x.abs_diff(*y)).max().unwrap();
+                assert!(d <= 1, "{kind:?} at {secs}: {d} levels");
+                worst = worst.max(d);
+                // It does something: mid-reveal and mid-whip the frame is
+                // not the untouched timeline's.
+                let moved = b.iter().zip(&plain).map(|(x, y)| x.abs_diff(*y)).max().unwrap();
+                let acting = match kind { TemplateKind::TrackMatteReveal => secs < 2.0, _ => secs == 1.9 || secs == 2.1 };
+                if acting {
+                    assert!(moved > 30, "{kind:?} at {secs}: only {moved} levels from the untouched timeline");
+                }
+            }
+        }
+        println!("cut recipes, file against code: worst {worst} levels over 3 recipes x 5 times");
+    }
+
+    /// #2886: a scaled clip keeps its scale through a whip pan: the
+    /// recipe keys its position only. The code's Scale key reset it to 1
+    /// from the pan's start.
+    #[test]
+    fn a_scaled_clip_keeps_its_scale_through_a_whip_pan() {
+        let (mut seq, red) = scene();
+        let clip = seq.all_clips_mut().find(|c| c.id == red).unwrap();
+        clip.push_effect(klipp_effects::BuiltinEffect::Transform { position_x: 0.0, position_y: 0.0, scale_x: 1.5, scale_y: 1.5, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None });
+        assert_eq!(seq.all_clips().find(|c| c.id == red).unwrap().video_param_value(klipp_core::VideoParam::Scale), 1.5);
+        for kind in &KINDS[1..] {
+            let got = by_recipe(&seq, kind, red);
+            let clip = got.all_clips().find(|c| c.id == red).unwrap();
+            assert!(clip.video_param_keyframes(klipp_core::VideoParam::Scale).is_empty(), "{kind:?}: no Scale key");
+            assert_eq!(clip.video_param_value(klipp_core::VideoParam::Scale), 1.5, "{kind:?}: its scale kept");
+            let old = by_code(&seq, kind, red);
+            let keys = old.all_clips().find(|c| c.id == red).unwrap().video_param_keyframes(klipp_core::VideoParam::Scale).to_vec();
+            assert_eq!(klipp_core::keyframe::evaluate(&keys, 1.9, 1.5), 1.0, "the code reset it");
         }
     }
 }
