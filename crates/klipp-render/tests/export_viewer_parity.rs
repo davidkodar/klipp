@@ -558,3 +558,83 @@ fn another_aspect_is_letterboxed() {
     assert!(at(540, 980) < 5, "bottom bar should be black: {}", at(540, 980));
     assert!(at(540, 540) > 250, "picture should be white: {}", at(540, 540));
 }
+
+
+// ── Full-range sources ──────────────────────────────────────────────────
+//
+// Screen recorders and phones write full-range Y'CbCr, often with the
+// BT.601 matrix and no transfer tag (wf-recorder: `pc`, `bt470bg`,
+// transfer unknown). The expected colours are worked out here from the
+// code values, the range and the matrix, not taken from Klipp.
+
+/// Y'CbCr code values of the patches, left to right: black and white at
+/// both ranges' ends, mid grey, and a colour that BT.601 and BT.709 read
+/// 7 levels apart in red.
+const PATCHES: [[u8; 3]; 6] = [[0, 128, 128], [16, 128, 128], [128, 128, 128], [235, 128, 128], [255, 128, 128], [120, 100, 170]];
+
+/// The sRGB-coded colour a correct decode gives `code`.
+fn patch_rgb([y, u, v]: [u8; 3], full: bool, bt601: bool) -> [i32; 3] {
+    let (y, cb, cr) = if full {
+        (y as f64 / 255.0, (u as f64 - 128.0) / 255.0, (v as f64 - 128.0) / 255.0)
+    } else {
+        ((y as f64 - 16.0) / 219.0, (u as f64 - 128.0) / 224.0, (v as f64 - 128.0) / 224.0)
+    };
+    let (kr, kb) = if bt601 { (0.299, 0.114) } else { (0.2126, 0.0722) };
+    let r = y + 2.0 * (1.0 - kr) * cr;
+    let b = y + 2.0 * (1.0 - kb) * cb;
+    let g = (y - kr * r - kb * b) / (1.0 - kr - kb);
+    [r, g, b].map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as i32)
+}
+
+/// A lossless H.264 clip of [`PATCHES`] as vertical bands, 4:2:0, tagged
+/// with `tags` — the decode route a screen recording takes.
+fn patch_clip(name: &str, tags: &[&str]) -> Option<PathBuf> {
+    if !ffmpeg_ok() { return None; }
+    let raw = tmp(&format!("{name}.yuv"));
+    let out = tmp(&format!("{name}.mkv"));
+    let band = |x: u32| PATCHES[(x * PATCHES.len() as u32 / W) as usize];
+    let mut frame = Vec::with_capacity((W * H * 3 / 2) as usize);
+    for _ in 0..H { frame.extend((0..W).map(|x| band(x)[0])); }
+    for c in 1..3 {
+        for _ in 0..H / 2 { frame.extend((0..W / 2).map(|x| band(x * 2)[c])); }
+    }
+    std::fs::write(&raw, frame.repeat(FRAMES as usize + 1)).ok()?;
+    let size = format!("{W}x{H}");
+    let mut args: Vec<&str> = vec!["-nostdin", "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "yuv420p", "-s", &size, "-r", "25"];
+    args.extend_from_slice(tags);
+    args.extend_from_slice(&["-i", raw.to_str()?, "-c:v", "libx264", "-qp", "0", "-pix_fmt", "yuv420p"]);
+    args.extend_from_slice(tags);
+    args.push(out.to_str()?);
+    let ok = std::process::Command::new("ffmpeg").args(&args).status().ok()?.success();
+    let _ = std::fs::remove_file(&raw);
+    ok.then_some(out)
+}
+
+/// A full-range source exports at its own levels: its black stays black
+/// and its white white, nothing is lifted or clipped, and its colour is
+/// read through the matrix it is tagged with. A limited-range clip is the
+/// control, its 16 and 235 being black and white.
+#[test]
+fn full_range_sources_export_at_their_code_values() {
+    let cases: [(&str, &[&str], bool, bool); 3] = [
+        ("full-601-untagged", &["-color_range", "pc", "-colorspace", "bt470bg"], true, true),
+        ("full-709", &["-color_range", "pc", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"], true, false),
+        ("limited-709", TAGS_709, false, false),
+    ];
+    for (name, tags, full, bt601) in cases {
+        let Some(src) = patch_clip(name, tags) else { return };
+        let out = tmp(&format!("{name}.mp4"));
+        export(media(src, None), &out);
+        let rgb = decode_709(&out);
+        let n = PATCHES.len() as u32;
+        let mut worst = 0;
+        for (i, code) in PATCHES.into_iter().enumerate() {
+            let want = patch_rgb(code, full, bt601);
+            let got = px(&rgb, (2 * i as u32 + 1) * W / (2 * n), H / 2);
+            let d = (0..3).map(|c| (got[c] - want[c]).abs()).max().unwrap();
+            eprintln!("{name}: code {code:?} want {want:?} export {got:?}");
+            worst = worst.max(d);
+        }
+        assert!(worst <= 3, "{name}: the export is {worst} levels off its source's code values");
+    }
+}
