@@ -12,7 +12,7 @@
 pkgname=klipp-git
 pkgrel=1
 pkgdesc="GPU-accelerated non-linear video editor for Linux, with a linear-light colour pipeline and an AI assistant"
-arch=('x86_64')
+arch=('x86_64' 'aarch64')
 url="https://github.com/davidkodar/klipp"
 license=('GPL-3.0-only')
 provides=('klipp')
@@ -33,11 +33,16 @@ depends=(
   'hicolor-icon-theme'  # the icon theme the launcher entry lives in
   'xdg-utils'           # opening files and links (xdg-open)
   'pciutils'            # GPU probing (lspci)
-  'onnxruntime'         # libonnxruntime.so for the ONNX vision models (BiRefNet, RF-DETR), CPU by default
   'espeak-ng'           # phonemes for the Kokoro narration voices (Window > Narrate)
   'libxi'               # an X11 session; Wayland doesn't load them
   'libxrandr'           # an X11 session; Wayland doesn't load them
   'libxkbcommon-x11'    # an X11 session; Wayland doesn't load them
+)
+# Arch Linux ARM has no onnxruntime package: on aarch64 the ONNX vision
+# models stay unavailable until a libonnxruntime.so is pointed at with
+# ORT_DYLIB_PATH.
+depends_x86_64=(
+  'onnxruntime'         # libonnxruntime.so for the ONNX vision models (BiRefNet, RF-DETR), CPU by default
 )
 makedepends=(
   'rust'
@@ -87,7 +92,7 @@ fi
 
 build() {
   cd "$_root"
-  if [[ $pkgname == klipp ]]; then
+  if [[ $pkgname == klipp && $CARCH == x86_64 ]]; then
     # Override both Cargo config and environment flags. Native C/C++ parts
     # (Whisper/ggml) must use the same portable baseline as Rust.
     export CARGO_ENCODED_RUSTFLAGS=$'-C\x1flink-arg=-fuse-ld=lld\x1f-C\x1ftarget-cpu=x86-64'
@@ -97,6 +102,12 @@ build() {
     export GGML_FMA=OFF GGML_F16C=OFF GGML_BMI2=OFF GGML_AVX_VNNI=OFF
     export GGML_AVX512=OFF GGML_AVX512_VBMI=OFF GGML_AVX512_VNNI=OFF
     export GGML_AVX512_BF16=OFF GGML_AMX_TILE=OFF GGML_AMX_INT8=OFF GGML_AMX_BF16=OFF
+  elif [[ $pkgname == klipp && $CARCH == aarch64 ]]; then
+    # The same portable baseline for ARMv8-A.
+    export CARGO_ENCODED_RUSTFLAGS=$'-C\x1ftarget-cpu=generic'
+    export CFLAGS='-O2 -march=armv8-a'
+    export CXXFLAGS="$CFLAGS"
+    export GGML_NATIVE=OFF
   fi
   # Lay out the Vulkan SDK directory the speech model's build expects.
   ./scripts/vulkan-sdk.sh
