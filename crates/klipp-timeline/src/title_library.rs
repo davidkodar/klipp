@@ -430,37 +430,6 @@ pub fn outlined(mut t: Text, width: f32) -> Text {
     t
 }
 
-// ── Social ──
-fn so_hook() -> TitleData {
-    layers(vec![text_at(
-        moved(lifted(graded(upper(face("[Hook line]", POSTER, FontStyle::Regular, 150.0, [255, 214, 10, 255], TextAlignment::Center), 1.5), [255, 226, 70, 255], [255, 190, 0, 255])),
-            TitleMotion::both(enter(MotionKind::Drop, 0.45, Easing::OutBack).distance(0.5).stagger(StaggerUnit::Word, 0.06), fade_out(0.25))),
-        0.5, 0.45, 0.5,
-    )])
-}
-
-fn so_handle() -> TitleData {
-    layers(vec![
-        rect(0.5, 0.90, 0.30, 0.075, [250, 250, 252, 255], 40.0),
-        text_at(
-            moved(face("@yourhandle", GRO, FontStyle::Bold, 34.0, INK, TextAlignment::Center),
-                TitleMotion::both(enter(MotionKind::ScaleUp, 0.4, Easing::OutBack), fade_out(0.25))),
-            0.5, 0.90, 0.5,
-        ),
-    ])
-}
-
-fn so_subscribe() -> TitleData {
-    layers(vec![
-        rect(0.5, 0.86, 0.30, 0.09, [230, 40, 40, 255], 6.0),
-        text_at(
-            moved(upper(face("Subscribe", GRO, FontStyle::Bold, 40.0, WHITE, TextAlignment::Center), 2.0),
-                TitleMotion::both(enter(MotionKind::SlideRight, 0.4, Easing::OutExpo).distance(0.8), Motion::new(MotionKind::SlideLeft).duration(0.3).easing(Easing::InCubic).distance(0.8))),
-            0.5, 0.86, 0.5,
-        ),
-    ])
-}
-
 // ── Utility ──
 fn ut_slate() -> TitleData {
     layers(vec![
@@ -493,64 +462,6 @@ fn ut_label() -> TitleData {
     ])
 }
 
-
-// ── More social, made for any frame shape (#1724) ──
-fn so_bold_caption() -> TitleData {
-    layers(vec![text_at(
-        moved(outlined(upper(face("[Say it big]", DISPLAY, FontStyle::Regular, 112.0, WHITE, TextAlignment::Center), 1.0), 6.0),
-            TitleMotion::both(enter(MotionKind::Pop, 0.35, Easing::OutBack).stagger(StaggerUnit::Word, 0.12), fade_out(0.2))),
-        0.5, 0.64, 0.5,
-    )])
-}
-
-fn so_highlight() -> TitleData {
-    let mut td = layers(vec![
-        moving(rect(0.5, 0.7, 0.4, 0.08, [255, 214, 10, 255], 10.0),
-            TitleMotion::both(enter(MotionKind::ScaleUp, 0.35, Easing::OutBack), fade_out(0.2))),
-        text_at(
-            moved(face("[Key words]", GRO, FontStyle::Bold, 52.0, INK, TextAlignment::Center),
-                TitleMotion::both(enter(MotionKind::Fade, 0.25, Easing::OutCubic).delay(0.12), fade_out(0.2))),
-            0.5, 0.7, 0.5,
-        ),
-    ]);
-    fit(&mut td, 0, 1, (26.0, 12.0));
-    td.objects[1].transform.size.x = 0.9;
-    td
-}
-
-fn so_question() -> TitleData {
-    layers(vec![
-        text_at(
-            moved(upper(face("Question", GRO, FontStyle::Bold, 24.0, [255, 214, 10, 255], TextAlignment::Center), 6.0),
-                TitleMotion::both(enter(MotionKind::Fade, 0.3, Easing::OutCubic), fade_out(0.25))),
-            0.5, 0.36, 0.5,
-        ),
-        text_at(
-            moved(lifted(face("[What would you do?]", GRO, FontStyle::Bold, 76.0, WHITE, TextAlignment::Center)),
-                TitleMotion::both(enter(MotionKind::Slam, 0.4, Easing::OutCubic).delay(0.15).stagger(StaggerUnit::Word, 0.07), fade_out(0.25))),
-            0.5, 0.48, 0.5,
-        ),
-    ])
-}
-
-fn so_tip() -> TitleData {
-    let mut td = layers(vec![
-        moving(rect(0.11, 0.16, 0.08, 0.06, [255, 214, 10, 255], 10.0),
-            TitleMotion::both(enter(MotionKind::ScaleUp, 0.35, Easing::OutBack), fade_out(0.25))),
-        text_at(
-            moved(upper(face("Tip", GRO, FontStyle::Bold, 24.0, INK, TextAlignment::Left), 3.0),
-                TitleMotion::both(enter(MotionKind::Fade, 0.25, Easing::OutCubic).delay(0.1), fade_out(0.25))),
-            0.08, 0.16, 0.0,
-        ),
-        text_at(
-            moved(lifted(face("[Your tip in a line]", GRO, FontStyle::Bold, 36.0, WHITE, TextAlignment::Left)),
-                TitleMotion::both(enter(MotionKind::SlideRight, 0.45, Easing::OutQuint).distance(0.2).delay(0.2), fade_out(0.25))),
-            0.08, 0.235, 0.0,
-        ),
-    ]);
-    fit(&mut td, 0, 1, (18.0, 8.0));
-    td
-}
 
 /// A built-in still made by code: its name, category, card text, the
 /// function making its layers, and its fields.
@@ -623,7 +534,15 @@ const FILES: &[&str] = &[
     include_str!("../../../assets/titles/cast.klipptitle"),
     include_str!("../../../assets/titles/thanks_for_watching.klipptitle"),
     include_str!("../../../assets/titles/up_next.klipptitle"),
+    include_str!("../../../assets/titles/hook.klipptitle"),
+    include_str!("../../../assets/titles/bold_caption.klipptitle"),
+    include_str!("../../../assets/titles/highlight.klipptitle"),
+    include_str!("../../../assets/titles/question.klipptitle"),
+    include_str!("../../../assets/titles/tip.klipptitle"),
+    include_str!("../../../assets/titles/handle.klipptitle"),
+    include_str!("../../../assets/titles/subscribe.klipptitle"),
 ];
+
 
 
 
@@ -647,13 +566,6 @@ fn from_files() -> impl Iterator<Item = TitleTemplate> {
 
 
 const CODED: &[Coded] = &[
-    Coded { name: "Hook", category: "Social", preview_text: "[HOOK LINE]", create_data: so_hook, fields: f(&["Hook"], None, (0.5, 0.45)) },
-    Coded { name: "Bold Caption", category: "Social", preview_text: "[Say it big]", create_data: so_bold_caption, fields: f(&["Caption"], None, (0.5, 0.64)) },
-    Coded { name: "Highlight", category: "Social", preview_text: "[Key words]", create_data: so_highlight, fields: f(&["Words"], Some(0), (0.5, 0.7)) },
-    Coded { name: "Question", category: "Social", preview_text: "[What would you do?]", create_data: so_question, fields: f(&["Label", "Question"], None, MID) },
-    Coded { name: "Tip", category: "Social", preview_text: "[Your tip in a line]", create_data: so_tip, fields: f(&["Label", "Tip"], Some(0), (0.08, 0.2)) },
-    Coded { name: "Handle", category: "Social", preview_text: "@yourhandle", create_data: so_handle, fields: f(&["Handle"], Some(0), (0.5, 0.9)) },
-    Coded { name: "Subscribe", category: "Social", preview_text: "Subscribe", create_data: so_subscribe, fields: f(&["Button"], Some(0), (0.5, 0.86)) },
     Coded { name: "Slate", category: "Utility", preview_text: "PROJECT", create_data: ut_slate, fields: f(&["Slate"], None, MID) },
     Coded { name: "Timecode", category: "Utility", preview_text: "00:00:00:00", create_data: ut_timecode, fields: f(&["Timecode"], None, (0.06, 0.93)) },
     Coded { name: "Watermark", category: "Utility", preview_text: "[Brand]", create_data: ut_watermark, fields: f(&["Brand"], None, (0.94, 0.92)) },

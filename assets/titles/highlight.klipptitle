@@ -1,0 +1,198 @@
+{
+  "category": "Social",
+  "data": {
+    "animation_type": "Static",
+    "background": "None",
+    "next_object_id": 2,
+    "objects": [
+      {
+        "content": {
+          "Shape": {
+            "fill": [
+              255,
+              214,
+              10,
+              255
+            ],
+            "fit": {
+              "padding": {
+                "x": 26.0,
+                "y": 12.0
+              },
+              "target": 1
+            },
+            "kind": {
+              "Rectangle": {
+                "corner_radius": 10.0
+              }
+            },
+            "stroke": null
+          }
+        },
+        "fx": {
+          "motion": {
+            "enter": {
+              "amount": null,
+              "anchor": null,
+              "delay_secs": 0.0,
+              "distance": 0.6,
+              "duration_secs": 0.35,
+              "easing": "OutBack",
+              "kind": "ScaleUp",
+              "stagger": "None",
+              "stagger_secs": 0.05
+            },
+            "exit": {
+              "amount": null,
+              "anchor": null,
+              "delay_secs": 0.0,
+              "distance": 0.6,
+              "duration_secs": 0.2,
+              "easing": "InCubic",
+              "kind": "Fade",
+              "stagger": "None",
+              "stagger_secs": 0.05
+            }
+          }
+        },
+        "id": 0,
+        "locked": false,
+        "name": "Shape 1",
+        "opacity": 1.0,
+        "opacity_keyframes": [],
+        "transform": {
+          "anchor_norm": {
+            "x": 0.5,
+            "y": 0.5
+          },
+          "anchor_x_keyframes": [],
+          "anchor_y_keyframes": [],
+          "center": {
+            "x": 0.5,
+            "y": 0.7
+          },
+          "center_x_keyframes": [],
+          "center_y_keyframes": [],
+          "rotation": 0.0,
+          "rotation_keyframes": [],
+          "size": {
+            "x": 0.4,
+            "y": 0.08
+          },
+          "size_x_keyframes": [],
+          "size_y_keyframes": []
+        },
+        "visible": true
+      },
+      {
+        "content": {
+          "TextBox": {
+            "alignment": "Center",
+            "ass_style_name": null,
+            "baseline_shift": 0.0,
+            "case_transform": "None",
+            "char_animation": null,
+            "chromatic_aberration_px": 0.0,
+            "color": [
+              18,
+              18,
+              22,
+              255
+            ],
+            "columns": 1,
+            "drop_cap_scale": 0.0,
+            "extrusion": null,
+            "font_name": "Inter",
+            "font_size": 52.0,
+            "font_style": "Bold",
+            "glitch_intensity": 0.0,
+            "gradient": null,
+            "line_spacing": 1.0,
+            "outline_write_on": 1.0,
+            "pattern_fill": null,
+            "pattern_fill_enabled": true,
+            "strikethrough": false,
+            "style_runs": [],
+            "text": "[Key words]",
+            "text_direction": "Ltr",
+            "text_path": null,
+            "texture_fill": null,
+            "tracking": 0.0,
+            "underline": false,
+            "vertical_layout": false,
+            "write_on": 1.0
+          }
+        },
+        "fx": {
+          "motion": {
+            "enter": {
+              "amount": null,
+              "anchor": null,
+              "delay_secs": 0.12,
+              "distance": 0.6,
+              "duration_secs": 0.25,
+              "easing": "OutCubic",
+              "kind": "Fade",
+              "stagger": "None",
+              "stagger_secs": 0.05
+            },
+            "exit": {
+              "amount": null,
+              "anchor": null,
+              "delay_secs": 0.0,
+              "distance": 0.6,
+              "duration_secs": 0.2,
+              "easing": "InCubic",
+              "kind": "Fade",
+              "stagger": "None",
+              "stagger_secs": 0.05
+            }
+          }
+        },
+        "id": 1,
+        "locked": false,
+        "name": "Text 2",
+        "opacity": 1.0,
+        "opacity_keyframes": [],
+        "transform": {
+          "anchor_norm": {
+            "x": 0.5,
+            "y": 0.5
+          },
+          "anchor_x_keyframes": [],
+          "anchor_y_keyframes": [],
+          "center": {
+            "x": 0.5,
+            "y": 0.7
+          },
+          "center_x_keyframes": [],
+          "center_y_keyframes": [],
+          "rotation": 0.0,
+          "rotation_keyframes": [],
+          "size": {
+            "x": 0.9,
+            "y": 1.0
+          },
+          "size_x_keyframes": [],
+          "size_y_keyframes": []
+        },
+        "visible": true
+      }
+    ]
+  },
+  "design": {
+    "accent": 0,
+    "anchor": [
+      0.5,
+      0.7
+    ],
+    "fields": [
+      "Words"
+    ],
+    "grow": true,
+    "preview": "[Key words]"
+  },
+  "format": 2,
+  "name": "Highlight",
+  "written_by": "built-in"
+}
