@@ -316,3 +316,9 @@ winit = { path = "vendor/winit" }
 # The other order deadlocked the engine, a decoder and the UI on the shared
 # device: playback froze at a cut under an overlay.
 wgpu-core = { path = "vendor/wgpu-core" }
+# livi 0.7.5 and lilv 0.2.4 with their C strings typed `c_char` rather than
+# `i8` (see vendor/livi/KLIPP-PATCH.md, vendor/lilv/KLIPP-PATCH.md).
+# Upstream's `i8` is `c_char` only on x86, so the LV2 host would not build
+# on aarch64.
+livi = { path = "vendor/livi" }
+lilv = { path = "vendor/lilv" }
