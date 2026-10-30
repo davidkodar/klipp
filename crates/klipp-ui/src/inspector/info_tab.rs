@@ -287,12 +287,19 @@ fn track_name(seq: &klipp_timeline::Sequence, idx: usize) -> String {
 /// for a bin item and a timeline clip.
 fn media_section(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme, media: &klipp_media::MediaItem) {
     let dim = theme.text_secondary;
+    // A sound has no picture: its size, rate, colour and pixel format are
+    // the pool's defaults or its cover art's, not the file's (#3128).
+    let picture = crate::selection::has_picture(media);
     section_card(ui, "CLIP INFO", None, theme, |ui| {
-        text_row(ui, theme, "Resolution", format!("{} \u{00D7} {}", media.resolution.width, media.resolution.height));
+        if picture {
+            text_row(ui, theme, "Resolution", format!("{} \u{00D7} {}", media.resolution.width, media.resolution.height));
+        }
         if media.is_still {
             text_row(ui, theme, "Type", "Still image");
-        } else {
+        } else if picture {
             text_row(ui, theme, "Frame rate", fps_text(media.fps.as_f64()));
+        } else {
+            text_row(ui, theme, "Type", "Sound");
         }
         let codecs: Vec<String> = [&media.video_codec, &media.audio_codec].into_iter().filter(|c| !c.is_empty()).map(|c| c.to_uppercase()).collect();
         if codecs.is_empty() {
@@ -311,12 +318,13 @@ fn media_section(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme, media:
 
         // The colour class the file was read as, then the transfer and
         // primaries its stream is tagged with, when it is.
-        if media.colour_space == klipp_media::ColourSpace::Unknown {
+        if !picture {
+        } else if media.colour_space == klipp_media::ColourSpace::Unknown {
             colour_row(ui, theme, "Colour", media.colour_space.label(), dim);
         } else {
             text_row(ui, theme, "Colour", media.colour_space.label());
         }
-        if media.color_transfer.is_some() || media.color_primaries.is_some() {
+        if picture && (media.color_transfer.is_some() || media.color_primaries.is_some()) {
             let transfer = media.color_transfer.as_deref().unwrap_or("Unspecified");
             let primaries = media.color_primaries.as_deref().unwrap_or("");
             let text = if !primaries.is_empty() && primaries != "Unspecified" && primaries != transfer {
@@ -354,13 +362,13 @@ fn media_section(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme, media:
         if let Some(enc) = &media.encoder {
             text_row(ui, theme, "Encoder", enc.clone());
         }
-        if media.bit_depth.is_some() || media.pixel_format.is_some() {
+        if picture && (media.bit_depth.is_some() || media.pixel_format.is_some()) {
             let mut parts = Vec::new();
             if let Some(bd) = media.bit_depth { parts.push(format!("{bd}-bit")); }
             if let Some(pf) = &media.pixel_format { parts.push(pf.clone()); }
             text_row(ui, theme, "Format", parts.join(" \u{00B7} "));
         }
-        if let Some(vbr) = media.video_bitrate_kbps {
+        if let Some(vbr) = media.video_bitrate_kbps.filter(|_| picture) {
             text_row(ui, theme, "Bitrate", if vbr >= 1000 { format!("{:.1} Mbps", vbr as f64 / 1000.0) } else { format!("{vbr} kbps") });
         }
         tag_list(ui, theme, &media.shot);
