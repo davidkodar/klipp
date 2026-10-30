@@ -1077,7 +1077,7 @@ pub fn streams_opened_on_screen() -> u64 {
 /// speed, isn't counted, nor are frames from the CPU reader.
 pub(crate) static REVERSED_FRAMES_GIVEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// See [`REVERSED_FRAMES_GIVEN`].
+/// See `REVERSED_FRAMES_GIVEN`.
 pub fn reversed_frames_given() -> u64 {
     REVERSED_FRAMES_GIVEN.load(std::sync::atomic::Ordering::Relaxed)
 }

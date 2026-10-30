@@ -144,7 +144,7 @@ impl GpuMaskDef {
         }
     }
     /// A round gradient (#2704): whole inside `inner` of the centre,
-    /// gone past `outer`, as [`klipp_core::MaskShape::RadialGradient`].
+    /// gone past `outer`, as `klipp_core::MaskShape::RadialGradient`.
     pub fn radial_gradient(cx: f32, cy: f32, inner: f32, outer: f32, feather: f32, invert: bool, opacity: f32) -> Self {
         Self {
             shape_type: 4, cx, cy, p1: inner, p2: outer, p3: 0.0, feather,

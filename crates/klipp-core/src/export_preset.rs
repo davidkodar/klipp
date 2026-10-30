@@ -118,7 +118,7 @@ pub const DELIVERY_TEMPLATES_FOLDER: &str = "delivery_templates";
 
 /// Klipp's delivery templates, then those in `dirs` (a person's folder,
 /// then the packs'), each read as someone else's (#3095) and held to
-/// what Klipp's are ([`delivery_fault`]: its preset one of Klipp's own),
+/// what Klipp's are (`delivery_fault`: its preset one of Klipp's own),
 /// and what was skipped.
 pub fn delivery_template_listing_in(dirs: &[std::path::PathBuf]) -> crate::preset_file::Merged<DeliveryTemplate> {
     let built_in = read_delivery_templates(include_str!("../../../assets/presets/delivery_templates/builtin.toml")).unwrap_or_else(|why| {

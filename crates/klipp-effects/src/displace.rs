@@ -45,7 +45,7 @@ fn value(p: V3, seed: u32) -> f32 {
     mix(mix(x00, x10, u.y), mix(x01, x11, u.y), u.z)
 }
 
-/// Two octaves of [`value`] noise at `p`, -1 to 1.
+/// Two octaves of `value` noise at `p`, -1 to 1.
 pub fn fbm(p: V3, seed: u32) -> f32 {
     let n = value(p, seed) * 0.65 + value(p * 2.03 + V3 { x: 17.0, y: 31.0, z: 7.0 }, seed) * 0.35;
     n * 2.0 - 1.0

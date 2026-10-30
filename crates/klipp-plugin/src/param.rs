@@ -18,7 +18,7 @@
 //! The suite's variadic members (paramGetValue, paramSetValue and their
 //! AtTime, Derivative and Integral forms) are C functions in
 //! `ofx_param_shim.c` (#2455): only C reads a `va_list`. Each asks
-//! [`klipp_ofx_param_shape`] what the parameter holds, reads or writes
+//! `klipp_ofx_param_shape` (`param_shape_fn` here) what the parameter holds, reads or writes
 //! that many arguments, and calls one of the typed functions here with a
 //! plain array.
 

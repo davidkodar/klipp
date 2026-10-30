@@ -1627,7 +1627,7 @@ pub enum ControlCommand {
     },
     /// Copy one of the project's sequences, as its tab's Duplicate does: by
     /// `index` or `sequence_id`, the open one when neither is given. The
-    /// copy is called `name` ("<name> copy" left out), goes last, and is
+    /// copy is called `name` (`"<name> copy"` left out), goes last, and is
     /// opened unless `open` is false: a second version of a cut, such as
     /// a vertical one, starts from it. Not part of a batch.
     DuplicateSequence {

@@ -388,7 +388,7 @@ const VRAM_REFRESH: Duration = Duration::from_secs(2);
 /// decoded on it keeps its queue of frames. `None` where frames don't stay
 /// on the GPU (hardware decode or GPU frames off) or its memory can't be
 /// read; its frames are then counted in [`free_memory`]. Read on a thread
-/// of its own every [`VRAM_REFRESH`], as reading NVIDIA's takes a
+/// of its own every `VRAM_REFRESH`, as reading NVIDIA's takes a
 /// program's start: the engine never waits for it.
 pub fn free_vram() -> Option<f64> {
     static FREE: AtomicU64 = AtomicU64::new(u64::MAX);

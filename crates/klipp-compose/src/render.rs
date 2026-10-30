@@ -519,7 +519,7 @@ impl klipp_nodes::frame_context::SourceProvider for ClipSources<'_> {
         Neighbour::Frame(LinearFrame { rgba, width, height, source_secs: pts, pts: Some(pts) })
     }
 
-    /// [`Self::next`] where the source holds it on the GPU (#2854): only
+    /// `next` where the source holds it on the GPU (#2854): only
     /// a display-referred frame's, as the frame shown was.
     fn next_on_gpu(&mut self, source_secs: f64) -> klipp_nodes::frame_context::Neighbour<klipp_nodes::frame_context::GpuLinearFrame> {
         use klipp_nodes::frame_context::{GpuLinearFrame, Missing, Neighbour};

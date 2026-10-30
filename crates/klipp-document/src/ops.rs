@@ -2899,7 +2899,7 @@ pub(crate) fn spoken_spans(clip: &Clip, words: Option<&[SpokenWord]>, fps: f64) 
 }
 
 /// An installed LV2 or CLAP audio plug-in as an edit is checked against
-/// it (#2485): its id ("lv2:<uri>", "clap:<id>"), name and parameters,
+/// it (#2485): its id (`"lv2:<uri>"`, `"clap:<id>"`), name and parameters,
 /// and why it cannot run here when its host refuses it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AudioPlugin {
@@ -7706,7 +7706,7 @@ pub fn op_effect_names() -> String {
 /// A picture effect by the name the ops and the app give it, at
 /// `amount` (0 to 1; a tasteful default when left out): the effect, and
 /// the amount it was made at. The one list behind `effect` on clips and
-/// the app's track effects (#846), [`OP_EFFECTS`].
+/// the app's track effects (#846), `OP_EFFECTS`.
 pub fn named_picture_effect(kind: &str, amount: Option<f32>) -> Result<(klipp_effects::BuiltinEffect, f32), (String, String)> {
     let name = kind.to_lowercase();
     let Some(op) = OP_EFFECTS.iter().find(|e| e.names.contains(&name.as_str())) else {

@@ -241,7 +241,7 @@ fn picture_licence(path: &Path, licences: &BTreeMap<String, String>) -> Option<S
 }
 
 /// Writes `titles` and `templates` as the pack `name` to `out`. Every
-/// picture needs its licence (see [`picture_licence`]): those without
+/// picture needs its licence (see `picture_licence`): those without
 /// are refused, named. A font is named when it is in the catalogue,
 /// carried when it is installed with a licence beside it, and said to be
 /// left out otherwise. Returns what the pack holds, as a reply.
