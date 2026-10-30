@@ -40,6 +40,9 @@ pub const MAX_RECIPE_KEYS: usize = 256;
 pub const MAX_TEXT: usize = 256;
 /// The most steps an audio chain recipe adds (#2886).
 pub const MAX_AUDIO_STEPS: usize = 16;
+/// The most steps a clips recipe makes, and keys one step sets (#2886).
+pub const MAX_CLIP_STEPS: usize = 32;
+pub const MAX_CLIP_KEYS: usize = 64;
 /// The format this build writes and reads: 2 carries the composition.
 pub const FORMAT_VERSION: u32 = 2;
 
@@ -258,6 +261,10 @@ pub struct CompositionTemplate {
     /// clip's sound. `None` for any other kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio: Option<AudioChain>,
+    /// A clips recipe's steps (#2886): what placing it does to the clip it
+    /// is placed on and the clips found from it. `None` for any other kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clips: Option<ClipRecipe>,
     /// The composition laid out for other frames (#2757): `tall` (9:16
     /// and other portrait frames) and `square`, each the id of one of
     /// `sequences`, with the same layers in the same order, so one set of
@@ -278,6 +285,156 @@ pub enum TemplateKind {
     /// A chain of Klipp's own audio effects added to a clip's sound
     /// (#2886).
     AudioChain,
+    /// Edits of the clip it is placed on and clips found from it: a matte,
+    /// keys (#2886).
+    Clips,
+}
+
+/// A clips recipe (#2886): how each clip slot is found from the clip the
+/// recipe is placed on when nothing fills it, and the steps, in order.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClipRecipe {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub find: BTreeMap<String, ClipFind>,
+    pub steps: Vec<ClipStep>,
+}
+
+/// A clip found from the one a recipe is placed on (#2886).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClipFind {
+    /// The clip after it on its track.
+    NextOnTrack,
+    /// The first clip on a track above it that overlaps it in time, an
+    /// adjustment layer passed over.
+    Above,
+}
+
+impl ClipFind {
+    /// What a clip needs for this to be found, as a refusal says it.
+    pub fn needs(self) -> &'static str {
+        match self {
+            ClipFind::NextOnTrack => "a next clip on the same track",
+            ClipFind::Above => "a clip on a higher track at the same time",
+        }
+    }
+}
+
+/// One step of a [`ClipRecipe`] (#2886): on `clip` (`placed`, the clip it
+/// is placed on, or a clip slot), a matte or keys.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClipStep {
+    pub clip: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matte: Option<MatteStep>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keys: Option<KeysStep>,
+}
+
+/// The clip seen through another, a slot's (#2886), as the `matte` op
+/// sets it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MatteStep {
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
+    #[serde(default)]
+    pub invert: bool,
+    #[serde(default)]
+    pub feather_px: f32,
+    #[serde(default)]
+    pub choke_px: f32,
+}
+
+/// Keys on one of a clip's own animated properties (#2886), by its name
+/// in [`CLIP_KEY_PARAMS`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct KeysStep {
+    pub param: String,
+    pub keys: Vec<ClipKey>,
+}
+
+/// One key of a [`KeysStep`]: when, seconds from the clip's start or
+/// before its end, and the value, plain or in the frame's widths or
+/// heights (pixels of the sequence).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClipKey {
+    pub at: KeyTime,
+    pub value: KeyValue,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum KeyTime {
+    Secs(f64),
+    FromEnd { from_end: f64 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum KeyValue {
+    Number(f32),
+    FrameWidths { frame_widths: f32 },
+    FrameHeights { frame_heights: f32 },
+}
+
+impl KeyTime {
+    /// Seconds into a clip `secs` long.
+    pub fn in_clip(self, secs: f64) -> f64 {
+        match self {
+            KeyTime::Secs(s) => s,
+            KeyTime::FromEnd { from_end } => (secs - from_end).max(0.0),
+        }
+    }
+
+    fn finite(self) -> bool {
+        match self {
+            KeyTime::Secs(s) | KeyTime::FromEnd { from_end: s } => s.is_finite() && s >= 0.0,
+        }
+    }
+}
+
+impl KeyValue {
+    /// The value in a `width` × `height` frame.
+    pub fn in_frame(self, width: u32, height: u32) -> f32 {
+        match self {
+            KeyValue::Number(v) => v,
+            KeyValue::FrameWidths { frame_widths } => frame_widths * width as f32,
+            KeyValue::FrameHeights { frame_heights } => frame_heights * height as f32,
+        }
+    }
+
+    fn finite(self) -> bool {
+        match self {
+            KeyValue::Number(v) | KeyValue::FrameWidths { frame_widths: v } | KeyValue::FrameHeights { frame_heights: v } => v.is_finite(),
+        }
+    }
+}
+
+/// The clip properties a clips recipe's keys may set (#2886), by name.
+pub const CLIP_KEY_PARAMS: [(&str, klipp_core::VideoParam); 8] = [
+    ("opacity", klipp_core::VideoParam::Opacity),
+    ("position_x", klipp_core::VideoParam::PositionX),
+    ("position_y", klipp_core::VideoParam::PositionY),
+    ("scale", klipp_core::VideoParam::Scale),
+    ("scale_y", klipp_core::VideoParam::ScaleY),
+    ("rotation", klipp_core::VideoParam::Rotation),
+    ("matte_feather", klipp_core::VideoParam::MatteFeather),
+    ("matte_choke", klipp_core::VideoParam::MatteChoke),
+];
+
+/// The property a clips recipe's keys name `name` sets.
+pub fn clip_key_param(name: &str) -> Option<klipp_core::VideoParam> {
+    CLIP_KEY_PARAMS.iter().find(|(n, _)| *n == name).map(|(_, p)| *p)
+}
+
+/// `steps.<i>.keys.<j>.value|at` (#2886): key `j` of a clips recipe's
+/// step `i`, its value or its time.
+pub fn clip_key_binding(property: &str) -> Option<(usize, usize, &str)> {
+    let rest = property.strip_prefix("steps.")?;
+    let (i, rest) = rest.split_once(".keys.")?;
+    let (j, field) = rest.split_once('.')?;
+    matches!(field, "value" | "at").then_some((i.parse().ok()?, j.parse().ok()?, field))
 }
 
 /// An audio chain recipe's steps, in the order they are added (#2886).
@@ -994,6 +1151,58 @@ impl CompositionTemplate {
                     }
                 }
             }
+            TemplateKind::Clips => {
+                let recipe = self.clips.as_ref().filter(|c| !c.steps.is_empty()).ok_or("a clips recipe carries the steps it makes")?;
+                if recipe.steps.len() > MAX_CLIP_STEPS {
+                    return Err(format!("a clips recipe makes at most {MAX_CLIP_STEPS} steps, not {}", recipe.steps.len()));
+                }
+                if let Some((name, _)) = self.slots.iter().find(|(_, s)| s.kind != SlotKind::Clip) {
+                    return Err(format!("slot \"{name}\": a clips recipe's slots are clips"));
+                }
+                if let Some(name) = recipe.find.keys().find(|n| !self.slots.contains_key(*n)) {
+                    return Err(format!("it finds \"{name}\", which is not one of its slots"));
+                }
+                let names_clip = |c: &str| c == "placed" || self.slots.contains_key(c);
+                for (k, step) in recipe.steps.iter().enumerate() {
+                    if !names_clip(&step.clip) {
+                        return Err(format!("step {k} is on \"{}\", neither placed nor one of its slots", step.clip));
+                    }
+                    match (&step.matte, &step.keys) {
+                        (Some(m), None) => {
+                            if m.source == step.clip || !self.slots.contains_key(&m.source) {
+                                return Err(format!("step {k}'s matte is seen through \"{}\", which is not another of its slots", m.source));
+                            }
+                            if m.channel.as_deref().is_some_and(|c| !matches!(c, "auto" | "alpha" | "luma")) {
+                                return Err(format!("step {k}'s matte channel is auto, alpha or luma"));
+                            }
+                            if !(m.feather_px.is_finite() && m.choke_px.is_finite() && m.feather_px >= 0.0 && m.choke_px >= 0.0) {
+                                return Err(format!("step {k}'s feather and choke are finite pixels, 0 or more"));
+                            }
+                        }
+                        (None, Some(keys)) => {
+                            if clip_key_param(&keys.param).is_none() {
+                                return Err(format!("step {k} keys \"{}\": it keys {}", keys.param, CLIP_KEY_PARAMS.map(|(n, _)| n).join(", ")));
+                            }
+                            if keys.keys.is_empty() || keys.keys.len() > MAX_CLIP_KEYS {
+                                return Err(format!("step {k} has {} keys, from 1 to {MAX_CLIP_KEYS}", keys.keys.len()));
+                            }
+                            if keys.keys.iter().any(|key| !key.at.finite() || !key.value.finite()) {
+                                return Err(format!("step {k}'s keys are at finite times, 0 or more, with finite values"));
+                            }
+                        }
+                        _ => return Err(format!("step {k} is a matte or keys, one of them")),
+                    }
+                }
+                for b in &self.bindings {
+                    let (k, j, _) = clip_key_binding(&b.property).ok_or_else(|| format!("a clips recipe binds steps.<i>.keys.<j>.value|at, not '{}'", b.property))?;
+                    if recipe.steps.get(k).and_then(|s| s.keys.as_ref()).is_none_or(|keys| keys.keys.len() <= j) {
+                        return Err(format!("'{}' names no key {j} of a keys step {k}", b.property));
+                    }
+                    if b.link.is_some() || self.parameters.get(&b.parameter).is_some_and(|p| !matches!(p.default, TemplateValue::Number(_))) {
+                        return Err(format!("'{}' sets a key, so '{}' is a number, bound as it is", b.property, b.parameter));
+                    }
+                }
+            }
             TemplateKind::Composition => {
                 // Each format's layout carried, and every binding and
                 // control resolving in it as in the main one.
@@ -1042,6 +1251,12 @@ impl CompositionTemplate {
         count("bindings", self.bindings.len(), MAX_BINDINGS)?;
         count("slots", self.slots.len(), MAX_SLOTS)?;
         count("sequences", self.sequences.len(), MAX_SEQUENCES)?;
+        if let Some(c) = &self.clips {
+            count("clip steps", c.steps.len(), MAX_CLIP_STEPS)?;
+            for step in &c.steps {
+                count("keys in one step", step.keys.as_ref().map_or(0, |k| k.keys.len()), MAX_CLIP_KEYS)?;
+            }
+        }
         if let Some(a) = &self.audio {
             count("audio steps", a.steps.len(), MAX_AUDIO_STEPS)?;
             for step in &a.steps {
@@ -1069,7 +1284,8 @@ impl CompositionTemplate {
             .chain(self.slots.iter().flat_map(|(k, s)| [k.as_str(), s.label.as_str()]))
             .chain(self.bindings.iter().flat_map(|b| [b.parameter.as_str(), b.property.as_str()]))
             .chain(self.graph.iter().flat_map(|g| g.checks.iter().map(|c| c.says.as_str()).chain(g.check_with.keys().map(String::as_str))))
-            .chain(self.audio.iter().flat_map(|a| a.steps.iter().flat_map(|s| [s.name.as_str(), s.effect.as_str(), s.says.as_str()].into_iter().chain(s.params.keys().map(String::as_str)))));
+            .chain(self.audio.iter().flat_map(|a| a.steps.iter().flat_map(|s| [s.name.as_str(), s.effect.as_str(), s.says.as_str()].into_iter().chain(s.params.keys().map(String::as_str)))))
+            .chain(self.clips.iter().flat_map(|c| c.find.keys().map(String::as_str).chain(c.steps.iter().flat_map(|s| std::iter::once(s.clip.as_str()).chain(s.matte.iter().flat_map(|m| std::iter::once(m.source.as_str()).chain(m.channel.as_deref()))).chain(s.keys.iter().map(|k| k.param.as_str()))))));
         for t in texts {
             if t.len() > MAX_TEXT || t.chars().any(char::is_control) {
                 return Err(format!("a name or label of {} bytes, or with control characters, is refused", t.len()));
@@ -1093,6 +1309,7 @@ impl CompositionTemplate {
             kind: TemplateKind::Composition,
             graph: None,
             audio: None,
+            clips: None,
             formats: BTreeMap::new(),
         }
     }
@@ -1455,6 +1672,31 @@ pub fn builtin_audio_chains() -> Vec<CompositionTemplate> {
         .collect()
 }
 
+/// The clips recipes Klipp ships (#2886), as files in
+/// `assets/recipes/cut`: each read and checked as a saved one is.
+pub fn builtin_clip_recipes() -> Vec<CompositionTemplate> {
+    const FILES: [&str; 3] = [
+        include_str!("../../../assets/recipes/cut/track_matte_reveal.klipptemplate"),
+        include_str!("../../../assets/recipes/cut/whip_pan_left.klipptemplate"),
+        include_str!("../../../assets/recipes/cut/whip_pan_right.klipptemplate"),
+    ];
+    FILES
+        .iter()
+        .filter_map(|json| match CompositionTemplate::read(json) {
+            Ok(t) if t.kind == TemplateKind::Clips => Some(t),
+            Ok(t) => {
+                debug_assert!(false, "\"{}\" is not a clips recipe", t.name);
+                None
+            }
+            Err(why) => {
+                tracing::error!("a built-in clips recipe doesn't read: {why}");
+                debug_assert!(false, "a built-in clips recipe doesn't read: {why}");
+                None
+            }
+        })
+        .collect()
+}
+
 /// The recipes Klipp ships (#2758), as files in `assets/recipes`: each a
 /// recipe like a saved one, read and checked as one is.
 pub fn builtin_recipes() -> Vec<CompositionTemplate> {
@@ -1610,6 +1852,12 @@ impl CompositionTemplateStore {
     pub fn recipes(&self) -> impl Iterator<Item = &CompositionTemplate> {
         let packs = self.packs.iter().map(|(_, t)| t).filter(|t| !self.entries.iter().any(|(_, m)| m.id == t.id));
         self.entries.iter().map(|(_, template)| template).chain(packs).filter(|t| t.kind == TemplateKind::Recipe)
+    }
+
+    /// The clips recipes (#2886): the user's own, then the packs'.
+    pub fn clip_recipes(&self) -> impl Iterator<Item = &CompositionTemplate> {
+        let packs = self.packs.iter().map(|(_, t)| t).filter(|t| !self.entries.iter().any(|(_, m)| m.id == t.id));
+        self.entries.iter().map(|(_, template)| template).chain(packs).filter(|t| t.kind == TemplateKind::Clips)
     }
 
     /// The audio chain recipes (#2886): the user's own, then the packs'.
@@ -2113,6 +2361,73 @@ mod tests {
         assert!(std::fs::read_dir(&dir).unwrap().flatten().any(|e| e.file_name().to_string_lossy().ends_with(&format!("escaped.{EXTENSION}"))), "saved inside the folder");
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_file(&outside).ok();
+    }
+
+    /// #2886: a clips recipe from a file is checked before it is used:
+    /// its slots clips, those it finds its own; each step on the placed
+    /// clip or a slot, a matte seen through another slot with a known
+    /// channel and finite, non-negative feather and choke, or keys on one
+    /// of the clip properties it may key, 1 to 64 of them at finite times
+    /// with finite values; 1 to 32 steps; bindings to a key there is, from
+    /// a number. Each is refused; one in a person's folder is left out.
+    #[test]
+    fn a_hostile_clips_recipe_is_refused() {
+        let reveal = || builtin_clip_recipes().into_iter().find(|r| r.name == "Track Matte Reveal").expect("shipped");
+        let whip = || builtin_clip_recipes().into_iter().find(|r| r.name == "Whip Pan (left)").expect("shipped");
+        let refused = |base: CompositionTemplate, f: &dyn Fn(&mut CompositionTemplate)| {
+            let mut t = base;
+            f(&mut t);
+            CompositionTemplate::read(&serde_json::to_string(&t).unwrap()).unwrap_err()
+        };
+        fn steps(t: &mut CompositionTemplate) -> &mut Vec<ClipStep> {
+            &mut t.clips.as_mut().unwrap().steps
+        }
+        assert!(refused(reveal(), &|t| t.slots.get_mut("above").unwrap().kind = SlotKind::Media).contains("slots are clips"));
+        assert!(refused(reveal(), &|t| { t.clips.as_mut().unwrap().find.insert("elsewhere".into(), ClipFind::Above); }).contains("not one of its slots"));
+        assert!(refused(reveal(), &|t| steps(t)[0].clip = "other".into()).contains("neither placed nor one of its slots"));
+        assert!(refused(reveal(), &|t| steps(t)[0].matte.as_mut().unwrap().source = "placed".into()).contains("not another of its slots"));
+        assert!(refused(reveal(), &|t| steps(t)[0].matte.as_mut().unwrap().channel = Some("red".into())).contains("auto, alpha or luma"));
+        assert!(refused(reveal(), &|t| steps(t)[0].matte.as_mut().unwrap().feather_px = -1.0).contains("finite pixels"));
+        assert!(refused(reveal(), &|t| steps(t)[0].keys = Some(KeysStep { param: "opacity".into(), keys: vec![ClipKey { at: KeyTime::Secs(0.0), value: KeyValue::Number(1.0) }] })).contains("a matte or keys, one of them"));
+        assert!(refused(reveal(), &|t| { steps(t)[1].keys = None; }).contains("a matte or keys, one of them"));
+        assert!(refused(whip(), &|t| steps(t)[0].keys.as_mut().unwrap().param = "volume".into()).contains("it keys opacity, position_x"));
+        assert!(refused(whip(), &|t| steps(t)[0].keys.as_mut().unwrap().keys.clear()).contains("from 1 to 64"));
+        assert!(refused(whip(), &|t| { let k = &mut steps(t)[0].keys.as_mut().unwrap().keys; *k = vec![k[0].clone(); MAX_CLIP_KEYS + 1]; }).contains("at most 64"));
+        assert!(refused(whip(), &|t| steps(t)[0].keys.as_mut().unwrap().keys[0].at = KeyTime::Secs(-1.0)).contains("finite times"));
+        assert!(refused(whip(), &|t| steps(t)[0].keys.as_mut().unwrap().keys[0].at = KeyTime::FromEnd { from_end: -0.5 }).contains("finite times"));
+        assert!(refused(whip(), &|t| { let s = steps(t); *s = vec![s[0].clone(); MAX_CLIP_STEPS + 1]; }).contains("at most 32"));
+        assert!(refused(whip(), &|t| steps(t).clear()).contains("carries the steps"));
+        assert!(refused(whip(), &|t| t.clips = None).contains("carries the steps"));
+        let bind = |t: &mut CompositionTemplate, property: &str| {
+            t.parameters.insert("amount".into(), TemplateParameter { label: "Amount".into(), default: TemplateValue::Number(1.0), range: None, choices: Vec::new() });
+            t.bindings = vec![TemplateBinding { parameter: "amount".into(), property: property.into(), link: None, take: None }];
+        };
+        assert!(refused(whip(), &|t| bind(t, "steps.0.keys.7.value")).contains("names no key 7"));
+        assert!(refused(whip(), &|t| bind(t, "node:0.amount")).contains("binds steps.<i>.keys.<j>.value|at"));
+        assert!(refused(whip(), &|t| { bind(t, "steps.0.keys.1.value"); t.bindings[0].link = Some(LinkMap { to: [0.0, 1.0], curve: klipp_core::LinkCurve::Linear, per: None }); }).contains("bound as it is"));
+        let mut ok = whip();
+        bind(&mut ok, "steps.0.keys.1.value");
+        CompositionTemplate::read(&serde_json::to_string(&ok).unwrap()).unwrap();
+        // Too large a value doesn't read at all.
+        let mut json = serde_json::to_value(whip()).unwrap();
+        json["clips"]["steps"][0]["keys"]["keys"][0]["value"] = serde_json::json!(1e300);
+        assert!(CompositionTemplate::read(&json.to_string()).is_err());
+
+        let dir = std::env::temp_dir().join(format!("klipp-hostile-clips-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut bad = whip();
+        bad.id = Uuid::new_v4();
+        bad.name = "Reach".into();
+        steps(&mut bad)[0].clip = "the editor's desktop".into();
+        std::fs::write(dir.join("reach.klipptemplate"), serde_json::to_string(&bad).unwrap()).unwrap();
+        let mut mine = whip();
+        mine.id = Uuid::new_v4();
+        mine.name = "My whip".into();
+        std::fs::write(dir.join("mine.klipptemplate"), serde_json::to_string(&mine).unwrap()).unwrap();
+        let store = CompositionTemplateStore::load(Some(dir.clone()));
+        assert_eq!(store.clip_recipes().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["My whip"]);
+        assert_eq!(store.templates().count() + store.recipes().count() + store.audio_chains().count(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// #2886: an audio chain recipe from a file names only Klipp's own

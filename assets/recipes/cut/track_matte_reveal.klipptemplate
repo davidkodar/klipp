@@ -1,0 +1,45 @@
+{
+  "format_version": 2,
+  "id": "3c9e7a12-5d41-4b8f-a6e0-1f2d7c4b9e31",
+  "name": "Track Matte Reveal",
+  "category": "Transitions",
+  "written_by": "built-in",
+  "kind": "clips",
+  "composition_id": "00000000-0000-0000-0000-000000000000",
+  "slots": {
+    "above": {
+      "label": "Matte source",
+      "kind": "clip"
+    }
+  },
+  "clips": {
+    "find": {
+      "above": "above"
+    },
+    "steps": [
+      {
+        "clip": "placed",
+        "matte": {
+          "source": "above",
+          "channel": "alpha"
+        }
+      },
+      {
+        "clip": "placed",
+        "keys": {
+          "param": "matte_feather",
+          "keys": [
+            {
+              "at": 0.0,
+              "value": 50.0
+            },
+            {
+              "at": 0.5,
+              "value": 0.0
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

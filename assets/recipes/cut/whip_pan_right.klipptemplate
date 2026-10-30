@@ -1,0 +1,62 @@
+{
+  "format_version": 2,
+  "id": "5e7d3a9c-2b84-4f16-9c3e-7a1b4d6e8f53",
+  "name": "Whip Pan (right)",
+  "category": "Transitions",
+  "written_by": "built-in",
+  "kind": "clips",
+  "composition_id": "00000000-0000-0000-0000-000000000000",
+  "slots": {
+    "next": {
+      "label": "Next clip",
+      "kind": "clip"
+    }
+  },
+  "clips": {
+    "find": {
+      "next": "next_on_track"
+    },
+    "steps": [
+      {
+        "clip": "placed",
+        "keys": {
+          "param": "position_x",
+          "keys": [
+            {
+              "at": {
+                "from_end": 0.2
+              },
+              "value": 0.0
+            },
+            {
+              "at": {
+                "from_end": 0.0
+              },
+              "value": {
+                "frame_widths": 1.0
+              }
+            }
+          ]
+        }
+      },
+      {
+        "clip": "next",
+        "keys": {
+          "param": "position_x",
+          "keys": [
+            {
+              "at": 0.0,
+              "value": {
+                "frame_widths": -1.0
+              }
+            },
+            {
+              "at": 0.2,
+              "value": 0.0
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

@@ -364,8 +364,8 @@ such a file, `assets/titles/ops/lower_third.klipptitle`, which only the
 composition and is refused with a hint to save it again):
 
 * `id`, `name`, `category`, `written_by`.
-* `kind` — `composition` (the default, left out), `recipe` or
-  `audio_chain`.
+* `kind` — `composition` (the default, left out), `recipe`,
+  `audio_chain` or `clips`.
 * `composition_id` and `sequences` — a composition carries its
   sequence and every sequence it nests, so it inserts into any project.
 * `graph` — a recipe's `{ops, checks, check_with}` instead: graph ops
@@ -389,6 +389,25 @@ composition and is refused with a hint to save it again):
   sound chain in their order, one whose effect the chain has already
   skipped, as one undo step. Its bindings are
   `step:<name>.<setting>` from a number control, without a link.
+* `clips` — a clips recipe's `{find, steps}` instead (#2886): edits of
+  the clip it is placed on (`placed`) and of clips found from it. Its
+  slots are all of kind `clip`; `find` names how one is found when the
+  op gives none, `next_on_track` (the clip after it on its track) or
+  `above` (the first clip on a higher track overlapping it, an
+  adjustment layer passed over). Each step, on `clip` (`placed` or a
+  slot), is one of: `matte: {source, channel?, invert?, feather_px?,
+  choke_px?}`, the clip seen through another slot's as the `matte` op
+  binds one (`channel` `auto`, `alpha` (the default) or `luma`); or
+  `keys: {param, keys: [{at, value}]}` on one of the clip's own
+  properties (`opacity`, `position_x`, `position_y`, `scale`,
+  `scale_y`, `rotation`, `matte_feather`, `matte_choke`), `at` seconds
+  from the clip's start or `{from_end}` before its end, `value` a
+  number or `{frame_widths}`/`{frame_heights}` of the sequence's frame.
+  1 to 32 steps, 1 to 64 keys each, every time finite and 0 or more,
+  every value finite. Placed, each step is made on the timeline as the
+  steps before left it, all as one undo step named for the recipe; a
+  clip it needs and can't find refuses it. Its bindings are
+  `steps.<i>.keys.<j>.value|at` from a number control, without a link.
 * `parameters` — by name: `{label, default, range?, choices}`, the
   default a `TemplateValue` (`Text`, `Color`, `Number`, `Bool`, `Enum`).
 * `slots` — by name: `{label, kind}`, kind `media`, `clip`, `title`,

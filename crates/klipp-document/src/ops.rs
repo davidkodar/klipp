@@ -1206,6 +1206,9 @@ pub enum Op {
         /// way: never sent.
         #[serde(skip)]
         audio: Option<AudioSteps>,
+        /// A clips recipe (#2886), found the same way: never sent.
+        #[serde(skip)]
+        clips: Option<ClipsRecipe>,
     },
     /// A lower third: `name`, and `role` under it, bottom left inside
     /// title-safe, for `secs` from `at`, fading in and out. It goes on a
@@ -4466,6 +4469,10 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             }
             template_link(i, clip, control.as_deref(), target.as_deref(), action.as_deref(), *value)
         }
+        Op::Recipe { clip_id, slots, controls, clips: Some(ClipsRecipe(recipe)), .. } => {
+            let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            clips_recipe(seq, pool, fps, i, clip, recipe, slots, controls)
+        }
         Op::Recipe { clip_id, name, audio: Some(AudioSteps(steps)), .. } => {
             let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             let steps = steps.clone().map_err(|why| refuse(i, why, "title_templates lists each recipe's steps and controls"))?;
@@ -7055,6 +7062,16 @@ impl PartialEq for RecipeMaker {
 /// whoever resolves the op from the recipe file and the op's controls.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AudioSteps(pub Result<Vec<(String, String, klipp_core::AudioEffectInstance)>, String>);
+
+/// A clips recipe an op places (#2886), found by whoever resolves it.
+#[derive(Debug, Clone)]
+pub struct ClipsRecipe(pub Box<klipp_timeline::composition_template::CompositionTemplate>);
+
+impl PartialEq for ClipsRecipe {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.id == other.0.id
+    }
+}
 
 /// What a recipe's builder gives (#2758): the graph ops, the instance its
 /// frame keeps, and anything the reply says beside (a subject matte the
@@ -10911,6 +10928,135 @@ struct CleanFlags {
     hiss: bool,
     hum: bool,
     deess: bool,
+}
+
+/// The clip `rel` finds from `from` (#2886): the next on its track, or
+/// the first on a track above it (later in the list) overlapping it in
+/// time, an adjustment layer passed over.
+pub fn clip_found(seq: &Sequence, from: ClipId, rel: klipp_timeline::composition_template::ClipFind) -> Option<ClipId> {
+    use klipp_timeline::composition_template::ClipFind;
+    let (ti, ci) = seq.find_clip(from)?;
+    let clip = &seq.tracks[ti].clips[ci];
+    match rel {
+        ClipFind::NextOnTrack => seq.tracks[ti].clips.get(ci + 1).map(|c| c.id),
+        ClipFind::Above => seq.tracks.iter().skip(ti + 1).flat_map(|t| t.clips.iter()).find(|c| c.id != from && !matches!(c.kind, ClipKind::AdjustmentLayer) && c.timeline_in < clip.timeline_out && c.timeline_out > clip.timeline_in).map(|c| c.id),
+    }
+}
+
+/// A clips recipe placed on `clip` (#2886): its slots filled from `slots`
+/// (by name or label, a clip id) or found from `clip`, then each step in
+/// order on the timeline as the steps before left it, a matte as the
+/// `matte` op sets one and keys on a clip's own properties, all one undo
+/// step named for the recipe. `controls` (by name or label, numbers) set
+/// the keys they are bound to, the rest their defaults.
+#[allow(clippy::too_many_arguments)]
+fn clips_recipe(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip: &Clip, recipe: &klipp_timeline::composition_template::CompositionTemplate, slots: &std::collections::BTreeMap<String, serde_json::Value>, controls: &std::collections::BTreeMap<String, serde_json::Value>) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    use klipp_timeline::composition_template::{clip_key_binding, KeyTime, KeyValue};
+    let mut steps = recipe.clips.clone().ok_or_else(|| refuse(i, format!("\"{}\" is not a clips recipe", recipe.name), "report it"))?;
+    for given in controls.keys() {
+        if !recipe.parameters.iter().any(|(n, p)| n.eq_ignore_ascii_case(given) || p.label.eq_ignore_ascii_case(given)) {
+            return Err(refuse(i, format!("\"{}\" has no control \"{given}\"", recipe.name), "title_templates lists each recipe's controls"));
+        }
+    }
+    for b in &recipe.bindings {
+        let Some((k, j, field)) = clip_key_binding(&b.property) else { continue };
+        let Some(p) = recipe.parameters.get(&b.parameter) else { continue };
+        let given = controls.iter().find(|(n, _)| n.eq_ignore_ascii_case(&b.parameter) || n.eq_ignore_ascii_case(&p.label)).map(|(_, v)| v);
+        let v = match given {
+            Some(v) => v.as_f64().filter(|v| v.is_finite()).ok_or_else(|| refuse(i, format!("control \"{}\" takes a number", p.label), "give it as a number"))?,
+            None => match p.default {
+                klipp_core::TemplateValue::Number(v) => v,
+                _ => continue,
+            },
+        };
+        p.validate(&klipp_core::TemplateValue::Number(v)).map_err(|why| refuse(i, format!("control \"{}\": {why}", p.label), "keep it in its range"))?;
+        if let Some(key) = steps.steps.get_mut(k).and_then(|s| s.keys.as_mut()).and_then(|keys| keys.keys.get_mut(j)) {
+            match field {
+                "value" => key.value = KeyValue::Number(v as f32),
+                _ => key.at = KeyTime::Secs(v.max(0.0)),
+            }
+        }
+    }
+    let steps = &steps;
+    let mut filled: std::collections::BTreeMap<String, ClipId> = std::collections::BTreeMap::from([("placed".to_string(), clip.id)]);
+    for (name, slot) in &recipe.slots {
+        let given = slots.iter().find(|(k, _)| k.eq_ignore_ascii_case(name) || k.eq_ignore_ascii_case(&slot.label)).map(|(_, v)| v);
+        let id = match given {
+            Some(v) => {
+                let id = serde_json::from_value::<ClipId>(v.clone()).ok().ok_or_else(|| refuse(i, format!("slot \"{}\" takes a clip id", slot.label), "clip ids are in the timeline view"))?;
+                seq.find_clip(id).ok_or_else(|| refuse(i, format!("no clip {}", id.0), "clip ids are in the timeline view"))?;
+                id
+            }
+            None => {
+                let rel = steps.find.get(name).copied().ok_or_else(|| refuse(i, format!("\"{}\" needs its \"{}\" slot filled", recipe.name, slot.label), "give a clip id for it"))?;
+                clip_found(seq, clip.id, rel).ok_or_else(|| refuse(i, format!("\"{}\" needs {}", recipe.name, rel.needs()), "place it on a clip that has one"))?
+            }
+        };
+        filled.insert(name.clone(), id);
+    }
+    // Each step made on the timeline as the steps before it left it.
+    let mut work = vec![seq.clone()];
+    let (mut work_pool, mut work_fps) = (pool.clone(), fps);
+    let (width, height) = (seq.resolution.width, seq.resolution.height);
+    let mut edits = Vec::new();
+    for (k, step) in steps.steps.iter().enumerate() {
+        let on = filled[&step.clip];
+        let now = &work[0];
+        let (ti, ci) = now.find_clip(on).ok_or_else(|| refuse(i, format!("step {k}'s clip is gone"), "report it"))?;
+        let target = now.tracks[ti].clips[ci].clone();
+        let edit = if let Some(m) = &step.matte {
+            let source = ClipRef::Id(filled[&m.source]);
+            let ask = MatteAsk { source: Some(&source), channel: Some(m.channel.as_deref().unwrap_or("alpha")), invert: m.invert, feather_px: m.feather_px, choke_px: m.choke_px, show_source: false, clear: false };
+            matte(now, pool, fps, i, ti, &target, ask)?.1
+        } else if let Some(keys) = &step.keys {
+            let param = klipp_timeline::composition_template::clip_key_param(&keys.param).ok_or_else(|| refuse(i, format!("\"{}\" is no clip property", keys.param), "report it"))?;
+            let secs = target.duration().to_secs_f64().max(0.0);
+            let at: Vec<(f64, f32)> = keys.keys.iter().map(|key| (key.at.in_clip(secs), key.value.in_frame(width, height))).collect();
+            let mut new = target.clone();
+            use klipp_core::VideoParam as P;
+            match param {
+                // A track matte's radii are the clip's own keys.
+                P::MatteFeather | P::MatteChoke => {
+                    let frames = if param == P::MatteFeather { &mut new.matte_feather_keyframes } else { &mut new.matte_choke_keyframes };
+                    for (t, v) in at {
+                        klipp_core::keyframe::upsert_keyframe(frames, t, v);
+                    }
+                }
+                // The placement and opacity: keys on the picture's
+                // placement, a key at the same time replaced.
+                _ => {
+                    let key = match param {
+                        P::Opacity => "opacity",
+                        P::PositionX => "pos_x",
+                        P::PositionY => "pos_y",
+                        P::Scale => "scale",
+                        P::ScaleY => "scale_y",
+                        _ => "rotation",
+                    };
+                    let path = new.placement_path().ok_or_else(|| refuse(i, format!("step {k}'s clip has no placement to key"), "report it"))?;
+                    let ops: Vec<klipp_graph_lift::ops::GraphOp> = at
+                        .into_iter()
+                        .map(|(t, v)| {
+                            let keyframe = klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
+                            serde_json::to_value(keyframe).map(|keyframe| klipp_graph_lift::ops::GraphOp::AddKeyAt { path: path.clone(), key: klipp_graph_format::ParamKey::from(key), keyframe })
+                        })
+                        .collect::<Result<_, _>>()
+                        .map_err(|e| refuse(i, format!("step {k}'s keys: {e}"), "report it"))?;
+                    new.apply_picture_ops(&ops).map_err(|why| refuse(i, format!("step {k}'s keys don't fit the clip: {why}"), "report it"))?;
+                }
+            }
+            EditCommand::ReplaceClip { description: "Recipe", old: Box::new(target), new: Box::new(new) }
+        } else {
+            return Err(refuse(i, format!("step {k} is neither a matte nor keys"), "report it"));
+        };
+        crate::apply::DocumentView { sequences: &mut work, active: 0, media_pool: &mut work_pool, fps: &mut work_fps }.apply_forward(&edit);
+        edits.push(edit);
+    }
+    let mut touched: Vec<ClipId> = filled.values().copied().collect();
+    touched.dedup();
+    let others: Vec<String> = recipe.slots.iter().map(|(name, s)| format!("{} {}", s.label.to_lowercase(), clip_name(seq, pool, seq.find_clip(filled[name]).map(|(t, c)| &seq.tracks[t].clips[c]).unwrap_or(clip)))).collect();
+    let what = if others.is_empty() { format!("{} on {}", quoted(&recipe.name), clip_name(seq, pool, clip)) } else { format!("{} on {}, {}", quoted(&recipe.name), clip_name(seq, pool, clip), others.join(", ")) };
+    Ok((what, EditCommand::Named { label: recipe.name.clone(), edit: Box::new(EditCommand::Batch(edits)) }, touched))
 }
 
 /// The steps of Klipp's own Clean Audio recipe (#2886) the flags ask
