@@ -43,6 +43,7 @@ fn export(src: &Path, asked: Option<(u32, u32)>, out: &Path) -> Ran {
     video.sequence.tracks.push(t);
     video.media.insert(id, MediaFile { path: src.to_path_buf(), log_format: None, source_rotation: 0, ..Default::default() });
     let snapshot = SequenceSnapshot {
+        audio_buses: Vec::new(),
         fps: 25.0, fps_num: 25, fps_den: 1, width: 128, height: 72, sample_rate: 48000,
         duration_frames: 10, export_range: None, video,
         audio_tracks: vec![], global_lut_path: None, subtitle_tracks: vec![], chapters: vec![],

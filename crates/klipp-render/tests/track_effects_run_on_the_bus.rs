@@ -53,6 +53,7 @@ fn clip(path: &std::path::Path, from: u64, to: u64, gain: f32) -> AudioClipSnaps
 
 fn snapshot(clips: Vec<AudioClipSnapshot>, effects: Vec<AudioEffectInstance>) -> SequenceSnapshot {
     SequenceSnapshot {
+        audio_buses: Vec::new(),
         fps: 25.0,
         fps_num: 25,
         fps_den: 1,
@@ -62,7 +63,7 @@ fn snapshot(clips: Vec<AudioClipSnapshot>, effects: Vec<AudioEffectInstance>) ->
         duration_frames: FRAMES,
         export_range: None,
         video: Default::default(),
-        audio_tracks: vec![AudioTrackSnapshot { volume: 1.0, pan: 0.0, muted: false, solo: false, clips, automation: Default::default(), effects }],
+        audio_tracks: vec![AudioTrackSnapshot { sends: Vec::new(), volume: 1.0, pan: 0.0, muted: false, solo: false, clips, automation: Default::default(), effects }],
         pan_law: Default::default(),
         global_lut_path: None,
         subtitle_tracks: vec![],

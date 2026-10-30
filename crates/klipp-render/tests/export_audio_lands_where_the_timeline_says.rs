@@ -59,6 +59,7 @@ fn secs_of(v: f32) -> f64 {
 
 fn snapshot(fps_num: u32, fps_den: u32, clip: AudioClipSnapshot) -> SequenceSnapshot {
     SequenceSnapshot {
+        audio_buses: Vec::new(),
         fps: fps_num as f64 / fps_den as f64,
         fps_num,
         fps_den,
@@ -68,7 +69,7 @@ fn snapshot(fps_num: u32, fps_den: u32, clip: AudioClipSnapshot) -> SequenceSnap
         duration_frames: 10_000,
         export_range: None,
         video: Default::default(),
-        audio_tracks: vec![AudioTrackSnapshot { volume: 1.0, pan: 0.0, muted: false, solo: false, clips: vec![clip], automation: Default::default() , effects: Vec::new()}],
+        audio_tracks: vec![AudioTrackSnapshot { sends: Vec::new(), volume: 1.0, pan: 0.0, muted: false, solo: false, clips: vec![clip], automation: Default::default() , effects: Vec::new()}],
         pan_law: Default::default(),
         global_lut_path: None,
         subtitle_tracks: vec![],

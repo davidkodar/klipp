@@ -33,6 +33,7 @@ fn snapshot_of(clip: klipp_timeline::Clip, media: HashMap<MediaId, MediaFile>) -
     t.clips = vec![clip];
     v.sequence.tracks.push(t);
     SequenceSnapshot {
+        audio_buses: Vec::new(),
         fps: FPS as f64, fps_num: FPS, fps_den: 1, width: W, height: H, sample_rate: 48000,
         duration_frames: FRAMES as u64, export_range: None, video: v,
         audio_tracks: vec![], global_lut_path: None, subtitle_tracks: vec![], chapters: vec![],

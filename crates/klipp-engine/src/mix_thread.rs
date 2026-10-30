@@ -417,6 +417,9 @@ fn mix_loop(
     // truncated to the actual filled length afterwards. Saves ~8 MB/s of
     // allocator traffic at 10 tracks × 200 Hz × 4 KB.
     let mut track_buffers: Vec<Vec<f32>> = Vec::new();
+    // The latency the picture was last held back by: the aux routing
+    // (#2861) changes it from the edit side, with no track's changing.
+    let mut pdc_pushed: u32 = 0;
 
     loop {
         // Publish current main-ring fill so the engine's pre-fill polling
@@ -593,8 +596,9 @@ fn mix_loop(
                 // so the engine subtracts it at video frame pick;
                 // video stays aligned with audio. Cheap atomic
                 // store; no contention with audio-thread reads.
-                if any_change {
+                if any_change || m.pdc_global_max_latency() != pdc_pushed {
                     let global_max = m.pdc_global_max_latency();
+                    pdc_pushed = global_max;
                     let offset_us = MasterClock::pdc_offset_us_from_samples(
                         global_max,
                         sample_rate,

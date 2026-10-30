@@ -1176,6 +1176,7 @@ mod tests {
             exact_secs: None,
         };
         let snapshot = klipp_render::snapshot::SequenceSnapshot {
+            audio_buses: Vec::new(),
             fps: 25.0,
             fps_num: 25,
             fps_den: 1,
@@ -1185,7 +1186,7 @@ mod tests {
             duration_frames: frames,
             export_range: None,
             video: Default::default(),
-            audio_tracks: vec![klipp_render::snapshot::AudioTrackSnapshot { volume: 1.0, pan: 0.0, muted: false, solo: false, clips: vec![clip], automation: Default::default(), effects: Vec::new() }],
+            audio_tracks: vec![klipp_render::snapshot::AudioTrackSnapshot { sends: Vec::new(), volume: 1.0, pan: 0.0, muted: false, solo: false, clips: vec![clip], automation: Default::default(), effects: Vec::new() }],
             pan_law: Default::default(),
             global_lut_path: None,
             subtitle_tracks: vec![],

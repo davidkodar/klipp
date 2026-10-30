@@ -35,6 +35,7 @@ fn a_clip_without_its_analysis_refuses_the_export_by_name() {
     video.sequence.tracks.push(track);
     video.media.insert(id, MediaFile { path: media.clone(), duration_secs: Some(2.0), fps: Some((25, 1)), resolution: Some((64, 64)), ..Default::default() });
     let snapshot = SequenceSnapshot {
+        audio_buses: Vec::new(),
         fps: 25.0, fps_num: 25, fps_den: 1, width: 64, height: 64, sample_rate: 48000,
         duration_frames: N as u64, export_range: None, video,
         audio_tracks: vec![], global_lut_path: None, subtitle_tracks: vec![], chapters: vec![],

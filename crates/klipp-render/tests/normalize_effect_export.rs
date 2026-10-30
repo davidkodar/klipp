@@ -62,6 +62,7 @@ fn clip(path: PathBuf, effects: Vec<klipp_core::AudioEffectInstance>) -> AudioCl
 /// The clip exported: its interleaved stereo, frame by frame.
 fn export(clip: AudioClipSnapshot) -> Vec<Vec<f32>> {
     let snapshot = SequenceSnapshot {
+        audio_buses: Vec::new(),
         fps: FPS as f64,
         fps_num: FPS,
         fps_den: 1,
@@ -71,7 +72,7 @@ fn export(clip: AudioClipSnapshot) -> Vec<Vec<f32>> {
         duration_frames: (FPS * SECS) as u64,
         export_range: None,
         video: Default::default(),
-        audio_tracks: vec![AudioTrackSnapshot { volume: 1.0, pan: 0.0, muted: false, solo: false, clips: vec![clip], automation: Default::default(), effects: Vec::new() }],
+        audio_tracks: vec![AudioTrackSnapshot { sends: Vec::new(), volume: 1.0, pan: 0.0, muted: false, solo: false, clips: vec![clip], automation: Default::default(), effects: Vec::new() }],
         pan_law: Default::default(),
         global_lut_path: None,
         subtitle_tracks: vec![],

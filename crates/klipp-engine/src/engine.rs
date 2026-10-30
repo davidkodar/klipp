@@ -4890,6 +4890,9 @@ impl PlaybackEngine {
             }
             lane.sends.truncate(n);
         }
+        // The delay lines to the routing: a bus's effects or a send
+        // changed may change how long each way is held back.
+        m.refresh_pdc();
     }
 
     /// Each track's mute and solo as the sequence has them, onto its

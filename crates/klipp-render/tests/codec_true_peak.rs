@@ -77,6 +77,7 @@ fn snapshot(source: PathBuf) -> SequenceSnapshot {
         exact_secs: None,
     };
     SequenceSnapshot {
+        audio_buses: Vec::new(),
         fps: 25.0,
         fps_num: 25,
         fps_den: 1,
@@ -86,7 +87,7 @@ fn snapshot(source: PathBuf) -> SequenceSnapshot {
         duration_frames: FRAMES,
         export_range: None,
         video: Default::default(),
-        audio_tracks: vec![AudioTrackSnapshot { volume: 1.0, pan: 0.0, muted: false, solo: false, clips: vec![clip], automation: Default::default() , effects: Vec::new()}],
+        audio_tracks: vec![AudioTrackSnapshot { sends: Vec::new(), volume: 1.0, pan: 0.0, muted: false, solo: false, clips: vec![clip], automation: Default::default() , effects: Vec::new()}],
         pan_law: Default::default(),
         global_lut_path: None,
         subtitle_tracks: vec![],

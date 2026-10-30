@@ -27,6 +27,113 @@ pub struct AudioMixdown {
     /// How a pan position becomes left and right gains — the project's
     /// law, so the render mixes the way playback does.
     pan_law: klipp_core::PanLaw,
+    /// The aux buses and sends (#2861); `None` without buses.
+    routing: Option<Routing>,
+}
+
+/// The aux buses and sends as the export runs them (#2861), and the mix
+/// made ahead through them.
+struct Routing {
+    buses: Vec<RoutedBus>,
+    /// The order the buses are mixed in, each before the bus it feeds.
+    order: Vec<usize>,
+    /// Each track's sends, to buses by index.
+    sends: Vec<Vec<RoutedSend>>,
+    /// Each track's delay on its way to master, after its fader.
+    direct_delay: Vec<Option<klipp_audio::pdc::TrackDelayLine>>,
+    /// How far the mix is made ahead: the slowest way's latency.
+    lead: u64,
+    bus_bufs: Vec<Vec<f32>>,
+    /// The frame expected next, the next frame to make, what has been
+    /// made and not yet given, and the sample of the first of it.
+    expected: Option<u64>,
+    next_frame: u64,
+    out: std::collections::VecDeque<f32>,
+    out_from: u64,
+}
+
+struct RoutedBus {
+    volume: f32,
+    pan: f32,
+    muted: bool,
+    output: Option<usize>,
+    chain: Option<AudioEffectChain>,
+}
+
+struct RoutedSend {
+    send: klipp_timeline::AuxSend,
+    bus: usize,
+    delay: Option<klipp_audio::pdc::TrackDelayLine>,
+}
+
+impl Routing {
+    /// The snapshot's buses and its tracks' sends, or `None` with no
+    /// buses: the mix is then made as it was before them.
+    fn new(snapshot: &SequenceSnapshot, sample_rate: u32, max_block: usize) -> Option<Self> {
+        let all = &snapshot.audio_buses;
+        if all.is_empty() {
+            return None;
+        }
+        let index = |id: klipp_core::BusId| all.iter().position(|b| b.id == id);
+        let buses: Vec<RoutedBus> = all
+            .iter()
+            .map(|b| RoutedBus {
+                volume: b.volume,
+                pan: b.pan,
+                muted: b.muted,
+                output: b.output.and_then(index),
+                chain: b.effects.iter().any(|e| e.enabled).then(|| {
+                    let mut chain = AudioEffectChain::from_instances(&b.effects, sample_rate);
+                    chain.prepare(2);
+                    chain
+                }),
+            })
+            .collect();
+        let latency: Vec<u32> = buses.iter().map(|b| b.chain.as_ref().map_or(0, |c| c.total_latency_samples(sample_rate))).collect();
+        let outputs: Vec<Option<usize>> = buses.iter().map(|b| b.output).collect();
+        let route = klipp_audio::routing::bus_routes(&latency, &outputs);
+        let sends: Vec<Vec<(klipp_timeline::AuxSend, usize)>> = snapshot.audio_tracks.iter().map(|t| t.sends.iter().filter_map(|s| Some((s.clone(), index(s.bus)?))).collect()).collect();
+        // The tracks' own effects are already made up for, read ahead.
+        let n = sends.len();
+        let plan = klipp_audio::routing::pdc_plan(&vec![0; n], &vec![None; n], &sends.iter().map(|s| s.iter().map(|(_, b)| *b).collect()).collect::<Vec<_>>(), &route);
+        // Every delay after the fader, so a track's automation keeps its
+        // time on its sound: the pre delay goes on each way.
+        let line = |d: u32| (d > 0).then(|| klipp_audio::pdc::TrackDelayLine::new(d as usize, max_block));
+        Some(Self {
+            order: klipp_timeline::routing::bus_order_of(all),
+            direct_delay: (0..n).map(|t| line(plan.pre[t] + plan.direct[t])).collect(),
+            sends: sends
+                .into_iter()
+                .enumerate()
+                .map(|(t, s)| s.into_iter().enumerate().map(|(i, (send, bus))| RoutedSend { send, bus, delay: line(plan.pre[t] + plan.sends[t][i]) }).collect())
+                .collect(),
+            bus_bufs: vec![Vec::new(); buses.len()],
+            buses,
+            lead: plan.total as u64,
+            expected: None,
+            next_frame: 0,
+            out: Default::default(),
+            out_from: 0,
+        })
+    }
+
+    /// Silence in every effect and delay, as at the start.
+    fn reset(&mut self) {
+        self.out.clear();
+        for b in &mut self.buses {
+            if let Some(c) = b.chain.as_mut() {
+                c.reset();
+            }
+        }
+        for line in self.direct_delay.iter_mut().flatten() {
+            line.reset();
+        }
+        for s in self.sends.iter_mut().flatten() {
+            if let Some(line) = s.delay.as_mut() {
+                line.reset();
+            }
+        }
+    }
 }
 
 struct TrackSettings {
@@ -138,6 +245,8 @@ impl AudioMixdown {
             fps_num: snapshot.fps_num.max(1) as u64,
             fps_den: snapshot.fps_den.max(1) as u64,
             pan_law: snapshot.pan_law,
+            // A frame's samples, and one over for the rounding.
+            routing: Routing::new(snapshot, sample_rate, (sample_rate as u64 * snapshot.fps_den.max(1) as u64 / snapshot.fps_num.max(1) as u64) as usize + 2),
         })
     }
 
@@ -174,105 +283,213 @@ impl AudioMixdown {
     }
 
     fn mix_frame(&mut self, frame_num: u64) -> Vec<f32> {
+        if self.routing.is_some() {
+            return self.mix_routed(frame_num);
+        }
         let (first, end) = self.frame_sample_range(frame_num);
         let stereo_samples = (end - first) as usize * 2;
         let mut mixed = vec![0.0f32; stereo_samples];
-
-        let (sample_rate, fps_num, fps_den) = (self.sample_rate, self.fps_num, self.fps_den);
-        for (track_idx, track_state) in self.track_decoders.iter_mut().enumerate() {
-            let settings = &mut self.track_settings[track_idx];
-
-            // Mute/solo logic
-            if settings.muted {
-                continue;
-            }
-            if self.any_solo && !settings.solo {
-                continue;
-            }
-
-            // Get samples for this frame from this track: its clips summed,
-            // then its own effects on them, before its fader (#2560).
-            let fps = fps_num as f64 / fps_den as f64;
-            let track_samples = match settings.inserts.as_mut() {
-                None => get_track_samples(track_state, frame_num, first, end, sample_rate, fps_num, fps_den, fps),
-                Some(ins) => {
-                    if ins.expected != Some(frame_num) {
-                        ins.chain.reset();
-                        ins.out.clear();
-                        (ins.started_at, ins.next_feed, ins.out_from) = (first, frame_num, 0);
-                    }
-                    ins.expected = Some(frame_num + 1);
-                    // Output index k is input sample started_at + k - latency.
-                    let want_until = end - ins.started_at + ins.latency;
-                    while ins.out_from + (ins.out.len() / 2) as u64 <= want_until.saturating_sub(1) {
-                        let f = ins.next_feed;
-                        let (a, b) = (first_sample_of_frame(f, sample_rate, fps_num, fps_den), first_sample_of_frame(f + 1, sample_rate, fps_num, fps_den));
-                        let mut fed = get_track_samples(track_state, f, a, b, sample_rate, fps_num, fps_den, fps);
-                        ins.chain.process(&mut fed, &klipp_audio::dsp::AudioProcessContext { sample_rate, channels: 2, clip_time_secs: 0.0 });
-                        ins.out.extend(fed);
-                        ins.next_feed += 1;
-                    }
-                    let want_from = first - ins.started_at + ins.latency;
-                    let skip = ((want_from - ins.out_from) * 2) as usize;
-                    ins.out.drain(..skip.min(ins.out.len()));
-                    ins.out_from = want_from;
-                    let take = (((end - first) * 2) as usize).min(ins.out.len());
-                    let samples: Vec<f32> = ins.out.drain(..take).collect();
-                    ins.out_from += (take / 2) as u64;
-                    samples
-                }
-            };
-
-            if track_samples.is_empty() {
-                continue;
-            }
-
-            // Volume and pan, by the project's pan law — the same
-            // `PanLaw::gains` playback uses.
-            //
-            // This used to be the constant-power law, written out here.
-            // That is 0.707 at centre, and the default law is Linear,
-            // which is unity — so every centred stereo track came out
-            // of a render 3 dB below what it sounded like in the viewer,
-            // and the user's choice of law was ignored entirely. An
-            // equal-power law is for panning a *mono* source; a stereo
-            // track at centre has to pass through untouched.
-            let (gain_l, gain_r) = self.pan_law.gains(settings.pan);
-            let pan_l = gain_l * settings.volume;
-            let pan_r = gain_r * settings.volume;
-            // Automated (#2306): the track's volume and pan at the frame's
-            // first sample and at the next frame's, by the function the
-            // playback mixer is fed by, ramped across the frame's samples.
-            let automated = settings.automation.plays(klipp_timeline::TrackParam::Volume) || settings.automation.plays(klipp_timeline::TrackParam::Pan);
-            let ramp = automated.then(|| {
-                let at = |sample: u64| automated_gains(settings, self.pan_law, sample as f64 / self.sample_rate as f64);
-                (at(first), at(end))
-            });
-
-            let sample_count = track_samples.len().min(stereo_samples);
-            let frames = (stereo_samples / 2).max(1) as f32;
-            for i in (0..sample_count).step_by(2) {
-                let l = track_samples[i];
-                let r = if i + 1 < track_samples.len() {
-                    track_samples[i + 1]
-                } else {
-                    l
-                };
-                let (pan_l, pan_r) = match ramp {
-                    Some(((l0, r0), (l1, r1))) => {
-                        let t = (i / 2) as f32 / frames;
-                        (l0 + (l1 - l0) * t, r0 + (r1 - r0) * t)
-                    }
-                    None => (pan_l, pan_r),
-                };
-                mixed[i] += l * pan_l;
-                if i + 1 < stereo_samples {
-                    mixed[i + 1] += r * pan_r;
+        for track_idx in 0..self.track_decoders.len() {
+            if let Some((_, post, written)) = self.track_frame(track_idx, frame_num, first, end) {
+                for (m, p) in mixed[..written].iter_mut().zip(&post) {
+                    *m += p;
                 }
             }
         }
-
         mixed
+    }
+
+    /// One track's sound over frame `frame_num`, samples `[first, end)`:
+    /// its clips summed through its own effects, before its fader, and
+    /// after its fader and pan, with how much of the latter is sound.
+    /// `None` when it is muted, soloed out or has nothing there.
+    #[allow(clippy::type_complexity)]
+    fn track_frame(&mut self, track_idx: usize, frame_num: u64, first: u64, end: u64) -> Option<(Vec<f32>, Vec<f32>, usize)> {
+        let stereo_samples = (end - first) as usize * 2;
+        let (sample_rate, fps_num, fps_den) = (self.sample_rate, self.fps_num, self.fps_den);
+        let settings = &mut self.track_settings[track_idx];
+        let track_state = &mut self.track_decoders[track_idx];
+
+        // Mute/solo logic
+        if settings.muted {
+            return None;
+        }
+        if self.any_solo && !settings.solo {
+            return None;
+        }
+
+        // Get samples for this frame from this track: its clips summed,
+        // then its own effects on them, before its fader (#2560).
+        let fps = fps_num as f64 / fps_den as f64;
+        let track_samples = match settings.inserts.as_mut() {
+            None => get_track_samples(track_state, frame_num, first, end, sample_rate, fps_num, fps_den, fps),
+            Some(ins) => {
+                if ins.expected != Some(frame_num) {
+                    ins.chain.reset();
+                    ins.out.clear();
+                    (ins.started_at, ins.next_feed, ins.out_from) = (first, frame_num, 0);
+                }
+                ins.expected = Some(frame_num + 1);
+                // Output index k is input sample started_at + k - latency.
+                let want_until = end - ins.started_at + ins.latency;
+                while ins.out_from + (ins.out.len() / 2) as u64 <= want_until.saturating_sub(1) {
+                    let f = ins.next_feed;
+                    let (a, b) = (first_sample_of_frame(f, sample_rate, fps_num, fps_den), first_sample_of_frame(f + 1, sample_rate, fps_num, fps_den));
+                    let mut fed = get_track_samples(track_state, f, a, b, sample_rate, fps_num, fps_den, fps);
+                    ins.chain.process(&mut fed, &klipp_audio::dsp::AudioProcessContext { sample_rate, channels: 2, clip_time_secs: 0.0 });
+                    ins.out.extend(fed);
+                    ins.next_feed += 1;
+                }
+                let want_from = first - ins.started_at + ins.latency;
+                let skip = ((want_from - ins.out_from) * 2) as usize;
+                ins.out.drain(..skip.min(ins.out.len()));
+                ins.out_from = want_from;
+                let take = (((end - first) * 2) as usize).min(ins.out.len());
+                let samples: Vec<f32> = ins.out.drain(..take).collect();
+                ins.out_from += (take / 2) as u64;
+                samples
+            }
+        };
+
+        if track_samples.is_empty() {
+            return None;
+        }
+
+        // Volume and pan, by the project's pan law — the same
+        // `PanLaw::gains` playback uses.
+        //
+        // This used to be the constant-power law, written out here.
+        // That is 0.707 at centre, and the default law is Linear,
+        // which is unity — so every centred stereo track came out
+        // of a render 3 dB below what it sounded like in the viewer,
+        // and the user's choice of law was ignored entirely. An
+        // equal-power law is for panning a *mono* source; a stereo
+        // track at centre has to pass through untouched.
+        let (gain_l, gain_r) = self.pan_law.gains(settings.pan);
+        let pan_l = gain_l * settings.volume;
+        let pan_r = gain_r * settings.volume;
+        // Automated (#2306): the track's volume and pan at the frame's
+        // first sample and at the next frame's, by the function the
+        // playback mixer is fed by, ramped across the frame's samples.
+        let automated = settings.automation.plays(klipp_timeline::TrackParam::Volume) || settings.automation.plays(klipp_timeline::TrackParam::Pan);
+        let ramp = automated.then(|| {
+            let at = |sample: u64| automated_gains(settings, self.pan_law, sample as f64 / self.sample_rate as f64);
+            (at(first), at(end))
+        });
+
+        let sample_count = track_samples.len().min(stereo_samples);
+        let mut post = vec![0.0f32; stereo_samples];
+        let mut written = 0;
+        let frames = (stereo_samples / 2).max(1) as f32;
+        for i in (0..sample_count).step_by(2) {
+            let l = track_samples[i];
+            let r = if i + 1 < track_samples.len() {
+                track_samples[i + 1]
+            } else {
+                l
+            };
+            let (pan_l, pan_r) = match ramp {
+                Some(((l0, r0), (l1, r1))) => {
+                    let t = (i / 2) as f32 / frames;
+                    (l0 + (l1 - l0) * t, r0 + (r1 - r0) * t)
+                }
+                None => (pan_l, pan_r),
+            };
+            post[i] = l * pan_l;
+            written = i + 1;
+            if i + 1 < stereo_samples {
+                post[i + 1] = r * pan_r;
+                written = i + 2;
+            }
+        }
+        Some((track_samples, post, written))
+    }
+
+    /// Frame `frame_num` mixed through the aux buses (#2861). The mix is
+    /// made ahead, frame after frame, by the latency of the slowest way
+    /// through the buses, each way held back to it as playback holds it
+    /// ([`klipp_audio::routing::pdc_plan`]), and read that far behind: so
+    /// a bus's effects that look ahead land with the dry sound, on the
+    /// picture. A frame that is not the next one starts it afresh.
+    fn mix_routed(&mut self, frame_num: u64) -> Vec<f32> {
+        let Some(mut r) = self.routing.take() else { return Vec::new() };
+        let (first, end) = self.frame_sample_range(frame_num);
+        if r.expected != Some(frame_num) {
+            r.reset();
+            (r.next_frame, r.out_from) = (frame_num, first);
+        }
+        r.expected = Some(frame_num + 1);
+        while r.out_from + ((r.out.len() / 2) as u64) < end + r.lead {
+            let g = r.next_frame;
+            let mixed = self.routed_frame(&mut r, g);
+            r.out.extend(mixed);
+            r.next_frame += 1;
+        }
+        let skip = ((first + r.lead - r.out_from) * 2) as usize;
+        r.out.drain(..skip.min(r.out.len()));
+        r.out_from = first + r.lead;
+        let take = (((end - first) * 2) as usize).min(r.out.len());
+        let samples: Vec<f32> = r.out.drain(..take).collect();
+        r.out_from += (take / 2) as u64;
+        self.routing = Some(r);
+        samples
+    }
+
+    /// Frame `g` of the mix through the buses, as made ahead: each track
+    /// to master held back by its way's delay, each send to its bus by
+    /// its own, then the buses, each before the bus it feeds.
+    fn routed_frame(&mut self, r: &mut Routing, g: u64) -> Vec<f32> {
+        let (first, end) = self.frame_sample_range(g);
+        let stereo = (end - first) as usize * 2;
+        let mut master = vec![0.0f32; stereo];
+        let mut direct = vec![0.0f32; stereo];
+        for b in &mut r.bus_bufs {
+            b.clear();
+            b.resize(stereo, 0.0);
+        }
+        let (at_first, at_end) = (first as f64 / self.sample_rate as f64, end as f64 / self.sample_rate as f64);
+        for t in 0..self.track_decoders.len() {
+            let Some((pre, post, written)) = self.track_frame(t, g, first, end) else { continue };
+            let mode = self.track_settings[t].automation.mode;
+            for send in r.sends[t].iter_mut() {
+                let mut tap = vec![0.0f32; stereo];
+                let from: &[f32] = if send.send.pre_fader { &pre } else { &post[..written] };
+                let n = from.len().min(stereo);
+                tap[..n].copy_from_slice(&from[..n]);
+                if let Some(line) = send.delay.as_mut() {
+                    line.process_in_place(&mut tap);
+                }
+                if !send.send.muted {
+                    let (g0, g1) = (send.send.gain_at(at_first, mode), send.send.gain_at(at_end, mode));
+                    klipp_audio::routing::add_ramped(&tap, g0, g1, &mut r.bus_bufs[send.bus]);
+                }
+            }
+            direct.fill(0.0);
+            direct[..written].copy_from_slice(&post[..written]);
+            if let Some(line) = r.direct_delay[t].as_mut() {
+                line.process_in_place(&mut direct);
+            }
+            for (m, d) in master.iter_mut().zip(&direct) {
+                *m += d;
+            }
+        }
+        for &b in &r.order {
+            let mut buf = std::mem::take(&mut r.bus_bufs[b]);
+            let bus = &mut r.buses[b];
+            if !bus.muted {
+                if let Some(chain) = bus.chain.as_mut() {
+                    chain.process(&mut buf, &AudioProcessContext { sample_rate: self.sample_rate, channels: 2, clip_time_secs: 0.0 });
+                }
+                let gains = self.pan_law.gains(bus.pan);
+                let dest = match bus.output {
+                    Some(o) if o != b => &mut r.bus_bufs[o][..],
+                    _ => &mut master[..],
+                };
+                klipp_audio::routing::add_bus(&buf, bus.volume, gains, dest);
+            }
+            r.bus_bufs[b] = buf;
+        }
+        master
     }
 
     /// The mono sample index at which frame `frame_num` starts, and the
@@ -921,6 +1138,7 @@ mod tests {
     fn make_empty_snapshot(num_audio_tracks: usize) -> SequenceSnapshot {
         let audio_tracks: Vec<AudioTrackSnapshot> = (0..num_audio_tracks)
             .map(|_| AudioTrackSnapshot {
+                sends: Vec::new(),
                 volume: 1.0,
                 pan: 0.0,
                 muted: false,
@@ -931,6 +1149,7 @@ mod tests {
             .collect();
 
         SequenceSnapshot {
+            audio_buses: Vec::new(),
             fps: 24.0,
             fps_num: 24,
             fps_den: 1,

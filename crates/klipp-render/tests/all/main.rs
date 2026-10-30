@@ -22,6 +22,8 @@ mod clip_sources_reads_the_media;
 mod banding_hint;
 #[path = "../codec_true_peak.rs"]
 mod codec_true_peak;
+#[path = "../aux_sends_export.rs"]
+mod aux_sends_export;
 #[path = "../track_effects_run_on_the_bus.rs"]
 mod track_effects_run_on_the_bus;
 #[path = "../export_status_timings.rs"]

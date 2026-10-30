@@ -79,6 +79,7 @@ fn export(media: &Path, source_in_frames: i64, out: &Path) -> Result<(), RenderE
     video.sequence.tracks.push(track);
     video.media.insert(id, MediaFile { path: media.to_path_buf(), log_format: None, source_rotation: 0, ..Default::default() });
     let snapshot = SequenceSnapshot {
+        audio_buses: Vec::new(),
         fps: 25.0, fps_num: 25, fps_den: 1, width: 64, height: 64, sample_rate: 48000,
         duration_frames: N as u64, export_range: None, video,
         audio_tracks: vec![], global_lut_path: None, subtitle_tracks: vec![], chapters: vec![],

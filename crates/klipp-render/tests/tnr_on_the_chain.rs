@@ -43,6 +43,7 @@ fn snapshot(src: &Path) -> SequenceSnapshot {
     video.sequence.tracks.push(t);
     video.media.insert(id, MediaFile { path: src.to_path_buf(), log_format: None, source_rotation: 0, duration_secs: Some(1.0), fps: Some((25, 1)), ..Default::default() });
     SequenceSnapshot {
+        audio_buses: Vec::new(),
         fps: 25.0, fps_num: 25, fps_den: 1, width: W, height: H, sample_rate: 48000,
         duration_frames: 20, export_range: None, video,
         audio_tracks: vec![], global_lut_path: None, subtitle_tracks: vec![], chapters: vec![],

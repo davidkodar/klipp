@@ -106,6 +106,31 @@ fn clamp_pan(v: f32) -> f32 {
     if v.is_finite() { v.clamp(-1.0, 1.0) } else { 0.0 }
 }
 
+/// The order `buses` are mixed in: each before the bus it feeds; those in
+/// a loop last, as listed.
+pub fn bus_order_of(buses: &[AuxBus]) -> Vec<usize> {
+    let n = buses.len();
+    let mut order = Vec::with_capacity(n);
+    let mut placed = vec![false; n];
+    // A bus goes once every bus feeding it has gone.
+    while order.len() < n {
+        let before = order.len();
+        for i in 0..n {
+            let fed_by_unplaced = (0..n).any(|j| !placed[j] && j != i && buses[j].output == Some(buses[i].id));
+            if !placed[i] && !fed_by_unplaced {
+                placed[i] = true;
+                order.push(i);
+            }
+        }
+        if order.len() == before {
+            // A loop: the rest in the order they are listed.
+            order.extend((0..n).filter(|&i| !placed[i]));
+            break;
+        }
+    }
+    order
+}
+
 impl Sequence {
     /// The index of bus `id`.
     pub fn bus_index(&self, id: BusId) -> Option<usize> {
@@ -129,26 +154,7 @@ impl Sequence {
     /// The buses in the order they are mixed: each before the bus it
     /// feeds. Their outputs must not loop ([`Self::mend_routing`]).
     pub fn bus_order(&self) -> Vec<usize> {
-        let n = self.buses.len();
-        let mut order = Vec::with_capacity(n);
-        let mut placed = vec![false; n];
-        // A bus goes once every bus feeding it has gone.
-        while order.len() < n {
-            let before = order.len();
-            for i in 0..n {
-                let fed_by_unplaced = (0..n).any(|j| !placed[j] && j != i && self.buses[j].output == Some(self.buses[i].id));
-                if !placed[i] && !fed_by_unplaced {
-                    placed[i] = true;
-                    order.push(i);
-                }
-            }
-            if order.len() == before {
-                // A loop: the rest in the order they are listed.
-                order.extend((0..n).filter(|&i| !placed[i]));
-                break;
-            }
-        }
-        order
+        bus_order_of(&self.buses)
     }
 
     /// The routing made sound, as a file is read: past [`MAX_BUSES`] buses
