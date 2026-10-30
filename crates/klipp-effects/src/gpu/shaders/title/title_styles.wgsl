@@ -967,6 +967,17 @@ fn main(@builtin(global_invocation_id) gid_flat: vec3<u32>, @builtin(num_workgro
             }
         } else if abs(p.row0.x-1.0)>=0.001 { alpha=floor(alpha*p.row0.x*255.0+0.5)/255.0; }
         store_rgba(i,vec4<f32>(v.rgb,alpha));
+    } else if p.op==65u {
+        // Op 10's over, onto a picture held in encoded authored colour (or
+        // onto nothing, `offset_y` 1), left encoded: layers laid one after
+        // another and taken to the working space once (#3170).
+        let s=load_rgba(i);
+        var d=vec4<f32>(0.0);
+        if p.offset_y==0 { d=load_dst(i); }
+        let srgb=matrix(s.rgb);
+        var alpha=s.a;
+        if abs(p.color.a-1.0)>=0.001 { alpha=floor(alpha*p.color.a*255.0+0.5)/255.0; }
+        store_rgba(i,over(vec4<f32>(encoded(srgb.x),encoded(srgb.y),encoded(srgb.z),alpha),d));
     } else if p.op==64u {
         // A layer moved by (color.x, color.y) pixels, sampled bilinearly in
         // premultiplied light: a keyed layer at one of the shutter's

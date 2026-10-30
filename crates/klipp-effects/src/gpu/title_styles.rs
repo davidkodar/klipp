@@ -1510,6 +1510,51 @@ impl GpuEffectsPipeline {
         true
     }
 
+    /// Layer `source` laid over `destination` at `opacity`, as
+    /// [`Self::stack_title_over`] lays it, but with `destination` held in
+    /// encoded authored colour and left so (over nothing when `first`):
+    /// several layers laid one after another, then taken to the working
+    /// space once by [`Self::stack_title_laid_to_working`] (#3170).
+    pub fn stack_title_lay_encoded(&mut self, source: usize, destination: usize, opacity: f32, first: bool) -> bool {
+        let (w, h) = self.stack_dims;
+        let count = u64::from(w) * u64::from(h);
+        if source == destination || source >= self.stack_layers.len() || destination >= self.stack_layers.len() || count == 0 || !opacity.is_finite() || self.is_device_lost() {
+            return false;
+        }
+        let Some(to_authored) = inverse(self.authored_to_working) else { return false };
+        let params = StyleParams { width: w, height: h, frame_width: w, op: 65, x0: 0, y0: 0, offset_x: 0, offset_y: i32::from(first), color: [0.0, 0.0, 0.0, opacity.clamp(0.0, 1.0)], matrix: to_authored };
+        self.write_params(&params);
+        self.stack_pass(&self.pipelines.title_style_pipeline, &self.stack_layers[source], &self.stack_layers[destination], (count as u32).div_ceil(WORKGROUP_SIZE), "title layer laid encoded");
+        true
+    }
+
+    /// Layers laid by [`Self::stack_title_lay_encoded`] taken to the working
+    /// space, as each of [`Self::stack_title_over`]'s is.
+    pub fn stack_title_laid_to_working(&mut self, slot: usize) -> bool {
+        let (w, h) = self.stack_dims;
+        let count = u64::from(w) * u64::from(h);
+        if slot >= self.stack_layers.len() || count == 0 || self.is_device_lost() {
+            return false;
+        }
+        if self.title_post_scratch.as_ref().is_none_or(|b| b.size() < count * 16) {
+            self.title_post_scratch = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("title scene scratch"),
+                size: count * 16,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+        }
+        let params = StyleParams { width: w, height: h, frame_width: w, op: 11, x0: 0, y0: 0, offset_x: 0, offset_y: 0, color: [0.0; 4], matrix: self.authored_to_working };
+        self.write_params(&params);
+        let layer = &self.stack_layers[slot];
+        let scratch = self.title_post_scratch.as_ref().unwrap();
+        self.stack_pass(&self.pipelines.title_style_pipeline, layer, scratch, (count as u32).div_ceil(WORKGROUP_SIZE), "title laid working space");
+        let mut enc = self.encoder(Some("title laid copy"));
+        enc.copy_buffer_to_buffer(scratch, 0, layer, 0, count * 16);
+        self.submit(enc);
+        true
+    }
+
     /// An undressed normal shape paints premultiplied encoded colour directly.
     pub fn stack_title_painted_over(&mut self,source:usize,destination:usize)->bool {
         self.title_over(source,destination,1.0,crate::BlendMode::Normal,true)

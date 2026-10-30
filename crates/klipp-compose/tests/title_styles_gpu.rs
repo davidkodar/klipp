@@ -2471,6 +2471,52 @@ fn a_sliding_layer_is_placed_at_each_instant_on_the_gpu_as_on_the_cpu() {
     }
 }
 
+/// #3170: a card like the Terminal Card's: a panel its keys move that
+/// pulses, a still text, a cursor that blinks, all blurred. Each layer is
+/// drawn once and laid at each instant at its offset and alpha: on the GPU
+/// as on the CPU, and close to drawing each instant afresh.
+fn blinking_card(per_instant: bool, w: u32, h: u32) -> Sequence {
+    use klipp_timeline::{MotionBlur, ObjectTransform, Shape, ShapeKind, TitleLoop, TitleObjectContent, TitlePosition};
+    let blur = Some(MotionBlur { enabled: true, shutter_angle: 180.0, shutter_angle_keyframes: vec![], samples: 8 });
+    let mut seq = sliding_panel(false, w, h);
+    let ClipKind::Title(title) = &mut seq.tracks[0].clips[0].kind else { unreachable!() };
+    title.objects[0].fx_mut().loops = vec![TitleLoop::Pulse { rate_hz: 0.55, min_opacity: 0.5 }];
+    if per_instant { title.objects[0].fx_mut().loops.push(TitleLoop::ColorCycle { rate_hz: 0.5 }); }
+    title.add_object(TitleObjectContent::Shape(Shape { kind: ShapeKind::Rectangle { corner_radius: 2.0 }, fill: Some([184, 157, 255, 255]), gradient: None, stroke: None, fit: None }),
+        ObjectTransform { size: TitlePosition { x: 0.02, y: 0.12 }, center: TitlePosition { x: 0.78, y: 0.5 }, ..klipp_timeline::default_text_transform() });
+    let cursor = title.objects.len() - 1;
+    title.objects[cursor].fx_mut().loops = vec![TitleLoop::Blink { rate_hz: 2.2, duty: 0.5 }];
+    title.objects[cursor].fx_mut().motion_blur = blur;
+    seq
+}
+
+#[test]
+fn a_blinking_card_is_laid_at_each_instant_on_the_gpu_as_on_the_cpu() {
+    let (w, h) = (320u32, 180u32);
+    let mut gpu = renderer(); gpu.set_gpu_enabled(true);
+    let mut cpu = renderer(); cpu.set_gpu_enabled(false);
+    assert!(gpu.executor().gpu_pipeline_or_init().is_some(), "GPU required");
+    let display = |px: &[f32]| klipp_color::display::display_transform_ws_dithered_to(px, klipp_color::display::ToneMapOp::None, klipp_core::WorkingColorspace::Rec709Linear, klipp_core::SdrTransfer::Srgb);
+    // The cursor on and off, the pulse at different depths.
+    for t in [0.2, 0.43, 0.65, 1.1, 1.6] {
+        let at = RationalTime::from_secs_f64(t, 30);
+        let (want, _) = cpu.render_inspected(&blinking_card(false, w, h), at, w, h, &mut NoMedia, RenderOptions::default(), Default::default());
+        let want = display(&want);
+        let scope = klipp_effects::residency::frame("blinking card", t);
+        let (got, _) = gpu.render_display_u8_on_gpu(&blinking_card(false, w, h), at, w, h, &mut NoMedia, RenderOptions::default()).expect("GPU frame");
+        drop(scope);
+        let events = klipp_effects::residency::last_frame().events;
+        assert!(!events.iter().any(|e| e.work == klipp_effects::residency::Work::Fallback), "at {t}: {events:?}");
+        let worst = got.iter().zip(&want).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
+        assert!(worst <= 1, "at {t}: the GPU {worst} levels from the CPU");
+        let (fresh, _) = cpu.render_inspected(&blinking_card(true, w, h), at, w, h, &mut NoMedia, RenderOptions::default(), Default::default());
+        let fresh = display(&fresh);
+        let apart: Vec<u8> = want.iter().zip(&fresh).map(|(a, b)| a.abs_diff(*b)).collect();
+        let (most, mean) = (*apart.iter().max().unwrap(), apart.iter().map(|&d| d as f64).sum::<f64>() / apart.len() as f64);
+        eprintln!("MEASURE at {t}: laid vs drawn afresh: worst {most}, mean {mean:.3}, over 2: {}", apart.iter().filter(|&&d| d > 2).count());
+    }
+}
+
 #[test]
 fn title_motion_blur_stays_on_the_stack_at_4k() {
     let (w, h) = (3840, 2160);
