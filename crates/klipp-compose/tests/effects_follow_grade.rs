@@ -123,6 +123,12 @@ thread_local! {
     static ON_CPU: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
+/// How far apart the two routes may be on aarch64; elsewhere they are
+/// bit for bit. Apple's GPU under Asahi compiles the two routes'
+/// shaders to round differently: measured up to 2.4e-6 on an M1, a
+/// sixth of a 16-bit level.
+const AARCH64_ROUNDING: f32 = 1e-5;
+
 fn last() -> (u32, u32, u32) {
     LAST.with(|l| l.get())
 }
@@ -150,7 +156,10 @@ fn both_seq(name: &str, seq: Sequence) -> Option<bool> {
     }
     if new.iter().map(|v| v.to_bits()).ne(legacy.iter().map(|v| v.to_bits())) {
         let worst = new.iter().zip(&legacy).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
-        panic!("{name}: the new route differs from the legacy one (worst {worst})");
+        let nan_apart = new.iter().zip(&legacy).any(|(a, b)| a.is_nan() != b.is_nan());
+        if !cfg!(target_arch = "aarch64") || nan_apart || !(worst <= AARCH64_ROUNDING) {
+            panic!("{name}: the new route differs from the legacy one (worst {worst})");
+        }
     }
     Some(followed == 1)
 }

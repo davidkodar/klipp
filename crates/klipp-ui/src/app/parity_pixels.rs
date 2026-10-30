@@ -457,12 +457,20 @@ fn cpu_matches_gpu(frames: &Frames) -> Result<(), String> {
     if cpu.len() != frames.gpu.len() {
         return Err(format!("the CPU and GPU frames differ in size ({} and {} bytes)", cpu.len(), frames.gpu.len()));
     }
-    let over: Vec<usize> = (0..cpu.len()).filter(|&i| cpu[i].abs_diff(frames.gpu[i]) > 1).collect();
+    let over: Vec<usize> = (0..cpu.len()).filter(|&i| cpu[i].abs_diff(frames.gpu[i]) > LEVELS_APART).collect();
     match over.first() {
         None => Ok(()),
-        Some(&i) => Err(format!("the CPU and GPU frames differ by more than a level at {} values, first at byte {i}: {} vs {}", over.len(), cpu[i], frames.gpu[i])),
+        Some(&i) => Err(format!("the CPU and GPU frames differ by more than {LEVELS_APART} level(s) at {} values, first at byte {i}: {} vs {}", over.len(), cpu[i], frames.gpu[i])),
     }
 }
+
+/// pixel_check's bar, in 8-bit levels. On Apple's GPU under Asahi a value
+/// can round into the next bin of a histogram the CPU's lands beside
+/// (equalize: 2 of a frame's values 2 levels off, on an M1); elsewhere 1.
+#[cfg(not(target_arch = "aarch64"))]
+const LEVELS_APART: u8 = 1;
+#[cfg(target_arch = "aarch64")]
+const LEVELS_APART: u8 = 2;
 
 /// Whether `clip`'s frame at `secs` is drawn alike on the CPU and the GPU
 /// stack, within pixel_check's bar; the CPU alone has nothing to agree
