@@ -2313,7 +2313,7 @@ fn a_moving_cards_blur_trail_composites_at_its_coverage() {
 /// the two side by side on one line.
 #[test]
 fn a_caption_on_a_lower_thirds_line_is_drawn_below_it() {
-    let lower_third = (klipp_timeline::title_library::TITLES.iter().find(|t| t.name == "Name Bar").expect("the Name Bar").create_data)();
+    let lower_third = klipp_timeline::title_library::TITLES.iter().find(|t| t.name == "Name Bar").expect("the Name Bar").design.clone();
     let mut caption = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "and that is where it started".into(), font_size: 40.0, ..Default::default() });
     for o in &mut caption.objects {
         o.transform.center.x = 0.6;

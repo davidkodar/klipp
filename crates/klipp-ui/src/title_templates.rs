@@ -209,13 +209,18 @@ fn format_one() -> u32 {
     1
 }
 
+/// The template at `path`, read and checked as the control socket reads
+/// one (`TemplateFile::read`), a designed one made (#2886).
 fn read_template(path: &Path) -> Result<UserTitleTemplate, String> {
-    let json = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-    let mut t: UserTitleTemplate = serde_json::from_str(&json).map_err(|e| e.to_string())?;
-    if t.format > klipp_timeline::TEMPLATE_FORMAT {
-        return Err(format!("written by a newer Klipp (format {}, this one reads {})", t.format, klipp_timeline::TEMPLATE_FORMAT));
+    let size = std::fs::metadata(path).map_err(|e| e.to_string())?.len();
+    if size > klipp_timeline::MAX_TEMPLATE_BYTES {
+        return Err(format!("{size} bytes, more than a title template has"));
     }
-    t.data.migrate_legacy_animation();
+    let json = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let made = klipp_timeline::TemplateFile::parse(&json)?.made();
+    let mut t: UserTitleTemplate = serde_json::from_str(&json).map_err(|e| e.to_string())?;
+    t.data = made.data;
+    t.format = made.format;
     Ok(t)
 }
 

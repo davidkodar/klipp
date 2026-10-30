@@ -14,12 +14,17 @@ use crate::{
 };
 
 pub struct TitleTemplate {
-    pub name: &'static str,
-    pub category: &'static str,
-    pub preview_text: &'static str,
-    pub create_data: fn() -> TitleData,
+    pub name: String,
+    pub category: String,
+    pub preview_text: String,
+    /// Its layers as designed on a wide frame, before they are named and
+    /// published.
+    pub design: TitleData,
     /// What it keeps editable once applied (#1724).
     pub fields: Fields,
+    /// Whether, centred, it grows into the room a tall or square frame
+    /// has across it.
+    pub grow: bool,
 }
 
 /// A built-in's published fields (#1724), simple first: each text by
@@ -27,7 +32,7 @@ pub struct TitleTemplate {
 /// when it has one (the layer at `accent`); then Size, grown from
 /// `anchor` (a point of the frame), and Speed when anything moves.
 pub struct Fields {
-    pub names: &'static [&'static str],
+    pub names: Vec<String>,
     pub accent: Option<usize>,
     pub anchor: (f32, f32),
 }
@@ -61,7 +66,7 @@ impl TitleTemplate {
     /// each text is wrapped inside title-safe, and on a tall frame, low
     /// down, clear of the strip the platforms' buttons cover.
     fn laid_out(&self, width: u32, height: u32) -> (TitleData, (f32, f32)) {
-        let mut td = (self.create_data)();
+        let mut td = self.design.clone();
         let a = self.fields.anchor;
         let format = Format::of(width, height);
         if format == Format::Wide {
@@ -71,7 +76,7 @@ impl TitleTemplate {
         let short = w.min(h);
         let (sx, sy) = (DESIGN_ASPECT * short / w, short / h);
         let centred = (a.0 - 0.5).abs() < 0.05 && (a.1 - 0.5).abs() < 0.05;
-        let grow = match (centred && self.category != "Utility", format) {
+        let grow = match (centred && self.grow, format) {
             (true, Format::Tall) => 1.25,
             (true, _) => 1.1,
             _ => 1.0,
@@ -233,9 +238,9 @@ fn publish(mut td: TitleData, fields: &Fields, anchor: (f32, f32)) -> TitleData 
     use crate::{FieldKind, PublishedField};
     let texts: Vec<usize> = td.objects.iter().enumerate().filter(|(_, o)| matches!(o.content, TitleObjectContent::TextBox(_))).map(|(i, _)| i).collect();
     let mut published = Vec::new();
-    for (&i, name) in texts.iter().zip(fields.names) {
-        td.objects[i].name = (*name).to_owned();
-        published.push(PublishedField { label: (*name).to_owned(), kind: FieldKind::Text { object: td.objects[i].id } });
+    for (&i, name) in texts.iter().zip(&fields.names) {
+        td.objects[i].name = name.clone();
+        published.push(PublishedField { label: name.clone(), kind: FieldKind::Text { object: td.objects[i].id } });
     }
     if let Some(o) = fields.accent.and_then(|a| td.objects.get(a)) {
         published.push(PublishedField { label: "Accent".into(), kind: FieldKind::Colour { object: o.id } });
@@ -423,92 +428,6 @@ pub fn fit(td: &mut TitleData, shape: usize, text: usize, pad: (f32, f32)) {
 pub fn outlined(mut t: Text, width: f32) -> Text {
     t.fx.outlines.push(crate::TextOutline { enabled: true, color: [0, 0, 0, 255], width, width_keyframes: Vec::new() });
     t
-}
-
-// ── Lower thirds ──
-fn lt_name_bar() -> TitleData {
-    layers(vec![
-        rect(0.30, 0.845, 0.48, 0.115, [14, 14, 18, 210], 4.0),
-        // Both lines inside the bar, from 0.085 to its right edge less
-        // the same margin.
-        boxed_at(
-            moved(keeps_line(face("[Name]", GRO, FontStyle::Bold, 44.0, WHITE, TextAlignment::Left)),
-                TitleMotion::both(enter(MotionKind::MaskRise, 0.5, Easing::OutExpo).delay(0.1), fade_out(0.3))),
-            0.085, 0.822, 0.43,
-        ),
-        boxed_at(
-            moved(keeps_line(face("[Title or role]", GRO, FontStyle::Regular, 26.0, MUTED, TextAlignment::Left)),
-                TitleMotion::both(enter(MotionKind::MaskRise, 0.5, Easing::OutExpo).delay(0.25), fade_out(0.3))),
-            0.085, 0.872, 0.43,
-        ),
-    ])
-}
-
-fn lt_clean_line() -> TitleData {
-    layers(vec![
-        rect(0.19, 0.847, 0.22, 0.006, ACCENT, 0.0),
-        text_at(
-            moved(keeps_line(lifted(face("[Name]", GRO, FontStyle::Bold, 46.0, WHITE, TextAlignment::Left))),
-                TitleMotion::both(enter(MotionKind::SlideRight, 0.5, Easing::OutQuint).distance(0.4), fade_out(0.3))),
-            0.08, 0.805, 0.0,
-        ),
-        text_at(
-            moved(lifted(face("[Title or role]", GRO, FontStyle::Regular, 26.0, MUTED, TextAlignment::Left)),
-                TitleMotion::both(enter(MotionKind::SlideRight, 0.5, Easing::OutQuint).distance(0.4).delay(0.12), fade_out(0.3))),
-            0.08, 0.882, 0.0,
-        ),
-    ])
-}
-
-fn lt_broadcast() -> TitleData {
-    let mut td = layers(vec![
-        rect(0.25, 0.815, 0.38, 0.07, [26, 84, 196, 255], 0.0),
-        rect(0.25, 0.874, 0.38, 0.048, [244, 244, 246, 255], 0.0),
-        text_at(
-            moved(keeps_line(upper(face("[Name]", DISPLAY, FontStyle::Regular, 50.0, WHITE, TextAlignment::Left), 2.0)),
-                TitleMotion::both(enter(MotionKind::SlideRight, 0.4, Easing::OutExpo).distance(0.8), fade_out(0.25))),
-            0.075, 0.815, 0.0,
-        ),
-        text_at(
-            moved(upper(face("[Title or role]", GRO, FontStyle::Bold, 20.0, INK, TextAlignment::Left), 2.5),
-                TitleMotion::both(enter(MotionKind::SlideRight, 0.4, Easing::OutExpo).distance(0.8).delay(0.1), fade_out(0.25))),
-            0.075, 0.874, 0.0,
-        ),
-    ]);
-    // The two backing strips grow independently with their text.
-    for (shape_index, text_index) in [(0, 2), (1, 3)] {
-        let target = td.objects[text_index].id;
-        if let TitleObjectContent::Shape(shape) = &mut td.objects[shape_index].content {
-            shape.fit = Some(crate::ShapeFit {
-                target, padding: TitlePosition { x: 28.0, y: 12.0 },
-            });
-        }
-        td.objects[text_index].transform.size.x = 0.85;
-    }
-    td
-}
-
-fn lt_documentary() -> TitleData {
-    layers(vec![
-        text_at(
-            moved(keeps_line(lifted(face("[Name]", EDITORIAL, FontStyle::Italic, 52.0, WHITE, TextAlignment::Left))),
-                TitleMotion::both(enter(MotionKind::Rise, 0.8, Easing::OutCubic).distance(0.3), fade_out(0.5))),
-            0.08, 0.815, 0.0,
-        ),
-        text_at(
-            moved(lifted(upper(weight(face("[Title or role]", LABEL, FontStyle::Regular, 28.0, MUTED, TextAlignment::Left), 500), 4.0)),
-                TitleMotion::both(enter(MotionKind::Rise, 0.8, Easing::OutCubic).distance(0.3).delay(0.15), fade_out(0.5))),
-            0.08, 0.868, 0.0,
-        ),
-    ])
-}
-
-fn lt_location() -> TitleData {
-    layers(vec![text_at(
-        moved(lifted(upper(face("[City, Country]\n[14:32]", MONO, FontStyle::Regular, 26.0, WHITE, TextAlignment::Left), 3.0)),
-            TitleMotion::both(Motion::new(MotionKind::Typewriter).duration(0.02).stagger(StaggerUnit::Char, 0.035), fade_out(0.3))),
-        0.06, 0.12, 0.0,
-    )])
 }
 
 // ── Openers ──
@@ -732,53 +651,6 @@ fn ut_label() -> TitleData {
 
 
 // ── More lower thirds (#1724) ──
-fn lt_accent_block() -> TitleData {
-    let words = |d: f32| TitleMotion::both(enter(MotionKind::SlideRight, 0.55, Easing::OutQuint).distance(0.25).delay(d), fade_out(0.3));
-    layers(vec![
-        moving(rect(0.072, 0.85, 0.008, 0.105, ACCENT, 0.0),
-            TitleMotion::both(enter(MotionKind::MaskRise, 0.45, Easing::OutExpo), fade_out(0.3))),
-        text_at(moved(lifted(face("[Name]", GRO, FontStyle::Bold, 48.0, WHITE, TextAlignment::Left)), words(0.12)), 0.088, 0.822, 0.0),
-        text_at(moved(lifted(face("[Title or role]", GRO, FontStyle::Regular, 26.0, MUTED, TextAlignment::Left)), words(0.22)), 0.088, 0.878, 0.0),
-    ])
-}
-
-fn lt_pill() -> TitleData {
-    let mut td = layers(vec![
-        moving(rect(0.18, 0.835, 0.2, 0.07, WHITE, 30.0),
-            TitleMotion::both(enter(MotionKind::ScaleUp, 0.4, Easing::OutBack), fade_out(0.25))),
-        text_at(
-            moved(face("[Name]", GRO, FontStyle::Bold, 40.0, INK, TextAlignment::Left),
-                TitleMotion::both(enter(MotionKind::Fade, 0.3, Easing::OutCubic).delay(0.15), fade_out(0.25))),
-            0.08, 0.835, 0.0,
-        ),
-        text_at(
-            moved(lifted(face("[Title or role]", GRO, FontStyle::Regular, 26.0, WHITE, TextAlignment::Left)),
-                TitleMotion::both(enter(MotionKind::Rise, 0.45, Easing::OutCubic).distance(0.3).delay(0.3), fade_out(0.25))),
-            0.08, 0.905, 0.0,
-        ),
-    ]);
-    fit(&mut td, 0, 1, (30.0, 14.0));
-    td.objects[1].transform.size.x = 0.85;
-    td
-}
-
-fn lt_stacked() -> TitleData {
-    layers(vec![
-        moving(rect(0.13, 0.857, 0.1, 0.005, ACCENT, 0.0),
-            TitleMotion::both(enter(MotionKind::SlideRight, 0.5, Easing::OutExpo).distance(0.5).delay(0.2), fade_out(0.3))),
-        text_at(
-            moved(lifted(upper(face("[Name]", DISPLAY, FontStyle::Regular, 72.0, WHITE, TextAlignment::Left), 3.0)),
-                TitleMotion::both(enter(MotionKind::MaskRise, 0.55, Easing::OutExpo).stagger(StaggerUnit::Char, 0.02), fade_out(0.3))),
-            0.08, 0.81, 0.0,
-        ),
-        text_at(
-            moved(lifted(upper(face("[Title or role]", GRO, FontStyle::Bold, 20.0, MUTED, TextAlignment::Left), 4.0)),
-                TitleMotion::both(enter(MotionKind::Fade, 0.5, Easing::OutCubic).delay(0.4), fade_out(0.3))),
-            0.08, 0.89, 0.0,
-        ),
-    ])
-}
-
 // ── More openers and chapters (#1724) ──
 fn op_chapter_number() -> TitleData {
     layers(vec![
@@ -947,55 +819,109 @@ fn cap_note() -> TitleData {
     td
 }
 
-const fn f(names: &'static [&'static str], accent: Option<usize>, anchor: (f32, f32)) -> Fields {
-    Fields { names, accent, anchor }
+/// A built-in still made by code: its name, category, card text, the
+/// function making its layers, and its fields.
+struct Coded {
+    name: &'static str,
+    category: &'static str,
+    preview_text: &'static str,
+    create_data: fn() -> TitleData,
+    fields: Spec,
 }
 
-/// Lower thirds grow from their left edge; centred titles from the
-/// middle of the frame.
-const LT: (f32, f32) = (0.08, 0.85);
-const MID: (f32, f32) = (0.5, 0.5);
-const NAME_ROLE: &[&str] = &["Name", "Role"];
+/// A coded built-in's [`Fields`].
+struct Spec {
+    names: &'static [&'static str],
+    accent: Option<usize>,
+    anchor: (f32, f32),
+}
 
-pub const TITLES: &[TitleTemplate] = &[
-    TitleTemplate { name: "Name Bar", category: "Lower Thirds", preview_text: "[Name]", create_data: lt_name_bar, fields: f(NAME_ROLE, Some(0), LT) },
-    TitleTemplate { name: "Clean Line", category: "Lower Thirds", preview_text: "[Name]", create_data: lt_clean_line, fields: f(NAME_ROLE, Some(0), LT) },
-    TitleTemplate { name: "Broadcast", category: "Lower Thirds", preview_text: "[Name]", create_data: lt_broadcast, fields: f(NAME_ROLE, Some(0), LT) },
-    TitleTemplate { name: "Accent Block", category: "Lower Thirds", preview_text: "[Name]", create_data: lt_accent_block, fields: f(NAME_ROLE, Some(0), LT) },
-    TitleTemplate { name: "Pill", category: "Lower Thirds", preview_text: "[Name]", create_data: lt_pill, fields: f(NAME_ROLE, Some(0), LT) },
-    TitleTemplate { name: "Stacked", category: "Lower Thirds", preview_text: "[Name]", create_data: lt_stacked, fields: f(NAME_ROLE, Some(0), LT) },
-    TitleTemplate { name: "Documentary", category: "Lower Thirds", preview_text: "[Name]", create_data: lt_documentary, fields: f(NAME_ROLE, None, LT) },
-    TitleTemplate { name: "Location", category: "Lower Thirds", preview_text: "[City, Country]", create_data: lt_location, fields: f(&["Place and time"], None, (0.06, 0.12)) },
-    TitleTemplate { name: "Cinematic", category: "Openers", preview_text: "[Title]", create_data: op_cinematic, fields: f(&["Title"], None, MID) },
-    TitleTemplate { name: "Impact", category: "Openers", preview_text: "[BIG TITLE]", create_data: op_impact, fields: f(&["Title"], None, MID) },
-    TitleTemplate { name: "Editorial", category: "Openers", preview_text: "[Headline]", create_data: op_editorial, fields: f(&["Headline", "Subtitle"], None, MID) },
-    TitleTemplate { name: "Title Card", category: "Openers", preview_text: "[Title]", create_data: op_title_card, fields: f(&["Title", "Subtitle"], None, MID) },
-    TitleTemplate { name: "Minimal", category: "Openers", preview_text: "[Title]", create_data: op_minimal, fields: f(&["Title"], None, MID) },
-    TitleTemplate { name: "Chapter", category: "Openers", preview_text: "[Chapter title]", create_data: op_chapter, fields: f(&["Chapter", "Chapter title"], None, MID) },
-    TitleTemplate { name: "Chapter Number", category: "Openers", preview_text: "[Chapter title]", create_data: op_chapter_number, fields: f(&["Number", "Chapter title"], Some(0), MID) },
-    TitleTemplate { name: "Statement", category: "Openers", preview_text: "[BOLD STATEMENT]", create_data: op_statement, fields: f(&["Statement"], Some(0), (0.08, 0.44)) },
-    TitleTemplate { name: "Quote", category: "Captions", preview_text: "[Quote]", create_data: cap_quote, fields: f(&["Quote", "Who said it"], None, MID) },
-    TitleTemplate { name: "Caption", category: "Captions", preview_text: "[Caption]", create_data: cap_caption, fields: f(&["Caption"], Some(0), (0.5, 0.885)) },
-    TitleTemplate { name: "Subtitle", category: "Captions", preview_text: "[Subtitle]", create_data: cap_subtitle, fields: f(&["Subtitle"], None, (0.5, 0.9)) },
-    TitleTemplate { name: "Callout", category: "Captions", preview_text: "[Callout]", create_data: cap_callout, fields: f(&["Callout"], Some(0), (0.8, 0.14)) },
-    TitleTemplate { name: "Note", category: "Captions", preview_text: "[A note on screen]", create_data: cap_note, fields: f(&["Note"], Some(1), (0.1, 0.16)) },
-    TitleTemplate { name: "Credits Roll", category: "Credits", preview_text: "Director", create_data: cr_roll, fields: f(&["Credits"], None, MID) },
-    TitleTemplate { name: "End Credits", category: "Credits", preview_text: "[Film title]", create_data: cr_end_credits, fields: f(&["Film title", "Roles", "Names"], None, MID) },
-    TitleTemplate { name: "End Card", category: "Credits", preview_text: "The End", create_data: cr_end_card, fields: f(&["Title"], None, MID) },
-    TitleTemplate { name: "Cast", category: "Credits", preview_text: "[Name]", create_data: cr_cast, fields: f(&["Role", "Name"], None, MID) },
-    TitleTemplate { name: "Thanks for Watching", category: "Credits", preview_text: "Thanks for watching", create_data: cr_thanks, fields: f(&["Title", "Where to find you"], None, MID) },
-    TitleTemplate { name: "Up Next", category: "Credits", preview_text: "[Next video title]", create_data: cr_up_next, fields: f(&["Label", "Next title"], Some(0), (0.08, 0.75)) },
-    TitleTemplate { name: "Hook", category: "Social", preview_text: "[HOOK LINE]", create_data: so_hook, fields: f(&["Hook"], None, (0.5, 0.45)) },
-    TitleTemplate { name: "Bold Caption", category: "Social", preview_text: "[Say it big]", create_data: so_bold_caption, fields: f(&["Caption"], None, (0.5, 0.64)) },
-    TitleTemplate { name: "Highlight", category: "Social", preview_text: "[Key words]", create_data: so_highlight, fields: f(&["Words"], Some(0), (0.5, 0.7)) },
-    TitleTemplate { name: "Question", category: "Social", preview_text: "[What would you do?]", create_data: so_question, fields: f(&["Label", "Question"], None, MID) },
-    TitleTemplate { name: "Tip", category: "Social", preview_text: "[Your tip in a line]", create_data: so_tip, fields: f(&["Label", "Tip"], Some(0), (0.08, 0.2)) },
-    TitleTemplate { name: "Handle", category: "Social", preview_text: "@yourhandle", create_data: so_handle, fields: f(&["Handle"], Some(0), (0.5, 0.9)) },
-    TitleTemplate { name: "Subscribe", category: "Social", preview_text: "Subscribe", create_data: so_subscribe, fields: f(&["Button"], Some(0), (0.5, 0.86)) },
-    TitleTemplate { name: "Slate", category: "Utility", preview_text: "PROJECT", create_data: ut_slate, fields: f(&["Slate"], None, MID) },
-    TitleTemplate { name: "Timecode", category: "Utility", preview_text: "00:00:00:00", create_data: ut_timecode, fields: f(&["Timecode"], None, (0.06, 0.93)) },
-    TitleTemplate { name: "Watermark", category: "Utility", preview_text: "[Brand]", create_data: ut_watermark, fields: f(&["Brand"], None, (0.94, 0.92)) },
-    TitleTemplate { name: "Label", category: "Utility", preview_text: "[Label]", create_data: ut_label, fields: f(&["Label"], Some(0), (0.14, 0.10)) },
+const fn f(names: &'static [&'static str], accent: Option<usize>, anchor: (f32, f32)) -> Spec {
+    Spec { names, accent, anchor }
+}
+
+impl Coded {
+    fn template(&self) -> TitleTemplate {
+        TitleTemplate {
+            name: self.name.into(),
+            category: self.category.into(),
+            preview_text: self.preview_text.into(),
+            design: (self.create_data)(),
+            fields: Fields { names: self.fields.names.iter().map(|n| (*n).to_owned()).collect(), accent: self.fields.accent, anchor: self.fields.anchor },
+            grow: self.category != "Utility",
+        }
+    }
+}
+
+/// Centred titles grow from the middle of the frame.
+const MID: (f32, f32) = (0.5, 0.5);
+
+/// Every built-in title template, in the order the browser shows them:
+/// those Klipp ships as files in `assets/titles` (#2886), read and checked
+/// as a saved one is, then those still made by code.
+pub static TITLES: std::sync::LazyLock<Vec<TitleTemplate>> = std::sync::LazyLock::new(|| from_files().chain(CODED.iter().map(Coded::template)).collect());
+
+/// The built-in title templates shipped as files (#2886).
+const FILES: [&str; 8] = [
+    include_str!("../../../assets/titles/name_bar.klipptitle"),
+    include_str!("../../../assets/titles/clean_line.klipptitle"),
+    include_str!("../../../assets/titles/broadcast.klipptitle"),
+    include_str!("../../../assets/titles/accent_block.klipptitle"),
+    include_str!("../../../assets/titles/pill.klipptitle"),
+    include_str!("../../../assets/titles/stacked.klipptitle"),
+    include_str!("../../../assets/titles/documentary.klipptitle"),
+    include_str!("../../../assets/titles/location.klipptitle"),
+];
+
+fn from_files() -> impl Iterator<Item = TitleTemplate> {
+    FILES.iter().filter_map(|json| {
+        let read = crate::TemplateFile::parse(json).and_then(|t| match t.design {
+            Some(how) => Ok(TitleTemplate::designed(&t.name, &t.category, t.data, how)),
+            None => Err(format!("\"{}\" has no design", t.name)),
+        });
+        match read {
+            Ok(t) => Some(t),
+            Err(why) => {
+                tracing::error!("a built-in title template doesn't read: {why}");
+                debug_assert!(false, "a built-in title template doesn't read: {why}");
+                None
+            }
+        }
+    })
+}
+
+
+const CODED: &[Coded] = &[
+    Coded { name: "Cinematic", category: "Openers", preview_text: "[Title]", create_data: op_cinematic, fields: f(&["Title"], None, MID) },
+    Coded { name: "Impact", category: "Openers", preview_text: "[BIG TITLE]", create_data: op_impact, fields: f(&["Title"], None, MID) },
+    Coded { name: "Editorial", category: "Openers", preview_text: "[Headline]", create_data: op_editorial, fields: f(&["Headline", "Subtitle"], None, MID) },
+    Coded { name: "Title Card", category: "Openers", preview_text: "[Title]", create_data: op_title_card, fields: f(&["Title", "Subtitle"], None, MID) },
+    Coded { name: "Minimal", category: "Openers", preview_text: "[Title]", create_data: op_minimal, fields: f(&["Title"], None, MID) },
+    Coded { name: "Chapter", category: "Openers", preview_text: "[Chapter title]", create_data: op_chapter, fields: f(&["Chapter", "Chapter title"], None, MID) },
+    Coded { name: "Chapter Number", category: "Openers", preview_text: "[Chapter title]", create_data: op_chapter_number, fields: f(&["Number", "Chapter title"], Some(0), MID) },
+    Coded { name: "Statement", category: "Openers", preview_text: "[BOLD STATEMENT]", create_data: op_statement, fields: f(&["Statement"], Some(0), (0.08, 0.44)) },
+    Coded { name: "Quote", category: "Captions", preview_text: "[Quote]", create_data: cap_quote, fields: f(&["Quote", "Who said it"], None, MID) },
+    Coded { name: "Caption", category: "Captions", preview_text: "[Caption]", create_data: cap_caption, fields: f(&["Caption"], Some(0), (0.5, 0.885)) },
+    Coded { name: "Subtitle", category: "Captions", preview_text: "[Subtitle]", create_data: cap_subtitle, fields: f(&["Subtitle"], None, (0.5, 0.9)) },
+    Coded { name: "Callout", category: "Captions", preview_text: "[Callout]", create_data: cap_callout, fields: f(&["Callout"], Some(0), (0.8, 0.14)) },
+    Coded { name: "Note", category: "Captions", preview_text: "[A note on screen]", create_data: cap_note, fields: f(&["Note"], Some(1), (0.1, 0.16)) },
+    Coded { name: "Credits Roll", category: "Credits", preview_text: "Director", create_data: cr_roll, fields: f(&["Credits"], None, MID) },
+    Coded { name: "End Credits", category: "Credits", preview_text: "[Film title]", create_data: cr_end_credits, fields: f(&["Film title", "Roles", "Names"], None, MID) },
+    Coded { name: "End Card", category: "Credits", preview_text: "The End", create_data: cr_end_card, fields: f(&["Title"], None, MID) },
+    Coded { name: "Cast", category: "Credits", preview_text: "[Name]", create_data: cr_cast, fields: f(&["Role", "Name"], None, MID) },
+    Coded { name: "Thanks for Watching", category: "Credits", preview_text: "Thanks for watching", create_data: cr_thanks, fields: f(&["Title", "Where to find you"], None, MID) },
+    Coded { name: "Up Next", category: "Credits", preview_text: "[Next video title]", create_data: cr_up_next, fields: f(&["Label", "Next title"], Some(0), (0.08, 0.75)) },
+    Coded { name: "Hook", category: "Social", preview_text: "[HOOK LINE]", create_data: so_hook, fields: f(&["Hook"], None, (0.5, 0.45)) },
+    Coded { name: "Bold Caption", category: "Social", preview_text: "[Say it big]", create_data: so_bold_caption, fields: f(&["Caption"], None, (0.5, 0.64)) },
+    Coded { name: "Highlight", category: "Social", preview_text: "[Key words]", create_data: so_highlight, fields: f(&["Words"], Some(0), (0.5, 0.7)) },
+    Coded { name: "Question", category: "Social", preview_text: "[What would you do?]", create_data: so_question, fields: f(&["Label", "Question"], None, MID) },
+    Coded { name: "Tip", category: "Social", preview_text: "[Your tip in a line]", create_data: so_tip, fields: f(&["Label", "Tip"], Some(0), (0.08, 0.2)) },
+    Coded { name: "Handle", category: "Social", preview_text: "@yourhandle", create_data: so_handle, fields: f(&["Handle"], Some(0), (0.5, 0.9)) },
+    Coded { name: "Subscribe", category: "Social", preview_text: "Subscribe", create_data: so_subscribe, fields: f(&["Button"], Some(0), (0.5, 0.86)) },
+    Coded { name: "Slate", category: "Utility", preview_text: "PROJECT", create_data: ut_slate, fields: f(&["Slate"], None, MID) },
+    Coded { name: "Timecode", category: "Utility", preview_text: "00:00:00:00", create_data: ut_timecode, fields: f(&["Timecode"], None, (0.06, 0.93)) },
+    Coded { name: "Watermark", category: "Utility", preview_text: "[Brand]", create_data: ut_watermark, fields: f(&["Brand"], None, (0.94, 0.92)) },
+    Coded { name: "Label", category: "Utility", preview_text: "[Label]", create_data: ut_label, fields: f(&["Label"], Some(0), (0.14, 0.10)) },
 ];
 
 /// Ordered list of categories for display.
@@ -1022,6 +948,19 @@ pub fn builtin(name: &str) -> Option<&'static TitleTemplate> {
 }
 
 impl TitleTemplate {
+    /// The template a designed file holds (#2886): its layers `design`,
+    /// laid out and published as `how` says, made as a built-in is.
+    pub fn designed(name: &str, category: &str, design: TitleData, how: crate::TitleDesign) -> TitleTemplate {
+        TitleTemplate {
+            name: name.into(),
+            category: category.into(),
+            preview_text: how.preview,
+            design,
+            fields: Fields { names: how.fields, accent: how.accent, anchor: (how.anchor[0], how.anchor[1]) },
+            grow: how.grow,
+        }
+    }
+
     /// The title the template makes, marked as made from it (#1716): what
     /// a drop from the browser and the template op place.
     pub fn data(&self) -> TitleData {
@@ -1031,7 +970,7 @@ impl TitleTemplate {
     /// [`Self::data`] laid out for a `width` × `height` frame (#2734).
     pub fn data_for(&self, width: u32, height: u32) -> TitleData {
         let mut td = self.build_for(width, height);
-        td.template = Some(self.name.to_string());
+        td.template = Some(self.name.clone());
         // No text smaller than reads on a phone (#2734): a role line or a
         // label at 20 px of a 1080 frame was a few pixels tall there.
         for object in &mut td.objects {
@@ -1046,6 +985,24 @@ impl TitleTemplate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #2886: every built-in file reads, is listed first in its order,
+    /// and makes its title, its fields published, on each frame.
+    #[test]
+    fn every_built_in_file_reads_and_makes_its_title() {
+        assert_eq!(from_files().count(), FILES.len());
+        let names: Vec<&str> = TITLES.iter().take(FILES.len()).map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["Name Bar", "Clean Line", "Broadcast", "Accent Block", "Pill", "Stacked", "Documentary", "Location"]);
+        assert_eq!(TITLES.len(), 38);
+        for t in TITLES.iter().take(FILES.len()) {
+            for (w, h) in [(1920, 1080), (1080, 1920), (1080, 1080)] {
+                let td = t.data_for(w, h);
+                let labels: Vec<&str> = td.published.iter().map(|f| f.label.as_str()).collect();
+                assert!(t.fields.names.iter().all(|n| labels.contains(&n.as_str())), "{} at {w}x{h}: {labels:?}", t.name);
+                assert_eq!(td.template.as_deref(), Some(t.name.as_str()));
+            }
+        }
+    }
 
     #[test]
     fn a_frame_is_wide_tall_or_square() {

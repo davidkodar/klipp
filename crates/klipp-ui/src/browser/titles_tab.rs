@@ -53,14 +53,14 @@ pub(crate) enum Entry<'a> {
 impl<'a> Entry<'a> {
     fn name(&self) -> &'a str {
         match self {
-            Entry::Builtin(t) => t.name,
+            Entry::Builtin(t) => &t.name,
             Entry::User(t) => &t.name,
         }
     }
 
     fn category(&self) -> &'a str {
         match self {
-            Entry::Builtin(t) => t.category,
+            Entry::Builtin(t) => &t.category,
             Entry::User(t) => &t.category,
         }
     }
@@ -530,7 +530,7 @@ fn effective_preview_text<'a>(
 ) -> std::borrow::Cow<'a, str> {
     if user_text.trim().is_empty() {
         match title {
-            Entry::Builtin(t) => std::borrow::Cow::Borrowed(t.preview_text),
+            Entry::Builtin(t) => std::borrow::Cow::Borrowed(&t.preview_text),
             Entry::User(t) => std::borrow::Cow::Owned(t.preview_text()),
         }
     } else {
@@ -1459,15 +1459,15 @@ mod tests {
 
     /// A built-in's template as made, before its fields are published.
     fn made(name: &str) -> TitleData {
-        (builtin(name).expect("a built-in").create_data)()
+        builtin(name).expect("a built-in").design.clone()
     }
 
     /// A template is a producer of titles: every layer it makes has an
     /// explicit stack, and no text box of it carries the old fields.
     #[test]
     fn every_template_authors_its_stacks_on_the_object() {
-        for tpl in TITLES {
-            let td = (tpl.create_data)();
+        for tpl in TITLES.iter() {
+            let td = tpl.design.clone();
             for o in &td.objects {
                 assert!(o.fx.is_some(), "{}: layer {} has no explicit stack", tpl.name, o.name);
                 if let TitleObjectContent::TextBox(tb) = &o.content {
@@ -1531,9 +1531,9 @@ mod tests {
     /// the template actually does something at render time.
     #[test]
     fn every_template_category_is_in_sidebar() {
-        for tpl in TITLES {
+        for tpl in TITLES.iter() {
             assert!(
-                CATEGORIES.contains(&tpl.category),
+                CATEGORIES.contains(&tpl.category.as_str()),
                 "Template '{}' has category '{}' which is not in CATEGORIES — \
                  it will never appear in the browser sidebar.",
                 tpl.name, tpl.category,
@@ -1554,8 +1554,8 @@ mod tests {
     #[test]
     fn every_animated_template_moves_in_the_real_renderer() {
         let mut r = klipp_title::TitleRenderer::new();
-        for tpl in TITLES {
-            let td = (tpl.create_data)();
+        for tpl in TITLES.iter() {
+            let td = tpl.design.clone();
             // Only motion the renderer itself evaluates; scroll and
             // crawl become clip keyframes at creation and are covered
             // by the app's template test.
@@ -1582,7 +1582,7 @@ mod tests {
             let names: Vec<&str> = TITLES
                 .iter()
                 .filter(|t| t.category == *cat)
-                .map(|t| t.name)
+                .map(|t| t.name.as_str())
                 .collect();
             for (i, name) in names.iter().enumerate() {
                 for other in &names[i + 1..] {
@@ -1602,14 +1602,14 @@ mod tests {
     #[test]
     fn every_template_publishes_its_texts_size_and_speed() {
         use klipp_timeline::FieldKind;
-        for tpl in TITLES {
+        for tpl in TITLES.iter() {
             let td = Entry::Builtin(tpl).data();
             let texts = td.objects.iter().filter(|o| matches!(o.content, TitleObjectContent::TextBox(_))).count();
             assert_eq!(tpl.fields.names.len(), texts, "{}: a name for each text", tpl.name);
             let fields: Vec<_> = td.live_fields();
             assert_eq!(fields.iter().filter(|(_, f, _)| matches!(f.kind, FieldKind::Text { .. })).count(), texts, "{}", tpl.name);
-            for name in tpl.fields.names {
-                assert!(td.field_named(name).is_some(), "{}: no field {name}", tpl.name);
+            for name in &tpl.fields.names {
+                assert!(td.field_named(name.as_str()).is_some(), "{}: no field {name}", tpl.name);
             }
             assert!(td.field_named("Size").is_some(), "{}: Size", tpl.name);
             assert_eq!(td.field_named("Accent").is_some(), tpl.fields.accent.is_some(), "{}: the accent is live", tpl.name);
@@ -1626,7 +1626,7 @@ mod tests {
     fn moving_backings_move_in_the_real_renderer() {
         let mut r = klipp_title::TitleRenderer::new();
         let mut checked = 0;
-        for tpl in TITLES {
+        for tpl in TITLES.iter() {
             let td = Entry::Builtin(tpl).data();
             for o in td.objects.iter().filter(|o| matches!(o.content, TitleObjectContent::Shape(_)) && o.fx().motion.is_active()) {
                 let mut alone = td.clone();

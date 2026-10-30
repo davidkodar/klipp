@@ -316,6 +316,20 @@ file each. The structs are in `klipp-timeline` and `klipp-core`.
 title (`TitleData`) with its published fields. A file of a newer
 `format` is left out, not guessed at.
 
+Format 2 adds `design`: `{anchor: [x, y], grow, fields, accent,
+preview}`. `data` is then the layers as designed on a wide frame, and
+Klipp makes the title as it makes a built-in: laid out again for a tall
+or square frame around `anchor` (a centred one growing into the room
+there when `grow`), its texts named by `fields` in stacking order, the
+layer `accent` published as its accent colour, then Size and Speed.
+`preview` is the browser card's text. A file is refused when `anchor`
+is outside the frame, `fields` names more texts than it has or more
+than 16, a name is blank or over 64 characters, `accent` is past the
+layers, `preview` is over 128 characters, it has over 256 layers, or a
+design comes in format 1; any `.klipptitle` over 16 MB is not read.
+Klipp's built-in title templates are such files, in `assets/titles`
+(#2886). A save still writes format 1.
+
 ### `.klipptemplate` — a composition template or a recipe
 
 `CompositionTemplate`, `format_version: 2` (format 1 only named its

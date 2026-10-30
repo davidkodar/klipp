@@ -145,7 +145,7 @@ fn split_screen() -> CompositionTemplate {
 /// `category` grown from `anchor` is ("Utility" keeps a centred design at
 /// its size on a tall frame, for one whose type is large already).
 fn laid(create: fn() -> TitleData, category: &'static str, anchor: (f32, f32), w: u32, h: u32) -> TitleData {
-    TitleTemplate { name: "", category, preview_text: "", create_data: create, fields: Fields { names: &[], accent: None, anchor } }.build_for(w, h)
+    TitleTemplate { name: String::new(), category: category.into(), preview_text: String::new(), design: create(), fields: Fields { names: Vec::new(), accent: None, anchor }, grow: category != "Utility" }.build_for(w, h)
 }
 
 /// A title clip of `td` from `from` to `to` seconds.
