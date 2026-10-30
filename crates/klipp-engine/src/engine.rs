@@ -13138,12 +13138,19 @@ impl SequentialFrameDecoder {
                         // refusal here is something other than EAGAIN. A
                         // second refusal means the packet's frame is lost,
                         // and that is an error, not a warning.
+                        //
+                        // Where the refusal is the packet's data, it is the
+                        // same decode error the receive side reports, and is
+                        // worded the same: a decoder may refuse a broken
+                        // packet as it is sent rather than fail the frame it
+                        // makes (Arch Linux ARM's ffmpeg does for FFV1), and
+                        // the frame lost is the one after those decoded.
                         let drained = self.receive(&mut decoded)?;
                         if let Err(again) = self.decoder.send_packet(&packet) {
                             self.drained = true;
                             return Err(format!(
-                                "after frame {}: the decoder refused a packet twice ({}; then {})",
-                                self.frames_out, describe(&first), describe(&again)
+                                "frame {}: decode error: {} (the decoder refused its packet twice; first: {})",
+                                self.frames_out, describe(&again), describe(&first)
                             ));
                         }
                         if drained.is_some() {
