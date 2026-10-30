@@ -1846,3 +1846,102 @@ fn temporal_denoise_uses_native_neighbours_in_a_smaller_viewer() {
         assert!(change > 1, "frame {frame}: viewer did not use its neighbours ({before} -> {after})");
     }
 }
+
+/// Y'CbCr code values of the patches, left to right: black and white at
+/// both ranges' ends, mid grey, and a colour that BT.601 and BT.709 read
+/// 7 levels apart in red. As in klipp-render's export parity tests.
+const PATCHES: [[u8; 3]; 6] = [[0, 128, 128], [16, 128, 128], [128, 128, 128], [235, 128, 128], [255, 128, 128], [120, 100, 170]];
+
+/// The coded size of [`patch_clip`]'s clips, pillarboxed in the sequence
+/// to 480×360 between x = 80 and 560.
+const PATCH_SIZE: (u32, u32) = (960, 720);
+
+/// The sRGB-coded colour a correct decode gives `code`.
+fn patch_rgb([y, u, v]: [u8; 3], full: bool, bt601: bool) -> [i32; 3] {
+    let (y, cb, cr) = if full {
+        (y as f64 / 255.0, (u as f64 - 128.0) / 255.0, (v as f64 - 128.0) / 255.0)
+    } else {
+        ((y as f64 - 16.0) / 219.0, (u as f64 - 128.0) / 224.0, (v as f64 - 128.0) / 224.0)
+    };
+    let (kr, kb) = if bt601 { (0.299, 0.114) } else { (0.2126, 0.0722) };
+    let r = y + 2.0 * (1.0 - kr) * cr;
+    let b = y + 2.0 * (1.0 - kb) * cb;
+    let g = (y - kr * r - kb * b) / (1.0 - kr - kb);
+    [r, g, b].map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as i32)
+}
+
+/// Two seconds of lossless H.264 with [`PATCHES`] as vertical bands,
+/// 4:2:0, tagged with `tags`: the decode route a screen recording takes.
+/// Coded 720 lines high, as an untagged file under 720 lines is taken to
+/// have SD primaries and a recording of a screen is not; and 4:3, as a
+/// parked viewer shows a same-aspect clip at its own size.
+fn patch_clip(name: &str, tags: &[&str]) -> PathBuf {
+    let (w, h) = PATCH_SIZE;
+    let raw = tmp(&format!("{}-{name}.yuv", uuid::Uuid::new_v4()));
+    let out = tmp(&format!("{}-{name}.mkv", uuid::Uuid::new_v4()));
+    let band = |x: u32| PATCHES[(x * PATCHES.len() as u32 / w) as usize];
+    let mut frame = Vec::with_capacity((w * h * 3 / 2) as usize);
+    for _ in 0..h { frame.extend((0..w).map(|x| band(x)[0])); }
+    for c in 1..3 {
+        for _ in 0..h / 2 { frame.extend((0..w / 2).map(|x| band(x * 2)[c])); }
+    }
+    std::fs::write(&raw, frame.repeat(2 * FPS as usize)).unwrap();
+    let size = format!("{w}x{h}");
+    let ok = std::process::Command::new("ffmpeg")
+        .args(["-nostdin", "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "yuv420p", "-s", &size, "-r", &FPS.to_string()])
+        .args(tags)
+        .args(["-i", raw.to_str().unwrap(), "-c:v", "libx264", "-qp", "0", "-pix_fmt", "yuv420p"])
+        .args(tags)
+        .arg(&out)
+        .status()
+        .unwrap()
+        .success();
+    let _ = std::fs::remove_file(&raw);
+    assert!(ok, "ffmpeg could not make {name}");
+    out
+}
+
+/// A full-range source shows at its own levels, in the viewer as in the
+/// export: black stays black and white white, nothing lifted or clipped,
+/// its colour read through the matrix it is tagged with. Screen recorders
+/// write full range with BT.601 and no transfer tag, phones full range
+/// BT.709. A limited-range clip is the control.
+#[test]
+fn a_full_range_source_shows_and_exports_at_its_code_values() {
+    let _decoders = decoders_at_speed();
+    if !ffmpeg_ok() {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    }
+    let cases: [(&str, &[&str], bool, bool); 3] = [
+        ("full-601-untagged", &["-color_range", "pc", "-colorspace", "bt470bg"], true, true),
+        ("full-709", &["-color_range", "pc", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"], true, false),
+        ("limited-709", &["-color_range", "tv", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"], false, false),
+    ];
+    for (name, tags, full, bt601) in cases {
+        let id = MediaId::new();
+        let mut seq = Sequence::new_default();
+        seq.fps = Fps::new(FPS as u32, 1);
+        seq.resolution = Resolution { width: W, height: H };
+        let mut v1 = Track::new("V1", TrackKind::Video);
+        v1.clips = vec![media_clip(id, 0, 40, 0)];
+        seq.tracks = vec![v1];
+        let coded = HashMap::from([(id, (PATCH_SIZE.0, PATCH_SIZE.1, 0))]);
+        let t = Timeline { seq, files: HashMap::from([(id, patch_clip(name, tags))]), coded };
+        let out = exported(&t);
+        let viewer = Viewer::start(&t);
+        let (v, e) = (viewer.frame_at(20), exported_frame(&out, 20));
+        let n = PATCHES.len() as u32;
+        let mut worst = 0;
+        for (i, code) in PATCHES.into_iter().enumerate() {
+            let want = patch_rgb(code, full, bt601);
+            let x = 80 + (2 * i as u32 + 1) * 480 / (2 * n);
+            let (got_v, got_e) = (px(&v, x, H / 2), px(&e, x, H / 2));
+            eprintln!("{name}: code {code:?} want {want:?} viewer {got_v:?} export {got_e:?}");
+            for got in [got_v, got_e] {
+                worst = worst.max((0..3).map(|c| (got[c] - want[c]).abs()).max().unwrap());
+            }
+        }
+        assert!(worst <= 3, "{name}: the viewer or the export is {worst} levels off its source's code values");
+    }
+}
