@@ -104,10 +104,8 @@ build() {
     export GGML_AVX512=OFF GGML_AVX512_VBMI=OFF GGML_AVX512_VNNI=OFF
     export GGML_AVX512_BF16=OFF GGML_AMX_TILE=OFF GGML_AMX_INT8=OFF GGML_AMX_BF16=OFF
   elif [[ $pkgname == klipp && $CARCH == aarch64 ]]; then
-    # The same portable baseline for ARMv8-A, linked with lld as the
-    # Cargo config these flags replace does: GNU ld runs a 16 GB machine
-    # out of memory linking Klipp.
-    export CARGO_ENCODED_RUSTFLAGS=$'-C\x1flink-arg=-fuse-ld=lld\x1f-C\x1ftarget-cpu=generic'
+    # The same portable baseline for ARMv8-A.
+    export CARGO_ENCODED_RUSTFLAGS=$'-C\x1ftarget-cpu=generic'
     export CFLAGS='-O2 -march=armv8-a'
     export CXXFLAGS="$CFLAGS"
     export GGML_NATIVE=OFF
