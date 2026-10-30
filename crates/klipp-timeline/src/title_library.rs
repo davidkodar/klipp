@@ -8,8 +8,8 @@
 //! and build one set.
 
 use crate::{
-    default_text_transform, Easing, FontStyle, Motion, MotionKind, ObjectTransform, ScrollDirection, Shape, ShapeKind,
-    StaggerUnit, TextAlignment, TitleAnimationType, TitleBackground, TitleData, TitleLoop, TitleMotion, TitleObjectContent,
+    default_text_transform, Easing, FontStyle, Motion, MotionKind, ObjectTransform, Shape, ShapeKind,
+    StaggerUnit, TextAlignment, TitleAnimationType, TitleBackground, TitleData, TitleMotion, TitleObjectContent,
     TitlePosition, TitleShadow,
 };
 
@@ -430,41 +430,6 @@ pub fn outlined(mut t: Text, width: f32) -> Text {
     t
 }
 
-// ── Credits ──
-fn cr_roll() -> TitleData {
-    let mut td = layers(vec![text_at(
-        lifted(spaced(face("Director\n[Name]\n\nProducer\n[Name]\n\nEditor\n[Name]", SANS, FontStyle::Regular, 44.0, WHITE, TextAlignment::Center), 1.2)),
-        0.5, 0.5, 0.5,
-    )]);
-    if let Some(o) = td.primary_object_mut() {
-        o.fx_mut().loops.push(TitleLoop::Scroll { direction: ScrollDirection::Up, speed_px_per_sec: 0.0, shape: Default::default() });
-    }
-    td
-}
-
-fn cr_end_card() -> TitleData {
-    layers(vec![text_at(
-        moved(lifted(upper(weight(face("The End", CLASSIC, FontStyle::Regular, 104.0, WHITE, TextAlignment::Center), 500), 16.0)),
-            TitleMotion::both(enter(MotionKind::Fade, 2.0, Easing::InOutCubic), fade_out(1.5))),
-        0.5, 0.5, 0.5,
-    )])
-}
-
-fn cr_cast() -> TitleData {
-    layers(vec![
-        text_at(
-            moved(lifted(upper(weight(face("[Role]", LABEL, FontStyle::Regular, 30.0, MUTED, TextAlignment::Center), 500), 6.0)),
-                TitleMotion::both(enter(MotionKind::Rise, 0.6, Easing::OutQuint).distance(0.4), fade_out(0.4))),
-            0.5, 0.43, 0.5,
-        ),
-        text_at(
-            moved(lifted(face("[Name]", HEADING, FontStyle::Regular, 84.0, WHITE, TextAlignment::Center)),
-                TitleMotion::both(enter(MotionKind::Rise, 0.6, Easing::OutQuint).distance(0.4).delay(0.12), fade_out(0.4))),
-            0.5, 0.525, 0.5,
-        ),
-    ])
-}
-
 // ── Social ──
 fn so_hook() -> TitleData {
     layers(vec![text_at(
@@ -528,66 +493,6 @@ fn ut_label() -> TitleData {
     ])
 }
 
-
-// ── More end cards and credits (#1724) ──
-fn cr_end_credits() -> TitleData {
-    let col = |text: &str, x: f32, anchor: f32, align: TextAlignment, colour: [u8; 4], style: FontStyle| text_at(
-        moved(lifted(face(text, if style == FontStyle::Bold { SANS } else { LABEL }, style, 32.0, colour, align)),
-            TitleMotion::both(enter(MotionKind::Fade, 0.8, Easing::OutCubic).delay(0.6).stagger(StaggerUnit::Line, 0.12), fade_out(0.6))),
-        x, 0.62, anchor,
-    );
-    let mut roles = col("Directed by\nProduced by\nEdited by\nMusic by", 0.485, 1.0, TextAlignment::Right, MUTED, FontStyle::Regular);
-    let mut names = col("[Name]\n[Name]\n[Name]\n[Name]", 0.515, 0.0, TextAlignment::Left, WHITE, FontStyle::Bold);
-    for l in [&mut roles, &mut names] {
-        l.1.size.x = 0.45;
-        if let TitleObjectContent::TextBox(tb) = &mut l.0 {
-            tb.line_spacing = 1.35;
-        }
-    }
-    layers(vec![
-        text_at(
-            moved(lifted(upper(weight(face("[Film title]", CLASSIC, FontStyle::Regular, 88.0, WHITE, TextAlignment::Center), 500), 12.0)),
-                TitleMotion::both(enter(MotionKind::Fade, 1.2, Easing::InOutCubic), fade_out(0.8))),
-            0.5, 0.30, 0.5,
-        ),
-        roles,
-        names,
-    ])
-}
-
-fn cr_thanks() -> TitleData {
-    layers(vec![
-        text_at(
-            moved(lifted(face("Thanks for watching", GRO, FontStyle::Bold, 72.0, WHITE, TextAlignment::Center)),
-                TitleMotion::both(enter(MotionKind::Rise, 0.7, Easing::OutQuint).distance(0.3).stagger(StaggerUnit::Word, 0.08), fade_out(0.5))),
-            0.5, 0.46, 0.5,
-        ),
-        text_at(
-            moved(lifted(face("[@yourhandle \u{00b7} yoursite.com]", GRO, FontStyle::Regular, 30.0, MUTED, TextAlignment::Center)),
-                TitleMotion::both(enter(MotionKind::Fade, 0.6, Easing::OutCubic).delay(0.5), fade_out(0.5))),
-            0.5, 0.56, 0.5,
-        ),
-    ])
-}
-
-fn cr_up_next() -> TitleData {
-    let mut td = layers(vec![
-        moving(rect(0.12, 0.70, 0.1, 0.05, ACCENT, 4.0),
-            TitleMotion::both(enter(MotionKind::SlideRight, 0.4, Easing::OutExpo).distance(0.3), fade_out(0.3))),
-        text_at(
-            moved(upper(face("Up next", GRO, FontStyle::Bold, 22.0, WHITE, TextAlignment::Left), 4.0),
-                TitleMotion::both(enter(MotionKind::Fade, 0.3, Easing::OutCubic).delay(0.15), fade_out(0.3))),
-            0.08, 0.70, 0.0,
-        ),
-        text_at(
-            moved(lifted(face("[Next video title]", GRO, FontStyle::Bold, 58.0, WHITE, TextAlignment::Left)),
-                TitleMotion::both(enter(MotionKind::MaskRise, 0.55, Easing::OutExpo).delay(0.25).stagger(StaggerUnit::Word, 0.06), fade_out(0.3))),
-            0.08, 0.79, 0.0,
-        ),
-    ]);
-    fit(&mut td, 0, 1, (16.0, 8.0));
-    td
-}
 
 // ── More social, made for any frame shape (#1724) ──
 fn so_bold_caption() -> TitleData {
@@ -722,21 +627,6 @@ const FILES: &[&str] = &[
 
 
 
-/// The templates being moved to files, as code made them, for the check
-/// that their files make and draw the same (#2886).
-#[doc(hidden)]
-pub fn coded_for_check() -> Vec<TitleTemplate> {
-    CODED_CHECKED.iter().map(Coded::template).collect()
-}
-
-const CODED_CHECKED: &[Coded] = &[
-    Coded { name: "Credits Roll", category: "Credits", preview_text: "Director", create_data: cr_roll, fields: f(&["Credits"], None, MID) },
-    Coded { name: "End Credits", category: "Credits", preview_text: "[Film title]", create_data: cr_end_credits, fields: f(&["Film title", "Roles", "Names"], None, MID) },
-    Coded { name: "End Card", category: "Credits", preview_text: "The End", create_data: cr_end_card, fields: f(&["Title"], None, MID) },
-    Coded { name: "Cast", category: "Credits", preview_text: "[Name]", create_data: cr_cast, fields: f(&["Role", "Name"], None, MID) },
-    Coded { name: "Thanks for Watching", category: "Credits", preview_text: "Thanks for watching", create_data: cr_thanks, fields: f(&["Title", "Where to find you"], None, MID) },
-    Coded { name: "Up Next", category: "Credits", preview_text: "[Next video title]", create_data: cr_up_next, fields: f(&["Label", "Next title"], Some(0), (0.08, 0.75)) },
-];
 
 fn from_files() -> impl Iterator<Item = TitleTemplate> {
     FILES.iter().filter_map(|json| {
@@ -831,22 +721,6 @@ impl TitleTemplate {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// #2886: each template read from its file makes the title its code
-    /// made, on a wide, a tall and a square frame, with its name,
-    /// category, card text and fields.
-    #[test]
-    fn every_moved_file_makes_what_its_code_made() {
-        let coded = coded_for_check();
-        assert!(!coded.is_empty());
-        for c in &coded {
-            let t = builtin(&c.name).unwrap_or_else(|| panic!("{} is listed", c.name));
-            assert_eq!((t.category.as_str(), t.preview_text.as_str(), &t.fields.names, t.fields.accent, t.fields.anchor, t.grow), (c.category.as_str(), c.preview_text.as_str(), &c.fields.names, c.fields.accent, c.fields.anchor, c.grow), "{}", c.name);
-            for (w, h) in [(1920, 1080), (1080, 1920), (1080, 1080)] {
-                assert_eq!(t.data_for(w, h), c.data_for(w, h), "{} at {w}x{h}", c.name);
-            }
-        }
-    }
 
     /// #2886: every built-in Klipp ships is listed, by name in its order:
     /// a file that doesn't read is logged and left out in a release, so
