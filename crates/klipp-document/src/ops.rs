@@ -5689,6 +5689,11 @@ pub fn scene_cut_ops(seq: &Sequence, clip_id: ClipId, source_cuts: &[f64], media
 /// the beat, long enough that a loud bar into a quiet one isn't a click.
 pub const MUSIC_JOIN_CROSSFADE_SECS: f64 = 0.25;
 
+/// A title backing's margin round its words, in pixels at 1080p, as the
+/// style op's backing has it: the title op wrote 0.3, read as pixels, a
+/// box hugging the glyphs.
+const BACKING_PADDING: f32 = 12.0;
+
 /// A fitted music track as ops (#503, #2210): each of `segments` (source
 /// seconds) placed back to back on `track` from `at`, every join
 /// crossfaded; with `replacing`, that clip removed first, in place.
@@ -11232,7 +11237,7 @@ fn restyle(td: &klipp_timeline::TitleData, look: &Look, secs: f64) -> Result<kli
     if let Some(color) = look.full_frame {
         new.background = TitleBackground::FullFrame { color };
     } else if let Some(color) = look.backing_color {
-        let padding = match new.background { TitleBackground::Color { padding, .. } => padding, _ => 12.0 };
+        let padding = match new.background { TitleBackground::Color { padding, .. } => padding, _ => BACKING_PADDING };
         new.background = TitleBackground::Color { color, padding };
     } else if let Some(dark) = look.backing {
         new.background = if dark <= 0.0 {
@@ -11242,7 +11247,7 @@ fn restyle(td: &klipp_timeline::TitleData, look: &Look, secs: f64) -> Result<kli
             // picture's brightness to the eye. This is the alpha that
             // looks as dark as asked.
             let alpha = 1.0 - (1.0 - dark.min(1.0)).powf(2.2);
-            TitleBackground::Color { color: [0, 0, 0, (alpha * 255.0).round() as u8], padding: 12.0 }
+            TitleBackground::Color { color: [0, 0, 0, (alpha * 255.0).round() as u8], padding: BACKING_PADDING }
         };
     }
     Ok(new)
@@ -12762,10 +12767,10 @@ fn title_op(seq: &Sequence, fps: Fps, i: usize, at: Timecode, a: TitleArgs) -> R
         td.background = TitleBackground::FullFrame { color };
     } else if let Some(bc) = a.backing_color {
         let color = parse_color(bc).ok_or_else(|| refuse(i, format!("\"{bc}\" is not a colour"), "write the backing colour as #rrggbb"))?;
-        td.background = TitleBackground::Color { color, padding: 0.3 };
+        td.background = TitleBackground::Color { color, padding: BACKING_PADDING };
     } else if let Some(b) = a.backing {
         let alpha = (b.clamp(0.0, 1.0) * 255.0) as u8;
-        td.background = TitleBackground::Color { color: [0, 0, 0, alpha], padding: 0.3 };
+        td.background = TitleBackground::Color { color: [0, 0, 0, alpha], padding: BACKING_PADDING };
     }
 
     let short: String = text.chars().take(24).collect();
@@ -18343,7 +18348,9 @@ mod tests {
         assert!(!fx.glows.is_empty(), "the neon glow landed");
         assert!(fx.motion.enter.is_some(), "the entrance landed");
         assert!(!fx.loops.is_empty(), "the pulse loop landed");
-        assert!(matches!(td.background, klipp_timeline::TitleBackground::Color { .. }), "the backing panel landed");
+        // The panel stands its margin off the words, in pixels at 1080p:
+        // 0.3 hugged the glyphs.
+        assert_eq!(td.background, klipp_timeline::TitleBackground::Color { color: [0, 0, 0, 102], padding: BACKING_PADDING }, "the backing panel landed");
         // Empty text is refused.
         assert!(resolve(&seq, &pool, &[Op::Title { text: "  ".into(), at: Anchor::Secs(0.5), secs: 2.0, track: None, x: None, y: None, size: None, color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None, edge_fade: None, style: None, over_faces: false, shadow: None, typeset: Default::default() }]).is_err());
     }

@@ -1144,10 +1144,13 @@ struct Layer {
 }
 
 /// The contrast protection a clip asks for, as its code (#2734): a
-/// title's own, 0 for anything else.
+/// title's own, 0 for anything else. A title with a backing has none:
+/// the backing is what it stands out on, and the pass, measuring the
+/// layer, read the dark box round white words as dark text and lightened
+/// the picture into bright streaks at the halo's edge.
 fn contrast_protect(c: &Clip) -> u32 {
     match &c.kind {
-        ClipKind::Title(td) => td.protect.code(),
+        ClipKind::Title(td) if matches!(td.background, klipp_timeline::TitleBackground::None) => td.protect.code(),
         _ => 0,
     }
 }
