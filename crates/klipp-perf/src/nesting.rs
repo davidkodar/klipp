@@ -6,6 +6,10 @@
 //!   1, 10, 50 and 200 placed instances of one composition template,
 //!   with the template's text and colour left as they are or overridden
 //!   on every instance. It runs on the CPU, before every render.
+//! - `s20_edit_*` (#3117): one edit and the flattening the viewer then
+//!   does, with its cache: a clip moved a frame, or one instance's
+//!   overridden text changed, on a timeline of 50 or 200 instances. Only
+//!   the scenes an edit changed are flattened again.
 //! - `s21_nest_*`: a frame of a precomposition nested 1 to 4 levels deep,
 //!   at 1080p and 4K, each level holding the one below plus a title and a
 //!   graded, blurred picture of its own; placed plainly or as a template
@@ -240,6 +244,37 @@ fn nest_run(depth: usize, width: u32, height: u32, overrides: bool, cpu_only: bo
     result
 }
 
+/// One edit and the cached flattening after it, timed together: a clip
+/// moved a frame back and forth, or, with `retext`, one instance's text
+/// changed, a different one each time.
+fn flatten_edit_run(n: usize, retext: bool) -> ScenarioResult {
+    // The project's sequences, the timeline last, edited in place as the
+    // app edits its own.
+    let (_, mut all) = instances(n, true);
+    let mut cache = klipp_timeline::flatten::FlattenCache::default();
+    std::hint::black_box(klipp_timeline::flatten::flatten_sequence_cached(&all[1], &all, &mut cache));
+    let mut samples = Vec::with_capacity(WARMUP + FRAMES);
+    for k in 0..WARMUP + FRAMES {
+        let t0 = Instant::now();
+        let clip = &mut all[1].tracks[0].clips[k % n];
+        if retext {
+            if let ClipKind::TemplatePrecomposition { template_instance, .. } = &mut clip.kind {
+                template_instance.overrides.insert("text".into(), TemplateValue::Text(format!("Edit {k}")));
+            }
+        } else {
+            let frame = tc(1.0 / 30.0) - tc(0.0);
+            if k % 2 == 0 { clip.timeline_in += frame } else { clip.timeline_in -= frame }
+        }
+        let flat = klipp_timeline::flatten::flatten_sequence_cached(&all[1], &all, &mut cache);
+        samples.push(t0.elapsed().as_secs_f64() * 1000.0);
+        std::hint::black_box(flat.tracks.len());
+    }
+    let name = format!("s20_edit_{n}_instances_{}", if retext { "retext" } else { "move" });
+    let mut result = summarise(&name, 1920, 1080, &samples, WARMUP, 16.7);
+    result.warmup_frames = WARMUP;
+    result
+}
+
 macro_rules! flatten_scenarios {
     ($($f:ident => $n:expr, $o:expr;)*) => {$(
         pub fn $f(_: bool) -> ScenarioResult { flatten_run($n, $o) }
@@ -256,6 +291,11 @@ flatten_scenarios! {
     flatten_1 => 1, false; flatten_10 => 10, false; flatten_50 => 50, false; flatten_200 => 200, false;
     flatten_1_o => 1, true; flatten_10_o => 10, true; flatten_50_o => 50, true; flatten_200_o => 200, true;
 }
+
+pub fn edit_50_move(_: bool) -> ScenarioResult { flatten_edit_run(50, false) }
+pub fn edit_200_move(_: bool) -> ScenarioResult { flatten_edit_run(200, false) }
+pub fn edit_50_retext(_: bool) -> ScenarioResult { flatten_edit_run(50, true) }
+pub fn edit_200_retext(_: bool) -> ScenarioResult { flatten_edit_run(200, true) }
 
 nest_scenarios! {
     nest_1_hd => 1, 1920, 1080, false; nest_2_hd => 2, 1920, 1080, false; nest_3_hd => 3, 1920, 1080, false; nest_4_hd => 4, 1920, 1080, false;

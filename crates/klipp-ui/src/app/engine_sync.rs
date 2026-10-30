@@ -306,7 +306,9 @@ pub(super) fn sync_sequence(state: &AppState, sequence: &klipp_timeline::SharedS
     // with no ClipKind::Sequence clips — the engine has no compound-clip
     // awareness. This mirrors the export path exactly: viewer and export
     // are consistent by construction.
-    let mut flat = klipp_timeline::flatten::flatten_sequence(active, &state.sequences);
+    // Each template's and precomposition's scene from the cache when
+    // nothing it is made from changed (#3117).
+    let mut flat = klipp_timeline::flatten::flatten_sequence_cached(active, &state.sequences, &mut state.flatten_cache.borrow_mut());
     // A command in the Colour workspace can sync while the timeline
     // grade stands in as a clip: the engine gets the grade, never the
     // stand-in.

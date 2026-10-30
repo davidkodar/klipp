@@ -144,6 +144,26 @@ pub const ALL: &[Scenario] = &[
         run: crate::nesting::flatten_200_o,
     },
     Scenario {
+        name: "s20_edit_50_instances_move",
+        desc: "#3117: a clip moved a frame among 50 instances, then the cached flattening",
+        run: crate::nesting::edit_50_move,
+    },
+    Scenario {
+        name: "s20_edit_200_instances_move",
+        desc: "#3117: a clip moved a frame among 200 instances, then the cached flattening",
+        run: crate::nesting::edit_200_move,
+    },
+    Scenario {
+        name: "s20_edit_50_instances_retext",
+        desc: "#3117: one instance's text changed among 50, then the cached flattening",
+        run: crate::nesting::edit_50_retext,
+    },
+    Scenario {
+        name: "s20_edit_200_instances_retext",
+        desc: "#3117: one instance's text changed among 200, then the cached flattening",
+        run: crate::nesting::edit_200_retext,
+    },
+    Scenario {
         name: "s21_nest_1_levels_1080p",
         desc: "#3073: precomposition nested 1 level(s), 1080p",
         run: crate::nesting::nest_1_hd,
