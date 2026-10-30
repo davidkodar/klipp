@@ -2364,6 +2364,62 @@ fn title_motion_blur_matches_cpu_on_the_stack() {
         }
     }
 }
+/// #3160, at the user's word: a layer moved by its own keys is blurred
+/// by its own motion blur, its smear as long as the shutter is open, on
+/// the GPU as on the CPU; a still layer with a blur is as it was.
+#[test]
+fn a_layers_keyed_move_is_blurred_by_its_motion_blur() {
+    use klipp_timeline::MotionBlur;
+    let (w, h) = (320u32, 180u32);
+    let sweep = |blur: bool, keyed: bool| {
+        let fx = LayerFx { motion_blur: blur.then_some(MotionBlur { enabled: true, shutter_angle: 180.0, shutter_angle_keyframes: vec![], samples: 16 }), ..Default::default() };
+        let mut title = TitleData::single_text_fx(TextBox { text: "I".into(), font_size: 300.0, color: [255, 255, 255, 255], ..Default::default() }, fx);
+        // 0 to 1 of the frame in half a second: at 0.25 s it is centred.
+        if keyed { title.objects[0].transform.center_x_keyframes = vec![key(0.0, 0.0), key(0.5, 1.0)]; } else { title.objects[0].transform.center.x = 0.5; }
+        let mut seq = Sequence::new_default(); seq.resolution = Resolution { width: w, height: h };
+        let mut track = Track::new("sweep", TrackKind::Video);
+        track.clips.push(Clip { kind: ClipKind::Title(title), ..Clip::gap(RationalTime::from_secs_f64(0.0, 30), RationalTime::from_secs_f64(3.0, 30)) });
+        seq.tracks = vec![track]; seq
+    };
+    let at = RationalTime::from_secs_f64(0.25, 30);
+    let mut gpu = renderer(); gpu.set_gpu_enabled(true);
+    let mut cpu = renderer(); cpu.set_gpu_enabled(false);
+    assert!(gpu.executor().gpu_pipeline_or_init().is_some(), "GPU required");
+    let draw = |r: &mut Renderer, seq: &Sequence, on_gpu: bool| -> Vec<u8> {
+        if on_gpu {
+            let scope = klipp_effects::residency::frame("keyed blur", 0.25);
+            let (px, _) = r.render_display_u8_on_gpu(seq, at, w, h, &mut NoMedia, RenderOptions::default()).expect("GPU frame");
+            drop(scope);
+            let events = klipp_effects::residency::last_frame().events;
+            assert!(!events.iter().any(|e| e.work == klipp_effects::residency::Work::Fallback), "{events:?}");
+            px
+        } else {
+            let (px, _) = r.render_inspected(seq, at, w, h, &mut NoMedia, RenderOptions::default(), Default::default());
+            klipp_color::display::display_transform_ws_dithered_to(&px, klipp_color::display::ToneMapOp::None, klipp_core::WorkingColorspace::Rec709Linear, klipp_core::SdrTransfer::Srgb)
+        }
+    };
+    let worst = |a: &[u8], b: &[u8]| a.iter().zip(b).map(|(x, y)| x.abs_diff(*y)).max().unwrap();
+    // The width the stroke covers across its middle row.
+    let span = |px: &[u8]| {
+        let row = &px[(h as usize / 2) * w as usize * 4..(h as usize / 2 + 1) * w as usize * 4];
+        let lit: Vec<usize> = row.chunks(4).enumerate().filter(|(_, p)| p[0] > 4).map(|(x, _)| x).collect();
+        (lit.last().unwrap() - lit.first().unwrap() + 1) as f32
+    };
+    let blurred = draw(&mut gpu, &sweep(true, true), true);
+    assert!(worst(&blurred, &draw(&mut cpu, &sweep(true, true), false)) <= 1, "the keyed move blurred as on the CPU");
+    let sharp = draw(&mut gpu, &sweep(false, true), true);
+    // The shutter is open half a frame: at 640 px a second, the sweep
+    // smears the stroke across that much of its travel, its first sample
+    // to its last.
+    let fps = sweep(true, true).fps.as_f64() as f32;
+    let smear = 640.0 * (0.5 / fps);
+    let grown = span(&blurred) - span(&sharp);
+    assert!((grown - smear).abs() <= 2.0, "the stroke grew {grown} px, the shutter swept {smear} px");
+    let still = draw(&mut gpu, &sweep(true, false), true);
+    assert!(worst(&still, &draw(&mut gpu, &sweep(false, false), true)) <= 1, "a still layer's blur changes nothing");
+    assert!(worst(&still, &draw(&mut cpu, &sweep(true, false), false)) <= 1);
+}
+
 #[test]
 fn title_motion_blur_stays_on_the_stack_at_4k() {
     let (w, h) = (3840, 2160);

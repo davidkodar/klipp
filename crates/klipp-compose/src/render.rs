@@ -7514,12 +7514,18 @@ fn title_post_source(td: &klipp_timeline::TitleData) -> Option<(klipp_timeline::
 fn title_raster_moves(td: &klipp_timeline::TitleData) -> Option<&klipp_timeline::TitleData> {
     // Any layer's own motion: the stack is the object's, whatever the
     // object is, and a character animation is a text's alone.
+    // A layer moved, turned or sized by its own keys moves within the
+    // shutter as much as a moved clip does, and is blurred so (#3160).
     let moves = td.objects.iter().any(|o| {
         let fx = o.fx();
+        let t = &o.transform;
         fx.motion.enter.is_some()
             || fx.motion.exit.is_some()
             || !fx.loops.is_empty()
             || matches!(&o.content, klipp_timeline::TitleObjectContent::TextBox(tb) if tb.char_animation.as_ref().is_some_and(|c| c.enabled))
+            || [&t.center_x_keyframes, &t.center_y_keyframes, &t.size_x_keyframes, &t.size_y_keyframes, &t.rotation_keyframes, &t.anchor_x_keyframes, &t.anchor_y_keyframes]
+                .into_iter()
+                .any(|k| animated_keys(k))
     });
     moves.then_some(td)
 }
