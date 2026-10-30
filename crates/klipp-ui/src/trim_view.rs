@@ -30,7 +30,7 @@ pub fn sides(seq: &Sequence, edit: &EditPoint, media: impl Fn(MediaId) -> Option
     let find = |id| seq.all_clips().find(|c| c.id == id);
     let frames = |secs: f64| (secs * fps).round() as i64;
     let name = |c: &klipp_timeline::Clip| c.name.clone().or_else(|| c.media_id().and_then(&media).map(|(_, n)| n)).unwrap_or_default();
-    let outgoing = edit.outgoing.and_then(&find).map(|c| {
+    let outgoing = edit.outgoing.and_then(find).map(|c| {
         let id = c.media_id();
         let last = (c.source_out.to_secs_f64() - 1.0 / fps).max(c.source_in.to_secs_f64());
         Side {
@@ -39,7 +39,7 @@ pub fn sides(seq: &Sequence, edit: &EditPoint, media: impl Fn(MediaId) -> Option
             handle_frames: id.and_then(&media).map(|(len, _)| frames(len - c.source_out.to_secs_f64()).max(0)),
         }
     });
-    let incoming = edit.incoming.and_then(&find).map(|c| {
+    let incoming = edit.incoming.and_then(find).map(|c| {
         let id = c.media_id();
         Side {
             name: name(c),

@@ -24,7 +24,7 @@ use klipp_render::{MediaFile, VideoTimeline};
 
 
 /// The same one clip, exported as 10-bit PQ common::BANDS_H.265 through `ExportJob`.
-fn export_pq(src: &Path, out: &Path) {
+fn export_pq(src: &Path, out: &Path) -> Result<(), String> {
     let id = MediaId::new();
     let tc = |f: i64| RationalTime::from_frames(f, common::FPS);
     let mut clip = klipp_timeline::Clip {
@@ -59,7 +59,21 @@ fn export_pq(src: &Path, out: &Path) {
         total_frames: 12,
     }
     .run()
-    .unwrap();
+    .map(|_| ())
+    .map_err(|e| format!("{e:?}"))
+}
+
+/// Whether this ffmpeg's libx265 encodes 10-bit at all. Arch Linux ARM
+/// builds x265 8-bit only, so no 10-bit HEVC export can be made there;
+/// Arch's x86_64 x265 carries 8, 10 and 12-bit. Asked of the encoder's
+/// pixel formats, not by encoding a frame: the ffmpeg program turns a
+/// 10-bit request into 8-bit where the encoder has no 10-bit, and
+/// succeeds.
+fn libx265_encodes_10_bit() -> bool {
+    std::process::Command::new("ffmpeg")
+        .args(["-hide_banner", "-h", "encoder=libx265"])
+        .output()
+        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).lines().any(|l| l.contains("pixel formats") && l.contains("yuv420p10le")))
 }
 
 /// The exported file's level at the centre of each neutral band, from its
@@ -120,7 +134,15 @@ fn the_viewer_measures_what_the_export_writes() {
 
     // And the file the export writes carries those same levels.
     let out = std::env::temp_dir().join("klipp-hdr-monitor-export.mp4");
-    export_pq(&src, &out);
+    if let Err(e) = export_pq(&src, &out) {
+        // Only a machine that cannot make the file is passed over: an
+        // export failing where libx265 does 10-bit is the export's fault.
+        if e.contains("open video encoder") && !libx265_encodes_10_bit() {
+            eprintln!("skipping the export half: no 10-bit HEVC encoder here ({e})");
+            return;
+        }
+        panic!("the HDR export failed: {e}");
+    }
     let exported = exported_band_nits(&out);
     for (b, want) in common::BAND_NITS.iter().enumerate() {
         eprintln!("band {b}: export {:.1} cd/m², viewer {:.1}", exported[b], measured[b]);
