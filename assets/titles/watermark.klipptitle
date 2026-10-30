@@ -1,0 +1,93 @@
+{
+  "category": "Utility",
+  "data": {
+    "animation_type": "Static",
+    "background": "None",
+    "next_object_id": 1,
+    "objects": [
+      {
+        "content": {
+          "TextBox": {
+            "alignment": "Right",
+            "ass_style_name": null,
+            "baseline_shift": 0.0,
+            "case_transform": "None",
+            "char_animation": null,
+            "chromatic_aberration_px": 0.0,
+            "color": [
+              255,
+              255,
+              255,
+              110
+            ],
+            "columns": 1,
+            "drop_cap_scale": 0.0,
+            "extrusion": null,
+            "font_name": "Inter",
+            "font_size": 28.0,
+            "font_style": "Bold",
+            "glitch_intensity": 0.0,
+            "gradient": null,
+            "line_spacing": 1.0,
+            "outline_write_on": 1.0,
+            "pattern_fill": null,
+            "pattern_fill_enabled": true,
+            "strikethrough": false,
+            "style_runs": [],
+            "text": "[Brand]",
+            "text_direction": "Ltr",
+            "text_path": null,
+            "texture_fill": null,
+            "tracking": 0.0,
+            "underline": false,
+            "vertical_layout": false,
+            "write_on": 1.0
+          }
+        },
+        "fx": {},
+        "id": 0,
+        "locked": false,
+        "name": "Text 1",
+        "opacity": 1.0,
+        "opacity_keyframes": [],
+        "transform": {
+          "anchor_norm": {
+            "x": 1.0,
+            "y": 0.5
+          },
+          "anchor_x_keyframes": [],
+          "anchor_y_keyframes": [],
+          "center": {
+            "x": 0.94,
+            "y": 0.92
+          },
+          "center_x_keyframes": [],
+          "center_y_keyframes": [],
+          "rotation": 0.0,
+          "rotation_keyframes": [],
+          "size": {
+            "x": 1.0,
+            "y": 1.0
+          },
+          "size_x_keyframes": [],
+          "size_y_keyframes": []
+        },
+        "visible": true
+      }
+    ]
+  },
+  "design": {
+    "anchor": [
+      0.94,
+      0.92
+    ],
+    "fields": [
+      "Brand"
+    ],
+    "grow": false,
+    "preview": "[Brand]"
+  },
+  "format": 2,
+  "name": "Watermark",
+  "written_by": "built-in"
+}

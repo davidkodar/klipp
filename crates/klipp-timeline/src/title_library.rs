@@ -541,11 +541,29 @@ const FILES: &[&str] = &[
     include_str!("../../../assets/titles/tip.klipptitle"),
     include_str!("../../../assets/titles/handle.klipptitle"),
     include_str!("../../../assets/titles/subscribe.klipptitle"),
+    include_str!("../../../assets/titles/slate.klipptitle"),
+    include_str!("../../../assets/titles/timecode.klipptitle"),
+    include_str!("../../../assets/titles/watermark.klipptitle"),
+    include_str!("../../../assets/titles/label.klipptitle"),
 ];
 
 
 
 
+
+/// The templates being moved to files, as code made them, for the check
+/// that their files make and draw the same (#2886).
+#[doc(hidden)]
+pub fn coded_for_check() -> Vec<TitleTemplate> {
+    CODED_CHECKED.iter().map(Coded::template).collect()
+}
+
+const CODED_CHECKED: &[Coded] = &[
+    Coded { name: "Slate", category: "Utility", preview_text: "PROJECT", create_data: ut_slate, fields: f(&["Slate"], None, MID) },
+    Coded { name: "Timecode", category: "Utility", preview_text: "00:00:00:00", create_data: ut_timecode, fields: f(&["Timecode"], None, (0.06, 0.93)) },
+    Coded { name: "Watermark", category: "Utility", preview_text: "[Brand]", create_data: ut_watermark, fields: f(&["Brand"], None, (0.94, 0.92)) },
+    Coded { name: "Label", category: "Utility", preview_text: "[Label]", create_data: ut_label, fields: f(&["Label"], Some(0), (0.14, 0.10)) },
+];
 
 fn from_files() -> impl Iterator<Item = TitleTemplate> {
     FILES.iter().filter_map(|json| {
@@ -566,10 +584,6 @@ fn from_files() -> impl Iterator<Item = TitleTemplate> {
 
 
 const CODED: &[Coded] = &[
-    Coded { name: "Slate", category: "Utility", preview_text: "PROJECT", create_data: ut_slate, fields: f(&["Slate"], None, MID) },
-    Coded { name: "Timecode", category: "Utility", preview_text: "00:00:00:00", create_data: ut_timecode, fields: f(&["Timecode"], None, (0.06, 0.93)) },
-    Coded { name: "Watermark", category: "Utility", preview_text: "[Brand]", create_data: ut_watermark, fields: f(&["Brand"], None, (0.94, 0.92)) },
-    Coded { name: "Label", category: "Utility", preview_text: "[Label]", create_data: ut_label, fields: f(&["Label"], Some(0), (0.14, 0.10)) },
 ];
 
 /// Ordered list of categories for display.
@@ -633,6 +647,22 @@ impl TitleTemplate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #2886: each template read from its file makes the title its code
+    /// made, on a wide, a tall and a square frame, with its name,
+    /// category, card text and fields.
+    #[test]
+    fn every_moved_file_makes_what_its_code_made() {
+        let coded = coded_for_check();
+        assert!(!coded.is_empty());
+        for c in &coded {
+            let t = builtin(&c.name).unwrap_or_else(|| panic!("{} is listed", c.name));
+            assert_eq!((t.category.as_str(), t.preview_text.as_str(), &t.fields.names, t.fields.accent, t.fields.anchor, t.grow), (c.category.as_str(), c.preview_text.as_str(), &c.fields.names, c.fields.accent, c.fields.anchor, c.grow), "{}", c.name);
+            for (w, h) in [(1920, 1080), (1080, 1920), (1080, 1080)] {
+                assert_eq!(t.data_for(w, h), c.data_for(w, h), "{} at {w}x{h}", c.name);
+            }
+        }
+    }
 
     /// #2886: every built-in Klipp ships is listed, by name in its order:
     /// a file that doesn't read is logged and left out in a release, so
