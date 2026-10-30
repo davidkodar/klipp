@@ -249,6 +249,11 @@ impl NewInspectorPanel {
                 );
             });
             ui.advance_cursor_after_rect(banner_rect);
+            // Where it starts and ends on the timeline, and how long it is
+            // there, in the sequence's timecode (#3126): a line of its own,
+            // the banner too narrow for it beside the track's name.
+            ui.add_space(2.0);
+            ui.label(egui::RichText::new(clip_span_text(clip.timeline_in, clip.timeline_out, state.timecode_display())).monospace().size(10.0).color(theme.text_secondary));
         }
 
         // ── The clip's own name and colour (#920) ──
@@ -636,6 +641,27 @@ impl NewInspectorPanel {
             self.focus_request = Some(kind);
         }
         cmds
+    }
+}
+
+/// A timeline clip's span as the inspector's banner says it: its start,
+/// its end and its length there (#3126). A walkthrough looked for a
+/// clip's length and found only its file's.
+pub(crate) fn clip_span_text(start: klipp_core::RationalTime, end: klipp_core::RationalTime, tc: klipp_core::TimecodeDisplay) -> String {
+    format!("Length {}  ({} \u{2013} {})", tc.duration(end - start), tc.position(start), tc.position(end))
+}
+
+#[cfg(test)]
+mod clip_span_tests {
+    /// #3126: the banner gives the clip's start, end and length in the
+    /// sequence's timecode.
+    #[test]
+    fn the_banner_says_where_the_clip_is_and_how_long() {
+        let tc = klipp_core::TimecodeDisplay::plain(klipp_core::Fps::film_24());
+        let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+        let text = super::clip_span_text(t(18.0), t(24.5), tc);
+        assert_eq!(text, format!("Length {}  ({} \u{2013} {})", tc.duration(t(6.5)), tc.position(t(18.0)), tc.position(t(24.5))));
+        assert!(text.contains("00:00:18:00") && text.contains("00:00:24:12"), "{text}");
     }
 }
 
