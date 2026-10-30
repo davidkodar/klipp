@@ -1573,12 +1573,23 @@ pub fn stall_next_hw_open(stall: Duration) {
 /// Open `path`'s video stream on the GPU and decode up to its first
 /// frame, on a thread of its own, within [`HW_OPEN_LIMIT`]. The decoder
 /// comes back flushed, ready for the caller's packets from the start.
-/// `None` when the open ran out of time: that thread is left behind,
-/// blocked in the driver, and its decoder dropped should it ever return.
-fn open_hardware_in_time(path: &Path, try_cuvid: bool) -> Option<Result<OpenedDecoder, ffmpeg_next::Error>> {
+/// `None` when the open ran out of time, or `stop` was set while it ran:
+/// that thread is left behind, blocked in the driver, and its decoder
+/// dropped should it ever return.
+///
+/// The thread left behind is counted as a decode thread for as long as
+/// it runs, so [`wait_for_decode_threads`] waits for it before the
+/// process exits. A decoder dropped while its GPU open ran left it
+/// creating a CUDA context as `exit()` tore the process down, and the
+/// process aborted after every test had passed.
+fn open_hardware_in_time(path: &Path, try_cuvid: bool, stop: &std::sync::atomic::AtomicBool) -> Option<Result<OpenedDecoder, ffmpeg_next::Error>> {
     let (tx, rx) = std::sync::mpsc::channel();
     let owned = path.to_path_buf();
+    let alive = DecodeThreadToken::new();
     let spawned = std::thread::Builder::new().name("klipp-hw-open".into()).spawn(move || {
+        // Declared first, so dropped last: after a decoder the caller no
+        // longer waits for is dropped here.
+        let _alive = alive;
         let stall = STALL_NEXT_HW_OPEN_MS.swap(0, std::sync::atomic::Ordering::Relaxed);
         if stall > 0 {
             std::thread::sleep(Duration::from_millis(stall));
@@ -1588,7 +1599,17 @@ fn open_hardware_in_time(path: &Path, try_cuvid: bool) -> Option<Result<OpenedDe
     if spawned.is_err() {
         return Some(Err(ffmpeg_next::Error::Bug));
     }
-    match rx.recv_timeout(HW_OPEN_LIMIT) {
+    let start = std::time::Instant::now();
+    let waited = loop {
+        // In slices, so a decoder stopped while its open runs is not held
+        // up for the whole limit.
+        match rx.recv_timeout(Duration::from_millis(20)) {
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) if stop.load(std::sync::atomic::Ordering::Relaxed) => return None,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) if start.elapsed() < HW_OPEN_LIMIT => continue,
+            waited => break waited,
+        }
+    };
+    match waited {
         Ok(opened) => Some(opened),
         Err(_) => {
             warn!("decode_thread: the GPU decoder for {path:?} did not open within {HW_OPEN_LIMIT:?}; decoding in software");
@@ -2646,7 +2667,10 @@ fn decode_thread_main(
 
     // The GPU open, and its first frame, within a time limit; software
     // when it runs out (#2394).
-    let hw_opened = if hw_enabled && !still { open_hardware_in_time(&path, try_cuvid) } else { None };
+    let hw_opened = if hw_enabled && !still { open_hardware_in_time(&path, try_cuvid, &stop_flag) } else { None };
+    if stop_flag.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
     let hw_opened = hw_opened.and_then(|opened| opened.map_err(|e| warn!("decode_thread: the GPU decoder would not open ({e}); decoding in software")).ok());
     // A still is decoded in software (#2474): read again on each seek, the
     // GPU's JPEG decoder reached the file's end with no frame, and the

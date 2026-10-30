@@ -75,6 +75,10 @@ name = "a_stalled_gpu_open_goes_to_software"
 path = "tests/a_stalled_gpu_open_goes_to_software.rs"
 
 [[test]]
+name = "a_decoder_dropped_while_opening_is_waited_for"
+path = "tests/a_decoder_dropped_while_opening_is_waited_for.rs"
+
+[[test]]
 name = "a_strobe_plays_through"
 path = "tests/a_strobe_plays_through.rs"
 
