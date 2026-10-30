@@ -712,9 +712,31 @@ const FILES: &[&str] = &[
     include_str!("../../../assets/titles/subtitle.klipptitle"),
     include_str!("../../../assets/titles/callout.klipptitle"),
     include_str!("../../../assets/titles/note.klipptitle"),
+    include_str!("../../../assets/titles/credits_roll.klipptitle"),
+    include_str!("../../../assets/titles/end_credits.klipptitle"),
+    include_str!("../../../assets/titles/end_card.klipptitle"),
+    include_str!("../../../assets/titles/cast.klipptitle"),
+    include_str!("../../../assets/titles/thanks_for_watching.klipptitle"),
+    include_str!("../../../assets/titles/up_next.klipptitle"),
 ];
 
 
+
+/// The templates being moved to files, as code made them, for the check
+/// that their files make and draw the same (#2886).
+#[doc(hidden)]
+pub fn coded_for_check() -> Vec<TitleTemplate> {
+    CODED_CHECKED.iter().map(Coded::template).collect()
+}
+
+const CODED_CHECKED: &[Coded] = &[
+    Coded { name: "Credits Roll", category: "Credits", preview_text: "Director", create_data: cr_roll, fields: f(&["Credits"], None, MID) },
+    Coded { name: "End Credits", category: "Credits", preview_text: "[Film title]", create_data: cr_end_credits, fields: f(&["Film title", "Roles", "Names"], None, MID) },
+    Coded { name: "End Card", category: "Credits", preview_text: "The End", create_data: cr_end_card, fields: f(&["Title"], None, MID) },
+    Coded { name: "Cast", category: "Credits", preview_text: "[Name]", create_data: cr_cast, fields: f(&["Role", "Name"], None, MID) },
+    Coded { name: "Thanks for Watching", category: "Credits", preview_text: "Thanks for watching", create_data: cr_thanks, fields: f(&["Title", "Where to find you"], None, MID) },
+    Coded { name: "Up Next", category: "Credits", preview_text: "[Next video title]", create_data: cr_up_next, fields: f(&["Label", "Next title"], Some(0), (0.08, 0.75)) },
+];
 
 fn from_files() -> impl Iterator<Item = TitleTemplate> {
     FILES.iter().filter_map(|json| {
@@ -735,12 +757,6 @@ fn from_files() -> impl Iterator<Item = TitleTemplate> {
 
 
 const CODED: &[Coded] = &[
-    Coded { name: "Credits Roll", category: "Credits", preview_text: "Director", create_data: cr_roll, fields: f(&["Credits"], None, MID) },
-    Coded { name: "End Credits", category: "Credits", preview_text: "[Film title]", create_data: cr_end_credits, fields: f(&["Film title", "Roles", "Names"], None, MID) },
-    Coded { name: "End Card", category: "Credits", preview_text: "The End", create_data: cr_end_card, fields: f(&["Title"], None, MID) },
-    Coded { name: "Cast", category: "Credits", preview_text: "[Name]", create_data: cr_cast, fields: f(&["Role", "Name"], None, MID) },
-    Coded { name: "Thanks for Watching", category: "Credits", preview_text: "Thanks for watching", create_data: cr_thanks, fields: f(&["Title", "Where to find you"], None, MID) },
-    Coded { name: "Up Next", category: "Credits", preview_text: "[Next video title]", create_data: cr_up_next, fields: f(&["Label", "Next title"], Some(0), (0.08, 0.75)) },
     Coded { name: "Hook", category: "Social", preview_text: "[HOOK LINE]", create_data: so_hook, fields: f(&["Hook"], None, (0.5, 0.45)) },
     Coded { name: "Bold Caption", category: "Social", preview_text: "[Say it big]", create_data: so_bold_caption, fields: f(&["Caption"], None, (0.5, 0.64)) },
     Coded { name: "Highlight", category: "Social", preview_text: "[Key words]", create_data: so_highlight, fields: f(&["Words"], Some(0), (0.5, 0.7)) },
@@ -815,6 +831,22 @@ impl TitleTemplate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #2886: each template read from its file makes the title its code
+    /// made, on a wide, a tall and a square frame, with its name,
+    /// category, card text and fields.
+    #[test]
+    fn every_moved_file_makes_what_its_code_made() {
+        let coded = coded_for_check();
+        assert!(!coded.is_empty());
+        for c in &coded {
+            let t = builtin(&c.name).unwrap_or_else(|| panic!("{} is listed", c.name));
+            assert_eq!((t.category.as_str(), t.preview_text.as_str(), &t.fields.names, t.fields.accent, t.fields.anchor, t.grow), (c.category.as_str(), c.preview_text.as_str(), &c.fields.names, c.fields.accent, c.fields.anchor, c.grow), "{}", c.name);
+            for (w, h) in [(1920, 1080), (1080, 1920), (1080, 1080)] {
+                assert_eq!(t.data_for(w, h), c.data_for(w, h), "{} at {w}x{h}", c.name);
+            }
+        }
+    }
 
     /// #2886: every built-in Klipp ships is listed, by name in its order:
     /// a file that doesn't read is logged and left out in a release, so
