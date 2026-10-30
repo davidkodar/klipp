@@ -814,6 +814,64 @@ fn rectangle_loops_fade_it_on_the_gpu_as_on_the_cpu() {
     check_rectangle_motion_samples(looping_panel,3,&[0.1,0.3,0.6,1.0,2.2]);
 }
 
+/// #3160: a keyed, turning rectangle of a two-layer title with a glow, or
+/// with a shadow, an outline and an inner shadow: its stack is drawn
+/// round it on the GPU shape route as the CPU draws it.
+fn styled_panel(fitted: bool, mode: u8, width: u32, height: u32) -> Sequence {
+    use klipp_timeline::{InnerShadow, TitleObjectContent, TitleShadow};
+    let mut seq=edge_faded_panel(fitted,0,width,height);
+    let ClipKind::Title(title)=&mut seq.tracks[0].clips[0].kind else {unreachable!()};
+    for object in &mut title.objects {
+        // Mode 0 glows round an opaque panel; mode 2 through a translucent one.
+        if let (0,TitleObjectContent::Shape(shape))=(mode,&mut object.content) {
+            shape.fill=Some([40,80,200,255]);
+            shape.stroke=shape.stroke.map(|mut k|{k.color[3]=255;k});
+        }
+        if matches!(object.content,TitleObjectContent::Shape(_)) {
+            let fx=object.fx_mut();
+            fx.edge_fade=Default::default();
+            if mode!=1 {
+                fx.glows=vec![TextGlow { enabled: true, color: [255,200,80,255], radius: 20.0, radius_keyframes: vec![], intensity: 0.35, intensity_keyframes: vec![] }];
+            } else {
+                fx.shadows=vec![TitleShadow { enabled: true, color: [0,0,0,200], offset_x: 6.0, offset_x_keyframes: vec![], offset_y: 8.0, offset_y_keyframes: vec![], blur: 5.0, blur_keyframes: vec![] }];
+                fx.outlines=vec![TextOutline { enabled: true, color: [250,250,250,255], width: 3.0, width_keyframes: vec![] }];
+                fx.inner_shadows=vec![InnerShadow { enabled: true, color: [10,20,60,220], offset_x: 3.0, offset_x_keyframes: vec![], offset_y: 3.0, offset_y_keyframes: vec![], blur: 4.0, blur_keyframes: vec![] }];
+            }
+        }
+    }
+    seq
+}
+
+#[test]
+fn shape_stacks_are_drawn_on_the_gpu_as_on_the_cpu() {
+    check_rectangle_motion_samples(styled_panel,2,&[0.0,0.3,0.7,1.0,2.2]);
+}
+
+/// A glow seen through a translucent shape: on the GPU in Rec.709, where
+/// it mixes as the CPU mixes it; outside it, with the title's raster.
+#[test]
+fn a_glow_through_a_translucent_shape_stays_on_the_cpu_outside_rec709() {
+    let (w,h)=(320,180);
+    let seq=styled_panel(false,2,w,h);
+    for (ws,on_gpu) in [(klipp_core::WorkingColorspace::Rec709Linear,true),(klipp_core::WorkingColorspace::AcesCG,false)] {
+        let mut cpu=renderer();cpu.set_gpu_enabled(false);cpu.set_working_colorspace(ws);
+        let mut gpu=renderer();gpu.set_gpu_enabled(true);gpu.set_working_colorspace(ws);
+        assert!(gpu.executor().gpu_pipeline_or_init().is_some(),"GPU required");
+        for t in [0.3,1.0] {
+            let at=RationalTime::from_secs_f64(t,30);
+            let (want,_)=cpu.render_inspected(&seq,at,w,h,&mut NoMedia,RenderOptions::default(),Default::default());
+            let want=klipp_color::display::display_transform_ws_dithered_to(&want,klipp_color::display::ToneMapOp::None,ws,klipp_core::SdrTransfer::Srgb);
+            let scope=klipp_effects::residency::frame("glow through a translucent shape",t);
+            let (got,_)=gpu.render_display_u8_on_gpu(&seq,at,w,h,&mut NoMedia,RenderOptions::default()).expect("GPU frame");
+            drop(scope);
+            let fell=klipp_effects::residency::last_frame().events.iter().any(|e|e.work==klipp_effects::residency::Work::Fallback);
+            assert_eq!(fell,!on_gpu,"{ws:?} at {t}");
+            let worst=got.iter().zip(&want).map(|(a,b)|a.abs_diff(*b)).max().unwrap();
+            assert!(worst<=1,"{ws:?} at {t}: {worst} levels apart");
+        }
+    }
+}
+
 #[test]
 fn rectangle_motion_fades_match_cpu_and_remain_resident() {
     check_rectangle_motion_fades(motion_faded_panel);
@@ -884,7 +942,9 @@ fn check_rectangle_motion_fades_at_4k(panel: fn(bool,u8,u32,u32)->Sequence) {
 
 
 #[test]
-fn rectangle_motion_fades_keep_unsupported_styles_on_cpu() {
+fn styled_rectangle_motions_are_drawn_on_the_gpu() {
+    // A shape's stack with a blurring entrance, a matte's glow among them:
+    // drawn on the GPU since #3160, as the CPU draws them.
     use klipp_timeline::{MotionKind, TitleObjectContent};
     let (w,h)=(320,180);
     for case in 0..3 {
@@ -892,7 +952,6 @@ fn rectangle_motion_fades_keep_unsupported_styles_on_cpu() {
         let ClipKind::Title(title)=&mut seq.tracks[0].clips[0].kind else {unreachable!()};
         for object in &mut title.objects {
             if matches!(object.content,TitleObjectContent::Shape(_)) {
-                // Motions are supported, but other shape source styles still decline.
                 object.fx_mut().motion.enter.as_mut().unwrap().kind=MotionKind::FocusIn;
                 match case {
                     0=>object.fx_mut().glows.push(TextGlow {enabled:true,color:[255;4],radius:8.0,radius_keyframes:vec![],intensity:0.8,intensity_keyframes:vec![]}),
@@ -902,12 +961,22 @@ fn rectangle_motion_fades_keep_unsupported_styles_on_cpu() {
             }
         }
         let mut gpu=renderer();gpu.set_gpu_enabled(true);
+        let mut cpu=renderer();cpu.set_gpu_enabled(false);
         assert!(gpu.executor().gpu_pipeline_or_init().is_some(),"GPU required");
-        let scope=klipp_effects::residency::frame("unsupported rectangle motion",0.7);
-        let (got,_)=gpu.render_display_u8_on_gpu(&seq,RationalTime::from_secs_f64(0.7,30),w,h,&mut NoMedia,RenderOptions::default()).expect("composited fallback");
-        drop(scope);
-        assert_eq!(got.len(),(w*h*4) as usize);
-        assert!(klipp_effects::residency::last_frame().events.iter().any(|e|e.work==klipp_effects::residency::Work::Fallback),"case {case} must not claim residency");
+        for t in [0.2,0.7,2.2] {
+            let at=RationalTime::from_secs_f64(t,30);
+            let (want,_)=cpu.render_inspected(&seq,at,w,h,&mut NoMedia,RenderOptions::default(),Default::default());
+            let want=klipp_color::display::display_transform_ws_dithered_to(&want,klipp_color::display::ToneMapOp::None,klipp_core::WorkingColorspace::Rec709Linear,klipp_core::SdrTransfer::Srgb);
+            let scope=klipp_effects::residency::frame("styled rectangle motion",t);
+            let (got,_)=gpu.render_display_u8_on_gpu(&seq,at,w,h,&mut NoMedia,RenderOptions::default()).expect("GPU frame");
+            drop(scope);
+            let events=klipp_effects::residency::last_frame().events;
+            assert!(!events.iter().any(|e|e.work==klipp_effects::residency::Work::Fallback),"case {case} at {t}: {events:?}");
+            let worst=got.iter().zip(&want).map(|(a,b)|a.abs_diff(*b)).max().unwrap();
+            // Measured: 1 level, but 2 for the shadow halfway into its
+            // focus-in, where the dressed layer is blurred and scaled.
+            assert!(worst<=if case==1 && t<0.5 {2} else {1},"case {case} at {t}: {worst} levels apart");
+        }
     }
 }
 
