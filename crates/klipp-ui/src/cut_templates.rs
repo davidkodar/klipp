@@ -933,13 +933,17 @@ mod recipe_check {
     fn a_scaled_clip_keeps_its_scale_through_a_whip_pan() {
         let (mut seq, red) = scene();
         let clip = seq.all_clips_mut().find(|c| c.id == red).unwrap();
-        clip.push_effect(klipp_effects::BuiltinEffect::Transform { position_x: 0.0, position_y: 0.0, scale_x: 1.5, scale_y: 1.5, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None });
-        assert_eq!(seq.all_clips().find(|c| c.id == red).unwrap().video_param_value(klipp_core::VideoParam::Scale), 1.5);
+        let path = clip.placement_path().expect("a placement");
+        clip.apply_picture_ops(&[klipp_graph_lift::ops::GraphOp::SetParam { path, key: "scale".into(), value: klipp_graph_format::ParamValue::Float(1.5) }]).unwrap();
+        // Its scale, as its picture holds it: the placement's, and no keys.
+        let scale = |c: &Clip| {
+            let lifted = c.picture_v2().unwrap();
+            (lifted.picture.placement.scale, lifted.picture.placement_anim.contains_key(&klipp_graph_format::ParamKey::from("scale")))
+        };
+        assert_eq!(scale(seq.all_clips().find(|c| c.id == red).unwrap()), (Some(1.5), false));
         for kind in &[TemplateKind::WhipPanTransition { direction: WhipDirection::Left }, TemplateKind::WhipPanTransition { direction: WhipDirection::Right }] {
             let got = by_recipe(&seq, kind, red);
-            let clip = got.all_clips().find(|c| c.id == red).unwrap();
-            assert!(clip.video_param_keyframes(klipp_core::VideoParam::Scale).is_empty(), "{kind:?}: no Scale key");
-            assert_eq!(clip.video_param_value(klipp_core::VideoParam::Scale), 1.5, "{kind:?}: its scale kept");
+            assert_eq!(scale(got.all_clips().find(|c| c.id == red).unwrap()), (Some(1.5), false), "{kind:?}: its scale kept, no scale key");
         }
     }
 }

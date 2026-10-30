@@ -261,6 +261,10 @@ mod tests {
             clip_id: ClipRef::Id(on), name: name.into(), slots: serde_json::from_value(slots).unwrap(), controls: serde_json::from_value(controls).unwrap(), steps: None, build: None, audio: None, clips: None,
         };
         let placed = |o: Op, dir: Option<&std::path::Path>| resolve(&seq, &pool, &crate::plans::with_recipes(&[o], dir, &pool));
+        // A placement key's values, as the clip's picture holds them.
+        let keyed = |c: &klipp_timeline::Clip, key: &str| -> Vec<f64> {
+            c.picture_v2().unwrap().picture.placement_anim.get(&klipp_graph_format::ParamKey::from(key)).map(|a| a.keys.iter().filter_map(|k| k["value"].as_f64()).collect()).unwrap_or_default()
+        };
         let after = |edit: &EditCommand| {
             let mut seqs = vec![seq.clone()];
             let (mut p, mut f) = (pool.clone(), seq.fps);
@@ -273,7 +277,7 @@ mod tests {
         let s = after(&step.edit);
         assert_eq!(s.all_clips().find(|c| c.id == ia).unwrap().matte_source.as_ref().map(|m| m.source_clip_id), Some(iabove), "the clip above found");
         let plan = placed(op(ia, "Whip Pan (left)", json!({ "Next clip": ib.0.to_string() }), json!({})), None).unwrap_or_else(|r| panic!("{r:?}"));
-        assert_eq!(after(&plan.steps[0].edit).all_clips().find(|c| c.id == ib).unwrap().video_param_keyframes(klipp_core::VideoParam::PositionX).len(), 2, "the given next clip keyed");
+        assert_eq!(keyed(after(&plan.steps[0].edit).all_clips().find(|c| c.id == ib).unwrap(), "pos_x").len(), 2, "the given next clip keyed");
         let why = placed(op(ib, "Whip Pan (left)", json!({}), json!({})), None).unwrap_err().why;
         assert!(why.contains("needs a next clip on the same track"), "{why}");
         let why = placed(op(iabove, "Track Matte Reveal", json!({}), json!({})), None).unwrap_err().why;
@@ -290,7 +294,7 @@ mod tests {
         ct::CompositionTemplateStore::load(Some(dir.clone())).save(mine).unwrap();
         let end_x = |controls: Value| {
             let plan = placed(op(ia, "Short whip", json!({}), controls), Some(&dir)).unwrap_or_else(|r| panic!("{r:?}"));
-            after(&plan.steps[0].edit).all_clips().find(|c| c.id == ia).unwrap().video_param_keyframes(klipp_core::VideoParam::PositionX).last().map(|k| k.value)
+            keyed(after(&plan.steps[0].edit).all_clips().find(|c| c.id == ia).unwrap(), "pos_x").last().copied()
         };
         assert_eq!(end_x(json!({})), Some(-960.0), "its default");
         assert_eq!(end_x(json!({ "Reach (px)": -300.0 })), Some(-300.0), "set by its control");

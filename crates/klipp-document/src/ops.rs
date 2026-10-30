@@ -11011,12 +11011,40 @@ fn clips_recipe(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip: &Cli
         } else if let Some(keys) = &step.keys {
             let param = klipp_timeline::composition_template::clip_key_param(&keys.param).ok_or_else(|| refuse(i, format!("\"{}\" is no clip property", keys.param), "report it"))?;
             let secs = target.duration().to_secs_f64().max(0.0);
+            let at: Vec<(f64, f32)> = keys.keys.iter().map(|key| (key.at.in_clip(secs), key.value.in_frame(width, height))).collect();
             let mut new = target.clone();
-            new.edit_video_param_keyframes(param, |frames| {
-                for key in &keys.keys {
-                    klipp_core::keyframe::upsert_keyframe(frames, key.at.in_clip(secs), key.value.in_frame(width, height));
+            use klipp_core::VideoParam as P;
+            match param {
+                // A track matte's radii are the clip's own keys.
+                P::MatteFeather | P::MatteChoke => {
+                    let frames = if param == P::MatteFeather { &mut new.matte_feather_keyframes } else { &mut new.matte_choke_keyframes };
+                    for (t, v) in at {
+                        klipp_core::keyframe::upsert_keyframe(frames, t, v);
+                    }
                 }
-            });
+                // The placement and opacity: keys on the picture's
+                // placement, a key at the same time replaced.
+                _ => {
+                    let key = match param {
+                        P::Opacity => "opacity",
+                        P::PositionX => "pos_x",
+                        P::PositionY => "pos_y",
+                        P::Scale => "scale",
+                        P::ScaleY => "scale_y",
+                        _ => "rotation",
+                    };
+                    let path = new.placement_path().ok_or_else(|| refuse(i, format!("step {k}'s clip has no placement to key"), "report it"))?;
+                    let ops: Vec<klipp_graph_lift::ops::GraphOp> = at
+                        .into_iter()
+                        .map(|(t, v)| {
+                            let keyframe = klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
+                            serde_json::to_value(keyframe).map(|keyframe| klipp_graph_lift::ops::GraphOp::AddKeyAt { path: path.clone(), key: klipp_graph_format::ParamKey::from(key), keyframe })
+                        })
+                        .collect::<Result<_, _>>()
+                        .map_err(|e| refuse(i, format!("step {k}'s keys: {e}"), "report it"))?;
+                    new.apply_picture_ops(&ops).map_err(|why| refuse(i, format!("step {k}'s keys don't fit the clip: {why}"), "report it"))?;
+                }
+            }
             EditCommand::ReplaceClip { description: "Recipe", old: Box::new(target), new: Box::new(new) }
         } else {
             return Err(refuse(i, format!("step {k} is neither a matte nor keys"), "report it"));
