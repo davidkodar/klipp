@@ -774,8 +774,28 @@ const FILES: &[&str] = &[
     include_str!("../../../assets/titles/chapter.klipptitle"),
     include_str!("../../../assets/titles/chapter_number.klipptitle"),
     include_str!("../../../assets/titles/statement.klipptitle"),
+    include_str!("../../../assets/titles/quote.klipptitle"),
+    include_str!("../../../assets/titles/caption.klipptitle"),
+    include_str!("../../../assets/titles/subtitle.klipptitle"),
+    include_str!("../../../assets/titles/callout.klipptitle"),
+    include_str!("../../../assets/titles/note.klipptitle"),
 ];
 
+
+/// The templates being moved to files, as code made them, for the check
+/// that their files make and draw the same (#2886).
+#[doc(hidden)]
+pub fn coded_for_check() -> Vec<TitleTemplate> {
+    CODED_CHECKED.iter().map(Coded::template).collect()
+}
+
+const CODED_CHECKED: &[Coded] = &[
+    Coded { name: "Quote", category: "Captions", preview_text: "[Quote]", create_data: cap_quote, fields: f(&["Quote", "Who said it"], None, MID) },
+    Coded { name: "Caption", category: "Captions", preview_text: "[Caption]", create_data: cap_caption, fields: f(&["Caption"], Some(0), (0.5, 0.885)) },
+    Coded { name: "Subtitle", category: "Captions", preview_text: "[Subtitle]", create_data: cap_subtitle, fields: f(&["Subtitle"], None, (0.5, 0.9)) },
+    Coded { name: "Callout", category: "Captions", preview_text: "[Callout]", create_data: cap_callout, fields: f(&["Callout"], Some(0), (0.8, 0.14)) },
+    Coded { name: "Note", category: "Captions", preview_text: "[A note on screen]", create_data: cap_note, fields: f(&["Note"], Some(1), (0.1, 0.16)) },
+];
 
 fn from_files() -> impl Iterator<Item = TitleTemplate> {
     FILES.iter().filter_map(|json| {
@@ -796,11 +816,6 @@ fn from_files() -> impl Iterator<Item = TitleTemplate> {
 
 
 const CODED: &[Coded] = &[
-    Coded { name: "Quote", category: "Captions", preview_text: "[Quote]", create_data: cap_quote, fields: f(&["Quote", "Who said it"], None, MID) },
-    Coded { name: "Caption", category: "Captions", preview_text: "[Caption]", create_data: cap_caption, fields: f(&["Caption"], Some(0), (0.5, 0.885)) },
-    Coded { name: "Subtitle", category: "Captions", preview_text: "[Subtitle]", create_data: cap_subtitle, fields: f(&["Subtitle"], None, (0.5, 0.9)) },
-    Coded { name: "Callout", category: "Captions", preview_text: "[Callout]", create_data: cap_callout, fields: f(&["Callout"], Some(0), (0.8, 0.14)) },
-    Coded { name: "Note", category: "Captions", preview_text: "[A note on screen]", create_data: cap_note, fields: f(&["Note"], Some(1), (0.1, 0.16)) },
     Coded { name: "Credits Roll", category: "Credits", preview_text: "Director", create_data: cr_roll, fields: f(&["Credits"], None, MID) },
     Coded { name: "End Credits", category: "Credits", preview_text: "[Film title]", create_data: cr_end_credits, fields: f(&["Film title", "Roles", "Names"], None, MID) },
     Coded { name: "End Card", category: "Credits", preview_text: "The End", create_data: cr_end_card, fields: f(&["Title"], None, MID) },
@@ -881,6 +896,22 @@ impl TitleTemplate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #2886: each template read from its file makes the title its code
+    /// made, on a wide, a tall and a square frame, with its name,
+    /// category, card text and fields.
+    #[test]
+    fn every_moved_file_makes_what_its_code_made() {
+        let coded = coded_for_check();
+        assert!(!coded.is_empty());
+        for c in &coded {
+            let t = builtin(&c.name).unwrap_or_else(|| panic!("{} is listed", c.name));
+            assert_eq!((t.category.as_str(), t.preview_text.as_str(), &t.fields.names, t.fields.accent, t.fields.anchor, t.grow), (c.category.as_str(), c.preview_text.as_str(), &c.fields.names, c.fields.accent, c.fields.anchor, c.grow), "{}", c.name);
+            for (w, h) in [(1920, 1080), (1080, 1920), (1080, 1080)] {
+                assert_eq!(t.data_for(w, h), c.data_for(w, h), "{} at {w}x{h}", c.name);
+            }
+        }
+    }
 
     /// #2886: every built-in Klipp ships is listed, by name in its order:
     /// a file that doesn't read is logged and left out in a release, so
