@@ -14,7 +14,9 @@
 //!   * **DAZ** (Denormals-Are-Zero) — denormal INPUTS read as 0.
 //!
 //! Both flags are per-thread on x86_64; setting them once at the top of
-//! every DSP thread is enough. Cost on subsequent samples is zero — the
+//! every DSP thread is enough. AArch64 has one bit for both, FPCR.FZ
+//! (bit 24): with it set, denormal inputs and results are both flushed,
+//! and it too is per-thread. Cost on subsequent samples is zero — the
 //! flush happens transparently in the FPU.
 //!
 //! Call sites (audio threads only — UI / engine
@@ -27,11 +29,9 @@
 
 /// Configure the calling thread's FPU to flush denormal floats to zero.
 ///
-/// On `x86_64`, sets MXCSR's FZ + DAZ bits via `_mm_setcsr`. On other
-/// architectures this is currently a no-op — AArch64's equivalent is
-/// the FPCR.FZ bit and is not yet wired up; the slow-path is harmless
-/// (just slower DSP on silent biquads on ARM hosts), so revisit if
-/// Klipp ships on Apple Silicon or another AArch64 audio host.
+/// On `x86_64`, sets MXCSR's FZ + DAZ bits via `_mm_setcsr`; on
+/// `aarch64`, sets FPCR.FZ. On other architectures this is a no-op: the
+/// slow path is harmless, just slower DSP on silent biquads.
 ///
 /// Idempotent and cheap (one MXCSR write). Calling once at thread
 /// start is sufficient; calling per callback is also fine.
@@ -55,7 +55,27 @@ pub fn flush_denormals_to_zero() {
             options(readonly, nostack, preserves_flags),
         );
     }
-    // Other arches: no-op for now. See module doc.
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        // FPCR bit 24 = FZ. The other bits (rounding mode, trap enables)
+        // are left as they are.
+        const FPCR_FZ: u64 = 1 << 24;
+        let mut fpcr: u64;
+        core::arch::asm!("mrs {}, fpcr", out(reg) fpcr, options(nomem, nostack, preserves_flags));
+        fpcr |= FPCR_FZ;
+        core::arch::asm!("msr fpcr, {}", in(reg) fpcr, options(nomem, nostack, preserves_flags));
+    }
+    // Other arches: no-op. See module doc.
+}
+
+/// Read the calling thread's FPCR (aarch64 only), for the test below.
+#[cfg(all(test, target_arch = "aarch64"))]
+fn read_fpcr() -> u64 {
+    let fpcr: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, fpcr", out(reg) fpcr, options(nomem, nostack, preserves_flags));
+    }
+    fpcr
 }
 
 /// Read the calling thread's MXCSR (x86_64 only). Used by the
@@ -90,6 +110,13 @@ mod tests {
         assert!(csr & (1 << 15) != 0, "FZ bit (15) must be set after flush_denormals_to_zero");
     }
 
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn flush_denormals_sets_fz_bit_on_aarch64() {
+        flush_denormals_to_zero();
+        assert!(read_fpcr() & (1 << 24) != 0, "FPCR.FZ (bit 24) must be set after flush_denormals_to_zero");
+    }
+
     /// Behavioural pin: with FZ on, multiplying a denormal by a normal
     /// value gives 0 instead of a denormal result. This is the actual
     /// behaviour that saves the biquad state from sliding into slow
@@ -100,7 +127,7 @@ mod tests {
     /// which DOESN'T consult MXCSR, and the test produces a denormal
     /// constant regardless of FZ. We need the multiply to happen at
     /// runtime on the actual FPU.
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     #[test]
     fn flush_denormals_makes_arithmetic_round_denormals_to_zero() {
         use std::hint::black_box;
@@ -114,12 +141,11 @@ mod tests {
             "with FZ set, a denormal × 0.5 must flush to exactly 0.0 (got {result:e})");
     }
 
-    /// On non-x86 the function is a no-op and the test just confirms
-    /// it can be called without panicking. ARM hosts will see the
-    /// slow-but-correct denormal path until FPCR.FZ is wired up.
-    #[cfg(not(target_arch = "x86_64"))]
+    /// Elsewhere the function is a no-op and the test just confirms
+    /// it can be called without panicking.
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     #[test]
-    fn flush_denormals_is_a_safe_noop_on_non_x86_64() {
+    fn flush_denormals_is_a_safe_noop_elsewhere() {
         flush_denormals_to_zero();
     }
 }
