@@ -10,9 +10,12 @@ use klipp_core::{ClipId, Timecode};
 use klipp_document::ops::{stretch_at, stretch_range, Edge, RefusalCode, StretchTo};
 use klipp_timeline::{Clip, Sequence};
 
-/// The grip: this wide in from the clip's edge, this tall from its top.
+/// The grip: this wide in from the clip's edge, this tall from its top:
+/// the top of the edge, the rest of it a trim. At 16 tall it took most of
+/// a clip's upper half, and a walkthrough meaning to trim stretched
+/// instead (#3125).
 pub const GRIP_W: f32 = 12.0;
-pub const GRIP_H: f32 = 16.0;
+pub const GRIP_H: f32 = 10.0;
 /// The narrowest clip that shows its grips: on a narrower one the Rate
 /// Stretch tool and Ctrl on an edge still stretch it.
 pub const GRIP_MIN_W: f32 = 48.0;
@@ -229,7 +232,8 @@ mod tests {
     fn the_grips_are_the_top_corners_and_the_fade_handles_sit_beside_them() {
         let cr = egui::Rect::from_min_size(egui::pos2(100.0, 20.0), egui::vec2(200.0, 46.0));
         assert_eq!(grip_at(cr, egui::pos2(295.0, 24.0)), Some(true), "the end's");
-        assert_eq!(grip_at(cr, egui::pos2(104.0, 30.0)), Some(false), "the start's");
+        assert_eq!(grip_at(cr, egui::pos2(104.0, 27.0)), Some(false), "the start's");
+        assert_eq!(grip_at(cr, egui::pos2(295.0, 34.0)), None, "the edge below the top trims (#3125)");
         assert_eq!(grip_at(cr, egui::pos2(295.0, 50.0)), None, "the edge below it trims");
         assert_eq!(grip_at(cr, egui::pos2(200.0, 24.0)), None, "the body");
         let narrow = egui::Rect::from_min_size(egui::pos2(100.0, 20.0), egui::vec2(30.0, 46.0));

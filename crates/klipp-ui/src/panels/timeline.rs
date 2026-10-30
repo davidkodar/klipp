@@ -11080,12 +11080,21 @@ impl TimelinePanel {
                 // ripple head trim snaps its drawn end instead, and the
                 // stretch handed that start ran a frame into the clip
                 // before and was refused (#3124).
-                trim.wanted = Some(match trim.edge {
+                let offered = match trim.edge {
                     TrimEdge::Left if trim.ripple => {
                         let start = trim.original_timeline_in + dt;
                         find_snap(start, trim.clip_id).map(|(at, _, _)| at).unwrap_or(start)
                     }
                     _ => target,
+                };
+                // Held at the next shot on the track, where a stretch
+                // without ripple stops: offered past it, unsnapped, the
+                // stretch was refused, its refusal gone before it was
+                // read (#3125). A gap clip is room, not a shot.
+                let shots = trim.original.tracks.get(trim.track_idx).map(|t| t.clips.iter().filter(|c| c.id != trim.clip_id && !c.kind.is_gap()).map(|c| (c.timeline_in, c.timeline_out)).collect::<Vec<_>>()).unwrap_or_default();
+                trim.wanted = Some(match trim.edge {
+                    TrimEdge::Left => shots.iter().map(|s| s.1).filter(|end| *end <= trim.original_timeline_in).max().map_or(offered, |end| offered.max(end)),
+                    TrimEdge::Right => shots.iter().map(|s| s.0).filter(|start| *start >= trim.original_timeline_out).min().map_or(offered, |start| offered.min(start)),
                 });
                 let t = target.to_secs_f64();
                 let (lo, hi) = match trim.edge {
@@ -11246,9 +11255,13 @@ impl TimelinePanel {
         painter.galley(rect.min + egui::vec2(4.0, 1.5), galley, egui::Color32::WHITE);
     }
 
-    /// The stretch's readout: a small box above the track at the pointer.
+    /// The stretch's readout: a small box above the track at the pointer,
+    /// on the foreground layer as the move readout is: drawn with its
+    /// track, the tracks drawn after it covered its first lines, and a
+    /// stretch near the top showed only its last (#3125).
     fn paint_stretch_readout(painter: &egui::Painter, content_rect: &egui::Rect, track_rect: &egui::Rect, pointer: egui::Pos2, lines: &[String]) {
         let tt = theme();
+        let painter = &painter.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("stretch_readout")));
         let font = egui::FontId::monospace(10.0);
         let galleys: Vec<_> = lines.iter().map(|l| painter.layout_no_wrap(l.clone(), font.clone(), tt.text_primary)).collect();
         let w = galleys.iter().map(|g| g.size().x).fold(0.0, f32::max) + 12.0;
