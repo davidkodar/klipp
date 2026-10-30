@@ -1266,6 +1266,7 @@ mod tests {
     /// frames in memory.
     #[test]
     fn layers_decoded_on_the_gpu_are_held_to_its_memory() {
+        let _joined = Joined;
         let Some(path) = source() else {
             eprintln!("skipping: no ffmpeg");
             return;
