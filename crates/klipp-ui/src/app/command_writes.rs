@@ -455,6 +455,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::CloseCompoundClip
         | AppCommand::DecomposeCompoundClip { .. }
         | AppCommand::CloseGap { .. }
+        | AppCommand::FillGap { .. }
         | AppCommand::LoadSourceMedia { .. }
         | AppCommand::SetSourceInPoint(..)
         | AppCommand::SetSourceOutPoint(..)
