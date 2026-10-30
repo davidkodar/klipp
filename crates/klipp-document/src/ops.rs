@@ -11833,6 +11833,24 @@ fn lower_third_place(i: usize, side: Option<&str>, x: Option<f32>, y: Option<f32
     Ok(LowerThirdPlace { right, x, y, backing, picture: (0.0, 0.0, 1.0, 1.0) })
 }
 
+/// The lower third as Klipp's own title file makes it (#2886): its
+/// side and backing chosen, the name and role set (no role, its line
+/// gone and the name lower), and placed by the name's line in the
+/// picture's area, or at `x`/`y`.
+fn lower_third_made(name: &str, role: Option<&str>, place: LowerThirdPlace) -> Result<klipp_timeline::TitleData, String> {
+    let (data, design) = klipp_timeline::title_library::op_title("Lower Third").ok_or("Klipp's lower third is missing")?;
+    let backing = match place.backing {
+        LowerThirdBacking::Shadow => "shadow",
+        LowerThirdBacking::Box => "box",
+        LowerThirdBacking::None => "none",
+    };
+    let side = if place.right { "right" } else { "left" };
+    let mut td = design.make(data, &[("side", side), ("backing", backing)], &[("Name", name), ("Role", role.unwrap_or(""))])?;
+    klipp_timeline::title_library::place_by(&mut td, design.place_by.unwrap_or(0), [place.x, place.y], place.picture);
+    Ok(td)
+}
+
+#[cfg(test)]
 fn lower_third_title(name: &str, role: Option<&str>, place: LowerThirdPlace) -> klipp_timeline::TitleData {
     use klipp_timeline::{default_text_transform, Easing, FontStyle, Motion, MotionKind, ObjectTransform, TextAlignment, TextBox, TitleMotion, TitleObjectContent, TitlePosition};
     let lift = klipp_timeline::TitleShadow {
@@ -13373,7 +13391,8 @@ fn lower_third(
         }
         None => text_track_in_view(seq, tl_in, tl_out),
     };
-    let clip = title_clip(lower_third_title(name, role, place), tl_in, tl_out, fps);
+    let td = lower_third_made(name, role, place).map_err(|e| refuse(i, format!("the lower third couldn't be made: {e}"), "report it"))?;
+    let clip = title_clip(td, tl_in, tl_out, fps);
     let id = clip.id;
     let what = format!(
         "lower third {}{} at {:.2}-{:.2} s on {}",
@@ -21585,5 +21604,107 @@ mod effect_params_tests {
         assert!(effect("displace", r#"{"direction": "sideways"}"#).is_err());
         assert!(effect("displace", r#"{"seed": 1.5}"#).is_err());
         assert!(effect("displace", r#"{"amount": "lots"}"#).is_err());
+    }
+}
+
+#[cfg(test)]
+mod lower_third_file_check {
+    use super::*;
+
+    /// Whether `a` and `b` are the same JSON, numbers within `eps`.
+    fn near(a: &serde_json::Value, b: &serde_json::Value, eps: f64, at: &str) -> Result<(), String> {
+        use serde_json::Value as V;
+        match (a, b) {
+            (V::Number(x), V::Number(y)) => {
+                let (x, y) = (x.as_f64().unwrap(), y.as_f64().unwrap());
+                if (x - y).abs() <= eps { Ok(()) } else { Err(format!("{at}: {x} against {y}")) }
+            }
+            (V::Array(x), V::Array(y)) if x.len() == y.len() => x.iter().zip(y).enumerate().try_for_each(|(i, (x, y))| near(x, y, eps, &format!("{at}/{i}"))),
+            (V::Object(x), V::Object(y)) if x.len() == y.len() => x.iter().try_for_each(|(k, v)| y.get(k).ok_or_else(|| format!("{at}/{k}: missing")).and_then(|w| near(v, w, eps, &format!("{at}/{k}")))),
+            _ if a == b => Ok(()),
+            _ => Err(format!("{at}: {a} against {b}")),
+        }
+    }
+
+    /// #2886: the lower third made from Klipp's own file is the title the
+    /// code made, in all 48 of its shapes: with a role or none, left or
+    /// right, each backing, at a given x and y or not, in the whole frame
+    /// or a letterboxed picture. Positions are within a millionth (the
+    /// file moves the role with the name; the code added its drop); the
+    /// id counter is left out, one higher where the role's layer went.
+    #[test]
+    fn the_lower_third_file_makes_what_its_code_made() {
+        let mut n = 0;
+        for role in [Some("A role"), None] {
+            for right in [false, true] {
+                for backing in [LowerThirdBacking::Shadow, LowerThirdBacking::Box, LowerThirdBacking::None] {
+                    for (x, y) in [(None, None), (Some(0.3), Some(0.6))] {
+                        for picture in [(0.0, 0.0, 1.0, 1.0), (0.0, 0.12, 1.0, 0.76)] {
+                            let place = LowerThirdPlace { right, x, y, backing, picture };
+                            let mut want = serde_json::to_value(lower_third_title("A Speaker", role, place)).unwrap();
+                            let mut got = serde_json::to_value(lower_third_made("A Speaker", role, place).unwrap()).unwrap();
+                            // The id counter never goes back (a taken-out
+                            // layer leaves a gap), and is drawn by nothing.
+                            for v in [&mut want, &mut got] {
+                                v.as_object_mut().unwrap().remove("next_object_id");
+                            }
+                            near(&got, &want, 1e-6, "").unwrap_or_else(|e| panic!("{place:?} role {role:?}: {e}"));
+                            n += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(n, 48);
+    }
+
+    /// #2886: on the GPU stack the file's lower third draws what the
+    /// code's drew, within a level and with no frame falling back: a
+    /// role or none, each side and backing, in a letterboxed picture,
+    /// fading in, at rest and fading out.
+    #[test]
+    fn the_lower_third_file_draws_what_its_code_drew() {
+        use klipp_compose::{FrameSource, RenderOptions, Renderer, SourceFrame};
+        struct NoMedia;
+        impl FrameSource for NoMedia {
+            fn frame(&mut self, _: &Clip, _: f64, _: u32, _: u32) -> Option<SourceFrame> {
+                None
+            }
+        }
+        let mut gpu = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+        gpu.set_gpu_enabled(true);
+        if gpu.executor().gpu_pipeline_or_init().is_none() {
+            assert!(std::env::var_os("KLIPP_TEST_REQUIRE_GPU").is_none(), "GPU required");
+            return;
+        }
+        let (w, h) = (960, 540);
+        let frame = |gpu: &mut Renderer, td: klipp_timeline::TitleData, secs: f64| {
+            let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 30);
+            let mut seq = Sequence::new_default();
+            seq.resolution = klipp_core::Resolution { width: w, height: h };
+            let mut track = klipp_timeline::Track::new("t", TrackKind::Video);
+            track.clips.push(Clip { kind: ClipKind::Title(td), ..Clip::gap(tc(0.0), tc(4.0)) });
+            seq.tracks = vec![track];
+            let (px, _) = gpu.render_display_u8_on_gpu(&seq, tc(secs), w, h, &mut NoMedia, RenderOptions::default()).expect("drawn on the GPU");
+            assert_eq!(klipp_effects::residency::last_frame().fallback_count(), 0, "at {secs}");
+            px
+        };
+        let mut worst = 0;
+        let mut pairs = 0;
+        for (role, right, backing) in [(Some("A role"), false, LowerThirdBacking::Shadow), (None, true, LowerThirdBacking::Box), (Some("A role"), true, LowerThirdBacking::None), (None, false, LowerThirdBacking::Shadow)] {
+            let place = LowerThirdPlace { right, x: None, y: None, backing, picture: (0.0, 0.12, 1.0, 0.76) };
+            for secs in [0.2, 2.0, 3.8] {
+                let a = frame(&mut gpu, lower_third_title("A Speaker", role, place), secs);
+                let b = frame(&mut gpu, lower_third_made("A Speaker", role, place).unwrap(), secs);
+                let d = a.iter().zip(&b).map(|(x, y)| x.abs_diff(*y)).max().unwrap();
+                assert!(d <= 1, "{place:?} role {role:?} at {secs}: {d} levels");
+                if secs == 2.0 {
+                    assert!(b.chunks_exact(4).filter(|p| p[..3].iter().any(|v| *v > 30)).count() > 100, "something drawn");
+                }
+                worst = worst.max(d);
+                pairs += 1;
+            }
+        }
+        println!("lower third, file against code: worst {worst} levels over {pairs} frame pairs");
     }
 }

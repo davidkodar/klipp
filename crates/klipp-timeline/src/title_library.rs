@@ -498,6 +498,49 @@ fn from_files() -> impl Iterator<Item = TitleTemplate> {
 }
 
 
+/// `td` placed by its layer `by` (#2886): that layer's centre, a point of
+/// the frame as designed, put at the same point of the box `within`
+/// ((left, top, width, height), fractions of the frame), or at `at`
+/// for a coordinate `at` gives; every layer then moved as far as it
+/// moved, so they keep their distances from it. A layer `td` hasn't got
+/// leaves it as it is.
+pub fn place_by(td: &mut TitleData, by: usize, at: [Option<f32>; 2], within: (f32, f32, f32, f32)) {
+    let Some(c) = td.objects.get(by).map(|o| o.transform.center) else { return };
+    let (left, top, width, height) = within;
+    let to = (at[0].unwrap_or(left + width * c.x), at[1].unwrap_or(top + height * c.y));
+    let (dx, dy) = (to.0 - c.x, to.1 - c.y);
+    for o in &mut td.objects {
+        let t = &mut o.transform;
+        t.center.x += dx;
+        t.center.y += dy;
+        t.center_x_keyframes.iter_mut().for_each(|k| k.value += dx);
+        t.center_y_keyframes.iter_mut().for_each(|k| k.value += dy);
+    }
+}
+
+/// The titles Klipp's own ops build (#2886), by name: the layers as
+/// designed and how they are made, from files in `assets/titles/ops`.
+/// Not listed with the templates, and never one saved by the user.
+pub fn op_title(name: &str) -> Option<&'static (TitleData, crate::TitleDesign)> {
+    static OPS: std::sync::LazyLock<Vec<(String, (TitleData, crate::TitleDesign))>> = std::sync::LazyLock::new(|| {
+        OP_FILES
+            .iter()
+            .filter_map(|json| match crate::TemplateFile::parse(json).and_then(|t| t.design.map(|d| (t.name, (t.data, d))).ok_or_else(|| "it has no design".to_string())) {
+                Ok(t) => Some(t),
+                Err(why) => {
+                    tracing::error!("an op's title doesn't read: {why}");
+                    debug_assert!(false, "an op's title doesn't read: {why}");
+                    None
+                }
+            })
+            .collect()
+    });
+    OPS.iter().find(|(n, _)| n.eq_ignore_ascii_case(name.trim())).map(|(_, t)| t)
+}
+
+/// The titles of Klipp's own ops, as files (#2886).
+const OP_FILES: &[&str] = &[include_str!("../../../assets/titles/ops/lower_third.klipptitle")];
+
 /// Ordered list of categories for display.
 pub const CATEGORIES: &[&str] = &["Lower Thirds", "Openers", "Captions", "Credits", "Social", "Utility"];
 

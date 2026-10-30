@@ -1,0 +1,489 @@
+{
+  "category": "Ops",
+  "data": {
+    "animation_type": "Static",
+    "background": "None",
+    "next_object_id": 2,
+    "objects": [
+      {
+        "content": {
+          "TextBox": {
+            "alignment": "Left",
+            "ass_style_name": null,
+            "baseline_shift": 0.0,
+            "case_transform": "None",
+            "char_animation": null,
+            "chromatic_aberration_px": 0.0,
+            "color": [
+              255,
+              255,
+              255,
+              255
+            ],
+            "columns": 1,
+            "drop_cap_scale": 0.0,
+            "extrusion": null,
+            "font_name": "Inter",
+            "font_size": 46.0,
+            "font_style": "Bold",
+            "glitch_intensity": 0.0,
+            "gradient": null,
+            "line_spacing": 1.0,
+            "outline_write_on": 1.0,
+            "pattern_fill": null,
+            "pattern_fill_enabled": true,
+            "strikethrough": false,
+            "style_runs": [],
+            "text": "[Name]",
+            "text_direction": "Ltr",
+            "text_path": null,
+            "texture_fill": null,
+            "tracking": 0.0,
+            "underline": false,
+            "vertical_layout": false,
+            "write_on": 1.0
+          }
+        },
+        "fx": {
+          "motion": {
+            "enter": {
+              "amount": null,
+              "anchor": null,
+              "delay_secs": 0.0,
+              "distance": 0.6,
+              "duration_secs": 0.4,
+              "easing": "OutCubic",
+              "kind": "Fade",
+              "stagger": "None",
+              "stagger_secs": 0.05
+            },
+            "exit": {
+              "amount": null,
+              "anchor": null,
+              "delay_secs": 0.0,
+              "distance": 0.6,
+              "duration_secs": 0.4,
+              "easing": "InCubic",
+              "kind": "Fade",
+              "stagger": "None",
+              "stagger_secs": 0.05
+            }
+          },
+          "outlines": [
+            {
+              "color": [
+                0,
+                0,
+                0,
+                170
+              ],
+              "enabled": true,
+              "width": 1.5,
+              "width_keyframes": []
+            }
+          ],
+          "shadows": [
+            {
+              "blur": 12.0,
+              "blur_keyframes": [],
+              "color": [
+                0,
+                0,
+                0,
+                120
+              ],
+              "enabled": true,
+              "offset_x": 0.0,
+              "offset_x_keyframes": [],
+              "offset_y": 3.0,
+              "offset_y_keyframes": []
+            },
+            {
+              "blur": 4.0,
+              "blur_keyframes": [],
+              "color": [
+                0,
+                0,
+                0,
+                210
+              ],
+              "enabled": true,
+              "offset_x": 0.0,
+              "offset_x_keyframes": [],
+              "offset_y": 2.0,
+              "offset_y_keyframes": []
+            }
+          ]
+        },
+        "id": 0,
+        "locked": false,
+        "name": "Text 1",
+        "opacity": 1.0,
+        "opacity_keyframes": [],
+        "transform": {
+          "anchor_norm": {
+            "x": 0.0,
+            "y": 0.5
+          },
+          "anchor_x_keyframes": [],
+          "anchor_y_keyframes": [],
+          "center": {
+            "x": 0.08,
+            "y": 0.815
+          },
+          "center_x_keyframes": [],
+          "center_y_keyframes": [],
+          "rotation": 0.0,
+          "rotation_keyframes": [],
+          "size": {
+            "x": 1.0,
+            "y": 1.0
+          },
+          "size_x_keyframes": [],
+          "size_y_keyframes": []
+        },
+        "visible": true
+      },
+      {
+        "content": {
+          "TextBox": {
+            "alignment": "Left",
+            "ass_style_name": null,
+            "baseline_shift": 0.0,
+            "case_transform": "Uppercase",
+            "char_animation": null,
+            "chromatic_aberration_px": 0.0,
+            "color": [
+              205,
+              205,
+              212,
+              255
+            ],
+            "columns": 1,
+            "drop_cap_scale": 0.0,
+            "extrusion": null,
+            "font_name": "Inter",
+            "font_size": 24.0,
+            "font_style": "Regular",
+            "glitch_intensity": 0.0,
+            "gradient": null,
+            "line_spacing": 1.0,
+            "outline_write_on": 1.0,
+            "pattern_fill": null,
+            "pattern_fill_enabled": true,
+            "strikethrough": false,
+            "style_runs": [],
+            "text": "[Title or role]",
+            "text_direction": "Ltr",
+            "text_path": null,
+            "texture_fill": null,
+            "tracking": 3.0,
+            "underline": false,
+            "vertical_layout": false,
+            "write_on": 1.0
+          }
+        },
+        "fx": {
+          "motion": {
+            "enter": {
+              "amount": null,
+              "anchor": null,
+              "delay_secs": 0.1,
+              "distance": 0.6,
+              "duration_secs": 0.4,
+              "easing": "OutCubic",
+              "kind": "Fade",
+              "stagger": "None",
+              "stagger_secs": 0.05
+            },
+            "exit": {
+              "amount": null,
+              "anchor": null,
+              "delay_secs": 0.0,
+              "distance": 0.6,
+              "duration_secs": 0.4,
+              "easing": "InCubic",
+              "kind": "Fade",
+              "stagger": "None",
+              "stagger_secs": 0.05
+            }
+          },
+          "outlines": [
+            {
+              "color": [
+                0,
+                0,
+                0,
+                170
+              ],
+              "enabled": true,
+              "width": 1.0,
+              "width_keyframes": []
+            }
+          ],
+          "shadows": [
+            {
+              "blur": 12.0,
+              "blur_keyframes": [],
+              "color": [
+                0,
+                0,
+                0,
+                120
+              ],
+              "enabled": true,
+              "offset_x": 0.0,
+              "offset_x_keyframes": [],
+              "offset_y": 3.0,
+              "offset_y_keyframes": []
+            },
+            {
+              "blur": 4.0,
+              "blur_keyframes": [],
+              "color": [
+                0,
+                0,
+                0,
+                210
+              ],
+              "enabled": true,
+              "offset_x": 0.0,
+              "offset_x_keyframes": [],
+              "offset_y": 2.0,
+              "offset_y_keyframes": []
+            }
+          ]
+        },
+        "id": 1,
+        "locked": false,
+        "name": "Text 2",
+        "opacity": 1.0,
+        "opacity_keyframes": [],
+        "transform": {
+          "anchor_norm": {
+            "x": 0.0,
+            "y": 0.5
+          },
+          "anchor_x_keyframes": [],
+          "anchor_y_keyframes": [],
+          "center": {
+            "x": 0.08,
+            "y": 0.868
+          },
+          "center_x_keyframes": [],
+          "center_y_keyframes": [],
+          "rotation": 0.0,
+          "rotation_keyframes": [],
+          "size": {
+            "x": 1.0,
+            "y": 1.0
+          },
+          "size_x_keyframes": [],
+          "size_y_keyframes": []
+        },
+        "visible": true
+      }
+    ],
+    "protect": "auto"
+  },
+  "design": {
+    "anchor": [
+      0.08,
+      0.815
+    ],
+    "fields": [
+      "Name",
+      "Role"
+    ],
+    "grow": false,
+    "optional": [
+      {
+        "edits": [
+          {
+            "pointer": "/objects/0/transform/center/y",
+            "value": 0.85
+          }
+        ],
+        "field": "Role"
+      }
+    ],
+    "place_by": 0,
+    "preview": "[Name]",
+    "variants": [
+      {
+        "name": "side",
+        "options": [
+          {
+            "edits": [],
+            "name": "left"
+          },
+          {
+            "edits": [
+              {
+                "pointer": "/objects/0/transform/center/x",
+                "value": 0.92
+              },
+              {
+                "pointer": "/objects/0/transform/anchor_norm/x",
+                "value": 1.0
+              },
+              {
+                "pointer": "/objects/0/content/TextBox/alignment",
+                "value": "Right"
+              },
+              {
+                "pointer": "/objects/1/transform/center/x",
+                "value": 0.92
+              },
+              {
+                "pointer": "/objects/1/transform/anchor_norm/x",
+                "value": 1.0
+              },
+              {
+                "pointer": "/objects/1/content/TextBox/alignment",
+                "value": "Right"
+              }
+            ],
+            "name": "right"
+          }
+        ]
+      },
+      {
+        "name": "backing",
+        "options": [
+          {
+            "edits": [],
+            "name": "shadow"
+          },
+          {
+            "edits": [
+              {
+                "pointer": "/background",
+                "value": {
+                  "Color": {
+                    "color": [
+                      0,
+                      0,
+                      0,
+                      200
+                    ],
+                    "padding": 14.0
+                  }
+                }
+              },
+              {
+                "pointer": "/objects/0/fx/shadows",
+                "value": [
+                  {
+                    "blur": 12.0,
+                    "blur_keyframes": [],
+                    "color": [
+                      0,
+                      0,
+                      0,
+                      120
+                    ],
+                    "enabled": true,
+                    "offset_x": 0.0,
+                    "offset_x_keyframes": [],
+                    "offset_y": 3.0,
+                    "offset_y_keyframes": []
+                  }
+                ]
+              },
+              {
+                "pointer": "/objects/0/fx/outlines",
+                "value": []
+              },
+              {
+                "pointer": "/objects/1/fx/shadows",
+                "value": [
+                  {
+                    "blur": 12.0,
+                    "blur_keyframes": [],
+                    "color": [
+                      0,
+                      0,
+                      0,
+                      120
+                    ],
+                    "enabled": true,
+                    "offset_x": 0.0,
+                    "offset_x_keyframes": [],
+                    "offset_y": 3.0,
+                    "offset_y_keyframes": []
+                  }
+                ]
+              },
+              {
+                "pointer": "/objects/1/fx/outlines",
+                "value": []
+              }
+            ],
+            "name": "box"
+          },
+          {
+            "edits": [
+              {
+                "pointer": "/background",
+                "value": "None"
+              },
+              {
+                "pointer": "/objects/0/fx/shadows",
+                "value": [
+                  {
+                    "blur": 12.0,
+                    "blur_keyframes": [],
+                    "color": [
+                      0,
+                      0,
+                      0,
+                      120
+                    ],
+                    "enabled": true,
+                    "offset_x": 0.0,
+                    "offset_x_keyframes": [],
+                    "offset_y": 3.0,
+                    "offset_y_keyframes": []
+                  }
+                ]
+              },
+              {
+                "pointer": "/objects/0/fx/outlines",
+                "value": []
+              },
+              {
+                "pointer": "/objects/1/fx/shadows",
+                "value": [
+                  {
+                    "blur": 12.0,
+                    "blur_keyframes": [],
+                    "color": [
+                      0,
+                      0,
+                      0,
+                      120
+                    ],
+                    "enabled": true,
+                    "offset_x": 0.0,
+                    "offset_x_keyframes": [],
+                    "offset_y": 3.0,
+                    "offset_y_keyframes": []
+                  }
+                ]
+              },
+              {
+                "pointer": "/objects/1/fx/outlines",
+                "value": []
+              }
+            ],
+            "name": "none"
+          }
+        ]
+      }
+    ]
+  },
+  "format": 2,
+  "name": "Lower Third",
+  "written_by": "built-in"
+}
