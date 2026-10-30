@@ -1,0 +1,166 @@
+{
+  "category": "Utility",
+  "data": {
+    "animation_type": "Static",
+    "background": "None",
+    "next_object_id": 2,
+    "objects": [
+      {
+        "content": {
+          "Shape": {
+            "fill": [
+              0,
+              0,
+              0,
+              180
+            ],
+            "kind": {
+              "Rectangle": {
+                "corner_radius": 4.0
+              }
+            },
+            "stroke": null
+          }
+        },
+        "fx": {},
+        "id": 0,
+        "locked": false,
+        "name": "Shape 1",
+        "opacity": 1.0,
+        "opacity_keyframes": [],
+        "transform": {
+          "anchor_norm": {
+            "x": 0.5,
+            "y": 0.5
+          },
+          "anchor_x_keyframes": [],
+          "anchor_y_keyframes": [],
+          "center": {
+            "x": 0.14,
+            "y": 0.1
+          },
+          "center_x_keyframes": [],
+          "center_y_keyframes": [],
+          "rotation": 0.0,
+          "rotation_keyframes": [],
+          "size": {
+            "x": 0.18,
+            "y": 0.06
+          },
+          "size_x_keyframes": [],
+          "size_y_keyframes": []
+        },
+        "visible": true
+      },
+      {
+        "content": {
+          "TextBox": {
+            "alignment": "Center",
+            "ass_style_name": null,
+            "baseline_shift": 0.0,
+            "case_transform": "Uppercase",
+            "char_animation": null,
+            "chromatic_aberration_px": 0.0,
+            "color": [
+              255,
+              255,
+              255,
+              255
+            ],
+            "columns": 1,
+            "drop_cap_scale": 0.0,
+            "extrusion": null,
+            "font_name": "Inter",
+            "font_size": 22.0,
+            "font_style": "Bold",
+            "glitch_intensity": 0.0,
+            "gradient": null,
+            "line_spacing": 1.0,
+            "outline_write_on": 1.0,
+            "pattern_fill": null,
+            "pattern_fill_enabled": true,
+            "strikethrough": false,
+            "style_runs": [],
+            "text": "[Label]",
+            "text_direction": "Ltr",
+            "text_path": null,
+            "texture_fill": null,
+            "tracking": 3.0,
+            "underline": false,
+            "vertical_layout": false,
+            "write_on": 1.0
+          }
+        },
+        "fx": {
+          "motion": {
+            "enter": {
+              "amount": null,
+              "anchor": null,
+              "delay_secs": 0.0,
+              "distance": 0.6,
+              "duration_secs": 0.3,
+              "easing": "OutCubic",
+              "kind": "Fade",
+              "stagger": "None",
+              "stagger_secs": 0.05
+            },
+            "exit": {
+              "amount": null,
+              "anchor": null,
+              "delay_secs": 0.0,
+              "distance": 0.6,
+              "duration_secs": 0.25,
+              "easing": "InCubic",
+              "kind": "Fade",
+              "stagger": "None",
+              "stagger_secs": 0.05
+            }
+          }
+        },
+        "id": 1,
+        "locked": false,
+        "name": "Text 2",
+        "opacity": 1.0,
+        "opacity_keyframes": [],
+        "transform": {
+          "anchor_norm": {
+            "x": 0.5,
+            "y": 0.5
+          },
+          "anchor_x_keyframes": [],
+          "anchor_y_keyframes": [],
+          "center": {
+            "x": 0.14,
+            "y": 0.1
+          },
+          "center_x_keyframes": [],
+          "center_y_keyframes": [],
+          "rotation": 0.0,
+          "rotation_keyframes": [],
+          "size": {
+            "x": 1.0,
+            "y": 1.0
+          },
+          "size_x_keyframes": [],
+          "size_y_keyframes": []
+        },
+        "visible": true
+      }
+    ]
+  },
+  "design": {
+    "accent": 0,
+    "anchor": [
+      0.14,
+      0.1
+    ],
+    "fields": [
+      "Label"
+    ],
+    "grow": false,
+    "preview": "[Label]"
+  },
+  "format": 2,
+  "name": "Label",
+  "written_by": "built-in"
+}
