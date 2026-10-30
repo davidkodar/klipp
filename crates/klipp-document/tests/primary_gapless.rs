@@ -63,3 +63,51 @@ fn every_op_that_leaves_a_hole_on_the_primary_fills_it() {
     let trimmed = holds("trim an in without ripple", seq.clone(), pool.clone(), serde_json::json!({ "op": "trim", "clip_id": id(0), "edge": "in", "to": { "secs": 0.5 } }));
     assert!(trimmed.tracks[p].clips.iter().any(|c| c.kind.is_gap() && c.timeline_in.to_secs_f64() == 0.0 && c.timeline_out == t(0.5)), "a gap clip of half a second, not rounded");
 }
+
+/// The fixture with its middle clip taken out: 0-2 s, a gap clip 2-4 s,
+/// 4-6 s.
+fn with_a_gap() -> (Sequence, klipp_media::MediaPool, [klipp_core::ClipId; 3]) {
+    let (mut seq, pool, _, ids) = fixture();
+    let p = seq.primary_track_index().unwrap();
+    seq.tracks[p].clips.retain(|c| c.id != ids[1]);
+    seq.fill_primary_holes();
+    (seq, pool, ids)
+}
+
+/// A gap clip is room, not a shot: the first clip slowed into the gap
+/// after it, by a stretch or a retime without ripple, takes the gap's
+/// room and moves nothing; the rest of the gap stays a gap clip; the
+/// sequence is as long as it was. A stretch past the gap into the next
+/// shot is still refused.
+#[test]
+fn a_clip_slowed_into_a_gap_clip_takes_its_room() {
+    let (seq, pool, ids) = with_a_gap();
+    let p = seq.primary_track_index().unwrap();
+    let length = seq.total_duration();
+    let id = |i: usize| ids[i].0.to_string();
+    let span = |s: &Sequence, i: usize| s.tracks[p].clips.iter().find(|c| c.id == ids[i]).map(|c| (c.timeline_in, c.timeline_out)).unwrap();
+    let gaps = |s: &Sequence| s.tracks[p].clips.iter().filter(|c| c.kind.is_gap()).map(|c| (c.timeline_in, c.timeline_out)).collect::<Vec<_>>();
+
+    let part = holds("stretch into part of the gap", seq.clone(), pool.clone(), serde_json::json!({ "op": "stretch", "clip_id": id(0), "end_at_secs": 3.0 }));
+    assert_eq!(span(&part, 0), (t(0.0), t(3.0)), "the clip ends at 3 s");
+    assert_eq!(gaps(&part), vec![(t(3.0), t(4.0))], "a gap clip for what is left of the room");
+    assert_eq!(span(&part, 2), (t(4.0), t(6.0)), "the next shot stays");
+    assert_eq!(part.total_duration(), length);
+
+    let whole = holds("stretch over the whole gap", seq.clone(), pool.clone(), serde_json::json!({ "op": "stretch", "clip_id": id(0), "end_at_secs": 4.0 }));
+    assert_eq!(span(&whole, 0), (t(0.0), t(4.0)));
+    assert!(gaps(&whole).is_empty(), "no gap left: {:?}", gaps(&whole));
+    assert_eq!(span(&whole, 2), (t(4.0), t(6.0)));
+
+    let retimed = holds("retime at half speed into the gap", seq.clone(), pool.clone(), serde_json::json!({ "op": "retime", "clip_id": id(0), "speed": 0.5 }));
+    assert_eq!(span(&retimed, 0), (t(0.0), t(4.0)), "half speed, twice as long, over the gap");
+    assert_eq!(span(&retimed, 2), (t(4.0), t(6.0)));
+    assert_eq!(retimed.total_duration(), length);
+
+    for op in [serde_json::json!({ "op": "stretch", "clip_id": id(0), "end_at_secs": 5.0 }), serde_json::json!({ "op": "retime", "clip_id": id(0), "speed": 0.25 })] {
+        let op: Op = serde_json::from_value(op).unwrap();
+        let Err(refused) = resolve(&seq, &pool, &[op]) else { panic!("past the gap into the next shot is refused") };
+        assert!(refused.why.contains("would run"), "{}", refused.why);
+        assert!(!refused.why.contains(" s on track"), "the track said with each clip, not again after the time: {}", refused.why);
+    }
+}

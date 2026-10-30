@@ -10333,6 +10333,28 @@ struct Rippled {
     partners: usize,
 }
 
+/// Room for `from..to` on track `ti`, taken from the gap clips there: the
+/// primary track keeps its holes as gap clips (#3083), and a clip grown
+/// into one was refused as though the gap were a shot. Each gap clip the
+/// span overlaps is removed; what of it the span leaves is filled again
+/// as the edit is recorded. Any other clip in the span, `skip` aside, is
+/// what the span would run into.
+pub(super) fn room_from_gaps<'a>(seq: &'a Sequence, ti: usize, from: Timecode, to: Timecode, skip: &dyn Fn(&Clip) -> bool) -> Result<Vec<EditCommand>, &'a Clip> {
+    let mut taken: Vec<(usize, &Clip)> = Vec::new();
+    for (position, c) in seq.tracks[ti].clips.iter().enumerate() {
+        if skip(c) || c.timeline_out <= from || c.timeline_in >= to {
+            continue;
+        }
+        if !c.kind.is_gap() {
+            return Err(c);
+        }
+        taken.push((position, c));
+    }
+    // Last first, so each one's position is still its own when undone.
+    taken.sort_by_key(|(p, _)| std::cmp::Reverse(*p));
+    Ok(taken.into_iter().map(|(position, c)| EditCommand::LegacyRemoveClip { clip: c.clone(), track_index: ti, position }).collect())
+}
+
 /// The clips after `members` (each a clip, its track and its new end)
 /// moved by their change in length with `ripple`, and the clips linked
 /// to them on other tracks with them (#2473); without it, a member that
@@ -10362,12 +10384,19 @@ fn ripple_after(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, members: &
                 rippled.push((c, delta));
             }
             moved_later += later.len();
-        } else if let Some(n) = later.iter().find(|c| c.timeline_in < new_out) {
-            return Err(refuse(
-                i,
-                format!("{} would run over {} at {:.2} s on track {mti}", clip_name(seq, pool, m), clip_name(seq, pool, n), secs(n.timeline_in)),
-                format!("{verb} with ripple to move the clips after it, or make room first"),
-            ));
+        } else if new_out > m.timeline_out {
+            // Into a gap clip it grows; into a shot it is refused.
+            let skip = |c: &Clip| c.id == m.id || members.iter().any(|(_, x, _)| x.id == c.id) || moves.iter().any(|e| matches!(e, EditCommand::LegacyRemoveClip { clip, .. } if clip.id == c.id));
+            match room_from_gaps(seq, mti, m.timeline_out, new_out, &skip) {
+                Ok(taken) => moves.extend(taken),
+                Err(n) => {
+                    return Err(refuse(
+                        i,
+                        format!("{} would run over {} at {:.2} s", clip_name(seq, pool, m), clip_name(seq, pool, n), secs(n.timeline_in)),
+                        format!("{verb} with ripple to move the clips after it, or make room first"),
+                    ));
+                }
+            }
         }
     }
     // A picture and sound of different lengths (a J or L cut) change by
@@ -10396,7 +10425,7 @@ fn ripple_after(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, members: &
         if let Some(n) = seq.tracks[pti].clips.iter().filter(staying).find(|c| c.timeline_in < new_out && new_in < c.timeline_out) {
             return Err(refuse(
                 i,
-                format!("{}, linked to a later clip, would run over {} at {:.2} s on track {pti}", clip_name(seq, pool, p), clip_name(seq, pool, n), secs(n.timeline_in)),
+                format!("{}, linked to a later clip, would run over {} at {:.2} s", clip_name(seq, pool, p), clip_name(seq, pool, n), secs(n.timeline_in)),
                 format!("{verb} without ripple, or make room on that track first"),
             ));
         }

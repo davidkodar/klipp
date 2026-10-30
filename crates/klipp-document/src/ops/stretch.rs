@@ -202,21 +202,29 @@ pub(super) fn stretch(seq: &Sequence, pool: &MediaPool, i: usize, clip_ids: &[Cl
         }
     }
 
-    // Without ripple, nothing else may be run into.
+    // Without ripple, a stretch takes the room of the gap clips it grows
+    // into (the primary track's holes) and runs into nothing else.
     let ids: Vec<ClipId> = replaced.iter().map(|(_, o, _)| o.id).collect();
+    let mut taken: Vec<EditCommand> = Vec::new();
     if !ripple {
         for (ti, _, n) in &replaced {
-            if let Some(c) = seq.tracks[*ti].clips.iter().find(|c| !ids.contains(&c.id) && c.timeline_out > n.timeline_in && c.timeline_in < n.timeline_out) {
-                return Err(refuse_as(
-                    i,
-                    RefusalCode::WouldOverlap,
-                    format!("{} would run into {} at {:.2} s on track {ti}", clip_name(seq, pool, n), clip_name(seq, pool, c), secs(c.timeline_in)),
-                    "stretch less, make room first, or stretch with ripple",
-                ));
+            let skip = |c: &Clip| ids.contains(&c.id) || taken.iter().any(|e| matches!(e, EditCommand::LegacyRemoveClip { clip, .. } if clip.id == c.id));
+            match super::room_from_gaps(seq, *ti, n.timeline_in, n.timeline_out, &skip) {
+                Ok(gaps) => taken.extend(gaps),
+                Err(c) => {
+                    return Err(refuse_as(
+                        i,
+                        RefusalCode::WouldOverlap,
+                        format!("{} would run into {} at {:.2} s", clip_name(seq, pool, n), clip_name(seq, pool, c), secs(c.timeline_in)),
+                        "stretch less, make room first, or stretch with ripple (Alt)",
+                    ));
+                }
             }
         }
     }
-    let mut edits: Vec<EditCommand> = replaced.iter().map(|(_, o, n)| EditCommand::ReplaceClip { description: "Rate Stretch", old: Box::new(o.clone()), new: Box::new(n.clone()) }).collect();
+    // The gaps out of the way first, then the clips stretched over them.
+    let mut edits: Vec<EditCommand> = taken;
+    edits.extend(replaced.iter().map(|(_, o, n)| EditCommand::ReplaceClip { description: "Rate Stretch", old: Box::new(o.clone()), new: Box::new(n.clone()) }));
     let mut moved_ids = Vec::new();
     let mut said_ripple = String::new();
     if ripple {
