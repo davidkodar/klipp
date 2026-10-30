@@ -7,6 +7,11 @@ license.workspace = true
 # and the [[test]] entries to go back to one binary per file.
 autotests = false
 
+[features]
+# wgpu's own allocation totals in the GPU memory report (#3174): off in
+# a release, on for the measuring test.
+gpu-memory-report = ["wgpu/counters"]
+
 [dependencies]
 klipp-presets = { workspace = true }
 # naga is a transitive dep of wgpu (same version pin); `shader_check`

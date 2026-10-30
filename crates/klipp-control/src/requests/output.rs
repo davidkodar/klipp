@@ -963,6 +963,17 @@ pub(crate) fn respond(
                     "phases": phases(&avg.phases),
                 },
                 "picture_fallbacks": klipp_effects::residency::snapshot(),
+                // What Klipp's GPU caches hold now and what one-call
+                // allocations have made (#3174); `driver` is wgpu's own
+                // totals, in a build with klipp-effects/gpu-memory-report.
+                "gpu_memory": {
+                    "now": klipp_effects::gpu_memory::snapshot(),
+                    "free_vram": klipp_engine::decode_budget::free_vram(),
+                    "free_memory": klipp_engine::decode_budget::free_memory(),
+                    "out_of_memory_errors": klipp_effects::gpu_context::out_of_memory_errors(),
+                    "validation_errors": klipp_effects::gpu_context::validation_errors(),
+                    "scope": "held: bytes each cache keeps now; made: cumulative bytes and count of one-call allocations; driver: wgpu's allocated bytes for the device, all callers",
+                },
                 "generators": {
                     "gpu_draws": klipp_compose::GPU_GENERATOR_DRAWS.load(std::sync::atomic::Ordering::Relaxed),
                     "cpu_draws": klipp_compose::CPU_GENERATOR_DRAWS.load(std::sync::atomic::Ordering::Relaxed),

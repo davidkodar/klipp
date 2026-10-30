@@ -33,6 +33,7 @@
 //! decoder optimisation.
 
 pub mod residency;
+pub mod gpu_memory;
 pub mod animate;
 pub mod blur;
 mod cpu;

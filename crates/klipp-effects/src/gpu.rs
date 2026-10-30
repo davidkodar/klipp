@@ -561,6 +561,8 @@ pub struct GpuEffectsPipeline {
     /// The glyph table of the frame being placed (grows as needed).
     sprite_glyph_table: Option<wgpu::Buffer>,
     stack_buf_size: u64,
+    /// What its caches hold, in the GPU memory report (#3174).
+    memory_gauges: MemoryGauges,
     /// Whether anything has been blended into the accumulator yet.
     stack_acc_touched: bool,
     stack_dims: (u32, u32),
@@ -948,6 +950,22 @@ enum KeyRoute {
     KeptToSlot(slots::SlotId, slots::SlotId),
     /// The chain's picture in `buf_a` (`true`) or `buf_b`, into a slot.
     ChainToSlot(bool, slots::SlotId),
+}
+
+/// The pipeline's shares of the GPU memory report (#3174), one a cache.
+#[derive(Debug)]
+struct MemoryGauges {
+    chain: crate::gpu_memory::Gauge,
+    slots: crate::gpu_memory::Gauge,
+    stack: crate::gpu_memory::Gauge,
+    sprites: crate::gpu_memory::Gauge,
+}
+
+impl Default for MemoryGauges {
+    fn default() -> Self {
+        use crate::gpu_memory::{Gauge, Held};
+        Self { chain: Gauge::new(Held::ChainBuffers), slots: Gauge::new(Held::Slots), stack: Gauge::new(Held::StackLayers), sprites: Gauge::new(Held::Sprites) }
+    }
 }
 
 /// A pool slot's buffer, of the frame's size.

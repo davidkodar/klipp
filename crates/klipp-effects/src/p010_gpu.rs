@@ -517,6 +517,7 @@ impl GpuP010Converter {
         let y_size = y_data.len() as u64;
         let uv_size = uv_data.len() as u64;
         let output_size = (dst_width * dst_height * 4) as u64;
+        crate::gpu_memory::note_decoded_frame(dst_width, dst_height);
 
         Self::ensure_buf(
             &mut self.y_buf, &mut self.cached_y_size, y_size,
@@ -649,6 +650,7 @@ impl GpuP010Converter {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         }));
+        crate::gpu_memory::made(crate::gpu_memory::Made::ConvertToLinear, linear_buf.size());
 
         let y_buf = self.y_buf.as_ref().unwrap();
         let uv_buf = self.uv_buf.as_ref().unwrap();

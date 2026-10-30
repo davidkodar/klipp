@@ -222,6 +222,11 @@ impl<B> SlotPool<B> {
         self.created
     }
 
+    /// The bytes its slots hold, each `size` of its key (#3174).
+    pub fn bytes(&self, size: impl Fn(&SlotKey) -> u64) -> u64 {
+        self.slots.iter().map(|s| size(&s.key)).sum()
+    }
+
     /// Slots leased now.
     pub fn leased(&self) -> usize {
         self.leased
