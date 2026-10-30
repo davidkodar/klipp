@@ -1581,7 +1581,8 @@ pub struct TitleData {
     /// dark text, lightened) as far as its brightness and busyness ask;
     /// `Always` does so even where it would not need to. `Off` for a
     /// title saved before it, so its look does not change; a new title
-    /// takes `Auto`.
+    /// takes `Auto`. A title with a backing is not protected: the backing
+    /// is what its text stands out on.
     #[serde(default, skip_serializing_if = "ContrastProtect::is_off")]
     pub protect: ContrastProtect,
 }
