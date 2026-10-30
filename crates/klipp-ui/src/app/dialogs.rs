@@ -337,7 +337,7 @@ impl KlippApp {
                     let screen = ctx.screen_rect();
                     let resp = ui.allocate_rect(screen, egui::Sense::click());
                     ui.painter().rect_filled(screen, 0.0, egui::Color32::from_black_alpha(120));
-                    if resp.clicked() { self.state.show_speed_dialog = false; }
+                    if resp.clicked() { self.state.close_speed_dialog(false); }
                 });
 
             let mut open = true;
@@ -354,8 +354,52 @@ impl KlippApp {
                     ui.horizontal(|ui| {
                         ui.label("Speed:");
                         ui.add(egui::DragValue::new(&mut self.state.speed_dialog_value)
-                            .range(1.0..=1000.0).speed(1.0).suffix("%").fixed_decimals(0));
+                            .range(1.0..=1000.0).speed(1.0).suffix("%").max_decimals(1));
                     });
+                    // The length it plays for, in step with the speed: one
+                    // setting, its source over the length (#3115).
+                    let content = self.state.speed_dialog_content_secs;
+                    if content > 0.0 {
+                        let tc = self.state.timecode_display();
+                        let mut length = crate::speed_dialog::length_at(content, self.state.speed_dialog_value);
+                        ui.horizontal(|ui| {
+                            ui.label("Length:");
+                            let r = ui.add(egui::DragValue::new(&mut length)
+                                .range(content / 10.0..=content * 100.0).speed(0.05).suffix(" s").max_decimals(2)
+                                .custom_parser(move |s| crate::speed_dialog::parse_length(s, tc)))
+                                .on_hover_text("How long the clip plays at this speed. Type seconds (4.5) or a timecode.");
+                            if r.changed() {
+                                self.state.speed_dialog_value = crate::speed_dialog::percent_for(content, length).clamp(1.0, 1000.0);
+                            }
+                        });
+                        // Fit to fill: the room to the next shot, or the
+                        // marked range, each when there is one.
+                        let fit = self.state.speed_dialog_fit;
+                        ui.horizontal(|ui| {
+                            let to_next = ui.add_enabled(fit.to_next.is_some(), egui::Button::new(match fit.to_next {
+                                Some(l) => format!("Fill to the next clip ({l:.2} s)"),
+                                None => "Fill to the next clip".into(),
+                            }))
+                            .on_hover_text("Slow or speed the clip so it ends where the next clip on its track starts, over any gap between.")
+                            .on_disabled_hover_text("No clip follows this one on its track");
+                            if to_next.clicked() {
+                                if let Some(l) = fit.to_next {
+                                    self.state.speed_dialog_value = crate::speed_dialog::percent_for(content, l).clamp(1.0, 1000.0);
+                                }
+                            }
+                            let range = ui.add_enabled(fit.range.is_some(), egui::Button::new(match fit.range {
+                                Some(l) => format!("Fit to the marked range ({l:.2} s)"),
+                                None => "Fit to the marked range".into(),
+                            }))
+                            .on_hover_text("Make the clip as long as the timeline's marked In to Out.")
+                            .on_disabled_hover_text("Mark an In and an Out point on the timeline first");
+                            if range.clicked() {
+                                if let Some(l) = fit.range {
+                                    self.state.speed_dialog_value = crate::speed_dialog::percent_for(content, l).clamp(1.0, 1000.0);
+                                }
+                            }
+                        });
+                    }
                     ui.add_space(4.0);
 
                     // Preset buttons
@@ -402,15 +446,15 @@ impl KlippApp {
                                 cmds.push(AppCommand::SetClipSpeed { clip_id, speed, ripple: self.state.speed_dialog_ripple });
                                 cmds.push(AppCommand::SetClipKeepPitch { clip_id, keep_pitch: self.state.speed_dialog_keep_pitch });
                             }
-                            self.state.show_speed_dialog = false;
+                            self.state.close_speed_dialog(true);
                         }
                         if ui.button("Cancel").clicked() {
-                            self.state.show_speed_dialog = false;
+                            self.state.close_speed_dialog(false);
                         }
                     });
                 });
             if !open {
-                self.state.show_speed_dialog = false;
+                self.state.close_speed_dialog(false);
             }
         }
 

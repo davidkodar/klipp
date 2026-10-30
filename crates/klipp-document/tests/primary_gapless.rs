@@ -111,3 +111,41 @@ fn a_clip_slowed_into_a_gap_clip_takes_its_room() {
         assert!(!refused.why.contains(" s on track"), "the track said with each clip, not again after the time: {}", refused.why);
     }
 }
+
+/// #3115: a retime fitted to fill runs over the gap clip to the next
+/// shot, not to the gap clip's start; `length_secs` and `fit_range` set
+/// the clip's length and work out the speed; two ways at once are
+/// refused.
+#[test]
+fn a_retime_fits_to_the_next_shot_a_length_or_the_marked_range() {
+    let (mut seq, pool, ids) = with_a_gap();
+    let p = seq.primary_track_index().unwrap();
+    let id = |i: usize| ids[i].0.to_string();
+    let first = |s: &Sequence| s.tracks[p].clips.iter().find(|c| c.id == ids[0]).cloned().unwrap();
+
+    let fitted = holds("fit to fill over the gap clip", seq.clone(), pool.clone(), serde_json::json!({ "op": "retime", "clip_id": id(0), "fit": true }));
+    assert_eq!((first(&fitted).timeline_in, first(&fitted).timeline_out), (t(0.0), t(4.0)), "to the next shot at 4 s");
+    assert!((first(&fitted).speed - 0.5).abs() < 1e-9, "2 s of source over 4 s: {}", first(&fitted).speed);
+
+    let long = holds("a length", seq.clone(), pool.clone(), serde_json::json!({ "op": "retime", "clip_id": id(0), "length_secs": 3.0 }));
+    assert_eq!(first(&long).timeline_out, t(3.0));
+    assert!((first(&long).speed - 2.0 / 3.0).abs() < 1e-9, "{}", first(&long).speed);
+
+    seq.in_point = Some(t(1.0));
+    seq.out_point = Some(t(4.5));
+    let ranged = holds("the marked range's length", seq.clone(), pool.clone(), serde_json::json!({ "op": "retime", "clip_id": id(0), "fit_range": true, "ripple": true }));
+    assert_eq!(first(&ranged).timeline_out, t(3.5), "3.5 s, the range's length, from where it starts");
+
+    for (op, why) in [
+        (serde_json::json!({ "op": "retime", "clip_id": id(0), "fit": true, "length_secs": 3.0 }), "more than one"),
+        (serde_json::json!({ "op": "retime", "clip_id": id(0), "length_secs": 0.0 }), "no length"),
+    ] {
+        let op: Op = serde_json::from_value(op).unwrap();
+        let Err(refused) = resolve(&seq, &pool, &[op]) else { panic!("{why}: refused") };
+        assert!(refused.why.contains(why), "{}", refused.why);
+    }
+    seq.in_point = None;
+    let op: Op = serde_json::from_value(serde_json::json!({ "op": "retime", "clip_id": id(0), "fit_range": true })).unwrap();
+    let Err(refused) = resolve(&seq, &pool, &[op]) else { panic!("no range: refused") };
+    assert!(refused.why.contains("no marked range"), "{}", refused.why);
+}

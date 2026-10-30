@@ -1599,12 +1599,7 @@ impl KlippApp {
                     true
                 }
                 AppCommand::OpenSpeedDialog { clip_id } => {
-                    let spd = self.state.sequence().all_clips().find(|c| c.id == *clip_id).map(|c| c.speed).unwrap_or(1.0);
-                    self.state.speed_dialog_value = spd.abs() * 100.0;
-                    self.state.speed_dialog_reverse = spd < 0.0;
-                    let keep = self.state.sequence().all_clips().any(|c| c.id == *clip_id && c.keep_pitch);
-                    self.state.speed_dialog_keep_pitch = keep;
-                    self.state.show_speed_dialog = true;
+                    self.state.open_speed_dialog(*clip_id);
                     true
                 }
                 AppCommand::SubclipFromClip { clip_id } => {
