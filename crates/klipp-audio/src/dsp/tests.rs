@@ -1485,3 +1485,44 @@ fn a_chain_tail_sums_its_effects() {
     assert_eq!(one(AudioEffectInstance { wet_dry: 0.0, ..instance("delay", &[]) }), 0);
     assert_eq!(one(instance("delay", &[("feedback", 0.95), ("delay_time", 2000.0)])), SR as usize * 10);
 }
+
+/// A pack's denoiser preset of huge settings (#3095): its values pass the
+/// preset's reading, finite as they are, and the effect holds each to its
+/// own range. Played through, the sound comes out finite and no louder
+/// than it went in.
+#[test]
+fn a_pack_s_denoiser_preset_of_huge_values_is_held_to_the_effect_s_ranges() {
+    let dir = std::env::temp_dir().join(format!("klipp-huge-denoiser-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("huge.toml"),
+        "kind = \"audio_effect_preset\"\nformat_version = 1\n[[preset]]\neffect = \"denoiser\"\nname = \"Huge\"\ndescription = \"d\"\nparams = { strength = 1e30, floor = -1e30, wind = 1e30, profile_seconds = 1e30 }\n",
+    )
+    .unwrap();
+    let listing = klipp_core::audio_effect_registry::audio_preset_listing_in(std::slice::from_ref(&dir));
+    let huge = listing.entries[listing.built_in..].iter().find(|p| p.name == "Huge").expect("read: its values are finite");
+    let mut fx = create_effect("denoiser", SR).unwrap();
+    for (k, v) in huge.values() {
+        fx.set_param(&k, v);
+        let d = fx.param_descriptors().iter().find(|d| d.name == k).unwrap();
+        let held = fx.get_param(&k).unwrap();
+        assert!((d.min..=d.max).contains(&held), "{k} {v} held at {held}, outside {}..{}", d.min, d.max);
+    }
+    // A tone under noise, two seconds: the noise profile is learnt, then
+    // the rest is cleaned.
+    let mut seed = 7u32;
+    let mut noise = || {
+        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (seed >> 8) as f32 / (1u32 << 24) as f32 - 0.5
+    };
+    let input: Vec<f32> = sine_stereo(440.0, 2.0, SR).iter().map(|s| s * 0.6 + noise() * 0.2).collect();
+    let mut buf = input.clone();
+    let ctx = make_ctx(SR);
+    for chunk in buf.chunks_mut(1024) {
+        fx.process(chunk, &ctx);
+    }
+    let peak = |b: &[f32]| b.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+    assert!(buf.iter().all(|s| s.is_finite()), "the sound stays finite");
+    assert!(peak(&buf) <= peak(&input) + 1e-4, "no louder: {} out of {} in", peak(&buf), peak(&input));
+    std::fs::remove_dir_all(&dir).unwrap();
+}

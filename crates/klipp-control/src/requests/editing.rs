@@ -932,12 +932,12 @@ pub(crate) fn respond(
             Ok(reply)
         }
 
-        ControlCommand::ExportTemplatePack { path, name, templates, licences, author, version, licence } => {
+        ControlCommand::ExportTemplatePack { path, name, templates, presets, licences, author, version, licence } => {
             if in_batch {
                 return Err("packing templates is not part of a batch: send it on its own".into());
             }
             let about = klipp_project::template_pack::PackAbout { author, version, licence };
-            export_template_pack(&path, &name, &about, templates.as_deref(), &licences)
+            export_template_pack(&path, &name, &about, templates.as_deref(), &presets, &licences)
         }
 
         ControlCommand::TemplatePacks => {
@@ -1529,7 +1529,7 @@ impl klipp_project::template_pack::FontLookup for PackFonts {
 }
 
 /// The `export_template_pack` request (#2757).
-fn export_template_pack(path: &str, name: &str, about: &klipp_project::template_pack::PackAbout, names: Option<&[String]>, licences: &std::collections::BTreeMap<String, String>) -> Result<serde_json::Value, String> {
+fn export_template_pack(path: &str, name: &str, about: &klipp_project::template_pack::PackAbout, names: Option<&[String]>, presets: &[crate::protocol::PresetRef], licences: &std::collections::BTreeMap<String, String>) -> Result<serde_json::Value, String> {
     let out = std::path::Path::new(path);
     if !out.is_absolute() || out.extension().and_then(|e| e.to_str()) != Some(klipp_project::template_pack::PACK_EXTENSION) {
         return Err(format!("give an absolute path ending in .{}", klipp_project::template_pack::PACK_EXTENSION));
@@ -1538,6 +1538,8 @@ fn export_template_pack(path: &str, name: &str, about: &klipp_project::template_
     let store = klipp_timeline::composition_template::CompositionTemplateStore::load(crate::plans::composition_dir());
     // Composition templates and recipes: one format, one pack.
     let templates: Vec<_> = store.templates().chain(store.recipes()).cloned().collect();
+    // Presets only: no templates unless named.
+    let names = if names.is_none() && !presets.is_empty() { Some(&[][..]) } else { names };
     let (titles, templates) = match names {
         None => (titles, templates),
         Some(names) => {
@@ -1549,7 +1551,9 @@ fn export_template_pack(path: &str, name: &str, about: &klipp_project::template_
             (titles.into_iter().filter(|t| wanted(&t.name)).collect(), templates.into_iter().filter(|t| wanted(&t.name)).collect())
         }
     };
-    let text = klipp_project::template_pack::export_pack(out, name, about, titles, templates, licences, &PackFonts::new())?;
+    let wanted: Vec<(String, String)> = presets.iter().map(|p| (p.kind.trim().to_string(), p.name.clone())).collect();
+    let preset_files = klipp_project::template_pack::presets_for_pack(&wanted, name)?;
+    let text = klipp_project::template_pack::export_pack_with(out, name, about, titles, templates, &preset_files, licences, &PackFonts::new())?;
     Ok(json!({ "text": text, "path": path }))
 }
 
@@ -1562,5 +1566,5 @@ fn import_template_pack(path: &str, replace: bool) -> Result<serde_json::Value, 
         klipp_title::catalogue::note_fonts_added();
     }
     let source = klipp_timeline::template_places::Source::Pack(pack.folder.clone()).name();
-    Ok(json!({ "text": format!("{} (as {source})", report.text(&pack.name)), "source": source, "added": report.added, "missing": report.fallbacks, "fonts_added": report.fonts_added }))
+    Ok(json!({ "text": format!("{} (as {source})", report.text(&pack.name)), "source": source, "added": report.added, "missing": report.fallbacks, "fonts_added": report.fonts_added, "presets_added": report.presets_added, "presets_not_offered": report.presets_skipped }))
 }

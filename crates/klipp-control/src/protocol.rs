@@ -212,6 +212,15 @@ pub struct ShortMomentAsk {
     pub hook: Option<String>,
 }
 
+/// A preset of a person's own, by its kind's folder (`generators`,
+/// `hdr_zones`, …) and its name (an animator's by its id).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PresetRef {
+    pub kind: String,
+    pub name: String,
+}
+
 // One of these is deserialised per request off a socket, used, and
 // dropped. It is never stored in a collection and never on a hot path,
 // so the gap between the smallest variant and the largest costs one
@@ -1325,6 +1334,10 @@ pub enum ControlCommand {
         name: String,
         #[serde(default)]
         templates: Option<Vec<String>>,
+        /// The person's own presets carried too (#3095), each by its
+        /// kind's folder and its name.
+        #[serde(default)]
+        presets: Vec<PresetRef>,
         #[serde(default)]
         licences: std::collections::BTreeMap<String, String>,
         /// Who made it, its version and its licence, as the pack says.
@@ -2183,6 +2196,8 @@ mod tests {
         assert!(matches!(by_format.command, super::ControlCommand::NewProject { format: Some(ref f), fps: None, .. } if f == "UHD 4K"));
         let list: Request = serde_json::from_value(json!({"id": 1, "method": "generators"})).unwrap();
         assert!(matches!(list.command, super::ControlCommand::Generators));
+        let packed: Request = serde_json::from_value(json!({"id": 1, "method": "export_template_pack", "path": "/tmp/a.klipppack", "name": "Mine", "presets": [{"kind": "generators", "name": "Brand Red"}]})).unwrap();
+        assert!(matches!(packed.command, super::ControlCommand::ExportTemplatePack { ref presets, .. } if presets == &[super::PresetRef { kind: "generators".into(), name: "Brand Red".into() }]));
         let deliveries: Request = serde_json::from_value(json!({"id": 1, "method": "delivery_templates"})).unwrap();
         assert!(matches!(deliveries.command, super::ControlCommand::DeliveryTemplates));
         let ns: Request = serde_json::from_value(json!({"id": 1, "method": "new_sequence", "name": "V", "width": 1080, "height": 1920, "fps": 30})).unwrap();
