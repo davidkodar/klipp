@@ -836,6 +836,9 @@ pub(crate) struct TimelineFrameCache {
     /// 1 still draws the existing timecode-only label, so the value
     /// is recorded but not yet read by the renderer.
     pub snap_line_x: Option<(f32, klipp_core::SnapTargetKind)>,
+    /// Which edge of a moved clip caught the snap, "Start" or "End", said
+    /// in the snap's label (#3129).
+    pub snap_edge: Option<&'static str>,
     /// Per-track rects this frame: (track_idx, kind, rect). Used for cross-track drag hit testing.
     pub track_rects: Vec<(usize, TrackKind, egui::Rect)>,
     /// Clip id → screen rect, populated while drawing clips. Used for linked-clip connection lines.
@@ -5302,6 +5305,10 @@ impl TimelinePanel {
         let snap_secs = (snap_x - content_rect.left() + state.timeline_scroll_x) as f64
             / state.timeline_zoom as f64;
         let label = Self::snap_legend_label_for_kind(kind, snap_secs, state);
+        let label = match self.frame_cache.snap_edge {
+            Some(edge) => format!("{edge} on {label}"),
+            None => label,
+        };
         let label_pos = egui::pos2(snap_x + 4.0, tracks_start_y + 3.0);
         let text_galley = painter.layout_no_wrap(
             label.clone(),
@@ -9647,19 +9654,31 @@ impl TimelinePanel {
                         moving.extend(crate::timeline::snap::Snapper::moving_with(state, id));
                     }
                     let delta = new_timeline_in - drag.original_timeline_in;
-                    let edges: Vec<RationalTime> = state.sequence().all_clips()
-                        .filter(|c| moving.contains(&c.id))
-                        .flat_map(|c| [c.timeline_in + delta, c.timeline_out + delta])
-                        .collect();
+                    let movers: Vec<&klipp_timeline::Clip> = state.sequence().all_clips().filter(|c| moving.contains(&c.id)).collect();
+                    let edges: Vec<RationalTime> = movers.iter().flat_map(|c| [c.timeline_in + delta, c.timeline_out + delta]).collect();
+                    // The grabbed clip's edge nearer where it was grabbed
+                    // snaps first (#3129): grabbed by its start half, its
+                    // start goes to a marker though its end is nearer a
+                    // clip's edge.
+                    let grabbed_at = (drag.start_x - content_rect.left() + state.timeline_scroll_x) as f64 / zoom as f64;
+                    let preferred = movers.iter().position(|c| c.id == drag.clip_id).map(|i| {
+                        let c = movers[i];
+                        let nearer_end = (c.timeline_out.to_secs_f64() - grabbed_at).abs() < (grabbed_at - c.timeline_in.to_secs_f64()).abs();
+                        2 * i + usize::from(nearer_end)
+                    });
                     let mut exclude = moving.clone();
                     exclude.extend(state.selected_clips.iter().copied().chain(state.selected_clip));
                     let mut hold = drag.hold;
-                    let snap = snapper.snap(&edges, &exclude, &mut hold);
+                    let snap = match preferred {
+                        Some(p) => snapper.snap_preferring(&edges, p, &exclude, &mut hold),
+                        None => snapper.snap(&edges, &exclude, &mut hold),
+                    };
                     let mut final_in = new_timeline_in;
                     let snapped = snap.is_some();
                     if let Some(snap) = snap {
                         final_in = new_timeline_in + (snap.at - edges[snap.edge]);
                         self.frame_cache.snap_line_x = Some(snapper.line(&snap, content_rect.left()));
+                        self.frame_cache.snap_edge = Some(if snap.edge % 2 == 0 { "Start" } else { "End" });
                     }
 
                     // Clamp to >= 0

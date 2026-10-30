@@ -193,6 +193,22 @@ impl Snapper {
         best.map(|(_, s)| s)
     }
 
+    /// [`Self::snap`], `edges[preferred]` first (#3129): it snaps when it
+    /// has a target in reach, and only when it has none does any other
+    /// edge. A moved clip snapped by whichever edge was nearer a target,
+    /// so a title meant to start on a marker caught a clip edge with its
+    /// end first, and its start could not reach the marker.
+    pub fn snap_preferring(&self, edges: &[RationalTime], preferred: usize, exclude: &[ClipId], hold: &mut Option<SnapHold>) -> Option<Snap> {
+        let Some(&edge) = edges.get(preferred) else { return self.snap(edges, exclude, hold) };
+        let mut own = hold.filter(|SnapHold(s)| s.edge == preferred).map(|SnapHold(s)| SnapHold(Snap { edge: 0, ..s }));
+        if let Some(s) = self.snap(&[edge], exclude, &mut own) {
+            let s = Snap { edge: preferred, ..s };
+            *hold = Some(SnapHold(s));
+            return Some(s);
+        }
+        self.snap(edges, exclude, hold)
+    }
+
     /// Where the snap line for `snap` is drawn, in the timeline's
     /// `snap_line_x`: `content_left` is the tracks' left edge on screen.
     pub fn line(&self, snap: &Snap, content_left: f32) -> (f32, SnapTargetKind) {
@@ -222,6 +238,23 @@ mod tests {
         state.sequences[0].tracks[v].clips.extend([a, b]);
         state.playhead = t(20.0);
         (state, ia, ib)
+    }
+
+    /// #3129: the preferred edge snaps when it has a target in reach,
+    /// though the other edge is nearer one; with none for it, the other
+    /// edge still snaps.
+    #[test]
+    fn the_preferred_edge_snaps_first() {
+        let (state, a, b) = state();
+        let s = Snapper::of(&state, 100.0, false);
+        // Start 0.08 s from b's start (5 s), end 0.02 s from b's end (7 s).
+        let edges = [t(4.92), t(6.98)];
+        assert_eq!(s.snap(&edges, &[a], &mut None).map(|g| (g.edge, g.at)), Some((1, t(7.0))), "the nearer edge, unpreferred");
+        let mut hold = None;
+        assert_eq!(s.snap_preferring(&edges, 0, &[a], &mut hold).map(|g| (g.edge, g.at, g.owner)), Some((0, t(5.0), Some(b))), "the start, preferred");
+        assert_eq!(hold.map(|SnapHold(h)| h.edge), Some(0), "held by the start");
+        // The start out of reach: the end snaps.
+        assert_eq!(s.snap_preferring(&[t(4.7), t(6.98)], 0, &[a], &mut None).map(|g| g.edge), Some(1));
     }
 
     #[test]
