@@ -238,6 +238,50 @@ fn a_stretch_ripples_only_with_alt() {
     }
 }
 
+/// #3125: with snapping off, a start dragged past its media and into the
+/// previous clip, or an end into the next, is offered its stretch only as
+/// far as that clip's edge, where a stretch without ripple stops: it
+/// plans, where before it was refused and the refusal was gone unread.
+#[test]
+fn the_offered_stretch_stops_at_the_next_shot() {
+    for at_end in [false, true] {
+        let mut state = AppState { snap_threshold_px: 10.0, playhead: t(30.0), ..Default::default() };
+        state.snap.master = false;
+        state.ripple_enabled = false;
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/stretch-clamp.mov".into(), None);
+        item.duration = t(10.0);
+        let media = state.media_pool.add(item);
+        let seq = &mut state.sequences[0];
+        let v1 = seq.tracks.iter().position(|t| t.name == "Video 1").unwrap();
+        // 1-4 s, a gap clip 4-6 s, the clip at 6-9 s showing 1-4 s of a
+        // 10 s file (1 s before it, 6 after), a gap clip 9-11 s, 11-13 s.
+        let before = Clip::media(media, t(1.0), t(4.0), t(1.0), t(4.0));
+        let mut clip = Clip::media(media, t(6.0), t(9.0), t(1.0), t(4.0));
+        if at_end {
+            clip.source_in = t(7.0);
+            clip.source_out = t(10.0);
+        }
+        let after = Clip::media(media, t(11.0), t(13.0), t(1.0), t(3.0));
+        let id = clip.id;
+        seq.tracks[v1].clips = vec![before, clip, after];
+        seq.fill_primary_holes();
+        let mut tl = Timeline::new(state);
+        let r = tl.rect(v1);
+        let (from, to) = if at_end { (8.95, 12.0) } else { (6.05, 3.0) };
+        let edge = egui::pos2(tl.x(v1, from), r.bottom() - 8.0);
+        tl.drag(edge, &[egui::pos2(tl.x(v1, to), edge.y)], egui::Modifiers::NONE);
+        let Some(crate::widgets::toast::ToastAction::Stretch { clip_id, at_end: end, to }) = tl.state.toast.action_for_test() else {
+            panic!("at_end {at_end}: no stretch offered: {:?} {:?}", tl.state.toast.message_for_test(), tl.sent)
+        };
+        assert!(clip_id == id && end == at_end);
+        let want = if at_end { 11.0 } else { 4.0 };
+        assert!((to.to_secs_f64() - want).abs() < 1e-6, "at_end {at_end}: held at the next shot's edge {want}: {}", to.to_secs_f64());
+        let edge = if at_end { klipp_document::ops::Edge::Out } else { klipp_document::ops::Edge::In };
+        let planned = klipp_document::ops::stretch_at(tl.state.sequence(), &tl.state.media_pool, &[id], edge, klipp_document::ops::StretchTo::EdgeAt(to.to_secs_f64()), false, true);
+        assert!(planned.is_ok(), "at_end {at_end}: {:?}", planned.err().map(|r| r.why));
+    }
+}
+
 /// #3124: a start edge trimmed past its media onto the previous clip's
 /// end, as a walkthrough had it (1 s of handle, 2 s of gap): the toast's
 /// stretch plans, with ripple off and on.
