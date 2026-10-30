@@ -624,3 +624,24 @@ fn escape_cancels_a_trim_and_a_move() {
         assert!(tl.state.active_history_mut().undo().is_none(), "{case}: no history entry");
     }
 }
+
+/// #3129: a clip moved so its start is near a marker and its end nearer
+/// another clip's start snaps by the edge it was grabbed nearer: grabbed
+/// in its first half, its start goes onto the marker; in its second, its
+/// end onto the clip.
+#[test]
+fn a_moved_clip_snaps_by_the_edge_it_was_grabbed_nearer() {
+    for (grab_secs, start) in [(0.4, 69), (1.6, 72)] {
+        let (mut state, _, _) = three_tracks();
+        // At frame 69 (2.875 s), so the distances below are whole frames.
+        state.sequences[0].markers.push(marker(69.0 / 24.0));
+        let mut tl = Timeline::new(state);
+        let v2 = tl.track("Video 2");
+        let grab = tl.at(v2, grab_secs);
+        // Start to frame 71 (2.958 s, two frames from the marker), end to
+        // 4.958 s (one frame from the target's start at 5 s).
+        let drop = grab + egui::vec2(71.0 / 24.0 * ZOOM, 0.0);
+        tl.drag(grab, &[grab + egui::vec2(100.0, 0.0), drop], egui::Modifiers::NONE);
+        assert_eq!(moved_to(&tl.sent), [(RationalTime::from_frames(start, 24), None)], "grabbed at {grab_secs} s");
+    }
+}
