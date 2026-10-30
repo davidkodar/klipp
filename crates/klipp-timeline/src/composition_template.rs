@@ -1637,6 +1637,7 @@ pub fn builtin_templates() -> Vec<CompositionTemplate> {
         include_str!("../../../assets/templates/collage.klipptemplate"),
         include_str!("../../../assets/templates/stinger.klipptemplate"),
         include_str!("../../../assets/templates/opener.klipptemplate"),
+        include_str!("../../../assets/templates/terminal_card.klipptemplate"),
     ];
     FILES
         .iter()
@@ -2502,6 +2503,36 @@ mod tests {
         assert_eq!(some.iter().map(|(n, _, _)| n.as_str()).collect::<Vec<_>>(), ["voice", "deess"], "the recipe's order");
         assert_eq!(some[0].2.params[0], ("reduction".to_string(), 12.0));
         assert!(r.audio_steps(&BTreeMap::new(), Some(&["reverb".into()])).unwrap_err().contains("has no step \"reverb\""));
+    }
+
+    /// #2886: the Terminal Card ships as a file: a dark card, the command
+    /// and a blinking cursor, in a wide, a tall and a square layout. The
+    /// card enters and drifts on keys eased by their named curves, each
+    /// segment a Bezier with real handles; the command types on a
+    /// character at a time over the 0.34 s its speed names; and each of its
+    /// five parameters is bound.
+    #[test]
+    fn the_terminal_card_ships_as_a_file() {
+        let card = builtin_templates().into_iter().find(|t| t.name == "Terminal Card").expect("shipped");
+        assert_eq!((card.category.as_str(), card.formats.keys().map(String::as_str).collect::<Vec<_>>()), ("Cards", vec!["square", "tall"]));
+        let title = card.composition().and_then(|s| s.tracks.iter().flat_map(|t| &t.clips).find_map(|c| c.title_data().cloned())).expect("its title");
+        use crate::TitleObjectContent as C;
+        assert!(matches!((&title.objects[0].content, &title.objects[1].content, &title.objects[2].content), (C::Shape(_), C::TextBox(_), C::Shape(_))));
+        assert!(title.objects[0].fx().motion.is_active());
+        assert!(title.objects[2].fx().loops.iter().any(|l| matches!(l, crate::TitleLoop::Blink { .. })), "the cursor blinks");
+        let keys = &title.objects[0].transform.center_x_keyframes;
+        assert!(keys.len() >= 4);
+        for pair in keys.windows(2) {
+            assert_eq!(pair[0].interpolation, klipp_core::Interpolation::Bezier, "each segment is eased");
+            assert!(pair[0].tangent_out.0 > 0.0 || pair[1].tangent_in.0 < 0.0, "with real handles");
+        }
+        assert_eq!(keys[0].tangent_in, (0.0, 0.0), "nothing precedes the first key");
+        let enter = title.objects[1].fx().motion.enter.expect("an entrance");
+        assert_eq!(enter.stagger, crate::StaggerUnit::Char);
+        assert!((enter.stagger_secs * "$ find invoice.pdf".chars().count() as f32 - 0.34).abs() < 1e-5, "{}", enter.stagger_secs);
+        let mut bound: Vec<&str> = card.bindings.iter().map(|b| b.parameter.as_str()).collect();
+        bound.sort();
+        assert_eq!(bound, ["accent", "command_text", "entry_direction", "float_amount", "typing_speed"]);
     }
 
     /// #2757: the templates Klipp ships load and check as saved ones do;
